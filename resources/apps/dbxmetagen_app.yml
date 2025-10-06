@@ -1,0 +1,47 @@
+resources:
+  apps:
+    dbxmetagen_app:
+      name: ${var.app_name}
+      description: 'UI For dbxmetagen app'
+
+      # The location of the source code for the app
+      source_code_path: ../../app
+
+      # The resources in the bundle which this app has access to. This binds the resource in the app with the bundle resource.
+      resources:
+      #   - name: "sql_warehouse"
+      #     sql_warehouse:
+      #       id: ${var.sql_warehouse_id}
+      #       permission: "CAN_USE"
+
+        # - name: "catalog_name"
+        #   secret:
+        #     key: "catalog_name"
+        #     scope: "dbxmetagen_secret_scope"
+        #     permission: "READ"
+
+        # - name: "schema_name"
+        #   secret:
+        #     key: "schema_name"
+        #     scope: "dbxmetagen_secret_scope"
+        #     permission: "READ"
+
+        - name: "dbxmetagen_metadata_job"
+          job:
+            id: ${resources.jobs.metadata_generator_job.id}
+            permission: "CAN_MANAGE_RUN"
+
+        - name: "sync_ddl_job"
+          job:
+            id: ${resources.jobs.sync_ddl_job.id}
+            permission: "CAN_MANAGE_RUN"
+          
+        # - name: "deploying_user"
+        #   value: ${var.deploying_user}
+        
+        # - name: "deploying_user"
+        #   secret:
+        #     key: "deploying_user"
+        #     scope: "dbxmetagen_secret_scope"
+        #     permission: "READ"
+

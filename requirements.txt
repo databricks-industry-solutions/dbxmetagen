@@ -1,1 +1,14 @@
-# Check here to get the latest version of the databricks-cli: https://github.com/databricks/cli
+mlflow>=2.22.1, <3.0.0
+openai>=1.99.9
+cloudpickle==3.1.0
+pydantic>=2.10.1
+ydata-profiling==4.12.1
+databricks-langchain==0.7.1
+databricks-sdk>=0.30.0
+openpyxl==3.1.5
+spacy==3.8.7
+presidio_analyzer==2.2.358
+presidio_anonymizer==2.2.358
+# Pre-download spaCy model to avoid runtime downloads
+https://github.com/explosion/spacy-models/releases/download/en_core_web_lg-3.8.0/en_core_web_lg-3.8.0-py3-none-any.whl
+requests>=2.25.0

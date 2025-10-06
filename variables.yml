@@ -1,0 +1,192 @@
+variables:
+  host:
+    description: Base url host variable. If using asset bundles, will get overridden by target host. Otherwise, use the host here that you want to target. Replace this example host name with a real one, specifically the one you will be using.
+    default: None
+  catalog_name:
+    description: Target catalog where data, models, and files are stored for this project. If source tables are in this catalog, then table names only have to be scoped with schema and table. If table names are in other catalogs then table names need to be fully scoped. Replace this catalog name with the main catalog you want to run dbxmetagen from.
+    default: None
+  bundle_target:
+    description: Bundle target environment (dev/prod).
+    default: ${bundle.target}
+  allow_data:
+    description: Set this to false if you do not want data sent to LLMs, do not want any metadata stored in comments, and do not want metadata used that could leak data into metadata. Reduces quality of outputs. Internally sets sample_size to 0, allow_data_in_comments to false, and include_possible_data_fields_in_metadata to false.
+    default: True
+  sample_size:
+    description: Sample size used per chunk in the prompt generation. when set to 0, no data will be sent to LLM, but due to leakage from metadata if this field alone is set, does not prevent data being added to comments.
+    default: 5
+  disable_medical_information_value:
+    description: Set this to true if you want all phi assumptions to be as secure as possible. Under this setting there is no 'medical information' category. Instead, all medical information is converted to PHI. Note that this will mean that any downstream masking you do, and security concerns around your data will be much more stringent.
+    default: true
+  allow_data_in_comments:
+    description: Whether to allow data in comments. Note that this does not prevent data from being used in the inputs, but is meant to keep data from the outputs. These comments still need to be reviewed, and to be 100% sure, either set allow_data to false, or set your combination of add_metadata, include_existing_table_comment, and other fields to the proper settings.
+    default: true
+  add_metadata:
+    description: Whether to use metadata from information schema and from a DESCRIBE EXTENDED ... COMPUTE STATISTICS... on each column or not. The most information will be used if ANALYZE ALL COLUMNS ... COMPUTE STATISTICS... is run on the table, but there are good reasons not to do that, please review the considerations. Setting add_metadata to true will also lead to a slower process. Note that some metadata can in theory leak data, such as min or max. Strings don't have values for min or max, but dates, floats, and integers do.
+    default: true
+  include_datatype_from_metadata:
+    description: Should datatype be included in the comment generation?
+    default: false
+  include_existing_table_comment:
+    description: If there's an existing comment at the table level, include it in the payload that is used to build the metadata. This can lead to data leakage, but can also help enrich AI generated comments with existing comments, or include information that the previous comment authors wanted to include.
+    default: false
+  include_possible_data_fields_in_metadata:
+    description: There are a few fields in extended metadata if ANALYZE TABLE...COMPUTE STATISTICS... is used that in theory could leak PII or PHI. For example, if a phone number or SSN is stored as an INT, or for appointment dates that could be classified as PHI. Set this to false if you want to exclude these fields. Note that these fields are some of the most useful for tools like Genie.
+    default: true
+  catalog_tokenizable:
+    description: tokenizable catalog name. You can add string formatting here for environment. For example, add _{env} so that config.env from widgets or from the asset bundle variables gets parameterized with the catalog name. Paired with format_catalog and making sure that there's a value in the instantiated config for the parameterized value, the token can be formatted in Databricks. If the token itself should be present in the DDL generated, then leave format_catalog as false.
+    default: __CATALOG_NAME__
+  format_catalog:
+    description: Whether or not to string format any bracketed variables in catalog name. If set to false, then __CATALOG_NAME__{env} will keep the _{env} suffix, if not it will be formatted with the current environment.
+    default: false 
+  model:
+    description: LLM endpoint used by model calls. Note that this is not the same as any registered model in UC that wraps the prompt engineering work, but is the serving endpoint called after prompt engineering. This can be changed to other served models as well as provisioned throughput models or external models for compliance purposes if needed. Recommend databricks-claude-3-7-sonnet for best comments, with databricks-meta-llama-3-3-70b-instruct as a backup. Sonnet will generally give more complex responses. Review security, tenancy, and cost considerations before making a decision. 
+    default: databricks-claude-3-7-sonnet
+  chat_completion_type:
+    description: |
+      Type of chat completion endpoint to use:
+      - 'databricks' (default): Use Databricks foundation models (e.g., databricks-claude-3-7-sonnet). Uses DATABRICKS_TOKEN and DATABRICKS_HOST environment variables.
+      - 'openai_spec': Use any OpenAI-compatible API endpoint that accepts standard 'model' parameter (e.g., OpenAI, Azure OpenAI with standard format, Anthropic, etc.). Requires custom_endpoint_url and secret configuration.
+      - 'custom_chat_spec': Use APIs that are OpenAI-compatible but use 'engine' instead of 'model' parameter (e.g., some Azure OpenAI deployments). Requires custom_endpoint_url and secret configuration.
+    default: databricks
+  custom_endpoint_url:
+    description: |
+      Base URL for custom chat completion endpoints. Only used when chat_completion_type is 'openai_spec' or 'custom_chat_spec'.
+      Should be the base URL without the /chat/completions suffix.
+      Examples:
+      - OpenAI: https://api.openai.com/v1
+      - Azure OpenAI: https://your-resource.openai.azure.com
+      - Anthropic: https://api.anthropic.com
+    default: ""
+  custom_endpoint_secret_scope:
+    description: |
+      Databricks secret scope containing the API key/token for custom endpoints. Only used when chat_completion_type is 'openai_spec' or 'custom_chat_spec'.
+      The secret should contain the Bearer token or API key for authentication.
+      Example: Create a secret scope called 'openai-secrets' and store your API key there.
+    default: ""
+  custom_endpoint_secret_key:
+    description: |
+      Key name within the secret scope for the API token. Only used when chat_completion_type is 'openai_spec' or 'custom_chat_spec'.
+      This is the key name you used when storing the secret in the scope.
+      Common names: 'api_key', 'token', 'openai_key', etc.
+    default: api_key
+  job_table_names:
+    description: default table names - get applied if there are no host overrides.
+    default: default.simple_test
+  create_test_data:
+    description: Flag to create test data during deployment. Set via --create-test-data flag in deploy_app.sh
+    default: false
+  apply_ddl:
+    description: Whether to apply DDL directly to the specified environment or not. Modify permissions needed, and be aware that this will alter tables.
+    default: False
+  ddl_output_format:
+    description: Output format can be via sql file (default) or via tsv or excel if this improves reviewability. This file is the individual output files.
+    default: sql
+  reviewable_output_format:
+    description: Desired format for full run output for reviewability. tsv or excel 
+    default: tsv
+  include_deterministic_pi:
+    description: Run presidio analyzer before using LLM-based PI identification.
+    default: true
+  spacy_model_names:
+    description: spacy models to use in presidio. Currently will only handle a single model. Adding support for multiple models is a planned feature.
+    default: en_core_web_lg
+  pi_classification_rules:
+    description: Rules for PI classification. These rules will be injected into the prompt and provided along with the prompt to the model.
+    default: |
+      PII (Personally Identifiable Information): Any data that can identify an individual, such as name, address, or social security number. PHI (Protected Health Information): Health-related data that includes any of the 18 HIPAA-identified elements, like medical records or treatment histories. PCI (Payment Card Information): Data related to payment card transactions, including card numbers, expiration dates, and security codes. Non-PII/PHI/PCI: Data that cannot be used to identify an individual or is not related to health or payment cards, such as general demographics or anonymized statistics.
+      ###
+      To identify these types:
+      ###
+      PII: Look for column names or data containing personal details like 'full_name', 'address', 'ssn', 'email', or 'phone_number', geo subdivisions smaller than a state, dates that relate to an individual such as birth date, medical record number (MRN), URLs, Certificate or license numbers, account numbers, VIN or license plate numbers, biometric identifiers, face photography, or unique identifying number characteristic or code.
+      PHI: Search for health-related terms in column names or data, such as 'medical_record_number', 'diagnosis', 'treatment_date', or any of the 18 HIPAA identifiers. If a column ONLY has medical information with absolutely no identifying information, then it is not PHI. It should be classified as medical information at the column level to allow table-level PHI to be evaluated.
+      PCI: Identify columns or data with payment card-related terms like 'card_number', 'expiration_date', 'cvv', or 'cardholder_name'.
+      Non-PII/PHI/PCI: Look for general, non-identifying information like 'state', 'country', 'age_group', or 'product_category'. Anything smaller than state is generally considered PII.
+      ###
+      Tables with PII vs columns with PII:
+      ###
+      If a column has only PII, then it should be considered only PII, even if other columns in the table have medical information in them. A specific example of this is that if a column only contains name, or address, then it should be marked as pii, not as phi. However, the column containing medical information would be considered PHI because it pertains to the health status, provision of health care, or payment for health care that can be linked to an individual.
+      If a table has columns with both PII and PHI, or with PII and medical information, then the table itself has PHI.
+  allow_manual_override:
+    description: Whether to allow manual overrides to fields. manual override csv allows overrides to be specified in a CSV.
+    default: true
+  override_csv_path:
+    description: Path and name of csv to be used for manual overrides.
+    default: metadata_overrides.csv
+  tag_none_fields:
+    description: Whether to tag fields with no PI, or not apply any tags. If a field is classified as 'None' in PI, it won't get tagged.
+    default: true
+  max_prompt_length:
+    description: maximum prompt length
+    default: 4096
+  word_limit_per_cell:
+    description: number of words for each cell of the source tables. any value from a source table larger than this will get truncated when added to prompt content.
+    default: 100
+  limit_prompt_based_on_cell_len:
+    description: whether or not to truncate cells longer than the value in word_limit_per_cell
+    default: true
+  columns_per_call:
+    description: columns per call - this is the number of columns sent to the prompt per chunk
+    default: 20
+  max_tokens:
+    description: maximum tokens for model
+    default: 4096
+  temperature:
+    description: temperature applied to the model
+    default: 0.1
+  acro_content:
+    description: acronyms that are commonly used in the data
+    default: |
+        {
+        "DBX": "Databricks",
+        "WHO": "World Health Organization",
+        "GMC": "Global Marketing Code",
+        }
+  use_protected_classification_for_table:
+    description: Whether to use protected classification for the table.
+    default: true
+  schema_name:
+    description: Primary schema where data, models, and files are written to for this project. This is not the source schema, which is specified elsewhere with the source table name.
+    default: metadata_results
+  volume_name:
+    description: volume name in which to store DDL files.
+    default: generated_metadata
+  registered_model_name:
+    description: registered model name
+    default: default
+  model_type:
+    description: Model type
+    default: default
+  table_names_source:
+    description: Path variable to table names. Don't edit unless you know what you're doing.
+    default: csv_file_path
+  source_file_path:
+    description: Path to the source file used in identifying table names.
+    default: table_names.csv
+  current_user:
+    description: User deploying the bundle. Can apply to service principals as well.
+    default: ${workspace.current_user.userName}
+  current_working_directory:
+    description: Working directory or bundle root.
+    default: /Users/${var.current_user}/.bundle/${bundle.name}/${bundle.target}
+  pi_column_field_names:
+    description: Field names for PI columns. Not yet implemented. Will allow name changes and alternate schemas for tag names. Currently, the code must be changed.
+    default: default
+  review_input_file_type:
+    description: excel or tsv. allows reviewed DDL to be in either format.
+    default: tsv
+  review_output_file_type:
+    description: sql, excel, or tsv. allows reviewed DDL to be exported in either format.
+    default: tsv
+  review_apply_ddl:
+    description: When running 'sync_reviewed_ddl', if this is set to true, the DDL will all be applied after running.
+    default: false
+  column_with_reviewed_ddl:
+    description: When reviewing content and supplying it back to the sync process, do not modify the DDL column, modify the columns 'column_content' or 'type' and 'classification'. For the alternative column the specified option should just be 'other'. We will add an option to modify the DDL in a future release.
+    default: other
+  control_table:
+    description: Control table name.
+    default: "metadata_control_{}"
+  dry_run:
+    description: Whether to perform a dry run. Not yet implemented, though if volume_name is set to null and apply_ddl is set to false this effectively is a dry run. Similarly, just setting apply_ddl to false is in a way a dry run.
+    default: false
+
