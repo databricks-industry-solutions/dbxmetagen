@@ -132,3 +132,12 @@ databricks/
 
 #specific folders
 **/.agents/
+.vscode/
+.idea/
+*.swp
+*.swo
+Thumbs.db
+.DS_Store
+__pycache__/
+dist/
+*.egg-info/
