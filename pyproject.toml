@@ -1,0 +1,39 @@
+[tool.poetry]
+name = "dbxmetagen"
+version = "0.4.1"
+description = "Generates comments and identifies and classifies other metadata for Delta tables in Databricks."
+readme = "README.md"
+authors = ["Eli Swanson <eli.swanson@databricks.com>"]
+maintainers = ["Eli Swanson <eli.swanson@databricks.com>"]
+license = "DB License"
+requires-poetry = ">=2.0.*"
+packages = [
+    { include = "dbxmetagen", from = "src" }
+]
+
+[tool.poetry.dependencies]
+python = ">=3.10.12, <3.13.0"
+mlflow = "==3.1.1"
+openai = "==1.56.1"
+cloudpickle = "==3.1.0"
+pydantic = "==2.9.2"
+ydata-profiling = "^4.12.1"
+databricks-langchain = "==0.7.1"
+openpyxl = "==3.1.5"
+spacy = "==3.8.7"
+presidio_analyzer = "==2.2.358"
+presidio_anonymizer = "==2.2.358"
+
+[tool.poetry.scripts]
+main = "dbxmetagen.main:main"
+
+[tool.poetry.requires-plugins]
+poetry-plugin-export = ">=1.9.0"
+
+[tool.poetry.group.dev.dependencies]
+pre-commit = "^4.0.1"
+pytest = ">=8.3.4"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

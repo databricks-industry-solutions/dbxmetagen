@@ -354,86 +354,39 @@ Put the file you want to review in 'reviewed_outputs' folder in your user folder
 - **Medical Columns:** Often classified as PHI for safety.
 - **Chunking and Sampling:** Affect both performance and quality of generated metadata.
 
-## Under Development
-
-- Prompt registration and model evaluation using agent evals.
-- Support for multiple spaCy models and custom PI column field names.
-
 ## License
 
 This project is licensed under the Databricks DB License.
 
-## Analysis of packages used
+## Analysis of Packages Used
 
-Below is a detailed table summarizing the status, open source availability, and licensing details for each Python library used in this project:
+| Package | License | Source |
+|---------|---------|--------|
+| mlflow >=2.22.1 | Apache 2.0 | https://github.com/mlflow/mlflow |
+| openai >=1.99.9 | Apache 2.0 | https://github.com/openai/openai-python |
+| cloudpickle 3.1.0 | BSD 3-Clause | https://github.com/cloudpipe/cloudpickle |
+| pydantic >=2.10.1 | MIT | https://github.com/pydantic/pydantic |
+| ydata-profiling 4.12.1 | MIT | https://github.com/ydataai/ydata-profiling |
+| databricks-langchain 0.7.1 | Apache 2.0 | https://github.com/databricks/databricks-ai-bridge |
+| databricks-sdk >=0.30.0 | Apache 2.0 | https://github.com/databricks/databricks-sdk-py |
+| openpyxl 3.1.5 | MIT | https://foss.heptapod.net/openpyxl/openpyxl |
+| spacy 3.8.7 | MIT | https://github.com/explosion/spaCy |
+| en_core_web_lg 3.8.0 | MIT | https://github.com/explosion/spacy-models |
+| presidio-analyzer 2.2.358 | MIT | https://github.com/microsoft/presidio |
+| presidio-anonymizer 2.2.358 | MIT | https://github.com/microsoft/presidio |
+| requests >=2.25.0 | Apache 2.0 | https://github.com/psf/requests |
+| numpy | BSD-3-Clause | https://github.com/numpy/numpy |
+| pandas |	BSD-3 | https://github.com/pandas-dev/pandas |
+| pyspark |	Apache2.0 | https://github.com/apache/spark |
+| cloudpickle==2.2.1 | BSD-3 | https://github.com/cloudpipe/cloudpickle |
+| streamlit | Apache2.0 | https://github.com/streamlit |
+| databricks-sdk | Apache2.0 | https://pypi.org/project/databricks-sdk/ |
+| databricks-sql-connector | Apache2.0 | https://github.com/databricks/ |
 
-| Package           | Status / Description                                                                 | Open Source | License Type & Details                                                                                          |
-|-----------------------------|-------------------------------------------------------------------------------------|-------------|---------------------------------------------------------------------------------------------------------------|
-| **mlflow (2.18.0)**         | Machine learning lifecycle platform (tracking, packaging, deployment, registry)     | Yes         | **Apache 2.0** — Permissive, allows commercial use, modification, distribution, patent use[1][2].             |
-| **openai (1.56.1)**         | Official Python client for OpenAI API                                               | Yes         | **MIT** — Permissive, allows commercial use, modification, distribution, private use[3].                      |
-| **cloudpickle (3.1.0)**     | Enhanced pickling for Python objects; used for serialization                        | Yes         | **BSD 3-Clause** — Permissive, allows commercial use, modification, distribution[4].                         |
-| **pydantic (2.9.2)**        | Data validation and settings management using Python type annotations                | Yes         | **BSD 3-Clause** — Permissive, allows commercial use, modification, distribution[5].                         |
-| **ydata-profiling (4.12.1)**| Automated data profiling and exploratory data analysis                              | Yes         | **MIT** — Permissive, allows commercial use, modification, distribution, private use[6].                      |
-| **databricks-langchain (0.0.3)** | Integration between Databricks and LangChain for LLM apps                     | Yes         | **MIT** — Permissive, allows commercial use, modification, distribution, private use[7].                     |
-| **openpyxl (3.1.5)**        | Read/write Excel 2010 xlsx/xlsm/xltx/xltm files                                     | Yes         | **MIT** — Permissive, allows commercial use, modification, distribution, private use[8].                     |
-| **spacy (3.8.7)**           | Industrial-strength NLP toolkit                                                     | Yes         | **MIT** — Permissive, allows commercial use, modification, distribution, private use[9].                     |
-| **presidio_analyzer (2.2.358)** | PII/PHI/PCI detection and analysis toolkit                                     | Yes         | **MIT** — Permissive, allows commercial use, modification, distribution, private use.                         |
-| **presidio_anonymizer (2.2.358)** | PII/PHI/PCI anonymization toolkit                                           | Yes         | **MIT** — Permissive, allows commercial use, modification, distribution, private use.                         |
 
-### Additional Details
+**All packages are open source with permissive licenses** (Apache 2.0, MIT, BSD 3-Clause) that allow commercial use, modification, and redistribution.
 
-- **All libraries listed are open source** and widely used in the Python/data science ecosystem.
-- **Licensing is permissive** for all entries, with Apache 2.0, BSD 3-Clause, and MIT being the most common. These allow for commercial use, modification, and redistribution, with minimal restrictions.
-- **MLflow** is governed by Apache 2.0, which is slightly more restrictive than MIT but still highly permissive[1][2].
-- **OpenAI's Python client** and most data science/utility libraries here use the MIT license, which is very permissive[3][6][7][8][9].
-- **Pydantic** and **cloudpickle** use BSD 3-Clause, which is similar to MIT but with an additional clause regarding the use of the names of the copyright holders[4][5].
-
-### Notes
-
-- All versions referenced are current or recent as of July 2025.
-- For some libraries (e.g., presidio_analyzer and presidio_anonymizer), the MIT license is standard for Microsoft open source projects, though always confirm in the project repository for the specific release.
-
-This table should provide a clear overview for compliance, integration, and open source policy review.
-
-[1] https://github.com/mlflow/mlflow/blob/master/LICENSE.txt
-
-[2] https://pypi.org/project/mlflow/
-
-[3] https://github.com/openai/openai-quickstart-python/blob/master/LICENSE
-
-[4] https://release-monitoring.org/project/python-cloudpickle
-
-[5] https://github.com/conda-forge/pydantic-feedstock/blob/main/LICENSE.txt
-
-[6] https://github.com/ydataai/ydata-profiling/blob/develop/LICENSE
-
-[7] https://pypi.org/project/databricks-langchain/
-
-[8] https://layers.openembedded.org/layerindex/recipe/120206/
-
-[9] https://github.com/ipipan/spacy-pl/blob/master/LICENSE
-
-[10] http://mlflow.org/releases/2.18.0
-
-[11] https://security.snyk.io/package/pip/mlflow/2.18.0
-
-[12] http://mlflow.org
-
-[13] https://launchpad.net/ubuntu/+source/cloudpickle/3.1.0-1
-
-[14] https://github.com/FullStackWithLawrence/pydantic-example/blob/main/LICENSE
-
-[15] https://github.com/mlflow/mlflow/blob/master/CHANGELOG.md
-
-[16] https://github.com/openai/openai-python/blob/main/LICENSE
-
-[17] https://github.com/ydataai/ydata-profiling/releases
-
-[18] https://hiplab.mc.vanderbilt.edu/git/steve/databricks-cli/src/commit/e236c8a54546a08e5415fcf83ab4d200769dde1d/LICENSE
-
-[19] https://github.com/LaneDoyle/OpenPyxl-Examples/blob/master/LICENSE
-
-[20] https://huggingface.co/spacy/pl_core_news_lg/blob/main/LICENSES_SOURCES
+**Other libraries used come from the Databricks runtime**
 
 ## Acknowledgements
 
