@@ -1,0 +1,209 @@
+version: 0.2
+domains:
+  clinical:
+    name: "Clinical"
+    description: "Clinical trials"
+    subdomains:
+      clinical_trials:
+        name: "Clinical Trials"
+        description: "Trial-related infromation"
+
+  finance:
+    name: "Finance"
+    description: "Financial data, transactions, accounting, and related business metrics"
+    keywords: ["revenue", "transaction", "payment", "invoice", "billing", "accounting", "financial", "cost", "budget", "profit", "loss", "balance", "ledger", "asset", "liability", "equity", "cash", "credit", "debit", "tax", "audit"]
+    subdomains:
+      accounting:
+        name: "Accounting"
+        description: "General ledger, accounts payable/receivable, financial statements"
+        keywords: ["ledger", "journal", "account", "balance", "trial_balance", "gl", "ap", "ar", "financial_statement"]
+      
+      payments:
+        name: "Payments"
+        description: "Payment processing, transactions, billing"
+        keywords: ["payment", "transaction", "billing", "invoice", "receipt", "charge", "refund", "settlement"]
+      
+      treasury:
+        name: "Treasury"
+        description: "Cash management, investments, banking"
+        keywords: ["cash", "bank", "investment", "treasury", "liquidity", "funding", "capital"]
+      
+      compliance:
+        name: "Compliance"
+        description: "Regulatory compliance, audit, tax reporting"
+        keywords: ["audit", "compliance", "regulatory", "tax", "sox", "gaap", "ifrs", "regulation"]
+
+  crm:
+    name: "Customer Relationship Management"
+    description: "Customer data, interactions, sales, and relationship management"
+    keywords: ["customer", "contact", "lead", "opportunity", "sales", "prospect", "account", "relationship", "interaction", "communication", "campaign", "pipeline", "deal", "quote", "contract"]
+    subdomains:
+      sales:
+        name: "Sales"
+        description: "Sales processes, opportunities, quotes, deals"
+        keywords: ["sales", "opportunity", "quote", "deal", "pipeline", "forecast", "territory", "commission"]
+      
+      marketing:
+        name: "Marketing"
+        description: "Marketing campaigns, leads, attribution"
+        keywords: ["marketing", "campaign", "lead", "attribution", "segment", "channel", "promotion", "email", "social"]
+      
+      support:
+        name: "Customer Support"
+        description: "Customer service, tickets, support interactions"
+        keywords: ["support", "ticket", "case", "issue", "resolution", "help", "service", "complaint", "escalation"]
+      
+      loyalty:
+        name: "Customer Loyalty"
+        description: "Loyalty programs, rewards, retention"
+        keywords: ["loyalty", "reward", "point", "retention", "churn", "lifetime_value", "engagement"]
+
+  hr:
+    name: "Human Resources"
+    description: "Employee data, payroll, benefits, and HR processes"
+    keywords: ["employee", "staff", "personnel", "payroll", "salary", "wage", "benefit", "hr", "human_resources", "workforce", "talent", "recruitment", "performance", "training", "leave", "time", "attendance"]
+    subdomains:
+      payroll:
+        name: "Payroll"
+        description: "Employee compensation, salary, benefits"
+        keywords: ["payroll", "salary", "wage", "compensation", "bonus", "commission", "deduction", "tax_withholding"]
+      
+      recruitment:
+        name: "Recruitment"
+        description: "Hiring, candidates, job applications"
+        keywords: ["recruitment", "hiring", "candidate", "application", "interview", "job", "position", "vacancy"]
+      
+      performance:
+        name: "Performance Management"
+        description: "Employee performance, reviews, goals"
+        keywords: ["performance", "review", "goal", "objective", "appraisal", "feedback", "rating", "development"]
+      
+      benefits:
+        name: "Benefits & Compensation"
+        description: "Employee benefits, insurance, retirement"
+        keywords: ["benefit", "insurance", "retirement", "401k", "health", "dental", "vision", "pto", "vacation"]
+
+  operations:
+    name: "Operations"
+    description: "Operational data, supply chain, inventory, and logistics"
+    keywords: ["inventory", "supply", "chain", "logistics", "warehouse", "shipment", "order", "fulfillment", "procurement", "vendor", "supplier", "product", "manufacturing", "production", "quality", "facility", "asset", "maintenance"]
+    subdomains:
+      inventory:
+        name: "Inventory Management"
+        description: "Stock levels, inventory tracking, warehouse management"
+        keywords: ["inventory", "stock", "warehouse", "storage", "sku", "item", "location", "bin", "cycle_count"]
+      
+      procurement:
+        name: "Procurement"
+        description: "Purchasing, suppliers, vendor management"
+        keywords: ["procurement", "purchase", "vendor", "supplier", "contract", "rfp", "po", "requisition"]
+      
+      logistics:
+        name: "Logistics"
+        description: "Shipping, delivery, transportation"
+        keywords: ["logistics", "shipping", "delivery", "transport", "carrier", "tracking", "freight", "route"]
+      
+      manufacturing:
+        name: "Manufacturing"
+        description: "Production, quality control, manufacturing processes"
+        keywords: ["manufacturing", "production", "quality", "batch", "lot", "work_order", "bom", "routing"]
+
+  marketing:
+    name: "Marketing"
+    description: "Marketing campaigns, digital marketing, brand management"
+    keywords: ["marketing", "campaign", "brand", "advertisement", "promotion", "digital", "social", "email", "content", "seo", "sem", "analytics", "attribution", "conversion", "engagement", "reach", "impression", "click"]
+    subdomains:
+      digital:
+        name: "Digital Marketing"
+        description: "Online marketing, social media, email campaigns"
+        keywords: ["digital", "online", "social", "email", "web", "mobile", "app", "seo", "sem", "ppc"]
+      
+      analytics:
+        name: "Marketing Analytics"
+        description: "Marketing performance, attribution, ROI analysis"
+        keywords: ["analytics", "attribution", "roi", "conversion", "funnel", "cohort", "retention", "engagement"]
+      
+      content:
+        name: "Content Management"
+        description: "Content creation, management, and distribution"
+        keywords: ["content", "blog", "article", "video", "image", "asset", "publication", "editorial"]
+
+  product:
+    name: "Product"
+    description: "Product data, features, user interactions, and product analytics"
+    keywords: ["product", "feature", "user", "usage", "interaction", "behavior", "session", "click", "view", "conversion", "funnel", "cohort", "retention", "engagement", "feedback", "rating", "review"]
+    subdomains:
+      analytics:
+        name: "Product Analytics"
+        description: "User behavior, feature usage, product metrics"
+        keywords: ["analytics", "behavior", "usage", "metric", "kpi", "funnel", "cohort", "retention"]
+      
+      feedback:
+        name: "Product Feedback"
+        description: "User feedback, reviews, ratings, surveys"
+        keywords: ["feedback", "review", "rating", "survey", "nps", "satisfaction", "comment", "suggestion"]
+      
+      catalog:
+        name: "Product Catalog"
+        description: "Product information, SKUs, categories, attributes"
+        keywords: ["catalog", "sku", "product", "category", "attribute", "specification", "variant", "bundle"]
+
+  technology:
+    name: "Technology"
+    description: "System data, infrastructure, security, and IT operations"
+    keywords: ["system", "infrastructure", "security", "log", "event", "monitoring", "performance", "server", "application", "database", "network", "cloud", "deployment", "configuration", "alert", "incident"]
+    subdomains:
+      security:
+        name: "Security"
+        description: "Security logs, access control, threat detection"
+        keywords: ["security", "access", "permission", "auth", "login", "threat", "vulnerability", "incident", "breach"]
+      
+      monitoring:
+        name: "System Monitoring"
+        description: "System performance, logs, alerts, uptime"
+        keywords: ["monitoring", "performance", "log", "alert", "uptime", "metric", "health", "status"]
+      
+      infrastructure:
+        name: "Infrastructure"
+        description: "Servers, networks, cloud resources, configurations"
+        keywords: ["infrastructure", "server", "network", "cloud", "instance", "resource", "configuration", "deployment"]
+
+  legal:
+    name: "Legal"
+    description: "Legal documents, contracts, compliance, and regulatory data"
+    keywords: ["legal", "contract", "agreement", "compliance", "regulatory", "policy", "terms", "condition", "liability", "intellectual_property", "patent", "trademark", "copyright", "litigation", "dispute"]
+    subdomains:
+      contracts:
+        name: "Contracts"
+        description: "Legal contracts, agreements, terms"
+        keywords: ["contract", "agreement", "terms", "condition", "clause", "amendment", "renewal", "termination"]
+      
+      compliance:
+        name: "Regulatory Compliance"
+        description: "Compliance tracking, regulatory requirements"
+        keywords: ["compliance", "regulatory", "requirement", "audit", "violation", "penalty", "reporting"]
+      
+      intellectual_property:
+        name: "Intellectual Property"
+        description: "Patents, trademarks, copyrights, IP management"
+        keywords: ["patent", "trademark", "copyright", "ip", "intellectual_property", "license", "royalty"]
+
+  data:
+    name: "Data & Analytics"
+    description: "Data management, analytics, reporting, and business intelligence"
+    keywords: ["data", "analytics", "report", "dashboard", "kpi", "metric", "dimension", "measure", "fact", "warehouse", "mart", "etl", "pipeline", "quality", "lineage", "governance", "master", "reference"]
+    subdomains:
+      warehouse:
+        name: "Data Warehouse"
+        description: "Data warehouse tables, dimensions, facts"
+        keywords: ["warehouse", "dimension", "fact", "star", "snowflake", "cube", "mart", "summary"]
+      
+      pipeline:
+        name: "Data Pipeline"
+        description: "ETL processes, data integration, pipeline management"
+        keywords: ["etl", "pipeline", "integration", "transform", "load", "batch", "stream", "schedule"]
+      
+      governance:
+        name: "Data Governance"
+        description: "Data quality, lineage, metadata management"
+        keywords: ["governance", "quality", "lineage", "metadata", "catalog", "dictionary", "standard", "policy"]

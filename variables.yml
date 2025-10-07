@@ -69,6 +69,9 @@ variables:
       This is the key name you used when storing the secret in the scope.
       Common names: 'api_key', 'token', 'openai_key', etc.
     default: api_key
+  mode:
+    description: Mode for generating metadata. Options are 'comment', 'pi', or 'domain'. Comment mode generates descriptions for tables and columns. PI mode identifies and classifies sensitive information. Domain mode classifies tables into business domains using an agent.
+    default: comment
   job_table_names:
     description: default table names - get applied if there are no host overrides.
     default: default.simple_test
@@ -141,6 +144,9 @@ variables:
         "WHO": "World Health Organization",
         "GMC": "Global Marketing Code",
         }
+  domain_config_path:
+    description: Path to the domain configuration YAML file for domain classification mode
+    default: configurations/domain_config.yaml
   use_protected_classification_for_table:
     description: Whether to use protected classification for the table.
     default: true

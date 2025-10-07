@@ -676,6 +676,36 @@ class CommentNoDataPrompt(Prompt):
         }
 
 
+class DomainPrompt(Prompt):
+    """
+    Prompt for domain classification of tables.
+    Domain classification is table-level only and uses metadata + column info.
+    """
+
+    def convert_to_comment_input(self) -> Dict[str, Any]:
+        """
+        Convert DataFrame to a dictionary format for domain classification.
+        Includes table name, column names, and sample data.
+        """
+        pandas_df = self.df.toPandas()
+        if self.config.limit_prompt_based_on_cell_len:
+            truncated_pandas_df = self.calculate_cell_length(pandas_df)
+        else:
+            truncated_pandas_df = pandas_df
+        return {
+            "table_name": self.full_table_name,
+            "column_contents": truncated_pandas_df.to_dict(orient="split"),
+        }
+
+    def create_prompt_template(self) -> Dict[str, Any]:
+        """
+        Create prompt template for domain classification.
+        This is used to prepare data for the agent, not as a chat template.
+        """
+        content = self.prompt_content
+        return {"domain": content}
+
+
 class PromptFactory:
     """
     Factory class for creating prompts.
@@ -700,5 +730,7 @@ class PromptFactory:
             return CommentNoDataPrompt(config, df, full_table_name)
         elif config.mode == "pi":
             return PIPrompt(config, df, full_table_name)
+        elif config.mode == "domain":
+            return DomainPrompt(config, df, full_table_name)
         else:
-            raise ValueError("Invalid mode. Use 'pi' or 'comment'.")
+            raise ValueError("Invalid mode. Use 'pi', 'comment', or 'domain'.")

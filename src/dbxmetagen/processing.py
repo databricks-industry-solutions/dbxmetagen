@@ -253,6 +253,51 @@ def append_table_row(
     return rows
 
 
+def append_domain_table_row(
+    config: MetadataConfig,
+    rows: List[Row],
+    full_table_name: str,
+    domain_result: Dict[str, Any],
+    tokenized_full_table_name: str,
+) -> List[Row]:
+    """
+    Appends a domain classification row to the list of rows.
+
+    Args:
+        rows (List[Row]): The list of rows to append to.
+        full_table_name (str): The full name of the table.
+        domain_result (Dict[str, Any]): The domain classification result.
+        tokenized_full_table_name (str): The tokenized table name.
+
+    Returns:
+        List[Row]: The updated list of rows with the new domain row appended.
+    """
+    # Format domain classification as a comment-like string
+    domain_comment = (
+        f"Domain: {domain_result['domain']}"
+        + (
+            f" | Subdomain: {domain_result['subdomain']}"
+            if domain_result.get("subdomain")
+            else ""
+        )
+        + f" | Confidence: {domain_result['confidence']:.2f}"
+        + f" | Reasoning: {domain_result['reasoning']}"
+    )
+
+    row = Row(
+        table=full_table_name,
+        tokenized_table=tokenized_full_table_name,
+        ddl_type="table",
+        column_name="None",
+        column_content=domain_comment,
+        domain=domain_result["domain"],
+        subdomain=domain_result.get("subdomain", "None"),
+        confidence=float(domain_result["confidence"]),
+    )
+    rows.append(row)
+    return rows
+
+
 def append_column_rows(
     config: MetadataConfig,
     rows: List[Row],
@@ -1350,6 +1395,68 @@ def create_and_persist_ddl(
 
 
 # TODO: Update this to use get_generated_metadata_data_unaware() if sample size is 0 so Presidio can still use data.
+def get_domain_classification(
+    config: MetadataConfig, full_table_name: str
+) -> Dict[str, Any]:
+    """
+    Generates domain classification for a given table.
+
+    Args:
+        config: Configuration object
+        full_table_name: Full table name (catalog.schema.table)
+
+    Returns:
+        Dict containing domain classification results
+    """
+    from src.dbxmetagen.domain_classifier import (
+        classify_table_domain,
+        load_domain_config,
+    )
+
+    spark = SparkSession.builder.getOrCreate()
+
+    # Load domain configuration
+    domain_config = load_domain_config(config.domain_config_path)
+
+    # Get table data and metadata
+    df = spark.read.table(full_table_name)
+    sampled_df = sample_df(df, df.count(), config.sample_size)
+
+    # Create prompt to collect metadata
+    prompt = PromptFactory.create_prompt(config, sampled_df, full_table_name)
+
+    # Build metadata dictionary for domain classifier
+    table_metadata = {
+        "column_contents": prompt.prompt_content.get("column_contents", {}),
+    }
+
+    # Add extended metadata if configured
+    if config.add_metadata:
+        table_metadata["column_metadata"] = prompt.prompt_content.get(
+            "column_contents", {}
+        ).get("column_metadata", {})
+        table_metadata["table_tags"] = prompt.prompt_content.get(
+            "column_contents", {}
+        ).get("table_tags", "")
+        table_metadata["table_constraints"] = prompt.prompt_content.get(
+            "column_contents", {}
+        ).get("table_constraints", "")
+        table_metadata["table_comments"] = prompt.prompt_content.get(
+            "column_contents", {}
+        ).get("table_comments", "")
+
+    # Classify the table
+    classification_result = classify_table_domain(
+        table_name=full_table_name,
+        table_metadata=table_metadata,
+        domain_config=domain_config,
+        model_endpoint=config.model,
+        temperature=config.temperature,
+    )
+
+    return classification_result
+
+
 def get_generated_metadata(
     config: MetadataConfig, full_table_name: str
 ) -> List[Tuple[PIResponse, CommentResponse]]:
@@ -1450,7 +1557,7 @@ def review_and_generate_metadata(
         schema (str): The schema name.
         table_names (str): A list of table names.
         model (str): model name
-        mode (str): Mode to determine whether to process 'pi' or 'comment'
+        mode (str): Mode to determine whether to process 'pi', 'comment', or 'domain'
 
     Returns:
         Tuple[DataFrame, DataFrame]: DataFrames containing the generated metadata.
@@ -1458,6 +1565,22 @@ def review_and_generate_metadata(
     print("Review and generate metadata...")
     table_rows = []
     column_rows = []
+
+    # Domain mode uses a different flow - no chunking, table-level only
+    if config.mode == "domain":
+        domain_result = get_domain_classification(config, full_table_name)
+        tokenized_full_table_name = replace_catalog_name(config, full_table_name)
+        table_rows = append_domain_table_row(
+            config,
+            table_rows,
+            full_table_name,
+            domain_result,
+            tokenized_full_table_name,
+        )
+        # Domain mode doesn't generate column-level metadata
+        return rows_to_df(column_rows, config), rows_to_df(table_rows, config)
+
+    # Standard flow for comment and pi modes
     responses = get_generated_metadata(config, full_table_name)
     for response in responses:
         tokenized_full_table_name = replace_catalog_name(config, full_table_name)
@@ -1707,9 +1830,52 @@ def add_ddl_to_dfs(config, table_df, column_df, table_name):
             )
         if config.apply_ddl:
             apply_ddl_to_tables(dfs, config)
+    elif config.mode == "domain":
+        # Domain mode: table-level only, no column-level DDL
+        # table_df contains domain classification info
+        if table_df is not None:
+            table_df = add_ddl_to_domain_table_df(table_df, "ddl")
+            dfs["domain_table_df"] = table_df
+        else:
+            print(
+                f"[DEBUG] WARNING: table_df is None! No domain DDL will be generated!"
+            )
+        # Domain mode has no column-level DDL
+        dfs["domain_column_df"] = None
+        if config.apply_ddl:
+            apply_ddl_to_tables(dfs, config)
     else:
-        raise ValueError("Invalid mode. Use 'pi' or 'comment'.")
+        raise ValueError("Invalid mode. Use 'pi', 'comment', or 'domain'.")
     return dfs
+
+
+def add_ddl_to_domain_table_df(table_df: DataFrame, ddl_col_name: str) -> DataFrame:
+    """
+    Adds DDL statements to domain classification DataFrame.
+
+    Args:
+        table_df (DataFrame): The DataFrame containing domain classifications.
+        ddl_col_name (str): The name of the DDL column to add.
+
+    Returns:
+        DataFrame: The DataFrame with DDL statements added.
+    """
+    if table_df is None:
+        return None
+
+    # Generate COMMENT ON TABLE DDL with domain information
+    table_df = table_df.withColumn(
+        ddl_col_name,
+        concat_ws(
+            "",
+            lit("COMMENT ON TABLE "),
+            col("tokenized_table"),
+            lit(" IS '"),
+            col("column_content"),  # Contains formatted domain classification
+            lit("';"),
+        ),
+    )
+    return table_df
 
 
 def apply_ddl_to_tables(dfs, config):
@@ -1720,8 +1886,14 @@ def apply_ddl_to_tables(dfs, config):
         dfs (DataFrame): The DataFrame containing the DDL statements.
         config (MetadataConfig): The configuration object.
     """
-    apply_comment_ddl(dfs[f"{config.mode}_table_df"], config)
-    apply_comment_ddl(dfs[f"{config.mode}_column_df"], config)
+    table_df = dfs.get(f"{config.mode}_table_df")
+    column_df = dfs.get(f"{config.mode}_column_df")
+
+    if table_df is not None:
+        apply_comment_ddl(table_df, config)
+
+    if column_df is not None:
+        apply_comment_ddl(column_df, config)
 
 
 def create_pi_table_df(

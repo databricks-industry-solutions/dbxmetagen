@@ -74,7 +74,7 @@ def get_job_context(job_id, dbutils_instance=None):
 def setup_widgets(dbutils):
     """Setup widgets for the notebook."""
     dbutils.widgets.dropdown("cleanup_control_table", "false", ["true", "false"])
-    dbutils.widgets.dropdown("mode", "comment", ["comment", "pi"])
+    dbutils.widgets.dropdown("mode", "comment", ["comment", "pi", "domain"])
     dbutils.widgets.text("env", "")
     dbutils.widgets.text("catalog_name", "")
     dbutils.widgets.text("schema_name", "")
@@ -114,15 +114,6 @@ def get_widgets(dbutils):
         "sample_size": sample_size,
     }
     return {k: v for k, v in notebook_variables.items() if v is not None and v != ""}
-
-
-# def get_host_name(host_name=None):
-#     """Get host name from environment or parameter."""
-#     if not host_name:
-#         host_name = os.environ.get("DATABRICKS_HOST")
-#     print("host_name", host_name)
-#     print("DATABRICKS_HOST", os.environ.get("DATABRICKS_HOST"))
-#     return host_name
 
 
 def get_current_user(dbutils_instance=None, current_user_param=None):
@@ -171,16 +162,3 @@ def setup_notebook_variables(dbutils):
     notebook_variables["current_user"] = current_user
     notebook_variables["notebook_path"] = notebook_path
     return notebook_variables
-
-
-# notebook_variables = {
-#     "catalog_name": catalog_name,
-#     "schema_name": schema_name,
-#     "host_name": host_name,
-#     "table_names": table_names,
-#     "mode": mode,
-#     "env": env,
-#     "current_user": current_user,
-#     "cleanup_control_table": cleanup_control_table,
-#     "job_id": job_id,
-# }
