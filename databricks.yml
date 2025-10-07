@@ -18,22 +18,11 @@ artifacts:
     path: .
 
 targets:
-#   dev_spn:
-#     mode: development
-
-#     workspace:
-#       #root_path: ${var.current_working_directory}
-#       host: https://adb-830292400663869.9.azuredatabricks.net/ #<Update dev host name here to use DAB deploy>
-#     permissions:
-#       - user_name: ${var.deploying_user}
-#         level: CAN_MANAGE
-
   dev:
     mode: development
     default: true
 
     workspace:
-      #root_path: ${var.current_working_directory}
       host: https://adb-830292400663869.9.azuredatabricks.net/ #<Update dev host name here to use DAB deploy>
     permissions:
       - user_name: ${var.deploying_user}

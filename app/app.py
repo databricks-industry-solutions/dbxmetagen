@@ -36,7 +36,6 @@ class DBXMetaGenApp:
         self.config_manager = ConfigManager()
         self.ui_components = UIComponents()
 
-        # Initialize authentication on session start for better user experience
         logger.info("🔄 Initializing authentication on session start...")
         self.client_ready = DatabricksClientManager.setup_client()
 
@@ -68,7 +67,6 @@ class DBXMetaGenApp:
 
         self.ui_components.render_sidebar_config()
 
-        # Navigation with state management - no tab jumping!
         if "current_section" not in st.session_state:
             st.session_state.current_section = "📋 Tables & Jobs"
 
@@ -76,13 +74,11 @@ class DBXMetaGenApp:
             "Navigate:",
             [
                 "📋 Tables & Jobs",
-                # "📊 Results",
                 "✏️ Review Metadata",
                 "❓ Help",
             ],
             index=[
                 "📋 Tables & Jobs",
-                # "📊 Results",
                 "✏️ Review Metadata",
                 "❓ Help",
             ].index(st.session_state.current_section),

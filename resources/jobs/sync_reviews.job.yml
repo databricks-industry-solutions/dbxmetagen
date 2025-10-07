@@ -1,0 +1,40 @@
+resources:
+  jobs:
+    sync_ddl_job:
+      name: "${var.app_name}_sync_ddl_job"
+      
+      email_notifications:
+        on_failure:
+          - ${var.current_user}
+          
+      # Job parameters for DDL sync
+      parameters:
+        - name: reviewed_file_name
+          default: ""
+        - name: mode
+          default: "comment"
+        - name: current_user_override
+          default: ${var.current_user}
+
+      tasks:
+        - task_key: sync_reviewed_ddl
+          job_cluster_key: sync_cluster
+          
+          notebook_task:
+            notebook_path: ../../notebooks/sync_reviewed_ddl.py
+            base_parameters:
+              reviewed_file_name: "{{job.parameters.reviewed_file_name}}"
+              mode: "{{job.parameters.mode}}"
+              current_user_override: "{{job.parameters.current_user_override}}"
+              
+          libraries:
+            - whl: ../../dist/*.whl
+            
+      job_clusters:
+        - job_cluster_key: sync_cluster
+          new_cluster:
+            spark_version: 15.4.x-cpu-ml-scala2.12
+            node_type_id: Standard_D3_v2
+            autoscale:
+              min_workers: 1
+              max_workers: 2
