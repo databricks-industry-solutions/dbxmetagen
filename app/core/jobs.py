@@ -22,53 +22,6 @@ from core.user_context import UserContextManager, AppConfig
 logger = logging.getLogger(__name__)
 
 
-# class DBXJobManager:
-#     """Handles Databricks job creation and monitoring - clean and simple"""
-
-#     def __init__(self, workspace_client: WorkspaceClient):
-#         self.workspace_client = workspace_client
-
-#     def create_metadata_job(
-#         self,
-#         job_name: str,
-#         tables: List[str],
-#         config: Dict[str, Any],
-#         user_email: Optional[str] = None,
-#     ) -> Tuple[int, int]:
-#         """Create and run a metadata generation job"""
-#         logger.info(f"Creating metadata job: {job_name}")
-#         w = WorkspaceClient()
-#         notebook_path = f"/Users/{w.current_user.me().user_name}/"
-
-#         if config.get("cluster_id"):
-#             created_job = w.jobs.create(
-#                 name=f"sdk-{time.time_ns()}",
-#                 tasks=[
-#                     jobs.Task(
-#                         description="test",
-#                         existing_cluster_id=config.get("cluster_id"),
-#                         notebook_task=NotebookTask(notebook_path=notebook_path),
-#                         task_key="test",
-#                         timeout_seconds=0,
-#                     )
-#                 ],
-#             )
-#         else:
-#             created_job = w.jobs.create(
-#                 name=f"sdk-{time.time_ns()}",
-#                 tasks=[
-#                     jobs.Task(
-#                         description="test",
-#                         notebook_task=jobs.NotebookTask(notebook_path=notebook_path),
-#                         task_key="test",
-#                         timeout_seconds=0,
-#                     )
-#                 ],
-#             )
-
-#         return created_job.job_id, created_job.run_id
-
-
 class JobManager:
     """Handles Databricks job creation and monitoring - clean and simple"""
 
@@ -241,7 +194,7 @@ class JobManager:
         st.info(f"Job user: {job_user}")
         catalog_name = AppConfig.get_catalog_name()
 
-        return {
+        job_params = {
             "table_names": tables if isinstance(tables, str) else ",".join(tables),
             "env": "app",
             "cleanup_control_table": "true",
@@ -276,6 +229,14 @@ class JobManager:
             # Pass actual current user to override config
             "current_user": job_user,
         }
+
+        # Add domain config path if in domain mode
+        if config.get("mode") == "domain":
+            job_params["domain_config_path"] = config.get(
+                "domain_config_path", "configurations/domain_config.yaml"
+            )
+
+        return job_params
 
     def _detect_node_type(self, config: Dict[str, Any]) -> str:
         """Auto-detect appropriate node type based on workspace"""
@@ -395,179 +356,6 @@ class JobManager:
         # for non-account admins, add support for OBO deployment type.
         # For now, only SPN is supported to avoid permission issues.
         return os.getenv("APP_DEPLOYMENT_TYPE", "SPN")
-
-    # def _create_and_run_spn_job(
-    #     self, tables: List[str], job_type: str
-    # ):  # this is what's running now
-    #     """Create or find existing job and run it using Service Principal authentication"""
-    #     # Generate consistent job name for reuse across multiple runs by same user
-    #     app_name = AppConfig.get_app_name()
-    #     current_user = UserContextManager.get_current_user()
-    #     sanitized_user = (
-    #         current_user.replace("@", "_").replace(".", "_").replace("-", "_")
-    #     )
-
-    #     if job_type == "metadata":
-    #         job_name = f"{app_name}_{sanitized_user}_metadata_job"
-    #     else:  # DDL sync
-    #         job_name = f"{app_name}_{sanitized_user}_sync_job"
-
-    #     # Look for existing job first to enable reuse
-    #     job_id = self._find_job_by_name(job_name)
-
-    #     if not job_id:
-    #         logger.info(f"Creating new SPN job: {job_name}")
-    #         # Create job using direct app service principal approach (not bundle jobs)
-    #         job_id = self._create_dynamic_spn_job(job_name, job_type, current_user)
-    #     else:
-    #         logger.info(f"Using existing SPN job: {job_name} (ID: {job_id})")
-    #         # Update job permissions to include current user
-    #         self._update_job_permissions(job_id, current_user)
-
-    #     # Set up job parameters
-    #     catalog_name = AppConfig.get_catalog_name()
-
-    #     if job_type == "metadata":
-    #         job_params = {
-    #             "table_names": "|".join(tables),
-    #             "mode": st.session_state.config.get("mode", "comment"),
-    #             "catalog_name": catalog_name,
-    #             "current_user": current_user,
-    #         }
-    #     else:  # DDL sync - will be implemented for sync jobs
-    #         job_params = {}
-
-    #     # Trigger the job run
-    #     run_response = self.workspace_client.jobs.run_now(
-    #         job_id=job_id, job_parameters=job_params
-    #     )
-    #     run_id = run_response.run_id
-
-    #     # Store job run info for tracking
-    #     if "job_runs" not in st.session_state:
-    #         st.session_state.job_runs = {}
-
-    #     st.session_state.job_runs[run_id] = {
-    #         "job_id": job_id,
-    #         "job_name": job_name,
-    #         "run_id": run_id,
-    #         "tables": tables,
-    #         "config": st.session_state.config,
-    #         "job_type": f"spn_{job_type}_job",
-    #         "status": "RUNNING",
-    #         "start_time": datetime.now(),
-    #         "created_at": datetime.now().isoformat(),
-    #         "app_user": current_user,
-    #     }
-
-    #     st.success(f"✅ Job '{job_name}' started!")
-    #     st.write(f"📋 **Job ID:** {job_id}")
-    #     st.write(f"🔄 **Run ID:** {run_id}")
-    #     st.write(f"📊 **Processing:** {len(tables)} tables")
-    #     st.info(
-    #         "🔄 Job will run with Service Principal permissions. You'll receive read grants after completion."
-    #     )
-
-    #     # Schedule post-job permission grants
-    #     self._schedule_post_job_grants(run_id, current_user, catalog_name)
-
-    # def _create_dynamic_spn_job(
-    #     self, job_name: str, job_type: str, current_user: str
-    # ) -> int:
-    #     """
-    #     Create a new job dynamically using Service Principal authentication.
-    #     Uses the proven approach from create_metadata_job internals but only creates the job (doesn't run it).
-    #     """
-    #     logger.info(f"Creating dynamic SPN job: {job_name}")
-
-    #     if job_type == "metadata":
-    #         # Step A: Validate inputs - use minimal validation for SPN jobs
-    #         cluster_size = "Medium (2-4 workers)"
-    #         config = st.session_state.config
-
-    #         # Step D: Prepare job configuration using proven methods
-    #         # For SPN mode, build parameters directly without get_job_user() call
-    #         job_parameters = self._build_job_parameters(
-    #             ["placeholder"], config, current_user
-    #         )
-    #         notebook_path = self._resolve_notebook_path(config)
-
-    #         # Step C: Create job only (don't run it yet)
-    #         job_id = self._create_job(
-    #             job_name, notebook_path, job_parameters, current_user
-    #         )
-
-    #         logger.info(f"SPN metadata job created successfully - job_id: {job_id}")
-    #         return job_id
-    #     else:
-    #         # For sync jobs, create a similar DDL sync job
-    #         return self._create_sync_job_only(job_name, current_user)
-
-    # def _create_sync_job_only(self, job_name: str, current_user: str) -> int:
-    #     """Create a DDL sync job using the proven approach (create only, don't run)"""
-    #     logger.info("Creating sync job: %s", job_name)
-
-    #     try:
-    #         # Use the sync notebook path - reuse existing logic where possible
-    #         app_name = AppConfig.get_app_name()
-    #         bundle_target = AppConfig.get_bundle_target()
-    #         use_shared = st.session_state.config.get(
-    #             "use_shared_bundle_location", False
-    #         )
-
-    #         notebook_path = UserContextManager.get_notebook_path(
-    #             notebook_name="sync_reviewed_ddl",
-    #             bundle_name=app_name,
-    #             bundle_target=bundle_target,
-    #             use_shared=use_shared,
-    #         )
-
-    #         # Create job
-    #         job = self.workspace_client.jobs.create(
-    #             name=job_name,
-    #             tasks=[
-    #                 jobs.Task(
-    #                     task_key="sync_reviewed_ddl",
-    #                     new_cluster=jobs.ClusterSpec(
-    #                         spark_version="15.4.x-cpu-ml-scala2.12",
-    #                         node_type_id="Standard_D3_v2",
-    #                         num_workers=1,
-    #                     ),
-    #                     notebook_task=jobs.NotebookTask(
-    #                         notebook_path=notebook_path,
-    #                         base_parameters={
-    #                             "reviewed_file_name": "{{job.parameters.reviewed_file_name}}",
-    #                             "mode": "{{job.parameters.mode}}",
-    #                             "current_user_override": "{{job.parameters.current_user_override}}",
-    #                         },
-    #                     ),
-    #                     libraries=[jobs.Library(whl="../../dist/*.whl")],
-    #                 )
-    #             ],
-    #             parameters=[
-    #                 jobs.JobParameterDefinition(name="reviewed_file_name", default=""),
-    #                 jobs.JobParameterDefinition(name="mode", default="comment"),
-    #                 jobs.JobParameterDefinition(
-    #                     name="current_user_override", default=""
-    #                 ),
-    #             ],
-    #             email_notifications=jobs.JobEmailNotifications(
-    #                 on_failure=[current_user], on_success=[current_user]
-    #             ),
-    #             max_concurrent_runs=10,
-    #             queue=jobs.QueueSettings(enabled=True),
-    #         )
-
-    #         logger.info(f"Sync job created successfully - job_id: {job.job_id}")
-
-    #         # Set permissions
-    #         self._update_job_permissions(job.job_id, current_user)
-
-    #         return job.job_id
-
-    #     except Exception as e:
-    #         logger.error(f"Failed to create sync job: {e}")
-    #         raise ValueError(f"Cannot create sync job: {e}")
 
     def _update_job_permissions(self, job_id: int, current_user: str):
         """Update job permissions to include current app user without removing existing permissions"""

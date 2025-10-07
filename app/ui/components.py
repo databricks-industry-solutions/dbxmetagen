@@ -102,12 +102,22 @@ class UIComponents:
 
             mode = st.selectbox(
                 "Processing Mode",
-                options=["comment", "pi"],
-                index=["comment", "pi"].index(
-                    st.session_state.config.get("mode", "pi")
+                options=["comment", "pi", "domain"],
+                index=["comment", "pi", "domain"].index(
+                    st.session_state.config.get("mode", "comment", "domain")
                 ),
-                help="What to generate: comments or PII classification.",
+                help="What to generate: comments, PII classification, or domain.",
             )
+
+            # Show domain config path input if domain mode is selected
+            if mode == "domain":
+                domain_config_path = st.text_input(
+                    "Domain Config Path",
+                    value=st.session_state.config.get(
+                        "domain_config_path", "configurations/domain_config.yaml"
+                    ),
+                    help="Path to the domain configuration YAML file",
+                )
 
             st.subheader("🚀 Execution Settings")
 
@@ -128,18 +138,22 @@ class UIComponents:
 
             if st.form_submit_button("💾 Save Configuration", type="primary"):
                 # Update session state config
-                st.session_state.config.update(
-                    {
-                        "catalog_name": catalog_name,
-                        "schema_name": schema_name,
-                        "allow_data": allow_data,
-                        "sample_size": sample_size,
-                        "columns_per_call": columns_per_call,
-                        "mode": mode,
-                        "cluster_size": cluster_size,
-                        "apply_ddl": apply_ddl,
-                    }
-                )
+                config_update = {
+                    "catalog_name": catalog_name,
+                    "schema_name": schema_name,
+                    "allow_data": allow_data,
+                    "sample_size": sample_size,
+                    "columns_per_call": columns_per_call,
+                    "mode": mode,
+                    "cluster_size": cluster_size,
+                    "apply_ddl": apply_ddl,
+                }
+
+                # Add domain config path if in domain mode
+                if mode == "domain":
+                    config_update["domain_config_path"] = domain_config_path
+
+                st.session_state.config.update(config_update)
 
                 st.sidebar.success("Configuration saved!")
 
@@ -741,7 +755,11 @@ class UIComponents:
             - **Catalog Name**: Target catalog for storing metadata results
             - **Allow Data**: Whether to include actual data samples in LLM processing
             - **Sample Size**: Number of data rows to sample per column (0 = no data sampling)
-            - **Mode**: Choose between generating comments, identifying PII, or both
+            - **Mode**: Choose between:
+              - **comment**: Generate descriptive comments for tables and columns
+              - **pi**: Identify and classify personally identifiable information (PII/PHI/PCI)
+              - **domain**: Classify tables into business domains (e.g., finance, sales, HR)
+            - **Domain Config Path**: (Domain mode only) Path to domain configuration YAML file
             - **Apply DDL**: ⚠️ **WARNING** - This will directly modify your tables
             """
             )
