@@ -36,8 +36,6 @@ add_service_principal_simple() {
         }
     }' "$TARGET_FILE"
 
-    # Clean up sed backup file
-    #rm "${TARGET_FILE}.tmp" 2>/dev/null
 
 echo "Created $TARGET_FILE with service principal permissions added to dev section"
 }
@@ -93,7 +91,7 @@ deploy_bundle() {
 run_permissions_setup() {
     echo "Setting up permissions..."
     
-    local catalog_name="dbxmetagen"
+    local catalog_name="${catalog_name:-dbxmetagen}"
     if [ -f "variables.yml" ]; then
         catalog_name=$(awk '/catalog_name:/{flag=1; next} flag && /default:/{print $2; exit}' variables.yml | xargs)
         catalog_name=${catalog_name:-dbxmetagen}
