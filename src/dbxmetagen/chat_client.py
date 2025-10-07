@@ -1,15 +1,21 @@
+"""A fair amount of this is stubbed out for future flexibility around alternative API endpoints."""
+
 import os
 import json
 import re
+import requests
 import mlflow
 import time
 from abc import ABC, abstractmethod
 from typing import List, Dict, Any
 from openai import OpenAI
-from openai.types.chat.chat_completion import ChatCompletion
 from databricks_langchain import ChatDatabricks
 from databricks.sdk import WorkspaceClient
 from pydantic import BaseModel
+import json
+from openai.types.chat.chat_completion import ChatCompletion, Choice
+from openai.types.chat.chat_completion_message import ChatCompletionMessage
+from openai.types.chat.chat_completion import ChatCompletion
 
 
 class ChatClient(ABC):
@@ -25,7 +31,7 @@ class ChatClient(ABC):
         **kwargs,
     ) -> Any:
         """Create a chat completion."""
-        pass
+        raise NotImplementedError
 
     @abstractmethod
     def create_structured_completion(
@@ -38,7 +44,7 @@ class ChatClient(ABC):
         **kwargs,
     ) -> BaseModel:
         """Create a structured chat completion."""
-        pass
+        raise NotImplementedError
 
 
 class DatabricksClient(ChatClient):
@@ -61,13 +67,6 @@ class DatabricksClient(ChatClient):
     ) -> ChatCompletion:
         """Create a chat completion using OpenAI client with Databricks endpoint."""
 
-        # Track timing for benchmarking
-        start_time = time.time()
-        # mlflow.set_tag("benchmarking_id", self.config.benchmarking_id)
-        # mlflow.update_current_trace(
-        #     tags={"benchmarking_id": self.config.benchmarking_id}
-        # )
-
         response = self.openai_client.chat.completions.create(
             messages=messages,
             model=model,
@@ -76,12 +75,8 @@ class DatabricksClient(ChatClient):
             **kwargs,
         )
 
-        end_time = time.time()
-        response_time = end_time - start_time
-
-        # Extract token usage from response
         token_usage = self._extract_and_log_usage(
-            response, model, response_time, messages, max_tokens, temperature
+            response, model, messages, max_tokens, temperature
         )
 
         # Store token usage in response for easy access
@@ -94,19 +89,16 @@ class DatabricksClient(ChatClient):
         self,
         response: ChatCompletion,
         model: str,
-        response_time: float,
         messages: List[Dict[str, str]],
         max_tokens: int,
         temperature: float,
     ) -> dict:
         """Extract token usage and log to MLFlow for benchmarking."""
 
-        # Extract usage information from response
         usage_info = {
             "prompt_tokens": 0,
             "completion_tokens": 0,
             "total_tokens": 0,
-            "response_time_seconds": response_time,
         }
 
         if hasattr(response, "usage") and response.usage:
@@ -118,24 +110,15 @@ class DatabricksClient(ChatClient):
                 }
             )
 
-        # Calculate additional metrics for benchmarking
-        tokens_per_second = (
-            usage_info["completion_tokens"] / response_time if response_time > 0 else 0
-        )
-
-        # Log to MLFlow with detailed context
         try:
             mlflow.log_metrics(
                 {
                     "prompt_tokens": usage_info["prompt_tokens"],
                     "completion_tokens": usage_info["completion_tokens"],
                     "total_tokens": usage_info["total_tokens"],
-                    "response_time_seconds": response_time,
-                    "tokens_per_second": tokens_per_second,
                 }
             )
 
-            # Log parameters for benchmarking context
             mlflow.log_params(
                 {
                     "model": model,
@@ -239,13 +222,9 @@ class OpenAISpecClient(ChatClient):
         **kwargs,
     ) -> BaseModel:
         """Create a structured completion with JSON parsing for OpenAI-compatible endpoints."""
-
-        # Add JSON formatting instruction to the messages if not already present
         if isinstance(messages, list) and messages:
-            # Check if we already have JSON instruction
             last_message = messages[-1].get("content", "")
             if "JSON" not in last_message and "json" not in last_message:
-                # Add JSON formatting instruction
                 messages = messages.copy()  # Don't modify the original
                 messages[-1] = {
                     **messages[-1],
@@ -307,11 +286,6 @@ class CustomChatSpecClient(ChatClient):
         **kwargs,
     ) -> ChatCompletion:
         """Create a chat completion using custom endpoint with 'engine' parameter."""
-        import requests
-        import json
-        from openai.types.chat.chat_completion import ChatCompletion, Choice
-        from openai.types.chat.chat_completion_message import ChatCompletionMessage
-
         # Prepare the request payload with 'engine' instead of 'model'
         payload = {
             "engine": model,  # Use 'engine' instead of 'model'

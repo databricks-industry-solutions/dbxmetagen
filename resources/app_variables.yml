@@ -1,0 +1,30 @@
+variables:
+  deploying_user:
+    description: User who deploys the asset bundle (for notebook paths). Must match the deploying_user in variables.yml.
+    default: ${workspace.current_user.userName}
+  app_deployment_type:
+    description: |
+      Type of app deployment. Only SPN is currently fully supported.
+      - SPN means that jobs are created by the app service principal with proper permissions for the app user.
+      - Jobs are reused across runs for better resource management and concurrent execution.
+      - Max 10 concurrent runs with queue of 10 for each user's job.
+      - Post-job grants are applied to give app users read access to created schemas and tables.
+      
+      NOTE: OBO (On-Behalf-Of) deployment will be added when jobs.jobs scope becomes available to non-account admins.
+      This will allow jobs to run with the logged-in user's permissions instead of service principal permissions.
+    default: "SPN"
+  app_name:
+    description: "Name of the app"
+    default: "dbxmetagen-app"
+  debug_mode:
+    description: Enable debug mode for detailed logging and debugging features in the application and jobs. Set to true for development environments.
+    default: false
+  metadata_generator_job:
+    description: Name of the metadata generator job
+    default: "dbxmetagen_metadata_job"
+  sync_ddl_job:
+    description: Name of the DDL sync job
+    default: "dbxmetagen_sync_ddl_job"
+  app_service_principal_application_id:
+    description: Application ID of the service principal used for the Databricks app. This service principal will be granted CAN_MANAGE permissions on the bundle resources. If not set, the app will use the current user context.
+    default: "None"

@@ -61,32 +61,6 @@ check_for_deployed_app() {
     fi
 }
 
-# Do we need this for customer deployment? I don't think we do anymore.
-# Commenting out where this is used for now.
-create_secret_scope() {
-    local scope_name="dbxmetagen"
-    
-    if ! databricks secrets list-scopes | grep -q "$scope_name"; then
-        databricks secrets create-scope "$scope_name"
-        echo "Created secret scope: $scope_name"
-    fi
-    
-    if ! databricks secrets list-secrets "$scope_name" 2>/dev/null | grep -q "databricks_token"; then
-        echo "Enter your Databricks token (generate in User Settings > Access Tokens):"
-        read -s -p "Token: " token
-        echo
-        
-        if [ -n "$token" ]; then
-            databricks secrets put-secret --json "{
-                \"scope\": \"$scope_name\",
-                \"key\": \"databricks_token\", 
-                \"string_value\": \"$token\"
-            }"
-            echo "Token configured"
-        fi
-    fi
-}
-
 validate_bundle() {
     echo "Validating bundle..."
     if ! databricks bundle validate; then

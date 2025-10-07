@@ -9,11 +9,8 @@ env:
     value: "false"
   - name: DEBUG
     value: "false"
-  # DATABRICKS_HOST is automatically provided by Databricks Apps
-  # On-Behalf-Of (OBO) authentication uses forwarded user tokens
-  - name: APP_ENV
-    value: "dev"  # use "prod" in production deployments
-  # User context - deploying user is loaded from deploying_user.yml instead of environment variable
+  # - name: APP_ENV
+  #   value: "dev"  # use "prod" in production deployments
   - name: APP_NAME  
     valueFrom: "app_name"
   - name: APP_SERVICE_PRINCIPAL

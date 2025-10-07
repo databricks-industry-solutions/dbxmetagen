@@ -4,7 +4,14 @@ import uuid
 import mlflow
 from mlflow import MlflowClient
 from pyspark.sql import SparkSession
-from datetime import datetime
+from datetime import datetime, timedelta
+from pyspark.sql.types import (
+    StructType,
+    StructField,
+    StringType,
+    IntegerType,
+    TimestampType,
+)
 
 
 def setup_benchmarking(config):
@@ -46,15 +53,11 @@ def log_token_usage(config, experiment_name: str):
             max_results=50,
         )
 
-        # Filter to recent traces (last 5 minutes)
-        from datetime import datetime, timedelta
-
-        five_minutes_ago = datetime.now() - timedelta(minutes=5)
+        one_hour_ago = datetime.now() - timedelta(minutes=60)
         recent_traces = [
             trace
             for trace in traces
-            if datetime.fromtimestamp(trace.info.timestamp_ms / 1000)
-            >= five_minutes_ago
+            if datetime.fromtimestamp(trace.info.timestamp_ms / 1000) >= one_hour_ago
         ]
         traces = recent_traces
 
@@ -65,9 +68,7 @@ def log_token_usage(config, experiment_name: str):
         spark = SparkSession.builder.getOrCreate()
         rows = []
 
-        # Debug: Check what run_ids are actually in the traces
         if traces:
-            print(f"[BENCHMARK DEBUG] Checking trace run_ids:")
             for i, trace in enumerate(traces[:3]):  # Show first 3
                 trace_run_id = (
                     trace.info.request_metadata.get("run_id")
@@ -80,7 +81,6 @@ def log_token_usage(config, experiment_name: str):
 
         for trace in traces:
             for span in trace.data.spans:
-                # Only process "Completions" spans (the actual LLM calls)
                 if span.name != "Completions":
                     continue
 
@@ -104,14 +104,6 @@ def log_token_usage(config, experiment_name: str):
                     )
 
         if rows:
-            from pyspark.sql.types import (
-                StructType,
-                StructField,
-                StringType,
-                IntegerType,
-                TimestampType,
-            )
-
             schema = StructType(
                 [
                     StructField("timestamp", TimestampType(), True),

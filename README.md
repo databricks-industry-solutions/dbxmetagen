@@ -382,6 +382,10 @@ This project is licensed under the Databricks DB License.
 | streamlit | Apache2.0 | https://github.com/streamlit |
 | databricks-sdk | Apache2.0 | https://pypi.org/project/databricks-sdk/ |
 | databricks-sql-connector | Apache2.0 | https://github.com/databricks/ |
+| pyyaml>=6.0 | MIT | https://pypi.org/project/PyYAML/ |
+| requests>=2.25.0 | Apache | https://pypi.org/project/requests/ |
+| plotly>=5.0.0 | MIT | https://pypi.org/project/plotly/ |
+| deprecated | MIT | https://pypi.org/project/Deprecated/ |
 
 
 **All packages are open source with permissive licenses** (Apache 2.0, MIT, BSD 3-Clause) that allow commercial use, modification, and redistribution.

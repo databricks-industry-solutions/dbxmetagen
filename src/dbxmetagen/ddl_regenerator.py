@@ -24,14 +24,6 @@ def ensure_directory_exists(path: str) -> None:
     Args:
         path (str): Directory path.
     """
-    # Check if this is a Unity Catalog volume path
-    if path.startswith("/Volumes/"):
-        # For UC volumes, directories are created automatically when files are written
-        logging.info(
-            f"Unity Catalog volume path detected: {path} - directory will be created automatically"
-        )
-        return
-
     if not os.path.exists(path):
         try:
             os.makedirs(path, exist_ok=True)

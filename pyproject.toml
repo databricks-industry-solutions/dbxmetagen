@@ -23,6 +23,7 @@ openpyxl = "==3.1.5"
 spacy = "==3.8.7"
 presidio_analyzer = "==2.2.358"
 presidio_anonymizer = "==2.2.358"
+deprecated = "==1.2.13"
 
 [tool.poetry.scripts]
 main = "dbxmetagen.main:main"

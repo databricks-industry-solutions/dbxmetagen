@@ -9,58 +9,6 @@ from src.dbxmetagen.user_utils import sanitize_user_identifier, get_current_user
 class MetadataConfig:
     """Configuration class for dbxmetagen."""
 
-    # Dynamic attributes loaded from YAML - defined for type checking
-    # disable_medical_information_value: str
-    # mode: str
-    # allow_data: bool
-    # yaml_file_path: str
-    # yaml_variable_names: list
-    # host: str
-    # env: str
-    # catalog_name: str
-    # schema_name: str
-    # catalog_tokenizable: bool
-    # format_catalog: bool
-    # model: str
-    # chat_completion_type: str
-    # custom_endpoint_url: str
-    # custom_endpoint_secret_scope: str
-    # custom_endpoint_secret_key: str
-    # registered_model_name: str
-    # model_type: str
-    # volume_name: str
-    # table_names_source: str
-    # source_file_path: str
-    # control_table: str
-    # apply_ddl: bool
-    # ddl_output_format: str
-    # allow_data_in_comments: bool
-    # dry_run: bool
-    # pi_classification_rules: str
-    # allow_manual_override: bool
-    # override_csv_path: str
-    # tag_none_fields: bool
-    # pi_column_field_names: str
-    # max_prompt_length: int
-    # columns_per_call: int
-    # sample_size: int
-    # max_tokens: int
-    # word_limit_per_cell: int
-    # limit_prompt_based_on_cell_len: bool
-    # temperature: float
-    # add_metadata: bool
-    # acro_content: str
-    # include_datatype_from_metadata: bool
-    # include_possible_data_fields_in_metadata: bool
-    # review_input_file_type: str
-    # review_output_file_type: str
-    # include_deterministic_pi: bool
-    # reviewable_output_format: str
-    # spacy_model_names: str
-    # include_existing_table_comment: bool
-    # column_with_reviewed_ddl: str
-    # current_user: str
-    # use_protected_classification_for_table: bool
     ACRO_CONTENT = {}
     SETUP_PARAMS = {
         "yaml_file_path": "../variables.yml",

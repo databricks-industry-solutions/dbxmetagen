@@ -58,20 +58,6 @@ class UIComponents:
         if not st.session_state.config:
             st.session_state.config = self.config_manager.load_default_config()
 
-        # with st.sidebar.expander("📂 Configuration File", expanded=False):
-        #     col1, col2 = st.sidebar.columns(2)
-
-        #     with col1:
-        #         if st.button("💾 Save Config"):
-        #             self._save_config_to_file()
-
-        #     with col2:
-        #         uploaded_config = st.file_uploader(
-        #             "📤 Load Config", type=["yml", "yaml"], key="config_uploader"
-        #         )
-        #         if uploaded_config:
-        #             self._load_config_from_file(uploaded_config)
-
         # Configuration form
         with st.sidebar.form("config_form"):
             st.subheader("🏷️ Target Settings")
@@ -101,7 +87,7 @@ class UIComponents:
             sample_size = st.number_input(
                 "Sample Size",
                 min_value=0,
-                max_value=1000,
+                max_value=100,
                 value=st.session_state.config.get("sample_size", 10),
                 help="Number of rows to sample per column (0 = no sampling)",
             )
@@ -132,15 +118,6 @@ class UIComponents:
                 "🔐 Jobs run with Service Principal permissions. Read grants will be applied after completion."
             )
 
-            # TODO: Remove cluster_size settings - hiding for now but keeping for backwards compatibility
-            # cluster_size = st.selectbox(
-            #     "Cluster Size",
-            #     options=["small", "medium", "large"],
-            #     index=["small", "medium", "large"].index(
-            #         st.session_state.config.get("cluster_size", "small")
-            #     ),
-            # )
-            # Hidden but defaulted to medium for jobs
             cluster_size = "Medium (2-4 workers)"
 
             apply_ddl = st.checkbox(
