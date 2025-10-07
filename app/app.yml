@@ -9,8 +9,8 @@ env:
     value: "false"
   - name: DEBUG
     value: "false"
-  # - name: APP_ENV
-  #   value: "dev"  # use "prod" in production deployments
+  - name: APP_ENV
+    value: "dev"
   - name: APP_NAME  
     valueFrom: "app_name"
   - name: APP_SERVICE_PRINCIPAL

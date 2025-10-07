@@ -141,3 +141,4 @@ Thumbs.db
 __pycache__/
 dist/
 *.egg-info/
+*.tmp
