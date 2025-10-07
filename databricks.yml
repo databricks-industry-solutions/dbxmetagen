@@ -23,7 +23,7 @@ targets:
     default: true
 
     workspace:
-      host: https://adb-830292400663869.9.azuredatabricks.net/ #<Update dev host name here to use DAB deploy>
+      host: ${var.workspace_host}
     permissions:
       - user_name: ${var.deploying_user}
         level: CAN_MANAGE
@@ -31,7 +31,7 @@ targets:
   prod:
     mode: production
     workspace:
-      host: https://adb-830292400663869.9.azuredatabricks.net/ #<Update prod host name here to use DAB deploy>
+      host: ${var.workspace_host}
       root_path: ${var.current_working_directory}
     permissions:
       - user_name: ${var.current_user}
@@ -39,6 +39,4 @@ targets:
       - service_principal_name: ${var.app_service_principal_application_id}
         level: CAN_MANAGE
     run_as:
-      user_name: ${var.current_user} #sp name should be used instead for true production cases.
-
-
+      user_name: ${var.current_user} 
