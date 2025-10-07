@@ -50,6 +50,7 @@ def load_domain_config(config_path: str = None) -> Dict[str, Any]:
             logger.warning(f"Could not load domain config from {config_path}: {e}")
 
     # Try default paths
+    # TODO: This should be refactored to use the ConfigManager class and evaluate which path is correct for the current environment
     config_paths = [
         "configurations/domain_config.yaml",
         "../configurations/domain_config.yaml",
@@ -174,17 +175,10 @@ def classify_table_domain(
         Dictionary with classification results
     """
     try:
-        # Create LLM with structured output
         llm = ChatDatabricks(endpoint=model_endpoint, temperature=temperature)
         structured_llm = llm.with_structured_output(TableClassification)
-
-        # Create system prompt
         system_prompt = create_system_prompt(domain_config)
-
-        # Format metadata for the prompt
         catalog, schema, table = table_name.split(".")
-
-        # Build user message with metadata
         user_message = f"""Please classify the following table:
 
 Table: {table_name}
@@ -193,8 +187,6 @@ Column Information:
 {json.dumps(table_metadata.get('column_contents', {}), indent=2)}
 
 """
-
-        # Add optional metadata if available
         if table_metadata.get("table_tags"):
             user_message += f"\nTable Tags:\n{table_metadata['table_tags']}\n"
 
@@ -219,7 +211,6 @@ Column Information:
 
         response = structured_llm.invoke(messages)
 
-        # Convert to dict and ensure catalog/schema/table are set correctly
         result = response.dict()
         result["catalog"] = catalog
         result["schema"] = schema
@@ -234,7 +225,6 @@ Column Information:
 
     except Exception as e:
         logger.error(f"Error classifying table {table_name}: {e}")
-        # Return a fallback classification
         catalog, schema, table = table_name.split(".")
         return {
             "catalog": catalog,

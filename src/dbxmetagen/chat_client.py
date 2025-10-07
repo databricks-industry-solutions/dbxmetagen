@@ -276,6 +276,7 @@ class CustomChatSpecClient(ChatClient):
             api_key=api_key,
             base_url=base_url,
         )
+        raise NotImplementedError("CustomChatSpecClient is not yet fully implemented")
 
     def create_completion(
         self,

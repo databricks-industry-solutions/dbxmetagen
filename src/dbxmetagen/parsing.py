@@ -9,7 +9,6 @@ from src.dbxmetagen.user_utils import sanitize_user_identifier
 @deprecated("Use sanitize_user_identifier from processing module instead.")
 def sanitize_email(email: str) -> str:
     """Use sanitize_user_identifier from processing module instead."""
-    raise NotImplementedError
     return sanitize_user_identifier(email)
 
 

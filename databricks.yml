@@ -4,11 +4,10 @@ bundle:
 
 include:
   - resources/jobs/*.yml
-  - resources/apps/*.yml  # Temporarily disabled to fix state mismatch - re-enable after bundle works
+  - resources/apps/*.yml
   - benchmarks/resources/jobs/benchmarks/*.yml
   - variables.yml
   - resources/app_variables.yml
-  #- resources/secrets.yml
 
 
 artifacts:
@@ -23,7 +22,7 @@ targets:
     default: true
 
     workspace:
-      host: https://adb-830292400663869.9.azuredatabricks.net/ #<Update dev host name here to use DAB deploy>
+      host: ${var.workspace_host}
     permissions:
       - user_name: ${var.deploying_user}
         level: CAN_MANAGE
@@ -31,7 +30,7 @@ targets:
   prod:
     mode: production
     workspace:
-      host: https://adb-830292400663869.9.azuredatabricks.net/ #<Update prod host name here to use DAB deploy>
+      host: ${var.workspace_host}
       root_path: ${var.current_working_directory}
     permissions:
       - user_name: ${var.current_user}

@@ -559,11 +559,9 @@ class DatabricksClientManager:
         headers = session_info.headers
         logger.info(f"✅ Found headers dictionary with {len(headers)} headers")
 
-        # Log all headers for debugging (be careful not to log sensitive data)
         logger.info("🔍 Available headers:")
         for header_name, header_value in headers.items():
             if "token" in header_name.lower() or "auth" in header_name.lower():
-                # Log auth-related headers with partial values
                 value_preview = (
                     f"{header_value[:10]}..."
                     if len(header_value) > 10
@@ -571,7 +569,6 @@ class DatabricksClientManager:
                 )
                 logger.info(f"  - {header_name}: {value_preview}")
             else:
-                # Log other headers normally (but truncate if very long)
                 value_preview = (
                     header_value
                     if len(header_value) < 50
