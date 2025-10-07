@@ -56,8 +56,6 @@ check_for_deployed_app() {
         validate_bundle -t ${TARGET} -bundle_file "databricks_final.yml.tmp" --var "app_service_principal_application_id=$APP_SP_ID"
         deploy_bundle -t ${TARGET} -bundle_file "databricks_final.yml.tmp" --var "app_service_principal_application_id=$APP_SP_ID"
         rm databricks_final.yml.tmp
-        #SP_ID=$(databricks apps get "dbxmetagen-app" --output json | jq -r '.id')
-        #export APP_SP_ID="$SP_ID"
     fi
 }
 
@@ -70,7 +68,7 @@ validate_bundle() {
 }
 
 deploy_bundle() {
-    TARGET="${TARGET:-dev}"
+    TARGET="${TARGET:-dev}" # This is hardcoded for now, but should be passed in from env
     echo "Deploying to $TARGET..."
     
     DEPLOY_VARS=""
@@ -90,6 +88,7 @@ deploy_bundle() {
     echo "Bundle deployed successfully"
 }
 
+# May need to update this
 run_permissions_setup() {
     echo "Setting up permissions..."
     
@@ -175,6 +174,7 @@ CREATE_TEST_DATA=false
 TARGET="dev"
 PROFILE="DEFAULT"
 CURRENT_USER=$(databricks current-user me --profile DEFAULT --output json | jq -r '.userName')
+HOST_URL=$(databricks current-user me --profile DEFAULT --output json | jq -r '.workspaceUrl')
 
 
 while [[ $# -gt 0 ]]; do
