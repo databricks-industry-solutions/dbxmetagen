@@ -52,6 +52,8 @@ graph LR
 
 ### Simplest Option (no app)
 1. Clone the repo into your Databricks workspace into a Git Folder
+2. Run cells in the notebook up through setup_widgets().
+3. Complete at least catalog_name and table_names widgets. Choose mode. Adjust any other widgets you need to.
 
 ### Option 1: Streamlit App (Recommended for Business Users)
 DBX MetaGen includes a production-quality Streamlit app with an intuitive web interface:
@@ -370,18 +372,18 @@ This project is licensed under the Databricks DB License.
 | databricks-langchain 0.7.1 | Apache 2.0 | https://github.com/databricks/databricks-ai-bridge |
 | databricks-sdk >=0.30.0 | Apache 2.0 | https://github.com/databricks/databricks-sdk-py |
 | openpyxl 3.1.5 | MIT | https://foss.heptapod.net/openpyxl/openpyxl |
-| spacy 3.8.7 | MIT | https://github.com/explosion/spaCy |
+| spacy 3.8.7 | MIT | https://spacy.io/models/en#en_core_web_lg |
 | en_core_web_lg 3.8.0 | MIT | https://github.com/explosion/spacy-models |
 | presidio-analyzer 2.2.358 | MIT | https://github.com/microsoft/presidio |
 | presidio-anonymizer 2.2.358 | MIT | https://github.com/microsoft/presidio |
 | requests >=2.25.0 | Apache 2.0 | https://github.com/psf/requests |
 | numpy | BSD-3-Clause | https://github.com/numpy/numpy |
-| pandas |	BSD-3 | https://github.com/pandas-dev/pandas |
-| pyspark |	Apache2.0 | https://github.com/apache/spark |
+| pandas |	BSD-3-Clause | https://github.com/pandas-dev/pandas |
+| pyspark |	Apache 2.0 | https://github.com/apache/spark |
 | cloudpickle==2.2.1 | BSD-3 | https://github.com/cloudpipe/cloudpickle |
-| streamlit | Apache2.0 | https://github.com/streamlit |
-| databricks-sdk | Apache2.0 | https://pypi.org/project/databricks-sdk/ |
-| databricks-sql-connector | Apache2.0 | https://github.com/databricks/ |
+| streamlit | Apache 2.0 | https://github.com/streamlit |
+| databricks-sdk | Apache 2.0 | https://pypi.org/project/databricks-sdk/ |
+| databricks-sql-connector | Apache 2.0 | https://github.com/databricks/ |
 | pyyaml>=6.0 | MIT | https://pypi.org/project/PyYAML/ |
 | requests>=2.25.0 | Apache | https://pypi.org/project/requests/ |
 | plotly>=5.0.0 | MIT | https://pypi.org/project/plotly/ |
