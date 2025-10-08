@@ -8,6 +8,20 @@ import streamlit as st
 import yaml
 import os
 import logging
+
+
+def st_debug(message: str):
+    """
+    Display debug messages only when debug mode is enabled.
+    Uses logger instead of UI to keep interface clean.
+    """
+    logger = logging.getLogger(__name__)
+    logger.debug(message)
+    # Only show in UI if debug mode is explicitly enabled
+    if st.session_state.get("config", {}).get("debug_mode", False):
+        st.caption(f"🔍 {message}")
+
+
 from typing import Dict, Any, Optional, List
 from databricks.sdk import WorkspaceClient
 
@@ -87,7 +101,7 @@ class ConfigManager:
             try:
                 with open(deploying_user_path, "r") as f:
                     deploying_config = yaml.safe_load(f)
-                    st.info(f"Deploying user config: {deploying_config}")
+                    st_debug(f"Deploying user config: {deploying_config}")
 
                 # Merge deploying user config into main config
                 if deploying_config:
@@ -95,7 +109,7 @@ class ConfigManager:
                     logger.info(
                         f"Successfully merged deploying_user.yml - deploying_user: {deploying_config.get('deploying_user', 'unknown')}"
                     )
-                    st.info(
+                    st_debug(
                         f"Successfully merged deploying_user.yml - deploying_user: {config.get('deploying_user', 'unknown')}"
                     )
                     st.session_state.deploying_user = config.get(
@@ -118,7 +132,7 @@ class ConfigManager:
             logger.info(
                 f"Successfully merged deploying_user.yml - deploying_user: {deploying_config.get('deploying_user', 'unknown')}"
             )
-            st.info(
+            st_debug(
                 f"Successfully merged deploying_user.yml - deploying_user: {config.get('deploying_user', 'unknown')}"
             )
             st.session_state.deploying_user = config.get("deploying_user", "unknown")

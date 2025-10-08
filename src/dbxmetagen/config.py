@@ -61,6 +61,7 @@ class MetadataConfig:
             "column_with_reviewed_ddl",
             "current_user",
             "use_protected_classification_for_table",
+            "domain_config_path",
         ],
         "yaml_advanced_file_path": "../variables.advanced.yml",
         "yaml_advanced_variable_names": [
@@ -100,6 +101,7 @@ class MetadataConfig:
             setattr(self, key, value)
 
         # self.instantiate_environments()
+        self.allow_data = bool(self.allow_data)
 
         if not self.allow_data:
             self.allow_data_in_comments = False
@@ -109,7 +111,6 @@ class MetadataConfig:
 
         self.columns_per_call = int(self.columns_per_call)
         self.sample_size = int(self.sample_size)
-        self.allow_data = bool(self.allow_data)
         self.allow_data_in_comments = bool(self.allow_data_in_comments)
         self.include_possible_data_fields_in_metadata = bool(
             self.include_possible_data_fields_in_metadata
@@ -146,16 +147,3 @@ class MetadataConfig:
             return selected_variables
         except FileNotFoundError:
             return {}
-
-    # def instantiate_environments(self):
-    #     """Instantiate environments."""
-    #     try:
-    #         #print(f"Instantiating environments: {self.host}")
-    #         print(f"Env: {self.env}")
-    #         # print(f"Bundle target: {self.bundle_target}")
-    #         #print(f"Base URL: {self.base_url}")
-    #         self.base_url = self.host
-    #     except:
-    #         raise Exception(
-    #             f"Environment {self.env} does not match any provided host in variables.yml."
-    #         )

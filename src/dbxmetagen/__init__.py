@@ -1,11 +1,11 @@
-__version__ = "0.1.0"
+__version__ = "0.3.1"
 
 from src.dbxmetagen.config import MetadataConfig
 from src.dbxmetagen.overrides import (
     build_condition,
     apply_overrides_with_loop,
     apply_overrides_with_joins,
-    override_metadata_from_csv
+    override_metadata_from_csv,
 )
 
 __all__ = [
@@ -13,5 +13,5 @@ __all__ = [
     "build_condition",
     "apply_overrides_with_loop",
     "apply_overrides_with_joins",
-    "override_metadata_from_csv"
+    "override_metadata_from_csv",
 ]

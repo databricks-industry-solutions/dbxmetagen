@@ -1,4 +1,8 @@
-"""A fair amount of this is stubbed out for future flexibility around alternative API endpoints."""
+"""A fair amount of this is stubbed out for future flexibility
+around alternative API endpoints.
+
+Need to improve NotImplementedError, deprecated marks, and other indications of stubbed out code.
+"""
 
 import os
 import json
@@ -15,7 +19,6 @@ from pydantic import BaseModel
 import json
 from openai.types.chat.chat_completion import ChatCompletion, Choice
 from openai.types.chat.chat_completion_message import ChatCompletionMessage
-from openai.types.chat.chat_completion import ChatCompletion
 
 
 class ChatClient(ABC):
@@ -79,7 +82,6 @@ class DatabricksClient(ChatClient):
             response, model, messages, max_tokens, temperature
         )
 
-        # Store token usage in response for easy access
         if hasattr(response, "__dict__"):
             response.token_usage = token_usage
 
@@ -148,13 +150,12 @@ class DatabricksClient(ChatClient):
         if hasattr(response, "token_usage"):
             return response.token_usage
 
-        # Fallback to extracting from response.usage directly
         if hasattr(response, "usage") and response.usage:
             return {
                 "prompt_tokens": response.usage.prompt_tokens,
                 "completion_tokens": response.usage.completion_tokens,
                 "total_tokens": response.usage.total_tokens,
-                "response_time_seconds": 0,  # Not available in fallback
+                "response_time_seconds": 0,
             }
 
         return {
@@ -247,25 +248,20 @@ class OpenAISpecClient(ChatClient):
             response_dict = json.loads(response_text)
             return response_model(**response_dict)
         except (json.JSONDecodeError, TypeError, ValueError) as e:
-            # Fallback: create a minimal response object
             print(f"Warning: Failed to parse structured response: {e}")
             print(f"Raw response: {response_text}")
-            # Create a basic response with the raw content
             if (
                 hasattr(response_model, "model_fields")
                 and "column_contents" in response_model.model_fields
             ):
-                # This is likely a CommentResponse or similar
                 return response_model(
                     table="unknown", columns=[], column_contents=response_text
                 )
-            else:
-                # Generic fallback - this may still fail but provides better error info
-                raise ValueError(
-                    f"Could not parse response into {response_model.__name__}: {e}"
-                )
+            raise ValueError(
+                "Could not parse response into %s: %s", response_model.__name__, e
+            )
         except Exception as e:
-            raise ValueError(f"Unexpected error parsing structured response: {e}")
+            raise ValueError("Unexpected error parsing structured response: %s", e)
 
 
 class CustomChatSpecClient(ChatClient):
@@ -349,13 +345,10 @@ class CustomChatSpecClient(ChatClient):
         **kwargs,
     ) -> BaseModel:
         """Create a structured completion with JSON parsing for custom endpoints."""
-        # Add JSON formatting instruction to the messages if not already present
         if isinstance(messages, list) and messages:
-            # Check if we already have JSON instruction
             last_message = messages[-1].get("content", "")
             if "JSON" not in last_message and "json" not in last_message:
-                # Add JSON formatting instruction
-                messages = messages.copy()  # Don't modify the original
+                messages = messages.copy()
                 messages[-1] = {
                     **messages[-1],
                     "content": messages[-1]["content"]
@@ -378,10 +371,8 @@ class CustomChatSpecClient(ChatClient):
             response_dict = json.loads(response_text)
             return response_model(**response_dict)
         except (json.JSONDecodeError, TypeError, ValueError) as e:
-            # Fallback: create a minimal response object
             print(f"Warning: Failed to parse structured response: {e}")
             print(f"Raw response: {response_text}")
-            # Create a basic response with the raw content
             if (
                 hasattr(response_model, "model_fields")
                 and "column_contents" in response_model.model_fields
@@ -393,7 +384,7 @@ class CustomChatSpecClient(ChatClient):
             else:
                 # Generic fallback - this may still fail but provides better error info
                 raise ValueError(
-                    f"Could not parse response into {response_model.__name__}: {e}"
+                    "Could not parse response into {response_model.__name__}: {e}"
                 )
         except Exception as e:
             raise ValueError(f"Unexpected error parsing structured response: {e}")

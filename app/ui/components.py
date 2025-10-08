@@ -104,7 +104,7 @@ class UIComponents:
                 "Processing Mode",
                 options=["comment", "pi", "domain"],
                 index=["comment", "pi", "domain"].index(
-                    st.session_state.config.get("mode", "comment", "domain")
+                    st.session_state.config.get("mode", "comment")
                 ),
                 help="What to generate: comments, PII classification, or domain.",
             )
@@ -542,30 +542,76 @@ class UIComponents:
             st.success(f"✅ Loaded {len(df)} metadata records for review")
 
             st.subheader("📋 Edit Metadata")
-            st.info(
-                "💡 Edit the Description and PII Classification fields. DDL will be auto-generated when you save or apply changes."
+
+            # Detect metadata type for appropriate instructions
+            has_domain = "domain" in df.columns
+            has_pii = (
+                "pii_classification" in df.columns or "classification" in df.columns
             )
 
-            # Use data_editor for editing capabilities - focus on comment editing
+            if has_domain:
+                st.info(
+                    "💡 Edit the Domain and Subdomain fields. DDL will be auto-generated when you save or apply changes."
+                )
+            elif has_pii:
+                st.info(
+                    "💡 Edit the PII Classification fields. DDL will be auto-generated when you save or apply changes."
+                )
+            else:
+                st.info(
+                    "💡 Edit the Description and PII Classification fields. DDL will be auto-generated when you save or apply changes."
+                )
+
+            # Build column config based on available columns
+            column_config = {
+                "table": st.column_config.TextColumn("Table", disabled=True),
+                "table_name": st.column_config.TextColumn("Table", disabled=True),
+                "column": st.column_config.TextColumn("Column", disabled=True),
+                "column_name": st.column_config.TextColumn("Column", disabled=True),
+                "ddl": st.column_config.TextColumn(
+                    "DDL (Auto-generated)", disabled=True, width="large"
+                ),
+            }
+
+            # Add editable columns based on metadata type
+            if "column_content" in df.columns:
+                column_config["column_content"] = st.column_config.TextColumn(
+                    "Description"
+                )
+            if "pii_classification" in df.columns:
+                column_config["pii_classification"] = st.column_config.TextColumn(
+                    "PII Classification"
+                )
+            if "classification" in df.columns:
+                column_config["classification"] = st.column_config.TextColumn(
+                    "Classification"
+                )
+            if "type" in df.columns:
+                column_config["type"] = st.column_config.TextColumn("Type")
+            if "domain" in df.columns:
+                column_config["domain"] = st.column_config.TextColumn("Domain")
+            if "subdomain" in df.columns:
+                column_config["subdomain"] = st.column_config.TextColumn("Subdomain")
+            if "recommended_domain" in df.columns:
+                column_config["recommended_domain"] = st.column_config.TextColumn(
+                    "Recommended Domain", disabled=True
+                )
+            if "recommended_subdomain" in df.columns:
+                column_config["recommended_subdomain"] = st.column_config.TextColumn(
+                    "Recommended Subdomain", disabled=True
+                )
+
+            # Use data_editor for editing capabilities
             edited_df = st.data_editor(
                 df,
                 use_container_width=True,
                 hide_index=True,
-                column_config={
-                    "table": st.column_config.TextColumn("Table", disabled=True),
-                    "column": st.column_config.TextColumn("Column", disabled=True),
-                    "column_content": st.column_config.TextColumn("Description"),
-                    "pii_classification": st.column_config.TextColumn(
-                        "PII Classification"
-                    ),
-                    "ddl": st.column_config.TextColumn(
-                        "DDL (Auto-generated)", disabled=True, width="large"
-                    ),
-                },
+                key="metadata_editor",
+                column_config=column_config,
             )
 
-            # Store the edited data
-            st.session_state.review_metadata = edited_df
+            # Don't update session state here - let it update only on save/apply
+            # This prevents conflicts with Streamlit's rerun cycle
 
             st.subheader("💾 Save & Apply Changes")
 

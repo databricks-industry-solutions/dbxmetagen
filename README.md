@@ -54,6 +54,7 @@ graph LR
 1. Clone the repo into your Databricks workspace into a Git Folder
 2. Run cells in the notebook up through setup_widgets().
 3. Complete at least catalog_name and table_names widgets. Choose mode. Adjust any other widgets you need to.
+4. For domain configuration, either use the default, or update to match your organization's data domains.
 
 ### Option 1: Streamlit App (Recommended for Business Users)
 DBX MetaGen includes a production-quality Streamlit app with an intuitive web interface:

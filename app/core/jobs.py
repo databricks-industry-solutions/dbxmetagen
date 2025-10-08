@@ -233,7 +233,7 @@ class JobManager:
         # Add domain config path if in domain mode
         if config.get("mode") == "domain":
             job_params["domain_config_path"] = config.get(
-                "domain_config_path", "configurations/domain_config.yaml"
+                "domain_config_path", ".configurations/domain_config.yaml"
             )
 
         return job_params
@@ -269,11 +269,11 @@ class JobManager:
                 bundle_target = st.session_state.get("app_env", "dev")
                 logger.info(f"Using deploying user: {deploying_user}")
                 logger.info(f"Using bundle target: {bundle_target}")
-                st.info(f"Using bundle target: {bundle_target}")
-                path = f"/Workspace/Users/{deploying_user}/.bundle/dbxmetagen/{bundle_target}/files/notebooks/generate_metadata"
-                st.info(
-                    f"Resolved notebook path for deploying user {deploying_user}: {path}"
-                )
+                # st.info(f"Using bundle target: {bundle_target}")
+                # path = f"/Workspace/Users/{deploying_user}/.bundle/dbxmetagen/{bundle_target}/files/notebooks/generate_metadata"
+                # st.info(
+                #     f"Resolved notebook path for deploying user {deploying_user}: {path}"
+                # )
                 logger.info(
                     f"Resolved notebook path for deploying user {deploying_user}: {path}"
                 )

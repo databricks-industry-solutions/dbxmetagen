@@ -16,6 +16,12 @@ logger = logging.getLogger(__name__)
 
 
 class Prompt(ABC):
+    """Prompt class for generating prompts for the database metadata classifier.
+
+    Args:
+        ABC: Abstract base class for prompts.
+    """
+
     def __init__(self, config: Any, df: DataFrame, full_table_name: str):
         """
         Initialize the Prompt class.
@@ -41,13 +47,6 @@ class Prompt(ABC):
 
         Returns:
             Dict[str, Any]: Dictionary containing table and column contents.
-        """
-        raise NotImplementedError("Subclasses must implement this method")
-
-    @abstractmethod
-    def add_metadata_to_comment_input(self) -> None:
-        """
-        Add metadata to the comment input.
         """
         raise NotImplementedError("Subclasses must implement this method")
 
@@ -82,7 +81,7 @@ class Prompt(ABC):
 
         if truncated_count > 0:
             print(f"{truncated_count} cells were truncated.")
-            logger.info(f"{truncated_count} cells were truncated.")
+            logger.info("%s cells were truncated.", truncated_count)
 
         return pandas_df
 
@@ -107,6 +106,7 @@ class Prompt(ABC):
         mode_handlers = {
             "pi": self._filter_pi_mode,
             "comment": self._filter_comment_mode,
+            "domain": self._filter_domain_mode,
         }
 
         handler = mode_handlers.get(self.config.mode)
@@ -119,6 +119,10 @@ class Prompt(ABC):
 
     def _filter_pi_mode(self, df: DataFrame) -> DataFrame:
         """Filter metadata for PI mode (remove NULL values)"""
+        return df.filter(df["info_value"] != "NULL")
+
+    def _filter_domain_mode(self, df: DataFrame) -> DataFrame:
+        """Filter metadata for domain mode (remove NULL values)"""
         return df.filter(df["info_value"] != "NULL")
 
     def _filter_comment_mode(self, df: DataFrame) -> DataFrame:
@@ -154,36 +158,34 @@ class Prompt(ABC):
         """
         column_metadata_dict = {}
         for column_name in self.prompt_content["column_contents"]["columns"]:
-            print(f"[DEBUG] Extracting metadata for column: {column_name}")
 
             extended_metadata_df = self.spark.sql(
                 f"DESCRIBE EXTENDED {self.full_table_name} `{column_name}`"
             )
 
-            # Sample a few rows to see what the data looks like
-            try:
-                sample_rows = extended_metadata_df.limit(3).collect()
-                print(f"[DEBUG] Sample DESCRIBE EXTENDED rows for {column_name}:")
-                for i, row in enumerate(sample_rows):
-                    print(f"  Row {i}: {dict(row.asDict())}")
-            except Exception as e:
-                print(f"[DEBUG] Error sampling DESCRIBE EXTENDED rows: {e}")
+            # try:
+            #     sample_rows = extended_metadata_df.limit(3).collect()
+            #     for i, row in enumerate(sample_rows):
+            #         print(f"  Row {i}: {dict(row.asDict())}")
+            # except Exception as e:
+            #     print(f"[DEBUG] Error sampling DESCRIBE EXTENDED rows: {e}")
 
             filtered_metadata_df = self.filter_extended_metadata_fields(
                 extended_metadata_df
             )
 
-            # Check if the filtered DataFrame is empty or has problematic data
-            try:
-                filtered_sample = filtered_metadata_df.limit(3).collect()
-                for i, row in enumerate(filtered_sample):
-                    print(f"  Row {i}: {dict(row.asDict())}")
-            except Exception as e:
-                print(f"[DEBUG] Error sampling filtered rows: {e}")
+            # # Check if the filtered DataFrame is empty or has problematic data
+            # try:
+            #     filtered_sample = filtered_metadata_df.limit(3).collect()
+            #     for i, row in enumerate(filtered_sample):
+            #         print(f"  Row {i}: {dict(row.asDict())}")
+            # except Exception as e:
+            #     print(f"[DEBUG] Error sampling filtered rows: {e}")
 
             try:
                 column_metadata = filtered_metadata_df.toPandas().to_dict(orient="list")
             except Exception as e:
+                print(f"ERROR in pandas conversion for {column_name}: {e}")
                 raise
 
             combined_metadata = dict(
@@ -573,7 +575,7 @@ class PIPrompt(Prompt):
                 },
                 {
                     "role": "user",
-                    "content": f"""{content}.
+                    "content": f"""{content} + {acro_content}.
                     \n
                     ###
                     Deterministic results from Presidio or other outside checks to consider to help check your outputs are here: {self.deterministic_results}.
@@ -737,11 +739,10 @@ class PromptFactory:
         """
         if config.mode == "comment" and config.allow_data_in_comments:
             return CommentPrompt(config, df, full_table_name)
-        elif config.mode == "comment":
+        if config.mode == "comment":
             return CommentNoDataPrompt(config, df, full_table_name)
-        elif config.mode == "pi":
+        if config.mode == "pi":
             return PIPrompt(config, df, full_table_name)
-        elif config.mode == "domain":
+        if config.mode == "domain":
             return DomainPrompt(config, df, full_table_name)
-        else:
-            raise ValueError("Invalid mode. Use 'pi', 'comment', or 'domain'.")
+        raise ValueError("Invalid mode. Use 'pi', 'comment', or 'domain'.")

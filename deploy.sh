@@ -41,21 +41,18 @@ echo "Created $TARGET_FILE with service principal permissions added to dev secti
 }
 
 check_for_deployed_app() {
-    SP_ID=$(databricks apps get "dbxmetagen-app" --output json | jq -r '.id')
+    cd ../
+    SP_ID=$(databricks apps get "dbxmetagen-app" --output json 2>/dev/null | jq -r '.id' || echo "")
     echo "SP_ID: $SP_ID"
+    cd dbxmetagen
     export APP_SP_ID="$SP_ID"
-    if [ ! -n "$SP_ID" ]; then
-        echo "App does not exist. Running initial deployment to get app SP ID..."
-        validate_bundle -t ${TARGET}_spn --var "app_service_principal_application_id=None"
-        deploy_bundle -t ${TARGET}_spn --var "app_service_principal_application_id=None"
+    
+    if [ -z "$SP_ID" ] || [ "$SP_ID" = "null" ]; then
+        echo "App does not exist. Will create it in first deployment..."
+        export APP_EXISTS=false
     else        
         echo "App already exists. Using existing SP ID: $APP_SP_ID"
-        add_service_principal_simple
-        validate_bundle -t ${TARGET} -bundle_file "databricks_final.yml.tmp" --var "app_service_principal_application_id=$APP_SP_ID"
-        deploy_bundle -t ${TARGET} -bundle_file "databricks_final.yml.tmp" --var "app_service_principal_application_id=$APP_SP_ID"
-        rm databricks_final.yml.tmp
-        #SP_ID=$(databricks apps get "dbxmetagen-app" --output json | jq -r '.id')
-        #export APP_SP_ID="$SP_ID"
+        export APP_EXISTS=true
     fi
 }
 
@@ -68,6 +65,7 @@ validate_bundle() {
 }
 
 deploy_bundle() {
+
     TARGET="${TARGET:-dev}"
     echo "Deploying to $TARGET..."
     
@@ -80,7 +78,7 @@ deploy_bundle() {
     fi
     
     if ! databricks bundle deploy --target "$TARGET" $DEPLOY_VARS; then
-        echo "Error: Bundle deployment failed"
+        echo "Error: Bundle deployment failed with target $TARGET and vars $DEPLOY_VARS"
             exit 1
         fi
             
@@ -154,6 +152,10 @@ cleanup_temp_yml_files() {
         echo "Cleaning up databricks_final.yml..."
         rm databricks_final.yml
     fi
+    if [ -f databricks_final.yml.tmp ]; then
+        echo "Cleaning up databricks_final.yml.tmp..."
+        rm databricks_final.yml.tmp
+    fi
 }
 
 start_app() {
@@ -173,10 +175,19 @@ CREATE_TEST_DATA=false
 TARGET="dev"
 PROFILE="DEFAULT"
 CURRENT_USER=$(databricks current-user me --profile DEFAULT --output json | jq -r '.userName')
+ENV="dev"
 
 
 while [[ $# -gt 0 ]]; do
     case $1 in
+        --env)
+            ENV="$2"
+            shift 2
+            ;;
+        --host)
+            HOST_URL="$2"
+            shift 2
+            ;;
         --permissions)
             RUN_PERMISSIONS=true
             shift
@@ -229,12 +240,41 @@ copy_variables_to_app() {
 
 # Deploy everything
 #create_secret_scope
+export $(cat dev.env)
+HOST_URL=$HOST
+TARGET=$TARGET
 create_deploying_user_yml
 create_app_env_yml
 copy_variables_to_app
 check_for_deployed_app
-validate_bundle
-deploy_bundle
+
+if [ "$APP_EXISTS" = false ]; then
+    echo "=== First deployment: Creating app without SP ==="
+    validate_bundle
+    deploy_bundle
+    
+    # Get the newly created SP ID
+    cd ../
+    APP_SP_ID=$(databricks apps get "dbxmetagen-app" --output json 2>/dev/null | jq -r '.id' || echo "")
+    cd dbxmetagen
+    export APP_SP_ID
+    
+    if [ -z "$APP_SP_ID" ] || [ "$APP_SP_ID" = "null" ]; then
+        echo "Error: Failed to get SP ID after first deployment"
+        exit 1
+    fi
+    
+    echo "=== Second deployment: Updating with SP ID: $APP_SP_ID ==="
+    add_service_principal_simple
+    validate_bundle
+    deploy_bundle
+else
+    echo "=== Single deployment: App exists, using SP ID: $APP_SP_ID ==="
+    add_service_principal_simple
+    validate_bundle
+    deploy_bundle
+fi
+
 start_app
 cleanup_temp_yml_files
 

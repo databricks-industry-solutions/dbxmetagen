@@ -14,6 +14,17 @@ from typing import List, Tuple, Dict, Any, Optional
 logger = logging.getLogger(__name__)
 
 
+def st_debug(message: str):
+    """
+    Display debug messages only when debug mode is enabled.
+    Uses logger instead of UI to keep interface clean.
+    """
+    logger.debug(message)
+    # Only show in UI if debug mode is explicitly enabled
+    if st.session_state.get("config", {}).get("debug_mode", False):
+        st.caption(f"🔍 {message}")
+
+
 class DataOperations:
     """Handles data processing operations for metadata generation."""
 
@@ -295,7 +306,7 @@ class MetadataProcessor:
                     if isinstance(content_bytes, bytes)
                     else str(content_bytes)
                 )
-                st.info("✅ Used read() method")
+                st_debug("✅ Used read() method")
             elif hasattr(raw_content, "contents"):
                 # If it has contents attribute, extract from there
                 actual_content = raw_content.contents
@@ -306,28 +317,28 @@ class MetadataProcessor:
                         if isinstance(content_bytes, bytes)
                         else str(content_bytes)
                     )
-                    st.info("✅ Used contents.read() method")
+                    st_debug("✅ Used contents.read() method")
                 else:
                     content = str(actual_content)
-                    st.info("✅ Used str(contents)")
+                    st_debug("✅ Used str(contents)")
             else:
                 # Last resort - try context manager or convert to string
                 try:
                     with raw_content as stream:
                         content = stream.read().decode("utf-8")
-                    st.info("✅ Used context manager")
+                    st_debug("✅ Used context manager")
                 except Exception:
                     content = str(raw_content)
-                    st.info("⚠️ Fallback to string conversion")
+                    st_debug("⚠️ Fallback to string conversion")
 
             if not content:
                 raise Exception("Failed to extract content from DownloadResponse")
 
-            st.info(f"✅ Successfully read {len(content)} characters")
+            st_debug(f"✅ Successfully read {len(content)} characters")
 
             # Parse TSV
             df = pd.read_csv(StringIO(content), sep="\t")
-            st.info(
+            st_debug(
                 f"🔍 Loaded DataFrame: {df.shape} shape, columns: {list(df.columns)}"
             )
 
@@ -342,7 +353,6 @@ class MetadataProcessor:
             st.error(f"❌ Error loading metadata: {str(e)}")
             logger.error(f"Error in load_metadata_from_volume: {str(e)}")
 
-            # Show debug info for directories that don't exist
             try:
                 # Try parent directories to help debug
                 path_parts = (
@@ -356,7 +366,7 @@ class MetadataProcessor:
                                 parent_dir
                             )
                         )
-                        st.info(
+                        st_debug(
                             f"✅ Found parent directory: {parent_dir} with {len(parent_files)} items"
                         )
                         break
@@ -395,13 +405,11 @@ class MetadataProcessor:
         results = {"success": False, "applied": 0, "failed": 0, "errors": []}
 
         try:
-            # Debug: Show DataFrame structure (only in debug mode)
             debug_mode = st.session_state.config.get("debug_mode", False)
             if debug_mode:
-                st.info(f"🔍 DataFrame columns: {list(df.columns)}")
-                st.info(f"🔍 DataFrame shape: {df.shape}")
+                st_debug(f"🔍 DataFrame columns: {list(df.columns)}")
+                st_debug(f"🔍 DataFrame shape: {df.shape}")
 
-            # Generate DDL from edited metadata first
             st.info("🔄 Generating DDL from edited metadata...")
             updated_df = self._generate_ddl_from_comments(df)
 
@@ -454,6 +462,7 @@ class MetadataProcessor:
 
         # Determine if this is PI or comment metadata
         is_pi_metadata = "classification" in df.columns and "type" in df.columns
+        is_domain_metadata = "domain" in df.columns
 
         # Determine column names (handle different possible column name variations)
         table_col = "table_name" if "table_name" in df.columns else "table"
@@ -461,18 +470,22 @@ class MetadataProcessor:
 
         # Handle different metadata types
         if is_pi_metadata:
-            st.info(
-                "🔍 Detected PI metadata - generating DDL with data_classification and data_subclassification tags"
-            )
+            # st.info(
+            #    "🔍 Detected PI metadata - generating DDL with data_classification and data_subclassification tags"
+            # )
             # For PI metadata, use classification and type columns
             metadata_cols = ["classification", "type"]
             desc_cols = []
             pii_cols = []
+        elif is_domain_metadata:
+            st.info("🔍 Detected domain metadata - generating DDL with domain tags")
+            metadata_cols = ["domain"]
+            desc_cols = []
         else:
-            st.info(
-                "🔍 Detected comment metadata - generating DDL from description and PII fields"
-            )
-            # For comment metadata, use traditional approach
+            # st.info(
+            #    "🔍 detected comment metadata - generating ddl from description and pii fields"
+            # )
+            # for comment metadata, use traditional approach
             desc_cols = [
                 col
                 for col in df.columns
@@ -541,18 +554,15 @@ class MetadataProcessor:
                         # Ensure valid data_subclassification values
                         valid_subclassifications = [
                             "None",
-                            "PII",
-                            "PCI",
-                            "PHI",
-                            "Medical Information",
+                            "pii",
+                            "pci",
+                            "phi",
+                            "medical_information",
                         ]
 
-                        # Normalize common variations
                         type_mapping = {
                             "medical_information": "Medical Information",
-                            "medical": "Medical Information",
                             "healthcare": "PHI",
-                            "health": "PHI",
                             "payment": "PCI",
                             "credit_card": "PCI",
                             "personal": "PII",
@@ -587,15 +597,15 @@ class MetadataProcessor:
                             ddl_statement = (
                                 f"ALTER TABLE {table_name} SET TAGS ({tags_string})"
                             )
-                            st.info(
-                                f"🔍 Generated TABLE TAGS DDL for {table_name}: {ddl_statement}"
-                            )
+                            # st.info(
+                            #    f"🔍 Generated TABLE TAGS DDL for {table_name}: {ddl_statement}"
+                            # )
                         else:
                             # Column-level tags DDL
                             ddl_statement = f"ALTER TABLE {table_name} ALTER COLUMN `{column_name}` SET TAGS ({tags_string})"
-                            st.info(
-                                f"🔍 Generated COLUMN TAGS DDL for {table_name}.{column_name}: {ddl_statement}"
-                            )
+                            # st.info(
+                            #    f"🔍 Generated COLUMN TAGS DDL for {table_name}.{column_name}: {ddl_statement}"
+                            # )
 
                         updated_df.at[index, "ddl"] = ddl_statement
                     else:
@@ -604,17 +614,50 @@ class MetadataProcessor:
                             if is_table_comment
                             else f"{table_name}.{column_name}"
                         )
-                        st.info(
-                            f"⚠️ No valid PI classification for {target} - skipping DDL generation"
-                        )
+                        # st.info(
+                        #    f"⚠️ No valid PI classification for {target} - skipping DDL generation"
+                        # )
                 else:
                     target = (
                         table_name
                         if is_table_comment
                         else f"{table_name}.{column_name}"
                     )
+                    # st.info(
+                    #     f"⚠️ No PI classification for {target} - skipping DDL generation"
+                    # )
+            elif is_domain_metadata:
+                # Handle domain metadata - generate domain tags DDL
+                domain = row.get("domain", "")
+                subdomain = row.get("subdomain", "")
+
+                # Only generate DDL if we have a valid domain
+                if (
+                    pd.notna(domain)
+                    and str(domain).strip()
+                    and str(domain).strip().lower() not in ["none", "null", ""]
+                ):
+                    # Build tags for domain classification
+                    tags = []
+                    domain_val = str(domain).strip()
+                    tags.append(f"'domain' = '{domain_val}'")
+
+                    # Add subdomain if present and valid
+                    if (
+                        pd.notna(subdomain)
+                        and str(subdomain).strip()
+                        and str(subdomain).strip().lower() not in ["none", "null", ""]
+                    ):
+                        subdomain_val = str(subdomain).strip()
+                        tags.append(f"'subdomain' = '{subdomain_val}'")
+
+                    # Generate table-level tags DDL (domain is always table-level)
+                    tags_string = ", ".join(tags)
+                    ddl_statement = f"ALTER TABLE {table_name} SET TAGS ({tags_string})"
+                    updated_df.at[index, "ddl"] = ddl_statement
+                else:
                     st.info(
-                        f"⚠️ No PI classification for {target} - skipping DDL generation"
+                        f"⚠️ No valid domain for {table_name} - skipping DDL generation"
                     )
             else:
                 # Handle comment metadata - original logic
@@ -651,9 +694,9 @@ class MetadataProcessor:
                         ddl_statement = (
                             f"ALTER TABLE {table_name} COMMENT '{escaped_comment}'"
                         )
-                        st.info(
-                            f"🔍 Generated TABLE DDL for {table_name}: {ddl_statement}"
-                        )
+                        # st.info(
+                        #     f"🔍 Generated TABLE DDL for {table_name}: {ddl_statement}"
+                        # )
                     else:
                         # Column-level comment DDL
                         ddl_statement = f"ALTER TABLE {table_name} ALTER COLUMN `{column_name}` COMMENT '{escaped_comment}'"
@@ -668,9 +711,9 @@ class MetadataProcessor:
                         if is_table_comment
                         else f"{table_name}.{column_name}"
                     )
-                    st.info(
-                        f"⚠️ No comment content for {target} - skipping DDL generation"
-                    )
+                    # st.info(
+                    #     f"⚠️ No comment content for {target} - skipping DDL generation"
+                    # )
 
         return updated_df
 
@@ -734,9 +777,8 @@ class MetadataProcessor:
                 "mode": "comment",  # Default mode, could be made configurable
             }
 
-            st.info(f"🔧 Job parameters: {job_params}")
+            st_debug(f"🔧 Job parameters: {job_params}")
 
-            # Create and run the DDL sync job
             try:
                 job_id, run_id = job_manager.create_and_run_sync_job(
                     filename=filename, mode="comment"
@@ -746,7 +788,7 @@ class MetadataProcessor:
                     "success": True,
                     "job_id": job_id,
                     "run_id": run_id,
-                    "message": f"DDL sync job triggered successfully",
+                    "message": "DDL sync job triggered successfully",
                 }
 
             except AttributeError:
@@ -764,7 +806,6 @@ class MetadataProcessor:
     def review_uploaded_metadata(self, uploaded_file) -> Optional[pd.DataFrame]:
         """Review uploaded metadata file."""
         try:
-            # Read the uploaded file
             content = uploaded_file.read()
 
             # Handle both string and bytes
@@ -774,7 +815,8 @@ class MetadataProcessor:
             # Try to parse as TSV first, then CSV
             try:
                 df = pd.read_csv(StringIO(content), sep="\t")
-            except:
+            except Exception as e:
+                logger.error(f"❌ Failed to parse TSV file: {str(e)}")
                 df = pd.read_csv(StringIO(content))
 
             # Validate required columns

@@ -20,8 +20,6 @@ def setup_benchmarking(config):
         return None
 
     mlflow.openai.autolog()
-    benchmarking_id = str(uuid.uuid4())
-    print("Benchmarking ID", benchmarking_id)
     notebook_path = config.notebook_path
     experiment_name = (
         notebook_path

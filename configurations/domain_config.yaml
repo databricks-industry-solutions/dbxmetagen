@@ -1,5 +1,6 @@
-version: 0.2
+version: 0.3
 domains:
+
   clinical:
     name: "Clinical"
     description: "Clinical trials"
@@ -7,6 +8,18 @@ domains:
       clinical_trials:
         name: "Clinical Trials"
         description: "Trial-related infromation"
+      patient_data:
+        name: "Patient Data"
+        description: "Patient data, demographics, medical history"
+      clinical_data:
+        name: "Clinical Data"
+        description: "Clinical data, medical history"
+      pharmaceutical_data:
+        name: "Pharmaceutical Data"
+        description: "Pharmaceutical data, clinical trials"
+      medical_device_data:
+        name: "Medical Device Data"
+        description: "Medical device data, clinical trials"
 
   finance:
     name: "Finance"

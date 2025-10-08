@@ -325,10 +325,8 @@ def apply_ddl_to_databricks(
                 try:
                     spark.sql(ddl)
                     logging.info(f"Executed DDL: {ddl[:60]}...")
-                    print(f"Executed DDL: {ddl[:60]}...")
                 except Exception as e:
                     logging.error(f"Failed to execute DDL: {ddl[:60]}... Error: {e}")
-                    print(f"Failed to execute DDL: {ddl[:60]}... Error: {e}")
         logging.info("All DDL statements applied successfully.")
     except Exception as e:
         logging.error(f"Failed to apply DDLs to Databricks: {e}")

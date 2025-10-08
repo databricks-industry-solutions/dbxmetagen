@@ -49,18 +49,15 @@ def validate_runtime_compatibility(dbr_version, config):
 def setup_mode_dependencies(config):
     """Setup mode-specific dependencies and validate configurations."""
     if config.mode == "pi":
-        # Setup for PI mode
         if config.include_deterministic_pi or config.include_deterministic_pi == "true":
             ensure_spacy_model(config.spacy_model_names)
 
     elif config.mode == "domain":
-        # Setup for domain mode
         if not os.path.exists(config.domain_config_path):
             print(f"Warning: Domain config not found at {config.domain_config_path}")
             print("Domain classification will use fallback configuration")
 
     elif config.mode == "comment":
-        # Comment mode has no special setup requirements
         pass
 
     else:

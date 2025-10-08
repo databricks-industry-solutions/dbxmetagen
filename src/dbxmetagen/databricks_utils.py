@@ -6,7 +6,7 @@ from databricks.sdk import WorkspaceClient
 from pyspark.sql import SparkSession
 
 # from databricks.sdk.core import _InactiveRpcError
-from grpc._channel import _InactiveRpcError
+from grpc._channel import _InactiveRpcError, _MultiThreadedRendezvous
 
 
 def setup_databricks_environment(dbutils_instance=None):
@@ -73,15 +73,17 @@ def get_job_context(job_id, dbutils_instance=None):
 
 def setup_widgets(dbutils):
     """Setup widgets for the notebook."""
-    dbutils.widgets.dropdown("cleanup_control_table", "false", ["true", "false"])
-    dbutils.widgets.dropdown("mode", "comment", ["comment", "pi", "domain"])
-    dbutils.widgets.text("env", "")
-    dbutils.widgets.text("catalog_name", "")
-    dbutils.widgets.text("schema_name", "")
-    dbutils.widgets.text("host", "")
-    dbutils.widgets.text("table_names", "")
-    dbutils.widgets.text("current_user", "")
-    dbutils.widgets.text("apply_ddl", "")
+    dbutils.widgets.dropdown(
+        "cleanup_control_table", "false", ["true", "false"], "Cleanup Control Table"
+    )
+    dbutils.widgets.dropdown("mode", "comment", ["comment", "pi", "domain"], "Mode")
+    dbutils.widgets.text("env", "", "Environment")
+    dbutils.widgets.text("catalog_name", "", "Output Catalog Name")
+    dbutils.widgets.text("schema_name", "", "Output Schema Name")
+    dbutils.widgets.text("host", "", "Host URL (if different from current)")
+    dbutils.widgets.text("table_names", "", "Table Names (comma-separated)")
+    dbutils.widgets.text("current_user", "", "Current User")
+    dbutils.widgets.text("apply_ddl", "", "Apply DDL")
     dbutils.widgets.text("columns_per_call", "")
     dbutils.widgets.text("sample_size", "")
     dbutils.widgets.text("job_id", "")
@@ -162,3 +164,96 @@ def setup_notebook_variables(dbutils):
     notebook_variables["current_user"] = current_user
     notebook_variables["notebook_path"] = notebook_path
     return notebook_variables
+
+
+def grant_user_permissions(
+    catalog_name: str,
+    schema_name: str,
+    current_user: str,
+    volume_name: str = None,
+    table_name: str = None,
+):
+    """
+    Grant permissions to the current user on objects created by the app service principal.
+
+    Args:
+        catalog_name: Catalog name
+        schema_name: Schema name
+        current_user: Email/username of the current user
+        volume_name: Optional volume name
+        table_name: Optional table name (can be fully qualified or just table name)
+    """
+
+    spark = SparkSession.builder.getOrCreate()
+
+    try:
+        spark.sql(
+            f"GRANT USE SCHEMA ON SCHEMA {catalog_name}.{schema_name} TO `{current_user}`"
+        )
+        spark.sql(
+            f"GRANT CREATE TABLE ON SCHEMA {catalog_name}.{schema_name} TO `{current_user}`"
+        )
+        print(f"Granted schema permissions to {current_user}")
+
+        if volume_name:
+            spark.sql(
+                f"GRANT READ VOLUME, WRITE VOLUME ON VOLUME {catalog_name}.{schema_name}.{volume_name} TO `{current_user}`"
+            )
+            print(f"Granted volume permissions to {current_user}")
+
+        if table_name:
+            if "." not in table_name:
+                full_table_name = f"{catalog_name}.{schema_name}.{table_name}"
+            else:
+                full_table_name = table_name
+
+            spark.sql(
+                f"GRANT SELECT, MODIFY ON TABLE {full_table_name} TO `{current_user}`"
+            )
+            print(f"Granted table permissions on {full_table_name} to {current_user}")
+
+    except Exception as e:
+        print(f"Warning: Could not grant permissions to {current_user}: {e}")
+
+
+def grant_group_permissions(
+    catalog_name: str,
+    schema_name: str,
+    group_name: str = "account users",
+    volume_name: str = None,
+    table_pattern: str = None,
+):
+    """
+    Grant permissions to a group on objects created by the app service principal.
+    This is more scalable than per-user grants.
+
+    Args:
+        catalog_name: Catalog name
+        schema_name: Schema name
+        group_name: Group name (default: "account users" for all users)
+        volume_name: Optional volume name
+        table_pattern: Optional table name pattern (e.g., "table_processing_log")
+    """
+    spark = SparkSession.builder.getOrCreate()
+
+    try:
+        spark.sql(
+            f"GRANT USE SCHEMA ON SCHEMA {catalog_name}.{schema_name} TO `{group_name}`"
+        )
+        print(f"✓ Granted schema permissions to group: {group_name}")
+
+        if volume_name:
+            spark.sql(
+                f"GRANT READ VOLUME ON VOLUME {catalog_name}.{schema_name}.{volume_name} TO `{group_name}`"
+            )
+            print(f"Granted volume permissions to group: {group_name}")
+
+        if table_pattern:
+            full_table_name = f"{catalog_name}.{schema_name}.{table_pattern}"
+            spark.sql(f"GRANT SELECT ON TABLE {full_table_name} TO `{group_name}`")
+            print(
+                f"Granted table permissions on {full_table_name} to group: {group_name}"
+            )
+
+    except Exception as e:
+        print(f"Warning: Could not grant permissions to group {group_name}: {e}")

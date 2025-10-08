@@ -3,6 +3,7 @@ Simplified domain classifier for dbxmetagen that works without UC tools.
 This module provides table-level domain classification using metadata passed directly.
 """
 
+import os
 import json
 import yaml
 import logging
@@ -21,11 +22,17 @@ class TableClassification(BaseModel):
     schema_name: str = Field(description="Schema name", alias="schema")
     table: str = Field(description="Table name")
     domain: str = Field(description="Primary business domain classification")
-    subdomain: Optional[str] = Field(
-        default=None, description="Subdomain classification"
-    )
+    subdomain: str = Field(description="Subdomain classification")
     confidence: float = Field(
         description="Confidence score between 0.0 and 1.0", ge=0.0, le=1.0
+    )
+    recommended_domain: Optional[str] = Field(
+        default=None,
+        description="Recommended domain to use if the table does not fit into any of the domains",
+    )
+    recommended_subdomain: Optional[str] = Field(
+        default=None,
+        description="Recommended subdomain to use if the table does not fit into any of the subdomains",
     )
     reasoning: str = Field(description="Detailed reasoning for the classification")
     metadata_summary: Optional[str] = Field(
@@ -38,16 +45,15 @@ class TableClassification(BaseModel):
 
 def load_domain_config(config_path: str = None) -> Dict[str, Any]:
     """Load domain configuration from YAML file"""
-    import os
 
     if config_path and os.path.exists(config_path):
         try:
             with open(config_path, "r") as file:
                 config = yaml.safe_load(file)
-            logger.info(f"Loaded domain config from {config_path}")
+            logger.info("Loaded domain config from %s", config_path)
             return config
         except Exception as e:
-            logger.warning(f"Could not load domain config from {config_path}: {e}")
+            logger.warning("Could not load domain config from %s: %s", config_path, e)
 
     # Try default paths
     # TODO: This should be refactored to use the ConfigManager class and evaluate which path is correct for the current environment
@@ -62,10 +68,10 @@ def load_domain_config(config_path: str = None) -> Dict[str, Any]:
             if os.path.exists(path):
                 with open(path, "r") as file:
                     config = yaml.safe_load(file)
-                logger.info(f"Loaded domain config from {path}")
+                logger.info("Loaded domain config from %s", path)
                 return config
         except Exception as e:
-            logger.warning(f"Could not load domain config from {path}: {e}")
+            logger.warning("Could not load domain config from %s: %s", path, e)
 
     # Fallback configuration
     logger.warning("Could not load domain config from any path, using fallback")
@@ -119,7 +125,15 @@ def create_system_prompt(domain_config: Dict[str, Any]) -> str:
 
     return f"""You are a Table Classification Agent that helps classify database tables into business domains.
 
-Your task is to analyze table metadata and classify tables into appropriate business domains.
+Your task is to analyze table metadata and classify tables into appropriate business domains. 
+
+You will be given a domain configuration that you will use to classify the table. 
+Only provide the domain and subdomain keys from the configuration. Do not make up any domains or subdomains.
+
+Reduce your confidence score if you are not sure about the classification or you think that the table does not fit into any of the domains.
+
+
+
 
 The metadata provided includes:
 - Table name (catalog.schema.table format)
@@ -134,13 +148,13 @@ Based on the metadata provided, classify the table into the most appropriate dom
 Always provide structured responses with:
 - Domain classification (use the domain keys from the configuration above)
 - Confidence score (0.0 to 1.0)
-- Subdomain (use subdomain keys from configuration or descriptive terms)
+- Subdomain (use subdomain keys from configuration)
 - Detailed reasoning explaining your classification
 - Metadata summary highlighting key factors in your decision
 
 Consider:
 1. Table and column names for domain hints
-2. Data types and patterns in the data
+2. Data types and patterns in the data and metadata
 3. Keywords from the domain configuration
 4. Overall purpose and business context of the table
 
@@ -156,6 +170,7 @@ def classify_table_domain(
     domain_config: Dict[str, Any],
     model_endpoint: str = "databricks-claude-3-7-sonnet",
     temperature: float = 0.1,
+    max_tokens: int = 8192,
 ) -> Dict[str, Any]:
     """
     Classify a table into a business domain using metadata.
@@ -170,12 +185,15 @@ def classify_table_domain(
         domain_config: Domain configuration dictionary
         model_endpoint: LLM endpoint to use
         temperature: Model temperature
+        max_tokens: Maximum tokens for completion
 
     Returns:
         Dictionary with classification results
     """
     try:
-        llm = ChatDatabricks(endpoint=model_endpoint, temperature=temperature)
+        llm = ChatDatabricks(
+            endpoint=model_endpoint, temperature=temperature, max_tokens=max_tokens
+        )
         structured_llm = llm.with_structured_output(TableClassification)
         system_prompt = create_system_prompt(domain_config)
         catalog, schema, table = table_name.split(".")
@@ -217,14 +235,17 @@ Column Information:
         result["table"] = table
 
         logger.info(
-            f"Classified {table_name} as {result['domain']}/{result.get('subdomain', 'N/A')} "
-            f"(confidence: {result['confidence']:.2f})"
+            "Classified %s as %s/%s (confidence: %.2f)",
+            table_name,
+            result["domain"],
+            result.get("subdomain", "N/A"),
+            result["confidence"],
         )
 
         return result
 
     except Exception as e:
-        logger.error(f"Error classifying table {table_name}: {e}")
+        logger.error("Error classifying table %s: %s", table_name, e)
         catalog, schema, table = table_name.split(".")
         return {
             "catalog": catalog,
@@ -244,6 +265,7 @@ async def classify_table_domain_async(
     domain_config: Dict[str, Any],
     model_endpoint: str = "databricks-claude-3-7-sonnet",
     temperature: float = 0.1,
+    max_tokens: int = 4096,
 ) -> Dict[str, Any]:
     """
     Async version of classify_table_domain for batch processing.
@@ -254,6 +276,7 @@ async def classify_table_domain_async(
         domain_config: Domain configuration dictionary
         model_endpoint: LLM endpoint to use
         temperature: Model temperature
+        max_tokens: Maximum tokens for completion
 
     Returns:
         Dictionary with classification results
@@ -271,4 +294,5 @@ async def classify_table_domain_async(
         domain_config,
         model_endpoint,
         temperature,
+        max_tokens,
     )

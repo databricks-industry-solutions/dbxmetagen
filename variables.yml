@@ -1,5 +1,5 @@
 variables:
-  host:
+  workspace_host:
     description: Base url host variable. If using asset bundles, will get overridden by target host. Otherwise, use the host here that you want to target. Replace this example host name with a real one, specifically the one you will be using.
     default: None
   catalog_name:
@@ -146,7 +146,7 @@ variables:
         }
   domain_config_path:
     description: Path to the domain configuration YAML file for domain classification mode
-    default: configurations/domain_config.yaml
+    default: ../configurations/domain_config.yaml
   use_protected_classification_for_table:
     description: Whether to use protected classification for the table.
     default: true
@@ -192,3 +192,6 @@ variables:
   control_table:
     description: Control table name.
     default: "metadata_control_{}"
+  dry_run:
+    description: Whether to perform a dry run. Not yet implemented, though if volume_name is set to null and apply_ddl is set to false this effectively is a dry run. Similarly, just setting apply_ddl to false is in a way a dry run.
+    default: false
