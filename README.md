@@ -15,6 +15,7 @@
 - [Current Status](#current-status)
 - [Discussion Points & Recommendations](#discussion-points--recommendations)
 - [Details of Comment Generation and PI Identification](#details-of-comment-generation-and-pi-identification)
+- [Domain Classification](#domain-classification)
 - [Performance Details and Skew](#performance-details-and-skew)
 - [Under Development](#under-development)
 - [License](#license)
@@ -27,10 +28,6 @@
 **dbxmetagen** is a utility for generating high-quality descriptions for tables and columns in Databricks, enhancing enterprise search, governance, and Databricks Genie performance. It can identify and classify personal information (PI) into PII, PHI, and PCI. The tool is highly configurable, supporting bulk operations, SDLC integration, and fine-grained control over privacy and output formats.
 
 ## Quickstart
-
-### Simplest Path: Run Notebook Directly (No Configuration Required)
-
-Perfect for trying out dbxmetagen or one-off metadata generation:
 
 1. **Clone the repo** into a Git Folder in your Databricks workspace
    ```
@@ -45,13 +42,19 @@ Perfect for trying out dbxmetagen or one-off metadata generation:
    - **metadata_type**: Choose `comment`, `pi`, or `domain`
    - Adjust other widgets as needed (all have sensible defaults)
 
-4. **Run the notebook** - metadata will be generated and applied to your tables
+4. **Run the notebook** - metadata will be generated. If you change apply_ddl to true, then the DDL will be applied to your tables.
 
 That's it! No YAML files to edit, no deployment scripts to run.
 
+If you want to take the next step with this same quickstart approach:
+1. Update notebooks/table_names.csv instead of the table names widget.
+2. Explore the review functionality
+3. Review some of the advanced options in variables.yml
+4. Manually create a Databricks job and run notebooks/generate_metadata.py as a task.
+
 ---
 
-### 📱 Full App Deployment (Recommended for Regular Use)
+### Full App Deployment (Recommended for Regular Use)
 
 For a web UI with job management, metadata review, and team collaboration:
 
@@ -76,11 +79,11 @@ See [docs/ENV_SETUP.md](docs/ENV_SETUP.md) for detailed deployment documentation
 
 ---
 
-### 📊 What You Can Generate
+### What You Can Generate
 
 - **Comments**: AI-generated descriptions for tables and columns
-- **PI Classification**: Identify PII, PHI, and PCI with Unity Catalog tags
-- **Domain Metadata**: Classify tables into business domains and subdomains
+- **PI Classification**: Identify and tag PII, PHI, and PCI with Unity Catalog tags
+- **Domain Classification**: Automatically categorize tables into business domains and subdomains with Unity Catalog tags
 
 ## Disclaimer
 
@@ -92,7 +95,7 @@ See [docs/ENV_SETUP.md](docs/ENV_SETUP.md) for detailed deployment documentation
 
 ## Solution Overview
 
-- **Configuration-driven:** All settings are managed via `variables.yml`.
+- **Configuration-driven:** Basic required settings can be managed via widgets and in the app config. Advanced settings are managed via `variables.yml`.
 - **AI-assisted:** Both comment generation and PI identification and classification use both AI-based and deterministic or data engineering approaches, combining multiple sophisticated approaches to get you quality metadata.
 - **Data Sampling:** Controls over sample size, inclusion of data, and metadata.
 - **Validation:** Uses `Pydantic` and structured outputs for schema enforcement.
@@ -117,7 +120,7 @@ Both primary entry points for this application are Databricks notebooks.
 
 ### Workflow Diagrams
 
-- **Simple Workflow:** Clone repo, configure `variables.yml`, update `notebooks/table_names.csv`, run notebook.
+- **Simple Workflow:** Clone repo, configure widgets, update `notebooks/table_names.csv`, run notebook.
 
 <img src="images/personas.png" alt="User Personas" width="400" top-margin="50">
 
@@ -136,18 +139,9 @@ Both primary entry points for this application are Databricks notebooks.
 <br/>
 <br/>
 
-### Minimal Setup
-1. Clone the repo into Databricks to a Git Folder.
-1. In variables.yml, update the host, the catalog_name, and if needed the apply_ddl setting if you want it to add the comments or PI definitions directly to a table.
-1. Set the widget for comment or pi and run the notebook.
-1. Update notebooks/table_names.csv
-
-### No workspace files setup
-1. Follow minimal setup guidelines, but move all files in configuration_files folder to a volume that you have access to.
-
-### Setup
+### Additional Setup Details
 1. Clone the Repo into Databricks or locally
-1. If cloned into Repos in Databricks, one can run the notebook using an all-purpose cluster (tested on 14.3 ML LTS, 15.4 ML LTS, 16.2 ML) without further deployment, simply adjusting variables.yml and widgets in the notebook.
+1. If cloned into Repos in Databricks, one can run the notebook using an all-purpose cluster (tested on 14.3 ML LTS, 15.4 ML LTS, 16.4 ML) without further deployment, simply adjusting variables.yml and widgets in the notebook.
    1. Alternatively, run the notebook deploy.py, open the web terminal, copy-paste the path and command from deploy.py and run it in the web terminal. This will run an asset bundle-based deploy in the Databricks UI web terminal.
    1. The end result of this approach is to deploy a job. Table names can be added to the job itself for users with CAN MANAGE, or to table_names.csv as for the interactive workload.
    1. Default workflow runs both PI identification/classification and comment generation.
@@ -360,6 +354,88 @@ Put the file you want to review in 'reviewed_outputs' folder in your user folder
 
 - **PHI Classification:** All medical columns are treated as PHI if `disable_medical_information_value` is true.
 - **Column-level vs Table-level:** Columns are classified individually; tables inherit the highest classification from their columns.
+
+## Domain Classification
+
+**Domain classification** automatically categorizes tables into business domains and subdomains using AI-powered analysis. This enables better data organization, governance, and discovery by tagging tables with Unity Catalog tags representing their business function.
+
+### How It Works
+
+1. **Table Analysis**: The system samples table data and analyzes schema metadata to understand the table's content and purpose
+2. **Domain Matching**: Using the configured domain taxonomy (from `domain_config.yaml`), the LLM identifies the most relevant domain and subdomain
+3. **Tagging**: Unity Catalog tags are applied to tables:
+   - `domain`: The high-level business domain (e.g., "Finance", "Clinical", "CRM")
+   - `subdomain`: The specific subdomain (e.g., "Accounting", "Patient Data", "Customer Service")
+
+### Domain Configuration (`domain_config.yaml`)
+
+The domain taxonomy is defined in `configurations/domain_config.yaml` and should be customized to match your organization's business structure. Each domain configuration includes:
+
+```yaml
+domains:
+  finance:
+    name: "Finance"
+    description: "Financial data, transactions, accounting, and related business metrics"
+    keywords: ["revenue", "transaction", "payment", "invoice", "billing", "accounting"]
+    subdomains:
+      accounting:
+        name: "Accounting"
+        description: "General ledger, accounts payable/receivable, financial statements"
+        keywords: ["ledger", "journal", "account", "balance", "trial_balance"]
+```
+
+**Configuration Elements:**
+- **Domain name**: Unique identifier for the domain (e.g., `finance`, `clinical`, `crm`)
+- **Display name**: Human-readable name shown in tags and UI
+- **Description**: Explains the domain's scope and purpose (used by LLM for matching)
+- **Keywords**: Optional list of terms that help the LLM identify relevant tables
+- **Subdomains**: Nested categorization within each domain, with their own descriptions and keywords
+
+### Built-in Domains
+
+The default `domain_config.yaml` includes common business domains:
+- **Clinical**: Clinical trials, patient data, pharmaceutical data, medical devices
+- **Finance**: Accounting, payments, treasury, compliance
+- **CRM**: Customer data, interactions, marketing campaigns, customer service
+- **Sales**: Opportunities, orders, pricing, forecasting
+- **HR**: Employee data, payroll, recruitment, performance management
+- **Operations**: Supply chain, inventory, logistics, facilities
+- **Marketing**: Campaigns, analytics, content, social media
+- **Product**: Product catalog, development, analytics, lifecycle
+- **IT**: Infrastructure, security, applications, support
+- **Legal**: Contracts, compliance, intellectual property, litigation
+
+### Customizing for Your Organization
+
+To adapt domain classification to your organization:
+
+1. **Copy the example**: Start with `configurations/domain_config.yaml`
+2. **Modify domains**: Add, remove, or rename domains to match your business structure
+3. **Update descriptions**: Ensure descriptions accurately reflect what data belongs in each domain
+4. **Add keywords**: Include industry-specific terms, system names, and common column patterns
+4. **Test iteratively**: Run domain classification on sample tables and refine descriptions/keywords based on results
+
+**Best Practices:**
+- Keep descriptions clear and specific to help the LLM distinguish between similar domains
+- Include both technical and business terminology in keywords
+- Test with diverse table types to ensure accurate classification
+- Review and refine domain assignments, especially for edge cases
+
+### Domain Configuration Variables
+
+Domain classification behavior can be tuned in `variables.yml`:
+- **`columns_per_call`**: Controls how many columns are analyzed (domain mode uses limited sampling for efficiency)
+- **`sample_size`**: Number of data rows sampled for content analysis
+- **`model`**: LLM endpoint used for classification (recommend Claude Sonnet or Llama 3.3 70B)
+- **`temperature`**: Lower values (0.1-0.3) produce more consistent classifications
+
+### Reviewing Domain Assignments
+
+Domain classifications can be reviewed and edited in the Streamlit app or by modifying exported run logs:
+1. Run domain classification on your tables
+2. Review the `recommended_domain` and `recommended_subdomain` columns in the output
+3. Edit assignments if needed
+4. Apply the updated DDL to persist changes as Unity Catalog tags
 - **Manual Overrides:** Allow explicit tagging or comment overrides via CSV.
 - **Summarization:** Table comments are generated by summarizing column comments.
 
@@ -407,6 +483,7 @@ This project is licensed under the Databricks DB License.
 **Other libraries used come from the Databricks runtime**
 
 ## Acknowledgements
+Thanks to James McCall, Diego Malaver, and Charles Linville for discussions around dbxmetagen and its value.
 
 Special thanks to the Databricks community and contributors.
 
