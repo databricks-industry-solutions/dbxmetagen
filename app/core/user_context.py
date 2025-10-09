@@ -190,7 +190,6 @@ class AppConfig:
         """Get bundle target environment"""
         return os.getenv("BUNDLE_TARGET", "dev")
 
-    @deprecated
     @staticmethod
     def set_app_permissions_for_job(job_id: str, user_email: str):
         """Set app service principal permissions on a job"""
