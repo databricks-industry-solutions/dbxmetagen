@@ -8,7 +8,6 @@ include:
   - benchmarks/resources/jobs/benchmarks/*.yml
   - variables.yml
   - resources/app_variables.yml
-  - variables_override.yml
 
 
 artifacts:
@@ -24,7 +23,7 @@ targets:
     default: true
 
     workspace:
-      host: https://adb-830292400663869.9.azuredatabricks.net/
+      host: https://adb-984752964297111.11.azuredatabricks.net/
     permissions:
       - user_name: ${var.deploying_user}
         level: CAN_MANAGE
@@ -32,7 +31,7 @@ targets:
   prod:
     mode: production
     workspace:
-      host: https://adb-830292400663869.9.azuredatabricks.net/
+      host: https://adb-984752964297111.11.azuredatabricks.net/
       root_path: ${var.current_working_directory}
     permissions:
       - user_name: ${var.current_user}

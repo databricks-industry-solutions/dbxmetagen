@@ -12,12 +12,6 @@ if [ ! -f "databricks.yml" ]; then
     exit 1
 fi
 
-if ! databricks current-user me --profile DEFAULT &> /dev/null; then
-    echo "Error: Not authenticated with Databricks. Run: databricks configure"
-    exit 1
-fi
- 
-
 add_service_principal_simple() {
     # Copy databricks.yml and add service principal permissions to the dev section
 
@@ -42,23 +36,22 @@ echo "Created $TARGET_FILE with service principal permissions added to dev secti
 
 check_for_deployed_app() {
     cd ../
-    SP_ID=$(databricks apps get "dbxmetagen-app" --output json 2>/dev/null | jq -r '.id' || echo "")
-    echo "SP_ID: $SP_ID"
+    SP_ID=$(databricks apps get "dbxmetagen-app" --profile "$PROFILE" --output json 2>/dev/null | jq -r '.service_principal_id' || echo "")
     cd dbxmetagen
     export APP_SP_ID="$SP_ID"
     
-    if [ -z "$SP_ID" ] || [ "$SP_ID" = "null" ]; then
-        echo "App does not exist. Will create it in first deployment..."
-        export APP_EXISTS=false
-    else        
-        echo "App already exists. Using existing SP ID: $APP_SP_ID"
-        export APP_EXISTS=true
+    if [ -n "$SP_ID" ] && [ "$SP_ID" != "null" ]; then
+        echo "App already exists with SP ID: $APP_SP_ID"
+        echo "Adding service principal permissions..."
+        add_service_principal_simple
+    else
+        echo "App does not exist yet or no SP ID available"
     fi
 }
 
 validate_bundle() {
     echo "Validating bundle..."
-    if ! databricks bundle validate -t "$TARGET"; then
+    if ! databricks bundle validate -t "$TARGET" --profile "$PROFILE"; then
         echo "Error: Bundle validation failed"
         exit 1
     fi
@@ -69,7 +62,6 @@ deploy_bundle() {
     TARGET="${TARGET:-dev}"
     echo "Deploying to $TARGET..."
     
-    # Build var flags only for debug/test modes (simpler boolean values)
     local DEPLOY_VARS=()
     if [ "$DEBUG_MODE" = true ]; then
         DEPLOY_VARS+=("--var" "debug_mode=true")
@@ -78,7 +70,7 @@ deploy_bundle() {
         DEPLOY_VARS+=("--var" "create_test_data=true")
     fi
     
-    if ! databricks bundle deploy --target "$TARGET" "${DEPLOY_VARS[@]}"; then
+    if ! databricks bundle deploy --target "$TARGET" --profile "$PROFILE" "${DEPLOY_VARS[@]}"; then
         echo "Error: Bundle deployment failed with target $TARGET"
         exit 1
     fi
@@ -97,11 +89,11 @@ run_permissions_setup() {
     fi
     
     local job_id
-    job_id=$(databricks jobs list --output json | grep -B5 -A5 "dbxmetagen_permissions_setup" | grep '"job_id"' | head -1 | sed 's/.*"job_id": *\([0-9]*\).*/\1/' || echo "")
+    job_id=$(databricks jobs list --profile "$PROFILE" --output json | grep -B5 -A5 "dbxmetagen_permissions_setup" | grep '"job_id"' | head -1 | sed 's/.*"job_id": *\([0-9]*\).*/\1/' || echo "")
     
     if [ -n "$job_id" ]; then
         echo "Running permissions setup job..."
-        databricks jobs run-now --json "{\"job_id\": $job_id, \"job_parameters\": {\"catalog_name\": \"$catalog_name\"}}"
+        databricks jobs run-now --profile "$PROFILE" --json "{\"job_id\": $job_id, \"job_parameters\": {\"catalog_name\": \"$catalog_name\"}}"
         echo "Permissions job started (ID: $job_id)"
     else
         echo "Warning: Could not find permissions setup job"
@@ -111,7 +103,6 @@ run_permissions_setup() {
 create_deploying_user_yml() {
     echo "Creating deploying_user.yml with current user..."
     
-    # Create the deploying_user.yml file in the app directory
     cat > app/deploying_user.yml << EOF
 # Auto-generated during deployment - contains the user who deployed this app
 # This file is created by deploy.sh and should not be committed to version control
@@ -119,7 +110,7 @@ create_deploying_user_yml() {
 deploying_user: "$CURRENT_USER"
 EOF
     
-    echo "✅ deploying_user.yml created with user: $CURRENT_USER"
+    echo "deploying_user.yml created with user: $CURRENT_USER"
 }
 
 create_app_env_yml() {
@@ -153,7 +144,7 @@ EOF
         echo "permission_users: \"$permission_users\"" >> app/env_overrides.yml
     fi
     
-    echo "✅ env_overrides.yml created"
+    echo "env_overrides.yml created"
 }
 
 cleanup_temp_yml_files() {
@@ -181,6 +172,10 @@ cleanup_temp_yml_files() {
         echo "Cleaning up databricks_final.yml.tmp..."
         rm databricks_final.yml.tmp
     fi
+    if [ -f app/domain_config.yml ]; then
+        echo "Cleaning up domain_config.yml..."
+        rm app/domain_config.yml
+    fi
 }
 
 start_app() {
@@ -190,7 +185,7 @@ start_app() {
     # Create deploying_user.yml before deployment
 
     # Deploy and run the app
-    databricks bundle run -t "$TARGET" \
+    databricks bundle run -t "$TARGET" --profile "$PROFILE" \
         --var "deploying_user=$CURRENT_USER" \
         --var "app_service_principal_application_id=$APP_SP_ID" \
         dbxmetagen_app
@@ -202,9 +197,7 @@ DEBUG_MODE=false
 CREATE_TEST_DATA=false
 TARGET="dev"
 PROFILE="DEFAULT"
-CURRENT_USER=$(databricks current-user me --profile DEFAULT --output json | jq -r '.userName')
 ENV="dev"
-
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -214,6 +207,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --host)
             HOST_URL="$2"
+            shift 2
+            ;;
+        --profile)
+            PROFILE="$2"
             shift 2
             ;;
         --permissions)
@@ -235,11 +232,12 @@ while [[ $# -gt 0 ]]; do
         --help|-h)
             echo "Usage: $0 [OPTIONS]"
             echo "Options:"
-            echo "  --permissions     Run permissions setup job"
-            echo "  --debug          Enable debug mode"
-            echo "  --create-test-data Generate test data"
-            echo "  --target TARGET  Deploy to specific target (dev/prod)"
-            echo "  --help           Show this help"
+            echo "  --profile PROFILE    Databricks CLI profile to use (default: DEFAULT)"
+            echo "  --target TARGET      Deploy to specific target (dev/prod, default: dev)"
+            echo "  --permissions        Run permissions setup job"
+            echo "  --debug              Enable debug mode"
+            echo "  --create-test-data   Generate test data"
+            echo "  --help               Show this help"
             exit 0
             ;;
         *)
@@ -250,17 +248,25 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Main execution
+# Get current user using the specified profile
+echo "Using Databricks profile: $PROFILE"
+if ! databricks current-user me --profile "$PROFILE" &> /dev/null; then
+    echo "Error: Not authenticated with Databricks using profile '$PROFILE'."
+    echo "Run: databricks configure --profile $PROFILE"
+    exit 1
+fi
+
+CURRENT_USER=$(databricks current-user me --profile "$PROFILE" --output json | jq -r '.userName')
+echo "Current user: $CURRENT_USER"
+
+echo ""
 echo "DBX MetaGen Deployment"
 echo "Target: $TARGET"
 APP_ENV=${TARGET}
 
 create_variables_override_yml() {
-    # Create a variables override file that will be included in the bundle
-    # This is cleaner than passing --var flags and handles complex values better
     echo "Creating variables override file from dev.env..."
     
-    # Check if dev.env exists
     if [ ! -f "dev.env" ]; then
         echo "No dev.env found, creating empty override file"
         cat > variables_override.yml << 'EOF'
@@ -282,7 +288,7 @@ EOF
   workspace_host:
     default: "$DATABRICKS_HOST"
 EOF
-        echo "  ✓ Setting workspace_host from DATABRICKS_HOST"
+        echo "Setting workspace_host from DATABRICKS_HOST"
     fi
     
     # Add permission_groups override if set  
@@ -291,7 +297,7 @@ EOF
   permission_groups:
     default: "$permission_groups"
 EOF
-        echo "  ✓ Setting permission_groups: $permission_groups"
+        echo "Setting permission_groups: $permission_groups"
     fi
     
     # Add permission_users override if set
@@ -300,16 +306,12 @@ EOF
   permission_users:
     default: "$permission_users"
 EOF
-        echo "  ✓ Setting permission_users: $permission_users"
+        echo "Setting permission_users: $permission_users"
     fi
     
-    echo "✅ Created variables_override.yml"
+    echo "Created variables_override.yml"
 }
 
-# Deploy everything
-#create_secret_scope
-
-# Source dev.env properly (handles values with spaces and special characters)
 if [ -f "dev.env" ]; then
     echo "Loading environment variables from dev.env..."
     set -a  # automatically export all variables
@@ -320,47 +322,28 @@ fi
 HOST_URL=$DATABRICKS_HOST
 TARGET=$TARGET
 
-# Create override files from environment variables
 create_variables_override_yml
+sed -i '' '1d' variables_override.yml
+cat variables.yml variables_override.yml > app/variables.yml
+cp variables.yml app/variables.yml
+cp configurations/domain_config.yaml app/domain_config.yaml
 create_deploying_user_yml
 create_app_env_yml
 create_env_overrides_yml
 check_for_deployed_app
 
-if [ "$APP_EXISTS" = false ]; then
-    echo "=== First deployment: Creating app without SP ==="
-    validate_bundle
-    deploy_bundle
-    
-    # Get the newly created SP ID
-    cd ../
-    APP_SP_ID=$(databricks apps get "dbxmetagen-app" --output json 2>/dev/null | jq -r '.id' || echo "")
-    cd dbxmetagen
-    export APP_SP_ID
-    
-    if [ -z "$APP_SP_ID" ] || [ "$APP_SP_ID" = "null" ]; then
-        echo "Error: Failed to get SP ID after first deployment"
-        exit 1
-    fi
-    
-    echo "=== Second deployment: Updating with SP ID: $APP_SP_ID ==="
-    add_service_principal_simple
-    validate_bundle
-    deploy_bundle
-else
-    echo "=== Single deployment: App exists, using SP ID: $APP_SP_ID ==="
-    add_service_principal_simple
-    validate_bundle
-    deploy_bundle
-fi
+echo "=== Deploying bundle ==="
+validate_bundle
+deploy_bundle
 
+echo "=== Starting app ==="
 start_app
-cleanup_temp_yml_files
-
 #Run permissions if requested
 if [ "$RUN_PERMISSIONS" = true ]; then
        run_permissions_setup
 fi
+
+cleanup_temp_yml_files
 
 echo "Deployment complete!"
 echo "Access your app in Databricks workspace > Apps > dbxmetagen-app"
