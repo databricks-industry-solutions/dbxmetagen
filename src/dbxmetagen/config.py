@@ -62,6 +62,10 @@ class MetadataConfig:
             "current_user",
             "use_protected_classification_for_table",
             "domain_config_path",
+            "grant_permissions_after_creation",
+            "permission_groups",
+            "permission_users",
+            "run_id",
         ],
         "yaml_advanced_file_path": "../variables.advanced.yml",
         "yaml_advanced_variable_names": [

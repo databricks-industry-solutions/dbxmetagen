@@ -124,11 +124,7 @@ class UIComponents:
             # TODO: Re-enable OBO authentication when jobs.jobs scope becomes available to non-account admins
             # For now, we only support SPN (Service Principal) deployment type to avoid permission issues.
             # The OBO checkbox will be added back as a deployment-time configuration option.
-            st.info(
-                "🔐 Jobs run with Service Principal permissions. Read grants will be applied after completion."
-            )
-
-            cluster_size = "Medium (2-4 workers)"
+            cluster_size = "serverless"
 
             apply_ddl = st.checkbox(
                 "⚠️ Apply DDL (CAUTION)",
@@ -197,7 +193,6 @@ class UIComponents:
                     st.success(f"✅ Loaded {len(csv_tables)} tables from CSV")
                     return csv_tables
 
-        # Parse and validate tables from text input
         tables = self._parse_and_store_tables(table_names_input)
 
         return tables
@@ -372,6 +367,7 @@ class UIComponents:
                     if len(tables) > 10:
                         st.write(f"... and {len(tables) - 10} more tables")
 
+    # TODO: Delete unused function - "📊 Results" is not in the navigation menu
     def render_results_viewer(self):
         """Render results viewing interface."""
         st.header("📊 Results Viewer")
@@ -503,14 +499,7 @@ class UIComponents:
             # Store selected file info
             if selected_index is not None:
                 st.session_state.selected_review_file = available_files[selected_index]
-                selected_file = available_files[selected_index]
 
-                # Show file details
-                st.info(
-                    f"Selected: **{selected_file['name']}** ({selected_file['type']}, {selected_file['size']/(1024*1024):.1f}MB)"
-                )
-
-        # Load button (only show if file is selected or fallback to auto-select)
         load_button_text = (
             "🔍 Load Selected File"
             if st.session_state.get("selected_review_file")
@@ -632,7 +621,6 @@ class UIComponents:
             return
 
         try:
-            # Generate DDL from edited metadata before saving
             st.info("🔄 Generating DDL from edited metadata...")
             updated_df = self.metadata_processor._generate_ddl_from_comments(df)
             st.session_state.review_metadata = (
@@ -726,6 +714,7 @@ class UIComponents:
                     for error in results["errors"]:
                         st.write(f"• {error}")
 
+    # TODO: Delete unused function - only called by render_results_viewer which is also unused
     def _download_metadata(self, df: pd.DataFrame, format: str):
         """Download metadata in specified format."""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -746,6 +735,7 @@ class UIComponents:
             mime=mime,
         )
 
+    # TODO: Delete unused function
     def _save_config_to_file(self):
         """Save current configuration to YAML file."""
         try:
@@ -764,6 +754,7 @@ class UIComponents:
         except Exception as e:
             st.sidebar.error(f"❌ Failed to save config: {str(e)}")
 
+    # TODO: Delete unused function
     def _load_config_from_file(self, uploaded_file):
         """Load configuration from uploaded YAML file."""
         try:

@@ -17,6 +17,7 @@ from databricks.sdk.service.jobs import (
     JobAccessControlRequest,
     JobPermissionLevel,
 )
+from deprecated import deprecated
 
 logger = logging.getLogger(__name__)
 
@@ -162,54 +163,6 @@ class UserContextManager:
         base_path = UserContextManager.get_bundle_base_path(use_shared)
         return f"{base_path}/.bundle/{bundle_name}/{bundle_target}/files/notebooks/{notebook_name}"
 
-    @staticmethod
-    def get_user_context_info() -> Dict[str, Any]:
-        """
-        Get all user context information for debugging/display.
-
-        Returns:
-            Dict with user context information
-        """
-        context = {}
-
-        try:
-            context["deploying_user"] = UserContextManager.get_deploying_user()
-        except ValueError as e:
-            context["deploying_user"] = f"ERROR: {e}"
-
-        try:
-            context["current_user"] = UserContextManager.get_current_user()
-        except ValueError as e:
-            context["current_user"] = f"ERROR: {e}"
-
-        try:
-            context["job_user_app"] = UserContextManager.get_job_user(use_obo=False)
-        except ValueError as e:
-            context["job_user_app"] = f"ERROR: {e}"
-
-        try:
-            context["job_user_obo"] = UserContextManager.get_job_user(use_obo=True)
-        except ValueError as e:
-            context["job_user_obo"] = f"ERROR: {e}"
-
-        return context
-
-    @staticmethod
-    def create_service_principal_client() -> WorkspaceClient:
-        """Create a WorkspaceClient using service principal credentials"""
-        try:
-            # Service principal authentication is handled automatically by the SDK
-            # when client_id and client_secret are provided to Config
-            config = Config(
-                host=os.getenv("DATABRICKS_HOST", os.getenv("DATABRICKS_HOSTNAME")),
-                client_id=os.getenv("DATABRICKS_CLIENT_ID"),
-                client_secret=os.getenv("DATABRICKS_CLIENT_SECRET"),
-            )
-            return WorkspaceClient(config=config)
-        except Exception as e:
-            logger.error(f"Failed to create service principal client: {e}")
-            raise ValueError(f"Service principal authentication failed: {e}")
-
 
 class AppConfig:
     """Application configuration helper"""
@@ -238,6 +191,7 @@ class AppConfig:
         """Get bundle target environment"""
         return os.getenv("BUNDLE_TARGET", "dev")
 
+    @deprecated
     @staticmethod
     def set_app_permissions_for_job(job_id: str, user_email: str):
         """Set app service principal permissions on a job"""

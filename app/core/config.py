@@ -119,6 +119,26 @@ class ConfigManager:
             except Exception as e:
                 logger.warning(f"Failed to load deploying_user.yml: {e}")
 
+        # Load env_overrides.yml if it exists (created during deployment from dev.env)
+        env_overrides_path = "./env_overrides.yml"
+        if os.path.exists(env_overrides_path):
+            logger.info(f"Loading environment overrides from {env_overrides_path}")
+            try:
+                with open(env_overrides_path, "r") as f:
+                    env_overrides = yaml.safe_load(f)
+                    st_debug(f"Environment overrides: {env_overrides}")
+
+                # Merge environment overrides into main config
+                if env_overrides:
+                    config.update(env_overrides)
+                    logger.info(
+                        f"Successfully merged env_overrides.yml with {len(env_overrides)} overrides"
+                    )
+                    st_debug(f"Applied overrides: {', '.join(env_overrides.keys())}")
+
+            except Exception as e:
+                logger.warning(f"Failed to load env_overrides.yml: {e}")
+
         logger.info(f"Successfully loaded configuration with {len(config)} keys")
         return config
 
@@ -640,27 +660,3 @@ class DatabricksClientManager:
             if token:
                 return token
         return None
-
-    @staticmethod
-    def get_current_user_info() -> Optional[Dict[str, str]]:
-        """
-        Get current user information from session state.
-
-        Returns:
-            dict: User information or None if not available
-        """
-        return st.session_state.get("databricks_user_info")
-
-    @staticmethod
-    def is_client_ready() -> bool:
-        """Check if client is ready for use."""
-        return st.session_state.get("workspace_client") is not None
-
-    @staticmethod
-    def reset_client():
-        """Reset/clear the current client (useful for testing or re-authentication)."""
-        if "workspace_client" in st.session_state:
-            del st.session_state.workspace_client
-        if "databricks_user_info" in st.session_state:
-            del st.session_state.databricks_user_info
-        logger.info("Databricks client reset")

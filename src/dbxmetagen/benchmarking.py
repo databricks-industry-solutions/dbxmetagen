@@ -15,11 +15,13 @@ from pyspark.sql.types import (
 
 
 def setup_benchmarking(config):
-    """Setup benchmarking."""
+    """Setup benchmarking with run_id tagging."""
     if not config.enable_benchmarking:
         return None
 
+    # Enable autologging
     mlflow.openai.autolog()
+
     notebook_path = config.notebook_path
     experiment_name = (
         notebook_path
@@ -30,6 +32,23 @@ def setup_benchmarking(config):
             else None
         )
     )
+
+    # Start an MLflow run if not already active, and set run_id tag
+    if not mlflow.active_run():
+        mlflow.start_run()
+
+    # Set run_id as a tag for filtering traces later
+    if (
+        hasattr(config, "run_id")
+        and config.run_id
+        and str(config.run_id).lower() != "none"
+    ):
+        mlflow.set_tag("run_id", str(config.run_id))
+        mlflow.set_tag("job_id", str(config.job_id) if config.job_id else "unknown")
+        print(f"Benchmarking enabled with run_id: {config.run_id}")
+    else:
+        print("Benchmarking enabled without run_id (will use time-based filtering)")
+
     return experiment_name
 
 
@@ -46,11 +65,26 @@ def log_token_usage(config, experiment_name: str):
             return
 
         client = MlflowClient()
+
+        # Build filter to get traces from this run if run_id is available
+        filter_string = None
+        if (
+            hasattr(config, "run_id")
+            and config.run_id
+            and str(config.run_id).lower() != "none"
+        ):
+            filter_string = f"tags.run_id = '{config.run_id}'"
+            print(f"Filtering traces by run_id: {config.run_id}")
+        else:
+            print("No run_id available, using time-based filtering only")
+
         traces = client.search_traces(
             experiment_ids=[exp.experiment_id],
+            filter_string=filter_string,
             max_results=50,
         )
 
+        # Also filter by time (last hour) as a fallback
         one_hour_ago = datetime.now() - timedelta(minutes=60)
         recent_traces = [
             trace
@@ -88,6 +122,15 @@ def log_token_usage(config, experiment_name: str):
                     completion_tokens = usage.get("completion_tokens")
                     total_tokens = usage.get("total_tokens")
 
+                    # Only add run_id if it's valid (not None or string "None")
+                    run_id_value = None
+                    if (
+                        hasattr(config, "run_id")
+                        and config.run_id
+                        and str(config.run_id).lower() != "none"
+                    ):
+                        run_id_value = str(config.run_id)
+
                     rows.append(
                         {
                             "timestamp": datetime.now(),
@@ -97,7 +140,7 @@ def log_token_usage(config, experiment_name: str):
                             "completion_tokens": completion_tokens,
                             "total_tokens": total_tokens,
                             "job_id": str(config.job_id) if config.job_id else None,
-                            "run_id": str(config.run_id),
+                            "run_id": run_id_value,
                         }
                     )
 
@@ -133,3 +176,7 @@ def log_token_usage(config, experiment_name: str):
 
     except Exception as e:
         print(f"Benchmarking failed: {e}")
+    finally:
+        # End the MLflow run if one was started
+        if mlflow.active_run():
+            mlflow.end_run()

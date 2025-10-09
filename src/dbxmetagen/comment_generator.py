@@ -4,6 +4,7 @@ from src.dbxmetagen.chat_client import ChatClientFactory
 from src.dbxmetagen.config import MetadataConfig
 
 
+# TODO: Delete unused function - CommentGeneratorModel is not used anywhere
 class CommentGeneratorModel(CommentGenerator, mlflow.pyfunc.PythonModel):
     """
     This is a workaround to allow the config to be passed as a MetadataConfig object,

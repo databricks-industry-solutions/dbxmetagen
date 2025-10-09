@@ -78,10 +78,10 @@ def setup_widgets(dbutils):
     )
     dbutils.widgets.dropdown("mode", "comment", ["comment", "pi", "domain"], "Mode")
     dbutils.widgets.text("env", "", "Environment")
-    dbutils.widgets.text("catalog_name", "", "Output Catalog Name")
+    dbutils.widgets.text("catalog_name", "", "Catalog Name (required)")
     dbutils.widgets.text("schema_name", "", "Output Schema Name")
     dbutils.widgets.text("host", "", "Host URL (if different from current)")
-    dbutils.widgets.text("table_names", "", "Table Names (comma-separated)")
+    dbutils.widgets.text("table_names", "", "Table Names - comma-separated (required)")
     dbutils.widgets.text("current_user", "", "Current User")
     dbutils.widgets.text("apply_ddl", "", "Apply DDL")
     dbutils.widgets.text("columns_per_call", "")
@@ -148,7 +148,7 @@ def get_notebook_path(dbutils_instance):
 
 
 def setup_notebook_variables(dbutils):
-    """Setup notebook variables."""
+    """Setup notebook variables and validate required parameters."""
     try:
         job_id = dbutils.widgets.get("job_id")
     except ValueError as e:
@@ -163,6 +163,31 @@ def setup_notebook_variables(dbutils):
     notebook_variables["job_id"] = job_id
     notebook_variables["current_user"] = current_user
     notebook_variables["notebook_path"] = notebook_path
+
+    # Validate required parameters
+    catalog_name = notebook_variables.get("catalog_name", "")
+    table_names = notebook_variables.get("table_names", "")
+
+    # Check if catalog_name is missing or set to 'none'
+    if not catalog_name or catalog_name.lower() in ["none", "null", ""]:
+        raise ValueError(
+            "❌ REQUIRED PARAMETER MISSING: catalog_name\n\n"
+            "Please provide a valid catalog name using the 'Catalog Name (required)' widget.\n"
+            "The catalog name cannot be 'none', 'null', or empty.\n\n"
+            "Example: my_catalog"
+        )
+
+    # Check if table_names is missing or set to 'none'
+    if not table_names or table_names.lower() in ["none", "null", ""]:
+        raise ValueError(
+            "❌ REQUIRED PARAMETER MISSING: table_names\n\n"
+            "Please provide table names using the 'Table Names - comma-separated (required)' widget.\n"
+            "Specify one or more tables in the format: catalog.schema.table\n\n"
+            "Examples:\n"
+            "  - Single table: my_catalog.my_schema.my_table\n"
+            "  - Multiple tables: my_catalog.schema1.table1, my_catalog.schema2.table2"
+        )
+
     return notebook_variables
 
 
@@ -174,7 +199,7 @@ def grant_user_permissions(
     table_name: str = None,
 ):
     """
-    Grant permissions to the current user on objects created by the app service principal.
+    Grant read permissions to a user on created schema, volume, and optionally tables.
 
     Args:
         catalog_name: Catalog name
@@ -224,7 +249,7 @@ def grant_group_permissions(
     table_pattern: str = None,
 ):
     """
-    Grant permissions to a group on objects created by the app service principal.
+    Grant read permissions to a group on created schema, volume, and optionally tables.
     This is more scalable than per-user grants.
 
     Args:

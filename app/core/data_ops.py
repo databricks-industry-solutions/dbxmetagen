@@ -442,6 +442,9 @@ class MetadataProcessor:
                 st.info(f"📋 Job ID: {job_result.get('job_id')}")
                 if job_result.get("run_id"):
                     st.info(f"🔄 Run ID: {job_result.get('run_id')}")
+
+                # Grant permissions to current app user
+                self._grant_permissions_to_app_user()
             else:
                 error_msg = job_result.get("error", "Unknown error triggering job")
                 results["error"] = error_msg
@@ -455,6 +458,39 @@ class MetadataProcessor:
             logger.error(error_msg)
 
         return results
+
+    def _grant_permissions_to_app_user(self):
+        """Grant read permissions to the current app user on created objects."""
+        try:
+            # Import here to avoid circular dependencies
+            import sys
+
+            sys.path.append("../")
+            from src.dbxmetagen.databricks_utils import grant_user_permissions
+
+            catalog_name = st.session_state.config.get("catalog_name")
+            schema_name = st.session_state.config.get("schema_name", "metadata_results")
+            volume_name = st.session_state.config.get(
+                "volume_name", "generated_metadata"
+            )
+            current_user = st.session_state.workspace_client.current_user.me().user_name
+
+            st.info(f"🔐 Granting permissions to {current_user}...")
+            grant_user_permissions(
+                catalog_name=catalog_name,
+                schema_name=schema_name,
+                current_user=current_user,
+                volume_name=volume_name,
+                table_name=None,
+            )
+            st.success(f"✅ Granted read permissions to {current_user}")
+
+        except Exception as e:
+            # Log but don't fail - permissions are nice-to-have
+            logger.warning(f"Could not grant permissions to app user: {e}")
+            st.warning(
+                f"⚠️ Note: Could not automatically grant permissions. You may need to request access manually."
+            )
 
     def _generate_ddl_from_comments(self, df: pd.DataFrame) -> pd.DataFrame:
         """Generate DDL statements from metadata fields (works for both comment and PI metadata)."""
@@ -803,6 +839,7 @@ class MetadataProcessor:
             logger.error(error_msg)
             return {"success": False, "error": error_msg}
 
+    # TODO: Delete unused function
     def review_uploaded_metadata(self, uploaded_file) -> Optional[pd.DataFrame]:
         """Review uploaded metadata file."""
         try:

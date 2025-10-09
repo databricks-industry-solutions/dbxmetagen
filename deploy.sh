@@ -58,7 +58,7 @@ check_for_deployed_app() {
 
 validate_bundle() {
     echo "Validating bundle..."
-    if ! databricks bundle validate; then
+    if ! databricks bundle validate -t "$TARGET"; then
         echo "Error: Bundle validation failed"
         exit 1
     fi
@@ -69,20 +69,21 @@ deploy_bundle() {
     TARGET="${TARGET:-dev}"
     echo "Deploying to $TARGET..."
     
-    DEPLOY_VARS=""
+    # Build var flags only for debug/test modes (simpler boolean values)
+    local DEPLOY_VARS=()
     if [ "$DEBUG_MODE" = true ]; then
-        DEPLOY_VARS="$DEPLOY_VARS --var=debug_mode=true"
+        DEPLOY_VARS+=("--var" "debug_mode=true")
     fi
     if [ "$CREATE_TEST_DATA" = true ]; then
-        DEPLOY_VARS="$DEPLOY_VARS --var=create_test_data=true"
+        DEPLOY_VARS+=("--var" "create_test_data=true")
     fi
     
-    if ! databricks bundle deploy --target "$TARGET" $DEPLOY_VARS; then
-        echo "Error: Bundle deployment failed with target $TARGET and vars $DEPLOY_VARS"
-            exit 1
-        fi
-            
-            export DEPLOY_TARGET="$TARGET"
+    if ! databricks bundle deploy --target "$TARGET" "${DEPLOY_VARS[@]}"; then
+        echo "Error: Bundle deployment failed with target $TARGET"
+        exit 1
+    fi
+    
+    export DEPLOY_TARGET="$TARGET"
     echo "Bundle deployed successfully"
 }
 
@@ -117,6 +118,9 @@ create_deploying_user_yml() {
 # However, it cannot be added to gitignore because asset bundles obeys gitignore.
 deploying_user: "$CURRENT_USER"
 EOF
+    
+    echo "✅ deploying_user.yml created with user: $CURRENT_USER"
+}
 
 create_app_env_yml() {
     echo "Creating app_env.yml with target..."
@@ -127,8 +131,29 @@ app_env: "$APP_ENV"
 EOF
 }
 
+create_env_overrides_yml() {
+    echo "Creating env_overrides.yml with environment-specific values..."
+    cat > app/env_overrides.yml << EOF
+# Auto-generated during deployment from dev.env
+# This file is created by deploy.sh and should not be committed to version control
+EOF
     
-    echo "✅ deploying_user.yml created with user: $CURRENT_USER"
+    # Add workspace_host if set
+    if [ -n "$DATABRICKS_HOST" ]; then
+        echo "workspace_host: \"$DATABRICKS_HOST\"" >> app/env_overrides.yml
+    fi
+    
+    # Add permission_groups if set
+    if [ -n "$permission_groups" ]; then
+        echo "permission_groups: \"$permission_groups\"" >> app/env_overrides.yml
+    fi
+    
+    # Add permission_users if set
+    if [ -n "$permission_users" ]; then
+        echo "permission_users: \"$permission_users\"" >> app/env_overrides.yml
+    fi
+    
+    echo "✅ env_overrides.yml created"
 }
 
 cleanup_temp_yml_files() {
@@ -140,13 +165,13 @@ cleanup_temp_yml_files() {
         echo "Cleaning up app_env.yml..."
         rm app/app_env.yml
     fi
-    if [ -f app/variables.yml ]; then
-        echo "Cleaning up variables.yml..."
-        rm app/variables.yml
+    if [ -f app/env_overrides.yml ]; then
+        echo "Cleaning up env_overrides.yml..."
+        rm app/env_overrides.yml
     fi
-    if [ -f app/app_variables.yml ]; then
-        echo "Cleaning up app_variables.yml..."
-        rm app/app_variables.yml
+    if [ -f variables_override.yml ]; then
+        echo "Cleaning up variables_override.yml..."
+        rm variables_override.yml
     fi
     if [ -f databricks_final.yml ]; then
         echo "Cleaning up databricks_final.yml..."
@@ -164,8 +189,11 @@ start_app() {
 
     # Create deploying_user.yml before deployment
 
-    # Deploy and run the app - the app will read deploying_user.yml directly
-    databricks bundle run -t $TARGET --var="deploying_user=$CURRENT_USER" --var="app_service_principal_application_id=$APP_SP_ID" dbxmetagen_app
+    # Deploy and run the app
+    databricks bundle run -t "$TARGET" \
+        --var "deploying_user=$CURRENT_USER" \
+        --var "app_service_principal_application_id=$APP_SP_ID" \
+        dbxmetagen_app
 }
 
 # Parse arguments
@@ -227,25 +255,76 @@ echo "DBX MetaGen Deployment"
 echo "Target: $TARGET"
 APP_ENV=${TARGET}
 
-copy_variables_to_app() {
-    #Copy variables to app folder if it exists
-    if [ -f "resoures/app_variables.yml" ]; then
-    cp resources/app_variables.yml app/ 2>/dev/null || true
+create_variables_override_yml() {
+    # Create a variables override file that will be included in the bundle
+    # This is cleaner than passing --var flags and handles complex values better
+    echo "Creating variables override file from dev.env..."
+    
+    # Check if dev.env exists
+    if [ ! -f "dev.env" ]; then
+        echo "No dev.env found, creating empty override file"
+        cat > variables_override.yml << 'EOF'
+# Auto-generated during deployment
+variables: {}
+EOF
+        return
     fi
-
-    if [ -f "variables.yml" ]; then
-    cp variables.yml app/ 2>/dev/null || true
+    
+    cat > variables_override.yml << 'EOF'
+# Auto-generated from dev.env during deployment
+# This file overrides default values in variables.yml
+variables:
+EOF
+    
+    # Add workspace_host override if set
+    if [ -n "$DATABRICKS_HOST" ]; then
+        cat >> variables_override.yml << EOF
+  workspace_host:
+    default: "$DATABRICKS_HOST"
+EOF
+        echo "  ✓ Setting workspace_host from DATABRICKS_HOST"
     fi
+    
+    # Add permission_groups override if set  
+    if [ -n "$permission_groups" ]; then
+        cat >> variables_override.yml << EOF
+  permission_groups:
+    default: "$permission_groups"
+EOF
+        echo "  ✓ Setting permission_groups: $permission_groups"
+    fi
+    
+    # Add permission_users override if set
+    if [ -n "$permission_users" ]; then
+        cat >> variables_override.yml << EOF
+  permission_users:
+    default: "$permission_users"
+EOF
+        echo "  ✓ Setting permission_users: $permission_users"
+    fi
+    
+    echo "✅ Created variables_override.yml"
 }
 
 # Deploy everything
 #create_secret_scope
-export $(cat dev.env)
-HOST_URL=$HOST
+
+# Source dev.env properly (handles values with spaces and special characters)
+if [ -f "dev.env" ]; then
+    echo "Loading environment variables from dev.env..."
+    set -a  # automatically export all variables
+    source dev.env
+    set +a  # turn off automatic export
+fi
+
+HOST_URL=$DATABRICKS_HOST
 TARGET=$TARGET
+
+# Create override files from environment variables
+create_variables_override_yml
 create_deploying_user_yml
 create_app_env_yml
-copy_variables_to_app
+create_env_overrides_yml
 check_for_deployed_app
 
 if [ "$APP_EXISTS" = false ]; then

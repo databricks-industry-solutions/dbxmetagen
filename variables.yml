@@ -3,7 +3,7 @@ variables:
     description: Base url host variable. If using asset bundles, will get overridden by target host. Otherwise, use the host here that you want to target. Replace this example host name with a real one, specifically the one you will be using.
     default: None
   catalog_name:
-    description: Target catalog where data, models, and files are stored for this project. If source tables are in this catalog, then table names only have to be scoped with schema and table. If table names are in other catalogs then table names need to be fully scoped. Replace this catalog name with the main catalog you want to run dbxmetagen from.
+    description: "(REQUIRED) Target catalog where data, models, and files are stored for this project. If source tables are in this catalog, then table names only have to be scoped with schema and table. If table names are in other catalogs then table names need to be fully scoped. Replace this catalog name with the main catalog you want to run dbxmetagen from. Cannot be 'none', 'null', or empty."
     default: None
   bundle_target:
     description: Bundle target environment (dev/prod).
@@ -16,7 +16,7 @@ variables:
     default: 5
   disable_medical_information_value:
     description: Set this to true if you want all phi assumptions to be as secure as possible. Under this setting there is no 'medical information' category. Instead, all medical information is converted to PHI. Note that this will mean that any downstream masking you do, and security concerns around your data will be much more stringent.
-    default: true
+    default: false
   allow_data_in_comments:
     description: Whether to allow data in comments. Note that this does not prevent data from being used in the inputs, but is meant to keep data from the outputs. These comments still need to be reviewed, and to be 100% sure, either set allow_data to false, or set your combination of add_metadata, include_existing_table_comment, and other fields to the proper settings.
     default: true
@@ -163,7 +163,7 @@ variables:
     description: Model type
     default: default
   table_names_source:
-    description: Path variable to table names. Don't edit unless you know what you're doing.
+    description: Path variable to table names. Set to 'parameter' when passing table names directly. When using parameter mode, table names cannot be 'none', 'null', or empty.
     default: csv_file_path
   source_file_path:
     description: Path to the source file used in identifying table names.
@@ -195,3 +195,15 @@ variables:
   dry_run:
     description: Whether to perform a dry run. Not yet implemented, though if volume_name is set to null and apply_ddl is set to false this effectively is a dry run. Similarly, just setting apply_ddl to false is in a way a dry run.
     default: false
+  grant_permissions_after_creation:
+    description: Whether to automatically grant read permissions on created schema, volume, and tables to specified groups/users after metadata generation completes. Requires appropriate permissions to grant.
+    default: true
+  permission_groups:
+    description: Comma-separated list of groups to grant read access to created objects (e.g., "data_engineers,analysts,account users"). Leave empty to skip group grants.
+    default: None
+  permission_users:
+    description: Comma-separated list of additional users (emails) to grant read access to created objects (e.g., "user1@company.com,user2@company.com"). The current job user always gets permissions. Leave empty to skip additional user grants.
+    default: None
+  run_id:
+    description: Job run ID for benchmarking and tracing (automatically set by job execution)
+    default: None

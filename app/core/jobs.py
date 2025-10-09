@@ -1,6 +1,8 @@
+"""Jobs module for Databricks job creation and monitoring"""
+
 import os
 import logging
-import time
+import traceback
 from datetime import datetime
 from typing import Dict, Any, List, Tuple, Optional
 
@@ -28,8 +30,6 @@ class JobManager:
     def __init__(self, workspace_client: WorkspaceClient):
         self.workspace_client = workspace_client
 
-    # Step 2 Create & run job triggers this
-    # TODO: Want to modify this to reuse the job if it exists.
     def create_metadata_job(
         self,
         job_name: str,
@@ -47,14 +47,11 @@ class JobManager:
         """
         logger.info(f"Creating metadata job: {job_name}")
 
-        # Step 1: Validate inputs
         self._validate_inputs(job_name, tables, cluster_size, config)
 
-        # Step 2: Prepare job configuration
         job_parameters = self._build_job_parameters(tables, config)
         notebook_path = self._resolve_notebook_path(config)
 
-        # Step 3: Check if job already exists, if so reuse it
         existing_job_id = self._find_job_by_name(job_name)
         if existing_job_id:
             logger.info(
@@ -62,15 +59,12 @@ class JobManager:
             )
             job_id = existing_job_id
         else:
-            # Create new job
             job_id = self._create_job(
                 job_name, notebook_path, job_parameters, user_email
             )
 
-        # Step 4: Start job run
         run_id = self._start_job_run(job_id, job_parameters)
 
-        # Step 5: Add to session state for tracking
         if "job_runs" not in st.session_state:
             st.session_state.job_runs = {}
 
@@ -144,7 +138,6 @@ class JobManager:
 
     # === Private helper methods (small and composable) ===
 
-    # Step 3 Create & run job triggers this, not actually needed because we're using serverless clusters.
     def _validate_inputs(
         self,
         job_name: str,
@@ -185,8 +178,6 @@ class JobManager:
     ) -> Dict[str, str]:
         """Build job parameters for notebook execution"""
 
-        # Get the job execution user (no hardcoded defaults)
-        # If job_user is provided (e.g., for SPN mode), skip the get_job_user() call
         if job_user is None:
             job_user = UserContextManager.get_job_user(
                 use_obo=config.get("use_obo", False)
@@ -278,8 +269,7 @@ class JobManager:
                     f"Resolved notebook path for deploying user {deploying_user}: {path}"
                 )
                 return path
-            else:
-                logger.info("DEPLOY_USER_NAME not set, continuing to fallback")
+            logger.info("DEPLOY_USER_NAME not set, continuing to fallback")
 
         except Exception as e:
             logger.warning(f"Could not resolve deploying user path: {e}")
@@ -409,55 +399,6 @@ class JobManager:
         except Exception as e:
             logger.error(f"Failed to update job permissions for job {job_id}: {e}")
             # Don't raise - job can still run without this
-
-    def _schedule_post_job_grants(self, run_id: int, app_user: str, catalog_name: str):
-        """Schedule post-job permission grants for the app user"""
-        # Store information for post-job processing
-        if "pending_grants" not in st.session_state:
-            st.session_state.pending_grants = {}
-
-        st.session_state.pending_grants[run_id] = {
-            "app_user": app_user,
-            "catalog_name": catalog_name,
-            "scheduled_at": datetime.now().isoformat(),
-        }
-
-        logger.info(f"Scheduled post-job grants for run {run_id}, user {app_user}")
-
-    def _execute_post_job_grants(self, run_id: int):
-        """Execute post-job permission grants using SQL warehouse"""
-        if "pending_grants" not in st.session_state:
-            return
-
-        grant_info = st.session_state.pending_grants.get(run_id)
-        if not grant_info:
-            return
-
-        try:
-            app_user = grant_info["app_user"]
-            catalog_name = grant_info["catalog_name"]
-
-            # TODO: Implement SQL warehouse-based grants
-            # This will use the SQL warehouse that the app has CAN_USE permission on
-            # to grant read access to all schemas and new tables created by the job
-
-            # Grant SELECT on all schemas in the catalog
-            grant_queries = [
-                f"GRANT USE CATALOG ON CATALOG `{catalog_name}` TO `{app_user}`",
-                f"GRANT SELECT ON CATALOG `{catalog_name}` TO `{app_user}`",
-            ]
-
-            # TODO: Execute these grants using SQL warehouse when implementation is ready
-            logger.info(
-                f"Would execute post-job grants for {app_user} on catalog {catalog_name}"
-            )
-            logger.info(f"Grant queries prepared: {grant_queries}")
-
-            # Remove from pending grants
-            del st.session_state.pending_grants[run_id]
-
-        except Exception as e:
-            logger.error(f"Failed to execute post-job grants for run {run_id}: {e}")
 
     def _find_existing_cluster(self) -> Optional[str]:
         """Find an existing cluster that can be reused"""
@@ -602,76 +543,7 @@ class JobManager:
                 f"- Workspace client: {'Yes' if st.session_state.get('workspace_client') else 'No'}"
             )
 
-            import traceback
-
             st.code(traceback.format_exc())
-
-    def create_sync_metadata_job(self, df, filename: str):
-        """Create a job to sync reviewed metadata"""
-        try:
-            from pandas import DataFrame
-
-            job_parameters = {
-                "catalog_name": AppConfig.get_catalog_name(),
-                "schema_name": st.session_state.config.get(
-                    "schema_name", "metadata_results"
-                ),
-                "volume_name": st.session_state.config.get(
-                    "volume_name", "generated_metadata"
-                ),
-                "reviewed_metadata_file": filename,
-                "apply_changes": "true",
-                "job_id": st.session_state.job_id,
-            }
-
-            job_name = (
-                f"sync_reviewed_metadata_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-            )
-
-            # Get notebook path
-            app_name = AppConfig.get_app_name()
-            bundle_target = AppConfig.get_bundle_target()
-            use_shared = st.session_state.config.get(
-                "use_shared_bundle_location", False
-            )
-
-            notebook_path = UserContextManager.get_notebook_path(
-                notebook_name="sync_reviewed_ddl",
-                bundle_name=app_name,
-                bundle_target=bundle_target,
-                use_shared=use_shared,
-            )
-
-            job = self.workspace_client.jobs.create(
-                environments=[
-                    JobEnvironment(
-                        environment_key="default_python",
-                        spec=Environment(environment_version="2"),
-                    )
-                ],
-                performance_target=PerformanceTarget.PERFORMANCE_OPTIMIZED,
-                name=job_name,
-                tasks=[
-                    Task(
-                        task_key="sync_metadata",
-                        notebook_task=NotebookTask(
-                            notebook_path=notebook_path,
-                            base_parameters=job_parameters,
-                        ),
-                        timeout_seconds=14400,
-                    )
-                ],
-                max_concurrent_runs=1,
-            )
-
-            st.success(f"✅ Sync job created! Job ID: {job.job_id}")
-            st.info(
-                "📋 Upload your reviewed metadata file to the volume and then run this job."
-            )
-
-        except Exception as e:
-            st.error(f"❌ Error creating sync job: {str(e)}")
-            logger.error(f"Error creating sync job: {str(e)}")
 
     def create_and_run_sync_job(
         self, filename: str, mode: str = "comment"

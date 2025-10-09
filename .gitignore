@@ -142,3 +142,14 @@ __pycache__/
 dist/
 *.egg-info/
 *.tmp
+
+# Deployment temporary files
+databricks_final.yml
+databricks_final.yml.tmp
+app/deploying_user.yml
+app/app_env.yml
+app/env_overrides.yml
+
+# Environment-specific config (not committed)
+*.env
+!example.env

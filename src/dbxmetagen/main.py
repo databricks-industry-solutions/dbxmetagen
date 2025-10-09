@@ -82,6 +82,102 @@ def initialize_infrastructure(config):
     print("Running generate on...", config.table_names)
 
 
+def grant_permissions_on_created_objects(config):
+    """Grant permissions to groups and users specified in config."""
+    # Check if permission grants are enabled
+    if not getattr(config, "grant_permissions_after_creation", True):
+        print("Permission grants disabled in config")
+        return
+
+    from src.dbxmetagen.databricks_utils import (
+        grant_user_permissions,
+        grant_group_permissions,
+    )
+
+    catalog_name = config.catalog_name
+    schema_name = config.schema_name
+    volume_name = config.volume_name
+
+    try:
+        # Always grant to current user (the one running the job)
+        print(f"Granting permissions to job user: {config.current_user}")
+        grant_user_permissions(
+            catalog_name=catalog_name,
+            schema_name=schema_name,
+            current_user=config.current_user,
+            volume_name=volume_name,
+        )
+        print(f"✓ Granted schema and volume permissions to {config.current_user}")
+
+        # Grant to configured groups
+        if hasattr(config, "permission_groups") and config.permission_groups:
+            # Check if value is None or string "None"
+            if (
+                config.permission_groups is None
+                or str(config.permission_groups).lower() == "none"
+            ):
+                print("No permission groups specified")
+            else:
+                groups = [
+                    g.strip()
+                    for g in str(config.permission_groups).split(",")
+                    if g.strip()
+                ]
+                for group in groups:
+                    print(f"Granting permissions to group: {group}")
+                    grant_group_permissions(
+                        catalog_name=catalog_name,
+                        schema_name=schema_name,
+                        group_name=group,
+                        volume_name=volume_name,
+                    )
+                    print(f"✓ Granted schema and volume permissions to group '{group}'")
+
+        # Grant to configured users
+        if hasattr(config, "permission_users") and config.permission_users:
+            # Check if value is None or string "None"
+            if (
+                config.permission_users is None
+                or str(config.permission_users).lower() == "none"
+            ):
+                print("No additional permission users specified")
+            else:
+                users = [
+                    u.strip()
+                    for u in str(config.permission_users).split(",")
+                    if u.strip()
+                ]
+                for user in users:
+                    print(f"Granting permissions to user: {user}")
+                    grant_user_permissions(
+                        catalog_name=catalog_name,
+                        schema_name=schema_name,
+                        current_user=user,
+                        volume_name=volume_name,
+                    )
+                    print(f"✓ Granted schema and volume permissions to {user}")
+
+        # Only print this message if both are actually None/empty
+        permission_groups_empty = (
+            not hasattr(config, "permission_groups")
+            or config.permission_groups is None
+            or str(config.permission_groups).lower() in ["none", ""]
+        )
+        permission_users_empty = (
+            not hasattr(config, "permission_users")
+            or config.permission_users is None
+            or str(config.permission_users).lower() in ["none", ""]
+        )
+
+        if permission_groups_empty and permission_users_empty:
+            print("No additional groups or users specified for permissions")
+
+    except Exception as e:
+        print(f"⚠️ Warning: Could not grant some permissions: {e}")
+        print("This is non-fatal - metadata generation completed successfully")
+        # Don't fail the job if permissions fail
+
+
 def cleanup_resources(config, spark):
     """Cleanup temporary tables and control tables."""
     temp_table = config.get_temp_metadata_log_table_name()
@@ -115,6 +211,35 @@ def main(kwargs):
     spark = SparkSession.builder.getOrCreate()
     dbr_version = get_dbr_version()
 
+    # Validate required parameters early
+    catalog_name = kwargs.get("catalog_name", "")
+    table_names = kwargs.get("table_names", "")
+
+    if not catalog_name or str(catalog_name).lower() in ["none", "null", ""]:
+        raise ValueError(
+            "REQUIRED PARAMETER MISSING: catalog_name\n\n"
+            "Please provide a valid catalog name.\n"
+            "The catalog name cannot be 'none', 'null', or empty.\n\n"
+            "Set it via:\n"
+            "  - Notebook widget: 'Catalog Name (required)'\n"
+            "  - Job parameter: catalog_name\n"
+            "  - variables.yml: catalog_name.default\n\n"
+            "Example: my_catalog"
+        )
+
+    if not table_names or str(table_names).lower() in ["none", "null", ""]:
+        raise ValueError(
+            "REQUIRED PARAMETER MISSING: table_names\n\n"
+            "Please provide table names to process.\n"
+            "Specify one or more tables in the format: catalog.schema.table\n\n"
+            "Set it via:\n"
+            "  - Notebook widget: 'Table Names - comma-separated (required)'\n"
+            "  - Job parameter: table_names\n\n"
+            "Examples:\n"
+            "  - Single table: my_catalog.my_schema.my_table\n"
+            "  - Multiple tables: my_catalog.schema1.table1, my_catalog.schema2.table2"
+        )
+
     # Validate override CSV
     if not validate_csv("./metadata_overrides.csv"):
         raise ValueError(
@@ -138,6 +263,9 @@ def main(kwargs):
 
     # Generate metadata
     generate_and_persist_metadata(config)
+
+    # Grant permissions on created objects
+    grant_permissions_on_created_objects(config)
 
     # Cleanup resources
     cleanup_resources(config, spark)
