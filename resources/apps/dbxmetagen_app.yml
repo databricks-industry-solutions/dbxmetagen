@@ -6,6 +6,18 @@ resources:
 
       source_code_path: ../../app
 
+      # config:
+      #   - name: "app_name"
+      #     value: ${var.app_name}
+      #   - name: "app_service_principal_id"
+      #     value: ${resources.apps.dbxmetagen_app.service_principal_id}
+      #   - name: "dbxmetagen_metadata_job"
+      #     value: ${var.metadata_generator_job}
+      #   - name: "sync_ddl_job"
+      #     value: ${var.sync_ddl_job}
+      #   - name: "app_deployment_type"
+      #     value: ${var.app_deployment_type}
+
       resources:
         - name: "dbxmetagen_metadata_job"
           job:

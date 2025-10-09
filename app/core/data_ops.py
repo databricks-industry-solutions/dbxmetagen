@@ -14,6 +14,17 @@ from typing import List, Tuple, Dict, Any, Optional
 logger = logging.getLogger(__name__)
 
 
+def st_debug(message: str):
+    """
+    Display debug messages only when debug mode is enabled.
+    Uses logger instead of UI to keep interface clean.
+    """
+    logger.debug(message)
+    # Only show in UI if debug mode is explicitly enabled
+    if st.session_state.get("config", {}).get("debug_mode", False):
+        st.caption(f"🔍 {message}")
+
+
 class DataOperations:
     """Handles data processing operations for metadata generation."""
 
@@ -203,26 +214,92 @@ class MetadataProcessor:
     def get_available_files_from_volume(
         self, catalog: str, schema: str, volume: str
     ) -> List[Dict[str, str]]:
-        """Get list of available metadata files from Unity Catalog volume."""
+        """
+        Get list of available metadata files from Unity Catalog volume.
+        First checks current date, then searches previous dates if needed.
+        """
         if not st.session_state.get("workspace_client"):
             st.error("❌ Workspace client not initialized")
             return []
 
         try:
+            import re
+
             # Build path
             current_user = st.session_state.workspace_client.current_user.me().user_name
             sanitized_user = (
                 current_user.replace("@", "_").replace(".", "_").replace("-", "_")
             )
             current_date = str(datetime.now().strftime("%Y%m%d"))
-            full_directory_path = f"/Volumes/{catalog}/{schema}/{volume}/{sanitized_user}/{current_date}/exportable_run_logs/"
 
+            # Try current date first
+            full_directory_path = f"/Volumes/{catalog}/{schema}/{volume}/{sanitized_user}/{current_date}/exportable_run_logs/"
             st.info(f"🔍 Looking for files in: {full_directory_path}")
+
+            metadata_files = self._get_files_from_directory(full_directory_path)
+
+            # If no files found in current date, search previous dates
+            if not metadata_files:
+                st.info("No files found for current date, searching previous dates...")
+                user_base_path = (
+                    f"/Volumes/{catalog}/{schema}/{volume}/{sanitized_user}"
+                )
+
+                try:
+                    # List all directories in user base path
+                    user_dirs = list(
+                        st.session_state.workspace_client.files.list_directory_contents(
+                            user_base_path
+                        )
+                    )
+
+                    # Find all date directories (YYYYMMDD format)
+                    date_dirs = []
+                    for d in user_dirs:
+                        if d.is_directory and re.match(r"^\d{8}$", d.name):
+                            date_dirs.append(d.name)
+
+                    # Sort dates descending (most recent first)
+                    date_dirs.sort(reverse=True)
+
+                    # Search each date directory until we find files
+                    for date_dir in date_dirs:
+                        search_path = (
+                            f"{user_base_path}/{date_dir}/exportable_run_logs/"
+                        )
+                        st.info(f"🔍 Checking: {search_path}")
+
+                        metadata_files = self._get_files_from_directory(search_path)
+                        if metadata_files:
+                            st.success(
+                                f"✅ Found {len(metadata_files)} file(s) from {date_dir}"
+                            )
+                            break
+
+                    if not metadata_files:
+                        st.warning("No metadata files found in any date directory")
+
+                except Exception as e:
+                    st.warning(f"Could not search previous dates: {str(e)}")
+
+            return metadata_files
+
+        except Exception as e:
+            st.error(f"❌ Error accessing volume directory: {str(e)}")
+            return []
+
+    def _get_files_from_directory(self, directory_path: str) -> List[Dict[str, str]]:
+        """
+        Helper method to get metadata files from a specific directory.
+        Returns empty list if directory doesn't exist or has no files.
+        """
+        try:
+            import re
 
             # List files
             files = list(
                 st.session_state.workspace_client.files.list_directory_contents(
-                    full_directory_path
+                    directory_path
                 )
             )
 
@@ -230,16 +307,13 @@ class MetadataProcessor:
             metadata_files = []
             for f in files:
                 if f.name.endswith((".tsv", ".xlsx")):
-                    # Parse creation time if available
                     file_info = {
                         "name": f.name,
-                        "path": f"{full_directory_path}{f.name}",
+                        "path": f"{directory_path}{f.name}",
                         "size": getattr(f, "file_size", 0),
                         "type": "Excel" if f.name.endswith(".xlsx") else "TSV",
                     }
                     # Try to extract timestamp from filename for sorting
-                    import re
-
                     timestamp_match = re.search(r"(\d{8}_\d{6})", f.name)
                     if timestamp_match:
                         file_info["timestamp"] = timestamp_match.group(1)
@@ -253,8 +327,8 @@ class MetadataProcessor:
 
             return metadata_files
 
-        except Exception as e:
-            st.error(f"❌ Error accessing volume directory: {str(e)}")
+        except Exception:
+            # Directory doesn't exist or can't be accessed
             return []
 
     def load_metadata_from_volume(
@@ -295,7 +369,7 @@ class MetadataProcessor:
                     if isinstance(content_bytes, bytes)
                     else str(content_bytes)
                 )
-                st.info("✅ Used read() method")
+                st_debug("✅ Used read() method")
             elif hasattr(raw_content, "contents"):
                 # If it has contents attribute, extract from there
                 actual_content = raw_content.contents
@@ -306,28 +380,28 @@ class MetadataProcessor:
                         if isinstance(content_bytes, bytes)
                         else str(content_bytes)
                     )
-                    st.info("✅ Used contents.read() method")
+                    st_debug("✅ Used contents.read() method")
                 else:
                     content = str(actual_content)
-                    st.info("✅ Used str(contents)")
+                    st_debug("✅ Used str(contents)")
             else:
                 # Last resort - try context manager or convert to string
                 try:
                     with raw_content as stream:
                         content = stream.read().decode("utf-8")
-                    st.info("✅ Used context manager")
+                    st_debug("✅ Used context manager")
                 except Exception:
                     content = str(raw_content)
-                    st.info("⚠️ Fallback to string conversion")
+                    st_debug("⚠️ Fallback to string conversion")
 
             if not content:
                 raise Exception("Failed to extract content from DownloadResponse")
 
-            st.info(f"✅ Successfully read {len(content)} characters")
+            st_debug(f"✅ Successfully read {len(content)} characters")
 
             # Parse TSV
             df = pd.read_csv(StringIO(content), sep="\t")
-            st.info(
+            st_debug(
                 f"🔍 Loaded DataFrame: {df.shape} shape, columns: {list(df.columns)}"
             )
 
@@ -342,7 +416,6 @@ class MetadataProcessor:
             st.error(f"❌ Error loading metadata: {str(e)}")
             logger.error(f"Error in load_metadata_from_volume: {str(e)}")
 
-            # Show debug info for directories that don't exist
             try:
                 # Try parent directories to help debug
                 path_parts = (
@@ -356,7 +429,7 @@ class MetadataProcessor:
                                 parent_dir
                             )
                         )
-                        st.info(
+                        st_debug(
                             f"✅ Found parent directory: {parent_dir} with {len(parent_files)} items"
                         )
                         break
@@ -395,13 +468,11 @@ class MetadataProcessor:
         results = {"success": False, "applied": 0, "failed": 0, "errors": []}
 
         try:
-            # Debug: Show DataFrame structure (only in debug mode)
             debug_mode = st.session_state.config.get("debug_mode", False)
             if debug_mode:
-                st.info(f"🔍 DataFrame columns: {list(df.columns)}")
-                st.info(f"🔍 DataFrame shape: {df.shape}")
+                st_debug(f"🔍 DataFrame columns: {list(df.columns)}")
+                st_debug(f"🔍 DataFrame shape: {df.shape}")
 
-            # Generate DDL from edited metadata first
             st.info("🔄 Generating DDL from edited metadata...")
             updated_df = self._generate_ddl_from_comments(df)
 
@@ -434,6 +505,9 @@ class MetadataProcessor:
                 st.info(f"📋 Job ID: {job_result.get('job_id')}")
                 if job_result.get("run_id"):
                     st.info(f"🔄 Run ID: {job_result.get('run_id')}")
+
+                # Grant permissions to current app user
+                self._grant_permissions_to_app_user()
             else:
                 error_msg = job_result.get("error", "Unknown error triggering job")
                 results["error"] = error_msg
@@ -448,229 +522,211 @@ class MetadataProcessor:
 
         return results
 
+    def _grant_permissions_to_app_user(self):
+        """Grant read permissions to the current app user on created objects."""
+        try:
+            # Import here to avoid circular dependencies
+            import sys
+
+            sys.path.append("../")
+            from src.dbxmetagen.databricks_utils import grant_user_permissions
+
+            catalog_name = st.session_state.config.get("catalog_name")
+            schema_name = st.session_state.config.get("schema_name", "metadata_results")
+            volume_name = st.session_state.config.get(
+                "volume_name", "generated_metadata"
+            )
+            current_user = st.session_state.workspace_client.current_user.me().user_name
+
+            st.info(f"🔐 Granting permissions to {current_user}...")
+            grant_user_permissions(
+                catalog_name=catalog_name,
+                schema_name=schema_name,
+                current_user=current_user,
+                volume_name=volume_name,
+                table_name=None,
+            )
+            st.success(f"✅ Granted read permissions to {current_user}")
+
+        except Exception as e:
+            # Log but don't fail - permissions are nice-to-have
+            logger.warning(f"Could not grant permissions to app user: {e}")
+            st.warning(
+                f"⚠️ Note: Could not automatically grant permissions. You may need to request access manually."
+            )
+
     def _generate_ddl_from_comments(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Generate DDL statements from metadata fields (works for both comment and PI metadata)."""
+        """
+        Generate DDL statements from metadata fields.
+        Routes to appropriate handler based on metadata type (PI, domain, or comment).
+        """
         updated_df = df.copy()
 
-        # Determine if this is PI or comment metadata
+        # Determine metadata type
         is_pi_metadata = "classification" in df.columns and "type" in df.columns
+        is_domain_metadata = "domain" in df.columns and not is_pi_metadata
 
-        # Determine column names (handle different possible column name variations)
+        # Route to appropriate handler
+        if is_pi_metadata:
+            st.info("🔍 Detected PI metadata - generating tags DDL")
+            return self._generate_ddl_for_pi_metadata(updated_df)
+        elif is_domain_metadata:
+            st.info("🔍 Detected domain metadata - generating tags DDL")
+            return self._generate_ddl_for_domain_metadata(updated_df)
+        else:
+            st.info("🔍 Detected comment metadata - generating comment DDL")
+            return self._generate_ddl_for_comment_metadata(updated_df)
+
+    def _generate_ddl_for_pi_metadata(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Generate DDL for PI metadata using data_classification and data_subclassification tags.
+        The backend outputs classification/type directly from processing - use them as-is.
+        """
+        updated_df = df.copy()
+
+        # Determine column names
         table_col = "table_name" if "table_name" in df.columns else "table"
         column_col = "column_name" if "column_name" in df.columns else "column"
 
-        # Handle different metadata types
-        if is_pi_metadata:
-            st.info(
-                "🔍 Detected PI metadata - generating DDL with data_classification and data_subclassification tags"
-            )
-            # For PI metadata, use classification and type columns
-            metadata_cols = ["classification", "type"]
-            desc_cols = []
-            pii_cols = []
-        else:
-            st.info(
-                "🔍 Detected comment metadata - generating DDL from description and PII fields"
-            )
-            # For comment metadata, use traditional approach
-            desc_cols = [
-                col
-                for col in df.columns
-                if col.lower() in ["description", "column_content"]
-            ]
-            pii_cols = [col for col in df.columns if "pii" in col.lower()]
-            metadata_cols = desc_cols + pii_cols
+        for index, row in updated_df.iterrows():
+            table_name = row[table_col]
+            column_name = row[column_col]
+            classification = row.get("classification", "")
+            type_value = row.get("type", "")
 
-        st.info(
-            f"🔍 Generating DDL - table: {table_col}, column: {column_col}, metadata_cols: {metadata_cols}"
-        )
+            # Check if this is table-level (no column)
+            is_table_level = pd.isna(column_name) or str(
+                column_name
+            ).lower().strip() in ["nan", "null", ""]
+
+            # Skip if no valid classification
+            if not classification or str(classification).strip().lower() in [
+                "none",
+                "null",
+                "",
+            ]:
+                continue
+
+            # Use classification and type directly - backend already formats them correctly
+            tags = []
+
+            if pd.notna(classification) and str(classification).strip():
+                classification_val = str(classification).strip()
+                tags.append(f"'data_classification' = '{classification_val}'")
+
+            if (
+                pd.notna(type_value)
+                and str(type_value).strip()
+                and str(type_value).strip().lower() != "none"
+            ):
+                type_val = str(type_value).strip()
+                tags.append(f"'data_subclassification' = '{type_val}'")
+
+            if tags:
+                tags_string = ", ".join(tags)
+                if is_table_level:
+                    ddl_statement = f"ALTER TABLE {table_name} SET TAGS ({tags_string})"
+                else:
+                    ddl_statement = f"ALTER TABLE {table_name} ALTER COLUMN `{column_name}` SET TAGS ({tags_string})"
+
+                updated_df.at[index, "ddl"] = ddl_statement
+
+        return updated_df
+
+    def _generate_ddl_for_domain_metadata(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Generate DDL for domain metadata using domain/subdomain tags."""
+        updated_df = df.copy()
+
+        table_col = "table_name" if "table_name" in df.columns else "table"
+
+        for index, row in updated_df.iterrows():
+            table_name = row[table_col]
+            domain = row.get("domain", "")
+            subdomain = row.get("subdomain", "")
+
+            # Only generate DDL if we have a valid domain
+            if not domain or str(domain).strip().lower() in ["none", "null", ""]:
+                continue
+
+            tags = []
+            domain_val = str(domain).strip()
+            tags.append(f"'domain' = '{domain_val}'")
+
+            # Add subdomain if present and valid
+            if (
+                subdomain
+                and str(subdomain).strip()
+                and str(subdomain).strip().lower() not in ["none", "null", ""]
+            ):
+                subdomain_val = str(subdomain).strip()
+                tags.append(f"'subdomain' = '{subdomain_val}'")
+
+            # Domain is always table-level
+            tags_string = ", ".join(tags)
+            ddl_statement = f"ALTER TABLE {table_name} SET TAGS ({tags_string})"
+            updated_df.at[index, "ddl"] = ddl_statement
+
+        return updated_df
+
+    def _generate_ddl_for_comment_metadata(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Generate DDL for comment metadata using ALTER TABLE...COMMENT statements."""
+        updated_df = df.copy()
+
+        table_col = "table_name" if "table_name" in df.columns else "table"
+        column_col = "column_name" if "column_name" in df.columns else "column"
+
+        # Find description and PII columns
+        desc_cols = [
+            col
+            for col in df.columns
+            if col.lower() in ["description", "column_content"]
+        ]
+        pii_cols = [col for col in df.columns if "pii" in col.lower()]
 
         for index, row in updated_df.iterrows():
             table_name = row[table_col]
             column_name = row[column_col]
 
-            # Check if this is a table-level comment (column_name is null/nan)
-            is_table_comment = pd.isna(column_name) or str(
+            # Check if table-level
+            is_table_level = pd.isna(column_name) or str(
                 column_name
             ).lower().strip() in ["nan", "null", ""]
 
-            # Build DDL based on metadata type
-            if is_pi_metadata:
-                # Handle PI metadata - generate tags DDL
-                classification = row.get("classification", "")
-                type_value = row.get("type", "")
+            comment_parts = []
 
-                # Only generate DDL if we have meaningful PI classification
+            # Add description
+            for desc_col in desc_cols:
                 if (
-                    pd.notna(classification)
-                    and str(classification).strip()
-                    and str(classification).strip().lower() not in ["none", "null", ""]
-                ) or (
-                    pd.notna(type_value)
-                    and str(type_value).strip()
-                    and str(type_value).strip().lower() not in ["none", "null", ""]
+                    desc_col in row
+                    and pd.notna(row[desc_col])
+                    and str(row[desc_col]).strip()
                 ):
-                    # Build tags for PI classification using proper tag structure
-                    tags = []
+                    comment_parts.append(str(row[desc_col]).strip())
 
-                    # Map classification to data_classification tag
-                    if pd.notna(classification) and str(classification).strip():
-                        classification_val = str(classification).strip()
-                        # Map to 'Protected' or 'None' for data_classification
-                        # Any PI-related classification should be 'Protected'
-                        protected_values = [
-                            "protected",
-                            "pii",
-                            "phi",
-                            "pci",
-                            "sensitive",
-                            "confidential",
-                            "personal",
-                            "medical",
-                            "medical_information",
-                        ]
-                        if classification_val.lower() in protected_values:
-                            data_classification = "Protected"
-                        else:
-                            data_classification = "None"
-                        tags.append(f"'data_classification' = '{data_classification}'")
+            # Add PII classification
+            for pii_col in pii_cols:
+                if (
+                    pii_col in row
+                    and pd.notna(row[pii_col])
+                    and str(row[pii_col]).strip()
+                ):
+                    pii_value = str(row[pii_col]).strip()
+                    comment_parts.append(f"PII: {pii_value}")
 
-                    # Map type to data_subclassification tag
-                    if pd.notna(type_value) and str(type_value).strip():
-                        type_val = str(type_value).strip()
-                        # Ensure valid data_subclassification values
-                        valid_subclassifications = [
-                            "None",
-                            "PII",
-                            "PCI",
-                            "PHI",
-                            "Medical Information",
-                        ]
+            if comment_parts:
+                combined_comment = " | ".join(comment_parts)
+                escaped_comment = combined_comment.replace(
+                    "'", "''"
+                )  # Escape single quotes
 
-                        # Normalize common variations
-                        type_mapping = {
-                            "medical_information": "Medical Information",
-                            "medical": "Medical Information",
-                            "healthcare": "PHI",
-                            "health": "PHI",
-                            "payment": "PCI",
-                            "credit_card": "PCI",
-                            "personal": "PII",
-                            "personally_identifiable": "PII",
-                        }
-
-                        # Check direct match first
-                        if type_val in valid_subclassifications:
-                            tags.append(f"'data_subclassification' = '{type_val}'")
-                        # Check case-insensitive match
-                        elif type_val.upper() in [
-                            s.upper() for s in valid_subclassifications
-                        ]:
-                            matched_val = next(
-                                s
-                                for s in valid_subclassifications
-                                if s.upper() == type_val.upper()
-                            )
-                            tags.append(f"'data_subclassification' = '{matched_val}'")
-                        # Check mapping
-                        elif type_val.lower() in type_mapping:
-                            mapped_val = type_mapping[type_val.lower()]
-                            tags.append(f"'data_subclassification' = '{mapped_val}'")
-                        else:
-                            # For non-standard values, still include them
-                            tags.append(f"'data_subclassification' = '{type_val}'")
-
-                    if tags:
-                        tags_string = ", ".join(tags)
-                        if is_table_comment:
-                            # Table-level tags DDL
-                            ddl_statement = (
-                                f"ALTER TABLE {table_name} SET TAGS ({tags_string})"
-                            )
-                            st.info(
-                                f"🔍 Generated TABLE TAGS DDL for {table_name}: {ddl_statement}"
-                            )
-                        else:
-                            # Column-level tags DDL
-                            ddl_statement = f"ALTER TABLE {table_name} ALTER COLUMN `{column_name}` SET TAGS ({tags_string})"
-                            st.info(
-                                f"🔍 Generated COLUMN TAGS DDL for {table_name}.{column_name}: {ddl_statement}"
-                            )
-
-                        updated_df.at[index, "ddl"] = ddl_statement
-                    else:
-                        target = (
-                            table_name
-                            if is_table_comment
-                            else f"{table_name}.{column_name}"
-                        )
-                        st.info(
-                            f"⚠️ No valid PI classification for {target} - skipping DDL generation"
-                        )
+                if is_table_level:
+                    ddl_statement = (
+                        f"ALTER TABLE {table_name} COMMENT '{escaped_comment}'"
+                    )
                 else:
-                    target = (
-                        table_name
-                        if is_table_comment
-                        else f"{table_name}.{column_name}"
-                    )
-                    st.info(
-                        f"⚠️ No PI classification for {target} - skipping DDL generation"
-                    )
-            else:
-                # Handle comment metadata - original logic
-                comment_parts = []
+                    ddl_statement = f"ALTER TABLE {table_name} ALTER COLUMN `{column_name}` COMMENT '{escaped_comment}'"
 
-                # Apply Description if it exists and is not empty
-                for desc_col in desc_cols:
-                    if (
-                        desc_col in row
-                        and pd.notna(row[desc_col])
-                        and str(row[desc_col]).strip()
-                    ):
-                        comment_parts.append(str(row[desc_col]).strip())
-
-                # Add PII classification if available and not empty
-                for pii_col in pii_cols:
-                    if (
-                        pii_col in row
-                        and pd.notna(row[pii_col])
-                        and str(row[pii_col]).strip()
-                    ):
-                        pii_value = str(row[pii_col]).strip()
-                        comment_parts.append(f"PII: {pii_value}")
-
-                # Create the combined comment and generate DDL
-                if comment_parts:
-                    combined_comment = " | ".join(comment_parts)
-                    escaped_comment = combined_comment.replace(
-                        "'", "''"
-                    )  # Escape single quotes
-
-                    if is_table_comment:
-                        # Table-level comment DDL
-                        ddl_statement = (
-                            f"ALTER TABLE {table_name} COMMENT '{escaped_comment}'"
-                        )
-                        st.info(
-                            f"🔍 Generated TABLE DDL for {table_name}: {ddl_statement}"
-                        )
-                    else:
-                        # Column-level comment DDL
-                        ddl_statement = f"ALTER TABLE {table_name} ALTER COLUMN `{column_name}` COMMENT '{escaped_comment}'"
-                        st.info(
-                            f"🔍 Generated COLUMN DDL for {table_name}.{column_name}: {ddl_statement}"
-                        )
-
-                    updated_df.at[index, "ddl"] = ddl_statement
-                else:
-                    target = (
-                        table_name
-                        if is_table_comment
-                        else f"{table_name}.{column_name}"
-                    )
-                    st.info(
-                        f"⚠️ No comment content for {target} - skipping DDL generation"
-                    )
+                updated_df.at[index, "ddl"] = ddl_statement
 
         return updated_df
 
@@ -724,7 +780,6 @@ class MetadataProcessor:
             logger.error(f"Error in _save_updated_metadata_for_job: {str(e)}")
             return None
 
-    # STep 10: this is what gets triggered when the user clicks the "Apply Metadata" button
     def _trigger_ddl_sync_job(self, filename: str, job_manager) -> Dict[str, Any]:
         """Trigger a Databricks job to execute DDL using sync_reviewed_ddl.py notebook."""
         try:
@@ -734,9 +789,8 @@ class MetadataProcessor:
                 "mode": "comment",  # Default mode, could be made configurable
             }
 
-            st.info(f"🔧 Job parameters: {job_params}")
+            st_debug(f"🔧 Job parameters: {job_params}")
 
-            # Create and run the DDL sync job
             try:
                 job_id, run_id = job_manager.create_and_run_sync_job(
                     filename=filename, mode="comment"
@@ -746,7 +800,7 @@ class MetadataProcessor:
                     "success": True,
                     "job_id": job_id,
                     "run_id": run_id,
-                    "message": f"DDL sync job triggered successfully",
+                    "message": "DDL sync job triggered successfully",
                 }
 
             except AttributeError:
@@ -761,10 +815,10 @@ class MetadataProcessor:
             logger.error(error_msg)
             return {"success": False, "error": error_msg}
 
+    # TODO: Delete unused function
     def review_uploaded_metadata(self, uploaded_file) -> Optional[pd.DataFrame]:
         """Review uploaded metadata file."""
         try:
-            # Read the uploaded file
             content = uploaded_file.read()
 
             # Handle both string and bytes
@@ -774,7 +828,8 @@ class MetadataProcessor:
             # Try to parse as TSV first, then CSV
             try:
                 df = pd.read_csv(StringIO(content), sep="\t")
-            except:
+            except Exception as e:
+                logger.error(f"❌ Failed to parse TSV file: {str(e)}")
                 df = pd.read_csv(StringIO(content))
 
             # Validate required columns

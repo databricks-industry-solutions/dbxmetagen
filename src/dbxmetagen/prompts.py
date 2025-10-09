@@ -16,6 +16,12 @@ logger = logging.getLogger(__name__)
 
 
 class Prompt(ABC):
+    """Prompt class for generating prompts for the database metadata classifier.
+
+    Args:
+        ABC: Abstract base class for prompts.
+    """
+
     def __init__(self, config: Any, df: DataFrame, full_table_name: str):
         """
         Initialize the Prompt class.
@@ -42,14 +48,7 @@ class Prompt(ABC):
         Returns:
             Dict[str, Any]: Dictionary containing table and column contents.
         """
-        pass
-
-    @abstractmethod
-    def add_metadata_to_comment_input(self) -> None:
-        """
-        Add metadata to the comment input.
-        """
-        pass
+        raise NotImplementedError("Subclasses must implement this method")
 
     def calculate_cell_length(self, pandas_df) -> pd.DataFrame:
         """
@@ -82,7 +81,7 @@ class Prompt(ABC):
 
         if truncated_count > 0:
             print(f"{truncated_count} cells were truncated.")
-            logger.info(f"{truncated_count} cells were truncated.")
+            logger.info("%s cells were truncated.", truncated_count)
 
         return pandas_df
 
@@ -107,6 +106,7 @@ class Prompt(ABC):
         mode_handlers = {
             "pi": self._filter_pi_mode,
             "comment": self._filter_comment_mode,
+            "domain": self._filter_domain_mode,
         }
 
         handler = mode_handlers.get(self.config.mode)
@@ -119,6 +119,10 @@ class Prompt(ABC):
 
     def _filter_pi_mode(self, df: DataFrame) -> DataFrame:
         """Filter metadata for PI mode (remove NULL values)"""
+        return df.filter(df["info_value"] != "NULL")
+
+    def _filter_domain_mode(self, df: DataFrame) -> DataFrame:
+        """Filter metadata for domain mode (remove NULL values)"""
         return df.filter(df["info_value"] != "NULL")
 
     def _filter_comment_mode(self, df: DataFrame) -> DataFrame:
@@ -154,45 +158,34 @@ class Prompt(ABC):
         """
         column_metadata_dict = {}
         for column_name in self.prompt_content["column_contents"]["columns"]:
-            print(f"[DEBUG] Extracting metadata for column: {column_name}")
 
             extended_metadata_df = self.spark.sql(
                 f"DESCRIBE EXTENDED {self.full_table_name} `{column_name}`"
             )
 
-            # Sample a few rows to see what the data looks like
-            try:
-                sample_rows = extended_metadata_df.limit(3).collect()
-                print(f"[DEBUG] Sample DESCRIBE EXTENDED rows for {column_name}:")
-                for i, row in enumerate(sample_rows):
-                    print(f"  Row {i}: {dict(row.asDict())}")
-            except Exception as e:
-                print(f"[DEBUG] Error sampling DESCRIBE EXTENDED rows: {e}")
+            # try:
+            #     sample_rows = extended_metadata_df.limit(3).collect()
+            #     for i, row in enumerate(sample_rows):
+            #         print(f"  Row {i}: {dict(row.asDict())}")
+            # except Exception as e:
+            #     print(f"[DEBUG] Error sampling DESCRIBE EXTENDED rows: {e}")
 
             filtered_metadata_df = self.filter_extended_metadata_fields(
                 extended_metadata_df
             )
 
-            # Check if the filtered DataFrame is empty or has problematic data
-            try:
-                filtered_sample = filtered_metadata_df.limit(3).collect()
-                print(f"[DEBUG] Sample filtered rows for {column_name}:")
-                for i, row in enumerate(filtered_sample):
-                    print(f"  Row {i}: {dict(row.asDict())}")
-            except Exception as e:
-                print(f"[DEBUG] Error sampling filtered rows: {e}")
+            # # Check if the filtered DataFrame is empty or has problematic data
+            # try:
+            #     filtered_sample = filtered_metadata_df.limit(3).collect()
+            #     for i, row in enumerate(filtered_sample):
+            #         print(f"  Row {i}: {dict(row.asDict())}")
+            # except Exception as e:
+            #     print(f"[DEBUG] Error sampling filtered rows: {e}")
 
             try:
                 column_metadata = filtered_metadata_df.toPandas().to_dict(orient="list")
-                print(f"[DEBUG] Pandas conversion successful for {column_name}")
-                print(f"[DEBUG] Column metadata keys: {list(column_metadata.keys())}")
-                print(
-                    f"[DEBUG] Column metadata sample: {str(column_metadata)[:200]}..."
-                )
             except Exception as e:
-                print(f"[DEBUG] ERROR in pandas conversion for {column_name}: {e}")
-                # Try to get more details about the error
-                print(f"[DEBUG] DataFrame dtypes: {filtered_metadata_df.dtypes}")
+                print(f"ERROR in pandas conversion for {column_name}: {e}")
                 raise
 
             combined_metadata = dict(
@@ -202,7 +195,6 @@ class Prompt(ABC):
                 column_name, combined_metadata
             )
             column_metadata_dict[column_name] = combined_metadata
-            print(f"[DEBUG] Successfully processed metadata for column: {column_name}")
 
         return column_metadata_dict
 
@@ -397,6 +389,10 @@ class Prompt(ABC):
 
 
 class CommentPrompt(Prompt):
+    """
+    Prompt for generating metadata for tables and columns in Databricks.
+    """
+
     def convert_to_comment_input(self) -> Dict[str, Any]:
         pandas_df = self.df.toPandas()
         if self.config.limit_prompt_based_on_cell_len:
@@ -409,7 +405,13 @@ class CommentPrompt(Prompt):
         }
 
     def create_prompt_template(self) -> Dict[str, Any]:
-        print("Creating comment prompt template...")
+        """
+        Create a prompt template for generating metadata for tables and columns in Databricks.
+
+        Returns:
+            Dict[str, Any]: Dictionary containing the prompt template.
+        """
+        logger.debug("Creating comment prompt template...")
         content = self.prompt_content
         acro_content = self.config.acro_content
         return {
@@ -482,6 +484,10 @@ class CommentPrompt(Prompt):
 
 
 class PIPrompt(Prompt):
+    """
+    Prompt for generating metadata for tables and columns in Databricks.
+    """
+
     def convert_to_comment_input(self) -> Dict[str, Any]:
         pandas_df = self.df.toPandas()
         if self.config.limit_prompt_based_on_cell_len:
@@ -494,6 +500,13 @@ class PIPrompt(Prompt):
         }
 
     def create_prompt_template(self) -> Dict[str, Any]:
+        """
+        Create a prompt template for generating metadata for tables and columns in Databricks.
+
+        Returns:
+            Dict[str, Any]: Dictionary containing the prompt template.
+        """
+        logger.debug("Creating PI prompt template...")
         content = self.prompt_content
         if self.config.include_deterministic_pi:
             self.deterministic_results = detect_pi(self.config, self.prompt_content)
@@ -562,7 +575,7 @@ class PIPrompt(Prompt):
                 },
                 {
                     "role": "user",
-                    "content": f"""{content}.
+                    "content": f"""{content} + {acro_content}.
                     \n
                     ###
                     Deterministic results from Presidio or other outside checks to consider to help check your outputs are here: {self.deterministic_results}.
@@ -676,6 +689,36 @@ class CommentNoDataPrompt(Prompt):
         }
 
 
+class DomainPrompt(Prompt):
+    """
+    Prompt for domain classification of tables.
+    Domain classification is table-level only and uses metadata + column info.
+    """
+
+    def convert_to_comment_input(self) -> Dict[str, Any]:
+        """
+        Convert DataFrame to a dictionary format for domain classification.
+        Includes table name, column names, and sample data.
+        """
+        pandas_df = self.df.toPandas()
+        if self.config.limit_prompt_based_on_cell_len:
+            truncated_pandas_df = self.calculate_cell_length(pandas_df)
+        else:
+            truncated_pandas_df = pandas_df
+        return {
+            "table_name": self.full_table_name,
+            "column_contents": truncated_pandas_df.to_dict(orient="split"),
+        }
+
+    def create_prompt_template(self) -> Dict[str, Any]:
+        """
+        Create prompt template for domain classification.
+        This is used to prepare data for the agent, not as a chat template.
+        """
+        content = self.prompt_content
+        return {"domain": content}
+
+
 class PromptFactory:
     """
     Factory class for creating prompts.
@@ -696,9 +739,10 @@ class PromptFactory:
         """
         if config.mode == "comment" and config.allow_data_in_comments:
             return CommentPrompt(config, df, full_table_name)
-        elif config.mode == "comment":
+        if config.mode == "comment":
             return CommentNoDataPrompt(config, df, full_table_name)
-        elif config.mode == "pi":
+        if config.mode == "pi":
             return PIPrompt(config, df, full_table_name)
-        else:
-            raise ValueError("Invalid mode. Use 'pi' or 'comment'.")
+        if config.mode == "domain":
+            return DomainPrompt(config, df, full_table_name)
+        raise ValueError("Invalid mode. Use 'pi', 'comment', or 'domain'.")

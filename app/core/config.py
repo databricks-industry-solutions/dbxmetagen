@@ -8,6 +8,20 @@ import streamlit as st
 import yaml
 import os
 import logging
+
+
+def st_debug(message: str):
+    """
+    Display debug messages only when debug mode is enabled.
+    Uses logger instead of UI to keep interface clean.
+    """
+    logger = logging.getLogger(__name__)
+    logger.debug(message)
+    # Only show in UI if debug mode is explicitly enabled
+    if st.session_state.get("config", {}).get("debug_mode", False):
+        st.caption(f"🔍 {message}")
+
+
 from typing import Dict, Any, Optional, List
 from databricks.sdk import WorkspaceClient
 
@@ -87,7 +101,7 @@ class ConfigManager:
             try:
                 with open(deploying_user_path, "r") as f:
                     deploying_config = yaml.safe_load(f)
-                    st.info(f"Deploying user config: {deploying_config}")
+                    st_debug(f"Deploying user config: {deploying_config}")
 
                 # Merge deploying user config into main config
                 if deploying_config:
@@ -95,7 +109,7 @@ class ConfigManager:
                     logger.info(
                         f"Successfully merged deploying_user.yml - deploying_user: {deploying_config.get('deploying_user', 'unknown')}"
                     )
-                    st.info(
+                    st_debug(
                         f"Successfully merged deploying_user.yml - deploying_user: {config.get('deploying_user', 'unknown')}"
                     )
                     st.session_state.deploying_user = config.get(
@@ -104,6 +118,26 @@ class ConfigManager:
 
             except Exception as e:
                 logger.warning(f"Failed to load deploying_user.yml: {e}")
+
+        # Load env_overrides.yml if it exists (created during deployment from dev.env)
+        env_overrides_path = "./env_overrides.yml"
+        if os.path.exists(env_overrides_path):
+            logger.info(f"Loading environment overrides from {env_overrides_path}")
+            try:
+                with open(env_overrides_path, "r") as f:
+                    env_overrides = yaml.safe_load(f)
+                    st_debug(f"Environment overrides: {env_overrides}")
+
+                # Merge environment overrides into main config
+                if env_overrides:
+                    config.update(env_overrides)
+                    logger.info(
+                        f"Successfully merged env_overrides.yml with {len(env_overrides)} overrides"
+                    )
+                    st_debug(f"Applied overrides: {', '.join(env_overrides.keys())}")
+
+            except Exception as e:
+                logger.warning(f"Failed to load env_overrides.yml: {e}")
 
         logger.info(f"Successfully loaded configuration with {len(config)} keys")
         return config
@@ -118,7 +152,7 @@ class ConfigManager:
             logger.info(
                 f"Successfully merged deploying_user.yml - deploying_user: {deploying_config.get('deploying_user', 'unknown')}"
             )
-            st.info(
+            st_debug(
                 f"Successfully merged deploying_user.yml - deploying_user: {config.get('deploying_user', 'unknown')}"
             )
             st.session_state.deploying_user = config.get("deploying_user", "unknown")
@@ -559,11 +593,9 @@ class DatabricksClientManager:
         headers = session_info.headers
         logger.info(f"✅ Found headers dictionary with {len(headers)} headers")
 
-        # Log all headers for debugging (be careful not to log sensitive data)
         logger.info("🔍 Available headers:")
         for header_name, header_value in headers.items():
             if "token" in header_name.lower() or "auth" in header_name.lower():
-                # Log auth-related headers with partial values
                 value_preview = (
                     f"{header_value[:10]}..."
                     if len(header_value) > 10
@@ -571,7 +603,6 @@ class DatabricksClientManager:
                 )
                 logger.info(f"  - {header_name}: {value_preview}")
             else:
-                # Log other headers normally (but truncate if very long)
                 value_preview = (
                     header_value
                     if len(header_value) < 50
@@ -629,27 +660,3 @@ class DatabricksClientManager:
             if token:
                 return token
         return None
-
-    @staticmethod
-    def get_current_user_info() -> Optional[Dict[str, str]]:
-        """
-        Get current user information from session state.
-
-        Returns:
-            dict: User information or None if not available
-        """
-        return st.session_state.get("databricks_user_info")
-
-    @staticmethod
-    def is_client_ready() -> bool:
-        """Check if client is ready for use."""
-        return st.session_state.get("workspace_client") is not None
-
-    @staticmethod
-    def reset_client():
-        """Reset/clear the current client (useful for testing or re-authentication)."""
-        if "workspace_client" in st.session_state:
-            del st.session_state.workspace_client
-        if "databricks_user_info" in st.session_state:
-            del st.session_state.databricks_user_info
-        logger.info("Databricks client reset")

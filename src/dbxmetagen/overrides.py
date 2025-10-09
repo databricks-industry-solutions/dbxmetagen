@@ -147,8 +147,59 @@ def apply_overrides_with_loop(df, csv_dict, config):
             except ValueError as e:
                 print(f"Skipping row due to: {e}")
 
+    elif config.mode == "domain":
+        # Domain mode overrides work at table level only
+        for row in csv_dict:
+            catalog = row.get("catalog")
+            schema = row.get("schema")
+            table = row.get("table")
+            domain_override = row.get("domain")
+            subdomain_override = row.get("subdomain")
+
+            # Domain overrides are table-level, so column should be None or empty
+            if not table:
+                print("Skipping row: table name is required for domain overrides")
+                continue
+
+            # Skip if both overrides are None/null
+            if (domain_override is None or pd.isna(domain_override)) and (
+                subdomain_override is None or pd.isna(subdomain_override)
+            ):
+                print(f"Skipping null/blank domain override for table: {table}")
+                continue
+
+            # Convert to strings
+            if domain_override is not None and not pd.isna(domain_override):
+                domain_override = str(domain_override)
+            if subdomain_override is not None and not pd.isna(subdomain_override):
+                subdomain_override = str(subdomain_override)
+
+            try:
+                # Build condition for table-level override (no column)
+                condition = build_condition(df, table, None, schema, catalog)
+
+                # Apply domain override
+                if domain_override is not None and not pd.isna(domain_override):
+                    df = df.withColumn(
+                        "domain",
+                        when(condition, lit(domain_override).cast("string")).otherwise(
+                            col("domain")
+                        ),
+                    )
+
+                # Apply subdomain override
+                if subdomain_override is not None and not pd.isna(subdomain_override):
+                    df = df.withColumn(
+                        "subdomain",
+                        when(
+                            condition, lit(subdomain_override).cast("string")
+                        ).otherwise(col("subdomain")),
+                    )
+            except ValueError as e:
+                print(f"Skipping row due to: {e}")
+
     else:
-        raise ValueError("Invalid mode provided.")
+        raise ValueError("Invalid mode provided. Must be 'pi', 'comment', or 'domain'.")
 
     return df
 
@@ -206,14 +257,15 @@ def build_condition(df, table, column, schema, catalog):
     """
     Builds the condition for the DataFrame filtering.
 
-    Only two parameter combinations are supported:
+    Supported parameter combinations:
     1. Only column name is provided (all other parameters are None or empty)
     2. All parameters (catalog, schema, table, column) are provided
+    3. Table-level: (catalog, schema, table) provided, column is None (for domain mode)
 
     Args:
         df (DataFrame): The input DataFrame.
         table (str): The table name.
-        column (str): The column name.
+        column (str): The column name (can be None for table-level conditions).
         schema (str): The schema name.
         catalog (str): The catalog name.
 
@@ -227,11 +279,14 @@ def build_condition(df, table, column, schema, catalog):
     schema = schema if schema else None
     catalog = catalog if catalog else None
 
-    if not column:
-        raise ValueError("At least one parameter (column) must be provided.")
-
+    # Pattern 1: Only column name (column-level override across all tables)
     only_column = column and not any([table, schema, catalog])
+
+    # Pattern 2: All params including column (specific column in specific table)
     all_params = all([column, table, schema, catalog])
+
+    # Pattern 3: Table-level (no column, for domain mode)
+    table_level = all([table, schema, catalog]) and not column
 
     if only_column:
         return col("column_name") == column
@@ -245,9 +300,22 @@ def build_condition(df, table, column, schema, catalog):
                 col("catalog") == catalog,
             ],
         )
+    elif table_level:
+        # Table-level condition (for domain mode)
+        return reduce(
+            lambda x, y: x & y,
+            [
+                col("table_name") == table,
+                col("schema") == schema,
+                col("catalog") == catalog,
+            ],
+        )
     else:
         raise ValueError(
-            "Unsupported parameter combination. Either provide all parameters (catalog, schema, table, column) or only column name."
+            "Unsupported parameter combination. Supported patterns:\n"
+            "1. Only column name (column-level override across all tables)\n"
+            "2. All parameters (catalog, schema, table, column)\n"
+            "3. Table-level (catalog, schema, table) with column=None"
         )
 
 

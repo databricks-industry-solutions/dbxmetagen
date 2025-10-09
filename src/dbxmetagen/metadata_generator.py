@@ -105,10 +105,6 @@ class CommentGenerator(MetadataGenerator):
             max_tokens=self.config.max_tokens,
             temperature=self.config.temperature,
         )
-        if hasattr(self.chat_response, "usage"):
-            print(f"[DEBUG] chat_response: {self.chat_response.usage}")
-        else:
-            print(f"[DEBUG] chat_response: {dir(self.chat_response)}")
         return self.chat_response
 
     def get_comment_response(
@@ -249,20 +245,13 @@ class PIIdentifier(MetadataGenerator):
         max_retries: int = 0,
     ) -> Tuple[PIResponse, Dict[str, Any]]:
         try:
-            print(
-                f"[LLM CALL] Making LLM call (attempt {retries + 1}/{max_retries + 1})"
-            )
             chat_response = self._get_chat_completion(
                 config, prompt_content, model, max_tokens, temperature
             )
-            print(f"[LLM CALL] LLM call succeeded")
             response_payload = None
             return chat_response, response_payload
         except (ValidationError, json.JSONDecodeError, AttributeError, ValueError) as e:
             if retries < max_retries:
-                print(
-                    f"[RETRY] Attempt {retries + 1} failed, retrying due to: {type(e).__name__}: {str(e)[:200]}"
-                )
                 return self.get_pi_response(
                     config,
                     content,
@@ -274,13 +263,9 @@ class PIIdentifier(MetadataGenerator):
                     max_retries,
                 )
             else:
-                print(
-                    f"[RETRY EXHAUSTED] Validation error after {max_retries} attempts"
+                raise ValueError(
+                    f"Validation error after %s attempts: %s", max_retries, e
                 )
-                print(
-                    f"[RETRY EXHAUSTED] Final error: {type(e).__name__}: {str(e)[:500]}"
-                )
-                raise ValueError(f"Validation error after {max_retries} attempts: {e}")
 
     def _get_chat_completion(
         self,
@@ -296,7 +281,6 @@ class PIIdentifier(MetadataGenerator):
             return self.predict_chat_response(prompt_content)
         except Exception as e:
             if retries < max_retries:
-                print(f"[RETRY] Error: {e}. Retrying in {2 ** retries} seconds...")
                 exponential_backoff(retries)
                 return self._get_chat_completion(
                     config,

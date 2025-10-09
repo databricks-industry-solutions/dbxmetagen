@@ -102,23 +102,29 @@ class UIComponents:
 
             mode = st.selectbox(
                 "Processing Mode",
-                options=["comment", "pi"],
-                index=["comment", "pi"].index(
-                    st.session_state.config.get("mode", "pi")
+                options=["comment", "pi", "domain"],
+                index=["comment", "pi", "domain"].index(
+                    st.session_state.config.get("mode", "comment")
                 ),
-                help="What to generate: comments or PII classification.",
+                help="What to generate: comments, PII classification, or domain.",
             )
+
+            # Show domain config path input if domain mode is selected
+            if mode == "domain":
+                domain_config_path = st.text_input(
+                    "Domain Config Path",
+                    value=st.session_state.config.get(
+                        "domain_config_path", "configurations/domain_config.yaml"
+                    ),
+                    help="Path to the domain configuration YAML file",
+                )
 
             st.subheader("🚀 Execution Settings")
 
             # TODO: Re-enable OBO authentication when jobs.jobs scope becomes available to non-account admins
             # For now, we only support SPN (Service Principal) deployment type to avoid permission issues.
             # The OBO checkbox will be added back as a deployment-time configuration option.
-            st.info(
-                "🔐 Jobs run with Service Principal permissions. Read grants will be applied after completion."
-            )
-
-            cluster_size = "Medium (2-4 workers)"
+            cluster_size = "serverless"
 
             apply_ddl = st.checkbox(
                 "⚠️ Apply DDL (CAUTION)",
@@ -128,18 +134,22 @@ class UIComponents:
 
             if st.form_submit_button("💾 Save Configuration", type="primary"):
                 # Update session state config
-                st.session_state.config.update(
-                    {
-                        "catalog_name": catalog_name,
-                        "schema_name": schema_name,
-                        "allow_data": allow_data,
-                        "sample_size": sample_size,
-                        "columns_per_call": columns_per_call,
-                        "mode": mode,
-                        "cluster_size": cluster_size,
-                        "apply_ddl": apply_ddl,
-                    }
-                )
+                config_update = {
+                    "catalog_name": catalog_name,
+                    "schema_name": schema_name,
+                    "allow_data": allow_data,
+                    "sample_size": sample_size,
+                    "columns_per_call": columns_per_call,
+                    "mode": mode,
+                    "cluster_size": cluster_size,
+                    "apply_ddl": apply_ddl,
+                }
+
+                # Add domain config path if in domain mode
+                if mode == "domain":
+                    config_update["domain_config_path"] = domain_config_path
+
+                st.session_state.config.update(config_update)
 
                 st.sidebar.success("Configuration saved!")
 
@@ -183,7 +193,6 @@ class UIComponents:
                     st.success(f"✅ Loaded {len(csv_tables)} tables from CSV")
                     return csv_tables
 
-        # Parse and validate tables from text input
         tables = self._parse_and_store_tables(table_names_input)
 
         return tables
@@ -358,6 +367,7 @@ class UIComponents:
                     if len(tables) > 10:
                         st.write(f"... and {len(tables) - 10} more tables")
 
+    # TODO: Delete unused function - "📊 Results" is not in the navigation menu
     def render_results_viewer(self):
         """Render results viewing interface."""
         st.header("📊 Results Viewer")
@@ -489,14 +499,7 @@ class UIComponents:
             # Store selected file info
             if selected_index is not None:
                 st.session_state.selected_review_file = available_files[selected_index]
-                selected_file = available_files[selected_index]
 
-                # Show file details
-                st.info(
-                    f"Selected: **{selected_file['name']}** ({selected_file['type']}, {selected_file['size']/(1024*1024):.1f}MB)"
-                )
-
-        # Load button (only show if file is selected or fallback to auto-select)
         load_button_text = (
             "🔍 Load Selected File"
             if st.session_state.get("selected_review_file")
@@ -528,30 +531,76 @@ class UIComponents:
             st.success(f"✅ Loaded {len(df)} metadata records for review")
 
             st.subheader("📋 Edit Metadata")
-            st.info(
-                "💡 Edit the Description and PII Classification fields. DDL will be auto-generated when you save or apply changes."
+
+            # Detect metadata type for appropriate instructions
+            has_domain = "domain" in df.columns
+            has_pii = (
+                "pii_classification" in df.columns or "classification" in df.columns
             )
 
-            # Use data_editor for editing capabilities - focus on comment editing
+            if has_domain:
+                st.info(
+                    "💡 Edit the Domain and Subdomain fields. DDL will be auto-generated when you save or apply changes."
+                )
+            elif has_pii:
+                st.info(
+                    "💡 Edit the PII Classification fields. DDL will be auto-generated when you save or apply changes."
+                )
+            else:
+                st.info(
+                    "💡 Edit the Description and PII Classification fields. DDL will be auto-generated when you save or apply changes."
+                )
+
+            # Build column config based on available columns
+            column_config = {
+                "table": st.column_config.TextColumn("Table", disabled=True),
+                "table_name": st.column_config.TextColumn("Table", disabled=True),
+                "column": st.column_config.TextColumn("Column", disabled=True),
+                "column_name": st.column_config.TextColumn("Column", disabled=True),
+                "ddl": st.column_config.TextColumn(
+                    "DDL (Auto-generated)", disabled=True, width="large"
+                ),
+            }
+
+            # Add editable columns based on metadata type
+            if "column_content" in df.columns:
+                column_config["column_content"] = st.column_config.TextColumn(
+                    "Description"
+                )
+            if "pii_classification" in df.columns:
+                column_config["pii_classification"] = st.column_config.TextColumn(
+                    "PII Classification"
+                )
+            if "classification" in df.columns:
+                column_config["classification"] = st.column_config.TextColumn(
+                    "Classification"
+                )
+            if "type" in df.columns:
+                column_config["type"] = st.column_config.TextColumn("Type")
+            if "domain" in df.columns:
+                column_config["domain"] = st.column_config.TextColumn("Domain")
+            if "subdomain" in df.columns:
+                column_config["subdomain"] = st.column_config.TextColumn("Subdomain")
+            if "recommended_domain" in df.columns:
+                column_config["recommended_domain"] = st.column_config.TextColumn(
+                    "Recommended Domain", disabled=True
+                )
+            if "recommended_subdomain" in df.columns:
+                column_config["recommended_subdomain"] = st.column_config.TextColumn(
+                    "Recommended Subdomain", disabled=True
+                )
+
+            # Use data_editor for editing capabilities
             edited_df = st.data_editor(
                 df,
                 use_container_width=True,
                 hide_index=True,
-                column_config={
-                    "table": st.column_config.TextColumn("Table", disabled=True),
-                    "column": st.column_config.TextColumn("Column", disabled=True),
-                    "column_content": st.column_config.TextColumn("Description"),
-                    "pii_classification": st.column_config.TextColumn(
-                        "PII Classification"
-                    ),
-                    "ddl": st.column_config.TextColumn(
-                        "DDL (Auto-generated)", disabled=True, width="large"
-                    ),
-                },
+                key="metadata_editor",
+                column_config=column_config,
             )
 
-            # Store the edited data
-            st.session_state.review_metadata = edited_df
+            # Don't update session state here - let it update only on save/apply
+            # This prevents conflicts with Streamlit's rerun cycle
 
             st.subheader("💾 Save & Apply Changes")
 
@@ -572,7 +621,6 @@ class UIComponents:
             return
 
         try:
-            # Generate DDL from edited metadata before saving
             st.info("🔄 Generating DDL from edited metadata...")
             updated_df = self.metadata_processor._generate_ddl_from_comments(df)
             st.session_state.review_metadata = (
@@ -666,6 +714,7 @@ class UIComponents:
                     for error in results["errors"]:
                         st.write(f"• {error}")
 
+    # TODO: Delete unused function - only called by render_results_viewer which is also unused
     def _download_metadata(self, df: pd.DataFrame, format: str):
         """Download metadata in specified format."""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -686,6 +735,7 @@ class UIComponents:
             mime=mime,
         )
 
+    # TODO: Delete unused function
     def _save_config_to_file(self):
         """Save current configuration to YAML file."""
         try:
@@ -704,6 +754,7 @@ class UIComponents:
         except Exception as e:
             st.sidebar.error(f"❌ Failed to save config: {str(e)}")
 
+    # TODO: Delete unused function
     def _load_config_from_file(self, uploaded_file):
         """Load configuration from uploaded YAML file."""
         try:
@@ -741,7 +792,11 @@ class UIComponents:
             - **Catalog Name**: Target catalog for storing metadata results
             - **Allow Data**: Whether to include actual data samples in LLM processing
             - **Sample Size**: Number of data rows to sample per column (0 = no data sampling)
-            - **Mode**: Choose between generating comments, identifying PII, or both
+            - **Mode**: Choose between:
+              - **comment**: Generate descriptive comments for tables and columns
+              - **pi**: Identify and classify personally identifiable information (PII/PHI/PCI)
+              - **domain**: Classify tables into business domains (e.g., finance, sales, HR)
+            - **Domain Config Path**: (Domain mode only) Path to domain configuration YAML file
             - **Apply DDL**: ⚠️ **WARNING** - This will directly modify your tables
             """
             )

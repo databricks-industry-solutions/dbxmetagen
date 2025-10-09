@@ -1,11 +1,11 @@
 """Processing utilities shared among modules."""
 
 import os
+import shutil
 import re
 from abc import ABC
 from datetime import datetime
 from typing import List, Dict, Any, Tuple
-import traceback
 import logging
 import mlflow
 import nest_asyncio
@@ -47,14 +47,12 @@ from openai.types.chat.chat_completion import (
 )
 import pandas as pd
 
-# MLflow ChatResponse was removed in newer versions, use conditional import
 try:
     from mlflow.types.llm import TokenUsageStats, ChatResponse
 except ImportError:
     TokenUsageStats = None
     ChatResponse = None
-
-
+from grpc._channel import _InactiveRpcError, _MultiThreadedRendezvous
 from src.dbxmetagen.config import MetadataConfig
 from src.dbxmetagen.sampling import determine_sampling_ratio
 from src.dbxmetagen.prompts import Prompt, PIPrompt, CommentPrompt, PromptFactory
@@ -77,7 +75,7 @@ from src.dbxmetagen.overrides import (
     get_join_conditions,
 )
 from src.dbxmetagen.user_utils import sanitize_user_identifier, get_current_user
-
+from src.dbxmetagen.domain_classifier import load_domain_config, classify_table_domain
 
 logging.basicConfig(
     level=logging.WARNING,
@@ -85,6 +83,36 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger(__name__)
+
+# Suppress verbose PySpark Connect logging to prevent GRPC stacktraces in notebooks
+logging.getLogger("pyspark.sql.connect.client.logging").setLevel(logging.CRITICAL)
+
+
+def extract_concise_error(error: Exception) -> str:
+    """
+    Extract a concise error message from an exception, removing JVM stacktraces.
+    For tag policy violations, extracts just the relevant tag information.
+
+    Args:
+        error: The exception to extract the message from
+
+    Returns:
+        A concise error message string
+    """
+    error_str = str(error)
+    if "INVALID_PARAMETER_VALUE" in error_str and "Tag value" in error_str:
+        match = re.search(
+            r"Tag value (\S+) is not an allowed value for tag policy key (\S+)",
+            error_str,
+        )
+        if match:
+            tag_value, tag_key = match.groups()
+            return f"Tag policy violation: '{tag_key}' cannot be set to '{tag_value}'"
+    return (
+        error_str.split("JVM stacktrace:")[0].strip()
+        if "JVM stacktrace:" in error_str
+        else error_str
+    )
 
 
 class DDLGenerator(ABC):
@@ -159,15 +187,13 @@ def chunk_df(df: DataFrame, columns_per_call: int = 5) -> List[DataFrame]:
     """
     col_names = df.columns
     n_cols = count_df_columns(df)
-    num_chunks = (
-        n_cols + columns_per_call - 1
-    ) // columns_per_call  # Calculate the number of chunks
+    num_chunks = (n_cols + columns_per_call - 1) // columns_per_call
 
     dataframes = []
     for i in range(num_chunks):
         chunk_col_names = col_names[i * columns_per_call : (i + 1) * columns_per_call]
-        chunk_df = df.select(chunk_col_names)
-        dataframes.append(chunk_df)
+        chunk_df_var = df.select(chunk_col_names)
+        dataframes.append(chunk_df_var)
 
     return dataframes
 
@@ -192,9 +218,6 @@ def sample_df(df: DataFrame, nrows: int, sample_size: int = 5) -> DataFrame:
         DataFrame: A DataFrame with columns to generate metadata for.
     """
     if nrows < sample_size:
-        print(
-            f"Not enough rows for a proper sample. Continuing with inference with {nrows} rows..."
-        )
         return df.limit(sample_size)
 
     larger_sample = sample_size * 100
@@ -223,7 +246,6 @@ def sample_df(df: DataFrame, nrows: int, sample_size: int = 5) -> DataFrame:
 
 
 def append_table_row(
-    config: MetadataConfig,
     rows: List[Row],
     full_table_name: str,
     response: Dict[str, Any],
@@ -248,6 +270,53 @@ def append_table_row(
         column_content=str(
             response.table
         ),  # Ensure string type for serverless compatibility
+    )
+    rows.append(row)
+    return rows
+
+
+def append_domain_table_row(
+    rows: List[Row],
+    full_table_name: str,
+    domain_result: Dict[str, Any],
+    tokenized_full_table_name: str,
+) -> List[Row]:
+    """
+    Appends a domain classification row to the list of rows.
+
+    Args:
+        rows (List[Row]): The list of rows to append to.
+        full_table_name (str): The full name of the table.
+        domain_result (Dict[str, Any]): The domain classification result.
+        tokenized_full_table_name (str): The tokenized table name.
+
+    Returns:
+        List[Row]: The updated list of rows with the new domain row appended.
+    """
+    domain_comment = (
+        f"Domain: {domain_result['domain']}"
+        + (
+            f" | Subdomain: {domain_result['subdomain']}"
+            if domain_result.get("subdomain")
+            else ""
+        )
+        + f" | Confidence: {domain_result['confidence']:.2f}"
+        + f" | Reasoning: {domain_result['reasoning']}"
+    )
+
+    row = Row(
+        table=full_table_name,
+        tokenized_table=tokenized_full_table_name,
+        ddl_type="table",
+        column_name="None",
+        column_content=domain_comment,
+        domain=domain_result["domain"],
+        subdomain=domain_result.get("subdomain", "None"),
+        confidence=float(domain_result["confidence"]),
+        recommended_domain=domain_result.get("recommended_domain", "None"),
+        recommended_subdomain=domain_result.get("recommended_subdomain", "None"),
+        reasoning=domain_result["reasoning"],
+        metadata_summary=domain_result["metadata_summary"],
     )
     rows.append(row)
     return rows
@@ -314,6 +383,7 @@ def define_row_schema(config):
     Returns:
         StructType: The schema for the row DataFrame.
     """
+    df_schema = None
     if config.mode == "pi":
         df_schema = StructType(
             [
@@ -336,6 +406,23 @@ def define_row_schema(config):
                 StructField("column_content", StringType(), True),
             ]
         )
+    elif config.mode == "domain":
+        df_schema = StructType(
+            [
+                StructField("table", StringType(), True),
+                StructField("tokenized_table", StringType(), True),
+                StructField("ddl_type", StringType(), True),
+                StructField("column_name", StringType(), True),
+                StructField("column_content", StringType(), True),
+                StructField("domain", StringType(), True),
+                StructField("subdomain", StringType(), True),
+                StructField("confidence", StringType(), True),
+                StructField("recommended_domain", StringType(), True),
+                StructField("recommended_subdomain", StringType(), True),
+                StructField("reasoning", StringType(), True),
+                StructField("metadata_summary", StringType(), True),
+            ]
+        )
     return df_schema
 
 
@@ -354,22 +441,17 @@ def rows_to_df(rows: List[Row], config: MetadataConfig) -> DataFrame:
         return None
     else:
         schema = define_row_schema(config)
-
-        # CRITICAL FIX: Force schema compliance by creating DF with schema
-        # This prevents Spark from doing its own type inference that causes DOUBLE issues
         try:
             df = spark.createDataFrame(rows, schema)
-
         except Exception as e:
-            print(f"[DEBUG] ERROR in DataFrame creation: {e}")
-            print(f"[DEBUG] Attempting to analyze problematic row data...")
+            logger.debug("ERROR in DataFrame creation: %s", e)
 
+            # TODO: evaluate for performance improvement
             for i, row in enumerate(rows):
                 try:
                     test_df = spark.createDataFrame([row], schema)
                 except Exception as row_error:
-                    print(f"  Row {i}: ERROR - {row_error}")
-                    print(f"    Problematic row data: {dict(row.asDict())}")
+                    print(f"Problematic row data: {dict(row.asDict())}")
             raise
 
         if config.mode == "comment" and "column_content" in df.columns:
@@ -390,7 +472,6 @@ def add_ddl_to_column_comment_df(df: DataFrame, ddl_column: str) -> DataFrame:
     Returns:
         DataFrame: The updated DataFrame with the DDL statement added.
     """
-    # CRITICAL SERVERLESS FIX: Ensure column_content stays string when adding DDL
     if "column_content" in df.columns:
         df = df.withColumn("column_content", col("column_content").cast("string"))
 
@@ -399,7 +480,6 @@ def add_ddl_to_column_comment_df(df: DataFrame, ddl_column: str) -> DataFrame:
         generate_column_comment_ddl("tokenized_table", "column_name", "column_content"),
     )
 
-    # Double-check after DDL addition
     if "column_content" in result_df.columns:
         result_df = result_df.withColumn(
             "column_content", col("column_content").cast("string")
@@ -427,7 +507,6 @@ def add_ddl_to_table_comment_df(df: DataFrame, ddl_column: str) -> DataFrame:
             ddl_column, generate_table_comment_ddl("tokenized_table", "column_content")
         )
 
-        # Double-check after table DDL addition
         if "column_content" in result_df.columns:
 
             result_df = result_df.withColumn(
@@ -482,8 +561,6 @@ def df_to_sql_file(
     df: DataFrame,
     catalog_name: str,
     dest_schema_name: str,
-    table_name: str,
-    volume_name: str,
     sql_column: str,
     filename: str,
 ) -> str:
@@ -506,13 +583,8 @@ def df_to_sql_file(
     selected_column_df = df.select(sql_column)
     uc_volume_path = f"/Volumes/{catalog_name}/{dest_schema_name}/{filename}.sql"
 
-    # Use Spark's text writer instead of collect()
     temp_path = f"/Volumes/{catalog_name}/{dest_schema_name}/temp_{filename}"
     selected_column_df.coalesce(1).write.mode("overwrite").text(temp_path)
-
-    # Move the part file to final location
-    import os
-    import shutil
 
     part_files = [f for f in os.listdir(temp_path) if f.startswith("part-")]
     if part_files:
@@ -613,24 +685,41 @@ def df_column_to_excel_file(
 
 
 def populate_log_table(df, config, current_user, base_path):
+    """
+    Populates the log table with the necessary columns.
+
+    Args:
+        df (DataFrame): The DataFrame to populate.
+        config (MetadataConfig): The configuration.
+        current_user (str): The current user.
+        base_path (str): The base path.
+
+    Returns:
+        DataFrame: The result DataFrame.
+    """
     # For serverless compatibility, ensure consistent data types without forcing string conversion
     # This maintains compatibility with existing table schemas
 
     # CRITICAL FIX: Explicitly cast all literal columns for serverless compatibility
-    result_df = (
-        df.withColumn("current_user", lit(current_user).cast("string"))
-        .withColumn("model", lit(config.model).cast("string"))
-        .withColumn("sample_size", lit(config.sample_size).cast("int"))
-        .withColumn("max_tokens", lit(config.max_tokens).cast("int"))
-        .withColumn("temperature", lit(config.temperature).cast("double"))
-        .withColumn("columns_per_call", lit(config.columns_per_call).cast("int"))
-        .withColumn("status", lit("No Volume specified...").cast("string"))
-    )
-
-    # CRITICAL SERVERLESS FIX: Ensure column_content stays as string after adding log columns
-    if config.mode == "comment" and "column_content" in result_df.columns:
-        result_df = result_df.withColumn(
-            "column_content", col("column_content").cast("string")
+    result_df = None
+    if df is not None:
+        result_df = (
+            df.withColumn("current_user", lit(current_user).cast("string"))
+            .withColumn("model", lit(config.model).cast("string"))
+            .withColumn("sample_size", lit(config.sample_size).cast("int"))
+            .withColumn("max_tokens", lit(config.max_tokens).cast("int"))
+            .withColumn("temperature", lit(config.temperature).cast("double"))
+            .withColumn("columns_per_call", lit(config.columns_per_call).cast("int"))
+            .withColumn("status", lit("No Volume specified...").cast("string"))
+        )
+        # CRITICAL SERVERLESS FIX: Ensure column_content stays as string after adding log columns
+        if config.mode == "comment" and "column_content" in result_df.columns:
+            result_df = result_df.withColumn(
+                "column_content", col("column_content").cast("string")
+            )
+    else:
+        logger.info(
+            "df is none during processing. Expected for table df for pi, and column df for domain."
         )
 
     return result_df
@@ -684,6 +773,7 @@ def mark_as_deleted(table_name: str, config: MetadataConfig) -> None:
 
 
 def run_log_table_ddl(config):
+    """Run the log table DDL."""
     spark = SparkSession.builder.getOrCreate()
     if config.mode == "comment":
         spark.sql(
@@ -731,8 +821,39 @@ def run_log_table_ddl(config):
             status STRING
         )"""
         )
+    elif config.mode == "domain":
+        spark.sql(
+            f"""CREATE TABLE IF NOT EXISTS {config.catalog_name}.{config.schema_name}.{config.mode}_metadata_generation_log (
+            table STRING, 
+            tokenized_table STRING, 
+            ddl_type STRING, 
+            column_name STRING,
+            _created_at TIMESTAMP,
+            column_content STRING,
+            domain STRING,
+            subdomain STRING,
+            confidence DOUBLE,
+            recommended_domain STRING,
+            recommended_subdomain STRING,
+            reasoning STRING,
+            metadata_summary STRING,
+            catalog STRING, 
+            schema STRING, 
+            table_name STRING, 
+            ddl STRING, 
+            current_user STRING, 
+            model STRING, 
+            sample_size INT, 
+            max_tokens INT, 
+            temperature DOUBLE, 
+            columns_per_call INT, 
+            status STRING
+        )"""
+        )
     else:
-        raise ValueError(f"Invalid mode: {config.mode}, please choose pi or comment.")
+        raise ValueError(
+            f"Invalid mode: {config.mode}, please choose pi, comment, or domain."
+        )
 
 
 def output_df_pandas_to_tsv(df, output_file):
@@ -1104,9 +1225,7 @@ def write_ddl_to_volume_spark_native(
         )
 
     if output_format in ["sql", "tsv"]:
-        print(f"[DEBUG] About to collect DDL statements...")
         nrows = df.count()
-        print(f"[DEBUG] Number of rows: {nrows}")
         try:
             df.select("ddl").toPandas()
         except Exception as e:
@@ -1196,12 +1315,10 @@ def create_and_persist_ddl(
                 table_df = table_df.withColumn(
                     "column_content", col("column_content").cast("string")
                 )
-                print(f"[DEBUG] table_df count: {table_df.count()} in comment mode")
             if column_df is not None:
                 column_df = column_df.withColumn(
                     "column_content", col("column_content").cast("string")
                 )
-                print(f"[DEBUG] column_df count: {column_df.count()} in comment mode")
 
             # Handle union with potential None DataFrames
             if table_df is not None and column_df is not None:
@@ -1249,6 +1366,33 @@ def create_and_persist_ddl(
                         "columns_per_call",
                         "status",
                     ]
+                elif config.mode == "domain":
+                    expected_columns = [
+                        "table",
+                        "tokenized_table",
+                        "ddl_type",
+                        "column_name",
+                        "column_content",
+                        "domain",
+                        "subdomain",
+                        "confidence",
+                        "recommended_domain",
+                        "recommended_subdomain",
+                        "reasoning",
+                        "metadata_summary",
+                        "_created_at",
+                        "catalog",
+                        "schema",
+                        "table_name",
+                        "ddl",
+                        "current_user",
+                        "model",
+                        "sample_size",
+                        "max_tokens",
+                        "temperature",
+                        "columns_per_call",
+                        "status",
+                    ]
                 else:
                     raise ValueError(f"Unsupported mode: {config.mode}")
 
@@ -1259,10 +1403,8 @@ def create_and_persist_ddl(
                 column_count = column_df_ordered.count()
                 unioned_df = table_df_ordered.union(column_df_ordered)
             elif table_df is not None:
-                print(f"[DEBUG] Using only table_df (column_df is None)")
                 unioned_df = table_df
             elif column_df is not None:
-                print(f"[DEBUG] Using only column_df (table_df is None)")
                 unioned_df = column_df
             else:
                 raise ValueError("Both table and column DataFrames are None")
@@ -1328,9 +1470,38 @@ def create_and_persist_ddl(
                 unioned_df = column_df
             else:
                 raise ValueError("Both table and column DataFrames are None")
+        elif config.mode == "domain":
+            # Domain mode: table-level only, no column-level DataFrame
+            if table_df is not None:
+                # Ensure domain columns are properly cast
+                table_df = table_df.withColumn(
+                    "column_content", col("column_content").cast("string")
+                )
+                table_df = table_df.withColumn("domain", col("domain").cast("string"))
+                table_df = table_df.withColumn(
+                    "subdomain", col("subdomain").cast("string")
+                )
+                table_df = table_df.withColumn(
+                    "confidence", col("confidence").cast("double")
+                )
+                table_df = table_df.withColumn(
+                    "recommended_domain", col("recommended_domain").cast("string")
+                )
+                table_df = table_df.withColumn(
+                    "recommended_subdomain", col("recommended_subdomain").cast("string")
+                )
+                table_df = table_df.withColumn(
+                    "reasoning", col("reasoning").cast("string")
+                )
+                table_df = table_df.withColumn(
+                    "metadata_summary", col("metadata_summary").cast("string")
+                )
+                unioned_df = table_df
+            else:
+                raise ValueError("Domain mode requires table_df to be non-None")
         else:
             raise ValueError(
-                f"Invalid mode: {config.mode}. Expected 'comment' or 'pi'."
+                f"Invalid mode: {config.mode}. Expected 'comment', 'pi', or 'domain'."
             )
         filter_and_write_ddl(
             unioned_df, config, modified_path, table_name, current_user, current_date
@@ -1350,17 +1521,95 @@ def create_and_persist_ddl(
 
 
 # TODO: Update this to use get_generated_metadata_data_unaware() if sample size is 0 so Presidio can still use data.
+def get_domain_classification(
+    config: MetadataConfig, full_table_name: str
+) -> Dict[str, Any]:
+    """
+    Generates domain classification for a given table.
+
+    Note: Domain classification only uses the first N columns (defined by columns_per_call)
+    to avoid massive prompts. In testing, this is typically sufficient to determine business domain.
+
+    Args:
+        config: Configuration object
+        full_table_name: Full table name (catalog.schema.table)
+
+    Returns:
+        Dict containing domain classification results
+    """
+
+    spark = SparkSession.builder.getOrCreate()
+
+    domain_config = load_domain_config(config.domain_config_path)
+
+    df = spark.read.table(full_table_name)
+    total_columns = len(df.columns)
+
+    # Limit columns for domain classification to avoid massive prompts
+    # Use only the first chunk of columns (defined by columns_per_call)
+    chunked_dfs = chunk_df(df, config.columns_per_call)
+    first_chunk_df = chunked_dfs[0] if chunked_dfs else df
+    columns_used = len(first_chunk_df.columns)
+
+    logger.info(
+        f"Domain classification for {full_table_name}: Using {columns_used}/{total_columns} columns (limited by columns_per_call={config.columns_per_call})"
+    )
+
+    # Sample rows from the limited column set
+    sampled_df = sample_df(first_chunk_df, first_chunk_df.count(), config.sample_size)
+
+    prompt = PromptFactory.create_prompt(config, sampled_df, full_table_name)
+    prompt_messages = prompt.create_prompt_template()
+
+    # Check prompt length to avoid excessive token usage
+    check_token_length_against_num_words(prompt_messages, config)
+
+    table_metadata = {
+        "column_contents": prompt.prompt_content.get("column_contents", {}),
+    }
+
+    if config.add_metadata:
+        table_metadata["column_metadata"] = prompt.prompt_content.get(
+            "column_contents", {}
+        ).get("column_metadata", {})
+        table_metadata["table_tags"] = prompt.prompt_content.get(
+            "column_contents", {}
+        ).get("table_tags", "")
+        table_metadata["table_constraints"] = prompt.prompt_content.get(
+            "column_contents", {}
+        ).get("table_constraints", "")
+        table_metadata["table_comments"] = prompt.prompt_content.get(
+            "column_contents", {}
+        ).get("table_comments", "")
+
+    # Classify the table
+    classification_result = classify_table_domain(
+        table_name=full_table_name,
+        table_metadata=table_metadata,
+        domain_config=domain_config,
+        model_endpoint=config.model,
+        temperature=config.temperature,
+        max_tokens=config.max_tokens,
+    )
+
+    return classification_result
+
+
 def get_generated_metadata(
     config: MetadataConfig, full_table_name: str
 ) -> List[Tuple[PIResponse, CommentResponse]]:
     """
     Generates metadata for a given table.
-    Wraps get_generated_metadata_data_aware() to allow different handling when data is allowed versus disallowed.
-    Currently no difference is implemented between the two routes, but in the future can be if needed.
+    Wraps get_generated_metadata_data_aware() to allow
+    different handling when data is allowed versus disallowed.
+    Currently no difference is implemented between the two routes,
+    but in the future can be if needed.
 
-    The intent here is to allow Presidio to be used, or skip the query to the table if data is not allowed.
+    The intent here is to allow Presidio to be used,
+    or skip the query to the table if data is not allowed.
 
-    Currently, the table is still queried but with a limit of 0 rows if sample size is 0.
+    Currently, the table is still queried but with a
+    limit of 0 rows if sample size is 0.
 
     Args:
         catalog (str): The catalog name.
@@ -1401,16 +1650,7 @@ def get_generated_metadata_data_aware(
     responses = []
     nrows = df.count()
     chunked_dfs = chunk_df(df, config.columns_per_call)
-    print(
-        f"[LLM CALL DEBUG] Table has {len(df.columns)} columns, columns_per_call={config.columns_per_call}"
-    )
-    print(
-        f"[LLM CALL DEBUG] Created {len(chunked_dfs)} chunks - will make {len(chunked_dfs)} LLM calls"
-    )
     for i, chunk in enumerate(chunked_dfs):
-        print(
-            f"[LLM CALL DEBUG] Processing chunk {i+1}/{len(chunked_dfs)} with {len(chunk.columns)} columns"
-        )
         sampled_chunk = sample_df(chunk, nrows, config.sample_size)
         prompt = PromptFactory.create_prompt(config, sampled_chunk, full_table_name)
         prompt_messages = prompt.create_prompt_template()
@@ -1450,20 +1690,32 @@ def review_and_generate_metadata(
         schema (str): The schema name.
         table_names (str): A list of table names.
         model (str): model name
-        mode (str): Mode to determine whether to process 'pi' or 'comment'
+        mode (str): Mode to determine whether to process 'pi', 'comment', or 'domain'
 
     Returns:
         Tuple[DataFrame, DataFrame]: DataFrames containing the generated metadata.
     """
-    print("Review and generate metadata...")
     table_rows = []
     column_rows = []
+
+    if config.mode == "domain":
+        domain_result = get_domain_classification(config, full_table_name)
+        tokenized_full_table_name = replace_catalog_name(config, full_table_name)
+        table_rows = append_domain_table_row(
+            table_rows,
+            full_table_name,
+            domain_result,
+            tokenized_full_table_name,
+        )
+        return rows_to_df(column_rows, config), rows_to_df(table_rows, config)
+
+    # Standard flow for comment and pi modes
     responses = get_generated_metadata(config, full_table_name)
     for response in responses:
         tokenized_full_table_name = replace_catalog_name(config, full_table_name)
         if config.mode == "comment":
             table_rows = append_table_row(
-                config, table_rows, full_table_name, response, tokenized_full_table_name
+                table_rows, full_table_name, response, tokenized_full_table_name
             )
         column_rows = append_column_rows(
             config, column_rows, full_table_name, response, tokenized_full_table_name
@@ -1495,30 +1747,124 @@ def replace_catalog_name(config, full_table_name):
         replaced_catalog_name = catalog_tokenizable.replace(
             "__CATALOG_NAME__", catalog_name
         )
-    logger.debug("Replaced catalog name...", replaced_catalog_name)
+    logger.debug("Replaced catalog name: %s", replaced_catalog_name)
     return f"{replaced_catalog_name}.{schema_name}.{table_name}"
 
 
-def apply_comment_ddl(df: DataFrame, config: MetadataConfig) -> None:
+def log_missing_governance_tags(error_msg: str, ddl_statement: str) -> None:
+    """
+    Log the missing governance tags.
+    """
+
+    missing_tags = []
+    failed_statements = []
+
+    if "TAG_NOT_FOUND" in error_msg or "tag" in error_msg.lower():
+        if "SET TAGS" in ddl_statement:
+
+            tag_pattern = r"'(\w+)'\s*="
+            tags = re.findall(tag_pattern, ddl_statement)
+            for tag in tags:
+                if tag not in missing_tags:
+                    missing_tags.append(tag)
+            print(f"  Missing governance tags detected: {', '.join(tags)}")
+            print(f"   Statement: {ddl_statement}")
+            failed_statements.append(
+                {
+                    "statement": ddl_statement,
+                    "error": "Missing governance tags",
+                    "tags": tags,
+                }
+            )
+        else:
+            print(f"  Error applying DDL: {ddl_statement}")
+            failed_statements.append({"statement": ddl_statement, "error": error_msg})
+    else:
+        print(f" Error applying DDL: {error_msg}")
+        failed_statements.append({"statement": ddl_statement, "error": error_msg})
+    return missing_tags, failed_statements
+
+
+def apply_comment_ddl(df: DataFrame, config: MetadataConfig) -> dict:
     """
     Applies the comment DDL statements stored in the DataFrame to the table.
 
     Args:
         df (DataFrame): The DataFrame containing the DDL statements.
+
+    Returns:
+        dict: Summary of DDL application including any missing tags
     """
     spark = SparkSession.builder.getOrCreate()
     ddl_statements = df.select("ddl").collect()
+    missing_tags = []
+    failed_statements = []
+    success_count = 0
+
     for row in ddl_statements:
-        logger.debug(f"Applying DDL statement: {row['ddl']}")
+        logger.debug("Applying DDL statement: %s", row["ddl"])
         print("Applying DDL statement: ", row["ddl"])
         ddl_statement = row["ddl"]
         if not config.dry_run:
-            spark.sql(ddl_statement)
+            try:
+                spark.sql(ddl_statement)
+                success_count += 1
+            except Exception as e:
+                # Extract concise error message
+                concise_error = extract_concise_error(e)
+                logger.error("Error applying DDL: %s", concise_error)
+                logger.error("DDL statement: %s", ddl_statement)
+
+                # Track failed tags for summary
+                if "Tag policy violation" in concise_error:
+                    match = re.search(
+                        r"'(\w+)' cannot be set to '(\S+)'", concise_error
+                    )
+                    if match:
+                        tag_key, tag_value = match.groups()
+                        missing_tags.append(f"{tag_key}={tag_value}")
+
+                failed_statements.append(
+                    {"statement": ddl_statement, "error": concise_error}
+                )
+
+    if missing_tags:
+        logger.warning(
+            "Failed to set the following tags due to tag policy restrictions: %s",
+            ", ".join(missing_tags),
+        )
+
+    return {
+        "success_count": success_count,
+        "failed_count": len(failed_statements),
+        "missing_tags": missing_tags,
+        "failed_statements": failed_statements,
+    }
+
+
+def split_and_hardcode_df(df, config):
+    """
+    Splits the DataFrame and hardcodes the classification.
+
+    Works for both table and column DataFrames.
+
+    Does not handle all mode types, need to manage the conditional in process_and_add_ddl.
+    """
+    if df is not None:
+        df = split_name_for_df(df)
+        df = hardcode_classification(df, config)
+        return df
+
+    logger.info(
+        "df is none during processing. Expected for table df for pi, and column df for domain."
+    )
+    return None
 
 
 def process_and_add_ddl(config: MetadataConfig, table_name: str) -> DataFrame:
     """
-    Processes the metadata, splits the DataFrame based on 'table' values, applies DDL functions, and returns a unioned DataFrame.
+    Processes the metadata, splits the DataFrame based on 'table' values,
+    applies DDL functions, and returns a unioned DataFrame.
 
     Args:
         catalog (str): The catalog name data is being read from and written to.
@@ -1530,24 +1876,19 @@ def process_and_add_ddl(config: MetadataConfig, table_name: str) -> DataFrame:
         DataFrame: The unioned DataFrame with DDL statements added.
     """
     column_df, table_df = review_and_generate_metadata(config, table_name)
-    column_df.count()
-    column_df = split_name_for_df(column_df)
-    column_df = hardcode_classification(column_df, config)
+    column_df = split_and_hardcode_df(column_df, config)
+    table_df = split_and_hardcode_df(table_df, config)
 
-    # Handle table_df which can be None in PI mode
-    if table_df is not None:
-        table_df = split_name_for_df(table_df)
-        table_df = hardcode_classification(table_df, config)
-    if config.allow_manual_override:
+    if config.allow_manual_override and column_df is not None:
         logger.info("Overriding metadata from CSV...")
         column_df = override_metadata_from_csv(
             column_df, config.override_csv_path, config
         )
+
     dfs = add_ddl_to_dfs(config, table_df, column_df, table_name)
     return dfs
 
 
-# TODO: figure out where the pi column classsification is getting messed up, its being set to None every time.
 def hardcode_classification(df, config):
     """
     Hardcodes the classification for the DataFrame.
@@ -1575,37 +1916,26 @@ def split_name_for_df(df):
         DataFrame: The DataFrame with the fully scoped table name split.
     """
     if df is not None:
-        # CRITICAL SERVERLESS FIX: Preserve column_content type during table name splitting
         has_column_content = "column_content" in df.columns
         if has_column_content:
-            print(
-                f"[DEBUG] Preserving column_content as string during split_name_for_df"
-            )
             original_column_content_type = str(
                 df.select("column_content").schema.fields[0].dataType
-            )
-            print(
-                f"[DEBUG] Original column_content type: {original_column_content_type}"
             )
 
         df = split_fully_scoped_table_name(df, "table")
 
-        # Re-ensure column_content is string after split operation
         if has_column_content and "column_content" in df.columns:
             df = df.withColumn("column_content", col("column_content").cast("string"))
-            print(f"[DEBUG] Re-cast column_content to string after split")
             final_column_content_type = str(
                 df.select("column_content").schema.fields[0].dataType
             )
-            print(f"[DEBUG] Final column_content type: {final_column_content_type}")
 
         logger.info(
-            "df columns after generating metadata in process_and_add_ddl", df.columns
+            "df columns after generating metadata in process_and_add_ddl %s", df.columns
         )
     return df
 
 
-# TODO: Figure out where the pi table classification is getting messed up, the DDL isn't being written to a df.
 def add_ddl_to_dfs(config, table_df, column_df, table_name):
     """
     Adds DDL to the DataFrames.
@@ -1624,76 +1954,25 @@ def add_ddl_to_dfs(config, table_df, column_df, table_name):
     """
     dfs = {}
     if config.mode == "comment":
-        # Test DataFrames before processing - with serverless error handling
-        if table_df is not None:
-            try:
-                count = table_df.count()
-            except Exception as e:
-                # For serverless, try to materialize the DataFrame to detect schema issues
-                try:
-                    # Use a simple operation instead of cache() for serverless compatibility
-                    count = table_df.count()
-                    print(f"[DEBUG] table_df count on retry: {count}")
-                except Exception as retry_error:
-                    print(
-                        f"[DEBUG] CRITICAL: table_df corrupted, retry failed: {retry_error}"
-                    )
-                    print(f"[DEBUG] Attempting to show schema details...")
-        if column_df is not None:
-            try:
-                count = column_df.count()
-            except Exception as e:
 
-                # For serverless, try to materialize the DataFrame to detect schema issues
-                try:
-                    # Use a simple operation instead of cache() for serverless compatibility
-                    count = column_df.count()
-                except Exception as retry_error:
-                    print(
-                        f"[DEBUG] CRITICAL: column_df corrupted, retry failed: {retry_error}"
-                    )
-                    print(f"[DEBUG] Attempting to show schema details...")
-
-        # Handle table_df which can be None in PI mode
         if table_df is not None:
             summarized_table_df = summarize_table_content(table_df, config, table_name)
             summarized_table_df = split_name_for_df(summarized_table_df)
         else:
-            print(f"[DEBUG] table_df is None - skipping table content summarization")
             summarized_table_df = None
 
-        # CRITICAL SERVERLESS FIX: Ensure column_content remains string after all transformations
         if column_df is not None and "column_content" in column_df.columns:
             column_df = column_df.withColumn(
                 "column_content", col("column_content").cast("string")
             )
-
-        if summarized_table_df is not None:
-            try:
-                count = summarized_table_df.count()
-            except Exception as e:
-                print(f"[DEBUG] ERROR counting summarized_table_df: {e}")
 
         dfs["comment_table_df"] = add_ddl_to_table_comment_df(
             summarized_table_df, "ddl"
         )
         dfs["comment_column_df"] = add_ddl_to_column_comment_df(column_df, "ddl")
 
-        # Test final DataFrames
-        if dfs["comment_table_df"] is not None:
-            try:
-                count = dfs["comment_table_df"].count()
-            except Exception as e:
-                print(f"[DEBUG] ERROR counting comment_table_df after ddl: {e}")
-
-        if dfs["comment_column_df"] is not None:
-            try:
-                count = dfs["comment_column_df"].count()
-            except Exception as e:
-                print(f"[DEBUG] ERROR counting comment_column_df after ddl: {e}")
-
         if config.apply_ddl:
-            apply_ddl_to_tables(dfs, config)
+            dfs["ddl_results"] = apply_ddl_to_tables(dfs, config)
     elif config.mode == "pi":
         dfs["pi_column_df"] = add_column_ddl_to_pi_df(config, column_df, "ddl")
         table_df = create_pi_table_df(dfs["pi_column_df"], table_name, config)
@@ -1702,14 +1981,60 @@ def add_ddl_to_dfs(config, table_df, column_df, table_name):
             table_df = add_table_ddl_to_pi_df(table_df, "ddl")
             dfs["pi_table_df"] = table_df
         else:
-            print(
-                f"[DEBUG] WARNING: table_df is None! No table-level DDL will be generated!"
+            logger.error(
+                "[DEBUG] WARNING: table_df is None! No table-level DDL will be generated!"
             )
         if config.apply_ddl:
-            apply_ddl_to_tables(dfs, config)
+            dfs["ddl_results"] = apply_ddl_to_tables(dfs, config)
+    elif config.mode == "domain":
+        if table_df is not None:
+            table_df = add_ddl_to_domain_table_df(table_df, "ddl")
+            dfs["domain_table_df"] = table_df
+        else:
+            logger.error(
+                "[DEBUG] WARNING: table_df is None! No domain DDL will be generated!"
+            )
+        dfs["domain_column_df"] = None
+        if config.apply_ddl:
+            dfs["ddl_results"] = apply_ddl_to_tables(dfs, config)
     else:
-        raise ValueError("Invalid mode. Use 'pi' or 'comment'.")
+        raise ValueError("Invalid mode. Use 'pi', 'comment', or 'domain'.")
     return dfs
+
+
+def add_ddl_to_domain_table_df(table_df: DataFrame, ddl_col_name: str) -> DataFrame:
+    """
+    Adds DDL statements to domain classification DataFrame.
+
+    Args:
+        table_df (DataFrame): The DataFrame containing domain classifications.
+        ddl_col_name (str): The name of the DDL column to add.
+
+    Returns:
+        DataFrame: The DataFrame with DDL statements added.
+    """
+    if table_df is None:
+        return None
+
+    # Ensure domain columns are cast to string for serverless compatibility
+    if "domain" in table_df.columns:
+        table_df = table_df.withColumn("domain", col("domain").cast("string"))
+    if "subdomain" in table_df.columns:
+        table_df = table_df.withColumn("subdomain", col("subdomain").cast("string"))
+
+    # Generate ALTER TABLE SET TAGS DDL with domain information using UDF
+    result_df = table_df.withColumn(
+        ddl_col_name,
+        generate_table_domain_ddl("tokenized_table", "domain", "subdomain"),
+    )
+
+    # Keep column_content for logging purposes
+    if "column_content" in result_df.columns:
+        result_df = result_df.withColumn(
+            "column_content", col("column_content").cast("string")
+        )
+
+    return result_df
 
 
 def apply_ddl_to_tables(dfs, config):
@@ -1719,9 +2044,91 @@ def apply_ddl_to_tables(dfs, config):
     Args:
         dfs (DataFrame): The DataFrame containing the DDL statements.
         config (MetadataConfig): The configuration object.
+
+    Returns:
+        dict: Summary of DDL application results
     """
-    apply_comment_ddl(dfs[f"{config.mode}_table_df"], config)
-    apply_comment_ddl(dfs[f"{config.mode}_column_df"], config)
+    table_df = dfs.get(f"{config.mode}_table_df")
+    column_df = dfs.get(f"{config.mode}_column_df")
+
+    results = {"table_results": {}, "column_results": {}, "all_missing_tags": []}
+
+    if table_df is not None:
+        results["table_results"] = apply_comment_ddl(table_df, config)
+        if results["table_results"]["missing_tags"]:
+            results["all_missing_tags"].extend(results["table_results"]["missing_tags"])
+
+    if column_df is not None:
+        results["column_results"] = apply_comment_ddl(column_df, config)
+        if results["column_results"]["missing_tags"]:
+            for tag in results["column_results"]["missing_tags"]:
+                if tag not in results["all_missing_tags"]:
+                    results["all_missing_tags"].append(tag)
+
+    print_ddl_summary(results, config)
+
+    return results
+
+
+def print_ddl_summary(results, config):
+    """
+    Prints a formatted summary of DDL application results.
+
+    Args:
+        results (dict): Results dictionary from apply_ddl_to_tables
+        config (MetadataConfig): Configuration object
+    """
+    print("\n" + "=" * 80)
+    print("DDL APPLICATION SUMMARY")
+    print("=" * 80)
+
+    total_success = 0
+    total_failed = 0
+
+    if results["table_results"]:
+        total_success += results["table_results"]["success_count"]
+        total_failed += results["table_results"]["failed_count"]
+        print(
+            f"Table DDL: {results['table_results']['success_count']} succeeded, {results['table_results']['failed_count']} failed"
+        )
+
+    if results["column_results"]:
+        total_success += results["column_results"]["success_count"]
+        total_failed += results["column_results"]["failed_count"]
+        print(
+            f"Column DDL: {results['column_results']['success_count']} succeeded, {results['column_results']['failed_count']} failed"
+        )
+
+    print(f"\nTotal: {total_success} succeeded, {total_failed} failed")
+
+    # Show failures
+    if total_failed > 0:
+        print("\n" + "-" * 80)
+        print("FAILED DDL STATEMENTS:")
+        print("-" * 80)
+
+        if results["table_results"] and results["table_results"]["failed_statements"]:
+            for fail in results["table_results"]["failed_statements"]:
+                print(f"\nStatement: {fail['statement']}")
+                print(f"Error: {fail['error'][:200]}...")  # Truncate long errors
+
+        if results["column_results"] and results["column_results"]["failed_statements"]:
+            for fail in results["column_results"]["failed_statements"]:
+                print(f"\nStatement: {fail['statement']}")
+                print(f"Error: {fail['error'][:200]}...")
+
+    # Show missing tags
+    if results["all_missing_tags"]:
+        print("\n" + "-" * 80)
+        print("MISSING GOVERNANCE TAGS:")
+        print("-" * 80)
+        for tag in results["all_missing_tags"]:
+            print(f"  - {tag}")
+        print("\nTo create these tags, run:")
+        for tag in results["all_missing_tags"]:
+            print(f"  CREATE TAG {config.catalog_name}.{tag};")
+
+    print("=" * 80 + "\n")
 
 
 def create_pi_table_df(
@@ -1815,7 +2222,8 @@ def determine_table_classification(pi_rows: DataFrame) -> str:
 
 def get_protected_classification_for_table(table_classification: str) -> str:
     """
-    Determines the classification based on the values in the 'classification' column of the pi_rows DataFrame.
+    Determines the classification based on the values in the 'classification'
+    column of the pi_rows DataFrame.
     """
     if table_classification is not None:
         return "protected"
@@ -1827,7 +2235,6 @@ def summarize_table_content(table_df, config, table_name):
         summarizer = TableCommentSummarizer(config, table_df)
         summary = summarizer.summarize_comments(table_name)
 
-        # Ensure summary is always a string to prevent serverless type inference issues
         if summary is None:
             summary = "No table summary available"
         elif not isinstance(summary, str):
@@ -1835,10 +2242,9 @@ def summarize_table_content(table_df, config, table_name):
 
         summary_df = table_df.limit(1).withColumn("column_content", lit(summary))
         return summary_df
-    elif table_df.count() == 1:
+    if table_df.count() == 1:
         return table_df
-    else:
-        raise ValueError("No table rows found during summarization...")
+    raise ValueError("No table rows found during summarization...")
 
 
 def setup_ddl(config: MetadataConfig) -> None:
@@ -1862,7 +2268,7 @@ def setup_ddl(config: MetadataConfig) -> None:
     if config.volume_name:
         spark.sql(volume_sql)
         review_output_path = f"/Volumes/{config.catalog_name}/{config.schema_name}/{config.volume_name}/{sanitize_user_identifier(config.current_user)}/reviewed_outputs/"
-        # Note: Directory creation for UC volumes happens automatically when files are written
+        os.makedirs(review_output_path, exist_ok=True)
 
 
 def create_tables(config: MetadataConfig) -> None:
@@ -1887,8 +2293,8 @@ def create_tables(config: MetadataConfig) -> None:
 def instantiate_metadata_objects(
     env, mode, catalog_name=None, schema_name=None, table_names=None, base_url=None
 ):
-    """By default, variables from variables.yml will be used. If widget values are provided, they will override."""
-    # config = MetadataConfig()
+    """By default, variables from variables.yml will be used.
+    If widget values are provided, they will override."""
     METADATA_PARAMS = {"table_names": table_names}
     if catalog_name and catalog_name != "":
         METADATA_PARAMS["catalog_name"] = catalog_name
@@ -1952,7 +2358,7 @@ def generate_and_persist_metadata(config: Any) -> None:
                     "status": "Table does not exist",
                     "user": sanitize_user_identifier(config.current_user),
                     "mode": config.mode,
-                    "apply_ddl": config.apply_ddl,
+                    "apply_ddl": str(config.apply_ddl),
                     "_updated_at": str(datetime.now()),
                 }
             else:
@@ -1961,12 +2367,24 @@ def generate_and_persist_metadata(config: Any) -> None:
                     f"[generate_and_persist_metadata] Generating and persisting ddl for {table}..."
                 )
                 create_and_persist_ddl(df, config, table)
+
+                # Check if DDL application had any failures
+                status = "Table processed"
+                if config.apply_ddl and "ddl_results" in df:
+                    ddl_results = df["ddl_results"]
+                    if ddl_results.get("failed_count", 0) > 0:
+                        missing_tags = ddl_results.get("missing_tags", [])
+                        if missing_tags:
+                            status = f"Partial success - Missing governance tags: {', '.join(missing_tags)}"
+                        else:
+                            status = f"Partial success - {ddl_results['failed_count']} DDL statements failed"
+
                 log_dict = {
                     "full_table_name": table,
-                    "status": "Table processed",
+                    "status": status,
                     "user": sanitize_user_identifier(config.current_user),
                     "mode": config.mode,
-                    "apply_ddl": config.apply_ddl,
+                    "apply_ddl": str(config.apply_ddl),
                     "_updated_at": str(datetime.now()),
                 }
 
@@ -1985,12 +2403,15 @@ def generate_and_persist_metadata(config: Any) -> None:
             raise  # Optionally re-raise if you want to halt further processing
 
         except Exception as e:
+            # Extract concise error message
+            concise_error = extract_concise_error(e)
             logger.error(
-                f"[generate_and_persist_metadata] Unexpected error for {table}: {e}\n{traceback.format_exc()}"
+                "[generate_and_persist_metadata] Error for %s: %s", table, concise_error
             )
+
             log_dict = {
                 "full_table_name": table,
-                "status": f"Processing failed: {e}",
+                "status": f"Processing failed: {concise_error}",
                 "user": sanitize_user_identifier(config.current_user),
                 "mode": config.mode,
                 "apply_ddl": config.apply_ddl,
@@ -2000,16 +2421,20 @@ def generate_and_persist_metadata(config: Any) -> None:
 
         finally:
             try:
+                print("\n\n\nTrying to write to log table...\n\n\n")
                 write_to_log_table(
                     log_dict,
                     f"{config.catalog_name}.{config.schema_name}.table_processing_log",
                 )
                 logger.info(
-                    f"[generate_and_persist_metadata] Log written for table {table}."
+                    "[generate_and_persist_metadata] Log written for table %s.", table
                 )
             except Exception as log_err:
+                concise_log_err = extract_concise_error(log_err)
                 logger.error(
-                    f"[generate_and_persist_metadata] Failed to write log for {table}: {log_err}\n{traceback.format_exc()}"
+                    "[generate_and_persist_metadata] Failed to write log for %s: %s",
+                    table,
+                    concise_log_err,
                 )
             print(f"Finished processing table {table} and writing to log table.")
 
@@ -2236,13 +2661,20 @@ def expand_schema_wildcards(table_names: List[str]) -> List[str]:
 
 
 def sanitize_string_list(string_list: List[str]):
+    """Sanitize a list of strings.
+
+    Args:
+        string_list (List[str]): The list of strings to sanitize.
+
+    Returns:
+        List[str]: The sanitized list of strings.
+    """
     sanitized_list = []
     for s in string_list:
         s = str(s)
         s = s.strip()
         s = " ".join(s.split())
         s = s.lower()
-        # Allow asterisk for wildcard patterns
         s = "".join(
             c
             for c in s
@@ -2264,7 +2696,6 @@ def split_fully_scoped_table_name(df: DataFrame, full_table_name_col: str) -> Da
         DataFrame: The updated DataFrame with catalog, schema, and table columns added.
     """
     split_col = split(col(full_table_name_col), r"\.")
-    # CRITICAL FIX: Explicitly cast split results for serverless compatibility
     df = (
         df.withColumn("catalog", split_col.getItem(0).cast("string"))
         .withColumn("schema", split_col.getItem(1).cast("string"))
@@ -2274,19 +2705,34 @@ def split_fully_scoped_table_name(df: DataFrame, full_table_name_col: str) -> Da
 
 
 def split_table_names(table_names: str) -> List[str]:
+    """Split a comma-separated string of table names into a list of table names.
+
+    Args:
+        table_names (str): The comma-separated string of table names.
+
+    Returns:
+        List[str]: The list of table names.
+    """
     if not table_names:
         return []
     return table_names.split(",")
 
 
 def replace_fully_scoped_table_column(df):
+    """Replace the fully scoped table column with the table name.
+
+    Args:
+        df (DataFrame): The DataFrame to replace the fully scoped table column with the table name.
+
+    Returns:
+        DataFrame: The DataFrame with the fully scoped table column replaced with the table name.
+    """
     return df.withColumn("table", split_part(col("table"), ".", -1))
 
 
-# Define UDF helper functions without decorators to avoid module serialization issues
 def _create_table_comment_ddl_func():
+
     def table_comment_ddl(full_table_name: str, comment: str) -> str:
-        # Inline cleanse_sql_comment logic for serverless compatibility
         if comment is not None:
             comment = comment.replace('""', "'")
             comment = comment.replace('"', "'")
@@ -2297,16 +2743,12 @@ def _create_table_comment_ddl_func():
 
 def _create_column_comment_ddl_func():
     def column_comment_ddl(full_table_name: str, column_name: str, comment: str) -> str:
-        # Inline cleanse_sql_comment logic for serverless compatibility
         if comment is not None:
             comment = comment.replace('""', "'")
             comment = comment.replace('"', "'")
 
-        import os
-
         dbr_number = os.environ.get("DATABRICKS_RUNTIME_VERSION")
 
-        # Handle serverless environments where DBR version might not be available
         if dbr_number is None:
             # Default to newer syntax for serverless (assumes DBR 15+)
             ddl_statement = f"""COMMENT ON COLUMN {full_table_name}.`{column_name}` IS "{comment}";"""
@@ -2324,7 +2766,6 @@ def _create_column_comment_ddl_func():
                         f"Unsupported Databricks runtime version: {dbr_number}"
                     )
             except ValueError as e:
-                # If version parsing fails, default to newer syntax
                 ddl_statement = f"""COMMENT ON COLUMN {full_table_name}.`{column_name}` IS "{comment}";"""
         return ddl_statement
 
@@ -2335,7 +2776,6 @@ def _create_table_pi_information_ddl_func():
     def table_pi_information_ddl(
         table_name: str, classification: str, pi_type: str
     ) -> str:
-        # Debug statements removed - enable via debug_mode if needed
         return f"ALTER TABLE {table_name} SET TAGS ('data_classification' = '{classification}', 'data_subclassification' = '{pi_type}');"
 
     return table_pi_information_ddl
@@ -2345,17 +2785,35 @@ def _create_pi_information_ddl_func():
     def pi_information_ddl(
         table_name: str, column_name: str, classification: str, pi_type: str
     ) -> str:
-        # Debug statements removed - enable via debug_mode if needed
         return f"ALTER TABLE {table_name} ALTER COLUMN `{column_name}` SET TAGS ('data_classification' = '{classification}', 'data_subclassification' = '{pi_type}');"
 
     return pi_information_ddl
 
 
-# Create UDFs dynamically to avoid module serialization issues
-# CRITICAL FIX: Explicitly specify return types for Spark Connect/serverless compatibility
+def _create_table_domain_ddl_func():
+    def table_domain_ddl(full_table_name: str, domain: str, subdomain: str) -> str:
+        """
+        Generate DDL for domain classification as table tags.
+
+        Args:
+            full_table_name: The full table name (catalog.schema.table)
+            domain: Primary domain classification
+            subdomain: Subdomain classification (can be None or empty)
+
+        Returns:
+            DDL statement to set table tags with domain information
+        """
+        if subdomain is None or subdomain == "None" or subdomain.strip() == "":
+            return f"ALTER TABLE {full_table_name} SET TAGS ('domain' = '{domain}');"
+        return f"ALTER TABLE {full_table_name} SET TAGS ('domain' = '{domain}', 'subdomain' = '{subdomain}');"
+
+    return table_domain_ddl
+
+
 generate_table_comment_ddl = udf(_create_table_comment_ddl_func(), StringType())
 generate_column_comment_ddl = udf(_create_column_comment_ddl_func(), StringType())
 generate_table_pi_information_ddl = udf(
     _create_table_pi_information_ddl_func(), StringType()
 )
 generate_pi_information_ddl = udf(_create_pi_information_ddl_func(), StringType())
+generate_table_domain_ddl = udf(_create_table_domain_ddl_func(), StringType())

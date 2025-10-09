@@ -62,7 +62,7 @@ class DBXMetaGenApp:
         """Main app execution - clean and organized."""
         st.title("🏷️ DBXMetaGen")
         st.markdown(
-            "### AI-Powered Metadata Generation & PI Identification & Classification for Databricks Tables"
+            "### AI-Powered Metadata Generation, Identification, and Classification for Databricks Tables"
         )
 
         self.ui_components.render_sidebar_config()
