@@ -22,54 +22,66 @@
 
 ## Project Overview
 
-```mermaid
-graph LR
-    A["🚀 Process<br/>Tables"] --> B["📊 Extract Schema<br/>& Sample Data"]
-    
-    B --> C["📝 Create Prompts<br/>(Comment/PII)"]
-    
-    C --> D["🤖 LLM Call<br/>(Foundational Model Endpoints)"]
-    
-    D --> E["🔄 Process Response<br/>(Parse & Validate)"]
-    
-    E --> F["🛠️ Generate DDL<br/>(ALTER TABLE statements)"]
-    
-    F --> G["💾 Apply<br/>to Tables"]
-    
-    %% Style for slide presentation
-    classDef main fill:#e3f2fd,stroke:#1976d2,stroke-width:3px,font-size:14px
-    classDef llm fill:#fff3e0,stroke:#f57c00,stroke-width:3px,font-size:14px
-    classDef output fill:#e8f5e8,stroke:#388e3c,stroke-width:3px,font-size:14px
-    
-    class A,B,C,E main
-    class D llm
-    class F,G output
-```
+<img src="images/personas.png" alt="User Personas" width="400" top-margin="50">
+image credit: Diego Malaver
 
 **dbxmetagen** is a utility for generating high-quality descriptions for tables and columns in Databricks, enhancing enterprise search, governance, and Databricks Genie performance. It can identify and classify personal information (PI) into PII, PHI, and PCI. The tool is highly configurable, supporting bulk operations, SDLC integration, and fine-grained control over privacy and output formats.
 
-**Quickstart Options**
+## Quickstart
 
-### Simplest Option (no app)
-1. Clone the repo into your Databricks workspace into a Git Folder
-2. Run cells in the notebook up through setup_widgets().
-3. Complete at least catalog_name and table_names widgets. Choose mode. Adjust any other widgets you need to.
-4. For domain configuration, either use the default, or update to match your organization's data domains.
+### Simplest Path: Run Notebook Directly (No Configuration Required)
 
-### Option 1: Streamlit App (Recommended for Business Users)
-DBX MetaGen includes a production-quality Streamlit app with an intuitive web interface:
+Perfect for trying out dbxmetagen or one-off metadata generation:
 
-1. **Deploy the app**: `./deploy_app.sh`
-2. **Access through Databricks workspace** under Apps
-3. **Configure and run** through the web interface
+1. **Clone the repo** into a Git Folder in your Databricks workspace
+   ```
+   Repos → Add Repo → https://github.com/databricks-industry-solutions/dbxmetagen
+   ```
 
-See [`app/README.md`](app/README.md) for detailed app documentation.
+2. **Open the notebook**: `notebooks/generate_metadata.py`
 
-### Option 2: Traditional Notebooks (For Technical Users)
-1. Clone the repo into a Git Folder in Databricks.
-2. Update host and catalog name in `variables.yml`. Make sure the catalog exists.
-3. Update `notebooks/table_names.csv` - what tables do you want to generate comments, or identify PII and PHI for?
-4. Set notebook widget for comment or PI mode and run the notebook.
+3. **Fill in the widgets** (no file editing needed!):
+   - **catalog_name** (required): Your Unity Catalog name
+   - **table_names** (required): Comma-separated list (e.g., `catalog.schema.table1, catalog.schema.table2`)
+   - **metadata_type**: Choose `comment`, `pi`, or `domain`
+   - Adjust other widgets as needed (all have sensible defaults)
+
+4. **Run the notebook** - metadata will be generated and applied to your tables
+
+That's it! No YAML files to edit, no deployment scripts to run.
+
+---
+
+### 📱 Full App Deployment (Recommended for Regular Use)
+
+For a web UI with job management, metadata review, and team collaboration:
+
+1. **Prerequisites**:
+   - Databricks CLI installed and configured: `databricks configure --profile <your-profile>`
+   - Python 3.9+, Poetry (for building the wheel)
+
+2. **Configure environment** (optional):
+   ```bash
+   cp example.env dev.env
+   # Edit dev.env with your workspace URL and permission groups/users
+   ```
+
+3. **Deploy**:
+   ```bash
+   ./deploy.sh --profile <your-profile>
+   ```
+
+4. **Access**: Go to **Databricks Workspace → Apps → dbxmetagen-app**
+
+See [docs/ENV_SETUP.md](docs/ENV_SETUP.md) for detailed deployment documentation.
+
+---
+
+### 📊 What You Can Generate
+
+- **Comments**: AI-generated descriptions for tables and columns
+- **PI Classification**: Identify PII, PHI, and PCI with Unity Catalog tags
+- **Domain Metadata**: Classify tables into business domains and subdomains
 
 ## Disclaimer
 
