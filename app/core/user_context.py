@@ -17,7 +17,6 @@ from databricks.sdk.service.jobs import (
     JobAccessControlRequest,
     JobPermissionLevel,
 )
-from deprecated import deprecated
 
 logger = logging.getLogger(__name__)
 
