@@ -23,7 +23,7 @@ targets:
     default: true
 
     workspace:
-      host: https://adb-984752964297111.11.azuredatabricks.net/
+      host: <Databricks host URL here>
     permissions:
       - user_name: ${var.deploying_user}
         level: CAN_MANAGE
@@ -31,7 +31,7 @@ targets:
   prod:
     mode: production
     workspace:
-      host: https://adb-984752964297111.11.azuredatabricks.net/
+      host: <Databricks host URL here>
       root_path: ${var.current_working_directory}
     permissions:
       - user_name: ${var.current_user}
