@@ -65,8 +65,9 @@ class ConfigManager:
         return self._cache_and_return_config(config)
 
     def _load_variables_yml(self) -> Dict[str, Any]:
-        """Load configuration from variables.yml file and merge with deploying_user.yml if available."""
+        """Load configuration from variables.yml file and merge with deploying_user.yml and variables.advanced.yml if available."""
         yaml_path = "./variables.yml"  # Root of project
+        advanced_yaml_path = "./variables.advanced.yml"
         deploying_user_path = "./deploying_user.yml"
         app_env = "./app_env.yml"
 
@@ -91,6 +92,32 @@ class ConfigManager:
                 config[key] = value_config["default"]
             else:
                 config[key] = value_config
+
+        # Load variables.advanced.yml if it exists (advanced configuration)
+        if os.path.exists(advanced_yaml_path):
+            logger.info(f"Loading advanced variables from {advanced_yaml_path}")
+            try:
+                with open(advanced_yaml_path, "r") as f:
+                    advanced_config = yaml.safe_load(f)
+
+                # Extract defaults from advanced variables
+                if advanced_config and "variables" in advanced_config:
+                    advanced_variables = advanced_config["variables"]
+                    for key, value_config in advanced_variables.items():
+                        if isinstance(value_config, dict) and "default" in value_config:
+                            config[key] = value_config["default"]
+                        else:
+                            config[key] = value_config
+
+                    logger.info(
+                        f"Successfully loaded {len(advanced_variables)} advanced configuration variables"
+                    )
+                    st_debug(
+                        f"Loaded advanced config keys: {', '.join(advanced_variables.keys())}"
+                    )
+
+            except Exception as e:
+                logger.warning(f"Failed to load variables.advanced.yml: {e}")
 
         # Load deploying_user.yml if it exists (created during deployment)
         deploying_user_path = "./deploying_user.yml"

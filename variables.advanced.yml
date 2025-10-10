@@ -5,3 +5,15 @@ variables:
   benchmark_table_name:
     description: Name of the table to log token usage benchmarks
     default: dbxmetagen_token_usage
+  pi_classification_tag_name:
+    description: Unity Catalog tag name for PI classification (PII/PHI/PCI/None)
+    default: "data_classification"
+  pi_subclassification_tag_name:
+    description: Unity Catalog tag name for PI subclassification (specific PI type)
+    default: "data_subclassification"
+  domain_tag_name:
+    description: Unity Catalog tag name for business domain
+    default: "domain"
+  subdomain_tag_name:
+    description: Unity Catalog tag name for business subdomain
+    default: "subdomain"

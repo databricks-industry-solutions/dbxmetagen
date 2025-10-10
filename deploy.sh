@@ -161,10 +161,6 @@ cleanup_temp_yml_files() {
         echo "Cleaning up env_overrides.yml..."
         rm app/env_overrides.yml
     fi
-    if [ -f variables_override.yml ]; then
-        echo "Cleaning up variables_override.yml..."
-        rm variables_override.yml
-    fi
     if [ -f databricks_final.yml ]; then
         echo "Cleaning up databricks_final.yml..."
         rm databricks_final.yml
@@ -176,6 +172,10 @@ cleanup_temp_yml_files() {
     if [ -f app/domain_config.yml ]; then
         echo "Cleaning up domain_config.yml..."
         rm app/domain_config.yml
+    fi
+    if [ -f variables.bkp ]; then
+        echo "Cleaning up variables.bkp..."
+        mv variables.bkp variables.yml
     fi
 }
 
@@ -265,34 +265,25 @@ echo "DBX MetaGen Deployment"
 echo "Target: $TARGET"
 APP_ENV=${TARGET}
 
-create_variables_override_yml() {
+update_variables_yml() {
     echo "Creating variables override file from dev.env..."
+
+    cp variables.yml variables.bkp
     
     if [ ! -f "dev.env" ]; then
-        echo "No dev.env found, creating empty override file"
-        cat > variables_override.yml << 'EOF'
-# Auto-generated during deployment
-variables: {}
-EOF
+        echo "No dev.env found."
         return
     fi
     
-    cat > variables_override.yml << 'EOF'
-# Auto-generated from dev.env during deployment
-# This file overrides default values in variables.yml
-variables:
-EOF
-    
-    # Add workspace_host override if set
     if [ -n "$DATABRICKS_HOST" ]; then
         cat >> variables_override.yml << EOF
+  
   workspace_host:
     default: "$DATABRICKS_HOST"
 EOF
         echo "Setting workspace_host from DATABRICKS_HOST"
     fi
     
-    # Add permission_groups override if set  
     if [ -n "$permission_groups" ]; then
         cat >> variables_override.yml << EOF
   permission_groups:
@@ -301,7 +292,6 @@ EOF
         echo "Setting permission_groups: $permission_groups"
     fi
     
-    # Add permission_users override if set
     if [ -n "$permission_users" ]; then
         cat >> variables_override.yml << EOF
   permission_users:
@@ -310,7 +300,7 @@ EOF
         echo "Setting permission_users: $permission_users"
     fi
     
-    echo "Created variables_override.yml"
+    echo "Updated variables.yml"
 }
 
 if [ -f "dev.env" ]; then
@@ -323,15 +313,23 @@ fi
 HOST_URL=$DATABRICKS_HOST
 TARGET=$TARGET
 
-create_variables_override_yml
-sed -i '' '1d' variables_override.yml
-cat variables.yml variables_override.yml > app/variables.yml
-cp variables.yml app/variables.yml
+if [ -f "variables.bkp" ]; then
+    echo "Restoring variables.yml from backup..."
+    mv variables.bkp variables.yml
+fi
+
+if [ -f "variables_override.yml" ]; then
+    echo "Cleaning up variables_override.yml..."
+    rm variables_override.yml
+fi
+
+update_variables_yml
 cp configurations/domain_config.yaml app/domain_config.yaml
 create_deploying_user_yml
 create_app_env_yml
 create_env_overrides_yml
 check_for_deployed_app
+cat variables_override.yml >> variables.yml
 
 echo "=== Deploying bundle ==="
 validate_bundle

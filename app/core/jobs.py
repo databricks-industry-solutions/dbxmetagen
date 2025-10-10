@@ -13,7 +13,6 @@ from databricks.sdk.service.jobs import (
     NotebookTask,
     JobEnvironment,
     Task,
-    PerformanceTarget,
     JobEmailNotifications,
 )
 from databricks.sdk.service.compute import Environment
@@ -260,21 +259,12 @@ class JobManager:
                 bundle_target = st.session_state.get("app_env", "dev")
                 logger.info(f"Using deploying user: {deploying_user}")
                 logger.info(f"Using bundle target: {bundle_target}")
-                # st.info(f"Using bundle target: {bundle_target}")
-                # path = f"/Workspace/Users/{deploying_user}/.bundle/dbxmetagen/{bundle_target}/files/notebooks/generate_metadata"
-                # st.info(
-                #     f"Resolved notebook path for deploying user {deploying_user}: {path}"
-                # )
-                logger.info(
-                    f"Resolved notebook path for deploying user {deploying_user}: {path}"
-                )
                 return path
             logger.info("DEPLOY_USER_NAME not set, continuing to fallback")
 
         except Exception as e:
             logger.warning(f"Could not resolve deploying user path: {e}")
 
-        # 3) Use user context manager (no hardcoded fallbacks)
         try:
             app_name = AppConfig.get_app_name()
             bundle_target = AppConfig.get_bundle_target()
@@ -436,16 +426,15 @@ class JobManager:
         existing_cluster_id = self._find_existing_cluster()
 
         try:
-            job = self.workspace_client.jobs.create(
-                environments=[
+            job_params = {
+                "environments": [
                     JobEnvironment(
                         environment_key="default_python",
                         spec=Environment(environment_version="2"),
                     )
                 ],
-                performance_target=PerformanceTarget.PERFORMANCE_OPTIMIZED,
-                name=job_name,
-                tasks=[
+                "name": job_name,
+                "tasks": [
                     Task(
                         description="Generate metadata for tables",
                         task_key="generate_metadata",
@@ -457,7 +446,7 @@ class JobManager:
                         timeout_seconds=14400,
                     )
                 ],
-                email_notifications=(
+                "email_notifications": (
                     JobEmailNotifications(
                         on_failure=[user_email] if user_email else [],
                         on_success=[user_email] if user_email else [],
@@ -465,8 +454,10 @@ class JobManager:
                     if user_email
                     else None
                 ),
-                max_concurrent_runs=1,
-            )
+                "max_concurrent_runs": 1,
+            }
+
+            job = self.workspace_client.jobs.create(**job_params)
 
             # Verify job creation
             created_job = self.workspace_client.jobs.get(job.job_id)

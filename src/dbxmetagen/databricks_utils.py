@@ -260,7 +260,13 @@ def grant_group_permissions(
         table_pattern: Optional table name pattern (e.g., "table_processing_log")
     """
     spark = SparkSession.builder.getOrCreate()
-
+    print("\n\n")
+    print(f"Granting schema permissions to group: {group_name}")
+    print(f"Catalog name: {catalog_name}")
+    print(f"Schema name: {schema_name}")
+    print(f"Volume name: {volume_name}")
+    print(f"Table pattern: {table_pattern}")
+    print("\n\n")
     try:
         spark.sql(
             f"GRANT USE SCHEMA ON SCHEMA {catalog_name}.{schema_name} TO `{group_name}`"

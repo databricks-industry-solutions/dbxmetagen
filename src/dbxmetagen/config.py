@@ -71,6 +71,10 @@ class MetadataConfig:
         "yaml_advanced_variable_names": [
             "enable_benchmarking",
             "benchmark_table_name",
+            "pi_classification_tag_name",
+            "pi_subclassification_tag_name",
+            "domain_tag_name",
+            "subdomain_tag_name",
         ],
     }
     MODEL_PARAMS = {}

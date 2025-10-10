@@ -518,20 +518,26 @@ def add_ddl_to_table_comment_df(df: DataFrame, ddl_column: str) -> DataFrame:
         return df
 
 
-def add_table_ddl_to_pi_df(df: DataFrame, ddl_column: str) -> DataFrame:
+def add_table_ddl_to_pi_df(config, df: DataFrame, ddl_column: str) -> DataFrame:
     """
     Adds a DDL statement to a DataFrame for PI information.
 
     Args:
+        config: MetadataConfig with tag name configuration
         df (DataFrame): The DataFrame to add the DDL statement to.
         ddl_column (str): The name of the DDL column.
 
     Returns:
         DataFrame: The updated DataFrame with the DDL statement added.
     """
+    # Create UDF with config-specific tag names
+    generate_table_pi_ddl = udf(
+        _create_table_pi_information_ddl_func(config), StringType()
+    )
+
     return df.withColumn(
         ddl_column,
-        generate_table_pi_information_ddl("tokenized_table", "classification", "type"),
+        generate_table_pi_ddl("tokenized_table", "classification", "type"),
     )
 
 
@@ -540,19 +546,21 @@ def add_column_ddl_to_pi_df(config, df: DataFrame, ddl_column: str) -> DataFrame
     Adds a DDL statement to a DataFrame for PI information.
 
     Args:
+        config: MetadataConfig with tag name configuration
         df (DataFrame): The DataFrame to add the DDL statement to.
         ddl_column (str): The name of the DDL column.
 
     Returns:
         DataFrame: The updated DataFrame with the DDL statement added.
     """
+    # Create UDF with config-specific tag names
+    generate_pi_ddl = udf(_create_pi_information_ddl_func(config), StringType())
+
     if not config.tag_none_fields:
         df = df.filter(col("type") != "None")
     df = df.withColumn(
         ddl_column,
-        generate_pi_information_ddl(
-            "tokenized_table", "column_name", "classification", "type"
-        ),
+        generate_pi_ddl("tokenized_table", "column_name", "classification", "type"),
     )
     return df
 
@@ -1978,7 +1986,7 @@ def add_ddl_to_dfs(config, table_df, column_df, table_name):
         table_df = create_pi_table_df(dfs["pi_column_df"], table_name, config)
         if table_df is not None:
             table_df = set_protected_classification(table_df, config)
-            table_df = add_table_ddl_to_pi_df(table_df, "ddl")
+            table_df = add_table_ddl_to_pi_df(config, table_df, "ddl")
             dfs["pi_table_df"] = table_df
         else:
             logger.error(
@@ -2023,9 +2031,12 @@ def add_ddl_to_domain_table_df(table_df: DataFrame, ddl_col_name: str) -> DataFr
         table_df = table_df.withColumn("subdomain", col("subdomain").cast("string"))
 
     # Generate ALTER TABLE SET TAGS DDL with domain information using UDF
+    # Create UDF with config-specific tag names
+    generate_domain_ddl = udf(_create_table_domain_ddl_func(config), StringType())
+
     result_df = table_df.withColumn(
         ddl_col_name,
-        generate_table_domain_ddl("tokenized_table", "domain", "subdomain"),
+        generate_domain_ddl("tokenized_table", "domain", "subdomain"),
     )
 
     # Keep column_content for logging purposes
@@ -2772,25 +2783,38 @@ def _create_column_comment_ddl_func():
     return column_comment_ddl
 
 
-def _create_table_pi_information_ddl_func():
+def _create_table_pi_information_ddl_func(config: MetadataConfig):
+    pi_class_tag = getattr(config, "pi_classification_tag_name", "data_classification")
+    pi_subclass_tag = getattr(
+        config, "pi_subclassification_tag_name", "data_subclassification"
+    )
+
     def table_pi_information_ddl(
         table_name: str, classification: str, pi_type: str
     ) -> str:
-        return f"ALTER TABLE {table_name} SET TAGS ('data_classification' = '{classification}', 'data_subclassification' = '{pi_type}');"
+        return f"ALTER TABLE {table_name} SET TAGS ('{pi_class_tag}' = '{classification}', '{pi_subclass_tag}' = '{pi_type}');"
 
     return table_pi_information_ddl
 
 
-def _create_pi_information_ddl_func():
+def _create_pi_information_ddl_func(config: MetadataConfig):
+    pi_class_tag = getattr(config, "pi_classification_tag_name", "data_classification")
+    pi_subclass_tag = getattr(
+        config, "pi_subclassification_tag_name", "data_subclassification"
+    )
+
     def pi_information_ddl(
         table_name: str, column_name: str, classification: str, pi_type: str
     ) -> str:
-        return f"ALTER TABLE {table_name} ALTER COLUMN `{column_name}` SET TAGS ('data_classification' = '{classification}', 'data_subclassification' = '{pi_type}');"
+        return f"ALTER TABLE {table_name} ALTER COLUMN `{column_name}` SET TAGS ('{pi_class_tag}' = '{classification}', '{pi_subclass_tag}' = '{pi_type}');"
 
     return pi_information_ddl
 
 
-def _create_table_domain_ddl_func():
+def _create_table_domain_ddl_func(config: MetadataConfig):
+    domain_tag = getattr(config, "domain_tag_name", "domain")
+    subdomain_tag = getattr(config, "subdomain_tag_name", "subdomain")
+
     def table_domain_ddl(full_table_name: str, domain: str, subdomain: str) -> str:
         """
         Generate DDL for domain classification as table tags.
@@ -2804,16 +2828,18 @@ def _create_table_domain_ddl_func():
             DDL statement to set table tags with domain information
         """
         if subdomain is None or subdomain == "None" or subdomain.strip() == "":
-            return f"ALTER TABLE {full_table_name} SET TAGS ('domain' = '{domain}');"
-        return f"ALTER TABLE {full_table_name} SET TAGS ('domain' = '{domain}', 'subdomain' = '{subdomain}');"
+            return (
+                f"ALTER TABLE {full_table_name} SET TAGS ('{domain_tag}' = '{domain}');"
+            )
+        return f"ALTER TABLE {full_table_name} SET TAGS ('{domain_tag}' = '{domain}', '{subdomain_tag}' = '{subdomain}');"
 
     return table_domain_ddl
 
 
 generate_table_comment_ddl = udf(_create_table_comment_ddl_func(), StringType())
 generate_column_comment_ddl = udf(_create_column_comment_ddl_func(), StringType())
-generate_table_pi_information_ddl = udf(
-    _create_table_pi_information_ddl_func(), StringType()
-)
-generate_pi_information_ddl = udf(_create_pi_information_ddl_func(), StringType())
-generate_table_domain_ddl = udf(_create_table_domain_ddl_func(), StringType())
+
+# These UDFs require config and are created dynamically in their respective functions
+# generate_table_pi_information_ddl
+# generate_pi_information_ddl
+# generate_table_domain_ddl
