@@ -130,11 +130,11 @@ class MetadataConfig:
         Ensures concurrent jobs don't interfere with each other's temp tables.
 
         Returns:
-            str: Full table name in format: catalog.schema.mode_temp_metadata_generation_log_user_timestamp
+            str: Full table name in format: catalog.schema.temp_metadata_generation_log_user_timestamp
         """
 
         current_user = sanitize_user_identifier(get_current_user())
-        table_name = f"{self.catalog_name}.{self.schema_name}.{self.mode}_temp_metadata_generation_log_{current_user}_{self.log_timestamp}"
+        table_name = f"{self.catalog_name}.{self.schema_name}.temp_metadata_generation_log_{current_user}_{self.log_timestamp}"
         return table_name
 
     def load_yaml(self, file_path=None, variable_names=None):

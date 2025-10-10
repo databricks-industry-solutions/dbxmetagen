@@ -781,87 +781,39 @@ def mark_as_deleted(table_name: str, config: MetadataConfig) -> None:
 
 
 def run_log_table_ddl(config):
-    """Run the log table DDL."""
+    """Run the unified log table DDL."""
     spark = SparkSession.builder.getOrCreate()
-    if config.mode == "comment":
-        spark.sql(
-            f"""CREATE TABLE IF NOT EXISTS {config.catalog_name}.{config.schema_name}.{config.mode}_metadata_generation_log (
-            table STRING, 
-            tokenized_table STRING, 
-            ddl_type STRING, 
-            column_name STRING, 
-            _created_at TIMESTAMP,
-            column_content STRING, 
-            catalog STRING, 
-            schema STRING, 
-            table_name STRING, 
-            ddl STRING, 
-            current_user STRING, 
-            model STRING, 
-            sample_size INT, 
-            max_tokens INT, 
-            temperature DOUBLE, 
-            columns_per_call INT, 
-            status STRING
-        )"""
-        )
-    elif config.mode == "pi":
-        spark.sql(
-            f"""CREATE TABLE IF NOT EXISTS {config.catalog_name}.{config.schema_name}.{config.mode}_metadata_generation_log (
-            table STRING, 
-            tokenized_table STRING, 
-            ddl_type STRING, 
-            column_name STRING,
-            _created_at TIMESTAMP,
-            classification STRING,
-            type STRING,
-            confidence DOUBLE,
-            catalog STRING, 
-            schema STRING, 
-            table_name STRING, 
-            ddl STRING, 
-            current_user STRING, 
-            model STRING, 
-            sample_size INT, 
-            max_tokens INT, 
-            temperature DOUBLE, 
-            columns_per_call INT, 
-            status STRING
-        )"""
-        )
-    elif config.mode == "domain":
-        spark.sql(
-            f"""CREATE TABLE IF NOT EXISTS {config.catalog_name}.{config.schema_name}.{config.mode}_metadata_generation_log (
-            table STRING, 
-            tokenized_table STRING, 
-            ddl_type STRING, 
-            column_name STRING,
-            _created_at TIMESTAMP,
-            column_content STRING,
-            domain STRING,
-            subdomain STRING,
-            confidence DOUBLE,
-            recommended_domain STRING,
-            recommended_subdomain STRING,
-            reasoning STRING,
-            metadata_summary STRING,
-            catalog STRING, 
-            schema STRING, 
-            table_name STRING, 
-            ddl STRING, 
-            current_user STRING, 
-            model STRING, 
-            sample_size INT, 
-            max_tokens INT, 
-            temperature DOUBLE, 
-            columns_per_call INT, 
-            status STRING
-        )"""
-        )
-    else:
-        raise ValueError(
-            f"Invalid mode: {config.mode}, please choose pi, comment, or domain."
-        )
+    spark.sql(
+        f"""CREATE TABLE IF NOT EXISTS {config.catalog_name}.{config.schema_name}.metadata_generation_log (
+        metadata_type STRING,
+        table STRING, 
+        tokenized_table STRING, 
+        ddl_type STRING, 
+        column_name STRING,
+        _created_at TIMESTAMP,
+        column_content STRING,
+        classification STRING,
+        type STRING,
+        confidence DOUBLE,
+        domain STRING,
+        subdomain STRING,
+        recommended_domain STRING,
+        recommended_subdomain STRING,
+        reasoning STRING,
+        metadata_summary STRING,
+        catalog STRING, 
+        schema STRING, 
+        table_name STRING, 
+        ddl STRING, 
+        current_user STRING, 
+        model STRING, 
+        sample_size INT, 
+        max_tokens INT, 
+        temperature DOUBLE, 
+        columns_per_call INT, 
+        status STRING
+    )"""
+    )
 
 
 def output_df_pandas_to_tsv(df, output_file):
@@ -1108,11 +1060,12 @@ def log_metadata_generation(
     df: DataFrame, config: MetadataConfig, table_name: str, volume_name: str
 ) -> None:
     """
-    Log the metadata generation to the log table.
+    Log the metadata generation to the unified log table.
     """
     run_log_table_ddl(config)
+    df = df.withColumn("metadata_type", lit(config.mode))
     df.write.mode("append").option("mergeSchema", "true").saveAsTable(
-        f"{config.catalog_name}.{config.schema_name}.{config.mode}_metadata_generation_log"
+        f"{config.catalog_name}.{config.schema_name}.metadata_generation_log"
     )
     mark_as_deleted(table_name, config)
 
@@ -1996,7 +1949,7 @@ def add_ddl_to_dfs(config, table_df, column_df, table_name):
             dfs["ddl_results"] = apply_ddl_to_tables(dfs, config)
     elif config.mode == "domain":
         if table_df is not None:
-            table_df = add_ddl_to_domain_table_df(table_df, "ddl")
+            table_df = add_ddl_to_domain_table_df(table_df, "ddl", config)
             dfs["domain_table_df"] = table_df
         else:
             logger.error(
@@ -2010,13 +1963,16 @@ def add_ddl_to_dfs(config, table_df, column_df, table_name):
     return dfs
 
 
-def add_ddl_to_domain_table_df(table_df: DataFrame, ddl_col_name: str) -> DataFrame:
+def add_ddl_to_domain_table_df(
+    table_df: DataFrame, ddl_col_name: str, config
+) -> DataFrame:
     """
     Adds DDL statements to domain classification DataFrame.
 
     Args:
         table_df (DataFrame): The DataFrame containing domain classifications.
         ddl_col_name (str): The name of the DDL column to add.
+        config: Configuration object with tag names.
 
     Returns:
         DataFrame: The DataFrame with DDL statements added.
