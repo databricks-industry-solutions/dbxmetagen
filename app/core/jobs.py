@@ -497,29 +497,16 @@ class JobManager:
             logger.error(error_msg)
             raise RuntimeError(error_msg)
 
-    # === Job creation UI methods ===
 
-    # Step 1 Create & run job triggers this
     def create_and_run_metadata_job(self, tables: List[str]):
         """Create and run a metadata generation job using SPN deployment type"""
         try:
-            # Recheck authentication before starting job operations
             if not DatabricksClientManager.recheck_authentication():
                 st.error(
                     "❌ Authentication check failed. Please refresh the page and try again."
                 )
                 return
 
-            # Get deployment type from app configuration
-            # app_deployment_type = self._get_app_deployment_type()
-
-            # if app_deployment_type == "SPN":
-            #    self._create_and_run_spn_job(tables, "metadata")
-            # else:
-            # Fallback to legacy approach if needed (for debugging/troubleshooting)
-            # st.warning(
-            #     f"⚠️ Using legacy job creation approach for deployment type: {app_deployment_type}"
-            # )
             job_name = "dbxmetagen_app_job"
             job_id, run_id = self.create_metadata_job(
                 job_name=job_name,
@@ -551,18 +538,15 @@ class JobManager:
         """Create and run a DDL sync job"""
         logger.info(f"Creating sync job for file: {filename}, mode: {mode}")
 
-        # Use consistent job name
         job_name = "dbxmetagen_app_sync_job"
 
-        # Prepare job parameters for sync notebook
         job_parameters = {
             "reviewed_file_name": filename,
             "mode": mode,
             "env": "app",
-            "table_names": "from_metadata_file",  # Sync job reads tables from metadata file
+            "table_names": "from_metadata_file",
         }
 
-        # Check if job already exists, if so reuse it
         existing_job_id = self._find_job_by_name(job_name)
         if existing_job_id:
             logger.info(
@@ -570,7 +554,6 @@ class JobManager:
             )
             job_id = existing_job_id
         else:
-            # Create new job - need sync notebook path
             notebook_path = self._resolve_sync_notebook_path()
             job_id = self._create_job(job_name, notebook_path, job_parameters)
 

@@ -340,6 +340,23 @@ def append_column_rows(
     Returns:
         List[Row]: The updated list of rows with the new column rows appended.
     """
+    # Parse presidio results for PI mode
+    presidio_map = {}
+    if (
+        config.mode == "pi"
+        and hasattr(response, "presidio_results")
+        and response.presidio_results
+    ):
+        try:
+            import json
+
+            presidio_data = json.loads(response.presidio_results)
+            for result in presidio_data.get("deterministic_results", []):
+                col = result.get("column")
+                presidio_map[col] = json.dumps(result)
+        except Exception as e:
+            logging.warning(f"Failed to parse presidio results: {e}")
+
     for i, (column_name, column_content) in enumerate(
         zip(response.columns, response.column_contents)
     ):
@@ -350,11 +367,15 @@ def append_column_rows(
             if isinstance(column_content, PIColumnContent):
                 column_content = column_content.model_dump()
 
+            # Add presidio results for this column
+            presidio_results = presidio_map.get(column_name, None)
+
             row = Row(
                 table=full_table_name,
                 tokenized_table=tokenized_full_table_name,
                 ddl_type="column",
                 column_name=column_name,
+                presidio_results=presidio_results,
                 **column_content,
             )
         elif isinstance(column_content, str) and config.mode == "comment":
@@ -394,6 +415,7 @@ def define_row_schema(config):
                 StructField("classification", StringType(), True),
                 StructField("type", StringType(), True),
                 StructField("confidence", DoubleType(), True),
+                StructField("presidio_results", StringType(), True),
             ]
         )
     elif config.mode == "comment":
@@ -795,6 +817,7 @@ def run_log_table_ddl(config):
         classification STRING,
         type STRING,
         confidence DOUBLE,
+        presidio_results STRING,
         domain STRING,
         subdomain STRING,
         recommended_domain STRING,
@@ -1623,6 +1646,9 @@ def get_generated_metadata_data_aware(
         response, _ = chat_response.get_responses(
             prompt_messages, prompt.prompt_content
         )
+        # Store presidio results with the response for PI mode
+        if hasattr(prompt, "deterministic_results"):
+            response.presidio_results = prompt.deterministic_results
         responses.append(response)
     return responses
 
