@@ -1,17 +1,5 @@
 #!/bin/bash
 
-set -e
-
-if ! command -v databricks &> /dev/null; then
-    echo "Error: Databricks CLI not found. Please install it first."
-    exit 1
-fi
-
-if [ ! -f "databricks.yml" ]; then
-    echo "Error: databricks.yml not found. Run from the dbxmetagen directory."
-    exit 1
-fi
-
 add_service_principal_simple() {
     # Copy databricks.yml and add service principal permissions to the dev section
 
@@ -179,6 +167,45 @@ cleanup_temp_yml_files() {
     fi
 }
 
+update_variables_yml() {
+    echo "Creating variables override file from dev.env..."
+
+    cp variables.yml variables.bkp
+    
+    if [ ! -f "dev.env" ]; then
+        echo "No dev.env found."
+        return
+    fi
+    
+    if [ -n "$DATABRICKS_HOST" ]; then
+        cat >> variables_override.yml << EOF
+  
+  workspace_host:
+    default: "$DATABRICKS_HOST"
+EOF
+        echo "Setting workspace_host from DATABRICKS_HOST"
+    fi
+    
+    if [ -n "$permission_groups" ]; then
+        cat >> variables_override.yml << EOF
+  permission_groups:
+    default: "$permission_groups"
+EOF
+        echo "Setting permission_groups: $permission_groups"
+    fi
+    
+    if [ -n "$permission_users" ]; then
+        cat >> variables_override.yml << EOF
+  permission_users:
+    default: "$permission_users"
+EOF
+        echo "Setting permission_users: $permission_users"
+    fi
+    
+    echo "Updated variables.yml"
+}
+
+
 start_app() {
     echo "App ID: $APP_ID"
     echo "Service Principal ID: $APP_SP_ID"
@@ -249,7 +276,19 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Get current user using the specified profile
+
+set -e
+
+if ! command -v databricks &> /dev/null; then
+    echo "Error: Databricks CLI not found. Please install it first."
+    exit 1
+fi
+
+if [ ! -f "databricks.yml" ]; then
+    echo "Error: databricks.yml not found. Run from the dbxmetagen directory."
+    exit 1
+fi
+
 echo "Using Databricks profile: $PROFILE"
 if ! databricks current-user me --profile "$PROFILE" &> /dev/null; then
     echo "Error: Not authenticated with Databricks using profile '$PROFILE'."
@@ -258,55 +297,26 @@ if ! databricks current-user me --profile "$PROFILE" &> /dev/null; then
 fi
 
 CURRENT_USER=$(databricks current-user me --profile "$PROFILE" --output json | jq -r '.userName')
-echo "Current user: $CURRENT_USER"
 
-echo ""
-echo "DBX MetaGen Deployment"
-echo "Target: $TARGET"
+cat > app/deploying_user.yml << EOF
+# Auto-generated during deployment - contains the user who deployed this app
+# This file is created by deploy.sh and should not be committed to version control
+deploying_user: "$CURRENT_USER"
+EOF
+
+
 APP_ENV=${TARGET}
 
-update_variables_yml() {
-    echo "Creating variables override file from dev.env..."
+cat > app/app_env.yml << EOF
+# Auto-generated during deployment - contains the user who deployed this app
+# This file is created by deploy.sh and should not be committed to version control
+app_env: "$APP_ENV"
+EOF
 
-    cp variables.yml variables.bkp
-    
-    if [ ! -f "dev.env" ]; then
-        echo "No dev.env found."
-        return
-    fi
-    
-    if [ -n "$DATABRICKS_HOST" ]; then
-        cat >> variables_override.yml << EOF
-  
-  workspace_host:
-    default: "$DATABRICKS_HOST"
-EOF
-        echo "Setting workspace_host from DATABRICKS_HOST"
-    fi
-    
-    if [ -n "$permission_groups" ]; then
-        cat >> variables_override.yml << EOF
-  permission_groups:
-    default: "$permission_groups"
-EOF
-        echo "Setting permission_groups: $permission_groups"
-    fi
-    
-    if [ -n "$permission_users" ]; then
-        cat >> variables_override.yml << EOF
-  permission_users:
-    default: "$permission_users"
-EOF
-        echo "Setting permission_users: $permission_users"
-    fi
-    
-    echo "Updated variables.yml"
-}
-
-if [ -f "dev.env" ]; then
+if [ -f "${APP_ENV}.env" ]; then
     echo "Loading environment variables from dev.env..."
     set -a  # automatically export all variables
-    source dev.env
+    source ${APP_ENV}.env
     set +a  # turn off automatic export
 fi
 
@@ -322,6 +332,16 @@ if [ -f "variables_override.yml" ]; then
     echo "Cleaning up variables_override.yml..."
     rm variables_override.yml
 fi
+
+
+cat app/deploying_user.yml
+cat app/app_env.yml
+
+echo "Current user: $CURRENT_USER"
+
+echo ""
+echo "DBX MetaGen Deployment"
+echo "Target: $TARGET"
 
 update_variables_yml
 cp configurations/domain_config.yaml app/domain_config.yaml
