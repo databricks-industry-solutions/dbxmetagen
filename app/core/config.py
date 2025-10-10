@@ -66,10 +66,10 @@ class ConfigManager:
 
     def _load_variables_yml(self) -> Dict[str, Any]:
         """Load configuration from variables.yml file and merge with deploying_user.yml and variables.advanced.yml if available."""
-        yaml_path = "./variables.yml"  # Root of project
+        yaml_path = "./variables.yml"
         advanced_yaml_path = "./variables.advanced.yml"
         deploying_user_path = "./deploying_user.yml"
-        app_env = "./app_env.yml"
+        app_env_path = "./app_env.yml"
 
         if not os.path.exists(yaml_path):
             raise FileNotFoundError(f"variables.yml not found at {yaml_path}")
@@ -121,6 +121,8 @@ class ConfigManager:
 
         # Load deploying_user.yml if it exists (created during deployment)
         deploying_user_path = "./deploying_user.yml"
+        deploying_user_loaded = False
+
         if os.path.exists(deploying_user_path):
             logger.info(
                 f"Loading deploying user configuration from {deploying_user_path}"
@@ -131,7 +133,7 @@ class ConfigManager:
                     st_debug(f"Deploying user config: {deploying_config}")
 
                 # Merge deploying user config into main config
-                if deploying_config:
+                if deploying_config and deploying_config.get("deploying_user"):
                     config.update(deploying_config)
                     logger.info(
                         f"Successfully merged deploying_user.yml - deploying_user: {deploying_config.get('deploying_user', 'unknown')}"
@@ -139,12 +141,22 @@ class ConfigManager:
                     st_debug(
                         f"Successfully merged deploying_user.yml - deploying_user: {config.get('deploying_user', 'unknown')}"
                     )
-                    st.session_state.deploying_user = config.get(
-                        "deploying_user", "unknown"
-                    )
+                    st.session_state.deploying_user = config.get("deploying_user")
+                    deploying_user_loaded = True
 
             except Exception as e:
                 logger.warning(f"Failed to load deploying_user.yml: {e}")
+        else:
+            logger.warning(f"deploying_user.yml not found at {deploying_user_path}")
+
+        # Set default if not loaded
+        if not deploying_user_loaded:
+            if (
+                not hasattr(st.session_state, "deploying_user")
+                or not st.session_state.deploying_user
+            ):
+                st.session_state.deploying_user = "unknown"
+                logger.warning("deploying_user not loaded - set to 'unknown'")
 
         # Load env_overrides.yml if it exists (created during deployment from dev.env)
         env_overrides_path = "./env_overrides.yml"

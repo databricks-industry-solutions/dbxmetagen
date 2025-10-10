@@ -1980,14 +1980,11 @@ def add_ddl_to_domain_table_df(
     if table_df is None:
         return None
 
-    # Ensure domain columns are cast to string for serverless compatibility
     if "domain" in table_df.columns:
         table_df = table_df.withColumn("domain", col("domain").cast("string"))
     if "subdomain" in table_df.columns:
         table_df = table_df.withColumn("subdomain", col("subdomain").cast("string"))
 
-    # Generate ALTER TABLE SET TAGS DDL with domain information using UDF
-    # Create UDF with config-specific tag names
     generate_domain_ddl = udf(_create_table_domain_ddl_func(config), StringType())
 
     result_df = table_df.withColumn(

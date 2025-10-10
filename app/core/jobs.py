@@ -178,9 +178,14 @@ class JobManager:
         """Build job parameters for notebook execution"""
 
         if job_user is None:
-            job_user = UserContextManager.get_job_user(
-                use_obo=config.get("use_obo", False)
-            )
+            try:
+                job_user = UserContextManager.get_job_user(
+                    use_obo=config.get("use_obo", False)
+                )
+            except ValueError as e:
+                logger.error(f"Failed to get job user: {e}")
+                st.error(f"❌ Failed to determine job user: {e}")
+                raise
         st.info(f"Job user: {job_user}")
         catalog_name = AppConfig.get_catalog_name()
 
@@ -253,14 +258,18 @@ class JobManager:
             # Get deploying user from session state (loaded from deploying_user.yml)
             deploying_user = st.session_state.get("deploying_user")
 
+            if not deploying_user or deploying_user == "unknown":
+                logger.warning("Deploying user not found in session state")
+                st.warning("⚠️ Deploying user not found - check deploying_user.yml file")
+
             st.info(f"Deploying user: {deploying_user}")
 
-            if deploying_user:  # TODO: marke this spot
+            if deploying_user and deploying_user != "unknown":  # TODO: marke this spot
                 bundle_target = st.session_state.get("app_env", "dev")
                 logger.info(f"Using deploying user: {deploying_user}")
                 logger.info(f"Using bundle target: {bundle_target}")
                 return path
-            logger.info("DEPLOY_USER_NAME not set, continuing to fallback")
+            logger.info("Deploying user not properly set, continuing to fallback")
 
         except Exception as e:
             logger.warning(f"Could not resolve deploying user path: {e}")
@@ -429,8 +438,8 @@ class JobManager:
             job_params = {
                 "environments": [
                     JobEnvironment(
-                        environment_key="default_python",
-                        spec=Environment(environment_version="2"),
+                        environment_key="default",
+                        spec=Environment(client="2"),
                     )
                 ],
                 "name": job_name,
