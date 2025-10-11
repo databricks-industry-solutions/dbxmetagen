@@ -1,52 +1,84 @@
 #!/bin/bash
 
-set -e
-
-if ! command -v databricks &> /dev/null; then
-    echo "Error: Databricks CLI not found. Please install it first."
-    exit 1
-fi
-
-if [ ! -f "databricks.yml" ]; then
-    echo "Error: databricks.yml not found. Run from the dbxmetagen directory."
-    exit 1
-fi
-
-add_service_principal_simple() {
-    # Copy databricks.yml and add service principal permissions to the dev section
-
-    SOURCE_FILE="databricks.yml"
-    TARGET_FILE="databricks_final.yml"
-
-    # Copy the original file
-    cp "$SOURCE_FILE" "$TARGET_FILE"
-
-    # Add service principal lines after the existing user permissions in dev section
-    sed -i.tmp '/^  dev:/,/^  [a-z]/{
-        /^      level: CAN_MANAGE/{
-            a\
-        - service_principal_name: ${var.app_service_principal_application_id}\
-            level: CAN_MANAGE
+add_service_principal_to_bundle() {
+    # Create a modified databricks.yml with service principal permissions for redeployment
+    
+    if [ -z "$APP_SP_ID" ] || [ "$APP_SP_ID" = "null" ]; then
+        echo "No service principal ID available, skipping SP permissions"
+        return
+    fi
+    
+    echo "Adding service principal $APP_SP_ID to bundle permissions..."
+    
+    # Backup original
+    cp databricks.yml databricks.yml.backup
+    
+    # Add service principal to dev section's permissions after deploying_user
+    # This adds it after the first occurrence of "level: CAN_MANAGE" in the dev section
+    awk '
+        /^  dev:/ { in_dev=1 }
+        /^  prod:/ { in_dev=0 }
+        {
+            print
+            if (in_dev && /level: CAN_MANAGE/ && !added) {
+                print "      - service_principal_name: ${var.app_service_principal_application_id}"
+                print "        level: CAN_MANAGE"
+                added=1
+            }
         }
-    }' "$TARGET_FILE"
+    ' databricks.yml.backup > databricks.yml
+    
+    rm -f databricks.yml.tmp
+    echo "Service principal permissions added to databricks.yml"
+}
 
-
-echo "Created $TARGET_FILE with service principal permissions added to dev section"
+restore_original_bundle() {
+    # Restore the original databricks.yml after deployment
+    if [ -f databricks.yml.backup ]; then
+        echo "Restoring original databricks.yml..."
+        mv databricks.yml.backup databricks.yml
+        rm -f databricks.yml.tmp
+    fi
 }
 
 check_for_deployed_app() {
-    cd ../
-    SP_ID=$(databricks apps get "dbxmetagen-app" --profile "$PROFILE" --output json 2>/dev/null | jq -r '.service_principal_id' || echo "")
-    cd dbxmetagen
-    export APP_SP_ID="$SP_ID"
+    # Check Terraform state file to get the correct app's service principal
+    # This is the source of truth for what was actually deployed
+    echo "============================================"
+    echo "DEBUG: Checking for deployed app via Terraform state"
+    echo "Profile: $PROFILE"
+    echo "Target: $TARGET"
+    echo "============================================"
     
-    if [ -n "$SP_ID" ] && [ "$SP_ID" != "null" ]; then
-        echo "App already exists with SP ID: $APP_SP_ID"
-        echo "Adding service principal permissions..."
-        add_service_principal_simple
+    # Terraform state file is the most reliable source
+    TF_STATE_FILE=".databricks/bundle/$TARGET/terraform/terraform.tfstate"
+    
+    if [ -f "$TF_STATE_FILE" ]; then
+        echo "Found Terraform state file: $TF_STATE_FILE"
+        
+        # Extract service_principal_client_id from the databricks_app resource
+        APP_SP_ID=$(jq -r '.resources[] | select(.type == "databricks_app" and .name == "dbxmetagen_app") | .instances[0].attributes.service_principal_client_id // empty' "$TF_STATE_FILE" 2>/dev/null)
+        
+        if [ -n "$APP_SP_ID" ] && [ "$APP_SP_ID" != "null" ] && [ "$APP_SP_ID" != "" ]; then
+            echo "✓ Found deployed app with Service Principal Client ID: $APP_SP_ID"
+            
+            # Also show the app ID for verification
+            APP_ID=$(jq -r '.resources[] | select(.type == "databricks_app" and .name == "dbxmetagen_app") | .instances[0].attributes.id // empty' "$TF_STATE_FILE" 2>/dev/null)
+            echo "  App ID: $APP_ID"
+            
+            export APP_SP_ID="$APP_SP_ID"
+            echo "Will add service principal permissions to bundle before deployment"
+        else
+            echo "State file exists but no service principal ID found yet"
+            echo "This is likely the first deployment - SP will be created during deployment"
+            export APP_SP_ID=""
+        fi
     else
-        echo "App does not exist yet or no SP ID available"
+        echo "No Terraform state file found at $TF_STATE_FILE"
+        echo "This is the first deployment - app will be created"
+        export APP_SP_ID=""
     fi
+    echo "============================================"
 }
 
 validate_bundle() {
@@ -62,6 +94,11 @@ deploy_bundle() {
     TARGET="${TARGET:-dev}"
     echo "Deploying to $TARGET..."
     
+    # If app exists, add service principal permissions to bundle
+    if [ -n "$APP_SP_ID" ] && [ "$APP_SP_ID" != "null" ]; then
+        add_service_principal_to_bundle
+    fi
+    
     local DEPLOY_VARS=()
     if [ "$DEBUG_MODE" = true ]; then
         DEPLOY_VARS+=("--var" "debug_mode=true")
@@ -70,10 +107,20 @@ deploy_bundle() {
         DEPLOY_VARS+=("--var" "create_test_data=true")
     fi
     
+    # Add service principal ID and deploying user for variable substitution
+    if [ -n "$APP_SP_ID" ] && [ "$APP_SP_ID" != "null" ]; then
+        DEPLOY_VARS+=("--var" "app_service_principal_application_id=$APP_SP_ID")
+    fi
+    DEPLOY_VARS+=("--var" "deploying_user=$CURRENT_USER")
+    
     if ! databricks bundle deploy --target "$TARGET" --profile "$PROFILE" "${DEPLOY_VARS[@]}"; then
         echo "Error: Bundle deployment failed with target $TARGET"
+        restore_original_bundle  # Restore even on failure
         exit 1
     fi
+    
+    # Restore original databricks.yml after successful deployment
+    restore_original_bundle
     
     export DEPLOY_TARGET="$TARGET"
     echo "Bundle deployed successfully"
@@ -161,10 +208,6 @@ cleanup_temp_yml_files() {
         echo "Cleaning up env_overrides.yml..."
         rm app/env_overrides.yml
     fi
-    if [ -f variables_override.yml ]; then
-        echo "Cleaning up variables_override.yml..."
-        rm variables_override.yml
-    fi
     if [ -f databricks_final.yml ]; then
         echo "Cleaning up databricks_final.yml..."
         rm databricks_final.yml
@@ -173,11 +216,62 @@ cleanup_temp_yml_files() {
         echo "Cleaning up databricks_final.yml.tmp..."
         rm databricks_final.yml.tmp
     fi
+    if [ -f databricks.yml.backup ]; then
+        echo "Cleaning up databricks.yml.backup..."
+        rm databricks.yml.backup
+    fi
+    if [ -f databricks.yml.tmp ]; then
+        echo "Cleaning up databricks.yml.tmp..."
+        rm databricks.yml.tmp
+    fi
     if [ -f app/domain_config.yml ]; then
         echo "Cleaning up domain_config.yml..."
         rm app/domain_config.yml
     fi
+    if [ -f variables.bkp ]; then
+        echo "Cleaning up variables.bkp..."
+        mv variables.bkp variables.yml
+    fi
 }
+
+update_variables_yml() {
+    echo "Creating variables override file from dev.env..."
+
+    cp variables.yml variables.bkp
+    
+    if [ ! -f "dev.env" ]; then
+        echo "No dev.env found."
+        return
+    fi
+    
+    if [ -n "$DATABRICKS_HOST" ]; then
+        cat >> variables_override.yml << EOF
+  
+  workspace_host:
+    default: "$DATABRICKS_HOST"
+EOF
+        echo "Setting workspace_host from DATABRICKS_HOST"
+    fi
+    
+    if [ -n "$permission_groups" ]; then
+        cat >> variables_override.yml << EOF
+  permission_groups:
+    default: "$permission_groups"
+EOF
+        echo "Setting permission_groups: $permission_groups"
+    fi
+    
+    if [ -n "$permission_users" ]; then
+        cat >> variables_override.yml << EOF
+  permission_users:
+    default: "$permission_users"
+EOF
+        echo "Setting permission_users: $permission_users"
+    fi
+    
+    echo "Updated variables.yml"
+}
+
 
 start_app() {
     echo "App ID: $APP_ID"
@@ -249,7 +343,19 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Get current user using the specified profile
+
+set -e
+
+if ! command -v databricks &> /dev/null; then
+    echo "Error: Databricks CLI not found. Please install it first."
+    exit 1
+fi
+
+if [ ! -f "databricks.yml" ]; then
+    echo "Error: databricks.yml not found. Run from the dbxmetagen directory."
+    exit 1
+fi
+
 echo "Using Databricks profile: $PROFILE"
 if ! databricks current-user me --profile "$PROFILE" &> /dev/null; then
     echo "Error: Not authenticated with Databricks using profile '$PROFILE'."
@@ -258,84 +364,80 @@ if ! databricks current-user me --profile "$PROFILE" &> /dev/null; then
 fi
 
 CURRENT_USER=$(databricks current-user me --profile "$PROFILE" --output json | jq -r '.userName')
-echo "Current user: $CURRENT_USER"
 
-echo ""
-echo "DBX MetaGen Deployment"
-echo "Target: $TARGET"
+cat > app/deploying_user.yml << EOF
+# Auto-generated during deployment - contains the user who deployed this app
+# This file is created by deploy.sh and should not be committed to version control
+deploying_user: "$CURRENT_USER"
+EOF
+
+
 APP_ENV=${TARGET}
 
-create_variables_override_yml() {
-    echo "Creating variables override file from dev.env..."
-    
-    if [ ! -f "dev.env" ]; then
-        echo "No dev.env found, creating empty override file"
-        cat > variables_override.yml << 'EOF'
-# Auto-generated during deployment
-variables: {}
+cat > app/app_env.yml << EOF
+# Auto-generated during deployment - contains the user who deployed this app
+# This file is created by deploy.sh and should not be committed to version control
+app_env: "$APP_ENV"
 EOF
-        return
-    fi
-    
-    cat > variables_override.yml << 'EOF'
-# Auto-generated from dev.env during deployment
-# This file overrides default values in variables.yml
-variables:
-EOF
-    
-    # Add workspace_host override if set
-    if [ -n "$DATABRICKS_HOST" ]; then
-        cat >> variables_override.yml << EOF
-  workspace_host:
-    default: "$DATABRICKS_HOST"
-EOF
-        echo "Setting workspace_host from DATABRICKS_HOST"
-    fi
-    
-    # Add permission_groups override if set  
-    if [ -n "$permission_groups" ]; then
-        cat >> variables_override.yml << EOF
-  permission_groups:
-    default: "$permission_groups"
-EOF
-        echo "Setting permission_groups: $permission_groups"
-    fi
-    
-    # Add permission_users override if set
-    if [ -n "$permission_users" ]; then
-        cat >> variables_override.yml << EOF
-  permission_users:
-    default: "$permission_users"
-EOF
-        echo "Setting permission_users: $permission_users"
-    fi
-    
-    echo "Created variables_override.yml"
-}
 
-if [ -f "dev.env" ]; then
+if [ -f "${APP_ENV}.env" ]; then
     echo "Loading environment variables from dev.env..."
     set -a  # automatically export all variables
-    source dev.env
+    source ${APP_ENV}.env
     set +a  # turn off automatic export
 fi
 
 HOST_URL=$DATABRICKS_HOST
 TARGET=$TARGET
 
-create_variables_override_yml
-sed -i '' '1d' variables_override.yml
-cat variables.yml variables_override.yml > app/variables.yml
-cp variables.yml app/variables.yml
+if [ -f "variables.bkp" ]; then
+    echo "Restoring variables.yml from backup..."
+    mv variables.bkp variables.yml
+fi
+
+if [ -f "variables_override.yml" ]; then
+    echo "Cleaning up variables_override.yml..."
+    rm variables_override.yml
+fi
+
+
+cat app/deploying_user.yml
+cat app/app_env.yml
+
+echo "Current user: $CURRENT_USER"
+
+echo ""
+echo "DBX MetaGen Deployment"
+echo "Target: $TARGET"
+
+update_variables_yml
 cp configurations/domain_config.yaml app/domain_config.yaml
 create_deploying_user_yml
 create_app_env_yml
 create_env_overrides_yml
 check_for_deployed_app
+cat variables_override.yml >> variables.yml
 
 echo "=== Deploying bundle ==="
 validate_bundle
+
+# Store the SP ID before deployment (might be empty on first deploy)
+OLD_APP_SP_ID="$APP_SP_ID"
+
 deploy_bundle
+
+# After deployment, check if we now have a service principal ID
+echo "=== Checking for service principal after deployment ==="
+check_for_deployed_app
+
+# If we got a new SP ID after deployment, redeploy with permissions
+if [ -z "$OLD_APP_SP_ID" ] && [ -n "$APP_SP_ID" ] && [ "$APP_SP_ID" != "null" ]; then
+    echo "============================================"
+    echo "📝 New service principal detected: $APP_SP_ID"
+    echo "Redeploying bundle with service principal permissions..."
+    echo "============================================"
+    deploy_bundle
+fi
 
 echo "=== Starting app ==="
 start_app

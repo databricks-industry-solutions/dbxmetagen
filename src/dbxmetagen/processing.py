@@ -340,6 +340,23 @@ def append_column_rows(
     Returns:
         List[Row]: The updated list of rows with the new column rows appended.
     """
+    # Parse presidio results for PI mode
+    presidio_map = {}
+    if (
+        config.mode == "pi"
+        and hasattr(response, "presidio_results")
+        and response.presidio_results
+    ):
+        try:
+            import json
+
+            presidio_data = json.loads(response.presidio_results)
+            for result in presidio_data.get("deterministic_results", []):
+                col = result.get("column")
+                presidio_map[col] = json.dumps(result)
+        except Exception as e:
+            logging.warning(f"Failed to parse presidio results: {e}")
+
     for i, (column_name, column_content) in enumerate(
         zip(response.columns, response.column_contents)
     ):
@@ -350,12 +367,18 @@ def append_column_rows(
             if isinstance(column_content, PIColumnContent):
                 column_content = column_content.model_dump()
 
+            # Add presidio results for this column
+            presidio_results = presidio_map.get(column_name, None)
+
             row = Row(
                 table=full_table_name,
                 tokenized_table=tokenized_full_table_name,
                 ddl_type="column",
                 column_name=column_name,
-                **column_content,
+                classification=column_content.get("classification"),
+                type=column_content.get("type"),
+                confidence=column_content.get("confidence"),
+                presidio_results=presidio_results,
             )
         elif isinstance(column_content, str) and config.mode == "comment":
             row = Row(
@@ -394,6 +417,7 @@ def define_row_schema(config):
                 StructField("classification", StringType(), True),
                 StructField("type", StringType(), True),
                 StructField("confidence", DoubleType(), True),
+                StructField("presidio_results", StringType(), True),
             ]
         )
     elif config.mode == "comment":
@@ -518,20 +542,26 @@ def add_ddl_to_table_comment_df(df: DataFrame, ddl_column: str) -> DataFrame:
         return df
 
 
-def add_table_ddl_to_pi_df(df: DataFrame, ddl_column: str) -> DataFrame:
+def add_table_ddl_to_pi_df(config, df: DataFrame, ddl_column: str) -> DataFrame:
     """
     Adds a DDL statement to a DataFrame for PI information.
 
     Args:
+        config: MetadataConfig with tag name configuration
         df (DataFrame): The DataFrame to add the DDL statement to.
         ddl_column (str): The name of the DDL column.
 
     Returns:
         DataFrame: The updated DataFrame with the DDL statement added.
     """
+    # Create UDF with config-specific tag names
+    generate_table_pi_ddl = udf(
+        _create_table_pi_information_ddl_func(config), StringType()
+    )
+
     return df.withColumn(
         ddl_column,
-        generate_table_pi_information_ddl("tokenized_table", "classification", "type"),
+        generate_table_pi_ddl("tokenized_table", "classification", "type"),
     )
 
 
@@ -540,19 +570,21 @@ def add_column_ddl_to_pi_df(config, df: DataFrame, ddl_column: str) -> DataFrame
     Adds a DDL statement to a DataFrame for PI information.
 
     Args:
+        config: MetadataConfig with tag name configuration
         df (DataFrame): The DataFrame to add the DDL statement to.
         ddl_column (str): The name of the DDL column.
 
     Returns:
         DataFrame: The updated DataFrame with the DDL statement added.
     """
+    # Create UDF with config-specific tag names
+    generate_pi_ddl = udf(_create_pi_information_ddl_func(config), StringType())
+
     if not config.tag_none_fields:
         df = df.filter(col("type") != "None")
     df = df.withColumn(
         ddl_column,
-        generate_pi_information_ddl(
-            "tokenized_table", "column_name", "classification", "type"
-        ),
+        generate_pi_ddl("tokenized_table", "column_name", "classification", "type"),
     )
     return df
 
@@ -773,87 +805,40 @@ def mark_as_deleted(table_name: str, config: MetadataConfig) -> None:
 
 
 def run_log_table_ddl(config):
-    """Run the log table DDL."""
+    """Run the unified log table DDL."""
     spark = SparkSession.builder.getOrCreate()
-    if config.mode == "comment":
-        spark.sql(
-            f"""CREATE TABLE IF NOT EXISTS {config.catalog_name}.{config.schema_name}.{config.mode}_metadata_generation_log (
-            table STRING, 
-            tokenized_table STRING, 
-            ddl_type STRING, 
-            column_name STRING, 
-            _created_at TIMESTAMP,
-            column_content STRING, 
-            catalog STRING, 
-            schema STRING, 
-            table_name STRING, 
-            ddl STRING, 
-            current_user STRING, 
-            model STRING, 
-            sample_size INT, 
-            max_tokens INT, 
-            temperature DOUBLE, 
-            columns_per_call INT, 
-            status STRING
-        )"""
-        )
-    elif config.mode == "pi":
-        spark.sql(
-            f"""CREATE TABLE IF NOT EXISTS {config.catalog_name}.{config.schema_name}.{config.mode}_metadata_generation_log (
-            table STRING, 
-            tokenized_table STRING, 
-            ddl_type STRING, 
-            column_name STRING,
-            _created_at TIMESTAMP,
-            classification STRING,
-            type STRING,
-            confidence DOUBLE,
-            catalog STRING, 
-            schema STRING, 
-            table_name STRING, 
-            ddl STRING, 
-            current_user STRING, 
-            model STRING, 
-            sample_size INT, 
-            max_tokens INT, 
-            temperature DOUBLE, 
-            columns_per_call INT, 
-            status STRING
-        )"""
-        )
-    elif config.mode == "domain":
-        spark.sql(
-            f"""CREATE TABLE IF NOT EXISTS {config.catalog_name}.{config.schema_name}.{config.mode}_metadata_generation_log (
-            table STRING, 
-            tokenized_table STRING, 
-            ddl_type STRING, 
-            column_name STRING,
-            _created_at TIMESTAMP,
-            column_content STRING,
-            domain STRING,
-            subdomain STRING,
-            confidence DOUBLE,
-            recommended_domain STRING,
-            recommended_subdomain STRING,
-            reasoning STRING,
-            metadata_summary STRING,
-            catalog STRING, 
-            schema STRING, 
-            table_name STRING, 
-            ddl STRING, 
-            current_user STRING, 
-            model STRING, 
-            sample_size INT, 
-            max_tokens INT, 
-            temperature DOUBLE, 
-            columns_per_call INT, 
-            status STRING
-        )"""
-        )
-    else:
-        raise ValueError(
-            f"Invalid mode: {config.mode}, please choose pi, comment, or domain."
-        )
+    spark.sql(
+        f"""CREATE TABLE IF NOT EXISTS {config.catalog_name}.{config.schema_name}.metadata_generation_log (
+        metadata_type STRING,
+        table STRING, 
+        tokenized_table STRING, 
+        ddl_type STRING, 
+        column_name STRING,
+        _created_at TIMESTAMP,
+        column_content STRING,
+        classification STRING,
+        type STRING,
+        confidence DOUBLE,
+        presidio_results STRING,
+        domain STRING,
+        subdomain STRING,
+        recommended_domain STRING,
+        recommended_subdomain STRING,
+        reasoning STRING,
+        metadata_summary STRING,
+        catalog STRING, 
+        schema STRING, 
+        table_name STRING, 
+        ddl STRING, 
+        current_user STRING, 
+        model STRING, 
+        sample_size INT, 
+        max_tokens INT, 
+        temperature DOUBLE, 
+        columns_per_call INT, 
+        status STRING
+    )"""
+    )
 
 
 def output_df_pandas_to_tsv(df, output_file):
@@ -1100,11 +1085,12 @@ def log_metadata_generation(
     df: DataFrame, config: MetadataConfig, table_name: str, volume_name: str
 ) -> None:
     """
-    Log the metadata generation to the log table.
+    Log the metadata generation to the unified log table.
     """
     run_log_table_ddl(config)
+    df = df.withColumn("metadata_type", lit(config.mode))
     df.write.mode("append").option("mergeSchema", "true").saveAsTable(
-        f"{config.catalog_name}.{config.schema_name}.{config.mode}_metadata_generation_log"
+        f"{config.catalog_name}.{config.schema_name}.metadata_generation_log"
     )
     mark_as_deleted(table_name, config)
 
@@ -1662,6 +1648,9 @@ def get_generated_metadata_data_aware(
         response, _ = chat_response.get_responses(
             prompt_messages, prompt.prompt_content
         )
+        # Store presidio results with the response for PI mode
+        if hasattr(prompt, "deterministic_results"):
+            response.presidio_results = prompt.deterministic_results
         responses.append(response)
     return responses
 
@@ -1978,7 +1967,7 @@ def add_ddl_to_dfs(config, table_df, column_df, table_name):
         table_df = create_pi_table_df(dfs["pi_column_df"], table_name, config)
         if table_df is not None:
             table_df = set_protected_classification(table_df, config)
-            table_df = add_table_ddl_to_pi_df(table_df, "ddl")
+            table_df = add_table_ddl_to_pi_df(config, table_df, "ddl")
             dfs["pi_table_df"] = table_df
         else:
             logger.error(
@@ -1988,7 +1977,7 @@ def add_ddl_to_dfs(config, table_df, column_df, table_name):
             dfs["ddl_results"] = apply_ddl_to_tables(dfs, config)
     elif config.mode == "domain":
         if table_df is not None:
-            table_df = add_ddl_to_domain_table_df(table_df, "ddl")
+            table_df = add_ddl_to_domain_table_df(table_df, "ddl", config)
             dfs["domain_table_df"] = table_df
         else:
             logger.error(
@@ -2002,13 +1991,16 @@ def add_ddl_to_dfs(config, table_df, column_df, table_name):
     return dfs
 
 
-def add_ddl_to_domain_table_df(table_df: DataFrame, ddl_col_name: str) -> DataFrame:
+def add_ddl_to_domain_table_df(
+    table_df: DataFrame, ddl_col_name: str, config
+) -> DataFrame:
     """
     Adds DDL statements to domain classification DataFrame.
 
     Args:
         table_df (DataFrame): The DataFrame containing domain classifications.
         ddl_col_name (str): The name of the DDL column to add.
+        config: Configuration object with tag names.
 
     Returns:
         DataFrame: The DataFrame with DDL statements added.
@@ -2016,16 +2008,16 @@ def add_ddl_to_domain_table_df(table_df: DataFrame, ddl_col_name: str) -> DataFr
     if table_df is None:
         return None
 
-    # Ensure domain columns are cast to string for serverless compatibility
     if "domain" in table_df.columns:
         table_df = table_df.withColumn("domain", col("domain").cast("string"))
     if "subdomain" in table_df.columns:
         table_df = table_df.withColumn("subdomain", col("subdomain").cast("string"))
 
-    # Generate ALTER TABLE SET TAGS DDL with domain information using UDF
+    generate_domain_ddl = udf(_create_table_domain_ddl_func(config), StringType())
+
     result_df = table_df.withColumn(
         ddl_col_name,
-        generate_table_domain_ddl("tokenized_table", "domain", "subdomain"),
+        generate_domain_ddl("tokenized_table", "domain", "subdomain"),
     )
 
     # Keep column_content for logging purposes
@@ -2772,25 +2764,38 @@ def _create_column_comment_ddl_func():
     return column_comment_ddl
 
 
-def _create_table_pi_information_ddl_func():
+def _create_table_pi_information_ddl_func(config: MetadataConfig):
+    pi_class_tag = getattr(config, "pi_classification_tag_name", "data_classification")
+    pi_subclass_tag = getattr(
+        config, "pi_subclassification_tag_name", "data_subclassification"
+    )
+
     def table_pi_information_ddl(
         table_name: str, classification: str, pi_type: str
     ) -> str:
-        return f"ALTER TABLE {table_name} SET TAGS ('data_classification' = '{classification}', 'data_subclassification' = '{pi_type}');"
+        return f"ALTER TABLE {table_name} SET TAGS ('{pi_class_tag}' = '{classification}', '{pi_subclass_tag}' = '{pi_type}');"
 
     return table_pi_information_ddl
 
 
-def _create_pi_information_ddl_func():
+def _create_pi_information_ddl_func(config: MetadataConfig):
+    pi_class_tag = getattr(config, "pi_classification_tag_name", "data_classification")
+    pi_subclass_tag = getattr(
+        config, "pi_subclassification_tag_name", "data_subclassification"
+    )
+
     def pi_information_ddl(
         table_name: str, column_name: str, classification: str, pi_type: str
     ) -> str:
-        return f"ALTER TABLE {table_name} ALTER COLUMN `{column_name}` SET TAGS ('data_classification' = '{classification}', 'data_subclassification' = '{pi_type}');"
+        return f"ALTER TABLE {table_name} ALTER COLUMN `{column_name}` SET TAGS ('{pi_class_tag}' = '{classification}', '{pi_subclass_tag}' = '{pi_type}');"
 
     return pi_information_ddl
 
 
-def _create_table_domain_ddl_func():
+def _create_table_domain_ddl_func(config: MetadataConfig):
+    domain_tag = getattr(config, "domain_tag_name", "domain")
+    subdomain_tag = getattr(config, "subdomain_tag_name", "subdomain")
+
     def table_domain_ddl(full_table_name: str, domain: str, subdomain: str) -> str:
         """
         Generate DDL for domain classification as table tags.
@@ -2804,16 +2809,18 @@ def _create_table_domain_ddl_func():
             DDL statement to set table tags with domain information
         """
         if subdomain is None or subdomain == "None" or subdomain.strip() == "":
-            return f"ALTER TABLE {full_table_name} SET TAGS ('domain' = '{domain}');"
-        return f"ALTER TABLE {full_table_name} SET TAGS ('domain' = '{domain}', 'subdomain' = '{subdomain}');"
+            return (
+                f"ALTER TABLE {full_table_name} SET TAGS ('{domain_tag}' = '{domain}');"
+            )
+        return f"ALTER TABLE {full_table_name} SET TAGS ('{domain_tag}' = '{domain}', '{subdomain_tag}' = '{subdomain}');"
 
     return table_domain_ddl
 
 
 generate_table_comment_ddl = udf(_create_table_comment_ddl_func(), StringType())
 generate_column_comment_ddl = udf(_create_column_comment_ddl_func(), StringType())
-generate_table_pi_information_ddl = udf(
-    _create_table_pi_information_ddl_func(), StringType()
-)
-generate_pi_information_ddl = udf(_create_pi_information_ddl_func(), StringType())
-generate_table_domain_ddl = udf(_create_table_domain_ddl_func(), StringType())
+
+# These UDFs require config and are created dynamically in their respective functions
+# generate_table_pi_information_ddl
+# generate_pi_information_ddl
+# generate_table_domain_ddl

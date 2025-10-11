@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 import json
 import mlflow
 from pydantic import ValidationError
-from typing import Tuple, Dict, List, Any, Union
+from typing import Tuple, Dict, List, Any, Union, Optional
 from openai.types.chat.chat_completion import ChatCompletion
 from pydantic import BaseModel, ConfigDict, field_validator
 from src.dbxmetagen.config import MetadataConfig
@@ -25,6 +25,7 @@ class PIColumnContent(BaseModel):
 class PIResponse(Response):
     model_config = ConfigDict(extra="forbid")
     column_contents: List[PIColumnContent]
+    presidio_results: Optional[str] = None
 
 
 class CommentResponse(Response):

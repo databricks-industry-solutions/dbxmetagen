@@ -199,14 +199,14 @@ def grant_user_permissions(
     table_name: str = None,
 ):
     """
-    Grant read permissions to a user on created schema, volume, and optionally tables.
+    Grant read permissions to a user on created schema and volume.
 
     Args:
         catalog_name: Catalog name
         schema_name: Schema name
         current_user: Email/username of the current user
         volume_name: Optional volume name
-        table_name: Optional table name (can be fully qualified or just table name)
+        table_name: Deprecated - use schema-level SELECT instead
     """
 
     spark = SparkSession.builder.getOrCreate()
@@ -218,24 +218,16 @@ def grant_user_permissions(
         spark.sql(
             f"GRANT CREATE TABLE ON SCHEMA {catalog_name}.{schema_name} TO `{current_user}`"
         )
-        print(f"Granted schema permissions to {current_user}")
+        spark.sql(
+            f"GRANT SELECT ON SCHEMA {catalog_name}.{schema_name} TO `{current_user}`"
+        )
+        print(f"Granted schema permissions (including SELECT) to {current_user}")
 
         if volume_name:
             spark.sql(
                 f"GRANT READ VOLUME, WRITE VOLUME ON VOLUME {catalog_name}.{schema_name}.{volume_name} TO `{current_user}`"
             )
             print(f"Granted volume permissions to {current_user}")
-
-        if table_name:
-            if "." not in table_name:
-                full_table_name = f"{catalog_name}.{schema_name}.{table_name}"
-            else:
-                full_table_name = table_name
-
-            spark.sql(
-                f"GRANT SELECT, MODIFY ON TABLE {full_table_name} TO `{current_user}`"
-            )
-            print(f"Granted table permissions on {full_table_name} to {current_user}")
 
     except Exception as e:
         print(f"Warning: Could not grant permissions to {current_user}: {e}")
@@ -249,7 +241,7 @@ def grant_group_permissions(
     table_pattern: str = None,
 ):
     """
-    Grant read permissions to a group on created schema, volume, and optionally tables.
+    Grant read permissions to a group on created schema and volume.
     This is more scalable than per-user grants.
 
     Args:
@@ -257,7 +249,7 @@ def grant_group_permissions(
         schema_name: Schema name
         group_name: Group name (default: "account users" for all users)
         volume_name: Optional volume name
-        table_pattern: Optional table name pattern (e.g., "table_processing_log")
+        table_pattern: Deprecated - use schema-level SELECT instead
     """
     spark = SparkSession.builder.getOrCreate()
 
@@ -265,20 +257,16 @@ def grant_group_permissions(
         spark.sql(
             f"GRANT USE SCHEMA ON SCHEMA {catalog_name}.{schema_name} TO `{group_name}`"
         )
-        print(f"✓ Granted schema permissions to group: {group_name}")
+        spark.sql(
+            f"GRANT SELECT ON SCHEMA {catalog_name}.{schema_name} TO `{group_name}`"
+        )
+        print(f"✓ Granted schema permissions (including SELECT) to group: {group_name}")
 
         if volume_name:
             spark.sql(
                 f"GRANT READ VOLUME ON VOLUME {catalog_name}.{schema_name}.{volume_name} TO `{group_name}`"
             )
-            print(f"Granted volume permissions to group: {group_name}")
-
-        if table_pattern:
-            full_table_name = f"{catalog_name}.{schema_name}.{table_pattern}"
-            spark.sql(f"GRANT SELECT ON TABLE {full_table_name} TO `{group_name}`")
-            print(
-                f"Granted table permissions on {full_table_name} to group: {group_name}"
-            )
+            print(f"✓ Granted volume permissions to group: {group_name}")
 
     except Exception as e:
         print(f"Warning: Could not grant permissions to group {group_name}: {e}")

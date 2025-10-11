@@ -14,6 +14,10 @@ from src.dbxmetagen.processing import (
 from src.dbxmetagen.config import MetadataConfig
 from src.dbxmetagen.deterministic_pi import ensure_spacy_model
 from src.dbxmetagen.benchmarking import log_token_usage, setup_benchmarking
+from src.dbxmetagen.databricks_utils import (
+    grant_user_permissions,
+    grant_group_permissions,
+)
 
 
 def get_dbr_version():
@@ -82,24 +86,61 @@ def initialize_infrastructure(config):
     print("Running generate on...", config.table_names)
 
 
+def _grant_permissions_to_groups(config, catalog_name, schema_name, volume_name):
+    """Grant permissions to groups specified in config."""
+    if not hasattr(config, "permission_groups") or not config.permission_groups:
+        return False
+
+    if str(config.permission_groups).lower() == "none":
+        print("No permission groups specified")
+        return True
+
+    groups = [g.strip() for g in str(config.permission_groups).split(",") if g.strip()]
+    for group in groups:
+        print(f"Granting permissions to group: {group}")
+        grant_group_permissions(
+            catalog_name=catalog_name,
+            schema_name=schema_name,
+            group_name=group,
+            volume_name=volume_name,
+        )
+        print(f"✓ Granted schema and volume permissions to group '{group}'")
+    return True
+
+
+def _grant_permissions_to_users(config, catalog_name, schema_name, volume_name):
+    """Grant permissions to additional users specified in config."""
+    if not hasattr(config, "permission_users") or not config.permission_users:
+        return False
+
+    if str(config.permission_users).lower() == "none":
+        print("No additional permission users specified")
+        return True
+
+    users = [u.strip() for u in str(config.permission_users).split(",") if u.strip()]
+    for user in users:
+        print(f"Granting permissions to user: {user}")
+        grant_user_permissions(
+            catalog_name=catalog_name,
+            schema_name=schema_name,
+            current_user=user,
+            volume_name=volume_name,
+        )
+        print(f"✓ Granted schema and volume permissions to {user}")
+    return True
+
+
 def grant_permissions_on_created_objects(config):
     """Grant permissions to groups and users specified in config."""
-    # Check if permission grants are enabled
     if not getattr(config, "grant_permissions_after_creation", True):
         print("Permission grants disabled in config")
         return
-
-    from src.dbxmetagen.databricks_utils import (
-        grant_user_permissions,
-        grant_group_permissions,
-    )
 
     catalog_name = config.catalog_name
     schema_name = config.schema_name
     volume_name = config.volume_name
 
     try:
-        # Always grant to current user (the one running the job)
         print(f"Granting permissions to job user: {config.current_user}")
         grant_user_permissions(
             catalog_name=catalog_name,
@@ -109,73 +150,19 @@ def grant_permissions_on_created_objects(config):
         )
         print(f"✓ Granted schema and volume permissions to {config.current_user}")
 
-        # Grant to configured groups
-        if hasattr(config, "permission_groups") and config.permission_groups:
-            # Check if value is None or string "None"
-            if (
-                config.permission_groups is None
-                or str(config.permission_groups).lower() == "none"
-            ):
-                print("No permission groups specified")
-            else:
-                groups = [
-                    g.strip()
-                    for g in str(config.permission_groups).split(",")
-                    if g.strip()
-                ]
-                for group in groups:
-                    print(f"Granting permissions to group: {group}")
-                    grant_group_permissions(
-                        catalog_name=catalog_name,
-                        schema_name=schema_name,
-                        group_name=group,
-                        volume_name=volume_name,
-                    )
-                    print(f"✓ Granted schema and volume permissions to group '{group}'")
-
-        # Grant to configured users
-        if hasattr(config, "permission_users") and config.permission_users:
-            # Check if value is None or string "None"
-            if (
-                config.permission_users is None
-                or str(config.permission_users).lower() == "none"
-            ):
-                print("No additional permission users specified")
-            else:
-                users = [
-                    u.strip()
-                    for u in str(config.permission_users).split(",")
-                    if u.strip()
-                ]
-                for user in users:
-                    print(f"Granting permissions to user: {user}")
-                    grant_user_permissions(
-                        catalog_name=catalog_name,
-                        schema_name=schema_name,
-                        current_user=user,
-                        volume_name=volume_name,
-                    )
-                    print(f"✓ Granted schema and volume permissions to {user}")
-
-        # Only print this message if both are actually None/empty
-        permission_groups_empty = (
-            not hasattr(config, "permission_groups")
-            or config.permission_groups is None
-            or str(config.permission_groups).lower() in ["none", ""]
+        groups_granted = _grant_permissions_to_groups(
+            config, catalog_name, schema_name, volume_name
         )
-        permission_users_empty = (
-            not hasattr(config, "permission_users")
-            or config.permission_users is None
-            or str(config.permission_users).lower() in ["none", ""]
+        users_granted = _grant_permissions_to_users(
+            config, catalog_name, schema_name, volume_name
         )
 
-        if permission_groups_empty and permission_users_empty:
+        if not groups_granted and not users_granted:
             print("No additional groups or users specified for permissions")
 
     except Exception as e:
         print(f"⚠️ Warning: Could not grant some permissions: {e}")
         print("This is non-fatal - metadata generation completed successfully")
-        # Don't fail the job if permissions fail
 
 
 def cleanup_resources(config, spark):

@@ -33,6 +33,12 @@ class ConfigManager:
 
     def __init__(self):
         self.initialize_session_state()
+        # Load config immediately to ensure deploying_user is set before authentication
+        if not st.session_state.config:
+            logger.info(
+                "🔍 [ConfigManager.__init__] Loading config immediately for initial auth"
+            )
+            st.session_state.config = self.load_default_config()
 
     def initialize_session_state(self):
         """Initialize all session state variables in one place"""
@@ -52,111 +58,101 @@ class ConfigManager:
             if key not in st.session_state:
                 st.session_state[key] = default_value
 
+        # Log current deploying_user state for debugging
+        logger.info(
+            "[initialize_session_state] deploying_user in session_state: %s",
+            st.session_state.get("deploying_user", "NOT_SET"),
+        )
+
     def load_default_config(self) -> Dict[str, Any]:
         """Load configuration from cached or variables.yml file."""
         # Check for cached config
         cached_config = self._get_cached_config()
         if cached_config is not None:
-            logger.info("Using cached configuration")
+            logger.info(
+                "[load_default_config] Using cached configuration, deploying_user: %s",
+                st.session_state.get("deploying_user", "NOT_SET"),
+            )
             return cached_config
 
         # Load variables.yml and set it up as config
+        logger.info("[load_default_config] Loading fresh config from YAML files")
         config = self._load_variables_yml()
         return self._cache_and_return_config(config)
 
-    def _load_variables_yml(self) -> Dict[str, Any]:
-        """Load configuration from variables.yml file and merge with deploying_user.yml if available."""
-        yaml_path = "./variables.yml"  # Root of project
-        deploying_user_path = "./deploying_user.yml"
-        app_env = "./app_env.yml"
+    def _load_yaml_file(
+        self, path: str, required: bool = False
+    ) -> Optional[Dict[str, Any]]:
+        """Load a YAML file and return its contents."""
+        if not os.path.exists(path):
+            if required:
+                raise FileNotFoundError(f"{path} not found")
+            return None
 
-        if not os.path.exists(yaml_path):
-            raise FileNotFoundError(f"variables.yml not found at {yaml_path}")
+        try:
+            with open(path, "r") as f:
+                return yaml.safe_load(f)
+        except Exception as e:
+            logger.warning(f"Failed to load {path}: {e}")
+            return None
 
-        logger.info(f"Loading variables.yml from {yaml_path}")
-        with open(yaml_path, "r") as f:
-            raw_config = yaml.safe_load(f)
-
+    def _extract_variables(self, raw_config: Dict[str, Any]) -> Dict[str, Any]:
+        """Extract default values from Databricks variables.yml structure."""
         if not raw_config or "variables" not in raw_config:
             raise ValueError(
                 "Invalid variables.yml structure - missing 'variables' key"
             )
 
-        # Extract default values from variables.yml structure
         config = {}
-        variables = raw_config["variables"]
-
-        for key, value_config in variables.items():
+        for key, value_config in raw_config["variables"].items():
             if isinstance(value_config, dict) and "default" in value_config:
                 config[key] = value_config["default"]
             else:
                 config[key] = value_config
+        return config
 
-        # Load deploying_user.yml if it exists (created during deployment)
-        deploying_user_path = "./deploying_user.yml"
-        if os.path.exists(deploying_user_path):
+    def _load_variables_yml(self) -> Dict[str, Any]:
+        """Load configuration from variables.yml and merge with advanced and deployment configs."""
+        raw_config = self._load_yaml_file("./variables.yml", required=True)
+        config = self._extract_variables(raw_config)
+        logger.info("Loaded %s base variables", len(config))
+
+        advanced_config = self._load_yaml_file("./variables.advanced.yml")
+        if advanced_config:
+            advanced_vars = self._extract_variables(advanced_config)
+            config.update(advanced_vars)
+            logger.info("Merged %s advanced variables", len(advanced_vars))
+
+        deploying_config = self._load_yaml_file("./deploying_user.yml")
+        if deploying_config and "deploying_user" in deploying_config:
+            config.update(deploying_config)
+            st.session_state.deploying_user = deploying_config["deploying_user"]
+            # st.info(
+            #     f"Deploying user in _load_variables_yml: {deploying_config['deploying_user']}"
+            # )
             logger.info(
-                f"Loading deploying user configuration from {deploying_user_path}"
+                "[_load_variables_yml] SET deploying_user to: %s",
+                deploying_config["deploying_user"],
             )
-            try:
-                with open(deploying_user_path, "r") as f:
-                    deploying_config = yaml.safe_load(f)
-                    st_debug(f"Deploying user config: {deploying_config}")
+            logger.info(
+                "[_load_variables_yml] VERIFY session_state.deploying_user = %s",
+                st.session_state.deploying_user,
+            )
+        else:
+            st.session_state.deploying_user = "unknown"
+            logger.warning(
+                "[_load_variables_yml] deploying_user.yml not found or missing deploying_user key - set to 'unknown'"
+            )
 
-                # Merge deploying user config into main config
-                if deploying_config:
-                    config.update(deploying_config)
-                    logger.info(
-                        f"Successfully merged deploying_user.yml - deploying_user: {deploying_config.get('deploying_user', 'unknown')}"
-                    )
-                    st_debug(
-                        f"Successfully merged deploying_user.yml - deploying_user: {config.get('deploying_user', 'unknown')}"
-                    )
-                    st.session_state.deploying_user = config.get(
-                        "deploying_user", "unknown"
-                    )
-
-            except Exception as e:
-                logger.warning(f"Failed to load deploying_user.yml: {e}")
-
-        # Load env_overrides.yml if it exists (created during deployment from dev.env)
-        env_overrides_path = "./env_overrides.yml"
-        if os.path.exists(env_overrides_path):
-            logger.info(f"Loading environment overrides from {env_overrides_path}")
-            try:
-                with open(env_overrides_path, "r") as f:
-                    env_overrides = yaml.safe_load(f)
-                    st_debug(f"Environment overrides: {env_overrides}")
-
-                # Merge environment overrides into main config
-                if env_overrides:
-                    config.update(env_overrides)
-                    logger.info(
-                        f"Successfully merged env_overrides.yml with {len(env_overrides)} overrides"
-                    )
-                    st_debug(f"Applied overrides: {', '.join(env_overrides.keys())}")
-
-            except Exception as e:
-                logger.warning(f"Failed to load env_overrides.yml: {e}")
-
-        logger.info(f"Successfully loaded configuration with {len(config)} keys")
         return config
 
     def _load_env_yml(self, filename: str, config: Dict[str, Any]) -> Dict[str, Any]:
-        """Load configuration from environment file."""
-        with open(filename, "r") as f:
-            yaml_config = yaml.safe_load(f)
-
-        if config:
-            config.update(yaml_config)
-            logger.info(
-                f"Successfully merged deploying_user.yml - deploying_user: {deploying_config.get('deploying_user', 'unknown')}"
-            )
-            st_debug(
-                f"Successfully merged deploying_user.yml - deploying_user: {config.get('deploying_user', 'unknown')}"
-            )
-            st.session_state.deploying_user = config.get("deploying_user", "unknown")
-            st.session_state.app_env = config.get("app_env", "unknown")
+        """Load and merge environment-specific overrides."""
+        env_config = self._load_yaml_file(filename)
+        if env_config:
+            config.update(env_config)
+            st.session_state.app_env = env_config.get("app_env", "unknown")
+            logger.info(f"Merged environment config from {filename}")
         return config
 
     def _get_cached_config(self) -> Optional[Dict[str, Any]]:
@@ -204,22 +200,18 @@ class DatabricksClientManager:
             return True
 
         try:
-            # Step 1: Validate environment
             host = DatabricksClientManager._validate_environment()
             if not host:
                 return False
 
-            # Step 2: Create authenticated client
             client = DatabricksClientManager._create_authenticated_client(host)
             if not client:
                 return False
 
-            # Step 3: Test connection
             user_info = DatabricksClientManager._test_client_connection(client)
             if not user_info:
                 return False
 
-            # Step 4: Store successful client
             DatabricksClientManager._store_client_in_session(client, user_info)
             return True
 
@@ -337,6 +329,10 @@ class DatabricksClientManager:
 
             # First, try to identify the actual app user from headers/context
             actual_user = DatabricksClientManager._identify_app_user()
+            deploying_user = st.session_state.get("deploying_user", "NOT_SET")
+            logger.info(
+                "🔍 [get_client] deploying_user from session_state: %s", deploying_user
+            )
 
             # Try OBO token authentication
             user_token = DatabricksClientManager._extract_user_token()
@@ -354,13 +350,8 @@ class DatabricksClientManager:
                     if hasattr(st, "session_state"):
                         st.session_state.auth_method = "OBO (x-forwarded-access-token)"
                         st.session_state.app_user = test_user.user_name
-                        # Get deploying user from configuration instead of environment variable
-                        deploying_user = st.session_state.config.get(
-                            "deploying_user", "unknown"
-                        )
-                        st.session_state.deploying_user = deploying_user
                         logger.info(
-                            f"🔍 App-wide user tracking - User: {test_user.user_name}, Deployer: {st.session_state.deploying_user}"
+                            f"🔍 App-wide user tracking - User: {test_user.user_name}, Deployer: {st.session_state.get('deploying_user', 'unknown')}"
                         )
 
                     return client
@@ -390,14 +381,10 @@ class DatabricksClientManager:
                 st.session_state.auth_method = "Service Principal (hybrid)"
                 st.session_state.service_principal = sp_user.user_name
                 st.session_state.app_user = actual_user if actual_user else "unknown"
-                # Get deploying user from configuration instead of environment variable
-                deploying_user = st.session_state.config.get(
-                    "deploying_user", "unknown"
-                )
-                st.session_state.deploying_user = deploying_user
+                # deploying_user already set by _load_variables_yml - don't overwrite it
 
                 logger.info(
-                    f"🔍 App-wide user tracking - SP: {sp_user.user_name}, User: {actual_user}, Deployer: {st.session_state.deploying_user}"
+                    f"🔍 App-wide user tracking - SP: {sp_user.user_name}, User: {actual_user}, Deployer: {st.session_state.get('deploying_user', 'unknown')}"
                 )
 
             return client

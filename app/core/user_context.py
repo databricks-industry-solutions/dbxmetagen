@@ -36,7 +36,6 @@ class UserContextManager:
         Raises:
             ValueError: If deploying_user cannot be determined
         """
-        # Get deploying user from session state (loaded from deploying_user.yml)
         deploying_user = st.session_state.get("deploying_user")
 
         if not deploying_user:
