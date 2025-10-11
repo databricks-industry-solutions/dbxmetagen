@@ -137,7 +137,7 @@ class DBXMetaGenApp:
                         )
                     if st.session_state.get("deploying_user"):
                         st.sidebar.write(
-                            f"  - Deploying User: {st.session_state.get('deploying_user')}"
+                            f"  - Deploying User in render_debug_info: {st.session_state.get('deploying_user')}"
                         )
                     if st.session_state.get("app_env"):
                         st.sidebar.write(

@@ -579,10 +579,17 @@ class MetadataProcessor:
 
     def _generate_ddl_for_pi_metadata(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        Generate DDL for PI metadata using data_classification and data_subclassification tags.
+        Generate DDL for PI metadata using configurable tag names for classification and subclassification.
         The backend outputs classification/type directly from processing - use them as-is.
         """
         updated_df = df.copy()
+
+        # Get configurable tag names from config
+        config = st.session_state.get("config", {})
+        pi_class_tag = config.get("pi_classification_tag_name", "data_classification")
+        pi_subclass_tag = config.get(
+            "pi_subclassification_tag_name", "data_subclassification"
+        )
 
         # Determine column names
         table_col = "table_name" if "table_name" in df.columns else "table"
@@ -612,7 +619,7 @@ class MetadataProcessor:
 
             if pd.notna(classification) and str(classification).strip():
                 classification_val = str(classification).strip()
-                tags.append(f"'data_classification' = '{classification_val}'")
+                tags.append(f"'{pi_class_tag}' = '{classification_val}'")
 
             if (
                 pd.notna(type_value)
@@ -620,7 +627,7 @@ class MetadataProcessor:
                 and str(type_value).strip().lower() != "none"
             ):
                 type_val = str(type_value).strip()
-                tags.append(f"'data_subclassification' = '{type_val}'")
+                tags.append(f"'{pi_subclass_tag}' = '{type_val}'")
 
             if tags:
                 tags_string = ", ".join(tags)
@@ -634,8 +641,13 @@ class MetadataProcessor:
         return updated_df
 
     def _generate_ddl_for_domain_metadata(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Generate DDL for domain metadata using domain/subdomain tags."""
+        """Generate DDL for domain metadata using configurable tag names for domain/subdomain."""
         updated_df = df.copy()
+
+        # Get configurable tag names from config
+        config = st.session_state.get("config", {})
+        domain_tag = config.get("domain_tag_name", "domain")
+        subdomain_tag = config.get("subdomain_tag_name", "subdomain")
 
         table_col = "table_name" if "table_name" in df.columns else "table"
 
@@ -650,7 +662,7 @@ class MetadataProcessor:
 
             tags = []
             domain_val = str(domain).strip()
-            tags.append(f"'domain' = '{domain_val}'")
+            tags.append(f"'{domain_tag}' = '{domain_val}'")
 
             # Add subdomain if present and valid
             if (
@@ -659,7 +671,7 @@ class MetadataProcessor:
                 and str(subdomain).strip().lower() not in ["none", "null", ""]
             ):
                 subdomain_val = str(subdomain).strip()
-                tags.append(f"'subdomain' = '{subdomain_val}'")
+                tags.append(f"'{subdomain_tag}' = '{subdomain_val}'")
 
             # Domain is always table-level
             tags_string = ", ".join(tags)

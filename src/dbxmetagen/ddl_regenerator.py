@@ -81,31 +81,30 @@ def get_comment_from_ddl(ddl: str) -> str:
     """
     Extract comment from DDL.
     """
-    ddl = re.sub(
-        r'(COMMENT ON TABLE [^"\']+ IS\s+)(["\'])(.*?)(["\'])',
-        lambda m: f"{m.group(1)}{m.group(2)}{new_comment}{m.group(4)}",
-        new_comment,
+    match = re.search(r'(COMMENT ON TABLE [^"\']+ IS\s+)(["\'])(.*?)(["\'])', ddl)
+    if match:
+        return match.group(3)
+    return ""
+
+
+def get_pii_tags_from_ddl(ddl: str, config: MetadataConfig) -> Tuple[str, str]:
+    """
+    Extract classification and subclassification from DDL statement.
+    """
+    tag_class = getattr(config, "pi_classification_tag_name", "data_classification")
+    tag_subclass = getattr(
+        config, "pi_subclassification_tag_name", "data_subclassification"
     )
-    return cleanse_sql_comment(new_comment)
 
-
-def get_pii_tags_from_ddl(ddl: str, classification: str, subclassification: str) -> str:
-    """
-    Replace the PII tagging strings in a DDL statement with new classification and subclassification.
-    """
     if "ALTER COLUMN" not in ddl:
-        ddl = re.sub(
-            r"(ALTER TABLE [^ ]+ SET TAGS \('data_classification' = ')[^']+(', 'data_subclassification' = ')[^']+('\);)",
-            lambda m: f"{m.group(1)}{classification}{m.group(2)}{subclassification}{m.group(3)}",
-            ddl,
-        )
+        pattern = rf"ALTER TABLE [^ ]+ SET TAGS \('{tag_class}' = '([^']+)', '{tag_subclass}' = '([^']+)'\);"
     else:
-        ddl = re.sub(
-            r"(ALTER TABLE [^ ]+ ALTER COLUMN [^ ]+ SET TAGS \('data_classification' = ')[^']+(', 'data_subclassification' = ')[^']+('\);)",
-            lambda m: f"{m.group(1)}{classification}{m.group(2)}{subclassification}{m.group(3)}",
-            ddl,
-        )
-    return classification, subclassification
+        pattern = rf"ALTER TABLE [^ ]+ ALTER COLUMN [^ ]+ SET TAGS \('{tag_class}' = '([^']+)', '{tag_subclass}' = '([^']+)'\);"
+
+    match = re.search(pattern, ddl)
+    if match:
+        return match.group(1), match.group(2)
+    return "", ""
 
 
 def replace_comment_in_ddl(ddl: str, new_comment: str) -> str:
@@ -138,20 +137,25 @@ def replace_comment_in_ddl(ddl: str, new_comment: str) -> str:
 
 
 def replace_pii_tags_in_ddl(
-    ddl: str, classification: str, subclassification: str
+    ddl: str, classification: str, subclassification: str, config: MetadataConfig
 ) -> str:
     """
     Replace the PII tagging strings in a DDL statement with new classification and subclassification.
     """
+    tag_class = getattr(config, "pi_classification_tag_name", "data_classification")
+    tag_subclass = getattr(
+        config, "pi_subclassification_tag_name", "data_subclassification"
+    )
+
     if "ALTER COLUMN" not in ddl:
         ddl = re.sub(
-            r"(ALTER TABLE [^ ]+ SET TAGS \('data_classification' = ')[^']+(', 'data_subclassification' = ')[^']+('\);)",
+            rf"(ALTER TABLE [^ ]+ SET TAGS \('{tag_class}' = ')[^']+(', '{tag_subclass}' = ')[^']+('\);)",
             lambda m: f"{m.group(1)}{classification}{m.group(2)}{subclassification}{m.group(3)}",
             ddl,
         )
     else:
         ddl = re.sub(
-            r"(ALTER TABLE [^ ]+ ALTER COLUMN [^ ]+ SET TAGS \('data_classification' = ')[^']+(', 'data_subclassification' = ')[^']+('\);)",
+            rf"(ALTER TABLE [^ ]+ ALTER COLUMN [^ ]+ SET TAGS \('{tag_class}' = ')[^']+(', '{tag_subclass}' = ')[^']+('\);)",
             lambda m: f"{m.group(1)}{classification}{m.group(2)}{subclassification}{m.group(3)}",
             ddl,
         )
@@ -159,20 +163,18 @@ def replace_pii_tags_in_ddl(
 
 
 def update_ddl_row(
-    mode: str, reviewed_column: str, row: pd.Series
+    mode: str, reviewed_column: str, row: pd.Series, config: MetadataConfig
 ) -> Union[str, Tuple[str]]:
     """
     Update a single row's DDL based on classification/type or column_content.
     """
     if mode == "pi":
         if reviewed_column == "ddl":
-            new_classification, new_type = get_pii_tags_from_ddl(
-                row["ddl"], row["classification"], row["type"]
-            )
+            new_classification, new_type = get_pii_tags_from_ddl(row["ddl"], config)
             return new_classification, new_type, row["ddl"]
         elif reviewed_column in ("classification", "type", "other", "column_content"):
             new_ddl = replace_pii_tags_in_ddl(
-                row["ddl"], row["classification"], row["type"]
+                row["ddl"], row["classification"], row["type"], config
             )
             return row["classification"], row["type"], new_ddl
         else:
@@ -371,14 +373,16 @@ def process_metadata_file(
         df = load_metadata_file(os.path.join(input_dir, input_file), input_file_type)
         if config.mode == "pi":
             df[["classification", "type", "ddl"]] = df.apply(
-                lambda row: update_ddl_row("pi", config.column_with_reviewed_ddl, row),
+                lambda row: update_ddl_row(
+                    "pi", config.column_with_reviewed_ddl, row, config
+                ),
                 axis=1,
                 result_type="expand",
             )
         elif config.mode == "comment":
             df[["column_content", "ddl"]] = df.apply(
                 lambda row: update_ddl_row(
-                    "comment", config.column_with_reviewed_ddl, row
+                    "comment", config.column_with_reviewed_ddl, row, config
                 ),
                 axis=1,
                 result_type="expand",
