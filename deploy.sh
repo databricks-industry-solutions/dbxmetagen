@@ -1,40 +1,84 @@
 #!/bin/bash
 
-add_service_principal_simple() {
-    # Copy databricks.yml and add service principal permissions to the dev section
-
-    SOURCE_FILE="databricks.yml"
-    TARGET_FILE="databricks_final.yml"
-
-    # Copy the original file
-    cp "$SOURCE_FILE" "$TARGET_FILE"
-
-    # Add service principal lines after the existing user permissions in dev section
-    sed -i.tmp '/^  dev:/,/^  [a-z]/{
-        /^      level: CAN_MANAGE/{
-            a\
-        - service_principal_name: ${var.app_service_principal_application_id}\
-            level: CAN_MANAGE
+add_service_principal_to_bundle() {
+    # Create a modified databricks.yml with service principal permissions for redeployment
+    
+    if [ -z "$APP_SP_ID" ] || [ "$APP_SP_ID" = "null" ]; then
+        echo "No service principal ID available, skipping SP permissions"
+        return
+    fi
+    
+    echo "Adding service principal $APP_SP_ID to bundle permissions..."
+    
+    # Backup original
+    cp databricks.yml databricks.yml.backup
+    
+    # Add service principal to dev section's permissions after deploying_user
+    # This adds it after the first occurrence of "level: CAN_MANAGE" in the dev section
+    awk '
+        /^  dev:/ { in_dev=1 }
+        /^  prod:/ { in_dev=0 }
+        {
+            print
+            if (in_dev && /level: CAN_MANAGE/ && !added) {
+                print "      - service_principal_name: ${var.app_service_principal_application_id}"
+                print "        level: CAN_MANAGE"
+                added=1
+            }
         }
-    }' "$TARGET_FILE"
+    ' databricks.yml.backup > databricks.yml
+    
+    rm -f databricks.yml.tmp
+    echo "Service principal permissions added to databricks.yml"
+}
 
-
-echo "Created $TARGET_FILE with service principal permissions added to dev section"
+restore_original_bundle() {
+    # Restore the original databricks.yml after deployment
+    if [ -f databricks.yml.backup ]; then
+        echo "Restoring original databricks.yml..."
+        mv databricks.yml.backup databricks.yml
+        rm -f databricks.yml.tmp
+    fi
 }
 
 check_for_deployed_app() {
-    cd ../
-    SP_ID=$(databricks apps get "dbxmetagen-app" --profile "$PROFILE" --output json 2>/dev/null | jq -r '.service_principal_id' || echo "")
-    cd dbxmetagen
-    export APP_SP_ID="$SP_ID"
+    # Check Terraform state file to get the correct app's service principal
+    # This is the source of truth for what was actually deployed
+    echo "============================================"
+    echo "DEBUG: Checking for deployed app via Terraform state"
+    echo "Profile: $PROFILE"
+    echo "Target: $TARGET"
+    echo "============================================"
     
-    if [ -n "$SP_ID" ] && [ "$SP_ID" != "null" ]; then
-        echo "App already exists with SP ID: $APP_SP_ID"
-        echo "Adding service principal permissions..."
-        add_service_principal_simple
+    # Terraform state file is the most reliable source
+    TF_STATE_FILE=".databricks/bundle/$TARGET/terraform/terraform.tfstate"
+    
+    if [ -f "$TF_STATE_FILE" ]; then
+        echo "Found Terraform state file: $TF_STATE_FILE"
+        
+        # Extract service_principal_client_id from the databricks_app resource
+        APP_SP_ID=$(jq -r '.resources[] | select(.type == "databricks_app" and .name == "dbxmetagen_app") | .instances[0].attributes.service_principal_client_id // empty' "$TF_STATE_FILE" 2>/dev/null)
+        
+        if [ -n "$APP_SP_ID" ] && [ "$APP_SP_ID" != "null" ] && [ "$APP_SP_ID" != "" ]; then
+            echo "✓ Found deployed app with Service Principal Client ID: $APP_SP_ID"
+            
+            # Also show the app ID for verification
+            APP_ID=$(jq -r '.resources[] | select(.type == "databricks_app" and .name == "dbxmetagen_app") | .instances[0].attributes.id // empty' "$TF_STATE_FILE" 2>/dev/null)
+            echo "  App ID: $APP_ID"
+            
+            export APP_SP_ID="$APP_SP_ID"
+            echo "Will add service principal permissions to bundle before deployment"
+        else
+            echo "State file exists but no service principal ID found yet"
+            echo "This is likely the first deployment - SP will be created during deployment"
+            export APP_SP_ID=""
+        fi
     else
-        echo "App does not exist yet or no SP ID available"
+        echo "No Terraform state file found at $TF_STATE_FILE"
+        echo "This is the first deployment - app will be created"
+        export APP_SP_ID=""
     fi
+    echo "============================================"
 }
 
 validate_bundle() {
@@ -50,6 +94,11 @@ deploy_bundle() {
     TARGET="${TARGET:-dev}"
     echo "Deploying to $TARGET..."
     
+    # If app exists, add service principal permissions to bundle
+    if [ -n "$APP_SP_ID" ] && [ "$APP_SP_ID" != "null" ]; then
+        add_service_principal_to_bundle
+    fi
+    
     local DEPLOY_VARS=()
     if [ "$DEBUG_MODE" = true ]; then
         DEPLOY_VARS+=("--var" "debug_mode=true")
@@ -58,10 +107,20 @@ deploy_bundle() {
         DEPLOY_VARS+=("--var" "create_test_data=true")
     fi
     
+    # Add service principal ID and deploying user for variable substitution
+    if [ -n "$APP_SP_ID" ] && [ "$APP_SP_ID" != "null" ]; then
+        DEPLOY_VARS+=("--var" "app_service_principal_application_id=$APP_SP_ID")
+    fi
+    DEPLOY_VARS+=("--var" "deploying_user=$CURRENT_USER")
+    
     if ! databricks bundle deploy --target "$TARGET" --profile "$PROFILE" "${DEPLOY_VARS[@]}"; then
         echo "Error: Bundle deployment failed with target $TARGET"
+        restore_original_bundle  # Restore even on failure
         exit 1
     fi
+    
+    # Restore original databricks.yml after successful deployment
+    restore_original_bundle
     
     export DEPLOY_TARGET="$TARGET"
     echo "Bundle deployed successfully"
@@ -156,6 +215,14 @@ cleanup_temp_yml_files() {
     if [ -f databricks_final.yml.tmp ]; then
         echo "Cleaning up databricks_final.yml.tmp..."
         rm databricks_final.yml.tmp
+    fi
+    if [ -f databricks.yml.backup ]; then
+        echo "Cleaning up databricks.yml.backup..."
+        rm databricks.yml.backup
+    fi
+    if [ -f databricks.yml.tmp ]; then
+        echo "Cleaning up databricks.yml.tmp..."
+        rm databricks.yml.tmp
     fi
     if [ -f app/domain_config.yml ]; then
         echo "Cleaning up domain_config.yml..."
@@ -353,7 +420,24 @@ cat variables_override.yml >> variables.yml
 
 echo "=== Deploying bundle ==="
 validate_bundle
+
+# Store the SP ID before deployment (might be empty on first deploy)
+OLD_APP_SP_ID="$APP_SP_ID"
+
 deploy_bundle
+
+# After deployment, check if we now have a service principal ID
+echo "=== Checking for service principal after deployment ==="
+check_for_deployed_app
+
+# If we got a new SP ID after deployment, redeploy with permissions
+if [ -z "$OLD_APP_SP_ID" ] && [ -n "$APP_SP_ID" ] && [ "$APP_SP_ID" != "null" ]; then
+    echo "============================================"
+    echo "📝 New service principal detected: $APP_SP_ID"
+    echo "Redeploying bundle with service principal permissions..."
+    echo "============================================"
+    deploy_bundle
+fi
 
 echo "=== Starting app ==="
 start_app

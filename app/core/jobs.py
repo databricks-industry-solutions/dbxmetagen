@@ -19,6 +19,10 @@ from databricks.sdk.service.compute import Environment
 
 from core.config import DatabricksClientManager
 from core.user_context import UserContextManager, AppConfig
+from databricks.sdk.service.jobs import (
+    JobAccessControlRequest,
+    JobPermissionLevel,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -53,10 +57,36 @@ class JobManager:
 
         existing_job_id = self._find_job_by_name(job_name)
         if existing_job_id:
-            logger.info(
-                f"Job '{job_name}' already exists with ID {existing_job_id}, triggering new run"
-            )
-            job_id = existing_job_id
+            try:
+                existing_job = self.workspace_client.jobs.get(existing_job_id)
+                existing_path = existing_job.settings.tasks[
+                    0
+                ].notebook_task.notebook_path
+
+                if existing_path != notebook_path:
+                    logger.warning(
+                        f"Existing job has wrong notebook path: {existing_path} != {notebook_path}. Deleting and recreating."
+                    )
+                    st.warning(
+                        f"Existing job has outdated configuration. Recreating..."
+                    )
+                    self.workspace_client.jobs.delete(existing_job_id)
+                    job_id = self._create_job(
+                        job_name, notebook_path, job_parameters, user_email
+                    )
+                else:
+                    logger.info(
+                        f"Job '{job_name}' already exists with ID {existing_job_id} and correct path, triggering new run"
+                    )
+                    job_id = existing_job_id
+            except Exception as e:
+                logger.warning(
+                    f"Could not verify existing job configuration: {e}. Recreating job."
+                )
+                self.workspace_client.jobs.delete(existing_job_id)
+                job_id = self._create_job(
+                    job_name, notebook_path, job_parameters, user_email
+                )
         else:
             job_id = self._create_job(
                 job_name, notebook_path, job_parameters, user_email
@@ -128,14 +158,12 @@ class JobManager:
                     job_info["status"] = f"ERROR: {str(e)}"
 
             st.success(
-                f"✅ Refreshed status for {len(st.session_state.job_runs)} job runs"
+                f"Refreshed status for {len(st.session_state.job_runs)} job runs"
             )
 
         except Exception as e:
             logger.error(f"Failed to refresh job status: {str(e)}")
             st.error(f"❌ Failed to refresh job status: {str(e)}")
-
-    # === Private helper methods (small and composable) ===
 
     def _validate_inputs(
         self,
@@ -153,6 +181,7 @@ class JobManager:
             raise ValueError("Configuration is required")
 
         valid_sizes = [
+            "Serverless",
             "Small (1-2 workers)",
             "Medium (2-4 workers)",
             "Large (4-8 workers)",
@@ -165,6 +194,7 @@ class JobManager:
     def _get_worker_config(self, cluster_size: str) -> Dict[str, int]:
         """Map cluster size to worker configuration"""
         worker_map = {
+            "Serverless": {"min": 1, "max": 1},
             "Small (1-2 workers)": {"min": 1, "max": 2},
             "Medium (2-4 workers)": {"min": 2, "max": 4},
             "Large (4-8 workers)": {"min": 4, "max": 8},
@@ -191,9 +221,8 @@ class JobManager:
 
         job_params = {
             "table_names": tables if isinstance(tables, str) else ",".join(tables),
-            "env": "app",
+            "env": config.get("bundle_target", "app"),
             "cleanup_control_table": "true",
-            # Core settings
             "catalog_name": catalog_name,
             "host": config.get("host", ""),
             "schema_name": config.get("schema_name", "metadata_results"),
@@ -247,27 +276,40 @@ class JobManager:
 
     def _resolve_notebook_path(self, config: Dict[str, Any]) -> str:
         """Resolve the notebook path for job execution"""
-        # 1) Explicit override
+        logger.info(
+            "[_resolve_notebook_path] ALL session_state keys: %s",
+            list(st.session_state.keys()),
+        )
+        logger.info(
+            "[_resolve_notebook_path] session_state.deploying_user = %s",
+            st.session_state.get("deploying_user", "NOT_SET"),
+        )
+
         explicit_path = os.environ.get("NOTEBOOK_PATH") or config.get("notebook_path")
         if explicit_path:
             logger.info(f"Using explicit NOTEBOOK_PATH override: {explicit_path}")
             return explicit_path
 
-        # 2) With OBO, use the deploying user for notebook paths (not the app user)
         try:
-            # Get deploying user from session state (loaded from deploying_user.yml)
             deploying_user = st.session_state.get("deploying_user")
+
+            logger.info(
+                "[_resolve_notebook_path] Retrieved deploying_user: %s",
+                deploying_user,
+            )
 
             if not deploying_user or deploying_user == "unknown":
                 logger.warning("Deploying user not found in session state")
-                st.warning("⚠️ Deploying user not found - check deploying_user.yml file")
+                st.warning("Deploying user not found - check deploying_user.yml file")
 
-            st.info(f"Deploying user: {deploying_user}")
+            # st.info(f"Deploying user: {deploying_user}")
 
-            if deploying_user and deploying_user != "unknown":  # TODO: marke this spot
+            if deploying_user and deploying_user != "unknown":
                 bundle_target = st.session_state.get("app_env", "dev")
+                path = f"/Workspace/Users/{deploying_user}/.bundle/dbxmetagen/{bundle_target}/files/notebooks/generate_metadata"
                 logger.info(f"Using deploying user: {deploying_user}")
                 logger.info(f"Using bundle target: {bundle_target}")
+                logger.info(f"Resolved notebook path: {path}")
                 return path
             logger.info("Deploying user not properly set, continuing to fallback")
 
@@ -349,10 +391,6 @@ class JobManager:
     def _update_job_permissions(self, job_id: int, current_user: str):
         """Update job permissions to include current app user without removing existing permissions"""
         try:
-            from databricks.sdk.service.jobs import (
-                JobAccessControlRequest,
-                JobPermissionLevel,
-            )
 
             # Get existing permissions
             existing_permissions = self.workspace_client.jobs.get_permissions(
@@ -399,24 +437,25 @@ class JobManager:
             logger.error(f"Failed to update job permissions for job {job_id}: {e}")
             # Don't raise - job can still run without this
 
-    def _find_existing_cluster(self) -> Optional[str]:
-        """Find an existing cluster that can be reused"""
-        try:
-            clusters = self.workspace_client.clusters.list()
-            for cluster in clusters:
-                if (
-                    cluster.state
-                    and cluster.state.value in ["RUNNING", "TERMINATED"]
-                    and hasattr(cluster, "cluster_name")
-                    and "shared" in cluster.cluster_name.lower()
-                ):
-                    logger.info(
-                        f"Found existing cluster: {cluster.cluster_name} ({cluster.cluster_id})"
-                    )
-                    return cluster.cluster_id
-        except Exception as e:
-            logger.warning(f"Could not list clusters: {e}")
-        return None
+    # # TODO:
+    # def _find_existing_cluster(self) -> Optional[str]:
+    #     """Find an existing cluster that can be reused"""
+    #     try:
+    #         clusters = self.workspace_client.clusters.list()
+    #         for cluster in clusters:
+    #             if (
+    #                 cluster.state
+    #                 and cluster.state.value in ["RUNNING", "TERMINATED"]
+    #                 and hasattr(cluster, "cluster_name")
+    #                 and "shared" in cluster.cluster_name.lower()
+    #             ):
+    #                 logger.info(
+    #                     f"Found existing cluster: {cluster.cluster_name} ({cluster.cluster_id})"
+    #                 )
+    #                 return cluster.cluster_id
+    #     except Exception as e:
+    #         logger.warning(f"Could not list clusters: {e}")
+    #     return None
 
     def _create_job(
         self,
@@ -425,14 +464,11 @@ class JobManager:
         job_parameters: Dict[str, str],
         user_email: Optional[str] = None,
     ) -> int:
-        """Create the Databricks job"""
-        # Validate critical parameters
+        """Create the Databricks job for generating metadata"""
         if not notebook_path:
             raise ValueError("Notebook path is empty - cannot create job")
         if not job_parameters.get("table_names"):
             raise ValueError("No table names provided - cannot create job")
-
-        existing_cluster_id = self._find_existing_cluster()
 
         try:
             job_params = {
@@ -451,7 +487,6 @@ class JobManager:
                             notebook_path=notebook_path,
                             base_parameters=job_parameters,
                         ),
-                        existing_cluster_id=existing_cluster_id,
                         timeout_seconds=14400,
                     )
                 ],
@@ -463,12 +498,11 @@ class JobManager:
                     if user_email
                     else None
                 ),
-                "max_concurrent_runs": 1,
+                "max_concurrent_runs": 5,
             }
 
             job = self.workspace_client.jobs.create(**job_params)
 
-            # Verify job creation
             created_job = self.workspace_client.jobs.get(job.job_id)
             task_count = (
                 len(created_job.settings.tasks) if created_job.settings.tasks else 0
@@ -497,7 +531,6 @@ class JobManager:
             logger.error(error_msg)
             raise RuntimeError(error_msg)
 
-
     def create_and_run_metadata_job(self, tables: List[str]):
         """Create and run a metadata generation job using SPN deployment type"""
         try:
@@ -511,7 +544,7 @@ class JobManager:
             job_id, run_id = self.create_metadata_job(
                 job_name=job_name,
                 tables=tables,
-                cluster_size="Medium (2-4 workers)",
+                cluster_size="Serverless",  # TODO: Make this dynamic
                 config=st.session_state.config,
             )
             return job_id, run_id
@@ -520,7 +553,6 @@ class JobManager:
             st.error(f"❌ Job execution failed: {str(e)}")
             logger.error(f"Job execution failed: {str(e)}", exc_info=True)
 
-            # Show debug information for troubleshooting
             st.markdown("**Debug Information:**")
             st.write(f"- Tables: {len(tables)} total")
             st.write(
@@ -556,6 +588,7 @@ class JobManager:
         else:
             notebook_path = self._resolve_sync_notebook_path()
             job_id = self._create_job(job_name, notebook_path, job_parameters)
+            self._update_job_permissions(job_id, st.session_state.get("deploying_user"))
 
         # Start job run
         run_id = self._start_job_run(job_id, job_parameters)

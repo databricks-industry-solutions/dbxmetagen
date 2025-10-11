@@ -16,6 +16,7 @@ from core.jobs import JobManager
 from core.user_context import AppConfig
 from core.data_ops import DataOperations, MetadataProcessor
 
+
 logger = logging.getLogger(__name__)
 
 
@@ -26,7 +27,6 @@ class UIComponents:
         self.config_manager = ConfigManager()
         self.data_ops = DataOperations()
         self.metadata_processor = MetadataProcessor()
-        # Job manager will be initialized when workspace client is available
         self._job_manager = None
 
     def _ensure_client_ready(self) -> bool:
@@ -45,25 +45,22 @@ class UIComponents:
     def job_manager(self):
         """Get job manager with lazy client initialization"""
         if self._job_manager is None:
-            # Ensure client is ready with lazy initialization
             if self._ensure_client_ready() and st.session_state.get("workspace_client"):
                 self._job_manager = JobManager(st.session_state.workspace_client)
         return self._job_manager
 
     def render_sidebar_config(self):
         """Render configuration sidebar."""
-        st.sidebar.header("⚙️ Configuration")
+        st.sidebar.header("Configuration")
 
-        # Load default configuration
         if not st.session_state.config:
             st.session_state.config = self.config_manager.load_default_config()
 
-        # Configuration form
         with st.sidebar.form("config_form"):
-            st.subheader("🏷️ Target Settings")
+            st.subheader("Target Settings")
 
             catalog_name = st.text_input(
-                "Catalog Name",
+                "Output Catalog Name",
                 value=st.session_state.config.get(
                     "catalog_name", AppConfig.get_app_name()
                 ),
@@ -76,13 +73,13 @@ class UIComponents:
                 help="Schema name for metadata tables",
             )
 
-            st.subheader("⚡ Processing Options")
+            st.subheader("Processing Options")
 
-            allow_data = st.checkbox(
-                "Allow Data Sampling",
-                value=st.session_state.config.get("allow_data", True),
-                help="Include actual data samples in LLM processing",
-            )
+            # allow_data = st.checkbox(
+            #     "Allow Data In Comments",
+            #     value=st.session_state.config.get("allow_data", True),
+            #     help="Include actual data samples in LLM processing",
+            # )
 
             sample_size = st.number_input(
                 "Sample Size",
@@ -109,7 +106,6 @@ class UIComponents:
                 help="What to generate: comments, PII classification, or domain.",
             )
 
-            # Show domain config path input if domain mode is selected
             if mode == "domain":
                 domain_config_path = st.text_input(
                     "Domain Config Path",
@@ -119,25 +115,21 @@ class UIComponents:
                     help="Path to the domain configuration YAML file",
                 )
 
-            st.subheader("🚀 Execution Settings")
+            st.subheader("Execution Settings")
 
-            # TODO: Re-enable OBO authentication when jobs.jobs scope becomes available to non-account admins
-            # For now, we only support SPN (Service Principal) deployment type to avoid permission issues.
-            # The OBO checkbox will be added back as a deployment-time configuration option.
-            cluster_size = "serverless"
+            cluster_size = "Serverless"
 
             apply_ddl = st.checkbox(
-                "⚠️ Apply DDL (CAUTION)",
+                "Apply DDL (CAUTION)",
                 value=st.session_state.config.get("apply_ddl", False),
                 help="WARNING: This will directly modify your tables!",
             )
 
-            if st.form_submit_button("💾 Save Configuration", type="primary"):
+            if st.form_submit_button("Save Configuration", type="primary"):
                 # Update session state config
                 config_update = {
                     "catalog_name": catalog_name,
                     "schema_name": schema_name,
-                    "allow_data": allow_data,
                     "sample_size": sample_size,
                     "columns_per_call": columns_per_call,
                     "mode": mode,
@@ -190,7 +182,7 @@ class UIComponents:
                 if csv_tables:
                     # Update session state and return CSV tables directly
                     st.session_state.selected_tables = csv_tables
-                    st.success(f"✅ Loaded {len(csv_tables)} tables from CSV")
+                    st.success(f"Loaded {len(csv_tables)} tables from CSV")
                     return csv_tables
 
         tables = self._parse_and_store_tables(table_names_input)
@@ -233,7 +225,7 @@ class UIComponents:
 
     def _show_no_tables_warning(self):
         """Show warning when no tables are provided."""
-        st.info("📝 Enter table names above or upload a CSV file to get started")
+        st.info("Enter table names above or upload a CSV file to get started")
 
     def _validate_tables(self, tables: List[str]):
         """Validate table names and accessibility."""
@@ -266,7 +258,7 @@ class UIComponents:
                 if errors:
                     st.error("Validation Errors:")
                     for error in errors:
-                        st.write(f"⚠️ {error}")
+                        st.write(f"{error}")
 
     def _save_table_list(self, tables: List[str]):
         """Save table list as downloadable CSV."""
@@ -276,7 +268,7 @@ class UIComponents:
             filename = f"table_names_{timestamp}.csv"
 
             st.download_button(
-                label="📥 Download CSV",
+                label="Download CSV",
                 data=csv_content,
                 file_name=filename,
                 mime="text/csv",
@@ -284,16 +276,14 @@ class UIComponents:
 
     def render_job_status_section(self):
         """Render job status monitoring section."""
-        st.header("📊 Job Status")
+        st.header("Job Status")
 
         if not st.session_state.get("job_runs"):
             st.info("No jobs to display. Create a job above to track its status.")
             return
 
-        # Job status header with manual refresh button
         self._render_job_status_header()
 
-        # Display job status using working format (run_id as key)
         self._display_job_status_working()
 
     @st.fragment
@@ -301,7 +291,7 @@ class UIComponents:
         """Render job status header with refresh button (isolated fragment to prevent scroll issues)"""
         col1, col2 = st.columns([3, 1])
         with col1:
-            st.subheader("📊 Job Status")
+            st.subheader("Job Status")
         with col2:
             if st.button("🔄 Refresh Now", help="Manually refresh job status"):
                 if not self.job_manager:
@@ -312,7 +302,6 @@ class UIComponents:
                 with st.spinner("Refreshing job status..."):
                     self.job_manager.refresh_job_status()
                 st.success("✅ Status refreshed!")
-                # Note: No st.rerun() needed - fragment reruns automatically
 
     def _display_job_status_working(self):
         """Display job status using working format (run_id as key)"""
@@ -366,62 +355,6 @@ class UIComponents:
                         st.write(f"{i}. {table}")
                     if len(tables) > 10:
                         st.write(f"... and {len(tables) - 10} more tables")
-
-    # TODO: Delete unused function - "📊 Results" is not in the navigation menu
-    def render_results_viewer(self):
-        """Render results viewing interface."""
-        st.header("📊 Results Viewer")
-
-        # Configuration inputs
-        col1, col2, col3 = st.columns(3)
-
-        with col1:
-            catalog = st.text_input(
-                "Catalog",
-                value=st.session_state.config.get(
-                    "catalog_name", AppConfig.get_app_name()
-                ),
-            )
-
-        with col2:
-            schema = st.text_input(
-                "Schema",
-                value=st.session_state.config.get("schema_name", "metadata_results"),
-            )
-
-        with col3:
-            volume = st.text_input(
-                "Volume",
-                value=st.session_state.config.get("volume_name", "generated_metadata"),
-            )
-
-        if st.button("📥 Load Results"):
-            with st.spinner("Loading results from volume..."):
-                df = self.metadata_processor.load_metadata_from_volume(
-                    catalog, schema, volume
-                )
-                if df is not None:
-                    st.session_state.current_metadata = df
-
-        # Display results
-        if st.session_state.get("current_metadata") is not None:
-            df = st.session_state.current_metadata
-
-            st.success(f"✅ Loaded {len(df)} metadata records")
-
-            # Display options
-            col1, col2, col3 = st.columns(3)
-
-            with col1:
-                if st.button("📥 Download TSV"):
-                    self._download_metadata(df, "tsv")
-
-            with col2:
-                if st.button("📥 Download CSV"):
-                    self._download_metadata(df, "csv")
-
-            # Display data
-            st.dataframe(df, use_container_width=True)
 
     def render_metadata_review(self):
         """Render metadata review interface with editing capabilities."""
@@ -599,9 +532,6 @@ class UIComponents:
                 column_config=column_config,
             )
 
-            # Don't update session state here - let it update only on save/apply
-            # This prevents conflicts with Streamlit's rerun cycle
-
             st.subheader("💾 Save & Apply Changes")
 
             col1, col2 = st.columns(2)
@@ -685,7 +615,6 @@ class UIComponents:
     def _apply_metadata(self, df: pd.DataFrame):
         """Apply metadata changes to tables."""
         # Recheck authentication before applying metadata
-        from core.config import DatabricksClientManager
 
         if not DatabricksClientManager.recheck_authentication():
             st.error(
@@ -713,63 +642,6 @@ class UIComponents:
                     st.markdown("**Error Details:**")
                     for error in results["errors"]:
                         st.write(f"• {error}")
-
-    # TODO: Delete unused function - only called by render_results_viewer which is also unused
-    def _download_metadata(self, df: pd.DataFrame, format: str):
-        """Download metadata in specified format."""
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-
-        if format == "tsv":
-            content = df.to_csv(sep="\t", index=False)
-            filename = f"metadata_{timestamp}.tsv"
-            mime = "text/tab-separated-values"
-        else:
-            content = df.to_csv(index=False)
-            filename = f"metadata_{timestamp}.csv"
-            mime = "text/csv"
-
-        st.download_button(
-            label=f"📥 Download {format.upper()}",
-            data=content.encode("utf-8"),
-            file_name=filename,
-            mime=mime,
-        )
-
-    # TODO: Delete unused function
-    def _save_config_to_file(self):
-        """Save current configuration to YAML file."""
-        try:
-            yaml_content = yaml.dump(st.session_state.config, default_flow_style=False)
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            app_name = AppConfig.get_app_name()
-            filename = f"{app_name}_config_{timestamp}.yml"
-
-            st.sidebar.download_button(
-                label="📥 Download Config",
-                data=yaml_content.encode("utf-8"),
-                file_name=filename,
-                mime="application/x-yaml",
-            )
-
-        except Exception as e:
-            st.sidebar.error(f"❌ Failed to save config: {str(e)}")
-
-    # TODO: Delete unused function
-    def _load_config_from_file(self, uploaded_file):
-        """Load configuration from uploaded YAML file."""
-        try:
-            content = uploaded_file.read()
-            if isinstance(content, bytes):
-                content = content.decode("utf-8")
-
-            config = yaml.safe_load(content)
-            st.session_state.config.update(config)
-
-            st.sidebar.success("✅ Configuration loaded!")
-            # Note: Removed st.rerun() to prevent scroll-to-top - changes will show on next interaction
-
-        except Exception as e:
-            st.sidebar.error(f"❌ Failed to load config: {str(e)}")
 
     def render_help(self):
         """Render help and documentation."""

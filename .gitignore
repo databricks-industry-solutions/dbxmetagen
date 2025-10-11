@@ -149,7 +149,13 @@ databricks_final.yml.tmp
 #app/deploying_user.yml
 #app/app_env.yml
 app/env_overrides.yml
+variables_override.yml
+
+# backup files
+*.bkp
+*.backup
 
 # Environment-specific config (not committed)
+
 *.env
 !example.env

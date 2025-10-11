@@ -375,8 +375,10 @@ def append_column_rows(
                 tokenized_table=tokenized_full_table_name,
                 ddl_type="column",
                 column_name=column_name,
+                classification=column_content.get("classification"),
+                type=column_content.get("type"),
+                confidence=column_content.get("confidence"),
                 presidio_results=presidio_results,
-                **column_content,
             )
         elif isinstance(column_content, str) and config.mode == "comment":
             row = Row(
