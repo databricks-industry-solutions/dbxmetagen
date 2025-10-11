@@ -1,7 +1,0 @@
-  
-  workspace_host:
-    default: "https://adb-830292400663869.9.azuredatabricks.net/"
-  permission_groups:
-    default: "account users, pgh_genie_dev_group"
-  permission_users:
-    default: "james.mccall@databricks.com, yen.low@databricks.com"
