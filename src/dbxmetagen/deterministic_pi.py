@@ -20,20 +20,33 @@ def get_analyzer_engine(add_pci: bool = True, add_phi: bool = True) -> AnalyzerE
     analyzer = AnalyzerEngine()
 
     if add_pci:
-        # PCI patterns for financial data
+        # PCI patterns for financial data - made more specific to reduce false positives
         pci_patterns = [
-            Pattern(name="credit_card", regex=r"\b(?:\d[ -]*?){13,16}\b", score=0.8),
-            Pattern(name="cvv", regex=r"\b\d{3,4}\b", score=0.6),
+            # Credit card: Must be 13-19 digits with optional separators (spaces/dashes every 4 digits)
+            # Luhn algorithm validation would be ideal but regex can't do it
+            Pattern(
+                name="credit_card",
+                regex=r"\b(?:\d{4}[ -]?){3}\d{1,7}\b",  # Groups of 4 digits
+                score=0.6,  # Lower score - requires context validation
+            ),
+            # CVV: Removed - too aggressive, matches any 3-4 digit number
+            # Expiry date: Month/Year format only
             Pattern(
                 name="expiry_date",
                 regex=r"\b(0[1-9]|1[0-2])[\/\-](\d{2}|\d{4})\b",
                 score=0.7,
             ),
-            Pattern(name="iban", regex=r"\b[A-Z]{2}\d{2}[A-Z0-9]{1,30}\b", score=0.8),
+            # IBAN: International Bank Account Number with country code
+            Pattern(
+                name="iban",
+                regex=r"\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b",  # At least 15 chars total
+                score=0.8,
+            ),
+            # SWIFT: Bank Identifier Code
             Pattern(
                 name="swift", regex=r"\b[A-Z]{6}[A-Z0-9]{2}([A-Z0-9]{3})?\b", score=0.8
             ),
-            Pattern(name="bank_account", regex=r"\b\d{8,17}\b", score=0.6),
+            # Bank account: Removed - too generic, matches timestamps, IDs, etc.
         ]
         pci_recognizer = PatternRecognizer(
             supported_entity="CREDIT_CARD",
@@ -44,11 +57,15 @@ def get_analyzer_engine(add_pci: bool = True, add_phi: bool = True) -> AnalyzerE
                 "visa",
                 "mastercard",
                 "amex",
+                "discover",
                 "payment",
                 "cvv",
+                "cvc",
                 "expiry",
-                "bank",
-                "account",
+                "expiration",
+                "cardholder",
+                "pan",
+                "primary account",
             ],
         )
         analyzer.registry.add_recognizer(pci_recognizer)
@@ -100,15 +117,22 @@ def analyze_column(
     column_data: List[Any],
     entities: Optional[List[str]] = None,
     language: str = "en",
+    score_threshold: float = 0.5,
 ) -> List[List[RecognizerResult]]:
     """
     Analyze each cell in a column for PII/PHI/PCI entities.
+    Only returns results above the score threshold to reduce false positives.
     """
     results = []
     for cell in column_data:
         try:
             text = str(cell) if cell is not None else ""
-            analysis = analyzer.analyze(text=text, language=language, entities=entities)
+            analysis = analyzer.analyze(
+                text=text,
+                language=language,
+                entities=entities,
+                score_threshold=score_threshold,
+            )
             results.append(analysis)
         except Exception as e:
             logging.error(f"Error analyzing cell '{cell}': {e}")
@@ -117,11 +141,15 @@ def analyze_column(
 
 
 def classify_column(
-    analyzer: AnalyzerEngine, column_name: str, column_data: List[Any]
+    analyzer: AnalyzerEngine,
+    column_name: str,
+    column_data: List[Any],
+    score_threshold: float = 0.5,
 ) -> Tuple[str, List[str]]:
     """
     Classify a column as PII, PHI, PCI, or Non-sensitive.
     Returns the detected type and a list of detected entities.
+    Filters out overly aggressive entities and applies score thresholds.
     """
     entity_map = {
         "PII": [
@@ -129,16 +157,16 @@ def classify_column(
             "EMAIL_ADDRESS",
             "PHONE_NUMBER",
             "ADDRESS",
-            "DATE_TIME",
+            # DATE_TIME removed - too aggressive, matches timestamps and numbers
             "NRP",
             "LOCATION",
             "IP_ADDRESS",
             "URL",
-            "CREDIT_CARD",
-            "IBAN_CODE",
+            # CREDIT_CARD removed - should only be in PCI
+            # IBAN_CODE removed - should only be in PCI
+            # US_BANK_NUMBER removed - should only be in PCI
             "CRYPTO",
             "US_SSN",
-            "US_BANK_NUMBER",
             "US_DRIVER_LICENSE",
             "US_PASSPORT",
             "US_ITIN",
@@ -199,15 +227,27 @@ def classify_column(
             "BANK_ACCOUNT_NUMBER",
         ],
     }
+
+    # Additional filtering for overly aggressive entities
+    entities_to_ignore = {
+        "DATE_TIME",  # Too aggressive - matches times, dates, and random numbers
+    }
+
     detected_types = set()
     detected_entities = set()
-    results = analyze_column(analyzer, column_data)
+    results = analyze_column(analyzer, column_data, score_threshold=score_threshold)
+
     for cell_results in results:
         for res in cell_results:
+            # Skip ignored entities
+            if res.entity_type in entities_to_ignore:
+                continue
+
             for typ, ents in entity_map.items():
                 if res.entity_type in ents:
                     detected_types.add(typ)
                     detected_entities.add(res.entity_type)
+
     if not detected_types:
         return "Non-sensitive", []
     return ", ".join(sorted(detected_types)), sorted(detected_entities)
@@ -216,9 +256,17 @@ def classify_column(
 def process_table(
     config: MetadataConfig,
     data: Dict[str, Any],
+    score_threshold: float = 0.5,
 ) -> List[Dict[str, Any]]:
     """
     Process the input data, classify each column, and save results.
+
+    Args:
+        config: MetadataConfig with catalog/schema info
+        data: Dictionary with column_contents (columns and data)
+        score_threshold: Minimum confidence score for Presidio matches (0.0-1.0).
+                        Higher values reduce false positives but may miss some PII.
+                        Recommended: 0.5 for balanced, 0.6-0.7 for stricter filtering.
     """
     current_date = datetime.now().strftime("%Y%m%d")
     current_timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
@@ -232,20 +280,30 @@ def process_table(
     columns = column_contents.get("columns", [])
     data_rows = column_contents.get("data", [])
     results = []
+
+    logging.info(
+        f"Analyzing {len(columns)} columns with score threshold {score_threshold}"
+    )
+
     for idx, col in enumerate(columns):
         column_data = [row[idx] for row in data_rows]
-        col_type, entities = classify_column(analyzer, col, column_data)
+        col_type, entities = classify_column(
+            analyzer, col, column_data, score_threshold=score_threshold
+        )
         results.append(
             {"column": col, "classification": col_type, "entities": entities}
         )
         logging.info(
             f"Column '{col}' classified as '{col_type}' with entities: {entities}"
         )
+
     output_path = os.path.join(
         output_dir, f"presidio_column_classification_results_{current_timestamp}.txt"
     )
     try:
         with open(output_path, "w") as f:
+            f.write(f"Presidio Analysis Results (score_threshold={score_threshold})\n")
+            f.write("=" * 80 + "\n\n")
             for res in results:
                 f.write(
                     f"{res['column']}: {res['classification']} ({', '.join(res['entities'])})\n"
@@ -272,9 +330,14 @@ def ensure_spacy_model(model_name: str = "en_core_web_lg"):
 def detect_pi(config, input_data: Dict[str, Any]) -> str:
     """
     Main function to process input data for PII/PHI/PCI detection.
+    Uses presidio_score_threshold from config (default 0.6) to filter results.
     """
-    # setup_logging()
-    logging.info("Starting PII/PHI/PCI detection process.")
-    results = process_table(config, input_data)
-    return json.dumps({"deterministic_results": results})
+    # Get score threshold from config, default to 0.6 if not set
+    score_threshold = getattr(config, "presidio_score_threshold", 0.6)
+
+    logging.info(
+        f"Starting PII/PHI/PCI detection with score threshold {score_threshold}"
+    )
+    results = process_table(config, input_data, score_threshold=score_threshold)
     logging.info("Detection process completed.")
+    return json.dumps({"deterministic_results": results})

@@ -4,6 +4,7 @@
 
 - [Project Overview](#project-overview)
 - [Disclaimer](#disclaimer)
+- [Quickstart] (#quickstart)
 - [Solution Overview](#solution-overview)
 - [User Guide](#user-guide)
   - [Personas](#personas)
@@ -25,9 +26,16 @@
 
 <img src="images/DBXMetagen_arch_hl.png" alt="High-level DBXMetagen Architecture" width="800" top-margin="50">
 
-**dbxmetagen** is a utility for generating high-quality descriptions for tables and columns in Databricks, enhancing enterprise search, governance, and Databricks Genie performance. It can identify and classify personal information (PI) into PII, PHI, and PCI. The tool is highly configurable, supporting bulk operations, SDLC integration, and fine-grained control over privacy and output formats.
+**dbxmetagen** is a utility for generating high-quality metadata for Unity Catalog.
 
-## Quickstart
+Options:
+- descriptions for tables and columns in Databricks, enhancing enterprise search, governance, Databricks Genie performance, and any other tooling that benefit significantly from high quality metadata. 
+- identify and classify columns and tables into personal information (PI) into PII, PHI, and PCI.
+- predict domain + subdomain for tables
+
+The tool is highly configurable, supporting bulk operations, SDLC integration, and fine-grained control over privacy and output formats.
+
+**Quickstart**
 
 1. **Clone the repo** into a Git Folder in your Databricks workspace
    ```
@@ -36,9 +44,9 @@
 
 2. **Open the notebook**: `notebooks/generate_metadata.py`
 
-3. **Fill in the widgets** (no file editing needed!):
+3. **Run the first few cells to setup widgets, then fill in the widgets**:
    - **catalog_name** (required): Your Unity Catalog name
-   - **table_names** (required): Comma-separated list (e.g., `catalog.schema.table1, catalog.schema.table2`)
+   - **table_names** (required): Comma-separated list (e.g., `catalog.schema.table1, catalog.schema.table2`). You can provide entire schemas as `catalog.schema.*`. Use test tables or a small schema for initial runs.
    - **metadata_type**: Choose `comment`, `pi`, or `domain`
    - Adjust other widgets as needed (all have sensible defaults)
 

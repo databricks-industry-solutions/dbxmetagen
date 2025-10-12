@@ -17,3 +17,6 @@ variables:
   subdomain_tag_name:
     description: Unity Catalog tag name for business subdomain
     default: "subdomain"
+  presidio_score_threshold:
+    description: Minimum confidence score for Presidio PII detection (0.0-1.0). Higher values reduce false positives. Recommended 0.5-0.7.
+    default: 0.6
