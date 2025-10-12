@@ -4,6 +4,8 @@
 
 Presidio provides deterministic (rule-based) PII detection to complement LLM-based classification. It scans sample data for patterns matching credit cards, SSNs, emails, phone numbers, and other identifiers.
 
+**Important**: Presidio analyzes **data values only**, not column names. A column named `patient_id` containing values like `100524, 100550` will not be detected as PII unless the values match recognizer patterns (e.g., "PT-100524" or "PATIENT 100524").
+
 ## Configuration
 
 ### Score Threshold
@@ -47,13 +49,42 @@ presidio_score_threshold:
 - Data contains non-standard PII formats
 - Prefer recall over precision
 
-## Filtered Entities
+## Pattern Recognition
 
-The following Presidio entities are **ignored** regardless of threshold:
+### Custom Recognizers
+
+We use custom pattern recognizers instead of Presidio's defaults:
+
+**PCI (Payment Card Industry)**:
+- Credit cards with separators: 13-19 digits in 4-digit groups (e.g., "4532 1234 5678 9010")
+- Credit cards without separators: 13-19 consecutive digits, excluding date formats (20220214)
+- IBAN: Country code + 13-30 alphanumeric chars
+- SWIFT: Bank identifier codes
+- Requires financial context words nearby (card, payment, visa, etc.)
+- **Explicitly excludes**: Date patterns (4-2-2 or 8-digit YYYYMMDD), non-numeric text
+
+**PHI (Protected Health Information)**:
+- Medical Record Numbers: "MRN-123456" or "MRN: 123456"
+- Patient IDs: "PT-123456", "PATIENT 123456", "PAT-123456"
+- Health insurance: 3 letters + 9-12 digits
+- Medical licenses: "MD-123456", "RN-123456"
+- Requires medical context words nearby (patient, medical, health, etc.)
+
+### Built-in Recognizer Removal
+
+Presidio's built-in `CreditCardRecognizer` is **disabled** because it:
+- Matches dates like "2022-02-14" as potential card numbers
+- Flags medical terms with capital letters and numbers
+- Has no context awareness
+
+### Filtered Entities
+
+The following entities are **ignored** regardless of threshold:
 
 - `DATE_TIME` - Overly aggressive, matches timestamps and numeric codes
+- Built-in credit card patterns - Replaced with stricter custom patterns
 
-This filtering is hardcoded to prevent common false positives.
+This filtering prevents common false positives on dates, IDs, and medical terminology.
 
 ## Integration with LLM Classification
 
@@ -107,6 +138,23 @@ presidio_score_threshold:
 **Issue**: Column with obvious PII (email, SSN) marked as "Non-sensitive"
 
 **Solution**: Lower threshold to 0.5 or check if sample data actually contains PII
+
+---
+
+**Issue**: Column named `patient_id` or `customer_id` not detected as PII
+
+**Explanation**: Presidio only analyzes data values. Plain numeric IDs (e.g., `100524`) without prefixes are not recognized.
+
+**Solutions**:
+- Rely on LLM classification (sees column names + context)
+- If data format allows, add prefixes: "PT-100524" instead of "100524"
+- Use custom recognizers with looser patterns (may increase false positives)
+
+---
+
+**Issue**: Dates or medical terms flagged as PCI (CREDIT_CARD)
+
+**Solution**: This was caused by Presidio's built-in CreditCardRecognizer. **Fixed** in latest version - built-in recognizer is now disabled.
 
 ---
 

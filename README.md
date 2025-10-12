@@ -39,7 +39,7 @@ The tool is highly configurable, supporting bulk operations, SDLC integration, a
 
 1. **Clone the repo** into a Git Folder in your Databricks workspace
    ```
-   Repos → Add Repo → https://github.com/databricks-industry-solutions/dbxmetagen
+   Create Git Folder → https://github.com/databricks-industry-solutions/dbxmetagen
    ```
 
 2. **Open the notebook**: `notebooks/generate_metadata.py`
@@ -70,10 +70,11 @@ For a web UI with job management, metadata review, and team collaboration:
    - Databricks CLI installed and configured: `databricks configure --profile <your-profile>`
    - Python 3.9+, Poetry (for building the wheel)
 
-2. **Configure environment** (optional):
+2. **Configure environment**:
    ```bash
    cp example.env dev.env
    # Edit dev.env with your workspace URL and permission groups/users
+   Update datbricks.yml host for asset bundle deploy
    ```
 
 3. **Deploy**:
@@ -95,9 +96,8 @@ See [docs/ENV_SETUP.md](docs/ENV_SETUP.md) for detailed deployment documentation
 
 ## Disclaimer
 
-- **AI-generated comments must be human-reviewed.**
+- AI-generated metadata must be human-reviewed for full compliance.
 - Generated comments may include data samples or metadata, depending on settings.
-- Use [AI Guardrails](https://docs.databricks.com/en/ai-gateway/index.html#ai-guardrails) to mitigate risks.
 - Compliance (e.g., HIPAA) is the user's responsibility.
 - Unless configured otherwise, dbxmetagen inspects data and sends it to the specified model endpoint. There are a wide variety of options to control this behavior in detail.
 
@@ -150,25 +150,22 @@ Both primary entry points for this application are Databricks notebooks.
 ### Additional Setup Details
 1. Clone the Repo into Databricks or locally
 1. If cloned into Repos in Databricks, one can run the notebook using an all-purpose cluster (tested on 14.3 ML LTS, 15.4 ML LTS, 16.4 ML) without further deployment, simply adjusting variables.yml and widgets in the notebook.
-   1. Alternatively, run the notebook deploy.py, open the web terminal, copy-paste the path and command from deploy.py and run it in the web terminal. This will run an asset bundle-based deploy in the Databricks UI web terminal.
-   1. The end result of this approach is to deploy a job. Table names can be added to the job itself for users with CAN MANAGE, or to table_names.csv as for the interactive workload.
-   1. Default workflow runs both PI identification/classification and comment generation.
-1. Library installs in pyproject.toml should not need to be adjusted. A pre-commit hook builds a requirements.txt that's referenced by the main notebook. Expect that library installs may be different for model registration in advanced usage (not fully implemented).
 1. If cloned locally, we recommend using Databricks asset bundle build to create and run a workflow.
-1. Either create a catalog or use an existing one. Default catalog is called dbxmetagen.
+1. Either create a catalog or use an existing one. If using the app, app SPN will need permissions on the catalog.
+1. Same for schema and volume, defaults are in variables.yml.
 1. Whether using asset bundles, or the notebook run, adjust the host urls, catalog name, and if desired schema name in resources/variables/variables.yml.
 1. Review the settings in the config.py file in src/dbxmetagen to whatever settings you need. If you want to make changes to variables in your project, change them in the notebook widget.
    1. Make sure to check the options for add_metadata and apply_ddl and set them correctly. Add metadata will run a describe extended on every column and use the metadata in table descriptions, though ANALYZE ... COLUMNS will need to have been run to get useful information from this.
    1. You also can adjust sample_size, columns_per_call, and ACRO_CONTENT, as well as many other variables in variables.yml.
    1. Point to a test table to start, though by default DDL will not be applied, instead it will only be generated and added to .sql files in the volume generated_metadata.
    1. Settings in the notebook widgets will override settings in config.py, so make sure the widgets in the main notebook are updated appropriately.
-1. In notebooks/table_names.csv, keep the first row as _table_name_ and add the list of tables you want metadata to be generated for. Add them as <schema>.<table> if they are in the same catalog that you define your catalog in variables.yml file separately, or you can use a three-level namespace for these table names.
+1. In notebooks/table_names.csv, keep the first row as _table_name_ and add the list of tables you want metadata to be generated for. Add them as <schema>.<table> if they are in the same catalog that you define your catalog in variables.yml file separately, or you can use a three-level namespace for these table names. You can also provide <catalog>.<schema>.* to run against all tables in a schema.
 
 ### Configurations
 1. Most configurations that users should change are in variables.yml. There are a variety of useful options, please read the descriptions, I will not rewrite them all here.
 
 ### Current status
-1. Tested on DBR 15.4 ML LTS and 14.3 ML LTS.
+1. Tested on DBR 14.3, 15.4, and 16.4.
 1. Default settings currently create ALTER scripts and puts in a volume. Tested in a databricks workspace.
 1. Some print-based logging to make understanding what's happening and debugging easy in the UI.
 
@@ -360,8 +357,8 @@ Put the file you want to review in 'reviewed_outputs' folder in your user folder
 
 ## Details of Comment Generation and PI Identification
 
-- **PHI Classification:** All medical columns are treated as PHI if `disable_medical_information_value` is true.
-- **Column-level vs Table-level:** Columns are classified individually; tables inherit the highest classification from their columns.
+- **PHI Classification:** All medical columns are treated as PHI if `disable_medical_information_value` is true. All medical identifiers are treated as PHI if solo_medical_identifiers is set to phi, whether they are associated with healthcare information or not.
+- **Column-level vs Table-level:** Columns are classified individually; tables inherit the highest classification from their columns, or a compound classification (e.g. pii + medical information = phi).
 
 ## Domain Classification
 
@@ -491,7 +488,7 @@ This project is licensed under the Databricks DB License.
 **Other libraries used come from the Databricks runtime**
 
 ## Acknowledgements
-Thanks to James McCall, Diego Malaver, and Charles Linville for discussions around dbxmetagen and its value.
+Thanks to James McCall, Diego Malaver, Aaaron Zavora, and Charles Linville for discussions around dbxmetagen and its value.
 
 Special thanks to the Databricks community and contributors.
 

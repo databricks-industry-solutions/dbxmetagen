@@ -92,12 +92,12 @@ variables:
     default: en_core_web_lg
   solo_medical_identifier:
     description: When a medical identifier, such as a medical record number (MRN), is alone in a field, it should be classified as this value. Technically speaking, if for example a column is alone in a table MRN is PII, not PHI. However, a more conservative setting would be to classify all medical identifiers as PHI, even when they are PII.
-    default: phi
+    default: pii
   pi_classification_rules:
     description: Rules for PI classification. These rules will be injected into the prompt and provided along with the prompt to the model.
     default: |
       PII (Personally Identifiable Information): Any data that can identify an individual, such as name, address, or social security number. 
-      PHI (Protected Health Information): Health-related data that includes any of the 18 HIPAA-identified elements, like medical records or treatment histories. 
+      PHI (Protected Health Information): Health-related data that includes any of the 18 HIPAA-identified elements, like medical records or treatment histories. A column is classified definitively as PHI when it has both health-related information and personal identifiers. 
       PCI (Payment Card Information): Data related to payment card transactions, including card numbers, expiration dates, and security codes. 
       Non-PII/PHI/PCI: Data that cannot be used to identify an individual or is not related to health or payment cards, such as general demographics or anonymized statistics.
       ###
