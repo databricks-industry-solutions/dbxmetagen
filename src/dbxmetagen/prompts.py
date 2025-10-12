@@ -5,7 +5,7 @@ import pandas as pd
 from src.dbxmetagen.deterministic_pi import detect_pi
 
 from pyspark.sql import SparkSession, DataFrame
-from pyspark.sql.functions import collect_list, struct, to_json
+from pyspark.sql.functions import collect_list, struct, to_json, col
 
 logging.basicConfig(
     level=logging.WARNING,
@@ -118,18 +118,51 @@ class Prompt(ABC):
         return handler(extended_metadata_df)
 
     def _filter_pi_mode(self, df: DataFrame) -> DataFrame:
-        """Filter metadata for PI mode (remove NULL values)"""
-        return df.filter(df["info_value"] != "NULL")
+        """Filter metadata for PI mode (remove NULL values and existing PI tags to avoid bias)"""
+        # Get configured tag names (with defaults)
+        pi_classification_tag = getattr(
+            self.config, "pi_classification_tag_name", "data_classification"
+        )
+        pi_subclassification_tag = getattr(
+            self.config, "pi_subclassification_tag_name", "data_subclassification"
+        )
+
+        return df.filter(
+            (df["info_value"] != "NULL")
+            & ~df["info_name"].isin([pi_classification_tag, pi_subclassification_tag])
+        )
 
     def _filter_domain_mode(self, df: DataFrame) -> DataFrame:
-        """Filter metadata for domain mode (remove NULL values)"""
-        return df.filter(df["info_value"] != "NULL")
+        """Filter metadata for domain mode (remove NULL values and existing domain tags to avoid bias)"""
+        # Get configured tag names (with defaults)
+        domain_tag = getattr(self.config, "domain_tag_name", "domain")
+        subdomain_tag = getattr(self.config, "subdomain_tag_name", "subdomain")
+
+        return df.filter(
+            (df["info_value"] != "NULL")
+            & ~df["info_name"].isin([domain_tag, subdomain_tag])
+        )
 
     def _filter_comment_mode(self, df: DataFrame) -> DataFrame:
         """Filter metadata for comment mode with additional exclusions"""
+        # Get configured tag names (with defaults) to avoid bias
+        pi_classification_tag = getattr(
+            self.config, "pi_classification_tag_name", "data_classification"
+        )
+        pi_subclassification_tag = getattr(
+            self.config, "pi_subclassification_tag_name", "data_subclassification"
+        )
+
         filtered_df = df.filter(
             (df["info_value"] != "NULL")
-            & ~df["info_name"].isin(["description", "comment"])
+            & ~df["info_name"].isin(
+                [
+                    "description",
+                    "comment",
+                    pi_classification_tag,
+                    pi_subclassification_tag,
+                ]
+            )
         )
 
         if not self.config.include_datatype_from_metadata:
@@ -265,12 +298,39 @@ class Prompt(ABC):
 
     def get_column_tags(self) -> Dict[str, Dict[str, str]]:
         """
-        Get column tags from the information schema.
+        Get column tags from the information schema, filtering out biasing tags based on mode.
 
         Returns:
-            Dict[str, Dict[str, str]]: Dictionary containing column tags.
+            Dict[str, Dict[str, str]]: Dictionary containing column tags (excluding biasing tags).
         """
         catalog_name, schema_name, table_name = self.full_table_name.split(".")
+
+        # Determine which tags to filter out based on mode
+        tags_to_exclude = []
+        if self.config.mode == "pi":
+            # Filter out existing PI classifications to avoid bias
+            pi_classification_tag = getattr(
+                self.config, "pi_classification_tag_name", "data_classification"
+            )
+            pi_subclassification_tag = getattr(
+                self.config, "pi_subclassification_tag_name", "data_subclassification"
+            )
+            tags_to_exclude = [pi_classification_tag, pi_subclassification_tag]
+        elif self.config.mode == "domain":
+            # Filter out existing domain classifications to avoid bias
+            domain_tag = getattr(self.config, "domain_tag_name", "domain")
+            subdomain_tag = getattr(self.config, "subdomain_tag_name", "subdomain")
+            tags_to_exclude = [domain_tag, subdomain_tag]
+        elif self.config.mode == "comment":
+            # Filter out PI tags for comment mode to avoid bias
+            pi_classification_tag = getattr(
+                self.config, "pi_classification_tag_name", "data_classification"
+            )
+            pi_subclassification_tag = getattr(
+                self.config, "pi_subclassification_tag_name", "data_subclassification"
+            )
+            tags_to_exclude = [pi_classification_tag, pi_subclassification_tag]
+
         query = f"""
         SELECT catalog_name, schema_name, table_name, column_name, tag_name, tag_value
         FROM system.information_schema.column_tags
@@ -279,6 +339,11 @@ class Prompt(ABC):
         AND table_name = '{table_name}';
         """
         result_df = self.spark.sql(query)
+
+        # Filter out biasing tags
+        if tags_to_exclude:
+            result_df = result_df.filter(~col("tag_name").isin(tags_to_exclude))
+
         column_tags = (
             result_df.groupBy("column_name")
             .agg(collect_list(struct("tag_name", "tag_value")).alias("tags"))
@@ -290,17 +355,44 @@ class Prompt(ABC):
             }
             for row in column_tags
         }
-        logger.debug("column tags dict: %s", column_tags_dict)
+        logger.debug("column tags dict (after filtering): %s", column_tags_dict)
         return column_tags_dict
 
     def get_table_tags(self) -> str:
         """
-        Get table tags from the information schema.
+        Get table tags from the information schema, filtering out biasing tags based on mode.
 
         Returns:
-            str: JSON string containing table tags.
+            str: JSON string containing table tags (excluding biasing tags).
         """
         catalog_name, schema_name, table_name = self.full_table_name.split(".")
+
+        # Determine which tags to filter out based on mode
+        tags_to_exclude = []
+        if self.config.mode == "pi":
+            # Filter out existing PI classifications to avoid bias
+            pi_classification_tag = getattr(
+                self.config, "pi_classification_tag_name", "data_classification"
+            )
+            pi_subclassification_tag = getattr(
+                self.config, "pi_subclassification_tag_name", "data_subclassification"
+            )
+            tags_to_exclude = [pi_classification_tag, pi_subclassification_tag]
+        elif self.config.mode == "domain":
+            # Filter out existing domain classifications to avoid bias
+            domain_tag = getattr(self.config, "domain_tag_name", "domain")
+            subdomain_tag = getattr(self.config, "subdomain_tag_name", "subdomain")
+            tags_to_exclude = [domain_tag, subdomain_tag]
+        elif self.config.mode == "comment":
+            # Filter out PI tags for comment mode to avoid bias
+            pi_classification_tag = getattr(
+                self.config, "pi_classification_tag_name", "data_classification"
+            )
+            pi_subclassification_tag = getattr(
+                self.config, "pi_subclassification_tag_name", "data_subclassification"
+            )
+            tags_to_exclude = [pi_classification_tag, pi_subclassification_tag]
+
         query = f"""
         SELECT tag_name, tag_value
         FROM system.information_schema.table_tags
@@ -309,6 +401,11 @@ class Prompt(ABC):
         AND table_name = '{table_name}';
         """
         result_df = self.spark.sql(query)
+
+        # Filter out biasing tags
+        if tags_to_exclude:
+            result_df = result_df.filter(~col("tag_name").isin(tags_to_exclude))
+
         return self.df_to_json(result_df)
 
     def get_table_constraints(self) -> str:
@@ -424,7 +521,7 @@ class CommentPrompt(Prompt):
                     {"table": "description", "columns": ["col1", "col2"], "column_contents": ["col1 desc", "col2 desc"]}
 
                     Guidelines:
-                    1. Scale comment length with information richness: 2-3 sentences for simple columns, 4-8 sentences when rich metadata/patterns emerge
+                    1. Scale comment length with information richness: 3-5 sentences for simple columns, 4-8 sentences when rich metadata/patterns emerge
                     2. Synthesize insights from: column name → table context → sample data → metadata statistics
                     3. Unpack acronyms confidently. Note anomalies (e.g., unexpectedly low distinct counts, suspicious nulls, data type mismatches)
                     4. Sample data may not represent full distribution - use metadata to validate/contradict sample observations
@@ -484,8 +581,14 @@ class PIPrompt(Prompt):
         content = self.prompt_content
         if self.config.include_deterministic_pi:
             self.deterministic_results = detect_pi(self.config, self.prompt_content)
+            print(
+                f"[PIPrompt] Presidio deterministic_results: {self.deterministic_results[:300]}..."
+            )
         else:
             self.deterministic_results = ""
+            print(
+                "[PIPrompt] Presidio detection disabled (include_deterministic_pi=False)"
+            )
         acro_content = self.config.acro_content
         return {
             "pi": [
@@ -505,26 +608,33 @@ class PIPrompt(Prompt):
                     ###
 
                     Specific Considerations
-                    1. pi and pii are synonyms for our purposes, and not used as a legal term but as a way to distinguish individuals from one another.
-                    2. Please don't respond with anything other than the dictionary.
-                    3. Attempt to classify into None, PII, PCI, medical information, and PHI based on common definitions. If definitions are provided in the content then use them. Otherwise, assume that PII is Personally Identifiable Information, PHI is Protected Health Information, and PCI is Protected Confidential Information. PII: This includes any data that could potentially identify a specific individual. Medical Information: This includes any infromation in a medical record that cannot be used to identify an individual. Medical information is not PI, but combined with PII becomes PHI. PHI: This includes any information in a medical record that can be used to identify an individual and that was created, used, or disclosed in the course of providing a health care service such as diagnosis or treatment. PCI: Payment Card Industry Information, including the primary account number (PAN) typically found on the front of the card, the card's security code, full track data stored in the card's chip or magnetic stripe, cardholder PIN, cardholder name, or card expiration date.
-                    4. Column-level classification priority: Classify columns based on their intrinsic content, not just context. Generic identifiers (names, emails, SSNs, addresses) should be classified as PII regardless of whether they appear in a healthcare, financial, or retail context. Healthcare-specific identifiers (MRN, insurance ID, patient account number) should be classified as PHI. Medical data without embedded identifiers (diagnosis codes, medication lists, lab result values) should be classified as medical_information. Only use PHI for columns that either: (a) are healthcare-specific identifiers, or (b) contain freeform text with embedded patient identifiers.
-                    5. The value for classification should always be either "pi", "medical_information", or "None". The value for type should always be either "pii", "pci", "medical_information", or "phi". When type is pii, pci, or phi, classification should be None. When type is None, classification should be None, and when type is medical information, classification should be medical_information.
-                    6. Freeform medical text with embedded identifiers: Clinical notes, physician notes, or any freeform text that mentions patient names or other identifiers within the text itself should be classified as PHI. This is because the identifiers are embedded in the column's content, not just in adjacent columns. For example, "Patient John Smith reports..." makes the entire text field PHI.
-                    7. Healthcare-specific identifiers: Medical Record Numbers (MRN), patient account numbers, insurance member IDs, and similar healthcare-specific identifiers should always be classified as PHI since they only exist in healthcare contexts.
-                    8. The medical_information type should be used for structured medical data that has been de-identified or contains no embedded identifiers: diagnosis codes, medication names, lab test names, procedure codes, or structured lab result values. These become part of PHI at the table level when combined with PII, but at the column level they are medical_information.
-                    9. Within strings, use single quotes as would be needed if the comment or column_content would be used as a Python string or in SQL DDL. For example format responses like: "The column 'scope' is a summary column.", rather than "The column "scope" is a summary column."
-                    10. Presidio Confidence Adjustment: When Presidio results are provided, adjust confidence scores based on agreement:
-                        - Both agree on PII: +0.1 confidence (max 0.98)
-                        - Presidio finds PII you missed: Trust Presidio, set confidence 0.6-0.8.
-                        - You find PII Presidio missed: Trust your assessment, confidence 0.8-0.9  
-                        - Disagreement on classification: Reduce confidence by 0.15
-
+                    1. Please don't respond with anything other than the dictionary.
+                    2. Attempt to classify into None, PII, PCI, medical information, and PHI based on common definitions, and for PHI following the 18 HIPAA Guidelines. Follow the PII classification rules here: 
                     ###
+                    \n 
                     """
-                    + f"""PI Classification Rules: {self.config.pi_classification_rules}.
+                    + f"""
+                    PI Classification Rules: {self.config.pi_classification_rules}.
+                    """
+                    + f"""
                     \n
-                    ###
+                    3. Baseline confidence: Set the confidence if you have no reason to modify it.
+                        - For obvious results, such as full_name, full_address, email, etc. set confidence to 0.98.
+                        - Similarly, for completely obvious results that are not PII such as Boolean values, years with no other information, or locales such as Country, set confidence to 0.98.
+                        - For results such as state or zip code, consider context, and set confidence lower, between 0.6 and 0.8.
+                        - For free-form text, use low confidence (0.3) by default, because we are not sampling every row nor the entirety of the text cell.
+                    4. Column-level classification priority: Classify columns based on their intrinsic content primarily, and secondarily by their context. Any of the 18 HIPAA PII identifiers should be classified as PII regardless of whether they appear in a healthcare, financial, or retail context. Medical data without embedded identifiers should be classified as medical_information. Only use PHI for columns that either: (a) are healthcare-specific identifiers, or (b) contain medical information or freeform text with embedded patient identifiers.
+                    5. The value for classification should always be either "pi", "medical_information", or "None". The value for type should always be either "None", "pii", "pci", "medical_information", or "phi". When type is pii, pci, or phi, classification should be set to pi. When type is None, classification should be None, and when type is medical information, classification should be medical_information.
+                    6. Freeform medical text with embedded identifiers: Clinical notes, physician notes, or any freeform text that mentions patient names or other identifiers within the text itself should be classified as PHI. For example, "Patient John Smith reports..." makes the entire text field PHI.
+                    7. Healthcare-specific identifiers: When completely alone in a field (no other medical information present in the column), medical Record Numbers (MRN), patient account numbers, insurance member IDs, and similar healthcare-specific identifiers should be set to {self.config.solo_medical_identifier}.
+                    8. The medical_information type should be used for medical text that has clearly been de-identified or contains no embedded identifiers: diagnosis codes, medication names, lab test names, procedure codes, or structured lab result values. These become part of PHI at the table level when combined with PII, but at the column level they are medical_information.
+                    9. Within strings, use single quotes as would be needed if the comment or column_content would be used as a Python string or in SQL DDL. For example format responses like: "The column 'scope' is a summary column.", rather than "The column "scope" is a summary column."
+                    10. Presidio Confidence Adjustment: When Presidio results are provided, assume that Presidio will generally identify PII effectively (high recall) but may often find PII where there is none. Trust Presidio, but use your judgement if it is obviously incorrect, and adjust confidence accordingly.                        
+                        - Both agree on PII: high confidence (max 0.98)
+                        - Presidio finds PII you missed: Strongly consider what Presidio suggests, aware of the fact that it sometimes finds PII where there is none. If Presidio is clearly incorrect, overrule it, but use a low confidence. If you aren't sure, trust Presidio and use a low confidence.
+                        - If Presidio finds PII, but you recognize that there is also medical information present, classify as phi with high confidence.
+                        - You find PII Presidio missed: Trust your assessment, confidence 0.6-0.8.
+                        - Fundamental disagreement on classification: Reduce confidence to 0.3.
                     """,
                 },
                 {
@@ -541,7 +651,7 @@ class PIPrompt(Prompt):
                 },
                 {
                     "role": "assistant",
-                    "content": """{"table": "web_sessions", "columns": ["user_email", "ip_address", "session_token", "device_id", "login_timestamp", "page_views", "cart_total"], "column_contents": [{"classification": "pi", "type": "pii", "confidence": 0.96}, {"classification": "pi", "type": "pii", "confidence": 0.88}, {"classification": "None", "type": "None", "confidence": 0.92}, {"classification": "None", "type": "None", "confidence": 0.90}, {"classification": "None", "type": "None", "confidence": 0.94}, {"classification": "None", "type": "None", "confidence": 0.96}, {"classification": "None", "type": "None", "confidence": 0.95}]}""",
+                    "content": """{"table": "web_sessions", "columns": ["user_email", "ip_address", "session_token", "device_id", "login_timestamp", "page_views", "cart_total"], "column_contents": [{"classification": "pi", "type": "pii", "confidence": 0.96}, {"classification": "pi", "type": "pii", "confidence": 0.98}, {"classification": "None", "type": "None", "confidence": 0.6}, {"classification": "None", "type": "None", "confidence": 0.90}, {"classification": "None", "type": "None", "confidence": 0.94}, {"classification": "None", "type": "None", "confidence": 0.96}, {"classification": "None", "type": "None", "confidence": 0.95}]}""",
                 },
                 {
                     "role": "user",
@@ -549,7 +659,7 @@ class PIPrompt(Prompt):
                 },
                 {
                     "role": "assistant",
-                    "content": """{"table": "patient_encounters", "columns": ["patient_full_name", "mrn", "diagnosis_code", "diagnosis_desc", "medication_orders", "physician_notes", "lab_results", "visit_date"], "column_contents": [{"classification": "pi", "type": "pii", "confidence": 0.97}, {"classification": "pi", "type": "phi", "confidence": 0.96}, {"classification": "medical_information", "type": "medical_information", "confidence": 0.94}, {"classification": "medical_information", "type": "medical_information", "confidence": 0.93}, {"classification": "medical_information", "type": "medical_information", "confidence": 0.90}, {"classification": "pi", "type": "phi", "confidence": 0.93}, {"classification": "medical_information", "type": "medical_information", "confidence": 0.91}, {"classification": "None", "type": "None", "confidence": 0.92}]}""",
+                    "content": """{"table": "patient_encounters", "columns": ["patient_full_name", "mrn", "diagnosis_code", "diagnosis_desc", "medication_orders", "physician_notes", "lab_results", "visit_date"], "column_contents": [{"classification": "pi", "type": "pii", "confidence": 0.97}, {"classification": "pi", "type": "pii", "confidence": 0.96}, {"classification": "medical_information", "type": "medical_information", "confidence": 0.94}, {"classification": "medical_information", "type": "medical_information", "confidence": 0.93}, {"classification": "medical_information", "type": "medical_information", "confidence": 0.90}, {"classification": "pi", "type": "phi", "confidence": 0.93}, {"classification": "medical_information", "type": "medical_information", "confidence": 0.91}, {"classification": "pi", "type": "pii", "confidence": 0.92}]}""",
                 },
                 {
                     "role": "user",
