@@ -21,10 +21,6 @@ class MetadataConfig:
             "disable_medical_information_value",
             "format_catalog",
             "model",
-            "chat_completion_type",
-            "custom_endpoint_url",
-            "custom_endpoint_secret_scope",
-            "custom_endpoint_secret_key",
             "registered_model_name",
             "model_type",
             "volume_name",
@@ -76,6 +72,10 @@ class MetadataConfig:
             "pi_subclassification_tag_name",
             "domain_tag_name",
             "subdomain_tag_name",
+            "chat_completion_type",
+            "custom_endpoint_url",
+            "custom_endpoint_secret_scope",
+            "custom_endpoint_secret_key",
         ],
     }
     MODEL_PARAMS = {}

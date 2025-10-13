@@ -214,9 +214,9 @@ class JobManager:
                 )
             except ValueError as e:
                 logger.error(f"Failed to get job user: {e}")
-                st.error(f"❌ Failed to determine job user: {e}")
+                # st.error(f"❌ Failed to determine job user: {e}")
                 raise
-        st.info(f"Job user: {job_user}")
+        # st.info(f"Job user: {job_user}")
         catalog_name = AppConfig.get_catalog_name()
 
         job_params = {
