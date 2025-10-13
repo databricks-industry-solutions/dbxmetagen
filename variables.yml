@@ -2,18 +2,18 @@ variables:
   catalog_name:
     description: "(REQUIRED) Target catalog where data, models, and files are stored for this project. If source tables are in this catalog, then table names only have to be scoped with schema and table. If table names are in other catalogs then table names need to be fully scoped. Replace this catalog name with the main catalog you want to run dbxmetagen from. Cannot be 'none', 'null', or empty."
     default: None
+  schema_name:
+    description: Primary schema where data, models, and files are written to for this project. This is not the source schema, which is specified elsewhere with the source table name.
+    default: metadata_results    
   bundle_target:
     description: Bundle target environment (dev/prod).
     default: ${bundle.target}
   allow_data:
     description: Set this to false if you do not want data sent to LLMs, do not want any metadata stored in comments, and do not want metadata used that could leak data into metadata. Reduces quality of outputs. Internally sets sample_size to 0, allow_data_in_comments to false, and include_possible_data_fields_in_metadata to false.
-    default: True
+    default: True  
   sample_size:
     description: Sample size used per chunk in the prompt generation. when set to 0, no data will be sent to LLM, but due to leakage from metadata if this field alone is set, does not prevent data being added to comments.
     default: 5
-  disable_medical_information_value:
-    description: Set this to true if you want all phi assumptions to be as secure as possible. Under this setting there is no 'medical information' category. Instead, all medical information is converted to PHI. Note that this will mean that any downstream masking you do, and security concerns around your data will be much more stringent.
-    default: false
   allow_data_in_comments:
     description: Whether to allow data in comments. Note that this does not prevent data from being used in the inputs, but is meant to keep data from the outputs. These comments still need to be reviewed, and to be 100% sure, either set allow_data to false, or set your combination of add_metadata, include_existing_table_comment, and other fields to the proper settings.
     default: true
@@ -35,37 +35,15 @@ variables:
   format_catalog:
     description: Whether or not to string format any bracketed variables in catalog name. If set to false, then __CATALOG_NAME__{env} will keep the _{env} suffix, if not it will be formatted with the current environment.
     default: false 
+  solo_medical_identifier:
+    description: When a medical identifier, such as a medical record number (MRN), is alone in a field, it should be classified as this value. Technically speaking, if for example a column is alone in a table MRN is PII, not PHI. However, a more conservative setting would be to classify all medical identifiers as PHI, even when they are PII.
+    default: pii
+  disable_medical_information_value:
+    description: Set this to true if you want all phi assumptions to be as secure as possible. Under this setting there is no 'medical information' category. Instead, all medical information is converted to PHI. Note that this will mean that any downstream masking you do, and security concerns around your data will be much more stringent.
+    default: false
   model:
     description: LLM endpoint used by model calls. Note that this is not the same as any registered model in UC that wraps the prompt engineering work, but is the serving endpoint called after prompt engineering. This can be changed to other served models as well as provisioned throughput models or external models for compliance purposes if needed. Recommend databricks-claude-3-7-sonnet for best comments, with databricks-meta-llama-3-3-70b-instruct as a backup. Sonnet will generally give more complex responses. Review security, tenancy, and cost considerations before making a decision. 
     default: databricks-claude-3-7-sonnet
-  chat_completion_type:
-    description: |
-      Type of chat completion endpoint to use:
-      - 'databricks' (default): Use Databricks foundation models (e.g., databricks-claude-3-7-sonnet). Uses DATABRICKS_TOKEN and DATABRICKS_HOST environment variables.
-      - 'openai_spec': Use any OpenAI-compatible API endpoint that accepts standard 'model' parameter (e.g., OpenAI, Azure OpenAI with standard format, Anthropic, etc.). Requires custom_endpoint_url and secret configuration.
-      - 'custom_chat_spec': Use APIs that are OpenAI-compatible but use 'engine' instead of 'model' parameter (e.g., some Azure OpenAI deployments). Requires custom_endpoint_url and secret configuration.
-    default: databricks
-  custom_endpoint_url:
-    description: |
-      Base URL for custom chat completion endpoints. Only used when chat_completion_type is 'openai_spec' or 'custom_chat_spec'.
-      Should be the base URL without the /chat/completions suffix.
-      Examples:
-      - OpenAI: https://api.openai.com/v1
-      - Azure OpenAI: https://your-resource.openai.azure.com
-      - Anthropic: https://api.anthropic.com
-    default: ""
-  custom_endpoint_secret_scope:
-    description: |
-      Databricks secret scope containing the API key/token for custom endpoints. Only used when chat_completion_type is 'openai_spec' or 'custom_chat_spec'.
-      The secret should contain the Bearer token or API key for authentication.
-      Example: Create a secret scope called 'openai-secrets' and store your API key there.
-    default: ""
-  custom_endpoint_secret_key:
-    description: |
-      Key name within the secret scope for the API token. Only used when chat_completion_type is 'openai_spec' or 'custom_chat_spec'.
-      This is the key name you used when storing the secret in the scope.
-      Common names: 'api_key', 'token', 'openai_key', etc.
-    default: api_key
   mode:
     description: Mode for generating metadata. Options are 'comment', 'pi', or 'domain'. Comment mode generates descriptions for tables and columns. PI mode identifies and classifies sensitive information. Domain mode classifies tables into business domains using an agent.
     default: comment
@@ -90,9 +68,6 @@ variables:
   spacy_model_names:
     description: spacy models to use in presidio. Currently will only handle a single model. Adding support for multiple models is a planned feature.
     default: en_core_web_lg
-  solo_medical_identifier:
-    description: When a medical identifier, such as a medical record number (MRN), is alone in a field, it should be classified as this value. Technically speaking, if for example a column is alone in a table MRN is PII, not PHI. However, a more conservative setting would be to classify all medical identifiers as PHI, even when they are PII.
-    default: pii
   pi_classification_rules:
     description: Rules for PI classification. These rules will be injected into the prompt and provided along with the prompt to the model.
     default: |
@@ -153,9 +128,6 @@ variables:
   use_protected_classification_for_table:
     description: Whether to use protected classification for the table.
     default: true
-  schema_name:
-    description: Primary schema where data, models, and files are written to for this project. This is not the source schema, which is specified elsewhere with the source table name.
-    default: metadata_results
   volume_name:
     description: volume name in which to store DDL files.
     default: generated_metadata

@@ -2,11 +2,14 @@
 
 import os
 import json
+import logging
 from databricks.sdk import WorkspaceClient
 from pyspark.sql import SparkSession
 
 # from databricks.sdk.core import _InactiveRpcError
 from grpc._channel import _InactiveRpcError, _MultiThreadedRendezvous
+
+logger = logging.getLogger(__name__)
 
 
 def setup_databricks_environment(dbutils_instance=None):
@@ -230,7 +233,7 @@ def grant_user_permissions(
             print(f"Granted volume permissions to {current_user}")
 
     except Exception as e:
-        print(f"Warning: Could not grant permissions to {current_user}: {e}")
+        logger.error(f"Warning: Could not grant permissions to {current_user}: {e}")
 
 
 def grant_group_permissions(

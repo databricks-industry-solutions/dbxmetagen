@@ -111,6 +111,7 @@ def replace_comment_in_ddl(ddl: str, new_comment: str) -> str:
     """
     Replace the comment string in a DDL statement with a new comment.
     """
+    is_serverless = False
     if "ALTER TABLE" not in ddl:
         ddl = re.sub(
             r'(COMMENT ON TABLE [^"\']+ IS\s+)(["\'])(.*?)(["\'])',
@@ -119,20 +120,26 @@ def replace_comment_in_ddl(ddl: str, new_comment: str) -> str:
         )
     else:
         dbr_number = os.environ.get("DATABRICKS_RUNTIME_VERSION")
-        if float(dbr_number) >= 16:
-            ddl = re.sub(
-                r'(ALTER TABLE [^"\']+ COMMENT ON COLUMN [^ ]+ IS\s+)(["\'])(.*?)(["\'])',
-                lambda m: f"{m.group(1)}{m.group(2)}{new_comment}{m.group(4)}",
-                ddl,
-            )
-        elif float(dbr_number) >= 14 and float(dbr_number) < 16:
-            ddl = re.sub(
-                r'(ALTER TABLE [^ ]+ ALTER COLUMN [^ ]+ COMMENT\s+)(["\'])(.*?)(["\'])',
-                lambda m: f"{m.group(1)}{m.group(2)}{new_comment}{m.group(4)}",
-                ddl,
-            )
-        else:
-            raise ValueError(f"Unsupported Databricks runtime version: {dbr_number}")
+        try:
+            dbr_number = float(dbr_number)
+        except ValueError:
+            is_serverless = bool("client" in dbr_number)
+            if is_serverless or dbr_number >= 16:
+                ddl = re.sub(
+                    r'(ALTER TABLE [^"\']+ COMMENT ON COLUMN [^ ]+ IS\s+)(["\'])(.*?)(["\'])',
+                    lambda m: f"{m.group(1)}{m.group(2)}{new_comment}{m.group(4)}",
+                    ddl,
+                )
+            elif float(dbr_number) >= 14 and float(dbr_number) < 16:
+                ddl = re.sub(
+                    r'(ALTER TABLE [^ ]+ ALTER COLUMN [^ ]+ COMMENT\s+)(["\'])(.*?)(["\'])',
+                    lambda m: f"{m.group(1)}{m.group(2)}{new_comment}{m.group(4)}",
+                    ddl,
+                )
+            else:
+                raise ValueError(
+                    f"Unsupported Databricks runtime version: {dbr_number}"
+                )
     return ddl
 
 
@@ -197,6 +204,9 @@ def update_ddl_row(
 
 
 def check_file_type(file_name: str, config: MetadataConfig) -> None:
+    """
+    Check if the file type matches the specified export format.
+    """
     if file_name.endswith(".xlsx") and config.review_input_file_type != "excel":
         raise ValueError(
             f"File {file_name} does not match the specified export format {config.review_input_file_type}."
@@ -351,19 +361,21 @@ def process_metadata_file(
     try:
         sanitized_email = sanitize_user_identifier(config.current_user)
         current_date = datetime.now().strftime("%Y%m%d")
-        input_dir = output_dir = os.path.join(
+        input_dir = os.path.join(
             "/Volumes",
             config.catalog_name,
             config.schema_name,
-            "generated_metadata",
+            config.volume_name,
             sanitized_email,
+            # current_date,
+            # "exportable_run_logs",
             "reviewed_outputs",
         )
         output_dir = os.path.join(
             "/Volumes",
             config.catalog_name,
             config.schema_name,
-            "generated_metadata",
+            config.volume_name,
             sanitized_email,
             current_date,
             "exportable_run_logs",

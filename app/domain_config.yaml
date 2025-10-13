@@ -1,25 +1,135 @@
 version: 0.3
 domains:
 
-  clinical:
-    name: "Clinical"
-    description: "Clinical trials"
+  clinical_operations:
+    name: "Clinical Operations"
+    description: "EHR data, patient care, clinical workflows, and provider operations"
+    keywords: ["ehr", "emr", "patient", "provider", "physician", "nurse", "clinical", "diagnosis", "procedure", "treatment", "care", "medical", "health", "hospital", "clinic", "encounter", "visit", "admission", "discharge", "order", "medication", "lab", "imaging", "vital", "observation", "note", "mrn"]
     subdomains:
-      clinical_trials:
-        name: "Clinical Trials"
-        description: "Trial-related infromation"
-      patient_data:
-        name: "Patient Data"
-        description: "Patient data, demographics, medical history"
-      clinical_data:
-        name: "Clinical Data"
-        description: "Clinical data, medical history"
-      pharmaceutical_data:
-        name: "Pharmaceutical Data"
-        description: "Pharmaceutical data, clinical trials"
-      medical_device_data:
-        name: "Medical Device Data"
-        description: "Medical device data, clinical trials"
+      patient_care:
+        name: "Patient Care & Treatment"
+        description: "Patient data, encounters, diagnoses, procedures, medications, orders"
+        keywords: ["patient", "encounter", "visit", "admission", "diagnosis", "procedure", "medication", "order", "treatment", "therapy", "demographic", "mrn", "icd", "cpt", "prescription", "discharge"]
+      
+      clinical_results:
+        name: "Clinical Results & Diagnostics"
+        description: "Lab results, imaging, pathology, test results, observations"
+        keywords: ["lab", "laboratory", "test", "result", "imaging", "radiology", "pathology", "xray", "ct", "mri", "loinc", "observation", "vital", "specimen", "panel", "scan"]
+      
+      clinical_documentation:
+        name: "Clinical Documentation"
+        description: "Clinical notes, assessments, care plans, documentation"
+        keywords: ["note", "documentation", "narrative", "assessment", "plan", "progress", "discharge_summary", "consultation", "dictation", "care_plan", "free_text"]
+
+  payer_operations:
+    name: "Payer Operations"
+    description: "Health insurance, claims, member management, and care coordination"
+    keywords: ["payer", "insurance", "claim", "member", "enrollment", "benefit", "coverage", "plan", "premium", "copay", "deductible", "authorization", "utilization", "network", "provider", "reimbursement", "adjudication", "eligibility"]
+    subdomains:
+      membership_benefits:
+        name: "Membership & Benefits"
+        description: "Member enrollment, eligibility, benefits, coverage, plan management"
+        keywords: ["member", "enrollment", "eligibility", "subscriber", "benefit", "coverage", "plan", "formulary", "copay", "deductible", "network", "effective_date"]
+      
+      claims_processing:
+        name: "Claims Processing"
+        description: "Claims submission, adjudication, payment, denials, appeals"
+        keywords: ["claim", "adjudication", "payment", "reimbursement", "denial", "appeal", "remittance", "eob", "837", "835", "hcfa", "ub04", "adjustment"]
+      
+      care_management:
+        name: "Care & Utilization Management"
+        description: "Prior authorization, utilization review, case management, care coordination"
+        keywords: ["prior_authorization", "utilization", "case_management", "care_coordination", "medical_necessity", "preauth", "utilization_review", "disease_management"]
+
+  pharmaceutical:
+    name: "Pharmaceutical Operations"
+    description: "Drug development, clinical trials, manufacturing, and commercial operations"
+    keywords: ["pharma", "pharmaceutical", "drug", "compound", "clinical_trial", "study", "protocol", "manufacturing", "batch", "regulatory", "fda", "commercial", "safety", "adverse_event"]
+    subdomains:
+      clinical_development:
+        name: "Clinical Development"
+        description: "Clinical trials, studies, research, adverse events, regulatory submissions"
+        keywords: ["clinical_trial", "study", "protocol", "subject", "site", "crf", "adverse_event", "efficacy", "safety", "regulatory", "submission", "ctms", "edc"]
+      
+      manufacturing_supply:
+        name: "Manufacturing & Supply Chain"
+        description: "Drug manufacturing, quality, batch records, distribution, inventory"
+        keywords: ["manufacturing", "batch", "lot", "quality", "gmp", "production", "supply_chain", "distribution", "inventory", "stability", "deviation"]
+      
+      commercial_medical:
+        name: "Commercial & Medical Affairs"
+        description: "Sales operations, marketing, medical information, HCP engagement"
+        keywords: ["commercial", "sales", "marketing", "hcp", "rep", "territory", "medical_affairs", "msl", "publication", "medical_information"]
+
+  quality_outcomes:
+    name: "Quality & Patient Outcomes"
+    description: "Quality measures, patient outcomes, safety, experience, and population health"
+    keywords: ["quality", "outcome", "measure", "patient_safety", "experience", "satisfaction", "mortality", "complication", "readmission", "hedis", "star", "population_health", "risk", "registry"]
+    subdomains:
+      clinical_quality:
+        name: "Clinical Quality & Safety"
+        description: "Quality measures, outcomes, safety events, performance metrics"
+        keywords: ["quality", "outcome", "safety", "mortality", "complication", "readmission", "infection", "measure", "hedis", "star", "mips", "benchmark"]
+      
+      patient_experience:
+        name: "Patient Experience & Engagement"
+        description: "Patient satisfaction, experience, feedback, engagement, portal usage"
+        keywords: ["experience", "satisfaction", "survey", "hcahps", "feedback", "engagement", "portal", "patient_reported", "adherence", "activation"]
+      
+      population_health:
+        name: "Population Health Management"
+        description: "Population health, risk stratification, care gaps, preventive care, SDOH"
+        keywords: ["population_health", "risk_stratification", "care_gap", "preventive", "screening", "chronic_disease", "sdoh", "social_determinants", "community_health"]
+
+  revenue_cycle:
+    name: "Revenue Cycle"
+    description: "Healthcare billing, coding, collections, and financial operations"
+    keywords: ["revenue_cycle", "billing", "charge", "coding", "collection", "payment", "denial", "ar", "accounts_receivable", "claim", "reimbursement", "charge_master", "cpt", "icd", "drg"]
+    subdomains:
+      billing_coding:
+        name: "Billing & Coding"
+        description: "Charge capture, coding, charge master, billing, invoicing"
+        keywords: ["billing", "charge", "coding", "charge_master", "cdm", "cpt", "icd", "drg", "invoice", "claim_submission", "scrubbing"]
+      
+      collections_ar:
+        name: "Collections & AR Management"
+        description: "Payment posting, collections, denials, appeals, accounts receivable"
+        keywords: ["collection", "payment", "ar", "accounts_receivable", "denial", "appeal", "aging", "bad_debt", "follow_up", "adjustment"]
+      
+      contract_reimbursement:
+        name: "Contracts & Reimbursement"
+        description: "Payer contracts, fee schedules, reimbursement rates, variance analysis"
+        keywords: ["contract", "payer", "fee_schedule", "reimbursement", "rate", "allowable", "underpayment", "variance"]
+
+  precision_medicine:
+    name: "Precision Medicine & Research"
+    description: "Genomics, biomarkers, precision medicine, clinical research, real-world evidence"
+    keywords: ["genomics", "genetics", "biomarker", "precision", "personalized", "research", "real_world", "rwe", "observational", "sequencing", "variant", "molecular", "pharmacogenomics"]
+    subdomains:
+      genomics_molecular:
+        name: "Genomics & Molecular Data"
+        description: "Genomic sequencing, variants, biomarkers, molecular profiling"
+        keywords: ["genomics", "sequencing", "variant", "mutation", "biomarker", "molecular", "ngs", "vcf", "gene", "expression", "oncology", "pharmacogenomics"]
+      
+      clinical_research:
+        name: "Clinical Research & RWE"
+        description: "Observational studies, registries, real-world data, outcomes research"
+        keywords: ["research", "real_world", "rwe", "observational", "registry", "cohort", "outcomes_research", "epidemiology", "health_economics", "heor"]
+
+  medical_devices:
+    name: "Medical Devices & Equipment"
+    description: "Medical devices, IoMT, equipment management, device data"
+    keywords: ["device", "equipment", "iomt", "wearable", "sensor", "monitor", "implant", "asset", "maintenance", "udi", "telemetry", "connected"]
+    subdomains:
+      device_data:
+        name: "Device Data & Monitoring"
+        description: "Connected device data, remote monitoring, IoMT, telemetry, sensor data"
+        keywords: ["device_data", "iomt", "connected", "remote_monitoring", "telemetry", "sensor", "wearable", "real_time", "streaming"]
+      
+      asset_management:
+        name: "Asset & Equipment Management"
+        description: "Equipment inventory, maintenance, calibration, asset tracking, UDI registry"
+        keywords: ["equipment", "asset", "inventory", "maintenance", "calibration", "tracking", "udi", "implant", "registry", "recall"]
 
   finance:
     name: "Finance"

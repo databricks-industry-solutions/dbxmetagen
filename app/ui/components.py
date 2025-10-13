@@ -358,7 +358,7 @@ class UIComponents:
 
     def render_metadata_review(self):
         """Render metadata review interface with editing capabilities."""
-        st.header("✏️ Review Metadata")
+        st.header("Review Metadata")
 
         # Configuration inputs (same as Results Viewer)
         col1, col2, col3 = st.columns(3)
@@ -457,15 +457,11 @@ class UIComponents:
                         "volume": volume,
                     }
 
-        # Display and edit metadata
         if st.session_state.get("review_metadata") is not None:
             df = st.session_state.review_metadata
 
-            st.success(f"✅ Loaded {len(df)} metadata records for review")
+            st.subheader("Edit Metadata")
 
-            st.subheader("📋 Edit Metadata")
-
-            # Detect metadata type for appropriate instructions
             has_domain = "domain" in df.columns
             has_pii = (
                 "pii_classification" in df.columns or "classification" in df.columns
@@ -473,18 +469,17 @@ class UIComponents:
 
             if has_domain:
                 st.info(
-                    "💡 Edit the Domain and Subdomain fields. DDL will be auto-generated when you save or apply changes."
+                    "Edit the Domain and Subdomain fields. DDL will be auto-generated when you save or apply changes."
                 )
             elif has_pii:
                 st.info(
-                    "💡 Edit the PII Classification fields. DDL will be auto-generated when you save or apply changes."
+                    "Edit the PII Classification fields. DDL will be auto-generated when you save or apply changes."
                 )
             else:
                 st.info(
-                    "💡 Edit the Description and PII Classification fields. DDL will be auto-generated when you save or apply changes."
+                    "Edit the Description and PII Classification fields. DDL will be auto-generated when you save or apply changes."
                 )
 
-            # Build column config based on available columns
             column_config = {
                 "table": st.column_config.TextColumn("Table", disabled=True),
                 "table_name": st.column_config.TextColumn("Table", disabled=True),
@@ -532,7 +527,7 @@ class UIComponents:
                 column_config=column_config,
             )
 
-            st.subheader("💾 Save & Apply Changes")
+            st.subheader("Save & Apply Changes")
 
             col1, col2 = st.columns(2)
 
@@ -571,22 +566,18 @@ class UIComponents:
 
             # Construct the output path with _reviewed suffix
             volume_path = f"/Volumes/{path_info['catalog']}/{path_info['schema']}/{path_info['volume']}"
-            output_dir = (
-                f"{volume_path}/{sanitized_user}/{current_date}/exportable_run_logs/"
-            )
+            output_dir = f"{volume_path}/{sanitized_user}/reviewed_outputs/"
 
             # Find the original file name pattern and add _reviewed
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            output_filename = f"review_metadata_reviewed_{timestamp}.tsv"
+            mode = st.session_state.config.get("mode", "comment")
+            output_filename = f"{mode}_metadata_reviewed_{timestamp}.tsv"
             output_path = f"{output_dir}{output_filename}"
 
-            # Save as TSV format (using updated DataFrame with regenerated DDL)
             with st.spinner(f"Saving reviewed metadata to {output_path}..."):
                 tsv_content = updated_df.to_csv(sep="\t", index=False)
 
-                # Use existing workspace client for proper Unity Catalog volume writing
                 try:
-                    # Use the existing workspace client's file upload capability
                     tsv_bytes = tsv_content.encode("utf-8")
                     st.session_state.workspace_client.files.upload(
                         output_path, tsv_bytes, overwrite=True
@@ -597,12 +588,12 @@ class UIComponents:
                     with open(output_path, "w", encoding="utf-8") as f:
                         f.write(tsv_content)
 
-                st.success(f"✅ Reviewed metadata saved to: {output_path}")
+                st.success(f"Reviewed metadata saved to: {output_path}")
                 st.info(f"📄 File: {output_filename}")
 
                 # Also provide download option
                 st.download_button(
-                    label="📥 Download Reviewed Metadata",
+                    label="Download Reviewed Metadata",
                     data=tsv_content.encode("utf-8"),
                     file_name=output_filename,
                     mime="text/tab-separated-values",
@@ -614,7 +605,6 @@ class UIComponents:
 
     def _apply_metadata(self, df: pd.DataFrame):
         """Apply metadata changes to tables."""
-        # Recheck authentication before applying metadata
 
         if not DatabricksClientManager.recheck_authentication():
             st.error(
@@ -647,7 +637,7 @@ class UIComponents:
         """Render help and documentation."""
         st.header("❓ Help & Documentation")
 
-        with st.expander("🚀 Getting Started", expanded=True):
+        with st.expander("Getting Started", expanded=True):
             st.markdown(
                 """
             1. **Configure Settings**: Use the sidebar to set your Databricks catalog, host, and processing options
@@ -658,7 +648,7 @@ class UIComponents:
             """
             )
 
-        with st.expander("⚙️ Configuration Options"):
+        with st.expander("Configuration Options"):
             st.markdown(
                 """
             - **Catalog Name**: Target catalog for storing metadata results
@@ -669,7 +659,7 @@ class UIComponents:
               - **pi**: Identify and classify personally identifiable information (PII/PHI/PCI)
               - **domain**: Classify tables into business domains (e.g., finance, sales, HR)
             - **Domain Config Path**: (Domain mode only) Path to domain configuration YAML file
-            - **Apply DDL**: ⚠️ **WARNING** - This will directly modify your tables
+            - **Apply DDL**: **WARNING** - This will directly modify your tables
             """
             )
 
