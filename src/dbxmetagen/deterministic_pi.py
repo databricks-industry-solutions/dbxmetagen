@@ -16,42 +16,25 @@ from src.dbxmetagen.user_utils import sanitize_user_identifier
 
 
 def get_analyzer_engine(add_pci: bool = True, add_phi: bool = True) -> AnalyzerEngine:
-    """
-    Initialize Presidio AnalyzerEngine with custom PCI/PHI recognizers.
-    Removes overly aggressive built-in recognizers that cause false positives.
-    """
+    """Initialize Presidio AnalyzerEngine with PCI/PHI recognizers."""
     analyzer = AnalyzerEngine()
 
-    # Remove built-in recognizers that cause false positives
-    # CreditCardRecognizer: Too aggressive, matches dates and random text
-    try:
-        analyzer.registry.remove_recognizer("CreditCardRecognizer")
-    except ValueError:
-        pass  # Already removed or doesn't exist
-
     if add_pci:
-        # PCI patterns for financial data - balanced to catch real cards without false positives
+        # PCI patterns for financial data - made more specific to reduce false positives
         pci_patterns = [
-            # Credit card: 13-19 digits, optionally separated in 4-digit groups
-            # Excludes date patterns (8 digits starting with 19/20, or 4-2-2 format)
+            # Credit card: Must be 13-19 digits with optional separators (spaces/dashes every 4 digits)
+            # Luhn algorithm validation would be ideal but regex can't do it
             Pattern(
-                name="credit_card_with_separators",
-                # Pattern: 4-4-4-X with space/dash separators (standard card format)
-                regex=r"\b\d{4}[ -]\d{4}[ -]\d{4}[ -]\d{1,7}\b",
-                score=0.6,
+                name="credit_card",
+                regex=r"\b(?:\d{4}[ -]?){3}\d{1,7}\b",  # Groups of 4 digits
+                score=0.6,  # Lower score - requires context validation
             ),
-            Pattern(
-                name="credit_card_no_separators",
-                # 13-19 consecutive digits, but NOT date formats
-                # Negative lookbehind: exclude 8-digit dates like 20220214
-                regex=r"\b(?!(?:19|20)\d{6}\b)\d{13,19}\b",
-                score=0.5,  # Lower confidence without separators
-            ),
-            # Expiry date: Month/Year ONLY (not full dates)
+            # CVV: Removed - too aggressive, matches any 3-4 digit number
+            # Expiry date: Month/Year format only
             Pattern(
                 name="expiry_date",
-                regex=r"\b(0[1-9]|1[0-2])[\/\-](\d{2})\b",  # MM/YY or MM-YY only
-                score=0.6,
+                regex=r"\b(0[1-9]|1[0-2])[\/\-](\d{2}|\d{4})\b",
+                score=0.7,
             ),
             # IBAN: International Bank Account Number with country code
             Pattern(
@@ -63,6 +46,7 @@ def get_analyzer_engine(add_pci: bool = True, add_phi: bool = True) -> AnalyzerE
             Pattern(
                 name="swift", regex=r"\b[A-Z]{6}[A-Z0-9]{2}([A-Z0-9]{3})?\b", score=0.8
             ),
+            # Bank account: Removed - too generic, matches timestamps, IDs, etc.
         ]
         pci_recognizer = PatternRecognizer(
             supported_entity="CREDIT_CARD",
@@ -82,7 +66,6 @@ def get_analyzer_engine(add_pci: bool = True, add_phi: bool = True) -> AnalyzerE
                 "cardholder",
                 "pan",
                 "primary account",
-                "billing",
             ],
         )
         analyzer.registry.add_recognizer(pci_recognizer)
@@ -141,7 +124,7 @@ def analyze_column(
     Only returns results above the score threshold to reduce false positives.
     """
     results = []
-    for cell in column_data:
+    for i, cell in enumerate(column_data):
         try:
             text = str(cell) if cell is not None else ""
             analysis = analyzer.analyze(
@@ -152,7 +135,7 @@ def analyze_column(
             )
             results.append(analysis)
         except Exception as e:
-            logging.error(f"Error analyzing cell '{cell}': {e}")
+            logging.error("Error analyzing cell at index %s: %s", i, e)
             results.append([])
     return results
 
@@ -310,17 +293,6 @@ def process_table(
         results.append(
             {"column": col, "classification": col_type, "entities": entities}
         )
-
-        # Debug logging for unexpected PCI results
-        if "PCI" in col_type and col not in [
-            "credit_card",
-            "card_number",
-            "payment_method",
-        ]:
-            logging.warning(
-                f"⚠️ Unexpected PCI classification for '{col}': {entities}. Sample data: {column_data[:3]}"
-            )
-
         logging.info(
             f"Column '{col}' classified as '{col_type}' with entities: {entities}"
         )
@@ -348,7 +320,8 @@ def ensure_spacy_model(model_name: str = "en_core_web_lg"):
     """
     try:
         return spacy.load(model_name)
-    except OSError:
+    except OSError as exc:
+        logging.error("Error loading spaCy model: %s", exc)
         raise RuntimeError(
             f"spaCy model '{model_name}' not found. "
             f"Ensure it's installed via requirements.txt or run: python -m spacy download {model_name}"

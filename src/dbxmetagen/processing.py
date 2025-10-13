@@ -350,16 +350,19 @@ def append_column_rows(
         try:
             import json
 
-            print(f"Parsing presidio_results: {response.presidio_results[:200]}...")
+            # Security: Log only metadata, not actual presidio results (may reference sensitive data)
             presidio_data = json.loads(response.presidio_results)
+            num_results = len(presidio_data.get("deterministic_results", []))
+            logger.debug(f"Parsing presidio_results with {num_results} column results")
+
             for result in presidio_data.get("deterministic_results", []):
                 col = result.get("column")
                 presidio_map[col] = json.dumps(result)
             print(f"Mapped presidio results for {len(presidio_map)} columns")
         except Exception as e:
-            print(
-                f"Failed to parse presidio results: {e}, raw data: {response.presidio_results[:500]}"
-            )
+            # Security: Do not log raw presidio data
+            print(f"Failed to parse presidio results: {e}")
+            logger.debug("Presidio parsing error details: %s", str(e)[:200])
 
     for i, (column_name, column_content) in enumerate(
         zip(response.columns, response.column_contents)
@@ -373,14 +376,6 @@ def append_column_rows(
 
             # Add presidio results for this column
             presidio_results = presidio_map.get(column_name, None)
-            if presidio_results:
-                print(
-                    f"[append_column_rows] Added presidio_results for column '{column_name}': {presidio_results[:100]}..."
-                )
-            else:
-                print(
-                    f"[append_column_rows] No presidio_results for column '{column_name}'"
-                )
 
             row = Row(
                 table=full_table_name,
@@ -487,7 +482,11 @@ def rows_to_df(rows: List[Row], config: MetadataConfig) -> DataFrame:
                 try:
                     test_df = spark.createDataFrame([row], schema)
                 except Exception as row_error:
-                    print(f"Problematic row data: {dict(row.asDict())}")
+                    # Security: Do not log actual row data (may contain PII/PHI/PCI)
+                    print(
+                        f"Problematic row at index {i}: Schema mismatch - check field types"
+                    )
+                    logger.debug("Row error details: %s", str(row_error)[:200])
             raise
 
         if config.mode == "comment" and "column_content" in df.columns:
@@ -1102,21 +1101,7 @@ def log_metadata_generation(
     run_log_table_ddl(config)
     df = df.withColumn("metadata_type", lit(config.mode))
 
-    # Debug: Check if presidio_results column exists and has data
     print(f"[log_metadata_generation] DataFrame columns: {df.columns}")
-    if "presidio_results" in df.columns:
-        presidio_count = df.filter(col("presidio_results").isNotNull()).count()
-        print(
-            f"[log_metadata_generation] Rows with presidio_results: {presidio_count}/{df.count()}"
-        )
-        if presidio_count > 0:
-            df.select("column_name", "presidio_results").filter(
-                col("presidio_results").isNotNull()
-            ).show(3, truncate=100)
-    else:
-        print(
-            "[log_metadata_generation] WARNING: presidio_results column NOT in DataFrame!"
-        )
 
     df.write.mode("append").option("mergeSchema", "true").saveAsTable(
         f"{config.catalog_name}.{config.schema_name}.metadata_generation_log"
@@ -1821,18 +1806,27 @@ def apply_comment_ddl(df: DataFrame, config: MetadataConfig) -> dict:
     success_count = 0
 
     for row in ddl_statements:
-        logger.debug("Applying DDL statement: %s", row["ddl"])
-        print("Applying DDL statement: ", row["ddl"])
+        # Security: DDL statements may contain sensitive data in comments/tags
+        # Log only metadata, not full DDL content
         ddl_statement = row["ddl"]
+        logger.debug("Applying DDL statement (%d characters)", len(ddl_statement))
+
         if not config.dry_run:
             try:
                 spark.sql(ddl_statement)
                 success_count += 1
+                print(
+                    f"Applied DDL statement successfully ({len(ddl_statement)} chars)"
+                )
             except Exception as e:
                 # Extract concise error message
                 concise_error = extract_concise_error(e)
                 logger.error("Error applying DDL: %s", concise_error)
-                logger.error("DDL statement: %s", ddl_statement)
+                print(f"Failed to apply DDL statement: {concise_error}")
+                # Security: Only log DDL structure, not full content (may contain sensitive data in comments)
+                logger.debug(
+                    "DDL statement first 100 chars: %s...", ddl_statement[:100]
+                )
 
                 # Track failed tags for summary
                 if "Tag policy violation" in concise_error:
@@ -2130,13 +2124,25 @@ def print_ddl_summary(results, config):
         print("-" * 80)
 
         if results["table_results"] and results["table_results"]["failed_statements"]:
-            for fail in results["table_results"]["failed_statements"]:
-                print(f"\nStatement: {fail['statement']}")
+            for i, fail in enumerate(results["table_results"]["failed_statements"], 1):
+                # Security: Do not print full DDL (may contain sensitive data in comments)
+                stmt_preview = (
+                    fail["statement"][:100] + "..."
+                    if len(fail["statement"]) > 100
+                    else fail["statement"]
+                )
+                print(f"\n#{i} Statement preview: {stmt_preview}")
                 print(f"Error: {fail['error'][:200]}...")  # Truncate long errors
 
         if results["column_results"] and results["column_results"]["failed_statements"]:
-            for fail in results["column_results"]["failed_statements"]:
-                print(f"\nStatement: {fail['statement']}")
+            for i, fail in enumerate(results["column_results"]["failed_statements"], 1):
+                # Security: Do not print full DDL (may contain sensitive data in comments)
+                stmt_preview = (
+                    fail["statement"][:100] + "..."
+                    if len(fail["statement"]) > 100
+                    else fail["statement"]
+                )
+                print(f"\n#{i} Statement preview: {stmt_preview}")
                 print(f"Error: {fail['error'][:200]}...")
 
     # Show missing tags
@@ -2582,9 +2588,9 @@ def upsert_table_names_to_control_table(
         .withColumn("_job_id", lit(config.job_id))
     )
     if new_table_names_df.count() > 0:
-        new_table_names_df.write.format("delta").mode("append").saveAsTable(
-            control_table
-        )
+        new_table_names_df.write.option("mergeSchema", "true").format("delta").mode(
+            "append"
+        ).saveAsTable(control_table)
         print(
             f"Inserted {new_table_names_df.count()} new table names into the control table {control_table}..."
         )
