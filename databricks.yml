@@ -23,7 +23,7 @@ targets:
     default: true
 
     workspace:
-      host: <dev host url here>
+      host: <host url here>
     permissions:
       - user_name: ${var.deploying_user}
         level: CAN_MANAGE

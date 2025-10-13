@@ -3,6 +3,7 @@ Data operations module.
 Handles table validation, CSV processing, metadata operations.
 """
 
+import sys
 from datetime import datetime
 import streamlit as st
 import pandas as pd
@@ -294,8 +295,6 @@ class MetadataProcessor:
         Returns empty list if directory doesn't exist or has no files.
         """
         try:
-            import re
-
             # List files
             files = list(
                 st.session_state.workspace_client.files.list_directory_contents(
@@ -351,12 +350,9 @@ class MetadataProcessor:
 
                 # Use most recent file as default
                 file_path = available_files[0]["path"]
-                st.info(f"📄 Loading most recent file: {available_files[0]['name']}")
+                st.info(f"Loading most recent file: {available_files[0]['name']}")
             else:
                 file_path = selected_file_path
-                st.info(
-                    f"📄 Loading selected file: {selected_file_path.split('/')[-1]}"
-                )
             raw_content = st.session_state.workspace_client.files.download(file_path)
 
             # Extract content - try different methods since DownloadResponse varies
@@ -470,10 +466,9 @@ class MetadataProcessor:
         try:
             debug_mode = st.session_state.config.get("debug_mode", False)
             if debug_mode:
-                st_debug(f"🔍 DataFrame columns: {list(df.columns)}")
-                st_debug(f"🔍 DataFrame shape: {df.shape}")
+                st_debug(f"DataFrame columns: {list(df.columns)}")
+                st_debug(f"DataFrame shape: {df.shape}")
 
-            # st.info("🔄 Generating DDL from edited metadata...")
             updated_df = self._generate_ddl_from_comments(df)
 
             # Save the updated DataFrame to Unity Catalog volume first
@@ -482,8 +477,6 @@ class MetadataProcessor:
                 results["error"] = "Failed to save metadata file for job execution"
                 return results
 
-            # Trigger Databricks job to execute DDL using sync_reviewed_ddl.py notebook
-            # st.info("🚀 Triggering Databricks job to execute DDL statements...")
             job_result = self._trigger_ddl_sync_job(saved_filename, job_manager)
 
             if job_result and job_result.get("success"):
@@ -500,13 +493,9 @@ class MetadataProcessor:
 
                 # Update session state with the updated DataFrame
                 st.session_state.review_metadata = updated_df
+                # if job_result.get("run_id"):
+                #     st.info(f"🔄 Run ID: {job_result.get('run_id')}")
 
-                # st.success("🎉 Successfully triggered DDL execution job!")
-                # st.info(f"📋 Job ID: {job_result.get('job_id')}")
-                if job_result.get("run_id"):
-                    st.info(f"🔄 Run ID: {job_result.get('run_id')}")
-
-                # Grant permissions to current app user
                 self._grant_permissions_to_app_user()
             else:
                 error_msg = job_result.get("error", "Unknown error triggering job")
@@ -525,8 +514,6 @@ class MetadataProcessor:
     def _grant_permissions_to_app_user(self):
         """Grant read permissions to the current app user on created objects."""
         try:
-            # Import here to avoid circular dependencies
-            import sys
 
             sys.path.append("../")
             from src.dbxmetagen.databricks_utils import grant_user_permissions
@@ -538,7 +525,6 @@ class MetadataProcessor:
             )
             current_user = st.session_state.workspace_client.current_user.me().user_name
 
-            st.info(f"🔐 Granting permissions to {current_user}...")
             grant_user_permissions(
                 catalog_name=catalog_name,
                 schema_name=schema_name,
@@ -649,10 +635,15 @@ class MetadataProcessor:
         domain_tag = config.get("domain_tag_name", "domain")
         subdomain_tag = config.get("subdomain_tag_name", "subdomain")
 
-        table_col = "table_name" if "table_name" in df.columns else "table"
+        # Domain metadata uses 'table' column which contains full qualified name (catalog.schema.table)
+        # This is different from 'table_name' which would be just the table name without catalog/schema
+        if "table" not in df.columns:
+            raise ValueError(
+                "Domain metadata DataFrame must have 'table' column with full qualified table names"
+            )
 
         for index, row in updated_df.iterrows():
-            table_name = row[table_col]
+            table_name = row["table"]  # Full qualified name: catalog.schema.table
             domain = row.get("domain", "")
             subdomain = row.get("subdomain", "")
 
@@ -760,19 +751,19 @@ class MetadataProcessor:
             )
             current_date = datetime.now().strftime("%Y%m%d")
 
-            # Construct the output path
             volume_path = f"/Volumes/{path_info['catalog']}/{path_info['schema']}/{path_info['volume']}"
-            output_dir = (
-                f"{volume_path}/{sanitized_user}/{current_date}/exportable_run_logs/"
-            )
+            # output_dir = (
+            #     f"{volume_path}/{sanitized_user}/{current_date}/exportable_run_logs/"
+            # )
+            output_dir = f"{volume_path}/{sanitized_user}/reviewed_outputs/"
+            mode = st.session_state.config.get("mode", "comment")
 
-            # Generate unique filename for job execution
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"reviewed_metadata_for_job_{timestamp}.tsv"
+            filename = f"{mode}_metadata_reviewed_{timestamp}.tsv"
             output_path = f"{output_dir}{filename}"
 
             # Save as TSV format
-            st.info(f"💾 Saving metadata for job execution: {output_path}")
+            # st.info(f"Saving metadata for job execution: {output_path}")
             tsv_content = df.to_csv(sep="\t", index=False)
 
             # Use WorkspaceClient to save the file
