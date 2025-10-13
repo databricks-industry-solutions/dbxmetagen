@@ -172,4 +172,10 @@ variables:
     default: false
   grant_permissions_after_creation:
     description: Whether to automatically grant read permissions on created schema, volume, and tables to specified groups/users after metadata generation completes. Requires appropriate permissions to grant.
-    default: true
+    default: true  
+  workspace_host:
+    default: "https://adb-830292400663869.9.azuredatabricks.net/"
+  permission_groups:
+    default: "account users, pgh_genie_dev_group"
+  permission_users:
+    default: "james.mccall@databricks.com, yen.low@databricks.com"

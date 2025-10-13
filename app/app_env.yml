@@ -1,0 +1,3 @@
+# Auto-generated during deployment - contains the user who deployed this app
+# This file is created by deploy.sh and should not be committed to version control
+app_env: "dev"

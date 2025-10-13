@@ -1,0 +1,4 @@
+# Auto-generated during deployment - contains the user who deployed this app
+# This file is created by deploy.sh and should not be committed to version control
+# However, it cannot be added to gitignore because asset bundles obeys gitignore.
+deploying_user: "eli.swanson@databricks.com"
