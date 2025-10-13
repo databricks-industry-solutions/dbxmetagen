@@ -1,22 +1,22 @@
 variables:
   enable_benchmarking:
     description: Enable token usage benchmarking to Delta table
-    default: true
+    default: false
   benchmark_table_name:
     description: Name of the table to log token usage benchmarks
     default: dbxmetagen_token_usage
   pi_classification_tag_name:
     description: Unity Catalog tag name for PI classification (PII/PHI/PCI/None)
-    default: "data_classification_test"
+    default: "data_classification"
   pi_subclassification_tag_name:
     description: Unity Catalog tag name for PI subclassification (specific PI type)
-    default: "data_subclassification_test"
+    default: "data_subclassification"
   domain_tag_name:
     description: Unity Catalog tag name for business domain
-    default: "domain_test"
+    default: "domain"
   subdomain_tag_name:
     description: Unity Catalog tag name for business subdomain
-    default: "subdomain_test"
+    default: "subdomain"
   presidio_score_threshold:
     description: Minimum confidence score for Presidio PII detection (0.0-1.0). Higher values reduce false positives. Recommended 0.5-0.7.
     default: 0.6
