@@ -146,8 +146,8 @@ dist/
 # Deployment temporary files
 databricks_final.yml
 databricks_final.yml.tmp
-#app/deploying_user.yml
-#app/app_env.yml
+app/deploying_user.yml
+app/app_env.yml
 app/env_overrides.yml
 variables_override.yml
 
