@@ -78,7 +78,7 @@ def setup_widgets(dbutils):
     )
     dbutils.widgets.dropdown("mode", "comment", ["comment", "pi", "domain"], "Mode")
     dbutils.widgets.text("env", "", "Environment")
-    dbutils.widgets.text("catalog_name", "", "Catalog Name (required)")
+    dbutils.widgets.text("catalog_name", "", "Output Catalog Name (required)")
     dbutils.widgets.text("schema_name", "", "Output Schema Name")
     dbutils.widgets.text("host", "", "Host URL (if different from current)")
     dbutils.widgets.text("table_names", "", "Table Names - comma-separated (required)")

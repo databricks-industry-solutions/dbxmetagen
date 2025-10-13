@@ -29,9 +29,15 @@ os.environ["DATABRICKS_TOKEN"] = (
 dbutils.widgets.text("reviewed_file_name", "")
 dbutils.widgets.text("mode", "comment")
 dbutils.widgets.text("current_user_override", "")
+dbutils.widgets.text("catalog_name", "")
+dbutils.widgets.text("schema_name", "")
+dbutils.widgets.text("volume_name", "generated_metadata")
 file_name = dbutils.widgets.get("reviewed_file_name")
 mode = dbutils.widgets.get("mode")
 current_user_override = dbutils.widgets.get("current_user_override")
+catalog_name = dbutils.widgets.get("catalog_name")
+schema_name = dbutils.widgets.get("schema_name")
+volume_name = dbutils.widgets.get("volume_name")
 
 # Use override if provided, otherwise use the detected current user
 if current_user_override and current_user_override.strip():
@@ -44,7 +50,14 @@ review_variables = {
     "reviewed_file_name": file_name,
     "current_user": current_user,
     "mode": mode,
+    "catalog_name": catalog_name,
+    "schema_name": schema_name,
+    "volume_name": volume_name,
 }
+
+print(
+    f"Sync job parameters: catalog={catalog_name}, schema={schema_name}, volume={volume_name}"
+)
 
 # COMMAND ----------
 

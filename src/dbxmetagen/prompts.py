@@ -5,7 +5,7 @@ import pandas as pd
 from src.dbxmetagen.deterministic_pi import detect_pi
 
 from pyspark.sql import SparkSession, DataFrame
-from pyspark.sql.functions import collect_list, struct, to_json
+from pyspark.sql.functions import collect_list, struct, to_json, col
 
 logging.basicConfig(
     level=logging.WARNING,
@@ -118,18 +118,51 @@ class Prompt(ABC):
         return handler(extended_metadata_df)
 
     def _filter_pi_mode(self, df: DataFrame) -> DataFrame:
-        """Filter metadata for PI mode (remove NULL values)"""
-        return df.filter(df["info_value"] != "NULL")
+        """Filter metadata for PI mode (remove NULL values and existing PI tags to avoid bias)"""
+        # Get configured tag names (with defaults)
+        pi_classification_tag = getattr(
+            self.config, "pi_classification_tag_name", "data_classification"
+        )
+        pi_subclassification_tag = getattr(
+            self.config, "pi_subclassification_tag_name", "data_subclassification"
+        )
+
+        return df.filter(
+            (df["info_value"] != "NULL")
+            & ~df["info_name"].isin([pi_classification_tag, pi_subclassification_tag])
+        )
 
     def _filter_domain_mode(self, df: DataFrame) -> DataFrame:
-        """Filter metadata for domain mode (remove NULL values)"""
-        return df.filter(df["info_value"] != "NULL")
+        """Filter metadata for domain mode (remove NULL values and existing domain tags to avoid bias)"""
+        # Get configured tag names (with defaults)
+        domain_tag = getattr(self.config, "domain_tag_name", "domain")
+        subdomain_tag = getattr(self.config, "subdomain_tag_name", "subdomain")
+
+        return df.filter(
+            (df["info_value"] != "NULL")
+            & ~df["info_name"].isin([domain_tag, subdomain_tag])
+        )
 
     def _filter_comment_mode(self, df: DataFrame) -> DataFrame:
         """Filter metadata for comment mode with additional exclusions"""
+        # Get configured tag names (with defaults) to avoid bias
+        pi_classification_tag = getattr(
+            self.config, "pi_classification_tag_name", "data_classification"
+        )
+        pi_subclassification_tag = getattr(
+            self.config, "pi_subclassification_tag_name", "data_subclassification"
+        )
+
         filtered_df = df.filter(
             (df["info_value"] != "NULL")
-            & ~df["info_name"].isin(["description", "comment"])
+            & ~df["info_name"].isin(
+                [
+                    "description",
+                    "comment",
+                    pi_classification_tag,
+                    pi_subclassification_tag,
+                ]
+            )
         )
 
         if not self.config.include_datatype_from_metadata:
@@ -265,12 +298,39 @@ class Prompt(ABC):
 
     def get_column_tags(self) -> Dict[str, Dict[str, str]]:
         """
-        Get column tags from the information schema.
+        Get column tags from the information schema, filtering out biasing tags based on mode.
 
         Returns:
-            Dict[str, Dict[str, str]]: Dictionary containing column tags.
+            Dict[str, Dict[str, str]]: Dictionary containing column tags (excluding biasing tags).
         """
         catalog_name, schema_name, table_name = self.full_table_name.split(".")
+
+        # Determine which tags to filter out based on mode
+        tags_to_exclude = []
+        if self.config.mode == "pi":
+            # Filter out existing PI classifications to avoid bias
+            pi_classification_tag = getattr(
+                self.config, "pi_classification_tag_name", "data_classification"
+            )
+            pi_subclassification_tag = getattr(
+                self.config, "pi_subclassification_tag_name", "data_subclassification"
+            )
+            tags_to_exclude = [pi_classification_tag, pi_subclassification_tag]
+        elif self.config.mode == "domain":
+            # Filter out existing domain classifications to avoid bias
+            domain_tag = getattr(self.config, "domain_tag_name", "domain")
+            subdomain_tag = getattr(self.config, "subdomain_tag_name", "subdomain")
+            tags_to_exclude = [domain_tag, subdomain_tag]
+        elif self.config.mode == "comment":
+            # Filter out PI tags for comment mode to avoid bias
+            pi_classification_tag = getattr(
+                self.config, "pi_classification_tag_name", "data_classification"
+            )
+            pi_subclassification_tag = getattr(
+                self.config, "pi_subclassification_tag_name", "data_subclassification"
+            )
+            tags_to_exclude = [pi_classification_tag, pi_subclassification_tag]
+
         query = f"""
         SELECT catalog_name, schema_name, table_name, column_name, tag_name, tag_value
         FROM system.information_schema.column_tags
@@ -279,6 +339,11 @@ class Prompt(ABC):
         AND table_name = '{table_name}';
         """
         result_df = self.spark.sql(query)
+
+        # Filter out biasing tags
+        if tags_to_exclude:
+            result_df = result_df.filter(~col("tag_name").isin(tags_to_exclude))
+
         column_tags = (
             result_df.groupBy("column_name")
             .agg(collect_list(struct("tag_name", "tag_value")).alias("tags"))
@@ -290,17 +355,44 @@ class Prompt(ABC):
             }
             for row in column_tags
         }
-        logger.debug("column tags dict: %s", column_tags_dict)
+        logger.debug("column tags dict (after filtering): %s", column_tags_dict)
         return column_tags_dict
 
     def get_table_tags(self) -> str:
         """
-        Get table tags from the information schema.
+        Get table tags from the information schema, filtering out biasing tags based on mode.
 
         Returns:
-            str: JSON string containing table tags.
+            str: JSON string containing table tags (excluding biasing tags).
         """
         catalog_name, schema_name, table_name = self.full_table_name.split(".")
+
+        # Determine which tags to filter out based on mode
+        tags_to_exclude = []
+        if self.config.mode == "pi":
+            # Filter out existing PI classifications to avoid bias
+            pi_classification_tag = getattr(
+                self.config, "pi_classification_tag_name", "data_classification"
+            )
+            pi_subclassification_tag = getattr(
+                self.config, "pi_subclassification_tag_name", "data_subclassification"
+            )
+            tags_to_exclude = [pi_classification_tag, pi_subclassification_tag]
+        elif self.config.mode == "domain":
+            # Filter out existing domain classifications to avoid bias
+            domain_tag = getattr(self.config, "domain_tag_name", "domain")
+            subdomain_tag = getattr(self.config, "subdomain_tag_name", "subdomain")
+            tags_to_exclude = [domain_tag, subdomain_tag]
+        elif self.config.mode == "comment":
+            # Filter out PI tags for comment mode to avoid bias
+            pi_classification_tag = getattr(
+                self.config, "pi_classification_tag_name", "data_classification"
+            )
+            pi_subclassification_tag = getattr(
+                self.config, "pi_subclassification_tag_name", "data_subclassification"
+            )
+            tags_to_exclude = [pi_classification_tag, pi_subclassification_tag]
+
         query = f"""
         SELECT tag_name, tag_value
         FROM system.information_schema.table_tags
@@ -309,6 +401,11 @@ class Prompt(ABC):
         AND table_name = '{table_name}';
         """
         result_df = self.spark.sql(query)
+
+        # Filter out biasing tags
+        if tags_to_exclude:
+            result_df = result_df.filter(~col("tag_name").isin(tags_to_exclude))
+
         return self.df_to_json(result_df)
 
     def get_table_constraints(self) -> str:
@@ -424,7 +521,7 @@ class CommentPrompt(Prompt):
                     {"table": "description", "columns": ["col1", "col2"], "column_contents": ["col1 desc", "col2 desc"]}
 
                     Guidelines:
-                    1. Scale comment length with information richness: 2-3 sentences for simple columns, 4-8 sentences when rich metadata/patterns emerge
+                    1. Scale comment length with information richness: 3-5 sentences for simple columns, 4-8 sentences when rich metadata/patterns emerge
                     2. Synthesize insights from: column name → table context → sample data → metadata statistics
                     3. Unpack acronyms confidently. Note anomalies (e.g., unexpectedly low distinct counts, suspicious nulls, data type mismatches)
                     4. Sample data may not represent full distribution - use metadata to validate/contradict sample observations
@@ -484,8 +581,14 @@ class PIPrompt(Prompt):
         content = self.prompt_content
         if self.config.include_deterministic_pi:
             self.deterministic_results = detect_pi(self.config, self.prompt_content)
+            print(
+                f"[PIPrompt] Presidio deterministic_results: {self.deterministic_results[:300]}..."
+            )
         else:
             self.deterministic_results = ""
+            print(
+                "[PIPrompt] Presidio detection disabled (include_deterministic_pi=False)"
+            )
         acro_content = self.config.acro_content
         return {
             "pi": [
@@ -505,31 +608,40 @@ class PIPrompt(Prompt):
                     ###
 
                     Specific Considerations
-                    1. pi and pii are synonyms for our purposes, and not used as a legal term but as a way to distinguish individuals from one another.
-                    2. Please don't respond with anything other than the dictionary.
-                    3. Attempt to classify into None, PII, PCI, medical information, and PHI based on common definitions. If definitions are provided in the content then use them. Otherwise, assume that PII is Personally Identifiable Information, PHI is Protected Health Information, and PCI is Protected Confidential Information. PII: This includes any data that could potentially identify a specific individual. Medical Information: This includes any infromation in a medical record that cannot be used to identify an individual. Medical information is not PI, but combined with PII becomes PHI. PHI: This includes any information in a medical record that can be used to identify an individual and that was created, used, or disclosed in the course of providing a health care service such as diagnosis or treatment. PCI: Payment Card Industry Information, including the primary account number (PAN) typically found on the front of the card, the card's security code, full track data stored in the card's chip or magnetic stripe, cardholder PIN, cardholder name, or card expiration date.
-                    4. Column-level classification priority: Classify columns based on their intrinsic content, not just context. Generic identifiers (names, emails, SSNs, addresses) should be classified as PII regardless of whether they appear in a healthcare, financial, or retail context. Healthcare-specific identifiers (MRN, insurance ID, patient account number) should be classified as PHI. Medical data without embedded identifiers (diagnosis codes, medication lists, lab result values) should be classified as medical_information. Only use PHI for columns that either: (a) are healthcare-specific identifiers, or (b) contain freeform text with embedded patient identifiers.
-                    5. The value for classification should always be either "pi", "medical_information", or "None". The value for type should always be either "pii", "pci", "medical_information", or "phi". When type is pii, pci, or phi, classification should be None. When type is None, classification should be None, and when type is medical information, classification should be medical_information.
-                    6. Freeform medical text with embedded identifiers: Clinical notes, physician notes, or any freeform text that mentions patient names or other identifiers within the text itself should be classified as PHI. This is because the identifiers are embedded in the column's content, not just in adjacent columns. For example, "Patient John Smith reports..." makes the entire text field PHI.
-                    7. Healthcare-specific identifiers: Medical Record Numbers (MRN), patient account numbers, insurance member IDs, and similar healthcare-specific identifiers should always be classified as PHI since they only exist in healthcare contexts.
-                    8. The medical_information type should be used for structured medical data that has been de-identified or contains no embedded identifiers: diagnosis codes, medication names, lab test names, procedure codes, or structured lab result values. These become part of PHI at the table level when combined with PII, but at the column level they are medical_information.
-                    9. Within strings, use single quotes as would be needed if the comment or column_content would be used as a Python string or in SQL DDL. For example format responses like: "The column 'scope' is a summary column.", rather than "The column "scope" is a summary column."
-                    10. Presidio Confidence Adjustment: When Presidio results are provided, adjust confidence scores based on agreement:
-                        - Both agree on PII: +0.1 confidence (max 0.98)
-                        - Presidio finds PII you missed: Trust Presidio, set confidence 0.6-0.8.
-                        - You find PII Presidio missed: Trust your assessment, confidence 0.8-0.9  
-                        - Disagreement on classification: Reduce confidence by 0.15
-
+                    1. Please don't respond with anything other than the dictionary.
+                    2. Attempt to classify into None, PII, PCI, medical information, and PHI based on common definitions, and for PHI following the 18 HIPAA Guidelines. Follow the PII classification rules here: 
                     ###
+                    \n 
                     """
-                    + f"""PI Classification Rules: {self.config.pi_classification_rules}.
+                    + f"""
+                    PI Classification Rules: {self.config.pi_classification_rules}.
+                    """
+                    + f"""
                     \n
-                    ###
+                    3. Baseline confidence: Set the confidence if you have no reason to modify it.
+                        - For obvious results, such as full_name, full_address, email, etc. set confidence to 0.98.
+                        - Similarly, for completely obvious results that are not PII such as Boolean values, years with no other information, or locales such as Country, set confidence to 0.98.
+                        - For results such as state or zip code, consider context, and set confidence lower, between 0.6 and 0.8.
+                        - For free-form text, use low confidence (0.3) by default, because we are not sampling every row nor the entirety of the text cell.
+                    4. Column-level classification priority: Classify columns based on their intrinsic content primarily, and secondarily by their context. Any of the 18 HIPAA PII identifiers should be classified as PII regardless of whether they appear in a healthcare, financial, or retail context. Medical data without embedded identifiers should be classified as medical_information. Only use PHI for columns that either: (a) are healthcare-specific identifiers, or (b) contain medical information or freeform text with embedded patient identifiers.
+                    5. The value for classification should always be either "pi", "medical_information", or "None". The value for type should always be either "None", "pii", "pci", "medical_information", or "phi". When type is pii, pci, or phi, classification should be set to pi. When type is None, classification should be None, and when type is medical information, classification should be medical_information.
+                    6. Freeform medical text with embedded identifiers: Clinical notes, physician notes, or any freeform text that mentions patient names or other identifiers within the text itself should be classified as PHI. For example, "Patient John Smith reports..." makes the entire text field PHI.
+                    7. Healthcare-specific identifiers: When completely alone in a field (no other medical information present in the column), medical Record Numbers (MRN), patient account numbers, insurance member IDs, and similar healthcare-specific identifiers should be set to {self.config.solo_medical_identifier}.
+                    8. The medical_information type should be used for medical text that has clearly been de-identified or contains no embedded identifiers: diagnosis codes, medication names, lab test names, procedure codes, or structured lab result values. These become part of PHI at the table level when combined with PII, but at the column level they are medical_information.
+                    9. Within strings, use single quotes as would be needed if the comment or column_content would be used as a Python string or in SQL DDL. For example format responses like: "The column 'scope' is a summary column.", rather than "The column "scope" is a summary column."
+                    10. Presidio Confidence Adjustment: When Presidio results are provided, assume that Presidio will generally identify PII effectively (high recall) but may often find PII where there is none. Trust Presidio, but use your judgement if it is obviously incorrect, and adjust confidence accordingly.                        
+                        - Both agree on PII: high confidence (max 0.98)
+                        - Presidio finds PII you missed: Strongly consider what Presidio suggests, aware of the fact that it sometimes finds PII where there is none. If Presidio is clearly incorrect, overrule it, but use a low confidence. If you aren't sure, trust Presidio and use a low confidence.
+                        - If Presidio finds PII, but you recognize that there is also medical information present, classify as phi with high confidence.
+                        - You find PII Presidio missed: Trust your assessment, confidence 0.6-0.8.
+                        - Fundamental disagreement on classification: Reduce confidence to 0.3.
                     """,
                 },
                 {
                     "role": "user",
-                    "content": """{"index": [0, 1], "columns": ["customer_name", "billing_address", "email_address", "card_number", "ssn", "order_id", "created_date"], "data": [["Sarah Martinez", "456 Oak Street, Austin TX 78701", "sarah.m@email.com", "4532 1234 5678 9010", "123-45-6789", "ORD-2024-1001", "2024-01-15"], ["Michael Chen", "789 Pine Ave, Seattle WA 98101", "mchen@work.com", "5105 1051 0510 5100", "987-65-4321", "ORD-2024-1002", "2024-01-16"]], "column_metadata": {'customer_name': {'col_name': 'customer_name', 'data_type': 'string', 'num_nulls': '0', 'distinct_count': '2500', 'avg_col_len': '18', 'max_col_len': '35'}, 'billing_address': {'col_name': 'billing_address', 'data_type': 'string', 'num_nulls': '0', 'distinct_count': '2450', 'avg_col_len': '42', 'max_col_len': '80'}, 'email_address': {'col_name': 'email_address', 'data_type': 'string', 'num_nulls': '0', 'distinct_count': '2500', 'avg_col_len': '22', 'max_col_len': '50'}, 'card_number': {'col_name': 'card_number', 'data_type': 'string', 'num_nulls': '0', 'distinct_count': '2100', 'avg_col_len': '19', 'max_col_len': '19'}, 'ssn': {'col_name': 'ssn', 'data_type': 'string', 'num_nulls': '0', 'distinct_count': '2500', 'avg_col_len': '11', 'max_col_len': '11'}, 'order_id': {'col_name': 'order_id', 'data_type': 'string', 'num_nulls': '0', 'distinct_count': '5000', 'avg_col_len': '14', 'max_col_len': '14'}, 'created_date': {'col_name': 'created_date', 'data_type': 'date', 'num_nulls': '0', 'distinct_count': '365', 'avg_col_len': '10', 'max_col_len': '10'}}}""",
+                    "content": """{"index": [0, 1], "columns": ["customer_name", "billing_address", "email_address", "card_number", "ssn", "order_id", "created_date"], "data": [["Sarah Martinez", "456 Oak Street, Austin TX 78701", "sarah.m@email.com", "4532 1234 5678 9010", "123-45-6789", "ORD-2024-1001", "2024-01-15"], ["Michael Chen", "789 Pine Ave, Seattle WA 98101", "mchen@work.com", "5105 1051 0510 5100", "987-65-4321", "ORD-2024-1002", "2024-01-16"]], "column_metadata": {'customer_name': {'col_name': 'customer_name', 'data_type': 'string', 'num_nulls': '0', 'distinct_count': '2500', 'avg_col_len': '18', 'max_col_len': '35'}, 'billing_address': {'col_name': 'billing_address', 'data_type': 'string', 'num_nulls': '0', 'distinct_count': '2450', 'avg_col_len': '42', 'max_col_len': '80'}, 'email_address': {'col_name': 'email_address', 'data_type': 'string', 'num_nulls': '0', 'distinct_count': '2500', 'avg_col_len': '22', 'max_col_len': '50'}, 'card_number': {'col_name': 'card_number', 'data_type': 'string', 'num_nulls': '0', 'distinct_count': '2100', 'avg_col_len': '19', 'max_col_len': '19'}, 'ssn': {'col_name': 'ssn', 'data_type': 'string', 'num_nulls': '0', 'distinct_count': '2500', 'avg_col_len': '11', 'max_col_len': '11'}, 'order_id': {'col_name': 'order_id', 'data_type': 'string', 'num_nulls': '0', 'distinct_count': '5000', 'avg_col_len': '14', 'max_col_len': '14'}, 'created_date': {'col_name': 'created_date', 'data_type': 'date', 'num_nulls': '0', 'distinct_count': '365', 'avg_col_len': '10', 'max_col_len': '10'}}}. 
+                    
+                    Presidio results: {"deterministic_results": [{"column": "customer_name", "classification": "PII", "entities": ["PERSON"]}, {"column": "billing_address", "classification": "PII", "entities": ["ADDRESS"]}, {"column": "email_address", "classification": "PII", "entities": ["EMAIL_ADDRESS"]}, {"column": "card_number", "classification": "PCI", "entities": ["CREDIT_CARD"]}, {"column": "ssn", "classification": "PII", "entities": ["US_SSN"]}, {"column": "order_id", "classification": "Non-sensitive", "entities": []}, {"column": "created_date", "classification": "Non-sensitive", "entities": []}]}""",
                 },
                 {
                     "role": "assistant",
@@ -537,27 +649,37 @@ class PIPrompt(Prompt):
                 },
                 {
                     "role": "user",
-                    "content": """{"index": [0, 1, 2], "columns": ["user_email", "ip_address", "session_token", "device_id", "login_timestamp", "page_views", "cart_total"], "data": [["john.doe@company.com", "203.0.113.45", "tk_a8f3e2b1c4d5", "dev_98765abcd", "2024-03-05 14:23:01", "12", "125.50"], ["jane.smith@email.net", "198.51.100.22", "tk_9d2f1e3c5b4a", "dev_54321fghi", "2024-03-05 15:10:42", "8", "89.99"], ["alex.wong@work.org", "192.0.2.15", "tk_b7e4d3a2c1f6", "dev_11223jklm", "2024-03-05 16:05:33", "5", "0.00"]], "column_metadata": {'user_email': {'col_name': 'user_email', 'data_type': 'string', 'num_nulls': '0', 'distinct_count': '15000', 'avg_col_len': '24', 'max_col_len': '50'}, 'ip_address': {'col_name': 'ip_address', 'data_type': 'string', 'num_nulls': '0', 'distinct_count': '8500', 'avg_col_len': '13', 'max_col_len': '15'}, 'session_token': {'col_name': 'session_token', 'data_type': 'string', 'num_nulls': '0', 'distinct_count': '50000', 'avg_col_len': '16', 'max_col_len': '16'}, 'device_id': {'col_name': 'device_id', 'data_type': 'string', 'num_nulls': '0', 'distinct_count': '12000', 'avg_col_len': '13', 'max_col_len': '13'}, 'login_timestamp': {'col_name': 'login_timestamp', 'data_type': 'timestamp', 'num_nulls': '0', 'distinct_count': '50000', 'avg_col_len': '19', 'max_col_len': '19'}, 'page_views': {'col_name': 'page_views', 'data_type': 'int', 'num_nulls': '0', 'distinct_count': '150', 'avg_col_len': '2', 'max_col_len': '3'}, 'cart_total': {'col_name': 'cart_total', 'data_type': 'decimal', 'num_nulls': '0', 'distinct_count': '2500', 'avg_col_len': '6', 'max_col_len': '8'}}}""",
+                    "content": """{"index": [0, 1, 2], "columns": ["user_email", "ip_address", "session_token", "device_id", "login_timestamp", "page_views", "cart_total"], "data": [["john.doe@company.com", "203.0.113.45", "tk_a8f3e2b1c4d5", "dev_98765abcd", "2024-03-05 14:23:01", "12", "125.50"], ["jane.smith@email.net", "198.51.100.22", "tk_9d2f1e3c5b4a", "dev_54321fghi", "2024-03-05 15:10:42", "8", "89.99"], ["alex.wong@work.org", "192.0.2.15", "tk_b7e4d3a2c1f6", "dev_11223jklm", "2024-03-05 16:05:33", "5", "0.00"]], "column_metadata": {'user_email': {'col_name': 'user_email', 'data_type': 'string', 'num_nulls': '0', 'distinct_count': '15000', 'avg_col_len': '24', 'max_col_len': '50'}, 'ip_address': {'col_name': 'ip_address', 'data_type': 'string', 'num_nulls': '0', 'distinct_count': '8500', 'avg_col_len': '13', 'max_col_len': '15'}, 'session_token': {'col_name': 'session_token', 'data_type': 'string', 'num_nulls': '0', 'distinct_count': '50000', 'avg_col_len': '16', 'max_col_len': '16'}, 'device_id': {'col_name': 'device_id', 'data_type': 'string', 'num_nulls': '0', 'distinct_count': '12000', 'avg_col_len': '13', 'max_col_len': '13'}, 'login_timestamp': {'col_name': 'login_timestamp', 'data_type': 'timestamp', 'num_nulls': '0', 'distinct_count': '50000', 'avg_col_len': '19', 'max_col_len': '19'}, 'page_views': {'col_name': 'page_views', 'data_type': 'int', 'num_nulls': '0', 'distinct_count': '150', 'avg_col_len': '2', 'max_col_len': '3'}, 'cart_total': {'col_name': 'cart_total', 'data_type': 'decimal', 'num_nulls': '0', 'distinct_count': '2500', 'avg_col_len': '6', 'max_col_len': '8'}}}. 
+                    
+                    Presidio results: {"deterministic_results": [{"column": "user_email", "classification": "PII", "entities": ["EMAIL_ADDRESS"]}, {"column": "ip_address", "classification": "PII", "entities": ["IP_ADDRESS"]}, {"column": "session_token", "classification": "Non-sensitive", "entities": []}, {"column": "device_id", "classification": "Non-sensitive", "entities": []}, {"column": "login_timestamp", "classification": "Non-sensitive", "entities": []}, {"column": "page_views", "classification": "Non-sensitive", "entities": []}, {"column": "cart_total", "classification": "Non-sensitive", "entities": []}]}""",
                 },
                 {
                     "role": "assistant",
-                    "content": """{"table": "web_sessions", "columns": ["user_email", "ip_address", "session_token", "device_id", "login_timestamp", "page_views", "cart_total"], "column_contents": [{"classification": "pi", "type": "pii", "confidence": 0.96}, {"classification": "pi", "type": "pii", "confidence": 0.88}, {"classification": "None", "type": "None", "confidence": 0.92}, {"classification": "None", "type": "None", "confidence": 0.90}, {"classification": "None", "type": "None", "confidence": 0.94}, {"classification": "None", "type": "None", "confidence": 0.96}, {"classification": "None", "type": "None", "confidence": 0.95}]}""",
+                    "content": """{"table": "web_sessions", "columns": ["user_email", "ip_address", "session_token", "device_id", "login_timestamp", "page_views", "cart_total"], "column_contents": [{"classification": "pi", "type": "pii", "confidence": 0.96}, {"classification": "pi", "type": "pii", "confidence": 0.98}, {"classification": "None", "type": "None", "confidence": 0.6}, {"classification": "None", "type": "None", "confidence": 0.90}, {"classification": "None", "type": "None", "confidence": 0.94}, {"classification": "None", "type": "None", "confidence": 0.96}, {"classification": "None", "type": "None", "confidence": 0.95}]}""",
                 },
                 {
                     "role": "user",
-                    "content": """{"index": [0, 1, 2], "columns": ["patient_full_name", "mrn", "diagnosis_code", "diagnosis_desc", "medication_orders", "physician_notes", "lab_results", "visit_date"], "data": [["Emily Rodriguez", "MRN-2024-8901", "E11.9", "Type 2 diabetes without complications", "Metformin 500mg BID", "Patient Emily Rodriguez reports improved glucose control. Continue current regimen.", "Glucose: 105 mg/dL, A1C: 6.2%", "2024-02-15"], ["Robert Johnson", "MRN-2024-8902", "I10", "Essential hypertension", "Lisinopril 10mg daily", "BP well controlled. Advised sodium reduction and exercise.", "BP: 128/82, HR: 72", "2024-02-16"], ["Maria Santos", "MRN-2024-8903", "J45.909", "Asthma, unspecified", "Albuterol inhaler PRN", "No recent exacerbations. Refill rescue inhaler.", "SpO2: 98%, Peak flow: 380 L/min", "2024-02-17"]], "column_metadata": {'patient_full_name': {'col_name': 'patient_full_name', 'data_type': 'string', 'num_nulls': '0', 'distinct_count': '8500', 'avg_col_len': '22', 'max_col_len': '45'}, 'mrn': {'col_name': 'mrn', 'data_type': 'string', 'num_nulls': '0', 'distinct_count': '8500', 'avg_col_len': '14', 'max_col_len': '14'}, 'diagnosis_code': {'col_name': 'diagnosis_code', 'data_type': 'string', 'num_nulls': '0', 'distinct_count': '450', 'avg_col_len': '6', 'max_col_len': '8'}, 'diagnosis_desc': {'col_name': 'diagnosis_desc', 'data_type': 'string', 'num_nulls': '0', 'distinct_count': '450', 'avg_col_len': '35', 'max_col_len': '100'}, 'medication_orders': {'col_name': 'medication_orders', 'data_type': 'string', 'num_nulls': '12', 'distinct_count': '1200', 'avg_col_len': '28', 'max_col_len': '150'}, 'physician_notes': {'col_name': 'physician_notes', 'data_type': 'string', 'num_nulls': '5', 'distinct_count': '8495', 'avg_col_len': '120', 'max_col_len': '500'}, 'lab_results': {'col_name': 'lab_results', 'data_type': 'string', 'num_nulls': '800', 'distinct_count': '5000', 'avg_col_len': '45', 'max_col_len': '200'}, 'visit_date': {'col_name': 'visit_date', 'data_type': 'date', 'num_nulls': '0', 'distinct_count': '365', 'avg_col_len': '10', 'max_col_len': '10'}}}""",
+                    "content": """{"index": [0, 1, 2], "columns": ["patient_full_name", "mrn", "diagnosis_code", "diagnosis_desc", "medication_orders", "physician_notes", "lab_results", "visit_date"], "data": [["Emily Rodriguez", "MRN-2024-8901", "E11.9", "Type 2 diabetes without complications", "Metformin 500mg BID", "Patient Emily Rodriguez reports improved glucose control. Continue current regimen.", "Glucose: 105 mg/dL, A1C: 6.2%", "2024-02-15"], ["Robert Johnson", "MRN-2024-8902", "I10", "Essential hypertension", "Lisinopril 10mg daily", "BP well controlled. Advised sodium reduction and exercise.", "BP: 128/82, HR: 72", "2024-02-16"], ["Maria Santos", "MRN-2024-8903", "J45.909", "Asthma, unspecified", "Albuterol inhaler PRN", "No recent exacerbations. Refill rescue inhaler.", "SpO2: 98%, Peak flow: 380 L/min", "2024-02-17"]], "column_metadata": {'patient_full_name': {'col_name': 'patient_full_name', 'data_type': 'string', 'num_nulls': '0', 'distinct_count': '8500', 'avg_col_len': '22', 'max_col_len': '45'}, 'mrn': {'col_name': 'mrn', 'data_type': 'string', 'num_nulls': '0', 'distinct_count': '8500', 'avg_col_len': '14', 'max_col_len': '14'}, 'diagnosis_code': {'col_name': 'diagnosis_code', 'data_type': 'string', 'num_nulls': '0', 'distinct_count': '450', 'avg_col_len': '6', 'max_col_len': '8'}, 'diagnosis_desc': {'col_name': 'diagnosis_desc', 'data_type': 'string', 'num_nulls': '0', 'distinct_count': '450', 'avg_col_len': '35', 'max_col_len': '100'}, 'medication_orders': {'col_name': 'medication_orders', 'data_type': 'string', 'num_nulls': '12', 'distinct_count': '1200', 'avg_col_len': '28', 'max_col_len': '150'}, 'physician_notes': {'col_name': 'physician_notes', 'data_type': 'string', 'num_nulls': '5', 'distinct_count': '8495', 'avg_col_len': '120', 'max_col_len': '500'}, 'lab_results': {'col_name': 'lab_results', 'data_type': 'string', 'num_nulls': '800', 'distinct_count': '5000', 'avg_col_len': '45', 'max_col_len': '200'}, 'visit_date': {'col_name': 'visit_date', 'data_type': 'date', 'num_nulls': '0', 'distinct_count': '365', 'avg_col_len': '10', 'max_col_len': '10'}}}. 
+                    
+                    Presidio results: {"deterministic_results": [{"column": "patient_full_name", "classification": "PII", "entities": ["PERSON"]}, {"column": "mrn", "classification": "PHI", "entities": ["MEDICAL_RECORD_NUMBER"]}, {"column": "diagnosis_code", "classification": "Non-sensitive", "entities": []}, {"column": "diagnosis_desc", "classification": "Non-sensitive", "entities": []}, {"column": "medication_orders", "classification": "Non-sensitive", "entities": []}, {"column": "physician_notes", "classification": "PII", "entities": ["PERSON"]}, {"column": "lab_results", "classification": "Non-sensitive", "entities": []}, {"column": "visit_date", "classification": "Non-sensitive", "entities": []}]}""",
                 },
                 {
                     "role": "assistant",
-                    "content": """{"table": "patient_encounters", "columns": ["patient_full_name", "mrn", "diagnosis_code", "diagnosis_desc", "medication_orders", "physician_notes", "lab_results", "visit_date"], "column_contents": [{"classification": "pi", "type": "pii", "confidence": 0.97}, {"classification": "pi", "type": "phi", "confidence": 0.96}, {"classification": "medical_information", "type": "medical_information", "confidence": 0.94}, {"classification": "medical_information", "type": "medical_information", "confidence": 0.93}, {"classification": "medical_information", "type": "medical_information", "confidence": 0.90}, {"classification": "pi", "type": "phi", "confidence": 0.93}, {"classification": "medical_information", "type": "medical_information", "confidence": 0.91}, {"classification": "None", "type": "None", "confidence": 0.92}]}""",
+                    "content": """{"table": "patient_encounters", "columns": ["patient_full_name", "mrn", "diagnosis_code", "diagnosis_desc", "medication_orders", "physician_notes", "lab_results", "visit_date"], "column_contents": [{"classification": "pi", "type": "pii", "confidence": 0.97}, {"classification": "pi", "type": "pii", "confidence": 0.96}, {"classification": "medical_information", "type": "medical_information", "confidence": 0.94}, {"classification": "medical_information", "type": "medical_information", "confidence": 0.93}, {"classification": "medical_information", "type": "medical_information", "confidence": 0.90}, {"classification": "pi", "type": "phi", "confidence": 0.93}, {"classification": "medical_information", "type": "medical_information", "confidence": 0.91}, {"classification": "pi", "type": "pii", "confidence": 0.92}]}""",
                 },
                 {
                     "role": "user",
-                    "content": f"""{content} + {acro_content}.
-                    \n
-                    ###
-                    Deterministic results from Presidio or other outside checks to consider to help check your outputs are here: {self.deterministic_results}.
-                    ###
+                    "content": """{"index": [0, 1, 2], "columns": ["customer_notes", "account_id", "state", "zip_code", "last_contact", "feedback_text", "internal_tags"], "data": [["Customer expressed interest in premium tier. Follow up in Q2. Contact: Sarah (sarah@email.com)", "ACC-89234", "CA", "94102", "2024-03-15", "The service was generally good but I had some issues with...", "high_value,needs_followup"], ["Resolved billing issue. Refund processed. Thanks!", "ACC-45677", "NY", "10001", "2024-03-14", "Great support team, very responsive and helpful with my problem!", "resolved,satisfied"], ["Initial consultation completed. Waiting for approval from legal team.", "ACC-12389", "TX", "78701", "2024-03-13", "I'm not sure if this is the right product for our needs. Would like more information about enterprise options and pricing for teams over 100 users. Can we schedule a demo?", "enterprise,demo_requested"]], "column_metadata": {'customer_notes': {'col_name': 'customer_notes', 'data_type': 'string', 'num_nulls': '150', 'distinct_count': '4500', 'avg_col_len': '180', 'max_col_len': '2000'}, 'account_id': {'col_name': 'account_id', 'data_type': 'string', 'num_nulls': '0', 'distinct_count': '5000', 'avg_col_len': '9', 'max_col_len': '10'}, 'state': {'col_name': 'state', 'data_type': 'string', 'num_nulls': '45', 'distinct_count': '50', 'avg_col_len': '2', 'max_col_len': '2'}, 'zip_code': {'col_name': 'zip_code', 'data_type': 'string', 'num_nulls': '0', 'distinct_count': '1200', 'avg_col_len': '5', 'max_col_len': '10'}, 'last_contact': {'col_name': 'last_contact', 'data_type': 'date', 'num_nulls': '10', 'distinct_count': '890', 'avg_col_len': '10', 'max_col_len': '10'}, 'feedback_text': {'col_name': 'feedback_text', 'data_type': 'string', 'num_nulls': '230', 'distinct_count': '4800', 'avg_col_len': '250', 'max_col_len': '5000'}, 'internal_tags': {'col_name': 'internal_tags', 'data_type': 'string', 'num_nulls': '500', 'distinct_count': '350', 'avg_col_len': '25', 'max_col_len': '100'}}}. 
+                    
+                    Presidio results: {"deterministic_results": [{"column": "customer_notes", "classification": "PII", "entities": ["PERSON", "EMAIL_ADDRESS"]}, {"column": "account_id", "classification": "Non-sensitive", "entities": []}, {"column": "state", "classification": "PII", "entities": ["LOCATION"]}, {"column": "zip_code", "classification": "PII", "entities": ["US_SSN"]}, {"column": "last_contact", "classification": "Non-sensitive", "entities": []}, {"column": "feedback_text", "classification": "Non-sensitive", "entities": []}, {"column": "internal_tags", "classification": "Non-sensitive", "entities": []}]}""",
+                },
+                {
+                    "role": "assistant",
+                    "content": """{"table": "customer_feedback", "columns": ["customer_notes", "account_id", "state", "zip_code", "last_contact", "feedback_text", "internal_tags"], "column_contents": [{"classification": "pi", "type": "pii", "confidence": 0.35}, {"classification": "None", "type": "None", "confidence": 0.85}, {"classification": "pi", "type": "pii", "confidence": 0.65}, {"classification": "pi", "type": "pii", "confidence": 0.70}, {"classification": "None", "type": "None", "confidence": 0.92}, {"classification": "None", "type": "None", "confidence": 0.40}, {"classification": "None", "type": "None", "confidence": 0.88}]}""",
+                },
+                {
+                    "role": "user",
+                    "content": f"""{content} + {acro_content}. Deterministic results from Presidio or other outside checks to consider to help check your outputs are here: {self.deterministic_results}.
                     """,
                 },
             ]

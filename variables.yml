@@ -90,10 +90,16 @@ variables:
   spacy_model_names:
     description: spacy models to use in presidio. Currently will only handle a single model. Adding support for multiple models is a planned feature.
     default: en_core_web_lg
+  solo_medical_identifier:
+    description: When a medical identifier, such as a medical record number (MRN), is alone in a field, it should be classified as this value. Technically speaking, if for example a column is alone in a table MRN is PII, not PHI. However, a more conservative setting would be to classify all medical identifiers as PHI, even when they are PII.
+    default: pii
   pi_classification_rules:
     description: Rules for PI classification. These rules will be injected into the prompt and provided along with the prompt to the model.
     default: |
-      PII (Personally Identifiable Information): Any data that can identify an individual, such as name, address, or social security number. PHI (Protected Health Information): Health-related data that includes any of the 18 HIPAA-identified elements, like medical records or treatment histories. PCI (Payment Card Information): Data related to payment card transactions, including card numbers, expiration dates, and security codes. Non-PII/PHI/PCI: Data that cannot be used to identify an individual or is not related to health or payment cards, such as general demographics or anonymized statistics.
+      PII (Personally Identifiable Information): Any data that can identify an individual, such as name, address, or social security number. 
+      PHI (Protected Health Information): Health-related data that includes any of the 18 HIPAA-identified elements, like medical records or treatment histories. A column is classified definitively as PHI when it has both health-related information and personal identifiers. 
+      PCI (Payment Card Information): Data related to payment card transactions, including card numbers, expiration dates, and security codes. 
+      Non-PII/PHI/PCI: Data that cannot be used to identify an individual or is not related to health or payment cards, such as general demographics or anonymized statistics.
       ###
       To identify these types:
       ###
@@ -120,7 +126,7 @@ variables:
     default: 4096
   word_limit_per_cell:
     description: number of words for each cell of the source tables. any value from a source table larger than this will get truncated when added to prompt content.
-    default: 100
+    default: 500
   limit_prompt_based_on_cell_len:
     description: whether or not to truncate cells longer than the value in word_limit_per_cell
     default: true
@@ -129,7 +135,7 @@ variables:
     default: 20
   max_tokens:
     description: maximum tokens for model
-    default: 4096
+    default: 8192
   temperature:
     description: temperature applied to the model
     default: 0.1

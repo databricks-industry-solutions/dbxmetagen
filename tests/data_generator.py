@@ -1,10 +1,12 @@
 # Databricks notebook source
-# MAGIC %pip install dbldatagen faker
-
-# COMMAND ----------
 
 # MAGIC %md
 # MAGIC # Multi-Domain Data Generator for Healthcare and Life Sciences
+
+# COMMAND ----------
+
+
+# MAGIC %pip install dbldatagen faker
 
 # COMMAND ----------
 
@@ -40,6 +42,7 @@ from faker.providers import BaseProvider
 
 # logging.basicConfig(level=logging.INFO)
 # logger = logging.getLogger(__name__)
+
 
 @dataclass
 class SchemaConfig:
@@ -119,6 +122,7 @@ class MedicalProvider(BaseProvider):
     def department(self) -> str:
         return self.random_element(self.departments)
 
+
 class ClinicalTrialProvider(BaseProvider):
     """Custom Faker provider for clinical trial data"""
 
@@ -153,7 +157,6 @@ class LivestockProvider(BaseProvider):
         return self.random_element(
             ["Holstein", "Angus", "Merino", "Yorkshire", "Mixed"]
         )
-
 
 
 # Standalone functions for PyfuncText to avoid serialization issues
@@ -311,7 +314,6 @@ def generate_vet_observation(context, _):
     return f"VETERINARY NOTE: Animal appears {observation}. Examiner: Dr. {context.faker.last_name()}"
 
 
-
 class MedicalNotesSchemaGenerator(BaseSchemaGenerator):
     """Generates medical notes schema with realistic clinical data"""
 
@@ -347,7 +349,7 @@ class MedicalNotesSchemaGenerator(BaseSchemaGenerator):
             .withColumn(
                 "date_of_birth",
                 DateType(),
-                expr="current_date()"#dateadd(current_date(), - cast(rand()*365*80 + 365*18 as int)),
+                expr="current_date()",  # dateadd(current_date(), - cast(rand()*365*80 + 365*18 as int)),
             )
             .withColumn(
                 "ssn",
@@ -433,8 +435,7 @@ class MedicalNotesSchemaGenerator(BaseSchemaGenerator):
             .withColumn(
                 "encounter_date",
                 DateType(),
-                #expr=f"date_add(current_date(), -cast(rand()*365*80 + 365*18 as int))"
-
+                # expr=f"date_add(current_date(), -cast(rand()*365*80 + 365*18 as int))"
                 expr=f"date_add('{self.config.start_date}', cast(rand()*datediff('{self.config.end_date}', '{self.config.start_date}') as int))",
             )
             .withColumn(
@@ -488,7 +489,7 @@ class MedicalNotesSchemaGenerator(BaseSchemaGenerator):
             .withColumn(
                 "created_datetime",
                 TimestampType(),
-                expr="current_timestamp()"# - interval cast(rand()*365*2 as int) day",
+                expr="current_timestamp()",  # - interval cast(rand()*365*2 as int) day",
             )
         )
 
@@ -532,7 +533,7 @@ class MedicalNotesSchemaGenerator(BaseSchemaGenerator):
             .withColumn(
                 "collected_datetime",
                 TimestampType(),
-                expr="current_timestamp()"# - interval cast(rand()*365*2 as int) day",
+                expr="current_timestamp()",  # - interval cast(rand()*365*2 as int) day",
             )
         )
 
@@ -549,7 +550,6 @@ class MedicalNotesSchemaGenerator(BaseSchemaGenerator):
             tables[spec.name] = df
 
         return tables
-
 
 
 class HospitalDataSchemaGenerator(BaseSchemaGenerator):
@@ -673,8 +673,7 @@ class HospitalDataSchemaGenerator(BaseSchemaGenerator):
             .withColumn(
                 "admission_date",
                 DateType(),
-                #expr=f"date_add(current_date(), -cast(rand()*365*80 + 365*18 as int))"
-
+                # expr=f"date_add(current_date(), -cast(rand()*365*80 + 365*18 as int))"
                 expr=f"date_add('{self.config.start_date}', cast(rand()*datediff('{self.config.end_date}', '{self.config.start_date}') as int))",
             )
             .withColumn(
@@ -810,7 +809,6 @@ class HospitalDataSchemaGenerator(BaseSchemaGenerator):
 # COMMAND ----------
 
 
-
 # COMMAND ----------
 
 
@@ -917,7 +915,7 @@ class ClinicalTrialsSchemaGenerator(BaseSchemaGenerator):
             .withColumn(
                 "date_of_birth",
                 DateType(),
-                expr="current_date()"# - cast(rand()*365*60 + 365*18 as int)",
+                expr="current_date()",  # - cast(rand()*365*60 + 365*18 as int)",
             )
             .withColumn("gender", StringType(), values=["Male", "Female"], random=True)
             .withColumn(
@@ -1154,7 +1152,7 @@ class LivestockResearchSchemaGenerator(BaseSchemaGenerator):
             .withColumn(
                 "birth_date",
                 DateType(),
-                expr="current_date()"# - cast(rand()*365*8 as int)",
+                expr="current_date()",  # - cast(rand()*365*8 as int)",
             )
             .withColumn(
                 "weight_kg", DoubleType(), minValue=5.0, maxValue=800.0, random=True
@@ -1318,9 +1316,11 @@ class DataGenerationOrchestrator:
             for table_name, table_df in schema_tables.items():
                 print("i", i)
                 full_table_name = f"{full_schema_name}.{table_name}"
-                #display(table_df)
-                table_df.write.mode("overwrite").option("overwriteSchema", "true").saveAsTable(full_table_name)
-                i+=1
+                # display(table_df)
+                table_df.write.mode("overwrite").option(
+                    "overwriteSchema", "true"
+                ).saveAsTable(full_table_name)
+                i += 1
 
                 # # Add table comment for documentation
                 # table_comment = self._get_table_comment(schema_name, table_name)
@@ -1328,7 +1328,6 @@ class DataGenerationOrchestrator:
                 #     self.spark.sql(
                 #         f"ALTER TABLE {full_table_name} SET TBLPROPERTIES ('comment' = '{table_comment}')"
                 #     )
-
 
     def _get_table_comment(self, schema_name: str, table_name: str) -> str:
         """Get descriptive comment for each table"""

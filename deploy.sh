@@ -433,7 +433,7 @@ check_for_deployed_app
 # If we got a new SP ID after deployment, redeploy with permissions
 if [ -z "$OLD_APP_SP_ID" ] && [ -n "$APP_SP_ID" ] && [ "$APP_SP_ID" != "null" ]; then
     echo "============================================"
-    echo "📝 New service principal detected: $APP_SP_ID"
+    echo "New service principal detected: $APP_SP_ID"
     echo "Redeploying bundle with service principal permissions..."
     echo "============================================"
     deploy_bundle

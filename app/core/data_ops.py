@@ -473,7 +473,7 @@ class MetadataProcessor:
                 st_debug(f"🔍 DataFrame columns: {list(df.columns)}")
                 st_debug(f"🔍 DataFrame shape: {df.shape}")
 
-            st.info("🔄 Generating DDL from edited metadata...")
+            # st.info("🔄 Generating DDL from edited metadata...")
             updated_df = self._generate_ddl_from_comments(df)
 
             # Save the updated DataFrame to Unity Catalog volume first
@@ -483,7 +483,7 @@ class MetadataProcessor:
                 return results
 
             # Trigger Databricks job to execute DDL using sync_reviewed_ddl.py notebook
-            st.info("🚀 Triggering Databricks job to execute DDL statements...")
+            # st.info("🚀 Triggering Databricks job to execute DDL statements...")
             job_result = self._trigger_ddl_sync_job(saved_filename, job_manager)
 
             if job_result and job_result.get("success"):
@@ -501,8 +501,8 @@ class MetadataProcessor:
                 # Update session state with the updated DataFrame
                 st.session_state.review_metadata = updated_df
 
-                st.success("🎉 Successfully triggered DDL execution job!")
-                st.info(f"📋 Job ID: {job_result.get('job_id')}")
+                # st.success("🎉 Successfully triggered DDL execution job!")
+                # st.info(f"📋 Job ID: {job_result.get('job_id')}")
                 if job_result.get("run_id"):
                     st.info(f"🔄 Run ID: {job_result.get('run_id')}")
 
@@ -795,17 +795,27 @@ class MetadataProcessor:
     def _trigger_ddl_sync_job(self, filename: str, job_manager) -> Dict[str, Any]:
         """Trigger a Databricks job to execute DDL using sync_reviewed_ddl.py notebook."""
         try:
+            # Get config from session state
+            config = st.session_state.get("config", {})
+
             # Prepare job parameters for the sync_reviewed_ddl.py notebook
             job_params = {
                 "reviewed_file_name": filename,
                 "mode": "comment",  # Default mode, could be made configurable
+                "catalog_name": config.get("catalog_name"),
+                "schema_name": config.get("schema_name"),
+                "volume_name": config.get("volume_name", "generated_metadata"),
             }
 
-            st_debug(f"🔧 Job parameters: {job_params}")
+            logger.debug(f"Job parameters: {job_params}")
 
             try:
                 job_id, run_id = job_manager.create_and_run_sync_job(
-                    filename=filename, mode="comment"
+                    filename=filename,
+                    mode="comment",
+                    catalog_name=job_params["catalog_name"],
+                    schema_name=job_params["schema_name"],
+                    volume_name=job_params["volume_name"],
                 )
 
                 return {
@@ -816,7 +826,6 @@ class MetadataProcessor:
                 }
 
             except AttributeError:
-                # Fallback: use generic job creation if sync-specific method doesn't exist
                 return {
                     "success": False,
                     "error": "DDL sync job creation not implemented in job manager",

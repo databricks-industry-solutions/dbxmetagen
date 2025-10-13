@@ -350,12 +350,19 @@ def append_column_rows(
         try:
             import json
 
+            # Security: Log only metadata, not actual presidio results (may reference sensitive data)
             presidio_data = json.loads(response.presidio_results)
+            num_results = len(presidio_data.get("deterministic_results", []))
+            logger.debug(f"Parsing presidio_results with {num_results} column results")
+
             for result in presidio_data.get("deterministic_results", []):
                 col = result.get("column")
                 presidio_map[col] = json.dumps(result)
+            print(f"Mapped presidio results for {len(presidio_map)} columns")
         except Exception as e:
-            logging.warning(f"Failed to parse presidio results: {e}")
+            # Security: Do not log raw presidio data
+            print(f"Failed to parse presidio results: {e}")
+            logger.debug("Presidio parsing error details: %s", str(e)[:200])
 
     for i, (column_name, column_content) in enumerate(
         zip(response.columns, response.column_contents)
@@ -475,7 +482,11 @@ def rows_to_df(rows: List[Row], config: MetadataConfig) -> DataFrame:
                 try:
                     test_df = spark.createDataFrame([row], schema)
                 except Exception as row_error:
-                    print(f"Problematic row data: {dict(row.asDict())}")
+                    # Security: Do not log actual row data (may contain PII/PHI/PCI)
+                    print(
+                        f"Problematic row at index {i}: Schema mismatch - check field types"
+                    )
+                    logger.debug("Row error details: %s", str(row_error)[:200])
             raise
 
         if config.mode == "comment" and "column_content" in df.columns:
@@ -1089,6 +1100,9 @@ def log_metadata_generation(
     """
     run_log_table_ddl(config)
     df = df.withColumn("metadata_type", lit(config.mode))
+
+    print(f"[log_metadata_generation] DataFrame columns: {df.columns}")
+
     df.write.mode("append").option("mergeSchema", "true").saveAsTable(
         f"{config.catalog_name}.{config.schema_name}.metadata_generation_log"
     )
@@ -1430,6 +1444,7 @@ def create_and_persist_ddl(
                     "classification",
                     "type",
                     "confidence",
+                    "presidio_results",
                     "_created_at",
                     "catalog",
                     "schema",
@@ -1514,7 +1529,7 @@ def get_domain_classification(
     Generates domain classification for a given table.
 
     Note: Domain classification only uses the first N columns (defined by columns_per_call)
-    to avoid massive prompts. In testing, this is typically sufficient to determine business domain.
+    to avoid massive prompts. In testing, along with table comments this is typically sufficient to determine business domain.
 
     Args:
         config: Configuration object
@@ -1791,18 +1806,27 @@ def apply_comment_ddl(df: DataFrame, config: MetadataConfig) -> dict:
     success_count = 0
 
     for row in ddl_statements:
-        logger.debug("Applying DDL statement: %s", row["ddl"])
-        print("Applying DDL statement: ", row["ddl"])
+        # Security: DDL statements may contain sensitive data in comments/tags
+        # Log only metadata, not full DDL content
         ddl_statement = row["ddl"]
+        logger.debug("Applying DDL statement (%d characters)", len(ddl_statement))
+
         if not config.dry_run:
             try:
                 spark.sql(ddl_statement)
                 success_count += 1
+                print(
+                    f"Applied DDL statement successfully ({len(ddl_statement)} chars)"
+                )
             except Exception as e:
                 # Extract concise error message
                 concise_error = extract_concise_error(e)
                 logger.error("Error applying DDL: %s", concise_error)
-                logger.error("DDL statement: %s", ddl_statement)
+                print(f"Failed to apply DDL statement: {concise_error}")
+                # Security: Only log DDL structure, not full content (may contain sensitive data in comments)
+                logger.debug(
+                    "DDL statement first 100 chars: %s...", ddl_statement[:100]
+                )
 
                 # Track failed tags for summary
                 if "Tag policy violation" in concise_error:
@@ -2100,13 +2124,25 @@ def print_ddl_summary(results, config):
         print("-" * 80)
 
         if results["table_results"] and results["table_results"]["failed_statements"]:
-            for fail in results["table_results"]["failed_statements"]:
-                print(f"\nStatement: {fail['statement']}")
+            for i, fail in enumerate(results["table_results"]["failed_statements"], 1):
+                # Security: Do not print full DDL (may contain sensitive data in comments)
+                stmt_preview = (
+                    fail["statement"][:100] + "..."
+                    if len(fail["statement"]) > 100
+                    else fail["statement"]
+                )
+                print(f"\n#{i} Statement preview: {stmt_preview}")
                 print(f"Error: {fail['error'][:200]}...")  # Truncate long errors
 
         if results["column_results"] and results["column_results"]["failed_statements"]:
-            for fail in results["column_results"]["failed_statements"]:
-                print(f"\nStatement: {fail['statement']}")
+            for i, fail in enumerate(results["column_results"]["failed_statements"], 1):
+                # Security: Do not print full DDL (may contain sensitive data in comments)
+                stmt_preview = (
+                    fail["statement"][:100] + "..."
+                    if len(fail["statement"]) > 100
+                    else fail["statement"]
+                )
+                print(f"\n#{i} Statement preview: {stmt_preview}")
                 print(f"Error: {fail['error'][:200]}...")
 
     # Show missing tags
@@ -2140,10 +2176,28 @@ def create_pi_table_df(
     Returns:
         DataFrame: A DataFrame with PI information at the table level.
     """
+    # First check all rows to determine classification
+    all_rows = column_df.filter(col("type").isNotNull())
+    table_subclassification = determine_table_classification(all_rows)
+
+    # Filter out None types only for confidence calculation
     pi_rows = column_df.filter((col("type").isNotNull()) & (col("type") != "None"))
-    # Use first() instead of collect() for single aggregate values
-    max_confidence = pi_rows.agg(spark_max("confidence")).first()[0]
-    table_subclassification = determine_table_classification(pi_rows)
+
+    # If all columns are "None", still create a table row if configured to tag None fields
+    if pi_rows.count() == 0:
+        # Check if we should tag None fields (uses existing config variable)
+        # This variable also controls column-level None tagging elsewhere
+        if not config.tag_none_fields:
+            return None
+
+        # Use all_rows for creating the table entry with "None" classification
+        max_confidence = all_rows.agg(spark_max("confidence")).first()[0]
+        base_row = all_rows.limit(1)
+    else:
+        # Use first() instead of collect() for single aggregate values
+        max_confidence = pi_rows.agg(spark_max("confidence")).first()[0]
+        base_row = pi_rows.limit(1)
+
     print("\n\ntable_subclassification:\n", table_subclassification)
     if config.use_protected_classification_for_table:
         table_classification = get_protected_classification_for_table(
@@ -2157,8 +2211,7 @@ def create_pi_table_df(
     print("table_subclassification", table_subclassification)
 
     pi_table_row = (
-        pi_rows.limit(1)
-        .drop("ddl_type")
+        base_row.drop("ddl_type")
         .drop("confidence")
         .drop("ddl")
         .withColumn("ddl_type", lit("table"))
@@ -2535,9 +2588,9 @@ def upsert_table_names_to_control_table(
         .withColumn("_job_id", lit(config.job_id))
     )
     if new_table_names_df.count() > 0:
-        new_table_names_df.write.format("delta").mode("append").saveAsTable(
-            control_table
-        )
+        new_table_names_df.write.option("mergeSchema", "true").format("delta").mode(
+            "append"
+        ).saveAsTable(control_table)
         print(
             f"Inserted {new_table_names_df.count()} new table names into the control table {control_table}..."
         )

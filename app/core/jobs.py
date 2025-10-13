@@ -565,7 +565,12 @@ class JobManager:
             st.code(traceback.format_exc())
 
     def create_and_run_sync_job(
-        self, filename: str, mode: str = "comment"
+        self,
+        filename: str,
+        mode: str = "comment",
+        catalog_name: Optional[str] = None,
+        schema_name: Optional[str] = None,
+        volume_name: Optional[str] = None,
     ) -> Tuple[int, int]:
         """Create and run a DDL sync job"""
         logger.info(f"Creating sync job for file: {filename}, mode: {mode}")
@@ -578,6 +583,14 @@ class JobManager:
             "env": "app",
             "table_names": "from_metadata_file",
         }
+
+        # Add catalog/schema/volume if provided
+        if catalog_name:
+            job_parameters["catalog_name"] = catalog_name
+        if schema_name:
+            job_parameters["schema_name"] = schema_name
+        if volume_name:
+            job_parameters["volume_name"] = volume_name
 
         existing_job_id = self._find_job_by_name(job_name)
         if existing_job_id:
