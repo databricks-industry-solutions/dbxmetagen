@@ -3,11 +3,10 @@
 ## Table of Contents
 
 - [Project Overview](#project-overview)
+- [Quickstart](#quickstart)
 - [Disclaimer](#disclaimer)
-- [Quickstart] (#quickstart)
 - [Solution Overview](#solution-overview)
 - [User Guide](#user-guide)
-  - [Personas](#personas)
   - [Workflow Diagrams](#workflow-diagrams)
 - [Minimal Setup](#minimal-setup)
 - [Full Setup Instructions](#full-setup-instructions)
@@ -26,7 +25,7 @@
 
 <img src="images/DBXMetagen_arch_hl.png" alt="High-level DBXMetagen Architecture" width="800" top-margin="50">
 
-**dbxmetagen** is a utility for generating high-quality metadata for Unity Catalog.
+**dbxmetagen** is a utility for generating high-quality metadata for Unity Catalog, and includes the ability to identify and classify data and metadata in various ways to assist enrichment of Unity Catalog, and quickly building up data catalogs for governance purposes.
 
 Options:
 - descriptions for tables and columns in Databricks, enhancing enterprise search, governance, Databricks Genie performance, and any other tooling that benefit significantly from high quality metadata. 
@@ -35,7 +34,7 @@ Options:
 
 The tool is highly configurable, supporting bulk operations, SDLC integration, and fine-grained control over privacy and output formats.
 
-**Quickstart**
+## Quickstart
 
 1. **Clone the repo** into a Git Folder in your Databricks workspace
    ```
@@ -119,18 +118,11 @@ Both primary entry points for this application are Databricks notebooks.
 - **dbxmetagen/src/notebooks/generate_metadata** This is the primary entry point for the application, allowing both comment generation and PI identification and classification.
 - **dbxmetagen/src/notebooks/sync_reviewed_ddl** This utility allows re-integration of reviewed and edited run logs in tsv or excel format to be used to apply DDL to tables.
 
-### Personas
-
-- **Data Engineer:** Sets up and maintains the tool.
-- **Data Steward:** Reviews and approves generated metadata.
-- **Data Scientist/Analyst:** Uses enriched metadata.
-- **Compliance Officer:** Ensures regulatory requirements are met.
+For detailed information on how different team members use dbxmetagen, see [docs/PERSONAS_AND_WORKFLOWS.md](docs/PERSONAS_AND_WORKFLOWS.md).
 
 ### Workflow Diagrams
 
 - **Simple Workflow:** Clone repo, configure widgets, update `notebooks/table_names.csv`, run notebook.
-
-<img src="images/personas.png" alt="User Personas" width="400" top-margin="50">
 
 - **Advanced Workflow:** Adjust PI definitions, acronyms, secondary options; use asset bundles or web terminal for deployment; leverage manual overrides.
 
@@ -189,7 +181,7 @@ Both primary entry points for this application are Databricks notebooks.
 
 ## Details
 
-1. Some errors are silent by design, but they always show up in the log table, so review it if you are not seeing the outputs you expect.
+1. Some errors are silent by design, but they will show up in the log table, so review it if you are not seeing the outputs you expect.
 1. If you get an error partway through a run, the control table will still keep in memory the tables you entered the first time that haven't run yet, so you should be able to remove the table names from table_names.csv and run it again and it should pick up any unfinished tables. If you don't, you'll see that they all get run again anyways. This checkpointing is a feature.
 1. To make sure that column constraints are interpretable, make sure the constraint names relate to the column that they constrain, as constraints are pulled from the table metadata, not the column metadata, and they describe the constraint name, not the columns with the constraint.
 1. If you get a Pydantic validation error, it's most likely due to some atypical details of your data or metadata in the specific failing table. First thing to try is another LLM - switch to llama from sonnet or vice versa for example. If that doesn't work, please open an issue on the repo.
@@ -200,8 +192,8 @@ Below is a table summarizing all configuration variables, their descriptions, an
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| catalog_name | Target catalog for data, models, and files. If source tables are here, only schema.table needed; otherwise, fully scoped names required. | dbxmetagen |
-| host | Base URL host. Overridden by asset bundles if used. | https://adb-830292400663869.9.azuredatabricks.net/ |
+| catalog_name | Target catalog for data, models, and files. If source tables are here, only schema.table needed; otherwise, fully scoped names required. | None |
+| host | Base URL host. Overridden by asset bundles if used. | None |
 | allow_data | If false, no data sent to LLMs, no data in comments, and no data-based metadata. Reduces output quality. Also sets sample_size=0, allow_data_in_comments=false, include_possible_data_fields_in_metadata=false. | false |
 | sample_size | Number of rows to sample per chunk for prompt generation. 0 disables data sampling. | 10 |
 | disable_medical_information_value | If true, all medical info is treated as PHI for maximum security. | true |
@@ -243,6 +235,7 @@ Below is a table summarizing all configuration variables, their descriptions, an
 | review_input_file_type | Input file type for reviewed DDL (excel or tsv). | tsv |
 | review_output_file_type | Output file type for reviewed DDL (sql, excel, or tsv). | excel |
 | review_apply_ddl | If true, applies all DDL after running 'sync_reviewed_ddl'. | false |
+| solo_medical_identifier | should columns such as MRN be 'pii' or 'phi' by default? | pii |
 
 ### Default PI Classification Rules
 
