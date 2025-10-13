@@ -14,39 +14,47 @@ from datetime import datetime
 from src.dbxmetagen.config import MetadataConfig
 from src.dbxmetagen.user_utils import sanitize_user_identifier
 
+def luhn_checksum(card_number):
+    card_number = card_number.replace(" ", "").replace("-", "")
+    if not card_number.isdigit():
+        return False
+    if len(card_number) < 13 or len(card_number) > 19:
+        return False
+    sum_ = 0
+    alt = False
+    for digit in reversed(card_number):
+        d = int(digit)
+        if alt:
+            d = d * 2
+            if d > 9:
+                d -= 9
+        sum_ += d
+        alt = not alt
+    return sum_ % 10 == 0
+
 
 def get_analyzer_engine(add_pci: bool = True, add_phi: bool = True) -> AnalyzerEngine:
     """Initialize Presidio AnalyzerEngine with PCI/PHI recognizers."""
     analyzer = AnalyzerEngine()
 
     if add_pci:
-        # PCI patterns for financial data - made more specific to reduce false positives
         pci_patterns = [
-            # Credit card: Must be 13-19 digits with optional separators (spaces/dashes every 4 digits)
-            # Luhn algorithm validation would be ideal but regex can't do it
             Pattern(
-                name="credit_card",
-                regex=r"\b(?:\d{4}[ -]?){3}\d{1,7}\b",  # Groups of 4 digits
-                score=0.6,  # Lower score - requires context validation
+                name="credit_card_basic", regex=r"\b(?:\d[ -]*?){13,19}\b", score=0.5
             ),
-            # CVV: Removed - too aggressive, matches any 3-4 digit number
-            # Expiry date: Month/Year format only
             Pattern(
-                name="expiry_date",
-                regex=r"\b(0[1-9]|1[0-2])[\/\-](\d{2}|\d{4})\b",
-                score=0.7,
+                name="credit_card_grouped",
+                regex=r"\b(?:\d{4}[ -]?){3}\d{4}\b",
+                score=0.6,
             ),
-            # IBAN: International Bank Account Number with country code
             Pattern(
                 name="iban",
                 regex=r"\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b",  # At least 15 chars total
                 score=0.8,
             ),
-            # SWIFT: Bank Identifier Code
             Pattern(
                 name="swift", regex=r"\b[A-Z]{6}[A-Z0-9]{2}([A-Z0-9]{3})?\b", score=0.8
             ),
-            # Bank account: Removed - too generic, matches timestamps, IDs, etc.
         ]
         pci_recognizer = PatternRecognizer(
             supported_entity="CREDIT_CARD",
@@ -157,14 +165,10 @@ def classify_column(
             "EMAIL_ADDRESS",
             "PHONE_NUMBER",
             "ADDRESS",
-            # DATE_TIME removed - too aggressive, matches timestamps and numbers
             "NRP",
             "LOCATION",
             "IP_ADDRESS",
             "URL",
-            # CREDIT_CARD removed - should only be in PCI
-            # IBAN_CODE removed - should only be in PCI
-            # US_BANK_NUMBER removed - should only be in PCI
             "CRYPTO",
             "US_SSN",
             "US_DRIVER_LICENSE",
@@ -228,7 +232,8 @@ def classify_column(
         ],
     }
 
-    # Additional filtering for overly aggressive entities
+ 
+    entities_to_ignore = {}
     entities_to_ignore = {
         "DATE_TIME",  # Too aggressive - matches times, dates, and random numbers
     }
@@ -241,6 +246,8 @@ def classify_column(
         for res in cell_results:
             # Skip ignored entities
             if res.entity_type in entities_to_ignore:
+                continue
+            if res.entity_type == "CREDIT_CARD" and not luhn_checksum(res.score):
                 continue
 
             for typ, ents in entity_map.items():
