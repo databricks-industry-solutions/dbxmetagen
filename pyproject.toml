@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "dbxmetagen"
-version = "0.4.1"
+version = "0.5.0"
 description = "Generates comments and identifies and classifies other metadata for Delta tables in Databricks."
 readme = "README.md"
 authors = ["Eli Swanson <eli.swanson@databricks.com>"]
