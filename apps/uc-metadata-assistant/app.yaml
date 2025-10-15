@@ -1,0 +1,14 @@
+command: [
+  "flask",
+  "--app",
+  "app.py",
+  "run"
+]
+env:
+  - name: 'DATABRICKS_HTTP_PATH'
+    value: '/sql/1.0/warehouses/fc63b669d98bde08'
+  - name: 'DATABRICKS_SERVER_HOSTNAME'
+    value: 'fe-vm-mv-serverless-tixx4d.cloud.databricks.com'
+
+  # Enhanced Generation Configuration (Self-Contained)
+  # Note: All configuration is now embedded in the app - no external setup required!
