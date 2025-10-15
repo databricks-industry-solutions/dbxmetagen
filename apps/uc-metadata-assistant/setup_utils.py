@@ -29,17 +29,30 @@ class AutoSetupManager:
             'results_table': 'metadata_results',
             'audit_table': 'generation_audit'
         }
+        # Session-level cache for setup validation (5 minute TTL)
+        self._setup_cache = None
+        self._setup_cache_timestamp = None
+        self._setup_cache_ttl = 300  # 5 minutes in seconds
     
-    async def ensure_setup_complete(self, config: Optional[Dict] = None) -> Dict:
+    async def ensure_setup_complete(self, config: Optional[Dict] = None, force_refresh: bool = False) -> Dict:
         """
         Ensure all required setup is complete. Creates infrastructure if needed.
+        Uses session-level caching to avoid redundant checks within 5 minutes.
         
         Args:
             config: Optional configuration override
+            force_refresh: If True, bypass cache and revalidate infrastructure
             
         Returns:
             Dict with setup status and details
         """
+        # Check cache first (unless force_refresh is True)
+        if not force_refresh and self._setup_cache is not None and self._setup_cache_timestamp is not None:
+            cache_age = (datetime.now() - self._setup_cache_timestamp).total_seconds()
+            if cache_age < self._setup_cache_ttl:
+                logger.info(f"✅ Using cached setup status (age: {int(cache_age)}s)")
+                return self._setup_cache
+        
         setup_config = {**self.default_config, **(config or {})}
         
         setup_status = {
@@ -53,6 +66,8 @@ class AutoSetupManager:
             'config': setup_config,
             'timestamp': datetime.now().isoformat()
         }
+        
+        logger.info("🔧 Running full infrastructure validation...")
         
         try:
             # Step 1: Ensure output catalog exists
@@ -107,6 +122,13 @@ class AutoSetupManager:
             setup_status['errors'].append(f"Setup validation failed: {str(e)}")
         
         logger.info(f"Setup status: {setup_status['setup_complete']}, Created: {len(setup_status['created_objects'])}")
+        
+        # Cache the result for future calls (only if successful)
+        if setup_status['setup_complete']:
+            self._setup_cache = setup_status
+            self._setup_cache_timestamp = datetime.now()
+            logger.info(f"✅ Cached setup status for {self._setup_cache_ttl}s")
+        
         return setup_status
     
     async def _ensure_catalog_exists(self, catalog_name: str) -> Dict:
@@ -827,14 +849,10 @@ class AutoSetupManager:
             return save_status
         
         # Debug: Log what we're trying to save
-        logger.info(f"🔍 Attempting to save {len(results)} results to {results_table}")
-        for i, result in enumerate(results[:3]):  # Log first 3 results
-            logger.info(f"📝 Result {i+1}: run_id='{result.get('run_id')}', full_name='{result.get('full_name')}', object_type='{result.get('object_type')}'")
-            logger.info(f"📝 Full result {i+1}: {result}")
+        logger.info(f"💾 Saving {len(results)} results to {results_table}")
         
         try:
-            # Ensure complete infrastructure exists before saving
-            logger.info(f"🔧 Ensuring infrastructure exists before saving to {results_table}")
+            # Ensure complete infrastructure exists before saving (uses cache if available)
             setup_status = await self.ensure_setup_complete()
             if not setup_status.get('setup_complete', False):
                 logger.warning(f"⚠️ Setup not complete: {setup_status}")
@@ -848,12 +866,14 @@ class AutoSetupManager:
             
             for i in range(0, len(results), batch_size):
                 batch = results[i:i + batch_size]
+                batch_num = i // batch_size + 1
+                logger.info(f"📦 Processing batch {batch_num} ({len(batch)} results)")
                 
                 try:
                     # Build batch INSERT
                     sql_parts = []
                     
-                    for result in batch:
+                    for idx, result in enumerate(batch):
                         # Escape and format values with enhanced escaping
                         raw_comment = result.get('proposed_comment', '')
                         if raw_comment:
@@ -865,9 +885,25 @@ class AutoSetupManager:
                             comment_text = comment_text.replace("\\", "\\\\")
                         else:
                             comment_text = None
-                        # Debug: Log run_id specifically
-                        run_id_value = result.get('run_id', '')
-                        logger.info(f"🔍 Processing result: run_id='{run_id_value}', full_name='{result.get('full_name', '')}', object_type='{result.get('object_type', '')}'")
+                        
+                        # Only log first result in batch for verification
+                        if idx == 0:
+                            logger.info(f"   First result: {result.get('full_name', '')} ({result.get('object_type', '')})")
+                        
+                        # Escape JSON fields that might contain single quotes
+                        context_json = json.dumps(result.get('context_used', {})) if result.get('context_used') else None
+                        if context_json:
+                            context_json = context_json.replace("'", "''")
+                        
+                        pii_analysis_json = json.dumps(result.get('pii_analysis', {})) if result.get('pii_analysis') else None
+                        if pii_analysis_json:
+                            pii_analysis_json = pii_analysis_json.replace("'", "''")
+                        
+                        # Escape string fields that might contain quotes
+                        def escape_sql_string(value):
+                            if value:
+                                return str(value).replace("'", "''")
+                            return value
                         
                         values = [
                             f"'{result.get('run_id', '')}'" if result.get('run_id') else 'NULL',
@@ -875,15 +911,15 @@ class AutoSetupManager:
                             f"'{result.get('object_type', '')}'" if result.get('object_type') else 'NULL',
                             f"'{comment_text}'" if comment_text else 'NULL',
                             str(result.get('confidence_score', 0.0)),
-                            f"'{result.get('pii_tags', '')}'" if result.get('pii_tags') else 'NULL',
-                            f"'{result.get('policy_tags', '')}'" if result.get('policy_tags') else 'NULL',
-                            f"'{result.get('proposed_policy_tags', '')}'" if result.get('proposed_policy_tags') else 'NULL',  # Add missing field
-                            f"'{result.get('data_classification', 'INTERNAL')}'" if result.get('data_classification') else "'INTERNAL'",
-                            f"'{result.get('source_model', '')}'" if result.get('source_model') else 'NULL',
-                            f"'{result.get('generation_style', '')}'" if result.get('generation_style') else 'NULL',
+                            f"'{escape_sql_string(result.get('pii_tags', ''))}'" if result.get('pii_tags') else 'NULL',
+                            f"'{escape_sql_string(result.get('policy_tags', ''))}'" if result.get('policy_tags') else 'NULL',
+                            f"'{escape_sql_string(result.get('proposed_policy_tags', ''))}'" if result.get('proposed_policy_tags') else 'NULL',
+                            f"'{escape_sql_string(result.get('data_classification', 'INTERNAL'))}'" if result.get('data_classification') else "'INTERNAL'",
+                            f"'{escape_sql_string(result.get('source_model', ''))}'" if result.get('source_model') else 'NULL',
+                            f"'{escape_sql_string(result.get('generation_style', ''))}'" if result.get('generation_style') else 'NULL',
                             str(result.get('pii_detected', False)).lower(),
-                            f"'{json.dumps(result.get('context_used', {}))}'" if result.get('context_used') else 'NULL',
-                            f"'{json.dumps(result.get('pii_analysis', {}))}'" if result.get('pii_analysis') else 'NULL',
+                            f"'{context_json}'" if context_json else 'NULL',
+                            f"'{pii_analysis_json}'" if pii_analysis_json else 'NULL',
                             f"'{result.get('generated_at', datetime.now().isoformat())}'" if result.get('generated_at') else f"'{datetime.now().isoformat()}'",
                             'NULL',  # submitted_at
                             "'generated'",  # status
@@ -903,19 +939,17 @@ class AutoSetupManager:
                         VALUES {', '.join(sql_parts)}
                     """
                     
-                    # Debug: Log the SQL statement (first 500 chars)
-                    logger.info(f"🔍 Executing SQL: {sql_statement[:500]}...")
-                    
                     result = await self._execute_sql(sql_statement)
                     
                     if result['success']:
                         save_status['saved_count'] += len(batch)
+                        logger.info(f"   ✅ Saved {len(batch)} results successfully")
                     else:
                         save_status['error_count'] += len(batch)
-                        error_msg = f"Batch {i//batch_size + 1}: {result.get('error')}"
+                        error_msg = f"Batch {batch_num}: {result.get('error')}"
                         save_status['errors'].append(error_msg)
-                        logger.error(f"SQL execution failed: {error_msg}")
-                        logger.error(f"Failed SQL statement: {sql_statement[:500]}...")  # Log first 500 chars
+                        logger.error(f"❌ SQL execution failed: {error_msg}")
+                        logger.error(f"Failed SQL statement: {sql_statement[:500]}...")  # Log first 500 chars for debugging
                         
                 except Exception as e:
                     save_status['error_count'] += len(batch)
