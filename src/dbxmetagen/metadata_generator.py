@@ -14,6 +14,7 @@ class Response(BaseModel):
     model_config = ConfigDict(extra="forbid")
     table: str
     columns: List[str]
+    input_metadata: Optional[str] = None
 
 
 class PIColumnContent(BaseModel):

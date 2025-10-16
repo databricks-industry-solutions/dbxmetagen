@@ -88,6 +88,53 @@ logger = logging.getLogger(__name__)
 logging.getLogger("pyspark.sql.connect.client.logging").setLevel(logging.CRITICAL)
 
 
+def extract_input_metadata_without_data(prompt_content: Dict[str, Any]) -> str:
+    """
+    Extract metadata from prompt_content, removing actual data values.
+    Returns a flattened JSON string suitable for logging.
+
+    Args:
+        prompt_content: Dictionary containing table_name, column_contents, and optional metadata
+
+    Returns:
+        JSON string of metadata without data values
+    """
+    import json
+    import copy
+
+    # Create a copy to avoid modifying the original
+    metadata = copy.deepcopy(prompt_content)
+
+    # Remove the actual data from column_contents
+    if "column_contents" in metadata and isinstance(metadata["column_contents"], dict):
+        # Keep columns and structure info, but remove data
+        col_contents = metadata["column_contents"]
+        if "data" in col_contents:
+            # Replace with count of rows instead of actual data
+            data_rows = len(col_contents["data"]) if col_contents["data"] else 0
+            col_contents["data"] = f"<{data_rows} rows removed>"
+        if "index" in col_contents:
+            # Remove index as well
+            col_contents["index"] = (
+                f"<{len(col_contents.get('index', []))} indices removed>"
+            )
+
+    # Flatten nested structures for easier querying
+    flattened = {
+        "table_name": metadata.get("table_name", ""),
+        "columns": metadata.get("column_contents", {}).get("columns", []),
+        "num_rows_sampled": len(metadata.get("column_contents", {}).get("data", [])),
+        "column_metadata": metadata.get("column_contents", {}).get(
+            "column_metadata", {}
+        ),
+        "table_tags": metadata.get("table_tags", ""),
+        "table_constraints": metadata.get("table_constraints", ""),
+        "table_comment": metadata.get("table_comment", ""),
+    }
+
+    return json.dumps(flattened, default=str)
+
+
 def extract_concise_error(error: Exception) -> str:
     """
     Extract a concise error message from an exception, removing JVM stacktraces.
@@ -262,6 +309,7 @@ def append_table_row(
     Returns:
         List[Row]: The updated list of rows with the new table row appended.
     """
+    input_metadata = getattr(response, "input_metadata", None)
     row = Row(
         table=full_table_name,
         tokenized_table=tokenized_full_table_name,
@@ -270,6 +318,7 @@ def append_table_row(
         column_content=str(
             response.table
         ),  # Ensure string type for serverless compatibility
+        input_metadata=input_metadata,
     )
     rows.append(row)
     return rows
@@ -317,6 +366,7 @@ def append_domain_table_row(
         recommended_subdomain=domain_result.get("recommended_subdomain", "None"),
         reasoning=domain_result["reasoning"],
         metadata_summary=domain_result["metadata_summary"],
+        input_metadata=domain_result.get("input_metadata", None),
     )
     rows.append(row)
     return rows
@@ -364,6 +414,9 @@ def append_column_rows(
             print(f"Failed to parse presidio results: {e}")
             logger.debug("Presidio parsing error details: %s", str(e)[:200])
 
+    # Extract input_metadata from response (same for all columns in this chunk)
+    input_metadata = getattr(response, "input_metadata", None)
+
     for i, (column_name, column_content) in enumerate(
         zip(response.columns, response.column_contents)
     ):
@@ -386,6 +439,7 @@ def append_column_rows(
                 type=column_content.get("type"),
                 confidence=column_content.get("confidence"),
                 presidio_results=presidio_results,
+                input_metadata=input_metadata,
             )
         elif isinstance(column_content, str) and config.mode == "comment":
             row = Row(
@@ -394,6 +448,7 @@ def append_column_rows(
                 ddl_type="column",
                 column_name=column_name,
                 column_content=column_content,
+                input_metadata=input_metadata,
             )
         else:
             raise ValueError(
@@ -425,6 +480,7 @@ def define_row_schema(config):
                 StructField("type", StringType(), True),
                 StructField("confidence", DoubleType(), True),
                 StructField("presidio_results", StringType(), True),
+                StructField("input_metadata", StringType(), True),
             ]
         )
     elif config.mode == "comment":
@@ -435,6 +491,7 @@ def define_row_schema(config):
                 StructField("ddl_type", StringType(), True),
                 StructField("column_name", StringType(), True),
                 StructField("column_content", StringType(), True),
+                StructField("input_metadata", StringType(), True),
             ]
         )
     elif config.mode == "domain":
@@ -452,6 +509,7 @@ def define_row_schema(config):
                 StructField("recommended_subdomain", StringType(), True),
                 StructField("reasoning", StringType(), True),
                 StructField("metadata_summary", StringType(), True),
+                StructField("input_metadata", StringType(), True),
             ]
         )
     return df_schema
@@ -831,22 +889,23 @@ def run_log_table_ddl(config):
         type STRING,
         confidence DOUBLE,
         presidio_results STRING,
+        input_metadata STRING,
         domain STRING,
         subdomain STRING,
         recommended_domain STRING,
         recommended_subdomain STRING,
         reasoning STRING,
         metadata_summary STRING,
-        catalog STRING, 
-        schema STRING, 
-        table_name STRING, 
-        ddl STRING, 
-        current_user STRING, 
-        model STRING, 
-        sample_size INT, 
-        max_tokens INT, 
-        temperature DOUBLE, 
-        columns_per_call INT, 
+        catalog STRING,
+        schema STRING,
+        table_name STRING,
+        ddl STRING,
+        current_user STRING,
+        model STRING,
+        sample_size INT,
+        max_tokens INT,
+        temperature DOUBLE,
+        columns_per_call INT,
         status STRING
     )"""
     )
@@ -1331,6 +1390,7 @@ def create_and_persist_ddl(
                         "ddl_type",
                         "column_name",
                         "column_content",
+                        "input_metadata",
                         "_created_at",
                         "catalog",
                         "schema",
@@ -1353,6 +1413,7 @@ def create_and_persist_ddl(
                         "classification",
                         "type",
                         "confidence",
+                        "input_metadata",
                         "_created_at",
                         "catalog",
                         "schema",
@@ -1380,6 +1441,7 @@ def create_and_persist_ddl(
                         "recommended_subdomain",
                         "reasoning",
                         "metadata_summary",
+                        "input_metadata",
                         "_created_at",
                         "catalog",
                         "schema",
@@ -1445,6 +1507,7 @@ def create_and_persist_ddl(
                     "type",
                     "confidence",
                     "presidio_results",
+                    "input_metadata",
                     "_created_at",
                     "catalog",
                     "schema",
@@ -1593,6 +1656,11 @@ def get_domain_classification(
         max_tokens=config.max_tokens,
     )
 
+    # Add input metadata (without data) to the result for logging
+    classification_result["input_metadata"] = extract_input_metadata_without_data(
+        prompt.prompt_content
+    )
+
     return classification_result
 
 
@@ -1666,6 +1734,10 @@ def get_generated_metadata_data_aware(
         # Store presidio results with the response for PI mode
         if hasattr(prompt, "deterministic_results"):
             response.presidio_results = prompt.deterministic_results
+        # Store input metadata (without data) for logging
+        response.input_metadata = extract_input_metadata_without_data(
+            prompt.prompt_content
+        )
         responses.append(response)
     return responses
 
