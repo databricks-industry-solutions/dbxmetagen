@@ -1,8 +1,4 @@
 # Databricks notebook source
-# MAGIC %pip install https://github.com/explosion/spacy-models/releases/download/en_core_web_lg-3.8.0/en_core_web_lg-3.8.0-py3-none-any.whl
-
-# COMMAND ----------
-
 # MAGIC %pip install -qqqq -U openai pydantic==2.9.2 presidio-analyzer
 # MAGIC dbutils.library.restartPython()
 
@@ -66,9 +62,38 @@ df_stream = df.withColumn("presdio_pii_entities", extract_entities_udf(df["medic
 
 spark = SparkSession.builder.getOrCreate()
 
-df = spark.table("dbxmetagen.default.phi_test_data")
-df.repartition(50).write.format("delta").mode("overwrite").saveAsTable("dbxmetagen.default.phi_test_data_restructured")
-df_stream = spark.readStream.format("delta").option("maxBytesPerTrigger", "50K").table("dbxmetagen.default.phi_test_data_restructured")
+df = spark.createDataFrame([
+  {"medical_text": "Some med text", "id": 1},
+  {"medical_text": "Some med text", "id": 2}
+  ])
+
+(
+    df
+    .write
+    .format("delta")
+    .mode("overwrite")
+    .saveAsTable("dbxmetagen.default.dummy_phi")
+)
+
+
+
+# COMMAND ----------
+
+from pyspark.sql.types import *
+
+spark = SparkSession.builder.getOrCreate()
+
+# schema = StructType([
+#     StructField("medical_text", StringType(), True),
+#     StructField("ID", IntegerType(), True),
+#     StructField("City", StringType(), True)
+# ])
+
+
+
+#df = spark.table("dbxmetagen.default.phi_test_data")
+# df.repartition(50).write.format("delta").mode("overwrite").saveAsTable("dbxmetagen.default.phi_test_data_restructured")
+# df_stream = spark.readStream.format("delta").option("maxBytesPerTrigger", "50K").table("dbxmetagen.default.phi_test_data_restructured")
 
 from presidio_analyzer import AnalyzerEngine
 from pyspark.sql.functions import pandas_udf
