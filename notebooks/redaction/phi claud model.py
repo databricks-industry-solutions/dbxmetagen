@@ -198,6 +198,12 @@ df_transformed = df_stream.select(
 
 # COMMAND ----------
 
+# MAGIC %md
+# MAGIC ### AI Query for PHI Masking
+# MAGIC This prompting attempts to identify and label all instances of PHI for a cell of medical text,. In post-processing, we then identify the positions of these PHI entities for downstream masking. Notably, if there are multiple of the same entities with different labels, (ie, "Beal Street" as a "person" label as well as a "street" label, the positions will be duplicated).
+
+# COMMAND ----------
+
 # ==== BTBeal AI Query 
 prompt = """
 You are an expert in Protected Health Information (PHI) detection who will help identify all PHI entities in a piece of medical text.
