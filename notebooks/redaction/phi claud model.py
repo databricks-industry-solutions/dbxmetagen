@@ -234,9 +234,9 @@ You will identify all PHI with the following enums as the "label":
 "street address",
 "geographic identifier"]
 
-and respond with a list of dictionaries with the actual text, its label, and a numeric value of how confident you are that this is PHI, such as [{"text": "Brennan Beal", "label": "Person", "score": 1.0}, {"text": "123-45-6789", "label": "SSN", "score": 0.99}]
+Respond with a list of dictionaries such as [{"text": "Brennan Beal", "label": "Person"}, {"text": "123-45-6789", "label": "SSN"}]
 
-If you are not sure, you can add a lower score between 0 and 1.0.
+Note that if there are multiple of the same entities, you should list them multiple times. For example, if the text suggests "The patient, Brennan, notes that is feeling unwell. Brennan presents with a moderate fever of 100.5F," you should list the entity "brennan" twice. 
 
 The text is listed here: 
 <MedicalText>
@@ -245,7 +245,7 @@ The text is listed here:
 
 EXAMPLE: 
 MedicalText: "MRN: 222345 -- I saw patient Brennan Beal today at 11:30am, who presents with a sore throat and temperature of 103F"
-response: [{"text": "Brennan Beal", "label": "person", "score": 1.0}, {"text": "222345", "label": "medical record number", "score": 0.99}]
+response: [{"text": "Brennan Beal", "label": "person"]}, {"text": "222345", "label": "medical record number"}]
 """
 
 query = f"""
@@ -259,7 +259,7 @@ query = f"""
           endpoint => '{endpoint}',
           request => prompt,
           failOnError => false,
-          returnType => 'STRUCT<result: ARRAY<STRUCT<text: STRING, label: STRING, score: STRING>>>',
+          returnType => 'STRUCT<result: ARRAY<STRUCT<text: STRING, label: STRING>>>',
           modelParameters => named_struct('reasoning_effort', 'low')
         ) AS response
   FROM data_with_prompting
@@ -269,14 +269,20 @@ query = f"""
 def add_positions_to_entities_udf(identified_entities_series, sentences):
     new_entity_series = []
     for entity_list, sentence in zip(identified_entities_series, sentences):
+
         entities = json.loads(entity_list)
-        for entity in entities:
-            pattern = re.escape(entity['text'])
+        unique_entities_set = set([(entity['text'], entity['label']) for entity in entities])
+
+        new_entity_list = []
+
+        for entity in unique_entities_set:
+            pattern = re.escape(entity[0])
             positions = [(m.start(), m.end() - 1) for m in re.finditer(pattern, sentence)]
-            entity['positions'] = positions
+
+            for position in positions:
+                new_entity_list.append({'text': entity[0], 'label': entity[1], 'start': position[0], 'end': position[1]})
         
-        new_entity_series.append(json.dumps(entities
-                                            ))
+        new_entity_series.append(json.dumps(new_entity_list))
     return pd.Series(new_entity_series)
 
 ai_query_df = (
