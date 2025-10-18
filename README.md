@@ -153,7 +153,7 @@ For detailed information on how different team members use dbxmetagen, see [docs
 1. Most configurations that users should change are in variables.yml. There are a variety of useful options, please read the descriptions, I will not rewrite them all here.
 
 ### Current status
-1. Tested on DBR 14.3, 15.4, and 16.4.
+1. Tested on DBR 14.3, 15.4, and 16.4, and on serverless environment 2.
 1. Default settings currently create ALTER scripts and puts in a volume. Tested in a databricks workspace.
 1. Some print-based logging to make understanding what's happening and debugging easy in the UI.
 

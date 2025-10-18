@@ -58,10 +58,10 @@ def load_metadata_file(file_path: str, file_type: str) -> pd.DataFrame:
 
     Returns:
         pd.DataFrame: Loaded data.
-    """
-    if not os.path.isfile(file_path):
-        logging.error(f"Input file does not exist: {file_path}")
-        raise FileNotFoundError(f"Input file does not exist: {file_path}")
+    # """
+    # if not os.path.isfile(file_path):
+    #     logging.error(f"Input file does not exist: {file_path}")
+    #     raise FileNotFoundError(f"Input file does not exist: {file_path}")
 
     try:
         if file_type == "tsv":
@@ -384,6 +384,7 @@ def process_metadata_file(
         input_file_type = config.review_input_file_type
         output_file_type = export_format or config.review_output_file_type
         input_file_path = os.path.join(input_dir, input_file)
+        print(f"Loading metadata file from: {input_file_path}")
         df = load_metadata_file(input_file_path, input_file_type)
         if config.mode == "pi":
             df[["classification", "type", "ddl"]] = df.apply(

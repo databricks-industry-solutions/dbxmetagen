@@ -10,7 +10,7 @@ sys.path.append("../")
 import os
 
 from src.dbxmetagen.config import MetadataConfig
-from src.dbxmetagen.processing import split_table_names
+from src.dbxmetagen.dataframe_utils import split_table_names
 from src.dbxmetagen.user_utils import sanitize_email
 from src.dbxmetagen.error_handling import exponential_backoff
 from src.dbxmetagen.ddl_regenerator import (
@@ -26,12 +26,12 @@ current_user = (
 os.environ["DATABRICKS_TOKEN"] = (
     dbutils.notebook.entry_point.getDbutils().notebook().getContext().apiToken().get()
 )
-dbutils.widgets.text("reviewed_file_name", "")
-dbutils.widgets.text("mode", "comment")
-dbutils.widgets.text("current_user_override", "")
-dbutils.widgets.text("catalog_name", "")
-dbutils.widgets.text("schema_name", "")
-dbutils.widgets.text("volume_name", "generated_metadata")
+dbutils.widgets.text("reviewed_file_name", "", "Reviewed File Name (Required)")
+dbutils.widgets.text("mode", "comment", "Mode (Required)")
+dbutils.widgets.text("current_user_override", "", "Current User Override (Optional)")
+dbutils.widgets.text("catalog_name", "", "Catalog Name (Required)")
+dbutils.widgets.text("schema_name", "", "Schema Name (Required)")
+dbutils.widgets.text("volume_name", "generated_metadata", "Volume Name (Required)")
 file_name = dbutils.widgets.get("reviewed_file_name")
 mode = dbutils.widgets.get("mode")
 current_user_override = dbutils.widgets.get("current_user_override")
@@ -54,6 +54,11 @@ review_variables = {
     "schema_name": schema_name,
     "volume_name": volume_name,
 }
+
+if catalog_name == "" or schema_name == "" or file_name == "":
+    raise ValueError(
+        "Please provide catalog_name, schema_name, and reviewed_file_name."
+    )
 
 print(
     f"Sync job parameters: catalog={catalog_name}, schema={schema_name}, volume={volume_name}"
