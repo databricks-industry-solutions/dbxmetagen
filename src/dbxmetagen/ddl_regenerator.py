@@ -9,7 +9,7 @@ from shutil import copyfile
 from pyspark.sql import SparkSession
 
 from src.dbxmetagen.config import MetadataConfig
-from src.dbxmetagen.processing import split_table_names
+from src.dbxmetagen.dataframe_utils import split_table_names
 from src.dbxmetagen.user_utils import sanitize_user_identifier
 
 logging.basicConfig(
