@@ -173,6 +173,4 @@ variables:
   grant_permissions_after_creation:
     description: Whether to automatically grant read permissions on created schema, volume, and tables to specified groups/users after metadata generation completes. Requires appropriate permissions to grant.
     default: true
-  build_knowledge_graph:
-    description: Whether to build a knowledge graph from metadata generation logs. Creates nodes and edges tables for graph-based querying of metadata relationships. Runs incrementally after metadata generation completes.
-    default: true
+  

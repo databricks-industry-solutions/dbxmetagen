@@ -51,4 +51,7 @@ variables:
       Key name within the secret scope for the API token. Only used when chat_completion_type is 'openai_spec' or 'custom_chat_spec'.
       This is the key name you used when storing the secret in the scope.
       Common names: 'api_key', 'token', 'openai_key', etc.
-    default: api_key    
+    default: api_key
+  build_knowledge_graph:
+    description: Whether to build a knowledge graph from metadata generation logs. Creates nodes and edges tables for graph-based querying of metadata relationships. Runs incrementally after metadata generation completes.
+    default: false
