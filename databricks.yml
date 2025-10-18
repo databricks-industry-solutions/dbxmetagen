@@ -9,7 +9,6 @@ include:
   - variables.yml
   - resources/app_variables.yml
 
-
 artifacts:
   default:
     type: whl
@@ -17,17 +16,16 @@ artifacts:
     path: .
 
 targets:
-
   dev:
     mode: development
     default: true
 
     workspace:
-      host: https://adb-830292400663869.9.azuredatabricks.net
+      host: <host url here>
     permissions:
       - user_name: ${var.deploying_user}
         level: CAN_MANAGE
-        
+
   prod:
     mode: production
     workspace:
@@ -37,4 +35,4 @@ targets:
       - user_name: ${var.current_user}
         level: CAN_MANAGE
     run_as:
-      user_name: ${var.current_user} 
+      user_name: ${var.current_user}
