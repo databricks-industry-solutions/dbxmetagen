@@ -110,12 +110,13 @@ def get_pii_tags_from_ddl(ddl: str, config: MetadataConfig) -> Tuple[str, str]:
 def replace_comment_in_ddl(ddl: str, new_comment: str) -> str:
     """
     Replace the comment string in a DDL statement with a new comment.
+    Uses double quotes to avoid escaping apostrophes in comments.
     """
     is_serverless = False
     if "ALTER TABLE" not in ddl:
         ddl = re.sub(
             r'(COMMENT ON TABLE [^"\']+ IS\s+)(["\'])(.*?)(["\'])',
-            lambda m: f"{m.group(1)}{m.group(2)}{new_comment}{m.group(4)}",
+            lambda m: f'{m.group(1)}"{new_comment}"',
             ddl,
         )
     else:
@@ -126,14 +127,14 @@ def replace_comment_in_ddl(ddl: str, new_comment: str) -> str:
             is_serverless = bool("client" in dbr_number)
             if is_serverless or dbr_number >= 16:
                 ddl = re.sub(
-                    r'(ALTER TABLE [^"\']+ COMMENT ON COLUMN [^ ]+ IS\s+)(["\'])(.*?)(["\'])',
-                    lambda m: f"{m.group(1)}{m.group(2)}{new_comment}{m.group(4)}",
+                    r'(COMMENT ON COLUMN [^"\']+ IS\s+)(["\'])(.*?)(["\'])',
+                    lambda m: f'{m.group(1)}"{new_comment}"',
                     ddl,
                 )
             elif float(dbr_number) >= 14 and float(dbr_number) < 16:
                 ddl = re.sub(
                     r'(ALTER TABLE [^ ]+ ALTER COLUMN [^ ]+ COMMENT\s+)(["\'])(.*?)(["\'])',
-                    lambda m: f"{m.group(1)}{m.group(2)}{new_comment}{m.group(4)}",
+                    lambda m: f'{m.group(1)}"{new_comment}"',
                     ddl,
                 )
             else:

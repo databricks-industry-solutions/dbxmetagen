@@ -63,6 +63,7 @@ class MetadataConfig:
             "permission_users",
             "run_id",
             "solo_medical_identifier",
+            "build_knowledge_graph",
         ],
         "yaml_advanced_file_path": "../variables.advanced.yml",
         "yaml_advanced_variable_names": [

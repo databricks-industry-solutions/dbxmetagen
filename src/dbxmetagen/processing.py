@@ -7,6 +7,8 @@ from abc import ABC
 from datetime import datetime
 from typing import List, Dict, Any, Tuple
 import logging
+import json
+import copy
 import mlflow
 import nest_asyncio
 import pandas as pd
@@ -30,6 +32,7 @@ from pyspark.sql.functions import (
     split,
     expr,
     split_part,
+    regexp_replace,
 )
 from pyspark.sql.types import (
     StructType,
@@ -74,8 +77,11 @@ from src.dbxmetagen.overrides import (
     build_condition,
     get_join_conditions,
 )
+
+from src.dbxmetagen.dataframe_utils import split_name_for_df, split_fully_scoped_table_name
 from src.dbxmetagen.user_utils import sanitize_user_identifier, get_current_user
 from src.dbxmetagen.domain_classifier import load_domain_config, classify_table_domain
+
 
 logging.basicConfig(
     level=logging.WARNING,
@@ -99,27 +105,18 @@ def extract_input_metadata_without_data(prompt_content: Dict[str, Any]) -> str:
     Returns:
         JSON string of metadata without data values
     """
-    import json
-    import copy
-
-    # Create a copy to avoid modifying the original
     metadata = copy.deepcopy(prompt_content)
 
-    # Remove the actual data from column_contents
     if "column_contents" in metadata and isinstance(metadata["column_contents"], dict):
-        # Keep columns and structure info, but remove data
         col_contents = metadata["column_contents"]
         if "data" in col_contents:
-            # Replace with count of rows instead of actual data
             data_rows = len(col_contents["data"]) if col_contents["data"] else 0
             col_contents["data"] = f"<{data_rows} rows removed>"
         if "index" in col_contents:
-            # Remove index as well
             col_contents["index"] = (
                 f"<{len(col_contents.get('index', []))} indices removed>"
             )
 
-    # Flatten nested structures for easier querying
     flattened = {
         "table_name": metadata.get("table_name", ""),
         "columns": metadata.get("column_contents", {}).get("columns", []),
@@ -130,7 +127,10 @@ def extract_input_metadata_without_data(prompt_content: Dict[str, Any]) -> str:
         "table_tags": metadata.get("table_tags", ""),
         "table_constraints": metadata.get("table_constraints", ""),
         "table_comment": metadata.get("table_comment", ""),
+        "table_usage_stats": metadata.get("table_usage_stats", {}),
+        "table_lineage": metadata.get("table_lineage", {}),
     }
+    print("Flattened metadata: ", flattened)
 
     return json.dumps(flattened, default=str)
 
@@ -267,29 +267,36 @@ def sample_df(df: DataFrame, nrows: int, sample_size: int = 5) -> DataFrame:
     if nrows < sample_size:
         return df.limit(sample_size)
 
+    # Sample a larger pool to account for null filtering
     larger_sample = sample_size * 100
     sampling_ratio = determine_sampling_ratio(nrows, larger_sample)
     sampled_df = df.sample(withReplacement=False, fraction=sampling_ratio)
-    null_counts_per_row = sampled_df.withColumn(
-        "null_count",
-        sum(when(col(c).isNull(), 1).otherwise(0) for c in sampled_df.columns),
-    )
-    threshold = len(sampled_df.columns) // 2
-    filtered_df = null_counts_per_row.filter(col("null_count") < threshold).drop(
-        "null_count"
-    )
-    result_rows = filtered_df.count()
-    if result_rows < sample_size:
-        print(
-            "Not enough non-NULL rows, returning available rows, despite large proportion of NULLs. Result rows:",
-            result_rows,
-            "vs sample size:",
-            sample_size,
-        )
-        return df.limit(sample_size)
+    
+    # Filter out rows with >= 50% nulls and limit to desired size
+    # Using limit before count avoids forcing evaluation of entire filtered set
+    filtered_df = _filter_null_heavy_rows(sampled_df).limit(sample_size)
+    
+    return filtered_df
 
-    print(f"Filtering {result_rows} result rows down to {sample_size} rows...")
-    return filtered_df.limit(sample_size)
+
+def _filter_null_heavy_rows(df: DataFrame) -> DataFrame:
+    """
+    Filter out rows where more than half the columns are null.
+    
+    Args:
+        df: DataFrame to filter
+        
+    Returns:
+        DataFrame with null-heavy rows removed
+    """
+    # Use Python's builtin sum with lit(0) as the start value
+    # This adds up all the Column objects properly
+    null_counts_per_row = df.withColumn(
+        "null_count",
+        sum([when(col(c).isNull(), 1).otherwise(0) for c in df.columns], lit(0)),
+    )
+    threshold = len(df.columns) // 2
+    return null_counts_per_row.filter(col("null_count") < threshold).drop("null_count")
 
 
 def append_table_row(
@@ -1162,6 +1169,27 @@ def log_metadata_generation(
 
     print(f"[log_metadata_generation] DataFrame columns: {df.columns}")
 
+    # Debug: Check if input_metadata has actual data
+    if "input_metadata" in df.columns:
+        non_null_count = df.filter(col("input_metadata").isNotNull()).count()
+        total_count = df.count()
+        print(
+            f"[log_metadata_generation] input_metadata: {non_null_count}/{total_count} rows have non-null values"
+        )
+        if non_null_count > 0:
+            print(f"[log_metadata_generation] Sample input_metadata (first 100 chars):")
+            sample = (
+                df.filter(col("input_metadata").isNotNull())
+                .select("input_metadata")
+                .first()
+            )
+            if sample and sample[0]:
+                print(f"  {sample[0][:100]}...")
+    else:
+        print(
+            "[log_metadata_generation] WARNING: input_metadata column not found in DataFrame!"
+        )
+
     df.write.mode("append").option("mergeSchema", "true").saveAsTable(
         f"{config.catalog_name}.{config.schema_name}.metadata_generation_log"
     )
@@ -1575,11 +1603,11 @@ def create_and_persist_ddl(
             "Volume name provided as None in configuration. Not writing DDL to volume..."
         )
         table_df = populate_log_table(
-            df["comment_table_df"], config, current_user, base_path
+            df[f"{config.mode}_table_df"], config, current_user, base_path
         )
         log_metadata_generation(table_df, config, table_name, base_path)
         column_df = populate_log_table(
-            df["comment_column_df"], config, current_user, base_path
+            df[f"{config.mode}_column_df"], config, current_user, base_path
         )
         log_metadata_generation(column_df, config, table_name, base_path)
 
@@ -1990,37 +2018,6 @@ def hardcode_classification(df, config):
     return df
 
 
-def split_name_for_df(df):
-    """
-    Splits the fully scoped table name for the DataFrame.
-
-    Args:
-        df (DataFrame): The DataFrame to split the fully scoped table name for.
-
-    Returns:
-        DataFrame: The DataFrame with the fully scoped table name split.
-    """
-    if df is not None:
-        has_column_content = "column_content" in df.columns
-        if has_column_content:
-            original_column_content_type = str(
-                df.select("column_content").schema.fields[0].dataType
-            )
-
-        df = split_fully_scoped_table_name(df, "table")
-
-        if has_column_content and "column_content" in df.columns:
-            df = df.withColumn("column_content", col("column_content").cast("string"))
-            final_column_content_type = str(
-                df.select("column_content").schema.fields[0].dataType
-            )
-
-        logger.info(
-            "df columns after generating metadata in process_and_add_ddl %s", df.columns
-        )
-    return df
-
-
 def add_ddl_to_dfs(config, table_df, column_df, table_name):
     """
     Adds DDL to the DataFrames.
@@ -2040,16 +2037,18 @@ def add_ddl_to_dfs(config, table_df, column_df, table_name):
     dfs = {}
     if config.mode == "comment":
 
-        if table_df is not None:
-            summarized_table_df = summarize_table_content(table_df, config, table_name)
+        # Clean up apostrophes in column comments first
+        if column_df is not None and "column_content" in column_df.columns:
+            column_df = column_df.withColumn(
+                "column_content", regexp_replace(col("column_content").cast("string"), "''", "'")
+            )
+        
+        # Summarize the column comments (not table descriptions) into a table-level comment
+        if column_df is not None:
+            summarized_table_df = summarize_table_content(column_df, config, table_name)
             summarized_table_df = split_name_for_df(summarized_table_df)
         else:
             summarized_table_df = None
-
-        if column_df is not None and "column_content" in column_df.columns:
-            column_df = column_df.withColumn(
-                "column_content", col("column_content").cast("string")
-            )
 
         dfs["comment_table_df"] = add_ddl_to_table_comment_df(
             summarized_table_df, "ddl"
@@ -2801,24 +2800,7 @@ def sanitize_string_list(string_list: List[str]):
     return sanitized_list
 
 
-def split_fully_scoped_table_name(df: DataFrame, full_table_name_col: str) -> DataFrame:
-    """
-    Splits a fully scoped table name column into catalog, schema, and table columns.
-
-    Args:
-        df (DataFrame): The input DataFrame.
-        full_table_name_col (str): The name of the column containing the fully scoped table name.
-
-    Returns:
-        DataFrame: The updated DataFrame with catalog, schema, and table columns added.
-    """
-    split_col = split(col(full_table_name_col), r"\.")
-    df = (
-        df.withColumn("catalog", split_col.getItem(0).cast("string"))
-        .withColumn("schema", split_col.getItem(1).cast("string"))
-        .withColumn("table_name", split_col.getItem(2).cast("string"))
-    )
-    return df
+# split_fully_scoped_table_name moved to dataframe_utils.py for easier testing
 
 
 def split_table_names(table_names: str) -> List[str]:
@@ -2847,74 +2829,13 @@ def replace_fully_scoped_table_column(df):
     return df.withColumn("table", split_part(col("table"), ".", -1))
 
 
-def _create_table_comment_ddl_func():
-
-    def table_comment_ddl(full_table_name: str, comment: str) -> str:
-        if comment is not None:
-            comment = comment.replace('""', "'")
-            comment = comment.replace('"', "'")
-        return f"""COMMENT ON TABLE {full_table_name} IS "{comment}";"""
-
-    return table_comment_ddl
-
-
-def _create_column_comment_ddl_func():
-    def column_comment_ddl(full_table_name: str, column_name: str, comment: str) -> str:
-        if comment is not None:
-            comment = comment.replace('""', "'")
-            comment = comment.replace('"', "'")
-
-        dbr_number = os.environ.get("DATABRICKS_RUNTIME_VERSION")
-
-        if dbr_number is None:
-            # Default to newer syntax for serverless (assumes DBR 15+)
-            ddl_statement = f"""COMMENT ON COLUMN {full_table_name}.`{column_name}` IS "{comment}";"""
-        else:
-            try:
-                dbr_version = float(dbr_number)
-                if dbr_version is None:
-                    raise ValueError(f"Databricks runtime version is None")
-                if dbr_version >= 16:
-                    ddl_statement = f"""COMMENT ON COLUMN {full_table_name}.`{column_name}` IS "{comment}";"""
-                elif dbr_version >= 14 and dbr_version < 16:
-                    ddl_statement = f"""ALTER TABLE {full_table_name} ALTER COLUMN `{column_name}` COMMENT "{comment}";"""
-                else:
-                    raise ValueError(
-                        f"Unsupported Databricks runtime version: {dbr_number}"
-                    )
-            except ValueError as e:
-                ddl_statement = f"""COMMENT ON COLUMN {full_table_name}.`{column_name}` IS "{comment}";"""
-        return ddl_statement
-
-    return column_comment_ddl
-
-
-def _create_table_pi_information_ddl_func(config: MetadataConfig):
-    pi_class_tag = getattr(config, "pi_classification_tag_name", "data_classification")
-    pi_subclass_tag = getattr(
-        config, "pi_subclassification_tag_name", "data_subclassification"
-    )
-
-    def table_pi_information_ddl(
-        table_name: str, classification: str, pi_type: str
-    ) -> str:
-        return f"ALTER TABLE {table_name} SET TAGS ('{pi_class_tag}' = '{classification}', '{pi_subclass_tag}' = '{pi_type}');"
-
-    return table_pi_information_ddl
-
-
-def _create_pi_information_ddl_func(config: MetadataConfig):
-    pi_class_tag = getattr(config, "pi_classification_tag_name", "data_classification")
-    pi_subclass_tag = getattr(
-        config, "pi_subclassification_tag_name", "data_subclassification"
-    )
-
-    def pi_information_ddl(
-        table_name: str, column_name: str, classification: str, pi_type: str
-    ) -> str:
-        return f"ALTER TABLE {table_name} ALTER COLUMN `{column_name}` SET TAGS ('{pi_class_tag}' = '{classification}', '{pi_subclass_tag}' = '{pi_type}');"
-
-    return pi_information_ddl
+# Import DDL generation functions from standalone module for easier testing
+from src.dbxmetagen.ddl_generators import (
+    _create_table_comment_ddl_func,
+    _create_column_comment_ddl_func,
+    _create_table_pi_information_ddl_func,
+    _create_pi_information_ddl_func,
+)
 
 
 def _create_table_domain_ddl_func(config: MetadataConfig):

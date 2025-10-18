@@ -282,19 +282,30 @@ class Prompt(ABC):
         return combined_metadata
 
     def add_table_metadata_to_column_contents(
-        self, table_metadata: Tuple[Dict[str, str], str, str, str]
+        self,
+        table_metadata: Tuple[
+            Dict[str, str], str, str, str, Dict[str, Any], Dict[str, Any]
+        ],
     ) -> None:
         """
         Add table metadata to the column contents.
 
         Args:
-            table_metadata (Tuple[Dict[str, str], str, str, str]): Tuple containing column tags, table tags, table constraints, and table comments.
+            table_metadata: Tuple containing column_tags, table_tags, table_constraints, table_comments, usage_stats, lineage
         """
-        column_tags, table_tags, table_constraints, table_comments = table_metadata
+        _, table_tags, table_constraints, table_comments, usage_stats, lineage = (
+            table_metadata
+        )
         self.prompt_content["column_contents"]["table_tags"] = table_tags
         self.prompt_content["column_contents"]["table_constraints"] = table_constraints
         if self.config.include_existing_table_comment:
             self.prompt_content["column_contents"]["table_comments"] = table_comments
+
+        # Add usage stats and lineage to prompt content
+        if usage_stats:
+            self.prompt_content["table_usage_stats"] = usage_stats
+        if lineage:
+            self.prompt_content["table_lineage"] = lineage
 
     def get_column_tags(self) -> Dict[str, Dict[str, str]]:
         """
@@ -450,18 +461,109 @@ class Prompt(ABC):
         """
         return self.df_to_json(self.spark.sql(query))
 
-    def get_table_metadata(self) -> Tuple[Dict[str, Dict[str, str]], str, str, str]:
+    def get_table_usage_stats(self) -> Dict[str, Any]:
         """
-        Get table metadata including column tags, table tags, table constraints, and table comments.
+        Get table usage statistics from system.access.table_lineage.
+        Returns number of queries in the last 7 days.
 
         Returns:
-            Tuple[Dict[str, Dict[str, str]], str, str, str]: Tuple containing column tags, table tags, table constraints, and table comments.
+            Dict with usage statistics, or empty dict if unavailable.
+        """
+        try:
+            query = f"""
+            SELECT
+                COUNT(DISTINCT event_id) AS num_queries_last_7_days
+            FROM system.access.table_lineage
+            WHERE event_date > CURRENT_DATE() - INTERVAL 7 DAYS
+              AND source_table_full_name = '{self.full_table_name}'
+            """
+            result = self.spark.sql(query).first()
+            if result:
+                return {
+                    "num_queries_last_7_days": result["num_queries_last_7_days"],
+                    "measurement_period": "7 days",
+                }
+        except Exception as e:
+            logger.debug(f"Could not fetch usage stats for {self.full_table_name}: {e}")
+        return {}
+
+    def get_table_lineage(self) -> Dict[str, Any]:
+        """
+        Get upstream and downstream table lineage from system.access.table_lineage.
+
+        Returns:
+            Dict with upstream_tables and downstream_tables lists, or empty dict if unavailable.
+        """
+        try:
+            query = f"""
+            SELECT DISTINCT
+                source_table_full_name,
+                target_table_full_name
+            FROM system.access.table_lineage
+            WHERE source_table_full_name = '{self.full_table_name}'
+               OR target_table_full_name = '{self.full_table_name}'
+            """
+            lineage_df = self.spark.sql(query)
+
+            # Collect upstream tables (where current table is the target)
+            upstream = (
+                lineage_df.filter(col("target_table_full_name") == self.full_table_name)
+                .select("source_table_full_name")
+                .distinct()
+                .collect()
+            )
+
+            # Collect downstream tables (where current table is the source)
+            downstream = (
+                lineage_df.filter(col("source_table_full_name") == self.full_table_name)
+                .select("target_table_full_name")
+                .distinct()
+                .collect()
+            )
+
+            return {
+                "upstream_tables": [
+                    row["source_table_full_name"]
+                    for row in upstream
+                    if row["source_table_full_name"]
+                ],
+                "downstream_tables": [
+                    row["target_table_full_name"]
+                    for row in downstream
+                    if row["target_table_full_name"]
+                ],
+                "upstream_count": len(upstream),
+                "downstream_count": len(downstream),
+            }
+        except Exception as e:
+            logger.debug(f"Could not fetch lineage for {self.full_table_name}: {e}")
+        return {}
+
+    def get_table_metadata(
+        self,
+    ) -> Tuple[
+        Dict[str, Dict[str, str]], str, str, str, Dict[str, Any], Dict[str, Any]
+    ]:
+        """
+        Get table metadata including column tags, table tags, table constraints, table comments, usage stats, and lineage.
+
+        Returns:
+            Tuple containing: column_tags, table_tags, table_constraints, table_comments, usage_stats, lineage
         """
         column_tags = self.get_column_tags()
         table_tags = self.get_table_tags()
         table_constraints = self.get_table_constraints()
         table_comments = self.get_table_comment()
-        return column_tags, table_tags, table_constraints, table_comments
+        usage_stats = self.get_table_usage_stats()
+        lineage = self.get_table_lineage()
+        return (
+            column_tags,
+            table_tags,
+            table_constraints,
+            table_comments,
+            usage_stats,
+            lineage,
+        )
 
     @staticmethod
     def df_to_json(df: DataFrame) -> str:

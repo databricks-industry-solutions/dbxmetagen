@@ -14,8 +14,20 @@ from datetime import datetime
 from src.dbxmetagen.config import MetadataConfig
 from src.dbxmetagen.user_utils import sanitize_user_identifier
 
+
 def luhn_checksum(card_number):
-    card_number = card_number.replace(" ", "").replace("-", "")
+    """Validate credit card number using Luhn algorithm.
+
+    Args:
+        card_number: Credit card number as string or numeric type
+
+    Returns:
+        bool: True if valid credit card number
+    """
+    # Convert to string and handle None/empty values
+    if card_number is None:
+        return False
+    card_number = str(card_number).replace(" ", "").replace("-", "").replace(".", "")
     if not card_number.isdigit():
         return False
     if len(card_number) < 13 or len(card_number) > 19:
@@ -232,7 +244,6 @@ def classify_column(
         ],
     }
 
- 
     entities_to_ignore = {}
     entities_to_ignore = {
         "DATE_TIME",  # Too aggressive - matches times, dates, and random numbers

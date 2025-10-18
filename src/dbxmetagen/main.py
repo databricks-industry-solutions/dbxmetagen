@@ -18,6 +18,7 @@ from src.dbxmetagen.databricks_utils import (
     grant_user_permissions,
     grant_group_permissions,
 )
+from src.dbxmetagen.knowledge_graph import build_knowledge_graph
 
 
 def get_dbr_version():
@@ -253,6 +254,13 @@ def main(kwargs):
 
     # Grant permissions on created objects
     grant_permissions_on_created_objects(config)
+
+    # Build knowledge graph if enabled
+    try:
+        build_knowledge_graph(config)
+    except Exception as e:
+        print(f"⚠️ Warning: Knowledge graph build failed: {e}")
+        print("This is non-fatal - metadata generation completed successfully")
 
     # Cleanup resources
     cleanup_resources(config, spark)
