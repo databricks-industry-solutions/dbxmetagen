@@ -3,6 +3,7 @@ Utility functions for DataFrame transformations.
 Extracted for easier testing without heavy dependencies.
 """
 import logging
+from typing import List
 from pyspark.sql import DataFrame
 from pyspark.sql.functions import col, split, regexp_replace
 
@@ -62,4 +63,18 @@ def split_name_for_df(df: DataFrame) -> DataFrame:
             "df columns after generating metadata in process_and_add_ddl %s", df.columns
         )
     return df
+
+
+def split_table_names(table_names: str) -> List[str]:
+    """Split a comma-separated string of table names into a list of table names.
+
+    Args:
+        table_names (str): The comma-separated string of table names.
+
+    Returns:
+        List[str]: The list of table names.
+    """
+    if not table_names:
+        return []
+    return table_names.split(",")
 

@@ -60,7 +60,8 @@ from src.dbxmetagen.config import MetadataConfig
 from src.dbxmetagen.sampling import determine_sampling_ratio
 from src.dbxmetagen.prompts import Prompt, PIPrompt, CommentPrompt, PromptFactory
 from src.dbxmetagen.error_handling import exponential_backoff, validate_csv
-from src.dbxmetagen.comment_summarizer import TableCommentSummarizer
+# Lazy import TableCommentSummarizer to avoid langchain dependencies when not needed
+# from src.dbxmetagen.comment_summarizer import TableCommentSummarizer
 from src.dbxmetagen.metadata_generator import (
     Response,
     PIResponse,
@@ -78,7 +79,7 @@ from src.dbxmetagen.overrides import (
     get_join_conditions,
 )
 
-from src.dbxmetagen.dataframe_utils import split_name_for_df, split_fully_scoped_table_name
+from src.dbxmetagen.dataframe_utils import split_name_for_df, split_fully_scoped_table_name, split_table_names
 from src.dbxmetagen.user_utils import sanitize_user_identifier, get_current_user
 from src.dbxmetagen.domain_classifier import load_domain_config, classify_table_domain
 
@@ -2348,6 +2349,9 @@ def get_protected_classification_for_table(table_classification: str) -> str:
 def summarize_table_content(table_df, config, table_name):
     """Create a new completion class for this."""
     if table_df.count() > 1:
+        # Lazy import to avoid langchain dependencies when not needed (e.g., in sync_ddl)
+        from src.dbxmetagen.comment_summarizer import TableCommentSummarizer
+        
         summarizer = TableCommentSummarizer(config, table_df)
         summary = summarizer.summarize_comments(table_name)
 
@@ -2803,18 +2807,7 @@ def sanitize_string_list(string_list: List[str]):
 # split_fully_scoped_table_name moved to dataframe_utils.py for easier testing
 
 
-def split_table_names(table_names: str) -> List[str]:
-    """Split a comma-separated string of table names into a list of table names.
-
-    Args:
-        table_names (str): The comma-separated string of table names.
-
-    Returns:
-        List[str]: The list of table names.
-    """
-    if not table_names:
-        return []
-    return table_names.split(",")
+# Moved to dataframe_utils.py
 
 
 def replace_fully_scoped_table_column(df):

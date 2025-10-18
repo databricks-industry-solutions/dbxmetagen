@@ -383,7 +383,8 @@ def process_metadata_file(
         )
         input_file_type = config.review_input_file_type
         output_file_type = export_format or config.review_output_file_type
-        df = load_metadata_file(os.path.join(input_dir, input_file), input_file_type)
+        input_file_path = os.path.join(input_dir, input_file)
+        df = load_metadata_file(input_file_path, input_file_type)
         if config.mode == "pi":
             df[["classification", "type", "ddl"]] = df.apply(
                 lambda row: update_ddl_row(
