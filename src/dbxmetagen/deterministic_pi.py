@@ -15,7 +15,8 @@ from src.dbxmetagen.config import MetadataConfig
 from src.dbxmetagen.user_utils import sanitize_user_identifier
 
 def luhn_checksum(card_number):
-    card_number = card_number.replace(" ", "").replace("-", "")
+    """Check if a card number is valid using the Luhn algorithm."""
+    card_number = str(card_number).replace(" ", "").replace("-", "")
     if not card_number.isdigit():
         return False
     if len(card_number) < 13 or len(card_number) > 19:
