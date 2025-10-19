@@ -400,11 +400,11 @@ def process_metadata_file(
                 result_type="expand",
             )
         exported_file = export_metadata(df, output_dir, input_file, output_file_type)
-        if getattr(config, "apply_reviewed_ddl", True):
+        if config.review_apply_ddl == True or config.review_apply_ddl == "True":
             apply_ddl_to_databricks(exported_file, config, output_file_type)
         else:
-            print("DDL application is only supported for SQL export format.")
-            logging.warning("DDL application is only supported for SQL export format.")
+            print("Skipping DDL application (review_apply_ddl is False)")
+            logging.info("Skipping DDL application (review_apply_ddl is False)")
     except Exception as e:
         logging.error(f"Processing failed: {e}")
         raise
