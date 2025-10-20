@@ -231,16 +231,16 @@ There are also additional standards and criteria to protect individuals from re-
 
 You will identify all PHI with the following enums as the "label":
 
-["person",
-"phone",
-"email",
+["PERSON",
+"PHONE",
+"EMAIL",
 "SSN",
-"medical record number",
-"date of birth",
-"street address",
-"geographic identifier"]
+"MEDICAL_RECORD",
+"DATE_OF_BIRTH",
+"STREET_ADDRESS",
+"GEOGRAPHIC_IDENTIFIER"]
 
-Respond with a list of dictionaries such as [{"text": "Brennan Beal", "label": "Person"}, {"text": "123-45-6789", "label": "SSN"}]
+Respond with a list of dictionaries such as [{"entity": "Brennan Beal", "entity_type": "PERSON"}, {"entity": "123-45-6789", "entity_type": "SSN"}]
 
 Note that if there are multiple of the same entities, you should list them multiple times. For example, if the text suggests "The patient, Brennan, notes that is feeling unwell. Brennan presents with a moderate fever of 100.5F," you should list the entity "brennan" twice. 
 
@@ -251,7 +251,7 @@ The text is listed here:
 
 EXAMPLE: 
 MedicalText: "MRN: 222345 -- I saw patient Brennan Beal today at 11:30am, who presents with a sore throat and temperature of 103F"
-response: [{"text": "Brennan Beal", "label": "person"]}, {"text": "222345", "label": "medical record number"}]
+response: [{"entity": "Brennan Beal", "entity_type": "PERSON"]}, {"entity": "222345", "entity_type": "MEDICAL_RECORED_NUMBER"}]
 """
 
 query = f"""
@@ -265,19 +265,19 @@ query = f"""
           endpoint => '{endpoint}',
           request => prompt,
           failOnError => false,
-          returnType => 'STRUCT<result: ARRAY<STRUCT<text: STRING, label: STRING>>>',
+          returnType => 'STRUCT<result: ARRAY<STRUCT<entity: STRING, entity_type: STRING>>>',
           modelParameters => named_struct('reasoning_effort', 'low')
         ) AS response
   FROM data_with_prompting
   """
 
+
 @pandas_udf(StringType())
 def add_positions_to_entities_udf(identified_entities_series, sentences):
     new_entity_series = []
     for entity_list, sentence in zip(identified_entities_series, sentences):
-
         entities = json.loads(entity_list)
-        unique_entities_set = set([(entity['text'], entity['label']) for entity in entities])
+        unique_entities_set = set([(entity['entity'], entity['entity_type']) for entity in entities])
 
         new_entity_list = []
 
@@ -286,9 +286,20 @@ def add_positions_to_entities_udf(identified_entities_series, sentences):
             positions = [(m.start(), m.end() - 1) for m in re.finditer(pattern, sentence)]
 
             for position in positions:
-                new_entity_list.append({'text': entity[0], 'label': entity[1], 'start': position[0], 'end': position[1]})
-        
+                new_entity_list.append(
+                    {
+                        'entity': entity[0], 
+                        'entity_type': entity[1], 
+                        'start': position[0], 
+                        'end': position[1],
+                        'score': None,
+                        'analysis_explanation': None,
+                        'recognition_metadata': {}
+                    }
+                )
+
         new_entity_series.append(json.dumps(new_entity_list))
+
     return pd.Series(new_entity_series)
 
 ai_query_df = (
@@ -297,7 +308,7 @@ ai_query_df = (
     .withColumn(
         "phi_ai_query_entities", 
         add_positions_to_entities_udf(
-            F.col("response.result"), F.col("medical_text_with_phi")
+            col("response.result"), col("medical_text_with_phi")
         )
     )
 )
@@ -305,6 +316,11 @@ ai_query_df = (
 # COMMAND ----------
 
 display(ai_query_df)
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC
 
 # COMMAND ----------
 
