@@ -14,7 +14,7 @@ from datetime import datetime
 from src.dbxmetagen.config import MetadataConfig
 from src.dbxmetagen.user_utils import sanitize_user_identifier
 
-def luhn_checksum(card_number):
+def luhn_checksum(card_number: str):
     card_number = card_number.replace(" ", "").replace("-", "")
     if not card_number.isdigit():
         return False
@@ -33,9 +33,9 @@ def luhn_checksum(card_number):
     return sum_ % 10 == 0
 
 
-def get_analyzer_engine(add_pci: bool = True, add_phi: bool = True) -> AnalyzerEngine:
+def get_analyzer_engine(add_pci: bool = True, add_phi: bool = True, **kwargs) -> AnalyzerEngine:
     """Initialize Presidio AnalyzerEngine with PCI/PHI recognizers."""
-    analyzer = AnalyzerEngine()
+    analyzer = AnalyzerEngine(**kwargs)
 
     if add_pci:
         pci_patterns = [
@@ -93,12 +93,12 @@ def get_analyzer_engine(add_pci: bool = True, add_phi: bool = True) -> AnalyzerE
                 regex=r"\b(?:MD|DO|NP|RN)[:\s-]*\d{6,10}\b",
                 score=0.7,
             ),
-            Pattern(
-                name="diagnosis_code", regex=r"\b[A-Z]\d{2}\.?\d{1,2}\b", score=0.6
-            ),
-            Pattern(
-                name="prescription_number", regex=r"\bRX[:\s-]*\d{6,12}\b", score=0.7
-            ),
+            # Pattern(
+            #     name="diagnosis_code", regex=r"\b[A-Z]\d{2}\.?\d{1,2}\b", score=0.6
+            # ),
+            # Pattern(
+            #     name="prescription_number", regex=r"\bRX[:\s-]*\d{6,12}\b", score=0.7
+            # ),
         ]
         phi_recognizer = PatternRecognizer(
             supported_entity="MEDICAL_RECORD_NUMBER",
@@ -110,8 +110,8 @@ def get_analyzer_engine(add_pci: bool = True, add_phi: bool = True) -> AnalyzerE
                 "patient",
                 "health",
                 "insurance",
-                "diagnosis",
-                "prescription",
+                # "diagnosis",
+                # "prescription",
                 "doctor",
             ],
         )
@@ -247,8 +247,10 @@ def classify_column(
             # Skip ignored entities
             if res.entity_type in entities_to_ignore:
                 continue
-            if res.entity_type == "CREDIT_CARD" and not luhn_checksum(res.score):
-                continue
+            if res.entity_type == "CREDIT_CARD":
+                # TODO: should not be res.score but the actual CC string
+                if not luhn_checksum(str(res.score)):
+                    continue
 
             for typ, ents in entity_map.items():
                 if res.entity_type in ents:
