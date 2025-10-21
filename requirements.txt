@@ -5,6 +5,7 @@ pydantic>=2.10.1
 ydata-profiling==4.12.1
 databricks-langchain==0.7.1
 databricks-sdk>=0.30.0
+langchain-core==0.3.79
 openpyxl==3.1.5
 spacy==3.8.7
 presidio_analyzer==2.2.358
