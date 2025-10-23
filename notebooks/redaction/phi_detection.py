@@ -220,10 +220,9 @@ num_cores = 10
 # COMMAND ----------
 
 
-df = spark.table("dbxmetagen.eval_data.jsl_48docs")
-df = df.select("doc_id", "text").distinct()
+_df = spark.table("dbxmetagen.eval_data.jsl_48docs").select("doc_id", "text").distinct()
 #df = df.limit(5)
-text_df = df.repartition(num_cores).withColumn("presidio_results", make_presidio_batch_udf(score_threshold=0.5)(col("doc_id"), col("text")))
+text_df = _df.repartition(num_cores).withColumn("presidio_results", make_presidio_batch_udf(score_threshold=0.5)(col("doc_id"), col("text")))
 text_df = text_df.withColumn("presidio_results_struct", from_json("presidio_results", "array<struct<entity:string, score:double, start:integer, end:integer, doc_id:string>>"))
 text_df.write.mode('overwrite').saveAsTable("dbxmetagen.eval_data.presidio_results")
 
