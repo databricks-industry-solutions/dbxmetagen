@@ -32,11 +32,45 @@ def luhn_checksum(card_number: str):
         alt = not alt
     return sum_ % 10 == 0
 
+TEN_DIGIT_PHONE_PATTERN = Pattern(
+    name="ten_digit_phone_pattern",
+    regex=r"\b\d{10}\b",  # exactly 10 digits, word-boundary safe
+    score=0.8
+)
+
+WHITESPACE_PHONE_PATTERN = Pattern(
+    name="whitespace_phone_pattern",
+    regex=r"\(\s*\d{3}\s*\)\s*-\s*\d{3}\s*-\s*\d{4}",
+    score=0.9
+)
+
+PhoneRecognizer = PatternRecognizer(
+    supported_entity="PHONE_NUMBER",
+    patterns=[TEN_DIGIT_PHONE_PATTERN, WHITESPACE_PHONE_PATTERN],
+    context=["phone", "call", "contact", "mobile"]
+)
+
+AGE_GENDER_PATTERN = Pattern(
+    name="age_gender_pattern",
+    regex=r"\b\d{1,3}\s?[YyMmFf]\b",
+    score=0.8
+)
+
+AgeGenderRecognizer = PatternRecognizer(
+    supported_entity="AGE_GENDER",
+    patterns=[AGE_GENDER_PATTERN],
+    context=["age", "sex", "gender"]
+)
+
+def add_recognizers_to_analyzer(analyzer_engine):
+    analyzer_engine.registry.add_recognizer(PhoneRecognizer)
+    analyzer_engine.registry.add_recognizer(AgeGenderRecognizer)
+    return analyzer_engine
+
 
 def get_analyzer_engine(add_pci: bool = True, add_phi: bool = True, **kwargs) -> AnalyzerEngine:
     """Initialize Presidio AnalyzerEngine with PCI/PHI recognizers."""
     analyzer = AnalyzerEngine(**kwargs)
-
     if add_pci:
         pci_patterns = [
             Pattern(
@@ -117,6 +151,7 @@ def get_analyzer_engine(add_pci: bool = True, add_phi: bool = True, **kwargs) ->
         )
         analyzer.registry.add_recognizer(phi_recognizer)
 
+    analyzer = add_recognizers_to_analyzer(analyzer)
     return analyzer
 
 
