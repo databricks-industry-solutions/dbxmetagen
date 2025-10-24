@@ -400,7 +400,7 @@ def process_metadata_file(
                 result_type="expand",
             )
         exported_file = export_metadata(df, output_dir, input_file, output_file_type)
-        if config.review_apply_ddl == True or config.review_apply_ddl == "True":
+        if config.review_apply_ddl is True or config.review_apply_ddl == "True":
             apply_ddl_to_databricks(exported_file, config, output_file_type)
         else:
             print("Skipping DDL application (review_apply_ddl is False)")
