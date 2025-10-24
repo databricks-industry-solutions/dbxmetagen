@@ -13,8 +13,6 @@
 
 # MAGIC %pip install -r ../../requirements.txt
 # MAGIC %restart_python
-# MAGIC #%pip install -qqqq -U openai pydantic==2.9.2 presidio-analyzer
-# MAGIC #dbutils.library.restartPython()
 
 # COMMAND ----------
 
@@ -23,16 +21,18 @@
 
 # COMMAND ----------
 
+# TODO: De-dupe imports
 import json
 import re
 import pandas as pd
-from pyspark.sql.functions import pandas_udf, col, expr, lit, concat
+from pyspark.sql.functions import pandas_udf, col, expr, lit, concat, from_json
 from pyspark.sql.types import LongType, StringType
 from pyspark.sql import SparkSession
 from src.dbxmetagen.config import MetadataConfig
 from src.dbxmetagen.deterministic_pi import *
 from presidio_analyzer import AnalyzerEngine, BatchAnalyzerEngine
 from presidio_analyzer.dict_analyzer_result import DictAnalyzerResult
+from presidio_analyzer import Pattern, PatternRecognizer
 
 import pandas as pd
 from pprint import pprint
@@ -42,6 +42,16 @@ import pandas as pd
 from pyspark.sql.functions import pandas_udf, col
 from pyspark.sql.functions import pandas_udf, col
 import pandas as pd
+
+import pandas as pd
+import numpy as np
+from typing import Iterator
+from pyspark.sql.functions import pandas_udf, PandasUDFType
+from rapidfuzz import fuzz
+import pandas as pd
+import numpy as np
+from pyspark.sql.functions import pandas_udf
+from pyspark.sql.types import ArrayType, StructType, StructField, StringType, IntegerType, DoubleType
 
 
 # COMMAND ----------
@@ -87,10 +97,15 @@ eligible_entity_types = [
     "MEDICAL_RECORD",
     "DATE_OF_BIRTH",
     "STREET_ADDRESS",
-    "GEOGRAPHIC_IDENTIFIER"
+    "GEOGRAPHIC_IDENTIFIER",
+    "HOSPITAL_NAME",
+    "MEDICAL_CENTER_NAME",
+    "APPOINTMENT_DATE",
 ]
 
 LABEL_ENUMS = '["PERSON","PHONE_NUMBER","NRP","UK_NHS","AU_ACN","LOCATION","DATE_TIME","AU_MEDICARE","MEDICAL_RECORD_NUMBER","AU_TFN","EMAIL_ADDRESS","US_SSN","VIN","IP","DRIVER_LICENSE","BIRTH_DATE","APPOINTMENT_DATE_TIME",]'
+
+ENTITIES_TO_IGNORE = '["TIME_PERIODS", "TIME_WITHOUT_DATE", "ONLY_YEAR", "NUMBERS_ALONE_NOT_AGES_OR_DATES", "TITLES_AND_PREFIXES", "NATIONAL_HOLIDAYS", "DOSING_SCHEDULES", "PHARMACEUTICAL_NAMES"]'
 
 prompt_skeleton = """
 You are an expert in Protected Health Information (PHI) detection who will help identify all PHI entities in a piece of medical text.
@@ -115,6 +130,9 @@ Qualifying PHI includes:
 17. Full face photographic images and any comparable images; and
 18. Any other unique identifying number, characteristic, or code (note this does not mean the unique code assigned by the investigator to code the data)
 There are also additional standards and criteria to protect individuals from re-identification. Any code used to replace the identifiers in data sets cannot be derived from any information related to the individual and the master codes, nor can the method to derive the codes be disclosed. For example, a subjects initials cannot be used to code their data because the initials are derived from their name. Additionally, the researcher must not have actual knowledge that the research subject could be re-identified from the remaining identifiers in the PHI used in the research study. In other words, the information would still be considered identifiable if there was a way to identify the individual even though all of the 18 identifiers were removed.
+
+Additional entities to count as PII:
+1. Hospital Names
 
 You will identify all PHI with the following enums as the "label":
 
@@ -162,7 +180,6 @@ def format_presidio_batch_results(
         output.append(json.dumps(findings))
     return output
 
-
 def make_presidio_batch_udf(score_threshold=0.5):
     @pandas_udf("string")
     def analyze_udf(batch_iter: Iterator[Tuple[pd.Series, pd.Series]]) -> Iterator[pd.Series]:
@@ -177,7 +194,6 @@ def make_presidio_batch_udf(score_threshold=0.5):
             output = format_presidio_batch_results(results, score_threshold=score_threshold)
             yield pd.Series(output)
     return analyze_udf
-
 
 def make_prompt(prompt_skeleton, labels=eligible_entity_types):
     return prompt_skeleton.format(label_enums=labels)
@@ -276,6 +292,119 @@ display(ai_results)
 all_results = presidio_results.drop("text").join(ai_results, "doc_id")
 all_results.write.mode('overwrite').option("mergeSchema", "true").saveAsTable("dbxmetagen.eval_data.ai_vs_presidio")
 display(all_results)
+
+# COMMAND ----------
+
+entity_struct = StructType([
+    StructField("entity", StringType()),
+    StructField("start", IntegerType()),
+    StructField("end", IntegerType()),
+    StructField("doc_id", StringType()),
+    StructField("presidio_score", DoubleType()),
+    StructField("confidence", StringType())
+])
+result_type = ArrayType(entity_struct)
+
+def is_fuzzy_match(str1, str2, threshold=50):
+    """
+    Returns True if the token set ratio similarity score is >= threshold.
+    """
+    score = fuzz.token_set_ratio(str1, str2)
+    return score >= threshold
+
+def is_overlap(start1, end1, start2, end2, tolerance=0):
+    """
+    Returns True if intervals [start1, end1] and [start2, end2] overlap, with optional tolerance.
+    """
+    return max(start1, start2) <= min(end1, end2) + tolerance
+
+def calculate_overlap(start1, end1, start2, end2):
+    """
+    Returns the length of the overlap between intervals [start1, end1] and [start2, end2].
+    """
+    return min(end1, end2) - max(start1, start2)
+
+def calculate_string_overlap(s1, s2):
+    max_overlap = min(len(s1), len(s2))
+    for i in range(max_overlap, 0, -1):
+        if s1[-i:] == s2[:i]:
+            return i / max_overlap
+    return 0.0
+
+def align_entities_row(ai_entities, presidio_entities, doc_id):
+    results = []
+    used_presidio = set()
+    for ai_ent in ai_entities:
+        best_match = None
+        presidio_score = None
+        confidence = "low"
+
+        for i, pres_ent in enumerate(presidio_entities):
+            if str(pres_ent.get('doc_id')) != str(doc_id):  # ensure both are string, and safe
+                continue
+            if (str(ai_ent.get('entity')) == str(pres_ent.get('entity')) and
+                int(ai_ent.get('start')) == int(pres_ent.get('start')) and
+                int(ai_ent.get('end')) == int(pres_ent.get('end'))):
+                best_match = pres_ent
+                presidio_score = float(pres_ent.get('score')) if pres_ent.get('score') is not None else None
+                confidence = "high"
+                used_presidio.add(i)
+                break
+            elif is_overlap(
+                int(ai_ent.get('start')), int(ai_ent.get('end')),
+                int(pres_ent.get('start')), int(pres_ent.get('end'))
+            ) and is_fuzzy_match(str(ai_ent.get('entity')), str(pres_ent.get('entity'))):
+                presidio_score = float(pres_ent.get('score')) if pres_ent.get('score') is not None else None
+                if len(str(pres_ent.get('entity'))) > len(str(ai_ent.get('entity'))):
+                    best_match = pres_ent
+                    confidence = "medium" if presidio_score and presidio_score >= 0.7 else "low"
+                    used_presidio.add(i)
+                else:
+                    confidence = "medium"
+                    used_presidio.add(i)
+                
+        results.append({
+            "entity": str(best_match['entity']) if best_match else str(ai_ent.get('entity')),
+            "start": int(best_match['start']) if best_match else int(ai_ent.get('start')),
+            "end": int(best_match['end']) if best_match else int(ai_ent.get('end')),
+            "doc_id": str(doc_id) if doc_id is not None else None,
+            "presidio_score": float(presidio_score) if presidio_score is not None else None,
+            "confidence": str(confidence)
+        })
+    for i, pres_ent in enumerate(presidio_entities):
+        if i not in used_presidio and str(pres_ent.get('doc_id')) == str(doc_id):
+            score = float(pres_ent.get('score')) if pres_ent.get('score') is not None else None
+            results.append({
+                "entity": str(pres_ent.get('entity')),
+                "start": int(pres_ent.get('start')),
+                "end": int(pres_ent.get('end')),
+                "doc_id": str(doc_id) if doc_id is not None else None,
+                "presidio_score": score,
+                "confidence": "low" if score is not None and score < 0.7 else "medium"
+            })
+    return results
+
+
+@pandas_udf(result_type)
+def align_entities_udf(ai_col: pd.Series, presidio_col: pd.Series, doc_id_col: pd.Series) -> pd.Series:
+    # Align entities for each row using a list comprehension
+    return pd.Series([
+        align_entities_row(ai, presidio, doc_id)
+        for ai, presidio, doc_id in zip(ai_col, presidio_col, doc_id_col)
+    ])
+
+df = spark.read.table("dbxmetagen.eval_data.ai_vs_presidio")
+
+df = df.withColumn(
+    "aligned_entities",
+    align_entities_udf("ai_results_struct", "presidio_results_struct", "doc_id")
+)
+
+df.write.mode('overwrite').saveAsTable("dbxmetagen.eval_data.aligned_entities3")
+
+# COMMAND ----------
+
+display(df)
 
 # COMMAND ----------
 
