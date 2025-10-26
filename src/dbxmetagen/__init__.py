@@ -1,4 +1,4 @@
-__version__ = "0.5.0"
+__version__ = "0.5.1"
 
 from src.dbxmetagen.config import MetadataConfig
 from src.dbxmetagen.overrides import (

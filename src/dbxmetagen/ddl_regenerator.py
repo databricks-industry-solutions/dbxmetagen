@@ -110,36 +110,62 @@ def get_pii_tags_from_ddl(ddl: str, config: MetadataConfig) -> Tuple[str, str]:
 def replace_comment_in_ddl(ddl: str, new_comment: str) -> str:
     """
     Replace the comment string in a DDL statement with a new comment.
+    Only used for comment mode.
     """
-    is_serverless = False
-    if "ALTER TABLE" not in ddl:
+    # Determine if this is a table or column comment by checking for COLUMN keyword
+    is_column_comment = "COLUMN" in ddl.upper()
+
+    if not is_column_comment:
+        # Table-level comment: COMMENT ON TABLE ... IS
         ddl = re.sub(
             r'(COMMENT ON TABLE [^"\']+ IS\s+)(["\'])(.*?)(["\'])',
             lambda m: f"{m.group(1)}{m.group(2)}{new_comment}{m.group(4)}",
             ddl,
         )
     else:
+        # Column-level comment - check DBR version for syntax
+        # Logic matches _create_column_comment_ddl_func() in processing.py
         dbr_number = os.environ.get("DATABRICKS_RUNTIME_VERSION")
-        try:
-            dbr_number = float(dbr_number)
-        except ValueError:
-            is_serverless = bool("client" in dbr_number)
-            if is_serverless or dbr_number >= 16:
+
+        if dbr_number is None:
+            # Default to newer syntax when version not available
+            ddl = re.sub(
+                r'(COMMENT ON COLUMN [^"\']+ IS\s+)(["\'])(.*?)(["\'])',
+                lambda m: f"{m.group(1)}{m.group(2)}{new_comment}{m.group(4)}",
+                ddl,
+            )
+        else:
+            try:
+                dbr_version = float(dbr_number)
+                if dbr_version is None:
+                    raise ValueError(f"Databricks runtime version is None")
+
+                if dbr_version >= 16:
+                    # DBR 16+: COMMENT ON COLUMN ... IS
+                    ddl = re.sub(
+                        r'(COMMENT ON COLUMN [^"\']+ IS\s+)(["\'])(.*?)(["\'])',
+                        lambda m: f"{m.group(1)}{m.group(2)}{new_comment}{m.group(4)}",
+                        ddl,
+                    )
+                elif dbr_version >= 14 and dbr_version < 16:
+                    # DBR 14-15: ALTER TABLE ... ALTER COLUMN ... COMMENT
+                    ddl = re.sub(
+                        r'(ALTER TABLE [^ ]+ ALTER COLUMN [^ ]+ COMMENT\s+)(["\'])(.*?)(["\'])',
+                        lambda m: f"{m.group(1)}{m.group(2)}{new_comment}{m.group(4)}",
+                        ddl,
+                    )
+                else:
+                    raise ValueError(
+                        f"Unsupported Databricks runtime version: {dbr_number}"
+                    )
+            except ValueError as e:
+                # Serverless (client.X.X) or parse error: use modern syntax
                 ddl = re.sub(
-                    r'(ALTER TABLE [^"\']+ COMMENT ON COLUMN [^ ]+ IS\s+)(["\'])(.*?)(["\'])',
+                    r'(COMMENT ON COLUMN [^"\']+ IS\s+)(["\'])(.*?)(["\'])',
                     lambda m: f"{m.group(1)}{m.group(2)}{new_comment}{m.group(4)}",
                     ddl,
                 )
-            elif float(dbr_number) >= 14 and float(dbr_number) < 16:
-                ddl = re.sub(
-                    r'(ALTER TABLE [^ ]+ ALTER COLUMN [^ ]+ COMMENT\s+)(["\'])(.*?)(["\'])',
-                    lambda m: f"{m.group(1)}{m.group(2)}{new_comment}{m.group(4)}",
-                    ddl,
-                )
-            else:
-                raise ValueError(
-                    f"Unsupported Databricks runtime version: {dbr_number}"
-                )
+
     return ddl
 
 
@@ -400,10 +426,12 @@ def process_metadata_file(
                 result_type="expand",
             )
         exported_file = export_metadata(df, output_dir, input_file, output_file_type)
-        if config.review_apply_ddl == True or config.review_apply_ddl == "True":
+        if config.review_apply_ddl is True or config.review_apply_ddl.lower() == "true":
             apply_ddl_to_databricks(exported_file, config, output_file_type)
         else:
-            print("Skipping DDL application (review_apply_ddl is False)")
+            print(
+                f"Skipping DDL application (review_apply_ddl is {config.review_apply_ddl})"
+            )
             logging.info("Skipping DDL application (review_apply_ddl is False)")
     except Exception as e:
         logging.error(f"Processing failed: {e}")
