@@ -37,9 +37,9 @@ variables:
     default: __CATALOG_NAME__
   format_catalog:
     description: Whether or not to string format any bracketed variables in catalog name. If set to false, then __CATALOG_NAME__{env} will keep the _{env} suffix, if not it will be formatted with the current environment.
-    default: false 
+    default: false
   model:
-    description: LLM endpoint used by model calls. Note that this is not the same as any registered model in UC that wraps the prompt engineering work, but is the serving endpoint called after prompt engineering. This can be changed to other served models as well as provisioned throughput models or external models for compliance purposes if needed. Recommend databricks-claude-3-7-sonnet for best comments, with databricks-meta-llama-3-3-70b-instruct as a backup. Sonnet will generally give more complex responses. Review security, tenancy, and cost considerations before making a decision. 
+    description: LLM endpoint used by model calls. Note that this is not the same as any registered model in UC that wraps the prompt engineering work, but is the serving endpoint called after prompt engineering. This can be changed to other served models as well as provisioned throughput models or external models for compliance purposes if needed. Recommend databricks-claude-3-7-sonnet for best comments, with databricks-meta-llama-3-3-70b-instruct as a backup. Sonnet will generally give more complex responses. Review security, tenancy, and cost considerations before making a decision.
     default: databricks-claude-3-7-sonnet
   chat_completion_type:
     description: |
@@ -85,7 +85,7 @@ variables:
     description: Output format can be via sql file (default) or via tsv or excel if this improves reviewability. This file is the individual output files.
     default: sql
   reviewable_output_format:
-    description: Desired format for full run output for reviewability. tsv or excel 
+    description: Desired format for full run output for reviewability. tsv or excel
     default: tsv
   include_deterministic_pi:
     description: Run presidio analyzer before using LLM-based PI identification.
@@ -139,14 +139,14 @@ variables:
   acro_content:
     description: acronyms that are commonly used in the data
     default: |
-        {
-        "DBX": "Databricks",
-        "WHO": "World Health Organization",
-        "GMC": "Global Marketing Code",
-        }
+      {
+      "DBX": "Databricks",
+      "WHO": "World Health Organization",
+      "GMC": "Global Marketing Code",
+      }
   domain_config_path:
     description: Path to the domain configuration YAML file for domain classification mode
-    default: ../configurations/domain_config.yaml
+    default: ../../configurations/domain_config.yaml
   use_protected_classification_for_table:
     description: Whether to use protected classification for the table.
     default: true

@@ -151,7 +151,7 @@ run_permissions_setup() {
 create_deploying_user_yml() {
     echo "Creating deploying_user.yml with current user..."
     
-    cat > app/deploying_user.yml << EOF
+    cat > apps/dbxmetagen/deploying_user.yml << EOF
 # Auto-generated during deployment - contains the user who deployed this app
 # This file is created by deploy.sh and should not be committed to version control
 # However, it cannot be added to gitignore because asset bundles obeys gitignore.
@@ -163,7 +163,7 @@ EOF
 
 create_app_env_yml() {
     echo "Creating app_env.yml with target..."
-    cat > app/app_env.yml << EOF
+    cat > apps/dbxmetagen/app_env.yml << EOF
 # Auto-generated during deployment - contains the user who deployed this app
 # This file is created by deploy.sh and should not be committed to version control
 app_env: "$APP_ENV"
@@ -172,41 +172,41 @@ EOF
 
 create_env_overrides_yml() {
     echo "Creating env_overrides.yml with environment-specific values..."
-    cat > app/env_overrides.yml << EOF
+    cat > apps/dbxmetagen/env_overrides.yml << EOF
 # Auto-generated during deployment from dev.env
 # This file is created by deploy.sh and should not be committed to version control
 EOF
     
     # Add workspace_host if set
     if [ -n "$DATABRICKS_HOST" ]; then
-        echo "workspace_host: \"$DATABRICKS_HOST\"" >> app/env_overrides.yml
+        echo "workspace_host: \"$DATABRICKS_HOST\"" >> apps/dbxmetagen/env_overrides.yml
     fi
     
     # Add permission_groups if set
     if [ -n "$permission_groups" ]; then
-        echo "permission_groups: \"$permission_groups\"" >> app/env_overrides.yml
+        echo "permission_groups: \"$permission_groups\"" >> apps/dbxmetagen/env_overrides.yml
     fi
     
     # Add permission_users if set
     if [ -n "$permission_users" ]; then
-        echo "permission_users: \"$permission_users\"" >> app/env_overrides.yml
+        echo "permission_users: \"$permission_users\"" >> apps/dbxmetagen/env_overrides.yml
     fi
     
     echo "env_overrides.yml created"
 }
 
 cleanup_temp_yml_files() {
-    if [ -f app/deploying_user.yml ]; then
+    if [ -f apps/dbxmetagen/deploying_user.yml ]; then
         echo "Cleaning up deploying_user.yml..."
-        rm app/deploying_user.yml
+        rm apps/dbxmetagen/deploying_user.yml
     fi
-    if [ -f app/app_env.yml ]; then
+    if [ -f apps/dbxmetagen/app_env.yml ]; then
         echo "Cleaning up app_env.yml..."
-        rm app/app_env.yml
+        rm apps/dbxmetagen/app_env.yml
     fi
-    if [ -f app/env_overrides.yml ]; then
+    if [ -f apps/dbxmetagen/env_overrides.yml ]; then
         echo "Cleaning up env_overrides.yml..."
-        rm app/env_overrides.yml
+        rm apps/dbxmetagen/env_overrides.yml
     fi
     if [ -f databricks_final.yml ]; then
         echo "Cleaning up databricks_final.yml..."
@@ -224,9 +224,9 @@ cleanup_temp_yml_files() {
         echo "Cleaning up databricks.yml.tmp..."
         rm databricks.yml.tmp
     fi
-    if [ -f app/domain_config.yml ]; then
+    if [ -f apps/dbxmetagen/domain_config.yml ]; then
         echo "Cleaning up domain_config.yml..."
-        rm app/domain_config.yml
+        rm apps/dbxmetagen/domain_config.yml
     fi
     if [ -f variables.bkp ]; then
         echo "Cleaning up variables.bkp..."
@@ -365,7 +365,7 @@ fi
 
 CURRENT_USER=$(databricks current-user me --profile "$PROFILE" --output json | jq -r '.userName')
 
-cat > app/deploying_user.yml << EOF
+cat > apps/dbxmetagen/deploying_user.yml << EOF
 # Auto-generated during deployment - contains the user who deployed this app
 # This file is created by deploy.sh and should not be committed to version control
 deploying_user: "$CURRENT_USER"
@@ -374,7 +374,7 @@ EOF
 
 APP_ENV=${TARGET}
 
-cat > app/app_env.yml << EOF
+cat > apps/dbxmetagen/app_env.yml << EOF
 # Auto-generated during deployment - contains the user who deployed this app
 # This file is created by deploy.sh and should not be committed to version control
 app_env: "$APP_ENV"
@@ -401,8 +401,8 @@ if [ -f "variables_override.yml" ]; then
 fi
 
 
-cat app/deploying_user.yml
-cat app/app_env.yml
+cat apps/dbxmetagen/deploying_user.yml
+cat apps/dbxmetagen/app_env.yml
 
 echo "Current user: $CURRENT_USER"
 
@@ -411,7 +411,7 @@ echo "DBX MetaGen Deployment"
 echo "Target: $TARGET"
 
 update_variables_yml
-cp configurations/domain_config.yaml app/domain_config.yaml
+cp configurations/domain_config.yaml apps/dbxmetagen/domain_config.yaml
 create_deploying_user_yml
 create_app_env_yml
 create_env_overrides_yml

@@ -528,6 +528,7 @@ class CommentPrompt(Prompt):
                     5. Use double quotes for strings. Escape apostrophes with '' (SQL style) for DDL compatibility
                     6. 'index' key is from Pandas to_dict() - ignore unless in 'columns' list
                     7. Return ONLY the JSON dictionary
+                    8. Do not include example values in the comment if the values are PII.
                     """,
                 },
                 {
@@ -735,6 +736,7 @@ class CommentNoDataPrompt(Prompt):
                     5. Use double quotes for strings. Escape apostrophes with '' (SQL style) for DDL compatibility
                     6. 'index' key is from Pandas to_dict() - ignore unless in 'columns' list
                     7. Return ONLY the JSON dictionary
+                    8. Do not include example values in the comment ever.
                     """,
                 },
                 {

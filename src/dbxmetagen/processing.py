@@ -30,6 +30,7 @@ from pyspark.sql.functions import (
     split,
     expr,
     split_part,
+    regexp_replace,
 )
 from pyspark.sql.types import (
     StructType,
@@ -508,7 +509,7 @@ def add_ddl_to_column_comment_df(df: DataFrame, ddl_column: str) -> DataFrame:
         DataFrame: The updated DataFrame with the DDL statement added.
     """
     if "column_content" in df.columns:
-        df = df.withColumn("column_content", col("column_content").cast("string"))
+        df = df.withColumn("column_content", regexp_replace(col("column_content").cast("string"), "''", "'"))
 
     result_df = df.withColumn(
         ddl_column,
@@ -535,7 +536,7 @@ def add_ddl_to_table_comment_df(df: DataFrame, ddl_column: str) -> DataFrame:
         DataFrame: The updated DataFrame with the DDL statement added.
     """
     if df is not None and "column_content" in df.columns:
-        df = df.withColumn("column_content", col("column_content").cast("string"))
+        df = df.withColumn("column_content", regexp_replace(col("column_content").cast("string"), "''", "'"))
 
     if df is not None:
         result_df = df.withColumn(
