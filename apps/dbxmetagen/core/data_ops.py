@@ -516,7 +516,7 @@ class MetadataProcessor:
         """Grant read permissions to the current app user on created objects."""
         try:
 
-            sys.path.append("../")
+            sys.path.append("../../")
             from src.dbxmetagen.databricks_utils import grant_user_permissions
 
             catalog_name = st.session_state.config.get("catalog_name")
@@ -708,7 +708,6 @@ class MetadataProcessor:
             if has_separate_columns:
                 table_name = f"{row['catalog']}.{row['schema']}.{row['table_name']}"
             else:
-                print("Table: ", row["table"])
                 # Fall back to 'table' column if it exists, otherwise 'table_name'
                 table_col = "table" if "table" in df.columns else "table_name"
                 table_name = row[table_col]
