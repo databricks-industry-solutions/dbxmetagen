@@ -1965,7 +1965,8 @@ class ClinicalTrialsSchemaGenerator(BaseSchemaGenerator):
             .withColumn(
                 "analysis_time",
                 TimestampType(),
-                expr="collection_time + INTERVAL cast(1 + rand() * 48 as int) HOUR",
+                baseColumn="collection_time",
+                expr="timestamp_seconds(unix_timestamp(collection_time) + cast((1 + rand() * 48) * 3600 as bigint))",
             )
             .withColumn(
                 "lab_technician",
@@ -2510,9 +2511,9 @@ class DataGenerationOrchestrator:
                 full_table_name = f"{full_schema_name}.{table_name}"
                 # display(table_df)
                 try:
-                    table_df.write.mode("overwrite").option(
-                        "overwriteSchema", "true"
-                    ).saveAsTable(full_table_name)
+                table_df.write.mode("overwrite").option(
+                    "overwriteSchema", "true"
+                ).saveAsTable(full_table_name)
                     print(f"    ✓ Successfully saved {full_table_name}")
                 except Exception as e:
                     print(f"    ✗ ERROR saving {full_table_name}: {str(e)}")
