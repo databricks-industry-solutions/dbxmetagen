@@ -1963,12 +1963,6 @@ class ClinicalTrialsSchemaGenerator(BaseSchemaGenerator):
                 expr=f"timestamp(date_add('{self.config.start_date}', cast(rand()*datediff('{self.config.end_date}', '{self.config.start_date}') as int)))",
             )
             .withColumn(
-                "analysis_time",
-                TimestampType(),
-                baseColumn="collection_time",
-                expr="timestamp_seconds(unix_timestamp(collection_time) + cast((1 + rand() * 48) * 3600 as bigint))",
-            )
-            .withColumn(
                 "lab_technician",
                 StringType(),
                 text=PyfuncText(generate_name, init=init_faker_for_generation),
