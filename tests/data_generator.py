@@ -1,10 +1,51 @@
 # Databricks notebook source
 
 # MAGIC %md
-# MAGIC # Multi-Domain Data Generator for Healthcare and Life Sciences
+# MAGIC # Healthcare and Life Sciences Synthetic Data Generator
+# MAGIC
+# MAGIC ## Purpose
+# MAGIC This notebook generates realistic synthetic healthcare and life sciences data using the dbldatagen library. The generated data includes realistic PII/PHI, correlated clinical measurements, and detailed medical documentation suitable for testing, demonstrations, and machine learning model development.
+# MAGIC
+# MAGIC ## Use Cases
+# MAGIC - **PII/PHI Redaction Testing**: Train and evaluate de-identification models with realistic clinical notes containing protected health information
+# MAGIC - **ML Model Training**: Generate correlated datasets for predictive modeling (e.g., lab values correlated with diagnoses, vital signs correlated with outcomes)
+# MAGIC - **Demo and POC Data**: Create representative healthcare datasets for demonstrations without using real patient data
+# MAGIC - **ETL Testing**: Validate data pipelines with realistic healthcare data structures and relationships
+# MAGIC
+# MAGIC ## Available Schemas
+# MAGIC
+# MAGIC ### 1. Medical Notes (6 tables)
+# MAGIC Patient demographics, clinical encounters, detailed SOAP/H&P notes with PII/PHI, de-identified notes with entity annotations, and lab results with correlated diagnoses.
+# MAGIC
+# MAGIC ### 2. Hospital Data (5 tables)
+# MAGIC Hospital staff, room assignments, patient admissions, medical procedures, and billing records with insurance information.
+# MAGIC
+# MAGIC ### 3. Clinical Trials (5 tables)
+# MAGIC Trial metadata, study sites, participant enrollment, adverse events, and lab measurements across study visits.
+# MAGIC
+# MAGIC ### 4. Livestock Research (5 tables)
+# MAGIC Research facilities, veterinarian records, animal subjects, study protocols, and detailed veterinary observations with correlated vital signs.
+# MAGIC
+# MAGIC ## How to Use
+# MAGIC 1. **Set Parameters**: Configure the output catalog name, select which schema(s) to generate, and optionally adjust the base row count (default: 1000)
+# MAGIC 2. **Run All Cells**: Execute cells in order from top to bottom
+# MAGIC 3. **Review Output**: Tables will be created in Unity Catalog under the specified catalog and schema names
+# MAGIC 4. **Query Data**: Use the example queries at the end to explore the generated data
+# MAGIC
+# MAGIC Note: Partition count is automatically calculated based on row count for optimal performance (1 partition per 250 rows, min 4, max 100).
+# MAGIC
+# MAGIC ## Key Features
+# MAGIC - **Realistic Clinical Notes**: SOAP and H&P format notes with detailed PII/PHI including names, dates, SSNs, addresses
+# MAGIC - **Correlated Data**: Lab values correlate with diagnoses, vital signs correlate with clinical signs, creating realistic patterns for ML training
+# MAGIC - **De-identification Ground Truth**: Separate table with masked PII and precise entity annotations for training redaction models
+# MAGIC - **Extended Schemas**: Key tables expanded to 20 columns with realistic healthcare data points
+# MAGIC
+# MAGIC ## Notes
+# MAGIC - Data is generated using the dbldatagen library with custom Faker providers for medical terminology
+# MAGIC - All correlations include realistic noise to prevent perfect linear relationships
+# MAGIC - Generated data is synthetic and does not represent real individuals or medical records
 
 # COMMAND ----------
-
 
 # MAGIC %pip install dbldatagen faker
 
@@ -14,10 +55,37 @@ dbutils.library.restartPython()
 
 # COMMAND ----------
 
+# Widget Configuration
 dbutils.widgets.text("catalog_name", "", "Output Catalog Name (Required)")
+dbutils.widgets.dropdown(
+    "schema_selection",
+    "all",
+    ["all", "medical_notes", "hospital_data", "clinical_trials", "livestock_research"],
+    "Schema to Generate",
+)
+dbutils.widgets.text("base_rows", "1000", "Base Row Count")
+
 catalog_name = dbutils.widgets.get("catalog_name")
+schema_selection = dbutils.widgets.get("schema_selection")
+base_rows_str = dbutils.widgets.get("base_rows")
+
 if catalog_name == "":
     raise ValueError("Output Catalog Name is required")
+if schema_selection == "":
+    raise ValueError("Schema selection is required")
+
+# Parse base_rows and calculate partitions
+try:
+    base_rows = int(base_rows_str)
+    if base_rows <= 0:
+        raise ValueError("Base row count must be positive")
+except ValueError as e:
+    raise ValueError(
+        f"Invalid base_rows value '{base_rows_str}': must be a positive integer"
+    ) from e
+
+# Calculate partitions based on base_rows (1 partition per 250 rows, min 4, max 100)
+partitions = max(4, min(100, base_rows // 250))
 
 # COMMAND ----------
 
@@ -2461,26 +2529,49 @@ class DataGenerationOrchestrator:
         self.spark = spark
         self.config = config
 
-    def generate_all_schemas(self) -> Dict[str, Dict[str, DataFrame]]:
-        """Generate data for all 4 schemas"""
+    def generate_all_schemas(
+        self, schema_selection: str = "all"
+    ) -> Dict[str, Dict[str, DataFrame]]:
+        """Generate data for selected schema(s)
 
+        Args:
+            schema_selection: One of "all", "medical_notes", "hospital_data", "clinical_trials", "livestock_research"
+        """
         all_schemas = {}
 
-        # Generate Medical Notes schema
-        medical_gen = MedicalNotesSchemaGenerator(self.spark, self.config)
-        all_schemas["medical_notes"] = medical_gen.generate_tables()
+        # Map schema names to generator classes
+        generators = {
+            "medical_notes": (MedicalNotesSchemaGenerator, "Medical Notes"),
+            "hospital_data": (HospitalDataSchemaGenerator, "Hospital Data"),
+            "clinical_trials": (ClinicalTrialsSchemaGenerator, "Clinical Trials"),
+            "livestock_research": (
+                LivestockResearchSchemaGenerator,
+                "Livestock Research",
+            ),
+        }
 
-        # Generate Hospital Data schema
-        hospital_gen = HospitalDataSchemaGenerator(self.spark, self.config)
-        all_schemas["hospital_data"] = hospital_gen.generate_tables()
+        # Determine which schemas to generate
+        if schema_selection == "all":
+            schemas_to_generate = list(generators.keys())
+        elif schema_selection in generators:
+            schemas_to_generate = [schema_selection]
+        else:
+            raise ValueError(
+                f"Invalid schema selection: {schema_selection}. Must be one of: all, medical_notes, hospital_data, clinical_trials, livestock_research"
+            )
 
-        # Generate Clinical Trials schema
-        trials_gen = ClinicalTrialsSchemaGenerator(self.spark, self.config)
-        all_schemas["clinical_trials"] = trials_gen.generate_tables()
+        print(f"Generating schema(s): {', '.join(schemas_to_generate)}\n")
 
-        # Generate Livestock Research schema
-        livestock_gen = LivestockResearchSchemaGenerator(self.spark, self.config)
-        all_schemas["livestock_research"] = livestock_gen.generate_tables()
+        # Generate selected schemas
+        for schema_key in schemas_to_generate:
+            generator_class, display_name = generators[schema_key]
+            gen = generator_class(self.spark, self.config)
+            all_schemas[schema_key] = gen.generate_tables()
+            print(f"✓ {display_name}: {len(all_schemas[schema_key])} tables")
+
+        print(f"\nGenerated {len(all_schemas)} schema(s) with the following tables:")
+        for schema_name, tables in all_schemas.items():
+            print(f"  - {schema_name}: {list(tables.keys())}")
 
         return all_schemas
 
@@ -2503,74 +2594,27 @@ class DataGenerationOrchestrator:
                     f"    Columns: {', '.join([f.name for f in table_df.schema.fields])}"
                 )
                 full_table_name = f"{full_schema_name}.{table_name}"
-                # display(table_df)
                 try:
-                table_df.write.mode("overwrite").option(
-                    "overwriteSchema", "true"
-                ).saveAsTable(full_table_name)
+                    table_df.write.mode("overwrite").option(
+                        "overwriteSchema", "true"
+                    ).saveAsTable(full_table_name)
                     print(f"    ✓ Successfully saved {full_table_name}")
                 except Exception as e:
                     print(f"    ✗ ERROR saving {full_table_name}: {str(e)}")
-                    print(f"    Schema details:")
+                    print("    Schema details:")
                     table_df.printSchema()
                     raise
                 i += 1
-
-                # # Add table comment for documentation
-                # table_comment = self._get_table_comment(schema_name, table_name)
-                # if table_comment:
-                #     self.spark.sql(
-                #         f"ALTER TABLE {full_table_name} SET TBLPROPERTIES ('comment' = '{table_comment}')"
-                #     )
-
-    def _get_table_comment(self, schema_name: str, table_name: str) -> str:
-        """Get descriptive comment for each table"""
-
-        comments = {
-            "medical_notes": {
-                "patients": "Patient demographic and contact information with PII/PHI including SSN, DOB, and insurance details",
-                "providers": "Healthcare provider information including NPI numbers and specialties",
-                "encounters": "Medical visit records linking patients to providers with encounter details",
-                "clinical_notes": "Unstructured clinical documentation containing PHI and medical assessments",
-                "lab_results": "Structured laboratory test results with PHI including test values and reference ranges",
-            },
-            "hospital_data": {
-                "hospital_staff": "Hospital employee records with PII including SSN, salary, and contact information",
-                "hospital_rooms": "Hospital room and facility information including room types and daily rates",
-                "patient_admissions": "Patient admission records with PHI including diagnoses and charges",
-                "medical_procedures": "Medical procedure records linked to admissions with costs and performing physicians",
-                "billing_records": "Billing data with unstructured notes and PHI including insurance and payment information",
-            },
-            "clinical_trials": {
-                "clinical_trials": "Clinical trial study information including NCT numbers, phases, and sponsor details",
-                "study_sites": "Research site data with PII including principal investigator and contact information",
-                "study_participants": "Study subject data with PII/PHI including demographics and treatment arms",
-                "adverse_events": "Adverse event reports with unstructured PHI text and causality assessments",
-                "lab_measurements": "Clinical laboratory measurements with PHI including visit data and test results",
-            },
-            "livestock_research": {
-                "research_facilities": "Research facility information with PII including manager contacts and capacity",
-                "researchers": "Researcher records with PII including contact information and specialties",
-                "research_animals": "Research animal subject data including species, breeds, and health status",
-                "research_studies": "Research study protocol information including investigators and study types",
-                "veterinary_observations": "Veterinary observation notes with unstructured text and some PII",
-            },
-        }
-
-        return comments.get(schema_name, {}).get(table_name, "")
 
 
 # COMMAND ----------
 
 # Initialize configuration and generate data
-config = SchemaConfig(base_rows=1000, partitions=4)
+print(f"Configuration: {base_rows:,} base rows with {partitions} partitions")
+config = SchemaConfig(base_rows=base_rows, partitions=partitions)
 orchestrator = DataGenerationOrchestrator(spark, config)
 
-print("Starting data generation for all life sciences schemas...")
-all_schemas = orchestrator.generate_all_schemas()
-
-print(f"\nGenerated {len(all_schemas)} schemas with the following tables:")
-
+all_schemas = orchestrator.generate_all_schemas(schema_selection)
 
 # COMMAND ----------
 
@@ -2578,7 +2622,7 @@ print(f"\nGenerated {len(all_schemas)} schemas with the following tables:")
 print(f"\nSaving all tables to Unity Catalog: {catalog_name}")
 orchestrator.save_tables_to_catalog(all_schemas, catalog_name)
 
-print(f"\nSuccess! Tables saved to Unity Catalog with the following structure:")
+print("\nSuccess! Tables saved to Unity Catalog with the following structure:")
 print(f"Catalog: {catalog_name}")
 for schema_name, schema_tables in all_schemas.items():
     print(f"  Schema: {catalog_name}.{schema_name}")
@@ -2587,129 +2631,99 @@ for schema_name, schema_tables in all_schemas.items():
 
 # COMMAND ----------
 
-# Display sample data from each schema
-print("Sample data from each schema:")
-for schema_name, schema_tables in all_schemas.items():
-    print(f"\n{'='*60}")
-    print(f"SCHEMA: {schema_name.upper()}")
-    print(f"{'='*60}")
-
-    for table_name, table_df in schema_tables.items():
-        print(f"\nTable: {table_name}")
-        print(f"Rows: {table_df.count():,}")
-        table_df.show(3, truncate=False)
-
-# COMMAND ----------
-
 # MAGIC %md
-# MAGIC ## Optional: Validate Generated Tables & Example Queries
+# MAGIC ## Example Queries
+# MAGIC
+# MAGIC Below are example SQL queries demonstrating how to work with the generated data. The queries shown depend on which schema(s) you selected to generate.
 
 # COMMAND ----------
 
+# Example queries based on selected schema
+if schema_selection == "all" or schema_selection == "medical_notes":
+    print("Medical Notes Example: Lab results correlated with diagnoses\n")
+    try:
+        result = spark.sql(
+            f"""
+            SELECT 
+                diagnosis_code,
+                condition_severity,
+                test_name,
+                AVG(test_value) as avg_test_value,
+                COUNT(*) as result_count
+            FROM {catalog_name}.medical_notes.lab_results
+            WHERE diagnosis_code IS NOT NULL
+            GROUP BY diagnosis_code, condition_severity, test_name
+            ORDER BY diagnosis_code, condition_severity, avg_test_value DESC
+            LIMIT 10
+        """
+        )
+        result.show(truncate=False)
+    except Exception as e:
+        print(f"Query failed: {e}")
 
-# Validate table relationships and data quality
-def validate_generated_data(schemas: Dict[str, Dict[str, DataFrame]]) -> None:
-    """Validate the generated data for quality and relationships"""
+if schema_selection == "all" or schema_selection == "hospital_data":
+    print("\nHospital Data Example: Billing summary by insurance status\n")
+    try:
+        result = spark.sql(
+            f"""
+            SELECT 
+                billing_status,
+                COUNT(*) as record_count,
+                AVG(total_amount) as avg_total,
+                AVG(insurance_paid) as avg_insurance_paid,
+                AVG(patient_responsibility) as avg_patient_resp,
+                AVG(outstanding_balance) as avg_outstanding
+            FROM {catalog_name}.hospital_data.billing_records
+            GROUP BY billing_status
+            ORDER BY billing_status
+        """
+        )
+        result.show(truncate=False)
+    except Exception as e:
+        print(f"Query failed: {e}")
 
-    print("Validating generated data...")
+if schema_selection == "all" or schema_selection == "clinical_trials":
+    print("\nClinical Trials Example: Lab measurements by test type and quality\n")
+    try:
+        result = spark.sql(
+            f"""
+            SELECT 
+                lab_test,
+                sample_quality,
+                abnormal_flag,
+                COUNT(*) as measurement_count,
+                AVG(result_value) as avg_result,
+                MIN(reference_min) as ref_min,
+                MAX(reference_max) as ref_max
+            FROM {catalog_name}.clinical_trials.lab_measurements
+            GROUP BY lab_test, sample_quality, abnormal_flag
+            ORDER BY lab_test, sample_quality
+            LIMIT 10
+        """
+        )
+        result.show(truncate=False)
+    except Exception as e:
+        print(f"Query failed: {e}")
 
-    # Check Medical Notes schema relationships
-    medical_tables = schemas["medical_notes"]
-    patient_count = medical_tables["patients"].count()
-    encounter_count = medical_tables["encounters"].count()
-
-    print(f"\nMedical Notes Schema Validation:")
-    print(f"  • Patients: {patient_count:,}")
-    print(
-        f"  • Encounters: {encounter_count:,} (ratio: {encounter_count/patient_count:.1f}x)"
-    )
-
-    # Check Hospital Data schema relationships
-    hospital_tables = schemas["hospital_data"]
-    staff_count = hospital_tables["hospital_staff"].count()
-    admission_count = hospital_tables["patient_admissions"].count()
-
-    print(f"\nHospital Data Schema Validation:")
-    print(f"  • Staff: {staff_count:,}")
-    print(f"  • Admissions: {admission_count:,}")
-
-    # Check Clinical Trials schema relationships
-    trials_tables = schemas["clinical_trials"]
-    trial_count = trials_tables["clinical_trials"].count()
-    participant_count = trials_tables["study_participants"].count()
-
-    print(f"\nClinical Trials Schema Validation:")
-    print(f"  • Trials: {trial_count:,}")
-    print(
-        f"  • Participants: {participant_count:,} (avg: {participant_count/trial_count:.0f} per trial)"
-    )
-
-    # Check Livestock Research schema relationships
-    livestock_tables = schemas["livestock_research"]
-    facility_count = livestock_tables["research_facilities"].count()
-    animal_count = livestock_tables["research_animals"].count()
-
-    print(f"\nLivestock Research Schema Validation:")
-    print(f"  • Facilities: {facility_count:,}")
-    print(
-        f"  • Animals: {animal_count:,} (avg: {animal_count/facility_count:.0f} per facility)"
-    )
-
-    print("\nData validation complete!")
-
-
-# Run validation
-validate_generated_data(all_schemas)
-
-# COMMAND ----------
-
-# Example queries to demonstrate the generated data
-print("Example queries on generated Unity Catalog data:\n")
-
-try:
-    # Query 1: Medical Notes - Find patients with multiple encounters
-    print("Query 1: Patients with multiple medical encounters")
-    result1 = spark.sql(
-        f"""
-        SELECT p.first_name, p.last_name, p.patient_id, COUNT(e.encounter_id) as encounter_count
-        FROM {catalog_name}.medical_notes.patients p
-        JOIN {catalog_name}.medical_notes.encounters e ON p.patient_id = e.patient_id  
-        GROUP BY p.patient_id, p.first_name, p.last_name
-        HAVING COUNT(e.encounter_id) > 2
-        ORDER BY encounter_count DESC
-        LIMIT 5
-    """
-    )
-    result1.show()
-
-    # Query 2: Hospital Data - High-cost procedures by department
-    print("\nQuery 2: High-cost procedures by department")
-    result2 = spark.sql(
-        f"""
-        SELECT r.department, COUNT(*) as procedure_count, AVG(p.procedure_cost) as avg_cost
-        FROM {catalog_name}.hospital_data.medical_procedures p
-        JOIN {catalog_name}.hospital_data.patient_admissions a ON p.admission_id = a.admission_id
-        JOIN {catalog_name}.hospital_data.hospital_rooms r ON a.room_id = r.room_id
-        GROUP BY r.department
-        ORDER BY avg_cost DESC
-    """
-    )
-    result2.show()
-
-    # Query 3: Clinical Trials - Adverse events by severity
-    print("\nQuery 3: Adverse events by severity and treatment arm")
-    result3 = spark.sql(
-        f"""
-        SELECT p.treatment_arm, ae.severity, COUNT(*) as event_count
-        FROM {catalog_name}.clinical_trials.adverse_events ae
-        JOIN {catalog_name}.clinical_trials.study_participants p ON ae.participant_id = p.participant_id
-        GROUP BY p.treatment_arm, ae.severity
-        ORDER BY p.treatment_arm, ae.severity
-    """
-    )
-    result3.show()
-
-    print("All example queries executed successfully!")
-
-except Exception as e:
-    print(f"Query execution skipped - tables may not be saved to catalog yet: {e}")
+if schema_selection == "all" or schema_selection == "livestock_research":
+    print("\nLivestock Research Example: Treatment outcomes by clinical signs\n")
+    try:
+        result = spark.sql(
+            f"""
+            SELECT 
+                clinical_signs,
+                treatment_administered,
+                treatment_outcome,
+                COUNT(*) as observation_count,
+                AVG(body_weight_kg) as avg_weight,
+                AVG(temperature_celsius) as avg_temp
+            FROM {catalog_name}.livestock_research.veterinary_observations
+            WHERE treatment_administered = 'Yes'
+            GROUP BY clinical_signs, treatment_administered, treatment_outcome
+            ORDER BY observation_count DESC
+            LIMIT 10
+        """
+        )
+        result.show(truncate=False)
+    except Exception as e:
+        print(f"Query failed: {e}")
