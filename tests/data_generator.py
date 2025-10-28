@@ -2272,18 +2272,21 @@ class LivestockResearchSchemaGenerator(BaseSchemaGenerator):
             .withColumn(
                 "heart_rate_bpm",
                 IntegerType(),
+                baseColumn="temperature_celsius",
                 expr="cast(70 + randn() * 20 + CASE WHEN temperature_celsius > 39.0 THEN 15 ELSE 0 END as int)",
             )
             # Respiratory rate correlated with heart rate and temperature
             .withColumn(
                 "respiratory_rate_pm",
                 IntegerType(),
+                baseColumn="temperature_celsius",
                 expr="cast(20 + randn() * 8 + CASE WHEN temperature_celsius > 39.0 THEN 8 ELSE 0 END as int)",
             )
             # Clinical signs correlated with temperature and weight
             .withColumn(
                 "clinical_signs",
                 StringType(),
+                baseColumn=["temperature_celsius", "body_weight_kg"],
                 expr="""
                 CASE 
                     WHEN temperature_celsius > 39.5 THEN 'Fever and Lethargy'
@@ -2297,6 +2300,7 @@ class LivestockResearchSchemaGenerator(BaseSchemaGenerator):
             .withColumn(
                 "mucous_membrane_color",
                 StringType(),
+                baseColumn="clinical_signs",
                 expr="""
                 CASE 
                     WHEN clinical_signs LIKE '%Lethargy%' AND rand() < 0.4 THEN 'Pale Pink'
@@ -2314,6 +2318,7 @@ class LivestockResearchSchemaGenerator(BaseSchemaGenerator):
             .withColumn(
                 "hydration_status",
                 StringType(),
+                baseColumn="clinical_signs",
                 expr="""
                 CASE 
                     WHEN clinical_signs LIKE '%Appetite%' AND rand() < 0.3 THEN 'Mildly Dehydrated'
@@ -2325,6 +2330,7 @@ class LivestockResearchSchemaGenerator(BaseSchemaGenerator):
             .withColumn(
                 "body_condition_score",
                 IntegerType(),
+                baseColumn="body_weight_kg",
                 expr="""
                 CASE 
                     WHEN body_weight_kg < 80 THEN cast(2 + rand() * 2 as int)
@@ -2336,6 +2342,7 @@ class LivestockResearchSchemaGenerator(BaseSchemaGenerator):
             .withColumn(
                 "appetite_assessment",
                 StringType(),
+                baseColumn="clinical_signs",
                 expr="""
                 CASE 
                     WHEN clinical_signs LIKE '%Appetite%' THEN 'Decreased'
@@ -2348,6 +2355,7 @@ class LivestockResearchSchemaGenerator(BaseSchemaGenerator):
             .withColumn(
                 "treatment_administered",
                 BooleanType(),
+                baseColumn="clinical_signs",
                 expr="clinical_signs != 'Normal' OR rand() < 0.2",
             )
             .withColumn(
@@ -2358,11 +2366,13 @@ class LivestockResearchSchemaGenerator(BaseSchemaGenerator):
             .withColumn(
                 "dosage_mg",
                 DoubleType(),
+                baseColumn="treatment_administered",
                 expr="CASE WHEN treatment_administered THEN 5 + rand() * 495 ELSE NULL END",
             )
             .withColumn(
                 "route_of_administration",
                 StringType(),
+                baseColumn="treatment_administered",
                 expr="""
                 CASE 
                     WHEN treatment_administered THEN 
@@ -2379,6 +2389,7 @@ class LivestockResearchSchemaGenerator(BaseSchemaGenerator):
             .withColumn(
                 "adverse_reactions",
                 StringType(),
+                baseColumn="treatment_administered",
                 expr="""
                 CASE 
                     WHEN treatment_administered AND rand() < 0.05 THEN 'Mild injection site reaction'
@@ -2391,6 +2402,7 @@ class LivestockResearchSchemaGenerator(BaseSchemaGenerator):
             .withColumn(
                 "treatment_outcome",
                 StringType(),
+                baseColumn=["treatment_administered", "clinical_signs"],
                 expr="""
                 CASE 
                     WHEN NOT treatment_administered THEN 'Not Applicable'
@@ -2405,6 +2417,7 @@ class LivestockResearchSchemaGenerator(BaseSchemaGenerator):
             .withColumn(
                 "follow_up_required",
                 BooleanType(),
+                baseColumn=["clinical_signs", "treatment_outcome", "adverse_reactions"],
                 expr="""
                 CASE 
                     WHEN clinical_signs = 'Fever and Lethargy' THEN true
