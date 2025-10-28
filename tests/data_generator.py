@@ -22,9 +22,10 @@ if catalog_name == "":
 # COMMAND ----------
 
 from dataclasses import dataclass
-from typing import Dict
+from typing import Dict, List, Tuple
 from abc import ABC, abstractmethod
-import logging
+import re
+import json
 
 from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql.types import (
@@ -65,7 +66,7 @@ class BaseSchemaGenerator(ABC):
     @abstractmethod
     def generate_tables(self) -> Dict[str, DataFrame]:
         """Generate all tables for this schema"""
-        pass
+        ...
 
 
 class MedicalProvider(BaseProvider):
@@ -278,17 +279,417 @@ def generate_study_title(context, _):
     )
 
 
-def generate_clinical_note(context, _):
-    """Generate clinical note text"""
+def generate_soap_note(context, _):
+    """Generate realistic SOAP format clinical note with detailed PII/PHI"""
+    patient_name = context.faker.name()
+    dob = context.faker.date_of_birth(minimum_age=18, maximum_age=90)
+    mrn = f"MRN-{context.faker.random_number(digits=7, fix_len=True)}"
+    ssn = context.faker.ssn()
+    address = context.faker.address().replace("\n", ", ")
+    phone = context.faker.phone_number()
+    physician = f"Dr. {context.faker.name()}"
     condition = context.faker.medical_condition()
-    medication = context.faker.medication()
-    return f"""CLINICAL NOTE
-Patient presents with {condition.lower()}. 
-Physical examination reveals {context.faker.sentence(nb_words=8)}.
-Current medications include {medication}.
-Assessment: {condition} - stable condition.
-Plan: Continue current treatment regimen. {context.faker.sentence(nb_words=12)}.
-Follow-up in {context.faker.random_int(min=1, max=12)} weeks."""
+    medication1 = context.faker.medication()
+    medication2 = context.faker.medication()
+
+    bp_sys = context.faker.random_int(min=110, max=160)
+    bp_dia = context.faker.random_int(min=70, max=95)
+    temp = round(context.faker.random.uniform(97.5, 99.8), 1)
+    hr = context.faker.random_int(min=60, max=100)
+    rr = context.faker.random_int(min=12, max=20)
+
+    hospital = f"{context.faker.city()} Medical Center"
+    date = context.faker.date_between(start_date="-1y", end_date="today")
+
+    return f"""SOAP NOTE - {hospital}
+Date of Service: {date.strftime('%B %d, %Y')}
+Provider: {physician}
+
+PATIENT INFORMATION:
+Name: {patient_name}
+Date of Birth: {dob.strftime('%m/%d/%Y')}
+MRN: {mrn}
+SSN: {ssn}
+Address: {address}
+Phone: {phone}
+
+SUBJECTIVE:
+Chief Complaint: Patient presents with symptoms of {condition.lower()}.
+
+History of Present Illness: {patient_name} is a {context.faker.random_int(min=25, max=75)}-year-old patient who reports experiencing symptoms for the past {context.faker.random_int(min=3, max=14)} days. Patient describes {context.faker.sentence(nb_words=15)} The symptoms have been progressively {context.faker.random_element(['worsening', 'improving', 'stable'])}. Patient denies any recent trauma, fever, or weight loss. Previous treatment with over-the-counter medications provided minimal relief.
+
+Past Medical History: {context.faker.random_element(['Hypertension', 'Type 2 Diabetes', 'Hyperlipidemia'])}, {context.faker.random_element(['Asthma', 'COPD', 'No significant history'])}
+
+Current Medications: {medication1} {context.faker.random_int(min=5, max=100)}mg {context.faker.random_element(['once daily', 'twice daily', 'three times daily'])}, {medication2} {context.faker.random_int(min=10, max=500)}mg {context.faker.random_element(['daily', 'as needed'])}
+
+Allergies: {context.faker.random_element(['NKDA (No Known Drug Allergies)', 'Penicillin - rash', 'Sulfa drugs - hives'])}
+
+Social History: {context.faker.random_element(['Non-smoker', 'Former smoker', 'Current smoker - 1 PPD'])}, alcohol use {context.faker.random_element(['social', 'none', 'occasional'])}, denies illicit drug use. Lives with {context.faker.random_element(['spouse', 'family', 'alone'])}, works as {context.faker.job()}.
+
+OBJECTIVE:
+Vital Signs:
+- Blood Pressure: {bp_sys}/{bp_dia} mmHg
+- Temperature: {temp}°F
+- Heart Rate: {hr} bpm
+- Respiratory Rate: {rr} breaths/min
+- O2 Saturation: {context.faker.random_int(min=95, max=100)}% on room air
+- Weight: {context.faker.random_int(min=120, max=250)} lbs
+- Height: {context.faker.random_int(min=60, max=75)} inches
+
+Physical Examination:
+General: Patient appears {context.faker.random_element(['well-developed, well-nourished', 'comfortable', 'in no acute distress'])}, alert and oriented x3.
+HEENT: Normocephalic, atraumatic. PERRLA. Oropharynx clear without erythema or exudate. Tympanic membranes intact bilaterally.
+Cardiovascular: Regular rate and rhythm. Normal S1 and S2. No murmurs, rubs, or gallops appreciated. Peripheral pulses 2+ bilaterally.
+Respiratory: Lungs clear to auscultation bilaterally. No wheezes, rales, or rhonchi. Respiratory effort normal.
+Abdomen: Soft, non-tender, non-distended. Bowel sounds present in all four quadrants. No organomegaly or masses palpated.
+Extremities: No cyanosis, clubbing, or edema. Full range of motion. No joint tenderness or swelling.
+Neurological: Cranial nerves II-XII grossly intact. Motor strength 5/5 in all extremities. Sensation intact to light touch.
+
+ASSESSMENT:
+1. {condition} - {context.faker.random_element(['acute', 'chronic', 'acute exacerbation of chronic'])}
+2. {context.faker.random_element(['Hypertension - controlled', 'Type 2 Diabetes - stable', 'No secondary diagnoses'])}
+
+PLAN:
+1. Diagnostic Studies: {context.faker.random_element(['Complete blood count', 'Basic metabolic panel', 'Chest X-ray', 'ECG', 'No labs needed at this time'])}
+2. Medications: Prescribe {medication1} {context.faker.random_int(min=5, max=100)}mg {context.faker.random_element(['once daily', 'twice daily'])} for {context.faker.random_int(min=7, max=30)} days. Continue current {medication2}.
+3. Patient Education: Discussed diagnosis, treatment plan, and expected outcomes with patient. Patient verbalizes understanding and agrees with plan. Provided written materials regarding condition management.
+4. Follow-up: Return to clinic in {context.faker.random_int(min=1, max=4)} weeks for re-evaluation. Patient instructed to call or return sooner if symptoms worsen or new symptoms develop.
+5. Referrals: {context.faker.random_element(['None needed at this time', f'Refer to {context.faker.random_element(["Cardiology", "Endocrinology", "Gastroenterology"])} for further evaluation'])}
+
+Time spent with patient: {context.faker.random_int(min=15, max=45)} minutes
+Medical decision making: {context.faker.random_element(['Low complexity', 'Moderate complexity', 'High complexity'])}
+
+Electronically signed by {physician}, MD
+License: MD{context.faker.random_number(digits=6, fix_len=True)}
+Date: {date.strftime('%m/%d/%Y %H:%M')}"""
+
+
+def generate_hp_note(context, _):
+    """Generate realistic History & Physical note with detailed PII/PHI"""
+    patient_name = context.faker.name()
+    dob = context.faker.date_of_birth(minimum_age=18, maximum_age=90)
+    mrn = f"MRN-{context.faker.random_number(digits=7, fix_len=True)}"
+    ssn = context.faker.ssn()
+    address = context.faker.address().replace("\n", ", ")
+    phone = context.faker.phone_number()
+    physician = f"Dr. {context.faker.name()}"
+    condition = context.faker.medical_condition()
+    medication1 = context.faker.medication()
+    medication2 = context.faker.medication()
+
+    bp_sys = context.faker.random_int(min=110, max=160)
+    bp_dia = context.faker.random_int(min=70, max=95)
+    temp = round(context.faker.random.uniform(97.5, 99.8), 1)
+    hr = context.faker.random_int(min=60, max=100)
+    rr = context.faker.random_int(min=12, max=20)
+
+    hospital = f"{context.faker.city()} Memorial Hospital"
+    admit_date = context.faker.date_between(start_date="-30d", end_date="today")
+
+    return f"""HISTORY AND PHYSICAL EXAMINATION
+{hospital}
+
+Date of Admission: {admit_date.strftime('%B %d, %Y at %H:%M')}
+Attending Physician: {physician}
+
+PATIENT DEMOGRAPHICS:
+Name: {patient_name}
+Date of Birth: {dob.strftime('%m/%d/%Y')} (Age: {context.faker.random_int(min=25, max=75)} years)
+Medical Record Number: {mrn}
+Social Security Number: {ssn}
+Home Address: {address}
+Contact Phone: {phone}
+Emergency Contact: {context.faker.name()}, {context.faker.random_element(['spouse', 'daughter', 'son', 'parent'])} - {context.faker.phone_number()}
+
+CHIEF COMPLAINT:
+"{context.faker.sentence(nb_words=8)[:-1]}"
+
+HISTORY OF PRESENT ILLNESS:
+{patient_name} is a {context.faker.random_int(min=25, max=75)}-year-old {context.faker.random_element(['male', 'female'])} with a past medical history significant for {context.faker.random_element(['hypertension', 'diabetes mellitus type 2', 'coronary artery disease'])} who presents to the emergency department with {condition.lower()}. The patient reports symptom onset approximately {context.faker.random_int(min=6, max=72)} hours prior to presentation. 
+
+Associated symptoms include {context.faker.sentence(nb_words=12)} The patient denies any recent illness, travel, or sick contacts. Patient attempted self-management with {context.faker.random_element(['over-the-counter analgesics', 'rest', 'home remedies'])} without significant improvement. Given persistent symptoms and {context.faker.random_element(['concern for complications', 'worsening condition', 'inability to tolerate oral intake'])}, patient presented to ED for evaluation.
+
+PAST MEDICAL HISTORY:
+1. {context.faker.random_element(['Hypertension', 'Type 2 Diabetes Mellitus', 'Hyperlipidemia'])} - diagnosed {context.faker.random_int(min=2, max=15)} years ago
+2. {context.faker.random_element(['Coronary Artery Disease', 'Asthma', 'COPD', 'GERD'])}
+3. {context.faker.random_element(['Chronic Kidney Disease Stage 2', 'Hypothyroidism', 'Osteoarthritis', 'No other significant history'])}
+
+PAST SURGICAL HISTORY:
+1. {context.faker.random_element(['Appendectomy', 'Cholecystectomy', 'Hernia repair', 'None'])} - {context.faker.random_int(min=5, max=30)} years ago
+2. {context.faker.random_element(['Knee arthroscopy', 'Carpal tunnel release', 'Cataract surgery', 'None'])}
+
+MEDICATIONS (CURRENT):
+1. {medication1} {context.faker.random_int(min=5, max=100)}mg orally {context.faker.random_element(['once daily', 'twice daily'])}
+2. {medication2} {context.faker.random_int(min=10, max=500)}mg orally {context.faker.random_element(['once daily', 'twice daily', 'as needed'])}
+3. {context.faker.medication()} {context.faker.random_int(min=5, max=50)}mg {context.faker.random_element(['daily', 'twice daily'])}
+4. Aspirin 81mg orally once daily
+
+ALLERGIES:
+{context.faker.random_element(['No Known Drug Allergies (NKDA)', 'Penicillin (rash)', 'Sulfa medications (hives and itching)', 'Codeine (nausea)'])}
+
+FAMILY HISTORY:
+Father: {context.faker.random_element(['Myocardial infarction at age 62', 'Diabetes', 'Hypertension', 'No significant history'])}
+Mother: {context.faker.random_element(['Breast cancer', 'Stroke at age 70', 'Diabetes', 'Alive and well'])}
+Siblings: {context.faker.random_int(min=0, max=4)} {context.faker.random_element(['siblings', 'sibling', 'none'])} - {context.faker.random_element(['non-contributory', 'history of hypertension'])}
+
+SOCIAL HISTORY:
+Occupation: {context.faker.job()}
+Tobacco: {context.faker.random_element(['Never smoker', 'Former smoker, quit 10 years ago', 'Current smoker, 1 pack per day for 20 years'])}
+Alcohol: {context.faker.random_element(['Social drinker, 1-2 drinks per week', 'None', '2-3 drinks daily'])}
+Illicit Drugs: Denies
+Living Situation: Lives with {context.faker.random_element(['spouse', 'family', 'alone'])} in {context.faker.random_element(['house', 'apartment'])}
+Exercise: {context.faker.random_element(['Walks 30 minutes 3x per week', 'Sedentary lifestyle', 'Regular exercise'])}
+
+REVIEW OF SYSTEMS:
+Constitutional: {context.faker.random_element(['Denies fever, chills, night sweats', 'Endorses fatigue', 'Reports recent weight loss'])}
+HEENT: {context.faker.random_element(['Denies headache, vision changes, hearing loss', 'Reports occasional headaches'])}
+Cardiovascular: {context.faker.random_element(['Denies chest pain, palpitations', 'Reports occasional palpitations'])}
+Respiratory: {context.faker.random_element(['Denies shortness of breath, cough', 'Reports dyspnea on exertion'])}
+Gastrointestinal: {context.faker.random_element(['Denies nausea, vomiting, diarrhea', 'Reports occasional constipation'])}
+All other systems reviewed and negative except as noted in HPI.
+
+PHYSICAL EXAMINATION:
+Vital Signs:
+Temperature: {temp}°F ({round(context.faker.random.uniform(36.5, 37.6), 1)}°C)
+Blood Pressure: {bp_sys}/{bp_dia} mmHg
+Heart Rate: {hr} beats per minute, regular
+Respiratory Rate: {rr} breaths per minute
+Oxygen Saturation: {context.faker.random_int(min=94, max=100)}% on room air
+Height: {context.faker.random_int(min=150, max=190)} cm
+Weight: {context.faker.random_int(min=55, max=120)} kg
+BMI: {round(context.faker.random.uniform(20, 32), 1)}
+
+General: Patient appears stated age, {context.faker.random_element(['well-developed', 'well-nourished'])}, in {context.faker.random_element(['no acute distress', 'mild distress', 'moderate distress'])}. Alert, oriented to person, place, time, and situation.
+
+HEENT: Head is normocephalic and atraumatic. Pupils equal, round, reactive to light and accommodation. Extraocular movements intact. Sclerae anicteric. Conjunctivae pink. Oropharynx clear without erythema, exudate, or lesions. Mucous membranes moist. Tympanic membranes intact with normal light reflex bilaterally.
+
+Neck: Supple without lymphadenopathy. No thyromegaly or thyroid nodules. Trachea midline. No jugular venous distension. Carotid pulses 2+ bilaterally without bruits.
+
+Cardiovascular: Regular rate and rhythm. Normal S1 and S2. No S3 or S4 gallops. No murmurs, rubs, or clicks appreciated. Point of maximal impulse non-displaced. Peripheral pulses 2+ and symmetric in all extremities. Capillary refill less than 2 seconds.
+
+Respiratory: Chest wall symmetric with normal respiratory effort. Lungs clear to auscultation in all fields bilaterally. No wheezes, rales, or rhonchi. No accessory muscle use. Tactile fremitus normal.
+
+Abdomen: Soft, non-tender, non-distended. Bowel sounds normoactive in all four quadrants. No hepatosplenomegaly. No masses or hernias palpated. No costovertebral angle tenderness. No rebound or guarding.
+
+Musculoskeletal: Normal bulk and tone. Full range of motion in all major joints. No erythema, warmth, or effusion. No focal bony tenderness. Gait steady and coordinated.
+
+Skin: Warm, dry, intact. Normal turgor. No rashes, lesions, or ulcerations. No cyanosis or pallor.
+
+Neurological: Alert and oriented x4. Cranial nerves II through XII grossly intact. Motor strength 5/5 in all major muscle groups. Deep tendon reflexes 2+ and symmetric. Sensation intact to light touch and proprioception. Coordination and cerebellar function normal. Negative Romberg.
+
+Psychiatric: Appropriate mood and affect. Thought process logical and goal-directed. No suicidal or homicidal ideation.
+
+DIAGNOSTIC STUDIES:
+Laboratory: {context.faker.random_element(['Complete blood count, comprehensive metabolic panel pending', 'Results pending', 'Labs drawn and sent to lab'])}
+Imaging: {context.faker.random_element(['Chest X-ray ordered', 'CT scan pending', 'No imaging at this time'])}
+
+ASSESSMENT AND PLAN:
+{patient_name} is a {context.faker.random_int(min=25, max=75)}-year-old with history of {context.faker.random_element(['hypertension', 'diabetes', 'CAD'])} presenting with {condition.lower()}.
+
+Primary Diagnosis: {condition}
+{context.faker.sentence(nb_words=20)}
+
+Plan:
+1. Admit to {context.faker.random_element(['medical floor', 'observation unit', 'telemetry'])} for further management and monitoring
+2. NPO pending {context.faker.random_element(['imaging', 'procedure', 'further evaluation'])}
+3. IV fluids: Normal saline at {context.faker.random_int(min=75, max=125)} mL/hour
+4. Medications: Continue home medications. Add {medication1} for symptom management
+5. Consult {context.faker.random_element(['Cardiology', 'Gastroenterology', 'Surgery', 'Internal Medicine'])} service
+6. Serial examinations and vital signs monitoring every {context.faker.random_element(['2', '4', '6'])} hours
+7. DVT prophylaxis with subcutaneous heparin
+8. Fall precautions
+9. Advance diet as tolerated
+10. Discharge planning: Will reassess based on clinical response to treatment
+
+Patient and family counseled regarding diagnosis, treatment plan, and expected hospital course. All questions answered. Patient consents to admission and treatment plan.
+
+Electronically signed: {physician}, MD
+Medical License: MD{context.faker.random_number(digits=6, fix_len=True)}
+Date and Time: {admit_date.strftime('%m/%d/%Y %H:%M')}
+Location: {hospital} Emergency Department"""
+
+
+def deidentify_text_with_annotations(text: str) -> Tuple[str, List[Dict]]:
+    """
+    De-identify clinical text and return both masked text and entity annotations.
+    Returns tuple of (deidentified_text, annotations_list)
+    """
+    # Pattern definitions with entity types - ORDER MATTERS for proper masking
+    patterns = [
+        # SSN patterns
+        (r"\b\d{3}-\d{2}-\d{4}\b", "SSN"),
+        # MRN patterns
+        (r"MRN-\d{7}", "MEDICAL_RECORD_NUMBER"),
+        (r"Medical Record Number:\s*MRN-\d{7}", "MEDICAL_RECORD_NUMBER"),
+        # Date patterns (various formats)
+        (
+            r"\b(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},\s+\d{4}(?:\s+at\s+\d{2}:\d{2})?",
+            "DATE",
+        ),
+        (r"\b\d{1,2}/\d{1,2}/\d{4}(?:\s+\d{2}:\d{2})?", "DATE"),
+        # Phone patterns
+        (r"\b\d{3}[-.]?\d{3}[-.]?\d{4}\b", "PHONE_NUMBER"),
+        (r"\(\d{3}\)\s*\d{3}[-.]?\d{4}\b", "PHONE_NUMBER"),
+        # License patterns
+        (r"License:\s*MD\d{6}", "LICENSE_NUMBER"),
+        (r"Medical License:\s*MD\d{6}", "LICENSE_NUMBER"),
+    ]
+
+    # First pass: collect all entities with positions
+    entities_to_mask = []
+    for pattern, entity_type in patterns:
+        for match in re.finditer(pattern, text):
+            entities_to_mask.append(
+                {
+                    "start": match.start(),
+                    "end": match.end(),
+                    "text": match.group(),
+                    "entity_type": entity_type,
+                }
+            )
+
+    # Name patterns - more complex, done separately
+    # Look for "Name: " pattern and "Dr. Name" pattern
+    name_patterns = [
+        r"Name:\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)",
+        r"Dr\.\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)",
+        r"Electronically signed by\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)",
+        r"Provider:\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)",
+        r"Attending Physician:\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)",
+        r"Emergency Contact:\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)",
+        r"([A-Z][a-z]+\s+[A-Z][a-z]+)\s+is a\s+\d{2}-year-old",
+    ]
+
+    for pattern in name_patterns:
+        for match in re.finditer(pattern, text):
+            name_text = match.group(1) if "(" in pattern else match.group()
+            entities_to_mask.append(
+                {
+                    "start": match.start(),
+                    "end": match.end(),
+                    "text": match.group(),
+                    "entity_type": "PERSON",
+                    "name_only": name_text,
+                }
+            )
+
+    # Address patterns - look for "Address:" pattern
+    address_pattern = r"(?:Address|Home Address):\s+([^\\n]+(?:,\s*[^\\n]+)*)"
+    for match in re.finditer(address_pattern, text):
+        entities_to_mask.append(
+            {
+                "start": match.start(),
+                "end": match.end(),
+                "text": match.group(),
+                "entity_type": "LOCATION",
+            }
+        )
+
+    # Location patterns (hospitals, cities in context)
+    location_patterns = [
+        r"([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\s+(?:Medical Center|Memorial Hospital|Hospital)",
+    ]
+    for pattern in location_patterns:
+        for match in re.finditer(pattern, text):
+            entities_to_mask.append(
+                {
+                    "start": match.start(),
+                    "end": match.end(),
+                    "text": match.group(),
+                    "entity_type": "LOCATION",
+                }
+            )
+
+    # Sort by position (reverse order for replacement)
+    entities_to_mask.sort(key=lambda x: x["start"], reverse=True)
+
+    # Remove overlapping entities (keep first/longest)
+    filtered_entities = []
+    for entity in entities_to_mask:
+        overlap = False
+        for existing in filtered_entities:
+            if not (
+                entity["end"] <= existing["start"] or entity["start"] >= existing["end"]
+            ):
+                overlap = True
+                break
+        if not overlap:
+            filtered_entities.append(entity)
+
+    # Now mask the text and build annotations
+    masked_text = text
+    final_annotations = []
+
+    for entity in filtered_entities:
+        original_entity = entity["text"]
+        entity_type = entity["entity_type"]
+        original_start = entity["start"]
+        original_end = entity["end"]
+
+        # Create mask based on entity type
+        if entity_type == "PERSON":
+            mask = "[NAME]"
+        elif entity_type == "DATE":
+            mask = "[DATE]"
+        elif entity_type == "SSN":
+            mask = "[SSN]"
+        elif entity_type == "MEDICAL_RECORD_NUMBER":
+            mask = "[MRN]"
+        elif entity_type == "PHONE_NUMBER":
+            mask = "[PHONE]"
+        elif entity_type == "LOCATION":
+            mask = "[LOCATION]"
+        elif entity_type == "LICENSE_NUMBER":
+            mask = "[LICENSE]"
+        else:
+            mask = f"[{entity_type}]"
+
+        # Replace in text
+        masked_text = masked_text[:original_start] + mask + masked_text[original_end:]
+
+        # Calculate new positions after masking (working backwards)
+        annotation = {
+            "entity": original_entity,
+            "entity_type": entity_type,
+            "start": original_start,
+            "end": original_start + len(mask),
+            "score": None,
+            "analysis_explanation": None,
+            "recognition_metadata": {},
+        }
+        final_annotations.append(annotation)
+
+    # Sort annotations by start position for output
+    final_annotations.sort(key=lambda x: x["start"])
+
+    return masked_text, final_annotations
+
+
+def generate_deidentified_note(context, row):
+    """Generate de-identified version of clinical note"""
+    # Generate original note (alternating between SOAP and H&P)
+    note_type = row if row else 0
+    if note_type % 2 == 0:
+        original_note = generate_soap_note(context, None)
+    else:
+        original_note = generate_hp_note(context, None)
+
+    deidentified, _ = deidentify_text_with_annotations(original_note)
+    return deidentified
+
+
+def generate_entity_annotations(context, row):
+    """Generate entity annotations for de-identified note"""
+    # Generate original note
+    note_type = row if row else 0
+    if note_type % 2 == 0:
+        original_note = generate_soap_note(context, None)
+    else:
+        original_note = generate_hp_note(context, None)
+
+    _, annotations = deidentify_text_with_annotations(original_note)
+    # Return as JSON string to be parsed by Spark
+    return json.dumps(annotations)
 
 
 def generate_billing_note(context, _):
@@ -307,11 +708,93 @@ def generate_ae_description(context, _):
 
 
 def generate_vet_observation(context, _):
-    """Generate veterinary observation note"""
-    observation = context.faker.random_element(
-        ["normal behavior", "mild lethargy", "good appetite"]
+    """Generate detailed veterinary observation note"""
+    species = context.faker.animal_species()
+    breed = context.faker.animal_breed()
+    animal_id = f"TAG{context.faker.random_number(digits=6, fix_len=True)}"
+    veterinarian = f"Dr. {context.faker.name()}"
+    facility = f"{context.faker.city()} Research Farm"
+    date = context.faker.date_between(start_date="-6m", end_date="today")
+
+    temp = round(context.faker.random.uniform(37.5, 39.5), 1)
+    hr = context.faker.random_int(min=60, max=120)
+    rr = context.faker.random_int(min=15, max=40)
+    weight = round(context.faker.random.uniform(50, 600), 1)
+
+    medication = context.faker.medication()
+    dosage = context.faker.random_int(min=5, max=500)
+
+    clinical_status = context.faker.random_element(
+        [
+            "Normal - no abnormalities detected",
+            "Mild lethargy noted",
+            "Decreased appetite observed",
+            "Good body condition",
+            "Alert and responsive",
+        ]
     )
-    return f"VETERINARY NOTE: Animal appears {observation}. Examiner: Dr. {context.faker.last_name()}"
+
+    return f"""VETERINARY OBSERVATION REPORT
+{facility}
+Date of Examination: {date.strftime('%B %d, %Y')}
+Examining Veterinarian: {veterinarian}
+
+ANIMAL IDENTIFICATION:
+Species: {species}
+Breed: {breed}
+Animal ID: {animal_id}
+Study Group: {context.faker.random_element(['Control', 'Treatment A', 'Treatment B'])}
+
+VITAL SIGNS:
+Body Weight: {weight} kg
+Temperature: {temp}°C ({round(temp * 9/5 + 32, 1)}°F)
+Heart Rate: {hr} beats per minute
+Respiratory Rate: {rr} breaths per minute
+
+PHYSICAL EXAMINATION:
+General Appearance: Animal is {context.faker.random_element(['alert', 'bright', 'quiet but responsive', 'active'])} and {context.faker.random_element(['well-nourished', 'appropriate body condition', 'good body condition'])}. Body condition score: {context.faker.random_int(min=3, max=5)}/5.
+
+Integument: Haircoat appears {context.faker.random_element(['healthy and lustrous', 'normal', 'well-groomed'])}. Skin is intact with no lesions, masses, or areas of alopecia noted. Mucous membranes are {context.faker.random_element(['pink and moist', 'normal pink', 'pale pink'])} with capillary refill time less than 2 seconds.
+
+Eyes, Ears, Nose, Throat: Eyes are clear and bright with no discharge. Sclera are white. Pupils equal and responsive to light. Ears clean with no erythema or discharge. Nares clear with no nasal discharge. No abnormalities of oral cavity.
+
+Cardiovascular: Heart rate and rhythm regular. No murmurs or arrhythmias detected on auscultation. Peripheral pulse strong and synchronous with heartbeat.
+
+Respiratory: Respiratory effort normal and unlabored. Lung sounds clear bilaterally on auscultation. No coughing, wheezing, or abnormal respiratory sounds noted.
+
+Gastrointestinal: Appetite reported as {context.faker.random_element(['good - consuming full ration', 'normal', 'slightly decreased', 'excellent'])}. Abdomen soft and non-painful on palpation. Fecal consistency normal. No vomiting or diarrhea reported.
+
+Musculoskeletal: Gait is {context.faker.random_element(['normal and coordinated', 'steady', 'appropriate for species'])}. No lameness detected. Full range of motion in all limbs. No swelling or pain on palpation of joints or long bones.
+
+Neurological: Animal is alert and responsive to external stimuli. Cranial nerve function appears intact. Postural reactions normal. No neurological deficits observed.
+
+CLINICAL SIGNS AND OBSERVATIONS:
+{clinical_status}
+
+Behavior: Animal exhibits {context.faker.random_element(['normal species-typical behavior', 'appropriate social behavior', 'calm demeanor', 'active and curious behavior'])}. No signs of distress or abnormal behaviors noted.
+
+TREATMENTS ADMINISTERED:
+Date: {date.strftime('%m/%d/%Y')}
+Medication: {medication}
+Dosage: {dosage} mg
+Route: {context.faker.random_element(['Intramuscular (IM)', 'Subcutaneous (SC)', 'Oral (PO)', 'Intravenous (IV)'])}
+Frequency: {context.faker.random_element(['Once daily', 'Twice daily', 'As needed', 'Single dose'])}
+
+ADVERSE REACTIONS:
+{context.faker.random_element(['None observed', 'No adverse reactions noted', 'Animal tolerated treatment well', 'Mild injection site reaction - resolved within 24 hours'])}
+
+ASSESSMENT:
+Overall health status: {context.faker.random_element(['Good', 'Excellent', 'Fair', 'Stable'])}
+{context.faker.sentence(nb_words=15)}
+
+PLAN:
+Continue current study protocol. Monitor for any changes in appetite, behavior, or clinical signs. Reweigh in {context.faker.random_int(min=3, max=14)} days. Next scheduled examination: {context.faker.random_int(min=7, max=30)} days.
+
+Additional comments: {context.faker.sentence(nb_words=12)}
+
+Veterinarian Signature: {veterinarian}, DVM
+License: DVM{context.faker.random_number(digits=5, fix_len=True)}
+Date: {date.strftime('%m/%d/%Y %H:%M')}"""
 
 
 class MedicalNotesSchemaGenerator(BaseSchemaGenerator):
@@ -320,7 +803,7 @@ class MedicalNotesSchemaGenerator(BaseSchemaGenerator):
     def generate_tables(self) -> Dict[str, DataFrame]:
         """Generate 5 interconnected tables for medical notes domain"""
 
-        # 1. Patients table (PII/PHI)
+        # 1. Patients table (PII/PHI) - Expanded to 20 columns
         patients_spec = (
             DataGenerator(
                 self.spark,
@@ -349,7 +832,7 @@ class MedicalNotesSchemaGenerator(BaseSchemaGenerator):
             .withColumn(
                 "date_of_birth",
                 DateType(),
-                expr="current_date()",  # dateadd(current_date(), - cast(rand()*365*80 + 365*18 as int)),
+                expr=f"date_add('{self.config.start_date}', -cast(rand()*365*60 + 365*18 as int))",
             )
             .withColumn(
                 "ssn",
@@ -372,6 +855,89 @@ class MedicalNotesSchemaGenerator(BaseSchemaGenerator):
                 text=PyfuncText(generate_address, init=init_faker_for_generation),
             )
             .withColumn("insurance_id", StringType(), template="INS-########")
+            .withColumn(
+                "race",
+                StringType(),
+                values=[
+                    "White",
+                    "Black or African American",
+                    "Asian",
+                    "Native American",
+                    "Other",
+                    "Decline to Answer",
+                ],
+                weights=[6, 2, 1, 0.5, 0.5, 1],
+            )
+            .withColumn(
+                "ethnicity",
+                StringType(),
+                values=[
+                    "Hispanic or Latino",
+                    "Not Hispanic or Latino",
+                    "Decline to Answer",
+                ],
+                weights=[2, 7, 1],
+            )
+            .withColumn(
+                "preferred_language",
+                StringType(),
+                values=["English", "Spanish", "Chinese", "Vietnamese", "Other"],
+                weights=[8, 1.5, 0.3, 0.1, 0.1],
+            )
+            .withColumn(
+                "marital_status",
+                StringType(),
+                values=["Single", "Married", "Divorced", "Widowed", "Separated"],
+                weights=[3, 5, 1.5, 0.8, 0.2],
+            )
+            .withColumn(
+                "emergency_contact_name",
+                StringType(),
+                text=PyfuncText(generate_name, init=init_faker_for_generation),
+            )
+            .withColumn(
+                "emergency_contact_phone",
+                StringType(),
+                text=PyfuncText(generate_phone_number, init=init_faker_for_generation),
+            )
+            .withColumn(
+                "employment_status",
+                StringType(),
+                values=[
+                    "Employed Full-time",
+                    "Employed Part-time",
+                    "Unemployed",
+                    "Retired",
+                    "Disabled",
+                    "Student",
+                ],
+                weights=[5, 2, 1, 2, 0.5, 1],
+            )
+            .withColumn(
+                "blood_type",
+                StringType(),
+                values=["O+", "O-", "A+", "A-", "B+", "B-", "AB+", "AB-"],
+                weights=[37.4, 6.6, 35.7, 6.3, 8.5, 1.5, 3.4, 0.6],
+            )
+            .withColumn(
+                "height_cm",
+                DoubleType(),
+                minValue=150.0,
+                maxValue=200.0,
+                expr="150 + rand() * 50",
+            )
+            .withColumn(
+                "weight_kg",
+                DoubleType(),
+                minValue=50.0,
+                maxValue=150.0,
+                expr="50 + rand() * 100",
+            )
+            .withColumn(
+                "bmi",
+                DoubleType(),
+                expr="round(weight_kg / ((height_cm / 100) * (height_cm / 100)), 1)",
+            )
         )
 
         # 2. Providers table
@@ -453,7 +1019,7 @@ class MedicalNotesSchemaGenerator(BaseSchemaGenerator):
             )
         )
 
-        # 4. Clinical notes table (Unstructured PHI)
+        # 4. Clinical notes table (Unstructured PHI) - Using SOAP and H&P formats
         notes_spec = (
             DataGenerator(
                 self.spark,
@@ -478,22 +1044,77 @@ class MedicalNotesSchemaGenerator(BaseSchemaGenerator):
             .withColumn(
                 "note_type",
                 StringType(),
-                values=["Progress Note", "Discharge Summary", "Consultation"],
-                random=True,
+                values=["SOAP Note", "History and Physical"],
+                weights=[6, 4],
             )
             .withColumn(
                 "note_text",
                 StringType(),
-                text=PyfuncText(generate_clinical_note, init=init_faker_for_generation),
+                expr="""
+                CASE 
+                    WHEN note_type = 'SOAP Note' THEN 'SOAP'
+                    ELSE 'H&P'
+                END
+                """,
+                text=PyfuncText(generate_soap_note, init=init_faker_for_generation),
             )
             .withColumn(
                 "created_datetime",
                 TimestampType(),
-                expr="current_timestamp()",  # - interval cast(rand()*365*2 as int) day",
+                expr=f"timestamp(date_add('{self.config.start_date}', cast(rand()*datediff('{self.config.end_date}', '{self.config.start_date}') as int)))",
             )
         )
 
-        # 5. Lab results table (Structured PHI)
+        # 5. De-identified Clinical Notes table (for PII redaction training)
+        deidentified_notes_spec = (
+            DataGenerator(
+                self.spark,
+                name="deidentified_clinical_notes",
+                rows=self.config.base_rows * 2,
+                partitions=self.config.partitions,
+            )
+            .withColumn(
+                "note_id",
+                IntegerType(),
+                minValue=300000,
+                maxValue=999999,
+                uniqueValues=self.config.base_rows * 2,
+            )
+            .withColumn(
+                "encounter_id",
+                IntegerType(),
+                minValue=200000,
+                maxValue=200000 + self.config.base_rows * 3 - 1,
+                random=True,
+            )
+            .withColumn(
+                "note_type",
+                StringType(),
+                values=["SOAP Note", "History and Physical"],
+                weights=[6, 4],
+            )
+            .withColumn(
+                "deidentified_note_text",
+                StringType(),
+                text=PyfuncText(
+                    generate_deidentified_note, init=init_faker_for_generation
+                ),
+            )
+            .withColumn(
+                "entity_annotations_json",
+                StringType(),
+                text=PyfuncText(
+                    generate_entity_annotations, init=init_faker_for_generation
+                ),
+            )
+            .withColumn(
+                "created_datetime",
+                TimestampType(),
+                expr=f"timestamp(date_add('{self.config.start_date}', cast(rand()*datediff('{self.config.end_date}', '{self.config.start_date}') as int)))",
+            )
+        )
+
+        # 6. Lab results table (Structured PHI) - Expanded to 20 columns with correlations
         lab_results_spec = (
             DataGenerator(
                 self.spark,
@@ -518,22 +1139,176 @@ class MedicalNotesSchemaGenerator(BaseSchemaGenerator):
             .withColumn(
                 "test_name",
                 StringType(),
-                values=["CBC", "BMP", "Lipid Panel", "HbA1c", "TSH"],
-                random=True,
+                values=[
+                    "CBC",
+                    "BMP",
+                    "Lipid Panel",
+                    "HbA1c",
+                    "TSH",
+                    "Creatinine",
+                    "ALT",
+                    "Glucose",
+                ],
+                weights=[2, 2, 1.5, 1, 1, 1.5, 1, 2],
             )
+            # Correlated test values based on test type
             .withColumn(
-                "test_value", DoubleType(), minValue=1.0, maxValue=500.0, random=True
+                "test_value",
+                DoubleType(),
+                expr="""
+                CASE 
+                    WHEN test_name = 'HbA1c' THEN 4.5 + rand() * 7.5
+                    WHEN test_name = 'Glucose' THEN 70 + rand() * 130
+                    WHEN test_name = 'Lipid Panel' THEN 120 + rand() * 180
+                    WHEN test_name = 'Creatinine' THEN 0.5 + rand() * 2.5
+                    WHEN test_name = 'ALT' THEN 10 + rand() * 100
+                    WHEN test_name = 'TSH' THEN 0.5 + rand() * 8.5
+                    WHEN test_name = 'CBC' THEN 4.0 + rand() * 7.0
+                    ELSE 50 + rand() * 100
+                END
+                """,
+            )
+            # Correlated diagnosis codes based on test values
+            .withColumn(
+                "diagnosis_code",
+                StringType(),
+                expr="""
+                CASE 
+                    WHEN test_name = 'HbA1c' AND test_value >= 6.5 THEN 'E11.9'
+                    WHEN test_name = 'HbA1c' AND test_value >= 5.7 THEN 'R73.03'
+                    WHEN test_name = 'Glucose' AND test_value >= 126 THEN 'E11.9'
+                    WHEN test_name = 'Glucose' AND test_value >= 100 THEN 'R73.09'
+                    WHEN test_name = 'Lipid Panel' AND test_value >= 240 THEN 'E78.5'
+                    WHEN test_name = 'Lipid Panel' AND test_value >= 200 THEN 'E78.0'
+                    WHEN test_name = 'Creatinine' AND test_value >= 1.5 THEN 'N18.3'
+                    WHEN test_name = 'ALT' AND test_value >= 60 THEN 'K76.9'
+                    WHEN test_name = 'TSH' AND test_value >= 5.0 THEN 'E03.9'
+                    WHEN test_name = 'TSH' AND test_value <= 0.4 THEN 'E05.90'
+                    ELSE NULL
+                END
+                """,
+            )
+            # Correlated condition severity based on how far out of range
+            .withColumn(
+                "condition_severity",
+                StringType(),
+                expr="""
+                CASE 
+                    WHEN diagnosis_code IN ('E11.9', 'N18.3') AND test_value >= 
+                        CASE WHEN test_name = 'HbA1c' THEN 9.0 
+                             WHEN test_name = 'Glucose' THEN 200
+                             WHEN test_name = 'Creatinine' THEN 2.5
+                        END THEN 'High'
+                    WHEN diagnosis_code IN ('E78.5', 'K76.9') AND test_value >= 
+                        CASE WHEN test_name = 'Lipid Panel' THEN 280
+                             WHEN test_name = 'ALT' THEN 80
+                        END THEN 'High'
+                    WHEN diagnosis_code IS NOT NULL THEN 'Moderate'
+                    ELSE 'Normal'
+                END
+                """,
             )
             .withColumn(
                 "reference_range",
                 StringType(),
-                values=["Normal", "High", "Low", "Critical"],
-                random=True,
+                expr="""
+                CASE 
+                    WHEN condition_severity = 'High' THEN 'Critical'
+                    WHEN condition_severity = 'Moderate' THEN 'High'
+                    WHEN condition_severity = 'Normal' AND diagnosis_code IS NOT NULL THEN 'Borderline'
+                    ELSE 'Normal'
+                END
+                """,
+            )
+            .withColumn(
+                "specimen_type",
+                StringType(),
+                values=["Whole Blood", "Serum", "Plasma", "Urine"],
+                weights=[4, 5, 2, 1],
+            )
+            .withColumn(
+                "collection_method",
+                StringType(),
+                values=["Venipuncture", "Fingerstick", "Arterial Line", "Catheter"],
+                weights=[8, 1.5, 0.3, 0.2],
+            )
+            .withColumn(
+                "lab_name",
+                StringType(),
+                text=PyfuncText(generate_company, init=init_faker_for_generation),
+            )
+            .withColumn("ordering_physician_npi", StringType(), template="##########")
+            .withColumn(
+                "performing_technician",
+                StringType(),
+                text=PyfuncText(generate_name, init=init_faker_for_generation),
+            )
+            .withColumn(
+                "result_units",
+                StringType(),
+                expr="""
+                CASE 
+                    WHEN test_name = 'HbA1c' THEN '%'
+                    WHEN test_name = 'Glucose' THEN 'mg/dL'
+                    WHEN test_name = 'Lipid Panel' THEN 'mg/dL'
+                    WHEN test_name = 'Creatinine' THEN 'mg/dL'
+                    WHEN test_name = 'ALT' THEN 'U/L'
+                    WHEN test_name = 'TSH' THEN 'mIU/L'
+                    WHEN test_name = 'CBC' THEN 'x10^9/L'
+                    ELSE 'mg/dL'
+                END
+                """,
+            )
+            .withColumn(
+                "reference_min",
+                DoubleType(),
+                expr="""
+                CASE 
+                    WHEN test_name = 'HbA1c' THEN 4.0
+                    WHEN test_name = 'Glucose' THEN 70.0
+                    WHEN test_name = 'Lipid Panel' THEN 100.0
+                    WHEN test_name = 'Creatinine' THEN 0.5
+                    WHEN test_name = 'ALT' THEN 7.0
+                    WHEN test_name = 'TSH' THEN 0.4
+                    WHEN test_name = 'CBC' THEN 4.0
+                    ELSE 10.0
+                END
+                """,
+            )
+            .withColumn(
+                "reference_max",
+                DoubleType(),
+                expr="""
+                CASE 
+                    WHEN test_name = 'HbA1c' THEN 5.6
+                    WHEN test_name = 'Glucose' THEN 99.0
+                    WHEN test_name = 'Lipid Panel' THEN 199.0
+                    WHEN test_name = 'Creatinine' THEN 1.2
+                    WHEN test_name = 'ALT' THEN 56.0
+                    WHEN test_name = 'TSH' THEN 4.5
+                    WHEN test_name = 'CBC' THEN 11.0
+                    ELSE 100.0
+                END
+                """,
+            )
+            .withColumn(
+                "abnormal_flag",
+                BooleanType(),
+                expr="test_value < reference_min OR test_value > reference_max",
+            )
+            .withColumn(
+                "critical_flag", BooleanType(), expr="reference_range = 'Critical'"
+            )
+            .withColumn(
+                "fasting_status",
+                StringType(),
+                values=["Fasting", "Non-Fasting", "Unknown"],
+                weights=[3, 6, 1],
             )
             .withColumn(
                 "collected_datetime",
                 TimestampType(),
-                expr="current_timestamp()",  # - interval cast(rand()*365*2 as int) day",
+                expr=f"timestamp(date_add('{self.config.start_date}', cast(rand()*datediff('{self.config.end_date}', '{self.config.start_date}') as int)))",
             )
         )
 
@@ -544,6 +1319,7 @@ class MedicalNotesSchemaGenerator(BaseSchemaGenerator):
             providers_spec,
             encounters_spec,
             notes_spec,
+            deidentified_notes_spec,
             lab_results_spec,
         ]:
             df = spec.build()
@@ -742,7 +1518,7 @@ class HospitalDataSchemaGenerator(BaseSchemaGenerator):
             )
         )
 
-        # 5. Billing records table (PHI with unstructured notes)
+        # 5. Billing records table (PHI with unstructured notes) - Expanded to 20 columns
         billing_spec = (
             DataGenerator(
                 self.spark,
@@ -765,6 +1541,11 @@ class HospitalDataSchemaGenerator(BaseSchemaGenerator):
                 random=True,
             )
             .withColumn(
+                "billing_date",
+                DateType(),
+                expr=f"date_add('{self.config.start_date}', cast(rand()*datediff('{self.config.end_date}', '{self.config.start_date}') as int))",
+            )
+            .withColumn(
                 "total_amount",
                 DoubleType(),
                 minValue=500.0,
@@ -774,15 +1555,84 @@ class HospitalDataSchemaGenerator(BaseSchemaGenerator):
             .withColumn(
                 "insurance_paid",
                 DoubleType(),
-                minValue=0.0,
-                maxValue=180000.0,
-                random=True,
+                expr="total_amount * (0.6 + rand() * 0.35)",
+            )
+            .withColumn(
+                "patient_responsibility",
+                DoubleType(),
+                expr="total_amount - insurance_paid",
             )
             .withColumn(
                 "billing_status",
                 StringType(),
-                values=["Paid", "Pending", "Overdue"],
+                values=["Paid", "Pending", "Overdue", "Partial"],
+                weights=[5, 3, 1, 2],
+            )
+            .withColumn(
+                "payment_method",
+                StringType(),
+                values=[
+                    "Insurance",
+                    "Credit Card",
+                    "Cash",
+                    "Check",
+                    "Payment Plan",
+                    "Pending",
+                ],
+                weights=[6, 2, 0.5, 1, 1.5, 2],
+            )
+            .withColumn("transaction_id", StringType(), template="TXN-###########")
+            .withColumn("billing_provider_npi", StringType(), template="##########")
+            .withColumn(
+                "primary_diagnosis_code",
+                StringType(),
+                values=["E11.9", "I10", "J44.9", "N18.3", "I25.10", "E78.5", "F41.9"],
                 random=True,
+            )
+            .withColumn(
+                "secondary_diagnosis_code",
+                StringType(),
+                values=["E78.0", "E66.9", "K21.9", "M79.3", "R53.83", "NULL"],
+                weights=[1, 1, 1, 1, 1, 3],
+            )
+            .withColumn(
+                "procedure_code",
+                StringType(),
+                values=["99213", "99214", "99215", "99285", "99291", "36415"],
+                random=True,
+            )
+            .withColumn(
+                "insurance_policy_number", StringType(), template="POL-#########"
+            )
+            .withColumn("insurance_group_number", StringType(), template="GRP-######")
+            .withColumn(
+                "copay_amount",
+                DoubleType(),
+                values=[0, 15, 25, 35, 50, 75],
+                weights=[2, 4, 4, 3, 2, 1],
+            )
+            .withColumn(
+                "deductible_amount",
+                DoubleType(),
+                expr="CASE WHEN rand() < 0.3 THEN 0 ELSE 500 + rand() * 2500 END",
+            )
+            .withColumn(
+                "amount_paid_to_date",
+                DoubleType(),
+                expr="""
+                CASE 
+                    WHEN billing_status = 'Paid' THEN total_amount
+                    WHEN billing_status = 'Partial' THEN total_amount * (0.3 + rand() * 0.5)
+                    WHEN billing_status = 'Pending' THEN 0
+                    WHEN billing_status = 'Overdue' THEN total_amount * (rand() * 0.3)
+                    ELSE 0
+                END
+                """,
+            )
+            .withColumn(
+                "outstanding_balance",
+                DoubleType(),
+                expr="total_amount - amount_paid_to_date",
             )
             .withColumn(
                 "billing_notes",
@@ -969,7 +1819,7 @@ class ClinicalTrialsSchemaGenerator(BaseSchemaGenerator):
             )
         )
 
-        # 5. Lab measurements table (Structured PHI)
+        # 5. Lab measurements table (Structured PHI) - Expanded to 20 columns
         lab_measurements_spec = (
             DataGenerator(
                 self.spark,
@@ -994,17 +1844,157 @@ class ClinicalTrialsSchemaGenerator(BaseSchemaGenerator):
             .withColumn(
                 "visit_name",
                 StringType(),
-                values=["Screening", "Baseline", "Week 4", "End of Study"],
-                random=True,
+                values=[
+                    "Screening",
+                    "Baseline",
+                    "Week 4",
+                    "Week 8",
+                    "Week 12",
+                    "End of Study",
+                ],
+                weights=[1, 1.5, 1.2, 1.2, 1.2, 1],
+            )
+            .withColumn(
+                "visit_date",
+                DateType(),
+                expr=f"date_add('{self.config.start_date}', cast(rand()*datediff('{self.config.end_date}', '{self.config.start_date}') as int))",
             )
             .withColumn(
                 "lab_test",
                 StringType(),
-                values=["Hemoglobin", "WBC Count", "ALT"],
-                random=True,
+                values=["Hemoglobin", "WBC Count", "ALT", "AST", "Creatinine", "BUN"],
+                weights=[2, 2, 1.5, 1.5, 1, 1],
             )
             .withColumn(
-                "result_value", DoubleType(), minValue=1.0, maxValue=300.0, random=True
+                "result_value",
+                DoubleType(),
+                expr="""
+                CASE 
+                    WHEN lab_test = 'Hemoglobin' THEN 10 + rand() * 8
+                    WHEN lab_test = 'WBC Count' THEN 3 + rand() * 9
+                    WHEN lab_test = 'ALT' THEN 10 + rand() * 80
+                    WHEN lab_test = 'AST' THEN 10 + rand() * 80
+                    WHEN lab_test = 'Creatinine' THEN 0.5 + rand() * 2
+                    WHEN lab_test = 'BUN' THEN 7 + rand() * 23
+                    ELSE 50 + rand() * 100
+                END
+                """,
+            )
+            .withColumn(
+                "result_units",
+                StringType(),
+                expr="""
+                CASE 
+                    WHEN lab_test = 'Hemoglobin' THEN 'g/dL'
+                    WHEN lab_test = 'WBC Count' THEN 'x10^9/L'
+                    WHEN lab_test IN ('ALT', 'AST') THEN 'U/L'
+                    WHEN lab_test = 'Creatinine' THEN 'mg/dL'
+                    WHEN lab_test = 'BUN' THEN 'mg/dL'
+                    ELSE 'units'
+                END
+                """,
+            )
+            .withColumn(
+                "reference_min",
+                DoubleType(),
+                expr="""
+                CASE 
+                    WHEN lab_test = 'Hemoglobin' THEN 12.0
+                    WHEN lab_test = 'WBC Count' THEN 4.0
+                    WHEN lab_test = 'ALT' THEN 7.0
+                    WHEN lab_test = 'AST' THEN 10.0
+                    WHEN lab_test = 'Creatinine' THEN 0.6
+                    WHEN lab_test = 'BUN' THEN 7.0
+                    ELSE 10.0
+                END
+                """,
+            )
+            .withColumn(
+                "reference_max",
+                DoubleType(),
+                expr="""
+                CASE 
+                    WHEN lab_test = 'Hemoglobin' THEN 16.0
+                    WHEN lab_test = 'WBC Count' THEN 11.0
+                    WHEN lab_test = 'ALT' THEN 56.0
+                    WHEN lab_test = 'AST' THEN 40.0
+                    WHEN lab_test = 'Creatinine' THEN 1.2
+                    WHEN lab_test = 'BUN' THEN 20.0
+                    ELSE 100.0
+                END
+                """,
+            )
+            .withColumn(
+                "abnormal_flag",
+                BooleanType(),
+                expr="result_value < reference_min OR result_value > reference_max",
+            )
+            .withColumn(
+                "specimen_type",
+                StringType(),
+                values=["Whole Blood", "Serum", "Plasma"],
+                weights=[3, 5, 2],
+            )
+            .withColumn(
+                "collection_time",
+                TimestampType(),
+                expr=f"timestamp(date_add('{self.config.start_date}', cast(rand()*datediff('{self.config.end_date}', '{self.config.start_date}') as int)))",
+            )
+            .withColumn(
+                "analysis_time",
+                TimestampType(),
+                expr="collection_time + INTERVAL cast(1 + rand() * 48 as int) HOUR",
+            )
+            .withColumn(
+                "lab_technician",
+                StringType(),
+                text=PyfuncText(generate_name, init=init_faker_for_generation),
+            )
+            .withColumn(
+                "lab_location",
+                StringType(),
+                text=PyfuncText(
+                    generate_city_medical_center, init=init_faker_for_generation
+                ),
+            )
+            .withColumn(
+                "fasting_status",
+                StringType(),
+                values=["Fasting", "Non-Fasting", "Unknown"],
+                weights=[4, 5, 1],
+            )
+            .withColumn(
+                "sample_quality",
+                StringType(),
+                values=["Acceptable", "Hemolyzed", "Lipemic", "Icteric"],
+                weights=[9, 0.5, 0.3, 0.2],
+            )
+            .withColumn(
+                "retest_flag",
+                BooleanType(),
+                expr="CASE WHEN sample_quality != 'Acceptable' THEN true ELSE rand() < 0.05 END",
+            )
+            .withColumn(
+                "clinically_significant",
+                BooleanType(),
+                expr="abnormal_flag AND (result_value < reference_min * 0.7 OR result_value > reference_max * 1.3)",
+            )
+            .withColumn(
+                "reviewed_by_physician",
+                StringType(),
+                text=PyfuncText(generate_dr_name, init=init_faker_for_generation),
+            )
+            .withColumn(
+                "comments",
+                StringType(),
+                expr="""
+                CASE 
+                    WHEN clinically_significant = true THEN 'Clinically significant abnormality - follow-up required'
+                    WHEN abnormal_flag = true THEN 'Mild abnormality noted'
+                    WHEN retest_flag = true THEN 'Retest performed due to quality issues'
+                    ELSE 'Within normal limits'
+                END
+                """,
             )
         )
 
@@ -1199,7 +2189,7 @@ class LivestockResearchSchemaGenerator(BaseSchemaGenerator):
             )
         )
 
-        # 5. Veterinary observations table (Unstructured text with some PII)
+        # 5. Veterinary observations table (Unstructured text with some PII) - Expanded to 20 columns with correlations
         observations_spec = (
             DataGenerator(
                 self.spark,
@@ -1232,17 +2222,172 @@ class LivestockResearchSchemaGenerator(BaseSchemaGenerator):
                 random=True,
             )
             .withColumn(
+                "observation_date",
+                DateType(),
+                expr=f"date_add('{self.config.start_date}', cast(rand()*datediff('{self.config.end_date}', '{self.config.start_date}') as int))",
+            )
+            # Body weight with realistic distribution - correlated with other health metrics
+            .withColumn(
                 "body_weight_kg",
                 DoubleType(),
-                minValue=5.0,
-                maxValue=800.0,
-                random=True,
+                expr="50 + abs(randn() * 150)",  # Normal distribution
             )
+            # Temperature correlated with clinical signs
+            .withColumn(
+                "temperature_celsius",
+                DoubleType(),
+                expr="37.5 + randn() * 0.8 + CASE WHEN rand() < 0.15 THEN 1.5 ELSE 0 END",  # Fever in ~15%
+            )
+            # Heart rate with species variation and correlation to temperature
+            .withColumn(
+                "heart_rate_bpm",
+                IntegerType(),
+                expr="cast(70 + randn() * 20 + CASE WHEN temperature_celsius > 39.0 THEN 15 ELSE 0 END as int)",
+            )
+            # Respiratory rate correlated with heart rate and temperature
+            .withColumn(
+                "respiratory_rate_pm",
+                IntegerType(),
+                expr="cast(20 + randn() * 8 + CASE WHEN temperature_celsius > 39.0 THEN 8 ELSE 0 END as int)",
+            )
+            # Clinical signs correlated with temperature and weight
             .withColumn(
                 "clinical_signs",
                 StringType(),
-                values=["Normal", "Lethargy", "Decreased Appetite"],
-                random=True,
+                expr="""
+                CASE 
+                    WHEN temperature_celsius > 39.5 THEN 'Fever and Lethargy'
+                    WHEN temperature_celsius > 39.0 THEN 'Mild Lethargy'
+                    WHEN body_weight_kg < 80 AND rand() < 0.3 THEN 'Decreased Appetite'
+                    WHEN rand() < 0.15 THEN 'Decreased Appetite'
+                    ELSE 'Normal'
+                END
+                """,
+            )
+            .withColumn(
+                "mucous_membrane_color",
+                StringType(),
+                expr="""
+                CASE 
+                    WHEN clinical_signs LIKE '%Lethargy%' AND rand() < 0.4 THEN 'Pale Pink'
+                    WHEN rand() < 0.05 THEN 'Pale'
+                    ELSE 'Pink'
+                END
+                """,
+            )
+            .withColumn(
+                "capillary_refill_time",
+                StringType(),
+                values=["<2 seconds", "2 seconds", ">2 seconds"],
+                weights=[8, 1.5, 0.5],
+            )
+            .withColumn(
+                "hydration_status",
+                StringType(),
+                expr="""
+                CASE 
+                    WHEN clinical_signs LIKE '%Appetite%' AND rand() < 0.3 THEN 'Mildly Dehydrated'
+                    WHEN rand() < 0.05 THEN 'Dehydrated'
+                    ELSE 'Normal'
+                END
+                """,
+            )
+            .withColumn(
+                "body_condition_score",
+                IntegerType(),
+                expr="""
+                CASE 
+                    WHEN body_weight_kg < 80 THEN cast(2 + rand() * 2 as int)
+                    WHEN body_weight_kg > 500 THEN cast(3 + rand() * 2 as int)
+                    ELSE cast(3 + rand() * 2 as int)
+                END
+                """,
+            )
+            .withColumn(
+                "appetite_assessment",
+                StringType(),
+                expr="""
+                CASE 
+                    WHEN clinical_signs LIKE '%Appetite%' THEN 'Decreased'
+                    WHEN rand() < 0.1 THEN 'Increased'
+                    ELSE 'Normal'
+                END
+                """,
+            )
+            # Treatment correlated with clinical signs
+            .withColumn(
+                "treatment_administered",
+                BooleanType(),
+                expr="clinical_signs != 'Normal' OR rand() < 0.2",
+            )
+            .withColumn(
+                "medication_name",
+                StringType(),
+                text=PyfuncText(generate_medication, init=init_faker_for_generation),
+            )
+            .withColumn(
+                "dosage_mg",
+                DoubleType(),
+                expr="CASE WHEN treatment_administered THEN 5 + rand() * 495 ELSE NULL END",
+            )
+            .withColumn(
+                "route_of_administration",
+                StringType(),
+                expr="""
+                CASE 
+                    WHEN treatment_administered THEN 
+                        CASE 
+                            WHEN rand() < 0.4 THEN 'Intramuscular (IM)'
+                            WHEN rand() < 0.6 THEN 'Oral (PO)'
+                            WHEN rand() < 0.8 THEN 'Subcutaneous (SC)'
+                            ELSE 'Intravenous (IV)'
+                        END
+                    ELSE NULL
+                END
+                """,
+            )
+            .withColumn(
+                "adverse_reactions",
+                StringType(),
+                expr="""
+                CASE 
+                    WHEN treatment_administered AND rand() < 0.05 THEN 'Mild injection site reaction'
+                    WHEN treatment_administered AND rand() < 0.02 THEN 'Transient hypersensitivity'
+                    ELSE 'None observed'
+                END
+                """,
+            )
+            # Treatment outcome correlated with severity of signs and treatment
+            .withColumn(
+                "treatment_outcome",
+                StringType(),
+                expr="""
+                CASE 
+                    WHEN NOT treatment_administered THEN 'Not Applicable'
+                    WHEN clinical_signs = 'Fever and Lethargy' AND rand() < 0.7 THEN 'Improving'
+                    WHEN clinical_signs = 'Fever and Lethargy' THEN 'Stable'
+                    WHEN clinical_signs != 'Normal' AND rand() < 0.85 THEN 'Resolved'
+                    WHEN clinical_signs != 'Normal' THEN 'Improving'
+                    ELSE 'Not Applicable'
+                END
+                """,
+            )
+            .withColumn(
+                "follow_up_required",
+                BooleanType(),
+                expr="""
+                CASE 
+                    WHEN clinical_signs = 'Fever and Lethargy' THEN true
+                    WHEN treatment_outcome IN ('Stable', 'Improving') THEN true
+                    WHEN adverse_reactions != 'None observed' THEN true
+                    ELSE rand() < 0.1
+                END
+                """,
+            )
+            .withColumn(
+                "veterinarian_name",
+                StringType(),
+                text=PyfuncText(generate_dr_name, init=init_faker_for_generation),
             )
             .withColumn(
                 "observation_notes",
