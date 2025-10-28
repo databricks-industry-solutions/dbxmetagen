@@ -2312,7 +2312,7 @@ class LivestockResearchSchemaGenerator(BaseSchemaGenerator):
             .withColumn(
                 "capillary_refill_time",
                 StringType(),
-                values=["<2 seconds", "2 seconds", ">2 seconds"],
+                values=["Less than 2 seconds", "2 seconds", "Greater than 2 seconds"],
                 weights=[8, 1.5, 0.5],
             )
             .withColumn(
