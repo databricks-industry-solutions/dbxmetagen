@@ -1960,7 +1960,7 @@ class ClinicalTrialsSchemaGenerator(BaseSchemaGenerator):
             .withColumn(
                 "collection_time",
                 TimestampType(),
-                expr=f"timestamp(date_add('{self.config.start_date}', cast(rand()*datediff('{self.config.end_date}', '{self.config.start_date}') as int)))",
+                expr=f"to_timestamp(date_add('{self.config.start_date}', cast(rand()*datediff('{self.config.end_date}', '{self.config.start_date}') as int)))",
             )
             .withColumn(
                 "lab_technician",
