@@ -692,6 +692,14 @@ def generate_entity_annotations(context, row):
     return json.dumps(annotations)
 
 
+def generate_clinical_note_mixed(context, _):
+    """Generate either SOAP or H&P note randomly"""
+    if context.faker.random.random() < 0.6:  # 60% SOAP, 40% H&P
+        return generate_soap_note(context, None)
+    else:
+        return generate_hp_note(context, None)
+
+
 def generate_billing_note(context, _):
     """Generate billing note text"""
     return f"""BILLING NOTE
@@ -1050,13 +1058,9 @@ class MedicalNotesSchemaGenerator(BaseSchemaGenerator):
             .withColumn(
                 "note_text",
                 StringType(),
-                expr="""
-                CASE 
-                    WHEN note_type = 'SOAP Note' THEN 'SOAP'
-                    ELSE 'H&P'
-                END
-                """,
-                text=PyfuncText(generate_soap_note, init=init_faker_for_generation),
+                text=PyfuncText(
+                    generate_clinical_note_mixed, init=init_faker_for_generation
+                ),
             )
             .withColumn(
                 "created_datetime",
@@ -1155,6 +1159,7 @@ class MedicalNotesSchemaGenerator(BaseSchemaGenerator):
             .withColumn(
                 "test_value",
                 DoubleType(),
+                baseColumn="test_name",
                 expr="""
                 CASE 
                     WHEN test_name = 'HbA1c' THEN 4.5 + rand() * 7.5
@@ -1172,6 +1177,7 @@ class MedicalNotesSchemaGenerator(BaseSchemaGenerator):
             .withColumn(
                 "diagnosis_code",
                 StringType(),
+                baseColumn=["test_name", "test_value"],
                 expr="""
                 CASE 
                     WHEN test_name = 'HbA1c' AND test_value >= 6.5 THEN 'E11.9'
@@ -1192,6 +1198,7 @@ class MedicalNotesSchemaGenerator(BaseSchemaGenerator):
             .withColumn(
                 "condition_severity",
                 StringType(),
+                baseColumn=["test_name", "test_value", "diagnosis_code"],
                 expr="""
                 CASE 
                     WHEN diagnosis_code IN ('E11.9', 'N18.3') AND test_value >= 
@@ -1211,6 +1218,7 @@ class MedicalNotesSchemaGenerator(BaseSchemaGenerator):
             .withColumn(
                 "reference_range",
                 StringType(),
+                baseColumn=["condition_severity", "diagnosis_code"],
                 expr="""
                 CASE 
                     WHEN condition_severity = 'High' THEN 'Critical'
@@ -1246,6 +1254,7 @@ class MedicalNotesSchemaGenerator(BaseSchemaGenerator):
             .withColumn(
                 "result_units",
                 StringType(),
+                baseColumn="test_name",
                 expr="""
                 CASE 
                     WHEN test_name = 'HbA1c' THEN '%'
@@ -1262,6 +1271,7 @@ class MedicalNotesSchemaGenerator(BaseSchemaGenerator):
             .withColumn(
                 "reference_min",
                 DoubleType(),
+                baseColumn="test_name",
                 expr="""
                 CASE 
                     WHEN test_name = 'HbA1c' THEN 4.0
@@ -1278,6 +1288,7 @@ class MedicalNotesSchemaGenerator(BaseSchemaGenerator):
             .withColumn(
                 "reference_max",
                 DoubleType(),
+                baseColumn="test_name",
                 expr="""
                 CASE 
                     WHEN test_name = 'HbA1c' THEN 5.6
@@ -1294,10 +1305,14 @@ class MedicalNotesSchemaGenerator(BaseSchemaGenerator):
             .withColumn(
                 "abnormal_flag",
                 BooleanType(),
+                baseColumn=["test_value", "reference_min", "reference_max"],
                 expr="test_value < reference_min OR test_value > reference_max",
             )
             .withColumn(
-                "critical_flag", BooleanType(), expr="reference_range = 'Critical'"
+                "critical_flag",
+                BooleanType(),
+                baseColumn="reference_range",
+                expr="reference_range = 'Critical'",
             )
             .withColumn(
                 "fasting_status",
@@ -1619,6 +1634,7 @@ class HospitalDataSchemaGenerator(BaseSchemaGenerator):
             .withColumn(
                 "amount_paid_to_date",
                 DoubleType(),
+                baseColumn=["billing_status", "total_amount"],
                 expr="""
                 CASE 
                     WHEN billing_status = 'Paid' THEN total_amount
@@ -1632,6 +1648,7 @@ class HospitalDataSchemaGenerator(BaseSchemaGenerator):
             .withColumn(
                 "outstanding_balance",
                 DoubleType(),
+                baseColumn=["total_amount", "amount_paid_to_date"],
                 expr="total_amount - amount_paid_to_date",
             )
             .withColumn(
@@ -1868,6 +1885,7 @@ class ClinicalTrialsSchemaGenerator(BaseSchemaGenerator):
             .withColumn(
                 "result_value",
                 DoubleType(),
+                baseColumn="lab_test",
                 expr="""
                 CASE 
                     WHEN lab_test = 'Hemoglobin' THEN 10 + rand() * 8
@@ -1883,6 +1901,7 @@ class ClinicalTrialsSchemaGenerator(BaseSchemaGenerator):
             .withColumn(
                 "result_units",
                 StringType(),
+                baseColumn="lab_test",
                 expr="""
                 CASE 
                     WHEN lab_test = 'Hemoglobin' THEN 'g/dL'
@@ -1897,6 +1916,7 @@ class ClinicalTrialsSchemaGenerator(BaseSchemaGenerator):
             .withColumn(
                 "reference_min",
                 DoubleType(),
+                baseColumn="lab_test",
                 expr="""
                 CASE 
                     WHEN lab_test = 'Hemoglobin' THEN 12.0
@@ -1912,6 +1932,7 @@ class ClinicalTrialsSchemaGenerator(BaseSchemaGenerator):
             .withColumn(
                 "reference_max",
                 DoubleType(),
+                baseColumn="lab_test",
                 expr="""
                 CASE 
                     WHEN lab_test = 'Hemoglobin' THEN 16.0
@@ -1927,6 +1948,7 @@ class ClinicalTrialsSchemaGenerator(BaseSchemaGenerator):
             .withColumn(
                 "abnormal_flag",
                 BooleanType(),
+                baseColumn=["result_value", "reference_min", "reference_max"],
                 expr="result_value < reference_min OR result_value > reference_max",
             )
             .withColumn(
@@ -1972,11 +1994,18 @@ class ClinicalTrialsSchemaGenerator(BaseSchemaGenerator):
             .withColumn(
                 "retest_flag",
                 BooleanType(),
+                baseColumn="sample_quality",
                 expr="CASE WHEN sample_quality != 'Acceptable' THEN true ELSE rand() < 0.05 END",
             )
             .withColumn(
                 "clinically_significant",
                 BooleanType(),
+                baseColumn=[
+                    "abnormal_flag",
+                    "result_value",
+                    "reference_min",
+                    "reference_max",
+                ],
                 expr="abnormal_flag AND (result_value < reference_min * 0.7 OR result_value > reference_max * 1.3)",
             )
             .withColumn(
@@ -1987,6 +2016,7 @@ class ClinicalTrialsSchemaGenerator(BaseSchemaGenerator):
             .withColumn(
                 "comments",
                 StringType(),
+                baseColumn=["clinically_significant", "abnormal_flag", "retest_flag"],
                 expr="""
                 CASE 
                     WHEN clinically_significant = true THEN 'Clinically significant abnormality - follow-up required'
