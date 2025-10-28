@@ -14,36 +14,30 @@
 # MAGIC
 # MAGIC ## Available Schemas
 # MAGIC
-# MAGIC ### 1. Medical Notes (6 tables)
-# MAGIC Patient demographics, clinical encounters, detailed SOAP/H&P notes with PII/PHI, de-identified notes with entity annotations, and lab results with correlated diagnoses.
+# MAGIC **Medical Notes** (6 tables): Patients, providers, encounters, clinical notes, de-identified notes, lab results
 # MAGIC
-# MAGIC ### 2. Hospital Data (5 tables)
-# MAGIC Hospital staff, room assignments, patient admissions, medical procedures, and billing records with insurance information.
+# MAGIC **Hospital Data** (5 tables): Staff, rooms, admissions, procedures, billing
 # MAGIC
-# MAGIC ### 3. Clinical Trials (5 tables)
-# MAGIC Trial metadata, study sites, participant enrollment, adverse events, and lab measurements across study visits.
+# MAGIC **Clinical Trials** (5 tables): Trials, sites, participants, adverse events, lab measurements
 # MAGIC
-# MAGIC ### 4. Livestock Research (5 tables)
-# MAGIC Research facilities, veterinarian records, animal subjects, study protocols, and detailed veterinary observations with correlated vital signs.
+# MAGIC **Livestock Research** (5 tables): Facilities, researchers, animals, studies, veterinary observations
 # MAGIC
 # MAGIC ## How to Use
-# MAGIC 1. **Set Parameters**: Configure the output catalog name, select which schema(s) to generate, and optionally adjust the base row count (default: 1000)
-# MAGIC 2. **Run All Cells**: Execute cells in order from top to bottom
-# MAGIC 3. **Review Output**: Tables will be created in Unity Catalog under the specified catalog and schema names
-# MAGIC 4. **Query Data**: Use the example queries at the end to explore the generated data
+# MAGIC 1. Run the notebook. It will fail the first time and prompt you to complete required widgets.
+# MAGIC 2. Set the output catalog name and select which schema(s) to generate
+# MAGIC 3. Optionally adjust base row count (default: 1000)
+# MAGIC 4. Run all cells in order
+# MAGIC 5. Query the generated tables using the examples at the end
 # MAGIC
-# MAGIC Note: Partition count is automatically calculated based on row count for optimal performance (1 partition per 250 rows, min 4, max 100).
+# MAGIC Partition count is automatically calculated (1 per 250 rows, min 4, max 100).
 # MAGIC
 # MAGIC ## Key Features
-# MAGIC - **Realistic Clinical Notes**: SOAP and H&P format notes with detailed PII/PHI including names, dates, SSNs, addresses
-# MAGIC - **Correlated Data**: Lab values correlate with diagnoses, vital signs correlate with clinical signs, creating realistic patterns for ML training
-# MAGIC - **De-identification Ground Truth**: Separate table with masked PII and precise entity annotations for training redaction models
-# MAGIC - **Extended Schemas**: Key tables expanded to 20 columns with realistic healthcare data points
+# MAGIC - Realistic clinical notes in SOAP and H&P formats with detailed PII/PHI
+# MAGIC - Correlated data for ML training (lab values with diagnoses, vital signs with outcomes)
+# MAGIC - De-identified notes with precise entity annotations for training redaction models
+# MAGIC - Extended schemas with 20+ columns per key table
 # MAGIC
-# MAGIC ## Notes
-# MAGIC - Data is generated using the dbldatagen library with custom Faker providers for medical terminology
-# MAGIC - All correlations include realistic noise to prevent perfect linear relationships
-# MAGIC - Generated data is synthetic and does not represent real individuals or medical records
+# MAGIC All data is synthetic and generated using dbldatagen with custom Faker providers.
 
 # COMMAND ----------
 
@@ -55,7 +49,6 @@ dbutils.library.restartPython()
 
 # COMMAND ----------
 
-# Widget Configuration
 dbutils.widgets.text("catalog_name", "", "Output Catalog Name (Required)")
 dbutils.widgets.dropdown(
     "schema_selection",
@@ -74,7 +67,6 @@ if catalog_name == "":
 if schema_selection == "":
     raise ValueError("Schema selection is required")
 
-# Parse base_rows and calculate partitions
 try:
     base_rows = int(base_rows_str)
     if base_rows <= 0:
@@ -109,9 +101,6 @@ from dbldatagen import DataGenerator, PyfuncText
 from faker import Faker
 from faker.providers import BaseProvider
 
-# logging.basicConfig(level=logging.INFO)
-# logger = logging.getLogger(__name__)
-
 
 @dataclass
 class SchemaConfig:
@@ -141,19 +130,112 @@ class MedicalProvider(BaseProvider):
     """Custom Faker provider for medical data"""
 
     medical_conditions = [
-        "Hypertension",
-        "Type 2 Diabetes",
-        "Coronary Artery Disease",
-        "Asthma",
-        "COPD",
-        "Pneumonia",
-        "Myocardial Infarction",
-        "Atrial Fibrillation",
-        "Heart Failure",
-        "Acute Renal Failure",
-        "Sepsis",
-        "Stroke",
-        "Pulmonary Embolism",
+        "Acute Nasopharyngitis",
+        "Acute Pharyngitis",
+        "Acute Bronchitis",
+        "Chronic Bronchitis",
+        "Allergic Rhinitis",
+        "Viral Infection, Unspecified",
+        "Urinary Tract Infection",
+        "Type 1 Diabetes",
+        "Type 2 Diabetes with Hyperglycemia",
+        "Hypercholesterolemia",
+        "Hyperlipidemia",
+        "Hypothyroidism",
+        "Obesity",
+        "Nutritional Deficiency",
+        "Hypertensive Heart Disease",
+        "Angina Pectoris",
+        "Atherosclerotic Heart Disease",
+        "Unstable Angina",
+        "Low Back Pain",
+        "Joint Pain",
+        "Osteoarthritis",
+        "Rotator Cuff Tear",
+        "Knee Osteoarthritis",
+        "Myalgia",
+        "Major Depressive Disorder",
+        "Generalized Anxiety Disorder",
+        "Adjustment Disorder",
+        "Eating Disorder",
+        "Attention-Deficit Hyperactivity Disorder",
+        "Tuberculosis",
+        "Syphilis",
+        "Chlamydia",
+        "Gonorrhea",
+        "HIV/AIDS",
+        "Diarrheal Diseases",
+        "Pertussis",
+        "Poliomyelitis",
+        "Diphtheria",
+        "Measles",
+        "Tetanus",
+        "Meningitis",
+        "Hepatitis B",
+        "Hepatitis C",
+        "Malaria",
+        "Leprosy",
+        "Dengue Fever",
+        "Low Birth Weight",
+        "Iron-Deficiency Anemia",
+        "Protein-Energy Malnutrition",
+        "Melanoma",
+        "Non-Melanoma Skin Cancer",
+        "Breast Cancer",
+        "Cervical Cancer",
+        "Ovarian Cancer",
+        "Prostate Cancer",
+        "Kidney Cancer",
+        "Bladder Cancer",
+        "Brain Tumor",
+        "Lung Cancer",
+        "Thyroid Cancer",
+        "Hodgkin Lymphoma",
+        "Non-Hodgkin Lymphoma",
+        "Multiple Myeloma",
+        "Leukemia",
+        "Other Malignant Neoplasm",
+        "Epilepsy",
+        "Alcohol Use Disorder",
+        "Alzheimer's Disease",
+        "Parkinson's Disease",
+        "Multiple Sclerosis",
+        "Drug Use Disorder",
+        "PTSD",
+        "Obsessive-Compulsive Disorder",
+        "Panic Disorder",
+        "Insomnia",
+        "Migraine",
+        "Intellectual Disability",
+        "Gout",
+        "Peptic Ulcer Disease",
+        "Irritable Bowel Syndrome",
+        "Celiac Disease",
+        "Crohn's Disease",
+        "Ulcerative Colitis",
+        "Liver Cirrhosis",
+        "Gallstones",
+        "Pancreatitis",
+        "Glaucoma",
+        "Cataract",
+        "Macular Degeneration",
+        "Retinitis Pigmentosa",
+        "Otitis Media",
+        "Sinusitis",
+        "Tonsillitis",
+        "Appendicitis",
+        "Gallbladder Disease",
+        "Renal Calculi",
+        "Benign Prostatic Hyperplasia",
+        "Endometriosis",
+        "Polycystic Ovary Syndrome",
+        "Fibromyalgia",
+        "Osteoporosis",
+        "Scoliosis",
+        "Rheumatoid Arthritis",
+        "Systemic Lupus Erythematosus",
+        "Psoriasis",
+        "Eczema",
     ]
 
     medications = [
@@ -167,6 +249,95 @@ class MedicalProvider(BaseProvider):
         "Warfarin",
         "Insulin",
         "Prednisone",
+        "ABILIFY",
+        "ADVAIR DISKUS",
+        "AMARYL",
+        "AMOXIL",
+        "ARICEPT",
+        "AUGMENTIN",
+        "AVAPRO",
+        "BACTRIM DS",
+        "BACTROBAN",
+        "BENICAR",
+        "CATAPRES",
+        "CELEBREX",
+        "CELEXA",
+        "CIPRO",
+        "COREG",
+        "COUMADIN",
+        "COZAAR",
+        "CRESTOR",
+        "CYMBALTA",
+        "DELTASONE",
+        "DEPAKOTE",
+        "DESYREL",
+        "DIFLUCAN",
+        "DILANTIN",
+        "DIOVAN",
+        "EFFEXOR XR",
+        "ELIQUIS",
+        "FLAGYL",
+        "FLEXERIL",
+        "FLOMAX",
+        "FLONASE",
+        "FLOVENT HFA",
+        "FOLVITE",
+        "FOSAMAX",
+        "GLUCOPHAGE",
+        "GLUCOPHAGE XR",
+        "GLUCOTROL XL",
+        "HYDRODIURIL",
+        "IMITREX",
+        "JANUVIA",
+        "K-DUR",
+        "KEFLEX",
+        "LAMICTAL",
+        "LAMISIL",
+        "LASIX",
+        "LEXAPRO",
+        "LIPITOR",
+        "LOPRESSOR",
+        "LYRICA",
+        "MACROBID",
+        "MAXZIDE",
+        "MOBIC",
+        "MOTRIN",
+        "NAPROSYN",
+        "NEURONTIN",
+        "NEXIUM",
+        "NORVASC",
+        "PAXIL",
+        "PLAVIX",
+        "PRAVACHOL",
+        "PRILOSEC",
+        "PROCARDIA XL",
+        "PROSCAR",
+        "PROTONIX",
+        "PROZAC",
+        "RISPERDAL",
+        "SEROQUEL",
+        "SINGULAIR",
+        "SYNTHROID",
+        "TENORMIN",
+        "TOPAMAX",
+        "TOPROL XL",
+        "TRICOR",
+        "V-CILLIN-K",
+        "VALTREX",
+        "VASOTEC",
+        "VENTOLIN INHALER",
+        "VIBRAMYCIN",
+        "WELLBUTRIN SR",
+        "XALATAN",
+        "XARELTO",
+        "ZESTORETIC",
+        "ZESTRIL",
+        "ZETIA",
+        "ZITHROMAX",
+        "ZOCOR",
+        "ZOLOFT",
+        "ZYLOPRIM",
+        "ZYPREXA",
     ]
 
     departments = [
@@ -228,11 +399,10 @@ class LivestockProvider(BaseProvider):
         )
 
 
-# Standalone functions for PyfuncText to avoid serialization issues
+# Used separate standalone functions for PyfuncText to avoid serialization issues
 def init_faker_for_generation(context):
     """Initialize faker context for PyfuncText - standalone function"""
     context.faker = Faker()
-    # Add custom providers
     context.faker.add_provider(MedicalProvider)
     context.faker.add_provider(ClinicalTrialProvider)
     context.faker.add_provider(LivestockProvider)
@@ -616,8 +786,6 @@ def deidentify_text_with_annotations(text: str) -> Tuple[str, List[Dict]]:
                 }
             )
 
-    # Name patterns - more complex, done separately
-    # Look for "Name: " pattern and "Dr. Name" pattern
     name_patterns = [
         r"Name:\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)",
         r"Dr\.\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)",
@@ -641,7 +809,6 @@ def deidentify_text_with_annotations(text: str) -> Tuple[str, List[Dict]]:
                 }
             )
 
-    # Address patterns - look for "Address:" pattern
     address_pattern = r"(?:Address|Home Address):\s+([^\\n]+(?:,\s*[^\\n]+)*)"
     for match in re.finditer(address_pattern, text):
         entities_to_mask.append(
@@ -653,7 +820,6 @@ def deidentify_text_with_annotations(text: str) -> Tuple[str, List[Dict]]:
             }
         )
 
-    # Location patterns (hospitals, cities in context)
     location_patterns = [
         r"([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\s+(?:Medical Center|Memorial Hospital|Hospital)",
     ]
@@ -684,7 +850,6 @@ def deidentify_text_with_annotations(text: str) -> Tuple[str, List[Dict]]:
         if not overlap:
             filtered_entities.append(entity)
 
-    # Now mask the text and build annotations
     masked_text = text
     final_annotations = []
 
@@ -715,7 +880,6 @@ def deidentify_text_with_annotations(text: str) -> Tuple[str, List[Dict]]:
         # Replace in text
         masked_text = masked_text[:original_start] + mask + masked_text[original_end:]
 
-        # Calculate new positions after masking (working backwards)
         annotation = {
             "entity": original_entity,
             "entity_type": entity_type,
@@ -727,7 +891,6 @@ def deidentify_text_with_annotations(text: str) -> Tuple[str, List[Dict]]:
         }
         final_annotations.append(annotation)
 
-    # Sort annotations by start position for output
     final_annotations.sort(key=lambda x: x["start"])
 
     return masked_text, final_annotations
@@ -735,7 +898,6 @@ def deidentify_text_with_annotations(text: str) -> Tuple[str, List[Dict]]:
 
 def generate_deidentified_note(context, row):
     """Generate de-identified version of clinical note"""
-    # Generate original note (alternating between SOAP and H&P)
     note_type = row if row else 0
     if note_type % 2 == 0:
         original_note = generate_soap_note(context, None)
@@ -748,7 +910,6 @@ def generate_deidentified_note(context, row):
 
 def generate_entity_annotations(context, row):
     """Generate entity annotations for de-identified note"""
-    # Generate original note
     note_type = row if row else 0
     if note_type % 2 == 0:
         original_note = generate_soap_note(context, None)
@@ -756,13 +917,12 @@ def generate_entity_annotations(context, row):
         original_note = generate_hp_note(context, None)
 
     _, annotations = deidentify_text_with_annotations(original_note)
-    # Return as JSON string to be parsed by Spark
     return json.dumps(annotations)
 
 
 def generate_clinical_note_mixed(context, _):
     """Generate either SOAP or H&P note randomly"""
-    if context.faker.random.random() < 0.6:  # 60% SOAP, 40% H&P
+    if context.faker.random.random() < 0.6:
         return generate_soap_note(context, None)
     else:
         return generate_hp_note(context, None)
@@ -1744,9 +1904,6 @@ class HospitalDataSchemaGenerator(BaseSchemaGenerator):
 # COMMAND ----------
 
 
-# COMMAND ----------
-
-
 class ClinicalTrialsSchemaGenerator(BaseSchemaGenerator):
     """Generates pharmaceutical clinical trial data with PII/PHI"""
 
@@ -2532,14 +2689,8 @@ class DataGenerationOrchestrator:
     def generate_all_schemas(
         self, schema_selection: str = "all"
     ) -> Dict[str, Dict[str, DataFrame]]:
-        """Generate data for selected schema(s)
-
-        Args:
-            schema_selection: One of "all", "medical_notes", "hospital_data", "clinical_trials", "livestock_research"
-        """
         all_schemas = {}
 
-        # Map schema names to generator classes
         generators = {
             "medical_notes": (MedicalNotesSchemaGenerator, "Medical Notes"),
             "hospital_data": (HospitalDataSchemaGenerator, "Hospital Data"),
@@ -2550,7 +2701,6 @@ class DataGenerationOrchestrator:
             ),
         }
 
-        # Determine which schemas to generate
         if schema_selection == "all":
             schemas_to_generate = list(generators.keys())
         elif schema_selection in generators:
@@ -2560,57 +2710,35 @@ class DataGenerationOrchestrator:
                 f"Invalid schema selection: {schema_selection}. Must be one of: all, medical_notes, hospital_data, clinical_trials, livestock_research"
             )
 
-        print(f"Generating schema(s): {', '.join(schemas_to_generate)}\n")
+        print(f"Generating {', '.join(schemas_to_generate)}...")
 
-        # Generate selected schemas
         for schema_key in schemas_to_generate:
             generator_class, display_name = generators[schema_key]
             gen = generator_class(self.spark, self.config)
             all_schemas[schema_key] = gen.generate_tables()
-            print(f"✓ {display_name}: {len(all_schemas[schema_key])} tables")
-
-        print(f"\nGenerated {len(all_schemas)} schema(s) with the following tables:")
-        for schema_name, tables in all_schemas.items():
-            print(f"  - {schema_name}: {list(tables.keys())}")
+            print(f"  ✓ {display_name}")
 
         return all_schemas
 
     def save_tables_to_catalog(
         self, schemas: Dict[str, Dict[str, DataFrame]], catalog_name: str
     ) -> None:
-        """Save generated tables to Unity Catalog with each domain as its own schema"""
+        print(f"Saving to {catalog_name}...")
         for schema_name, schema_tables in schemas.items():
-            # Create schema if it doesn't exist
             full_schema_name = f"{catalog_name}.{schema_name}"
-
             self.spark.sql(f"CREATE SCHEMA IF NOT EXISTS {full_schema_name}")
 
-            # Save each table to the schema
-            i = 0
             for table_name, table_df in schema_tables.items():
-                print(f"[{i}] Saving table: {full_schema_name}.{table_name}")
-                print(f"    Row count: {table_df.count()}")
-                print(
-                    f"    Columns: {', '.join([f.name for f in table_df.schema.fields])}"
-                )
                 full_table_name = f"{full_schema_name}.{table_name}"
-                try:
-                    table_df.write.mode("overwrite").option(
-                        "overwriteSchema", "true"
-                    ).saveAsTable(full_table_name)
-                    print(f"    ✓ Successfully saved {full_table_name}")
-                except Exception as e:
-                    print(f"    ✗ ERROR saving {full_table_name}: {str(e)}")
-                    print("    Schema details:")
-                    table_df.printSchema()
-                    raise
-                i += 1
+                table_df.write.mode("overwrite").option(
+                    "overwriteSchema", "true"
+                ).saveAsTable(full_table_name)
+                print(f"  ✓ {full_table_name}")
+        print("Done!")
 
 
 # COMMAND ----------
 
-# Initialize configuration and generate data
-print(f"Configuration: {base_rows:,} base rows with {partitions} partitions")
 config = SchemaConfig(base_rows=base_rows, partitions=partitions)
 orchestrator = DataGenerationOrchestrator(spark, config)
 
@@ -2618,112 +2746,84 @@ all_schemas = orchestrator.generate_all_schemas(schema_selection)
 
 # COMMAND ----------
 
-# Save to Unity Catalog
-print(f"\nSaving all tables to Unity Catalog: {catalog_name}")
 orchestrator.save_tables_to_catalog(all_schemas, catalog_name)
-
-print("\nSuccess! Tables saved to Unity Catalog with the following structure:")
-print(f"Catalog: {catalog_name}")
-for schema_name, schema_tables in all_schemas.items():
-    print(f"  Schema: {catalog_name}.{schema_name}")
-    for table_name in schema_tables.keys():
-        print(f"    {catalog_name}.{schema_name}.{table_name}")
 
 # COMMAND ----------
 
 # MAGIC %md
 # MAGIC ## Example Queries
-# MAGIC
-# MAGIC Below are example SQL queries demonstrating how to work with the generated data. The queries shown depend on which schema(s) you selected to generate.
 
 # COMMAND ----------
 
-# Example queries based on selected schema
 if schema_selection == "all" or schema_selection == "medical_notes":
-    print("Medical Notes Example: Lab results correlated with diagnoses\n")
-    try:
-        result = spark.sql(
-            f"""
-            SELECT 
-                diagnosis_code,
-                condition_severity,
-                test_name,
-                AVG(test_value) as avg_test_value,
-                COUNT(*) as result_count
-            FROM {catalog_name}.medical_notes.lab_results
-            WHERE diagnosis_code IS NOT NULL
-            GROUP BY diagnosis_code, condition_severity, test_name
-            ORDER BY diagnosis_code, condition_severity, avg_test_value DESC
-            LIMIT 10
-        """
-        )
-        result.show(truncate=False)
-    except Exception as e:
-        print(f"Query failed: {e}")
+    print("Medical Notes: Lab results correlated with diagnoses")
+    spark.sql(
+        f"""
+        SELECT 
+            diagnosis_code,
+            condition_severity,
+            test_name,
+            AVG(test_value) as avg_test_value,
+            COUNT(*) as result_count
+        FROM {catalog_name}.medical_notes.lab_results
+        WHERE diagnosis_code IS NOT NULL
+        GROUP BY diagnosis_code, condition_severity, test_name
+        ORDER BY diagnosis_code, condition_severity, avg_test_value DESC
+        LIMIT 10
+    """
+    ).show(truncate=False)
 
 if schema_selection == "all" or schema_selection == "hospital_data":
-    print("\nHospital Data Example: Billing summary by insurance status\n")
-    try:
-        result = spark.sql(
-            f"""
-            SELECT 
-                billing_status,
-                COUNT(*) as record_count,
-                AVG(total_amount) as avg_total,
-                AVG(insurance_paid) as avg_insurance_paid,
-                AVG(patient_responsibility) as avg_patient_resp,
-                AVG(outstanding_balance) as avg_outstanding
-            FROM {catalog_name}.hospital_data.billing_records
-            GROUP BY billing_status
-            ORDER BY billing_status
-        """
-        )
-        result.show(truncate=False)
-    except Exception as e:
-        print(f"Query failed: {e}")
+    print("Hospital Data: Billing summary by insurance status")
+    spark.sql(
+        f"""
+        SELECT 
+            billing_status,
+            COUNT(*) as record_count,
+            AVG(total_amount) as avg_total,
+            AVG(insurance_paid) as avg_insurance_paid,
+            AVG(patient_responsibility) as avg_patient_resp,
+            AVG(outstanding_balance) as avg_outstanding
+        FROM {catalog_name}.hospital_data.billing_records
+        GROUP BY billing_status
+        ORDER BY billing_status
+    """
+    ).show(truncate=False)
 
 if schema_selection == "all" or schema_selection == "clinical_trials":
-    print("\nClinical Trials Example: Lab measurements by test type and quality\n")
-    try:
-        result = spark.sql(
-            f"""
-            SELECT 
-                lab_test,
-                sample_quality,
-                abnormal_flag,
-                COUNT(*) as measurement_count,
-                AVG(result_value) as avg_result,
-                MIN(reference_min) as ref_min,
-                MAX(reference_max) as ref_max
-            FROM {catalog_name}.clinical_trials.lab_measurements
-            GROUP BY lab_test, sample_quality, abnormal_flag
-            ORDER BY lab_test, sample_quality
-            LIMIT 10
-        """
-        )
-        result.show(truncate=False)
-    except Exception as e:
-        print(f"Query failed: {e}")
+    print("Clinical Trials: Lab measurements by test type and quality")
+    spark.sql(
+        f"""
+        SELECT 
+            lab_test,
+            sample_quality,
+            abnormal_flag,
+            COUNT(*) as measurement_count,
+            AVG(result_value) as avg_result,
+            MIN(reference_min) as ref_min,
+            MAX(reference_max) as ref_max
+        FROM {catalog_name}.clinical_trials.lab_measurements
+        GROUP BY lab_test, sample_quality, abnormal_flag
+        ORDER BY lab_test, sample_quality
+        LIMIT 10
+    """
+    ).show(truncate=False)
 
 if schema_selection == "all" or schema_selection == "livestock_research":
-    print("\nLivestock Research Example: Treatment outcomes by clinical signs\n")
-    try:
-        result = spark.sql(
-            f"""
-            SELECT 
-                clinical_signs,
-                treatment_administered,
-                treatment_outcome,
-                COUNT(*) as observation_count,
-                AVG(body_weight_kg) as avg_weight,
-                AVG(temperature_celsius) as avg_temp
-            FROM {catalog_name}.livestock_research.veterinary_observations
-            WHERE treatment_administered = 'Yes'
-            GROUP BY clinical_signs, treatment_administered, treatment_outcome
-            ORDER BY observation_count DESC
-            LIMIT 10
-        """
-        )
-        result.show(truncate=False)
-    except Exception as e:
-        print(f"Query failed: {e}")
+    print("Livestock Research: Treatment outcomes by clinical signs")
+    spark.sql(
+        f"""
+        SELECT 
+            clinical_signs,
+            treatment_administered,
+            treatment_outcome,
+            COUNT(*) as observation_count,
+            AVG(body_weight_kg) as avg_weight,
+            AVG(temperature_celsius) as avg_temp
+        FROM {catalog_name}.livestock_research.veterinary_observations
+        WHERE treatment_administered = 'Yes'
+        GROUP BY clinical_signs, treatment_administered, treatment_outcome
+        ORDER BY observation_count DESC
+        LIMIT 10
+    """
+    ).show(truncate=False)
