@@ -1263,7 +1263,7 @@ class MedicalNotesSchemaGenerator(BaseSchemaGenerator):
                     WHEN test_name = 'Creatinine' THEN 'mg/dL'
                     WHEN test_name = 'ALT' THEN 'U/L'
                     WHEN test_name = 'TSH' THEN 'mIU/L'
-                    WHEN test_name = 'CBC' THEN 'x10^9/L'
+                    WHEN test_name = 'CBC' THEN '10E9/L'
                     ELSE 'mg/dL'
                 END
                 """,
@@ -1905,7 +1905,7 @@ class ClinicalTrialsSchemaGenerator(BaseSchemaGenerator):
                 expr="""
                 CASE 
                     WHEN lab_test = 'Hemoglobin' THEN 'g/dL'
-                    WHEN lab_test = 'WBC Count' THEN 'x10^9/L'
+                    WHEN lab_test = 'WBC Count' THEN '10E9/L'
                     WHEN lab_test = 'ALT' OR lab_test = 'AST' THEN 'U/L'
                     WHEN lab_test = 'Creatinine' THEN 'mg/dL'
                     WHEN lab_test = 'BUN' THEN 'mg/dL'
