@@ -1201,12 +1201,12 @@ class MedicalNotesSchemaGenerator(BaseSchemaGenerator):
                 baseColumn=["test_name", "test_value", "diagnosis_code"],
                 expr="""
                 CASE 
-                    WHEN diagnosis_code IN ('E11.9', 'N18.3') AND test_value >= 
+                    WHEN (diagnosis_code = 'E11.9' OR diagnosis_code = 'N18.3') AND test_value >= 
                         CASE WHEN test_name = 'HbA1c' THEN 9.0 
                              WHEN test_name = 'Glucose' THEN 200
                              WHEN test_name = 'Creatinine' THEN 2.5
                         END THEN 'High'
-                    WHEN diagnosis_code IN ('E78.5', 'K76.9') AND test_value >= 
+                    WHEN (diagnosis_code = 'E78.5' OR diagnosis_code = 'K76.9') AND test_value >= 
                         CASE WHEN test_name = 'Lipid Panel' THEN 280
                              WHEN test_name = 'ALT' THEN 80
                         END THEN 'High'
@@ -1906,7 +1906,7 @@ class ClinicalTrialsSchemaGenerator(BaseSchemaGenerator):
                 CASE 
                     WHEN lab_test = 'Hemoglobin' THEN 'g/dL'
                     WHEN lab_test = 'WBC Count' THEN 'x10^9/L'
-                    WHEN lab_test IN ('ALT', 'AST') THEN 'U/L'
+                    WHEN lab_test = 'ALT' OR lab_test = 'AST' THEN 'U/L'
                     WHEN lab_test = 'Creatinine' THEN 'mg/dL'
                     WHEN lab_test = 'BUN' THEN 'mg/dL'
                     ELSE 'units'
@@ -2421,7 +2421,7 @@ class LivestockResearchSchemaGenerator(BaseSchemaGenerator):
                 expr="""
                 CASE 
                     WHEN clinical_signs = 'Fever and Lethargy' THEN true
-                    WHEN treatment_outcome IN ('Stable', 'Improving') THEN true
+                    WHEN treatment_outcome = 'Stable' OR treatment_outcome = 'Improving' THEN true
                     WHEN adverse_reactions != 'None observed' THEN true
                     ELSE rand() < 0.1
                 END
