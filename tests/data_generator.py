@@ -2502,12 +2502,23 @@ class DataGenerationOrchestrator:
             # Save each table to the schema
             i = 0
             for table_name, table_df in schema_tables.items():
-                print("i", i)
+                print(f"[{i}] Saving table: {full_schema_name}.{table_name}")
+                print(f"    Row count: {table_df.count()}")
+                print(
+                    f"    Columns: {', '.join([f.name for f in table_df.schema.fields])}"
+                )
                 full_table_name = f"{full_schema_name}.{table_name}"
                 # display(table_df)
-                table_df.write.mode("overwrite").option(
-                    "overwriteSchema", "true"
-                ).saveAsTable(full_table_name)
+                try:
+                    table_df.write.mode("overwrite").option(
+                        "overwriteSchema", "true"
+                    ).saveAsTable(full_table_name)
+                    print(f"    ✓ Successfully saved {full_table_name}")
+                except Exception as e:
+                    print(f"    ✗ ERROR saving {full_table_name}: {str(e)}")
+                    print(f"    Schema details:")
+                    table_df.printSchema()
+                    raise
                 i += 1
 
                 # # Add table comment for documentation
