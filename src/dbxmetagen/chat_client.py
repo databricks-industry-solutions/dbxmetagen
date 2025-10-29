@@ -19,6 +19,13 @@ from pydantic import BaseModel
 import json
 from openai.types.chat.chat_completion import ChatCompletion, Choice
 from openai.types.chat.chat_completion_message import ChatCompletionMessage
+from requests.exceptions import HTTPError
+
+# Models that don't support LangChain's with_structured_output()
+MODELS_WITHOUT_STRUCTURED_OUTPUT = [
+    "databricks-gpt-oss-120b",
+    "databricks-gpt-oss-20b",
+]
 
 
 class ChatClient(ABC):
@@ -165,6 +172,48 @@ class DatabricksClient(ChatClient):
             "response_time_seconds": 0,
         }
 
+    def _parse_text_to_structured_output(
+        self, response_text: Any, response_model: BaseModel
+    ) -> BaseModel:
+        """Parse text response to structured output.
+
+        Handles special AIMessage content format from models like databricks-gpt-oss-120b
+        which return content as a list with reasoning and text objects.
+        """
+        # Handle AIMessage content which can be a list of dicts
+        if isinstance(response_text, list):
+            for item in response_text:
+                if isinstance(item, dict) and item.get("type") == "text":
+                    response_text = item.get("text", "")
+                    break
+
+        # If still not a string, try to extract from content field
+        if not isinstance(response_text, str):
+            if hasattr(response_text, "content"):
+                response_text = response_text.content
+                # Recursively handle if content is also a list
+                if isinstance(response_text, list):
+                    return self._parse_text_to_structured_output(
+                        response_text, response_model
+                    )
+            else:
+                response_text = str(response_text)
+
+        # Extract JSON from the response text
+        json_match = re.search(r"\{.*\}", response_text, re.DOTALL)
+        if json_match:
+            response_text = json_match.group()
+
+        try:
+            response_dict = json.loads(response_text)
+            return response_model(**response_dict)
+        except (json.JSONDecodeError, TypeError, ValueError) as e:
+            print(f"Warning: Failed to parse structured response: {e}")
+            print(f"Raw response: {response_text}")
+            raise ValueError(
+                f"Could not parse response into {response_model.__name__}: {e}"
+            ) from e
+
     def create_structured_completion(
         self,
         messages: List[Dict[str, str]] | str,
@@ -174,17 +223,50 @@ class DatabricksClient(ChatClient):
         temperature: float,
         **kwargs,
     ) -> BaseModel:
-        """Create a structured chat completion using ChatDatabricks."""
-        return (
-            ChatDatabricks(
-                endpoint=model,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                max_retries=1,
-            )
-            .with_structured_output(response_model)
-            .invoke(messages)
-        )
+        """Create a structured chat completion using ChatDatabricks.
+
+        Automatically detects models that don't support structured outputs
+        and falls back to text parsing for those models.
+        """
+        # Check if model requires text parsing instead of structured output
+        use_text_parsing = model in MODELS_WITHOUT_STRUCTURED_OUTPUT
+
+        try:
+            if use_text_parsing:
+                # Use invoke without structured output, then parse the response
+                response = ChatDatabricks(
+                    endpoint=model,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    max_retries=1,
+                ).invoke(messages)
+
+                # Parse the response content to structured output
+                return self._parse_text_to_structured_output(
+                    response.content, response_model
+                )
+            else:
+                # Use structured output for models that support it
+                return (
+                    ChatDatabricks(
+                        endpoint=model,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        max_retries=1,
+                    )
+                    .with_structured_output(response_model)
+                    .invoke(messages)
+                )
+        except HTTPError as e:
+            # Check if this is the specific error about model output format
+            if "Model output is not in expected format" in str(e):
+                print("\n" + "=" * 80)
+                print(f"WARNING: Model '{model}' does not support structured outputs.")
+                print(
+                    "This model should be added to MODELS_WITHOUT_STRUCTURED_OUTPUT in chat_client.py"
+                )
+                print("=" * 80 + "\n")
+            raise
 
 
 class OpenAISpecClient(ChatClient):
