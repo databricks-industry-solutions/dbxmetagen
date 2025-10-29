@@ -21,11 +21,9 @@
 
 # COMMAND ----------
 
-# Import necessary libraries
 from pyspark.sql.functions import col, from_json
 from pyspark.sql import SparkSession
 
-# Import the redaction library
 from src.dbxmetagen.redaction import (
     LABEL_ENUMS,
     make_presidio_batch_udf,
@@ -70,7 +68,6 @@ dbutils.widgets.dropdown(
 
 dbutils.widgets.text("presidio_score_threshold", "0.5", "Presidio Score Threshold")
 
-# Get widget values
 med_text_table = dbutils.widgets.get("medical_text_table")
 med_text_col = dbutils.widgets.get("medical_text_col")
 endpoint = dbutils.widgets.get("endpoint")
@@ -120,10 +117,8 @@ text_df.write.mode('overwrite').saveAsTable("dbxmetagen.eval_data.presidio_resul
 
 # COMMAND ----------
 
-# Create the prompt for AI detection
 prompt = make_prompt(PHI_PROMPT_SKELETON, labels=LABEL_ENUMS)
 
-# Build SQL query for AI detection
 query = f"""
   WITH data_with_prompting AS (
       SELECT DISTINCT doc_id, text,
@@ -141,7 +136,6 @@ query = f"""
   FROM data_with_prompting
 """
 
-# Execute AI detection
 ai_text_df = (
     spark
     .sql(query)
@@ -152,7 +146,6 @@ ai_text_df = (
     )
 )
 
-# Save results
 ai_text_df.write.mode('overwrite').saveAsTable("dbxmetagen.eval_data.ai_results")
 
 # COMMAND ----------

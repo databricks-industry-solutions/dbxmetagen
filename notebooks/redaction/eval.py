@@ -11,6 +11,19 @@
 
 # COMMAND ----------
 
+# MAGIC %pip install -r ../../requirements.txt
+# MAGIC %restart_python
+
+# COMMAND ----------
+
+# MAGIC %load_ext autoreload
+# MAGIC %autoreload 2
+
+# COMMAND ----------
+
+
+# COMMAND ----------
+
 # Import necessary libraries
 import pandas as pd
 import numpy as np
