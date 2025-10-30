@@ -41,14 +41,14 @@ from src.dbxmetagen.redaction.config import PHI_PROMPT_SKELETON
 # COMMAND ----------
 
 dbutils.widgets.text(
-    defaultValue="dbxmetagen.default.phi_test_data",
-    label="0. Table",
+    defaultValue="dbxmetagen.eval_data.jsl_48docs",
+    label="0. Source Table",
     name="medical_text_table"
 )
 
 dbutils.widgets.text(
-    defaultValue="medical_text_with_phi",
-    label="1. Column containing PHI",
+    defaultValue="text",
+    label="1. Text Column",
     name="medical_text_col"
 )
 
@@ -63,10 +63,10 @@ dbutils.widgets.dropdown(
         'databricks-meta-llama-3-3-70b-instruct',
         'databricks-meta-llama-3-1-8b-instruct'
     ]),
-    label='1. Endpoint'
+    label='2. AI Endpoint'
 )
 
-dbutils.widgets.text("presidio_score_threshold", "0.5", "Presidio Score Threshold")
+dbutils.widgets.text("presidio_score_threshold", "0.5", "3. Presidio Score Threshold")
 
 med_text_table = dbutils.widgets.get("medical_text_table")
 med_text_col = dbutils.widgets.get("medical_text_col")
@@ -87,14 +87,28 @@ num_cores = 10
 # COMMAND ----------
 
 # MAGIC %md
+# MAGIC ## Load Source Data
+
+# COMMAND ----------
+
+# Load source data (used for both Presidio and AI detection)
+source_df = (
+    spark.table(med_text_table)
+    .select("doc_id", col(med_text_col))
+    .distinct()
+)
+
+display(source_df)
+
+# COMMAND ----------
+
+# MAGIC %md
 # MAGIC ## Presidio-based PHI Detection
 
 # COMMAND ----------
 
-# Load and process data with Presidio
-num_cores = 10
-_df = spark.table("dbxmetagen.eval_data.jsl_48docs").select("doc_id", "text").distinct()
-text_df = _df.repartition(num_cores).withColumn(
+# Process data with Presidio
+text_df = source_df.repartition(num_cores).withColumn(
     "presidio_results", 
     make_presidio_batch_udf(score_threshold=score_threshold)(col("doc_id"), col("text"))
 )
@@ -125,15 +139,18 @@ display(spark.table("dbxmetagen.eval_data.presidio_results"))
 # Create the prompt for AI detection
 prompt = make_prompt(PHI_PROMPT_SKELETON, labels=LABEL_ENUMS)
 
-# Build SQL query for AI detection
+# Prepare data with prompts
 # NOTE: the `modelParameters` acceptable values will change based on the chosen model. 
 # See: https://docs.databricks.com/aws/en/sql/language-manual/functions/ai_query#model-params for more details
 
+# Create a temporary view from the source data
+source_df.createOrReplaceTempView("source_data_temp")
+
 query = f"""
   WITH data_with_prompting AS (
-      SELECT DISTINCT id, {med_text_col},
-            REPLACE('{prompt}', '{{med_text}}', CAST({med_text_col} AS STRING)) AS prompt
-      FROM {med_text_table}
+      SELECT doc_id, text,
+            REPLACE('{prompt}', '{{{{med_text}}}}', CAST(text AS STRING)) AS prompt
+      FROM source_data_temp
   )
   SELECT *,
         ai_query(
@@ -152,7 +169,7 @@ ai_text_df = (
     .repartition(num_cores)
     .withColumn(
         "ai_query_results", 
-        format_entity_response_object_udf(col("response.result"), col(med_text_col))
+        format_entity_response_object_udf(col("response.result"), col("text"))
     )
 )
 
