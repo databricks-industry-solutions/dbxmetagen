@@ -21,15 +21,10 @@
 
 # COMMAND ----------
 
-
-# COMMAND ----------
-
-# Import necessary libraries
 import pandas as pd
 import numpy as np
 from pyspark.sql.functions import col, explode
 
-# Import evaluation functions from the redaction library
 from src.dbxmetagen.redaction.evaluation import (
     evaluate_detection,
     calculate_metrics,
@@ -39,19 +34,36 @@ from src.dbxmetagen.redaction.evaluation import (
 
 # COMMAND ----------
 
+dbutils.widgets.text(
+    defaultValue="dbxmetagen.eval_data.jsl_48docs",
+    label="0. Ground Truth Table",
+    name="ground_truth_table"
+)
+
+dbutils.widgets.text(
+    defaultValue="dbxmetagen.eval_data.aligned_entities",
+    label="1. Aligned Entities Table",
+    name="aligned_entities_table"
+)
+
+ground_truth_table = dbutils.widgets.get("ground_truth_table")
+aligned_entities_table = dbutils.widgets.get("aligned_entities_table")
+
+# COMMAND ----------
+
 # MAGIC %md
 # MAGIC ## Load Data
 
 # COMMAND ----------
 
 # Load ground truth data
-df = spark.table("dbxmetagen.eval_data.jsl_48docs")
+df = spark.table(ground_truth_table)
 display(df)
 
 # COMMAND ----------
 
 # Load detection results
-df_results = spark.table("dbxmetagen.eval_data.aligned_entities3")
+df_results = spark.table(aligned_entities_table)
 display(df_results)
 
 # COMMAND ----------
@@ -238,7 +250,3 @@ display(
     .count()
     .orderBy(col("count").desc())
 )
-
-# COMMAND ----------
-
-
