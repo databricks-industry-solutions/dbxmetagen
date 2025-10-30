@@ -92,6 +92,7 @@ num_cores = 10
 # COMMAND ----------
 
 # Load and process data with Presidio
+num_cores = 10
 _df = spark.table("dbxmetagen.eval_data.jsl_48docs").select("doc_id", "text").distinct()
 text_df = _df.repartition(num_cores).withColumn(
     "presidio_results", 
@@ -117,11 +118,20 @@ text_df.write.mode('overwrite').saveAsTable("dbxmetagen.eval_data.presidio_resul
 
 # COMMAND ----------
 
+display(spark.table("dbxmetagen.eval_data.presidio_results"))
+
+# COMMAND ----------
+
+# Create the prompt for AI detection
 prompt = make_prompt(PHI_PROMPT_SKELETON, labels=LABEL_ENUMS)
+
+# Build SQL query for AI detection
+# NOTE: the `modelParameters` acceptable values will change based on the chosen model. 
+# See: https://docs.databricks.com/aws/en/sql/language-manual/functions/ai_query#model-params for more details
 
 query = f"""
   WITH data_with_prompting AS (
-      SELECT DISTINCT doc_id, text,
+      SELECT DISTINCT id, {med_text_col},
             REPLACE('{prompt}', '{{med_text}}', CAST({med_text_col} AS STRING)) AS prompt
       FROM {med_text_table}
   )
@@ -142,11 +152,17 @@ ai_text_df = (
     .repartition(num_cores)
     .withColumn(
         "ai_query_results", 
-        format_entity_response_object_udf(col("response.result"), col("text"))
+        format_entity_response_object_udf(col("response.result"), col(med_text_col))
     )
 )
 
-ai_text_df.write.mode('overwrite').saveAsTable("dbxmetagen.eval_data.ai_results")
+(
+  ai_text_df
+    .write
+    .mode('overwrite')
+    .option("mergeSchema", "true")
+    .saveAsTable("dbxmetagen.eval_data.ai_results")
+)
 
 # COMMAND ----------
 
