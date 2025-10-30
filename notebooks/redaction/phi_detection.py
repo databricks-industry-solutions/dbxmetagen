@@ -81,7 +81,8 @@ score_threshold = float(dbutils.widgets.get("presidio_score_threshold"))
 # COMMAND ----------
 
 # Set Spark configuration for batch processing
-spark.conf.set("spark.sql.execution.arrow.maxRecordsPerBatch", 10)
+# Comment this out if on serverless
+# spark.conf.set("spark.sql.execution.arrow.maxRecordsPerBatch", 10)
 num_cores = 10
 
 # COMMAND ----------
@@ -110,7 +111,7 @@ display(source_df)
 # Process data with Presidio
 text_df = source_df.repartition(num_cores).withColumn(
     "presidio_results", 
-    make_presidio_batch_udf(score_threshold=score_threshold)(col("doc_id"), col("text"))
+    make_presidio_batch_udf(score_threshold=score_threshold)(col("doc_id"), col(med_text_col))
 )
 
 # Parse results into structured format
@@ -132,10 +133,6 @@ text_df.write.mode('overwrite').saveAsTable("dbxmetagen.eval_data.presidio_resul
 
 # COMMAND ----------
 
-display(spark.table("dbxmetagen.eval_data.presidio_results"))
-
-# COMMAND ----------
-
 # Create the prompt for AI detection
 prompt = make_prompt(PHI_PROMPT_SKELETON, labels=LABEL_ENUMS)
 
@@ -149,7 +146,7 @@ source_df.createOrReplaceTempView("source_data_temp")
 query = f"""
   WITH data_with_prompting AS (
       SELECT doc_id, text,
-            REPLACE('{prompt}', '{{{{med_text}}}}', CAST(text AS STRING)) AS prompt
+            REPLACE('{prompt}', '{{med_text}}', CAST(text AS STRING)) AS prompt
       FROM source_data_temp
   )
   SELECT *,
@@ -180,6 +177,10 @@ ai_text_df = (
     .option("mergeSchema", "true")
     .saveAsTable("dbxmetagen.eval_data.ai_results")
 )
+
+# COMMAND ----------
+
+display(ai_text_df)
 
 # COMMAND ----------
 
@@ -237,13 +238,9 @@ df = df.withColumn(
 )
 
 # Save aligned results
-df.write.mode('overwrite').saveAsTable("dbxmetagen.eval_data.aligned_entities3")
+df.write.mode('overwrite').option("mergeSchema", "true").saveAsTable("dbxmetagen.eval_data.aligned_entities3")
 
 # COMMAND ----------
 
 # Display aligned results
 display(df)
-
-# COMMAND ----------
-
-
