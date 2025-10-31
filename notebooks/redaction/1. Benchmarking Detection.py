@@ -31,6 +31,7 @@ from src.dbxmetagen.redaction import (
     format_entity_response_object_udf,
     align_entities_udf,
 )
+from src.dbxmetagen.main import get_dbr_version
 from src.dbxmetagen.redaction.config import PHI_PROMPT_SKELETON
 
 # COMMAND ----------
@@ -52,6 +53,13 @@ dbutils.widgets.text(
     name="medical_text_col"
 )
 
+dbutils.widgets.text(
+    defaultValue="dbxmetagen.eval_data.jsl_48docs",
+    label="2. Redacted Output Table",
+    name="redacted_output_table"
+)
+
+# TODO: just evaluate a few of these and only offer the best options
 dbutils.widgets.dropdown(
     name='endpoint',
     defaultValue='databricks-gpt-oss-120b',
@@ -68,6 +76,8 @@ dbutils.widgets.dropdown(
 
 dbutils.widgets.text("presidio_score_threshold", "0.5", "3. Presidio Score Threshold")
 
+dbutils.widgets.text("num_cores", 16, "4. Number of cores on cluster")
+
 med_text_table = dbutils.widgets.get("medical_text_table")
 med_text_col = dbutils.widgets.get("medical_text_col")
 endpoint = dbutils.widgets.get("endpoint")
@@ -80,19 +90,17 @@ score_threshold = float(dbutils.widgets.get("presidio_score_threshold"))
 
 # COMMAND ----------
 
-# Set Spark configuration for batch processing
-# Comment this out if on serverless
-# spark.conf.set("spark.sql.execution.arrow.maxRecordsPerBatch", 10)
 num_cores = 10
+if "client" not in get_dbr_version():
+    spark.conf.set("spark.sql.execution.arrow.maxRecordsPerBatch", 100)
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Load Source Data
+# MAGIC ## Load Source Data For Redaction or Evaluation
 
 # COMMAND ----------
 
-# Load source data (used for both Presidio and AI detection)
 source_df = (
     spark.table(med_text_table)
     .select("doc_id", col(med_text_col))
