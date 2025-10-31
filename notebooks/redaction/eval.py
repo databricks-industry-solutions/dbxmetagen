@@ -1,199 +1,252 @@
 # Databricks notebook source
-import pandas as pd
-import numpy as np
-from pyspark.sql.functions import lower, trim, col, asc_nulls_last, abs as spark_abs, contains, explode
+# MAGIC %md
+# MAGIC # PHI Detection Evaluation
+# MAGIC
+# MAGIC This notebook evaluates the performance of different PHI detection methods:
+# MAGIC - Presidio-based detection
+# MAGIC - AI-based detection
+# MAGIC - Aligned/combined detection
+# MAGIC
+# MAGIC Metrics calculated include accuracy, precision, recall, specificity, and NPV.
 
 # COMMAND ----------
 
-df = spark.table("dbxmetagen.eval_data.jsl_48docs")
+# MAGIC %pip install -r ../../requirements.txt
+# MAGIC %restart_python
+
+# COMMAND ----------
+
+# MAGIC %load_ext autoreload
+# MAGIC %autoreload 2
+
+# COMMAND ----------
+
+import pandas as pd
+import numpy as np
+from pyspark.sql.functions import col, explode
+
+from src.dbxmetagen.redaction.evaluation import (
+    evaluate_detection,
+    calculate_metrics,
+    format_contingency_table,
+    format_metrics_summary,
+)
+
+# COMMAND ----------
+
+dbutils.widgets.text(
+    defaultValue="dbxmetagen.eval_data.jsl_48docs",
+    label="0. Ground Truth Table",
+    name="ground_truth_table"
+)
+
+dbutils.widgets.text(
+    defaultValue="dbxmetagen.eval_data.aligned_entities",
+    label="1. Aligned Entities Table",
+    name="aligned_entities_table"
+)
+
+ground_truth_table = dbutils.widgets.get("ground_truth_table")
+aligned_entities_table = dbutils.widgets.get("aligned_entities_table")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Load Data
+
+# COMMAND ----------
+
+# Load ground truth data
+df = spark.table(ground_truth_table)
 display(df)
 
 # COMMAND ----------
 
-df_results = spark.table("dbxmetagen.eval_data.aligned_entities3")
+# Load detection results
+df_results = spark.table(aligned_entities_table)
 display(df_results)
 
 # COMMAND ----------
 
-presidio_results_exploded = df_results.select("doc_id", "presidio_results_struct").withColumn("presidio_results_exploded", explode("presidio_results_struct")).select("presidio_results_exploded.*")
-
-ai_results_exploded = df_results.select("doc_id", "ai_results_struct").withColumn("ai_results_exploded", explode("ai_results_struct")).select("doc_id", "ai_results_exploded.entity", "ai_results_exploded.score", "ai_results_exploded.start", "ai_results_exploded.end")
-
-aligned_results_exploded = df_results.select("doc_id", "aligned_entities").withColumn("aligned_entities", explode("aligned_entities")).select("doc_id", "aligned_entities.entity", "aligned_entities.start", "aligned_entities.end")
+# MAGIC %md
+# MAGIC ## Prepare Data for Evaluation
 
 # COMMAND ----------
 
-def evaluate_df(df1, df2):
-    df_join = df1.join(
-        df2,
-        (contains(df1.chunk, df2.entity) | contains(df2.entity, df1.chunk))
-        & (df2.doc_id == df1.doc_id)
-        & (df2.start <= df1.begin)
-        & (df2.end >= df1.end-1),
-        how="outer"
-    ).drop("text").orderBy(asc_nulls_last(df.doc_id), asc_nulls_last(df.begin))
-    return df_join
+# Explode Presidio results for evaluation
+presidio_results_exploded = (
+    df_results
+    .select("doc_id", "presidio_results_struct")
+    .withColumn("presidio_results_exploded", explode("presidio_results_struct"))
+    .select("presidio_results_exploded.*")
+)
 
-presidio_join_df = evaluate_df(df, presidio_results_exploded)
-ai_join_df = evaluate_df(df, ai_results_exploded)
-aligned_join_df = evaluate_df(df, aligned_results_exploded)
+# Explode AI results for evaluation
+ai_results_exploded = (
+    df_results
+    .select("doc_id", "ai_results_struct")
+    .withColumn("ai_results_exploded", explode("ai_results_struct"))
+    .select(
+        "doc_id",
+        "ai_results_exploded.entity",
+        "ai_results_exploded.score",
+        "ai_results_exploded.start",
+        "ai_results_exploded.end"
+    )
+)
+
+# Explode aligned results for evaluation
+aligned_results_exploded = (
+    df_results
+    .select("doc_id", "aligned_entities")
+    .withColumn("aligned_entities", explode("aligned_entities"))
+    .select(
+        "doc_id",
+        "aligned_entities.entity",
+        "aligned_entities.start",
+        "aligned_entities.end"
+    )
+)
 
 # COMMAND ----------
 
-import spacy
+# MAGIC %md
+# MAGIC ## Evaluate Detection Methods
 
+# COMMAND ----------
+
+# Evaluate each detection method against ground truth
+presidio_join_df = evaluate_detection(df, presidio_results_exploded)
+ai_join_df = evaluate_detection(df, ai_results_exploded)
+aligned_join_df = evaluate_detection(df, aligned_results_exploded)
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Calculate Corpus Statistics
+
+# COMMAND ----------
+
+# Calculate total tokens in corpus for metrics
 text_dict = df.select("doc_id", "text").distinct().toPandas().to_dict(orient="list")
 corpus = '\n'.join(text_dict['text'])
 all_tokens = len(corpus)
 
+print(f"Total tokens in corpus: {all_tokens:,}")
+
 # COMMAND ----------
 
 display(df_results)
 
 # COMMAND ----------
 
-pos_actual = df.count()
-pos_pred = presidio_results_exploded.count()
-tp = presidio_join_df.where(col("chunk").isNotNull() & col("entity").isNotNull()).count()
-fp = pos_pred - tp
+# MAGIC %md
+# MAGIC ## Presidio Detection Metrics
 
-neg_actual = all_tokens - pos_actual
-tn = neg_actual - fp
-fn = pos_actual - tp
-neg_pred = tn + fn
+# COMMAND ----------
 
-recall = tp/pos_actual
-precision = tp/pos_pred
-specificity = tn/neg_actual
-npv = tn/neg_pred
+# Calculate metrics for Presidio
+presidio_metrics = calculate_metrics(presidio_join_df, all_tokens)
 
-neg_actual, pos_actual, neg_pred, pos_pred, tn, tp, fp, fn, recall, precision, specificity, npv
-
-contingency_data = {
-    "": ["Neg_pred", "Pos_pred"],
-    "Neg_actual": [tn, fp],
-    "Pos_actual": [fn, tp],
-    "Total": [tn + fp, fn + tp]
-}
-contingency_df = pd.DataFrame(contingency_data)
-contingency_df.loc["Total"] = [
-    "Total",
-    contingency_df["Neg_actual"].sum(),
-    contingency_df["Pos_actual"].sum(),
-    contingency_df["Total"].sum()
-]
-
+# Display contingency table
+print("Presidio Contingency Table:")
+contingency_df = format_contingency_table(presidio_metrics)
 display(contingency_df)
 
-accuracy = (tp + tn) / (pos_actual + neg_actual)
-
-summary_df = pd.DataFrame({
-    "Metric": ["Accuracy", "Precision", "Specificity", "NPV", "Recall"],
-    "Value": [accuracy, precision, specificity, npv, recall]
-})
-
+# Display summary metrics
+print("\nPresidio Metrics Summary:")
+summary_df = format_metrics_summary(presidio_metrics)
 display(summary_df)
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC |          | Neg_actual |  Pos_actual |        |
-# MAGIC |----------|------------|-------------|--------|
-# MAGIC | Neg_pred | 249546     |  772        | 250318 |
-# MAGIC | Pos_pred |    890     |  707        |   1597 |
-# MAGIC |          | 250436     | 1479        |        |
+# MAGIC ## AI Detection Metrics
 
 # COMMAND ----------
 
-pos_actual = df.count()
-pos_pred = ai_results_exploded.count()
-tp = ai_join_df.where(col("chunk").isNotNull() & col("entity").isNotNull()).count()
-fp = pos_pred - tp
+# Calculate metrics for AI detection
+ai_metrics = calculate_metrics(ai_join_df, all_tokens)
 
-neg_actual = all_tokens - pos_actual
-tn = neg_actual - fp
-fn = pos_actual - tp
-neg_pred = tn + fn
-
-recall = tp/pos_actual
-precision = tp/pos_pred
-specificity = tn/neg_actual
-npv = tn/neg_pred
-
-neg_actual, pos_actual, neg_pred, pos_pred, tn, tp, fp, fn, recall, precision, specificity, npv
-
-contingency_data = {
-    "": ["Neg_pred", "Pos_pred"],
-    "Neg_actual": [tn, fp],
-    "Pos_actual": [fn, tp],
-    "Total": [tn + fp, fn + tp]
-}
-contingency_df = pd.DataFrame(contingency_data)
-contingency_df.loc["Total"] = [
-    "Total",
-    contingency_df["Neg_actual"].sum(),
-    contingency_df["Pos_actual"].sum(),
-    contingency_df["Total"].sum()
-]
-
+# Display contingency table
+print("AI Detection Contingency Table:")
+contingency_df = format_contingency_table(ai_metrics)
 display(contingency_df)
 
-
-accuracy = (tp + tn) / (pos_actual + neg_actual)
-
-summary_df = pd.DataFrame({
-    "Metric": ["Accuracy", "Precision", "Specificity", "NPV", "Recall"],
-    "Value": [accuracy, precision, specificity, npv, recall]
-})
-
+# Display summary metrics
+print("\nAI Detection Metrics Summary:")
+summary_df = format_metrics_summary(ai_metrics)
 display(summary_df)
 
 # COMMAND ----------
 
-pos_actual = df.count()
-pos_pred = aligned_results_exploded.count()
-tp = aligned_join_df.where(col("chunk").isNotNull() & col("entity").isNotNull()).count()
-fp = pos_pred - tp
+# MAGIC %md
+# MAGIC ## Aligned Detection Metrics
 
-neg_actual = all_tokens - pos_actual
-tn = neg_actual - fp
-fn = pos_actual - tp
-neg_pred = tn + fn
+# COMMAND ----------
 
-recall = tp/pos_actual
-precision = tp/pos_pred
-specificity = tn/neg_actual
-npv = tn/neg_pred
+# Calculate metrics for aligned detection
+aligned_metrics = calculate_metrics(aligned_join_df, all_tokens)
 
-neg_actual, pos_actual, neg_pred, pos_pred, tn, tp, fp, fn, recall, precision, specificity, npv
-
-contingency_data = {
-    "": ["Neg_pred", "Pos_pred"],
-    "Neg_actual": [tn, fp],
-    "Pos_actual": [fn, tp],
-    "Total": [tn + fp, fn + tp]
-}
-contingency_df = pd.DataFrame(contingency_data)
-contingency_df.loc["Total"] = [
-    "Total",
-    contingency_df["Neg_actual"].sum(),
-    contingency_df["Pos_actual"].sum(),
-    contingency_df["Total"].sum()
-]
-
+# Display contingency table
+print("Aligned Detection Contingency Table:")
+contingency_df = format_contingency_table(aligned_metrics)
 display(contingency_df)
 
-
-accuracy = (tp + tn) / (pos_actual + neg_actual)
-
-summary_df = pd.DataFrame({
-    "Metric": ["Accuracy", "Precision", "Specificity", "NPV", "Recall"],
-    "Value": [accuracy, precision, specificity, npv, recall]
-})
-
+# Display summary metrics
+print("\nAligned Detection Metrics Summary:")
+summary_df = format_metrics_summary(aligned_metrics)
 display(summary_df)
 
 # COMMAND ----------
 
-### False negatives
-display(aligned_join_df.where(aligned_join_df.entity.isNull()).select("chunk").groupBy("chunk").count())
+# MAGIC %md
+# MAGIC ## Compare Methods
+
+# COMMAND ----------
+
+# Create comparison DataFrame
+comparison_data = {
+    "Method": ["Presidio", "AI", "Aligned"],
+    "Precision": [
+        presidio_metrics["precision"],
+        ai_metrics["precision"],
+        aligned_metrics["precision"]
+    ],
+    "Recall": [
+        presidio_metrics["recall"],
+        ai_metrics["recall"],
+        aligned_metrics["recall"]
+    ],
+    "F1 Score": [
+        presidio_metrics["f1_score"],
+        ai_metrics["f1_score"],
+        aligned_metrics["f1_score"]
+    ],
+    "Accuracy": [
+        presidio_metrics["accuracy"],
+        ai_metrics["accuracy"],
+        aligned_metrics["accuracy"]
+    ]
+}
+
+comparison_df = pd.DataFrame(comparison_data)
+display(comparison_df)
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Analyze False Negatives
+
+# COMMAND ----------
+
+# Show false negatives (entities that were missed)
+print("False Negatives (Missed Entities):")
+display(
+    aligned_join_df
+    .where(aligned_join_df.entity.isNull())
+    .select("chunk")
+    .groupBy("chunk")
+    .count()
+    .orderBy(col("count").desc())
+)
