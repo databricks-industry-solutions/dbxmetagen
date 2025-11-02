@@ -1,13 +1,17 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # PII Masking in unstructured medical data
+# MAGIC # PII/PHI Detection Benchmarking
 # MAGIC
-# MAGIC ### Presidio Query
-# MAGIC Uses Presidio for identifying PII in text
+# MAGIC This notebook performs PHI/PII detection on a dataset using configurable detection methods.
 # MAGIC
+# MAGIC **Detection Methods:**
+# MAGIC - **Presidio**: Rule-based and NLP-based detection using Microsoft Presidio
+# MAGIC - **AI Query**: LLM-based detection using Databricks AI endpoints
+# MAGIC - **All**: Runs both methods and aligns results
 # MAGIC
-# MAGIC ### AI Query for PHI Masking
-# MAGIC This prompting attempts to identify and label all instances of PHI for a cell of medical text,. In post-processing, we then identify the positions of these PHI entities for downstream masking. Notably, if there are multiple of the same entities with different labels, (ie, "Beal Street" as a "person" label as well as a "street" label), the positions will be duplicated.
+# MAGIC **Outputs:**
+# MAGIC - Detection results with entity positions and types
+# MAGIC - Aligned entities (when using multiple methods)
 
 # COMMAND ----------
 
@@ -16,23 +20,16 @@
 
 # COMMAND ----------
 
-# MAGIC %load_ext autoreload
-# MAGIC %autoreload 2
+import sys
+
+sys.path.append("../../")
 
 # COMMAND ----------
 
-from pyspark.sql.functions import col, from_json
-from pyspark.sql import SparkSession
+from pyspark.sql.functions import col
 
-from src.dbxmetagen.redaction import (
-    LABEL_ENUMS,
-    make_presidio_batch_udf,
-    make_prompt,
-    format_entity_response_object_udf,
-    align_entities_udf,
-)
-from src.dbxmetagen.main import get_dbr_version
-from src.dbxmetagen.redaction.config import PHI_PROMPT_SKELETON
+from src.dbxmetagen.redaction import run_detection_pipeline
+from src.dbxmetagen.databricks_utils import get_dbr_version
 
 # COMMAND ----------
 
@@ -42,46 +39,79 @@ from src.dbxmetagen.redaction.config import PHI_PROMPT_SKELETON
 # COMMAND ----------
 
 dbutils.widgets.text(
-    defaultValue="dbxmetagen.eval_data.jsl_48docs",
+    name="source_table",
+    defaultValue="dbxmetagen.eval_data.jsl_48docs_deduped",
     label="0. Source Table",
-    name="medical_text_table"
 )
 
 dbutils.widgets.text(
-    defaultValue="text",
-    label="1. Text Column",
-    name="medical_text_col"
+    name="doc_id_column", defaultValue="doc_id", label="1. Document ID Column"
 )
 
-dbutils.widgets.text(
-    defaultValue="dbxmetagen.eval_data.jsl_48docs",
-    label="2. Redacted Output Table",
-    name="redacted_output_table"
-)
+dbutils.widgets.text(name="text_column", defaultValue="text", label="2. Text Column")
 
-# TODO: just evaluate a few of these and only offer the best options
 dbutils.widgets.dropdown(
-    name='endpoint',
-    defaultValue='databricks-gpt-oss-120b',
-    choices=sorted([
-        'databricks-gpt-oss-20b',
-        'databricks-gpt-oss-120b',
-        'databricks-gemma-3-12b',
-        'databricks-llama-4-maverick',
-        'databricks-meta-llama-3-3-70b-instruct',
-        'databricks-meta-llama-3-1-8b-instruct'
-    ]),
-    label='2. AI Endpoint'
+    name="use_presidio",
+    defaultValue="true",
+    choices=["true", "false"],
+    label="3. Use Presidio Detection",
 )
 
-dbutils.widgets.text("presidio_score_threshold", "0.5", "3. Presidio Score Threshold")
+dbutils.widgets.dropdown(
+    name="use_ai_query",
+    defaultValue="true",
+    choices=["true", "false"],
+    label="4. Use AI Query Detection",
+)
 
-dbutils.widgets.text("num_cores", 16, "4. Number of cores on cluster")
+dbutils.widgets.dropdown(
+    name="use_gliner",
+    defaultValue="false",
+    choices=["true", "false"],
+    label="5. Use GLiNER Detection",
+)
 
-med_text_table = dbutils.widgets.get("medical_text_table")
-med_text_col = dbutils.widgets.get("medical_text_col")
+dbutils.widgets.dropdown(
+    name="endpoint",
+    defaultValue="databricks-gpt-oss-120b",
+    choices=sorted(
+        [
+            "databricks-claude-sonnet-4",
+            "databricks-gpt-oss-120b",
+        ]
+    ),
+    label="6. AI Endpoint (for AI Query method)",
+)
+
+dbutils.widgets.text(
+    name="presidio_score_threshold",
+    defaultValue="0.5",
+    label="5. Presidio Score Threshold",
+)
+
+dbutils.widgets.text(name="num_cores", defaultValue="10", label="6. Number of Cores")
+
+dbutils.widgets.text(
+    name="output_table",
+    defaultValue="",
+    label="7. Output Table (leave blank for auto-suffix)",
+)
+
+# Get widget values
+source_table = dbutils.widgets.get("source_table")
+doc_id_column = dbutils.widgets.get("doc_id_column")
+text_column = dbutils.widgets.get("text_column")
+use_presidio = dbutils.widgets.get("use_presidio") == "true"
+use_ai_query = dbutils.widgets.get("use_ai_query") == "true"
+use_gliner = dbutils.widgets.get("use_gliner") == "true"
 endpoint = dbutils.widgets.get("endpoint")
 score_threshold = float(dbutils.widgets.get("presidio_score_threshold"))
+num_cores = int(dbutils.widgets.get("num_cores"))
+output_table = dbutils.widgets.get("output_table")
+
+# Auto-generate output table name if not provided
+if not output_table:
+    output_table = f"{source_table}_detection_results"
 
 # COMMAND ----------
 
@@ -90,105 +120,63 @@ score_threshold = float(dbutils.widgets.get("presidio_score_threshold"))
 
 # COMMAND ----------
 
-num_cores = 10
 if "client" not in get_dbr_version():
     spark.conf.set("spark.sql.execution.arrow.maxRecordsPerBatch", 100)
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Load Source Data For Redaction or Evaluation
+# MAGIC ## Load Source Data
 
 # COMMAND ----------
 
-source_df = (
-    spark.table(med_text_table)
-    .select("doc_id", col(med_text_col))
-    .distinct()
-)
+source_df = spark.table(source_table).select(doc_id_column, col(text_column))
+
+source_df_count = source_df.count()
+
+if source_df_count > 100:
+    raise ValueError(
+        "Source table has more than 100 documents. Please use a smaller table or increase the limit for evaluation."
+    )
+
+print(f"Loaded {source_df_count} documents from {source_table}")
 
 display(source_df)
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Presidio-based PHI Detection
+# MAGIC ## Run Detection Pipeline
+# MAGIC
+# MAGIC This runs the selected detection method(s) and optionally aligns results.
 
 # COMMAND ----------
 
-# Process data with Presidio
-text_df = source_df.repartition(num_cores).withColumn(
-    "presidio_results", 
-    make_presidio_batch_udf(score_threshold=score_threshold)(col("doc_id"), col(med_text_col))
+results_df = run_detection_pipeline(
+    spark=spark,
+    source_df=source_df,
+    doc_id_column=doc_id_column,
+    text_column=text_column,
+    use_presidio=use_presidio,
+    use_ai_query=use_ai_query,
+    use_gliner=use_gliner,
+    endpoint=endpoint if use_ai_query else None,
+    score_threshold=score_threshold,
+    num_cores=num_cores,
+    align_results=True,
 )
-
-# Parse results into structured format
-text_df = text_df.withColumn(
-    "presidio_results_struct", 
-    from_json(
-        "presidio_results", 
-        "array<struct<entity:string, score:double, start:integer, end:integer, doc_id:string>>"
-    )
-)
-
-# Save results
-text_df.write.mode('overwrite').saveAsTable("dbxmetagen.eval_data.presidio_results")
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## AI-based PHI Detection
+# MAGIC ## Save Results
 
 # COMMAND ----------
 
-# Create the prompt for AI detection
-prompt = make_prompt(PHI_PROMPT_SKELETON, labels=LABEL_ENUMS)
-
-# Prepare data with prompts
-# NOTE: the `modelParameters` acceptable values will change based on the chosen model. 
-# See: https://docs.databricks.com/aws/en/sql/language-manual/functions/ai_query#model-params for more details
-
-# Create a temporary view from the source data
-source_df.createOrReplaceTempView("source_data_temp")
-
-query = f"""
-  WITH data_with_prompting AS (
-      SELECT doc_id, text,
-            REPLACE('{prompt}', '{{med_text}}', CAST(text AS STRING)) AS prompt
-      FROM source_data_temp
-  )
-  SELECT *,
-        ai_query(
-          endpoint => '{endpoint}',
-          request => prompt,
-          failOnError => false,
-          returnType => 'STRUCT<result: ARRAY<STRUCT<entity: STRING, entity_type: STRING>>>',
-          modelParameters => named_struct('reasoning_effort', 'low')
-        ) AS response
-  FROM data_with_prompting
-"""
-
-ai_text_df = (
-    spark
-    .sql(query)
-    .repartition(num_cores)
-    .withColumn(
-        "ai_query_results", 
-        format_entity_response_object_udf(col("response.result"), col("text"))
-    )
+results_df.write.mode("overwrite").option("mergeSchema", "true").saveAsTable(
+    output_table
 )
-
-(
-  ai_text_df
-    .write
-    .mode('overwrite')
-    .option("mergeSchema", "true")
-    .saveAsTable("dbxmetagen.eval_data.ai_results")
-)
-
-# COMMAND ----------
-
-display(ai_text_df)
+print(f"Results saved to table: {output_table}")
 
 # COMMAND ----------
 
@@ -197,58 +185,47 @@ display(ai_text_df)
 
 # COMMAND ----------
 
-# Display Presidio results
-presidio_results = spark.read.table("dbxmetagen.eval_data.presidio_results")
-display(presidio_results)
+results_df = spark.read.table(output_table)
+display(results_df)
 
 # COMMAND ----------
 
-# Display AI results
-ai_results = (
-    spark.read.table("dbxmetagen.eval_data.ai_results")
-    .withColumn(
-        "ai_results_struct", 
-        from_json(
-            "ai_query_results", 
-            "array<struct<entity:string, score:double, start:integer, end:integer, doc_id:string>>"
-        )
+# MAGIC %md
+# MAGIC ## Results Summary
+
+# COMMAND ----------
+
+if use_presidio and "presidio_results_struct" in results_df.columns:
+    print("=== Presidio Results ===")
+    presidio_summary = results_df.selectExpr(
+        f"{doc_id_column}", "SIZE(presidio_results_struct) as entity_count"
     )
-)
-display(ai_results)
+    display(presidio_summary)
 
 # COMMAND ----------
 
-# MAGIC %md
-# MAGIC ## Combine Results
+if use_ai_query and "ai_results_struct" in results_df.columns:
+    print("=== AI Query Results ===")
+    ai_summary = results_df.selectExpr(
+        f"{doc_id_column}", "SIZE(ai_results_struct) as entity_count"
+    )
+    display(ai_summary)
+
 
 # COMMAND ----------
 
-# Join Presidio and AI results
-all_results = presidio_results.drop("text").join(ai_results, "doc_id")
-all_results.write.mode('overwrite').option("mergeSchema", "true").saveAsTable("dbxmetagen.eval_data.ai_vs_presidio")
-display(all_results)
+if use_gliner and "gliner_results_struct" in results_df.columns:
+    print("=== GLiNER Results ===")
+    gliner_summary = results_df.selectExpr(
+        f"{doc_id_column}", "SIZE(gliner_results_struct) as entity_count"
+    )
+    display(gliner_summary)
 
 # COMMAND ----------
 
-# MAGIC %md
-# MAGIC ## Entity Alignment
-# MAGIC
-# MAGIC Align entities from both detection methods to create a consensus view with confidence scores.
-
-# COMMAND ----------
-
-# Read combined results and align entities
-df = spark.read.table("dbxmetagen.eval_data.ai_vs_presidio")
-
-df = df.withColumn(
-    "aligned_entities",
-    align_entities_udf()(col("ai_results_struct"), col("presidio_results_struct"), col("doc_id"))
-)
-
-# Save aligned results
-df.write.mode('overwrite').option("mergeSchema", "true").saveAsTable("dbxmetagen.eval_data.aligned_entities3")
-
-# COMMAND ----------
-
-# Display aligned results
-display(df)
+if "aligned_entities" in results_df.columns:
+    print("=== Aligned Results ===")
+    aligned_summary = results_df.selectExpr(
+        f"{doc_id_column}", "SIZE(aligned_entities) as entity_count"
+    )
+    display(aligned_summary)

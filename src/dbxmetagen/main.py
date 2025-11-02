@@ -18,16 +18,7 @@ from src.dbxmetagen.databricks_utils import (
     grant_user_permissions,
     grant_group_permissions,
 )
-
-
-def get_dbr_version():
-    """Get Databricks Runtime version from environment."""
-    dbr_version = os.environ.get("DATABRICKS_RUNTIME_VERSION", None)
-    if dbr_version:
-        print(f"Databricks Runtime Version: {dbr_version}")
-    else:
-        print("DATABRICKS_RUNTIME_VERSION environment variable not found.")
-    return dbr_version
+from src.dbxmetagen.databricks_utils import get_dbr_version
 
 
 def validate_runtime_compatibility(dbr_version, config):

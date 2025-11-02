@@ -43,6 +43,39 @@ from .alignment import (
 from .evaluation import (
     evaluate_detection,
     calculate_metrics,
+    format_contingency_table,
+    format_metrics_summary,
+    metrics_to_long_format,
+    save_evaluation_results,
+    compare_methods_across_datasets,
+    get_best_method_per_dataset,
+)
+
+from .detection import (
+    run_presidio_detection,
+    run_ai_query_detection,
+    run_gliner_detection,
+    run_detection,
+)
+
+from .redaction import (
+    redact_text,
+    create_redaction_udf,
+    create_redacted_table,
+    apply_redaction_to_columns,
+    RedactionStrategy,
+)
+
+from .metadata import (
+    get_columns_by_tag,
+    get_protected_columns,
+    get_table_metadata,
+)
+
+from .pipeline import (
+    run_detection_pipeline,
+    run_redaction_pipeline,
+    run_redaction_pipeline_by_tag,
 )
 
 __all__ = [
@@ -68,5 +101,29 @@ __all__ = [
     # Evaluation
     "evaluate_detection",
     "calculate_metrics",
+    "format_contingency_table",
+    "format_metrics_summary",
+    "metrics_to_long_format",
+    "save_evaluation_results",
+    "compare_methods_across_datasets",
+    "get_best_method_per_dataset",
+    # Detection
+    "run_presidio_detection",
+    "run_ai_query_detection",
+    "run_gliner_detection",
+    "run_detection",
+    # Redaction
+    "redact_text",
+    "create_redaction_udf",
+    "create_redacted_table",
+    "apply_redaction_to_columns",
+    "RedactionStrategy",
+    # Metadata
+    "get_columns_by_tag",
+    "get_protected_columns",
+    "get_table_metadata",
+    # Pipeline
+    "run_detection_pipeline",
+    "run_redaction_pipeline",
+    "run_redaction_pipeline_by_tag",
 ]
-
