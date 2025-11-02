@@ -171,7 +171,10 @@ def cleanup_resources(config, spark):
 
     # Clean up control table
     try:
-        if config.cleanup_control_table == "true" or config.cleanup_control_table:
+        if (
+            config.cleanup_control_table == "true"
+            or config.cleanup_control_table == True
+        ):
             if config.job_id is not None:
                 spark.sql(
                     f"DELETE FROM {control_table_full} WHERE job_id = {config.job_id}"

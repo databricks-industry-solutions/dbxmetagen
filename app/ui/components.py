@@ -135,6 +135,7 @@ class UIComponents:
                     "mode": mode,
                     "cluster_size": cluster_size,
                     "apply_ddl": apply_ddl,
+                    "review_apply_ddl": apply_ddl,
                 }
 
                 # Add domain config path if in domain mode
@@ -622,7 +623,9 @@ class UIComponents:
             )
 
             if results["success"]:
-                st.success(f"✅ Applied metadata to {results['applied']} tables")
+                st.success(
+                    f"✅ Applied metadata to {results['applied']} tables and columns..."
+                )
             else:
                 st.error(
                     f"❌ Failed to apply metadata: {results.get('error', 'Unknown error')}"

@@ -222,7 +222,9 @@ class JobManager:
         job_params = {
             "table_names": tables if isinstance(tables, str) else ",".join(tables),
             "env": config.get("bundle_target", "app"),
-            "cleanup_control_table": "true",
+            "cleanup_control_table": str(
+                config.get("cleanup_control_table", True)
+            ).lower(),
             "catalog_name": catalog_name,
             "host": config.get("host", ""),
             "schema_name": config.get("schema_name", "metadata_results"),
@@ -252,6 +254,7 @@ class JobManager:
             ).lower(),
             # Pass actual current user to override config
             "current_user": job_user,
+            "review_apply_ddl": str(config.get("review_apply_ddl", False)).lower(),
         }
 
         # Add domain config path if in domain mode
@@ -581,6 +584,9 @@ class JobManager:
             "reviewed_file_name": filename,
             "mode": mode,
             "env": "app",
+            "review_apply_ddl": str(
+                st.session_state.config.get("review_apply_ddl", False)
+            ).lower(),
             "table_names": "from_metadata_file",
         }
 

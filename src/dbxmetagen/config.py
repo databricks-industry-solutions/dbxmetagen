@@ -76,6 +76,7 @@ class MetadataConfig:
             "custom_endpoint_url",
             "custom_endpoint_secret_scope",
             "custom_endpoint_secret_key",
+            "build_knowledge_graph",
         ],
     }
     MODEL_PARAMS = {}
