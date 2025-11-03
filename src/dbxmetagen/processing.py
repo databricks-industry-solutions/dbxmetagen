@@ -54,12 +54,12 @@ except ImportError:
     TokenUsageStats = None
     ChatResponse = None
 from grpc._channel import _InactiveRpcError, _MultiThreadedRendezvous
-from src.dbxmetagen.config import MetadataConfig
-from src.dbxmetagen.sampling import determine_sampling_ratio
-from src.dbxmetagen.prompts import Prompt, PIPrompt, CommentPrompt, PromptFactory
-from src.dbxmetagen.error_handling import exponential_backoff, validate_csv
-from src.dbxmetagen.comment_summarizer import TableCommentSummarizer
-from src.dbxmetagen.metadata_generator import (
+from dbxmetagen.config import MetadataConfig
+from dbxmetagen.sampling import determine_sampling_ratio
+from dbxmetagen.prompts import Prompt, PIPrompt, CommentPrompt, PromptFactory
+from dbxmetagen.error_handling import exponential_backoff, validate_csv
+from dbxmetagen.comment_summarizer import TableCommentSummarizer
+from dbxmetagen.metadata_generator import (
     Response,
     PIResponse,
     CommentResponse,
@@ -69,14 +69,14 @@ from src.dbxmetagen.metadata_generator import (
     MetadataGenerator,
     CommentGenerator,
 )
-from src.dbxmetagen.overrides import (
+from dbxmetagen.overrides import (
     override_metadata_from_csv,
     apply_overrides_with_joins,
     build_condition,
     get_join_conditions,
 )
-from src.dbxmetagen.user_utils import sanitize_user_identifier, get_current_user
-from src.dbxmetagen.domain_classifier import load_domain_config, classify_table_domain
+from dbxmetagen.user_utils import sanitize_user_identifier, get_current_user
+from dbxmetagen.domain_classifier import load_domain_config, classify_table_domain
 
 logging.basicConfig(
     level=logging.WARNING,
@@ -509,7 +509,10 @@ def add_ddl_to_column_comment_df(df: DataFrame, ddl_column: str) -> DataFrame:
         DataFrame: The updated DataFrame with the DDL statement added.
     """
     if "column_content" in df.columns:
-        df = df.withColumn("column_content", regexp_replace(col("column_content").cast("string"), "''", "'"))
+        df = df.withColumn(
+            "column_content",
+            regexp_replace(col("column_content").cast("string"), "''", "'"),
+        )
 
     result_df = df.withColumn(
         ddl_column,
@@ -536,7 +539,10 @@ def add_ddl_to_table_comment_df(df: DataFrame, ddl_column: str) -> DataFrame:
         DataFrame: The updated DataFrame with the DDL statement added.
     """
     if df is not None and "column_content" in df.columns:
-        df = df.withColumn("column_content", regexp_replace(col("column_content").cast("string"), "''", "'"))
+        df = df.withColumn(
+            "column_content",
+            regexp_replace(col("column_content").cast("string"), "''", "'"),
+        )
 
     if df is not None:
         result_df = df.withColumn(

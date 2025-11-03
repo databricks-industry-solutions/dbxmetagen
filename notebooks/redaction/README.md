@@ -7,7 +7,7 @@ This module provides a comprehensive pipeline for detecting and redacting Protec
 The redaction system consists of:
 
 1. **Core Modules** (`src/dbxmetagen/redaction/`)
-   - Detection engines (Presidio, AI Query, NER stub)
+   - Detection engines (Presidio, AI Query, GLiNER)
    - Entity alignment for consensus detection
    - Text redaction with configurable strategies
    - Unity Catalog metadata integration
@@ -18,6 +18,24 @@ The redaction system consists of:
    - Evaluation and metrics
    - Redaction application
    - End-to-end pipeline
+
+## Installation
+
+```bash
+# Install from requirements.txt
+pip install -r requirements.txt
+```
+
+**Databricks Cluster:**
+```python
+%pip install -r /Workspace/.../requirements.txt
+dbutils.library.restartPython()
+```
+
+**Key Dependencies:**
+- `presidio_analyzer` and `presidio_anonymizer` for rule-based PHI detection
+- `transformers` and `torch` for GLiNER biomedical NER (no gliner package needed)
+- `spacy` with `en_core_web_lg` model for linguistic analysis
 
 ## Notebooks
 
@@ -226,7 +244,7 @@ This long-format schema enables:
 ### Detection (`src/dbxmetagen/redaction/detection.py`)
 
 ```python
-from src.dbxmetagen.redaction import run_detection
+from dbxmetagen.redaction import run_detection
 
 # Run detection
 result_df = run_detection(
@@ -243,7 +261,7 @@ result_df = run_detection(
 ### Redaction (`src/dbxmetagen/redaction/redaction.py`)
 
 ```python
-from src.dbxmetagen.redaction import create_redacted_table
+from dbxmetagen.redaction import create_redacted_table
 
 # Apply redaction
 redacted_df = create_redacted_table(
@@ -259,7 +277,7 @@ redacted_df = create_redacted_table(
 ### Pipeline (`src/dbxmetagen/redaction/pipeline.py`)
 
 ```python
-from src.dbxmetagen.redaction import run_redaction_pipeline
+from dbxmetagen.redaction import run_redaction_pipeline
 
 # End-to-end pipeline
 result_df = run_redaction_pipeline(
@@ -275,7 +293,7 @@ result_df = run_redaction_pipeline(
 ### Metadata (`src/dbxmetagen/redaction/metadata.py`)
 
 ```python
-from src.dbxmetagen.redaction import get_protected_columns
+from dbxmetagen.redaction import get_protected_columns
 
 # Find protected columns
 columns = get_protected_columns(
@@ -288,7 +306,7 @@ columns = get_protected_columns(
 ### Evaluation (`src/dbxmetagen/redaction/evaluation.py`)
 
 ```python
-from src.dbxmetagen.redaction import (
+from dbxmetagen.redaction import (
     evaluate_detection,
     calculate_metrics,
     save_evaluation_results

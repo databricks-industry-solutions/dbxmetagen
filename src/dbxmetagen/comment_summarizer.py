@@ -2,9 +2,9 @@ from pyspark.sql.functions import concat_ws, collect_list
 import json
 from typing import Dict, Any
 from openai.types.chat.chat_completion import ChatCompletion
-from src.dbxmetagen.config import MetadataConfig
-from src.dbxmetagen.error_handling import exponential_backoff
-from src.dbxmetagen.chat_client import ChatClientFactory
+from dbxmetagen.config import MetadataConfig
+from dbxmetagen.error_handling import exponential_backoff
+from dbxmetagen.chat_client import ChatClientFactory
 
 
 class TableCommentSummarizer:

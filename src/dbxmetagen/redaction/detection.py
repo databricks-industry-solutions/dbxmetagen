@@ -145,7 +145,7 @@ def run_gliner_detection(
     df: DataFrame,
     doc_id_column: str,
     text_column: str,
-    model_name: str = "urchade/gliner_medium-v2.1",
+    model_name: str = "Ihor/gliner-biomed-large-v1.0",
     num_cores: int = 10,
 ) -> DataFrame:
     """
@@ -181,7 +181,7 @@ def run_detection(
     use_gliner: bool = False,
     endpoint: Optional[str] = None,
     score_threshold: float = DEFAULT_PRESIDIO_SCORE_THRESHOLD,
-    gliner_model: str = "urchade/gliner_medium-v2.1",
+    gliner_model: str = "Ihor/gliner-biomed-large-v1.0",
     num_cores: int = 10,
 ) -> DataFrame:
     """

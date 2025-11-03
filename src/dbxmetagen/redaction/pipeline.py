@@ -25,7 +25,7 @@ def run_detection_pipeline(
     use_gliner: bool = False,
     endpoint: Optional[str] = None,
     score_threshold: float = 0.5,
-    gliner_model: str = "urchade/gliner_medium-v2.1",
+    gliner_model: str = "Ihor/gliner-biomed-large-v1.0",
     num_cores: int = 10,
     align_results: bool = True,
 ) -> DataFrame:
@@ -115,7 +115,7 @@ def run_redaction_pipeline(
     redaction_strategy: RedactionStrategy = "generic",
     endpoint: Optional[str] = None,
     score_threshold: float = 0.5,
-    gliner_model: str = "urchade/gliner_medium-v2.1",
+    gliner_model: str = "Ihor/gliner-biomed-large-v1.0",
     num_cores: int = 10,
     use_aligned: bool = True,
 ) -> DataFrame:
@@ -215,7 +215,7 @@ def run_redaction_pipeline_by_tag(
     redaction_strategy: RedactionStrategy = "generic",
     endpoint: Optional[str] = None,
     score_threshold: float = 0.5,
-    gliner_model: str = "urchade/gliner_medium-v2.1",
+    gliner_model: str = "Ihor/gliner-biomed-large-v1.0",
     num_cores: int = 10,
 ) -> DataFrame:
     """

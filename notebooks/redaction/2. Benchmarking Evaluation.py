@@ -18,20 +18,15 @@
 # COMMAND ----------
 
 # MAGIC %pip install -r ../../requirements.txt
+# MAGIC %pip install -e ../../
 # MAGIC %restart_python
-
-# COMMAND ----------
-
-import sys
-
-sys.path.append("../../")
 
 # COMMAND ----------
 
 import pandas as pd
 from pyspark.sql.functions import col, explode
 
-from src.dbxmetagen.redaction import (
+from dbxmetagen.redaction import (
     evaluate_detection,
     calculate_metrics,
     format_contingency_table,

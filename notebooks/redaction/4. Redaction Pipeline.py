@@ -18,6 +18,7 @@
 # COMMAND ----------
 
 # MAGIC %pip install -r ../../requirements.txt
+# MAGIC %pip install -e ../../
 # MAGIC %restart_python
 
 # COMMAND ----------
@@ -27,12 +28,12 @@
 
 # COMMAND ----------
 
-from src.dbxmetagen.redaction import (
+from dbxmetagen.redaction import (
     run_redaction_pipeline,
     run_redaction_pipeline_by_tag,
     get_columns_by_tag,
 )
-from src.dbxmetagen.databricks_utils import get_dbr_version
+from dbxmetagen.databricks_utils import get_dbr_version
 
 # COMMAND ----------
 

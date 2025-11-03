@@ -17,19 +17,14 @@
 # COMMAND ----------
 
 # MAGIC %pip install -r ../../requirements.txt
+# MAGIC %pip install -e ../../
 # MAGIC %restart_python
-
-# COMMAND ----------
-
-import sys
-
-sys.path.append("../../")
 
 # COMMAND ----------
 
 from pyspark.sql.functions import col
 
-from src.dbxmetagen.redaction import create_redacted_table
+from dbxmetagen.redaction import create_redacted_table
 
 # COMMAND ----------
 

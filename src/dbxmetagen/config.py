@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime
 import yaml
-from src.dbxmetagen.user_utils import sanitize_user_identifier, get_current_user
+from dbxmetagen.user_utils import sanitize_user_identifier, get_current_user
 
 
 class MetadataConfig:

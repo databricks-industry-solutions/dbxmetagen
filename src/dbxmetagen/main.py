@@ -2,8 +2,8 @@
 
 import os
 from pyspark.sql import SparkSession
-from src.dbxmetagen.error_handling import validate_csv
-from src.dbxmetagen.processing import (
+from dbxmetagen.error_handling import validate_csv
+from dbxmetagen.processing import (
     setup_ddl,
     create_tables,
     setup_queue,
@@ -11,14 +11,14 @@ from src.dbxmetagen.processing import (
     generate_and_persist_metadata,
     get_control_table,
 )
-from src.dbxmetagen.config import MetadataConfig
-from src.dbxmetagen.deterministic_pi import ensure_spacy_model
-from src.dbxmetagen.benchmarking import log_token_usage, setup_benchmarking
-from src.dbxmetagen.databricks_utils import (
+from dbxmetagen.config import MetadataConfig
+from dbxmetagen.deterministic_pi import ensure_spacy_model
+from dbxmetagen.benchmarking import log_token_usage, setup_benchmarking
+from dbxmetagen.databricks_utils import (
     grant_user_permissions,
     grant_group_permissions,
 )
-from src.dbxmetagen.databricks_utils import get_dbr_version
+from dbxmetagen.databricks_utils import get_dbr_version
 
 
 def validate_runtime_compatibility(dbr_version, config):
