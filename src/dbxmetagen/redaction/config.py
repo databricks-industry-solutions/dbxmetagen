@@ -104,3 +104,24 @@ DEFAULT_OVERLAP_TOLERANCE = 0
 # Confidence thresholds
 HIGH_CONFIDENCE_THRESHOLD = 0.7
 
+# Source weights for confidence calculation (used in weighted scoring)
+SOURCE_WEIGHTS = {
+    "presidio": 0.35,
+    "gliner": 0.30,
+    "ai": 0.35,
+}
+
+# Match quality thresholds
+EXACT_MATCH_SCORE = 1.0
+OVERLAP_MATCH_SCORE = 0.7
+FUZZY_MATCH_SCORE = 0.5
+
+# Confidence levels based on weighted scores
+CONFIDENCE_THRESHOLDS = {
+    "high": 0.7,  # 2+ sources with high agreement
+    "medium": 0.4,  # 1-2 sources with partial agreement
+    "low": 0.0,  # Single source or low agreement
+}
+
+# Required entity fields (minimal set needed for alignment)
+REQUIRED_ENTITY_FIELDS = {"entity", "start", "end"}

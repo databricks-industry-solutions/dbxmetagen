@@ -28,7 +28,7 @@ targets:
     default: true
 
     workspace:
-      host: https://adb-830292400663869.9.azuredatabricks.net/
+      host: <host url here>
     permissions:
       - user_name: ${var.deploying_user}
         level: CAN_MANAGE
