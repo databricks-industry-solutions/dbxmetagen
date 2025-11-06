@@ -7,7 +7,7 @@ with weighted confidence scoring.
 """
 
 from dataclasses import dataclass, field
-from typing import List, Dict, Any, Optional, Set, Tuple
+from typing import List, Dict, Any, Optional, Tuple
 from enum import Enum
 import pandas as pd
 from pyspark.sql.functions import pandas_udf
@@ -26,7 +26,6 @@ from .config import (
     SOURCE_WEIGHTS,
     EXACT_MATCH_SCORE,
     OVERLAP_MATCH_SCORE,
-    FUZZY_MATCH_SCORE,
     CONFIDENCE_THRESHOLDS,
     REQUIRED_ENTITY_FIELDS,
 )
@@ -444,7 +443,7 @@ class MultiSourceAligner:
                 ]
 
                 if candidates:
-                    best_match, score, match_type = find_best_match(
+                    best_match, _score, match_type = find_best_match(
                         primary_entity, candidates, self.fuzzy_threshold
                     )
 

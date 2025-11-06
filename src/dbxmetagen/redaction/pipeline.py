@@ -5,9 +5,17 @@ This module orchestrates the complete workflow from detection through
 alignment and redaction.
 """
 
-from typing import Optional, Literal
+from typing import Optional
 from pyspark.sql import DataFrame, SparkSession
-from pyspark.sql.functions import col
+from pyspark.sql.functions import col, array
+from pyspark.sql.types import (
+    ArrayType,
+    StructType,
+    StructField,
+    StringType,
+    IntegerType,
+    DoubleType,
+)
 
 from .detection import run_detection
 from .alignment import align_entities_udf
@@ -83,23 +91,58 @@ def run_detection_pipeline(
     # Count how many methods were used
     methods_used = sum([use_presidio, use_ai_query, use_gliner])
 
-    # Align results if multiple methods were used
-    if align_results and methods_used >= 2:
-        # For now, only align Presidio and AI Query (most common case)
-        if (
-            use_presidio
-            and use_ai_query
-            and "ai_results_struct" in result_df.columns
-            and "presidio_results_struct" in result_df.columns
-        ):
-            result_df = result_df.withColumn(
-                "aligned_entities",
-                align_entities_udf()(
-                    col("ai_results_struct"),
-                    col("presidio_results_struct"),
-                    col(doc_id_column),
-                ),
+    # Align results if multiple methods were used (or if requested for single method)
+    if align_results and methods_used >= 1:
+        print("2. Aligning entity results from multiple sources...")
+
+        # Define empty array schema for missing sources
+        empty_entity_array = array().cast(
+            ArrayType(
+                StructType(
+                    [
+                        StructField("entity", StringType()),
+                        StructField("entity_type", StringType()),
+                        StructField("start", IntegerType()),
+                        StructField("end", IntegerType()),
+                        StructField("score", DoubleType()),
+                        StructField("doc_id", StringType()),
+                    ]
+                )
             )
+        )
+
+        # Ensure all three columns exist (use empty array if not)
+        if "ai_results_struct" not in result_df.columns:
+            result_df = result_df.withColumn("ai_results_struct", empty_entity_array)
+        if "presidio_results_struct" not in result_df.columns:
+            result_df = result_df.withColumn(
+                "presidio_results_struct", empty_entity_array
+            )
+        if "gliner_results_struct" not in result_df.columns:
+            result_df = result_df.withColumn(
+                "gliner_results_struct", empty_entity_array
+            )
+
+        # Create alignment UDF with appropriate source flags
+        align_udf = align_entities_udf(
+            fuzzy_threshold=50,
+            include_presidio=use_presidio,
+            include_gliner=use_gliner,
+            include_ai=use_ai_query,
+        )
+
+        # Apply alignment (always pass all 4 columns in correct order)
+        result_df = result_df.withColumn(
+            "aligned_entities",
+            align_udf(
+                col("ai_results_struct"),
+                col("presidio_results_struct"),
+                col("gliner_results_struct"),
+                col(doc_id_column),
+            ),
+        )
+
+        print("✓ Alignment complete")
 
     return result_df
 
@@ -262,9 +305,6 @@ def run_redaction_pipeline_by_tag(
         raise ValueError(
             f"No columns found with {tag_name}={tag_value} in {source_table}"
         )
-
-    # Load source table
-    source_df = spark.table(source_table)
 
     # For each protected column, run detection and redaction
     # For simplicity, process the first text column found
