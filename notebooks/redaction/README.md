@@ -39,6 +39,21 @@ dbutils.library.restartPython()
 
 ## Notebooks
 
+### 0. Load AI4Privacy Dataset
+
+Loads the `ai4privacy/pii-masking-300k` dataset from HuggingFace and transforms it for benchmarking.
+
+**Inputs:**
+- Dataset from HuggingFace (ai4privacy/pii-masking-300k)
+- Sample size (1-300k records)
+- Output catalog and schema
+
+**Outputs:**
+- Source table for detection (`doc_id`, `text`)
+- Ground truth table for evaluation (`doc_id`, `text`, `chunk`, `begin`, `end`)
+
+**Use Case:** Create a standardized benchmarking dataset with 300k examples of real-world PII.
+
 ### 1. Benchmarking Detection
 
 Runs PHI/PII detection on a dataset using configurable detection methods.
@@ -115,9 +130,48 @@ End-to-end detection and redaction for production use.
 
 For evaluating detection methods on labeled data:
 
-1. **Detection**: Run `1. Benchmarking Detection` to detect entities
-2. **Evaluation**: Run `2. Benchmarking Evaluation` to compare with ground truth
-3. **Redaction** (optional): Run `3. Benchmarking Redaction` to create clean dataset
+1. **Load Dataset** (optional): Run `0. Load AI4Privacy Dataset` to create standardized benchmark
+2. **Detection**: Run `1. Benchmarking Detection` to detect entities
+3. **Evaluation**: Run `2. Benchmarking Evaluation` to compare with ground truth
+4. **Redaction** (optional): Run `3. Benchmarking Redaction` to create clean dataset
+
+### AI4Privacy Dataset Workflow
+
+For using the HuggingFace ai4privacy/pii-masking-300k dataset:
+
+**Step 1: Load and Transform Dataset**
+```
+Run 0. Load AI4Privacy Dataset with:
+- Sample Size: 1000 (for testing) or 0 (for full 300k)
+- Output Catalog: dbxmetagen
+- Output Schema: eval_data
+- Dataset Name: ai4privacy_pii_300k
+```
+
+**Step 2: Run Detection**
+```
+Run 1. Benchmarking Detection with:
+- Source Table: dbxmetagen.eval_data.ai4privacy_pii_300k_source
+- Doc ID Column: doc_id
+- Text Column: text
+- Detection Methods: Select Presidio, AI Query, and/or GLiNER
+- Output Table: (auto-generated or specify)
+```
+
+**Step 3: Evaluate Results**
+```
+Run 2. Benchmarking Evaluation with:
+- Ground Truth Table: dbxmetagen.eval_data.ai4privacy_pii_300k_ground_truth
+- Detection Results Table: (from Step 2)
+- Dataset Name: ai4privacy_pii_300k
+```
+
+**Benefits of AI4Privacy Dataset:**
+- 300k examples of real-world PII patterns
+- Diverse entity types (names, emails, phones, SSNs, addresses, etc.)
+- Pre-labeled ground truth for accurate evaluation
+- Standardized format compatible with existing workflows
+- Large enough for statistically significant evaluation
 
 ### Production Workflow
 
