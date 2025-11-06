@@ -16,6 +16,8 @@ pyyaml>=6.0.1
 rapidfuzz==3.14.1
 presidio_analyzer==2.2.358
 presidio_anonymizer==2.2.358
-# HuggingFace transformers for GLiNER biomedical NER (no gliner package needed)
+# GLiNER for biomedical named entity recognition
+gliner>=0.2.0
+# Transformers and torch (used by GLiNER and other models)
 transformers>=4.30.0
 torch>=2.0.0

@@ -20,86 +20,27 @@
 
 # COMMAND ----------
 
-# Development: Add repo to path for importing modules
-# For production with installed package, comment out the sys.path line
-import sys
-
-sys.path.insert(0, "../..")
+# Install wheel
+# For DABs deployment: uncomment to use bundle-deployed wheel
+# WHEEL_PATH = "/Workspace${workspace.root_path}/.databricks/bundle/${bundle.target}/files/dist/dbxmetagen-${var.package_version}-py3-none-any.whl"
+#
+# For volume deployment: use this pattern
+# WHEEL_PATH = "/Volumes/catalog/schema/volume/dbxmetagen-0.5.1-py3-none-any.whl"
+#
+# For development: use editable install
+# WHEEL_PATH = "/Workspace/Repos/username/repo/dbxmetagen"
+# %pip install -e $WHEEL_PATH
+#
+# Uncomment to install:
+# %pip install $WHEEL_PATH
+# %restart_python
 
 # COMMAND ----------
 
-import json
-from typing import Iterator, Tuple
-import pandas as pd
-from pyspark.sql.functions import pandas_udf, col
-from presidio_analyzer import BatchAnalyzerEngine
+from pyspark.sql.functions import col
 
-# Import helper functions into notebook scope - these will be captured in UDF closures
-from dbxmetagen.deterministic_pi import get_analyzer_engine
-from dbxmetagen.redaction.config import DEFAULT_PRESIDIO_SCORE_THRESHOLD
-from dbxmetagen.redaction.presidio import format_presidio_batch_results
 from dbxmetagen.redaction import run_detection_pipeline
 from dbxmetagen.databricks_utils import get_dbr_version
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## Presidio UDF Definition
-# MAGIC
-# MAGIC Define Presidio UDF inline in notebook to capture helper functions in closure.
-# MAGIC This avoids worker import issues - the UDF is serialized with all dependencies.
-
-# COMMAND ----------
-
-
-def make_presidio_batch_udf(
-    score_threshold: float = DEFAULT_PRESIDIO_SCORE_THRESHOLD, add_pci: bool = False
-):
-    """
-    Create a Pandas UDF for batch PHI detection using Presidio.
-
-    Defined inline in notebook to capture helper functions (get_analyzer_engine,
-    format_presidio_batch_results) in the closure, avoiding worker import issues.
-
-    Args:
-        score_threshold: Minimum confidence score to include results (0.0-1.0)
-        add_pci: Whether to add PCI (Payment Card Industry) recognizers
-
-    Returns:
-        A Pandas UDF that takes (doc_ids, texts) and returns JSON-serialized results
-    """
-
-    @pandas_udf("string")
-    def analyze_udf(
-        batch_iter: Iterator[Tuple[pd.Series, pd.Series]],
-    ) -> Iterator[pd.Series]:
-        # Captures get_analyzer_engine from notebook scope
-        analyzer = get_analyzer_engine(
-            add_pci=add_pci, default_score_threshold=score_threshold
-        )
-        batch_analyzer = BatchAnalyzerEngine(analyzer_engine=analyzer)
-
-        for doc_ids, texts in batch_iter:
-            text_dict = pd.DataFrame({"doc_id": doc_ids, "text": texts}).to_dict(
-                orient="list"
-            )
-
-            results = batch_analyzer.analyze_dict(
-                text_dict,
-                language="en",
-                keys_to_skip=["doc_id"],
-                score_threshold=score_threshold,
-                batch_size=20,
-                n_process=1,
-            )
-
-            # Captures format_presidio_batch_results from notebook scope
-            output = format_presidio_batch_results(
-                results, score_threshold=score_threshold
-            )
-            yield pd.Series(output)
-
-    return analyze_udf
 
 
 # COMMAND ----------
@@ -217,53 +158,25 @@ display(source_df)
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Run Detection
+# MAGIC ## Run Detection Pipeline
 # MAGIC
-# MAGIC Applies Presidio UDF defined above (uses closure capture for worker compatibility).
-# MAGIC For AI Query and GLiNER, uses pipeline functions.
+# MAGIC This runs the selected detection method(s) and optionally aligns results.
 
 # COMMAND ----------
 
-from pyspark.sql.functions import from_json
-
-# Start with source data
-results_df = source_df
-
-# Apply Presidio detection if enabled (using locally-defined UDF)
-if use_presidio:
-    print("Running Presidio detection with locally-defined UDF...")
-    presidio_udf = make_presidio_batch_udf(score_threshold=score_threshold)
-
-    results_df = (
-        results_df.repartition(num_cores)
-        .withColumn(
-            "presidio_results", presidio_udf(col(doc_id_column), col(text_column))
-        )
-        .withColumn(
-            "presidio_results_struct",
-            from_json(
-                "presidio_results",
-                "array<struct<entity:string, score:double, start:integer, end:integer, doc_id:string>>",
-            ),
-        )
-    )
-
-# For other detection methods, use pipeline (they don't have serialization issues)
-if use_ai_query or use_gliner:
-    print("Running additional detection methods via pipeline...")
-    results_df = run_detection_pipeline(
-        spark=spark,
-        source_df=results_df,  # Pass results with Presidio if already applied
-        doc_id_column=doc_id_column,
-        text_column=text_column,
-        use_presidio=False,  # Already applied above
-        use_ai_query=use_ai_query,
-        use_gliner=use_gliner,
-        endpoint=endpoint if use_ai_query else None,
-        score_threshold=score_threshold,
-        num_cores=num_cores,
-        align_results=True,
-    )
+results_df = run_detection_pipeline(
+    spark=spark,
+    source_df=source_df,
+    doc_id_column=doc_id_column,
+    text_column=text_column,
+    use_presidio=use_presidio,
+    use_ai_query=use_ai_query,
+    use_gliner=use_gliner,
+    endpoint=endpoint if use_ai_query else None,
+    score_threshold=score_threshold,
+    num_cores=num_cores,
+    align_results=True,
+)
 
 # COMMAND ----------
 

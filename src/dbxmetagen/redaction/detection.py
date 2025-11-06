@@ -54,7 +54,7 @@ def run_presidio_detection(
             "presidio_results_struct",
             from_json(
                 "presidio_results",
-                "array<struct<entity:string, score:double, start:integer, end:integer, doc_id:string>>",
+                "array<struct<entity:string, entity_type:string, score:double, start:integer, end:integer, doc_id:string>>",
             ),
         )
     )

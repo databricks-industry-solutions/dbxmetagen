@@ -60,30 +60,20 @@ def run_gliner_detection(
     @pandas_udf(StringType())
     def gliner_udf(doc_ids: pd.Series, texts: pd.Series) -> pd.Series:
         """
-        Apply GLiNER model via transformers for entity extraction.
+        Apply GLiNER model for entity extraction using official gliner library.
 
-        GLiNER models work by encoding the text and labels together,
-        then predicting entity spans.
+        GLiNER is a Named Entity Recognition model that can identify entities
+        based on user-provided labels without fine-tuning.
         """
         try:
-            from transformers import AutoTokenizer, AutoModelForTokenClassification
-            import torch
-            import numpy as np
+            from gliner import GLiNER
         except ImportError:
             raise ImportError(
-                "transformers and torch required. Install with: pip install transformers torch"
+                "gliner library required. Install with: pip install gliner"
             )
 
-        # Load model and tokenizer once per executor
-        tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-        model = AutoModelForTokenClassification.from_pretrained(
-            model_name, trust_remote_code=True
-        )
-        model.eval()
-
-        # Move to GPU if available
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        model = model.to(device)
+        # Load GLiNER model once per executor
+        model = GLiNER.from_pretrained(model_name)
 
         results = []
         for doc_id, text in zip(doc_ids, texts):
@@ -92,101 +82,27 @@ def run_gliner_detection(
                 continue
 
             try:
-                # Tokenize input text
-                inputs = tokenizer(
-                    text,
-                    return_tensors="pt",
-                    padding=True,
-                    truncation=True,
-                    max_length=512,
-                    return_offsets_mapping=True,
-                )
+                # Use GLiNER's native predict_entities method
+                entities = model.predict_entities(text, labels, threshold=0.5)
 
-                offset_mapping = inputs.pop("offset_mapping")[0]
-                inputs = {k: v.to(device) for k, v in inputs.items()}
-
-                # Get model predictions
-                with torch.no_grad():
-                    outputs = model(**inputs)
-                    logits = outputs.logits[0]  # [seq_len, num_labels]
-                    predictions = torch.argmax(logits, dim=-1).cpu().numpy()
-                    scores = (
-                        torch.softmax(logits, dim=-1).max(dim=-1).values.cpu().numpy()
-                    )
-
-                # Extract entities from predictions
-                formatted_entities = []
-                current_entity = None
-
-                for idx, (pred_label, score, (start_char, end_char)) in enumerate(
-                    zip(predictions, scores, offset_mapping)
-                ):
-                    # Skip special tokens (CLS, SEP, PAD)
-                    if start_char == 0 and end_char == 0:
-                        continue
-
-                    # Label 0 is usually "O" (outside entity)
-                    if pred_label == 0:
-                        # Save current entity if exists
-                        if current_entity:
-                            entity_text = text[
-                                current_entity["start"] : current_entity["end"]
-                            ]
-                            if entity_text.strip():  # Only non-empty entities
-                                formatted_entities.append(
-                                    {
-                                        "entity": entity_text,
-                                        "entity_type": current_entity["entity_type"],
-                                        "start": current_entity["start"],
-                                        "end": current_entity["end"]
-                                        - 1,  # Inclusive end
-                                        "score": float(current_entity["score"]),
-                                        "doc_id": str(doc_id),
-                                    }
-                                )
-                            current_entity = None
-                    else:
-                        # Start or continue entity
-                        entity_type = "PHI"  # Generic for now, can map label to type
-
-                        if current_entity is None:
-                            # Start new entity
-                            current_entity = {
-                                "start": int(start_char),
-                                "end": int(end_char),
-                                "entity_type": entity_type,
-                                "score": score,
-                                "count": 1,
-                            }
-                        else:
-                            # Continue current entity
-                            current_entity["end"] = int(end_char)
-                            current_entity["score"] = (
-                                current_entity["score"] * current_entity["count"]
-                                + score
-                            ) / (current_entity["count"] + 1)
-                            current_entity["count"] += 1
-
-                # Save final entity if exists
-                if current_entity:
-                    entity_text = text[current_entity["start"] : current_entity["end"]]
-                    if entity_text.strip():
-                        formatted_entities.append(
-                            {
-                                "entity": entity_text,
-                                "entity_type": current_entity["entity_type"],
-                                "start": current_entity["start"],
-                                "end": current_entity["end"] - 1,
-                                "score": float(current_entity["score"]),
-                                "doc_id": str(doc_id),
-                            }
-                        )
+                # Format entities to match expected structure
+                formatted_entities = [
+                    {
+                        "entity": ent["text"],
+                        "entity_type": ent["label"],
+                        "start": ent["start"],
+                        "end": ent["end"],
+                        "score": ent.get("score", 1.0),
+                        "doc_id": str(doc_id),
+                    }
+                    for ent in entities
+                ]
 
                 results.append(json.dumps(formatted_entities))
 
             except Exception as e:
                 # Log error and return empty results for this document
-                print(f"Error processing doc {doc_id}: {str(e)}")
+                print(f"Error processing document {doc_id}: {str(e)}")
                 results.append(json.dumps([]))
 
         return pd.Series(results)
