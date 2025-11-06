@@ -15,7 +15,8 @@
 
 # COMMAND ----------
 
-# MAGIC %pip install -r ../../requirements.txt
+# MAGIC %pip install -r ../../requirements.txt gliner
+# MAGIC %pip install /Volumes/dbxmetagen/default/init_scripts/dbxmetagen-0.5.1-py3-none-any.whl
 # MAGIC %restart_python
 
 # COMMAND ----------
@@ -241,3 +242,5 @@ if "aligned_entities" in results_df.columns:
         f"{doc_id_column}", "SIZE(aligned_entities) as entity_count"
     )
     display(aligned_summary)
+
+# COMMAND ----------

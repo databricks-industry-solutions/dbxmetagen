@@ -2,6 +2,11 @@ bundle:
   name: dbxmetagen
   databricks_cli_version: ">=0.234.*"
 
+variables:
+  package_version:
+    description: "Package version for wheel deployment"
+    default: "0.5.1"
+
 include:
   - resources/jobs/*.yml
   - resources/apps/*.yml
@@ -9,25 +14,25 @@ include:
   - variables.yml
   - resources/app_variables.yml
 
-
 artifacts:
   default:
     type: whl
     build: poetry build
     path: .
+    files:
+      - source: dist/dbxmetagen-${var.package_version}-py3-none-any.whl
 
 targets:
-
   dev:
     mode: development
     default: true
 
     workspace:
-      host: <host url here>
+      host: https://adb-830292400663869.9.azuredatabricks.net/
     permissions:
       - user_name: ${var.deploying_user}
         level: CAN_MANAGE
-        
+
   prod:
     mode: production
     workspace:
@@ -37,4 +42,4 @@ targets:
       - user_name: ${var.current_user}
         level: CAN_MANAGE
     run_as:
-      user_name: ${var.current_user} 
+      user_name: ${var.current_user}
