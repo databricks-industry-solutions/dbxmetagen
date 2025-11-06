@@ -511,7 +511,15 @@ class MultiSourceAligner:
         Returns:
             List of normalized Entity objects for this document
         """
-        if not entities:
+        # Handle None and empty arrays/lists (works with numpy arrays from Pandas UDFs)
+        if entities is None:
+            return []
+
+        try:
+            if len(entities) == 0:
+                return []
+        except TypeError:
+            # If entities doesn't support len(), treat as empty
             return []
 
         normalized = []
