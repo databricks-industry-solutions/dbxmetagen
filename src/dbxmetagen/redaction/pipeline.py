@@ -65,6 +65,7 @@ def run_detection_pipeline(
         ... )
     """
     # Run detection
+    print("1. Run detection pipeline.")
     result_df = run_detection(
         spark=spark,
         df=source_df,
