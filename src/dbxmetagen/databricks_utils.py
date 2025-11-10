@@ -12,6 +12,16 @@ from grpc._channel import _InactiveRpcError, _MultiThreadedRendezvous
 logger = logging.getLogger(__name__)
 
 
+def get_dbr_version():
+    """Get Databricks Runtime version from environment."""
+    dbr_version = os.environ.get("DATABRICKS_RUNTIME_VERSION", None)
+    if dbr_version:
+        print(f"Databricks Runtime Version: {dbr_version}")
+    else:
+        print("DATABRICKS_RUNTIME_VERSION environment variable not found.")
+    return dbr_version
+
+
 def setup_databricks_environment(dbutils_instance=None):
     """Set up Databricks environment variables and return current user."""
     current_user = None

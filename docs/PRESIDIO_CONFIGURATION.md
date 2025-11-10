@@ -4,7 +4,7 @@
 
 Presidio provides deterministic (rule-based) PII detection to complement LLM-based classification. It scans sample data for patterns matching credit cards, SSNs, emails, phone numbers, and other identifiers.
 
-**Important**: Presidio analyzes **data values only**, not column names. A column named `patient_id` containing values like `100524, 100550` will not be detected as PII unless the values match recognizer patterns (e.g., "PT-100524" or "PATIENT 100524").
+**Important**: Presidio analyzes **data values only**, not column names. A column named `patient_id` containing values like `100524, 100550` will not be detected as PII unless the values match recognizer patterns (e.g., "PT-100524" or "PATIENT 100524"). Note that the LLM will pay attention to column names though.
 
 ## Configuration
 
@@ -72,10 +72,7 @@ We use custom pattern recognizers instead of Presidio's defaults:
 
 ### Built-in Recognizer Removal
 
-Presidio's built-in `CreditCardRecognizer` is **disabled** because it:
-- Matches dates like "2022-02-14" as potential card numbers
-- Flags medical terms with capital letters and numbers
-- Has no context awareness
+- Added Luhn algo for CC now
 
 ### Filtered Entities
 
@@ -107,37 +104,11 @@ Each run creates a timestamped file showing:
 - Classification results
 - Score threshold used
 
-## Example Configurations
-
-### Standard deployment:
-```yaml
-presidio_score_threshold:
-  default: 0.6
-```
-
-### Healthcare with many patient IDs:
-```yaml
-presidio_score_threshold:
-  default: 0.7  # Reduce false positives on MRNs, encounter IDs
-```
-
-### E-commerce with order/product IDs:
-```yaml
-presidio_score_threshold:
-  default: 0.7  # Reduce false positives on order numbers, SKUs
-```
-
-### Financial services:
-```yaml
-presidio_score_threshold:
-  default: 0.5  # Prioritize detecting all PCI data
-```
-
 ## Troubleshooting
 
-**Issue**: Column with obvious PII (email, SSN) marked as "Non-sensitive"
+**Issue**: Column with obvious PII (email, first and last name) marked as "Non-sensitive"
 
-**Solution**: Lower threshold to 0.5 or check if sample data actually contains PII
+**Solution**: Lower threshold to 0.5 or check if sample data actually contains PII that is able to be captured without column names
 
 ---
 
@@ -154,7 +125,7 @@ presidio_score_threshold:
 
 **Issue**: Dates or medical terms flagged as PCI (CREDIT_CARD)
 
-**Solution**: This was caused by Presidio's built-in CreditCardRecognizer. **Fixed** in latest version - built-in recognizer is now disabled.
+**Solution**: This was caused by Presidio's built-in CreditCardRecognizer. Rather than disabling Recognizer, added Luhn algorithm.
 
 ---
 

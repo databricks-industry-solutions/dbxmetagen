@@ -180,7 +180,7 @@ class DatabricksClient(ChatClient):
                 endpoint=model,
                 temperature=temperature,
                 max_tokens=max_tokens,
-                max_retries=0,
+                max_retries=1,
             )
             .with_structured_output(response_model)
             .invoke(messages)

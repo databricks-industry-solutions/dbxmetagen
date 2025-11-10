@@ -2,9 +2,9 @@ from pyspark.sql.functions import concat_ws, collect_list
 import json
 from typing import Dict, Any
 from openai.types.chat.chat_completion import ChatCompletion
-from src.dbxmetagen.config import MetadataConfig
-from src.dbxmetagen.error_handling import exponential_backoff
-from src.dbxmetagen.chat_client import ChatClientFactory
+from dbxmetagen.config import MetadataConfig
+from dbxmetagen.error_handling import exponential_backoff
+from dbxmetagen.chat_client import ChatClientFactory
 
 
 class TableCommentSummarizer:
@@ -25,7 +25,7 @@ class TableCommentSummarizer:
         max_tokens: int,
         temperature: float,
         retries: int = 0,
-        max_retries: int = 3,
+        max_retries: int = 2,
     ) -> ChatCompletion:
         try:
             return self.chat_client.create_completion(
@@ -84,7 +84,7 @@ class TableCommentSummarizer:
                 Instructions:
 
                 1. Please focus on the description of the table. Include descriptions of the types of columns, primary keys, foreign keys, and anything else you are provided with. Point out the relationships to other tables if the table has foreign keys.
-                2. Please generate between 100 and 200 words, and 1 paragraph. But if you have significant information to include, not just guesses, add more information. The more columns the table has, the more meaningful metadata you are presented with, and if you are presented with significant information about the data in the tables, then spend more time elaborating, but if there is little to work with, then be more brief.
+                2. Please generate between 200 and 300 words, and 1 paragraph. But if you have significant information to include, not just guesses, add more information. The more columns the table has, the more meaningful metadata you are presented with, and if you are presented with significant information about the data in the tables, then spend more time elaborating, but if there is little to work with, then be more brief.
                 3. Please make sure you use complete sentences.
                 4. Do not include any violent, offensive, racist, or sexually explicit content.
                 5. Focus on generating meaningful content that is useful to users of a database table, rather than guessing or generating filler content.

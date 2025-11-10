@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime
 import yaml
-from src.dbxmetagen.user_utils import sanitize_user_identifier, get_current_user
+from dbxmetagen.user_utils import sanitize_user_identifier, get_current_user
 
 
 class MetadataConfig:
@@ -76,6 +76,7 @@ class MetadataConfig:
             "custom_endpoint_url",
             "custom_endpoint_secret_scope",
             "custom_endpoint_secret_key",
+            "build_knowledge_graph",
         ],
     }
     MODEL_PARAMS = {}

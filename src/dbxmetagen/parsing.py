@@ -3,7 +3,7 @@
 import re
 from typing import Optional
 from deprecated import deprecated
-from src.dbxmetagen.user_utils import sanitize_user_identifier
+from dbxmetagen.user_utils import sanitize_user_identifier
 
 
 @deprecated("Use sanitize_user_identifier from processing module instead.")
