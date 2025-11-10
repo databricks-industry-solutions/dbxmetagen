@@ -95,10 +95,31 @@ def create_redaction_udf(strategy: RedactionStrategy = "generic"):
         """Redact entities from text for each row."""
         results = []
         for text, entities in zip(texts, entities_series):
-            if entities is None or not isinstance(entities, list):
+            # Handle None
+            if entities is None:
                 results.append(text)
-            else:
-                results.append(redact_text(text, entities, strategy=strategy))
+                continue
+
+            # Handle empty arrays (works with numpy arrays, Spark arrays, lists)
+            try:
+                if len(entities) == 0:
+                    results.append(text)
+                    continue
+            except (TypeError, AttributeError):
+                results.append(text)
+                continue
+
+            # Convert to list if needed (handles numpy arrays, Spark arrays)
+            if not isinstance(entities, list):
+                try:
+                    entities = list(entities)
+                except (TypeError, ValueError):
+                    results.append(text)
+                    continue
+
+            # Apply redaction
+            results.append(redact_text(text, entities, strategy=strategy))
+
         return pd.Series(results)
 
     return redact_udf
