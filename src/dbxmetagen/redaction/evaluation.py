@@ -8,7 +8,7 @@ against ground truth data, calculating standard classification metrics.
 from typing import Dict, Any, Optional
 import pandas as pd
 from pyspark.sql import DataFrame
-from pyspark.sql.functions import col, contains, asc_nulls_last
+from pyspark.sql.functions import col, contains, asc_nulls_last, length
 
 
 def evaluate_detection(
@@ -60,19 +60,32 @@ def evaluate_detection(
     det = detection_df.alias("det")
 
     # Perform the evaluation join
+    # Improved matching logic: requires position overlap AND text similarity
     eval_df = gt.join(
         det,
         # Matching conditions:
         # 1. Same document
         (col(f"det.{doc_id_column}") == col(f"gt.{doc_id_column}"))
-        # 2. Text containment (entity overlaps with chunk)
+        # 2. Position overlap (ANY overlap, not containment)
+        # Check if ranges [det.start, det.end] and [gt.begin, gt.end] overlap
+        & (col(f"det.{start_column}") < col(f"gt.{end_column}") + 1)
+        & (col(f"det.{end_column}") >= col(f"gt.{begin_column}"))
+        # 3. Text similarity check (entity should match chunk or have significant overlap)
         & (
-            contains(col(f"gt.{chunk_column}"), col(f"det.{entity_column}"))
-            | contains(col(f"det.{entity_column}"), col(f"gt.{chunk_column}"))
-        )
-        # 3. Position overlap (detection within ground truth bounds)
-        & (col(f"det.{start_column}") <= col(f"gt.{begin_column}"))
-        & (col(f"det.{end_column}") >= col(f"gt.{end_column}") - 1),
+            # Case 1: Exact match (best case)
+            (col(f"det.{entity_column}") == col(f"gt.{chunk_column}"))
+            # Case 2: Detection is substring of ground truth (e.g., "Smith" in "John Smith")
+            | (contains(col(f"gt.{chunk_column}"), col(f"det.{entity_column}")))
+            # Case 3: Ground truth is substring of detection (e.g., "John Smith" contains "John")
+            # Only allow if detection is not too much longer (prevents "son" matching "Anderson")
+            | (
+                contains(col(f"det.{entity_column}"), col(f"gt.{chunk_column}"))
+                & (
+                    length(col(f"det.{entity_column}"))
+                    <= length(col(f"gt.{chunk_column}")) * 2
+                )
+            )
+        ),
         how="outer",
     )
 

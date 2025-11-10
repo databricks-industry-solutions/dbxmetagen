@@ -52,53 +52,69 @@ ENTITIES_TO_IGNORE = [
 
 # Prompt template for AI-based PHI detection
 PHI_PROMPT_SKELETON = """
-You are an expert in Protected Health Information (PHI) detection who will help identify all PHI entities in a piece of medical text.
+You are a PHI detection specialist. Extract ONLY personally identifiable information that could identify an individual.
 
-Qualifying PHI includes:
-1. Names;
-2. All geographical subdivisions smaller than a State, including street address, city, county, precinct, zip code, and their equivalent geocodes, except for the initial three digits of a zip code, if according to the current publicly available data from the Bureau of the Census: (1) The geographic unit formed by combining all zip codes with the same three initial digits contains more than 20,000 people; and (2) The initial three digits of a zip code for all such geographic units containing 20,000 or fewer people is changed to 000.
-3. All elements of dates (except year) for dates directly related to an individual, including birth date, admission date, discharge date, date of death; and all ages over 89 and all elements of dates (including year) indicative of such age, except that such ages and elements may be aggregated into a single category of age 90 or older;
-4. Phone numbers;
-5. Fax numbers;
-6. Electronic mail addresses;
-7. Social Security numbers;
-8. Medical record numbers;
-9. Health plan beneficiary numbers;
-10. Account numbers;
-11. Certificate/license numbers;
-12. Vehicle identifiers and serial numbers, including license plate numbers;
-13. Device identifiers and serial numbers;
-14. Web Universal Resource Locators (URLs);
-15. Internet Protocol (IP) address numbers;
-16. Biometric identifiers, including finger and voice prints;
-17. Full face photographic images and any comparable images; and
-18. Any other unique identifying number, characteristic, or code (note this does not mean the unique code assigned by the investigator to code the data)
-There are also additional standards and criteria to protect individuals from re-identification. Any code used to replace the identifiers in data sets cannot be derived from any information related to the individual and the master codes, nor can the method to derive the codes be disclosed. For example, a subjects initials cannot be used to code their data because the initials are derived from their name. Additionally, the researcher must not have actual knowledge that the research subject could be re-identified from the remaining identifiers in the PHI used in the research study. In other words, the information would still be considered identifiable if there was a way to identify the individual even though all of the 18 identifiers were removed.
+EXTRACT THESE (PHI):
+1. Names (patients, doctors, relatives, witnesses)
+2. Geographic locations smaller than state (street address, city, county, precinct, zip codes)
+3. Dates directly related to individuals (birth dates, admission dates, discharge dates, death dates)
+4. Ages over 89 years
+5. Phone/fax numbers
+6. Email addresses
+7. Social Security numbers
+8. Medical record numbers (MRN)
+9. Health plan/account numbers
+10. License/certificate numbers
+11. Vehicle/device identifiers
+12. URLs and IP addresses
+13. Biometric identifiers
 
-Additional entities to count as PII:
-1. Hospital Names
+DO NOT EXTRACT:
+- Medical conditions, symptoms, or diseases (e.g., "diabetes", "fever", "hypertension")
+- Medications or treatments (e.g., "aspirin", "chemotherapy")
+- Lab values or measurements (e.g., "120/80", "98.6F", "glucose level")
+- General years or time periods (e.g., "2024", "last year")
+- Generic appointment/procedure dates that don't directly identify the patient
+- Medical terminology or anatomical terms
+- Generic hospital names (UNLESS part of address)
 
-You will identify all PHI with the following enums as the "label":
+CRITICAL RULES:
+1. Extract entity text EXACTLY as it appears - preserve capitalization, punctuation, and spacing
+2. If the same entity appears multiple times, list it each time it appears
+3. For compound names, extract the FULL name, not parts
 
+You will identify all PHI using these entity types:
 {label_enums}
 
-Respond with a list of dictionaries such as [{{"entity": "Alice Anderson", "entity_type": "PERSON"}}, {{"entity": "123-45-6789", "entity_type": "US_SSN"}}]
+Respond ONLY with a JSON list of dictionaries: [{{"entity": "exact text", "entity_type": "TYPE"}}]
 
-Note that if there are multiple of the same entities, you should list them multiple times. For example, if the text suggests "The patient, Brennan, notes that is feeling unwell. Brennan presents with a moderate fever of 100.5F," you should list the entity "brennan" twice. 
+EXAMPLES:
 
-The text is listed here: 
+Example 1 - Extract names and identifiers:
+Input: "Patient John Smith (MRN: 123456, DOB: 01/15/1980) presented on 03/20/2024 with hypertension."
+Output: [{{"entity": "John Smith", "entity_type": "PERSON"}}, {{"entity": "123456", "entity_type": "MEDICAL_RECORD_NUMBER"}}, {{"entity": "01/15/1980", "entity_type": "BIRTH_DATE"}}]
+Note: "03/20/2024" is NOT extracted (general appointment date), "hypertension" is NOT extracted (medical condition)
+
+Example 2 - Extract contact information:
+Input: "Contact Dr. Anderson at 555-123-4567 or anderson@hospital.com for test results."
+Output: [{{"entity": "Dr. Anderson", "entity_type": "PERSON"}}, {{"entity": "555-123-4567", "entity_type": "PHONE_NUMBER"}}, {{"entity": "anderson@hospital.com", "entity_type": "EMAIL_ADDRESS"}}]
+
+Example 3 - Do NOT extract medical terminology:
+Input: "Patient presents with acute myocardial infarction. Temperature 98.6F, BP 120/80."
+Output: []
+Note: No PHI present - only medical conditions and measurements
+
+Now analyze this text:
 <MedicalText>
 {{med_text}}
-<MedicalText/>
+</MedicalText>
 
-EXAMPLE: 
-MedicalText: "MRN: 222345 -- I saw patient Alice Anderson today at 11:30am, who presents with a sore throat and temperature of 103F"
-response: [{{"entity": "Alice Anderson", "entity_type": "PERSON"}}, {{"entity": "222345", "entity_type": "MEDICAL_RECORED_NUMBER"}}]
+Response:
 """
 
 # Default thresholds
 DEFAULT_PRESIDIO_SCORE_THRESHOLD = 0.5
-DEFAULT_FUZZY_MATCH_THRESHOLD = 50
+DEFAULT_FUZZY_MATCH_THRESHOLD = 40  # Lowered from 50 to improve recall
 DEFAULT_OVERLAP_TOLERANCE = 0
 
 # Confidence thresholds
@@ -118,8 +134,8 @@ FUZZY_MATCH_SCORE = 0.5
 
 # Confidence levels based on weighted scores
 CONFIDENCE_THRESHOLDS = {
-    "high": 0.7,  # 2+ sources with high agreement
-    "medium": 0.4,  # 1-2 sources with partial agreement
+    "high": 0.65,  # 2+ sources with high agreement (lowered slightly)
+    "medium": 0.35,  # 1-2 sources with partial agreement (lowered slightly)
     "low": 0.0,  # Single source or low agreement
 }
 
