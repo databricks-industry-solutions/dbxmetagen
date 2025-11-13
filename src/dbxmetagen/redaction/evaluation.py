@@ -28,16 +28,16 @@ import uuid
 def calculate_iou(start1: int, end1: int, start2: int, end2: int) -> float:
     """
     Calculate Intersection over Union (IoU) for two spans.
-    
+
     Args:
         start1: Start position of first span
         end1: End position of first span
         start2: Start position of second span
         end2: End position of second span
-        
+
     Returns:
         IoU score between 0.0 and 1.0
-        
+
     Example:
         >>> calculate_iou(0, 10, 5, 15)  # 50% overlap
         0.5
@@ -67,13 +67,13 @@ def match_entities_one_to_one(
 ) -> Tuple[DataFrame, DataFrame, DataFrame]:
     """
     Perform greedy one-to-one entity matching with IoU threshold.
-    
+
     This function ensures no double counting by:
     1. Computing IoU scores for all candidate matches
     2. Filtering by IoU threshold
     3. Greedily assigning matches (highest IoU first)
     4. Ensuring each entity is matched at most once
-    
+
     Args:
         ground_truth_df: DataFrame with ground truth entities
         predictions_df: DataFrame with predicted entities
@@ -85,30 +85,32 @@ def match_entities_one_to_one(
         pred_start_column: Prediction start position column
         pred_end_column: Prediction end position column
         pred_text_column: Prediction text column
-        
+
     Returns:
         Tuple of (matched_pairs, false_negatives, false_positives)
         - matched_pairs: DF with matched GT-prediction pairs and IoU scores
         - false_negatives: DF with unmatched ground truth entities
         - false_positives: DF with unmatched predictions
-        
+
     Example:
         >>> matched, fn, fp = match_entities_one_to_one(gt_df, pred_df, iou_threshold=0.5)
         >>> tp_count = matched.count()
         >>> fn_count = fn.count()
         >>> fp_count = fp.count()
     """
+    from pyspark.sql.functions import monotonically_increasing_id
+
     # Add unique IDs to track entities
-    gt_with_id = ground_truth_df.withColumn("gt_id", lit(str(uuid.uuid4())))
-    pred_with_id = predictions_df.withColumn("pred_id", lit(str(uuid.uuid4())))
-    
+    gt_with_id = ground_truth_df.withColumn("gt_id", monotonically_increasing_id())
+    pred_with_id = predictions_df.withColumn("pred_id", monotonically_increasing_id())
+
     # Cross join on doc_id to get all candidate pairs
     candidates = gt_with_id.alias("gt").join(
         pred_with_id.alias("pred"),
         col(f"gt.{doc_id_column}") == col(f"pred.{doc_id_column}"),
-        "inner"
+        "inner",
     )
-    
+
     # Calculate IoU for all candidates
     candidates_with_iou = candidates.withColumn(
         "iou_score",
@@ -116,45 +118,47 @@ def match_entities_one_to_one(
             col(f"gt.{gt_start_column}"),
             col(f"gt.{gt_end_column}"),
             col(f"pred.{pred_start_column}"),
-            col(f"pred.{pred_end_column}")
-        )
+            col(f"pred.{pred_end_column}"),
+        ),
     )
-    
+
     # Filter by IoU threshold and sort by IoU descending
-    viable_matches = candidates_with_iou.filter(col("iou_score") >= iou_threshold).orderBy(
-        desc("iou_score")
-    )
-    
+    viable_matches = candidates_with_iou.filter(
+        col("iou_score") >= iou_threshold
+    ).orderBy(desc("iou_score"))
+
     # Greedy matching: collect to driver and assign one-to-one
     # Note: For large datasets, this could be optimized with distributed algorithms
     matches_list = viable_matches.collect()
-    
+
     matched_gt_ids = set()
     matched_pred_ids = set()
     final_matches = []
-    
+
     for row in matches_list:
         gt_id = row["gt_id"]
         pred_id = row["pred_id"]
-        
+
         if gt_id not in matched_gt_ids and pred_id not in matched_pred_ids:
             matched_gt_ids.add(gt_id)
             matched_pred_ids.add(pred_id)
             final_matches.append(row.asDict())
-    
+
     # Create matched pairs DataFrame
     if final_matches:
-        matched_df = viable_matches.sql_ctx.createDataFrame(final_matches)
+        matched_df = viable_matches.sparkSession.createDataFrame(
+            final_matches, schema=viable_matches.schema
+        )
     else:
         # Empty DataFrame with schema
         matched_df = viable_matches.limit(0)
-    
+
     # Extract false negatives (unmatched ground truth)
     false_negatives = gt_with_id.filter(~col("gt_id").isin(list(matched_gt_ids)))
-    
+
     # Extract false positives (unmatched predictions)
     false_positives = pred_with_id.filter(~col("pred_id").isin(list(matched_pred_ids)))
-    
+
     return matched_df, false_negatives, false_positives
 
 
@@ -334,21 +338,21 @@ def calculate_entity_metrics(
     false_positives_df: DataFrame,
     false_negatives_df: DataFrame,
     run_id: Optional[str] = None,
-    timestamp: Optional[datetime] = None
+    timestamp: Optional[datetime] = None,
 ) -> Dict[str, Any]:
     """
     Calculate precision/recall/F1 from one-to-one matched results.
-    
+
     This function calculates entity-level metrics without token-based TN,
     which is not meaningful for entity detection tasks.
-    
+
     Args:
         matched_df: DataFrame with matched ground truth-prediction pairs
         false_positives_df: DataFrame with unmatched predictions
         false_negatives_df: DataFrame with unmatched ground truth entities
         run_id: Unique identifier for this evaluation run
         timestamp: Timestamp of evaluation run
-        
+
     Returns:
         Dictionary with metrics including:
         - true_positives: Count of matched entities
@@ -359,7 +363,7 @@ def calculate_entity_metrics(
         - f1_score: Harmonic mean of precision and recall
         - run_id: Run identifier
         - timestamp: Run timestamp
-        
+
     Example:
         >>> matched, fn, fp = match_entities_one_to_one(gt_df, pred_df)
         >>> metrics = calculate_entity_metrics(matched, fp, fn, run_id="abc123")
@@ -368,11 +372,15 @@ def calculate_entity_metrics(
     tp = matched_df.count()
     fp = false_positives_df.count()
     fn = false_negatives_df.count()
-    
+
     precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
     recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
-    f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
-    
+    f1 = (
+        2 * precision * recall / (precision + recall)
+        if (precision + recall) > 0
+        else 0.0
+    )
+
     return {
         "true_positives": tp,
         "false_positives": fp,
@@ -381,7 +389,7 @@ def calculate_entity_metrics(
         "recall": recall,
         "f1_score": f1,
         "run_id": run_id or str(uuid.uuid4()),
-        "timestamp": timestamp or datetime.now()
+        "timestamp": timestamp or datetime.now(),
     }
 
 
@@ -393,11 +401,11 @@ def save_false_positives(
     catalog: str,
     schema: str,
     run_id: str,
-    timestamp: datetime
+    timestamp: datetime,
 ) -> None:
     """
     Write false positives to Delta table with metadata.
-    
+
     Args:
         spark: Active SparkSession
         fp_df: DataFrame with false positive predictions
@@ -407,20 +415,24 @@ def save_false_positives(
         schema: UC schema name
         run_id: Unique run identifier
         timestamp: Run timestamp
-        
+
     Example:
         >>> save_false_positives(spark, fp_df, "jsl_48docs", "presidio",
         ...                      "dbxmetagen", "eval_data", run_id, timestamp)
     """
     table_name = f"{catalog}.{schema}.{dataset_name}_false_positives"
-    
+
     # Add metadata columns
-    fp_with_metadata = fp_df.withColumn("method_name", lit(method_name)) \
-                             .withColumn("run_id", lit(run_id)) \
-                             .withColumn("timestamp", lit(timestamp))
-    
+    fp_with_metadata = (
+        fp_df.withColumn("method_name", lit(method_name))
+        .withColumn("run_id", lit(run_id))
+        .withColumn("timestamp", lit(timestamp))
+    )
+
     # Write to Delta table
-    fp_with_metadata.write.mode("append").option("mergeSchema", "true").saveAsTable(table_name)
+    fp_with_metadata.write.mode("append").option("mergeSchema", "true").saveAsTable(
+        table_name
+    )
     print(f"Saved {fp_df.count()} false positives to {table_name}")
 
 
@@ -432,11 +444,11 @@ def save_false_negatives(
     catalog: str,
     schema: str,
     run_id: str,
-    timestamp: datetime
+    timestamp: datetime,
 ) -> None:
     """
     Write false negatives to Delta table with metadata.
-    
+
     Args:
         spark: Active SparkSession
         fn_df: DataFrame with false negative ground truth entities
@@ -446,20 +458,24 @@ def save_false_negatives(
         schema: UC schema name
         run_id: Unique run identifier
         timestamp: Run timestamp
-        
+
     Example:
         >>> save_false_negatives(spark, fn_df, "jsl_48docs", "presidio",
         ...                      "dbxmetagen", "eval_data", run_id, timestamp)
     """
     table_name = f"{catalog}.{schema}.{dataset_name}_false_negatives"
-    
+
     # Add metadata columns
-    fn_with_metadata = fn_df.withColumn("method_name", lit(method_name)) \
-                             .withColumn("run_id", lit(run_id)) \
-                             .withColumn("timestamp", lit(timestamp))
-    
+    fn_with_metadata = (
+        fn_df.withColumn("method_name", lit(method_name))
+        .withColumn("run_id", lit(run_id))
+        .withColumn("timestamp", lit(timestamp))
+    )
+
     # Write to Delta table
-    fn_with_metadata.write.mode("append").option("mergeSchema", "true").saveAsTable(table_name)
+    fn_with_metadata.write.mode("append").option("mergeSchema", "true").saveAsTable(
+        table_name
+    )
     print(f"Saved {fn_df.count()} false negatives to {table_name}")
 
 
@@ -467,20 +483,20 @@ def get_latest_run_metrics(
     spark,
     evaluation_table: str,
     dataset_name: Optional[str] = None,
-    method_name: Optional[str] = None
+    method_name: Optional[str] = None,
 ) -> DataFrame:
     """
     Get metrics for most recent run by timestamp.
-    
+
     Args:
         spark: Active SparkSession
         evaluation_table: Table containing evaluation results
         dataset_name: Optional filter by dataset name
         method_name: Optional filter by method name
-        
+
     Returns:
         DataFrame with latest run metrics
-        
+
     Example:
         >>> latest = get_latest_run_metrics(spark, "dbxmetagen.eval_data.phi_evaluation_results",
         ...                                 dataset_name="jsl_48docs", method_name="presidio")
@@ -491,9 +507,9 @@ def get_latest_run_metrics(
         where_clauses.append(f"dataset_name = '{dataset_name}'")
     if method_name:
         where_clauses.append(f"method_name = '{method_name}'")
-    
+
     where_clause = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
-    
+
     query = f"""
     WITH latest_run AS (
         SELECT MAX(timestamp) as max_timestamp
@@ -506,7 +522,7 @@ def get_latest_run_metrics(
     {where_clause}
     ORDER BY e.metric_name
     """
-    
+
     return spark.sql(query)
 
 
