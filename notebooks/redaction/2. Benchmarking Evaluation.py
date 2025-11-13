@@ -18,7 +18,7 @@
 # COMMAND ----------
 
 # MAGIC %pip install -r ../../requirements.txt
-# MAGIC %pip install -e ../../
+# MAGIC %pip install /Volumes/dbxmetagen/default/init_scripts/dbxmetagen-0.5.1-py3-none-any.whl
 # MAGIC %restart_python
 
 # COMMAND ----------
@@ -321,3 +321,7 @@ if "aligned" in exploded_results:
         .orderBy(col("count").desc())
     )
     display(false_negatives.limit(20))
+
+# COMMAND ----------
+
+

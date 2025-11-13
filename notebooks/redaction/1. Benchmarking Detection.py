@@ -15,8 +15,8 @@
 
 # COMMAND ----------
 
-# MAGIC %pip install -r ../../requirements.txt gliner
-# MAGIC %pip install /Volumes/dbxmetagen/default/init_scripts/dbxmetagen-0.5.1-py3-none-any.whl
+# MAGIC %pip install -r ../../requirements.txt
+# MAGIC %pip install /Volumes/dbxmetagen/default/init_scripts/dbxmetagen-0.5.2-py3-none-any.whl
 # MAGIC %restart_python
 
 # COMMAND ----------
@@ -143,7 +143,7 @@ if "client" not in get_dbr_version():
 
 # COMMAND ----------
 
-source_df = spark.table(source_table).select(doc_id_column, col(text_column))
+source_df = spark.table(source_table).select(doc_id_column, col(text_column)).limit(5)
 
 source_df_count = source_df.count()
 
@@ -208,6 +208,10 @@ display(results_df)
 
 # COMMAND ----------
 
+display(results_df)
+
+# COMMAND ----------
+
 if use_presidio and "presidio_results_struct" in results_df.columns:
     print("=== Presidio Results ===")
     presidio_summary = results_df.selectExpr(
@@ -242,5 +246,3 @@ if "aligned_entities" in results_df.columns:
         f"{doc_id_column}", "SIZE(aligned_entities) as entity_count"
     )
     display(aligned_summary)
-
-# COMMAND ----------
