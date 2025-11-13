@@ -48,7 +48,8 @@ def run_presidio_detection(
     result_df = (
         df.repartition(num_cores)
         .withColumn(
-            "presidio_results", presidio_udf(col(doc_id_column), col(text_column))
+            "presidio_results",
+            presidio_udf(col(doc_id_column), col(text_column)),
         )
         .withColumn(
             "presidio_results_struct",
@@ -110,15 +111,15 @@ def run_ai_query_detection(
         SELECT *,
               REPLACE('{prompt}', '{{med_text}}', CAST({text_column} AS STRING)) AS prompt
         FROM {temp_view}
-    )
-    SELECT *,
-          ai_query(
-            endpoint => '{endpoint}',
-            request => prompt,
-            failOnError => false,
-            returnType => 'STRUCT<result: ARRAY<STRUCT<entity: STRING, entity_type: STRING>>>',
-            modelParameters => named_struct('reasoning_effort', 'low')
-          ) AS response
+     )
+     SELECT *,
+           ai_query(
+             endpoint => '{endpoint}',
+             request => prompt,
+             failOnError => false,
+             returnType => 'STRUCT<result: ARRAY<STRUCT<entity: STRING, entity_type: STRING>>>',
+             modelParameters => named_struct('reasoning_effort', 'low')
+           ) AS response
     FROM data_with_prompting
     """
 

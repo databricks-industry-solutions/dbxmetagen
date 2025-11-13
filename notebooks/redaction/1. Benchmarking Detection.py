@@ -15,7 +15,7 @@
 
 # COMMAND ----------
 
-# MAGIC %pip install -r ../../requirements.txt gliner
+# MAGIC %pip install -r ../../requirements.txt
 # MAGIC %pip install /Volumes/dbxmetagen/default/init_scripts/dbxmetagen-0.5.1-py3-none-any.whl
 # MAGIC %restart_python
 

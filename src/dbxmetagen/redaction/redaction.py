@@ -117,6 +117,9 @@ def create_redaction_udf(strategy: RedactionStrategy = "generic"):
                     results.append(text)
                     continue
 
+            # Convert Spark Row objects to dicts (Row objects have asDict method)
+            entities = [e.asDict() if hasattr(e, "asDict") else e for e in entities]
+
             # Apply redaction
             results.append(redact_text(text, entities, strategy=strategy))
 

@@ -46,7 +46,7 @@ def format_presidio_batch_results(
             ans["doc_id"] = doc_ids[i]
             ans["entity"] = original_texts[i][res_ent.start : res_ent.end]
 
-            if ans.get("score", 0) > score_threshold:
+            if ans.get("score", 0) >= score_threshold:
                 findings.append(ans)
 
         output.append(json.dumps(findings))
@@ -90,9 +90,7 @@ def make_presidio_batch_udf(
         # Lazy import to avoid serialization issues with heavy dependencies
         from dbxmetagen.deterministic_pi import get_analyzer_engine
 
-        analyzer = get_analyzer_engine(
-            add_pci=add_pci, default_score_threshold=score_threshold
-        )
+        analyzer = get_analyzer_engine(add_pci=add_pci)
         batch_analyzer = BatchAnalyzerEngine(analyzer_engine=analyzer)
 
         for doc_ids, texts in batch_iter:

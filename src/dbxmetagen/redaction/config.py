@@ -74,7 +74,7 @@ DO NOT EXTRACT:
 - Medications or treatments (e.g., "aspirin", "chemotherapy")
 - Lab values or measurements (e.g., "120/80", "98.6F", "glucose level")
 - General years or time periods (e.g., "2024", "last year")
-- Generic appointment/procedure dates that don't directly identify the patient
+- Generic appointment/procedure dates that do not directly identify the patient
 - Medical terminology or anatomical terms
 - Generic hospital names (UNLESS part of address)
 
@@ -82,34 +82,26 @@ CRITICAL RULES:
 1. Extract entity text EXACTLY as it appears - preserve capitalization, punctuation, and spacing
 2. If the same entity appears multiple times, list it each time it appears
 3. For compound names, extract the FULL name, not parts
+4. If two entities appear one after the other, extract them both separately, not as a single entity. For example, "Alice Anderson 123-45-6789" should be extracted as two entities, "Alice Anderson" and "123-45-6789".
 
-You will identify all PHI using these entity types:
+You will identify all PHI with the following enums as the "label":
+
 {label_enums}
 
-Respond ONLY with a JSON list of dictionaries: [{{"entity": "exact text", "entity_type": "TYPE"}}]
+Respond with a list of dictionaries such as [{{"entity": "Alice Anderson", "entity_type": "PERSON"}}, {{"entity": "123-45-6789", "entity_type": "US_SSN"}}]
 
-EXAMPLES:
+Note that if there are multiple of the same entities, you should list them multiple times. For example, if the text suggests "The patient, Brennan, notes that is feeling unwell. Brennan presents with a moderate fever of 100.5F," you should list the entity "brennan" twice. 
 
-Example 1 - Extract names and identifiers:
-Input: "Patient John Smith (MRN: 123456, DOB: 01/15/1980) presented on 03/20/2024 with hypertension."
-Output: [{{"entity": "John Smith", "entity_type": "PERSON"}}, {{"entity": "123456", "entity_type": "MEDICAL_RECORD_NUMBER"}}, {{"entity": "01/15/1980", "entity_type": "BIRTH_DATE"}}]
-Note: "03/20/2024" is NOT extracted (general appointment date), "hypertension" is NOT extracted (medical condition)
-
-Example 2 - Extract contact information:
-Input: "Contact Dr. Anderson at 555-123-4567 or anderson@hospital.com for test results."
-Output: [{{"entity": "Dr. Anderson", "entity_type": "PERSON"}}, {{"entity": "555-123-4567", "entity_type": "PHONE_NUMBER"}}, {{"entity": "anderson@hospital.com", "entity_type": "EMAIL_ADDRESS"}}]
-
-Example 3 - Do NOT extract medical terminology:
-Input: "Patient presents with acute myocardial infarction. Temperature 98.6F, BP 120/80."
-Output: []
-Note: No PHI present - only medical conditions and measurements
-
-Now analyze this text:
+The text is listed here: 
 <MedicalText>
 {{med_text}}
-</MedicalText>
+<MedicalText/>
 
-Response:
+EXAMPLE: 
+MedicalText: "MRN: 222345 -- I saw patient Alice Anderson today at 11:30am, who presents with a sore throat and temperature of 103F"
+response: [{{"entity": "Alice Anderson", "entity_type": "PERSON"}}, {{"entity": "222345", "entity_type": "MEDICAL_RECORD_NUMBER"}}]
+
+Note: "11:30am" and "103F" are NOT extracted (time and measurement, not PHI). "sore throat" is NOT extracted (medical symptom).
 """
 
 # Default thresholds

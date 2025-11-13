@@ -201,6 +201,16 @@ else:
 
 # COMMAND ----------
 
+# Build detection method description
+detection_methods = []
+if use_presidio:
+    detection_methods.append("Presidio")
+if use_ai_query:
+    detection_methods.append("AI Query")
+if use_gliner:
+    detection_methods.append("GLiNER")
+detection_method = " + ".join(detection_methods) if detection_methods else "None"
+
 print("=" * 80)
 print("STARTING REDACTION PIPELINE")
 print("=" * 80)

@@ -18,17 +18,24 @@
 # COMMAND ----------
 
 # MAGIC %pip install -r ../../requirements.txt
-# MAGIC %pip install -e ../../
+# MAGIC %pip install /Volumes/dbxmetagen/default/init_scripts/dbxmetagen-0.5.1-py3-none-any.whl
 # MAGIC %restart_python
 
 # COMMAND ----------
 
 import pandas as pd
-from pyspark.sql.functions import col, explode
+from pyspark.sql.functions import col, explode, desc
+import uuid
+from datetime import datetime
 
 from dbxmetagen.redaction import (
     evaluate_detection,
     calculate_metrics,
+    match_entities_one_to_one,
+    calculate_entity_metrics,
+    save_false_positives,
+    save_false_negatives,
+    get_latest_run_metrics,
     format_contingency_table,
     format_metrics_summary,
     save_evaluation_results,
@@ -176,33 +183,71 @@ print(f"Total tokens in corpus: {all_tokens:,}")
 # COMMAND ----------
 
 # MAGIC %md
+# MAGIC ## Generate Run ID and Timestamp
+
+# COMMAND ----------
+
+# Generate unique run ID and timestamp for this evaluation
+run_id = str(uuid.uuid4())
+run_timestamp = datetime.now()
+
+print(f"Run ID: {run_id}")
+print(f"Timestamp: {run_timestamp}")
+
+# COMMAND ----------
+
+# MAGIC %md
 # MAGIC ## Evaluate Each Detection Method
+# MAGIC
+# MAGIC Using one-to-one entity matching with IoU threshold to prevent double counting.
 
 # COMMAND ----------
 
 evaluation_results = {}
+false_positives_dfs = {}
+false_negatives_dfs = {}
+
+# Exploded ground truth for matching
+gt_exploded = ground_truth_df.select("doc_id", "chunk", "begin", "end", "entity")
 
 for method_name, exploded_df in exploded_results.items():
     print(f"\n{'='*80}")
     print(f"Evaluating: {method_name.upper()}")
     print(f"{'='*80}")
 
-    # Evaluate detection
-    eval_df = evaluate_detection(ground_truth_df, exploded_df)
+    # Perform one-to-one matching with IoU threshold
+    print(f"Matching entities with IoU threshold = 0.5...")
+    matched_df, fn_df, fp_df = match_entities_one_to_one(
+        ground_truth_df=gt_exploded,
+        predictions_df=exploded_df,
+        iou_threshold=0.5,
+        doc_id_column="doc_id",
+        gt_start_column="begin",
+        gt_end_column="end",
+        gt_text_column="chunk",
+        pred_start_column="start",
+        pred_end_column="end",
+        pred_text_column="entity",
+    )
 
-    # Calculate metrics
-    metrics = calculate_metrics(eval_df, all_tokens)
+    print(
+        f"Matched: {matched_df.count()}, False Negatives: {fn_df.count()}, False Positives: {fp_df.count()}"
+    )
+
+    # Calculate entity-level metrics (no TN)
+    metrics = calculate_entity_metrics(matched_df, fp_df, fn_df, run_id, run_timestamp)
     evaluation_results[method_name] = metrics
-
-    # Display contingency table
-    print(f"\n{method_name.upper()} Contingency Table:")
-    contingency_df = format_contingency_table(metrics)
-    display(contingency_df)
+    false_positives_dfs[method_name] = fp_df
+    false_negatives_dfs[method_name] = fn_df
 
     # Display metrics summary
     print(f"\n{method_name.upper()} Metrics Summary:")
-    summary_df = format_metrics_summary(metrics)
-    display(summary_df)
+    print(f"  True Positives:  {metrics['true_positives']}")
+    print(f"  False Positives: {metrics['false_positives']}")
+    print(f"  False Negatives: {metrics['false_negatives']}")
+    print(f"  Precision:       {metrics['precision']:.4f}")
+    print(f"  Recall:          {metrics['recall']:.4f}")
+    print(f"  F1 Score:        {metrics['f1_score']:.4f}")
 
     # Save to evaluation table
     save_evaluation_results(
@@ -212,6 +257,29 @@ for method_name, exploded_df in exploded_results.items():
         method_name=method_name,
         output_table=evaluation_output_table,
         mode=write_mode,
+    )
+
+    # Save false positives and false negatives to Delta tables
+    save_false_positives(
+        spark=spark,
+        fp_df=fp_df,
+        dataset_name=dataset_name,
+        method_name=method_name,
+        catalog="dbxmetagen",
+        schema="eval_data",
+        run_id=run_id,
+        timestamp=run_timestamp,
+    )
+
+    save_false_negatives(
+        spark=spark,
+        fn_df=fn_df,
+        dataset_name=dataset_name,
+        method_name=method_name,
+        catalog="dbxmetagen",
+        schema="eval_data",
+        run_id=run_id,
+        timestamp=run_timestamp,
     )
 
     print(f"\nResults saved to {evaluation_output_table}")
@@ -303,21 +371,85 @@ except Exception as e:
 # COMMAND ----------
 
 # MAGIC %md
+# MAGIC ## False Positives Analysis
+# MAGIC
+# MAGIC Analyze entities that were incorrectly detected.
+
+# COMMAND ----------
+
+for method_name, fp_df in false_positives_dfs.items():
+    print(f"\n{'='*80}")
+    print(f"{method_name.upper()} - False Positives (Top 20 by frequency)")
+    print(f"{'='*80}")
+
+    fp_summary = fp_df.groupBy("entity").count().orderBy(desc("count")).limit(20)
+    display(fp_summary)
+
+# COMMAND ----------
+
+# MAGIC %md
 # MAGIC ## False Negatives Analysis
 # MAGIC
 # MAGIC Analyze entities that were missed by detection methods.
 
 # COMMAND ----------
 
-if "aligned" in exploded_results:
-    aligned_eval_df = evaluate_detection(ground_truth_df, exploded_results["aligned"])
+for method_name, fn_df in false_negatives_dfs.items():
+    print(f"\n{'='*80}")
+    print(f"{method_name.upper()} - False Negatives (Top 20 by frequency)")
+    print(f"{'='*80}")
 
-    print("Top Missed Entities (False Negatives):")
-    false_negatives = (
-        aligned_eval_df.where(col("entity").isNull())
-        .select("chunk")
-        .groupBy("chunk")
-        .count()
-        .orderBy(col("count").desc())
+    fn_summary = fn_df.groupBy("chunk").count().orderBy(desc("count")).limit(20)
+    display(fn_summary)
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## False Positive Examples with Context
+# MAGIC
+# MAGIC Sample false positives with their document context.
+
+# COMMAND ----------
+
+for method_name, fp_df in false_positives_dfs.items():
+    print(f"\n{'='*80}")
+    print(f"{method_name.upper()} - False Positive Examples")
+    print(f"{'='*80}")
+
+    fp_examples = fp_df.select("doc_id", "entity", "start", "end").limit(10)
+    display(fp_examples)
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## False Negative Examples with Context
+# MAGIC
+# MAGIC Sample false negatives with their document context.
+
+# COMMAND ----------
+
+for method_name, fn_df in false_negatives_dfs.items():
+    print(f"\n{'='*80}")
+    print(f"{method_name.upper()} - False Negative Examples")
+    print(f"{'='*80}")
+
+    fn_examples = fn_df.select("doc_id", "chunk", "begin", "end", "entity").limit(10)
+    display(fn_examples)
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## View Latest Run Metrics
+# MAGIC
+# MAGIC Query the most recent evaluation run.
+
+# COMMAND ----------
+
+try:
+    latest_metrics = get_latest_run_metrics(
+        spark=spark, evaluation_table=evaluation_output_table, dataset_name=dataset_name
     )
-    display(false_negatives.limit(20))
+    print(f"Latest run metrics for dataset: {dataset_name}")
+    display(latest_metrics)
+except Exception as e:
+    print(f"Could not load latest run metrics: {e}")
