@@ -439,9 +439,27 @@ def save_false_positives(
     """
     table_name = f"{catalog}.{schema}.{dataset_name}_false_positives"
 
+    # Define expected schema for false positives (predictions without ground truth match)
+    FP_SCHEMA = {
+        "doc_id": "string",
+        "entity": "string",
+        "start": "integer",
+        "end": "integer",
+        "score": "double",
+        "entity_type": "string",
+    }
+
+    # Select and cast columns to expected schema
+    selected_cols = []
+    for col_name, col_type in FP_SCHEMA.items():
+        if col_name in fp_df.columns:
+            selected_cols.append(col(col_name).cast(col_type).alias(col_name))
+
+    fp_clean = fp_df.select(selected_cols) if selected_cols else fp_df.limit(0)
+
     # Add metadata columns
     fp_with_metadata = (
-        fp_df.withColumn("method_name", lit(method_name))
+        fp_clean.withColumn("method_name", lit(method_name))
         .withColumn("run_id", lit(run_id))
         .withColumn("timestamp", lit(timestamp))
     )
@@ -482,9 +500,26 @@ def save_false_negatives(
     """
     table_name = f"{catalog}.{schema}.{dataset_name}_false_negatives"
 
+    # Define expected schema for false negatives (ground truth without prediction match)
+    FN_SCHEMA = {
+        "doc_id": "string",
+        "chunk": "string",
+        "begin": "integer",
+        "end": "integer",
+        "entity": "string",
+    }
+
+    # Select and cast columns to expected schema
+    selected_cols = []
+    for col_name, col_type in FN_SCHEMA.items():
+        if col_name in fn_df.columns:
+            selected_cols.append(col(col_name).cast(col_type).alias(col_name))
+
+    fn_clean = fn_df.select(selected_cols) if selected_cols else fn_df.limit(0)
+
     # Add metadata columns
     fn_with_metadata = (
-        fn_df.withColumn("method_name", lit(method_name))
+        fn_clean.withColumn("method_name", lit(method_name))
         .withColumn("run_id", lit(run_id))
         .withColumn("timestamp", lit(timestamp))
     )
