@@ -18,7 +18,7 @@
 # COMMAND ----------
 
 # MAGIC %pip install -r ../../requirements.txt
-# MAGIC %pip install /Volumes/dbxmetagen/default/init_scripts/dbxmetagen-0.5.1-py3-none-any.whl
+# MAGIC %pip install /Volumes/dbxmetagen/default/init_scripts/dbxmetagen-0.5.2-py3-none-any.whl
 # MAGIC %restart_python
 
 # COMMAND ----------
@@ -208,7 +208,7 @@ false_positives_dfs = {}
 false_negatives_dfs = {}
 
 # Exploded ground truth for matching
-gt_exploded = ground_truth_df.select("doc_id", "chunk", "begin", "end", "entity")
+gt_exploded = ground_truth_df.select("doc_id", "chunk", "begin", "end")
 
 for method_name, exploded_df in exploded_results.items():
     print(f"\n{'='*80}")
@@ -433,7 +433,7 @@ for method_name, fn_df in false_negatives_dfs.items():
     print(f"{method_name.upper()} - False Negative Examples")
     print(f"{'='*80}")
 
-    fn_examples = fn_df.select("doc_id", "chunk", "begin", "end", "entity").limit(10)
+    fn_examples = fn_df.select("doc_id", "chunk", "begin", "end").limit(10)
     display(fn_examples)
 
 # COMMAND ----------

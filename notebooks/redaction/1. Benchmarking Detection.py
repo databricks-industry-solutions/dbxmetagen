@@ -16,25 +16,8 @@
 # COMMAND ----------
 
 # MAGIC %pip install -r ../../requirements.txt
-# MAGIC %pip install /Volumes/dbxmetagen/default/init_scripts/dbxmetagen-0.5.1-py3-none-any.whl
+# MAGIC %pip install /Volumes/dbxmetagen/default/init_scripts/dbxmetagen-0.5.2-py3-none-any.whl
 # MAGIC %restart_python
-
-# COMMAND ----------
-
-# Install wheel
-# For DABs deployment: uncomment to use bundle-deployed wheel
-# WHEEL_PATH = "/Workspace${workspace.root_path}/.databricks/bundle/${bundle.target}/files/dist/dbxmetagen-${var.package_version}-py3-none-any.whl"
-#
-# For volume deployment: use this pattern
-# WHEEL_PATH = "/Volumes/catalog/schema/volume/dbxmetagen-0.5.1-py3-none-any.whl"
-#
-# For development: use editable install
-# WHEEL_PATH = "/Workspace/Repos/username/repo/dbxmetagen"
-# %pip install -e $WHEEL_PATH
-#
-# Uncomment to install:
-# %pip install $WHEEL_PATH
-# %restart_python
 
 # COMMAND ----------
 
