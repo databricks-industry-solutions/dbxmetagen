@@ -133,7 +133,7 @@ def match_entities_one_to_one(
 
     matched_gt_ids = set()
     matched_pred_ids = set()
-    final_matches = []
+    matched_pairs = []  # Store (gt_id, pred_id) tuples
 
     for row in matches_list:
         gt_id = row["gt_id"]
@@ -142,13 +142,30 @@ def match_entities_one_to_one(
         if gt_id not in matched_gt_ids and pred_id not in matched_pred_ids:
             matched_gt_ids.add(gt_id)
             matched_pred_ids.add(pred_id)
-            final_matches.append(row.asDict())
+            matched_pairs.append((gt_id, pred_id))  # Store the pair
 
-    # Create matched pairs DataFrame
-    if final_matches:
-        matched_df = viable_matches.sparkSession.createDataFrame(
-            final_matches, schema=viable_matches.schema
+    # Create matched pairs DataFrame by joining back to preserve types
+    if matched_pairs:
+        from pyspark.sql.types import StructType, StructField, LongType
+
+        # Create DataFrame of matched pairs with explicit schema
+        pairs_schema = StructType(
+            [
+                StructField("matched_gt_id", LongType(), False),
+                StructField("matched_pred_id", LongType(), False),
+            ]
         )
+        matched_ids_df = viable_matches.sparkSession.createDataFrame(
+            matched_pairs, schema=pairs_schema
+        )
+
+        # Join back to viable_matches to preserve all columns and types
+        matched_df = viable_matches.join(
+            matched_ids_df,
+            (col("gt_id") == col("matched_gt_id"))
+            & (col("pred_id") == col("matched_pred_id")),
+            "inner",
+        ).drop("matched_gt_id", "matched_pred_id")
     else:
         # Empty DataFrame with schema
         matched_df = viable_matches.limit(0)
