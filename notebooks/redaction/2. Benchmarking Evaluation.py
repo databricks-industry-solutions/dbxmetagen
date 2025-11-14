@@ -268,13 +268,23 @@ for method_name, exploded_df in exploded_results.items():
             col("pred.entity").alias("predicted"),
             "iou_score",
             "exact_text_match",
+            "title_prefix_match",
             "pred_contains_gt",
             "final_score",
         ).limit(5)
         for row in match_samples.collect():
             print(f"    GT: '{row.ground_truth}' | Pred: '{row.predicted}'")
+            match_type = (
+                "Exact"
+                if row.exact_text_match
+                else (
+                    "Title"
+                    if row.title_prefix_match
+                    else ("Contains" if row.pred_contains_gt else "IoU")
+                )
+            )
             print(
-                f"      IoU: {row.iou_score:.3f} | Final: {row.final_score:.3f} | ExactMatch: {row.exact_text_match} | Contains: {row.pred_contains_gt}"
+                f"      IoU: {row.iou_score:.3f} | Final: {row.final_score:.3f} | MatchType: {match_type}"
             )
 
     # Save to evaluation table

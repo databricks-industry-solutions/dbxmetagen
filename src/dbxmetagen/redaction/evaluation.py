@@ -21,6 +21,8 @@ from pyspark.sql.functions import (
     desc,
     abs as sql_abs,
     when,
+    trim,
+    regexp_replace,
 )
 from pyspark.sql.types import DoubleType
 from datetime import datetime
@@ -124,27 +126,65 @@ def match_entities_one_to_one(
         ),
     )
 
-    # Add containment bonus: if prediction contains ground truth, boost score
-    candidates_with_bonus = candidates_with_iou.withColumn(
-        "pred_contains_gt",
-        when(
-            (col(f"pred.{pred_start_column}") <= col(f"gt.{gt_start_column}"))
-            & (col(f"pred.{pred_end_column}") >= col(f"gt.{gt_end_column}")),
-            lit(True),
-        ).otherwise(lit(False)),
+    # Strip whitespace from text columns for comparison
+    candidates_with_clean_text = candidates_with_iou.withColumn(
+        "gt_text_clean", trim(regexp_replace(col(f"gt.{gt_text_column}"), r"\s+", " "))
     ).withColumn(
-        "final_score",
-        when(
-            col("pred_contains_gt"), least(col("iou_score") + 0.2, lit(1.0))
-        ).otherwise(col("iou_score")),
+        "pred_text_clean",
+        trim(regexp_replace(col(f"pred.{pred_text_column}"), r"\s+", " ")),
     )
 
-    # Exact string match override: if strings match exactly and positions are close, force high score
+    # Add containment bonus: if prediction contains ground truth (positionally or textually), boost score
+    candidates_with_bonus = (
+        candidates_with_clean_text.withColumn(
+            "pred_contains_gt_position",
+            when(
+                (col(f"pred.{pred_start_column}") <= col(f"gt.{gt_start_column}"))
+                & (col(f"pred.{pred_end_column}") >= col(f"gt.{gt_end_column}")),
+                lit(True),
+            ).otherwise(lit(False)),
+        )
+        .withColumn(
+            "pred_contains_gt_text",
+            when(
+                col("pred_text_clean").contains(col("gt_text_clean")),
+                lit(True),
+            ).otherwise(lit(False)),
+        )
+        .withColumn(
+            "pred_contains_gt",
+            col("pred_contains_gt_position") | col("pred_contains_gt_text"),
+        )
+        .withColumn(
+            "final_score",
+            when(
+                col("pred_contains_gt"), least(col("iou_score") + 0.2, lit(1.0))
+            ).otherwise(col("iou_score")),
+        )
+    )
+
+    # Exact string match override: if strings match exactly (after cleaning) and positions are close, force high score
+    # Also handle common title prefixes (Dr., Mr., Ms., Mrs.)
     candidates_with_exact = (
         candidates_with_bonus.withColumn(
             "exact_text_match",
             when(
-                col(f"gt.{gt_text_column}") == col(f"pred.{pred_text_column}"),
+                col("gt_text_clean") == col("pred_text_clean"),
+                lit(True),
+            ).otherwise(lit(False)),
+        )
+        .withColumn(
+            "pred_without_title",
+            trim(
+                regexp_replace(
+                    col("pred_text_clean"), r"^(Dr\.|Mr\.|Ms\.|Mrs\.)\s+", ""
+                )
+            ),
+        )
+        .withColumn(
+            "title_prefix_match",
+            when(
+                col("pred_without_title") == col("gt_text_clean"),
                 lit(True),
             ).otherwise(lit(False)),
         )
@@ -162,7 +202,12 @@ def match_entities_one_to_one(
             when(
                 col("exact_text_match") & (col("position_distance") <= 5),
                 lit(1.0),  # Perfect match if text is identical and positions within 5
-            ).otherwise(col("final_score")),
+            )
+            .when(
+                col("title_prefix_match") & (col("position_distance") <= 5),
+                lit(1.0),  # Also perfect match if only difference is title prefix
+            )
+            .otherwise(col("final_score")),
         )
     )
 
