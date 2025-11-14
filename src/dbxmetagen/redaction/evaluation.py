@@ -68,9 +68,15 @@ def match_entities_one_to_one(
     pred_start_column: str = "start",
     pred_end_column: str = "end",
     pred_text_column: str = "entity",
+    matching_strategy: str = "rules_based",
 ) -> Tuple[DataFrame, DataFrame, DataFrame]:
     """
-    Perform greedy one-to-one entity matching with IoU threshold.
+    Perform greedy one-to-one entity matching with configurable strategy.
+
+    Matching strategies:
+    - 'complete_overlap': Only exact boundary matches (IoU = 1.0)
+    - 'partial_overlap': Any overlap (IoU > 0)
+    - 'rules_based': Smart matching with text normalization, title handling, containment bonus
 
     This function ensures no double counting by:
     1. Computing IoU scores for all candidate matches
@@ -126,95 +132,118 @@ def match_entities_one_to_one(
         ),
     )
 
-    # Strip whitespace from text columns for comparison
-    candidates_with_clean_text = candidates_with_iou.withColumn(
-        "gt_text_clean", trim(regexp_replace(col(f"gt.{gt_text_column}"), r"\s+", " "))
-    ).withColumn(
-        "pred_text_clean",
-        trim(regexp_replace(col(f"pred.{pred_text_column}"), r"\s+", " ")),
-    )
+    # Apply matching strategy
+    if matching_strategy == "complete_overlap":
+        # Complete overlap: Only IoU = 1.0 matches (iou_threshold parameter ignored)
+        viable_matches = (
+            candidates_with_iou.withColumn("final_score", col("iou_score"))
+            .filter(col("final_score") == 1.0)
+            .orderBy(desc("final_score"))
+        )
 
-    # Add containment bonus: if prediction contains ground truth (positionally or textually), boost score
-    candidates_with_bonus = (
-        candidates_with_clean_text.withColumn(
-            "pred_contains_gt_position",
-            when(
-                (col(f"pred.{pred_start_column}") <= col(f"gt.{gt_start_column}"))
-                & (col(f"pred.{pred_end_column}") >= col(f"gt.{gt_end_column}")),
-                lit(True),
-            ).otherwise(lit(False)),
+    elif matching_strategy == "partial_overlap":
+        # Partial overlap: Any overlap (IoU > 0) (iou_threshold parameter ignored)
+        viable_matches = (
+            candidates_with_iou.withColumn("final_score", col("iou_score"))
+            .filter(col("final_score") > 0)
+            .orderBy(desc("final_score"))
         )
-        .withColumn(
-            "pred_contains_gt_text",
-            when(
-                col("pred_text_clean").contains(col("gt_text_clean")),
-                lit(True),
-            ).otherwise(lit(False)),
-        )
-        .withColumn(
-            "pred_contains_gt",
-            col("pred_contains_gt_position") | col("pred_contains_gt_text"),
-        )
-        .withColumn(
-            "final_score",
-            when(
-                col("pred_contains_gt"), least(col("iou_score") + 0.2, lit(1.0))
-            ).otherwise(col("iou_score")),
-        )
-    )
 
-    # Exact string match override: if strings match exactly (after cleaning) and positions are close, force high score
-    # Also handle common title prefixes (Dr., Mr., Ms., Mrs.)
-    candidates_with_exact = (
-        candidates_with_bonus.withColumn(
-            "exact_text_match",
-            when(
-                col("gt_text_clean") == col("pred_text_clean"),
-                lit(True),
-            ).otherwise(lit(False)),
+    else:  # rules_based (default)
+        # Strip whitespace from text columns for comparison
+        candidates_with_clean_text = candidates_with_iou.withColumn(
+            "gt_text_clean",
+            trim(regexp_replace(col(f"gt.{gt_text_column}"), r"\s+", " ")),
+        ).withColumn(
+            "pred_text_clean",
+            trim(regexp_replace(col(f"pred.{pred_text_column}"), r"\s+", " ")),
         )
-        .withColumn(
-            "pred_without_title",
-            trim(
-                regexp_replace(
-                    col("pred_text_clean"), r"^(Dr\.|Mr\.|Ms\.|Mrs\.)\s+", ""
-                )
-            ),
+
+        # Add containment bonus: if prediction contains ground truth (positionally or textually), boost score
+        candidates_with_bonus = (
+            candidates_with_clean_text.withColumn(
+                "pred_contains_gt_position",
+                when(
+                    (col(f"pred.{pred_start_column}") <= col(f"gt.{gt_start_column}"))
+                    & (col(f"pred.{pred_end_column}") >= col(f"gt.{gt_end_column}")),
+                    lit(True),
+                ).otherwise(lit(False)),
+            )
+            .withColumn(
+                "pred_contains_gt_text",
+                when(
+                    col("pred_text_clean").contains(col("gt_text_clean")),
+                    lit(True),
+                ).otherwise(lit(False)),
+            )
+            .withColumn(
+                "pred_contains_gt",
+                col("pred_contains_gt_position") | col("pred_contains_gt_text"),
+            )
+            .withColumn(
+                "final_score",
+                when(
+                    col("pred_contains_gt"), least(col("iou_score") + 0.2, lit(1.0))
+                ).otherwise(col("iou_score")),
+            )
         )
-        .withColumn(
-            "title_prefix_match",
-            when(
-                col("pred_without_title") == col("gt_text_clean"),
-                lit(True),
-            ).otherwise(lit(False)),
-        )
-        .withColumn(
-            "position_distance",
-            least(
-                sql_abs(
-                    col(f"gt.{gt_start_column}") - col(f"pred.{pred_start_column}")
+
+        # Exact string match override: if strings match exactly (after cleaning) and positions are close, force high score
+        # Also handle common title prefixes (Dr., Mr., Ms., Mrs.)
+        candidates_with_exact = (
+            candidates_with_bonus.withColumn(
+                "exact_text_match",
+                when(
+                    col("gt_text_clean") == col("pred_text_clean"),
+                    lit(True),
+                ).otherwise(lit(False)),
+            )
+            .withColumn(
+                "pred_without_title",
+                trim(
+                    regexp_replace(
+                        col("pred_text_clean"), r"^(Dr\.|Mr\.|Ms\.|Mrs\.)\s+", ""
+                    )
                 ),
-                sql_abs(col(f"gt.{gt_end_column}") - col(f"pred.{pred_end_column}")),
-            ),
-        )
-        .withColumn(
-            "final_score",
-            when(
-                col("exact_text_match") & (col("position_distance") <= 5),
-                lit(1.0),  # Perfect match if text is identical and positions within 5
             )
-            .when(
-                col("title_prefix_match") & (col("position_distance") <= 5),
-                lit(1.0),  # Also perfect match if only difference is title prefix
+            .withColumn(
+                "title_prefix_match",
+                when(
+                    col("pred_without_title") == col("gt_text_clean"),
+                    lit(True),
+                ).otherwise(lit(False)),
             )
-            .otherwise(col("final_score")),
+            .withColumn(
+                "position_distance",
+                least(
+                    sql_abs(
+                        col(f"gt.{gt_start_column}") - col(f"pred.{pred_start_column}")
+                    ),
+                    sql_abs(
+                        col(f"gt.{gt_end_column}") - col(f"pred.{pred_end_column}")
+                    ),
+                ),
+            )
+            .withColumn(
+                "final_score",
+                when(
+                    col("exact_text_match") & (col("position_distance") <= 5),
+                    lit(
+                        1.0
+                    ),  # Perfect match if text is identical and positions within 5
+                )
+                .when(
+                    col("title_prefix_match") & (col("position_distance") <= 5),
+                    lit(1.0),  # Also perfect match if only difference is title prefix
+                )
+                .otherwise(col("final_score")),
+            )
         )
-    )
 
-    # Filter by score threshold and sort by score descending
-    viable_matches = candidates_with_exact.filter(
-        col("final_score") >= iou_threshold
-    ).orderBy(desc("final_score"))
+        # Filter by score threshold and sort by score descending
+        viable_matches = candidates_with_exact.filter(
+            col("final_score") >= iou_threshold
+        ).orderBy(desc("final_score"))
 
     # Greedy matching: collect to driver and assign one-to-one
     # Note: For large datasets, this could be optimized with distributed algorithms

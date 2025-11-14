@@ -76,12 +76,20 @@ dbutils.widgets.dropdown(
     label="4. Write Mode",
 )
 
+dbutils.widgets.dropdown(
+    name="matching_strategy",
+    defaultValue="rules_based",
+    choices=["complete_overlap", "partial_overlap", "rules_based"],
+    label="5. Matching Strategy",
+)
+
 # Get widget values
 ground_truth_table = dbutils.widgets.get("ground_truth_table")
 detection_results_table = dbutils.widgets.get("detection_results_table")
 dataset_name = dbutils.widgets.get("dataset_name")
 evaluation_output_table = dbutils.widgets.get("evaluation_output_table")
 write_mode = dbutils.widgets.get("write_mode")
+matching_strategy = dbutils.widgets.get("matching_strategy")
 
 # COMMAND ----------
 
@@ -223,15 +231,16 @@ gt_exploded = ground_truth_df.select("doc_id", "chunk", "begin", "end")
 
 for method_name, exploded_df in exploded_results.items():
     print(f"\n{'='*80}")
-    print(f"Evaluating: {method_name.upper()}")
+    print(f"Evaluating: {method_name.upper()} with {matching_strategy} strategy")
     print(f"{'='*80}")
 
-    # Perform one-to-one matching with IoU threshold
-    print(f"Matching entities with IoU threshold = 0.5...")
+    # Perform one-to-one matching with selected strategy
+    print(f"Matching entities with strategy: {matching_strategy}...")
+    # Note: iou_threshold only applies to rules_based; complete/partial use hardcoded filters
     matched_df, fn_df, fp_df = match_entities_one_to_one(
         ground_truth_df=gt_exploded,
         predictions_df=exploded_df,
-        iou_threshold=0.5,
+        iou_threshold=0.5 if matching_strategy == "rules_based" else 1.0,
         doc_id_column="doc_id",
         gt_start_column="begin",
         gt_end_column="end",
@@ -239,6 +248,7 @@ for method_name, exploded_df in exploded_results.items():
         pred_start_column="start",
         pred_end_column="end",
         pred_text_column="entity",
+        matching_strategy=matching_strategy,
     )
 
     print(
@@ -350,6 +360,122 @@ display(comparison_df)
 # COMMAND ----------
 
 # MAGIC %md
+# MAGIC ## Multi-Strategy Breakdown
+# MAGIC
+# MAGIC Calculate metrics using all three strategies and show breakdown of complete vs partial matches.
+
+# COMMAND ----------
+
+print("Calculating metrics across all strategies...")
+print(
+    "This helps understand what percentage of PII is completely captured vs partially captured.\n"
+)
+
+multi_strategy_results = {}
+
+for method_name, exploded_df in exploded_results.items():
+    print(f"\n{'='*60}")
+    print(f"Method: {method_name.upper()}")
+    print(f"{'='*60}")
+
+    strategy_metrics = {}
+
+    for strategy in ["complete_overlap", "partial_overlap", "rules_based"]:
+        # Note: iou_threshold only applies to rules_based; complete/partial use hardcoded filters
+        matched_df, fn_df, fp_df = match_entities_one_to_one(
+            ground_truth_df=gt_exploded,
+            predictions_df=exploded_df,
+            iou_threshold=0.5 if strategy == "rules_based" else 1.0,
+            doc_id_column="doc_id",
+            gt_start_column="begin",
+            gt_end_column="end",
+            gt_text_column="chunk",
+            pred_start_column="start",
+            pred_end_column="end",
+            pred_text_column="entity",
+            matching_strategy=strategy,
+        )
+
+        metrics = calculate_entity_metrics(
+            matched_df, fp_df, fn_df, run_id, run_timestamp
+        )
+        strategy_metrics[strategy] = metrics
+
+        print(
+            f"  {strategy:18s} | Precision: {metrics['precision']:.3f} | Recall: {metrics['recall']:.3f} | F1: {metrics['f1_score']:.3f}"
+        )
+
+    multi_strategy_results[method_name] = strategy_metrics
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### Detailed Breakdown: Complete vs Partial vs Missed
+
+# COMMAND ----------
+
+for method_name, strategy_metrics in multi_strategy_results.items():
+    print(f"\n{'='*80}")
+    print(f"{method_name.upper()} - Capture Breakdown")
+    print(f"{'='*80}\n")
+
+    total_gt = gt_exploded.count()
+
+    complete_tp = strategy_metrics["complete_overlap"]["true_positives"]
+    partial_tp = strategy_metrics["partial_overlap"]["true_positives"]
+    rules_tp = strategy_metrics["rules_based"]["true_positives"]
+
+    # Calculate breakdown
+    complete_pct = (complete_tp / total_gt * 100) if total_gt > 0 else 0
+    partial_only_pct = (
+        ((partial_tp - complete_tp) / total_gt * 100) if total_gt > 0 else 0
+    )
+    rules_only_pct = ((rules_tp - partial_tp) / total_gt * 100) if total_gt > 0 else 0
+    missed_pct = ((total_gt - rules_tp) / total_gt * 100) if total_gt > 0 else 0
+
+    print(f"Total Ground Truth Entities: {total_gt:,}\n")
+    print(f"  Complete Match (IoU = 1.0):     {complete_tp:5,} ({complete_pct:5.1f}%)")
+    print(
+        f"  Partial Only (0 < IoU < 1.0):   {partial_tp - complete_tp:5,} ({partial_only_pct:5.1f}%)"
+    )
+    print(
+        f"  Rules-Based Only:               {rules_tp - partial_tp:5,} ({rules_only_pct:5.1f}%)"
+    )
+    print(
+        f"  Not Captured:                   {total_gt - rules_tp:5,} ({missed_pct:5.1f}%)"
+    )
+    print(f"  " + "-" * 50)
+    print(
+        f"  Total Captured (Rules-Based):   {rules_tp:5,} ({rules_tp/total_gt*100:5.1f}%)"
+    )
+
+    # Create DataFrame for display
+    breakdown_data = {
+        "Category": [
+            "Complete Match (IoU=1.0)",
+            "Partial Match (0<IoU<1.0)",
+            "Rules-Based Only",
+            "Not Captured",
+        ],
+        "Count": [
+            complete_tp,
+            partial_tp - complete_tp,
+            rules_tp - partial_tp,
+            total_gt - rules_tp,
+        ],
+        "Percentage": [
+            f"{complete_pct:.1f}%",
+            f"{partial_only_pct:.1f}%",
+            f"{rules_only_pct:.1f}%",
+            f"{missed_pct:.1f}%",
+        ],
+    }
+    breakdown_df = pd.DataFrame(breakdown_data)
+    display(breakdown_df)
+
+# COMMAND ----------
+
+# MAGIC %md
 # MAGIC ## Cross-Dataset Comparison
 # MAGIC
 # MAGIC View all evaluation results from the shared table.
@@ -408,7 +534,7 @@ try:
         WHERE e.metric_name IN ('precision', 'recall', 'f1_score')
         GROUP BY e.dataset_name, e.method_name
         ORDER BY e.dataset_name, f1_score DESC
-        """
+    """
     )
     display(precision_recall)
 except Exception as e:
