@@ -169,6 +169,28 @@ if "client" not in get_dbr_version():
 # COMMAND ----------
 
 # MAGIC %md
+# MAGIC ## Validate Configuration
+
+# COMMAND ----------
+
+# Validate that at least one detection method is enabled
+if not (use_presidio or use_ai_query or use_gliner):
+    raise ValueError(
+        "At least one detection method must be enabled. "
+        "Please enable Presidio, AI Query, or GLiNER."
+    )
+
+# Validate that source table exists
+try:
+    source_df = spark.table(source_table)
+    print(f"✓ Source table found: {source_table}")
+    print(f"  Total records: {source_df.count():,}")
+except Exception as e:
+    raise ValueError(f"Source table '{source_table}' not found or not accessible: {e}")
+
+# COMMAND ----------
+
+# MAGIC %md
 # MAGIC ## Validate Input Mode
 
 # COMMAND ----------
@@ -193,6 +215,21 @@ if input_mode == "table_tag":
 else:
     print(f"Input Mode: Table + Column")
     print(f"Using specified column: {text_column}")
+
+    # Validate that columns exist
+    available_columns = source_df.columns
+    if text_column not in available_columns:
+        raise ValueError(
+            f"Text column '{text_column}' not found in source table. "
+            f"Available columns: {available_columns}"
+        )
+    if doc_id_column not in available_columns:
+        raise ValueError(
+            f"Document ID column '{doc_id_column}' not found in source table. "
+            f"Available columns: {available_columns}"
+        )
+
+    print(f"✓ Columns validated: {text_column}, {doc_id_column}")
 
 # COMMAND ----------
 
@@ -223,40 +260,108 @@ print("=" * 80)
 
 # COMMAND ----------
 
-if input_mode == "table_tag":
-    # Run pipeline with tag-based column identification
-    result_df = run_redaction_pipeline_by_tag(
-        spark=spark,
-        source_table=source_table,
-        output_table=output_table,
-        tag_name=tag_name,
-        tag_value=tag_value,
-        doc_id_column=doc_id_column,
-        use_presidio=use_presidio,
-        use_ai_query=use_ai_query,
-        use_gliner=use_gliner,
-        redaction_strategy=redaction_strategy,
-        endpoint=endpoint if use_ai_query else None,
-        score_threshold=score_threshold,
-        num_cores=num_cores,
-    )
-else:
-    # Run pipeline with explicit column name
-    result_df = run_redaction_pipeline(
-        spark=spark,
-        source_table=source_table,
-        text_column=text_column,
-        output_table=output_table,
-        doc_id_column=doc_id_column,
-        use_presidio=use_presidio,
-        use_ai_query=use_ai_query,
-        use_gliner=use_gliner,
-        redaction_strategy=redaction_strategy,
-        endpoint=endpoint if use_ai_query else None,
-        score_threshold=score_threshold,
-        num_cores=num_cores,
-        use_aligned=True,
-    )
+try:
+    if input_mode == "table_tag":
+        # Run pipeline with tag-based column identification
+        result_df = run_redaction_pipeline_by_tag(
+            spark=spark,
+            source_table=source_table,
+            output_table=output_table,
+            tag_name=tag_name,
+            tag_value=tag_value,
+            doc_id_column=doc_id_column,
+            use_presidio=use_presidio,
+            use_ai_query=use_ai_query,
+            use_gliner=use_gliner,
+            redaction_strategy=redaction_strategy,
+            endpoint=endpoint if use_ai_query else None,
+            score_threshold=score_threshold,
+            num_cores=num_cores,
+        )
+    else:
+        # Run pipeline with explicit column name
+        result_df = run_redaction_pipeline(
+            spark=spark,
+            source_table=source_table,
+            text_column=text_column,
+            output_table=output_table,
+            doc_id_column=doc_id_column,
+            use_presidio=use_presidio,
+            use_ai_query=use_ai_query,
+            use_gliner=use_gliner,
+            redaction_strategy=redaction_strategy,
+            endpoint=endpoint if use_ai_query else None,
+            score_threshold=score_threshold,
+            num_cores=num_cores,
+            use_aligned=True,
+        )
+except Exception as e:
+    print("=" * 80)
+    print("PIPELINE FAILED")
+    print("=" * 80)
+    print(f"Error: {str(e)}")
+    import traceback
+
+    traceback.print_exc()
+    raise
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Validate Results
+
+# COMMAND ----------
+
+# Verify output table was created and has expected schema
+try:
+    output_check = spark.table(output_table)
+    output_count = output_check.count()
+    source_count = source_df.count()
+
+    print("=" * 80)
+    print("PIPELINE VALIDATION")
+    print("=" * 80)
+    print(f"✓ Output table created: {output_table}")
+    print(f"✓ Source records: {source_count:,}")
+    print(f"✓ Output records: {output_count:,}")
+
+    # Verify expected columns exist
+    redacted_col_name = f"{text_column}_redacted"
+    if redacted_col_name not in output_check.columns:
+        print(f"⚠ Warning: Expected redacted column '{redacted_col_name}' not found")
+    else:
+        print(f"✓ Redacted column present: {redacted_col_name}")
+
+    # Check for detection result columns
+    detection_cols = []
+    if use_presidio and "presidio_results_struct" in output_check.columns:
+        detection_cols.append("presidio_results_struct")
+    if use_ai_query and "ai_results_struct" in output_check.columns:
+        detection_cols.append("ai_results_struct")
+    if use_gliner and "gliner_results_struct" in output_check.columns:
+        detection_cols.append("gliner_results_struct")
+    if "aligned_entities" in output_check.columns:
+        detection_cols.append("aligned_entities")
+
+    if detection_cols:
+        print(f"✓ Detection columns present: {', '.join(detection_cols)}")
+    else:
+        print("⚠ Warning: No detection result columns found")
+
+    # Check for NULL values in redacted column
+    if redacted_col_name in output_check.columns:
+        null_count = output_check.filter(
+            output_check[redacted_col_name].isNull()
+        ).count()
+        if null_count > 0:
+            print(f"⚠ Warning: {null_count} NULL values found in redacted column")
+        else:
+            print(f"✓ No NULL values in redacted column")
+
+    print("=" * 80)
+
+except Exception as e:
+    print(f"⚠ Warning: Could not validate output table: {e}")
 
 # COMMAND ----------
 

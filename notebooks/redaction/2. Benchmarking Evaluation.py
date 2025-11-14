@@ -474,7 +474,15 @@ doc_text_df = ground_truth_df.select("doc_id", "text").distinct()
 
 # COMMAND ----------
 
-from pyspark.sql.functions import substring, length, when, lit, concat
+from pyspark.sql.functions import (
+    substring,
+    length,
+    when,
+    lit,
+    concat,
+    abs as sql_abs,
+    least,
+)
 
 for method_name, fp_df in false_positives_dfs.items():
     print(f"\n{'='*80}")
@@ -484,44 +492,119 @@ for method_name, fp_df in false_positives_dfs.items():
     # Join with document text
     fp_with_text = fp_df.join(doc_text_df, on="doc_id", how="left")
 
-    # Calculate context window (25 chars before and after)
+    # Join with ground truth to find best matching GT entity (within 10 positions tolerance)
+    gt_for_matching = (
+        ground_truth_df.select("doc_id", "chunk", "begin", "end")
+        .withColumnRenamed("chunk", "gt_chunk")
+        .withColumnRenamed("begin", "gt_begin")
+        .withColumnRenamed("end", "gt_end")
+    )
+
+    fp_with_gt = fp_with_text.join(gt_for_matching, on="doc_id", how="left")
+
+    # Calculate position distance and filter to within tolerance
+    position_tolerance = 10
+    fp_with_gt = fp_with_gt.withColumn(
+        "position_distance",
+        least(
+            sql_abs(col("start") - col("gt_begin")), sql_abs(col("end") - col("gt_end"))
+        ),
+    ).filter(col("position_distance") <= position_tolerance)
+
+    # Keep only the best match per FP entity (closest GT)
+    from pyspark.sql.window import Window
+    from pyspark.sql.functions import row_number
+
+    window = Window.partitionBy("doc_id", "entity", "start", "end").orderBy(
+        "position_distance"
+    )
+    fp_with_best_gt = (
+        fp_with_gt.withColumn("rank", row_number().over(window))
+        .filter(col("rank") == 1)
+        .drop("rank")
+    )
+
+    # Calculate context window (25 chars before and after) for PREDICTED entity
     context_size = 25
     fp_with_context = (
-        fp_with_text.withColumn(
-            "context_start",
+        fp_with_best_gt.withColumn(
+            "pred_context_start",
             when(
                 col("start") - context_size >= 0, col("start") - context_size
             ).otherwise(0),
         )
         .withColumn(
-            "context_end",
+            "pred_context_end",
             when(
-                col("end") + context_size <= length(col("text")),
-                col("end") + context_size,
+                col("end") + 1 + context_size <= length(col("text")),
+                col("end") + 1 + context_size,
             ).otherwise(length(col("text"))),
         )
         .withColumn(
-            "text_with_context",
+            "pred_text_with_context",
             concat(
                 lit("..."),
                 substring(
                     col("text"),
-                    col("context_start") + 1,
-                    col("start") - col("context_start"),
+                    col("pred_context_start") + 1,
+                    col("start") - col("pred_context_start"),
                 ),
                 lit(">>>"),
-                col("entity"),
+                substring(col("text"), col("start") + 1, col("end") + 1 - col("start")),
                 lit("<<<"),
-                substring(col("text"), col("end") + 1, col("context_end") - col("end")),
+                substring(
+                    col("text"),
+                    col("end") + 2,
+                    col("pred_context_end") - col("end") - 1,
+                ),
+                lit("..."),
+            ),
+        )
+        # Calculate context for GROUND TRUTH entity
+        .withColumn(
+            "gt_context_start",
+            when(
+                col("gt_begin") - context_size >= 0, col("gt_begin") - context_size
+            ).otherwise(0),
+        )
+        .withColumn(
+            "gt_context_end",
+            when(
+                col("gt_end") + context_size <= length(col("text")),
+                col("gt_end") + context_size,
+            ).otherwise(length(col("text"))),
+        )
+        .withColumn(
+            "gt_text_with_context",
+            concat(
+                lit("..."),
+                substring(
+                    col("text"),
+                    col("gt_context_start") + 1,
+                    col("gt_begin") - col("gt_context_start"),
+                ),
+                lit(">>>"),
+                col("gt_chunk"),
+                lit("<<<"),
+                substring(
+                    col("text"),
+                    col("gt_end") + 1,
+                    col("gt_context_end") - col("gt_end"),
+                ),
                 lit("..."),
             ),
         )
     )
 
-    # Display sample with context
-    fp_display = fp_with_context.select("doc_id", "entity", "text_with_context").limit(
-        10
-    )
+    # Display sample with both predicted and GT context
+    fp_display = fp_with_context.select(
+        "doc_id",
+        "entity",
+        "pred_text_with_context",
+        "gt_chunk",
+        "gt_text_with_context",
+        "position_distance",
+    ).limit(10)
 
     display(fp_display)
 
