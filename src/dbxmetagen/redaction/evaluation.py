@@ -19,6 +19,8 @@ from pyspark.sql.functions import (
     greatest,
     least,
     desc,
+    abs as sql_abs,
+    when,
 )
 from pyspark.sql.types import DoubleType
 from datetime import datetime
@@ -122,10 +124,52 @@ def match_entities_one_to_one(
         ),
     )
 
-    # Filter by IoU threshold and sort by IoU descending
-    viable_matches = candidates_with_iou.filter(
-        col("iou_score") >= iou_threshold
-    ).orderBy(desc("iou_score"))
+    # Add containment bonus: if prediction contains ground truth, boost score
+    candidates_with_bonus = candidates_with_iou.withColumn(
+        "pred_contains_gt",
+        when(
+            (col(f"pred.{pred_start_column}") <= col(f"gt.{gt_start_column}"))
+            & (col(f"pred.{pred_end_column}") >= col(f"gt.{gt_end_column}")),
+            lit(True),
+        ).otherwise(lit(False)),
+    ).withColumn(
+        "final_score",
+        when(
+            col("pred_contains_gt"), least(col("iou_score") + 0.2, lit(1.0))
+        ).otherwise(col("iou_score")),
+    )
+
+    # Exact string match override: if strings match exactly and positions are close, force high score
+    candidates_with_exact = (
+        candidates_with_bonus.withColumn(
+            "exact_text_match",
+            when(
+                col(f"gt.{gt_text_column}") == col(f"pred.{pred_text_column}"),
+                lit(True),
+            ).otherwise(lit(False)),
+        )
+        .withColumn(
+            "position_distance",
+            least(
+                sql_abs(
+                    col(f"gt.{gt_start_column}") - col(f"pred.{pred_start_column}")
+                ),
+                sql_abs(col(f"gt.{gt_end_column}") - col(f"pred.{pred_end_column}")),
+            ),
+        )
+        .withColumn(
+            "final_score",
+            when(
+                col("exact_text_match") & (col("position_distance") <= 5),
+                lit(1.0),  # Perfect match if text is identical and positions within 5
+            ).otherwise(col("final_score")),
+        )
+    )
+
+    # Filter by score threshold and sort by score descending
+    viable_matches = candidates_with_exact.filter(
+        col("final_score") >= iou_threshold
+    ).orderBy(desc("final_score"))
 
     # Greedy matching: collect to driver and assign one-to-one
     # Note: For large datasets, this could be optimized with distributed algorithms

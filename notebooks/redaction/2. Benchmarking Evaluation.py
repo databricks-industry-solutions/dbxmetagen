@@ -260,6 +260,23 @@ for method_name, exploded_df in exploded_results.items():
     print(f"  Recall:          {metrics['recall']:.4f}")
     print(f"  F1 Score:        {metrics['f1_score']:.4f}")
 
+    # Show sample matched entities with scoring details
+    if matched_df.count() > 0:
+        print(f"\n  Sample Matches (with scoring details):")
+        match_samples = matched_df.select(
+            col("gt.chunk").alias("ground_truth"),
+            col("pred.entity").alias("predicted"),
+            "iou_score",
+            "exact_text_match",
+            "pred_contains_gt",
+            "final_score",
+        ).limit(5)
+        for row in match_samples.collect():
+            print(f"    GT: '{row.ground_truth}' | Pred: '{row.predicted}'")
+            print(
+                f"      IoU: {row.iou_score:.3f} | Final: {row.final_score:.3f} | ExactMatch: {row.exact_text_match} | Contains: {row.pred_contains_gt}"
+            )
+
     # Save to evaluation table
     save_evaluation_results(
         spark=spark,
