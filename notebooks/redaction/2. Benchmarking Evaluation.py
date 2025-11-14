@@ -29,15 +29,11 @@ import uuid
 from datetime import datetime
 
 from dbxmetagen.redaction import (
-    evaluate_detection,
-    calculate_metrics,
     match_entities_one_to_one,
     calculate_entity_metrics,
     save_false_positives,
     save_false_negatives,
     get_latest_run_metrics,
-    format_contingency_table,
-    format_metrics_summary,
     save_evaluation_results,
     compare_methods_across_datasets,
 )
@@ -51,7 +47,7 @@ from dbxmetagen.redaction import (
 
 dbutils.widgets.text(
     name="ground_truth_table",
-    defaultValue="dbxmetagen.eval_data.jsl_48docs",
+    defaultValue="dbxmetagen.eval_data.jsl_48_ground_truth",
     label="0. Ground Truth Table",
 )
 
@@ -117,6 +113,8 @@ display(detection_df.limit(5))
 available_methods = []
 if "presidio_results_struct" in detection_df.columns:
     available_methods.append("presidio")
+if "gliner_results_struct" in detection_df.columns:
+    available_methods.append("gliner")
 if "ai_results_struct" in detection_df.columns:
     available_methods.append("ai")
 if "aligned_entities" in detection_df.columns:
@@ -134,6 +132,19 @@ if "presidio" in available_methods:
         detection_df.select("doc_id", "presidio_results_struct")
         .withColumn("presidio_results_exploded", explode("presidio_results_struct"))
         .select("presidio_results_exploded.*")
+    )
+
+if "gliner" in available_methods:
+    exploded_results["gliner"] = (
+        detection_df.select("doc_id", "gliner_results_struct")
+        .withColumn("gliner_results_exploded", explode("gliner_results_struct"))
+        .select(
+            "doc_id",
+            "gliner_results_exploded.entity",
+            "gliner_results_exploded.score",
+            "gliner_results_exploded.start",
+            "gliner_results_exploded.end",
+        )
     )
 
 if "ai" in available_methods:
@@ -298,7 +309,6 @@ comparison_data = {
     "Precision": [],
     "Recall": [],
     "F1 Score": [],
-    "Accuracy": [],
 }
 
 for method_name, metrics in evaluation_results.items():
@@ -306,7 +316,6 @@ for method_name, metrics in evaluation_results.items():
     comparison_data["Precision"].append(metrics["precision"])
     comparison_data["Recall"].append(metrics["recall"])
     comparison_data["F1 Score"].append(metrics["f1_score"])
-    comparison_data["Accuracy"].append(metrics["accuracy"])
 
 comparison_df = pd.DataFrame(comparison_data)
 display(comparison_df)
@@ -350,19 +359,29 @@ except Exception as e:
 # COMMAND ----------
 
 try:
+    # Get only the latest run for each dataset and method
     precision_recall = spark.sql(
         f"""
+        WITH latest_runs AS (
+            SELECT dataset_name, method_name, MAX(timestamp) as latest_timestamp
+            FROM {evaluation_output_table}
+            GROUP BY dataset_name, method_name
+        )
         SELECT 
-            dataset_name,
-            method_name,
-            MAX(CASE WHEN metric_name = 'precision' THEN metric_value END) as precision,
-            MAX(CASE WHEN metric_name = 'recall' THEN metric_value END) as recall,
-            MAX(CASE WHEN metric_name = 'f1_score' THEN metric_value END) as f1_score
-        FROM {evaluation_output_table}
-        WHERE metric_name IN ('precision', 'recall', 'f1_score')
-        GROUP BY dataset_name, method_name
-        ORDER BY dataset_name, f1_score DESC
-    """
+            e.dataset_name,
+            e.method_name,
+            MAX(CASE WHEN e.metric_name = 'precision' THEN e.metric_value END) as precision,
+            MAX(CASE WHEN e.metric_name = 'recall' THEN e.metric_value END) as recall,
+            MAX(CASE WHEN e.metric_name = 'f1_score' THEN e.metric_value END) as f1_score
+        FROM {evaluation_output_table} e
+        INNER JOIN latest_runs lr 
+            ON e.dataset_name = lr.dataset_name 
+            AND e.method_name = lr.method_name 
+            AND e.timestamp = lr.latest_timestamp
+        WHERE e.metric_name IN ('precision', 'recall', 'f1_score')
+        GROUP BY e.dataset_name, e.method_name
+        ORDER BY e.dataset_name, f1_score DESC
+        """
     )
     display(precision_recall)
 except Exception as e:
@@ -435,6 +454,132 @@ for method_name, fn_df in false_negatives_dfs.items():
 
     fn_examples = fn_df.select("doc_id", "chunk", "begin", "end").limit(10)
     display(fn_examples)
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Visual Inspection with Context
+# MAGIC
+# MAGIC Show false positives and false negatives with surrounding text context for manual review.
+
+# COMMAND ----------
+
+# Get the full text for each document
+doc_text_df = ground_truth_df.select("doc_id", "text").distinct()
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### False Positives with Context
+
+# COMMAND ----------
+
+from pyspark.sql.functions import substring, length, when, lit, concat
+
+for method_name, fp_df in false_positives_dfs.items():
+    print(f"\n{'='*80}")
+    print(f"{method_name.upper()} - False Positive Examples with Context")
+    print(f"{'='*80}")
+
+    # Join with document text
+    fp_with_text = fp_df.join(doc_text_df, on="doc_id", how="left")
+
+    # Calculate context window (25 chars before and after)
+    context_size = 25
+    fp_with_context = (
+        fp_with_text.withColumn(
+            "context_start",
+            when(
+                col("start") - context_size >= 0, col("start") - context_size
+            ).otherwise(0),
+        )
+        .withColumn(
+            "context_end",
+            when(
+                col("end") + context_size <= length(col("text")),
+                col("end") + context_size,
+            ).otherwise(length(col("text"))),
+        )
+        .withColumn(
+            "text_with_context",
+            concat(
+                lit("..."),
+                substring(
+                    col("text"),
+                    col("context_start") + 1,
+                    col("start") - col("context_start"),
+                ),
+                lit(">>>"),
+                col("entity"),
+                lit("<<<"),
+                substring(col("text"), col("end") + 1, col("context_end") - col("end")),
+                lit("..."),
+            ),
+        )
+    )
+
+    # Display sample with context
+    fp_display = fp_with_context.select("doc_id", "entity", "text_with_context").limit(
+        10
+    )
+
+    display(fp_display)
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### False Negatives with Context
+
+# COMMAND ----------
+
+for method_name, fn_df in false_negatives_dfs.items():
+    print(f"\n{'='*80}")
+    print(f"{method_name.upper()} - False Negative Examples with Context")
+    print(f"{'='*80}")
+
+    # Join with document text
+    fn_with_text = fn_df.join(doc_text_df, on="doc_id", how="left")
+
+    # Calculate context window (25 chars before and after)
+    context_size = 25
+    fn_with_context = (
+        fn_with_text.withColumn(
+            "context_start",
+            when(
+                col("begin") - context_size >= 0, col("begin") - context_size
+            ).otherwise(0),
+        )
+        .withColumn(
+            "context_end",
+            when(
+                col("end") + context_size <= length(col("text")),
+                col("end") + context_size,
+            ).otherwise(length(col("text"))),
+        )
+        .withColumn(
+            "text_with_context",
+            concat(
+                lit("..."),
+                substring(
+                    col("text"),
+                    col("context_start") + 1,
+                    col("begin") - col("context_start"),
+                ),
+                lit(">>>"),
+                col("chunk"),
+                lit("<<<"),
+                substring(col("text"), col("end") + 1, col("context_end") - col("end")),
+                lit("..."),
+            ),
+        )
+    )
+
+    # Display sample with context
+    fn_display = fn_with_context.select("doc_id", "chunk", "text_with_context").limit(
+        10
+    )
+
+    display(fn_display)
 
 # COMMAND ----------
 
