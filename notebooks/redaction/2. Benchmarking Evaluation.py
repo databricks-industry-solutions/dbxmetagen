@@ -273,29 +273,47 @@ for method_name, exploded_df in exploded_results.items():
     # Show sample matched entities with scoring details
     if matched_df.count() > 0:
         print(f"\n  Sample Matches (with scoring details):")
-        match_samples = matched_df.select(
-            col("gt.chunk").alias("ground_truth"),
-            col("pred.entity").alias("predicted"),
-            "iou_score",
-            "exact_text_match",
-            "title_prefix_match",
-            "pred_contains_gt",
-            "final_score",
-        ).limit(5)
-        for row in match_samples.collect():
-            print(f"    GT: '{row.ground_truth}' | Pred: '{row.predicted}'")
-            match_type = (
-                "Exact"
-                if row.exact_text_match
-                else (
-                    "Title"
-                    if row.title_prefix_match
-                    else ("Contains" if row.pred_contains_gt else "IoU")
+
+        # Check which columns are available (rules_based has extra scoring columns)
+        available_cols = matched_df.columns
+        has_detailed_scoring = "exact_text_match" in available_cols
+
+        if has_detailed_scoring:
+            # Rules-based: show detailed match types
+            match_samples = matched_df.select(
+                col("gt.chunk").alias("ground_truth"),
+                col("pred.entity").alias("predicted"),
+                "iou_score",
+                "exact_text_match",
+                "title_prefix_match",
+                "pred_contains_gt",
+                "final_score",
+            ).limit(5)
+            for row in match_samples.collect():
+                print(f"    GT: '{row.ground_truth}' | Pred: '{row.predicted}'")
+                match_type = (
+                    "Exact"
+                    if row.exact_text_match
+                    else (
+                        "Title"
+                        if row.title_prefix_match
+                        else ("Contains" if row.pred_contains_gt else "IoU")
+                    )
                 )
-            )
-            print(
-                f"      IoU: {row.iou_score:.3f} | Final: {row.final_score:.3f} | MatchType: {match_type}"
-            )
+                print(
+                    f"      IoU: {row.iou_score:.3f} | Final: {row.final_score:.3f} | MatchType: {match_type}"
+                )
+        else:
+            # Complete/Partial overlap: show basic scores only
+            match_samples = matched_df.select(
+                col("gt.chunk").alias("ground_truth"),
+                col("pred.entity").alias("predicted"),
+                "iou_score",
+                "final_score",
+            ).limit(5)
+            for row in match_samples.collect():
+                print(f"    GT: '{row.ground_truth}' | Pred: '{row.predicted}'")
+                print(f"      IoU: {row.iou_score:.3f} | Final: {row.final_score:.3f}")
 
     # Save to evaluation table
     save_evaluation_results(
