@@ -594,10 +594,13 @@ for method_name, fp_df in false_positives_dfs.items():
     gt_with_positions = gt_exploded.select("doc_id", "chunk", "begin", "end")
 
     # Find FPs where text matches GT chunk exactly
-    potential_matches = fp_with_positions.join(
-        gt_with_positions,
-        (fp_with_positions["doc_id"] == gt_with_positions["doc_id"])
-        & (fp_with_positions["entity"] == gt_with_positions["chunk"]),
+    # Use aliases to avoid ambiguous column references
+    fp_aliased = fp_with_positions.alias("fp")
+    gt_aliased = gt_with_positions.alias("gt")
+
+    potential_matches = fp_aliased.join(
+        gt_aliased,
+        (col("fp.doc_id") == col("gt.doc_id")) & (col("fp.entity") == col("gt.chunk")),
         "inner",
     )
 
@@ -610,10 +613,16 @@ for method_name, fp_df in false_positives_dfs.items():
         potential_matches.withColumn(
             "position_diff",
             least(
-                sql_abs(fp_with_positions["start"] - gt_with_positions["begin"]),
-                sql_abs(fp_with_positions["end"] - gt_with_positions["end"]),
+                sql_abs(col("fp.start") - col("gt.begin")),
+                sql_abs(col("fp.end") - col("gt.end")),
             ),
-        ).select("doc_id", "entity", "start", "begin", "position_diff").orderBy(
+        ).select(
+            col("fp.doc_id").alias("doc_id"),
+            col("fp.entity").alias("entity"),
+            col("fp.start").alias("fp_start"),
+            col("gt.begin").alias("gt_begin"),
+            "position_diff",
+        ).orderBy(
             desc("position_diff")
         ).limit(
             5
