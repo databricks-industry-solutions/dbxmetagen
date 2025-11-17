@@ -29,13 +29,12 @@ import uuid
 from datetime import datetime
 
 from dbxmetagen.redaction import (
-    match_entities_one_to_one,
+    match_entities_flexible,
     calculate_entity_metrics,
     save_false_positives,
     save_false_negatives,
+    save_metrics,
     get_latest_run_metrics,
-    save_evaluation_results,
-    compare_methods_across_datasets,
 )
 
 # COMMAND ----------
@@ -76,11 +75,16 @@ dbutils.widgets.dropdown(
     label="4. Write Mode",
 )
 
-dbutils.widgets.dropdown(
-    name="matching_strategy",
-    defaultValue="rules_based",
-    choices=["complete_overlap", "partial_overlap", "rules_based"],
-    label="5. Matching Strategy",
+dbutils.widgets.text(
+    name="iou_threshold",
+    defaultValue="0.1",
+    label="5a. IoU Threshold for Partial Matches (0.0-1.0)",
+)
+
+dbutils.widgets.text(
+    name="position_tolerance",
+    defaultValue="2",
+    label="5b. Position Tolerance for Exact Matches (chars)",
 )
 
 # Get widget values
@@ -89,7 +93,8 @@ detection_results_table = dbutils.widgets.get("detection_results_table")
 dataset_name = dbutils.widgets.get("dataset_name")
 evaluation_output_table = dbutils.widgets.get("evaluation_output_table")
 write_mode = dbutils.widgets.get("write_mode")
-matching_strategy = dbutils.widgets.get("matching_strategy")
+iou_threshold = float(dbutils.widgets.get("iou_threshold"))
+position_tolerance = int(dbutils.widgets.get("position_tolerance"))
 
 # COMMAND ----------
 
@@ -166,6 +171,7 @@ if "ai" in available_methods:
             "ai_results_exploded.start",
             "ai_results_exploded.end",
         )
+        .withColumn("end", col("end") + 1)  # Convert AI's inclusive end to exclusive
     )
 
 if "aligned" in available_methods:
@@ -231,16 +237,17 @@ gt_exploded = ground_truth_df.select("doc_id", "chunk", "begin", "end")
 
 for method_name, exploded_df in exploded_results.items():
     print(f"\n{'='*80}")
-    print(f"Evaluating: {method_name.upper()} with {matching_strategy} strategy")
+    print(f"Evaluating: {method_name.upper()}")
+    print(f"  IoU Threshold: {iou_threshold}, Position Tolerance: {position_tolerance}")
     print(f"{'='*80}")
 
-    # Perform one-to-one matching with selected strategy
-    print(f"Matching entities with strategy: {matching_strategy}...")
-    # Note: iou_threshold only applies to rules_based; complete/partial use hardcoded filters
-    matched_df, fn_df, fp_df = match_entities_one_to_one(
+    # Perform flexible matching (exact, composite, partial)
+    print(f"Matching entities...")
+    matched_df, fn_df, fp_df = match_entities_flexible(
         ground_truth_df=gt_exploded,
         predictions_df=exploded_df,
-        iou_threshold=0.5 if matching_strategy == "rules_based" else 1.0,
+        iou_threshold=iou_threshold,
+        position_tolerance=position_tolerance,
         doc_id_column="doc_id",
         gt_start_column="begin",
         gt_end_column="end",
@@ -248,104 +255,74 @@ for method_name, exploded_df in exploded_results.items():
         pred_start_column="start",
         pred_end_column="end",
         pred_text_column="entity",
-        matching_strategy=matching_strategy,
     )
 
-    print(
-        f"Matched: {matched_df.count()}, False Negatives: {fn_df.count()}, False Positives: {fp_df.count()}"
-    )
+    # Count match types
+    exact_count = matched_df.filter(col("match_type") == "exact").count()
+    partial_count = matched_df.filter(col("match_type") == "partial").count()
+    total_matched = matched_df.count()
+    fn_count = fn_df.count()
+    fp_count = fp_df.count()
 
-    # Calculate entity-level metrics (no TN)
-    metrics = calculate_entity_metrics(matched_df, fp_df, fn_df, run_id, run_timestamp)
+    print(f"Results:")
+    print(f"  Exact Matches:    {exact_count:4,}")
+    print(f"  Partial Matches:  {partial_count:4,}")
+    print(f"  Total Matched:    {total_matched:4,}")
+    print(f"  False Negatives:  {fn_count:4,}")
+    print(f"  False Positives:  {fp_count:4,}")
+
+    # Calculate entity-level metrics
+    metrics = calculate_entity_metrics(matched_df, fn_df, fp_df)
     evaluation_results[method_name] = metrics
     false_positives_dfs[method_name] = fp_df
     false_negatives_dfs[method_name] = fn_df
 
     # Display metrics summary
     print(f"\n{method_name.upper()} Metrics Summary:")
-    print(f"  True Positives:  {metrics['true_positives']}")
-    print(f"  False Positives: {metrics['false_positives']}")
-    print(f"  False Negatives: {metrics['false_negatives']}")
+    print(f"  True Positives:  {metrics['tp']}")
+    print(f"  False Positives: {metrics['fp']}")
+    print(f"  False Negatives: {metrics['fn']}")
     print(f"  Precision:       {metrics['precision']:.4f}")
     print(f"  Recall:          {metrics['recall']:.4f}")
-    print(f"  F1 Score:        {metrics['f1_score']:.4f}")
+    print(f"  F1 Score:        {metrics['f1']:.4f}")
 
-    # Show sample matched entities with scoring details
+    # Show sample matched entities
     if matched_df.count() > 0:
-        print(f"\n  Sample Matches (with scoring details):")
+        print(f"\n  Sample Matches:")
+        matched_df.select(
+            "doc_id", "gt_text", "pred_text", "iou_score", "match_type"
+        ).orderBy(desc("iou_score")).limit(10).show(truncate=False)
 
-        # Check which columns are available (rules_based has extra scoring columns)
-        available_cols = matched_df.columns
-        has_detailed_scoring = "exact_text_match" in available_cols
-
-        if has_detailed_scoring:
-            # Rules-based: show detailed match types
-            match_samples = matched_df.select(
-                col("gt.chunk").alias("ground_truth"),
-                col("pred.entity").alias("predicted"),
-                "iou_score",
-                "exact_text_match",
-                "title_prefix_match",
-                "pred_contains_gt",
-                "final_score",
-            ).limit(5)
-            for row in match_samples.collect():
-                print(f"    GT: '{row.ground_truth}' | Pred: '{row.predicted}'")
-                match_type = (
-                    "Exact"
-                    if row.exact_text_match
-                    else (
-                        "Title"
-                        if row.title_prefix_match
-                        else ("Contains" if row.pred_contains_gt else "IoU")
-                    )
-                )
-                print(
-                    f"      IoU: {row.iou_score:.3f} | Final: {row.final_score:.3f} | MatchType: {match_type}"
-                )
-        else:
-            # Complete/Partial overlap: show basic scores only
-            match_samples = matched_df.select(
-                col("gt.chunk").alias("ground_truth"),
-                col("pred.entity").alias("predicted"),
-                "iou_score",
-                "final_score",
-            ).limit(5)
-            for row in match_samples.collect():
-                print(f"    GT: '{row.ground_truth}' | Pred: '{row.predicted}'")
-                print(f"      IoU: {row.iou_score:.3f} | Final: {row.final_score:.3f}")
-
-    # Save to evaluation table
-    save_evaluation_results(
-        spark=spark,
+    # Save metrics to evaluation table
+    save_metrics(
         metrics=metrics,
+        table_name=evaluation_output_table,
         dataset_name=dataset_name,
         method_name=method_name,
-        output_table=evaluation_output_table,
-        mode=write_mode,
+        run_id=run_id,
+        run_timestamp=run_timestamp,
+        spark=spark,
     )
 
     # Save false positives and false negatives to Delta tables
+    fp_table_name = f"{evaluation_output_table}_false_positives"
     save_false_positives(
-        spark=spark,
-        fp_df=fp_df,
+        false_positives_df=fp_df,
+        table_name=fp_table_name,
         dataset_name=dataset_name,
         method_name=method_name,
-        catalog="dbxmetagen",
-        schema="eval_data",
         run_id=run_id,
         timestamp=run_timestamp,
     )
 
+    fn_table_name = f"{evaluation_output_table}_false_negatives"
     save_false_negatives(
-        spark=spark,
-        fn_df=fn_df,
+        false_negatives_df=fn_df,
+        table_name=fn_table_name,
         dataset_name=dataset_name,
         method_name=method_name,
-        catalog="dbxmetagen",
-        schema="eval_data",
         run_id=run_id,
-        timestamp=run_timestamp,
+        run_timestamp=run_timestamp,
     )
 
     print(f"\nResults saved to {evaluation_output_table}")
@@ -370,161 +347,11 @@ for method_name, metrics in evaluation_results.items():
     comparison_data["Method"].append(method_name.capitalize())
     comparison_data["Precision"].append(metrics["precision"])
     comparison_data["Recall"].append(metrics["recall"])
-    comparison_data["F1 Score"].append(metrics["f1_score"])
+    comparison_data["F1 Score"].append(metrics["f1"])
 
 comparison_df = pd.DataFrame(comparison_data)
 display(comparison_df)
 
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## Multi-Strategy Breakdown
-# MAGIC
-# MAGIC Calculate metrics using all three strategies and show breakdown of complete vs partial matches.
-
-# COMMAND ----------
-
-print("Calculating metrics across all strategies...")
-print(
-    "This helps understand what percentage of PII is completely captured vs partially captured.\n"
-)
-
-multi_strategy_results = {}
-
-for method_name, exploded_df in exploded_results.items():
-    print(f"\n{'='*60}")
-    print(f"Method: {method_name.upper()}")
-    print(f"{'='*60}")
-
-    strategy_metrics = {}
-
-    for strategy in ["complete_overlap", "partial_overlap", "rules_based"]:
-        # Note: iou_threshold only applies to rules_based; complete/partial use hardcoded filters
-        matched_df, fn_df, fp_df = match_entities_one_to_one(
-            ground_truth_df=gt_exploded,
-            predictions_df=exploded_df,
-            iou_threshold=0.5 if strategy == "rules_based" else 1.0,
-            doc_id_column="doc_id",
-            gt_start_column="begin",
-            gt_end_column="end",
-            gt_text_column="chunk",
-            pred_start_column="start",
-            pred_end_column="end",
-            pred_text_column="entity",
-            matching_strategy=strategy,
-        )
-
-        metrics = calculate_entity_metrics(
-            matched_df, fp_df, fn_df, run_id, run_timestamp
-        )
-        strategy_metrics[strategy] = metrics
-
-        print(
-            f"  {strategy:18s} | Precision: {metrics['precision']:.3f} | Recall: {metrics['recall']:.3f} | F1: {metrics['f1_score']:.3f}"
-        )
-
-    multi_strategy_results[method_name] = strategy_metrics
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ### Detailed Breakdown: Complete vs Partial vs Missed
-
-# COMMAND ----------
-
-for method_name, strategy_metrics in multi_strategy_results.items():
-    print(f"\n{'='*80}")
-    print(f"{method_name.upper()} - Capture Breakdown")
-    print(f"{'='*80}\n")
-
-    total_gt = gt_exploded.count()
-
-    complete_tp = strategy_metrics["complete_overlap"]["true_positives"]
-    partial_tp = strategy_metrics["partial_overlap"]["true_positives"]
-    rules_tp = strategy_metrics["rules_based"]["true_positives"]
-
-    # Calculate breakdown (correct hierarchy: complete ⊆ rules ⊆ partial)
-    # Note: complete (IoU=1.0) ⊆ rules (IoU≥0.5 + text matching) ⊆ partial (IoU>0)
-    complete_pct = (complete_tp / total_gt * 100) if total_gt > 0 else 0
-    rules_only_pct = ((rules_tp - complete_tp) / total_gt * 100) if total_gt > 0 else 0
-    partial_only_pct = ((partial_tp - rules_tp) / total_gt * 100) if total_gt > 0 else 0
-    missed_pct = ((total_gt - partial_tp) / total_gt * 100) if total_gt > 0 else 0
-
-    print(f"Total Ground Truth Entities: {total_gt:,}\n")
-    print(f"  Complete Match (IoU = 1.0):     {complete_tp:5,} ({complete_pct:5.1f}%)")
-    print(
-        f"  Rules-Based Only (not complete): {rules_tp - complete_tp:5,} ({rules_only_pct:5.1f}%)"
-    )
-    print(
-        f"  Partial Only (not rules-based): {partial_tp - rules_tp:5,} ({partial_only_pct:5.1f}%)"
-    )
-    print(
-        f"  Not Captured:                   {total_gt - partial_tp:5,} ({missed_pct:5.1f}%)"
-    )
-    print(f"  " + "-" * 50)
-    print(
-        f"  Total Captured (Partial):       {partial_tp:5,} ({partial_tp/total_gt*100:5.1f}%)"
-    )
-    print(
-        f"  Total Captured (Rules-Based):   {rules_tp:5,} ({rules_tp/total_gt*100:5.1f}%)"
-    )
-
-    # Create DataFrame for display
-    breakdown_data = {
-        "Category": [
-            "Complete Match (IoU=1.0)",
-            "Rules-Based Only (not complete)",
-            "Partial Only (not rules-based)",
-            "Not Captured",
-        ],
-        "Count": [
-            complete_tp,
-            rules_tp - complete_tp,
-            partial_tp - rules_tp,
-            total_gt - partial_tp,
-        ],
-        "Percentage": [
-            f"{complete_pct:.1f}%",
-            f"{rules_only_pct:.1f}%",
-            f"{partial_only_pct:.1f}%",
-            f"{missed_pct:.1f}%",
-        ],
-    }
-    breakdown_df = pd.DataFrame(breakdown_data)
-    display(breakdown_df)
-
-    # Add diagnostic output for duplicate entity detection
-    print(f"\n  Diagnostic Info:")
-    print(f"    Entities detected: {exploded_df.count():,}")
-    print(f"    Ground truth entities: {total_gt:,}")
-
-    # Check for duplicate detections (same entity text at same position in same doc)
-    duplicate_detections = (
-        exploded_df.groupBy("doc_id", "entity", "start", "end")
-        .count()
-        .filter(col("count") > 1)
-    )
-    dup_count = duplicate_detections.count()
-    if dup_count > 0:
-        print(
-            f"    ⚠ Duplicate detections found: {dup_count} (same text, same position)"
-        )
-        print(f"      Sample duplicates:")
-        duplicate_detections.select(
-            "doc_id", "entity", "start", "end", "count"
-        ).orderBy(desc("count")).limit(3).show(truncate=False)
-
-    # Check for multiple occurrences of same entity text in same document
-    entity_occurrences = (
-        exploded_df.groupBy("doc_id", "entity").count().filter(col("count") > 1)
-    )
-    multi_occ_count = entity_occurrences.count()
-    if multi_occ_count > 0:
-        print(
-            f"    ℹ Multiple occurrences: {multi_occ_count} entity types appear multiple times in documents"
-        )
-        print(f"      Top repeated entities:")
-        entity_occurrences.orderBy(desc("count")).limit(5).show(truncate=False)
 
 # COMMAND ----------
 
@@ -682,8 +509,25 @@ except Exception as e:
 # COMMAND ----------
 
 try:
-    f1_comparison = compare_methods_across_datasets(
-        spark=spark, evaluation_table=evaluation_output_table, metric_name="f1_score"
+    # Simple comparison across datasets using new metrics schema
+    f1_comparison = spark.sql(
+        f"""
+        WITH latest_runs AS (
+            SELECT dataset_name, method_name, MAX(timestamp) as latest_timestamp
+            FROM {evaluation_output_table}
+            GROUP BY dataset_name, method_name
+        )
+        SELECT 
+            e.dataset_name,
+            e.method_name,
+            e.f1
+        FROM {evaluation_output_table} e
+        INNER JOIN latest_runs lr 
+            ON e.dataset_name = lr.dataset_name 
+            AND e.method_name = lr.method_name 
+            AND e.timestamp = lr.latest_timestamp
+        ORDER BY e.dataset_name, e.f1 DESC
+    """
     )
     display(f1_comparison)
 except Exception as e:
@@ -708,17 +552,17 @@ try:
         SELECT 
             e.dataset_name,
             e.method_name,
-            MAX(CASE WHEN e.metric_name = 'precision' THEN e.metric_value END) as precision,
-            MAX(CASE WHEN e.metric_name = 'recall' THEN e.metric_value END) as recall,
-            MAX(CASE WHEN e.metric_name = 'f1_score' THEN e.metric_value END) as f1_score
+            e.precision,
+            e.recall,
+            e.f1,
+            e.exact_matches,
+            e.partial_matches
         FROM {evaluation_output_table} e
         INNER JOIN latest_runs lr 
             ON e.dataset_name = lr.dataset_name 
             AND e.method_name = lr.method_name 
             AND e.timestamp = lr.latest_timestamp
-        WHERE e.metric_name IN ('precision', 'recall', 'f1_score')
-        GROUP BY e.dataset_name, e.method_name
-        ORDER BY e.dataset_name, f1_score DESC
+        ORDER BY e.dataset_name, e.f1 DESC
     """
     )
     display(precision_recall)
@@ -766,7 +610,8 @@ for method_name, fp_df in false_positives_dfs.items():
         potential_matches.withColumn(
             "position_diff",
             least(
-                sql_abs(col("start") - col("begin")), sql_abs(col("end") - col("end"))
+                sql_abs(fp_with_positions["start"] - gt_with_positions["begin"]),
+                sql_abs(fp_with_positions["end"] - gt_with_positions["end"]),
             ),
         ).select("doc_id", "entity", "start", "begin", "position_diff").orderBy(
             desc("position_diff")

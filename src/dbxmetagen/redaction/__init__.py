@@ -41,20 +41,15 @@ from .alignment import (
 )
 
 from .evaluation import (
-    evaluate_detection,
-    calculate_metrics,
+    normalize_whitespace,
     calculate_iou,
-    match_entities_one_to_one,
+    match_entities_flexible,
+    find_composite_matches,
     calculate_entity_metrics,
     save_false_positives,
     save_false_negatives,
+    save_metrics,
     get_latest_run_metrics,
-    format_contingency_table,
-    format_metrics_summary,
-    metrics_to_long_format,
-    save_evaluation_results,
-    compare_methods_across_datasets,
-    get_best_method_per_dataset,
 )
 
 from .detection import (
@@ -105,20 +100,15 @@ __all__ = [
     "align_entities_row",
     "align_entities_udf",
     # Evaluation
-    "evaluate_detection",
-    "calculate_metrics",
+    "normalize_whitespace",
     "calculate_iou",
-    "match_entities_one_to_one",
+    "match_entities_flexible",
+    "find_composite_matches",
     "calculate_entity_metrics",
     "save_false_positives",
     "save_false_negatives",
+    "save_metrics",
     "get_latest_run_metrics",
-    "format_contingency_table",
-    "format_metrics_summary",
-    "metrics_to_long_format",
-    "save_evaluation_results",
-    "compare_methods_across_datasets",
-    "get_best_method_per_dataset",
     # Detection
     "run_presidio_detection",
     "run_ai_query_detection",
