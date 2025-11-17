@@ -24,7 +24,7 @@
 # COMMAND ----------
 
 import pandas as pd
-from pyspark.sql.functions import col, explode, desc
+from pyspark.sql.functions import col, explode, desc, abs as sql_abs, least
 import uuid
 from datetime import datetime
 
@@ -443,26 +443,28 @@ for method_name, strategy_metrics in multi_strategy_results.items():
     partial_tp = strategy_metrics["partial_overlap"]["true_positives"]
     rules_tp = strategy_metrics["rules_based"]["true_positives"]
 
-    # Calculate breakdown
+    # Calculate breakdown (correct hierarchy: complete ⊆ rules ⊆ partial)
+    # Note: complete (IoU=1.0) ⊆ rules (IoU≥0.5 + text matching) ⊆ partial (IoU>0)
     complete_pct = (complete_tp / total_gt * 100) if total_gt > 0 else 0
-    partial_only_pct = (
-        ((partial_tp - complete_tp) / total_gt * 100) if total_gt > 0 else 0
-    )
-    rules_only_pct = ((rules_tp - partial_tp) / total_gt * 100) if total_gt > 0 else 0
-    missed_pct = ((total_gt - rules_tp) / total_gt * 100) if total_gt > 0 else 0
+    rules_only_pct = ((rules_tp - complete_tp) / total_gt * 100) if total_gt > 0 else 0
+    partial_only_pct = ((partial_tp - rules_tp) / total_gt * 100) if total_gt > 0 else 0
+    missed_pct = ((total_gt - partial_tp) / total_gt * 100) if total_gt > 0 else 0
 
     print(f"Total Ground Truth Entities: {total_gt:,}\n")
     print(f"  Complete Match (IoU = 1.0):     {complete_tp:5,} ({complete_pct:5.1f}%)")
     print(
-        f"  Partial Only (0 < IoU < 1.0):   {partial_tp - complete_tp:5,} ({partial_only_pct:5.1f}%)"
+        f"  Rules-Based Only (not complete): {rules_tp - complete_tp:5,} ({rules_only_pct:5.1f}%)"
     )
     print(
-        f"  Rules-Based Only:               {rules_tp - partial_tp:5,} ({rules_only_pct:5.1f}%)"
+        f"  Partial Only (not rules-based): {partial_tp - rules_tp:5,} ({partial_only_pct:5.1f}%)"
     )
     print(
-        f"  Not Captured:                   {total_gt - rules_tp:5,} ({missed_pct:5.1f}%)"
+        f"  Not Captured:                   {total_gt - partial_tp:5,} ({missed_pct:5.1f}%)"
     )
     print(f"  " + "-" * 50)
+    print(
+        f"  Total Captured (Partial):       {partial_tp:5,} ({partial_tp/total_gt*100:5.1f}%)"
+    )
     print(
         f"  Total Captured (Rules-Based):   {rules_tp:5,} ({rules_tp/total_gt*100:5.1f}%)"
     )
@@ -471,25 +473,58 @@ for method_name, strategy_metrics in multi_strategy_results.items():
     breakdown_data = {
         "Category": [
             "Complete Match (IoU=1.0)",
-            "Partial Match (0<IoU<1.0)",
-            "Rules-Based Only",
+            "Rules-Based Only (not complete)",
+            "Partial Only (not rules-based)",
             "Not Captured",
         ],
         "Count": [
             complete_tp,
-            partial_tp - complete_tp,
-            rules_tp - partial_tp,
-            total_gt - rules_tp,
+            rules_tp - complete_tp,
+            partial_tp - rules_tp,
+            total_gt - partial_tp,
         ],
         "Percentage": [
             f"{complete_pct:.1f}%",
-            f"{partial_only_pct:.1f}%",
             f"{rules_only_pct:.1f}%",
+            f"{partial_only_pct:.1f}%",
             f"{missed_pct:.1f}%",
         ],
     }
     breakdown_df = pd.DataFrame(breakdown_data)
     display(breakdown_df)
+
+    # Add diagnostic output for duplicate entity detection
+    print(f"\n  Diagnostic Info:")
+    print(f"    Entities detected: {exploded_df.count():,}")
+    print(f"    Ground truth entities: {total_gt:,}")
+
+    # Check for duplicate detections (same entity text at same position in same doc)
+    duplicate_detections = (
+        exploded_df.groupBy("doc_id", "entity", "start", "end")
+        .count()
+        .filter(col("count") > 1)
+    )
+    dup_count = duplicate_detections.count()
+    if dup_count > 0:
+        print(
+            f"    ⚠ Duplicate detections found: {dup_count} (same text, same position)"
+        )
+        print(f"      Sample duplicates:")
+        duplicate_detections.select(
+            "doc_id", "entity", "start", "end", "count"
+        ).orderBy(desc("count")).limit(3).show(truncate=False)
+
+    # Check for multiple occurrences of same entity text in same document
+    entity_occurrences = (
+        exploded_df.groupBy("doc_id", "entity").count().filter(col("count") > 1)
+    )
+    multi_occ_count = entity_occurrences.count()
+    if multi_occ_count > 0:
+        print(
+            f"    ℹ Multiple occurrences: {multi_occ_count} entity types appear multiple times in documents"
+        )
+        print(f"      Top repeated entities:")
+        entity_occurrences.orderBy(desc("count")).limit(5).show(truncate=False)
 
 # COMMAND ----------
 
@@ -574,6 +609,40 @@ for method_name, fp_df in false_positives_dfs.items():
 
     fp_summary = fp_df.groupBy("entity").count().orderBy(desc("count")).limit(20)
     display(fp_summary)
+
+    # Diagnostic: Check for FPs that look like they should match GT
+    print(f"\n  Diagnostic: Checking for potential matching issues...")
+
+    # Check if any FPs have exact text matches with GT (but different positions)
+    fp_with_positions = fp_df.select("doc_id", "entity", "start", "end")
+    gt_with_positions = gt_exploded.select("doc_id", "chunk", "begin", "end")
+
+    # Find FPs where text matches GT chunk exactly
+    potential_matches = fp_with_positions.join(
+        gt_with_positions,
+        (fp_with_positions["doc_id"] == gt_with_positions["doc_id"])
+        & (fp_with_positions["entity"] == gt_with_positions["chunk"]),
+        "inner",
+    )
+
+    potential_match_count = potential_matches.count()
+    if potential_match_count > 0:
+        print(
+            f"    ⚠ Found {potential_match_count} FPs with text matching GT (position mismatch >5 chars)"
+        )
+        print(f"      Sample cases:")
+        potential_matches.withColumn(
+            "position_diff",
+            least(
+                sql_abs(col("start") - col("begin")), sql_abs(col("end") - col("end"))
+            ),
+        ).select("doc_id", "entity", "start", "begin", "position_diff").orderBy(
+            desc("position_diff")
+        ).limit(
+            5
+        ).show(
+            truncate=False
+        )
 
 # COMMAND ----------
 
