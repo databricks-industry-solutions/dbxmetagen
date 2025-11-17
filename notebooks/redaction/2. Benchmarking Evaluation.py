@@ -529,6 +529,138 @@ for method_name, strategy_metrics in multi_strategy_results.items():
 # COMMAND ----------
 
 # MAGIC %md
+# MAGIC ## Alignment Diagnostic Analysis
+# MAGIC
+# MAGIC Compare individual methods vs aligned results to understand alignment behavior.
+
+# COMMAND ----------
+
+if "aligned" in exploded_results:
+    print("=" * 80)
+    print("ALIGNMENT DIAGNOSTIC: Understanding Alignment Behavior")
+    print("=" * 80)
+
+    # Get counts for each method
+    print("\n1. Entity Counts Per Method:")
+    for method_name, exploded_df in exploded_results.items():
+        count = exploded_df.count()
+        unique_count = (
+            exploded_df.select("doc_id", "entity", "start", "end").distinct().count()
+        )
+        print(f"  {method_name:12s}: {count:5,} total | {unique_count:5,} unique")
+
+    # Check if aligned has more entities than sum of individuals
+    if "presidio" in exploded_results and "ai" in exploded_results:
+        presidio_count = exploded_results["presidio"].count()
+        ai_count = exploded_results["ai"].count()
+        gliner_count = (
+            exploded_results["gliner"].count() if "gliner" in exploded_results else 0
+        )
+        aligned_count = exploded_results["aligned"].count()
+
+        print(f"\n2. Alignment Union Behavior:")
+        print(
+            f"  Sum of individual methods: {presidio_count + ai_count + gliner_count:,}"
+        )
+        print(f"  Aligned result count:      {aligned_count:,}")
+        delta = aligned_count - max(presidio_count, ai_count, gliner_count)
+        if delta > 0:
+            print(
+                f"  ⚠ Aligned has {delta} MORE entities than largest source (union behavior)"
+            )
+        elif delta < 0:
+            print(
+                f"  ✓ Aligned has {abs(delta)} FEWER entities (dedup/consensus behavior)"
+            )
+
+    # Find entities in aligned but not in any individual method (alignment artifacts)
+    print(f"\n3. Alignment Artifacts (entities created by alignment):")
+
+    aligned_df = exploded_results["aligned"].select("doc_id", "entity", "start", "end")
+
+    # Union all individual method entities
+    individual_union = None
+    for method in ["presidio", "ai", "gliner"]:
+        if method in exploded_results:
+            method_df = exploded_results[method].select(
+                "doc_id", "entity", "start", "end"
+            )
+            if individual_union is None:
+                individual_union = method_df
+            else:
+                individual_union = individual_union.union(method_df)
+
+    if individual_union is not None:
+        # Find entities in aligned but NOT in any individual method
+        artifacts = aligned_df.join(
+            individual_union,
+            (aligned_df["doc_id"] == individual_union["doc_id"])
+            & (aligned_df["entity"] == individual_union["entity"])
+            & (aligned_df["start"] == individual_union["start"])
+            & (aligned_df["end"] == individual_union["end"]),
+            "left_anti",
+        )
+
+        artifact_count = artifacts.count()
+        if artifact_count > 0:
+            print(
+                f"  ⚠ Found {artifact_count} entities in aligned that don't match ANY individual detection"
+            )
+            print(f"    These are likely boundary modifications by alignment")
+            print(f"    Sample artifacts:")
+            artifacts.orderBy("doc_id").limit(10).show(truncate=False)
+        else:
+            print(
+                f"  ✓ No artifacts - all aligned entities match individual detections"
+            )
+
+    # Find entities in individual methods but missing from aligned
+    print(f"\n4. Entities Lost in Alignment:")
+
+    for method in ["presidio", "ai", "gliner"]:
+        if method in exploded_results:
+            method_df = exploded_results[method].select(
+                "doc_id", "entity", "start", "end"
+            )
+
+            # Find entities in this method but NOT in aligned
+            missing_in_aligned = method_df.join(
+                aligned_df,
+                (method_df["doc_id"] == aligned_df["doc_id"])
+                & (method_df["entity"] == aligned_df["entity"])
+                & (method_df["start"] == aligned_df["start"])
+                & (method_df["end"] == aligned_df["end"]),
+                "left_anti",
+            )
+
+            missing_count = missing_in_aligned.count()
+            if missing_count > 0:
+                print(f"  ⚠ {method:12s}: {missing_count:3,} entities not in aligned")
+                print(f"    Sample missing entities from {method}:")
+                missing_in_aligned.orderBy("doc_id").limit(5).show(truncate=False)
+            else:
+                print(f"  ✓ {method:12s}: All entities present in aligned")
+
+    # Specific check for doc_id 2, entity at 4732-4738
+    print(f"\n5. Specific Case Investigation (Doc ID 2, pos 4732-4738):")
+
+    for method in ["presidio", "ai", "gliner", "aligned"]:
+        if method in exploded_results:
+            specific_entity = exploded_results[method].filter(
+                (col("doc_id") == "2") & (col("start") == 4732) & (col("end") == 4738)
+            )
+            count = specific_entity.count()
+            if count > 0:
+                print(f"  ✓ {method:12s}: Found entity at position 4732-4738")
+                specific_entity.select("doc_id", "entity", "start", "end").show(
+                    truncate=False
+                )
+            else:
+                print(f"  ✗ {method:12s}: NOT found")
+
+# COMMAND ----------
+
+# MAGIC %md
 # MAGIC ## Cross-Dataset Comparison
 # MAGIC
 # MAGIC View all evaluation results from the shared table.
