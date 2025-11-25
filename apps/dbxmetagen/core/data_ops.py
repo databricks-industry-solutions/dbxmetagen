@@ -4,6 +4,7 @@ Handles table validation, CSV processing, metadata operations.
 """
 
 import sys
+import os
 from datetime import datetime
 import streamlit as st
 import pandas as pd
@@ -515,7 +516,7 @@ class MetadataProcessor:
         """Grant read permissions to the current app user on created objects."""
         try:
 
-            sys.path.append("../")
+            sys.path.append("../../")
             from src.dbxmetagen.databricks_utils import grant_user_permissions
 
             catalog_name = st.session_state.config.get("catalog_name")
@@ -578,11 +579,22 @@ class MetadataProcessor:
         )
 
         # Determine column names
-        table_col = "table_name" if "table_name" in df.columns else "table"
         column_col = "column_name" if "column_name" in df.columns else "column"
 
+        # Check if we have separate catalog/schema/table columns or a fully qualified table column
+        has_separate_columns = all(
+            col in df.columns for col in ["catalog", "schema", "table_name"]
+        )
+
         for index, row in updated_df.iterrows():
-            table_name = row[table_col]
+            # Construct fully qualified table name
+            if has_separate_columns:
+                table_name = f"{row['catalog']}.{row['schema']}.{row['table_name']}"
+            else:
+                # Fall back to 'table' column if it exists, otherwise 'table_name'
+                table_col = "table" if "table" in df.columns else "table_name"
+                table_name = row[table_col]
+
             column_name = row[column_col]
             classification = row.get("classification", "")
             type_value = row.get("type", "")
@@ -675,8 +687,13 @@ class MetadataProcessor:
         """Generate DDL for comment metadata using ALTER TABLE...COMMENT statements."""
         updated_df = df.copy()
 
-        table_col = "table_name" if "table_name" in df.columns else "table"
+        # Determine which columns to use
         column_col = "column_name" if "column_name" in df.columns else "column"
+
+        # Check if we have separate catalog/schema/table columns or a fully qualified table column
+        has_separate_columns = all(
+            col in df.columns for col in ["catalog", "schema", "table_name"]
+        )
 
         # Find description and PII columns
         desc_cols = [
@@ -687,7 +704,14 @@ class MetadataProcessor:
         pii_cols = [col for col in df.columns if "pii" in col.lower()]
 
         for index, row in updated_df.iterrows():
-            table_name = row[table_col]
+            # Construct fully qualified table name
+            if has_separate_columns:
+                table_name = f"{row['catalog']}.{row['schema']}.{row['table_name']}"
+            else:
+                # Fall back to 'table' column if it exists, otherwise 'table_name'
+                table_col = "table" if "table" in df.columns else "table_name"
+                table_name = row[table_col]
+
             column_name = row[column_col]
 
             # Check if table-level
@@ -718,16 +742,37 @@ class MetadataProcessor:
 
             if comment_parts:
                 combined_comment = " | ".join(comment_parts)
-                escaped_comment = combined_comment.replace(
-                    "'", "''"
-                )  # Escape single quotes
+                # Use double quotes for SQL and escape them
+                escaped_comment = combined_comment.replace('"', "'")
 
                 if is_table_level:
+                    # Table comment: consistent syntax across all versions
                     ddl_statement = (
-                        f"ALTER TABLE {table_name} COMMENT '{escaped_comment}'"
+                        f'COMMENT ON TABLE {table_name} IS "{escaped_comment}";'
                     )
                 else:
-                    ddl_statement = f"ALTER TABLE {table_name} ALTER COLUMN `{column_name}` COMMENT '{escaped_comment}'"
+                    # Column comment: version-dependent syntax (match processing.py)
+                    dbr_number = os.environ.get("DATABRICKS_RUNTIME_VERSION")
+
+                    if dbr_number is None:
+                        # Default to newer syntax when version not available
+                        ddl_statement = f'COMMENT ON COLUMN {table_name}.`{column_name}` IS "{escaped_comment}";'
+                    else:
+                        try:
+                            dbr_version = float(dbr_number)
+                            if dbr_version >= 16:
+                                # DBR 16+: COMMENT ON COLUMN ... IS
+                                ddl_statement = f'COMMENT ON COLUMN {table_name}.`{column_name}` IS "{escaped_comment}";'
+                            elif dbr_version >= 14 and dbr_version < 16:
+                                # DBR 14-15: ALTER TABLE ... ALTER COLUMN ... COMMENT
+                                ddl_statement = f'ALTER TABLE {table_name} ALTER COLUMN `{column_name}` COMMENT "{escaped_comment}";'
+                            else:
+                                raise ValueError(
+                                    f"Unsupported Databricks runtime version: {dbr_number}"
+                                )
+                        except ValueError:
+                            # Serverless (client.X.X) or parse error: use modern syntax
+                            ddl_statement = f'COMMENT ON COLUMN {table_name}.`{column_name}` IS "{escaped_comment}";'
 
                 updated_df.at[index, "ddl"] = ddl_statement
 
