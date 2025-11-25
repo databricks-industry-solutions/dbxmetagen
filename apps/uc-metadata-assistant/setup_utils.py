@@ -29,19 +29,20 @@ class AutoSetupManager:
             'results_table': 'metadata_results',
             'audit_table': 'generation_audit'
         }
-        # Session-level cache for setup validation (5 minute TTL)
+        # Session-level cache for setup validation (24 hour TTL - infrastructure rarely changes)
         self._setup_cache = None
         self._setup_cache_timestamp = None
-        self._setup_cache_ttl = 300  # 5 minutes in seconds
+        self._setup_cache_ttl = 86400  # 24 hours in seconds (infrastructure rarely changes)
     
-    async def ensure_setup_complete(self, config: Optional[Dict] = None, force_refresh: bool = False) -> Dict:
+    async def ensure_setup_complete(self, config: Optional[Dict] = None, force_refresh: bool = False, quick_check: bool = True) -> Dict:
         """
         Ensure all required setup is complete. Creates infrastructure if needed.
-        Uses session-level caching to avoid redundant checks within 5 minutes.
+        Uses session-level caching to avoid redundant checks within 24 hours.
         
         Args:
             config: Optional configuration override
             force_refresh: If True, bypass cache and revalidate infrastructure
+            quick_check: If True, use quick validation (just check results table) instead of full scan (much faster)
             
         Returns:
             Dict with setup status and details
@@ -50,10 +51,36 @@ class AutoSetupManager:
         if not force_refresh and self._setup_cache is not None and self._setup_cache_timestamp is not None:
             cache_age = (datetime.now() - self._setup_cache_timestamp).total_seconds()
             if cache_age < self._setup_cache_ttl:
-                logger.info(f"✅ Using cached setup status (age: {int(cache_age)}s)")
+                logger.info(f"✅ Using cached setup status (age: {int(cache_age)}s, TTL: {self._setup_cache_ttl}s)")
                 return self._setup_cache
         
         setup_config = {**self.default_config, **(config or {})}
+        
+        # OPTIMIZATION: Quick check mode - just verify results table is accessible (10x faster than full scan)
+        # Only attempt quick check if infrastructure was previously validated (avoids error on first run)
+        if quick_check and not force_refresh and self._setup_cache is not None:
+            try:
+                results_table = f"{setup_config['output_catalog']}.{setup_config['schema_name']}.{setup_config['results_table']}"
+                quick_sql = f"SELECT COUNT(*) FROM {results_table} LIMIT 1"
+                result = await self._execute_sql(quick_sql)
+                
+                if result.get('success'):
+                    logger.info(f"✅ Quick validation passed: {results_table} is accessible (skipped full infrastructure scan)")
+                    # Cache successful quick check
+                    quick_status = {
+                        'setup_complete': True,
+                        'all_exist': True,
+                        'created_objects': [],
+                        'errors': [],
+                        'validation_mode': 'quick'
+                    }
+                    self._setup_cache = quick_status
+                    self._setup_cache_timestamp = datetime.now()
+                    return quick_status
+                else:
+                    logger.info(f"⚠️ Quick check failed, performing full validation to ensure infrastructure integrity")
+            except Exception as e:
+                logger.info(f"⚠️ Quick check not available, performing full validation (first run or infrastructure changes)")
         
         setup_status = {
             'setup_complete': False,
@@ -67,7 +94,7 @@ class AutoSetupManager:
             'timestamp': datetime.now().isoformat()
         }
         
-        logger.info("🔧 Running full infrastructure validation...")
+        logger.info("🔧 Running full infrastructure validation (full scan)...")
         
         try:
             # Step 1: Ensure output catalog exists
@@ -589,8 +616,61 @@ class AutoSetupManager:
             url = f"https://{workspace_host}/api/2.0/sql/statements"
             
             import requests
-            response = requests.post(url, headers=headers, json=payload)
-            response.raise_for_status()
+            
+            # Log request details (before sending)
+            logger.debug(f"Sending SQL request to {url}")
+            logger.debug(f"Warehouse ID: {warehouse_id}")
+            logger.debug(f"Statement length: {len(sql_statement)} characters")
+            
+            try:
+                response = requests.post(url, headers=headers, json=payload, timeout=60)
+                
+                # Log response details
+                logger.debug(f"Response status code: {response.status_code}")
+                
+                # Check for HTTP errors before parsing JSON
+                if response.status_code != 200:
+                    error_body = response.text[:1000]  # First 1000 chars of error response
+                    logger.error(f"HTTP {response.status_code} error from SQL API")
+                    logger.error(f"Response body: {error_body}")
+                    
+                    return {
+                        'success': False,
+                        'error': f"HTTP {response.status_code}: {error_body}",
+                        'details': {
+                            'status_code': response.status_code,
+                            'response_text': error_body
+                        }
+                    }
+                
+                response.raise_for_status()
+                
+            except requests.exceptions.RequestException as e:
+                logger.error(f"Request failed before reaching SQL warehouse: {e}")
+                logger.error(f"Request exception type: {type(e).__name__}")
+                
+                # Check if response exists
+                if hasattr(e, 'response') and e.response is not None:
+                    logger.error(f"Response status: {e.response.status_code}")
+                    logger.error(f"Response body: {e.response.text[:1000]}")
+                    
+                    return {
+                        'success': False,
+                        'error': f"Request failed: {str(e)}",
+                        'details': {
+                            'exception_type': type(e).__name__,
+                            'status_code': e.response.status_code,
+                            'response_text': e.response.text[:1000]
+                        }
+                    }
+                else:
+                    return {
+                        'success': False,
+                        'error': f"Request failed before response: {str(e)}",
+                        'details': {
+                            'exception_type': type(e).__name__
+                        }
+                    }
             
             result = response.json()
             
@@ -610,10 +690,17 @@ class AutoSetupManager:
                 }
                 
         except Exception as e:
-            logger.error(f"SQL execution error: {e}")
+            logger.error(f"SQL execution error (outer catch): {e}")
+            logger.error(f"Exception type: {type(e).__name__}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
             return {
                 'success': False,
-                'error': str(e)
+                'error': str(e),
+                'details': {
+                    'exception_type': type(e).__name__,
+                    'traceback': traceback.format_exc()
+                }
             }
     
     def _get_warehouse_id(self) -> str:
@@ -870,6 +957,8 @@ class AutoSetupManager:
                 logger.info(f"📦 Processing batch {batch_num} ({len(batch)} results)")
                 
                 try:
+                    logger.debug(f"Building SQL for batch {batch_num} with {len(batch)} items")
+                    
                     # Build batch INSERT
                     sql_parts = []
                     
@@ -895,9 +984,46 @@ class AutoSetupManager:
                         if context_json:
                             context_json = context_json.replace("'", "''")
                         
-                        pii_analysis_json = json.dumps(result.get('pii_analysis', {})) if result.get('pii_analysis') else None
-                        if pii_analysis_json:
-                            pii_analysis_json = pii_analysis_json.replace("'", "''")
+                        # Serialize pii_analysis dict safely
+                        pii_analysis_data = result.get('pii_analysis', {})
+                        if pii_analysis_data:
+                            try:
+                                # Ensure it's JSON-serializable (convert any non-serializable objects)
+                                pii_analysis_json = json.dumps(pii_analysis_data, default=str)
+                                
+                                # Validate JSON is parseable
+                                json.loads(pii_analysis_json)  # Will throw if invalid
+                                
+                                # Escape for SQL
+                                pii_analysis_json = pii_analysis_json.replace("'", "''")
+                                
+                                # Log if suspiciously large
+                                if len(pii_analysis_json) > 10000:
+                                    logger.warning(f"⚠️ Large pii_analysis ({len(pii_analysis_json)} chars) for {result.get('full_name')}")
+                                    
+                            except Exception as e:
+                                logger.error(f"❌ Failed to serialize pii_analysis for {result.get('full_name')}: {e}")
+                                logger.error(f"   pii_analysis type: {type(pii_analysis_data)}")
+                                logger.error(f"   pii_analysis content (first 500 chars): {str(pii_analysis_data)[:500]}")
+                                pii_analysis_json = None
+                        else:
+                            pii_analysis_json = None
+                        
+                        # Serialize proposed_policy_tags the same way (it's already a JSON string from enhanced_generator.py)
+                        proposed_policy_tags_json = None
+                        proposed_policy_tags_data = result.get('proposed_policy_tags')
+                        if proposed_policy_tags_data:
+                            try:
+                                # proposed_policy_tags is already a JSON string, just escape it for SQL
+                                if isinstance(proposed_policy_tags_data, str):
+                                    proposed_policy_tags_json = proposed_policy_tags_data.replace("'", "''")
+                                else:
+                                    # If it's not a string (shouldn't happen), serialize it
+                                    proposed_policy_tags_json = json.dumps(proposed_policy_tags_data, default=str)
+                                    proposed_policy_tags_json = proposed_policy_tags_json.replace("'", "''")
+                            except Exception as e:
+                                logger.error(f"❌ Failed to serialize proposed_policy_tags for {result.get('full_name')}: {e}")
+                                proposed_policy_tags_json = None
                         
                         # Escape string fields that might contain quotes
                         def escape_sql_string(value):
@@ -905,39 +1031,64 @@ class AutoSetupManager:
                                 return str(value).replace("'", "''")
                             return value
                         
-                        values = [
-                            f"'{result.get('run_id', '')}'" if result.get('run_id') else 'NULL',
-                            f"'{result.get('full_name', '')}'" if result.get('full_name') else 'NULL',
-                            f"'{result.get('object_type', '')}'" if result.get('object_type') else 'NULL',
-                            f"'{comment_text}'" if comment_text else 'NULL',
-                            str(result.get('confidence_score', 0.0)),
-                            f"'{escape_sql_string(result.get('pii_tags', ''))}'" if result.get('pii_tags') else 'NULL',
-                            f"'{escape_sql_string(result.get('policy_tags', ''))}'" if result.get('policy_tags') else 'NULL',
-                            f"'{escape_sql_string(result.get('proposed_policy_tags', ''))}'" if result.get('proposed_policy_tags') else 'NULL',
-                            f"'{escape_sql_string(result.get('data_classification', 'INTERNAL'))}'" if result.get('data_classification') else "'INTERNAL'",
-                            f"'{escape_sql_string(result.get('source_model', ''))}'" if result.get('source_model') else 'NULL',
-                            f"'{escape_sql_string(result.get('generation_style', ''))}'" if result.get('generation_style') else 'NULL',
-                            str(result.get('pii_detected', False)).lower(),
-                            f"'{context_json}'" if context_json else 'NULL',
-                            f"'{pii_analysis_json}'" if pii_analysis_json else 'NULL',
-                            f"'{result.get('generated_at', datetime.now().isoformat())}'" if result.get('generated_at') else f"'{datetime.now().isoformat()}'",
-                            'NULL',  # submitted_at
-                            "'generated'",  # status
-                            'NULL',  # error_message
-                            "'uc_metadata_assistant'"  # created_by
-                        ]
-                        
-                        sql_parts.append(f"({', '.join(values)})")
+                        try:
+                            values = [
+                                f"'{result.get('run_id', '')}'" if result.get('run_id') else 'NULL',
+                                f"'{result.get('full_name', '')}'" if result.get('full_name') else 'NULL',
+                                f"'{result.get('object_type', '')}'" if result.get('object_type') else 'NULL',
+                                f"'{comment_text}'" if comment_text else 'NULL',
+                                str(result.get('confidence_score', 0.0)),
+                                f"'{escape_sql_string(result.get('pii_tags', ''))}'" if result.get('pii_tags') else 'NULL',
+                                f"'{escape_sql_string(result.get('policy_tags', ''))}'" if result.get('policy_tags') else 'NULL',
+                                f"'{proposed_policy_tags_json}'" if proposed_policy_tags_json else 'NULL',
+                                f"'{escape_sql_string(result.get('data_classification', 'INTERNAL'))}'" if result.get('data_classification') else "'INTERNAL'",
+                                f"'{escape_sql_string(result.get('source_model', ''))}'" if result.get('source_model') else 'NULL',
+                                f"'{escape_sql_string(result.get('generation_style', ''))}'" if result.get('generation_style') else 'NULL',
+                                str(result.get('pii_detected', False)).lower(),
+                                f"'{context_json}'" if context_json else 'NULL',
+                                f"'{pii_analysis_json}'" if pii_analysis_json else 'NULL',
+                                f"'{result.get('generated_at', datetime.now().isoformat())}'" if result.get('generated_at') else f"'{datetime.now().isoformat()}'",
+                                'NULL',  # submitted_at
+                                "'generated'",  # status
+                                'NULL',  # error_message
+                                "'uc_metadata_assistant'"  # created_by
+                            ]
+                            
+                            sql_parts.append(f"({', '.join(values)})")
+                            
+                        except Exception as e:
+                            logger.error(f"❌ Failed to construct VALUES for item {idx} ({result.get('full_name')}): {e}")
+                            logger.error(f"   Exception type: {type(e).__name__}")
+                            raise  # Re-raise to be caught by outer try-catch
                     
-                    sql_statement = f"""
-                        INSERT INTO {results_table} (
-                            run_id, full_name, object_type, proposed_comment, confidence_score,
-                            pii_tags, policy_tags, proposed_policy_tags, data_classification, source_model, generation_style,
-                            pii_detected, context_used, pii_analysis, generated_at, submitted_at,
-                            status, error_message, created_by
-                        )
-                        VALUES {', '.join(sql_parts)}
-                    """
+                    try:
+                        sql_statement = f"""
+                            INSERT INTO {results_table} (
+                                run_id, full_name, object_type, proposed_comment, confidence_score,
+                                pii_tags, policy_tags, proposed_policy_tags, data_classification, source_model, generation_style,
+                                pii_detected, context_used, pii_analysis, generated_at, submitted_at,
+                                status, error_message, created_by
+                            )
+                            VALUES {', '.join(sql_parts)}
+                        """
+                    except Exception as e:
+                        logger.error(f"❌ Failed to construct SQL statement: {e}")
+                        logger.error(f"   Number of sql_parts: {len(sql_parts)}")
+                        logger.error(f"   Exception type: {type(e).__name__}")
+                        raise  # Re-raise to be caught by outer try-catch
+                    
+                    # Validate SQL statement before sending
+                    logger.debug(f"SQL statement constructed, length: {len(sql_statement)} chars")
+                    if len(sql_statement) > 1000000:  # 1MB
+                        logger.warning(f"⚠️ SQL statement is very large ({len(sql_statement)} chars), may exceed API limits")
+                    
+                    # Ensure SQL statement is valid (not empty, no null bytes)
+                    if not sql_statement or '\x00' in sql_statement:
+                        error_msg = "Invalid SQL statement: empty or contains null bytes"
+                        logger.error(error_msg)
+                        save_status['error_count'] += len(batch)
+                        save_status['errors'].append(error_msg)
+                        continue
                     
                     result = await self._execute_sql(sql_statement)
                     
@@ -946,10 +1097,28 @@ class AutoSetupManager:
                         logger.info(f"   ✅ Saved {len(batch)} results successfully")
                     else:
                         save_status['error_count'] += len(batch)
-                        error_msg = f"Batch {batch_num}: {result.get('error')}"
+                        
+                        # Extract detailed error information
+                        error_details = result.get('error', 'No error message')
+                        error_full_details = result.get('details', {})
+                        
+                        error_msg = f"Batch {batch_num}: {error_details}"
                         save_status['errors'].append(error_msg)
+                        
                         logger.error(f"❌ SQL execution failed: {error_msg}")
-                        logger.error(f"Failed SQL statement: {sql_statement[:500]}...")  # Log first 500 chars for debugging
+                        logger.error(f"Full error details: {json.dumps(error_full_details, indent=2)}")
+                        logger.error(f"Failed SQL statement (first 1000 chars): {sql_statement[:1000]}...")
+                        
+                        # Log the actual data we're trying to insert for the first item in the batch
+                        if batch:
+                            first_item = batch[0]
+                            logger.error(f"First item data:")
+                            logger.error(f"  - full_name: {first_item.get('full_name')}")
+                            logger.error(f"  - proposed_comment length: {len(str(first_item.get('proposed_comment', '')))}")
+                            logger.error(f"  - pii_analysis type: {type(first_item.get('pii_analysis'))}")
+                            logger.error(f"  - pii_analysis keys: {list(first_item.get('pii_analysis', {}).keys()) if isinstance(first_item.get('pii_analysis'), dict) else 'Not a dict'}")
+                            logger.error(f"  - proposed_policy_tags type: {type(first_item.get('proposed_policy_tags'))}")
+                            logger.error(f"  - proposed_policy_tags: {first_item.get('proposed_policy_tags')}")
                         
                 except Exception as e:
                     save_status['error_count'] += len(batch)

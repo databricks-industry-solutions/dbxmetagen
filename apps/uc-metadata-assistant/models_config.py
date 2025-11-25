@@ -25,10 +25,10 @@ class ModelsConfigManager:
         
         # Built-in models (from LLMMetadataGenerator)
         self.builtin_models = {
-            "databricks-gpt-oss-120b": {
-                "name": "GPT-OSS 120B",
-                "description": "Databricks GPT OSS 120B - General purpose foundation model",
-                "max_tokens": 2048,
+            "databricks-gpt-oss-20b": {
+                "name": "GPT-OSS-20B",
+                "description": "GPT-OSS 20B is a state-of-the-art, lightweight reasoning model built and trained by OpenAI. This model also has a 128K token context window and excels at real-time copilots and batch inference tasks.",
+                "max_tokens": 4096,
                 "builtin": True
             },
             "databricks-claude-sonnet-4": {
@@ -37,10 +37,10 @@ class ModelsConfigManager:
                 "max_tokens": 4096,
                 "builtin": True
             },
-            "databricks-meta-llama-3-3-70b-instruct": {
-                "name": "Llama-3.3 70B Instruct",
-                "description": "Meta Llama 3.3 70B Instruct - Instruction following", 
-                "max_tokens": 2048,
+            "databricks-meta-llama-3-1-8b-instruct": {
+                "name": "Llama 3.1 8B",
+                "description": "Llama 3.1 is a state-of-the-art 8B parameter dense language model trained and released by Meta. The model supports a context length of 128K tokens.", 
+                "max_tokens": 4096,
                 "builtin": True
             },
             "databricks-gemma-3-12b": {
