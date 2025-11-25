@@ -20,6 +20,7 @@ databricks-langchain = "==0.2.0"
 databricks-sdk = ">=0.30.0"
 openpyxl = "==3.1.5"
 spacy = "==3.8.7"
+en-core-web-lg = { url = "https://github.com/explosion/spacy-models/releases/download/en_core_web_lg-3.8.0/en_core_web_lg-3.8.0-py3-none-any.whl" }
 presidio_analyzer = "==2.2.358"
 presidio_anonymizer = "==2.2.358"
 deprecated = "==1.2.13"
@@ -35,6 +36,18 @@ poetry-plugin-export = ">=1.9.0"
 [tool.poetry.group.dev.dependencies]
 pre-commit = "^4.0.1"
 pytest = ">=8.3.4"
+
+[tool.pytest.ini_options]
+# Exclude integration tests from default test runs
+# Run them explicitly with: pytest notebooks/integration_tests/ -v
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "--ignore=notebooks/integration_tests"
+markers = [
+    "integration: marks tests as integration tests (deselect with '-m \"not integration\"')",
+]
 
 [build-system]
 requires = ["poetry-core"]

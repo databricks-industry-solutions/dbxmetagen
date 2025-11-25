@@ -513,7 +513,12 @@ class MetadataProcessor:
         return results
 
     def _grant_permissions_to_app_user(self):
-        """Grant read permissions to the current app user on created objects."""
+        """Grant read permissions to the current app user on created objects.
+
+        This function attempts to grant permissions but failures are non-fatal.
+        Permission grants can fail if the app service principal doesn't have
+        admin privileges, which is common in production deployments.
+        """
         try:
 
             sys.path.append("../")
@@ -538,9 +543,25 @@ class MetadataProcessor:
         except Exception as e:
             # Log but don't fail - permissions are nice-to-have
             logger.warning(f"Could not grant permissions to app user: {e}")
-            st.warning(
-                f"⚠️ Note: Could not automatically grant permissions. You may need to request access manually."
-            )
+            with st.expander("⚠️ Permission Grant Warning (Non-Fatal)", expanded=False):
+                st.warning(
+                    f"Could not automatically grant permissions. This is common and expected "
+                    f"when the app service principal doesn't have admin privileges."
+                )
+                st.info(
+                    "**Why it's OK:** Metadata was generated successfully. You can manually "
+                    "request access from your workspace admin if needed."
+                )
+                st.code(
+                    f"GRANT USE SCHEMA ON SCHEMA {catalog_name}.{schema_name} TO `<user>`;\n"
+                    f"GRANT SELECT ON SCHEMA {catalog_name}.{schema_name} TO `<user>`;"
+                    + (
+                        f"\nGRANT READ VOLUME ON VOLUME {catalog_name}.{schema_name}.{volume_name} TO `<user>`;"
+                        if volume_name
+                        else ""
+                    ),
+                    language="sql",
+                )
 
     def _generate_ddl_from_comments(self, df: pd.DataFrame) -> pd.DataFrame:
         """
