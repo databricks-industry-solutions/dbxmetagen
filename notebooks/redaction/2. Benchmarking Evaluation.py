@@ -46,7 +46,7 @@ from dbxmetagen.redaction import (
 
 dbutils.widgets.text(
     name="ground_truth_table",
-    defaultValue="dbxmetagen.eval_data.jsl_48_ground_truth",
+    defaultValue="dbxmetagen.eval_data.jsl_48_ground_truths",
     label="0. Ground Truth Table",
 )
 
@@ -70,7 +70,7 @@ dbutils.widgets.text(
 
 dbutils.widgets.dropdown(
     name="write_mode",
-    defaultValue="append",
+    defaultValue="overwrite",
     choices=["append", "overwrite"],
     label="4. Write Mode",
 )
@@ -312,7 +312,7 @@ for method_name, exploded_df in exploded_results.items():
         dataset_name=dataset_name,
         method_name=method_name,
         run_id=run_id,
-        timestamp=run_timestamp,
+        run_timestamp=run_timestamp,
     )
 
     fn_table_name = f"{evaluation_output_table}_false_negatives"
@@ -661,7 +661,7 @@ for method_name, fp_df in false_positives_dfs.items():
     print(f"{method_name.upper()} - False Positive Examples")
     print(f"{'='*80}")
 
-    fp_examples = fp_df.select("doc_id", "entity", "start", "end").limit(10)
+    fp_examples = fp_df.select("doc_id", "entity", "start", "end")
     display(fp_examples)
 
 # COMMAND ----------
@@ -678,7 +678,7 @@ for method_name, fn_df in false_negatives_dfs.items():
     print(f"{method_name.upper()} - False Negative Examples")
     print(f"{'='*80}")
 
-    fn_examples = fn_df.select("doc_id", "chunk", "begin", "end").limit(10)
+    fn_examples = fn_df.select("doc_id", "chunk", "begin", "end").orderBy('doc_id').limit(1000)
     display(fn_examples)
 
 # COMMAND ----------
@@ -907,3 +907,7 @@ try:
     display(latest_metrics)
 except Exception as e:
     print(f"Could not load latest run metrics: {e}")
+
+# COMMAND ----------
+
+
