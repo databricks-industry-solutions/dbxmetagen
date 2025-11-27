@@ -1,0 +1,68 @@
+variables:
+  catalog_name:
+    description: Test catalog
+    default: test_catalog
+  schema_name:
+    description: Test schema
+    default: test_schema
+  apply_ddl:
+    description: Apply DDL
+    default: false
+  cleanup_control_table:
+    description: Cleanup control table
+    default: true
+  grant_permissions_after_creation:
+    description: Grant permissions
+    default: false
+  permission_groups:
+    description: Permission groups
+    default: "none"
+  permission_users:
+    description: Permission users
+    default: "none"
+  allow_manual_override:
+    description: Allow manual override
+    default: true
+  volume_name:
+    description: Volume name
+    default: test_volume
+  mode:
+    description: Mode
+    default: comment
+  model:
+    description: Model
+    default: databricks-claude-3-7-sonnet
+  sample_size:
+    description: Sample size
+    default: 5
+  columns_per_call:
+    description: Columns per call
+    default: 20
+  allow_data:
+    description: Allow data
+    default: true
+  ddl_output_format:
+    description: DDL output format
+    default: sql
+  reviewable_output_format:
+    description: Reviewable output format
+    default: tsv
+  review_output_file_type:
+    description: Review output file type
+    default: tsv
+  max_tokens:
+    description: Max tokens
+    default: 8192
+  temperature:
+    description: Temperature
+    default: 0.1
+  control_table:
+    description: Control table
+    default: "metadata_control_{}"
+  table_names_source:
+    description: Table names source
+    default: parameter
+  current_user:
+    description: Current user
+    default: test_user@test.com
+

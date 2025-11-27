@@ -173,3 +173,12 @@ variables:
   grant_permissions_after_creation:
     description: Whether to automatically grant read permissions on created schema, volume, and tables to specified groups/users after metadata generation completes. Requires appropriate permissions to grant.
     default: true
+  permission_groups:
+    description: Comma-separated list of groups to grant read permissions to (e.g., "data_analysts,data_scientists"). Set to "none" to skip group permissions.
+    default: "none"
+  permission_users:
+    description: Comma-separated list of users to grant read permissions to (e.g., "user1@example.com,user2@example.com"). Set to "none" to skip user permissions.
+    default: "none"
+  deploying_user:
+    description: User deploying the bundle (for permissions).
+    default: ${workspace.current_user.userName}

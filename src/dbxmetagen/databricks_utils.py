@@ -86,7 +86,7 @@ def setup_widgets(dbutils):
     dbutils.widgets.text("host", "", "Host URL (if different from current)")
     dbutils.widgets.text("table_names", "", "Table Names - comma-separated (required)")
     dbutils.widgets.text("current_user", "", "Current User")
-    dbutils.widgets.text("apply_ddl", "", "Apply DDL")
+    dbutils.widgets.dropdown("apply_ddl", "false", ["true", "false"], "Apply DDL")
     dbutils.widgets.text("columns_per_call", "")
     dbutils.widgets.text("sample_size", "")
     dbutils.widgets.text("job_id", "")

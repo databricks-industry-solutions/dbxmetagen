@@ -14,6 +14,7 @@ from datetime import datetime
 from src.dbxmetagen.config import MetadataConfig
 from src.dbxmetagen.user_utils import sanitize_user_identifier
 
+
 def luhn_checksum(card_number):
     """Check if a card number is valid using the Luhn algorithm."""
     card_number = str(card_number).replace(" ", "").replace("-", "")
@@ -233,7 +234,6 @@ def classify_column(
         ],
     }
 
- 
     entities_to_ignore = {}
     entities_to_ignore = {
         "DATE_TIME",  # Too aggressive - matches times, dates, and random numbers
@@ -278,7 +278,7 @@ def process_table(
     """
     current_date = datetime.now().strftime("%Y%m%d")
     current_timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
-    output_dir = f"/Volumes/{config.catalog_name}/{config.schema_name}/generated_metadata/{sanitize_user_identifier(config.current_user)}/{current_date}/presidio_logs"
+    output_dir = f"/Volumes/{config.catalog_name}/{config.schema_name}/{config.volume_name}/generated_metadata/{sanitize_user_identifier(config.current_user)}/{current_date}/presidio_logs"
 
     # Create directory for UC volumes (they don't auto-create)
     os.makedirs(output_dir, exist_ok=True)

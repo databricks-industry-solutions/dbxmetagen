@@ -509,7 +509,10 @@ def add_ddl_to_column_comment_df(df: DataFrame, ddl_column: str) -> DataFrame:
         DataFrame: The updated DataFrame with the DDL statement added.
     """
     if "column_content" in df.columns:
-        df = df.withColumn("column_content", regexp_replace(col("column_content").cast("string"), "''", "'"))
+        df = df.withColumn(
+            "column_content",
+            regexp_replace(col("column_content").cast("string"), "''", "'"),
+        )
 
     result_df = df.withColumn(
         ddl_column,
@@ -536,7 +539,10 @@ def add_ddl_to_table_comment_df(df: DataFrame, ddl_column: str) -> DataFrame:
         DataFrame: The updated DataFrame with the DDL statement added.
     """
     if df is not None and "column_content" in df.columns:
-        df = df.withColumn("column_content", regexp_replace(col("column_content").cast("string"), "''", "'"))
+        df = df.withColumn(
+            "column_content",
+            regexp_replace(col("column_content").cast("string"), "''", "'"),
+        )
 
     if df is not None:
         result_df = df.withColumn(
@@ -2581,7 +2587,13 @@ def upsert_table_names_to_control_table(
         [(name,) for name in table_names], ["table_name"]
     )
     table_names_df = trim_whitespace_from_df(table_names_df)
-    existing_df = spark.read.table(control_table)
+
+    # Check if control table exists before reading
+    if spark.catalog.tableExists(control_table):
+        existing_df = spark.read.table(control_table)
+    else:
+        # Create empty DataFrame with same schema if table doesn't exist yet
+        existing_df = spark.createDataFrame([], table_names_df.schema)
     new_table_names_df = (
         table_names_df.join(existing_df, on="table_name", how="left_anti")
         .withColumn("_updated_at", current_timestamp())

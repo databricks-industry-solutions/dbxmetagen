@@ -9,7 +9,7 @@ variables:
       - Jobs are reused across runs for better resource management and concurrent execution.
       - Max 10 concurrent runs with queue of 10 for each user's job.
       - Post-job grants are applied to give app users read access to created schemas and tables.
-      
+
       NOTE: OBO (On-Behalf-Of) deployment will be added when jobs.jobs scope becomes available to non-account admins.
       This will allow jobs to run with the logged-in user's permissions instead of service principal permissions.
     default: "SPN"
