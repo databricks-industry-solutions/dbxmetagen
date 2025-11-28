@@ -160,6 +160,7 @@ class MetadataConfig:
         # Parse boolean fields properly (string "false" should be False, not True)
         self.allow_data = _parse_bool(getattr(self, "allow_data", True))
         self.apply_ddl = _parse_bool(getattr(self, "apply_ddl", False))
+        self.dry_run = _parse_bool(getattr(self, "dry_run", False))
         self.cleanup_control_table = _parse_bool(
             getattr(self, "cleanup_control_table", False)
         )
