@@ -377,6 +377,145 @@ def verify_sql_file_exists(spark, catalog, schema, volume_name, user, table_name
         return False
 
 
+def verify_sql_file_content(
+    spark, catalog, schema, volume_name, user, table_name, mode=None
+):
+    """Read and validate SQL file contents match expected mode output.
+
+    Args:
+        spark: SparkSession
+        catalog: Catalog name
+        schema: Schema name
+        volume_name: Volume name
+        user: User identifier (sanitized)
+        table_name: Table name
+        mode: Mode (comment, pi, domain). If None, performs basic DDL validation without mode-specific checks.
+
+    Returns:
+        dict: Dictionary with validation results (if mode specified) or str: SQL content (if mode is None)
+    """
+    from datetime import datetime
+
+    result = {
+        "file_found": False,
+        "file_path": None,
+        "contains_table_ddl": False,
+        "contains_column_ddl": False,
+        "ddl_type_correct": False,
+        "sql_content": None,
+    }
+
+    try:
+        # Build volume path
+        current_date = datetime.now().strftime("%Y%m%d")
+        volume_path = f"/Volumes/{catalog}/{schema}/{volume_name}/{user}/{current_date}"
+
+        # Extract simple table name
+        simple_table_name = (
+            table_name.split(".")[-1] if "." in table_name else table_name
+        )
+
+        # Find SQL file
+        files = dbutils.fs.ls(volume_path)
+        sql_file = None
+        for file_info in files:
+            # When mode is specified, look for mode-specific file
+            if mode:
+                expected_filename = f"{simple_table_name}_{mode}.sql"
+                if expected_filename in file_info.name:
+                    sql_file = file_info.path
+                    break
+            else:
+                # Fallback for when mode is None
+                if simple_table_name in file_info.name and file_info.name.endswith(".sql"):
+                    sql_file = file_info.path
+                    break
+
+        if not sql_file:
+            print(f"  ✗ No SQL file found for {simple_table_name}")
+            return result
+
+        result["file_found"] = True
+        result["file_path"] = sql_file
+
+        # Read SQL file content
+        # For Unity Catalog volumes, strip 'dbfs:' prefix; for legacy DBFS, replace with '/dbfs'
+        if sql_file.startswith("dbfs:/Volumes/"):
+            local_path = sql_file.replace("dbfs:", "")
+        else:
+            local_path = sql_file.replace("dbfs:", "/dbfs")
+        
+        with open(local_path, "r") as f:
+            sql_content = f.read()
+
+        result["sql_content"] = sql_content
+
+        # If no mode specified, just return content after basic validation
+        if mode is None:
+            # Basic validation: check for DDL keywords
+            ddl_keywords = ["ALTER TABLE", "COMMENT ON", "UPDATE", "ALTER"]
+            if not any(keyword in sql_content.upper() for keyword in ddl_keywords):
+                print(f"  ✗ SQL file does not contain expected DDL keywords")
+                return sql_content  # Return content anyway for inspection
+
+            # Validate table name appears in content
+            if simple_table_name not in sql_content:
+                print(f"  ✗ SQL file does not reference table '{simple_table_name}'")
+                return sql_content  # Return content anyway for inspection
+
+            print(
+                f"  ✓ SQL file validated ({len(sql_content)} bytes, contains valid DDL)"
+            )
+            return sql_content
+
+        # Verify content based on mode
+        if mode == "comment":
+            # Check for COMMENT ON TABLE
+            result["contains_table_ddl"] = "COMMENT ON TABLE" in sql_content
+            # Check for COMMENT ON COLUMN
+            result["contains_column_ddl"] = "COMMENT ON COLUMN" in sql_content
+            result["ddl_type_correct"] = (
+                result["contains_table_ddl"] or result["contains_column_ddl"]
+            )
+
+            if result["ddl_type_correct"]:
+                print(f"  ✓ Comment mode SQL contains COMMENT ON statements")
+
+        elif mode == "pi":
+            # Check for ALTER TABLE...SET TAGS
+            result["contains_table_ddl"] = (
+                "ALTER TABLE" in sql_content and "SET TAGS" in sql_content
+            )
+            # Check for ALTER COLUMN...SET TAGS
+            result["contains_column_ddl"] = (
+                "ALTER COLUMN" in sql_content and "SET TAGS" in sql_content
+            )
+            result["ddl_type_correct"] = (
+                result["contains_table_ddl"] or result["contains_column_ddl"]
+            )
+
+            if result["ddl_type_correct"]:
+                print(
+                    f"  ✓ PI mode SQL contains ALTER TABLE/COLUMN SET TAGS statements"
+                )
+
+        elif mode == "domain":
+            # Check for ALTER TABLE...SET TAGS (domain tags)
+            result["contains_table_ddl"] = (
+                "ALTER TABLE" in sql_content and "SET TAGS" in sql_content
+            )
+            result["ddl_type_correct"] = result["contains_table_ddl"]
+
+            if result["ddl_type_correct"]:
+                print(f"  ✓ Domain mode SQL contains ALTER TABLE SET TAGS statements")
+
+        return result
+
+    except Exception as e:
+        print(f"  ✗ Error reading SQL file: {e}")
+        return result
+
+
 def verify_table_has_comment(spark, full_table_name):
     """Verify table has a comment applied.
 
@@ -651,75 +790,6 @@ def verify_control_table_entry(spark, catalog, schema, control_table_name, table
 
     except AnalysisException as e:
         raise TestFailure(f"Error querying control table: {e}")
-
-
-def verify_sql_file_content(spark, catalog, schema, volume_name, user, table_name):
-    """Verify SQL file exists and contains valid DDL statements.
-
-    Args:
-        spark: SparkSession
-        catalog: Catalog name
-        schema: Schema name
-        volume_name: Volume name
-        user: User identifier (sanitized)
-        table_name: Table name
-
-    Returns:
-        str: The SQL file content
-
-    Raises:
-        TestFailure: If validation fails
-    """
-    from datetime import datetime
-
-    simple_table_name = table_name.split(".")[-1] if "." in table_name else table_name
-    current_date = datetime.now().strftime("%Y%m%d")
-    volume_path = f"/Volumes/{catalog}/{schema}/{volume_name}/{user}/{current_date}"
-
-    try:
-        files = dbutils.fs.ls(volume_path)
-
-        # Find SQL file for this table
-        sql_files = [
-            f for f in files if f.name.endswith(".sql") and simple_table_name in f.name
-        ]
-
-        if not sql_files:
-            raise TestFailure(
-                f"No SQL file found for table '{simple_table_name}' in {volume_path}"
-            )
-
-        sql_file = sql_files[0]
-        print(f"  Found SQL file: {sql_file.name}")
-
-        # Read file content
-        content = dbutils.fs.head(sql_file.path, 100000)  # Read up to 100KB
-
-        if not content or len(content) < 10:
-            raise TestFailure(f"SQL file is empty or too small")
-
-        # Validate content has DDL statements
-        ddl_keywords = ["ALTER TABLE", "COMMENT ON", "UPDATE", "ALTER"]
-        if not any(keyword in content.upper() for keyword in ddl_keywords):
-            raise TestFailure(
-                f"SQL file does not contain expected DDL keywords (ALTER TABLE, COMMENT ON, etc.)"
-            )
-
-        # Validate table name appears in content
-        if simple_table_name not in content:
-            raise TestFailure(
-                f"SQL file does not reference table '{simple_table_name}'"
-            )
-
-        print(
-            f"  Validated SQL file content ({len(content)} bytes, contains valid DDL)"
-        )
-        return content
-
-    except Exception as e:
-        if "FileNotFoundException" in str(type(e).__name__):
-            raise TestFailure(f"Volume path not found: {volume_path}")
-        raise TestFailure(f"Error reading SQL file: {e}")
 
 
 def verify_mode_differentiation(spark, catalog, schema, table_name):

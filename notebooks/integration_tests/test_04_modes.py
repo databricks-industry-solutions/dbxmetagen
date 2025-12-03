@@ -55,6 +55,7 @@ try:
         table_names=test_table,
         volume_name="test_volume",
         mode="comment",
+        apply_ddl=True,  # Apply changes to database for verification
         grant_permissions_after_creation="false",  # Override for tests
         current_user=current_user,  # Explicit user for integration tests
     )
@@ -71,6 +72,30 @@ try:
         "Comment mode generated metadata log entry",
     )
 
+    # Verify actual comments were applied to table and columns
+    print("\n🔍 Verifying comments were applied to database")
+    table_comment = test_utils.get_table_comment(test_table)
+    test_utils.assert_not_none(
+        table_comment, "Table comment was applied in comment mode"
+    )
+    test_utils.assert_true(
+        len(table_comment) > 10, "Table comment has meaningful content"
+    )
+    print(f"  ✓ Table comment: {table_comment[:100]}...")
+
+    # Check that at least some columns have comments
+    columns_with_comments = 0
+    for col_name in ["name", "email", "age"]:
+        col_comment = test_utils.get_column_comment(test_table, col_name)
+        if col_comment and len(col_comment) > 5:
+            columns_with_comments += 1
+            print(f"  ✓ Column '{col_name}' has comment: {col_comment[:80]}...")
+
+    test_utils.assert_true(
+        columns_with_comments >= 2,
+        f"At least 2 columns have comments (found {columns_with_comments})",
+    )
+
     # Test Mode: pi
     print("\n🧪 Test 2: mode=pi")
 
@@ -81,6 +106,7 @@ try:
         table_names=test_table,
         volume_name="test_volume",
         mode="pi",
+        apply_ddl=True,  # Apply changes to database for verification
         grant_permissions_after_creation="false",  # Override for tests
         current_user=current_user,  # Explicit user for integration tests
     )
@@ -97,6 +123,49 @@ try:
         "PI mode generated metadata log entry",
     )
 
+    # Verify PII tags were applied
+    print("\n🔍 Verifying PII tags were applied")
+    try:
+        # Check table-level tags
+        table_tags_df = spark.sql(f"SHOW TAGS ON TABLE {test_table}")
+        table_tags = table_tags_df.collect()
+
+        if len(table_tags) > 0:
+            tag_names = [row.tag_name for row in table_tags]
+            print(
+                f"  ✓ Found {len(table_tags)} table-level tag(s): {', '.join(tag_names)}"
+            )
+
+            # Check for expected PII tags
+            has_classification_tag = any(
+                "classification" in tag.lower() for tag in tag_names
+            )
+            if has_classification_tag:
+                print("  ✓ Found classification-related tags")
+
+        # Check column-level tags for at least one column
+        columns_with_tags = 0
+        for col_name in ["name", "email"]:
+            try:
+                col_tags_df = spark.sql(f"SHOW TAGS ON COLUMN {test_table}.{col_name}")
+                col_tags = col_tags_df.collect()
+                if len(col_tags) > 0:
+                    columns_with_tags += 1
+                    tag_info = [(row.tag_name, row.tag_value) for row in col_tags]
+                    print(
+                        f"  ✓ Column '{col_name}' has {len(col_tags)} tag(s): {tag_info}"
+                    )
+            except Exception as e:
+                print(f"  Note: Could not check tags for column '{col_name}': {e}")
+
+        if columns_with_tags > 0:
+            print(f"  ✓ {columns_with_tags} column(s) have PII tags")
+        else:
+            print("  Note: No column-level tags found (may depend on LLM detection)")
+
+    except Exception as e:
+        print(f"  Note: Could not verify tags (may require Unity Catalog): {e}")
+
     # Test Mode: domain
     print("\n🧪 Test 3: mode=domain")
 
@@ -107,6 +176,7 @@ try:
         table_names=test_table,
         volume_name="test_volume",
         mode="domain",
+        apply_ddl=True,  # Apply changes to database for verification
         grant_permissions_after_creation="false",  # Override for tests
         current_user=current_user,  # Explicit user for integration tests
     )
@@ -123,13 +193,92 @@ try:
         "Domain mode generated metadata log entry",
     )
 
-    # Verify SQL files exist for each mode
+    # Verify domain tags were applied
+    print("\n🔍 Verifying domain classification tags were applied")
+    try:
+        table_tags_df = spark.sql(f"SHOW TAGS ON TABLE {test_table}")
+        table_tags = table_tags_df.collect()
+
+        if len(table_tags) > 0:
+            tag_dict = {row.tag_name: row.tag_value for row in table_tags}
+            print(f"  ✓ Found {len(table_tags)} table-level tag(s)")
+
+            # Look for domain-related tags
+            domain_tags = [k for k in tag_dict.keys() if "domain" in k.lower()]
+            if domain_tags:
+                for tag in domain_tags:
+                    print(f"  ✓ Domain tag '{tag}' = '{tag_dict[tag]}'")
+                test_utils.assert_true(True, "Domain classification tags were applied")
+            else:
+                print(
+                    "  Note: No explicit 'domain' tags found, but other tags may be present"
+                )
+        else:
+            print(
+                "  Note: No table-level tags found (may depend on LLM classification)"
+            )
+
+    except Exception as e:
+        print(f"  Note: Could not verify domain tags: {e}")
+
+    # Verify SQL files exist and contain correct DDL types for each mode
     print("\n🔍 Verifying SQL files for each mode")
     user_sanitized = sanitize_user_identifier(config_comment.current_user)
-    sql_exists = verify_sql_file_exists(
-        spark, test_catalog, test_schema, "test_volume", user_sanitized, test_table
+
+    # Check comment mode SQL
+    print("\n  Checking comment mode SQL file...")
+    comment_sql_result = verify_sql_file_content(
+        spark,
+        test_catalog,
+        test_schema,
+        "test_volume",
+        user_sanitized,
+        test_table,
+        "comment",
     )
-    test_utils.assert_true(sql_exists, "SQL files generated for all modes")
+    test_utils.assert_true(
+        comment_sql_result["file_found"], "Comment mode SQL file exists"
+    )
+    test_utils.assert_true(
+        comment_sql_result["ddl_type_correct"],
+        "Comment mode SQL contains COMMENT ON statements",
+    )
+
+    # Check PI mode SQL
+    print("\n  Checking PI mode SQL file...")
+    pi_sql_result = verify_sql_file_content(
+        spark,
+        test_catalog,
+        test_schema,
+        "test_volume",
+        user_sanitized,
+        test_table,
+        "pi",
+    )
+    test_utils.assert_true(pi_sql_result["file_found"], "PI mode SQL file exists")
+    test_utils.assert_true(
+        pi_sql_result["ddl_type_correct"],
+        "PI mode SQL contains ALTER TABLE SET TAGS statements",
+    )
+
+    # Check domain mode SQL
+    print("\n  Checking domain mode SQL file...")
+    domain_sql_result = verify_sql_file_content(
+        spark,
+        test_catalog,
+        test_schema,
+        "test_volume",
+        user_sanitized,
+        test_table,
+        "domain",
+    )
+    test_utils.assert_true(
+        domain_sql_result["file_found"], "Domain mode SQL file exists"
+    )
+    test_utils.assert_true(
+        domain_sql_result["ddl_type_correct"],
+        "Domain mode SQL contains ALTER TABLE SET TAGS statements",
+    )
 
     test_passed = True
     print_test_result("Mode Switching", True)

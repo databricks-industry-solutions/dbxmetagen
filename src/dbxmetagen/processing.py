@@ -31,6 +31,8 @@ from pyspark.sql.functions import (
     expr,
     split_part,
     regexp_replace,
+    base64,
+    to_json,
 )
 from pyspark.sql.types import (
     StructType,
@@ -39,6 +41,7 @@ from pyspark.sql.types import (
     TimestampType,
     FloatType,
     DoubleType,
+    BinaryType,
 )
 from openai import OpenAI
 from openai.types.chat.chat_completion import (
@@ -206,9 +209,44 @@ def get_extended_metadata_for_column(config, table_name, column_name):
     return spark.sql(query)
 
 
+def convert_special_types_to_string(df: DataFrame) -> DataFrame:
+    """
+    Convert BINARY and VARIANT columns to string format for processing.
+    
+    - BINARY columns are encoded as base64 strings
+    - VARIANT columns are converted to JSON strings
+    
+    Args:
+        df (DataFrame): The DataFrame to convert.
+    
+    Returns:
+        DataFrame: DataFrame with BINARY and VARIANT columns converted to strings.
+    """
+    for field in df.schema.fields:
+        col_name = field.name
+        col_type = field.dataType
+        
+        # Handle BINARY type - encode as base64
+        if isinstance(col_type, BinaryType):
+            print(f"Converting BINARY column '{col_name}' to base64 string")
+            df = df.withColumn(col_name, base64(col(col_name)))
+        
+        # Handle VARIANT type - convert to JSON string
+        # VARIANT type is represented as a string typename in Databricks
+        elif str(col_type).upper() == "VARIANT":
+            print(f"Converting VARIANT column '{col_name}' to JSON string")
+            # For VARIANT type, we need to cast to string
+            # Databricks automatically converts VARIANT to JSON when cast to string
+            df = df.withColumn(col_name, col(col_name).cast("string"))
+    
+    return df
+
+
 def sample_df(df: DataFrame, nrows: int, sample_size: int = 5) -> DataFrame:
     """
     Sample dataframe to a given size and filter out rows with lots of nulls.
+    
+    Automatically handles special data types (BINARY, VARIANT) by converting them to strings.
 
     Args:
         df (DataFrame): The DataFrame to be analyzed.
@@ -218,6 +256,9 @@ def sample_df(df: DataFrame, nrows: int, sample_size: int = 5) -> DataFrame:
     Returns:
         DataFrame: A DataFrame with columns to generate metadata for.
     """
+    # Convert special types (BINARY, VARIANT) to strings before sampling
+    df = convert_special_types_to_string(df)
+    
     if nrows < sample_size:
         return df.limit(sample_size)
 

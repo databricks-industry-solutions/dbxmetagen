@@ -86,12 +86,24 @@ try:
 
     # Check column comments were also added
     print("\n🔍 Verifying column comments were added")
-    column_comment = test_utils.get_column_comment(test_table, "name")
-    if column_comment:
-        print(f"  Column 'name' comment: {column_comment[:100]}...")
-        test_utils.assert_true(True, "Column comments were added")
-    else:
-        print("  Note: Column comments may not have been added (depends on LLM)")
+
+    # Check all columns and count how many have comments
+    test_columns = ["id", "name", "email", "age", "created_date"]
+    columns_with_comments = 0
+
+    for col_name in test_columns:
+        column_comment = test_utils.get_column_comment(test_table, col_name)
+        if column_comment and len(column_comment) > 5:
+            columns_with_comments += 1
+            print(f"  ✓ Column '{col_name}' comment: {column_comment[:80]}...")
+        else:
+            print(f"  - Column '{col_name}' has no comment")
+
+    # Assert that at least 3 out of 5 columns have comments
+    test_utils.assert_true(
+        columns_with_comments >= 3,
+        f"At least 3 out of 5 columns have comments (found {columns_with_comments})",
+    )
 
     # Verify metadata_generation_log has entry with applied values
     print("\n🔍 Verifying metadata_generation_log entry")
