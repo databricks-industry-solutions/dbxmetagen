@@ -32,14 +32,18 @@ class CommentResponse(Response):
     model_config = ConfigDict(extra="forbid")
     column_contents: Union[str, list[str]]
 
-    @field_validator("column_contents")
+    @field_validator("column_contents", mode="before")
     @classmethod
     def validate_column_contents(cls, v):
-        """Convert string to list if needed, otherwise return as is."""
+        """Convert string to list if needed, flatten nested lists."""
         if isinstance(v, str):
             return [v]
         elif isinstance(v, list):
-            return v
+            # Handle nested list case: [[desc1, desc2, ...]] -> [desc1, desc2, ...]
+            if len(v) == 1 and isinstance(v[0], list):
+                return v[0]
+            # Ensure all elements are strings
+            return [str(item) if not isinstance(item, str) else item for item in v]
         else:
             raise ValueError(
                 "column_contents must be either a string or a list of strings"

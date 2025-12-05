@@ -33,6 +33,7 @@ from pyspark.sql.functions import (
     when,
     sum as spark_sum,
     base64,
+    to_json,
 )
 from pyspark.sql.types import (
     StructType,
@@ -80,13 +81,17 @@ def convert_special_types_to_string(df: DataFrame) -> DataFrame:
             print(f"Converting BINARY column '{col_name}' to base64 string")
             df = df.withColumn(col_name, base64(col(col_name)))
 
-        # Handle VARIANT type - convert to JSON string
-        # VARIANT type is represented as a string typename in Databricks
-        elif str(col_type).upper() == "VARIANT":
-            print(f"Converting VARIANT column '{col_name}' to JSON string")
-            # For VARIANT type, we need to cast to string
-            # Databricks automatically converts VARIANT to JSON when cast to string
-            df = df.withColumn(col_name, col(col_name).cast("string"))
+        # Handle VARIANT type - convert to JSON string using to_json()
+        # VARIANT type can be represented multiple ways in schema
+        else:
+            type_str = str(col_type).upper()
+            type_class = type(col_type).__name__.upper()
+            if ("VARIANT" in type_str or 
+                "VARIANT" in type_class or 
+                "UNPARSED" in type_str or
+                "UNPARSED" in type_class):
+                print(f"Converting VARIANT column '{col_name}' (type: {col_type}) to JSON string using to_json()")
+                df = df.withColumn(col_name, to_json(col(col_name)))
 
     return df
 

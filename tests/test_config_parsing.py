@@ -5,18 +5,6 @@ import sys
 import os
 from unittest.mock import Mock, MagicMock
 
-# Mock pyspark and databricks modules BEFORE any imports
-sys.modules["pyspark"] = MagicMock()
-sys.modules["pyspark.sql"] = MagicMock()
-sys.modules["pyspark.sql.functions"] = MagicMock()
-sys.modules["pyspark.sql.types"] = MagicMock()
-sys.modules["pyspark.sql.column"] = MagicMock()
-sys.modules["databricks"] = MagicMock()
-sys.modules["databricks.sdk"] = MagicMock()
-sys.modules["databricks.sdk.core"] = MagicMock()
-sys.modules["grpc"] = MagicMock()
-sys.modules["grpc._channel"] = MagicMock()
-
 # Add src to path for imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 

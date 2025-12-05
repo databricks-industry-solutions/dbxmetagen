@@ -38,17 +38,20 @@ poetry-plugin-export = ">=1.9.0"
 [tool.poetry.group.dev.dependencies]
 pre-commit = "^4.0.1"
 pytest = ">=8.3.4"
+pyspark = "^3.5.0"
 
 [tool.pytest.ini_options]
-# Exclude integration tests from default test runs
-# Run them explicitly with: pytest notebooks/integration_tests/ -v
+# Exclude integration tests and app tests from default test runs
+# App tests mock sys.modules which corrupts the namespace for other tests
+# Run app tests separately with: pytest tests/test_app_*.py -v
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
-addopts = "--ignore=notebooks/integration_tests"
+addopts = "--ignore=notebooks/integration_tests --ignore=tests/test_app_config_manager.py --ignore=tests/test_app_data_ops.py --ignore=tests/test_app_job_manager.py --ignore=tests/test_app_logic.py --ignore=tests/test_app_user_context.py"
 markers = [
     "integration: marks tests as integration tests (deselect with '-m \"not integration\"')",
+    "app: marks tests as Streamlit app tests (run separately due to mocking)",
 ]
 
 [build-system]

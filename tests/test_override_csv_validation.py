@@ -8,24 +8,10 @@ Tests that the override CSV validation:
 """
 
 import sys
-from unittest.mock import MagicMock
-
-# Mock Databricks/PySpark modules before importing dbxmetagen
-sys.modules["pyspark"] = MagicMock()
-sys.modules["pyspark.sql"] = MagicMock()
-sys.modules["pyspark.sql.functions"] = MagicMock()
-sys.modules["pyspark.sql.types"] = MagicMock()
-sys.modules["pyspark.sql.column"] = MagicMock()
-sys.modules["databricks"] = MagicMock()
-sys.modules["databricks.sdk"] = MagicMock()
-sys.modules["databricks.sdk.runtime"] = MagicMock()
-sys.modules["databricks.sdk.core"] = MagicMock()
-sys.modules["grpc"] = MagicMock()
-sys.modules["grpc._channel"] = MagicMock()
-
 import os
 import tempfile
 import pytest
+from unittest.mock import MagicMock
 
 # Add src to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
