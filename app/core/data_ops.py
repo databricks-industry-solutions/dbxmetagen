@@ -6,11 +6,13 @@ Handles table validation, CSV processing, metadata operations.
 import sys
 import os
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 import streamlit as st
 import pandas as pd
 import re
 import logging
-from io import StringIO
+from io import StringIO, BytesIO
+import httpx
 from typing import List, Tuple, Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -25,6 +27,118 @@ def st_debug(message: str):
     # Only show in UI if debug mode is explicitly enabled
     if st.session_state.get("config", {}).get("debug_mode", False):
         st.caption(f"🔍 {message}")
+
+
+def download_file_content(
+    workspace_client, file_path: str, timeout_seconds: int = 60
+) -> str:
+    """
+    Download file content from Unity Catalog volume using REST API.
+    
+    Uses OBO token from Streamlit headers for authentication.
+
+    Args:
+        workspace_client: Databricks WorkspaceClient (not used, kept for compatibility)
+        file_path: Path to the file in the volume
+        timeout_seconds: Maximum time to wait for download (default 60s)
+
+    Returns:
+        str: The file content as a string
+    """
+    # Get workspace host
+    workspace_host = os.environ.get("DATABRICKS_HOST", "")
+    if not workspace_host:
+        raise ValueError("DATABRICKS_HOST environment variable not set")
+    
+    workspace_host = workspace_host.strip().rstrip("/")
+    if not workspace_host.startswith(("https://", "http://")):
+        workspace_host = f"https://{workspace_host}"
+    
+    # Build Files API URL
+    files_api_url = f"{workspace_host}/api/2.0/fs/files{file_path}"
+    logger.info(f"[download] REST API URL: {files_api_url}")
+    
+    # Get token - try OBO first, then service principal
+    token = None
+    
+    # Method 1: Try OBO token from Streamlit headers
+    try:
+        from streamlit.runtime.scriptrunner import get_script_run_ctx
+        ctx = get_script_run_ctx()
+        if ctx and hasattr(ctx, "session_info") and hasattr(ctx.session_info, "headers"):
+            token = ctx.session_info.headers.get("x-forwarded-access-token")
+            if token:
+                logger.info(f"[download] Using OBO token, length: {len(token)}")
+    except Exception as e:
+        logger.debug(f"[download] Could not get OBO token: {e}")
+    
+    # Method 2: Fall back to service principal via SDK Config (like pixels app)
+    if not token:
+        try:
+            from databricks.sdk.core import Config
+            cfg = Config()
+            token = cfg.authenticate()
+            if token:
+                logger.info(f"[download] Using service principal token, length: {len(token)}")
+        except Exception as e:
+            logger.warning(f"[download] SDK Config auth failed: {e}")
+    
+    if not token:
+        raise ValueError("Could not obtain token from OBO headers or service principal")
+    
+    headers = {"Authorization": f"Bearer {token}"}
+    
+    # Make HTTP request with SSL verification disabled for debugging
+    try:
+        with httpx.Client(timeout=float(timeout_seconds), verify=False) as client:
+            logger.info("[download] Making HTTP GET request (SSL verify=False)...")
+            response = client.get(files_api_url, headers=headers)
+            
+            logger.info(f"[download] Response status: {response.status_code}")
+            
+            if response.status_code != 200:
+                error_msg = f"Files API returned {response.status_code}: {response.text[:500]}"
+                logger.error(f"[download] {error_msg}")
+                raise Exception(error_msg)
+            
+            content = response.text
+            logger.info(f"[download] Downloaded {len(content)} chars")
+            return content
+            
+    except httpx.TimeoutException:
+        logger.error(f"[download] HTTP timeout after {timeout_seconds}s: {file_path}")
+        raise TimeoutError(f"Download timed out after {timeout_seconds}s: {file_path}")
+
+
+def parse_tsv_content(content: str) -> Optional[pd.DataFrame]:
+    """
+    Parse TSV content string into a pandas DataFrame.
+
+    Args:
+        content: TSV-formatted string content
+
+    Returns:
+        DataFrame with parsed content, or None if content is empty/invalid
+
+    Raises:
+        ValueError: If content cannot be parsed as TSV
+    """
+    if not content or not content.strip():
+        logger.warning("Empty content provided to parse_tsv_content")
+        return None
+
+    try:
+        df = pd.read_csv(StringIO(content), sep="\t")
+        logger.info(f"Parsed TSV: {df.shape[0]} rows, {df.shape[1]} columns")
+
+        if len(df) == 0:
+            logger.warning("Parsed DataFrame is empty")
+            return None
+
+        return df
+    except Exception as e:
+        logger.error(f"Failed to parse TSV content: {e}")
+        raise ValueError(f"Failed to parse TSV content: {e}")
 
 
 class DataOperations:
@@ -335,10 +449,15 @@ class MetadataProcessor:
         self, catalog: str, schema: str, volume: str, selected_file_path: str = None
     ) -> Optional[pd.DataFrame]:
         """Load metadata files from Unity Catalog volume - with file selection support."""
+        logger.info(
+            f"load_metadata_from_volume called with: catalog={catalog}, schema={schema}, volume={volume}, selected_file_path={selected_file_path}"
+        )
+
         if not st.session_state.get("workspace_client"):
             st.error("❌ Workspace client not initialized")
             return None
 
+        file_path = None  # Initialize for error logging
         try:
             # If no specific file path provided, get available files and use most recent
             if not selected_file_path:
@@ -354,87 +473,42 @@ class MetadataProcessor:
                 st.info(f"Loading most recent file: {available_files[0]['name']}")
             else:
                 file_path = selected_file_path
-            raw_content = st.session_state.workspace_client.files.download(file_path)
 
-            # Extract content - try different methods since DownloadResponse varies
-            content = None
-            if hasattr(raw_content, "read"):
-                # If it has a read method, use it directly
-                content_bytes = raw_content.read()
-                content = (
-                    content_bytes.decode("utf-8")
-                    if isinstance(content_bytes, bytes)
-                    else str(content_bytes)
-                )
-                st_debug("✅ Used read() method")
-            elif hasattr(raw_content, "contents"):
-                # If it has contents attribute, extract from there
-                actual_content = raw_content.contents
-                if hasattr(actual_content, "read"):
-                    content_bytes = actual_content.read()
-                    content = (
-                        content_bytes.decode("utf-8")
-                        if isinstance(content_bytes, bytes)
-                        else str(content_bytes)
-                    )
-                    st_debug("✅ Used contents.read() method")
-                else:
-                    content = str(actual_content)
-                    st_debug("✅ Used str(contents)")
-            else:
-                # Last resort - try context manager or convert to string
-                try:
-                    with raw_content as stream:
-                        content = stream.read().decode("utf-8")
-                    st_debug("✅ Used context manager")
-                except Exception:
-                    content = str(raw_content)
-                    st_debug("⚠️ Fallback to string conversion")
+            logger.info(f"Attempting to download file: {file_path}")
+            st_debug(f"Downloading from path: {file_path}")
 
-            if not content:
-                raise Exception("Failed to extract content from DownloadResponse")
-
-            st_debug(f"✅ Successfully read {len(content)} characters")
-
-            # Parse TSV
-            df = pd.read_csv(StringIO(content), sep="\t")
-            st_debug(
-                f"🔍 Loaded DataFrame: {df.shape} shape, columns: {list(df.columns)}"
+            # Download and read file content with timeout (covers entire operation)
+            content = download_file_content(
+                st.session_state.workspace_client, file_path, timeout_seconds=30
             )
 
-            if len(df) == 0:
-                st.warning("⚠️ DataFrame is empty!")
+            st_debug(f"Successfully read {len(content)} characters")
+
+            # Parse TSV using extracted helper function
+            df = parse_tsv_content(content)
+            if df is None:
+                st.warning("DataFrame is empty!")
                 return None
 
-            st.success(f"✅ Loaded {len(df)} records from {file_path.split('/')[-1]}")
+            st_debug(f"Loaded DataFrame: {df.shape} shape, columns: {list(df.columns)}")
+            st.success(f"Loaded {len(df)} records from {file_path.split('/')[-1]}")
             return df
 
+        except TimeoutError as e:
+            # Timeout - fail fast with clear message
+            logger.error(f"TIMEOUT loading file: {file_path}")
+            st.error(f"File download timed out after 30 seconds")
+            st.warning(
+                f"Could not download: `{file_path}`\n\n"
+                "The SDK files.download() is hanging. This is a known issue with "
+                "Databricks Apps file access. Try refreshing the page or re-deploying the app."
+            )
+            return None
         except Exception as e:
-            st.error(f"❌ Error loading metadata: {str(e)}")
-            logger.error(f"Error in load_metadata_from_volume: {str(e)}")
-
-            try:
-                # Try parent directories to help debug
-                path_parts = (
-                    file_path.rstrip(file_path.split("/")[-1]).rstrip("/").split("/")
-                )
-                for i in range(len(path_parts) - 1, 2, -1):
-                    parent_dir = "/".join(path_parts[: i + 1])
-                    try:
-                        parent_files = list(
-                            st.session_state.workspace_client.files.list_directory_contents(
-                                parent_dir
-                            )
-                        )
-                        st_debug(
-                            f"✅ Found parent directory: {parent_dir} with {len(parent_files)} items"
-                        )
-                        break
-                    except:
-                        continue
-            except:
-                pass
-
+            error_msg = str(e)
+            logger.error(f"Error in load_metadata_from_volume: {error_msg}")
+            logger.error(f"Failed file path: {file_path}")
+            st.error(f"Error loading metadata: {error_msg}")
             return None
 
     def _load_file_from_volume(

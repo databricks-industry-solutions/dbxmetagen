@@ -92,20 +92,21 @@ def _grant_permissions_to_groups(config, catalog_name, schema_name, volume_name)
         return False
 
     if str(config.permission_groups).lower() == "none":
-        print("No permission groups specified")
         return True
 
     groups = [g.strip() for g in str(config.permission_groups).split(",") if g.strip()]
+    any_granted = False
     for group in groups:
-        print(f"Granting permissions to group: {group}")
-        grant_group_permissions(
+        granted = grant_group_permissions(
             catalog_name=catalog_name,
             schema_name=schema_name,
             group_name=group,
             volume_name=volume_name,
         )
-        print(f"✓ Granted schema and volume permissions to group '{group}'")
-    return True
+        if granted:
+            print(f"Granted permissions to group: {group}")
+            any_granted = True
+    return any_granted
 
 
 def _grant_permissions_to_users(config, catalog_name, schema_name, volume_name):
@@ -114,20 +115,21 @@ def _grant_permissions_to_users(config, catalog_name, schema_name, volume_name):
         return False
 
     if str(config.permission_users).lower() == "none":
-        print("No additional permission users specified")
         return True
 
     users = [u.strip() for u in str(config.permission_users).split(",") if u.strip()]
+    any_granted = False
     for user in users:
-        print(f"Granting permissions to user: {user}")
-        grant_user_permissions(
+        granted = grant_user_permissions(
             catalog_name=catalog_name,
             schema_name=schema_name,
             current_user=user,
             volume_name=volume_name,
         )
-        print(f"✓ Granted schema and volume permissions to {user}")
-    return True
+        if granted:
+            print(f"Granted permissions to user: {user}")
+            any_granted = True
+    return any_granted
 
 
 def grant_permissions_on_created_objects(config):
@@ -141,9 +143,6 @@ def grant_permissions_on_created_objects(config):
         print(
             "Permission grants disabled in config (grant_permissions_after_creation=false)"
         )
-        print(
-            "To enable permission grants, set grant_permissions_after_creation=true in variables.yml"
-        )
         return
 
     catalog_name = config.catalog_name
@@ -151,21 +150,26 @@ def grant_permissions_on_created_objects(config):
     volume_name = config.volume_name
 
     try:
-        print(f"Granting permissions to job user: {config.current_user}")
-        grant_user_permissions(
+        # Try to grant permissions - will be skipped if user lacks MANAGE
+        job_user_granted = grant_user_permissions(
             catalog_name=catalog_name,
             schema_name=schema_name,
             current_user=config.current_user,
             volume_name=volume_name,
         )
-        print(f"✓ Granted schema and volume permissions to {config.current_user}")
-
+        
         groups_granted = _grant_permissions_to_groups(
             config, catalog_name, schema_name, volume_name
         )
         users_granted = _grant_permissions_to_users(
             config, catalog_name, schema_name, volume_name
         )
+        
+        # Print summary message
+        if job_user_granted or groups_granted or users_granted:
+            print("Permission grants completed successfully")
+        else:
+            print("Skipped permission grants - current user lacks MANAGE on schema")
 
         if not groups_granted and not users_granted:
             print("No additional groups or users specified for permissions")

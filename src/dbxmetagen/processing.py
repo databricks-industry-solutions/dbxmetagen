@@ -166,30 +166,19 @@ def write_to_log_table(log_data: Dict[str, Any], log_table_name: str) -> None:
     """
     spark = SparkSession.builder.getOrCreate()
     
-    # Ensure apply_ddl is always a string to avoid schema merge conflicts
+    # Ensure apply_ddl is a boolean to match existing table schema
     if "apply_ddl" in log_data:
-        log_data["apply_ddl"] = str(log_data["apply_ddl"])
+        val = log_data["apply_ddl"]
+        if isinstance(val, str):
+            log_data["apply_ddl"] = val.lower() == "true"
+        elif not isinstance(val, bool):
+            log_data["apply_ddl"] = bool(val)
     
     log_df = spark.createDataFrame([log_data])
     
-    # Explicitly cast apply_ddl to string
-    if "apply_ddl" in log_df.columns:
-        log_df = log_df.withColumn("apply_ddl", col("apply_ddl").cast("string"))
-    
-    try:
-        log_df.write.format("delta").option("mergeSchema", "true").mode(
-            "append"
-        ).saveAsTable(log_table_name)
-    except Exception as e:
-        if "DELTA_FAILED_TO_MERGE_FIELDS" in str(e) and "apply_ddl" in str(e):
-            # Existing table has apply_ddl as different type - drop and retry without it
-            print(f"Warning: Schema conflict on apply_ddl column, retrying without it")
-            log_df_without_apply_ddl = log_df.drop("apply_ddl")
-            log_df_without_apply_ddl.write.format("delta").option("mergeSchema", "true").mode(
-                "append"
-            ).saveAsTable(log_table_name)
-        else:
-            raise
+    log_df.write.format("delta").option("mergeSchema", "true").mode(
+        "append"
+    ).saveAsTable(log_table_name)
 
 
 def count_df_columns(df: DataFrame) -> int:
@@ -2555,7 +2544,7 @@ def generate_and_persist_metadata(config: Any) -> None:
                     "status": "Table does not exist",
                     "user": sanitize_user_identifier(config.current_user),
                     "mode": config.mode,
-                    "apply_ddl": str(config.apply_ddl),
+                    "apply_ddl": config.apply_ddl,
                     "_updated_at": str(datetime.now()),
                 }
             else:
@@ -2581,7 +2570,7 @@ def generate_and_persist_metadata(config: Any) -> None:
                     "status": status,
                     "user": sanitize_user_identifier(config.current_user),
                     "mode": config.mode,
-                    "apply_ddl": str(config.apply_ddl),
+                    "apply_ddl": config.apply_ddl,
                     "_updated_at": str(datetime.now()),
                 }
 
@@ -2594,7 +2583,7 @@ def generate_and_persist_metadata(config: Any) -> None:
                 "status": f"Processing failed: {tpe}",
                 "user": sanitize_user_identifier(config.current_user),
                 "mode": config.mode,
-                "apply_ddl": str(config.apply_ddl),
+                "apply_ddl": config.apply_ddl,
                 "_updated_at": str(datetime.now()),
             }
             raise  # Optionally re-raise if you want to halt further processing
@@ -2611,7 +2600,7 @@ def generate_and_persist_metadata(config: Any) -> None:
                 "status": f"Processing failed: {concise_error}",
                 "user": sanitize_user_identifier(config.current_user),
                 "mode": config.mode,
-                "apply_ddl": str(config.apply_ddl),
+                "apply_ddl": config.apply_ddl,
                 "_updated_at": str(datetime.now()),
             }
             raise
