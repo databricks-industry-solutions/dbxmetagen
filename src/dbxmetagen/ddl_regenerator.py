@@ -426,7 +426,14 @@ def process_metadata_file(
                 result_type="expand",
             )
         exported_file = export_metadata(df, output_dir, input_file, output_file_type)
-        if config.review_apply_ddl is True or config.review_apply_ddl.lower() == "true":
+
+        # Determine if DDL should be applied based on type
+        if isinstance(config.review_apply_ddl, bool):
+            should_apply = config.review_apply_ddl
+        else:
+            should_apply = config.review_apply_ddl.lower() == "true"
+
+        if should_apply:
             apply_ddl_to_databricks(exported_file, config, output_file_type)
         else:
             print(
