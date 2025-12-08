@@ -12,7 +12,6 @@ import pandas as pd
 import re
 import logging
 from io import StringIO, BytesIO
-import httpx
 from typing import List, Tuple, Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -30,84 +29,38 @@ def st_debug(message: str):
 
 
 def download_file_content(
-    workspace_client, file_path: str, timeout_seconds: int = 60
+    workspace_client, file_path: str, timeout_seconds: int = 30
 ) -> str:
     """
-    Download file content from Unity Catalog volume using REST API.
-    
-    Uses OBO token from Streamlit headers for authentication.
+    Download file content from Unity Catalog volume using SDK.
 
     Args:
-        workspace_client: Databricks WorkspaceClient (not used, kept for compatibility)
+        workspace_client: Databricks WorkspaceClient
         file_path: Path to the file in the volume
-        timeout_seconds: Maximum time to wait for download (default 60s)
+        timeout_seconds: Maximum time to wait for download (default 30s)
 
     Returns:
         str: The file content as a string
     """
-    # Get workspace host
-    workspace_host = os.environ.get("DATABRICKS_HOST", "")
-    if not workspace_host:
-        raise ValueError("DATABRICKS_HOST environment variable not set")
+    logger.info(f"[download] Starting SDK download: {file_path}")
     
-    workspace_host = workspace_host.strip().rstrip("/")
-    if not workspace_host.startswith(("https://", "http://")):
-        workspace_host = f"https://{workspace_host}"
+    # Use SDK download directly - auth is handled by the workspace_client
+    response = workspace_client.files.download(file_path)
+    logger.info(f"[download] Got response type: {type(response)}")
     
-    # Build Files API URL
-    files_api_url = f"{workspace_host}/api/2.0/fs/files{file_path}"
-    logger.info(f"[download] REST API URL: {files_api_url}")
+    # Read the content
+    if hasattr(response, "read"):
+        content_bytes = response.read()
+    elif hasattr(response, "contents"):
+        contents = response.contents
+        content_bytes = contents.read() if hasattr(contents, "read") else contents
+    else:
+        # Try iteration
+        content_bytes = b"".join(response)
     
-    # Get token - try OBO first, then service principal
-    token = None
-    
-    # Method 1: Try OBO token from Streamlit headers
-    try:
-        from streamlit.runtime.scriptrunner import get_script_run_ctx
-        ctx = get_script_run_ctx()
-        if ctx and hasattr(ctx, "session_info") and hasattr(ctx.session_info, "headers"):
-            token = ctx.session_info.headers.get("x-forwarded-access-token")
-            if token:
-                logger.info(f"[download] Using OBO token, length: {len(token)}")
-    except Exception as e:
-        logger.debug(f"[download] Could not get OBO token: {e}")
-    
-    # Method 2: Fall back to service principal via SDK Config (like pixels app)
-    if not token:
-        try:
-            from databricks.sdk.core import Config
-            cfg = Config()
-            token = cfg.authenticate()
-            if token:
-                logger.info(f"[download] Using service principal token, length: {len(token)}")
-        except Exception as e:
-            logger.warning(f"[download] SDK Config auth failed: {e}")
-    
-    if not token:
-        raise ValueError("Could not obtain token from OBO headers or service principal")
-    
-    headers = {"Authorization": f"Bearer {token}"}
-    
-    # Make HTTP request with SSL verification disabled for debugging
-    try:
-        with httpx.Client(timeout=float(timeout_seconds), verify=False) as client:
-            logger.info("[download] Making HTTP GET request (SSL verify=False)...")
-            response = client.get(files_api_url, headers=headers)
-            
-            logger.info(f"[download] Response status: {response.status_code}")
-            
-            if response.status_code != 200:
-                error_msg = f"Files API returned {response.status_code}: {response.text[:500]}"
-                logger.error(f"[download] {error_msg}")
-                raise Exception(error_msg)
-            
-            content = response.text
-            logger.info(f"[download] Downloaded {len(content)} chars")
-            return content
-            
-    except httpx.TimeoutException:
-        logger.error(f"[download] HTTP timeout after {timeout_seconds}s: {file_path}")
-        raise TimeoutError(f"Download timed out after {timeout_seconds}s: {file_path}")
+    result = content_bytes.decode("utf-8") if isinstance(content_bytes, bytes) else str(content_bytes)
+    logger.info(f"[download] Success: {len(result)} chars")
+    return result
 
 
 def parse_tsv_content(content: str) -> Optional[pd.DataFrame]:

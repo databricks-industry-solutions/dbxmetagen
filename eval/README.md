@@ -2,6 +2,8 @@
 
 Systematic evaluation framework for dbxmetagen's LLM-based metadata generation using MLflow 3.x.
 
+This eval is not intended to be used end users yet.
+
 ## Overview
 
 This evaluation system allows you to:

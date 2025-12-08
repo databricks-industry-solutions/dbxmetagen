@@ -81,17 +81,40 @@ class TestParseTsvContent:
 
 
 class TestDownloadFileContent:
-    """Tests for download_file_content - OBO token tests skipped (require real Streamlit)."""
+    """Tests for download_file_content using SDK."""
 
-    def test_missing_host_raises_error(self):
-        """Test that missing DATABRICKS_HOST raises ValueError."""
-        with patch.dict(os.environ, {}, clear=True):
-            os.environ.pop("DATABRICKS_HOST", None)
-            
-            with pytest.raises(ValueError) as exc_info:
-                download_file_content(None, "/Volumes/cat/sch/vol/file.tsv")
-            
-            assert "DATABRICKS_HOST" in str(exc_info.value)
+    def test_successful_download_with_read(self):
+        """Test successful download using read() method."""
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        mock_response.read.return_value = b"col1\tcol2\nval1\tval2"
+        mock_client.files.download.return_value = mock_response
+        
+        result = download_file_content(mock_client, "/Volumes/cat/sch/vol/file.tsv")
+        
+        assert result == "col1\tcol2\nval1\tval2"
+        mock_client.files.download.assert_called_once_with("/Volumes/cat/sch/vol/file.tsv")
+
+    def test_successful_download_with_contents(self):
+        """Test successful download using contents attribute."""
+        mock_client = MagicMock()
+        mock_response = MagicMock(spec=["contents"])
+        mock_response.contents = b"test content"
+        mock_client.files.download.return_value = mock_response
+        
+        result = download_file_content(mock_client, "/Volumes/cat/sch/vol/file.tsv")
+        
+        assert result == "test content"
+
+    def test_download_exception_propagates(self):
+        """Test that download exceptions propagate correctly."""
+        mock_client = MagicMock()
+        mock_client.files.download.side_effect = Exception("Network error")
+        
+        with pytest.raises(Exception) as exc_info:
+            download_file_content(mock_client, "/Volumes/cat/sch/vol/file.tsv")
+        
+        assert "Network error" in str(exc_info.value)
 
 
 if __name__ == "__main__":

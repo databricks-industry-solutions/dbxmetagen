@@ -3,6 +3,8 @@ Custom metrics for dbxmetagen evaluation.
 
 Defines both programmatic metrics and LLM-as-judge metrics for evaluating
 metadata generation quality.
+
+Currently generalized, not intented to be run by end users.
 """
 
 import mlflow

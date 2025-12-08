@@ -10,6 +10,7 @@
 # MAGIC 3. Compare models
 # MAGIC 4. Review results in MLflow UI
 # MAGIC 5. Add SME feedback
+# MAGIC 6. Currently generalized, not intented to be run by end users.
 
 # COMMAND ----------
 

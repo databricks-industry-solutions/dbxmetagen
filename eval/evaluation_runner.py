@@ -3,6 +3,8 @@ Main evaluation runner for dbxmetagen prompt testing.
 
 Uses MLflow 3.x mlflow.evaluate() with custom metrics to evaluate
 metadata generation across different models and configurations.
+
+Currently generalized, not intented to be run by end users.
 """
 
 import mlflow
