@@ -34,7 +34,7 @@ The tool is highly configurable, supporting bulk operations, SDLC integration, a
 
 1. **Clone the repo** into a Git Folder in your Databricks workspace
    ```
-   Create Git Folder → https://github.com/databricks-industry-solutions/dbxmetagen
+   Create Git Folder → Clone https://github.com/databricks-industry-solutions/dbxmetagen
    ```
 
 2. **Open the notebook**: `notebooks/generate_metadata.py`
@@ -63,7 +63,7 @@ For a web UI with job management, metadata review, and team collaboration:
 
 1. **Prerequisites**:
    - Databricks CLI installed and configured: `databricks configure --profile <your-profile>`
-   - Python 3.9+, Poetry (for building the wheel)
+   - Python 3.9+, Poetry (for building a wheel when using Databricks asset bundles)
 
 2. **Configure environment**:
    ```bash
@@ -152,10 +152,6 @@ For detailed information on how different team members use dbxmetagen, see [docs
 ### Configurations
 1. Most configurations that users should change are in variables.yml. There are a variety of useful options, please read the descriptions, I will not rewrite them all here.
 
-### Current status
-1. Tested on DBR 14.3, 15.4, and 16.4.
-1. Default settings currently create ALTER scripts and puts in a volume. Tested in a databricks workspace.
-1. Some print-based logging to make understanding what's happening and debugging easy in the UI.
 
 ### Discussion points and recommendations:
 1. Throttling - the default PPT endpoints will throttle eventually. Likely this will occur wehn running backfills for large numbers of tables, or if you have other users using the same endpoint.
@@ -209,6 +205,7 @@ For complete configuration reference, see [docs/CONFIGURATION.md](docs/CONFIGURA
 ## Current Status
 
 - Tested on DBR 16.4 LTS, 14.3 LTS, and 15.4 LTS, as well as the ML versions.
+- Serverless runtimes tested extensively but runtimes are less consistent.
 - Views only work on 16.4. Pre-16.4, alternative DDL is used that only works on tables.
 - Excel writes for metadata generator or sync_reviewed_ddl only work on ML runtimes. If you must use a standard runtime, leverage tsv.
 
@@ -266,6 +263,7 @@ This project is licensed under the Databricks DB License.
 | requests>=2.25.0 | Apache | https://pypi.org/project/requests/ |
 | plotly>=5.0.0 | MIT | https://pypi.org/project/plotly/ |
 | deprecated | MIT | https://pypi.org/project/Deprecated/ |
+| grpcio | Apache | https://pypi.org/project/grpcio/ |
 
 
 **All packages are open source with permissive licenses** (Apache 2.0, MIT, BSD 3-Clause) that allow commercial use, modification, and redistribution.
