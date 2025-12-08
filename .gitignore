@@ -159,3 +159,8 @@ variables_override.yml
 
 *.env
 !example.env
+
+# AI-generated operational documentation
+# Only the index is version controlled
+docs/operations/*/
+!docs/operations/README.md

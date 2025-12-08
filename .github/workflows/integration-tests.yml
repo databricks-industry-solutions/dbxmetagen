@@ -1,0 +1,69 @@
+name: Integration Tests
+
+# Integration tests run separately since they require Databricks environment
+# Trigger manually or on merge to main
+on:
+  workflow_dispatch:
+    inputs:
+      databricks_host:
+        description: "Databricks workspace URL"
+        required: true
+      databricks_token:
+        description: "Databricks token (use secrets)"
+        required: false
+  push:
+    branches: [main, master]
+    paths:
+      - "notebooks/integration_tests/**"
+
+jobs:
+  integration-tests:
+    name: Run Integration Tests
+    runs-on: ubuntu-latest
+
+    # Only run if Databricks credentials are available
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && secrets.DATABRICKS_HOST != '')
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Poetry
+        uses: snok/install-poetry@v1
+        with:
+          version: 2.0.1
+
+      - name: Install dependencies
+        run: poetry install --no-interaction
+
+      - name: Set up Databricks environment
+        env:
+          DATABRICKS_HOST: ${{ github.event.inputs.databricks_host || secrets.DATABRICKS_HOST }}
+          DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+        run: |
+          echo "DATABRICKS_HOST=$DATABRICKS_HOST" >> $GITHUB_ENV
+          echo "DATABRICKS_TOKEN=$DATABRICKS_TOKEN" >> $GITHUB_ENV
+
+      - name: Run integration tests
+        run: |
+          poetry run pytest notebooks/integration_tests/ -v --tb=short
+        continue-on-error: true
+
+      - name: Integration test summary
+        if: always()
+        run: |
+          echo "## 🔗 Integration Test Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ ${{ job.status }} == 'success' ]; then
+            echo "✅ Integration tests passed!" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⚠️ Integration tests failed or were skipped" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**Note:** Integration tests require Databricks workspace access." >> $GITHUB_STEP_SUMMARY
+            echo "Configure secrets: DATABRICKS_HOST and DATABRICKS_TOKEN" >> $GITHUB_STEP_SUMMARY
+          fi

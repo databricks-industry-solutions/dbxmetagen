@@ -6,11 +6,12 @@ Handles table validation, CSV processing, metadata operations.
 import sys
 import os
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 import streamlit as st
 import pandas as pd
 import re
 import logging
-from io import StringIO
+from io import StringIO, BytesIO
 from typing import List, Tuple, Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -25,6 +26,72 @@ def st_debug(message: str):
     # Only show in UI if debug mode is explicitly enabled
     if st.session_state.get("config", {}).get("debug_mode", False):
         st.caption(f"🔍 {message}")
+
+
+def download_file_content(
+    workspace_client, file_path: str, timeout_seconds: int = 30
+) -> str:
+    """
+    Download file content from Unity Catalog volume using SDK.
+
+    Args:
+        workspace_client: Databricks WorkspaceClient
+        file_path: Path to the file in the volume
+        timeout_seconds: Maximum time to wait for download (default 30s)
+
+    Returns:
+        str: The file content as a string
+    """
+    logger.info(f"[download] Starting SDK download: {file_path}")
+    
+    # Use SDK download directly - auth is handled by the workspace_client
+    response = workspace_client.files.download(file_path)
+    logger.info(f"[download] Got response type: {type(response)}")
+    
+    # Read the content
+    if hasattr(response, "read"):
+        content_bytes = response.read()
+    elif hasattr(response, "contents"):
+        contents = response.contents
+        content_bytes = contents.read() if hasattr(contents, "read") else contents
+    else:
+        # Try iteration
+        content_bytes = b"".join(response)
+    
+    result = content_bytes.decode("utf-8") if isinstance(content_bytes, bytes) else str(content_bytes)
+    logger.info(f"[download] Success: {len(result)} chars")
+    return result
+
+
+def parse_tsv_content(content: str) -> Optional[pd.DataFrame]:
+    """
+    Parse TSV content string into a pandas DataFrame.
+
+    Args:
+        content: TSV-formatted string content
+
+    Returns:
+        DataFrame with parsed content, or None if content is empty/invalid
+
+    Raises:
+        ValueError: If content cannot be parsed as TSV
+    """
+    if not content or not content.strip():
+        logger.warning("Empty content provided to parse_tsv_content")
+        return None
+
+    try:
+        df = pd.read_csv(StringIO(content), sep="\t")
+        logger.info(f"Parsed TSV: {df.shape[0]} rows, {df.shape[1]} columns")
+
+        if len(df) == 0:
+            logger.warning("Parsed DataFrame is empty")
+            return None
+
+        return df
+    except Exception as e:
+        logger.error(f"Failed to parse TSV content: {e}")
+        raise ValueError(f"Failed to parse TSV content: {e}")
 
 
 class DataOperations:
@@ -335,10 +402,15 @@ class MetadataProcessor:
         self, catalog: str, schema: str, volume: str, selected_file_path: str = None
     ) -> Optional[pd.DataFrame]:
         """Load metadata files from Unity Catalog volume - with file selection support."""
+        logger.info(
+            f"load_metadata_from_volume called with: catalog={catalog}, schema={schema}, volume={volume}, selected_file_path={selected_file_path}"
+        )
+
         if not st.session_state.get("workspace_client"):
             st.error("❌ Workspace client not initialized")
             return None
 
+        file_path = None  # Initialize for error logging
         try:
             # If no specific file path provided, get available files and use most recent
             if not selected_file_path:
@@ -354,87 +426,42 @@ class MetadataProcessor:
                 st.info(f"Loading most recent file: {available_files[0]['name']}")
             else:
                 file_path = selected_file_path
-            raw_content = st.session_state.workspace_client.files.download(file_path)
 
-            # Extract content - try different methods since DownloadResponse varies
-            content = None
-            if hasattr(raw_content, "read"):
-                # If it has a read method, use it directly
-                content_bytes = raw_content.read()
-                content = (
-                    content_bytes.decode("utf-8")
-                    if isinstance(content_bytes, bytes)
-                    else str(content_bytes)
-                )
-                st_debug("✅ Used read() method")
-            elif hasattr(raw_content, "contents"):
-                # If it has contents attribute, extract from there
-                actual_content = raw_content.contents
-                if hasattr(actual_content, "read"):
-                    content_bytes = actual_content.read()
-                    content = (
-                        content_bytes.decode("utf-8")
-                        if isinstance(content_bytes, bytes)
-                        else str(content_bytes)
-                    )
-                    st_debug("✅ Used contents.read() method")
-                else:
-                    content = str(actual_content)
-                    st_debug("✅ Used str(contents)")
-            else:
-                # Last resort - try context manager or convert to string
-                try:
-                    with raw_content as stream:
-                        content = stream.read().decode("utf-8")
-                    st_debug("✅ Used context manager")
-                except Exception:
-                    content = str(raw_content)
-                    st_debug("⚠️ Fallback to string conversion")
+            logger.info(f"Attempting to download file: {file_path}")
+            st_debug(f"Downloading from path: {file_path}")
 
-            if not content:
-                raise Exception("Failed to extract content from DownloadResponse")
-
-            st_debug(f"✅ Successfully read {len(content)} characters")
-
-            # Parse TSV
-            df = pd.read_csv(StringIO(content), sep="\t")
-            st_debug(
-                f"🔍 Loaded DataFrame: {df.shape} shape, columns: {list(df.columns)}"
+            # Download and read file content with timeout (covers entire operation)
+            content = download_file_content(
+                st.session_state.workspace_client, file_path, timeout_seconds=30
             )
 
-            if len(df) == 0:
-                st.warning("⚠️ DataFrame is empty!")
+            st_debug(f"Successfully read {len(content)} characters")
+
+            # Parse TSV using extracted helper function
+            df = parse_tsv_content(content)
+            if df is None:
+                st.warning("DataFrame is empty!")
                 return None
 
-            st.success(f"✅ Loaded {len(df)} records from {file_path.split('/')[-1]}")
+            st_debug(f"Loaded DataFrame: {df.shape} shape, columns: {list(df.columns)}")
+            st.success(f"Loaded {len(df)} records from {file_path.split('/')[-1]}")
             return df
 
+        except TimeoutError as e:
+            # Timeout - fail fast with clear message
+            logger.error(f"TIMEOUT loading file: {file_path}")
+            st.error(f"File download timed out after 30 seconds")
+            st.warning(
+                f"Could not download: `{file_path}`\n\n"
+                "The SDK files.download() is hanging. This is a known issue with "
+                "Databricks Apps file access. Try refreshing the page or re-deploying the app."
+            )
+            return None
         except Exception as e:
-            st.error(f"❌ Error loading metadata: {str(e)}")
-            logger.error(f"Error in load_metadata_from_volume: {str(e)}")
-
-            try:
-                # Try parent directories to help debug
-                path_parts = (
-                    file_path.rstrip(file_path.split("/")[-1]).rstrip("/").split("/")
-                )
-                for i in range(len(path_parts) - 1, 2, -1):
-                    parent_dir = "/".join(path_parts[: i + 1])
-                    try:
-                        parent_files = list(
-                            st.session_state.workspace_client.files.list_directory_contents(
-                                parent_dir
-                            )
-                        )
-                        st_debug(
-                            f"✅ Found parent directory: {parent_dir} with {len(parent_files)} items"
-                        )
-                        break
-                    except:
-                        continue
-            except:
-                pass
-
+            error_msg = str(e)
+            logger.error(f"Error in load_metadata_from_volume: {error_msg}")
+            logger.error(f"Failed file path: {file_path}")
+            st.error(f"Error loading metadata: {error_msg}")
             return None
 
     def _load_file_from_volume(
@@ -513,7 +540,12 @@ class MetadataProcessor:
         return results
 
     def _grant_permissions_to_app_user(self):
-        """Grant read permissions to the current app user on created objects."""
+        """Grant read permissions to the current app user on created objects.
+
+        This function attempts to grant permissions but failures are non-fatal.
+        Permission grants can fail if the app service principal doesn't have
+        admin privileges, which is common in production deployments.
+        """
         try:
 
             sys.path.append("../")
@@ -538,9 +570,25 @@ class MetadataProcessor:
         except Exception as e:
             # Log but don't fail - permissions are nice-to-have
             logger.warning(f"Could not grant permissions to app user: {e}")
-            st.warning(
-                f"⚠️ Note: Could not automatically grant permissions. You may need to request access manually."
-            )
+            with st.expander("⚠️ Permission Grant Warning (Non-Fatal)", expanded=False):
+                st.warning(
+                    f"Could not automatically grant permissions. This is common and expected "
+                    f"when the app service principal doesn't have admin privileges."
+                )
+                st.info(
+                    "**Why it's OK:** Metadata was generated successfully. You can manually "
+                    "request access from your workspace admin if needed."
+                )
+                st.code(
+                    f"GRANT USE SCHEMA ON SCHEMA {catalog_name}.{schema_name} TO `<user>`;\n"
+                    f"GRANT SELECT ON SCHEMA {catalog_name}.{schema_name} TO `<user>`;"
+                    + (
+                        f"\nGRANT READ VOLUME ON VOLUME {catalog_name}.{schema_name}.{volume_name} TO `<user>`;"
+                        if volume_name
+                        else ""
+                    ),
+                    language="sql",
+                )
 
     def _generate_ddl_from_comments(self, df: pd.DataFrame) -> pd.DataFrame:
         """

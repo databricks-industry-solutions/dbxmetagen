@@ -4,13 +4,13 @@ variables:
     default: None
   schema_name:
     description: Primary schema where data, models, and files are written to for this project. This is not the source schema, which is specified elsewhere with the source table name.
-    default: metadata_results    
+    default: metadata_results
   bundle_target:
     description: Bundle target environment (dev/prod).
     default: ${bundle.target}
   allow_data:
     description: Set this to false if you do not want data sent to LLMs, do not want any metadata stored in comments, and do not want metadata used that could leak data into metadata. Reduces quality of outputs. Internally sets sample_size to 0, allow_data_in_comments to false, and include_possible_data_fields_in_metadata to false.
-    default: True  
+    default: True
   sample_size:
     description: Sample size used per chunk in the prompt generation. when set to 0, no data will be sent to LLM, but due to leakage from metadata if this field alone is set, does not prevent data being added to comments.
     default: 5
@@ -34,7 +34,7 @@ variables:
     default: __CATALOG_NAME__
   format_catalog:
     description: Whether or not to string format any bracketed variables in catalog name. If set to false, then __CATALOG_NAME__{env} will keep the _{env} suffix, if not it will be formatted with the current environment.
-    default: false 
+    default: false
   solo_medical_identifier:
     description: When a medical identifier, such as a medical record number (MRN), is alone in a field, it should be classified as this value. Technically speaking, if for example a column is alone in a table MRN is PII, not PHI. However, a more conservative setting would be to classify all medical identifiers as PHI, even when they are PII.
     default: pii
@@ -42,8 +42,8 @@ variables:
     description: Set this to true if you want all phi assumptions to be as secure as possible. Under this setting there is no 'medical information' category. Instead, all medical information is converted to PHI. Note that this will mean that any downstream masking you do, and security concerns around your data will be much more stringent.
     default: false
   model:
-    description: LLM endpoint used by model calls. Note that this is not the same as any registered model in UC that wraps the prompt engineering work, but is the serving endpoint called after prompt engineering. This can be changed to other served models as well as provisioned throughput models or external models for compliance purposes if needed. Recommend databricks-claude-3-7-sonnet for best comments, with databricks-meta-llama-3-3-70b-instruct as a backup. Sonnet will generally give more complex responses. Review security, tenancy, and cost considerations before making a decision. 
-    default: databricks-claude-3-7-sonnet
+    description: LLM endpoint used by model calls. Note that this is not the same as any registered model in UC that wraps the prompt engineering work, but is the serving endpoint called after prompt engineering. This can be changed to other served models as well as provisioned throughput models or external models for compliance purposes if needed. Recommend databricks-claude-3-7-sonnet for best comments, with databricks-meta-llama-3-3-70b-instruct as a backup. Sonnet will generally give more complex responses. Review security, tenancy, and cost considerations before making a decision.
+    default: databricks-claude-sonnet-4-5
   mode:
     description: Mode for generating metadata. Options are 'comment', 'pi', or 'domain'. Comment mode generates descriptions for tables and columns. PI mode identifies and classifies sensitive information. Domain mode classifies tables into business domains using an agent.
     default: comment
@@ -60,7 +60,7 @@ variables:
     description: Output format can be via sql file (default) or via tsv or excel if this improves reviewability. This file is the individual output files.
     default: sql
   reviewable_output_format:
-    description: Desired format for full run output for reviewability. tsv or excel 
+    description: Desired format for full run output for reviewability. tsv or excel
     default: tsv
   include_deterministic_pi:
     description: Run presidio analyzer before using LLM-based PI identification.
@@ -117,11 +117,11 @@ variables:
   acro_content:
     description: acronyms that are commonly used in the data
     default: |
-        {
-        "DBX": "Databricks",
-        "WHO": "World Health Organization",
-        "GMC": "Global Marketing Code",
-        }
+      {
+      "DBX": "Databricks",
+      "WHO": "World Health Organization",
+      "GMC": "Global Marketing Code",
+      }
   domain_config_path:
     description: Path to the domain configuration YAML file for domain classification mode
     default: ../configurations/domain_config.yaml
@@ -173,3 +173,12 @@ variables:
   grant_permissions_after_creation:
     description: Whether to automatically grant read permissions on created schema, volume, and tables to specified groups/users after metadata generation completes. Requires appropriate permissions to grant.
     default: true
+  permission_groups:
+    description: Comma-separated list of groups to grant read permissions to (e.g., "data_analysts,data_scientists"). Set to "none" to skip group permissions.
+    default: "none"
+  permission_users:
+    description: Comma-separated list of users to grant read permissions to (e.g., "user1@example.com,user2@example.com"). Set to "none" to skip user permissions.
+    default: "none"
+  deploying_user:
+    description: User deploying the bundle (for permissions).
+    default: ${workspace.current_user.userName}

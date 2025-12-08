@@ -3,12 +3,14 @@ bundle:
   databricks_cli_version: ">=0.234.*"
 
 include:
-  - resources/jobs/*.yml
+  - resources/jobs/metagen.job.yml
+  - resources/jobs/sync_reviews.job.yml
+  # Uncomment the line below to deploy integration tests:
+  #- resources/jobs/integration_tests.job.yml
   - resources/apps/*.yml
   - benchmarks/resources/jobs/benchmarks/*.yml
   - variables.yml
   - resources/app_variables.yml
-
 
 artifacts:
   default:
@@ -17,17 +19,23 @@ artifacts:
     path: .
 
 targets:
-
   dev:
     mode: development
     default: true
-
     workspace:
       host: <host url here>
     permissions:
       - user_name: ${var.deploying_user}
         level: CAN_MANAGE
-        
+
+  integration_test:
+    mode: development
+    workspace:
+      host: <host_url_here>
+    permissions:
+      - user_name: ${var.deploying_user}
+        level: CAN_MANAGE
+
   prod:
     mode: production
     workspace:
@@ -37,4 +45,4 @@ targets:
       - user_name: ${var.current_user}
         level: CAN_MANAGE
     run_as:
-      user_name: ${var.current_user} 
+      user_name: ${var.current_user}

@@ -2,9 +2,10 @@ resources:
   apps:
     dbxmetagen_app:
       name: ${var.app_name}
-      description: 'UI For dbxmetagen app'
+      description: "UI For dbxmetagen app"
 
       source_code_path: ../../app
+      user_api_scopes: ["files.files"]
 
       # config:
       #   - name: "app_name"

@@ -16,7 +16,7 @@ from pyspark.sql.types import (
 
 def setup_benchmarking(config):
     """Setup benchmarking with run_id tagging."""
-    if not config.enable_benchmarking:
+    if not getattr(config, "enable_benchmarking", False):
         return None
 
     # Enable autologging
@@ -55,7 +55,7 @@ def setup_benchmarking(config):
 def log_token_usage(config, experiment_name: str):
     """Log token usage from MLflow traces to a Delta table."""
 
-    if not config.enable_benchmarking:
+    if not getattr(config, "enable_benchmarking", False):
         return
 
     try:

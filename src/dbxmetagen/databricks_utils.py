@@ -11,6 +11,9 @@ from grpc._channel import _InactiveRpcError, _MultiThreadedRendezvous
 
 logger = logging.getLogger(__name__)
 
+# Cache for schema permission checks to avoid repeated queries
+_schema_permission_cache = {}
+
 
 def setup_databricks_environment(dbutils_instance=None):
     """Set up Databricks environment variables and return current user."""
@@ -86,7 +89,7 @@ def setup_widgets(dbutils):
     dbutils.widgets.text("host", "", "Host URL (if different from current)")
     dbutils.widgets.text("table_names", "", "Table Names - comma-separated (required)")
     dbutils.widgets.text("current_user", "", "Current User")
-    dbutils.widgets.text("apply_ddl", "", "Apply DDL")
+    dbutils.widgets.dropdown("apply_ddl", "false", ["true", "false"], "Apply DDL")
     dbutils.widgets.text("columns_per_call", "")
     dbutils.widgets.text("sample_size", "")
     dbutils.widgets.text("job_id", "")
@@ -194,13 +197,72 @@ def setup_notebook_variables(dbutils):
     return notebook_variables
 
 
+def user_can_manage_schema(catalog_name: str, schema_name: str) -> bool:
+    """
+    Check if the current user has MANAGE permission on the schema.
+    Queries system tables to check permissions without triggering grant operations.
+    Results are cached to avoid repeated queries during a session.
+    
+    Returns:
+        True if user can manage the schema, False otherwise
+    """
+    cache_key = f"{catalog_name}.{schema_name}"
+    
+    # Return cached result if available
+    if cache_key in _schema_permission_cache:
+        return _schema_permission_cache[cache_key]
+    
+    spark = SparkSession.builder.getOrCreate()
+    
+    try:
+        # Query system.information_schema.schema_privileges to check if user has MANAGE
+        # This is a read-only operation that won't generate permission errors
+        current_user = spark.sql("SELECT current_user()").collect()[0][0]
+        
+        # Check for MANAGE privilege on schema
+        # Note: Users may also have inherited permissions from groups or catalog ownership
+        result = spark.sql(f"""
+            SELECT COUNT(*) as cnt FROM system.information_schema.schema_privileges
+            WHERE catalog_name = '{catalog_name}'
+              AND schema_name = '{schema_name}'
+              AND grantee = '{current_user}'
+              AND privilege_type = 'MANAGE'
+        """).collect()
+        
+        if result and result[0]["cnt"] > 0:
+            _schema_permission_cache[cache_key] = True
+            return True
+            
+        # Also check if user is owner of the schema (owners have implicit MANAGE)
+        owner_result = spark.sql(f"""
+            SELECT schema_owner FROM system.information_schema.schemata
+            WHERE catalog_name = '{catalog_name}'
+              AND schema_name = '{schema_name}'
+              AND schema_owner = '{current_user}'
+        """).collect()
+        
+        if owner_result and len(owner_result) > 0:
+            _schema_permission_cache[cache_key] = True
+            return True
+        
+        _schema_permission_cache[cache_key] = False
+        return False
+        
+    except Exception as e:
+        # If we can't check permissions (e.g., no access to system tables), 
+        # assume we can try and let it fail gracefully
+        logger.debug(f"Could not check schema permissions: {e}")
+        _schema_permission_cache[cache_key] = True  # Optimistically assume we can try
+        return True
+
+
 def grant_user_permissions(
     catalog_name: str,
     schema_name: str,
     current_user: str,
     volume_name: str = None,
     table_name: str = None,
-):
+) -> bool:
     """
     Grant read permissions to a user on created schema and volume.
 
@@ -210,9 +272,17 @@ def grant_user_permissions(
         current_user: Email/username of the current user
         volume_name: Optional volume name
         table_name: Deprecated - use schema-level SELECT instead
+    
+    Returns:
+        True if permissions were granted, False if skipped or failed
     """
 
     spark = SparkSession.builder.getOrCreate()
+
+    # Check if we have permission to grant before attempting
+    # This avoids noisy JVM stacktraces on serverless/shared compute
+    if not user_can_manage_schema(catalog_name, schema_name):
+        return False
 
     try:
         spark.sql(
@@ -224,16 +294,17 @@ def grant_user_permissions(
         spark.sql(
             f"GRANT SELECT ON SCHEMA {catalog_name}.{schema_name} TO `{current_user}`"
         )
-        print(f"Granted schema permissions (including SELECT) to {current_user}")
 
         if volume_name:
             spark.sql(
                 f"GRANT READ VOLUME, WRITE VOLUME ON VOLUME {catalog_name}.{schema_name}.{volume_name} TO `{current_user}`"
             )
-            print(f"Granted volume permissions to {current_user}")
+        
+        return True
 
     except Exception as e:
         logger.error(f"Warning: Could not grant permissions to {current_user}: {e}")
+        return False
 
 
 def grant_group_permissions(
@@ -242,7 +313,7 @@ def grant_group_permissions(
     group_name: str = "account users",
     volume_name: str = None,
     table_pattern: str = None,
-):
+) -> bool:
     """
     Grant read permissions to a group on created schema and volume.
     This is more scalable than per-user grants.
@@ -253,8 +324,16 @@ def grant_group_permissions(
         group_name: Group name (default: "account users" for all users)
         volume_name: Optional volume name
         table_pattern: Deprecated - use schema-level SELECT instead
+    
+    Returns:
+        True if permissions were granted, False if skipped or failed
     """
     spark = SparkSession.builder.getOrCreate()
+
+    # Check if we have permission to grant before attempting
+    # This avoids noisy JVM stacktraces on serverless/shared compute
+    if not user_can_manage_schema(catalog_name, schema_name):
+        return False
 
     try:
         spark.sql(
@@ -263,13 +342,14 @@ def grant_group_permissions(
         spark.sql(
             f"GRANT SELECT ON SCHEMA {catalog_name}.{schema_name} TO `{group_name}`"
         )
-        print(f"✓ Granted schema permissions (including SELECT) to group: {group_name}")
 
         if volume_name:
             spark.sql(
                 f"GRANT READ VOLUME ON VOLUME {catalog_name}.{schema_name}.{volume_name} TO `{group_name}`"
             )
-            print(f"✓ Granted volume permissions to group: {group_name}")
+        
+        return True
 
     except Exception as e:
         print(f"Warning: Could not grant permissions to group {group_name}: {e}")
+        return False

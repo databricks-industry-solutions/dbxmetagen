@@ -31,6 +31,8 @@ from pyspark.sql.functions import (
     expr,
     split_part,
     regexp_replace,
+    base64,
+    to_json,
 )
 from pyspark.sql.types import (
     StructType,
@@ -39,6 +41,7 @@ from pyspark.sql.types import (
     TimestampType,
     FloatType,
     DoubleType,
+    BinaryType,
 )
 from openai import OpenAI
 from openai.types.chat.chat_completion import (
@@ -162,7 +165,17 @@ def write_to_log_table(log_data: Dict[str, Any], log_table_name: str) -> None:
         log_table_name (str): The name of the log table.
     """
     spark = SparkSession.builder.getOrCreate()
+    
+    # Ensure apply_ddl is a boolean to match existing table schema
+    if "apply_ddl" in log_data:
+        val = log_data["apply_ddl"]
+        if isinstance(val, str):
+            log_data["apply_ddl"] = val.lower() == "true"
+        elif not isinstance(val, bool):
+            log_data["apply_ddl"] = bool(val)
+    
     log_df = spark.createDataFrame([log_data])
+    
     log_df.write.format("delta").option("mergeSchema", "true").mode(
         "append"
     ).saveAsTable(log_table_name)
@@ -206,9 +219,123 @@ def get_extended_metadata_for_column(config, table_name, column_name):
     return spark.sql(query)
 
 
+def get_column_types_from_describe(spark: SparkSession, full_table_name: str) -> dict:
+    """
+    Get column names and types using DESCRIBE TABLE.
+    This works even when df.schema fails (e.g., VARIANT type in Spark Connect).
+    
+    Returns:
+        dict: {column_name: data_type_string}
+    """
+    describe_df = spark.sql(f"DESCRIBE TABLE {full_table_name}")
+    columns = {}
+    for row in describe_df.collect():
+        col_name = row["col_name"]
+        # Skip partition info and other metadata rows
+        if col_name and not col_name.startswith("#") and col_name != "":
+            data_type = row["data_type"]
+            if data_type:  # Skip empty type rows
+                columns[col_name] = data_type.upper()
+    return columns
+
+
+def read_table_with_type_conversion(spark: SparkSession, full_table_name: str) -> DataFrame:
+    """
+    Read a table with automatic conversion of special types (BINARY, VARIANT).
+    Uses SQL-based approach to handle VARIANT types which fail in Spark Connect schema access.
+    
+    Args:
+        spark: SparkSession
+        full_table_name: Full table name (catalog.schema.table)
+    
+    Returns:
+        DataFrame with BINARY/VARIANT columns converted to strings
+    """
+    # Get column types using DESCRIBE (works even with VARIANT)
+    column_types = get_column_types_from_describe(spark, full_table_name)
+    
+    # Build SELECT expressions with type conversions
+    select_exprs = []
+    has_special_types = False
+    
+    for col_name, col_type in column_types.items():
+        if col_type == "BINARY":
+            # Convert BINARY to base64 string
+            print(f"Converting BINARY column '{col_name}' to base64 string")
+            select_exprs.append(f"base64(`{col_name}`) AS `{col_name}`")
+            has_special_types = True
+        elif col_type == "VARIANT":
+            # Convert VARIANT to JSON string using to_json()
+            print(f"Converting VARIANT column '{col_name}' to JSON string using to_json()")
+            select_exprs.append(f"to_json(`{col_name}`) AS `{col_name}`")
+            has_special_types = True
+        else:
+            select_exprs.append(f"`{col_name}`")
+    
+    if has_special_types:
+        # Use SQL query with conversions
+        select_clause = ", ".join(select_exprs)
+        query = f"SELECT {select_clause} FROM {full_table_name}"
+        return spark.sql(query)
+    else:
+        # No special types - read normally
+        return spark.read.table(full_table_name)
+
+
+def convert_special_types_to_string(df: DataFrame) -> DataFrame:
+    """
+    Convert BINARY and VARIANT columns to string format for processing.
+    
+    Note: For tables with VARIANT columns in Spark Connect (serverless), use
+    read_table_with_type_conversion() instead, as df.schema access will fail.
+    
+    - BINARY columns are encoded as base64 strings
+    - VARIANT columns are converted to JSON strings
+    
+    Args:
+        df (DataFrame): The DataFrame to convert.
+    
+    Returns:
+        DataFrame: DataFrame with BINARY and VARIANT columns converted to strings.
+    """
+    try:
+        schema_fields = df.schema.fields
+    except Exception as e:
+        # Schema access can fail with VARIANT types in Spark Connect
+        print(f"Warning: Could not access DataFrame schema ({e}). "
+              "Special types may not be converted. Use read_table_with_type_conversion() instead.")
+        return df
+    
+    for field in schema_fields:
+        col_name = field.name
+        col_type = field.dataType
+        
+        # Handle BINARY type - encode as base64
+        if isinstance(col_type, BinaryType):
+            print(f"Converting BINARY column '{col_name}' to base64 string")
+            df = df.withColumn(col_name, base64(col(col_name)))
+        
+        # Handle VARIANT type - convert to JSON string using to_json()
+        # VARIANT type can be represented multiple ways in schema
+        else:
+            type_str = str(col_type).upper()
+            type_class = type(col_type).__name__.upper()
+            if ("VARIANT" in type_str or 
+                "VARIANT" in type_class or 
+                "UNPARSED" in type_str or
+                "UNPARSED" in type_class):
+                print(f"Converting VARIANT column '{col_name}' (type: {col_type}) to JSON string using to_json()")
+                df = df.withColumn(col_name, to_json(col(col_name)))
+    
+    return df
+
+
 def sample_df(df: DataFrame, nrows: int, sample_size: int = 5) -> DataFrame:
     """
     Sample dataframe to a given size and filter out rows with lots of nulls.
+    
+    Note: Special data types (BINARY, VARIANT) should be converted before calling this function
+    via convert_special_types_to_string() in get_generated_metadata_data_aware().
 
     Args:
         df (DataFrame): The DataFrame to be analyzed.
@@ -509,7 +636,10 @@ def add_ddl_to_column_comment_df(df: DataFrame, ddl_column: str) -> DataFrame:
         DataFrame: The updated DataFrame with the DDL statement added.
     """
     if "column_content" in df.columns:
-        df = df.withColumn("column_content", regexp_replace(col("column_content").cast("string"), "''", "'"))
+        df = df.withColumn(
+            "column_content",
+            regexp_replace(col("column_content").cast("string"), "''", "'"),
+        )
 
     result_df = df.withColumn(
         ddl_column,
@@ -536,7 +666,10 @@ def add_ddl_to_table_comment_df(df: DataFrame, ddl_column: str) -> DataFrame:
         DataFrame: The updated DataFrame with the DDL statement added.
     """
     if df is not None and "column_content" in df.columns:
-        df = df.withColumn("column_content", regexp_replace(col("column_content").cast("string"), "''", "'"))
+        df = df.withColumn(
+            "column_content",
+            regexp_replace(col("column_content").cast("string"), "''", "'"),
+        )
 
     if df is not None:
         result_df = df.withColumn(
@@ -1544,7 +1677,8 @@ def get_domain_classification(
 
     domain_config = load_domain_config(config.domain_config_path)
 
-    df = spark.read.table(full_table_name)
+    # Use SQL-based reading with type conversion to handle VARIANT in Spark Connect
+    df = read_table_with_type_conversion(spark, full_table_name)
     total_columns = len(df.columns)
 
     # Limit columns for domain classification to avoid massive prompts
@@ -1648,7 +1782,8 @@ def get_generated_metadata_data_aware(
     Returns:
         List[Tuple[PIResponse, CommentResponse]]: A list of tuples containing the generated metadata.
     """
-    df = spark.read.table(full_table_name)
+    # Use SQL-based reading with type conversion to handle VARIANT in Spark Connect
+    df = read_table_with_type_conversion(spark, full_table_name)
     responses = []
     nrows = df.count()
     chunked_dfs = chunk_df(df, config.columns_per_call)
@@ -2270,9 +2405,14 @@ def get_protected_classification_for_table(table_classification: str) -> str:
     """
     Determines the classification based on the values in the 'classification'
     column of the pi_rows DataFrame.
+
+    Returns "protected" only if table_classification represents actual PI.
+    Returns "None" (string) if table_classification is None or the string "None",
+    to be consistent with column-level classifications.
     """
-    if table_classification is not None:
+    if table_classification is not None and table_classification != "None":
         return "protected"
+    return "None"
 
 
 def summarize_table_content(table_df, config, table_name):
@@ -2404,7 +2544,7 @@ def generate_and_persist_metadata(config: Any) -> None:
                     "status": "Table does not exist",
                     "user": sanitize_user_identifier(config.current_user),
                     "mode": config.mode,
-                    "apply_ddl": str(config.apply_ddl),
+                    "apply_ddl": config.apply_ddl,
                     "_updated_at": str(datetime.now()),
                 }
             else:
@@ -2430,7 +2570,7 @@ def generate_and_persist_metadata(config: Any) -> None:
                     "status": status,
                     "user": sanitize_user_identifier(config.current_user),
                     "mode": config.mode,
-                    "apply_ddl": str(config.apply_ddl),
+                    "apply_ddl": config.apply_ddl,
                     "_updated_at": str(datetime.now()),
                 }
 
@@ -2581,7 +2721,13 @@ def upsert_table_names_to_control_table(
         [(name,) for name in table_names], ["table_name"]
     )
     table_names_df = trim_whitespace_from_df(table_names_df)
-    existing_df = spark.read.table(control_table)
+
+    # Check if control table exists before reading
+    if spark.catalog.tableExists(control_table):
+        existing_df = spark.read.table(control_table)
+    else:
+        # Create empty DataFrame with same schema if table doesn't exist yet
+        existing_df = spark.createDataFrame([], table_names_df.schema)
     new_table_names_df = (
         table_names_df.join(existing_df, on="table_name", how="left_anti")
         .withColumn("_updated_at", current_timestamp())

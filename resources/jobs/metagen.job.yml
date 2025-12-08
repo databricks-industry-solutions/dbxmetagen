@@ -2,18 +2,18 @@ resources:
   jobs:
     metadata_generator_job:
       name: "${var.app_name}_metadata_job"
-      
+
       email_notifications:
         on_failure:
           - ${var.current_user}
-          
+
       # Job parameters that can be passed at runtime
       parameters:
         - name: table_names
           default: ""
         - name: mode
           default: "comment"
-        - name: catalog_name  
+        - name: catalog_name
           default: ${var.catalog_name}
         - name: current_user
           default: ${var.current_user}
@@ -27,7 +27,7 @@ resources:
       tasks:
         - task_key: generate_metadata
           job_cluster_key: metadata_cluster
-          
+
           notebook_task:
             notebook_path: ../../notebooks/generate_metadata.py
             base_parameters:
@@ -38,16 +38,15 @@ resources:
               permission_groups: "{{job.parameters.permission_groups}}"
               permission_users: "{{job.parameters.permission_users}}"
               run_id: "{{job.parameters.run_id}}"
-              
+
           libraries:
             - whl: ../../dist/*.whl
-            
+
       job_clusters:
         - job_cluster_key: metadata_cluster
           new_cluster:
             spark_version: 15.4.x-cpu-ml-scala2.12
-            node_type_id: Standard_D3_v2
+            node_type_id: i3.2xlarge
             autoscale:
               min_workers: 1
               max_workers: 4
-              
