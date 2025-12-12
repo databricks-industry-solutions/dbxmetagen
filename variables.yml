@@ -98,7 +98,7 @@ variables:
     default: true
   max_prompt_length:
     description: maximum prompt length
-    default: 4096
+    default: 8192
   word_limit_per_cell:
     description: number of words for each cell of the source tables. any value from a source table larger than this will get truncated when added to prompt content.
     default: 500
