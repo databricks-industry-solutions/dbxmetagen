@@ -115,7 +115,11 @@ class TestColumnContentsValidator:
             """Try to parse a string as a JSON array."""
             if isinstance(s, str):
                 stripped = s.strip()
-                if stripped.startswith("[") and stripped.endswith("]"):
+                if stripped.startswith("["):
+                    # Handle truncated arrays
+                    if not stripped.endswith("]"):
+                        if stripped.endswith('"') or stripped.endswith("'"):
+                            stripped = stripped + "]"
                     try:
                         parsed = json.loads(stripped)
                         if isinstance(parsed, list):
@@ -207,6 +211,19 @@ class TestColumnContentsValidator:
         """Test list with both normal strings and stringified arrays."""
         result = self.validate_column_contents(['["stringified desc"]', 'normal desc'])
         assert result == ["stringified desc", "normal desc"]
+
+    def test_truncated_stringified_array(self):
+        """Test that truncated stringified arrays (missing closing ]) are recovered."""
+        # LLM sometimes returns truncated output like: ["desc1", "desc2"  (missing ])
+        truncated = '["desc1", "desc2"'
+        result = self.validate_column_contents([truncated])
+        assert result == ["desc1", "desc2"]
+
+    def test_truncated_stringified_array_in_string(self):
+        """Test truncated stringified array passed as string value."""
+        truncated = '["only one description here"'
+        result = self.validate_column_contents(truncated)
+        assert result == ["only one description here"]
 
 
 class TestMaxPromptLengthValidation:

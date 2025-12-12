@@ -41,7 +41,12 @@ class CommentResponse(Response):
             """Try to parse a string as a JSON array. Returns (success, parsed_list_or_original)."""
             if isinstance(s, str):
                 stripped = s.strip()
-                if stripped.startswith("[") and stripped.endswith("]"):
+                if stripped.startswith("["):
+                    # Handle truncated arrays - LLM sometimes outputs stringified array
+                    # that gets cut off before the closing ]
+                    if not stripped.endswith("]"):
+                        if stripped.endswith('"') or stripped.endswith("'"):
+                            stripped = stripped + "]"
                     try:
                         parsed = json.loads(stripped)
                         if isinstance(parsed, list):
