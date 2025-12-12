@@ -37,48 +37,49 @@ class CommentResponse(Response):
     def validate_column_contents(cls, v):
         """Convert string to list if needed, flatten nested lists, parse stringified arrays."""
 
-        def parse_if_stringified_array(item):
-            """Parse a string if it looks like a stringified JSON array."""
-            if isinstance(item, str):
-                stripped = item.strip()
+        def try_parse_stringified_array(s):
+            """Try to parse a string as a JSON array. Returns (success, parsed_list_or_original)."""
+            if isinstance(s, str):
+                stripped = s.strip()
                 if stripped.startswith("[") and stripped.endswith("]"):
                     try:
                         parsed = json.loads(stripped)
-                        if isinstance(parsed, list) and len(parsed) == 1:
-                            # Single-element array like '["description"]' -> "description"
-                            return (
-                                str(parsed[0])
-                                if not isinstance(parsed[0], str)
-                                else parsed[0]
-                            )
-                        elif isinstance(parsed, list):
-                            # Multi-element array - return first element (shouldn't happen with columns_per_call=1)
-                            return (
-                                str(parsed[0])
-                                if not isinstance(parsed[0], str)
-                                else parsed[0]
-                            )
+                        if isinstance(parsed, list):
+                            return True, [
+                                str(item) if not isinstance(item, str) else item
+                                for item in parsed
+                            ]
                     except json.JSONDecodeError:
                         pass
-            return str(item) if not isinstance(item, str) else item
+            return False, s
 
         if isinstance(v, str):
-            # Check if it's a stringified JSON array (LLM sometimes returns this)
-            stripped = v.strip()
-            if stripped.startswith("[") and stripped.endswith("]"):
-                try:
-                    parsed = json.loads(stripped)
-                    if isinstance(parsed, list):
-                        return [parse_if_stringified_array(item) for item in parsed]
-                except json.JSONDecodeError:
-                    pass  # Not valid JSON, treat as regular string
+            # Check if it's a stringified JSON array
+            success, result = try_parse_stringified_array(v)
+            if success:
+                return result
             return [v]
         elif isinstance(v, list):
             # Handle nested list case: [[desc1, desc2, ...]] -> [desc1, desc2, ...]
             if len(v) == 1 and isinstance(v[0], list):
-                return [parse_if_stringified_array(item) for item in v[0]]
-            # Check each element for stringified arrays
-            return [parse_if_stringified_array(item) for item in v]
+                v = v[0]
+
+            # Handle case where list has ONE element that is a stringified multi-element array
+            # e.g., ["[\"desc1\", \"desc2\", \"desc3\"]"] -> ["desc1", "desc2", "desc3"]
+            if len(v) == 1 and isinstance(v[0], str):
+                success, result = try_parse_stringified_array(v[0])
+                if success and len(result) > 1:
+                    return result
+
+            # Process each element, expanding any stringified arrays
+            expanded = []
+            for item in v:
+                success, result = try_parse_stringified_array(item)
+                if success:
+                    expanded.extend(result)
+                else:
+                    expanded.append(str(item) if not isinstance(item, str) else item)
+            return expanded
         else:
             raise ValueError(
                 "column_contents must be either a string or a list of strings"

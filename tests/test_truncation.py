@@ -111,35 +111,43 @@ class TestColumnContentsValidator:
     def validate_column_contents(self, v):
         """Replicate the validator logic for testing."""
         
-        def parse_if_stringified_array(item):
-            """Parse a string if it looks like a stringified JSON array."""
-            if isinstance(item, str):
-                stripped = item.strip()
+        def try_parse_stringified_array(s):
+            """Try to parse a string as a JSON array."""
+            if isinstance(s, str):
+                stripped = s.strip()
                 if stripped.startswith("[") and stripped.endswith("]"):
                     try:
                         parsed = json.loads(stripped)
-                        if isinstance(parsed, list) and len(parsed) == 1:
-                            return str(parsed[0]) if not isinstance(parsed[0], str) else parsed[0]
-                        elif isinstance(parsed, list):
-                            return str(parsed[0]) if not isinstance(parsed[0], str) else parsed[0]
+                        if isinstance(parsed, list):
+                            return True, [str(item) if not isinstance(item, str) else item for item in parsed]
                     except json.JSONDecodeError:
                         pass
-            return str(item) if not isinstance(item, str) else item
+            return False, s
         
         if isinstance(v, str):
-            stripped = v.strip()
-            if stripped.startswith('[') and stripped.endswith(']'):
-                try:
-                    parsed = json.loads(stripped)
-                    if isinstance(parsed, list):
-                        return [parse_if_stringified_array(item) for item in parsed]
-                except json.JSONDecodeError:
-                    pass
+            success, result = try_parse_stringified_array(v)
+            if success:
+                return result
             return [v]
         elif isinstance(v, list):
             if len(v) == 1 and isinstance(v[0], list):
-                return [parse_if_stringified_array(item) for item in v[0]]
-            return [parse_if_stringified_array(item) for item in v]
+                v = v[0]
+            
+            # Handle single element that is a stringified multi-element array
+            if len(v) == 1 and isinstance(v[0], str):
+                success, result = try_parse_stringified_array(v[0])
+                if success and len(result) > 1:
+                    return result
+            
+            # Process each element, expanding stringified arrays
+            expanded = []
+            for item in v:
+                success, result = try_parse_stringified_array(item)
+                if success:
+                    expanded.extend(result)
+                else:
+                    expanded.append(str(item) if not isinstance(item, str) else item)
+            return expanded
         else:
             raise ValueError("column_contents must be either a string or a list of strings")
 
@@ -184,10 +192,16 @@ class TestColumnContentsValidator:
         assert result == ["Single column description"]
 
     def test_list_containing_stringified_array(self):
-        """Test that stringified arrays inside list elements are parsed."""
+        """Test that stringified arrays inside list elements are parsed and expanded."""
         # LLM sometimes returns: {"column_contents": ["[\"actual description\"]"]}
         result = self.validate_column_contents(['["The actual description here"]'])
         assert result == ["The actual description here"]
+
+    def test_list_containing_stringified_multi_element_array(self):
+        """Test that a single-element list with stringified multi-element array is expanded."""
+        # This is the actual case: ["[\"desc1\", \"desc2\", \"desc3\"]"] -> ["desc1", "desc2", "desc3"]
+        result = self.validate_column_contents(['["desc1", "desc2", "desc3"]'])
+        assert result == ["desc1", "desc2", "desc3"]
 
     def test_list_with_mixed_stringified_and_normal(self):
         """Test list with both normal strings and stringified arrays."""
