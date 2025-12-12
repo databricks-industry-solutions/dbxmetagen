@@ -35,8 +35,20 @@ class CommentResponse(Response):
     @field_validator("column_contents", mode="before")
     @classmethod
     def validate_column_contents(cls, v):
-        """Convert string to list if needed, flatten nested lists."""
+        """Convert string to list if needed, flatten nested lists, parse stringified arrays."""
         if isinstance(v, str):
+            # Check if it's a stringified JSON array (LLM sometimes returns this)
+            stripped = v.strip()
+            if stripped.startswith("[") and stripped.endswith("]"):
+                try:
+                    parsed = json.loads(stripped)
+                    if isinstance(parsed, list):
+                        return [
+                            str(item) if not isinstance(item, str) else item
+                            for item in parsed
+                        ]
+                except json.JSONDecodeError:
+                    pass  # Not valid JSON, treat as regular string
             return [v]
         elif isinstance(v, list):
             # Handle nested list case: [[desc1, desc2, ...]] -> [desc1, desc2, ...]

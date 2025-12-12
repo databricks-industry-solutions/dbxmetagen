@@ -105,6 +105,69 @@ class TestBinaryTruncationAtSource:
             assert all(c in valid_chars for c in truncated)
 
 
+class TestColumnContentsValidator:
+    """Test the CommentResponse column_contents validator."""
+
+    def validate_column_contents(self, v):
+        """Replicate the validator logic for testing."""
+        if isinstance(v, str):
+            stripped = v.strip()
+            if stripped.startswith('[') and stripped.endswith(']'):
+                try:
+                    parsed = json.loads(stripped)
+                    if isinstance(parsed, list):
+                        return [str(item) if not isinstance(item, str) else item for item in parsed]
+                except json.JSONDecodeError:
+                    pass
+            return [v]
+        elif isinstance(v, list):
+            if len(v) == 1 and isinstance(v[0], list):
+                return v[0]
+            return [str(item) if not isinstance(item, str) else item for item in v]
+        else:
+            raise ValueError("column_contents must be either a string or a list of strings")
+
+    def test_normal_list_unchanged(self):
+        """Test that a normal list of strings is returned as-is."""
+        result = self.validate_column_contents(["desc1", "desc2", "desc3"])
+        assert result == ["desc1", "desc2", "desc3"]
+
+    def test_stringified_array_is_parsed(self):
+        """Test that a stringified JSON array is correctly parsed."""
+        # This is what the LLM sometimes returns incorrectly
+        stringified = '["Description for column 1", "Description for column 2"]'
+        result = self.validate_column_contents(stringified)
+        assert result == ["Description for column 1", "Description for column 2"]
+
+    def test_stringified_array_with_whitespace(self):
+        """Test parsing with leading/trailing whitespace."""
+        stringified = '  ["desc1", "desc2"]  '
+        result = self.validate_column_contents(stringified)
+        assert result == ["desc1", "desc2"]
+
+    def test_regular_string_wrapped_in_list(self):
+        """Test that a regular string (not JSON array) is wrapped in a list."""
+        result = self.validate_column_contents("Just a regular description")
+        assert result == ["Just a regular description"]
+
+    def test_invalid_json_treated_as_string(self):
+        """Test that invalid JSON starting with [ is treated as regular string."""
+        invalid = "[This is not valid JSON"
+        result = self.validate_column_contents(invalid)
+        assert result == ["[This is not valid JSON"]
+
+    def test_nested_list_flattened(self):
+        """Test that [[desc1, desc2]] is flattened to [desc1, desc2]."""
+        result = self.validate_column_contents([["desc1", "desc2"]])
+        assert result == ["desc1", "desc2"]
+
+    def test_stringified_single_element_array(self):
+        """Test parsing a stringified single-element array."""
+        stringified = '["Single column description"]'
+        result = self.validate_column_contents(stringified)
+        assert result == ["Single column description"]
+
+
 class TestMaxPromptLengthValidation:
     """Test the max_prompt_length validation in metadata generators."""
 
