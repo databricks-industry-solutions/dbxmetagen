@@ -110,20 +110,36 @@ class TestColumnContentsValidator:
 
     def validate_column_contents(self, v):
         """Replicate the validator logic for testing."""
+        
+        def parse_if_stringified_array(item):
+            """Parse a string if it looks like a stringified JSON array."""
+            if isinstance(item, str):
+                stripped = item.strip()
+                if stripped.startswith("[") and stripped.endswith("]"):
+                    try:
+                        parsed = json.loads(stripped)
+                        if isinstance(parsed, list) and len(parsed) == 1:
+                            return str(parsed[0]) if not isinstance(parsed[0], str) else parsed[0]
+                        elif isinstance(parsed, list):
+                            return str(parsed[0]) if not isinstance(parsed[0], str) else parsed[0]
+                    except json.JSONDecodeError:
+                        pass
+            return str(item) if not isinstance(item, str) else item
+        
         if isinstance(v, str):
             stripped = v.strip()
             if stripped.startswith('[') and stripped.endswith(']'):
                 try:
                     parsed = json.loads(stripped)
                     if isinstance(parsed, list):
-                        return [str(item) if not isinstance(item, str) else item for item in parsed]
+                        return [parse_if_stringified_array(item) for item in parsed]
                 except json.JSONDecodeError:
                     pass
             return [v]
         elif isinstance(v, list):
             if len(v) == 1 and isinstance(v[0], list):
-                return v[0]
-            return [str(item) if not isinstance(item, str) else item for item in v]
+                return [parse_if_stringified_array(item) for item in v[0]]
+            return [parse_if_stringified_array(item) for item in v]
         else:
             raise ValueError("column_contents must be either a string or a list of strings")
 
@@ -166,6 +182,17 @@ class TestColumnContentsValidator:
         stringified = '["Single column description"]'
         result = self.validate_column_contents(stringified)
         assert result == ["Single column description"]
+
+    def test_list_containing_stringified_array(self):
+        """Test that stringified arrays inside list elements are parsed."""
+        # LLM sometimes returns: {"column_contents": ["[\"actual description\"]"]}
+        result = self.validate_column_contents(['["The actual description here"]'])
+        assert result == ["The actual description here"]
+
+    def test_list_with_mixed_stringified_and_normal(self):
+        """Test list with both normal strings and stringified arrays."""
+        result = self.validate_column_contents(['["stringified desc"]', 'normal desc'])
+        assert result == ["stringified desc", "normal desc"]
 
 
 class TestMaxPromptLengthValidation:
