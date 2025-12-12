@@ -35,15 +35,56 @@ class CommentResponse(Response):
     @field_validator("column_contents", mode="before")
     @classmethod
     def validate_column_contents(cls, v):
-        """Convert string to list if needed, flatten nested lists."""
+        """Convert string to list if needed, flatten nested lists, parse stringified arrays."""
+
+        def try_parse_stringified_array(s):
+            """Try to parse a string as a JSON array. Returns (success, parsed_list_or_original)."""
+            if isinstance(s, str):
+                stripped = s.strip()
+                if stripped.startswith("["):
+                    # Handle truncated arrays - LLM sometimes outputs stringified array
+                    # that gets cut off before the closing ]
+                    if not stripped.endswith("]"):
+                        if stripped.endswith('"') or stripped.endswith("'"):
+                            stripped = stripped + "]"
+                    try:
+                        parsed = json.loads(stripped)
+                        if isinstance(parsed, list):
+                            return True, [
+                                str(item) if not isinstance(item, str) else item
+                                for item in parsed
+                            ]
+                    except json.JSONDecodeError:
+                        pass
+            return False, s
+
         if isinstance(v, str):
+            # Check if it's a stringified JSON array
+            success, result = try_parse_stringified_array(v)
+            if success:
+                return result
             return [v]
         elif isinstance(v, list):
             # Handle nested list case: [[desc1, desc2, ...]] -> [desc1, desc2, ...]
             if len(v) == 1 and isinstance(v[0], list):
-                return v[0]
-            # Ensure all elements are strings
-            return [str(item) if not isinstance(item, str) else item for item in v]
+                v = v[0]
+
+            # Handle case where list has ONE element that is a stringified multi-element array
+            # e.g., ["[\"desc1\", \"desc2\", \"desc3\"]"] -> ["desc1", "desc2", "desc3"]
+            if len(v) == 1 and isinstance(v[0], str):
+                success, result = try_parse_stringified_array(v[0])
+                if success and len(result) > 1:
+                    return result
+
+            # Process each element, expanding any stringified arrays
+            expanded = []
+            for item in v:
+                success, result = try_parse_stringified_array(item)
+                if success:
+                    expanded.extend(result)
+                else:
+                    expanded.append(str(item) if not isinstance(item, str) else item)
+            return expanded
         else:
             raise ValueError(
                 "column_contents must be either a string or a list of strings"
@@ -83,10 +124,11 @@ class CommentGenerator(MetadataGenerator):
         self, prompt, prompt_content
     ) -> Tuple[CommentResponse, ChatCompletion]:
 
-        if len(prompt) > self.config.max_prompt_length:
+        prompt_size = len(json.dumps(prompt))
+        if prompt_size > self.config.max_prompt_length * 5:
             raise ValueError(
-                """The prompt template is too long. Please reduce the 
-                number of columns or increase the max_prompt_length."""
+                f"The prompt template is too long ({prompt_size} chars). Please reduce the "
+                f"number of columns or increase the max_prompt_length."
             )
         comment_response, message_payload = self.get_comment_response(
             self.config,
@@ -210,9 +252,11 @@ class PIIdentifier(MetadataGenerator):
     def get_responses(
         self, prompt, prompt_content
     ) -> Tuple[PIResponse, ChatCompletion]:
-        if len(prompt) > self.config.max_prompt_length:
+        prompt_size = len(json.dumps(prompt))
+        if prompt_size > self.config.max_prompt_length * 5:
             raise ValueError(
-                "The prompt template is too long. Please reduce the number of columns or increase the max_prompt_length."
+                f"The prompt template is too long ({prompt_size} chars). Please reduce the "
+                f"number of columns or increase the max_prompt_length."
             )
         comment_response, message_payload = self.get_pi_response(
             self.config,

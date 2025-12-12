@@ -517,8 +517,10 @@ class CommentPrompt(Prompt):
                     "role": "system",
                     "content": """Generate comprehensive metadata comments for Databricks tables and columns. Analyze all provided information (table name, column names, data samples, metadata statistics, acronyms) to create well-reasoned descriptions.
 
-                    Response Format:
+                    Response Format (MUST be valid JSON with arrays, not stringified arrays):
                     {"table": "description", "columns": ["col1", "col2"], "column_contents": ["col1 desc", "col2 desc"]}
+                    
+                    IMPORTANT: column_contents must be a JSON array [...], NOT a string containing an array.
 
                     Guidelines:
                     1. Scale comment length with information richness: 3-5 sentences for simple columns, 4-8 sentences when rich metadata/patterns emerge
@@ -725,8 +727,10 @@ class CommentNoDataPrompt(Prompt):
                     "role": "system",
                     "content": """Generate comprehensive metadata comments for Databricks tables and columns. Analyze all provided information (table name, column names, data samples, metadata statistics, acronyms) to create well-reasoned descriptions. **CRITICAL: Do NOT include any actual data values in your descriptions - this data may be sensitive.**
 
-                    Response Format:
+                    Response Format (MUST be valid JSON with arrays, not stringified arrays):
                     {"table": "description", "columns": ["col1", "col2"], "column_contents": ["col1 desc", "col2 desc"]}
+                    
+                    IMPORTANT: column_contents must be a JSON array [...], NOT a string containing an array.
 
                     Guidelines:
                     1. Scale comment length with information richness: 2-3 sentences for simple columns, 4-8 sentences when rich metadata/patterns emerge

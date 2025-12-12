@@ -165,7 +165,7 @@ def write_to_log_table(log_data: Dict[str, Any], log_table_name: str) -> None:
         log_table_name (str): The name of the log table.
     """
     spark = SparkSession.builder.getOrCreate()
-    
+
     # Ensure apply_ddl is a boolean to match existing table schema
     if "apply_ddl" in log_data:
         val = log_data["apply_ddl"]
@@ -173,9 +173,9 @@ def write_to_log_table(log_data: Dict[str, Any], log_table_name: str) -> None:
             log_data["apply_ddl"] = val.lower() == "true"
         elif not isinstance(val, bool):
             log_data["apply_ddl"] = bool(val)
-    
+
     log_df = spark.createDataFrame([log_data])
-    
+
     log_df.write.format("delta").option("mergeSchema", "true").mode(
         "append"
     ).saveAsTable(log_table_name)
@@ -223,7 +223,7 @@ def get_column_types_from_describe(spark: SparkSession, full_table_name: str) ->
     """
     Get column names and types using DESCRIBE TABLE.
     This works even when df.schema fails (e.g., VARIANT type in Spark Connect).
-    
+
     Returns:
         dict: {column_name: data_type_string}
     """
@@ -239,39 +239,43 @@ def get_column_types_from_describe(spark: SparkSession, full_table_name: str) ->
     return columns
 
 
-def read_table_with_type_conversion(spark: SparkSession, full_table_name: str) -> DataFrame:
+def read_table_with_type_conversion(
+    spark: SparkSession, full_table_name: str
+) -> DataFrame:
     """
     Read a table with automatic conversion of special types (BINARY, VARIANT).
     Uses SQL-based approach to handle VARIANT types which fail in Spark Connect schema access.
-    
+
     Args:
         spark: SparkSession
         full_table_name: Full table name (catalog.schema.table)
-    
+
     Returns:
         DataFrame with BINARY/VARIANT columns converted to strings
     """
     # Get column types using DESCRIBE (works even with VARIANT)
     column_types = get_column_types_from_describe(spark, full_table_name)
-    
+
     # Build SELECT expressions with type conversions
     select_exprs = []
     has_special_types = False
-    
+
     for col_name, col_type in column_types.items():
         if col_type == "BINARY":
-            # Convert BINARY to base64 string
-            print(f"Converting BINARY column '{col_name}' to base64 string")
-            select_exprs.append(f"base64(`{col_name}`) AS `{col_name}`")
+            # Convert BINARY to base64 string, truncated to 50 chars (enough for LLM identification)
+            print(f"Converting BINARY column '{col_name}' to base64 string (truncated)")
+            select_exprs.append(f"substr(base64(`{col_name}`), 1, 50) AS `{col_name}`")
             has_special_types = True
         elif col_type == "VARIANT":
             # Convert VARIANT to JSON string using to_json()
-            print(f"Converting VARIANT column '{col_name}' to JSON string using to_json()")
+            print(
+                f"Converting VARIANT column '{col_name}' to JSON string using to_json()"
+            )
             select_exprs.append(f"to_json(`{col_name}`) AS `{col_name}`")
             has_special_types = True
         else:
             select_exprs.append(f"`{col_name}`")
-    
+
     if has_special_types:
         # Use SQL query with conversions
         select_clause = ", ".join(select_exprs)
@@ -285,16 +289,16 @@ def read_table_with_type_conversion(spark: SparkSession, full_table_name: str) -
 def convert_special_types_to_string(df: DataFrame) -> DataFrame:
     """
     Convert BINARY and VARIANT columns to string format for processing.
-    
+
     Note: For tables with VARIANT columns in Spark Connect (serverless), use
     read_table_with_type_conversion() instead, as df.schema access will fail.
-    
+
     - BINARY columns are encoded as base64 strings
     - VARIANT columns are converted to JSON strings
-    
+
     Args:
         df (DataFrame): The DataFrame to convert.
-    
+
     Returns:
         DataFrame: DataFrame with BINARY and VARIANT columns converted to strings.
     """
@@ -302,38 +306,44 @@ def convert_special_types_to_string(df: DataFrame) -> DataFrame:
         schema_fields = df.schema.fields
     except Exception as e:
         # Schema access can fail with VARIANT types in Spark Connect
-        print(f"Warning: Could not access DataFrame schema ({e}). "
-              "Special types may not be converted. Use read_table_with_type_conversion() instead.")
+        print(
+            f"Warning: Could not access DataFrame schema ({e}). "
+            "Special types may not be converted. Use read_table_with_type_conversion() instead."
+        )
         return df
-    
+
     for field in schema_fields:
         col_name = field.name
         col_type = field.dataType
-        
-        # Handle BINARY type - encode as base64
+
+        # Handle BINARY type - encode as base64, truncated to 50 chars (enough for LLM identification)
         if isinstance(col_type, BinaryType):
-            print(f"Converting BINARY column '{col_name}' to base64 string")
-            df = df.withColumn(col_name, base64(col(col_name)))
-        
+            print(f"Converting BINARY column '{col_name}' to base64 string (truncated)")
+            df = df.withColumn(col_name, expr(f"substr(base64(`{col_name}`), 1, 50)"))
+
         # Handle VARIANT type - convert to JSON string using to_json()
         # VARIANT type can be represented multiple ways in schema
         else:
             type_str = str(col_type).upper()
             type_class = type(col_type).__name__.upper()
-            if ("VARIANT" in type_str or 
-                "VARIANT" in type_class or 
-                "UNPARSED" in type_str or
-                "UNPARSED" in type_class):
-                print(f"Converting VARIANT column '{col_name}' (type: {col_type}) to JSON string using to_json()")
+            if (
+                "VARIANT" in type_str
+                or "VARIANT" in type_class
+                or "UNPARSED" in type_str
+                or "UNPARSED" in type_class
+            ):
+                print(
+                    f"Converting VARIANT column '{col_name}' (type: {col_type}) to JSON string using to_json()"
+                )
                 df = df.withColumn(col_name, to_json(col(col_name)))
-    
+
     return df
 
 
 def sample_df(df: DataFrame, nrows: int, sample_size: int = 5) -> DataFrame:
     """
     Sample dataframe to a given size and filter out rows with lots of nulls.
-    
+
     Note: Special data types (BINARY, VARIANT) should be converted before calling this function
     via convert_special_types_to_string() in get_generated_metadata_data_aware().
 
