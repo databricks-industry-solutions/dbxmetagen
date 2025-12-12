@@ -83,10 +83,11 @@ class CommentGenerator(MetadataGenerator):
         self, prompt, prompt_content
     ) -> Tuple[CommentResponse, ChatCompletion]:
 
-        if len(prompt) > self.config.max_prompt_length:
+        prompt_size = len(json.dumps(prompt))
+        if prompt_size > self.config.max_prompt_length * 5:
             raise ValueError(
-                """The prompt template is too long. Please reduce the 
-                number of columns or increase the max_prompt_length."""
+                f"The prompt template is too long ({prompt_size} chars). Please reduce the "
+                f"number of columns or increase the max_prompt_length."
             )
         comment_response, message_payload = self.get_comment_response(
             self.config,
@@ -210,9 +211,11 @@ class PIIdentifier(MetadataGenerator):
     def get_responses(
         self, prompt, prompt_content
     ) -> Tuple[PIResponse, ChatCompletion]:
-        if len(prompt) > self.config.max_prompt_length:
+        prompt_size = len(json.dumps(prompt))
+        if prompt_size > self.config.max_prompt_length * 5:
             raise ValueError(
-                "The prompt template is too long. Please reduce the number of columns or increase the max_prompt_length."
+                f"The prompt template is too long ({prompt_size} chars). Please reduce the "
+                f"number of columns or increase the max_prompt_length."
             )
         comment_response, message_payload = self.get_pi_response(
             self.config,
