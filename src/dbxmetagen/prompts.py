@@ -62,10 +62,6 @@ class Prompt(ABC):
             words = value.split()
             if len(words) > word_limit:
                 return " ".join(words[:word_limit])
-            # Fallback: truncate long single-word values (e.g., base64) by character count
-            char_limit = word_limit * 10
-            if len(words) <= 1 and len(value) > char_limit:
-                return value[:char_limit]
             return value
 
         word_limit = getattr(self.config, "word_limit_per_cell", 100)
