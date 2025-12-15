@@ -62,6 +62,10 @@ class Prompt(ABC):
             words = value.split()
             if len(words) > word_limit:
                 return " ".join(words[:word_limit])
+            # Fallback: character-based truncation (10x word limit)
+            char_limit = word_limit * 10
+            if len(value) > char_limit:
+                return value[:char_limit]
             return value
 
         word_limit = getattr(self.config, "word_limit_per_cell", 100)
@@ -73,8 +77,9 @@ class Prompt(ABC):
             truncated_values = pandas_df[column].apply(
                 lambda x: truncate_value(x, word_limit)
             )
+            char_limit = word_limit * 10
             truncation_flags = pandas_df[column].apply(
-                lambda x: len(x.split()) > word_limit
+                lambda x: len(x.split()) > word_limit or len(x) > char_limit
             )
             pandas_df[column] = truncated_values
             truncated_count += truncation_flags.sum()
