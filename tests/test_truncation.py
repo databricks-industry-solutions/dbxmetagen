@@ -16,13 +16,17 @@ import pandas as pd
 
 
 class TestTruncateValue:
-    """Test the truncate_value function logic (word-based only)."""
+    """Test the truncate_value function logic (word-based + character fallback)."""
 
     def truncate_value(self, value: str, word_limit: int) -> str:
         """Replicate the truncate_value logic for testing."""
         words = value.split()
         if len(words) > word_limit:
             return " ".join(words[:word_limit])
+        # Fallback: character-based truncation (10x word limit)
+        char_limit = word_limit * 10
+        if len(value) > char_limit:
+            return value[:char_limit]
         return value
 
     def test_truncate_normal_text_under_limit(self):
@@ -42,16 +46,48 @@ class TestTruncateValue:
         result = self.truncate_value("", word_limit=100)
         assert result == ""
 
-    def test_truncate_single_word_not_affected(self):
-        """Test that single words (like URLs) are NOT truncated by word-based logic."""
-        # URLs and other single-word strings should pass through unchanged
-        long_url = (
-            "https://example.com/very/long/path/to/resource?param=value&other=stuff"
-        )
-        result = self.truncate_value(long_url, word_limit=100)
-        assert (
-            result == long_url
-        )  # Unchanged - word-based truncation doesn't affect single words
+    def test_truncate_short_single_word_not_affected(self):
+        """Test that short single words (like URLs) under char limit are not truncated."""
+        # Short URLs under char_limit pass through unchanged
+        short_url = "https://example.com/path"
+        result = self.truncate_value(short_url, word_limit=100)  # char_limit = 1000
+        assert result == short_url
+
+    def test_truncate_long_single_word_by_chars(self):
+        """Test that long single words are truncated by character limit."""
+        # With word_limit=100, char_limit = 1000
+        long_string = "x" * 5000  # Way over char_limit
+        result = self.truncate_value(long_string, word_limit=100)
+        assert len(result) == 1000  # Truncated to char_limit
+        assert result == "x" * 1000
+
+    def test_truncate_json_blob_by_chars(self):
+        """Test that JSON blobs with few spaces are truncated by char limit."""
+        # JSON with minimal whitespace - few "words" but many chars
+        json_blob = '{"key":"' + "x" * 10000 + '"}'  # ~10010 chars, 1 "word"
+        result = self.truncate_value(json_blob, word_limit=500)  # char_limit = 5000
+        assert len(result) == 5000
+
+    def test_truncate_base64_by_chars(self):
+        """Test that base64 strings (no spaces) are truncated by char limit."""
+        base64_str = "A" * 20000  # No spaces, so 1 "word"
+        result = self.truncate_value(base64_str, word_limit=500)  # char_limit = 5000
+        assert len(result) == 5000
+
+    def test_truncate_variant_json_by_chars(self):
+        """Test that VARIANT column JSON is truncated by char limit."""
+        # Simulate a VARIANT column converted to JSON - could be huge with few spaces
+        variant_json = json.dumps({"nested": {"deep": {"data": "x" * 50000}}})
+        result = self.truncate_value(variant_json, word_limit=500)  # char_limit = 5000
+        assert len(result) == 5000
+
+    def test_word_truncation_takes_precedence(self):
+        """Test that word truncation happens before char truncation for prose."""
+        # Text with many words - word truncation should apply first
+        prose = "word " * 600  # 600 words, ~3000 chars
+        result = self.truncate_value(prose, word_limit=500)  # char_limit = 5000
+        # Word truncation applies (600 > 500), not char truncation
+        assert len(result.split()) == 500
 
 
 class TestBinaryTruncationAtSource:
@@ -273,7 +309,7 @@ class TestMaxPromptLengthValidation:
 
 
 class TestCalculateCellLengthIntegration:
-    """Integration tests for the calculate_cell_length flow (word-based only)."""
+    """Integration tests for the calculate_cell_length flow (word + char truncation)."""
 
     def calculate_cell_length(
         self, pandas_df: pd.DataFrame, word_limit: int
@@ -284,6 +320,10 @@ class TestCalculateCellLengthIntegration:
             words = value.split()
             if len(words) > word_limit:
                 return " ".join(words[:word_limit])
+            # Fallback: character-based truncation (10x word limit)
+            char_limit = word_limit * 10
+            if len(value) > char_limit:
+                return value[:char_limit]
             return value
 
         for column in pandas_df.columns:
@@ -309,8 +349,8 @@ class TestCalculateCellLengthIntegration:
         # Long text truncated to 100 words
         assert len(result["text_col"].iloc[1].split()) == 100
 
-    def test_single_word_values_unchanged(self):
-        """Test that single-word values (URLs, IDs) pass through unchanged."""
+    def test_short_single_word_values_unchanged(self):
+        """Test that short single-word values under char limit pass through unchanged."""
         df = pd.DataFrame(
             {
                 "url": ["https://example.com/path?query=value"],
@@ -320,11 +360,48 @@ class TestCalculateCellLengthIntegration:
         )
 
         original = df.copy()
-        result = self.calculate_cell_length(df, word_limit=100)
+        result = self.calculate_cell_length(df, word_limit=100)  # char_limit = 1000
 
-        # All single-word values should be unchanged
+        # All short single-word values should be unchanged (all under 1000 chars)
         for col in result.columns:
             assert result[col].iloc[0] == original[col].iloc[0]
+
+    def test_long_json_blob_truncated_by_chars(self):
+        """Test that long JSON blobs are truncated by character limit."""
+        large_json = '{"data":"' + "x" * 20000 + '"}'
+        df = pd.DataFrame({"json_col": [large_json]})
+
+        result = self.calculate_cell_length(df, word_limit=500)  # char_limit = 5000
+
+        # JSON blob truncated to char_limit
+        assert len(result["json_col"].iloc[0]) == 5000
+
+    def test_variant_column_truncated(self):
+        """Test that VARIANT-like JSON columns are properly truncated."""
+        # Simulate VARIANT column with minimal spaces (compact JSON)
+        # Use a long string value to avoid word-based splitting
+        variant_data = '{"data":"' + "x" * 10000 + '"}'  # ~10010 chars, 1 "word"
+        df = pd.DataFrame({"variant_col": [variant_data]})
+
+        result = self.calculate_cell_length(df, word_limit=500)  # char_limit = 5000
+
+        assert len(result["variant_col"].iloc[0]) == 5000
+
+    def test_mixed_content_dataframe(self):
+        """Test DataFrame with mixed content types."""
+        df = pd.DataFrame(
+            {
+                "prose": ["word " * 600],  # 600 words -> word truncation
+                "json": ['{"key":"' + "x" * 10000 + '"}'],  # char truncation
+                "short": ["hello world"],  # no truncation
+            }
+        )
+
+        result = self.calculate_cell_length(df, word_limit=500)  # char_limit = 5000
+
+        assert len(result["prose"].iloc[0].split()) == 500  # word truncated
+        assert len(result["json"].iloc[0]) == 5000  # char truncated
+        assert result["short"].iloc[0] == "hello world"  # unchanged
 
 
 if __name__ == "__main__":
