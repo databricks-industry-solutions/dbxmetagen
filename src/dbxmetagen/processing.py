@@ -273,6 +273,11 @@ def read_table_with_type_conversion(
             )
             select_exprs.append(f"to_json(`{col_name}`) AS `{col_name}`")
             has_special_types = True
+        elif col_type.upper().startswith("TIMESTAMP"):
+            # Convert TIMESTAMP to string to avoid Arrow overflow on out-of-range dates (e.g., 9999-12-31)
+            print(f"Converting TIMESTAMP column '{col_name}' to string")
+            select_exprs.append(f"CAST(`{col_name}` AS STRING) AS `{col_name}`")
+            has_special_types = True
         else:
             select_exprs.append(f"`{col_name}`")
 
