@@ -116,10 +116,11 @@ class MetadataConfig:
         self.setup_params = self.__class__.SETUP_PARAMS
         self.model_params = self.__class__.MODEL_PARAMS
         self.log_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.run_id = uuid.uuid4()
 
         # Runtime-determined attributes with defaults
         self.job_id = None  # From job context
+        self.run_id = None  # From job run context ({{run.id}}), fallback to UUID
+        self.task_id = None  # From task context, for table claiming
         self.base_url = None  # From workspace config or 'host' YAML param
         self.notebook_path = None  # From dbutils
         self.env = None  # From widgets or bundle
@@ -190,6 +191,10 @@ class MetadataConfig:
         self.include_possible_data_fields_in_metadata = _parse_bool(
             getattr(self, "include_possible_data_fields_in_metadata", True)
         )
+
+        # Fallback for run_id if not provided via kwargs/YAML
+        if not self.run_id:
+            self.run_id = str(uuid.uuid4())
 
     def get_temp_metadata_log_table_name(self) -> str:
         """

@@ -916,24 +916,27 @@ def get_control_table(config: MetadataConfig) -> str:
     """
     Returns the control table name based on the provided configuration.
 
+    When cleanup_control_table is true, appends job_id and run_id to create
+    a unique control table per job run, enabling concurrent task support.
+
     Args:
         config (MetadataConfig): Configuration object containing setup and model parameters.
 
     Returns:
         str: The control table name.
     """
-    spark = SparkSession.builder.getOrCreate()
-    if config.job_id and (
-        config.cleanup_control_table == "true" or config.cleanup_control_table == True
-    ):
-        formatted_control_table = config.control_table.format(
-            sanitize_user_identifier(get_current_user())
-        ) + str(config.job_id)
-    else:
-        formatted_control_table = config.control_table.format(
-            sanitize_user_identifier(get_current_user())
-        )
-    return formatted_control_table
+    base_table = config.control_table.format(
+        sanitize_user_identifier(get_current_user())
+    )
+    if config.cleanup_control_table == "true" or config.cleanup_control_table == True:
+        suffix_parts = []
+        if config.job_id:
+            suffix_parts.append(str(config.job_id))
+        if config.run_id:
+            suffix_parts.append(str(config.run_id))
+        if suffix_parts:
+            return f"{base_table}_{'_'.join(suffix_parts)}"
+    return base_table
 
 
 def mark_as_deleted(table_name: str, config: MetadataConfig) -> None:
@@ -957,6 +960,59 @@ def mark_as_deleted(table_name: str, config: MetadataConfig) -> None:
     """
     spark.sql(update_query)
     print(f"Marked {table_name} as deleted in the control table...")
+
+
+def claim_table(table_name: str, config: MetadataConfig) -> bool:
+    """
+    Atomically claim a table for processing in concurrent task scenarios.
+    
+    Uses an UPDATE with WHERE clause to ensure only one task can claim a table.
+    After the UPDATE, verifies that this task owns the claim.
+    
+    Args:
+        table_name (str): The fully qualified table name to claim.
+        config (MetadataConfig): Configuration object with task_id for claim ownership.
+        
+    Returns:
+        bool: True if this task successfully claimed the table, False if another task claimed it.
+    """
+    spark = SparkSession.builder.getOrCreate()
+    formatted_control_table = get_control_table(config)
+    control_table = (
+        f"{config.catalog_name}.{config.schema_name}.{formatted_control_table}"
+    )
+    task_id = config.task_id
+    
+    if not task_id:
+        # No task_id means not running in concurrent mode, allow processing
+        return True
+    
+    # Attempt to claim: UPDATE only if not already claimed and not deleted
+    claim_query = f"""
+    UPDATE {control_table}
+    SET _claimed_by = '{task_id}',
+        _claimed_at = current_timestamp(),
+        _updated_at = current_timestamp()
+    WHERE table_name = '{table_name}'
+      AND _claimed_by IS NULL
+      AND _deleted_at IS NULL
+    """
+    spark.sql(claim_query)
+    
+    # Verify claim ownership
+    verify_query = f"""
+    SELECT _claimed_by FROM {control_table}
+    WHERE table_name = '{table_name}'
+    """
+    result = spark.sql(verify_query).collect()
+    
+    if result and result[0]["_claimed_by"] == task_id:
+        print(f"Successfully claimed table {table_name} for task {task_id}")
+        return True
+    else:
+        claimed_by = result[0]["_claimed_by"] if result else "unknown"
+        print(f"Table {table_name} already claimed by {claimed_by}, skipping...")
+        return False
 
 
 def run_log_table_ddl(config):
@@ -2482,7 +2538,15 @@ def create_tables(config: MetadataConfig) -> None:
         formatted_control_table = get_control_table(config)
         logger.info("Formatted control table...", formatted_control_table)
         spark.sql(
-            f"""CREATE TABLE IF NOT EXISTS {config.catalog_name}.{config.schema_name}.{formatted_control_table} (table_name STRING, _updated_at TIMESTAMP, _deleted_at TIMESTAMP, _job_id STRING)"""
+            f"""CREATE TABLE IF NOT EXISTS {config.catalog_name}.{config.schema_name}.{formatted_control_table} (
+                table_name STRING,
+                _updated_at TIMESTAMP,
+                _deleted_at TIMESTAMP,
+                _job_id STRING,
+                _run_id STRING,
+                _claimed_by STRING,
+                _claimed_at TIMESTAMP
+            )"""
         )
 
 
@@ -2532,6 +2596,9 @@ class TableProcessingError(Exception):
 def generate_and_persist_metadata(config: Any) -> None:
     """
     Generates and persists comments for tables based on the provided setup and model parameters.
+    
+    Supports concurrent task execution by claiming tables before processing.
+    If a table is already claimed by another task, it will be skipped.
 
     Args:
         config: Configuration object containing setup and model parameters.
@@ -2539,11 +2606,19 @@ def generate_and_persist_metadata(config: Any) -> None:
     spark = SparkSession.builder.getOrCreate()
     logger = logging.getLogger("metadata_processing")
     logger.setLevel(logging.INFO)
+    
+    skipped_tables = []
 
     for table in config.table_names:
         log_dict = {}
         try:
             logger.info(f"[generate_and_persist_metadata] Processing table {table}...")
+            
+            # Attempt to claim table for concurrent task safety
+            if config.control_table and not claim_table(table, config):
+                logger.info(f"[generate_and_persist_metadata] Skipping {table} - claimed by another task")
+                skipped_tables.append(table)
+                continue
 
             if not spark.catalog.tableExists(table):
                 msg = f"Table {table} does not exist. Deleting from control table and skipping..."
@@ -2633,6 +2708,13 @@ def generate_and_persist_metadata(config: Any) -> None:
                     concise_log_err,
                 )
             print(f"Finished processing table {table} and writing to log table.")
+    
+    # Log summary of skipped tables for concurrent task visibility
+    if skipped_tables:
+        logger.info(
+            f"[generate_and_persist_metadata] Skipped {len(skipped_tables)} table(s) "
+            f"claimed by other tasks: {skipped_tables}"
+        )
 
 
 def setup_queue(config: MetadataConfig) -> List[str]:
@@ -2743,6 +2825,9 @@ def upsert_table_names_to_control_table(
         .withColumn("_updated_at", current_timestamp())
         .withColumn("_deleted_at", lit(None).cast(TimestampType()))
         .withColumn("_job_id", lit(config.job_id))
+        .withColumn("_run_id", lit(config.run_id))
+        .withColumn("_claimed_by", lit(None).cast(StringType()))
+        .withColumn("_claimed_at", lit(None).cast(TimestampType()))
     )
     if new_table_names_df.count() > 0:
         new_table_names_df.write.option("mergeSchema", "true").format("delta").mode(

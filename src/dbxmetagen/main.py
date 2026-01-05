@@ -222,9 +222,18 @@ def cleanup_resources(config, spark):
             config.cleanup_control_table == "true"
             or config.cleanup_control_table == True
         ):
-            if config.job_id is not None:
+            if config.run_id is not None:
+                # Delete by run_id for concurrent task safety
                 spark.sql(
-                    f"DELETE FROM {control_table_full} WHERE job_id = {config.job_id}"
+                    f"DELETE FROM {control_table_full} WHERE _run_id = '{config.run_id}'"
+                )
+                print(
+                    f"Cleaned up control table rows for run_id {config.run_id}: {control_table_full}"
+                )
+            elif config.job_id is not None:
+                # Fallback to job_id for backward compatibility
+                spark.sql(
+                    f"DELETE FROM {control_table_full} WHERE _job_id = '{config.job_id}'"
                 )
                 print(
                     f"Cleaned up control table rows for job_id {config.job_id}: {control_table_full}"
