@@ -126,6 +126,10 @@ def setup_widgets(dbutils):
     dbutils.widgets.text("sample_size", "")
     dbutils.widgets.text("job_id", "")
     dbutils.widgets.text("run_id", "")
+    dbutils.widgets.dropdown(
+        "include_previously_failed_tables", "false", ["true", "false"], 
+        "Include Previously Failed Tables"
+    )
 
 
 def get_widgets(dbutils):
@@ -142,6 +146,7 @@ def get_widgets(dbutils):
     columns_per_call = dbutils.widgets.get("columns_per_call")
     sample_size = dbutils.widgets.get("sample_size")
     run_id = dbutils.widgets.get("run_id")
+    include_previously_failed_tables = dbutils.widgets.get("include_previously_failed_tables")
     notebook_variables = {
         "cleanup_control_table": cleanup_control_table,
         "mode": mode,
@@ -155,6 +160,7 @@ def get_widgets(dbutils):
         "columns_per_call": columns_per_call,
         "sample_size": sample_size,
         "run_id": run_id,
+        "include_previously_failed_tables": include_previously_failed_tables,
     }
     return {k: v for k, v in notebook_variables.items() if v is not None and v != ""}
 

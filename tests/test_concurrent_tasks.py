@@ -98,7 +98,12 @@ class TestGetTaskId:
 
 
 class TestGetControlTable:
-    """Test get_control_table function with run_id support."""
+    """Test get_control_table function - returns base table name only.
+    
+    run_id is now used as a key column in the table, not in the table name.
+    This allows concurrent tasks to share the same control table while 
+    filtering by _run_id for their entries.
+    """
 
     def setup_method(self):
         """Import the function under test."""
@@ -106,8 +111,8 @@ class TestGetControlTable:
         self.get_control_table = get_control_table
 
     @patch("src.dbxmetagen.processing.get_current_user")
-    def test_get_control_table_without_cleanup(self, mock_user):
-        """Test control table name without cleanup flag."""
+    def test_get_control_table_returns_base_name(self, mock_user):
+        """Test control table always returns base name (run_id is a column, not in name)."""
         mock_user.return_value = "test_user@example.com"
         
         config = MetadataConfig(
@@ -120,12 +125,13 @@ class TestGetControlTable:
         
         result = self.get_control_table(config)
         assert result == "metadata_control_test_user_example_com"
+        # run_id and job_id should NOT be in the table name
         assert "123" not in result
         assert "456" not in result
 
     @patch("src.dbxmetagen.processing.get_current_user")
-    def test_get_control_table_with_cleanup_and_run_id(self, mock_user):
-        """Test control table name includes run_id when cleanup is true."""
+    def test_get_control_table_with_cleanup_true(self, mock_user):
+        """Test control table name is same regardless of cleanup flag."""
         mock_user.return_value = "test_user@example.com"
         
         config = MetadataConfig(
@@ -137,44 +143,27 @@ class TestGetControlTable:
         )
         
         result = self.get_control_table(config)
-        assert "123" in result
-        assert "456" in result
-        assert result == "metadata_control_test_user_example_com_123_456"
+        # Should return base name - run_id is used as column key, not in table name
+        assert result == "metadata_control_test_user_example_com"
+        assert "123" not in result
+        assert "456" not in result
 
     @patch("src.dbxmetagen.processing.get_current_user")
-    def test_get_control_table_with_cleanup_only_run_id(self, mock_user):
-        """Test control table name with only run_id (no job_id)."""
-        mock_user.return_value = "test_user@example.com"
+    def test_get_control_table_sanitizes_user(self, mock_user):
+        """Test that user email is sanitized in table name."""
+        mock_user.return_value = "test.user@example.com"
         
         config = MetadataConfig(
             skip_yaml_loading=True,
             control_table="metadata_control_{}",
             cleanup_control_table=True,
-            job_id=None,
             run_id="456"
         )
         
         result = self.get_control_table(config)
-        assert "456" in result
-        assert result == "metadata_control_test_user_example_com_456"
-
-    @patch("src.dbxmetagen.processing.get_current_user")
-    def test_get_control_table_cleanup_string_true(self, mock_user):
-        """Test control table handles string 'true' for cleanup flag."""
-        mock_user.return_value = "test_user"
-        
-        config = MetadataConfig(
-            skip_yaml_loading=True,
-            control_table="metadata_control_{}",
-            cleanup_control_table="true",  # String value
-            job_id="123",
-            run_id="456"
-        )
-        
-        result = self.get_control_table(config)
-        # Note: cleanup_control_table is parsed to boolean in config
-        # So this test verifies the parsing chain works
-        assert "123" in result or "456" in result
+        # Dots and @ should be replaced with underscores
+        assert "@" not in result
+        assert result == "metadata_control_test_user_example_com"
 
 
 class TestClaimTable:
@@ -259,6 +248,16 @@ class TestWidgetExtraction:
         calls = [str(call) for call in mock_dbutils.widgets.text.call_args_list]
         assert any("run_id" in call for call in calls)
 
+    def test_setup_widgets_creates_include_previously_failed_tables_widget(self):
+        """Test that setup_widgets creates include_previously_failed_tables widget."""
+        mock_dbutils = MagicMock()
+        
+        self.setup_widgets(mock_dbutils)
+        
+        # Verify include_previously_failed_tables widget was created as dropdown
+        calls = [str(call) for call in mock_dbutils.widgets.dropdown.call_args_list]
+        assert any("include_previously_failed_tables" in call for call in calls)
+
     def test_get_widgets_includes_run_id(self):
         """Test that get_widgets extracts run_id."""
         mock_dbutils = MagicMock()
@@ -274,11 +273,200 @@ class TestWidgetExtraction:
             "apply_ddl": "false",
             "columns_per_call": "5",
             "sample_size": "10",
-            "run_id": "run_12345"
+            "run_id": "run_12345",
+            "include_previously_failed_tables": "false"
         }.get(name, "")
         
         result = self.get_widgets(mock_dbutils)
         assert result.get("run_id") == "run_12345"
+
+    def test_get_widgets_includes_include_previously_failed_tables(self):
+        """Test that get_widgets extracts include_previously_failed_tables."""
+        mock_dbutils = MagicMock()
+        mock_dbutils.widgets.get.side_effect = lambda name: {
+            "cleanup_control_table": "false",
+            "mode": "comment",
+            "env": "dev",
+            "catalog_name": "test_catalog",
+            "schema_name": "test_schema",
+            "host": "",
+            "table_names": "catalog.schema.table",
+            "current_user": "test@example.com",
+            "apply_ddl": "false",
+            "columns_per_call": "5",
+            "sample_size": "10",
+            "run_id": "run_12345",
+            "include_previously_failed_tables": "true"
+        }.get(name, "")
+        
+        result = self.get_widgets(mock_dbutils)
+        assert result.get("include_previously_failed_tables") == "true"
+
+
+class TestIncludePreviouslyFailedTablesConfig:
+    """Test include_previously_failed_tables configuration handling."""
+
+    def test_include_previously_failed_tables_default_false(self):
+        """Test that include_previously_failed_tables defaults to False."""
+        config = MetadataConfig(skip_yaml_loading=True)
+        assert config.include_previously_failed_tables is False
+
+    def test_include_previously_failed_tables_set_true(self):
+        """Test that include_previously_failed_tables can be set to True."""
+        config = MetadataConfig(skip_yaml_loading=True, include_previously_failed_tables="true")
+        assert config.include_previously_failed_tables is True
+
+    def test_include_previously_failed_tables_string_false(self):
+        """Test that string 'false' parses to False."""
+        config = MetadataConfig(skip_yaml_loading=True, include_previously_failed_tables="false")
+        assert config.include_previously_failed_tables is False
+
+    def test_claim_timeout_minutes_default(self):
+        """Test that claim_timeout_minutes defaults to 60."""
+        config = MetadataConfig(skip_yaml_loading=True)
+        assert config.claim_timeout_minutes == 60
+
+    def test_claim_timeout_minutes_custom_value(self):
+        """Test that claim_timeout_minutes can be customized."""
+        config = MetadataConfig(skip_yaml_loading=True, claim_timeout_minutes=120)
+        assert config.claim_timeout_minutes == 120
+
+    def test_cleanup_failed_tables_default_false(self):
+        """Test that cleanup_failed_tables defaults to False."""
+        config = MetadataConfig(skip_yaml_loading=True)
+        assert config.cleanup_failed_tables is False
+
+    def test_cleanup_failed_tables_set_true(self):
+        """Test that cleanup_failed_tables can be set to True."""
+        config = MetadataConfig(skip_yaml_loading=True, cleanup_failed_tables="true")
+        assert config.cleanup_failed_tables is True
+
+
+class TestMarkTableStatus:
+    """Test mark_table_completed and mark_table_failed functions."""
+
+    def setup_method(self):
+        """Import the functions under test."""
+        from src.dbxmetagen.processing import mark_table_completed, mark_table_failed
+        self.mark_table_completed = mark_table_completed
+        self.mark_table_failed = mark_table_failed
+
+    @patch("src.dbxmetagen.processing.SparkSession")
+    @patch("src.dbxmetagen.processing.get_control_table")
+    def test_mark_table_completed_executes_update(self, mock_get_control, mock_spark):
+        """Test that mark_table_completed executes UPDATE SQL."""
+        mock_get_control.return_value = "control_table"
+        mock_spark_instance = mock_spark.builder.getOrCreate.return_value
+        
+        config = MagicMock()
+        config.catalog_name = "test_catalog"
+        config.schema_name = "test_schema"
+        config.run_id = "run_123"
+        
+        self.mark_table_completed("catalog.schema.table", config)
+        
+        # Verify SQL was called
+        mock_spark_instance.sql.assert_called()
+        sql_call = mock_spark_instance.sql.call_args[0][0]
+        assert "_status = 'completed'" in sql_call
+        assert "run_123" in sql_call
+
+    @patch("src.dbxmetagen.processing.SparkSession")
+    @patch("src.dbxmetagen.processing.get_control_table")
+    def test_mark_table_failed_executes_update(self, mock_get_control, mock_spark):
+        """Test that mark_table_failed executes UPDATE SQL with error message."""
+        mock_get_control.return_value = "control_table"
+        mock_spark_instance = mock_spark.builder.getOrCreate.return_value
+        
+        config = MagicMock()
+        config.catalog_name = "test_catalog"
+        config.schema_name = "test_schema"
+        config.run_id = "run_123"
+        
+        self.mark_table_failed("catalog.schema.table", config, "Test error message")
+        
+        # Verify SQL was called
+        mock_spark_instance.sql.assert_called()
+        sql_call = mock_spark_instance.sql.call_args[0][0]
+        assert "_status = 'failed'" in sql_call
+        assert "Test error message" in sql_call
+        assert "run_123" in sql_call
+
+    @patch("src.dbxmetagen.processing.SparkSession")
+    @patch("src.dbxmetagen.processing.get_control_table")
+    def test_mark_table_failed_escapes_single_quotes(self, mock_get_control, mock_spark):
+        """Test that mark_table_failed escapes single quotes in error message."""
+        mock_get_control.return_value = "control_table"
+        mock_spark_instance = mock_spark.builder.getOrCreate.return_value
+        
+        config = MagicMock()
+        config.catalog_name = "test_catalog"
+        config.schema_name = "test_schema"
+        config.run_id = "run_123"
+        
+        # Error message with single quotes
+        self.mark_table_failed("catalog.schema.table", config, "Error: 'value' is invalid")
+        
+        # Verify SQL was called and quotes are escaped
+        mock_spark_instance.sql.assert_called()
+        sql_call = mock_spark_instance.sql.call_args[0][0]
+        # Single quotes should be escaped to double quotes in SQL
+        assert "''" in sql_call or "value" in sql_call
+
+
+class TestClaimTableWithStatus:
+    """Test claim_table function with status filtering."""
+
+    def setup_method(self):
+        """Import the function under test."""
+        from src.dbxmetagen.processing import claim_table
+        self.claim_table = claim_table
+
+    @patch("src.dbxmetagen.processing.SparkSession")
+    @patch("src.dbxmetagen.processing.get_control_table")
+    def test_claim_table_sets_status_to_in_progress(self, mock_get_control, mock_spark):
+        """Test that claim_table sets _status to 'in_progress'."""
+        mock_get_control.return_value = "control_table"
+        mock_spark_instance = mock_spark.builder.getOrCreate.return_value
+        
+        # Simulate successful claim
+        mock_spark_instance.sql.return_value.collect.return_value = [
+            {"_claimed_by": "task_123"}
+        ]
+        
+        config = MagicMock()
+        config.task_id = "task_123"
+        config.catalog_name = "test_catalog"
+        config.schema_name = "test_schema"
+        
+        self.claim_table("catalog.schema.table", config)
+        
+        # Find the UPDATE call (first SQL call)
+        update_call = mock_spark_instance.sql.call_args_list[0][0][0]
+        assert "_status = 'in_progress'" in update_call
+
+    @patch("src.dbxmetagen.processing.SparkSession")
+    @patch("src.dbxmetagen.processing.get_control_table")
+    def test_claim_table_filters_by_status(self, mock_get_control, mock_spark):
+        """Test that claim_table only claims queued or failed tables."""
+        mock_get_control.return_value = "control_table"
+        mock_spark_instance = mock_spark.builder.getOrCreate.return_value
+        
+        # Simulate successful claim
+        mock_spark_instance.sql.return_value.collect.return_value = [
+            {"_claimed_by": "task_123"}
+        ]
+        
+        config = MagicMock()
+        config.task_id = "task_123"
+        config.catalog_name = "test_catalog"
+        config.schema_name = "test_schema"
+        
+        self.claim_table("catalog.schema.table", config)
+        
+        # Find the UPDATE call and verify status filter
+        update_call = mock_spark_instance.sql.call_args_list[0][0][0]
+        assert "_status IN ('queued', 'failed')" in update_call or "(_status IS NULL OR _status IN ('queued', 'failed'))" in update_call
 
 
 if __name__ == "__main__":

@@ -128,6 +128,29 @@ try:
         "No table was claimed by multiple tasks"
     )
 
+    # Test 3b: Verify _status column shows completed or in_progress
+    print("\nTest 3b: Verify _status column values")
+    status_df = spark.sql(f"""
+        SELECT table_name, _status, _error_message 
+        FROM {full_control_table}
+        WHERE _status IS NOT NULL
+    """)
+    status_df.show(truncate=False)
+    
+    statuses = {row["table_name"]: row["_status"] for row in status_df.collect()}
+    print(f"  Table statuses: {statuses}")
+    
+    # All tables should have a status (either completed or in_progress)
+    for expected_table in expected_tables:
+        if expected_table in statuses:
+            status = statuses[expected_table]
+            test_utils.assert_true(
+                status in ('completed', 'in_progress', 'queued'),
+                f"Table {expected_table} has valid status: {status}"
+            )
+        else:
+            print(f"  Note: {expected_table} status not found (may use default 'queued')")
+
     # Test 4: Verify metadata_generation_log has entries
     print("\nTest 4: Verify metadata_generation_log entries")
     one_hour_ago = (datetime.now() - timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
@@ -135,13 +158,13 @@ try:
     log_table = f"{test_catalog}.{test_schema}.metadata_generation_log"
     if spark.catalog.tableExists(log_table):
         log_df = spark.sql(f"""
-            SELECT table_name, metadata_type, _created_at
+            SELECT `table`, metadata_type, _created_at
             FROM {log_table}
             WHERE _created_at >= '{one_hour_ago}'
         """)
         log_df.show(truncate=False)
 
-        logged_tables = {row["table_name"] for row in log_df.collect()}
+        logged_tables = {row["table"] for row in log_df.collect()}
         print(f"  Logged tables in last hour: {logged_tables}")
 
         # Verify all expected tables have log entries
@@ -159,10 +182,10 @@ try:
     print("\nTest 5: Verify no duplicate processing in logs")
     if spark.catalog.tableExists(log_table):
         duplicate_log_df = spark.sql(f"""
-            SELECT table_name, COUNT(*) as entry_count
+            SELECT `table`, COUNT(*) as entry_count
             FROM {log_table}
             WHERE _created_at >= '{one_hour_ago}'
-            GROUP BY table_name
+            GROUP BY `table`
             HAVING COUNT(*) > 1
         """)
         

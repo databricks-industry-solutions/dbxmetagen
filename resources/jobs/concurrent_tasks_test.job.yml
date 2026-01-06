@@ -92,7 +92,7 @@ resources:
         - job_cluster_key: test_cluster
           new_cluster:
             spark_version: 15.4.x-cpu-ml-scala2.12
-            node_type_id: Standard_D3_v2
+            node_type_id: ${var.node_type}
             num_workers: 0
             data_security_mode: SINGLE_USER
             spark_conf:
@@ -100,4 +100,3 @@ resources:
               spark.master: local[*]
             custom_tags:
               ResourceClass: SingleNode
-

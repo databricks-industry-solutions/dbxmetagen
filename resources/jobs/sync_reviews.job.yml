@@ -34,7 +34,7 @@ resources:
         - job_cluster_key: sync_cluster
           new_cluster:
             spark_version: 15.4.x-cpu-ml-scala2.12
-            node_type_id: i3.2xlarge
+            node_type_id: ${var.node_type}
             autoscale:
               min_workers: 1
               max_workers: 2

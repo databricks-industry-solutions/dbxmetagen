@@ -94,6 +94,10 @@ class MetadataConfig:
             "permission_users",
             "run_id",
             "solo_medical_identifier",
+            "include_previously_failed_tables",
+            "claim_timeout_minutes",
+            "cleanup_failed_tables",
+            "node_type",
         ],
         "yaml_advanced_file_path": "../variables.advanced.yml",
         "yaml_advanced_variable_names": [
@@ -190,6 +194,17 @@ class MetadataConfig:
         )
         self.include_possible_data_fields_in_metadata = _parse_bool(
             getattr(self, "include_possible_data_fields_in_metadata", True)
+        )
+
+        # Parse retry/concurrent task options
+        self.include_previously_failed_tables = _parse_bool(
+            getattr(self, "include_previously_failed_tables", False)
+        )
+        self.cleanup_failed_tables = _parse_bool(
+            getattr(self, "cleanup_failed_tables", False)
+        )
+        self.claim_timeout_minutes = int(
+            getattr(self, "claim_timeout_minutes", 60)
         )
 
         # Fallback for run_id if not provided via kwargs/YAML
