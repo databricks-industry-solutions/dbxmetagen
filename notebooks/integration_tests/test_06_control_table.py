@@ -40,7 +40,7 @@ error_message = None
 
 try:
     # Setup
-    print("\n📋 Setup: Creating test environment")
+    print("\nSetup: Creating test environment")
     test_utils.setup_test_environment()
 
     # current_user already set above, just use it
@@ -51,7 +51,7 @@ try:
     test_table = test_utils.create_test_table("test_control_table", with_comment=False)
 
     # Test 1: cleanup_control_table=false leaves control table
-    print("\n🧪 Test 1: cleanup_control_table=false preserves control table")
+    print("\nTest 1: cleanup_control_table=false preserves control table")
 
     # Create config using production YAML with test overrides
     config_no_cleanup = MetadataConfig(
@@ -88,7 +88,7 @@ try:
     test_utils.assert_true(control_count > 0, "Control table has entries")
 
     # Validate control table schema/content
-    print("\n🔍 Validating control table schema")
+    print("\nValidating control table schema")
     control_df = spark.sql(f"SELECT * FROM {full_control_table}")
     control_columns = control_df.columns
     print(f"  Control table columns: {control_columns}")
@@ -97,10 +97,10 @@ try:
     expected_cols = ["table_name", "status", "timestamp"]
     for col in expected_cols:
         if col in control_columns:
-            print(f"  ✓ Found expected column: {col}")
+            print(f"  [OK] Found expected column: {col}")
 
     # Test 2: cleanup_control_table=true deletes rows for this run
-    print("\n🧪 Test 2: cleanup_control_table=true deletes rows for this run")
+    print("\nTest 2: cleanup_control_table=true deletes rows for this run")
 
     config_cleanup = MetadataConfig(
         yaml_file_path="../../variables.yml",  # Production YAML (2 levels up)
@@ -162,7 +162,7 @@ except Exception as e:
 
 finally:
     # Cleanup
-    print("\n🧹 Cleanup")
+    print("\nCleanup")
     test_utils.cleanup_test_artifacts()
 
     # Cleanup control tables

@@ -40,13 +40,13 @@ error_message = None
 
 try:
     # Setup
-    print("\n📋 Setup: Creating test environment")
+    print("\nSetup: Creating test environment")
     test_utils.setup_test_environment()
 
     test_table = test_utils.create_test_table("test_modes", with_comment=False)
 
     # Test Mode: comment
-    print("\n🧪 Test 1: mode=comment")
+    print("\nTest 1: mode=comment")
 
     config_comment = MetadataConfig(
         yaml_file_path="../../variables.yml",  # Production YAML (2 levels up)
@@ -61,7 +61,7 @@ try:
     )
 
     main(config_comment.__dict__)
-    print("  ✓ comment mode completed")
+    print("  [OK] comment mode completed")
 
     # Verify comment mode produces descriptions
     log_df_comment = verify_metadata_generation_log(
@@ -73,7 +73,7 @@ try:
     )
 
     # Verify actual comments were applied to table and columns
-    print("\n🔍 Verifying comments were applied to database")
+    print("\nVerifying comments were applied to database")
     table_comment = test_utils.get_table_comment(test_table)
     test_utils.assert_not_none(
         table_comment, "Table comment was applied in comment mode"
@@ -81,7 +81,7 @@ try:
     test_utils.assert_true(
         len(table_comment) > 10, "Table comment has meaningful content"
     )
-    print(f"  ✓ Table comment: {table_comment[:100]}...")
+    print(f"  [OK] Table comment: {table_comment[:100]}...")
 
     # Check that at least some columns have comments
     columns_with_comments = 0
@@ -89,7 +89,7 @@ try:
         col_comment = test_utils.get_column_comment(test_table, col_name)
         if col_comment and len(col_comment) > 5:
             columns_with_comments += 1
-            print(f"  ✓ Column '{col_name}' has comment: {col_comment[:80]}...")
+            print(f"  [OK] Column '{col_name}' has comment: {col_comment[:80]}...")
 
     test_utils.assert_true(
         columns_with_comments >= 2,
@@ -97,7 +97,7 @@ try:
     )
 
     # Test Mode: pi
-    print("\n🧪 Test 2: mode=pi")
+    print("\nTest 2: mode=pi")
 
     config_pi = MetadataConfig(
         yaml_file_path="../../variables.yml",  # Production YAML (2 levels up)
@@ -112,7 +112,7 @@ try:
     )
 
     main(config_pi.__dict__)
-    print("  ✓ pi mode completed")
+    print("  [OK] pi mode completed")
 
     # Verify PI mode generates different output
     log_df_pi = verify_metadata_generation_log(
@@ -124,7 +124,7 @@ try:
     )
 
     # Verify PII tags were applied
-    print("\n🔍 Verifying PII tags were applied")
+    print("\nVerifying PII tags were applied")
     try:
         # Check table-level tags
         table_tags_df = spark.sql(f"SHOW TAGS ON TABLE {test_table}")
@@ -133,7 +133,7 @@ try:
         if len(table_tags) > 0:
             tag_names = [row.tag_name for row in table_tags]
             print(
-                f"  ✓ Found {len(table_tags)} table-level tag(s): {', '.join(tag_names)}"
+                f"  [OK] Found {len(table_tags)} table-level tag(s): {', '.join(tag_names)}"
             )
 
             # Check for expected PII tags
@@ -141,7 +141,7 @@ try:
                 "classification" in tag.lower() for tag in tag_names
             )
             if has_classification_tag:
-                print("  ✓ Found classification-related tags")
+                print("  [OK] Found classification-related tags")
 
         # Check column-level tags for at least one column
         columns_with_tags = 0
@@ -153,13 +153,13 @@ try:
                     columns_with_tags += 1
                     tag_info = [(row.tag_name, row.tag_value) for row in col_tags]
                     print(
-                        f"  ✓ Column '{col_name}' has {len(col_tags)} tag(s): {tag_info}"
+                        f"  [OK] Column '{col_name}' has {len(col_tags)} tag(s): {tag_info}"
                     )
             except Exception as e:
                 print(f"  Note: Could not check tags for column '{col_name}': {e}")
 
         if columns_with_tags > 0:
-            print(f"  ✓ {columns_with_tags} column(s) have PII tags")
+            print(f"  [OK] {columns_with_tags} column(s) have PII tags")
         else:
             print("  Note: No column-level tags found (may depend on LLM detection)")
 
@@ -167,7 +167,7 @@ try:
         print(f"  Note: Could not verify tags (may require Unity Catalog): {e}")
 
     # Test Mode: domain
-    print("\n🧪 Test 3: mode=domain")
+    print("\nTest 3: mode=domain")
 
     config_domain = MetadataConfig(
         yaml_file_path="../../variables.yml",  # Production YAML (2 levels up)
@@ -182,7 +182,7 @@ try:
     )
 
     main(config_domain.__dict__)
-    print("  ✓ domain mode completed")
+    print("  [OK] domain mode completed")
 
     # Verify domain mode generates output
     log_df_domain = verify_metadata_generation_log(
@@ -194,20 +194,20 @@ try:
     )
 
     # Verify domain tags were applied
-    print("\n🔍 Verifying domain classification tags were applied")
+    print("\nVerifying domain classification tags were applied")
     try:
         table_tags_df = spark.sql(f"SHOW TAGS ON TABLE {test_table}")
         table_tags = table_tags_df.collect()
 
         if len(table_tags) > 0:
             tag_dict = {row.tag_name: row.tag_value for row in table_tags}
-            print(f"  ✓ Found {len(table_tags)} table-level tag(s)")
+            print(f"  [OK] Found {len(table_tags)} table-level tag(s)")
 
             # Look for domain-related tags
             domain_tags = [k for k in tag_dict.keys() if "domain" in k.lower()]
             if domain_tags:
                 for tag in domain_tags:
-                    print(f"  ✓ Domain tag '{tag}' = '{tag_dict[tag]}'")
+                    print(f"  [OK] Domain tag '{tag}' = '{tag_dict[tag]}'")
                 test_utils.assert_true(True, "Domain classification tags were applied")
             else:
                 print(
@@ -222,7 +222,7 @@ try:
         print(f"  Note: Could not verify domain tags: {e}")
 
     # Verify SQL files exist and contain correct DDL types for each mode
-    print("\n🔍 Verifying SQL files for each mode")
+    print("\nVerifying SQL files for each mode")
     user_sanitized = sanitize_user_identifier(config_comment.current_user)
 
     # Check comment mode SQL
@@ -298,7 +298,7 @@ except Exception as e:
 
 finally:
     # Cleanup
-    print("\n🧹 Cleanup")
+    print("\nCleanup")
     test_utils.cleanup_test_artifacts()
 
 # COMMAND ----------

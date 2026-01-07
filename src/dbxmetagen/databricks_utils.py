@@ -23,7 +23,7 @@ def setup_databricks_environment(dbutils_instance=None):
         current_user = w.current_user.me().user_name
         if w.config.host:
             os.environ["DATABRICKS_HOST"] = w.config.host.rstrip("/")
-        print(f"✓ Successfully authenticated as: {current_user}")
+        print(f"[OK] Successfully authenticated as: {current_user}")
     except Exception:
         print("Warning: Could not get user info from WorkspaceClient")
 
@@ -225,7 +225,7 @@ def setup_notebook_variables(dbutils):
     # Check if catalog_name is missing or set to 'none'
     if not catalog_name or catalog_name.lower() in ["none", "null", ""]:
         raise ValueError(
-            "❌ REQUIRED PARAMETER MISSING: catalog_name\n\n"
+            "[ERROR] REQUIRED PARAMETER MISSING: catalog_name\n\n"
             "Please provide a valid catalog name using the 'Catalog Name (required)' widget.\n"
             "The catalog name cannot be 'none', 'null', or empty.\n\n"
             "Example: my_catalog"
@@ -234,7 +234,7 @@ def setup_notebook_variables(dbutils):
     # Check if table_names is missing or set to 'none'
     if not table_names or table_names.lower() in ["none", "null", ""]:
         raise ValueError(
-            "❌ REQUIRED PARAMETER MISSING: table_names\n\n"
+            "[ERROR] REQUIRED PARAMETER MISSING: table_names\n\n"
             "Please provide table names using the 'Table Names - comma-separated (required)' widget.\n"
             "Specify one or more tables in the format: catalog.schema.table\n\n"
             "Examples:\n"

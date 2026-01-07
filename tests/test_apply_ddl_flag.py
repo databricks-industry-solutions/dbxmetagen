@@ -268,7 +268,7 @@ class TestApplyDDLOnlyWhenIntended:
 
     def test_execution_requires_both_apply_ddl_true_and_dry_run_false(self):
         """Test that DDL execution requires apply_ddl=True."""
-        # Scenario 1: apply_ddl=True, dry_run=False → Should call apply_ddl_to_tables
+        # Scenario 1: apply_ddl=True, dry_run=False -> Should call apply_ddl_to_tables
         config1 = MetadataConfig(
             skip_yaml_loading=True,
             catalog_name="test_catalog",
@@ -280,7 +280,7 @@ class TestApplyDDLOnlyWhenIntended:
         assert config1.apply_ddl is True  # apply_ddl_to_tables will be called
         assert config1.dry_run is False  # spark.sql will execute
 
-        # Scenario 2: apply_ddl=True, dry_run=True → Should call apply_ddl_to_tables but not execute SQL
+        # Scenario 2: apply_ddl=True, dry_run=True -> Should call apply_ddl_to_tables but not execute SQL
         config2 = MetadataConfig(
             skip_yaml_loading=True,
             catalog_name="test_catalog",
@@ -292,7 +292,7 @@ class TestApplyDDLOnlyWhenIntended:
         assert config2.apply_ddl is True  # apply_ddl_to_tables will be called
         assert config2.dry_run is True  # spark.sql will NOT execute
 
-        # Scenario 3: apply_ddl=False, dry_run=False → Should NOT call apply_ddl_to_tables
+        # Scenario 3: apply_ddl=False, dry_run=False -> Should NOT call apply_ddl_to_tables
         config3 = MetadataConfig(
             skip_yaml_loading=True,
             catalog_name="test_catalog",

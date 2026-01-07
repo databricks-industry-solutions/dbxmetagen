@@ -173,6 +173,9 @@ variables:
   grant_permissions_after_creation:
     description: Whether to automatically grant read permissions on created schema, volume, and tables to specified groups/users after metadata generation completes. Requires appropriate permissions to grant.
     default: true
+  node_type:
+    description: Node type for job clusters
+    default: i3.2xlarge    
   permission_groups:
     description: Comma-separated list of groups to grant read permissions to (e.g., "data_analysts,data_scientists"). Set to "none" to skip group permissions.
     default: "none"
@@ -182,15 +185,3 @@ variables:
   deploying_user:
     description: User deploying the bundle (for permissions).
     default: ${workspace.current_user.userName}
-  node_type:
-    description: Node type for the metadata generator job.
-    default: r5.2xlarge
-  include_previously_failed_tables:
-    description: Whether to include previously failed tables from prior runs when processing. When true, tables that failed in previous runs will be retried. When false (default), only process tables from current session.
-    default: "false"
-  claim_timeout_minutes:
-    description: Minutes before an in_progress table is considered abandoned and eligible for retry. Used for detecting crashed tasks in concurrent processing.
-    default: 60
-  cleanup_failed_tables:
-    description: Whether to remove failed table entries during cleanup. When false (default), failed entries remain for potential retry.
-    default: "false"

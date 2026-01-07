@@ -29,7 +29,7 @@ sys.path.insert(0, "/Workspace/path/to/dbxmetagen")  # Update this path
 from eval.evaluation_runner import EvaluationRunner
 from eval.datasets.evaluation_data import create_eval_dataset
 
-print("✅ Imports successful")
+print("[OK] Imports successful")
 
 # COMMAND ----------
 
@@ -78,12 +78,12 @@ print("="*70)
 print(f"Example: {first_example['request_id']}")
 print("="*70)
 
-print("\n📊 Inputs:")
+print("\nInputs:")
 print(f"  Table: {first_example['inputs']['table_name']}")
 print(f"  Columns: {first_example['inputs']['columns']}")
 print(f"  Mode: {first_example['inputs']['mode']}")
 
-print("\n✅ Ground Truth:")
+print("\n[OK] Ground Truth:")
 if 'table' in first_example['ground_truth']:
     print(f"  Table comment: {first_example['ground_truth']['table'][:100]}...")
     
@@ -108,8 +108,8 @@ result = runner.run_single_evaluation(
     temperature=0.1
 )
 
-print("\n✅ Test evaluation complete!")
-print("\n📊 Metrics:")
+print("\n[OK] Test evaluation complete!")
+print("\nMetrics:")
 for metric_name, value in result.metrics.items():
     if isinstance(value, (int, float)):
         print(f"  {metric_name}: {value:.4f}")
@@ -137,7 +137,7 @@ comparison_df = runner.run_model_comparison(
     temperature=0.1
 )
 
-print("\n✅ Model comparison complete!")
+print("\n[OK] Model comparison complete!")
 
 # COMMAND ----------
 
@@ -160,9 +160,7 @@ display(comparison_df)
 # MAGIC    - Token usage
 # MAGIC 6. Add SME feedback:
 # MAGIC    - Click on predictions
-# MAGIC    - Add 👍 /
-
- 👎 ratings
+# MAGIC    - Add thumbs up/down ratings
 # MAGIC    - Add comments
 
 # COMMAND ----------
@@ -172,7 +170,7 @@ experiment_id = mlflow.get_experiment_by_name(experiment_name).experiment_id
 workspace_url = dbutils.notebook.entry_point.getDbutils().notebook().getContext().browserHostName().get()
 
 mlflow_url = f"https://{workspace_url}/#mlflow/experiments/{experiment_id}"
-print(f"📊 MLflow UI: {mlflow_url}")
+print(f"MLflow UI: {mlflow_url}")
 displayHTML(f'<a href="{mlflow_url}" target="_blank">Open MLflow Experiment UI</a>')
 
 # COMMAND ----------
@@ -206,8 +204,8 @@ pi_result = runner.run_single_evaluation(
     temperature=0.1
 )
 
-print("\n✅ PI mode evaluation complete!")
-print("\n📊 PII Detection Metrics:")
+print("\n[OK] PI mode evaluation complete!")
+print("\nPII Detection Metrics:")
 for metric_name, value in pi_result.metrics.items():
     if isinstance(value, (int, float)):
         print(f"  {metric_name}: {value:.4f}")
@@ -247,10 +245,10 @@ for metric_name, value in pi_result.metrics.items():
 # MAGIC ## Summary
 # MAGIC
 # MAGIC You've successfully:
-# MAGIC - ✅ Run evaluation
-# MAGIC - ✅ Compared models
-# MAGIC - ✅ Viewed results in MLflow
-# MAGIC - ✅ Understand next steps
+# MAGIC - Run evaluation
+# MAGIC - Compared models
+# MAGIC - Viewed results in MLflow
+# MAGIC - Understand next steps
 # MAGIC
 # MAGIC **Key Resources:**
 # MAGIC - Evaluation code: `eval/` directory

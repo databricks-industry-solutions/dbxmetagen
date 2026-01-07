@@ -249,7 +249,7 @@ class MetadataConfig:
                 return {}
             else:
                 raise FileNotFoundError(
-                    f"❌ Required configuration file not found: {file_path}\n"
+                    f"[ERROR] Required configuration file not found: {file_path}\n"
                     f"Current working directory: {os.getcwd()}\n"
                     f"Expected path: {os.path.abspath(file_path) if os.path.exists('.') else 'N/A'}\n\n"
                     f"This usually means:\n"

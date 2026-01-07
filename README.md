@@ -166,7 +166,7 @@ For detailed information on how different team members use dbxmetagen, see [docs
 
 1. **Clone the repository** into Databricks or locally.
 2. **Configure variables:** Adjust `variables.yml` and notebook widgets.
-3. **Deploy:** Run notebook directly or use `deploy.py` for asset bundle deployment.
+3. **Deploy:** Run notebook directly or use `deploy.sh` for asset bundle deployment.
 4. **Review and adjust settings:** Tweak options in `variables.yml` and `config.py`.
 5. **Add table names** in `notebooks/table_names.csv`.
 6. **Run and review outputs:** Generated DDL scripts are stored in the `generated_metadata` volume.

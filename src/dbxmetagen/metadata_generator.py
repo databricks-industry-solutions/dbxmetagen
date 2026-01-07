@@ -47,15 +47,24 @@ class CommentResponse(Response):
                     if not stripped.endswith("]"):
                         if stripped.endswith('"') or stripped.endswith("'"):
                             stripped = stripped + "]"
-                    try:
-                        parsed = json.loads(stripped)
-                        if isinstance(parsed, list):
-                            return True, [
-                                str(item) if not isinstance(item, str) else item
-                                for item in parsed
-                            ]
-                    except json.JSONDecodeError:
-                        pass
+                    
+                    # Try parsing, with fallback for extra trailing brackets
+                    # LLM sometimes outputs "["a", "b"]]" with extra ]
+                    for attempt in range(3):  # Try removing up to 2 extra brackets
+                        try:
+                            parsed = json.loads(stripped)
+                            if isinstance(parsed, list):
+                                return True, [
+                                    str(item) if not isinstance(item, str) else item
+                                    for item in parsed
+                                ]
+                            break
+                        except json.JSONDecodeError:
+                            # If ends with ]] or ]]], try removing extra bracket
+                            if stripped.endswith("]]"):
+                                stripped = stripped[:-1]
+                            else:
+                                break
             return False, s
 
         if isinstance(v, str):

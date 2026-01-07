@@ -25,7 +25,7 @@ def st_debug(message: str):
     logger.debug(message)
     # Only show in UI if debug mode is explicitly enabled
     if st.session_state.get("config", {}).get("debug_mode", False):
-        st.caption(f"🔍 {message}")
+        st.caption(f"{message}")
 
 
 def download_file_content(
@@ -81,7 +81,7 @@ def parse_tsv_content(content: str) -> Optional[pd.DataFrame]:
         return None
 
     try:
-        df = pd.read_csv(StringIO(content), sep="\t")
+        df = pd.read_csv(StringIO(content), sep="\t", dtype=str)
         logger.info(f"Parsed TSV: {df.shape[0]} rows, {df.shape[1]} columns")
 
         if len(df) == 0:
@@ -134,16 +134,16 @@ class DataOperations:
     ):
         """Display validation results to the user."""
         if valid_tables:
-            st.success(f"✅ {len(valid_tables)} valid table names")
+            st.success(f"[OK] {len(valid_tables)} valid table names")
             with st.expander(f"Valid Tables ({len(valid_tables)})"):
                 for table in valid_tables:
-                    st.write(f"✅ {table}")
+                    st.write(f"[OK] {table}")
 
         if invalid_tables:
-            st.error(f"❌ {len(invalid_tables)} invalid table names")
+            st.error(f"[ERROR] {len(invalid_tables)} invalid table names")
             with st.expander(f"Invalid Tables ({len(invalid_tables)})"):
                 for table in invalid_tables:
-                    st.write(f"❌ {table}")
+                    st.write(f"[ERROR] {table}")
                 st.write("**Expected format:** `catalog.schema.table`")
 
     def validate_tables(self, tables: List[str]) -> Dict[str, List[str]]:
@@ -175,10 +175,10 @@ class DataOperations:
 
                     if table_info:
                         accessible.append(table)
-                        logger.info(f"✅ Table accessible: {table}")
+                        logger.info(f"Table accessible: {table}")
                     else:
                         inaccessible.append(table)
-                        logger.warning(f"❌ Table not found: {table}")
+                        logger.warning(f"Table not found: {table}")
 
                 except Exception as e:
                     inaccessible.append(table)
@@ -239,7 +239,7 @@ class DataOperations:
             # Remove empty strings
             table_names = [name for name in table_names if name and name != "nan"]
 
-            st.success(f"✅ Loaded {len(table_names)} table names from CSV")
+            st.success(f"[OK] Loaded {len(table_names)} table names from CSV")
             logger.info(
                 f"Loaded {len(table_names)} table names from {uploaded_file.name}"
             )
@@ -248,7 +248,7 @@ class DataOperations:
 
         except Exception as e:
             error_msg = f"Failed to process CSV file: {str(e)}"
-            st.error(f"❌ {error_msg}")
+            st.error(f"[ERROR] {error_msg}")
             logger.error(error_msg)
             return []
 
@@ -269,7 +269,7 @@ class DataOperations:
 
         except Exception as e:
             error_msg = f"Failed to create CSV: {str(e)}"
-            st.error(f"❌ {error_msg}")
+            st.error(f"[ERROR] {error_msg}")
             logger.error(error_msg)
             return None
 
@@ -288,7 +288,7 @@ class MetadataProcessor:
         First checks current date, then searches previous dates if needed.
         """
         if not st.session_state.get("workspace_client"):
-            st.error("❌ Workspace client not initialized")
+            st.error("[ERROR] Workspace client not initialized")
             return []
 
         try:
@@ -303,7 +303,7 @@ class MetadataProcessor:
 
             # Try current date first
             full_directory_path = f"/Volumes/{catalog}/{schema}/{volume}/{sanitized_user}/{current_date}/exportable_run_logs/"
-            st.info(f"🔍 Looking for files in: {full_directory_path}")
+            st.info(f"Looking for files in: {full_directory_path}")
 
             metadata_files = self._get_files_from_directory(full_directory_path)
 
@@ -336,12 +336,12 @@ class MetadataProcessor:
                         search_path = (
                             f"{user_base_path}/{date_dir}/exportable_run_logs/"
                         )
-                        st.info(f"🔍 Checking: {search_path}")
+                        st.info(f"Checking: {search_path}")
 
                         metadata_files = self._get_files_from_directory(search_path)
                         if metadata_files:
                             st.success(
-                                f"✅ Found {len(metadata_files)} file(s) from {date_dir}"
+                                f"[OK] Found {len(metadata_files)} file(s) from {date_dir}"
                             )
                             break
 
@@ -354,7 +354,7 @@ class MetadataProcessor:
             return metadata_files
 
         except Exception as e:
-            st.error(f"❌ Error accessing volume directory: {str(e)}")
+            st.error(f"[ERROR] Error accessing volume directory: {str(e)}")
             return []
 
     def _get_files_from_directory(self, directory_path: str) -> List[Dict[str, str]]:
@@ -407,7 +407,7 @@ class MetadataProcessor:
         )
 
         if not st.session_state.get("workspace_client"):
-            st.error("❌ Workspace client not initialized")
+            st.error("[ERROR] Workspace client not initialized")
             return None
 
         file_path = None  # Initialize for error logging
@@ -522,14 +522,14 @@ class MetadataProcessor:
                 # Update session state with the updated DataFrame
                 st.session_state.review_metadata = updated_df
                 # if job_result.get("run_id"):
-                #     st.info(f"🔄 Run ID: {job_result.get('run_id')}")
+                #     st.info(f"Run ID: {job_result.get('run_id')}")
 
                 self._grant_permissions_to_app_user()
             else:
                 error_msg = job_result.get("error", "Unknown error triggering job")
                 results["error"] = error_msg
                 results["errors"].append(error_msg)
-                st.error(f"❌ Failed to trigger DDL execution job: {error_msg}")
+                st.error(f"[ERROR] Failed to trigger DDL execution job: {error_msg}")
 
         except Exception as e:
             error_msg = f"Failed to apply metadata: {str(e)}"
@@ -565,12 +565,12 @@ class MetadataProcessor:
                 volume_name=volume_name,
                 table_name=None,
             )
-            st.success(f"✅ Granted read permissions to {current_user}")
+            st.success(f"[OK] Granted read permissions to {current_user}")
 
         except Exception as e:
             # Log but don't fail - permissions are nice-to-have
             logger.warning(f"Could not grant permissions to app user: {e}")
-            with st.expander("⚠️ Permission Grant Warning (Non-Fatal)", expanded=False):
+            with st.expander("[WARNING] Permission Grant Warning (Non-Fatal)", expanded=False):
                 st.warning(
                     f"Could not automatically grant permissions. This is common and expected "
                     f"when the app service principal doesn't have admin privileges."
@@ -603,13 +603,13 @@ class MetadataProcessor:
 
         # Route to appropriate handler
         if is_pi_metadata:
-            st.info("🔍 Detected PI metadata - generating tags DDL")
+            st.info("Detected PI metadata - generating tags DDL")
             return self._generate_ddl_for_pi_metadata(updated_df)
         elif is_domain_metadata:
-            st.info("🔍 Detected domain metadata - generating tags DDL")
+            st.info("Detected domain metadata - generating tags DDL")
             return self._generate_ddl_for_domain_metadata(updated_df)
         else:
-            st.info("🔍 Detected comment metadata - generating comment DDL")
+            st.info("Detected comment metadata - generating comment DDL")
             return self._generate_ddl_for_comment_metadata(updated_df)
 
     def _generate_ddl_for_pi_metadata(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -832,7 +832,7 @@ class MetadataProcessor:
         try:
             if not st.session_state.get("review_metadata_original_path"):
                 st.error(
-                    "❌ Original file path not found. Cannot save for job execution."
+                    "[ERROR] Original file path not found. Cannot save for job execution."
                 )
                 return None
 
@@ -866,14 +866,14 @@ class MetadataProcessor:
                 st.session_state.workspace_client.files.upload(
                     output_path, tsv_bytes, overwrite=True
                 )
-                st.success(f"✅ Saved metadata file: {filename}")
+                st.success(f"[OK] Saved metadata file: {filename}")
                 return filename
             except Exception as upload_error:
-                st.error(f"❌ Failed to save file: {upload_error}")
+                st.error(f"[ERROR] Failed to save file: {upload_error}")
                 return None
 
         except Exception as e:
-            st.error(f"❌ Error saving metadata for job: {str(e)}")
+            st.error(f"[ERROR] Error saving metadata for job: {str(e)}")
             logger.error(f"Error in _save_updated_metadata_for_job: {str(e)}")
             return None
 
@@ -935,7 +935,7 @@ class MetadataProcessor:
             try:
                 df = pd.read_csv(StringIO(content), sep="\t")
             except Exception as e:
-                logger.error(f"❌ Failed to parse TSV file: {str(e)}")
+                logger.error(f"Failed to parse TSV file: {str(e)}")
                 df = pd.read_csv(StringIO(content))
 
             # Validate required columns
@@ -943,16 +943,16 @@ class MetadataProcessor:
             missing_columns = [col for col in required_columns if col not in df.columns]
 
             if missing_columns:
-                st.error(f"❌ Missing required columns: {missing_columns}")
+                st.error(f"[ERROR] Missing required columns: {missing_columns}")
                 return None
 
-            st.success(f"✅ Loaded metadata file with {len(df)} rows")
+            st.success(f"[OK] Loaded metadata file with {len(df)} rows")
             logger.info(f"Loaded metadata file: {uploaded_file.name}")
 
             return df
 
         except Exception as e:
             error_msg = f"Failed to process metadata file: {str(e)}"
-            st.error(f"❌ {error_msg}")
+            st.error(f"[ERROR] {error_msg}")
             logger.error(error_msg)
             return None

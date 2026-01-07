@@ -954,20 +954,25 @@ def mark_as_deleted(table_name: str, config: MetadataConfig) -> None:
     print(f"Marked {table_name} as deleted in the control table...")
 
 
-def claim_table(table_name: str, config: MetadataConfig) -> bool:
+def claim_table(table_name: str, config: MetadataConfig, max_retries: int = 3) -> bool:
     """
     Atomically claim a table for processing in concurrent task scenarios.
     
     Uses an UPDATE with WHERE clause to ensure only one task can claim a table.
     After the UPDATE, verifies that this task owns the claim.
+    Includes retry logic for handling concurrent modification exceptions.
     
     Args:
         table_name (str): The fully qualified table name to claim.
         config (MetadataConfig): Configuration object with task_id for claim ownership.
+        max_retries (int): Maximum number of retry attempts for concurrent conflicts.
         
     Returns:
         bool: True if this task successfully claimed the table, False if another task claimed it.
     """
+    import time
+    import random
+    
     spark = SparkSession.builder.getOrCreate()
     formatted_control_table = get_control_table(config)
     control_table = (
@@ -991,22 +996,40 @@ def claim_table(table_name: str, config: MetadataConfig) -> bool:
       AND _deleted_at IS NULL
       AND (_status IS NULL OR _status IN ('queued', 'failed'))
     """
-    spark.sql(claim_query)
     
-    # Verify claim ownership
     verify_query = f"""
     SELECT _claimed_by FROM {control_table}
     WHERE table_name = '{table_name}'
     """
-    result = spark.sql(verify_query).collect()
     
-    if result and result[0]["_claimed_by"] == task_id:
-        print(f"Successfully claimed table {table_name} for task {task_id}")
-        return True
-    else:
-        claimed_by = result[0]["_claimed_by"] if result else "unknown"
-        print(f"Table {table_name} already claimed by {claimed_by}, skipping...")
-        return False
+    for attempt in range(max_retries):
+        try:
+            spark.sql(claim_query)
+            
+            # Verify claim ownership
+            result = spark.sql(verify_query).collect()
+            
+            if result and result[0]["_claimed_by"] == task_id:
+                print(f"Successfully claimed table {table_name} for task {task_id}")
+                return True
+            else:
+                claimed_by = result[0]["_claimed_by"] if result else "unknown"
+                print(f"Table {table_name} already claimed by {claimed_by}, skipping...")
+                return False
+        except Exception as e:
+            error_str = str(e)
+            if "ConcurrentAppendException" in error_str or "DELTA_CONCURRENT" in error_str or "ConcurrentModificationException" in error_str:
+                if attempt < max_retries - 1:
+                    wait_time = (2 ** attempt) + random.uniform(0, 1)
+                    print(f"Concurrent conflict during claim, retrying in {wait_time:.2f}s (attempt {attempt + 1}/{max_retries})")
+                    time.sleep(wait_time)
+                else:
+                    print(f"Failed to claim {table_name} after {max_retries} attempts due to concurrent conflicts")
+                    return False
+            else:
+                raise
+    
+    return False
 
 
 def mark_table_completed(table_name: str, config: MetadataConfig) -> None:
@@ -2875,15 +2898,19 @@ def ensure_fully_scoped_table_names(
 
 
 def upsert_table_names_to_control_table(
-    table_names: List[str], config: MetadataConfig
+    table_names: List[str], config: MetadataConfig, max_retries: int = 3
 ) -> None:
     """
-    Upserts a list of table names into the control table, ensuring no duplicates are created.
+    Upserts a list of table names into the control table using MERGE for concurrent safety.
 
     Args:
         table_names (List[str]): A list of table names to upsert.
         config (MetadataConfig): Configuration object containing setup and model parameters.
+        max_retries (int): Maximum number of retry attempts for concurrent conflicts.
     """
+    import time
+    import random
+    
     print(f"Upserting table names to control table {table_names}...")
     spark = SparkSession.builder.getOrCreate()
     formatted_control_table = get_control_table(config)
@@ -2891,37 +2918,56 @@ def upsert_table_names_to_control_table(
         f"{config.catalog_name}.{config.schema_name}.{formatted_control_table}"
     )
     table_names = ensure_fully_scoped_table_names(table_names, config.catalog_name)
+    
+    if not table_names:
+        print("No table names to upsert.")
+        return
+    
     table_names_df = spark.createDataFrame(
         [(name,) for name in table_names], ["table_name"]
     )
     table_names_df = trim_whitespace_from_df(table_names_df)
-
-    # Check if control table exists before reading
-    if spark.catalog.tableExists(control_table):
-        existing_df = spark.read.table(control_table)
-    else:
-        # Create empty DataFrame with same schema if table doesn't exist yet
-        existing_df = spark.createDataFrame([], table_names_df.schema)
-    new_table_names_df = (
-        table_names_df.join(existing_df, on="table_name", how="left_anti")
-        .withColumn("_updated_at", current_timestamp())
-        .withColumn("_deleted_at", lit(None).cast(TimestampType()))
-        .withColumn("_job_id", lit(config.job_id))
-        .withColumn("_run_id", lit(config.run_id))
-        .withColumn("_claimed_by", lit(None).cast(StringType()))
-        .withColumn("_claimed_at", lit(None).cast(TimestampType()))
-        .withColumn("_status", lit("queued"))
-        .withColumn("_error_message", lit(None).cast(StringType()))
-    )
-    if new_table_names_df.count() > 0:
-        new_table_names_df.write.option("mergeSchema", "true").format("delta").mode(
-            "append"
-        ).saveAsTable(control_table)
-        print(
-            f"Inserted {new_table_names_df.count()} new table names into the control table {control_table}..."
+    
+    # Create a unique temp view name to avoid conflicts between concurrent tasks
+    temp_view_name = f"new_table_names_{config.task_id or 'default'}".replace("-", "_")
+    table_names_df.createOrReplaceTempView(temp_view_name)
+    
+    # Escape string values for SQL
+    job_id = config.job_id.replace("'", "''") if config.job_id else ""
+    run_id = str(config.run_id).replace("'", "''") if config.run_id else ""
+    
+    merge_sql = f"""
+        MERGE INTO {control_table} target
+        USING {temp_view_name} source
+        ON target.table_name = source.table_name
+        WHEN NOT MATCHED THEN INSERT (
+            table_name, _updated_at, _deleted_at, _job_id, _run_id, 
+            _claimed_by, _claimed_at, _status, _error_message
+        ) VALUES (
+            source.table_name, current_timestamp(), NULL, '{job_id}', 
+            '{run_id}', NULL, NULL, 'queued', NULL
         )
-    else:
-        print("No new table names to upsert.")
+    """
+    
+    # Retry loop for handling concurrent conflicts
+    for attempt in range(max_retries):
+        try:
+            spark.sql(merge_sql)
+            print(f"Successfully merged table names into control table {control_table}")
+            return
+        except Exception as e:
+            error_str = str(e)
+            if "ConcurrentAppendException" in error_str or "DELTA_CONCURRENT" in error_str:
+                if attempt < max_retries - 1:
+                    # Exponential backoff with jitter
+                    wait_time = (2 ** attempt) + random.uniform(0, 1)
+                    print(f"Concurrent conflict detected, retrying in {wait_time:.2f}s (attempt {attempt + 1}/{max_retries})")
+                    time.sleep(wait_time)
+                else:
+                    print(f"Failed after {max_retries} attempts due to concurrent conflicts")
+                    raise
+            else:
+                raise
 
 
 def load_table_names_from_csv(csv_file_path):

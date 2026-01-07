@@ -37,7 +37,7 @@ error_message = None
 
 try:
     # Setup
-    print("\n📋 Setup: Creating test environment")
+    print("\nSetup: Creating test environment")
     test_utils.setup_test_environment()
 
     # Get current user for tracking temp tables
@@ -47,7 +47,7 @@ try:
     print(f"  Sanitized user: {sanitized_user}")
 
     # Test 1: Successful run should clean up temp tables
-    print("\n🧪 Test 1: Successful run cleans up temp tables")
+    print("\nTest 1: Successful run cleans up temp tables")
     test_table = test_utils.create_test_table(
         "test_cleanup_success", with_comment=False
     )
@@ -78,7 +78,7 @@ try:
     )
 
     # Verify metadata_generation_log persists after cleanup
-    print("\n🔍 Verifying metadata_generation_log persists")
+    print("\nVerifying metadata_generation_log persists")
     log_df = verify_metadata_generation_log(spark, test_catalog, test_schema, test_table)
     test_utils.assert_true(
         log_df is not None and log_df.count() > 0,
@@ -86,7 +86,7 @@ try:
     )
 
     # Test 2: Failed run should STILL clean up temp tables
-    print("\n🧪 Test 2: Failed run also cleans up temp tables")
+    print("\nTest 2: Failed run also cleans up temp tables")
 
     # Create a scenario that will fail - invalid catalog
     config_fail = MetadataConfig(
@@ -102,9 +102,9 @@ try:
     try:
         print("  Attempting run with invalid catalog (expected to fail)...")
         main(config_fail.__dict__)
-        print("  ⚠ Run unexpectedly succeeded")
+        print("  [WARNING] Run unexpectedly succeeded")
     except Exception as e:
-        print(f"  ✓ Run failed as expected: {type(e).__name__}")
+        print(f"  [OK] Run failed as expected: {type(e).__name__}")
 
     # Even after failure, temp tables should be cleaned
     temp_tables_after_fail = test_utils.find_temp_tables(sanitized_user)
@@ -117,7 +117,7 @@ try:
     )
 
     # Test 3: Control tables
-    print("\n🧪 Test 3: Control table cleanup")
+    print("\nTest 3: Control table cleanup")
     control_tables = test_utils.find_control_tables(sanitized_user)
     print(f"  Control tables found: {len(control_tables)}")
 
@@ -147,7 +147,7 @@ except Exception as e:
 
 finally:
     # Cleanup
-    print("\n🧹 Cleanup")
+    print("\nCleanup")
     test_utils.cleanup_test_artifacts()
 
     # Also cleanup any lingering temp tables

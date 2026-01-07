@@ -235,12 +235,12 @@ cleanup_temp_yml_files() {
 }
 
 update_variables_yml() {
-    echo "Creating variables override file from dev.env..."
+    echo "Creating variables override file from ${APP_ENV}.env..."
 
     cp variables.yml variables.bkp
     
-    if [ ! -f "dev.env" ]; then
-        echo "No dev.env found."
+    if [ ! -f "${APP_ENV}.env" ]; then
+        echo "No ${APP_ENV}.env found."
         return
     fi
     
@@ -292,14 +292,9 @@ DEBUG_MODE=false
 CREATE_TEST_DATA=false
 TARGET="dev"
 PROFILE="DEFAULT"
-ENV="dev"
 
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --env)
-            ENV="$2"
-            shift 2
-            ;;
         --host)
             HOST_URL="$2"
             shift 2
@@ -381,7 +376,7 @@ app_env: "$APP_ENV"
 EOF
 
 if [ -f "${APP_ENV}.env" ]; then
-    echo "Loading environment variables from dev.env..."
+    echo "Loading environment variables from ${APP_ENV}.env..."
     set -a  # automatically export all variables
     source ${APP_ENV}.env
     set +a  # turn off automatic export

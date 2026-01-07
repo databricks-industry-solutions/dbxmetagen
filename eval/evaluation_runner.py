@@ -102,7 +102,7 @@ class EvaluationRunner:
                 extra_metrics=metrics,
             )
 
-            print(f"\n✅ Evaluation complete!")
+            print(f"\n[OK] Evaluation complete!")
             print(f"\nMetrics summary:")
             for metric_name, value in results.metrics.items():
                 print(
@@ -245,7 +245,7 @@ def run_quick_test():
         temperature=0.1,
     )
 
-    print("\n✅ Test complete! Check MLflow UI for results.")
+    print("\n[OK] Test complete! Check MLflow UI for results.")
 
 
 def run_full_evaluation():
@@ -291,7 +291,7 @@ def run_full_evaluation():
     )
 
     print("\n" + "=" * 70)
-    print("✅ Full evaluation complete!")
+    print("[OK] Full evaluation complete!")
     print("=" * 70)
     print("\nNext steps:")
     print("1. Open Databricks MLflow UI")

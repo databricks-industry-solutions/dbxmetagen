@@ -176,7 +176,7 @@ def grant_permissions_on_created_objects(config):
 
     except Exception as e:
         print("\n" + "=" * 80)
-        print("⚠️  PERMISSION GRANT WARNING (NON-FATAL)")
+        print("[WARNING] PERMISSION GRANT WARNING (NON-FATAL)")
         print("=" * 80)
         print(f"Could not grant some permissions: {e}")
         print("\nWhy this happens:")

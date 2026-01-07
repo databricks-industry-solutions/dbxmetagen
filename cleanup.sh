@@ -5,7 +5,7 @@
 
 set -e  # Exit on any error
 
-echo "🧹 Databricks Asset Bundle Cleanup"
+echo "Databricks Asset Bundle Cleanup"
 echo "=================================="
 
 # Colors for output
@@ -108,10 +108,10 @@ print_status "Getting current deployment summary..."
 databricks bundle summary
 
 echo ""
-print_warning "⚠️  This will permanently delete all deployed resources!"
-print_warning "   • Jobs will be deleted"
-print_warning "   • Notebooks will be removed from workspace"
-print_warning "   • All bundle artifacts will be cleaned up"
+print_warning "WARNING: This will permanently delete all deployed resources!"
+print_warning "   - Jobs will be deleted"
+print_warning "   - Notebooks will be removed from workspace"
+print_warning "   - All bundle artifacts will be cleaned up"
 echo ""
 
 read -p "Are you sure you want to destroy the bundle? (y/N): " -n 1 -r
