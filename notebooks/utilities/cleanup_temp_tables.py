@@ -136,10 +136,10 @@ def cleanup_tables(spark, catalog_name, schema_name, tables_to_drop, dry_run):
         else:
             try:
                 spark.sql(f"DROP TABLE IF EXISTS {full_table_name}")
-                print(f"✓ Dropped: {full_table_name}")
+                print(f"[OK] Dropped: {full_table_name}")
                 results["success"].append(table)
             except Exception as e:
-                print(f"✗ Failed to drop {full_table_name}: {e}")
+                print(f"[ERROR] Failed to drop {full_table_name}: {e}")
                 results["failed"].append(table)
     
     return results
@@ -164,7 +164,7 @@ print("="*80)
 print()
 
 # Find tables to clean up
-print("🔍 Searching for tables to clean up...")
+print("Searching for tables to clean up...")
 print()
 
 temp_tables = get_temp_tables(spark, catalog_name, schema_name, current_user_sanitized, include_all_users)
@@ -209,11 +209,11 @@ if temp_tables or control_tables:
     if dry_run:
         print(f"Would delete {len(results['success'])} table(s)")
     else:
-        print(f"✓ Successfully deleted: {len(results['success'])} table(s)")
-        print(f"✗ Failed to delete: {len(results['failed'])} table(s)")
+        print(f"[OK] Successfully deleted: {len(results['success'])} table(s)")
+        print(f"[ERROR] Failed to delete: {len(results['failed'])} table(s)")
     print("="*80)
 else:
-    print("✓ No tables found to clean up!")
+    print("[OK] No tables found to clean up!")
 
 # COMMAND ----------
 

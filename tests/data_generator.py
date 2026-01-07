@@ -1425,9 +1425,9 @@ def validate_generated_data(schemas: Dict[str, Dict[str, DataFrame]]) -> None:
     encounter_count = medical_tables["encounters"].count()
 
     print(f"\nMedical Notes Schema Validation:")
-    print(f"  • Patients: {patient_count:,}")
+    print(f"  - Patients: {patient_count:,}")
     print(
-        f"  • Encounters: {encounter_count:,} (ratio: {encounter_count/patient_count:.1f}x)"
+        f"  - Encounters: {encounter_count:,} (ratio: {encounter_count/patient_count:.1f}x)"
     )
 
     # Check Hospital Data schema relationships
@@ -1436,8 +1436,8 @@ def validate_generated_data(schemas: Dict[str, Dict[str, DataFrame]]) -> None:
     admission_count = hospital_tables["patient_admissions"].count()
 
     print(f"\nHospital Data Schema Validation:")
-    print(f"  • Staff: {staff_count:,}")
-    print(f"  • Admissions: {admission_count:,}")
+    print(f"  - Staff: {staff_count:,}")
+    print(f"  - Admissions: {admission_count:,}")
 
     # Check Clinical Trials schema relationships
     trials_tables = schemas["clinical_trials"]
@@ -1445,9 +1445,9 @@ def validate_generated_data(schemas: Dict[str, Dict[str, DataFrame]]) -> None:
     participant_count = trials_tables["study_participants"].count()
 
     print(f"\nClinical Trials Schema Validation:")
-    print(f"  • Trials: {trial_count:,}")
+    print(f"  - Trials: {trial_count:,}")
     print(
-        f"  • Participants: {participant_count:,} (avg: {participant_count/trial_count:.0f} per trial)"
+        f"  - Participants: {participant_count:,} (avg: {participant_count/trial_count:.0f} per trial)"
     )
 
     # Check Livestock Research schema relationships
@@ -1456,9 +1456,9 @@ def validate_generated_data(schemas: Dict[str, Dict[str, DataFrame]]) -> None:
     animal_count = livestock_tables["research_animals"].count()
 
     print(f"\nLivestock Research Schema Validation:")
-    print(f"  • Facilities: {facility_count:,}")
+    print(f"  - Facilities: {facility_count:,}")
     print(
-        f"  • Animals: {animal_count:,} (avg: {animal_count/facility_count:.0f} per facility)"
+        f"  - Animals: {animal_count:,} (avg: {animal_count/facility_count:.0f} per facility)"
     )
 
     print("\nData validation complete!")

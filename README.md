@@ -1,24 +1,5 @@
 # dbxmetagen: GenAI-Assisted Metadata Generation and Management for Databricks
 
-## Table of Contents
-
-- [Project Overview](#project-overview)
-- [Quickstart](#quickstart)
-- [Disclaimer](#disclaimer)
-- [Solution Overview](#solution-overview)
-- [User Guide](#user-guide)
-  - [Workflow Diagrams](#workflow-diagrams)
-- [Minimal Setup](#minimal-setup)
-- [Full Setup Instructions](#full-setup-instructions)
-- [Configuration](#configuration)
-- [Current Status](#current-status)
-- [Domain Classification](#domain-classification)
-- [Discussion Points & Recommendations](#discussion-points--recommendations)
-- [License](#license)
-- [Acknowledgements](#acknowledgements)
-
-## Project Overview
-
 <img src="images/DBXMetagen_arch_hl.png" alt="High-level DBXMetagen Architecture" width="800" top-margin="50">
 
 **dbxmetagen** is a utility for generating high-quality metadata for Unity Catalog, and includes the ability to identify and classify data and metadata in various ways to assist enrichment of Unity Catalog, and quickly building up data catalogs for governance purposes.
@@ -51,9 +32,10 @@ That's it! No YAML files to edit, no deployment scripts to run.
 
 If you want to take the next step with this same quickstart approach:
 1. Update notebooks/table_names.csv instead of the table names widget.
-2. Explore the review functionality
+2. Explore the review functionality - sync_reviewed_ddl notebook.
 3. Review some of the advanced options in variables.yml
 4. Manually create a Databricks job and run notebooks/generate_metadata.py as a task.
+5. Move to full deployment using Databricks Asset Bundles - only necessary to use the app, otherwise everything can be done with a simple git clone into the workspace.
 
 ---
 
@@ -63,18 +45,19 @@ For a web UI with job management, metadata review, and team collaboration:
 
 1. **Prerequisites**:
    - Databricks CLI installed and configured: `databricks configure --profile <your-profile>`
-   - Python 3.9+, Poetry (for building a wheel when using Databricks asset bundles)
+   - You may need to use `databricks auth login --profile <your-profile>`
+   - Python 3.10+, Poetry (for building a wheel when using Databricks asset bundles)
 
 2. **Configure environment**:
    ```bash
    cp example.env dev.env
    # Edit dev.env with your workspace URL and permission groups/users
-   Update datbricks.yml host for asset bundle deploy
+   Update databricks.yml host for asset bundle deploy
    ```
 
 3. **Deploy**:
    ```bash
-   ./deploy.sh --profile <your-profile>
+   ./deploy.sh --profile <your-profile> --target <your-dab-target>
    ```
 
 4. **Access**: Go to **Databricks Workspace → Apps → dbxmetagen-app**
@@ -122,19 +105,6 @@ For detailed information on how different team members use dbxmetagen, see [docs
 
 - **Advanced Workflow:** Adjust PI definitions, acronyms, secondary options; use asset bundles or web terminal for deployment; leverage manual overrides.
 
-<br/>
-<br/>
-
-<img src="images/workflow1.png" alt="User Process Flow - simple" width="1000"> 
-
-<br/>
-<br/>
-
-<img src="images/simple_dab_workflow.png" alt="User Process Flow - simple" width="1200"> 
-
-<br/>
-<br/>
-
 ### Additional Setup Details
 1. Clone the Repo into Databricks or locally
 1. If cloned into Repos in Databricks, one can run the notebook using an all-purpose cluster (tested on 14.3 ML LTS, 15.4 ML LTS, 16.4 ML) without further deployment, simply adjusting variables.yml and widgets in the notebook.
@@ -150,35 +120,7 @@ For detailed information on how different team members use dbxmetagen, see [docs
 1. In notebooks/table_names.csv, keep the first row as _table_name_ and add the list of tables you want metadata to be generated for. Add them as <schema>.<table> if they are in the same catalog that you define your catalog in variables.yml file separately, or you can use a three-level namespace for these table names. You can also provide <catalog>.<schema>.* to run against all tables in a schema.
 
 ### Configurations
-1. Most configurations that users should change are in variables.yml. There are a variety of useful options, please read the descriptions, I will not rewrite them all here.
-
-
-### Discussion points and recommendations:
-1. Throttling - the default PPT endpoints will throttle eventually. Likely this will occur wehn running backfills for large numbers of tables, or if you have other users using the same endpoint.
-1. Sampling - setting a reasonable sample size for data will serve to provide input from column contents without leading to swamping of column names.
-1. Chunking - running a smaller number of columns at once will result in more attention paid and more tokens PER column but will probably cost slightly more and take longer.
-1. One of the easiest ways to speed this up and get terser answers is to ramp up the columns per call - compare 5 and 50 for example. This will impact complexity of results.
-1. Larger chunks will result in simpler comments with less creativity and elaboration.
-1. Remember that PPT endpoints (the default) are not HIPAA compliant, you are responsible for setting up appropriate endpoints for your security needs.
-1. For 'pi' mode, the recommendation is to potentially use more rows of data, and smaller chunks given that scanning the data is important for identifying PI.
-
-## Full Setup Instructions
-
-1. **Clone the repository** into Databricks or locally.
-2. **Configure variables:** Adjust `variables.yml` and notebook widgets.
-3. **Deploy:** Run notebook directly or use `deploy.py` for asset bundle deployment.
-4. **Review and adjust settings:** Tweak options in `variables.yml` and `config.py`.
-5. **Add table names** in `notebooks/table_names.csv`.
-6. **Run and review outputs:** Generated DDL scripts are stored in the `generated_metadata` volume.
-
-## Details
-
-1. Some errors are silent by design, but they will show up in the log table, so review it if you are not seeing the outputs you expect.
-1. If you get an error partway through a run, the control table will still keep in memory the tables you entered the first time that haven't run yet, so you should be able to remove the table names from table_names.csv and run it again and it should pick up any unfinished tables. If you don't, you'll see that they all get run again anyways. This checkpointing is a feature.
-1. To make sure that column constraints are interpretable, make sure the constraint names relate to the column that they constrain, as constraints are pulled from the table metadata, not the column metadata, and they describe the constraint name, not the columns with the constraint.
-1. If you get a Pydantic validation error, it's most likely due to some atypical details of your data or metadata in the specific failing table. First thing to try is another LLM - switch to llama from sonnet or vice versa for example. If that doesn't work, please open an issue on the repo.
-
-## Configuration
+Most configurations that users should change are in variables.yml. There are a variety of useful options, please read the descriptions, I will not rewrite them all here.
 
 Key settings in `variables.yml`:
 
@@ -188,7 +130,7 @@ Key settings in `variables.yml`:
 - `allow_data_in_comments`: Control data in generated comments
 
 **Model:**
-- `model`: LLM endpoint (recommend `databricks-meta-llama-3-3-70b-instruct` or `databricks-claude-3-7-sonnet`)
+- `model`: LLM endpoint (recommend newer versions of claude sonnet or GPT-OSS).
 - `columns_per_call`: Columns per LLM call (5-10 recommended)
 - `temperature`: Model creativity (0.1 for consistency)
 
@@ -204,7 +146,7 @@ For complete configuration reference, see [docs/CONFIGURATION.md](docs/CONFIGURA
 
 ## Current Status
 
-- Tested on DBR 16.4 LTS, 14.3 LTS, and 15.4 LTS, as well as the ML versions.
+- Tested on DBR 17.4 LTS, 16.4 LTS, and 15.4 LTS, as well as the ML versions.
 - Serverless runtimes tested extensively but runtimes are less consistent.
 - Views only work on 16.4. Pre-16.4, alternative DDL is used that only works on tables.
 - Excel writes for metadata generator or sync_reviewed_ddl only work on ML runtimes. If you must use a standard runtime, leverage tsv.

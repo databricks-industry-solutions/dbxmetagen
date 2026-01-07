@@ -173,6 +173,9 @@ variables:
   grant_permissions_after_creation:
     description: Whether to automatically grant read permissions on created schema, volume, and tables to specified groups/users after metadata generation completes. Requires appropriate permissions to grant.
     default: true
+  node_type:
+    description: Node type for job clusters
+    default: i3.2xlarge    
   permission_groups:
     description: Comma-separated list of groups to grant read permissions to (e.g., "data_analysts,data_scientists"). Set to "none" to skip group permissions.
     default: "none"

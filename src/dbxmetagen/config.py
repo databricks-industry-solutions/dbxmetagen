@@ -94,6 +94,10 @@ class MetadataConfig:
             "permission_users",
             "run_id",
             "solo_medical_identifier",
+            "include_previously_failed_tables",
+            "claim_timeout_minutes",
+            "cleanup_failed_tables",
+            "node_type",
         ],
         "yaml_advanced_file_path": "../variables.advanced.yml",
         "yaml_advanced_variable_names": [
@@ -116,10 +120,11 @@ class MetadataConfig:
         self.setup_params = self.__class__.SETUP_PARAMS
         self.model_params = self.__class__.MODEL_PARAMS
         self.log_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.run_id = uuid.uuid4()
 
         # Runtime-determined attributes with defaults
         self.job_id = None  # From job context
+        self.run_id = None  # From job run context ({{run.id}}), fallback to UUID
+        self.task_id = None  # From task context, for table claiming
         self.base_url = None  # From workspace config or 'host' YAML param
         self.notebook_path = None  # From dbutils
         self.env = None  # From widgets or bundle
@@ -191,6 +196,21 @@ class MetadataConfig:
             getattr(self, "include_possible_data_fields_in_metadata", True)
         )
 
+        # Parse retry/concurrent task options
+        self.include_previously_failed_tables = _parse_bool(
+            getattr(self, "include_previously_failed_tables", False)
+        )
+        self.cleanup_failed_tables = _parse_bool(
+            getattr(self, "cleanup_failed_tables", False)
+        )
+        self.claim_timeout_minutes = int(
+            getattr(self, "claim_timeout_minutes", 60)
+        )
+
+        # Fallback for run_id if not provided via kwargs/YAML
+        if not self.run_id:
+            self.run_id = str(uuid.uuid4())
+
     def get_temp_metadata_log_table_name(self) -> str:
         """
         Generate unique temp metadata generation log table name for this job run.
@@ -229,7 +249,7 @@ class MetadataConfig:
                 return {}
             else:
                 raise FileNotFoundError(
-                    f"❌ Required configuration file not found: {file_path}\n"
+                    f"[ERROR] Required configuration file not found: {file_path}\n"
                     f"Current working directory: {os.getcwd()}\n"
                     f"Expected path: {os.path.abspath(file_path) if os.path.exists('.') else 'N/A'}\n\n"
                     f"This usually means:\n"

@@ -176,7 +176,7 @@ def grant_permissions_on_created_objects(config):
 
     except Exception as e:
         print("\n" + "=" * 80)
-        print("⚠️  PERMISSION GRANT WARNING (NON-FATAL)")
+        print("[WARNING] PERMISSION GRANT WARNING (NON-FATAL)")
         print("=" * 80)
         print(f"Could not grant some permissions: {e}")
         print("\nWhy this happens:")
@@ -222,9 +222,37 @@ def cleanup_resources(config, spark):
             config.cleanup_control_table == "true"
             or config.cleanup_control_table == True
         ):
-            if config.job_id is not None:
+            if config.run_id is not None:
+                # Selective cleanup based on status
+                # By default, only delete completed entries (keep failed for retry)
+                cleanup_failed = getattr(config, 'cleanup_failed_tables', False)
+                
+                if cleanup_failed:
+                    # Delete all entries for this run (completed AND failed)
+                    spark.sql(
+                        f"DELETE FROM {control_table_full} WHERE _run_id = '{config.run_id}'"
+                    )
+                    print(
+                        f"Cleaned up all control table rows for run_id {config.run_id}: {control_table_full}"
+                    )
+                else:
+                    # Only delete completed entries, keep failed for potential retry
+                    spark.sql(
+                        f"DELETE FROM {control_table_full} WHERE _run_id = '{config.run_id}' AND _status = 'completed'"
+                    )
+                    print(
+                        f"Cleaned up completed control table rows for run_id {config.run_id}: {control_table_full}"
+                    )
+                    # Log if there are failed entries remaining
+                    failed_count = spark.sql(
+                        f"SELECT COUNT(*) as cnt FROM {control_table_full} WHERE _run_id = '{config.run_id}' AND _status = 'failed'"
+                    ).first().cnt
+                    if failed_count > 0:
+                        print(f"Note: {failed_count} failed table(s) retained for potential retry")
+            elif config.job_id is not None:
+                # Fallback to job_id for backward compatibility
                 spark.sql(
-                    f"DELETE FROM {control_table_full} WHERE job_id = {config.job_id}"
+                    f"DELETE FROM {control_table_full} WHERE _job_id = '{config.job_id}'"
                 )
                 print(
                     f"Cleaned up control table rows for job_id {config.job_id}: {control_table_full}"

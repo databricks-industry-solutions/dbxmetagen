@@ -370,10 +370,10 @@ def verify_sql_file_exists(spark, catalog, schema, volume_name, user, table_name
                 print(f"  Found SQL file: {file_info.name}")
                 return True
 
-        print(f"  ✗ No SQL file found for {simple_table_name} (.sql extension)")
+        print(f"  [ERROR] No SQL file found for {simple_table_name} (.sql extension)")
         return False
     except Exception as e:
-        print(f"  ✗ Error checking SQL file: {e}")
+        print(f"  [ERROR] Error checking SQL file: {e}")
         return False
 
 
@@ -432,7 +432,7 @@ def verify_sql_file_content(
                     break
 
         if not sql_file:
-            print(f"  ✗ No SQL file found for {simple_table_name}")
+            print(f"  [ERROR] No SQL file found for {simple_table_name}")
             return result
 
         result["file_found"] = True
@@ -455,16 +455,16 @@ def verify_sql_file_content(
             # Basic validation: check for DDL keywords
             ddl_keywords = ["ALTER TABLE", "COMMENT ON", "UPDATE", "ALTER"]
             if not any(keyword in sql_content.upper() for keyword in ddl_keywords):
-                print(f"  ✗ SQL file does not contain expected DDL keywords")
+                print(f"  [ERROR] SQL file does not contain expected DDL keywords")
                 return sql_content  # Return content anyway for inspection
 
             # Validate table name appears in content
             if simple_table_name not in sql_content:
-                print(f"  ✗ SQL file does not reference table '{simple_table_name}'")
+                print(f"  [ERROR] SQL file does not reference table '{simple_table_name}'")
                 return sql_content  # Return content anyway for inspection
 
             print(
-                f"  ✓ SQL file validated ({len(sql_content)} bytes, contains valid DDL)"
+                f"  [OK] SQL file validated ({len(sql_content)} bytes, contains valid DDL)"
             )
             return sql_content
 
@@ -479,7 +479,7 @@ def verify_sql_file_content(
             )
 
             if result["ddl_type_correct"]:
-                print(f"  ✓ Comment mode SQL contains COMMENT ON statements")
+                print(f"  [OK] Comment mode SQL contains COMMENT ON statements")
 
         elif mode == "pi":
             # Check for ALTER TABLE...SET TAGS
@@ -496,7 +496,7 @@ def verify_sql_file_content(
 
             if result["ddl_type_correct"]:
                 print(
-                    f"  ✓ PI mode SQL contains ALTER TABLE/COLUMN SET TAGS statements"
+                    f"  [OK] PI mode SQL contains ALTER TABLE/COLUMN SET TAGS statements"
                 )
 
         elif mode == "domain":
@@ -507,12 +507,12 @@ def verify_sql_file_content(
             result["ddl_type_correct"] = result["contains_table_ddl"]
 
             if result["ddl_type_correct"]:
-                print(f"  ✓ Domain mode SQL contains ALTER TABLE SET TAGS statements")
+                print(f"  [OK] Domain mode SQL contains ALTER TABLE SET TAGS statements")
 
         return result
 
     except Exception as e:
-        print(f"  ✗ Error reading SQL file: {e}")
+        print(f"  [ERROR] Error reading SQL file: {e}")
         return result
 
 
@@ -533,7 +533,7 @@ def verify_table_has_comment(spark, full_table_name):
             return comment_row.data_type
         return None
     except Exception as e:
-        print(f"  ✗ Error checking table comment: {e}")
+        print(f"  [ERROR] Error checking table comment: {e}")
         return None
 
 
@@ -562,7 +562,7 @@ def verify_table_has_tags(spark, full_table_name, expected_tags=None):
         if expected_tags:
             for tag in expected_tags:
                 if tag not in tags:
-                    print(f"  ✗ Expected tag '{tag}' not found")
+                    print(f"  [ERROR] Expected tag '{tag}' not found")
                     return {}
 
         if tags:
@@ -570,7 +570,7 @@ def verify_table_has_tags(spark, full_table_name, expected_tags=None):
 
         return tags
     except Exception as e:
-        print(f"  ✗ Error checking table tags: {e}")
+        print(f"  [ERROR] Error checking table tags: {e}")
         return {}
 
 
@@ -592,7 +592,7 @@ def verify_column_has_comment(spark, full_table_name, column_name):
             return col_row.comment
         return None
     except Exception as e:
-        print(f"  ✗ Error checking column comment: {e}")
+        print(f"  [ERROR] Error checking column comment: {e}")
         return None
 
 
@@ -621,10 +621,10 @@ def verify_processing_log_exists(spark, catalog, schema, table_name):
             print(f"  Found processing log entry for {table_name}")
             return True
         else:
-            print(f"  ✗ No processing log entry found for {table_name}")
+            print(f"  [ERROR] No processing log entry found for {table_name}")
             return False
     except AnalysisException:
-        print(f"  ✗ Processing log table does not exist")
+        print(f"  [ERROR] Processing log table does not exist")
         return False
 
 

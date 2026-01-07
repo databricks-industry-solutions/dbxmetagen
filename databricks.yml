@@ -10,6 +10,7 @@ include:
   - resources/apps/*.yml
   - benchmarks/resources/jobs/benchmarks/*.yml
   - variables.yml
+  - variables.advanced.yml
   - resources/app_variables.yml
 
 artifacts:
@@ -23,15 +24,7 @@ targets:
     mode: development
     default: true
     workspace:
-      host: <host_url_here>
-    permissions:
-      - user_name: ${var.deploying_user}
-        level: CAN_MANAGE
-
-  integration_test:
-    mode: development
-    workspace:
-      host: <host_url_here>
+      host: <host url here>
     permissions:
       - user_name: ${var.deploying_user}
         level: CAN_MANAGE

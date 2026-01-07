@@ -23,6 +23,8 @@ resources:
           default: ${var.permission_users}
         - name: run_id
           default: "{{run.id}}"
+        - name: include_previously_failed_tables
+          default: "false"
 
       tasks:
         - task_key: generate_metadata
@@ -38,6 +40,7 @@ resources:
               permission_groups: "{{job.parameters.permission_groups}}"
               permission_users: "{{job.parameters.permission_users}}"
               run_id: "{{job.parameters.run_id}}"
+              include_previously_failed_tables: "{{job.parameters.include_previously_failed_tables}}"
 
           libraries:
             - whl: ../../dist/*.whl
@@ -46,7 +49,7 @@ resources:
         - job_cluster_key: metadata_cluster
           new_cluster:
             spark_version: 15.4.x-cpu-ml-scala2.12
-            node_type_id: i3.2xlarge
+            node_type_id: ${var.node_type}
             autoscale:
               min_workers: 1
               max_workers: 4

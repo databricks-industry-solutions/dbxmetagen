@@ -40,11 +40,11 @@ error_message = None
 
 try:
     # Setup
-    print("\n📋 Setup: Creating test environment")
+    print("\nSetup: Creating test environment")
     test_utils.setup_test_environment()
 
     # Test 1: Valid catalog and schema should work
-    print("\n🧪 Test 1: Valid catalog and schema")
+    print("\nTest 1: Valid catalog and schema")
     test_table = test_utils.create_test_table("test_permissions", with_comment=False)
 
     # Create config using production YAML with test overrides
@@ -59,10 +59,10 @@ try:
     )
 
     main(config.__dict__)
-    print("  ✓ Run with valid catalog/schema succeeded")
+    print("  [OK] Run with valid catalog/schema succeeded")
 
     # Test 2: Invalid catalog should fail with clear error
-    print("\n🧪 Test 2: Invalid catalog produces clear error")
+    print("\nTest 2: Invalid catalog produces clear error")
     config_invalid_catalog = MetadataConfig(
         yaml_file_path="../../variables.yml",  # Production YAML (2 levels up)
         catalog_name="nonexistent_catalog_xyz_999",
@@ -78,7 +78,7 @@ try:
         test_utils.assert_false(True, "Expected error for invalid catalog")
     except Exception as e:
         error_str = str(e).lower()
-        print(f"  ✓ Error raised: {type(e).__name__}")
+        print(f"  [OK] Error raised: {type(e).__name__}")
         print(f"  Error message: {str(e)[:200]}")
 
         # Verify error message is informative
@@ -90,7 +90,7 @@ try:
         )
 
     # Test 3: Invalid schema should fail with clear error
-    print("\n🧪 Test 3: Invalid schema produces clear error")
+    print("\nTest 3: Invalid schema produces clear error")
     config_invalid_schema = MetadataConfig(
         yaml_file_path="../../variables.yml",  # Production YAML (2 levels up)
         catalog_name=test_catalog,
@@ -106,7 +106,7 @@ try:
         test_utils.assert_false(True, "Expected error for invalid schema")
     except Exception as e:
         error_str = str(e).lower()
-        print(f"  ✓ Error raised: {type(e).__name__}")
+        print(f"  [OK] Error raised: {type(e).__name__}")
         print(f"  Error message: {str(e)[:200]}")
 
         # Verify error message is informative
@@ -118,7 +118,7 @@ try:
         )
 
     # Test 4: grant_permissions_after_creation=false should not error
-    print("\n🧪 Test 4: grant_permissions_after_creation=false bypasses grants")
+    print("\nTest 4: grant_permissions_after_creation=false bypasses grants")
     config_no_perms = MetadataConfig(
         yaml_file_path="../../variables.yml",  # Production YAML (2 levels up)
         catalog_name=test_catalog,
@@ -131,14 +131,14 @@ try:
 
     # This should succeed without permission grant errors
     main(config_no_perms.__dict__)
-    print("  ✓ Run succeeded with grant_permissions_after_creation=false")
+    print("  [OK] Run succeeded with grant_permissions_after_creation=false")
 
     # Test 5: Volume access (if volume exists)
-    print("\n🧪 Test 5: Volume access")
+    print("\nTest 5: Volume access")
     try:
         volume_path = f"/Volumes/{test_catalog}/{test_schema}/test_volume"
         files = dbutils.fs.ls(volume_path)
-        print(f"  ✓ Volume accessible, {len(files)} file(s) found")
+        print(f"  [OK] Volume accessible, {len(files)} file(s) found")
         test_utils.assert_true(True, "Volume is accessible")
     except Exception as e:
         print(f"  Note: Volume access test skipped: {e}")
@@ -162,7 +162,7 @@ except Exception as e:
 
 finally:
     # Cleanup
-    print("\n🧹 Cleanup")
+    print("\nCleanup")
     test_utils.cleanup_test_artifacts()
 
 # COMMAND ----------

@@ -529,7 +529,7 @@ class CommentPrompt(Prompt):
 
                     Guidelines:
                     1. Scale comment length with information richness: 3-5 sentences for simple columns, 4-8 sentences when rich metadata/patterns emerge
-                    2. Synthesize insights from: column name → table context → sample data → metadata statistics
+                    2. Synthesize insights from: column name -> table context -> sample data -> metadata statistics
                     3. Unpack acronyms confidently. Note anomalies (e.g., unexpectedly low distinct counts, suspicious nulls, data type mismatches)
                     4. Sample data may not represent full distribution - use metadata to validate/contradict sample observations
                     5. Use double quotes for strings. Escape apostrophes with '' (SQL style) for DDL compatibility
@@ -739,7 +739,7 @@ class CommentNoDataPrompt(Prompt):
 
                     Guidelines:
                     1. Scale comment length with information richness: 2-3 sentences for simple columns, 4-8 sentences when rich metadata/patterns emerge
-                    2. Synthesize insights from: column name → table context → sample data patterns → metadata statistics (WITHOUT citing specific values)
+                    2. Synthesize insights from: column name -> table context -> sample data patterns -> metadata statistics (WITHOUT citing specific values)
                     3. Unpack acronyms confidently. Note anomalies (e.g., unexpectedly low distinct counts, suspicious nulls, data type mismatches)
                     4. Use sample data to understand patterns/formats/types, but describe generically without quoting specific values
                     5. Use double quotes for strings. Escape apostrophes with '' (SQL style) for DDL compatibility

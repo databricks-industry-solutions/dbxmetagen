@@ -21,6 +21,8 @@ resources:
           default: "dev_integration_tests"
         - name: test_schema
           default: "dbxmetagen_tests"
+        - name: run_id
+          default: "{{run.id}}"
 
       tasks:
         - task_key: test_01_widget_parsing
@@ -105,6 +107,68 @@ resources:
           libraries:
             - whl: ../../dist/*.whl
 
+        # Concurrent tasks test - validates table claiming works correctly
+        - task_key: test_10_concurrent_setup
+          depends_on:
+            - task_key: test_07_permissions
+          job_cluster_key: integration_test_cluster
+          notebook_task:
+            notebook_path: ../../notebooks/integration_tests/test_10_concurrent_setup.py
+            base_parameters:
+              test_catalog: "{{job.parameters.test_catalog}}"
+              test_schema: "{{job.parameters.test_schema}}"
+          libraries:
+            - whl: ../../dist/*.whl
+
+        # These two tasks run in PARALLEL on separate clusters to test concurrent claiming
+        - task_key: concurrent_task_1
+          depends_on:
+            - task_key: test_10_concurrent_setup
+          job_cluster_key: concurrent_cluster_1
+          notebook_task:
+            notebook_path: ../../notebooks/generate_metadata.py
+            base_parameters:
+              mode: "comment"
+              table_names: "{{job.parameters.test_catalog}}.{{job.parameters.test_schema}}.concurrent_test_1,{{job.parameters.test_catalog}}.{{job.parameters.test_schema}}.concurrent_test_2"
+              catalog_name: "{{job.parameters.test_catalog}}"
+              schema_name: "{{job.parameters.test_schema}}"
+              cleanup_control_table: "false"
+              run_id: "{{job.parameters.run_id}}"
+              grant_permissions_after_creation: "false"
+          libraries:
+            - whl: ../../dist/*.whl
+
+        - task_key: concurrent_task_2
+          depends_on:
+            - task_key: test_10_concurrent_setup
+          job_cluster_key: concurrent_cluster_2
+          notebook_task:
+            notebook_path: ../../notebooks/generate_metadata.py
+            base_parameters:
+              mode: "comment"
+              table_names: "{{job.parameters.test_catalog}}.{{job.parameters.test_schema}}.concurrent_test_2,{{job.parameters.test_catalog}}.{{job.parameters.test_schema}}.concurrent_test_3"
+              catalog_name: "{{job.parameters.test_catalog}}"
+              schema_name: "{{job.parameters.test_schema}}"
+              cleanup_control_table: "false"
+              run_id: "{{job.parameters.run_id}}"
+              grant_permissions_after_creation: "false"
+          libraries:
+            - whl: ../../dist/*.whl
+
+        - task_key: test_10_concurrent_validate
+          depends_on:
+            - task_key: concurrent_task_1
+            - task_key: concurrent_task_2
+          job_cluster_key: integration_test_cluster
+          notebook_task:
+            notebook_path: ../../notebooks/integration_tests/test_10_concurrent_validate.py
+            base_parameters:
+              test_catalog: "{{job.parameters.test_catalog}}"
+              test_schema: "{{job.parameters.test_schema}}"
+              run_id: "{{job.parameters.run_id}}"
+          libraries:
+            - whl: ../../dist/*.whl
+
         # E2E tests run in parallel (no dependencies) to test different cluster configurations
         - task_key: test_e2e_serverless
           job_cluster_key: e2e_serverless_cluster
@@ -140,7 +204,32 @@ resources:
         - job_cluster_key: integration_test_cluster
           new_cluster:
             spark_version: 15.4.x-cpu-ml-scala2.12
-            node_type_id: Standard_D3_v2
+            node_type_id: ${var.node_type}
+            num_workers: 0
+            data_security_mode: SINGLE_USER
+            spark_conf:
+              spark.databricks.cluster.profile: singleNode
+              spark.master: local[*]
+            custom_tags:
+              ResourceClass: SingleNode
+
+        # Separate clusters for concurrent task testing (must run in parallel)
+        - job_cluster_key: concurrent_cluster_1
+          new_cluster:
+            spark_version: 15.4.x-cpu-ml-scala2.12
+            node_type_id: ${var.node_type}
+            num_workers: 0
+            data_security_mode: SINGLE_USER
+            spark_conf:
+              spark.databricks.cluster.profile: singleNode
+              spark.master: local[*]
+            custom_tags:
+              ResourceClass: SingleNode
+
+        - job_cluster_key: concurrent_cluster_2
+          new_cluster:
+            spark_version: 15.4.x-cpu-ml-scala2.12
+            node_type_id: ${var.node_type}
             num_workers: 0
             data_security_mode: SINGLE_USER
             spark_conf:
@@ -153,14 +242,14 @@ resources:
         - job_cluster_key: e2e_serverless_cluster
           new_cluster:
             spark_version: 15.4.x-photon-scala2.12
-            node_type_id: Standard_D3_v2
+            node_type_id: ${var.node_type}
             num_workers: 1
             data_security_mode: SINGLE_USER
 
         - job_cluster_key: e2e_ml_cluster
           new_cluster:
             spark_version: 15.4.x-cpu-ml-scala2.12
-            node_type_id: Standard_D3_v2
+            node_type_id: ${var.node_type}
             num_workers: 0
             data_security_mode: SINGLE_USER
             spark_conf:
@@ -172,7 +261,7 @@ resources:
         - job_cluster_key: e2e_standard_cluster
           new_cluster:
             spark_version: 16.4.x-scala2.12
-            node_type_id: Standard_D3_v2
+            node_type_id: ${var.node_type}
             num_workers: 0
             data_security_mode: USER_ISOLATION
             spark_conf:

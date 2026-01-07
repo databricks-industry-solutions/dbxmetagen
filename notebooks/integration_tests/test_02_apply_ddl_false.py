@@ -40,7 +40,7 @@ error_message = None
 
 try:
     # Setup
-    print("\n📋 Setup: Creating test environment")
+    print("\nSetup: Creating test environment")
     test_utils.setup_test_environment()
 
     # Create test table WITHOUT comment
@@ -55,7 +55,7 @@ try:
     )
 
     # Run metadata generation with apply_ddl=false
-    print("\n🚀 Running metadata generation with apply_ddl=false")
+    print("\nRunning metadata generation with apply_ddl=false")
 
     # Create config using production YAML with test overrides
     config = MetadataConfig(
@@ -72,10 +72,10 @@ try:
     # Run main (this may take a minute)
     main(config.__dict__)
 
-    print("\n✅ Metadata generation completed")
+    print("\n[OK] Metadata generation completed")
 
     # Verify table STILL has no comment (apply_ddl was false)
-    print("\n🔍 Verifying table was NOT modified")
+    print("\nVerifying table was NOT modified")
     final_comment = test_utils.get_table_comment(test_table)
 
     test_utils.assert_none(
@@ -83,7 +83,7 @@ try:
     )
 
     # Verify metadata_generation_log has entry
-    print("\n🔍 Verifying metadata_generation_log entry")
+    print("\nVerifying metadata_generation_log entry")
     log_df = verify_metadata_generation_log(
         spark, test_catalog, test_schema, test_table
     )
@@ -93,7 +93,7 @@ try:
     )
 
     # Verify SQL file was generated in volume
-    print("\n🔍 Verifying SQL file in volume")
+    print("\nVerifying SQL file in volume")
     user_sanitized = sanitize_user_identifier(config.current_user)
     sql_exists = verify_sql_file_exists(
         spark, test_catalog, test_schema, "test_volume", user_sanitized, test_table
@@ -101,13 +101,13 @@ try:
     test_utils.assert_true(sql_exists, "SQL DDL file generated in volume")
 
     # Verify processing log exists
-    print("\n🔍 Verifying processing log")
+    print("\nVerifying processing log")
     processing_log_exists = verify_processing_log_exists(
         spark, test_catalog, test_schema, test_table
     )
     # Note: Processing log may not exist in all configurations
     if processing_log_exists:
-        print("  ✓ Processing log found")
+        print("  [OK] Processing log found")
 
     test_passed = True
     print_test_result("apply_ddl=false", True)
@@ -127,7 +127,7 @@ except Exception as e:
 
 finally:
     # Cleanup
-    print("\n🧹 Cleanup")
+    print("\nCleanup")
     test_utils.cleanup_test_artifacts()
 
 # COMMAND ----------
