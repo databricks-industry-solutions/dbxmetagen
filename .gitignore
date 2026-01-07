@@ -129,6 +129,7 @@ databricks/
 .env.local
 .env.*.local
 .databricks
+*.local
 
 #specific folders
 **/.agents/
@@ -160,7 +161,6 @@ variables_override.yml
 *.env
 !example.env
 
-# AI-generated operational documentation
-# Only the index is version controlled
+docs/*
 docs/operations/*/
-!docs/operations/README.md
+#!docs/operations/README.md
