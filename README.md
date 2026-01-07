@@ -130,7 +130,7 @@ Key settings in `variables.yml`:
 - `allow_data_in_comments`: Control data in generated comments
 
 **Model:**
-- `model`: LLM endpoint (recommend `databricks-meta-llama-3-3-70b-instruct` or `databricks-claude-3-7-sonnet`)
+- `model`: LLM endpoint (recommend newer versions of claude sonnet or GPT-OSS).
 - `columns_per_call`: Columns per LLM call (5-10 recommended)
 - `temperature`: Model creativity (0.1 for consistency)
 

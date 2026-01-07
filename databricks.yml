@@ -24,17 +24,7 @@ targets:
     mode: development
     default: true
     workspace:
-      host: https://e2-demo-field-eng.cloud.databricks.com/
-    permissions:
-      - user_name: ${var.deploying_user}
-        level: CAN_MANAGE
-
-  integration_test:
-    mode: development
-    workspace:
-      host: https://e2-demo-field-eng.cloud.databricks.com/
-    variables:
-      node_type: "i3.2xlarge"
+      host: <host url here>
     permissions:
       - user_name: ${var.deploying_user}
         level: CAN_MANAGE
