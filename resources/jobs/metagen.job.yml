@@ -10,11 +10,13 @@ resources:
       # Job parameters that can be passed at runtime
       parameters:
         - name: table_names
-          default: ""
+          default: ${var.job_table_names}
         - name: mode
           default: "comment"
         - name: catalog_name
           default: ${var.catalog_name}
+        - name: schema_name
+          default: ${var.schema_name}
         - name: current_user
           default: ${var.current_user}
         - name: permission_groups
@@ -22,7 +24,7 @@ resources:
         - name: permission_users
           default: ${var.permission_users}
         - name: run_id
-          default: "{{run.id}}"
+          default: "{{job.run_id}}"
         - name: include_previously_failed_tables
           default: "false"
 
@@ -45,11 +47,50 @@ resources:
           libraries:
             - whl: ../../dist/*.whl
 
+        - task_key: build_knowledge_base
+          depends_on:
+            - task_key: generate_metadata
+          job_cluster_key: metadata_cluster
+
+          notebook_task:
+            notebook_path: ../../notebooks/build_knowledge_base.py
+            base_parameters:
+              catalog_name: "{{job.parameters.catalog_name}}"
+              schema_name: "{{job.parameters.schema_name}}"
+
+          libraries:
+            - whl: ../../dist/*.whl
+
+        - task_key: build_knowledge_graph
+          depends_on:
+            - task_key: build_knowledge_base
+          # ML cluster required - GraphFrames needs JVM dependencies not available on serverless
+          job_cluster_key: ml_cluster
+
+          notebook_task:
+            notebook_path: ../../notebooks/build_knowledge_graph.py
+            base_parameters:
+              catalog_name: "{{job.parameters.catalog_name}}"
+              schema_name: "{{job.parameters.schema_name}}"
+
+          libraries:
+            - whl: ../../dist/*.whl
+            - pypi:
+                package: graphframes
+
       job_clusters:
         - job_cluster_key: metadata_cluster
           new_cluster:
-            spark_version: 15.4.x-cpu-ml-scala2.12
+            spark_version: 17.3.x-cpu-ml-scala2.13
             node_type_id: ${var.node_type}
             autoscale:
               min_workers: 1
               max_workers: 4
+
+        # ML cluster for GraphFrames - required for knowledge graph building
+        # GraphFrames needs JVM dependencies not available on serverless
+        - job_cluster_key: ml_cluster
+          new_cluster:
+            spark_version: 17.3.x-cpu-ml-scala2.13
+            node_type_id: ${var.node_type}
+            num_workers: 1

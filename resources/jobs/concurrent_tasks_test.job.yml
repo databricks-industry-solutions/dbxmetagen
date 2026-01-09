@@ -23,7 +23,7 @@ resources:
         - name: test_schema
           default: "dbxmetagen_tests"
         - name: run_id
-          default: "{{run.id}}"
+          default: "{{job.run_id}}"
 
       tasks:
         # Step 1: Setup - create test tables

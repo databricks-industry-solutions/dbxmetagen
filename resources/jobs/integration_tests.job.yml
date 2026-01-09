@@ -22,7 +22,7 @@ resources:
         - name: test_schema
           default: "dbxmetagen_tests"
         - name: run_id
-          default: "{{run.id}}"
+          default: "{{job.run_id}}"
 
       tasks:
         - task_key: test_01_widget_parsing
@@ -166,6 +166,32 @@ resources:
               test_catalog: "{{job.parameters.test_catalog}}"
               test_schema: "{{job.parameters.test_schema}}"
               run_id: "{{job.parameters.run_id}}"
+          libraries:
+            - whl: ../../dist/*.whl
+
+        # Knowledge base ETL test
+        - task_key: test_11_knowledge_base
+          depends_on:
+            - task_key: test_10_concurrent_validate
+          job_cluster_key: integration_test_cluster
+          notebook_task:
+            notebook_path: ../../notebooks/integration_tests/test_11_knowledge_base.py
+            base_parameters:
+              catalog_name: "{{job.parameters.test_catalog}}"
+              test_schema: "{{job.parameters.test_schema}}"
+          libraries:
+            - whl: ../../dist/*.whl
+
+        # Knowledge graph ETL test (uses ML cluster for GraphFrames compatibility)
+        - task_key: test_12_knowledge_graph
+          depends_on:
+            - task_key: test_11_knowledge_base
+          job_cluster_key: e2e_ml_cluster
+          notebook_task:
+            notebook_path: ../../notebooks/integration_tests/test_12_knowledge_graph.py
+            base_parameters:
+              catalog_name: "{{job.parameters.test_catalog}}"
+              test_schema: "{{job.parameters.test_schema}}"
           libraries:
             - whl: ../../dist/*.whl
 

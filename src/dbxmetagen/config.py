@@ -123,7 +123,7 @@ class MetadataConfig:
 
         # Runtime-determined attributes with defaults
         self.job_id = None  # From job context
-        self.run_id = None  # From job run context ({{run.id}}), fallback to UUID
+        self.run_id = None  # From job run context ({{job.run_id}}), fallback to UUID
         self.task_id = None  # From task context, for table claiming
         self.base_url = None  # From workspace config or 'host' YAML param
         self.notebook_path = None  # From dbutils

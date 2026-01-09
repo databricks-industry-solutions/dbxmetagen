@@ -886,7 +886,7 @@ class MetadataProcessor:
             # Prepare job parameters for the sync_reviewed_ddl.py notebook
             job_params = {
                 "reviewed_file_name": filename,
-                "mode": "comment",  # Default mode, could be made configurable
+                "mode": config.get("mode", "comment"),
                 "catalog_name": config.get("catalog_name"),
                 "schema_name": config.get("schema_name"),
                 "volume_name": config.get("volume_name", "generated_metadata"),
@@ -897,7 +897,7 @@ class MetadataProcessor:
             try:
                 job_id, run_id = job_manager.create_and_run_sync_job(
                     filename=filename,
-                    mode="comment",
+                    mode=config.get("mode", "comment"),
                     catalog_name=job_params["catalog_name"],
                     schema_name=job_params["schema_name"],
                     volume_name=job_params["volume_name"],

@@ -9,7 +9,7 @@ domains:
       patient_care:
         name: "Patient Care & Treatment"
         description: "Patient data, encounters, diagnoses, procedures, medications, orders"
-        keywords: ["patient", "encounter", "visit", "admission", "diagnosis", "procedure", "medication", "order", "treatment", "therapy", "demographic", "mrn", "icd", "cpt", "prescription", "discharge"]
+        keywords: ["patient", "encounter", "visit"]
       
       clinical_results:
         name: "Clinical Results & Diagnostics"
@@ -18,7 +18,7 @@ domains:
       
       clinical_documentation:
         name: "Clinical Documentation"
-        description: "Clinical notes, assessments, care plans, documentation"
+        description: "DONT USE THIS"
         keywords: ["note", "documentation", "narrative", "assessment", "plan", "progress", "discharge_summary", "consultation", "dictation", "care_plan", "free_text"]
 
   payer_operations:

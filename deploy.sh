@@ -435,7 +435,7 @@ if [ -z "$OLD_APP_SP_ID" ] && [ -n "$APP_SP_ID" ] && [ "$APP_SP_ID" != "null" ];
 fi
 
 echo "=== Starting app ==="
-if databricks bundle resources list -t "$TARGET" --profile "$PROFILE" 2>/dev/null | grep -q "dbxmetagen_app"; then
+if databricks bundle summary -t "$TARGET" --profile "$PROFILE" 2>/dev/null | grep -q "dbxmetagen_app"; then
     start_app
 else
     echo "App resource not found in bundle (apps may be commented out in databricks.yml)"
