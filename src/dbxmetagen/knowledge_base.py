@@ -142,6 +142,7 @@ class KnowledgeBaseBuilder:
                 domain,
                 subdomain,
                 classification,
+                type,
                 _created_at
             FROM {self.config.fully_qualified_source}
             WHERE `table` IS NOT NULL
@@ -205,8 +206,8 @@ class KnowledgeBaseBuilder:
         """
         Aggregate PI classifications at table level.
         
-        A table has_pii if ANY column has PII/PHI/PCI classification.
-        A table has_phi if ANY column has PHI classification.
+        A table has_pii if ANY column has PII/PHI/PCI type.
+        A table has_phi if ANY column has PHI type.
         
         Args:
             source_df: Source DataFrame from metadata_generation_log
@@ -221,13 +222,13 @@ class KnowledgeBaseBuilder:
             .agg(
                 F.max(
                     F.when(
-                        F.lower(F.col("classification")).isin("pii", "phi", "pci"),
+                        F.lower(F.col("type")).isin("pii", "phi", "pci"),
                         F.lit(True)
                     ).otherwise(F.lit(False))
                 ).alias("has_pii"),
                 F.max(
                     F.when(
-                        F.lower(F.col("classification")) == "phi",
+                        F.lower(F.col("type")) == "phi",
                         F.lit(True)
                     ).otherwise(F.lit(False))
                 ).alias("has_phi")

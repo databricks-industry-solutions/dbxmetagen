@@ -278,8 +278,11 @@ test_data = [
     ),
 ]
 
-# Create DataFrame and insert
-test_df = spark.createDataFrame(test_data)
+# Get schema from the table we created
+table_schema = spark.table(f"{catalog_name}.{kb_test_schema}.metadata_generation_log").schema
+
+# Create DataFrame with explicit schema
+test_df = spark.createDataFrame(test_data, schema=table_schema)
 test_df.write.mode("append").saveAsTable(f"{catalog_name}.{kb_test_schema}.metadata_generation_log")
 
 print(f"[SETUP] Inserted {len(test_data)} test records")
@@ -411,7 +414,8 @@ new_pi_data = [
     ),
 ]
 
-new_pi_df = spark.createDataFrame(new_pi_data)
+# Use same schema for incremental data
+new_pi_df = spark.createDataFrame(new_pi_data, schema=table_schema)
 new_pi_df.write.mode("append").saveAsTable(f"{catalog_name}.{kb_test_schema}.metadata_generation_log")
 
 # Re-run ETL

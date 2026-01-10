@@ -1,7 +1,7 @@
 resources:
   jobs:
-    metadata_generator_job:
-      name: "${var.app_name}_metadata_job"
+    metadata_with_knowledge_base_job:
+      name: "${var.app_name}_metadata_with_kb_job"
 
       email_notifications:
         on_failure:
@@ -47,6 +47,37 @@ resources:
           libraries:
             - whl: ../../dist/*.whl
 
+        - task_key: build_knowledge_base
+          depends_on:
+            - task_key: generate_metadata
+          job_cluster_key: metadata_cluster
+
+          notebook_task:
+            notebook_path: ../../notebooks/build_knowledge_base.py
+            base_parameters:
+              catalog_name: "{{job.parameters.catalog_name}}"
+              schema_name: "{{job.parameters.schema_name}}"
+
+          libraries:
+            - whl: ../../dist/*.whl
+
+        - task_key: build_knowledge_graph
+          depends_on:
+            - task_key: build_knowledge_base
+          # ML cluster required - GraphFrames needs JVM dependencies not available on serverless
+          job_cluster_key: ml_cluster
+
+          notebook_task:
+            notebook_path: ../../notebooks/build_knowledge_graph.py
+            base_parameters:
+              catalog_name: "{{job.parameters.catalog_name}}"
+              schema_name: "{{job.parameters.schema_name}}"
+
+          libraries:
+            - whl: ../../dist/*.whl
+            - pypi:
+                package: graphframes
+
       job_clusters:
         - job_cluster_key: metadata_cluster
           new_cluster:
@@ -55,3 +86,12 @@ resources:
             autoscale:
               min_workers: 1
               max_workers: 4
+
+        # ML cluster for GraphFrames - required for knowledge graph building
+        # GraphFrames needs JVM dependencies not available on serverless
+        - job_cluster_key: ml_cluster
+          new_cluster:
+            spark_version: 17.3.x-cpu-ml-scala2.13
+            node_type_id: ${var.node_type}
+            num_workers: 1
+
