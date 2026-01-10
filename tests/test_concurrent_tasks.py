@@ -448,7 +448,7 @@ class TestClaimTableWithStatus:
     @patch("src.dbxmetagen.processing.SparkSession")
     @patch("src.dbxmetagen.processing.get_control_table")
     def test_claim_table_filters_by_status(self, mock_get_control, mock_spark):
-        """Test that claim_table only claims queued or failed tables."""
+        """Test that claim_table only claims queued, failed, or completed tables."""
         mock_get_control.return_value = "control_table"
         mock_spark_instance = mock_spark.builder.getOrCreate.return_value
         
@@ -464,9 +464,9 @@ class TestClaimTableWithStatus:
         
         self.claim_table("catalog.schema.table", config)
         
-        # Find the UPDATE call and verify status filter
+        # Find the UPDATE call and verify status filter (includes 'completed' to allow re-processing)
         update_call = mock_spark_instance.sql.call_args_list[0][0][0]
-        assert "_status IN ('queued', 'failed')" in update_call or "(_status IS NULL OR _status IN ('queued', 'failed'))" in update_call
+        assert "_status IN ('queued', 'failed', 'completed')" in update_call or "(_status IS NULL OR _status IN ('queued', 'failed', 'completed'))" in update_call
 
 
 if __name__ == "__main__":

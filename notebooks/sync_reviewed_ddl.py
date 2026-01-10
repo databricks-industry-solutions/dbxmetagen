@@ -50,7 +50,6 @@ if catalog_name == "" or schema_name == "" or file_name == "":
         "Please provide catalog_name, schema_name, and reviewed_file_name."
     )
 
-# Use override if provided, otherwise use the detected current user
 if current_user_override and current_user_override.strip():
     current_user = current_user_override.strip()
     print(f"Using current_user override: {current_user}")
@@ -66,6 +65,8 @@ review_variables = {
     "volume_name": volume_name,
     "review_apply_ddl": review_apply_ddl,
 }
+print("Review variables: ", review_variables)
+
 
 print(
     f"Sync job parameters: catalog={catalog_name}, schema={schema_name}, volume={volume_name}"

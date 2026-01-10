@@ -62,7 +62,12 @@ For a web UI with job management, metadata review, and team collaboration:
 
 4. **Access**: Go to **Databricks Workspace → Apps → dbxmetagen-app**
 
-See [docs/ENV_SETUP.md](docs/ENV_SETUP.md) for detailed deployment documentation.
+OR
+
+**Run through Automation**
+
+```databricks bundle run metadata_generator_job -t <your-dab-target> -p <your-profile> --params table_names='<catalog.schema>.*',mode=domain
+```
 
 ---
 

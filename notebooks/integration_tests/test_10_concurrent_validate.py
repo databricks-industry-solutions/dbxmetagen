@@ -64,10 +64,7 @@ try:
     control_tables = test_utils.find_control_tables(sanitized_user)
     print(f"\nControl tables found: {control_tables}")
 
-    test_utils.assert_true(
-        len(control_tables) > 0,
-        "At least one control table exists"
-    )
+    test_utils.assert_true(len(control_tables) > 0, "At least one control table exists")
 
     # Use the most recent control table (may have run_id suffix)
     control_table_name = control_tables[0]
@@ -75,7 +72,7 @@ try:
         if run_id and run_id in ct:
             control_table_name = ct
             break
-    
+
     full_control_table = f"{test_catalog}.{test_schema}.{control_table_name}"
     print(f"\nUsing control table: {full_control_table}")
 
@@ -90,78 +87,87 @@ try:
     for expected_table in expected_tables:
         test_utils.assert_true(
             expected_table in control_entries,
-            f"Control table has entry for {expected_table}"
+            f"Control table has entry for {expected_table}",
         )
 
-    # Test 2: Verify each table was claimed (has _claimed_by set)
-    print("\nTest 2: Verify table claims")
-    claims_df = spark.sql(f"""
-        SELECT table_name, _claimed_by, _claimed_at 
+    # Test 2: Verify each table was processed (has completed status)
+    # Note: _claimed_by is cleared when processing completes, so we check status instead
+    print("\nTest 2: Verify table processing completed")
+    completed_df = spark.sql(
+        f"""
+        SELECT table_name, _status, _claimed_at 
         FROM {full_control_table}
-        WHERE _claimed_by IS NOT NULL
-    """)
-    claims_df.show(truncate=False)
+        WHERE _status = 'completed'
+    """
+    )
+    completed_df.show(truncate=False)
 
-    claimed_tables = {row["table_name"] for row in claims_df.collect()}
-    print(f"  Claimed tables: {claimed_tables}")
+    completed_tables = {row["table_name"] for row in completed_df.collect()}
+    print(f"  Completed tables: {completed_tables}")
 
-    # All expected tables should have been claimed
+    # All expected tables should have completed status
     for expected_table in expected_tables:
         test_utils.assert_true(
-            expected_table in claimed_tables,
-            f"Table {expected_table} was claimed by a task"
+            expected_table in completed_tables,
+            f"Table {expected_table} processing completed",
         )
 
     # Test 3: Verify no duplicate claims (each table claimed by exactly one task)
     print("\nTest 3: Verify no duplicate claims")
-    duplicate_check_df = spark.sql(f"""
+    duplicate_check_df = spark.sql(
+        f"""
         SELECT table_name, COUNT(DISTINCT _claimed_by) as claim_count
         FROM {full_control_table}
         GROUP BY table_name
         HAVING COUNT(DISTINCT _claimed_by) > 1
-    """)
-    
+    """
+    )
+
     duplicates = duplicate_check_df.collect()
     test_utils.assert_equals(
-        len(duplicates),
-        0,
-        "No table was claimed by multiple tasks"
+        len(duplicates), 0, "No table was claimed by multiple tasks"
     )
 
     # Test 3b: Verify _status column shows completed or in_progress
     print("\nTest 3b: Verify _status column values")
-    status_df = spark.sql(f"""
+    status_df = spark.sql(
+        f"""
         SELECT table_name, _status, _error_message 
         FROM {full_control_table}
         WHERE _status IS NOT NULL
-    """)
+    """
+    )
     status_df.show(truncate=False)
-    
+
     statuses = {row["table_name"]: row["_status"] for row in status_df.collect()}
     print(f"  Table statuses: {statuses}")
-    
+
     # All tables should have a status (either completed or in_progress)
     for expected_table in expected_tables:
         if expected_table in statuses:
             status = statuses[expected_table]
             test_utils.assert_true(
-                status in ('completed', 'in_progress', 'queued'),
-                f"Table {expected_table} has valid status: {status}"
+                status in ("completed", "in_progress", "queued"),
+                f"Table {expected_table} has valid status: {status}",
             )
         else:
-            print(f"  Note: {expected_table} status not found (may use default 'queued')")
+            print(
+                f"  Note: {expected_table} status not found (may use default 'queued')"
+            )
 
     # Test 4: Verify metadata_generation_log has entries
     print("\nTest 4: Verify metadata_generation_log entries")
     one_hour_ago = (datetime.now() - timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
-    
+
     log_table = f"{test_catalog}.{test_schema}.metadata_generation_log"
     if spark.catalog.tableExists(log_table):
-        log_df = spark.sql(f"""
+        log_df = spark.sql(
+            f"""
             SELECT `table`, metadata_type, _created_at
             FROM {log_table}
             WHERE _created_at >= '{one_hour_ago}'
-        """)
+        """
+        )
         log_df.show(truncate=False)
 
         logged_tables = {row["table"] for row in log_df.collect()}
@@ -172,8 +178,7 @@ try:
             simple_name = expected_table.split(".")[-1]
             has_log = simple_name in logged_tables or expected_table in logged_tables
             test_utils.assert_true(
-                has_log,
-                f"metadata_generation_log has entry for {expected_table}"
+                has_log, f"metadata_generation_log has entry for {expected_table}"
             )
     else:
         print(f"  Warning: {log_table} does not exist yet")
@@ -181,14 +186,16 @@ try:
     # Test 5: Verify no duplicate log entries (each table processed once)
     print("\nTest 5: Verify no duplicate processing in logs")
     if spark.catalog.tableExists(log_table):
-        duplicate_log_df = spark.sql(f"""
+        duplicate_log_df = spark.sql(
+            f"""
             SELECT `table`, COUNT(*) as entry_count
             FROM {log_table}
             WHERE _created_at >= '{one_hour_ago}'
             GROUP BY `table`
             HAVING COUNT(*) > 1
-        """)
-        
+        """
+        )
+
         log_duplicates = duplicate_log_df.collect()
         if log_duplicates:
             print(f"  Warning: Some tables have multiple log entries: {log_duplicates}")
@@ -208,6 +215,7 @@ except Exception as e:
     error_message = f"Unexpected error: {str(e)}"
     print(error_message)
     import traceback
+
     traceback.print_exc()
     print_test_result("Concurrent Tasks Validation", False, error_message)
 
@@ -240,4 +248,3 @@ if not test_passed:
     raise Exception(f"Test failed: {error_message}")
 
 dbutils.notebook.exit(json.dumps({"passed": test_passed, "error": error_message}))
-

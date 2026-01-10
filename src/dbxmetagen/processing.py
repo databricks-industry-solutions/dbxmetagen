@@ -938,7 +938,8 @@ def get_control_table(config: MetadataConfig) -> str:
 
 def mark_as_deleted(table_name: str, config: MetadataConfig) -> None:
     """
-    Updates the _deleted_at and _updated_at columns to the current timestamp for the specified table.
+    Updates the _deleted_at, _updated_at, and _status columns for the specified table.
+    Also clears _claimed_by to release the claim.
 
     Args:
         table_name (str): The name of the table to update.
@@ -952,7 +953,9 @@ def mark_as_deleted(table_name: str, config: MetadataConfig) -> None:
     update_query = f"""
     UPDATE {control_table}
     SET _deleted_at = current_timestamp(),
-        _updated_at = current_timestamp()
+        _updated_at = current_timestamp(),
+        _status = 'completed',
+        _claimed_by = NULL
     WHERE table_name = '{table_name}'
     """
     spark.sql(update_query)
@@ -989,7 +992,7 @@ def claim_table(table_name: str, config: MetadataConfig, max_retries: int = 3) -
         # No task_id means not running in concurrent mode, allow processing
         return True
     
-    # Attempt to claim: UPDATE only if status is 'queued' or 'failed' and not deleted
+    # Attempt to claim: UPDATE only if status allows reprocessing and not currently claimed
     claim_query = f"""
     UPDATE {control_table}
     SET _claimed_by = '{task_id}',
@@ -998,8 +1001,7 @@ def claim_table(table_name: str, config: MetadataConfig, max_retries: int = 3) -
         _status = 'in_progress'
     WHERE table_name = '{table_name}'
       AND _claimed_by IS NULL
-      AND _deleted_at IS NULL
-      AND (_status IS NULL OR _status IN ('queued', 'failed'))
+      AND (_status IS NULL OR _status IN ('queued', 'failed', 'completed'))
     """
     
     verify_query = f"""
@@ -1054,6 +1056,7 @@ def mark_table_completed(table_name: str, config: MetadataConfig) -> None:
     update_query = f"""
     UPDATE {control_table}
     SET _status = 'completed',
+        _claimed_by = NULL,
         _updated_at = current_timestamp()
     WHERE table_name = '{table_name}'
       AND _run_id = '{config.run_id}'
