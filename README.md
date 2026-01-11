@@ -65,9 +65,13 @@ For a web UI with job management, metadata review, and team collaboration:
 OR
 
 **Run through Automation**
+   ```bash
+   databricks bundle run metadata_generator_job -t <your-dab-target> -p <your-profile> --params table_names='<catalog.schema>.*',mode=domain
+   ```
 
-```databricks bundle run metadata_generator_job -t <your-dab-target> -p <your-profile> --params table_names='<catalog.schema>.*',mode=domain
-```
+OR 
+
+**Notebook**: Go to **Databricks Workspace → generate_metadata notebook** 
 
 ---
 
