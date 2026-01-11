@@ -40,7 +40,7 @@ def setup_test_table(table_name: str):
     """
     )
 
-    print(f"✅ Created test table: {table_name}")
+    print(f"[OK] Created test table: {table_name}")
 
 
 def verify_no_comments(table_name: str):
@@ -52,7 +52,7 @@ def verify_no_comments(table_name: str):
             comment = row["data_type"]
             if comment and comment.strip() and comment.lower() != "null":
                 raise AssertionError(
-                    f"❌ FAILED: Table has comment when it shouldn't: {comment}"
+                    f"[FAIL] Table has comment when it shouldn't: {comment}"
                 )
 
     # Check column comments
@@ -60,10 +60,10 @@ def verify_no_comments(table_name: str):
     for col in columns:
         if col["comment"]:
             raise AssertionError(
-                f"❌ FAILED: Column '{col['col_name']}' has comment when it shouldn't: {col['comment']}"
+                f"[FAIL] Column '{col['col_name']}' has comment when it shouldn't: {col['comment']}"
             )
 
-    print(f"✅ Verified: No comments on {table_name}")
+    print(f"[OK] Verified: No comments on {table_name}")
 
 
 def verify_has_comments(table_name: str):
@@ -77,18 +77,18 @@ def verify_has_comments(table_name: str):
             comment = row["data_type"]
             if comment and comment.strip() and comment.lower() != "null":
                 has_any_comment = True
-                print(f"✅ Found table comment: {comment}")
+                print(f"[OK] Found table comment: {comment}")
 
     # Check column comments
     columns = spark.sql(f"DESCRIBE {table_name}").collect()
     for col in columns:
         if col["comment"]:
             has_any_comment = True
-            print(f"✅ Found column comment on '{col['col_name']}': {col['comment']}")
+            print(f"[OK] Found column comment on '{col['col_name']}': {col['comment']}")
 
     if not has_any_comment:
         raise AssertionError(
-            f"❌ FAILED: No comments found on {table_name} when they should exist"
+            f"[FAIL] No comments found on {table_name} when they should exist"
         )
 
 
@@ -121,7 +121,7 @@ def test_apply_ddl_false_comment_mode():
     # Verify no comments were applied
     verify_no_comments(table_name)
 
-    print("✅ PASSED: apply_ddl=false prevented DDL application in comment mode")
+    print("[PASS] apply_ddl=false prevented DDL application in comment mode")
 
 
 def test_apply_ddl_true_comment_mode():
@@ -153,7 +153,7 @@ def test_apply_ddl_true_comment_mode():
     # Verify comments WERE applied
     verify_has_comments(table_name)
 
-    print("✅ PASSED: apply_ddl=true successfully applied DDL in comment mode")
+    print("[PASS] apply_ddl=true successfully applied DDL in comment mode")
 
 
 def test_apply_ddl_false_pi_mode():
@@ -186,10 +186,10 @@ def test_apply_ddl_false_pi_mode():
     tags_df = spark.sql(f"SHOW TAGS ON TABLE {table_name}")
     if tags_df.count() > 0:
         raise AssertionError(
-            f"❌ FAILED: Tags found on {table_name} when they shouldn't exist"
+            f"[FAIL] Tags found on {table_name} when they shouldn't exist"
         )
 
-    print("✅ PASSED: apply_ddl=false prevented DDL application in PI mode")
+    print("[PASS] apply_ddl=false prevented DDL application in PI mode")
 
 
 def test_apply_ddl_false_domain_mode():
@@ -225,10 +225,10 @@ def test_apply_ddl_false_domain_mode():
     ]
     if len(domain_tags) > 0:
         raise AssertionError(
-            f"❌ FAILED: Domain tags found on {table_name} when they shouldn't exist"
+            f"[FAIL] Domain tags found on {table_name} when they shouldn't exist"
         )
 
-    print("✅ PASSED: apply_ddl=false prevented DDL application in domain mode")
+    print("[PASS] apply_ddl=false prevented DDL application in domain mode")
 
 
 def test_apply_ddl_string_values():
@@ -278,7 +278,7 @@ def test_apply_ddl_string_values():
     assert config3.apply_ddl is True, "String 'true' should parse to boolean True"
     assert config3.dry_run is True, "String 'true' should parse to boolean True"
 
-    print("✅ PASSED: All string values correctly parsed to booleans")
+    print("[PASS] All string values correctly parsed to booleans")
 
 
 def run_all_tests():
@@ -298,12 +298,12 @@ def run_all_tests():
         test_apply_ddl_false_domain_mode()
 
         print("\n" + "=" * 80)
-        print("✅ ALL INTEGRATION TESTS PASSED")
+        print("[PASS] ALL INTEGRATION TESTS PASSED")
         print("=" * 80)
 
     except Exception as e:
         print("\n" + "=" * 80)
-        print("❌ INTEGRATION TEST FAILED")
+        print("[FAIL] INTEGRATION TEST FAILED")
         print("=" * 80)
         print(f"Error: {e}")
         raise

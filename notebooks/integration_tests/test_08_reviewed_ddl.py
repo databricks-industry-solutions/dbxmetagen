@@ -49,13 +49,13 @@ error_message = None
 
 try:
     # Setup
-    print("\n📋 Setup: Creating test environment")
+    print("\nSetup: Creating test environment")
     test_utils.setup_test_environment()
 
     test_table = test_utils.create_test_table("test_reviewed_ddl", with_comment=False)
 
     # Step 1: Generate initial metadata
-    print("\n🚀 Step 1: Generate initial metadata")
+    print("\nStep 1: Generate initial metadata")
 
     config_initial = MetadataConfig(
         yaml_file_path="../../variables.yml",
@@ -71,15 +71,15 @@ try:
     )
 
     main(config_initial.__dict__)
-    print("  ✓ Initial metadata generated and applied")
+    print("  [OK] Initial metadata generated and applied")
 
     # Verify initial comment exists
     initial_comment = test_utils.get_table_comment(test_table)
     test_utils.assert_not_none(initial_comment, "Initial table comment exists")
-    print(f"  ✓ Initial table comment: {initial_comment[:100]}...")
+    print(f"  [OK] Initial table comment: {initial_comment[:100]}...")
 
     # Step 2: Locate the exported TSV file
-    print("\n📄 Step 2: Locate exported TSV file")
+    print("\nStep 2: Locate exported TSV file")
 
     user_sanitized = sanitize_user_identifier(current_user)
     current_date = datetime.now().strftime("%Y%m%d")
@@ -94,17 +94,17 @@ try:
         for file_info in export_files:
             if simple_table_name in file_info.name and file_info.name.endswith(".tsv"):
                 tsv_file = file_info.path
-                print(f"  ✓ Found TSV file: {file_info.name}")
+                print(f"  [OK] Found TSV file: {file_info.name}")
                 break
 
         test_utils.assert_not_none(tsv_file, "TSV export file exists")
 
     except Exception as e:
-        print(f"  ✗ Could not find TSV file: {e}")
+        print(f"  [ERROR] Could not find TSV file: {e}")
         raise TestFailure(f"Could not find TSV export file: {e}")
 
     # Step 3: Manually modify the TSV file (simulate review)
-    print("\n✏️  Step 3: Simulate manual review - modify comments")
+    print("\nStep 3: Simulate manual review - modify comments")
 
     # Read the TSV
     tsv_path_local = tsv_file.replace("dbfs:", "/dbfs")
@@ -118,7 +118,7 @@ try:
         df.loc[df["ddl_type"] == "table", "column_content"] = (
             "REVIEWED: This is a manually reviewed table comment"
         )
-        print("  ✓ Modified table comment")
+        print("  [OK] Modified table comment")
 
     # Modify a column comment
     name_column_rows = df[(df["ddl_type"] == "column") & (df["column_name"] == "name")]
@@ -127,7 +127,7 @@ try:
             (df["ddl_type"] == "column") & (df["column_name"] == "name"),
             "column_content",
         ] = "REVIEWED: This column contains person names"
-        print("  ✓ Modified 'name' column comment")
+        print("  [OK] Modified 'name' column comment")
 
     # Save the reviewed TSV to reviewed_outputs directory
     reviewed_dir = f"/Volumes/{test_catalog}/{test_schema}/test_volume/{user_sanitized}/reviewed_outputs"
@@ -138,10 +138,10 @@ try:
     reviewed_file_local = reviewed_file_path.replace("dbfs:", "/dbfs")
 
     df.to_csv(reviewed_file_local, sep="\t", index=False)
-    print(f"  ✓ Saved reviewed file: {reviewed_file_name}")
+    print(f"  [OK] Saved reviewed file: {reviewed_file_name}")
 
     # Step 4: Process the reviewed file to apply changes
-    print("\n🔄 Step 4: Process reviewed file and apply DDL")
+    print("\nStep 4: Process reviewed file and apply DDL")
 
     config_reviewed = MetadataConfig(
         yaml_file_path="../../variables.yml",
@@ -158,10 +158,10 @@ try:
     )
 
     process_metadata_file(config_reviewed, reviewed_file_name)
-    print("  ✓ Reviewed DDL processed and applied")
+    print("  [OK] Reviewed DDL processed and applied")
 
     # Step 5: Verify the changes were applied
-    print("\n🔍 Step 5: Verify reviewed comments were applied")
+    print("\nStep 5: Verify reviewed comments were applied")
 
     # Check table comment changed
     final_table_comment = test_utils.get_table_comment(test_table)
@@ -171,7 +171,7 @@ try:
         "REVIEWED: This is a manually reviewed table comment",
         "Table comment reflects manual review",
     )
-    print(f"  ✓ Table comment updated: {final_table_comment[:100]}...")
+    print(f"  [OK] Table comment updated: {final_table_comment[:100]}...")
 
     # Check column comment changed
     final_name_comment = test_utils.get_column_comment(test_table, "name")
@@ -181,10 +181,10 @@ try:
         "REVIEWED: This column contains person names",
         "'name' column comment reflects manual review",
     )
-    print(f"  ✓ Column 'name' comment updated: {final_name_comment}")
+    print(f"  [OK] Column 'name' comment updated: {final_name_comment}")
 
     # Step 6: Verify reviewed SQL file was generated
-    print("\n🔍 Step 6: Verify reviewed SQL file generated")
+    print("\nStep 6: Verify reviewed SQL file generated")
 
     reviewed_sql_dir = f"{export_dir}"  # Same location as original
     reviewed_sql_files = dbutils.fs.ls(reviewed_sql_dir)
@@ -192,7 +192,7 @@ try:
     reviewed_sql_found = False
     for file_info in reviewed_sql_files:
         if "reviewed" in file_info.name and file_info.name.endswith(".sql"):
-            print(f"  ✓ Found reviewed SQL file: {file_info.name}")
+            print(f"  [OK] Found reviewed SQL file: {file_info.name}")
             reviewed_sql_found = True
 
             # Read and verify content
@@ -224,7 +224,7 @@ except Exception as e:
 
 finally:
     # Cleanup
-    print("\n🧹 Cleanup")
+    print("\nCleanup")
     test_utils.cleanup_test_artifacts()
 
 # COMMAND ----------

@@ -32,12 +32,12 @@ class UIComponents:
     def _ensure_client_ready(self) -> bool:
         """Ensure Databricks client is initialized (lazy initialization)."""
         if not st.session_state.get("workspace_client"):
-            logger.info("🔄 Performing lazy client initialization for UI action...")
+            logger.info("Performing lazy client initialization for UI action...")
             client_ready = DatabricksClientManager.setup_client()
             if client_ready:
-                logger.info("✅ Lazy client initialization successful")
+                logger.info("Lazy client initialization successful")
             else:
-                logger.error("❌ Lazy client initialization failed")
+                logger.error("Lazy client initialization failed")
             return client_ready
         return True
 
@@ -148,7 +148,7 @@ class UIComponents:
 
     def render_unified_table_management(self):
         """Render the unified table management interface."""
-        st.header("📋 Table Management")
+        st.header("Table Management")
 
         tables = self._render_table_input_section()
 
@@ -203,11 +203,11 @@ class UIComponents:
         col1, col2, col3 = st.columns(3)
 
         with col1:
-            if st.button("✅ Validate Tables", type="secondary"):
+            if st.button("Validate Tables", type="secondary"):
                 self._validate_tables(tables)
 
         with col2:
-            if st.button("💾 Save List", type="secondary"):
+            if st.button("Save List", type="secondary"):
                 self._save_table_list(tables)
 
         with col3:
@@ -215,10 +215,10 @@ class UIComponents:
 
     def _render_job_creation_button(self, tables: List[str]):
         """Render job creation button with direct execution"""
-        if st.button("🚀 Create & Run Job", type="primary"):
+        if st.button("Create & Run Job", type="primary"):
             if not self.job_manager:
                 st.error(
-                    "❌ Databricks client not initialized. Please check connection."
+                    "[ERROR] Databricks client not initialized. Please check connection."
                 )
                 return
             with st.spinner("Creating and running job..."):
@@ -237,7 +237,7 @@ class UIComponents:
 
             # Accessibility validation for valid tables
             if valid_tables:
-                st.subheader("🔍 Checking Table Access...")
+                st.subheader("Checking Table Access...")
                 validation_results = self.data_ops.validate_tables(valid_tables)
 
                 accessible = validation_results["accessible"]
@@ -245,16 +245,16 @@ class UIComponents:
                 errors = validation_results["errors"]
 
                 if accessible:
-                    st.success(f"✅ {len(accessible)} tables accessible")
+                    st.success(f"[OK] {len(accessible)} tables accessible")
                     with st.expander("Accessible Tables"):
                         for table in accessible:
-                            st.write(f"✅ {table}")
+                            st.write(f"[OK] {table}")
 
                 if inaccessible:
-                    st.error(f"❌ {len(inaccessible)} tables inaccessible")
+                    st.error(f"[ERROR] {len(inaccessible)} tables inaccessible")
                     with st.expander("Inaccessible Tables"):
                         for table in inaccessible:
-                            st.write(f"❌ {table}")
+                            st.write(f"[ERROR] {table}")
 
                 if errors:
                     st.error("Validation Errors:")
@@ -294,47 +294,30 @@ class UIComponents:
         with col1:
             st.subheader("Job Status")
         with col2:
-            if st.button("🔄 Refresh Now", help="Manually refresh job status"):
+            if st.button("Refresh Now", help="Manually refresh job status"):
                 if not self.job_manager:
                     st.error(
-                        "❌ Databricks client not initialized. Please check connection."
+                        "[ERROR] Databricks client not initialized. Please check connection."
                     )
                     return
                 with st.spinner("Refreshing job status..."):
                     self.job_manager.refresh_job_status()
-                st.success("✅ Status refreshed!")
+                st.success("[OK] Status refreshed!")
 
     def _display_job_status_working(self):
         """Display job status using working format (run_id as key)"""
         for run_id, job_info in st.session_state.job_runs.items():
-            # Calculate progress for running jobs
-            progress = 0
-            if job_info["status"] == "SUCCESS":
-                progress = 100
-            elif job_info["status"] == "RUNNING":
-                # Estimate progress based on time elapsed (rough estimate)
-                start_time = job_info.get("start_time", datetime.now())
-                if isinstance(start_time, str):
-                    # Handle string timestamps
-                    try:
-                        start_time = datetime.fromisoformat(start_time)
-                    except:
-                        start_time = datetime.now()
-
-                elapsed = (datetime.now() - start_time).total_seconds()
-                progress = min(80, (elapsed / 600) * 100)  # Max 80% for running jobs
-            elif job_info["status"] == "FAILED":
-                progress = 0
+            status = job_info["status"]
 
             with st.expander(
-                f"🔧 {job_info['job_name']} (Run ID: {run_id})",
-                expanded=job_info["status"] == "RUNNING",
+                f"{job_info['job_name']} (Run ID: {run_id})",
+                expanded=status == "RUNNING",
             ):
                 # Job details
                 col1, col2 = st.columns(2)
                 with col1:
                     st.write(f"**Job ID:** {job_info.get('job_id', 'Unknown')}")
-                    st.write(f"**Status:** {job_info['status']}")
+                    st.write(f"**Status:** {status}")
                     st.write(f"**Tables:** {len(job_info.get('tables', []))}")
 
                 with col2:
@@ -345,13 +328,26 @@ class UIComponents:
                     if job_info.get("result_state"):
                         st.write(f"**Result:** {job_info['result_state']}")
 
-                # Progress bar
-                st.progress(progress / 100)
+                # Status indicator based on job state
+                if status == "SUCCESS":
+                    st.progress(1.0)
+                    st.success("Job completed successfully")
+                elif status == "RUNNING":
+                    st.info("Job is running...")
+                elif status == "FAILED":
+                    st.error("Job failed")
+                elif status == "TERMINATED":
+                    result = job_info.get("result_state", "UNKNOWN")
+                    if result == "SUCCESS":
+                        st.progress(1.0)
+                        st.success("Job completed successfully")
+                    else:
+                        st.error(f"Job terminated: {result}")
 
                 # Table list
                 tables = job_info.get("tables", [])
                 if tables:
-                    st.markdown(f"**📋 Processing {len(tables)} Tables:**")
+                    st.markdown(f"**Processing {len(tables)} Tables:**")
                     for i, table in enumerate(tables[:10], 1):
                         st.write(f"{i}. {table}")
                     if len(tables) > 10:
@@ -388,10 +384,10 @@ class UIComponents:
             )
 
         # File selection section
-        st.subheader("📁 Select File to Review")
+        st.subheader("Select File to Review")
 
         # Button to scan for available files
-        if st.button("🔍 Scan for Available Files", key="scan_files_button"):
+        if st.button("Scan for Available Files", key="scan_files_button"):
             with st.spinner("Scanning for metadata files..."):
                 available_files = (
                     self.metadata_processor.get_available_files_from_volume(
@@ -401,7 +397,7 @@ class UIComponents:
                 if available_files:
                     st.session_state.available_review_files = available_files
                     st.session_state.selected_review_file = None  # Reset selection
-                    st.success(f"✅ Found {len(available_files)} metadata files")
+                    st.success(f"[OK] Found {len(available_files)} metadata files")
                 else:
                     st.session_state.available_review_files = []
                     st.warning("No metadata files found in the specified location")
@@ -435,9 +431,9 @@ class UIComponents:
                 st.session_state.selected_review_file = available_files[selected_index]
 
         load_button_text = (
-            "🔍 Load Selected File"
+            "Load Selected File"
             if st.session_state.get("selected_review_file")
-            else "📥 Load Most Recent File"
+            else "Load Most Recent File"
         )
 
         if st.button(load_button_text, key="load_metadata_review_btn"):
@@ -533,21 +529,21 @@ class UIComponents:
             col1, col2 = st.columns(2)
 
             with col1:
-                if st.button("💾 Save Reviewed Metadata"):
+                if st.button("Save Reviewed Metadata"):
                     self._save_reviewed_metadata(edited_df)
 
             with col2:
-                if st.button("✅ Apply to Tables"):
+                if st.button("Apply to Tables"):
                     self._apply_metadata(edited_df)
 
     def _save_reviewed_metadata(self, df: pd.DataFrame):
         """Save reviewed metadata back to volume with _reviewed suffix."""
         if not st.session_state.get("review_metadata_original_path"):
-            st.error("❌ Original file path not found. Please reload the metadata.")
+            st.error("[ERROR] Original file path not found. Please reload the metadata.")
             return
 
         try:
-            st.info("🔄 Generating DDL from edited metadata...")
+            st.info("Generating DDL from edited metadata...")
             updated_df = self.metadata_processor._generate_ddl_from_comments(df)
             st.session_state.review_metadata = (
                 updated_df  # Update session state with new DDL
@@ -556,7 +552,7 @@ class UIComponents:
 
             # Get current user and date for path construction
             if not st.session_state.get("workspace_client"):
-                st.error("❌ Workspace client not initialized")
+                st.error("[ERROR] Workspace client not initialized")
                 return
 
             current_user = st.session_state.workspace_client.current_user.me().user_name
@@ -590,7 +586,7 @@ class UIComponents:
                         f.write(tsv_content)
 
                 st.success(f"Reviewed metadata saved to: {output_path}")
-                st.info(f"📄 File: {output_filename}")
+                st.info(f"File: {output_filename}")
 
                 # Also provide download option
                 st.download_button(
@@ -601,7 +597,7 @@ class UIComponents:
                 )
 
         except Exception as e:
-            st.error(f"❌ Error saving reviewed metadata: {str(e)}")
+            st.error(f"[ERROR] Error saving reviewed metadata: {str(e)}")
             logger.error(f"Error saving reviewed metadata: {str(e)}")
 
     def _apply_metadata(self, df: pd.DataFrame):
@@ -609,12 +605,12 @@ class UIComponents:
 
         if not DatabricksClientManager.recheck_authentication():
             st.error(
-                "❌ Authentication check failed. Please refresh the page and try again."
+                "[ERROR] Authentication check failed. Please refresh the page and try again."
             )
             return
 
         if not self.job_manager:
-            st.error("❌ Databricks client not initialized. Please check connection.")
+            st.error("[ERROR] Databricks client not initialized. Please check connection.")
             return
 
         with st.spinner("Applying metadata to tables..."):
@@ -624,21 +620,21 @@ class UIComponents:
 
             if results["success"]:
                 st.success(
-                    f"✅ Applied metadata to {results['applied']} tables and columns..."
+                    f"[OK] Applied metadata to {results['applied']} tables and columns..."
                 )
             else:
                 st.error(
-                    f"❌ Failed to apply metadata: {results.get('error', 'Unknown error')}"
+                    f"[ERROR] Failed to apply metadata: {results.get('error', 'Unknown error')}"
                 )
 
                 if results.get("errors"):
                     st.markdown("**Error Details:**")
                     for error in results["errors"]:
-                        st.write(f"• {error}")
+                        st.write(f"- {error}")
 
     def render_help(self):
         """Render help and documentation."""
-        st.header("❓ Help & Documentation")
+        st.header("Help & Documentation")
 
         with st.expander("Getting Started", expanded=True):
             st.markdown(
@@ -666,7 +662,7 @@ class UIComponents:
             """
             )
 
-        with st.expander("📁 File Formats"):
+        with st.expander("File Formats"):
             st.markdown(
                 """
             - **table_names.csv**: CSV file with 'table_name' column containing fully qualified table names
@@ -675,7 +671,7 @@ class UIComponents:
             """
             )
 
-        with st.expander("🔧 Troubleshooting"):
+        with st.expander("Troubleshooting"):
             st.markdown(
                 """
             - **Authentication Issues**: Ensure Databricks token and host are properly configured

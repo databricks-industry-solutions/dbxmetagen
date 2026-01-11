@@ -16,10 +16,12 @@ This document describes how to configure environment-specific values that should
 ## How It Works
 
 During deployment, `deploy.sh` will:
-1. Load variables from `dev.env`
-2. Merge them into `variables.yml` to create `variables.yml.merged`
-3. Use the merged file for deployment
-4. Clean up temporary files after deployment
+1. Load variables from `{target}.env` (e.g., `dev.env` for `--target dev`)
+2. Backup `variables.yml` to `variables.bkp`
+3. Create `variables_override.yml` from environment variables
+4. Append `variables_override.yml` to `variables.yml`
+5. Run the bundle deployment
+6. Restore original `variables.yml` from backup and clean up temporary files
 
 This ensures sensitive values are never committed to git.
 
@@ -72,9 +74,11 @@ To add a new environment variable that overrides `variables.yml`:
 ## Temporary Files
 
 The following files are created during deployment and cleaned up automatically:
-- `variables.yml.merged` - Merged configuration file
-- `variables.yml.tmp` - Temporary file during merge
-- `app/variables.yml` - Copy used by the app during deployment
+- `variables.bkp` - Backup of original variables.yml
+- `variables_override.yml` - Contains merged values from .env
+- `app/deploying_user.yml` - Current user info for the app
+- `app/app_env.yml` - Target environment for the app
+- `app/env_overrides.yml` - Environment-specific overrides for the app
 
 All of these are in `.gitignore` and will not be committed.
 

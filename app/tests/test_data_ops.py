@@ -117,5 +117,83 @@ class TestDownloadFileContent:
         assert "Network error" in str(exc_info.value)
 
 
+class TestTriggerDdlSyncJobModeParameter:
+    """
+    Tests to ensure _trigger_ddl_sync_job uses the mode from config,
+    not hardcoded values. This prevents regressions where mode is accidentally
+    hardcoded to 'comment' instead of using the user-selected mode.
+    """
+
+    @pytest.fixture
+    def mock_streamlit(self):
+        """Set up streamlit session state mock."""
+        import streamlit as st
+        st.session_state = MagicMock()
+        return st
+
+    @pytest.fixture
+    def metadata_processor(self):
+        """Create MetadataProcessor with mocked dependencies."""
+        from core.data_ops import MetadataProcessor
+        processor = MetadataProcessor()
+        return processor
+
+    def test_mode_pi_passed_to_sync_job(self, mock_streamlit, metadata_processor):
+        """When config mode is 'pi', sync job should receive mode='pi'."""
+        # Setup config with mode='pi'
+        mock_streamlit.session_state.get.return_value = {"mode": "pi"}
+        
+        mock_job_manager = MagicMock()
+        mock_job_manager.create_and_run_sync_job.return_value = (123, 456)
+        
+        result = metadata_processor._trigger_ddl_sync_job("test_file.tsv", mock_job_manager)
+        
+        # Verify create_and_run_sync_job was called with mode='pi'
+        mock_job_manager.create_and_run_sync_job.assert_called_once()
+        call_kwargs = mock_job_manager.create_and_run_sync_job.call_args
+        assert call_kwargs.kwargs.get("mode") == "pi", \
+            f"Expected mode='pi', got mode='{call_kwargs.kwargs.get('mode')}'. " \
+            "Mode should come from config, not be hardcoded!"
+
+    def test_mode_domain_passed_to_sync_job(self, mock_streamlit, metadata_processor):
+        """When config mode is 'domain', sync job should receive mode='domain'."""
+        mock_streamlit.session_state.get.return_value = {"mode": "domain"}
+        
+        mock_job_manager = MagicMock()
+        mock_job_manager.create_and_run_sync_job.return_value = (123, 456)
+        
+        result = metadata_processor._trigger_ddl_sync_job("test_file.tsv", mock_job_manager)
+        
+        call_kwargs = mock_job_manager.create_and_run_sync_job.call_args
+        assert call_kwargs.kwargs.get("mode") == "domain", \
+            f"Expected mode='domain', got mode='{call_kwargs.kwargs.get('mode')}'. " \
+            "Mode should come from config, not be hardcoded!"
+
+    def test_mode_comment_passed_to_sync_job(self, mock_streamlit, metadata_processor):
+        """When config mode is 'comment', sync job should receive mode='comment'."""
+        mock_streamlit.session_state.get.return_value = {"mode": "comment"}
+        
+        mock_job_manager = MagicMock()
+        mock_job_manager.create_and_run_sync_job.return_value = (123, 456)
+        
+        result = metadata_processor._trigger_ddl_sync_job("test_file.tsv", mock_job_manager)
+        
+        call_kwargs = mock_job_manager.create_and_run_sync_job.call_args
+        assert call_kwargs.kwargs.get("mode") == "comment"
+
+    def test_mode_defaults_to_comment_when_not_in_config(self, mock_streamlit, metadata_processor):
+        """When config has no mode, should default to 'comment'."""
+        mock_streamlit.session_state.get.return_value = {}  # No mode in config
+        
+        mock_job_manager = MagicMock()
+        mock_job_manager.create_and_run_sync_job.return_value = (123, 456)
+        
+        result = metadata_processor._trigger_ddl_sync_job("test_file.tsv", mock_job_manager)
+        
+        call_kwargs = mock_job_manager.create_and_run_sync_job.call_args
+        assert call_kwargs.kwargs.get("mode") == "comment", \
+            "Mode should default to 'comment' when not specified in config"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

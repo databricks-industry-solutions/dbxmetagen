@@ -1,0 +1,61 @@
+resources:
+  jobs:
+    knowledge_base_builder_job:
+      name: "${var.app_name}_knowledge_base_job"
+
+      email_notifications:
+        on_failure:
+          - ${var.current_user}
+
+      # Job parameters that can be passed at runtime
+      parameters:
+        - name: catalog_name
+          default: ${var.catalog_name}
+        - name: schema_name
+          default: ${var.schema_name}
+
+      tasks:
+        - task_key: build_knowledge_base
+          job_cluster_key: kb_cluster
+
+          notebook_task:
+            notebook_path: ../../notebooks/build_knowledge_base.py
+            base_parameters:
+              catalog_name: "{{job.parameters.catalog_name}}"
+              schema_name: "{{job.parameters.schema_name}}"
+
+          libraries:
+            - whl: ../../dist/*.whl
+
+        - task_key: build_knowledge_graph
+          depends_on:
+            - task_key: build_knowledge_base
+          # ML cluster required - GraphFrames needs JVM dependencies not available on serverless
+          job_cluster_key: ml_cluster
+
+          notebook_task:
+            notebook_path: ../../notebooks/build_knowledge_graph.py
+            base_parameters:
+              catalog_name: "{{job.parameters.catalog_name}}"
+              schema_name: "{{job.parameters.schema_name}}"
+
+          libraries:
+            - whl: ../../dist/*.whl
+            - pypi:
+                package: graphframes
+
+      job_clusters:
+        - job_cluster_key: kb_cluster
+          new_cluster:
+            spark_version: 17.3.x-cpu-ml-scala2.13
+            node_type_id: ${var.node_type}
+            num_workers: 1
+
+        # ML cluster for GraphFrames - required for knowledge graph building
+        # GraphFrames needs JVM dependencies not available on serverless
+        - job_cluster_key: ml_cluster
+          new_cluster:
+            spark_version: 17.3.x-cpu-ml-scala2.13
+            node_type_id: ${var.node_type}
+            num_workers: 1
+

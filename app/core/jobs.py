@@ -163,7 +163,7 @@ class JobManager:
 
         except Exception as e:
             logger.error(f"Failed to refresh job status: {str(e)}")
-            st.error(f"❌ Failed to refresh job status: {str(e)}")
+            st.error(f"[ERROR] Failed to refresh job status: {str(e)}")
 
     def _validate_inputs(
         self,
@@ -214,7 +214,7 @@ class JobManager:
                 )
             except ValueError as e:
                 logger.error(f"Failed to get job user: {e}")
-                # st.error(f"❌ Failed to determine job user: {e}")
+                # st.error(f"[ERROR] Failed to determine job user: {e}")
                 raise
         # st.info(f"Job user: {job_user}")
         catalog_name = AppConfig.get_catalog_name()
@@ -372,12 +372,12 @@ class JobManager:
                     found_jobs.append(f"'{job.settings.name}' (ID: {job.job_id})")
                     if job.settings.name == job_name:
                         logger.info(
-                            f"✅ Found matching job '{job_name}' with ID: {job.job_id}"
+                            f"Found matching job '{job_name}' with ID: {job.job_id}"
                         )
                         return job.job_id
 
             logger.warning(
-                f"❌ Job '{job_name}' not found. Available jobs: {found_jobs[:5]}"
+                f"Job '{job_name}' not found. Available jobs: {found_jobs[:5]}"
             )  # Show first 5 for debugging
             return None
         except Exception as e:
@@ -539,7 +539,7 @@ class JobManager:
         try:
             if not DatabricksClientManager.recheck_authentication():
                 st.error(
-                    "❌ Authentication check failed. Please refresh the page and try again."
+                    "[ERROR] Authentication check failed. Please refresh the page and try again."
                 )
                 return
 
@@ -553,7 +553,7 @@ class JobManager:
             return job_id, run_id
 
         except Exception as e:
-            st.error(f"❌ Job execution failed: {str(e)}")
+            st.error(f"[ERROR] Job execution failed: {str(e)}")
             logger.error(f"Job execution failed: {str(e)}", exc_info=True)
 
             st.markdown("**Debug Information:**")

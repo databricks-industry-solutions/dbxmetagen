@@ -23,7 +23,7 @@ def setup_databricks_environment(dbutils_instance=None):
         current_user = w.current_user.me().user_name
         if w.config.host:
             os.environ["DATABRICKS_HOST"] = w.config.host.rstrip("/")
-        print(f"✓ Successfully authenticated as: {current_user}")
+        print(f"[OK] Successfully authenticated as: {current_user}")
     except Exception:
         print("Warning: Could not get user info from WorkspaceClient")
 
@@ -77,6 +77,38 @@ def get_job_context(job_id, dbutils_instance=None):
         return None
 
 
+def get_task_id(dbutils_instance=None):
+    """Get task run ID from Databricks context for concurrent task identification.
+    
+    Returns a unique identifier for this task execution, used for table claiming
+    in concurrent processing scenarios.
+    """
+    try:
+        if dbutils_instance:
+            context_json = (
+                dbutils_instance.notebook.entry_point.getDbutils()
+                .notebook()
+                .getContext()
+                .safeToJson()
+            )
+            context = json.loads(context_json)
+            # Try taskRunId first (available in job tasks)
+            task_run_id = context.get("tags", {}).get("taskRunId")
+            if task_run_id:
+                return task_run_id
+            # Fallback to multitaskParentRunId if available
+            parent_run_id = context.get("tags", {}).get("multitaskParentRunId")
+            if parent_run_id:
+                return f"{parent_run_id}_interactive"
+        # Generate a UUID as fallback for interactive/local runs
+        import uuid
+        return str(uuid.uuid4())
+    except Exception as e:
+        print(f"Error getting task ID: {e}")
+        import uuid
+        return str(uuid.uuid4())
+
+
 def setup_widgets(dbutils):
     """Setup widgets for the notebook."""
     dbutils.widgets.dropdown(
@@ -93,6 +125,11 @@ def setup_widgets(dbutils):
     dbutils.widgets.text("columns_per_call", "")
     dbutils.widgets.text("sample_size", "")
     dbutils.widgets.text("job_id", "")
+    dbutils.widgets.text("run_id", "")
+    dbutils.widgets.dropdown(
+        "include_previously_failed_tables", "false", ["true", "false"], 
+        "Include Previously Failed Tables"
+    )
 
 
 def get_widgets(dbutils):
@@ -108,6 +145,8 @@ def get_widgets(dbutils):
     apply_ddl = dbutils.widgets.get("apply_ddl")
     columns_per_call = dbutils.widgets.get("columns_per_call")
     sample_size = dbutils.widgets.get("sample_size")
+    run_id = dbutils.widgets.get("run_id")
+    include_previously_failed_tables = dbutils.widgets.get("include_previously_failed_tables")
     notebook_variables = {
         "cleanup_control_table": cleanup_control_table,
         "mode": mode,
@@ -120,6 +159,8 @@ def get_widgets(dbutils):
         "apply_ddl": apply_ddl,
         "columns_per_call": columns_per_call,
         "sample_size": sample_size,
+        "run_id": run_id,
+        "include_previously_failed_tables": include_previously_failed_tables,
     }
     return {k: v for k, v in notebook_variables.items() if v is not None and v != ""}
 
@@ -157,16 +198,23 @@ def setup_notebook_variables(dbutils):
     """Setup notebook variables and validate required parameters."""
     try:
         job_id = dbutils.widgets.get("job_id")
-    except ValueError as e:
+    except ValueError:
         job_id = None
+    try:
+        run_id = dbutils.widgets.get("run_id")
+    except ValueError:
+        run_id = None
     try:
         notebook_variables = get_widgets(dbutils)
     except Exception:
         notebook_variables = {}
     job_id = get_job_context(job_id, dbutils)
+    task_id = get_task_id(dbutils)
     current_user = get_current_user(dbutils_instance=dbutils)
     notebook_path = get_notebook_path(dbutils)
     notebook_variables["job_id"] = job_id
+    notebook_variables["run_id"] = run_id
+    notebook_variables["task_id"] = task_id
     notebook_variables["current_user"] = current_user
     notebook_variables["notebook_path"] = notebook_path
 
@@ -177,7 +225,7 @@ def setup_notebook_variables(dbutils):
     # Check if catalog_name is missing or set to 'none'
     if not catalog_name or catalog_name.lower() in ["none", "null", ""]:
         raise ValueError(
-            "❌ REQUIRED PARAMETER MISSING: catalog_name\n\n"
+            "[ERROR] REQUIRED PARAMETER MISSING: catalog_name\n\n"
             "Please provide a valid catalog name using the 'Catalog Name (required)' widget.\n"
             "The catalog name cannot be 'none', 'null', or empty.\n\n"
             "Example: my_catalog"
@@ -186,7 +234,7 @@ def setup_notebook_variables(dbutils):
     # Check if table_names is missing or set to 'none'
     if not table_names or table_names.lower() in ["none", "null", ""]:
         raise ValueError(
-            "❌ REQUIRED PARAMETER MISSING: table_names\n\n"
+            "[ERROR] REQUIRED PARAMETER MISSING: table_names\n\n"
             "Please provide table names using the 'Table Names - comma-separated (required)' widget.\n"
             "Specify one or more tables in the format: catalog.schema.table\n\n"
             "Examples:\n"
