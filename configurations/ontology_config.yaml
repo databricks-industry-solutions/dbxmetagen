@@ -1,0 +1,231 @@
+# Ontology Configuration for DBXMetagen
+# This file defines the business ontology structure for entity discovery and validation
+
+ontology:
+  version: "1.0"
+  name: "Default Business Ontology"
+  description: "Standard business ontology for data catalog metadata"
+  
+  # Entity discovery settings
+  entities:
+    # Enable automatic entity discovery from knowledge base
+    auto_discover: true
+    
+    # Confidence threshold for auto-discovered entities (0.0-1.0)
+    discovery_confidence_threshold: 0.7
+    
+    # Pre-defined entity definitions
+    # Each entity can be matched to tables/columns based on keywords
+    definitions:
+      Customer:
+        description: "Customer, user, or account entities representing people or organizations"
+        keywords:
+          - customer
+          - user
+          - client
+          - account
+          - member
+          - subscriber
+          - buyer
+          - consumer
+        typical_attributes:
+          - id
+          - name
+          - email
+          - phone
+          - address
+          - created_date
+          - status
+        
+      Product:
+        description: "Product, item, or SKU entities representing goods or services"
+        keywords:
+          - product
+          - item
+          - sku
+          - inventory
+          - goods
+          - merchandise
+          - catalog
+          - offering
+        typical_attributes:
+          - id
+          - name
+          - description
+          - price
+          - category
+          - status
+          
+      Transaction:
+        description: "Transaction or order entities representing business events"
+        keywords:
+          - transaction
+          - order
+          - purchase
+          - sale
+          - payment
+          - invoice
+          - receipt
+        typical_attributes:
+          - id
+          - customer_id
+          - product_id
+          - amount
+          - date
+          - status
+          
+      Employee:
+        description: "Employee or staff entities representing workforce"
+        keywords:
+          - employee
+          - staff
+          - worker
+          - personnel
+          - hr
+          - human_resource
+        typical_attributes:
+          - id
+          - name
+          - email
+          - department
+          - role
+          - hire_date
+          
+      Location:
+        description: "Location, address, or geographic entities"
+        keywords:
+          - location
+          - address
+          - site
+          - facility
+          - store
+          - warehouse
+          - region
+          - territory
+        typical_attributes:
+          - id
+          - name
+          - address
+          - city
+          - state
+          - country
+          - zip_code
+          
+      Event:
+        description: "Event or activity entities representing occurrences"
+        keywords:
+          - event
+          - activity
+          - log
+          - audit
+          - action
+          - session
+          - visit
+        typical_attributes:
+          - id
+          - type
+          - timestamp
+          - user_id
+          - details
+          
+      Reference:
+        description: "Reference or lookup data entities"
+        keywords:
+          - reference
+          - lookup
+          - code
+          - type
+          - category
+          - config
+          - setting
+          - dim_
+        typical_attributes:
+          - id
+          - code
+          - name
+          - description
+          - active
+          
+      Metric:
+        description: "Metric, KPI, or aggregated data entities"
+        keywords:
+          - metric
+          - kpi
+          - aggregate
+          - summary
+          - stats
+          - analytics
+          - fact_
+        typical_attributes:
+          - id
+          - name
+          - value
+          - period
+          - dimension
+
+  # Relationship type definitions
+  relationships:
+    # Standard relationship types for the ontology
+    types:
+      - name: owns
+        description: "Entity owns or is responsible for another"
+        inverse: owned_by
+        
+      - name: contains
+        description: "Entity contains or includes another"
+        inverse: contained_in
+        
+      - name: references
+        description: "Entity references another (foreign key)"
+        inverse: referenced_by
+        
+      - name: derives_from
+        description: "Entity is derived from another (lineage)"
+        inverse: source_of
+        
+      - name: similar_to
+        description: "Entity is semantically similar to another"
+        inverse: similar_to
+        symmetric: true
+        
+      - name: part_of
+        description: "Entity is part of a larger entity"
+        inverse: has_part
+        
+      - name: instance_of
+        description: "Entity is an instance of a type"
+        inverse: type_of
+
+  # Metric definitions (stub for future UC metric views)
+  metrics:
+    # Enable metric discovery
+    auto_discover: false
+    
+    # Pre-defined metric definitions
+    definitions: []
+    #   - name: total_customers
+    #     description: "Total number of active customers"
+    #     entity: Customer
+    #     aggregation: count
+    #     filter: "status = 'active'"
+    #     
+    #   - name: total_revenue
+    #     description: "Total revenue from transactions"
+    #     entity: Transaction
+    #     aggregation: sum
+    #     field: amount
+
+  # Validation settings
+  validation:
+    # Minimum confidence for entity matches
+    min_entity_confidence: 0.5
+    
+    # Maximum entities to suggest per table
+    max_entities_per_table: 3
+    
+    # Enable AI-powered validation
+    ai_validation_enabled: true
+    
+    # Model for AI validation
+    validation_model: "databricks-meta-llama-3-3-70b-instruct"
+

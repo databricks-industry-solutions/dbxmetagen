@@ -1,0 +1,74 @@
+resources:
+  jobs:
+    ontology_job:
+      name: "${var.app_name}_ontology_job"
+
+      email_notifications:
+        on_failure:
+          - ${var.current_user}
+
+      parameters:
+        - name: catalog_name
+          default: ${var.catalog_name}
+        - name: schema_name
+          default: ${var.schema_name}
+        - name: config_path
+          default: "configurations/ontology_config.yaml"
+        - name: run_validation
+          default: "true"
+
+      tasks:
+        - task_key: build_ontology
+          job_cluster_key: ontology_cluster
+
+          notebook_task:
+            notebook_path: ../../notebooks/build_ontology.py
+            base_parameters:
+              catalog_name: "{{job.parameters.catalog_name}}"
+              schema_name: "{{job.parameters.schema_name}}"
+              config_path: "{{job.parameters.config_path}}"
+
+          libraries:
+            - whl: ../../dist/*.whl
+
+        - task_key: validate_ontology
+          depends_on:
+            - task_key: build_ontology
+          job_cluster_key: ontology_cluster
+          
+          # Only run if validation is enabled
+          condition_task:
+            left: "{{job.parameters.run_validation}}"
+            op: EQUAL_TO
+            right: "true"
+
+          notebook_task:
+            notebook_path: ../../notebooks/validate_ontology.py
+            base_parameters:
+              catalog_name: "{{job.parameters.catalog_name}}"
+              schema_name: "{{job.parameters.schema_name}}"
+
+          libraries:
+            - whl: ../../dist/*.whl
+
+        - task_key: update_graph_ontology
+          depends_on:
+            - task_key: validate_ontology
+          job_cluster_key: ontology_cluster
+
+          notebook_task:
+            notebook_path: ../../notebooks/update_graph_ontology.py
+            base_parameters:
+              catalog_name: "{{job.parameters.catalog_name}}"
+              schema_name: "{{job.parameters.schema_name}}"
+
+          libraries:
+            - whl: ../../dist/*.whl
+
+      job_clusters:
+        - job_cluster_key: ontology_cluster
+          new_cluster:
+            spark_version: 17.3.x-cpu-ml-scala2.13
+            node_type_id: ${var.node_type}
+            num_workers: 1
+

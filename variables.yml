@@ -185,3 +185,21 @@ variables:
   deploying_user:
     description: User deploying the bundle (for permissions).
     default: ${workspace.current_user.userName}
+  generate_profiling_data:
+    description: Enable profiling payload capture and statistics collection. When true, LLM prompts are logged and table statistics are computed.
+    default: false
+  embedding_model:
+    description: Databricks Foundation Model endpoint for generating embeddings
+    default: databricks-bge-large-en
+  ontology_config_path:
+    description: Path to ontology configuration YAML file
+    default: configurations/ontology_config.yaml
+  similarity_threshold:
+    description: Cosine similarity threshold for creating similar_embedding edges between nodes (0.0-1.0)
+    default: 0.8
+  profiling_max_tables:
+    description: Maximum number of tables to profile per run (empty for all)
+    default: ""
+  freshness_threshold_days:
+    description: Number of days before data is considered stale for quality scoring
+    default: 7

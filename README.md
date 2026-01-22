@@ -98,6 +98,69 @@ OR
 - **DDL Generation:** Produces `ALTER TABLE` statements for integration.
 - **Manual Overrides:** Supports CSV-based overrides for granular control.
 
+### Architecture Overview
+
+```mermaid
+flowchart TB
+    subgraph sources [Data Sources]
+        SYS[System Tables]
+        LOG[metadata_generation_log]
+        LLM[LLM Responses]
+    end
+    
+    subgraph kb [Knowledge Base Layer]
+        TKB[table_knowledge_base]
+        CKB[column_knowledge_base]
+        SKB[schema_knowledge_base]
+        EXT[extended_metadata]
+    end
+    
+    subgraph profiling [Profiling Layer]
+        PAY[llm_payloads]
+        PROF[profiling_snapshots]
+        DQ[data_quality_scores]
+    end
+    
+    subgraph graph [Graph Layer]
+        GN[graph_nodes]
+        GE[graph_edges]
+        EMB[node_embeddings]
+    end
+    
+    subgraph ontology [Ontology Layer]
+        ONT_CFG[ontology_config.yaml]
+        ENT[ontology_entities]
+        MET[ontology_metrics]
+    end
+    
+    SYS --> EXT
+    SYS --> PROF
+    LOG --> TKB
+    LOG --> CKB
+    TKB --> SKB
+    LLM --> PAY
+    
+    TKB --> GN
+    CKB --> GN
+    SKB --> GN
+    EXT --> GN
+    PROF --> GN
+    DQ --> GN
+    
+    GN --> EMB
+    EMB --> GE
+    
+    ONT_CFG --> ENT
+    GN --> ENT
+    ENT --> MET
+```
+
+The architecture supports:
+- **Knowledge Base Layer**: Table, column, and schema-level metadata aggregation from LLM outputs
+- **Profiling Layer**: Statistical profiling, data quality scoring, and LLM payload logging
+- **Graph Layer**: GraphFrames-compatible nodes/edges with embeddings for similarity analysis
+- **Ontology Layer**: Business entity discovery and validation with AI-powered recommendations
+
 ## User Guide
 
 ### Entry points

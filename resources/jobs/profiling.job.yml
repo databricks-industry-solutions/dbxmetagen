@@ -1,0 +1,66 @@
+resources:
+  jobs:
+    profiling_job:
+      name: "${var.app_name}_profiling_job"
+
+      email_notifications:
+        on_failure:
+          - ${var.current_user}
+
+      parameters:
+        - name: catalog_name
+          default: ${var.catalog_name}
+        - name: schema_name
+          default: ${var.schema_name}
+        - name: max_tables
+          default: ""
+
+      tasks:
+        - task_key: run_profiling
+          job_cluster_key: profiling_cluster
+
+          notebook_task:
+            notebook_path: ../../notebooks/run_profiling.py
+            base_parameters:
+              catalog_name: "{{job.parameters.catalog_name}}"
+              schema_name: "{{job.parameters.schema_name}}"
+              max_tables: "{{job.parameters.max_tables}}"
+
+          libraries:
+            - whl: ../../dist/*.whl
+
+        - task_key: compute_quality_scores
+          depends_on:
+            - task_key: run_profiling
+          job_cluster_key: profiling_cluster
+
+          notebook_task:
+            notebook_path: ../../notebooks/compute_data_quality.py
+            base_parameters:
+              catalog_name: "{{job.parameters.catalog_name}}"
+              schema_name: "{{job.parameters.schema_name}}"
+
+          libraries:
+            - whl: ../../dist/*.whl
+
+        - task_key: update_graph_quality
+          depends_on:
+            - task_key: compute_quality_scores
+          job_cluster_key: profiling_cluster
+
+          notebook_task:
+            notebook_path: ../../notebooks/update_graph_quality.py
+            base_parameters:
+              catalog_name: "{{job.parameters.catalog_name}}"
+              schema_name: "{{job.parameters.schema_name}}"
+
+          libraries:
+            - whl: ../../dist/*.whl
+
+      job_clusters:
+        - job_cluster_key: profiling_cluster
+          new_cluster:
+            spark_version: 17.3.x-cpu-ml-scala2.13
+            node_type_id: ${var.node_type}
+            num_workers: 1
+
