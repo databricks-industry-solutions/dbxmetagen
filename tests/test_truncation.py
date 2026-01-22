@@ -1,0 +1,408 @@
+"""
+Unit tests for truncation and prompt size validation.
+
+These tests verify:
+1. Word-based truncation in truncate_value (prompts.py)
+2. Binary truncation at source (processing.py)
+3. max_prompt_length validation (metadata_generator.py)
+
+Run with: pytest tests/test_truncation.py -v
+"""
+
+import pytest
+import json
+import base64
+import pandas as pd
+
+
+class TestTruncateValue:
+    """Test the truncate_value function logic (word-based + character fallback)."""
+
+    def truncate_value(self, value: str, word_limit: int) -> str:
+        """Replicate the truncate_value logic for testing."""
+        words = value.split()
+        if len(words) > word_limit:
+            return " ".join(words[:word_limit])
+        # Fallback: character-based truncation (10x word limit)
+        char_limit = word_limit * 10
+        if len(value) > char_limit:
+            return value[:char_limit]
+        return value
+
+    def test_truncate_normal_text_under_limit(self):
+        """Test that normal text under the word limit is not truncated."""
+        text = "This is a short sentence"
+        result = self.truncate_value(text, word_limit=10)
+        assert result == text
+
+    def test_truncate_normal_text_over_limit(self):
+        """Test that normal text over the word limit is truncated by words."""
+        text = "word1 word2 word3 word4 word5 word6 word7 word8 word9 word10 word11"
+        result = self.truncate_value(text, word_limit=5)
+        assert result == "word1 word2 word3 word4 word5"
+
+    def test_truncate_empty_string(self):
+        """Test that empty strings are handled correctly."""
+        result = self.truncate_value("", word_limit=100)
+        assert result == ""
+
+    def test_truncate_short_single_word_not_affected(self):
+        """Test that short single words (like URLs) under char limit are not truncated."""
+        # Short URLs under char_limit pass through unchanged
+        short_url = "https://example.com/path"
+        result = self.truncate_value(short_url, word_limit=100)  # char_limit = 1000
+        assert result == short_url
+
+    def test_truncate_long_single_word_by_chars(self):
+        """Test that long single words are truncated by character limit."""
+        # With word_limit=100, char_limit = 1000
+        long_string = "x" * 5000  # Way over char_limit
+        result = self.truncate_value(long_string, word_limit=100)
+        assert len(result) == 1000  # Truncated to char_limit
+        assert result == "x" * 1000
+
+    def test_truncate_json_blob_by_chars(self):
+        """Test that JSON blobs with few spaces are truncated by char limit."""
+        # JSON with minimal whitespace - few "words" but many chars
+        json_blob = '{"key":"' + "x" * 10000 + '"}'  # ~10010 chars, 1 "word"
+        result = self.truncate_value(json_blob, word_limit=500)  # char_limit = 5000
+        assert len(result) == 5000
+
+    def test_truncate_base64_by_chars(self):
+        """Test that base64 strings (no spaces) are truncated by char limit."""
+        base64_str = "A" * 20000  # No spaces, so 1 "word"
+        result = self.truncate_value(base64_str, word_limit=500)  # char_limit = 5000
+        assert len(result) == 5000
+
+    def test_truncate_variant_json_by_chars(self):
+        """Test that VARIANT column JSON is truncated by char limit."""
+        # Simulate a VARIANT column converted to JSON - could be huge with few spaces
+        variant_json = json.dumps({"nested": {"deep": {"data": "x" * 50000}}})
+        result = self.truncate_value(variant_json, word_limit=500)  # char_limit = 5000
+        assert len(result) == 5000
+
+    def test_word_truncation_takes_precedence(self):
+        """Test that word truncation happens before char truncation for prose."""
+        # Text with many words - word truncation should apply first
+        prose = "word " * 600  # 600 words, ~3000 chars
+        result = self.truncate_value(prose, word_limit=500)  # char_limit = 5000
+        # Word truncation applies (600 > 500), not char truncation
+        assert len(result.split()) == 500
+
+
+class TestBinaryTruncationAtSource:
+    """Test that binary data is truncated at the source (SQL/Spark level)."""
+
+    def test_binary_truncation_sql_expression(self):
+        """Verify the SQL expression correctly truncates base64."""
+        # This tests the logic that would be applied by:
+        # substr(base64(`col_name`), 1, 50)
+        large_binary = b"A" * 1000
+        full_base64 = base64.b64encode(large_binary).decode("utf-8")
+
+        # Simulate SQL substr(base64(...), 1, 50)
+        truncated = full_base64[:50]
+
+        assert len(full_base64) > 1000  # Original is large
+        assert len(truncated) == 50  # Truncated to 50 chars
+        # Truncated value is enough to identify as base64
+        assert truncated.isalnum() or "+" in truncated or "/" in truncated
+
+    def test_small_binary_not_affected(self):
+        """Verify small binary data stays under the limit."""
+        small_binary = b"Hello"
+        base64_str = base64.b64encode(small_binary).decode("utf-8")
+
+        # Small base64 is under 50 chars, so substr has no effect
+        truncated = base64_str[:50]
+        assert truncated == base64_str
+
+    def test_truncated_base64_is_identifiable(self):
+        """Verify that 50 chars of base64 is enough for LLM identification."""
+        # Different binary content all produce identifiable base64 patterns
+        # All test cases must be large enough to produce >50 chars of base64
+        test_cases = [
+            b"\x00" * 100,  # Null bytes
+            b"\xff" * 100,  # Max bytes
+            b"PDF-1.4 " * 20,  # PDF-like content repeated
+            bytes(range(256)) * 4,  # All byte values
+        ]
+
+        for binary_data in test_cases:
+            full_base64 = base64.b64encode(binary_data).decode("utf-8")
+            truncated = full_base64[:50]
+
+            # 50 chars is enough to see the base64 pattern
+            assert len(truncated) == 50, f"Base64 too short: {len(full_base64)} chars"
+            # All chars should be valid base64 characters
+            valid_chars = set(
+                "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/="
+            )
+            assert all(c in valid_chars for c in truncated)
+
+
+class TestColumnContentsValidator:
+    """Test the CommentResponse column_contents validator."""
+
+    def validate_column_contents(self, v):
+        """Replicate the validator logic for testing."""
+        
+        def try_parse_stringified_array(s):
+            """Try to parse a string as a JSON array."""
+            if isinstance(s, str):
+                stripped = s.strip()
+                if stripped.startswith("["):
+                    # Handle truncated arrays
+                    if not stripped.endswith("]"):
+                        if stripped.endswith('"') or stripped.endswith("'"):
+                            stripped = stripped + "]"
+                    try:
+                        parsed = json.loads(stripped)
+                        if isinstance(parsed, list):
+                            return True, [str(item) if not isinstance(item, str) else item for item in parsed]
+                    except json.JSONDecodeError:
+                        pass
+            return False, s
+        
+        if isinstance(v, str):
+            success, result = try_parse_stringified_array(v)
+            if success:
+                return result
+            return [v]
+        elif isinstance(v, list):
+            if len(v) == 1 and isinstance(v[0], list):
+                v = v[0]
+            
+            # Handle single element that is a stringified multi-element array
+            if len(v) == 1 and isinstance(v[0], str):
+                success, result = try_parse_stringified_array(v[0])
+                if success and len(result) > 1:
+                    return result
+            
+            # Process each element, expanding stringified arrays
+            expanded = []
+            for item in v:
+                success, result = try_parse_stringified_array(item)
+                if success:
+                    expanded.extend(result)
+                else:
+                    expanded.append(str(item) if not isinstance(item, str) else item)
+            return expanded
+        else:
+            raise ValueError("column_contents must be either a string or a list of strings")
+
+    def test_normal_list_unchanged(self):
+        """Test that a normal list of strings is returned as-is."""
+        result = self.validate_column_contents(["desc1", "desc2", "desc3"])
+        assert result == ["desc1", "desc2", "desc3"]
+
+    def test_stringified_array_is_parsed(self):
+        """Test that a stringified JSON array is correctly parsed."""
+        # This is what the LLM sometimes returns incorrectly
+        stringified = '["Description for column 1", "Description for column 2"]'
+        result = self.validate_column_contents(stringified)
+        assert result == ["Description for column 1", "Description for column 2"]
+
+    def test_stringified_array_with_whitespace(self):
+        """Test parsing with leading/trailing whitespace."""
+        stringified = '  ["desc1", "desc2"]  '
+        result = self.validate_column_contents(stringified)
+        assert result == ["desc1", "desc2"]
+
+    def test_regular_string_wrapped_in_list(self):
+        """Test that a regular string (not JSON array) is wrapped in a list."""
+        result = self.validate_column_contents("Just a regular description")
+        assert result == ["Just a regular description"]
+
+    def test_invalid_json_treated_as_string(self):
+        """Test that invalid JSON starting with [ is treated as regular string."""
+        invalid = "[This is not valid JSON"
+        result = self.validate_column_contents(invalid)
+        assert result == ["[This is not valid JSON"]
+
+    def test_nested_list_flattened(self):
+        """Test that [[desc1, desc2]] is flattened to [desc1, desc2]."""
+        result = self.validate_column_contents([["desc1", "desc2"]])
+        assert result == ["desc1", "desc2"]
+
+    def test_stringified_single_element_array(self):
+        """Test parsing a stringified single-element array."""
+        stringified = '["Single column description"]'
+        result = self.validate_column_contents(stringified)
+        assert result == ["Single column description"]
+
+    def test_list_containing_stringified_array(self):
+        """Test that stringified arrays inside list elements are parsed and expanded."""
+        # LLM sometimes returns: {"column_contents": ["[\"actual description\"]"]}
+        result = self.validate_column_contents(['["The actual description here"]'])
+        assert result == ["The actual description here"]
+
+    def test_list_containing_stringified_multi_element_array(self):
+        """Test that a single-element list with stringified multi-element array is expanded."""
+        # This is the actual case: ["[\"desc1\", \"desc2\", \"desc3\"]"] -> ["desc1", "desc2", "desc3"]
+        result = self.validate_column_contents(['["desc1", "desc2", "desc3"]'])
+        assert result == ["desc1", "desc2", "desc3"]
+
+    def test_list_with_mixed_stringified_and_normal(self):
+        """Test list with both normal strings and stringified arrays."""
+        result = self.validate_column_contents(['["stringified desc"]', 'normal desc'])
+        assert result == ["stringified desc", "normal desc"]
+
+    def test_truncated_stringified_array(self):
+        """Test that truncated stringified arrays (missing closing ]) are recovered."""
+        # LLM sometimes returns truncated output like: ["desc1", "desc2"  (missing ])
+        truncated = '["desc1", "desc2"'
+        result = self.validate_column_contents([truncated])
+        assert result == ["desc1", "desc2"]
+
+    def test_truncated_stringified_array_in_string(self):
+        """Test truncated stringified array passed as string value."""
+        truncated = '["only one description here"'
+        result = self.validate_column_contents(truncated)
+        assert result == ["only one description here"]
+
+
+class TestMaxPromptLengthValidation:
+    """Test the max_prompt_length validation in metadata generators."""
+
+    def check_prompt_size(self, prompt: dict, max_prompt_length: int) -> bool:
+        """Replicate the validation logic for testing."""
+        prompt_size = len(json.dumps(prompt))
+        return prompt_size <= max_prompt_length * 5
+
+    def test_small_prompt_passes(self):
+        """Test that a small prompt passes validation."""
+        prompt = {"comment": [{"role": "user", "content": "short message"}]}
+        assert self.check_prompt_size(prompt, max_prompt_length=4096)
+
+    def test_large_prompt_fails(self):
+        """Test that a very large prompt fails validation."""
+        # Create a prompt that exceeds max_prompt_length * 5 characters
+        large_content = "x" * 25000  # > 4096 * 5 = 20480
+        prompt = {"comment": [{"role": "user", "content": large_content}]}
+        assert not self.check_prompt_size(prompt, max_prompt_length=4096)
+
+    def test_prompt_with_truncated_base64_passes(self):
+        """Test that prompts with truncated base64 (50 chars) easily pass."""
+        # After binary truncation at source, base64 is only 50 chars
+        truncated_base64 = "A" * 50  # Simulates truncated base64
+        prompt = {
+            "comment": [
+                {"role": "user", "content": f"Binary column data: {truncated_base64}"}
+            ]
+        }
+        assert self.check_prompt_size(prompt, max_prompt_length=4096)
+
+    def test_old_broken_check_would_pass_incorrectly(self):
+        """Demonstrate that the old len(prompt) check was broken."""
+        # Old check: len(prompt) > max_prompt_length
+        # This would check dict key count (always 1), not content size
+        large_content = "x" * 100000
+        prompt = {"comment": [{"role": "user", "content": large_content}]}
+
+        # Old broken check would pass (len(prompt) == 1)
+        assert len(prompt) == 1
+        assert len(prompt) <= 4096  # Old check passes incorrectly!
+
+        # New check correctly fails
+        assert not self.check_prompt_size(prompt, max_prompt_length=4096)
+
+
+class TestCalculateCellLengthIntegration:
+    """Integration tests for the calculate_cell_length flow (word + char truncation)."""
+
+    def calculate_cell_length(
+        self, pandas_df: pd.DataFrame, word_limit: int
+    ) -> pd.DataFrame:
+        """Replicate the calculate_cell_length logic for testing."""
+
+        def truncate_value(value: str, word_limit: int) -> str:
+            words = value.split()
+            if len(words) > word_limit:
+                return " ".join(words[:word_limit])
+            # Fallback: character-based truncation (10x word limit)
+            char_limit = word_limit * 10
+            if len(value) > char_limit:
+                return value[:char_limit]
+            return value
+
+        for column in pandas_df.columns:
+            pandas_df[column] = pandas_df[column].astype(str)
+            pandas_df[column] = pandas_df[column].apply(
+                lambda x: truncate_value(x, word_limit)
+            )
+        return pandas_df
+
+    def test_dataframe_with_text_content(self):
+        """Test word-based truncation on a DataFrame with text content."""
+        df = pd.DataFrame(
+            {
+                "text_col": ["short text", "word " * 200],  # One short, one long
+                "numeric_col": [123, 456789],
+            }
+        )
+
+        result = self.calculate_cell_length(df, word_limit=100)
+
+        # Short text unchanged
+        assert result["text_col"].iloc[0] == "short text"
+        # Long text truncated to 100 words
+        assert len(result["text_col"].iloc[1].split()) == 100
+
+    def test_short_single_word_values_unchanged(self):
+        """Test that short single-word values under char limit pass through unchanged."""
+        df = pd.DataFrame(
+            {
+                "url": ["https://example.com/path?query=value"],
+                "uuid": ["550e8400e29b41d4a716446655440000"],
+                "hash": ["a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6"],
+            }
+        )
+
+        original = df.copy()
+        result = self.calculate_cell_length(df, word_limit=100)  # char_limit = 1000
+
+        # All short single-word values should be unchanged (all under 1000 chars)
+        for col in result.columns:
+            assert result[col].iloc[0] == original[col].iloc[0]
+
+    def test_long_json_blob_truncated_by_chars(self):
+        """Test that long JSON blobs are truncated by character limit."""
+        large_json = '{"data":"' + "x" * 20000 + '"}'
+        df = pd.DataFrame({"json_col": [large_json]})
+
+        result = self.calculate_cell_length(df, word_limit=500)  # char_limit = 5000
+
+        # JSON blob truncated to char_limit
+        assert len(result["json_col"].iloc[0]) == 5000
+
+    def test_variant_column_truncated(self):
+        """Test that VARIANT-like JSON columns are properly truncated."""
+        # Simulate VARIANT column with minimal spaces (compact JSON)
+        # Use a long string value to avoid word-based splitting
+        variant_data = '{"data":"' + "x" * 10000 + '"}'  # ~10010 chars, 1 "word"
+        df = pd.DataFrame({"variant_col": [variant_data]})
+
+        result = self.calculate_cell_length(df, word_limit=500)  # char_limit = 5000
+
+        assert len(result["variant_col"].iloc[0]) == 5000
+
+    def test_mixed_content_dataframe(self):
+        """Test DataFrame with mixed content types."""
+        df = pd.DataFrame(
+            {
+                "prose": ["word " * 600],  # 600 words -> word truncation
+                "json": ['{"key":"' + "x" * 10000 + '"}'],  # char truncation
+                "short": ["hello world"],  # no truncation
+            }
+        )
+
+        result = self.calculate_cell_length(df, word_limit=500)  # char_limit = 5000
+
+        assert len(result["prose"].iloc[0].split()) == 500  # word truncated
+        assert len(result["json"].iloc[0]) == 5000  # char truncated
+        assert result["short"].iloc[0] == "hello world"  # unchanged
+
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])

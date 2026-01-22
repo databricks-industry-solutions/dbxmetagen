@@ -31,6 +31,8 @@ from pyspark.sql.functions import (
     expr,
     split_part,
     regexp_replace,
+    base64,
+    to_json,
 )
 from pyspark.sql.types import (
     StructType,
@@ -39,6 +41,7 @@ from pyspark.sql.types import (
     TimestampType,
     FloatType,
     DoubleType,
+    BinaryType,
 )
 from openai import OpenAI
 from openai.types.chat.chat_completion import (
@@ -162,7 +165,17 @@ def write_to_log_table(log_data: Dict[str, Any], log_table_name: str) -> None:
         log_table_name (str): The name of the log table.
     """
     spark = SparkSession.builder.getOrCreate()
+
+    # Ensure apply_ddl is a boolean to match existing table schema
+    if "apply_ddl" in log_data:
+        val = log_data["apply_ddl"]
+        if isinstance(val, str):
+            log_data["apply_ddl"] = val.lower() == "true"
+        elif not isinstance(val, bool):
+            log_data["apply_ddl"] = bool(val)
+
     log_df = spark.createDataFrame([log_data])
+
     log_df.write.format("delta").option("mergeSchema", "true").mode(
         "append"
     ).saveAsTable(log_table_name)
@@ -206,9 +219,138 @@ def get_extended_metadata_for_column(config, table_name, column_name):
     return spark.sql(query)
 
 
+def get_column_types_from_describe(spark: SparkSession, full_table_name: str) -> dict:
+    """
+    Get column names and types using DESCRIBE TABLE.
+    This works even when df.schema fails (e.g., VARIANT type in Spark Connect).
+
+    Returns:
+        dict: {column_name: data_type_string}
+    """
+    describe_df = spark.sql(f"DESCRIBE TABLE {full_table_name}")
+    columns = {}
+    for row in describe_df.collect():
+        col_name = row["col_name"]
+        # Skip partition info and other metadata rows
+        if col_name and not col_name.startswith("#") and col_name != "":
+            data_type = row["data_type"]
+            if data_type:  # Skip empty type rows
+                columns[col_name] = data_type.upper()
+    return columns
+
+
+def read_table_with_type_conversion(
+    spark: SparkSession, full_table_name: str
+) -> DataFrame:
+    """
+    Read a table with automatic conversion of special types (BINARY, VARIANT).
+    Uses SQL-based approach to handle VARIANT types which fail in Spark Connect schema access.
+
+    Args:
+        spark: SparkSession
+        full_table_name: Full table name (catalog.schema.table)
+
+    Returns:
+        DataFrame with BINARY/VARIANT columns converted to strings
+    """
+    # Get column types using DESCRIBE (works even with VARIANT)
+    column_types = get_column_types_from_describe(spark, full_table_name)
+
+    # Build SELECT expressions with type conversions
+    select_exprs = []
+    has_special_types = False
+
+    for col_name, col_type in column_types.items():
+        if col_type == "BINARY":
+            # Convert BINARY to base64 string, truncated to 50 chars (enough for LLM identification)
+            print(f"Converting BINARY column '{col_name}' to base64 string (truncated)")
+            select_exprs.append(f"substr(base64(`{col_name}`), 1, 50) AS `{col_name}`")
+            has_special_types = True
+        elif col_type == "VARIANT":
+            # Convert VARIANT to JSON string using to_json()
+            print(
+                f"Converting VARIANT column '{col_name}' to JSON string using to_json()"
+            )
+            select_exprs.append(f"to_json(`{col_name}`) AS `{col_name}`")
+            has_special_types = True
+        elif col_type.upper().startswith("TIMESTAMP"):
+            # Convert TIMESTAMP to string to avoid Arrow overflow on out-of-range dates (e.g., 9999-12-31)
+            print(f"Converting TIMESTAMP column '{col_name}' to string")
+            select_exprs.append(f"CAST(`{col_name}` AS STRING) AS `{col_name}`")
+            has_special_types = True
+        else:
+            select_exprs.append(f"`{col_name}`")
+
+    if has_special_types:
+        # Use SQL query with conversions
+        select_clause = ", ".join(select_exprs)
+        query = f"SELECT {select_clause} FROM {full_table_name}"
+        return spark.sql(query)
+    else:
+        # No special types - read normally
+        return spark.read.table(full_table_name)
+
+
+def convert_special_types_to_string(df: DataFrame) -> DataFrame:
+    """
+    Convert BINARY and VARIANT columns to string format for processing.
+
+    Note: For tables with VARIANT columns in Spark Connect (serverless), use
+    read_table_with_type_conversion() instead, as df.schema access will fail.
+
+    - BINARY columns are encoded as base64 strings
+    - VARIANT columns are converted to JSON strings
+
+    Args:
+        df (DataFrame): The DataFrame to convert.
+
+    Returns:
+        DataFrame: DataFrame with BINARY and VARIANT columns converted to strings.
+    """
+    try:
+        schema_fields = df.schema.fields
+    except Exception as e:
+        # Schema access can fail with VARIANT types in Spark Connect
+        print(
+            f"Warning: Could not access DataFrame schema ({e}). "
+            "Special types may not be converted. Use read_table_with_type_conversion() instead."
+        )
+        return df
+
+    for field in schema_fields:
+        col_name = field.name
+        col_type = field.dataType
+
+        # Handle BINARY type - encode as base64, truncated to 50 chars (enough for LLM identification)
+        if isinstance(col_type, BinaryType):
+            print(f"Converting BINARY column '{col_name}' to base64 string (truncated)")
+            df = df.withColumn(col_name, expr(f"substr(base64(`{col_name}`), 1, 50)"))
+
+        # Handle VARIANT type - convert to JSON string using to_json()
+        # VARIANT type can be represented multiple ways in schema
+        else:
+            type_str = str(col_type).upper()
+            type_class = type(col_type).__name__.upper()
+            if (
+                "VARIANT" in type_str
+                or "VARIANT" in type_class
+                or "UNPARSED" in type_str
+                or "UNPARSED" in type_class
+            ):
+                print(
+                    f"Converting VARIANT column '{col_name}' (type: {col_type}) to JSON string using to_json()"
+                )
+                df = df.withColumn(col_name, to_json(col(col_name)))
+
+    return df
+
+
 def sample_df(df: DataFrame, nrows: int, sample_size: int = 5) -> DataFrame:
     """
     Sample dataframe to a given size and filter out rows with lots of nulls.
+
+    Note: Special data types (BINARY, VARIANT) should be converted before calling this function
+    via convert_special_types_to_string() in get_generated_metadata_data_aware().
 
     Args:
         df (DataFrame): The DataFrame to be analyzed.
@@ -509,7 +651,10 @@ def add_ddl_to_column_comment_df(df: DataFrame, ddl_column: str) -> DataFrame:
         DataFrame: The updated DataFrame with the DDL statement added.
     """
     if "column_content" in df.columns:
-        df = df.withColumn("column_content", regexp_replace(col("column_content").cast("string"), "''", "'"))
+        df = df.withColumn(
+            "column_content",
+            regexp_replace(col("column_content").cast("string"), "''", "'"),
+        )
 
     result_df = df.withColumn(
         ddl_column,
@@ -536,7 +681,10 @@ def add_ddl_to_table_comment_df(df: DataFrame, ddl_column: str) -> DataFrame:
         DataFrame: The updated DataFrame with the DDL statement added.
     """
     if df is not None and "column_content" in df.columns:
-        df = df.withColumn("column_content", regexp_replace(col("column_content").cast("string"), "''", "'"))
+        df = df.withColumn(
+            "column_content",
+            regexp_replace(col("column_content").cast("string"), "''", "'"),
+        )
 
     if df is not None:
         result_df = df.withColumn(
@@ -773,29 +921,25 @@ def get_control_table(config: MetadataConfig) -> str:
     """
     Returns the control table name based on the provided configuration.
 
+    The control table uses _run_id as a key column to support concurrent tasks
+    within the same job run. All tasks share the same control table but filter
+    by _run_id for their entries.
+
     Args:
         config (MetadataConfig): Configuration object containing setup and model parameters.
 
     Returns:
         str: The control table name.
     """
-    spark = SparkSession.builder.getOrCreate()
-    if config.job_id and (
-        config.cleanup_control_table == "true" or config.cleanup_control_table == True
-    ):
-        formatted_control_table = config.control_table.format(
-            sanitize_user_identifier(get_current_user())
-        ) + str(config.job_id)
-    else:
-        formatted_control_table = config.control_table.format(
-            sanitize_user_identifier(get_current_user())
-        )
-    return formatted_control_table
+    return config.control_table.format(
+        sanitize_user_identifier(get_current_user())
+    )
 
 
 def mark_as_deleted(table_name: str, config: MetadataConfig) -> None:
     """
-    Updates the _deleted_at and _updated_at columns to the current timestamp for the specified table.
+    Updates the _deleted_at, _updated_at, and _status columns for the specified table.
+    Also clears _claimed_by to release the claim.
 
     Args:
         table_name (str): The name of the table to update.
@@ -809,11 +953,146 @@ def mark_as_deleted(table_name: str, config: MetadataConfig) -> None:
     update_query = f"""
     UPDATE {control_table}
     SET _deleted_at = current_timestamp(),
-        _updated_at = current_timestamp()
+        _updated_at = current_timestamp(),
+        _status = 'completed',
+        _claimed_by = NULL
     WHERE table_name = '{table_name}'
     """
     spark.sql(update_query)
     print(f"Marked {table_name} as deleted in the control table...")
+
+
+def claim_table(table_name: str, config: MetadataConfig, max_retries: int = 3) -> bool:
+    """
+    Atomically claim a table for processing in concurrent task scenarios.
+    
+    Uses an UPDATE with WHERE clause to ensure only one task can claim a table.
+    After the UPDATE, verifies that this task owns the claim.
+    Includes retry logic for handling concurrent modification exceptions.
+    
+    Args:
+        table_name (str): The fully qualified table name to claim.
+        config (MetadataConfig): Configuration object with task_id for claim ownership.
+        max_retries (int): Maximum number of retry attempts for concurrent conflicts.
+        
+    Returns:
+        bool: True if this task successfully claimed the table, False if another task claimed it.
+    """
+    import time
+    import random
+    
+    spark = SparkSession.builder.getOrCreate()
+    formatted_control_table = get_control_table(config)
+    control_table = (
+        f"{config.catalog_name}.{config.schema_name}.{formatted_control_table}"
+    )
+    task_id = config.task_id
+    
+    if not task_id:
+        # No task_id means not running in concurrent mode, allow processing
+        return True
+    
+    # Attempt to claim: UPDATE only if status allows reprocessing and not currently claimed
+    claim_query = f"""
+    UPDATE {control_table}
+    SET _claimed_by = '{task_id}',
+        _claimed_at = current_timestamp(),
+        _updated_at = current_timestamp(),
+        _status = 'in_progress'
+    WHERE table_name = '{table_name}'
+      AND _claimed_by IS NULL
+      AND (_status IS NULL OR _status IN ('queued', 'failed', 'completed'))
+    """
+    
+    verify_query = f"""
+    SELECT _claimed_by FROM {control_table}
+    WHERE table_name = '{table_name}'
+    """
+    
+    for attempt in range(max_retries):
+        try:
+            spark.sql(claim_query)
+            
+            # Verify claim ownership
+            result = spark.sql(verify_query).collect()
+            
+            if result and result[0]["_claimed_by"] == task_id:
+                print(f"Successfully claimed table {table_name} for task {task_id}")
+                return True
+            else:
+                claimed_by = result[0]["_claimed_by"] if result else "unknown"
+                print(f"Table {table_name} already claimed by {claimed_by}, skipping...")
+                return False
+        except Exception as e:
+            error_str = str(e)
+            if "ConcurrentAppendException" in error_str or "DELTA_CONCURRENT" in error_str or "ConcurrentModificationException" in error_str:
+                if attempt < max_retries - 1:
+                    wait_time = (2 ** attempt) + random.uniform(0, 1)
+                    print(f"Concurrent conflict during claim, retrying in {wait_time:.2f}s (attempt {attempt + 1}/{max_retries})")
+                    time.sleep(wait_time)
+                else:
+                    print(f"Failed to claim {table_name} after {max_retries} attempts due to concurrent conflicts")
+                    return False
+            else:
+                raise
+    
+    return False
+
+
+def mark_table_completed(table_name: str, config: MetadataConfig) -> None:
+    """
+    Mark a table as completed in the control table.
+    
+    Args:
+        table_name (str): The fully qualified table name.
+        config (MetadataConfig): Configuration object.
+    """
+    spark = SparkSession.builder.getOrCreate()
+    formatted_control_table = get_control_table(config)
+    control_table = (
+        f"{config.catalog_name}.{config.schema_name}.{formatted_control_table}"
+    )
+    
+    update_query = f"""
+    UPDATE {control_table}
+    SET _status = 'completed',
+        _claimed_by = NULL,
+        _updated_at = current_timestamp()
+    WHERE table_name = '{table_name}'
+      AND _run_id = '{config.run_id}'
+    """
+    spark.sql(update_query)
+    print(f"Marked table {table_name} as completed")
+
+
+def mark_table_failed(table_name: str, config: MetadataConfig, error_message: str = None) -> None:
+    """
+    Mark a table as failed in the control table.
+    
+    Args:
+        table_name (str): The fully qualified table name.
+        config (MetadataConfig): Configuration object.
+        error_message (str, optional): Error message describing the failure.
+    """
+    spark = SparkSession.builder.getOrCreate()
+    formatted_control_table = get_control_table(config)
+    control_table = (
+        f"{config.catalog_name}.{config.schema_name}.{formatted_control_table}"
+    )
+    
+    # Escape single quotes in error message to prevent SQL injection
+    safe_error = error_message.replace("'", "''") if error_message else None
+    error_clause = f", _error_message = '{safe_error}'" if safe_error else ""
+    
+    update_query = f"""
+    UPDATE {control_table}
+    SET _status = 'failed',
+        _updated_at = current_timestamp(){error_clause}
+    WHERE table_name = '{table_name}'
+      AND _run_id = '{config.run_id}'
+    """
+    spark.sql(update_query)
+    print(f"Marked table {table_name} as failed: {error_message or 'No error message'}")
 
 
 def run_log_table_ddl(config):
@@ -1544,7 +1823,8 @@ def get_domain_classification(
 
     domain_config = load_domain_config(config.domain_config_path)
 
-    df = spark.read.table(full_table_name)
+    # Use SQL-based reading with type conversion to handle VARIANT in Spark Connect
+    df = read_table_with_type_conversion(spark, full_table_name)
     total_columns = len(df.columns)
 
     # Limit columns for domain classification to avoid massive prompts
@@ -1648,7 +1928,8 @@ def get_generated_metadata_data_aware(
     Returns:
         List[Tuple[PIResponse, CommentResponse]]: A list of tuples containing the generated metadata.
     """
-    df = spark.read.table(full_table_name)
+    # Use SQL-based reading with type conversion to handle VARIANT in Spark Connect
+    df = read_table_with_type_conversion(spark, full_table_name)
     responses = []
     nrows = df.count()
     chunked_dfs = chunk_df(df, config.columns_per_call)
@@ -2270,9 +2551,14 @@ def get_protected_classification_for_table(table_classification: str) -> str:
     """
     Determines the classification based on the values in the 'classification'
     column of the pi_rows DataFrame.
+
+    Returns "protected" only if table_classification represents actual PI.
+    Returns "None" (string) if table_classification is None or the string "None",
+    to be consistent with column-level classifications.
     """
-    if table_classification is not None:
+    if table_classification is not None and table_classification != "None":
         return "protected"
+    return "None"
 
 
 def summarize_table_content(table_df, config, table_name):
@@ -2332,7 +2618,17 @@ def create_tables(config: MetadataConfig) -> None:
         formatted_control_table = get_control_table(config)
         logger.info("Formatted control table...", formatted_control_table)
         spark.sql(
-            f"""CREATE TABLE IF NOT EXISTS {config.catalog_name}.{config.schema_name}.{formatted_control_table} (table_name STRING, _updated_at TIMESTAMP, _deleted_at TIMESTAMP, _job_id STRING)"""
+            f"""CREATE TABLE IF NOT EXISTS {config.catalog_name}.{config.schema_name}.{formatted_control_table} (
+                table_name STRING,
+                _updated_at TIMESTAMP,
+                _deleted_at TIMESTAMP,
+                _job_id STRING,
+                _run_id STRING,
+                _claimed_by STRING,
+                _claimed_at TIMESTAMP,
+                _status STRING,
+                _error_message STRING
+            )"""
         )
 
 
@@ -2382,6 +2678,9 @@ class TableProcessingError(Exception):
 def generate_and_persist_metadata(config: Any) -> None:
     """
     Generates and persists comments for tables based on the provided setup and model parameters.
+    
+    Supports concurrent task execution by claiming tables before processing.
+    If a table is already claimed by another task, it will be skipped.
 
     Args:
         config: Configuration object containing setup and model parameters.
@@ -2389,11 +2688,19 @@ def generate_and_persist_metadata(config: Any) -> None:
     spark = SparkSession.builder.getOrCreate()
     logger = logging.getLogger("metadata_processing")
     logger.setLevel(logging.INFO)
+    
+    skipped_tables = []
 
     for table in config.table_names:
         log_dict = {}
         try:
             logger.info(f"[generate_and_persist_metadata] Processing table {table}...")
+            
+            # Attempt to claim table for concurrent task safety
+            if config.control_table and not claim_table(table, config):
+                logger.info(f"[generate_and_persist_metadata] Skipping {table} - claimed by another task")
+                skipped_tables.append(table)
+                continue
 
             if not spark.catalog.tableExists(table):
                 msg = f"Table {table} does not exist. Deleting from control table and skipping..."
@@ -2404,7 +2711,7 @@ def generate_and_persist_metadata(config: Any) -> None:
                     "status": "Table does not exist",
                     "user": sanitize_user_identifier(config.current_user),
                     "mode": config.mode,
-                    "apply_ddl": str(config.apply_ddl),
+                    "apply_ddl": config.apply_ddl,
                     "_updated_at": str(datetime.now()),
                 }
             else:
@@ -2430,9 +2737,13 @@ def generate_and_persist_metadata(config: Any) -> None:
                     "status": status,
                     "user": sanitize_user_identifier(config.current_user),
                     "mode": config.mode,
-                    "apply_ddl": str(config.apply_ddl),
+                    "apply_ddl": config.apply_ddl,
                     "_updated_at": str(datetime.now()),
                 }
+                
+                # Mark table as completed in control table
+                if config.control_table:
+                    mark_table_completed(table, config)
 
         except TableProcessingError as tpe:
             logger.error(
@@ -2446,6 +2757,9 @@ def generate_and_persist_metadata(config: Any) -> None:
                 "apply_ddl": config.apply_ddl,
                 "_updated_at": str(datetime.now()),
             }
+            # Mark table as failed in control table
+            if config.control_table:
+                mark_table_failed(table, config, str(tpe))
             raise  # Optionally re-raise if you want to halt further processing
 
         except Exception as e:
@@ -2463,6 +2777,9 @@ def generate_and_persist_metadata(config: Any) -> None:
                 "apply_ddl": config.apply_ddl,
                 "_updated_at": str(datetime.now()),
             }
+            # Mark table as failed in control table
+            if config.control_table:
+                mark_table_failed(table, config, concise_error)
             raise
 
         finally:
@@ -2483,12 +2800,23 @@ def generate_and_persist_metadata(config: Any) -> None:
                     concise_log_err,
                 )
             print(f"Finished processing table {table} and writing to log table.")
+    
+    # Log summary of skipped tables for concurrent task visibility
+    if skipped_tables:
+        logger.info(
+            f"[generate_and_persist_metadata] Skipped {len(skipped_tables)} table(s) "
+            f"claimed by other tasks: {skipped_tables}"
+        )
 
 
 def setup_queue(config: MetadataConfig) -> List[str]:
     """
     Checks a control table for any records and returns a list of table names.
     If the queue table is empty, reads a CSV with table names based on the flag set in the config file.
+    
+    When include_previously_failed_tables is True, also includes:
+    - Failed tables from any run
+    - Abandoned tables (in_progress but timed out from other runs)
 
     Args:
         config (MetadataConfig): Configuration object containing setup and model parameters.
@@ -2502,23 +2830,8 @@ def setup_queue(config: MetadataConfig) -> List[str]:
         f"{config.catalog_name}.{config.schema_name}.{formatted_control_table}"
     )
     queued_table_names = set()
-    if spark.catalog.tableExists(control_table):
-        control_df = spark.sql(
-            f"""SELECT table_name FROM {control_table} WHERE _deleted_at IS NULL"""
-        )
-        # Use local temp table instead of collect() for better performance
-        control_df.createOrReplaceTempView("temp_queued_tables")
-        queued_table_names = set()
-
-        # Alternative: Use pandas for small datasets when you need Python collections
-        if control_df.count() < 10000:  # Only for reasonably small datasets
-            queued_table_names = {row["table_name"] for row in control_df.collect()}
-        else:
-            # For large datasets, consider using broadcast variables or temp tables
-            print(
-                f"Large dataset detected ({control_df.count()} rows). Using temp table approach."
-            )
-            queued_table_names = set()  # Handle large datasets differently
+    
+    # Get tables from current session (config and CSV)
     config_table_string = config.table_names
     config_table_names = [
         name.strip() for name in config_table_string.split(",") if len(name.strip()) > 0
@@ -2526,6 +2839,38 @@ def setup_queue(config: MetadataConfig) -> List[str]:
     # Expand schema wildcards in config table names as well
     config_table_names = expand_schema_wildcards(config_table_names)
     file_table_names = load_table_names_from_csv(config.source_file_path)
+    
+    # If include_previously_failed_tables is enabled, also include failed/abandoned tables
+    if spark.catalog.tableExists(control_table) and getattr(config, 'include_previously_failed_tables', False):
+        timeout_minutes = getattr(config, 'claim_timeout_minutes', 60)
+        run_id = config.run_id
+        
+        # Build query to get tables that should be retried:
+        # 1. Failed tables from any run
+        # 2. Abandoned tables (in_progress but timed out from OTHER runs)
+        retry_query = f"""
+        SELECT table_name FROM {control_table} 
+        WHERE _deleted_at IS NULL
+          AND (
+            _status = 'failed'
+            OR (
+              _status = 'in_progress' 
+              AND _run_id != '{run_id}'
+              AND _claimed_at < current_timestamp() - INTERVAL {timeout_minutes} MINUTES
+            )
+          )
+        """
+        retry_df = spark.sql(retry_query)
+        
+        if retry_df.count() < 10000:
+            queued_table_names = {row["table_name"] for row in retry_df.collect()}
+            if queued_table_names:
+                print(f"Including {len(queued_table_names)} previously failed/abandoned tables for retry")
+        else:
+            print(
+                f"Large dataset detected ({retry_df.count()} rows). Skipping retry table inclusion."
+            )
+    
     combined_table_names = list(
         set().union(queued_table_names, config_table_names, file_table_names)
     )
@@ -2561,15 +2906,19 @@ def ensure_fully_scoped_table_names(
 
 
 def upsert_table_names_to_control_table(
-    table_names: List[str], config: MetadataConfig
+    table_names: List[str], config: MetadataConfig, max_retries: int = 3
 ) -> None:
     """
-    Upserts a list of table names into the control table, ensuring no duplicates are created.
+    Upserts a list of table names into the control table using MERGE for concurrent safety.
 
     Args:
         table_names (List[str]): A list of table names to upsert.
         config (MetadataConfig): Configuration object containing setup and model parameters.
+        max_retries (int): Maximum number of retry attempts for concurrent conflicts.
     """
+    import time
+    import random
+    
     print(f"Upserting table names to control table {table_names}...")
     spark = SparkSession.builder.getOrCreate()
     formatted_control_table = get_control_table(config)
@@ -2577,26 +2926,56 @@ def upsert_table_names_to_control_table(
         f"{config.catalog_name}.{config.schema_name}.{formatted_control_table}"
     )
     table_names = ensure_fully_scoped_table_names(table_names, config.catalog_name)
+    
+    if not table_names:
+        print("No table names to upsert.")
+        return
+    
     table_names_df = spark.createDataFrame(
         [(name,) for name in table_names], ["table_name"]
     )
     table_names_df = trim_whitespace_from_df(table_names_df)
-    existing_df = spark.read.table(control_table)
-    new_table_names_df = (
-        table_names_df.join(existing_df, on="table_name", how="left_anti")
-        .withColumn("_updated_at", current_timestamp())
-        .withColumn("_deleted_at", lit(None).cast(TimestampType()))
-        .withColumn("_job_id", lit(config.job_id))
-    )
-    if new_table_names_df.count() > 0:
-        new_table_names_df.write.option("mergeSchema", "true").format("delta").mode(
-            "append"
-        ).saveAsTable(control_table)
-        print(
-            f"Inserted {new_table_names_df.count()} new table names into the control table {control_table}..."
+    
+    # Create a unique temp view name to avoid conflicts between concurrent tasks
+    temp_view_name = f"new_table_names_{config.task_id or 'default'}".replace("-", "_")
+    table_names_df.createOrReplaceTempView(temp_view_name)
+    
+    # Escape string values for SQL
+    job_id = config.job_id.replace("'", "''") if config.job_id else ""
+    run_id = str(config.run_id).replace("'", "''") if config.run_id else ""
+    
+    merge_sql = f"""
+        MERGE INTO {control_table} target
+        USING {temp_view_name} source
+        ON target.table_name = source.table_name
+        WHEN NOT MATCHED THEN INSERT (
+            table_name, _updated_at, _deleted_at, _job_id, _run_id, 
+            _claimed_by, _claimed_at, _status, _error_message
+        ) VALUES (
+            source.table_name, current_timestamp(), NULL, '{job_id}', 
+            '{run_id}', NULL, NULL, 'queued', NULL
         )
-    else:
-        print("No new table names to upsert.")
+    """
+    
+    # Retry loop for handling concurrent conflicts
+    for attempt in range(max_retries):
+        try:
+            spark.sql(merge_sql)
+            print(f"Successfully merged table names into control table {control_table}")
+            return
+        except Exception as e:
+            error_str = str(e)
+            if "ConcurrentAppendException" in error_str or "DELTA_CONCURRENT" in error_str:
+                if attempt < max_retries - 1:
+                    # Exponential backoff with jitter
+                    wait_time = (2 ** attempt) + random.uniform(0, 1)
+                    print(f"Concurrent conflict detected, retrying in {wait_time:.2f}s (attempt {attempt + 1}/{max_retries})")
+                    time.sleep(wait_time)
+                else:
+                    print(f"Failed after {max_retries} attempts due to concurrent conflicts")
+                    raise
+            else:
+                raise
 
 
 def load_table_names_from_csv(csv_file_path):

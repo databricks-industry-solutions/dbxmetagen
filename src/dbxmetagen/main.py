@@ -72,7 +72,7 @@ def setup_mode_dependencies(config):
 
 def setup_environment(config):
     """Setup Databricks environment variables."""
-    if not os.environ.get("DATABRICKS_HOST"):
+    if not os.environ.get("DATABRICKS_HOST") and config.base_url:
         os.environ["DATABRICKS_HOST"] = config.base_url
 
 
@@ -92,20 +92,21 @@ def _grant_permissions_to_groups(config, catalog_name, schema_name, volume_name)
         return False
 
     if str(config.permission_groups).lower() == "none":
-        print("No permission groups specified")
         return True
 
     groups = [g.strip() for g in str(config.permission_groups).split(",") if g.strip()]
+    any_granted = False
     for group in groups:
-        print(f"Granting permissions to group: {group}")
-        grant_group_permissions(
+        granted = grant_group_permissions(
             catalog_name=catalog_name,
             schema_name=schema_name,
             group_name=group,
             volume_name=volume_name,
         )
-        print(f"✓ Granted schema and volume permissions to group '{group}'")
-    return True
+        if granted:
+            print(f"Granted permissions to group: {group}")
+            any_granted = True
+    return any_granted
 
 
 def _grant_permissions_to_users(config, catalog_name, schema_name, volume_name):
@@ -114,26 +115,34 @@ def _grant_permissions_to_users(config, catalog_name, schema_name, volume_name):
         return False
 
     if str(config.permission_users).lower() == "none":
-        print("No additional permission users specified")
         return True
 
     users = [u.strip() for u in str(config.permission_users).split(",") if u.strip()]
+    any_granted = False
     for user in users:
-        print(f"Granting permissions to user: {user}")
-        grant_user_permissions(
+        granted = grant_user_permissions(
             catalog_name=catalog_name,
             schema_name=schema_name,
             current_user=user,
             volume_name=volume_name,
         )
-        print(f"✓ Granted schema and volume permissions to {user}")
-    return True
+        if granted:
+            print(f"Granted permissions to user: {user}")
+            any_granted = True
+    return any_granted
 
 
 def grant_permissions_on_created_objects(config):
-    """Grant permissions to groups and users specified in config."""
+    """Grant permissions to groups and users specified in config.
+
+    This function attempts to grant permissions but failures are non-fatal.
+    Permission grants can fail if the user/service principal doesn't have
+    admin privileges, which is common and expected in many deployments.
+    """
     if not getattr(config, "grant_permissions_after_creation", True):
-        print("Permission grants disabled in config")
+        print(
+            "Permission grants disabled in config (grant_permissions_after_creation=false)"
+        )
         return
 
     catalog_name = config.catalog_name
@@ -141,28 +150,57 @@ def grant_permissions_on_created_objects(config):
     volume_name = config.volume_name
 
     try:
-        print(f"Granting permissions to job user: {config.current_user}")
-        grant_user_permissions(
+        # Try to grant permissions - will be skipped if user lacks MANAGE
+        job_user_granted = grant_user_permissions(
             catalog_name=catalog_name,
             schema_name=schema_name,
             current_user=config.current_user,
             volume_name=volume_name,
         )
-        print(f"✓ Granted schema and volume permissions to {config.current_user}")
-
+        
         groups_granted = _grant_permissions_to_groups(
             config, catalog_name, schema_name, volume_name
         )
         users_granted = _grant_permissions_to_users(
             config, catalog_name, schema_name, volume_name
         )
+        
+        # Print summary message
+        if job_user_granted or groups_granted or users_granted:
+            print("Permission grants completed successfully")
+        else:
+            print("Skipped permission grants - current user lacks MANAGE on schema")
 
         if not groups_granted and not users_granted:
             print("No additional groups or users specified for permissions")
 
     except Exception as e:
-        print(f"⚠️ Warning: Could not grant some permissions: {e}")
-        print("This is non-fatal - metadata generation completed successfully")
+        print("\n" + "=" * 80)
+        print("[WARNING] PERMISSION GRANT WARNING (NON-FATAL)")
+        print("=" * 80)
+        print(f"Could not grant some permissions: {e}")
+        print("\nWhy this happens:")
+        print("  - The job user/service principal may not have admin privileges")
+        print("  - This is common and expected in production environments")
+        print("\nWhy it's OK:")
+        print("  - Metadata generation completed successfully")
+        print("  - Generated metadata is available in the output catalog/schema")
+        print("  - You can manually grant permissions if needed")
+        print("\nTo disable these grant attempts:")
+        print("  - Set 'grant_permissions_after_creation: false' in variables.yml")
+        print("  - Or pass grant_permissions_after_creation=false to the job")
+        print("\nTo manually grant permissions, run:")
+        print(
+            f"  GRANT USE SCHEMA ON SCHEMA {catalog_name}.{schema_name} TO `<user_or_group>`;"
+        )
+        print(
+            f"  GRANT SELECT ON SCHEMA {catalog_name}.{schema_name} TO `<user_or_group>`;"
+        )
+        if volume_name:
+            print(
+                f"  GRANT READ VOLUME ON VOLUME {catalog_name}.{schema_name}.{volume_name} TO `<user_or_group>`;"
+            )
+        print("=" * 80 + "\n")
 
 
 def cleanup_resources(config, spark):
@@ -184,13 +222,44 @@ def cleanup_resources(config, spark):
             config.cleanup_control_table == "true"
             or config.cleanup_control_table == True
         ):
-            if config.job_id is not None:
+            if config.run_id is not None:
+                # Selective cleanup based on status
+                # By default, only delete completed entries (keep failed for retry)
+                cleanup_failed = getattr(config, 'cleanup_failed_tables', False)
+                
+                if cleanup_failed:
+                    # Delete all entries for this run (completed AND failed)
+                    spark.sql(
+                        f"DELETE FROM {control_table_full} WHERE _run_id = '{config.run_id}'"
+                    )
+                    print(
+                        f"Cleaned up all control table rows for run_id {config.run_id}: {control_table_full}"
+                    )
+                else:
+                    # Only delete completed entries, keep failed for potential retry
+                    spark.sql(
+                        f"DELETE FROM {control_table_full} WHERE _run_id = '{config.run_id}' AND _status = 'completed'"
+                    )
+                    print(
+                        f"Cleaned up completed control table rows for run_id {config.run_id}: {control_table_full}"
+                    )
+                    # Log if there are failed entries remaining
+                    failed_count = spark.sql(
+                        f"SELECT COUNT(*) as cnt FROM {control_table_full} WHERE _run_id = '{config.run_id}' AND _status = 'failed'"
+                    ).first().cnt
+                    if failed_count > 0:
+                        print(f"Note: {failed_count} failed table(s) retained for potential retry")
+            elif config.job_id is not None:
+                # Fallback to job_id for backward compatibility
                 spark.sql(
-                    f"DELETE FROM {control_table_full} WHERE job_id = {config.job_id}"
+                    f"DELETE FROM {control_table_full} WHERE _job_id = '{config.job_id}'"
+                )
+                print(
+                    f"Cleaned up control table rows for job_id {config.job_id}: {control_table_full}"
                 )
             else:
-                spark.sql(f"DELETE FROM {control_table_full}")
-            print(f"Cleaned up control table: {control_table_full}")
+                spark.sql(f"DROP TABLE IF EXISTS {control_table_full}")
+                print(f"Dropped control table: {control_table_full}")
     except Exception as e:
         print(f"Control table cleanup skipped (table may not exist): {e}")
 
@@ -230,16 +299,24 @@ def main(kwargs):
             "  - Multiple tables: my_catalog.schema1.table1, my_catalog.schema2.table2"
         )
 
-    # Validate override CSV
-    if not validate_csv("./metadata_overrides.csv"):
-        raise ValueError(
-            "Invalid metadata_overrides.csv file. Please check the format of "
-            "your metadata_overrides configuration file."
-        )
-
     # Initialize configuration and benchmarking
     config = MetadataConfig(**kwargs)
     experiment_name = setup_benchmarking(config)
+
+    # Validate override CSV (only if manual overrides are enabled)
+    if getattr(config, "allow_manual_override", True):
+        override_path = (
+            config.override_csv_path
+            if hasattr(config, "override_csv_path")
+            else "metadata_overrides.csv"
+        )
+        # Only validate if file exists (it's optional)
+        if os.path.exists(override_path):
+            if not validate_csv(override_path):
+                raise ValueError(
+                    f"Invalid {override_path} file. Please check the format of "
+                    "your metadata_overrides configuration file."
+                )
 
     # Validate runtime compatibility
     validate_runtime_compatibility(dbr_version, config)
@@ -247,19 +324,23 @@ def main(kwargs):
     # Setup mode-specific dependencies
     setup_mode_dependencies(config)
 
-    # Setup environment and infrastructure
-    setup_environment(config)
-    initialize_infrastructure(config)
+    # Use try/finally to ensure cleanup runs even on errors
+    # The finally block ensures temp tables are cleaned up, but exceptions still propagate
+    try:
+        # Setup environment and infrastructure
+        setup_environment(config)
+        initialize_infrastructure(config)
 
-    # Generate metadata
-    generate_and_persist_metadata(config)
+        # Generate metadata
+        generate_and_persist_metadata(config)
 
-    # Grant permissions on created objects
-    grant_permissions_on_created_objects(config)
+        # Grant permissions on created objects
+        grant_permissions_on_created_objects(config)
 
-    # Cleanup resources
-    cleanup_resources(config, spark)
-
-    # Log token usage if benchmarking is enabled
-    if experiment_name:
-        log_token_usage(config, experiment_name)
+        # Log token usage if benchmarking is enabled
+        if experiment_name:
+            log_token_usage(config, experiment_name)
+    finally:
+        # Always cleanup resources, even if there were errors above
+        # cleanup_resources has internal error handling to prevent masking original exceptions
+        cleanup_resources(config, spark)

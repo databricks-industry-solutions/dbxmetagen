@@ -18,11 +18,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-logger.info("🚀 DBX MetaGen App starting up...")
+logger.info("DBX MetaGen App starting up...")
 
 st.set_page_config(
     page_title="DBX MetaGen",
-    page_icon="🏷️",
+    page_icon="tag",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
@@ -36,31 +36,31 @@ class DBXMetaGenApp:
         self.config_manager = ConfigManager()
         self.ui_components = UIComponents()
 
-        logger.info("🔄 Initializing authentication on session start...")
+        logger.info("Initializing authentication on session start...")
         self.client_ready = DatabricksClientManager.setup_client()
 
         if self.client_ready:
-            logger.info("✅ DBX MetaGen App initialized with successful authentication")
+            logger.info("DBX MetaGen App initialized with successful authentication")
         else:
-            logger.warning("⚠️ DBX MetaGen App initialized but authentication failed")
-            st.warning("⚠️ Authentication failed. Some features may be limited.")
+            logger.warning("DBX MetaGen App initialized but authentication failed")
+            st.warning("[WARNING] Authentication failed. Some features may be limited.")
 
     def ensure_client_ready(self) -> bool:
         """Ensure Databricks client is initialized (lazy initialization)."""
         if self.client_ready is None:
-            logger.info("🔄 Performing lazy client initialization...")
+            logger.info("Performing lazy client initialization...")
             self.client_ready = DatabricksClientManager.setup_client()
 
             if self.client_ready:
-                logger.info("✅ Lazy client initialization successful")
+                logger.info("Lazy client initialization successful")
             else:
-                logger.error("❌ Lazy client initialization failed")
+                logger.error("Lazy client initialization failed")
 
         return self.client_ready
 
     def run(self):
         """Main app execution - clean and organized."""
-        st.title("🏷️ DBXMetaGen")
+        st.title("DBXMetaGen")
         st.markdown(
             "### AI-Powered Metadata Generation, Identification, and Classification for Databricks Tables"
         )
@@ -68,19 +68,19 @@ class DBXMetaGenApp:
         self.ui_components.render_sidebar_config()
 
         if "current_section" not in st.session_state:
-            st.session_state.current_section = "📋 Tables & Jobs"
+            st.session_state.current_section = "Tables & Jobs"
 
         selected_section = st.radio(
             "Navigate:",
             [
-                "📋 Tables & Jobs",
-                "✏️ Review Metadata",
-                "❓ Help",
+                "Tables & Jobs",
+                "Review Metadata",
+                "Help",
             ],
             index=[
-                "📋 Tables & Jobs",
-                "✏️ Review Metadata",
-                "❓ Help",
+                "Tables & Jobs",
+                "Review Metadata",
+                "Help",
             ].index(st.session_state.current_section),
             key="main_navigation",
             horizontal=True,
@@ -92,24 +92,24 @@ class DBXMetaGenApp:
         st.markdown("---")
 
         # Render the selected section
-        if selected_section == "📋 Tables & Jobs":
+        if selected_section == "Tables & Jobs":
             self.ui_components.render_unified_table_management()
             st.markdown("---")
             self.ui_components.render_job_status_section()
 
-        elif selected_section == "📊 Results":
+        elif selected_section == "Results":
             self.ui_components.render_results_viewer()
 
-        elif selected_section == "✏️ Review Metadata":
+        elif selected_section == "Review Metadata":
             self.ui_components.render_metadata_review()
 
-        elif selected_section == "❓ Help":
+        elif selected_section == "Help":
             self.ui_components.render_help()
 
     def render_debug_info(self):
         """Render debug information in sidebar."""
         st.sidebar.markdown("---")
-        st.sidebar.subheader("🔧 Debug Information")
+        st.sidebar.subheader("Debug Information")
 
         if st.sidebar.button("Show Debug Info"):
             st.sidebar.write("**System Status:**")
@@ -120,7 +120,7 @@ class DBXMetaGenApp:
             if st.session_state.get("workspace_client"):
                 try:
                     user_info = st.session_state.workspace_client.current_user.me()
-                    st.sidebar.write("- Workspace Client: ✅ Connected")
+                    st.sidebar.write("- Workspace Client: [OK] Connected")
                     st.sidebar.write(f"  - Client User: {user_info.user_name}")
                     st.sidebar.write(
                         f"  - Auth Type: {st.session_state.get('auth_method', 'Unknown')}"
@@ -146,11 +146,11 @@ class DBXMetaGenApp:
 
                 except Exception as e:
                     st.sidebar.write(
-                        "- Workspace Client: ⚠️ Connected but can't get user info"
+                        "- Workspace Client: [WARNING] Connected but can't get user info"
                     )
                     st.sidebar.write(f"  - Error: {str(e)}")
             else:
-                st.sidebar.write("- Workspace Client: ❌ Not initialized")
+                st.sidebar.write("- Workspace Client: [ERROR] Not initialized")
                 st.sidebar.write(f"  - Setup Result: {client_ready}")
                 if not client_ready:
                     st.sidebar.write(
@@ -158,16 +158,16 @@ class DBXMetaGenApp:
                     )
 
             if st.session_state.get("config"):
-                st.sidebar.write(f"- Config: ✅ {len(st.session_state.config)} keys")
+                st.sidebar.write(f"- Config: [OK] {len(st.session_state.config)} keys")
             else:
-                st.sidebar.write("- Config: ❌ Not loaded")
+                st.sidebar.write("- Config: [ERROR] Not loaded")
 
             # Log viewing instructions
             st.sidebar.markdown("---")
-            st.sidebar.write("**📋 View Full Logs:**")
+            st.sidebar.write("**View Full Logs:**")
             st.sidebar.write("Add `/logz` to your app URL")
 
-            logger.info("🔍 Debug info requested by user")
+            logger.info("Debug info requested by user")
 
 
 # Run the app
@@ -181,8 +181,8 @@ if __name__ == "__main__":
         app.render_debug_info()
 
     except Exception as e:
-        logger.error("❌ Application failed to start: %s", str(e))
-        st.error(f"❌ Application Error: {str(e)}")
+        logger.error("Application failed to start: %s", str(e))
+        st.error(f"[ERROR] Application Error: {str(e)}")
 
         # Show error details directly (no expander to avoid nesting issues)
         st.code(str(e))

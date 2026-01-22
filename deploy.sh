@@ -235,12 +235,12 @@ cleanup_temp_yml_files() {
 }
 
 update_variables_yml() {
-    echo "Creating variables override file from dev.env..."
+    echo "Creating variables override file from ${APP_ENV}.env..."
 
     cp variables.yml variables.bkp
     
-    if [ ! -f "dev.env" ]; then
-        echo "No dev.env found."
+    if [ ! -f "${APP_ENV}.env" ]; then
+        echo "No ${APP_ENV}.env found."
         return
     fi
     
@@ -292,14 +292,9 @@ DEBUG_MODE=false
 CREATE_TEST_DATA=false
 TARGET="dev"
 PROFILE="DEFAULT"
-ENV="dev"
 
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --env)
-            ENV="$2"
-            shift 2
-            ;;
         --host)
             HOST_URL="$2"
             shift 2
@@ -351,8 +346,8 @@ if ! command -v databricks &> /dev/null; then
     exit 1
 fi
 
-if [ ! -f "databricks.yml" ]; then
-    echo "Error: databricks.yml not found. Run from the dbxmetagen directory."
+if [ ! -f "databricks.yml.template" ]; then
+    echo "Error: databricks.yml.template not found. Run from the dbxmetagen directory."
     exit 1
 fi
 
@@ -381,7 +376,7 @@ app_env: "$APP_ENV"
 EOF
 
 if [ -f "${APP_ENV}.env" ]; then
-    echo "Loading environment variables from dev.env..."
+    echo "Loading environment variables from ${APP_ENV}.env..."
     set -a  # automatically export all variables
     source ${APP_ENV}.env
     set +a  # turn off automatic export
@@ -389,6 +384,15 @@ fi
 
 HOST_URL=$DATABRICKS_HOST
 TARGET=$TARGET
+
+# Generate databricks.yml from template
+echo "Generating databricks.yml from template..."
+if [ ! -f "databricks.yml.template" ]; then
+    echo "Error: databricks.yml.template not found"
+    exit 1
+fi
+sed "s|__DATABRICKS_HOST__|${DATABRICKS_HOST}|g" databricks.yml.template > databricks.yml
+echo "Generated databricks.yml with host: ${DATABRICKS_HOST}"
 
 if [ -f "variables.bkp" ]; then
     echo "Restoring variables.yml from backup..."
@@ -440,7 +444,13 @@ if [ -z "$OLD_APP_SP_ID" ] && [ -n "$APP_SP_ID" ] && [ "$APP_SP_ID" != "null" ];
 fi
 
 echo "=== Starting app ==="
-start_app
+if databricks bundle summary -t "$TARGET" --profile "$PROFILE" 2>/dev/null | grep -q "dbxmetagen_app"; then
+    start_app
+else
+    echo "App resource not found in bundle (apps may be commented out in databricks.yml)"
+    echo "Skipping app start"
+fi
+
 #Run permissions if requested
 if [ "$RUN_PERMISSIONS" = true ]; then
        run_permissions_setup

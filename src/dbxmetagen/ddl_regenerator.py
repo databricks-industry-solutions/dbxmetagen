@@ -65,9 +65,17 @@ def load_metadata_file(file_path: str, file_type: str) -> pd.DataFrame:
 
     try:
         if file_type == "tsv":
-            df = pd.read_csv(file_path, sep="\t", dtype=str)
+            df = pd.read_csv(
+                file_path, sep="\t", dtype=str, keep_default_na=False, na_values=[]
+            )
         elif file_type == "excel":
-            df = pd.read_excel(file_path, dtype=str, engine="openpyxl")
+            df = pd.read_excel(
+                file_path,
+                dtype=str,
+                engine="openpyxl",
+                keep_default_na=False,
+                na_values=[],
+            )
         else:
             raise ValueError(f"Unsupported file type: {file_type}")
         logging.info(f"Loaded file: {file_path}")
@@ -335,9 +343,17 @@ def extract_ddls_from_file(file_path: str, file_type: str) -> list:
             ddls = [ddl.strip() for ddl in content.split(";") if ddl.strip()]
     elif file_type in ("excel", "tsv"):
         if file_type == "excel":
-            df = pd.read_excel(file_path, dtype=str, engine="openpyxl")
+            df = pd.read_excel(
+                file_path,
+                dtype=str,
+                engine="openpyxl",
+                keep_default_na=False,
+                na_values=[],
+            )
         else:
-            df = pd.read_csv(file_path, sep="\t", dtype=str)
+            df = pd.read_csv(
+                file_path, sep="\t", dtype=str, keep_default_na=False, na_values=[]
+            )
         if "ddl" in df.columns:
             ddl_series = df["ddl"]
         else:
@@ -358,13 +374,18 @@ def apply_ddl_to_databricks(
 
     try:
         ddls = extract_ddls_from_file(sql_file, file_type)
+        print(f"Applying {len(ddls)} DDL statements from {sql_file}...")
+        applied_count = 0
         for ddl in ddls:
             if ddl:
                 try:
                     spark.sql(ddl)
+                    applied_count += 1
                     logging.info(f"Executed DDL: {ddl[:60]}...")
                 except Exception as e:
                     logging.error(f"Failed to execute DDL: {ddl[:60]}... Error: {e}")
+                    print(f"Failed to execute DDL: {ddl[:60]}... Error: {e}")
+        print(f"Successfully applied {applied_count} DDL statements.")
         logging.info("All DDL statements applied successfully.")
     except Exception as e:
         logging.error(f"Failed to apply DDLs to Databricks: {e}")
@@ -408,7 +429,10 @@ def process_metadata_file(
         )
         input_file_type = config.review_input_file_type
         output_file_type = export_format or config.review_output_file_type
-        df = load_metadata_file(os.path.join(input_dir, input_file), input_file_type)
+        input_path = os.path.join(input_dir, input_file)
+        print(f"Loading {input_path}...")
+        df = load_metadata_file(input_path, input_file_type)
+        print(f"Loaded {len(df)} rows, processing in {config.mode} mode...")
         if config.mode == "pi":
             df[["classification", "type", "ddl"]] = df.apply(
                 lambda row: update_ddl_row(
@@ -426,7 +450,15 @@ def process_metadata_file(
                 result_type="expand",
             )
         exported_file = export_metadata(df, output_dir, input_file, output_file_type)
-        if config.review_apply_ddl is True or config.review_apply_ddl.lower() == "true":
+        print(f"Exported {len(df)} rows to {exported_file}")
+
+        # Determine if DDL should be applied based on type
+        if isinstance(config.review_apply_ddl, bool):
+            should_apply = config.review_apply_ddl
+        else:
+            should_apply = config.review_apply_ddl.lower() == "true"
+
+        if should_apply:
             apply_ddl_to_databricks(exported_file, config, output_file_type)
         else:
             print(

@@ -21,6 +21,15 @@ def override_metadata_from_csv(
     Returns:
         DataFrame: The updated DataFrame with overridden type and classification.
     """
+    import os
+
+    # Check if CSV file exists - if not, return DataFrame unchanged
+    if not csv_path or not os.path.exists(csv_path):
+        print(
+            f"Override CSV file not found or empty path: {csv_path}, skipping overrides"
+        )
+        return df
+
     csv_df = pd.read_csv(csv_path)
     csv_df = csv_df.where(pd.notna(csv_df), None)
 

@@ -62,6 +62,10 @@ class Prompt(ABC):
             words = value.split()
             if len(words) > word_limit:
                 return " ".join(words[:word_limit])
+            # Fallback: character-based truncation (10x word limit)
+            char_limit = word_limit * 10
+            if len(value) > char_limit:
+                return value[:char_limit]
             return value
 
         word_limit = getattr(self.config, "word_limit_per_cell", 100)
@@ -73,8 +77,9 @@ class Prompt(ABC):
             truncated_values = pandas_df[column].apply(
                 lambda x: truncate_value(x, word_limit)
             )
+            char_limit = word_limit * 10
             truncation_flags = pandas_df[column].apply(
-                lambda x: len(x.split()) > word_limit
+                lambda x: len(x.split()) > word_limit or len(x) > char_limit
             )
             pandas_df[column] = truncated_values
             truncated_count += truncation_flags.sum()
@@ -517,12 +522,14 @@ class CommentPrompt(Prompt):
                     "role": "system",
                     "content": """Generate comprehensive metadata comments for Databricks tables and columns. Analyze all provided information (table name, column names, data samples, metadata statistics, acronyms) to create well-reasoned descriptions.
 
-                    Response Format:
+                    Response Format (MUST be valid JSON with arrays, not stringified arrays):
                     {"table": "description", "columns": ["col1", "col2"], "column_contents": ["col1 desc", "col2 desc"]}
+                    
+                    IMPORTANT: column_contents must be a JSON array [...], NOT a string containing an array.
 
                     Guidelines:
                     1. Scale comment length with information richness: 3-5 sentences for simple columns, 4-8 sentences when rich metadata/patterns emerge
-                    2. Synthesize insights from: column name → table context → sample data → metadata statistics
+                    2. Synthesize insights from: column name -> table context -> sample data -> metadata statistics
                     3. Unpack acronyms confidently. Note anomalies (e.g., unexpectedly low distinct counts, suspicious nulls, data type mismatches)
                     4. Sample data may not represent full distribution - use metadata to validate/contradict sample observations
                     5. Use double quotes for strings. Escape apostrophes with '' (SQL style) for DDL compatibility
@@ -725,12 +732,14 @@ class CommentNoDataPrompt(Prompt):
                     "role": "system",
                     "content": """Generate comprehensive metadata comments for Databricks tables and columns. Analyze all provided information (table name, column names, data samples, metadata statistics, acronyms) to create well-reasoned descriptions. **CRITICAL: Do NOT include any actual data values in your descriptions - this data may be sensitive.**
 
-                    Response Format:
+                    Response Format (MUST be valid JSON with arrays, not stringified arrays):
                     {"table": "description", "columns": ["col1", "col2"], "column_contents": ["col1 desc", "col2 desc"]}
+                    
+                    IMPORTANT: column_contents must be a JSON array [...], NOT a string containing an array.
 
                     Guidelines:
                     1. Scale comment length with information richness: 2-3 sentences for simple columns, 4-8 sentences when rich metadata/patterns emerge
-                    2. Synthesize insights from: column name → table context → sample data patterns → metadata statistics (WITHOUT citing specific values)
+                    2. Synthesize insights from: column name -> table context -> sample data patterns -> metadata statistics (WITHOUT citing specific values)
                     3. Unpack acronyms confidently. Note anomalies (e.g., unexpectedly low distinct counts, suspicious nulls, data type mismatches)
                     4. Use sample data to understand patterns/formats/types, but describe generically without quoting specific values
                     5. Use double quotes for strings. Escape apostrophes with '' (SQL style) for DDL compatibility

@@ -54,9 +54,24 @@ class DatabricksClient(ChatClient):
     """Client for Databricks native chat completions."""
 
     def __init__(self):
+        # Get credentials from environment (should be set in Databricks runtime)
+        api_key = os.environ.get("DATABRICKS_TOKEN")
+        if not api_key:
+            raise ValueError(
+                "DATABRICKS_TOKEN not found in environment. "
+                "This should be automatically available in Databricks notebooks."
+            )
+
+        base_url = os.environ.get("DATABRICKS_HOST")
+        if not base_url:
+            raise ValueError(
+                "DATABRICKS_HOST not found in environment. "
+                "This should be set by the notebook or config."
+            )
+
         self.openai_client = OpenAI(
-            api_key=os.environ["DATABRICKS_TOKEN"],
-            base_url=os.environ["DATABRICKS_HOST"] + "/serving-endpoints",
+            api_key=api_key,
+            base_url=base_url + "/serving-endpoints",
         )
 
     @mlflow.trace
