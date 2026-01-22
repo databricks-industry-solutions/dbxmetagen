@@ -145,6 +145,7 @@ dist/
 *.tmp
 
 # Deployment temporary files
+databricks.yml
 databricks_final.yml
 databricks_final.yml.tmp
 #app/deploying_user.yml #cannot be ignored because asset bundles obey gitignore

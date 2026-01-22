@@ -346,8 +346,8 @@ if ! command -v databricks &> /dev/null; then
     exit 1
 fi
 
-if [ ! -f "databricks.yml" ]; then
-    echo "Error: databricks.yml not found. Run from the dbxmetagen directory."
+if [ ! -f "databricks.yml.template" ]; then
+    echo "Error: databricks.yml.template not found. Run from the dbxmetagen directory."
     exit 1
 fi
 
@@ -384,6 +384,15 @@ fi
 
 HOST_URL=$DATABRICKS_HOST
 TARGET=$TARGET
+
+# Generate databricks.yml from template
+echo "Generating databricks.yml from template..."
+if [ ! -f "databricks.yml.template" ]; then
+    echo "Error: databricks.yml.template not found"
+    exit 1
+fi
+sed "s|__DATABRICKS_HOST__|${DATABRICKS_HOST}|g" databricks.yml.template > databricks.yml
+echo "Generated databricks.yml with host: ${DATABRICKS_HOST}"
 
 if [ -f "variables.bkp" ]; then
     echo "Restoring variables.yml from backup..."
