@@ -6,7 +6,7 @@ include:
   - resources/jobs/metagen.job.yml
   - resources/jobs/sync_reviews.job.yml
   # Uncomment the line below to deploy integration tests:
-  #- resources/jobs/integration_tests.job.yml
+  # - resources/jobs/integration_tests.job.yml
   - resources/apps/*.yml
   - benchmarks/resources/jobs/benchmarks/*.yml
   - variables.yml
@@ -24,7 +24,7 @@ targets:
     mode: development
     default: true
     workspace:
-      host: <host url here>
+      host: https://e2-demo-field-eng.cloud.databricks.com
     permissions:
       - user_name: ${var.deploying_user}
         level: CAN_MANAGE
@@ -32,10 +32,11 @@ targets:
   prod:
     mode: production
     workspace:
-      host: <host url here>
+      host: https://e2-demo-field-eng.cloud.databricks.com
       root_path: ${var.current_working_directory}
     permissions:
       - user_name: ${var.current_user}
         level: CAN_MANAGE
     run_as:
       user_name: ${var.current_user}
+
