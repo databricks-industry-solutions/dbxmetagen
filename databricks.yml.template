@@ -24,7 +24,7 @@ targets:
     mode: development
     default: true
     workspace:
-      host: https://e2-demo-field-eng.cloud.databricks.com
+      host: __DATABRICKS_HOST__
     permissions:
       - user_name: ${var.deploying_user}
         level: CAN_MANAGE
@@ -32,10 +32,11 @@ targets:
   prod:
     mode: production
     workspace:
-      host: https://e2-demo-field-eng.cloud.databricks.com
+      host: __DATABRICKS_HOST__
       root_path: ${var.current_working_directory}
     permissions:
       - user_name: ${var.current_user}
         level: CAN_MANAGE
     run_as:
       user_name: ${var.current_user}
+
