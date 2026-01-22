@@ -3,14 +3,7 @@ bundle:
   databricks_cli_version: ">=0.234.*"
 
 include:
-  - resources/jobs/metagen.job.yml
-  - resources/jobs/sync_reviews.job.yml
-  # Uncomment the line below to deploy integration tests:
-  # - resources/jobs/integration_tests.job.yml
-  # Profiling and ontology jobs (uncomment to enable):
-  # - resources/jobs/profiling.job.yml
-  # - resources/jobs/ontology.job.yml
-  - resources/apps/*.yml
+  - resources/jobs/*.yml
   - benchmarks/resources/jobs/benchmarks/*.yml
   - variables.yml
   - variables.advanced.yml

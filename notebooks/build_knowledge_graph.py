@@ -19,10 +19,8 @@
 # COMMAND ----------
 # MAGIC %md
 # MAGIC ## Setup
-
-# COMMAND ----------
-# MAGIC %pip install -qqqq -r ../requirements.txt graphframes
-# MAGIC dbutils.library.restartPython()
+# MAGIC 
+# MAGIC Libraries (graphframes, dbxmetagen wheel) are installed via job cluster configuration.
 
 # COMMAND ----------
 # MAGIC %md

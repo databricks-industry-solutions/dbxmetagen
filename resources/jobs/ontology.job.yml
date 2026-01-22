@@ -14,8 +14,6 @@ resources:
           default: ${var.schema_name}
         - name: config_path
           default: "configurations/ontology_config.yaml"
-        - name: run_validation
-          default: "true"
 
       tasks:
         - task_key: build_ontology
@@ -35,12 +33,6 @@ resources:
           depends_on:
             - task_key: build_ontology
           job_cluster_key: ontology_cluster
-          
-          # Only run if validation is enabled
-          condition_task:
-            left: "{{job.parameters.run_validation}}"
-            op: EQUAL_TO
-            right: "true"
 
           notebook_task:
             notebook_path: ../../notebooks/validate_ontology.py
@@ -71,4 +63,3 @@ resources:
             spark_version: 17.3.x-cpu-ml-scala2.13
             node_type_id: ${var.node_type}
             num_workers: 1
-
