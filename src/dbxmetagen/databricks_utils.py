@@ -82,6 +82,9 @@ def get_task_id(dbutils_instance=None):
     
     Returns a unique identifier for this task execution, used for table claiming
     in concurrent processing scenarios.
+    
+    For job tasks: returns taskRunId (unique per task execution)
+    For interactive runs: returns current_user (allows self-reclaim of abandoned tables)
     """
     try:
         if dbutils_instance:
@@ -100,11 +103,31 @@ def get_task_id(dbutils_instance=None):
             parent_run_id = context.get("tags", {}).get("multitaskParentRunId")
             if parent_run_id:
                 return f"{parent_run_id}_interactive"
-        # Generate a UUID as fallback for interactive/local runs
+            # For interactive runs, use current_user (allows self-reclaim)
+            user = context.get("attributes", {}).get("user")
+            if user:
+                return user
+        # Try WorkspaceClient as fallback
+        try:
+            w = WorkspaceClient()
+            user = w.current_user.me().user_name
+            if user:
+                return user
+        except Exception:
+            pass
+        # Last resort: UUID (should rarely happen)
         import uuid
         return str(uuid.uuid4())
     except Exception as e:
         print(f"Error getting task ID: {e}")
+        # Try to get user even on error
+        try:
+            w = WorkspaceClient()
+            user = w.current_user.me().user_name
+            if user:
+                return user
+        except Exception:
+            pass
         import uuid
         return str(uuid.uuid4())
 
