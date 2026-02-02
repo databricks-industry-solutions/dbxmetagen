@@ -1,0 +1,14 @@
+command: [
+  "flask",
+  "--app", 
+  "app_react:flask_app",
+  "run",
+  "--host=0.0.0.0"
+]
+
+env:
+  - name: 'DATABRICKS_HTTP_PATH'
+    value: '/sql/1.0/warehouses/fc63b669d98bde08'
+  - name: 'DATABRICKS_SERVER_HOSTNAME'
+    value: 'fe-vm-mv-serverless-tixx4d.cloud.databricks.com'
+

@@ -1,0 +1,12 @@
+# Core dependencies
+requests
+python-dotenv
+flask-cors
+
+# Enhanced generation dependencies
+# Note: All enhanced functionality uses standard library - no additional packages needed!
+# The embedded PII detector uses regex patterns (standard library)
+# The enhanced generator uses asyncio and threading (standard library)
+# The setup utils use SQL API calls via requests (already included)
+
+# Note: flask and pandas are pre-installed in Databricks Apps environment
