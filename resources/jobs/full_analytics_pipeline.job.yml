@@ -1,0 +1,215 @@
+resources:
+  jobs:
+    full_analytics_pipeline_job:
+      name: "${var.app_name}_full_analytics_pipeline"
+
+      email_notifications:
+        on_failure:
+          - ${var.current_user}
+
+      parameters:
+        - name: catalog_name
+          default: ${var.catalog_name}
+        - name: schema_name
+          default: ${var.schema_name}
+        - name: similarity_threshold
+          default: "0.8"
+        - name: max_edges_per_node
+          default: "10"
+        - name: generate_comments
+          default: "true"
+        - name: cluster_min_k
+          default: "2"
+        - name: cluster_max_k
+          default: "15"
+        - name: cluster_node_types
+          default: "table"
+
+      tasks:
+        # Stage 1: Build knowledge bases (table, column, schema in parallel after table KB)
+        - task_key: build_knowledge_base
+          job_cluster_key: analytics_cluster
+          notebook_task:
+            notebook_path: ../../notebooks/build_knowledge_base.py
+            base_parameters:
+              catalog_name: "{{job.parameters.catalog_name}}"
+              schema_name: "{{job.parameters.schema_name}}"
+          libraries:
+            - whl: ../../dist/*.whl
+
+        - task_key: build_column_kb
+          depends_on:
+            - task_key: build_knowledge_base
+          job_cluster_key: analytics_cluster
+          notebook_task:
+            notebook_path: ../../notebooks/build_column_kb.py
+            base_parameters:
+              catalog_name: "{{job.parameters.catalog_name}}"
+              schema_name: "{{job.parameters.schema_name}}"
+          libraries:
+            - whl: ../../dist/*.whl
+
+        - task_key: build_schema_kb
+          depends_on:
+            - task_key: build_knowledge_base
+          job_cluster_key: analytics_cluster
+          notebook_task:
+            notebook_path: ../../notebooks/build_schema_kb.py
+            base_parameters:
+              catalog_name: "{{job.parameters.catalog_name}}"
+              schema_name: "{{job.parameters.schema_name}}"
+              generate_comments: "{{job.parameters.generate_comments}}"
+          libraries:
+            - whl: ../../dist/*.whl
+
+        - task_key: extract_extended_metadata
+          depends_on:
+            - task_key: build_knowledge_base
+          job_cluster_key: analytics_cluster
+          notebook_task:
+            notebook_path: ../../notebooks/extract_extended_metadata.py
+            base_parameters:
+              catalog_name: "{{job.parameters.catalog_name}}"
+              schema_name: "{{job.parameters.schema_name}}"
+          libraries:
+            - whl: ../../dist/*.whl
+
+        # Stage 2: Build knowledge graph (depends on all KB tasks)
+        - task_key: build_knowledge_graph
+          depends_on:
+            - task_key: build_column_kb
+            - task_key: build_schema_kb
+            - task_key: extract_extended_metadata
+          job_cluster_key: ml_cluster
+          notebook_task:
+            notebook_path: ../../notebooks/build_knowledge_graph.py
+            base_parameters:
+              catalog_name: "{{job.parameters.catalog_name}}"
+              schema_name: "{{job.parameters.schema_name}}"
+          libraries:
+            - whl: ../../dist/*.whl
+            - pypi:
+                package: graphframes
+
+        # Stage 3: Parallel branches - embeddings, profiling, ontology
+        - task_key: generate_embeddings
+          depends_on:
+            - task_key: build_knowledge_graph
+          job_cluster_key: analytics_cluster
+          notebook_task:
+            notebook_path: ../../notebooks/generate_embeddings.py
+            base_parameters:
+              catalog_name: "{{job.parameters.catalog_name}}"
+              schema_name: "{{job.parameters.schema_name}}"
+          libraries:
+            - whl: ../../dist/*.whl
+
+        - task_key: run_profiling
+          depends_on:
+            - task_key: build_knowledge_graph
+          job_cluster_key: analytics_cluster
+          notebook_task:
+            notebook_path: ../../notebooks/run_profiling.py
+            base_parameters:
+              catalog_name: "{{job.parameters.catalog_name}}"
+              schema_name: "{{job.parameters.schema_name}}"
+          libraries:
+            - whl: ../../dist/*.whl
+
+        - task_key: build_ontology
+          depends_on:
+            - task_key: build_knowledge_graph
+          job_cluster_key: analytics_cluster
+          notebook_task:
+            notebook_path: ../../notebooks/build_ontology.py
+            base_parameters:
+              catalog_name: "{{job.parameters.catalog_name}}"
+              schema_name: "{{job.parameters.schema_name}}"
+          libraries:
+            - whl: ../../dist/*.whl
+
+        # Stage 4: Secondary tasks
+        - task_key: build_similarity_edges
+          depends_on:
+            - task_key: generate_embeddings
+          job_cluster_key: analytics_cluster
+          notebook_task:
+            notebook_path: ../../notebooks/build_similarity_edges.py
+            base_parameters:
+              catalog_name: "{{job.parameters.catalog_name}}"
+              schema_name: "{{job.parameters.schema_name}}"
+              similarity_threshold: "{{job.parameters.similarity_threshold}}"
+              max_edges_per_node: "{{job.parameters.max_edges_per_node}}"
+          libraries:
+            - whl: ../../dist/*.whl
+
+        - task_key: cluster_analysis
+          depends_on:
+            - task_key: generate_embeddings
+          job_cluster_key: ml_cluster
+          notebook_task:
+            notebook_path: ../../notebooks/cluster_analysis.py
+            base_parameters:
+              catalog_name: "{{job.parameters.catalog_name}}"
+              schema_name: "{{job.parameters.schema_name}}"
+              min_k: "{{job.parameters.cluster_min_k}}"
+              max_k: "{{job.parameters.cluster_max_k}}"
+              node_types: "{{job.parameters.cluster_node_types}}"
+          libraries:
+            - whl: ../../dist/*.whl
+
+        - task_key: compute_data_quality
+          depends_on:
+            - task_key: run_profiling
+          job_cluster_key: analytics_cluster
+          notebook_task:
+            notebook_path: ../../notebooks/compute_data_quality.py
+            base_parameters:
+              catalog_name: "{{job.parameters.catalog_name}}"
+              schema_name: "{{job.parameters.schema_name}}"
+          libraries:
+            - whl: ../../dist/*.whl
+
+        - task_key: validate_ontology
+          depends_on:
+            - task_key: build_ontology
+          job_cluster_key: analytics_cluster
+          notebook_task:
+            notebook_path: ../../notebooks/validate_ontology.py
+            base_parameters:
+              catalog_name: "{{job.parameters.catalog_name}}"
+              schema_name: "{{job.parameters.schema_name}}"
+          libraries:
+            - whl: ../../dist/*.whl
+
+        # Stage 5: Final analysis (depends on all stage 4 tasks)
+        - task_key: final_analysis
+          depends_on:
+            - task_key: build_similarity_edges
+            - task_key: cluster_analysis
+            - task_key: compute_data_quality
+            - task_key: validate_ontology
+          job_cluster_key: analytics_cluster
+          notebook_task:
+            notebook_path: ../../notebooks/final_analysis.py
+            base_parameters:
+              catalog_name: "{{job.parameters.catalog_name}}"
+              schema_name: "{{job.parameters.schema_name}}"
+          libraries:
+            - whl: ../../dist/*.whl
+
+      job_clusters:
+        - job_cluster_key: analytics_cluster
+          new_cluster:
+            spark_version: 17.3.x-cpu-ml-scala2.13
+            node_type_id: ${var.node_type}
+            autoscale:
+              min_workers: 1
+              max_workers: 4
+
+        - job_cluster_key: ml_cluster
+          new_cluster:
+            spark_version: 17.3.x-cpu-ml-scala2.13
+            node_type_id: ${var.node_type}
+            num_workers: 1
+

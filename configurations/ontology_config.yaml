@@ -5,15 +5,16 @@ ontology:
   version: "1.0"
   name: "Default Business Ontology"
   description: "Standard business ontology for data catalog metadata"
-  
+
   # Entity discovery settings
   entities:
     # Enable automatic entity discovery from knowledge base
     auto_discover: true
-    
+
     # Confidence threshold for auto-discovered entities (0.0-1.0)
-    discovery_confidence_threshold: 0.7
-    
+    # Lowered from 0.7 to allow more flexible matching
+    discovery_confidence_threshold: 0.4
+
     # Pre-defined entity definitions
     # Each entity can be matched to tables/columns based on keywords
     definitions:
@@ -36,7 +37,7 @@ ontology:
           - address
           - created_date
           - status
-        
+
       Product:
         description: "Product, item, or SKU entities representing goods or services"
         keywords:
@@ -55,7 +56,7 @@ ontology:
           - price
           - category
           - status
-          
+
       Transaction:
         description: "Transaction or order entities representing business events"
         keywords:
@@ -73,7 +74,7 @@ ontology:
           - amount
           - date
           - status
-          
+
       Employee:
         description: "Employee or staff entities representing workforce"
         keywords:
@@ -90,7 +91,7 @@ ontology:
           - department
           - role
           - hire_date
-          
+
       Location:
         description: "Location, address, or geographic entities"
         keywords:
@@ -110,7 +111,7 @@ ontology:
           - state
           - country
           - zip_code
-          
+
       Event:
         description: "Event or activity entities representing occurrences"
         keywords:
@@ -127,7 +128,7 @@ ontology:
           - timestamp
           - user_id
           - details
-          
+
       Reference:
         description: "Reference or lookup data entities"
         keywords:
@@ -145,7 +146,7 @@ ontology:
           - name
           - description
           - active
-          
+
       Metric:
         description: "Metric, KPI, or aggregated data entities"
         keywords:
@@ -163,6 +164,184 @@ ontology:
           - period
           - dimension
 
+      # Healthcare / Life Sciences Entities
+      Patient:
+        description: "Patient or individual receiving healthcare services"
+        keywords:
+          - patient
+          - person
+          - individual
+          - subject
+          - participant
+          - member
+        typical_attributes:
+          - id
+          - mrn
+          - name
+          - dob
+          - gender
+          - address
+
+      ClinicalNote:
+        description: "Clinical notes, EHR notes, or medical documentation"
+        keywords:
+          - note
+          - ehr
+          - emr
+          - clinical
+          - documentation
+          - record
+          - chart
+          - progress
+          - assessment
+        typical_attributes:
+          - id
+          - patient_id
+          - text
+          - content
+          - date
+          - author
+          - type
+
+      Encounter:
+        description: "Healthcare encounter, visit, or episode of care"
+        keywords:
+          - encounter
+          - visit
+          - admission
+          - episode
+          - appointment
+          - consultation
+        typical_attributes:
+          - id
+          - patient_id
+          - date
+          - type
+          - provider
+          - location
+
+      Diagnosis:
+        description: "Medical diagnosis or condition"
+        keywords:
+          - diagnosis
+          - condition
+          - icd
+          - disease
+          - disorder
+          - problem
+        typical_attributes:
+          - id
+          - code
+          - description
+          - patient_id
+          - date
+          - status
+
+      Medication:
+        description: "Medication, prescription, or drug information"
+        keywords:
+          - medication
+          - drug
+          - prescription
+          - rx
+          - pharmacy
+          - medicine
+          - dosage
+        typical_attributes:
+          - id
+          - name
+          - ndc
+          - dose
+          - frequency
+          - route
+
+      Procedure:
+        description: "Medical procedure or intervention"
+        keywords:
+          - procedure
+          - surgery
+          - intervention
+          - cpt
+          - operation
+          - treatment
+        typical_attributes:
+          - id
+          - code
+          - description
+          - date
+          - provider
+          - status
+
+      LabResult:
+        description: "Laboratory test results"
+        keywords:
+          - lab
+          - result
+          - test
+          - loinc
+          - specimen
+          - panel
+          - blood
+          - urine
+        typical_attributes:
+          - id
+          - test_code
+          - value
+          - unit
+          - reference_range
+          - date
+
+      Provider:
+        description: "Healthcare provider or practitioner"
+        keywords:
+          - provider
+          - physician
+          - doctor
+          - nurse
+          - practitioner
+          - clinician
+          - npi
+        typical_attributes:
+          - id
+          - npi
+          - name
+          - specialty
+          - organization
+
+      Benchmark:
+        description: "Benchmark or evaluation dataset"
+        keywords:
+          - benchmark
+          - evaluation
+          - test
+          - validation
+          - gold
+          - ground_truth
+        typical_attributes:
+          - id
+          - name
+          - source
+          - category
+          - score
+
+      RedactionResult:
+        description: "PII/PHI detection or redaction results"
+        keywords:
+          - redact
+          - detection
+          - pii
+          - phi
+          - mask
+          - anonymize
+          - deidentify
+        typical_attributes:
+          - id
+          - entity_type
+          - text
+          - start
+          - end
+          - confidence
+
   # Relationship type definitions
   relationships:
     # Standard relationship types for the ontology
@@ -170,28 +349,28 @@ ontology:
       - name: owns
         description: "Entity owns or is responsible for another"
         inverse: owned_by
-        
+
       - name: contains
         description: "Entity contains or includes another"
         inverse: contained_in
-        
+
       - name: references
         description: "Entity references another (foreign key)"
         inverse: referenced_by
-        
+
       - name: derives_from
         description: "Entity is derived from another (lineage)"
         inverse: source_of
-        
+
       - name: similar_to
         description: "Entity is semantically similar to another"
         inverse: similar_to
         symmetric: true
-        
+
       - name: part_of
         description: "Entity is part of a larger entity"
         inverse: has_part
-        
+
       - name: instance_of
         description: "Entity is an instance of a type"
         inverse: type_of
@@ -200,7 +379,7 @@ ontology:
   metrics:
     # Enable metric discovery
     auto_discover: false
-    
+
     # Pre-defined metric definitions
     definitions: []
     #   - name: total_customers
@@ -208,7 +387,7 @@ ontology:
     #     entity: Customer
     #     aggregation: count
     #     filter: "status = 'active'"
-    #     
+    #
     #   - name: total_revenue
     #     description: "Total revenue from transactions"
     #     entity: Transaction
@@ -219,13 +398,12 @@ ontology:
   validation:
     # Minimum confidence for entity matches
     min_entity_confidence: 0.5
-    
+
     # Maximum entities to suggest per table
     max_entities_per_table: 3
-    
+
     # Enable AI-powered validation
     ai_validation_enabled: true
-    
-    # Model for AI validation
-    validation_model: "databricks-meta-llama-3-3-70b-instruct"
 
+    # Model for AI validation
+    validation_model: "databricks-gpt-oss-120b"

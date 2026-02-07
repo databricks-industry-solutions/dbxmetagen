@@ -4,7 +4,7 @@ from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql.functions import col, lit, when
 from pyspark.sql.column import Column
 from typing import List, Dict
-from src.dbxmetagen.config import MetadataConfig
+from dbxmetagen.config import MetadataConfig
 
 
 def override_metadata_from_csv(

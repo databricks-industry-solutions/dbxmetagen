@@ -203,3 +203,9 @@ variables:
   freshness_threshold_days:
     description: Number of days before data is considered stale for quality scoring
     default: 7
+  warehouse_id:
+    description: SQL warehouse ID for dashboard queries. Required for dashboard deployment.
+    default: "4b9b953939869799"
+  federation_mode:
+    description: "Enable federation compatibility mode for running against federated catalogs (e.g., Redshift, Snowflake via Unity Catalog federation). When true: DESCRIBE DETAIL is skipped (Delta-specific), DESCRIBE EXTENDED is skipped, DDL apply is forced to false (cannot ALTER federated tables), and tag operations are disabled. SELECT, DESCRIBE TABLE, and SHOW TABLES still work. dbxmetagen output tables remain Delta."
+    default: false

@@ -23,10 +23,10 @@
 # COMMAND ----------
 
 import sys
-sys.path.append("../../")
+sys.path.append("../../")  # For DAB deployment; pip-installed package works without this
 
 from pyspark.sql import SparkSession
-from src.dbxmetagen.user_utils import sanitize_user_identifier, get_current_user
+from dbxmetagen.user_utils import sanitize_user_identifier, get_current_user
 from datetime import datetime
 
 # Setup widgets

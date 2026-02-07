@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 from pyspark.sql import SparkSession
 from pyspark.sql.types import StructType, StructField, StringType, TimestampType, FloatType
 
-from src.dbxmetagen.column_knowledge_base import (
+from dbxmetagen.column_knowledge_base import (
     ColumnKnowledgeBaseConfig,
     ColumnKnowledgeBaseBuilder,
     build_column_knowledge_base

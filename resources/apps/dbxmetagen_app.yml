@@ -1,31 +1,38 @@
 resources:
   apps:
     dbxmetagen_app:
-      name: ${var.app_name}
-      description: "UI For dbxmetagen app"
-
-      source_code_path: ../../app
-      user_api_scopes: ["files.files"]
-
-      # config:
-      #   - name: "app_name"
-      #     value: ${var.app_name}
-      #   - name: "app_service_principal_id"
-      #     value: ${resources.apps.dbxmetagen_app.service_principal_id}
-      #   - name: "dbxmetagen_metadata_job"
-      #     value: ${var.metadata_generator_job}
-      #   - name: "sync_ddl_job"
-      #     value: ${var.sync_ddl_job}
-      #   - name: "app_deployment_type"
-      #     value: ${var.app_deployment_type}
-
+      name: "${var.app_name}-app"
+      description: "dbxmetagen dashboard: metadata review, profiling, ontology, and graph analytics"
+      source_code_path: ../../apps/dbxmetagen-app/app
+      config:
+        command:
+          - uvicorn
+          - api_server:app
+          - --host
+          - 0.0.0.0
+          - --port
+          - "8000"
+        env:
+          - name: CATALOG_NAME
+            value: ${var.catalog_name}
+          - name: SCHEMA_NAME
+            value: ${var.schema_name}
+          - name: WAREHOUSE_ID
+            value: ${var.warehouse_id}
       resources:
-        - name: "dbxmetagen_metadata_job"
+        - name: metadata_generator_job
           job:
             id: ${resources.jobs.metadata_generator_job.id}
-            permission: "CAN_MANAGE_RUN"
-
-        - name: "sync_ddl_job"
+            permission: CAN_MANAGE_RUN
+        - name: metadata_parallel_modes_job
+          job:
+            id: ${resources.jobs.metadata_parallel_modes_job.id}
+            permission: CAN_MANAGE_RUN
+        - name: sync_ddl_job
           job:
             id: ${resources.jobs.sync_ddl_job.id}
-            permission: "CAN_MANAGE_RUN"
+            permission: CAN_MANAGE_RUN
+      user_api_scopes:
+        - "files.files"
+        - "serving.serving-endpoints"
+        - "sql.statement-execution"

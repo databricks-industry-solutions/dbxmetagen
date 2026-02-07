@@ -14,7 +14,7 @@ import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from src.dbxmetagen.processing import (
+from dbxmetagen.processing import (
     get_protected_classification_for_table,
     determine_table_classification,
 )

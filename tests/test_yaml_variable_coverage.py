@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 import yaml
 import pytest
-from src.dbxmetagen.config import MetadataConfig
+from dbxmetagen.config import MetadataConfig
 
 
 class TestYAMLVariableCoverage:

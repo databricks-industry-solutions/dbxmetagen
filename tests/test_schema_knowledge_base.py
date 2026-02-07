@@ -4,7 +4,7 @@ import pytest
 from unittest.mock import MagicMock, patch
 from pyspark.sql import SparkSession
 
-from src.dbxmetagen.schema_knowledge_base import (
+from dbxmetagen.schema_knowledge_base import (
     SchemaKnowledgeBaseConfig,
     SchemaKnowledgeBaseBuilder,
     SchemaSummarizer,

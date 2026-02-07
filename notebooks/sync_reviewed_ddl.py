@@ -6,14 +6,14 @@
 
 import sys
 
-sys.path.append("../")
+sys.path.append("../")  # For DAB deployment; pip-installed package works without this
 import os
 
-from src.dbxmetagen.config import MetadataConfig
-from src.dbxmetagen.processing import split_table_names
-from src.dbxmetagen.user_utils import sanitize_email
-from src.dbxmetagen.error_handling import exponential_backoff
-from src.dbxmetagen.ddl_regenerator import (
+from dbxmetagen.config import MetadataConfig
+from dbxmetagen.processing import split_table_names
+from dbxmetagen.user_utils import sanitize_email
+from dbxmetagen.error_handling import exponential_backoff
+from dbxmetagen.ddl_regenerator import (
     process_metadata_file,
     load_metadata_file,
     replace_comment_in_ddl,

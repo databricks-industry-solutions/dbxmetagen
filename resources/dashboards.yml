@@ -1,0 +1,14 @@
+# Dashboard Resources
+# Defines AI/BI (Lakeview) dashboards deployed with the bundle
+
+resources:
+  dashboards:
+    metagen_analytics:
+      display_name: "DBXMetagen Analytics - ${bundle.target}"
+      warehouse_id: ${var.warehouse_id}
+      file_path: ../resources/dashboards/metagen_analytics.lvdash.json
+      embed_credentials: false
+      permissions:
+        - level: CAN_READ
+          group_name: users
+

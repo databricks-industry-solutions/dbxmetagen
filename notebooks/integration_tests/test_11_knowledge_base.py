@@ -293,7 +293,7 @@ print(f"[SETUP] Inserted {len(test_data)} test records")
 
 # COMMAND ----------
 
-from src.dbxmetagen.knowledge_base import (
+from dbxmetagen.knowledge_base import (
     KnowledgeBaseConfig,
     KnowledgeBaseBuilder,
     build_knowledge_base

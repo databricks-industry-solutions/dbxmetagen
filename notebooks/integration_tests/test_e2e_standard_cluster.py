@@ -14,10 +14,10 @@ import sys
 
 sys.path.append("../../")
 
-from src.dbxmetagen.config import MetadataConfig
-from src.dbxmetagen.main import main
-from src.dbxmetagen.user_utils import sanitize_user_identifier, get_current_user
-from src.dbxmetagen.databricks_utils import get_job_context
+from dbxmetagen.config import MetadataConfig
+from dbxmetagen.main import main
+from dbxmetagen.user_utils import sanitize_user_identifier, get_current_user
+from dbxmetagen.databricks_utils import get_job_context
 
 # Setup widgets
 dbutils.widgets.text("test_catalog", "dev_integration_tests", "Test Catalog")

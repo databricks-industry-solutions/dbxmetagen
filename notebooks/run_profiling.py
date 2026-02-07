@@ -22,7 +22,10 @@ print(f"Max Tables: {max_tables}")
 
 # COMMAND ----------
 
-from src.dbxmetagen.profiling import run_profiling
+import sys
+sys.path.append("../")  # For DAB deployment; pip-installed package works without this
+
+from dbxmetagen.profiling import run_profiling
 
 result = run_profiling(
     spark=spark,

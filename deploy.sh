@@ -192,6 +192,11 @@ EOF
         echo "permission_users: \"$permission_users\"" >> app/env_overrides.yml
     fi
     
+    # Add warehouse_id if set
+    if [ -n "$warehouse_id" ]; then
+        echo "warehouse_id: \"$warehouse_id\"" >> app/env_overrides.yml
+    fi
+    
     echo "env_overrides.yml created"
 }
 
@@ -267,6 +272,14 @@ EOF
     default: "$permission_users"
 EOF
         echo "Setting permission_users: $permission_users"
+    fi
+    
+    if [ -n "$warehouse_id" ]; then
+        cat >> variables_override.yml << EOF
+  warehouse_id:
+    default: "$warehouse_id"
+EOF
+        echo "Setting warehouse_id: $warehouse_id"
     fi
     
     echo "Updated variables.yml"

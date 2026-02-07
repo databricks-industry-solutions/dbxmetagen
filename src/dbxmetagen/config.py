@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime
 import yaml
-from src.dbxmetagen.user_utils import sanitize_user_identifier, get_current_user
+from dbxmetagen.user_utils import sanitize_user_identifier, get_current_user
 
 
 def _parse_bool(value):
@@ -98,6 +98,14 @@ class MetadataConfig:
             "claim_timeout_minutes",
             "cleanup_failed_tables",
             "node_type",
+            "federation_mode",
+            "generate_profiling_data",
+            "embedding_model",
+            "ontology_config_path",
+            "similarity_threshold",
+            "profiling_max_tables",
+            "freshness_threshold_days",
+            "warehouse_id",
         ],
         "yaml_advanced_file_path": "../variables.advanced.yml",
         "yaml_advanced_variable_names": [
@@ -206,6 +214,20 @@ class MetadataConfig:
         self.claim_timeout_minutes = int(
             getattr(self, "claim_timeout_minutes", 60)
         )
+
+        # Federation mode: force apply_ddl=false when reading from federated catalogs
+        self.federation_mode = _parse_bool(
+            getattr(self, "federation_mode", False)
+        )
+        if self.federation_mode:
+            self.apply_ddl = False
+            self.add_metadata = _parse_bool(getattr(self, "add_metadata", True))
+            # DESCRIBE EXTENDED won't work reliably on federated tables
+            if self.add_metadata:
+                print(
+                    "[federation_mode] Warning: add_metadata=true may produce limited "
+                    "results against federated tables (DESCRIBE EXTENDED may fail)."
+                )
 
         # Fallback for run_id if not provided via kwargs/YAML
         if not self.run_id:

@@ -14,7 +14,7 @@ import sys
 
 sys.path.append("../../")
 
-from src.dbxmetagen.config import MetadataConfig, _parse_bool
+from dbxmetagen.config import MetadataConfig, _parse_bool
 
 # Setup widgets
 dbutils.widgets.text("test_catalog", "dev_integration_tests", "Test Catalog")

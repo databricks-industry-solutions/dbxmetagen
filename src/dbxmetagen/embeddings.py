@@ -255,7 +255,7 @@ class EmbeddingGenerator:
         logger.info(f"Generating embeddings for {total_to_embed} nodes")
         
         if total_to_embed == 0:
-            return {"nodes_embedded": 0, "similar_pairs": 0}
+            return {"nodes_embedded": 0, "total_candidates": 0}
         
         # Generate embeddings in batches
         embeddings_df = self.generate_embeddings_batch(nodes_to_embed)

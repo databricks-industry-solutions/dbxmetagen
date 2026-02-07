@@ -2,12 +2,17 @@
 # MAGIC %md
 # MAGIC # Build Knowledge Graph
 # MAGIC 
-# MAGIC Transforms the `table_knowledge_base` into GraphFrames-compatible node and edge tables
-# MAGIC for relationship analysis between tables.
+# MAGIC Transforms knowledge bases into GraphFrames-compatible node and edge tables
+# MAGIC for relationship analysis between tables, columns, and schemas.
 # MAGIC
 # MAGIC ## Requirements
 # MAGIC - **ML Runtime Required**: GraphFrames requires JVM dependencies not available on serverless
-# MAGIC - Depends on `table_knowledge_base` being populated first
+# MAGIC - Depends on `table_knowledge_base`, `column_knowledge_base`, and `schema_knowledge_base`
+# MAGIC
+# MAGIC ## Node Types Created
+# MAGIC - `table`: From table_knowledge_base
+# MAGIC - `column`: From column_knowledge_base
+# MAGIC - `schema`: From schema_knowledge_base
 # MAGIC
 # MAGIC ## Relationships Created
 # MAGIC - `same_domain`: Tables in the same business domain
@@ -15,6 +20,9 @@
 # MAGIC - `same_catalog`: Tables in the same Unity Catalog catalog
 # MAGIC - `same_schema`: Tables in the same schema
 # MAGIC - `same_security_level`: Tables with matching PII/PHI/PUBLIC classification
+# MAGIC - `contains`: Hierarchical (schema->table, table->column)
+# MAGIC - `derives_from`: Lineage relationships
+# MAGIC - `same_classification`: Columns with matching PII classification
 
 # COMMAND ----------
 # MAGIC %md
@@ -41,19 +49,42 @@ print(f"Building knowledge graph in {catalog_name}.{schema_name}")
 
 # COMMAND ----------
 # MAGIC %md
-# MAGIC ## Verify Knowledge Base Exists
+# MAGIC ## Verify Knowledge Bases Exist
 
 # COMMAND ----------
 
-kb_count = spark.sql(f"""
+# Check table knowledge base
+table_kb_count = spark.sql(f"""
     SELECT COUNT(*) as cnt 
     FROM {catalog_name}.{schema_name}.table_knowledge_base
 """).collect()[0]["cnt"]
 
-if kb_count == 0:
+if table_kb_count == 0:
     raise ValueError("table_knowledge_base is empty. Run build_knowledge_base first.")
 
-print(f"Found {kb_count} tables in knowledge base")
+print(f"Found {table_kb_count} tables in table_knowledge_base")
+
+# Check column knowledge base (optional but recommended)
+try:
+    column_kb_count = spark.sql(f"""
+        SELECT COUNT(*) as cnt 
+        FROM {catalog_name}.{schema_name}.column_knowledge_base
+    """).collect()[0]["cnt"]
+    print(f"Found {column_kb_count} columns in column_knowledge_base")
+except:
+    column_kb_count = 0
+    print("column_knowledge_base not found - column nodes will be skipped")
+
+# Check schema knowledge base (optional but recommended)
+try:
+    schema_kb_count = spark.sql(f"""
+        SELECT COUNT(*) as cnt 
+        FROM {catalog_name}.{schema_name}.schema_knowledge_base
+    """).collect()[0]["cnt"]
+    print(f"Found {schema_kb_count} schemas in schema_knowledge_base")
+except:
+    schema_kb_count = 0
+    print("schema_knowledge_base not found - schema nodes will be skipped")
 
 # COMMAND ----------
 # MAGIC %md
@@ -62,19 +93,21 @@ print(f"Found {kb_count} tables in knowledge base")
 # COMMAND ----------
 
 import sys
-sys.path.append("../")
+sys.path.append("../")  # For DAB deployment; pip-installed package works without this
 
-from src.dbxmetagen.knowledge_graph import (
-    KnowledgeGraphConfig,
-    KnowledgeGraphBuilder,
-    build_knowledge_graph
+from dbxmetagen.knowledge_graph import (
+    ExtendedKnowledgeGraphConfig,
+    ExtendedKnowledgeGraphBuilder,
+    build_extended_knowledge_graph
 )
 
-# Execute the graph building pipeline
-result = build_knowledge_graph(
+# Execute the extended graph building pipeline (includes table, column, and schema nodes)
+result = build_extended_knowledge_graph(
     spark=spark,
     catalog_name=catalog_name,
-    schema_name=schema_name
+    schema_name=schema_name,
+    include_columns=(column_kb_count > 0),
+    include_schemas=(schema_kb_count > 0)
 )
 
 print(f"Knowledge graph build complete")
@@ -91,18 +124,34 @@ print(f"Total edges: {result['total_edges']}")
 
 from pyspark.sql import functions as F
 
-# Node statistics
-print("=== Node Statistics ===")
+# Node statistics by type
+print("=== Node Statistics by Type ===")
+node_type_stats = spark.sql(f"""
+    SELECT 
+        COALESCE(node_type, 'unknown') as node_type,
+        COUNT(*) as node_count,
+        SUM(CASE WHEN security_level = 'PHI' THEN 1 ELSE 0 END) as phi_count,
+        SUM(CASE WHEN security_level = 'PII' THEN 1 ELSE 0 END) as pii_count,
+        SUM(CASE WHEN security_level = 'PUBLIC' THEN 1 ELSE 0 END) as public_count
+    FROM {catalog_name}.{schema_name}.graph_nodes
+    GROUP BY node_type
+    ORDER BY node_count DESC
+""")
+node_type_stats.display()
+
+# COMMAND ----------
+
+# Overall node statistics
+print("=== Overall Node Statistics ===")
 node_stats = spark.sql(f"""
     SELECT 
         COUNT(*) as total_nodes,
         COUNT(DISTINCT catalog) as unique_catalogs,
         COUNT(DISTINCT schema) as unique_schemas,
         COUNT(DISTINCT domain) as unique_domains,
-        COUNT(DISTINCT subdomain) as unique_subdomains,
-        SUM(CASE WHEN security_level = 'PHI' THEN 1 ELSE 0 END) as phi_tables,
-        SUM(CASE WHEN security_level = 'PII' THEN 1 ELSE 0 END) as pii_tables,
-        SUM(CASE WHEN security_level = 'PUBLIC' THEN 1 ELSE 0 END) as public_tables
+        SUM(CASE WHEN node_type = 'table' THEN 1 ELSE 0 END) as table_nodes,
+        SUM(CASE WHEN node_type = 'column' THEN 1 ELSE 0 END) as column_nodes,
+        SUM(CASE WHEN node_type = 'schema' THEN 1 ELSE 0 END) as schema_nodes
     FROM {catalog_name}.{schema_name}.graph_nodes
 """)
 node_stats.display()
@@ -120,6 +169,24 @@ edge_stats = spark.sql(f"""
     ORDER BY edge_count DESC
 """)
 edge_stats.display()
+
+# COMMAND ----------
+
+# Containment hierarchy stats
+print("=== Containment Hierarchy ===")
+containment_stats = spark.sql(f"""
+    SELECT 
+        n1.node_type as parent_type,
+        n2.node_type as child_type,
+        COUNT(*) as edge_count
+    FROM {catalog_name}.{schema_name}.graph_edges e
+    JOIN {catalog_name}.{schema_name}.graph_nodes n1 ON e.src = n1.id
+    JOIN {catalog_name}.{schema_name}.graph_nodes n2 ON e.dst = n2.id
+    WHERE e.relationship = 'contains'
+    GROUP BY n1.node_type, n2.node_type
+    ORDER BY edge_count DESC
+""")
+containment_stats.display()
 
 # COMMAND ----------
 # MAGIC %md
@@ -158,15 +225,15 @@ same_domain.limit(10).display()
 
 # COMMAND ----------
 
-# PHI tables connected to other PHI tables
+# PHI nodes connected to other PHI nodes
 phi_connections = g.find("(a)-[e]->(b)").filter(
     (F.col("a.security_level") == "PHI") & 
     (F.col("b.security_level") == "PHI") &
-    (F.col("e.relationship") == "same_security_level")
+    (F.col("e.relationship").isin("same_security_level", "same_classification"))
 )
 
 print(f"Found {phi_connections.count()} PHI-to-PHI connections")
-phi_connections.select("a.table_name", "b.table_name", "a.domain").limit(10).display()
+phi_connections.select("a.id", "a.node_type", "b.id", "b.node_type", "e.relationship").limit(10).display()
 
 # COMMAND ----------
 # MAGIC %md
@@ -233,15 +300,15 @@ cluster_sizes.limit(10).display()
 
 # COMMAND ----------
 
-# Run PageRank to find most "important" tables
+# Run PageRank to find most "important" nodes
 pagerank = g.pageRank(resetProbability=0.15, maxIter=10)
 
-top_tables = pagerank.vertices.select(
-    "table_name", "domain", "security_level", "pagerank"
+top_nodes = pagerank.vertices.select(
+    "id", "node_type", "domain", "security_level", "pagerank"
 ).orderBy("pagerank", ascending=False)
 
-print("Top tables by PageRank:")
-top_tables.limit(20).display()
+print("Top nodes by PageRank:")
+top_nodes.limit(20).display()
 
 # COMMAND ----------
 # MAGIC %md

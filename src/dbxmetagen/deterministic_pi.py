@@ -11,8 +11,8 @@ from presidio_analyzer import (
 import spacy
 from datetime import datetime
 
-from src.dbxmetagen.config import MetadataConfig
-from src.dbxmetagen.user_utils import sanitize_user_identifier
+from dbxmetagen.config import MetadataConfig
+from dbxmetagen.user_utils import sanitize_user_identifier
 
 
 def luhn_checksum(card_number):

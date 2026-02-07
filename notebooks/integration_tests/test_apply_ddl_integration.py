@@ -17,8 +17,8 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
 
 from pyspark.sql import SparkSession
-from src.dbxmetagen.config import MetadataConfig
-from src.dbxmetagen.processing import generate_metadata
+from dbxmetagen.config import MetadataConfig
+from dbxmetagen.processing import generate_metadata
 
 # Get Spark session
 spark = SparkSession.builder.getOrCreate()

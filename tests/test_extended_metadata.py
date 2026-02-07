@@ -4,7 +4,7 @@ import pytest
 from unittest.mock import MagicMock, patch
 from pyspark.sql import SparkSession
 
-from src.dbxmetagen.extended_metadata import (
+from dbxmetagen.extended_metadata import (
     ExtendedMetadataConfig,
     ExtendedMetadataBuilder,
     extract_extended_metadata

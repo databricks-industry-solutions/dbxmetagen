@@ -14,7 +14,7 @@ from pyspark.sql import SparkSession
 from pyspark.sql.types import StructType, StructField, StringType, IntegerType
 from datetime import datetime
 import json
-from src.dbxmetagen.databricks_utils import setup_databricks_environment
+from dbxmetagen.databricks_utils import setup_databricks_environment
 
 # Setup Databricks authentication for all integration tests
 # This sets DATABRICKS_TOKEN and DATABRICKS_HOST environment variables

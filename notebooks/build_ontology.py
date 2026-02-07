@@ -20,7 +20,10 @@ print(f"Config: {config_path}")
 
 # COMMAND ----------
 
-from src.dbxmetagen.ontology import build_ontology
+import sys
+sys.path.append("../")  # For DAB deployment; pip-installed package works without this
+
+from dbxmetagen.ontology import build_ontology
 
 result = build_ontology(
     spark=spark,
@@ -33,6 +36,9 @@ print(f"Ontology build complete:")
 print(f"  Entities discovered: {result['entities_discovered']}")
 print(f"  Entity types: {result['entity_types']}")
 print(f"  Graph edges added: {result['edges_added']}")
+print()
+print("Note: ontology_metrics table is created but intentionally empty.")
+print("It is a stub for future Unity Catalog metric views integration.")
 
 # COMMAND ----------
 

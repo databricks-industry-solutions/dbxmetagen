@@ -4,6 +4,7 @@ bundle:
 
 include:
   - resources/jobs/*.yml
+  - resources/dashboards.yml
   - benchmarks/resources/jobs/benchmarks/*.yml
   - variables.yml
   - variables.advanced.yml

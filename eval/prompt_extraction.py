@@ -25,8 +25,8 @@ import os
 # Add parent directory to path to import dbxmetagen
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from src.dbxmetagen.prompts import CommentPrompt, PIPrompt
-from src.dbxmetagen.config import MetadataConfig
+from dbxmetagen.prompts import CommentPrompt, PIPrompt
+from dbxmetagen.config import MetadataConfig
 
 # Enable MLflow autologging for OpenAI
 mlflow.openai.autolog()

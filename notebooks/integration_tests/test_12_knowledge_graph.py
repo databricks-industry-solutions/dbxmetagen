@@ -124,7 +124,7 @@ print(f"[SETUP] Inserted {len(test_kb_data)} test records")
 
 # COMMAND ----------
 
-from src.dbxmetagen.knowledge_graph import (
+from dbxmetagen.knowledge_graph import (
     KnowledgeGraphConfig,
     KnowledgeGraphBuilder,
     build_knowledge_graph

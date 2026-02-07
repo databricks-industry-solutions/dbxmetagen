@@ -1,0 +1,19 @@
+command:
+  - uvicorn
+  - api_server:app
+  - --host
+  - 0.0.0.0
+  - --port
+  - "8000"
+
+env:
+  - name: CATALOG_NAME
+    value: ${CATALOG_NAME}
+  - name: SCHEMA_NAME
+    value: ${SCHEMA_NAME}
+  - name: WAREHOUSE_ID
+    value: ${WAREHOUSE_ID}
+  - name: LAKEBASE_GRAPHQL_URL
+    value: ${LAKEBASE_GRAPHQL_URL:-}
+  - name: GRAPHRAG_MODEL
+    value: ${GRAPHRAG_MODEL:-databricks-claude-sonnet-4-5}

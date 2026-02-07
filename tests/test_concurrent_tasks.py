@@ -9,7 +9,7 @@ import json
 # Add src to path for imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from src.dbxmetagen.config import MetadataConfig
+from dbxmetagen.config import MetadataConfig
 
 
 class TestRunIdConfig:
@@ -50,7 +50,7 @@ class TestGetTaskId:
 
     def setup_method(self):
         """Import the function under test."""
-        from src.dbxmetagen.databricks_utils import get_task_id
+        from dbxmetagen.databricks_utils import get_task_id
         self.get_task_id = get_task_id
 
     def test_get_task_id_from_context_taskRunId(self):
@@ -107,7 +107,7 @@ class TestGetControlTable:
 
     def setup_method(self):
         """Import the function under test."""
-        from src.dbxmetagen.processing import get_control_table
+        from dbxmetagen.processing import get_control_table
         self.get_control_table = get_control_table
 
     @patch("src.dbxmetagen.processing.get_current_user")
@@ -171,7 +171,7 @@ class TestClaimTable:
 
     def setup_method(self):
         """Import the function under test."""
-        from src.dbxmetagen.processing import claim_table
+        from dbxmetagen.processing import claim_table
         self.claim_table = claim_table
 
     @patch("src.dbxmetagen.processing.SparkSession")
@@ -234,7 +234,7 @@ class TestWidgetExtraction:
 
     def setup_method(self):
         """Import functions under test."""
-        from src.dbxmetagen.databricks_utils import get_widgets, setup_widgets
+        from dbxmetagen.databricks_utils import get_widgets, setup_widgets
         self.get_widgets = get_widgets
         self.setup_widgets = setup_widgets
 
@@ -347,7 +347,7 @@ class TestMarkTableStatus:
 
     def setup_method(self):
         """Import the functions under test."""
-        from src.dbxmetagen.processing import mark_table_completed, mark_table_failed
+        from dbxmetagen.processing import mark_table_completed, mark_table_failed
         self.mark_table_completed = mark_table_completed
         self.mark_table_failed = mark_table_failed
 
@@ -419,7 +419,7 @@ class TestClaimTableWithStatus:
 
     def setup_method(self):
         """Import the function under test."""
-        from src.dbxmetagen.processing import claim_table
+        from dbxmetagen.processing import claim_table
         self.claim_table = claim_table
 
     @patch("src.dbxmetagen.processing.SparkSession")

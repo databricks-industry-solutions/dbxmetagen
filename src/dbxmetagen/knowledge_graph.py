@@ -92,7 +92,7 @@ class KnowledgeGraphBuilder:
         self.config = config
     
     def create_nodes_table(self) -> None:
-        """Create the nodes table if it doesn't exist."""
+        """Create the nodes table if it doesn't exist, and add new columns if missing."""
         # Note: `schema` is a reserved word in SQL, must be escaped with backticks
         ddl = f"""
         CREATE TABLE IF NOT EXISTS {self.config.fully_qualified_nodes} (
@@ -107,7 +107,7 @@ class KnowledgeGraphBuilder:
             has_phi BOOLEAN,
             security_level STRING,
             comment STRING,
-            node_type STRING DEFAULT 'table',
+            node_type STRING,
             parent_id STRING,
             data_type STRING,
             quality_score DOUBLE,
@@ -118,6 +118,26 @@ class KnowledgeGraphBuilder:
         COMMENT 'GraphFrames nodes - tables, columns, and schemas from knowledge base'
         """
         self.spark.sql(ddl)
+        
+        # Add new columns to existing tables (migration for tables created before these columns existed)
+        new_columns = [
+            ("node_type", "STRING"),
+            ("parent_id", "STRING"),
+            ("data_type", "STRING"),
+            ("quality_score", "DOUBLE"),
+            ("embedding", "ARRAY<FLOAT>")
+        ]
+        for col_name, col_type in new_columns:
+            try:
+                self.spark.sql(f"ALTER TABLE {self.config.fully_qualified_nodes} ADD COLUMN {col_name} {col_type}")
+                logger.info(f"Added column {col_name} to {self.config.fully_qualified_nodes}")
+            except Exception as e:
+                # Column already exists - this is expected for new tables or already-migrated tables
+                if "already exists" in str(e).lower() or "FIELDS_ALREADY_EXISTS" in str(e):
+                    pass
+                else:
+                    logger.debug(f"Could not add column {col_name}: {e}")
+        
         logger.info(f"Nodes table {self.config.fully_qualified_nodes} ready")
     
     def create_edges_table(self) -> None:
@@ -700,6 +720,48 @@ class ExtendedKnowledgeGraphBuilder(KnowledgeGraphBuilder):
             return self.spark.createDataFrame([], 
                 "src STRING, dst STRING, relationship STRING, weight DOUBLE, created_at TIMESTAMP, updated_at TIMESTAMP")
     
+    def build_column_classification_edges(self, nodes_df: DataFrame) -> DataFrame:
+        """Build 'same_classification' edges between columns with matching PII classification."""
+        try:
+            # Filter to column nodes that have a security_level (PII/PHI)
+            column_nodes = nodes_df.filter(
+                (F.col("node_type") == "column") & 
+                (F.col("security_level").isin("PII", "PHI"))
+            )
+            
+            if column_nodes.count() == 0:
+                logger.info("No columns with PII/PHI classification found")
+                return self.spark.createDataFrame([], 
+                    "src STRING, dst STRING, relationship STRING, weight DOUBLE, created_at TIMESTAMP, updated_at TIMESTAMP")
+            
+            # Self-join to find column pairs with same security level
+            df_a = column_nodes.select(
+                F.col("id").alias("src"),
+                F.col("security_level").alias("level_a")
+            )
+            df_b = column_nodes.select(
+                F.col("id").alias("dst"),
+                F.col("security_level").alias("level_b")
+            )
+            
+            edges = (
+                df_a
+                .join(df_b, df_a.level_a == df_b.level_b)
+                .filter(F.col("src") < F.col("dst"))  # Avoid duplicates and self-loops
+                .select("src", "dst")
+                .withColumn("relationship", F.lit("same_classification"))
+                .withColumn("weight", F.lit(1.0))
+                .withColumn("created_at", F.current_timestamp())
+                .withColumn("updated_at", F.current_timestamp())
+            )
+            
+            logger.info(f"Built {edges.count()} same_classification edges for columns")
+            return edges
+        except Exception as e:
+            logger.warning(f"Could not build column classification edges: {e}")
+            return self.spark.createDataFrame([], 
+                "src STRING, dst STRING, relationship STRING, weight DOUBLE, created_at TIMESTAMP, updated_at TIMESTAMP")
+    
     def build_all_extended_edges(self, all_nodes_df: DataFrame) -> DataFrame:
         """Build all edges including extended relationship types."""
         all_edges = []
@@ -712,6 +774,11 @@ class ExtendedKnowledgeGraphBuilder(KnowledgeGraphBuilder):
         # Containment edges
         containment_edges = self.build_containment_edges(all_nodes_df)
         all_edges.append(containment_edges)
+        
+        # Column classification edges (same PII/PHI type)
+        classification_edges = self.build_column_classification_edges(all_nodes_df)
+        if classification_edges.count() > 0:
+            all_edges.append(classification_edges)
         
         # Lineage edges
         lineage_edges = self.build_lineage_edges()

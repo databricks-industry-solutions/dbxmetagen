@@ -14,7 +14,7 @@ import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from src.dbxmetagen.config import MetadataConfig, _parse_bool
+from dbxmetagen.config import MetadataConfig, _parse_bool
 
 
 class TestParseBoolForApplyDDL:

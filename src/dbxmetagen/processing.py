@@ -57,12 +57,12 @@ except ImportError:
     TokenUsageStats = None
     ChatResponse = None
 from grpc._channel import _InactiveRpcError, _MultiThreadedRendezvous
-from src.dbxmetagen.config import MetadataConfig
-from src.dbxmetagen.sampling import determine_sampling_ratio
-from src.dbxmetagen.prompts import Prompt, PIPrompt, CommentPrompt, PromptFactory
-from src.dbxmetagen.error_handling import exponential_backoff, validate_csv
-from src.dbxmetagen.comment_summarizer import TableCommentSummarizer
-from src.dbxmetagen.metadata_generator import (
+from dbxmetagen.config import MetadataConfig
+from dbxmetagen.sampling import determine_sampling_ratio
+from dbxmetagen.prompts import Prompt, PIPrompt, CommentPrompt, PromptFactory
+from dbxmetagen.error_handling import exponential_backoff, validate_csv
+from dbxmetagen.comment_summarizer import TableCommentSummarizer
+from dbxmetagen.metadata_generator import (
     Response,
     PIResponse,
     CommentResponse,
@@ -72,14 +72,14 @@ from src.dbxmetagen.metadata_generator import (
     MetadataGenerator,
     CommentGenerator,
 )
-from src.dbxmetagen.overrides import (
+from dbxmetagen.overrides import (
     override_metadata_from_csv,
     apply_overrides_with_joins,
     build_condition,
     get_join_conditions,
 )
-from src.dbxmetagen.user_utils import sanitize_user_identifier, get_current_user
-from src.dbxmetagen.domain_classifier import load_domain_config, classify_table_domain
+from dbxmetagen.user_utils import sanitize_user_identifier, get_current_user
+from dbxmetagen.domain_classifier import load_domain_config, classify_table_domain
 
 logging.basicConfig(
     level=logging.WARNING,
@@ -213,7 +213,13 @@ def chunk_df(df: DataFrame, columns_per_call: int = 5) -> List[DataFrame]:
 
 
 def get_extended_metadata_for_column(config, table_name, column_name):
-    """Get extended metadata for a column."""
+    """Get extended metadata for a column.
+
+    Returns None when federation_mode is enabled since DESCRIBE EXTENDED
+    is not supported on federated tables.
+    """
+    if getattr(config, "federation_mode", False):
+        return None
     spark = SparkSession.builder.getOrCreate()
     query = f"""DESCRIBE EXTENDED {config.catalog_name}.{config.schema_name}.{table_name} `{column_name}`;"""
     return spark.sql(query)

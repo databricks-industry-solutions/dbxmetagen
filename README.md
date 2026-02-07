@@ -2,103 +2,70 @@
 
 <img src="images/DBXMetagen_arch_hl.png" alt="High-level DBXMetagen Architecture" width="800" top-margin="50">
 
-**dbxmetagen** is a utility for generating high-quality metadata for Unity Catalog, and includes the ability to identify and classify data and metadata in various ways to assist enrichment of Unity Catalog, and quickly building up data catalogs for governance purposes.
+**dbxmetagen** is an AI-powered toolkit for generating, managing, and analyzing metadata across Unity Catalog. It provides:
 
-Options:
-- descriptions for tables and columns in Databricks, enhancing enterprise search, governance, Databricks Genie performance, and any other tooling that benefit significantly from high quality metadata. 
-- identify and classify columns and tables into personal information (PI) into PII, PHI, and PCI.
-- predict domain + subdomain for tables
-
-The tool is highly configurable, supporting bulk operations, SDLC integration, and fine-grained control over privacy and output formats.
+- **Comment generation**: AI-generated descriptions for tables and columns
+- **PI classification**: Identify and tag PII, PHI, and PCI with Unity Catalog tags
+- **Domain classification**: Categorize tables into business domains and subdomains
+- **Data profiling**: Statistical profiling and quality scoring
+- **Knowledge graph**: Graph-based metadata analytics with embeddings, similarity, and clustering
+- **Ontology discovery**: Business entity extraction and validation
+- **Web dashboard**: FastAPI + React app for metadata review, profiling, and graph exploration
 
 ## Quickstart
 
 1. **Clone the repo** into a Git Folder in your Databricks workspace
    ```
-   Create Git Folder → Clone https://github.com/databricks-industry-solutions/dbxmetagen
+   Create Git Folder -> Clone https://github.com/databricks-industry-solutions/dbxmetagen
    ```
 
 2. **Open the notebook**: `notebooks/generate_metadata.py`
 
-3. **Run the first few cells to setup widgets, then fill in the widgets**:
+3. **Fill in the widgets**:
    - **catalog_name** (required): Your Unity Catalog name
-   - **table_names** (required): Comma-separated list (e.g., `catalog.schema.table1, catalog.schema.table2`). You can provide entire schemas as `catalog.schema.*`. Use test tables or a small schema for initial runs.
-   - **metadata_type**: Choose `comment`, `pi`, or `domain`
-   - Adjust other widgets as needed (all have sensible defaults)
+   - **table_names** (required): Comma-separated list (e.g., `catalog.schema.table1`). Use `catalog.schema.*` for all tables in a schema.
+   - **mode**: Choose `comment`, `pi`, or `domain`
 
-4. **Run the notebook** - metadata will be generated. If you change apply_ddl to true, then the DDL will be applied to your tables.
+4. **Run the notebook** -- metadata is generated and logged. Set `apply_ddl=true` to apply changes to Unity Catalog.
 
-That's it! No YAML files to edit, no deployment scripts to run.
+### pip install
 
-If you want to take the next step with this same quickstart approach:
-1. Update notebooks/table_names.csv instead of the table names widget.
-2. Explore the review functionality - sync_reviewed_ddl notebook.
-3. Review some of the advanced options in variables.yml
-4. Manually create a Databricks job and run notebooks/generate_metadata.py as a task.
-5. Move to full deployment using Databricks Asset Bundles - only necessary to use the app, otherwise everything can be done with a simple git clone into the workspace.
+dbxmetagen is pip-installable:
 
----
+```bash
+pip install dbxmetagen              # Core (no SpaCy/Presidio)
+pip install dbxmetagen[nlp]         # With SpaCy + Presidio for deterministic PI detection
+```
 
-### Full App Deployment (Recommended for Regular Use)
+### Full Deployment (DAB)
 
-For a web UI with job management, metadata review, and team collaboration:
+For the web dashboard, batch jobs, and full pipeline:
 
-1. **Prerequisites**:
-   - Databricks CLI installed and configured: `databricks configure --profile <your-profile>`
-   - You may need to use `databricks auth login --profile <your-profile>`
-   - Python 3.10+, Poetry (for building a wheel when using Databricks asset bundles)
-
-2. **Configure environment**:
+1. Install prerequisites: Databricks CLI, Python 3.10+, Poetry
+2. Configure:
    ```bash
-   cp example.env dev.env
-   # Edit dev.env with your workspace URL and permission groups/users
-   Update databricks.yml host for asset bundle deploy
+   cp example.env dev.env  # Edit with your workspace URL
    ```
-
-3. **Deploy**:
+3. Deploy:
    ```bash
    ./deploy.sh --profile <your-profile> --target <your-dab-target>
    ```
+4. Access the app at **Workspace -> Apps -> dbxmetagen-app**
 
-4. **Access**: Go to **Databricks Workspace → Apps → dbxmetagen-app**
-
-OR
-
-**Run through Automation**
-   ```bash
-   databricks bundle run metadata_generator_job -t <your-dab-target> -p <your-profile> --params table_names='<catalog.schema>.*',mode=domain
-   ```
-
-OR 
-
-**Notebook**: Go to **Databricks Workspace → generate_metadata notebook** 
-
----
-
-### What You Can Generate
-
-- **Comments**: AI-generated descriptions for tables and columns
-- **PI Classification**: Identify and tag PII, PHI, and PCI with Unity Catalog tags
-- **Domain Classification**: Automatically categorize tables into business domains and subdomains with Unity Catalog tags
+Or run jobs directly:
+```bash
+databricks bundle run metadata_generator_job -t <target> -p <profile> --params table_names='catalog.schema.*',mode=domain
+databricks bundle run metadata_parallel_modes_job -t <target> -p <profile> --params table_names='catalog.schema.*'
+```
 
 ## Disclaimer
 
-- AI-generated metadata must be human-reviewed for full compliance.
-- Generated comments may include data samples or metadata, depending on settings.
+- AI-generated metadata must be human-reviewed for compliance.
+- Generated comments may include data samples depending on settings.
 - Compliance (e.g., HIPAA) is the user's responsibility.
-- Unless configured otherwise, dbxmetagen inspects data and sends it to the specified model endpoint. There are a wide variety of options to control this behavior in detail.
+- Unless configured otherwise, dbxmetagen sends data to the specified model endpoint.
 
-## Solution Overview
-
-- **Configuration-driven:** Basic required settings can be managed via widgets and in the app config. Advanced settings are managed via `variables.yml`.
-- **AI-assisted:** Both comment generation and PI identification and classification use both AI-based and deterministic or data engineering approaches, combining multiple sophisticated approaches to get you quality metadata.
-- **Data Sampling:** Controls over sample size, inclusion of data, and metadata.
-- **Validation:** Uses `Pydantic` and structured outputs for schema enforcement.
-- **Logging:** Tracks processed tables and results.
-- **DDL Generation:** Produces `ALTER TABLE` statements for integration.
-- **Manual Overrides:** Supports CSV-based overrides for granular control.
-
-### Architecture Overview
+## Architecture
 
 ```mermaid
 flowchart TB
@@ -107,185 +74,210 @@ flowchart TB
         LOG[metadata_generation_log]
         LLM[LLM Responses]
     end
-    
+
     subgraph kb [Knowledge Base Layer]
         TKB[table_knowledge_base]
         CKB[column_knowledge_base]
         SKB[schema_knowledge_base]
         EXT[extended_metadata]
     end
-    
+
     subgraph profiling [Profiling Layer]
-        PAY[llm_payloads]
         PROF[profiling_snapshots]
+        CS[column_profiling_stats]
         DQ[data_quality_scores]
     end
-    
+
     subgraph graph [Graph Layer]
         GN[graph_nodes]
         GE[graph_edges]
-        EMB[node_embeddings]
+        NCA[node_cluster_assignments]
+        CM[clustering_metrics]
     end
-    
+
     subgraph ontology [Ontology Layer]
         ONT_CFG[ontology_config.yaml]
         ENT[ontology_entities]
-        MET[ontology_metrics]
+        MET[ontology_metrics stub]
     end
-    
+
+    subgraph app [Dashboard App]
+        API[FastAPI Backend]
+        UI[React Frontend]
+        AGT[LangGraph GraphRAG Agent]
+    end
+
     SYS --> EXT
     SYS --> PROF
     LOG --> TKB
     LOG --> CKB
     TKB --> SKB
-    LLM --> PAY
-    
+    LLM --> LOG
+
     TKB --> GN
     CKB --> GN
     SKB --> GN
     EXT --> GN
     PROF --> GN
     DQ --> GN
-    
-    GN --> EMB
-    EMB --> GE
-    
+
+    GN --> GE
+    GE --> NCA
+    NCA --> CM
+
     ONT_CFG --> ENT
     GN --> ENT
-    ENT --> MET
+
+    GN --> API
+    GE --> API
+    API --> AGT
+    API --> UI
 ```
 
-The architecture supports:
-- **Knowledge Base Layer**: Table, column, and schema-level metadata aggregation from LLM outputs
-- **Profiling Layer**: Statistical profiling, data quality scoring, and LLM payload logging
-- **Graph Layer**: GraphFrames-compatible nodes/edges with embeddings for similarity analysis
-- **Ontology Layer**: Business entity discovery and validation with AI-powered recommendations
+### Layers
 
-## User Guide
+| Layer | Tables | Purpose |
+|-------|--------|---------|
+| **Knowledge Base** | `table_knowledge_base`, `column_knowledge_base`, `schema_knowledge_base`, `extended_metadata` | Aggregated metadata from LLM outputs and system tables |
+| **Profiling** | `profiling_snapshots`, `column_profiling_stats`, `data_quality_scores` | Statistical profiling and quality scoring |
+| **Graph** | `graph_nodes`, `graph_edges`, `node_cluster_assignments`, `clustering_metrics` | Graph analytics with embeddings, similarity edges, and K-means clustering |
+| **Ontology** | `ontology_entities`, `ontology_metrics` (stub) | Business entity discovery and validation |
 
-### Entry points
-Both primary entry points for this application are Databricks notebooks.
+## Notebooks
 
-- **dbxmetagen/src/notebooks/generate_metadata** This is the primary entry point for the application, allowing both comment generation and PI identification and classification.
-- **dbxmetagen/src/notebooks/sync_reviewed_ddl** This utility allows re-integration of reviewed and edited run logs in tsv or excel format to be used to apply DDL to tables.
+| Notebook | Purpose |
+|----------|---------|
+| `generate_metadata.py` | Primary entry point: comment, PI, and domain generation |
+| `sync_reviewed_ddl.py` | Re-apply reviewed/edited metadata from TSV or Excel |
+| `build_knowledge_base.py` | Build table + column knowledge base tables |
+| `build_column_kb.py` | Build column-level knowledge base |
+| `build_schema_kb.py` | Build schema-level knowledge base |
+| `extract_extended_metadata.py` | Extract system metadata via DESCRIBE EXTENDED |
+| `run_profiling.py` | Profile tables and columns |
+| `compute_data_quality.py` | Compute data quality scores |
+| `build_knowledge_graph.py` | Build graph nodes and edges |
+| `generate_embeddings.py` | Generate node embeddings |
+| `build_similarity_edges.py` | Build similarity edges from embeddings |
+| `build_ontology.py` | Discover and store ontology entities |
+| `validate_ontology.py` | Validate ontology entities |
+| `cluster_analysis.py` | K-means clustering with multi-phase optimization |
 
-For detailed information on how different team members use dbxmetagen, see [docs/PERSONAS_AND_WORKFLOWS.md](docs/PERSONAS_AND_WORKFLOWS.md).
+## Configuration
 
-### Workflow Diagrams
+Most settings are in `variables.yml`. Key options:
 
-- **Simple Workflow:** Clone repo, configure widgets, update `notebooks/table_names.csv`, run notebook.
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `allow_data` | `true` | Set `false` to prevent data from being sent to LLMs |
+| `apply_ddl` | `false` | Apply generated metadata directly to Unity Catalog |
+| `model` | `databricks-claude-sonnet-4-5` | LLM endpoint for generation |
+| `mode` | `comment` | Generation mode: `comment`, `pi`, or `domain` |
+| `federation_mode` | `false` | Enable for federated catalog sources (Redshift, Snowflake) |
+| `include_deterministic_pi` | `false` | Enable SpaCy/Presidio for rule-based PI detection |
 
-- **Advanced Workflow:** Adjust PI definitions, acronyms, secondary options; use asset bundles or web terminal for deployment; leverage manual overrides.
+For full reference, see [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 
-### Additional Setup Details
-1. Clone the Repo into Databricks or locally
-1. If cloned into Repos in Databricks, one can run the notebook using an all-purpose cluster (tested on 14.3 ML LTS, 15.4 ML LTS, 16.4 ML) without further deployment, simply adjusting variables.yml and widgets in the notebook.
-1. If cloned locally, we recommend using Databricks asset bundle build to create and run a workflow.
-1. Either create a catalog or use an existing one. If using the app, app SPN will need permissions on the catalog.
-1. Same for schema and volume, defaults are in variables.yml.
-1. Whether using asset bundles, or the notebook run, adjust the host urls, catalog name, and if desired schema name in resources/variables/variables.yml.
-1. Review the settings in the config.py file in src/dbxmetagen to whatever settings you need. If you want to make changes to variables in your project, change them in the notebook widget.
-   1. Make sure to check the options for add_metadata and apply_ddl and set them correctly. Add metadata will run a describe extended on every column and use the metadata in table descriptions, though ANALYZE ... COLUMNS will need to have been run to get useful information from this.
-   1. You also can adjust sample_size, columns_per_call, and ACRO_CONTENT, as well as many other variables in variables.yml.
-   1. Point to a test table to start, though by default DDL will not be applied, instead it will only be generated and added to .sql files in the volume generated_metadata.
-   1. Settings in the notebook widgets will override settings in config.py, so make sure the widgets in the main notebook are updated appropriately.
-1. In notebooks/table_names.csv, keep the first row as _table_name_ and add the list of tables you want metadata to be generated for. Add them as <schema>.<table> if they are in the same catalog that you define your catalog in variables.yml file separately, or you can use a three-level namespace for these table names. You can also provide <catalog>.<schema>.* to run against all tables in a schema.
+## Federation Mode
 
-### Configurations
-Most configurations that users should change are in variables.yml. There are a variety of useful options, please read the descriptions, I will not rewrite them all here.
+When `federation_mode=true`, dbxmetagen adapts for federated catalogs in Unity Catalog:
 
-Key settings in `variables.yml`:
+| Feature | Status | Notes |
+|---------|--------|-------|
+| SELECT / spark.read.table | Works | Standard reads via federation |
+| DESCRIBE TABLE | Works | Basic column info available |
+| SHOW TABLES IN | Works | Schema listing via federation |
+| DESCRIBE DETAIL | Skipped | Delta-specific (sizeInBytes, numFiles) |
+| DESCRIBE EXTENDED | Skipped | May return limited metadata |
+| ALTER TABLE / COMMENT ON | Skipped | Cannot modify federated tables |
+| SET TAGS / UNSET TAGS | Skipped | Cannot tag federated tables |
+| AI_QUERY() | Works | Databricks SQL function |
+| Output tables (MERGE, saveAsTable) | Works | Output tables are Delta |
 
-**Privacy:**
-- `allow_data`: false = no data sent to LLMs (maximum privacy)
-- `sample_size`: Number of rows sampled (0 = no sampling)
-- `allow_data_in_comments`: Control data in generated comments
+Federation mode forces `apply_ddl=false` since DDL cannot be applied to federated source tables. All dbxmetagen output tables remain Delta.
 
-**Model:**
-- `model`: LLM endpoint (recommend newer versions of claude sonnet or GPT-OSS).
-- `columns_per_call`: Columns per LLM call (5-10 recommended)
-- `temperature`: Model creativity (0.1 for consistency)
+## Dashboard App
 
-**Workflow:**
-- `apply_ddl`: Apply changes directly to Unity Catalog (false = generate only)
-- `ddl_output_format`: Output format (excel, tsv, or sql)
+The app is in `apps/dbxmetagen-app/` and provides a FastAPI backend with a React frontend:
 
-**PI Detection:**
-- `include_deterministic_pi`: Use Presidio for rule-based detection
-- `disable_medical_information_value`: Treat all medical data as PHI
+**Tabs:**
+1. **Batch Jobs** -- Trigger and monitor metadata generation, parallel modes, and full analytics pipeline
+2. **Metadata Review** -- Browse generation log, knowledge base tables, filter by table name
+3. **Data Profiling** -- Profiling snapshots, column statistics, quality scores
+4. **Ontology** -- Entity type summary, discovered entities, validation status
+5. **Analytics & Graph** -- Clustering results, similarity edges, GraphRAG query interface
 
-For complete configuration reference, see [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
+**GraphRAG:** Natural-language queries against the knowledge graph using a LangGraph agent that iteratively traverses graph_nodes and graph_edges. Supports both Lakebase GraphQL (when available) and SQL fallback.
 
-## Current Status
-
-- Tested on DBR 17.4 LTS, 16.4 LTS, and 15.4 LTS, as well as the ML versions.
-- Serverless runtimes tested extensively but runtimes are less consistent.
-- Views only work on 16.4. Pre-16.4, alternative DDL is used that only works on tables.
-- Excel writes for metadata generator or sync_reviewed_ddl only work on ML runtimes. If you must use a standard runtime, leverage tsv.
-
-## Discussion Points & Recommendations
-
-- **Throttling:** Default endpoints may throttle during large or concurrent jobs.
-- **Sampling:** Balance sample size for accuracy and performance.
-- **Chunking:** Fewer columns per call yield richer comments but may increase cost/time.
-- **Security:** Default endpoints are not HIPAA-compliant; configure secure endpoints as needed.
-- **PI Mode:** Use more rows and smaller chunks for better PI detection.
+Deploy via DAB:
+```bash
+./deploy.sh --profile <profile> --target <target>
+```
 
 ## Domain Classification
 
-Automatically categorizes tables into business domains and subdomains by analyzing table data and schema metadata. Tags are applied to Unity Catalog for better data organization and discovery.
+Categorizes tables into business domains by analyzing table metadata. Configured via `configurations/domain_config.yaml`.
 
-**Configuration:** Edit `configurations/domain_config.yaml` to match your organization's business structure. Default domains include Finance, Clinical, CRM, HR, Operations, Marketing, Product, IT, and Legal.
+Default domains: Finance, Clinical, CRM, HR, Operations, Marketing, Product, IT, Legal. Customize by editing the YAML file.
 
-**Customization:**
-1. Copy and modify `domain_config.yaml`
-2. Add/remove domains and subdomains
-3. Update descriptions and keywords for your industry
-4. Test on sample tables and refine
+## Jobs
 
-Review domain assignments in the Streamlit app or exported run logs before applying to Unity Catalog.
+| Job Resource | Description |
+|-------------|-------------|
+| `metadata_generator_job` | Single-mode metadata generation |
+| `metadata_parallel_modes_job` | All 3 modes (comment, pi, domain) in parallel |
+| `full_analytics_pipeline` | Knowledge base -> profiling -> graph -> embeddings -> clustering |
+| `ontology_job` | Ontology discovery and validation |
+| `profiling_job` | Table profiling and quality scoring |
 
-## License
+## Testing
 
-This project is licensed under the Databricks DB License.
+```bash
+# Unit tests
+pytest -v
+
+# Integration tests (requires Databricks cluster)
+# Run notebooks in notebooks/integration_tests/ via DAB or cluster
+
+# Build and test wheel
+poetry build && pip install dist/*.whl
+python -c "from dbxmetagen.config import MetadataConfig; print('OK')"
+```
+
+## Current Status
+
+- Tested on DBR 17.4 LTS, 16.4 LTS, 15.4 LTS (and ML variants)
+- Serverless runtimes tested but less consistent
+- Views only work on 16.4+
+- Excel writes require ML runtimes; use TSV on standard runtimes
 
 ## Analysis of Packages Used
 
 | Package | License | Source |
 |---------|---------|--------|
-| mlflow >=2.22.1 | Apache 2.0 | https://github.com/mlflow/mlflow |
-| openai >=1.99.9 | Apache 2.0 | https://github.com/openai/openai-python |
-| cloudpickle 3.1.0 | BSD 3-Clause | https://github.com/cloudpipe/cloudpickle |
-| pydantic >=2.10.1 | MIT | https://github.com/pydantic/pydantic |
-| ydata-profiling 4.12.1 | MIT | https://github.com/ydataai/ydata-profiling |
-| databricks-langchain 0.7.1 | Apache 2.0 | https://github.com/databricks/databricks-ai-bridge |
-| databricks-sdk >=0.30.0 | Apache 2.0 | https://github.com/databricks/databricks-sdk-py |
-| openpyxl 3.1.5 | MIT | https://foss.heptapod.net/openpyxl/openpyxl |
-| spacy 3.8.7 | MIT | https://spacy.io/models/en#en_core_web_lg |
-| en_core_web_lg 3.8.0 | MIT | https://github.com/explosion/spacy-models |
-| presidio-analyzer 2.2.358 | MIT | https://github.com/microsoft/presidio |
-| presidio-anonymizer 2.2.358 | MIT | https://github.com/microsoft/presidio |
-| requests >=2.25.0 | Apache 2.0 | https://github.com/psf/requests |
-| numpy | BSD-3-Clause | https://github.com/numpy/numpy |
-| pandas |	BSD-3-Clause | https://github.com/pandas-dev/pandas |
-| pyspark |	Apache 2.0 | https://github.com/apache/spark |
-| cloudpickle==2.2.1 | BSD-3 | https://github.com/cloudpipe/cloudpickle |
-| streamlit | Apache 2.0 | https://github.com/streamlit |
-| databricks-sdk | Apache 2.0 | https://pypi.org/project/databricks-sdk/ |
-| databricks-sql-connector | Apache 2.0 | https://github.com/databricks/ |
-| pyyaml>=6.0 | MIT | https://pypi.org/project/PyYAML/ |
-| requests>=2.25.0 | Apache | https://pypi.org/project/requests/ |
-| plotly>=5.0.0 | MIT | https://pypi.org/project/plotly/ |
-| deprecated | MIT | https://pypi.org/project/Deprecated/ |
-| grpcio | Apache | https://pypi.org/project/grpcio/ |
+| mlflow | Apache 2.0 | https://github.com/mlflow/mlflow |
+| openai | Apache 2.0 | https://github.com/openai/openai-python |
+| cloudpickle | BSD 3-Clause | https://github.com/cloudpipe/cloudpickle |
+| pydantic | MIT | https://github.com/pydantic/pydantic |
+| ydata-profiling | MIT | https://github.com/ydataai/ydata-profiling |
+| databricks-langchain | Apache 2.0 | https://github.com/databricks/databricks-ai-bridge |
+| databricks-sdk | Apache 2.0 | https://github.com/databricks/databricks-sdk-py |
+| openpyxl | MIT | https://foss.heptapod.net/openpyxl/openpyxl |
+| spacy (optional) | MIT | https://spacy.io |
+| presidio-analyzer (optional) | MIT | https://github.com/microsoft/presidio |
+| fastapi | MIT | https://github.com/tiangolo/fastapi |
+| langgraph | MIT | https://github.com/langchain-ai/langgraph |
+| pyyaml | MIT | https://pypi.org/project/PyYAML/ |
+| requests | Apache 2.0 | https://github.com/psf/requests |
 
+All packages use permissive licenses (Apache 2.0, MIT, BSD 3-Clause).
 
-**All packages are open source with permissive licenses** (Apache 2.0, MIT, BSD 3-Clause) that allow commercial use, modification, and redistribution.
+## License
 
-**Other libraries used come from the Databricks runtime**
+This project is licensed under the Databricks DB License.
 
 ## Acknowledgements
-Thanks to James McCall, Diego Malaver, Aaaron Zavora, and Charles Linville for discussions around dbxmetagen.
+
+Thanks to James McCall, Diego Malaver, Aaron Zavora, and Charles Linville for discussions around dbxmetagen.
 
 For detailed configuration options, see [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 

@@ -1,0 +1,102 @@
+# Parallel Metadata Generation: Comment + PI + Domain
+#
+# Runs generate_metadata in all three modes (comment, pi, domain) in parallel
+# against the SAME set of tables. Defaults to apply_ddl=false so tables are
+# added to metadata_generation_log for downstream analysis only.
+
+resources:
+  jobs:
+    metadata_parallel_modes_job:
+      name: "${var.app_name}_parallel_modes_job"
+
+      email_notifications:
+        on_failure:
+          - ${var.current_user}
+
+      parameters:
+        - name: table_names
+          default: ${var.job_table_names}
+        - name: catalog_name
+          default: ${var.catalog_name}
+        - name: schema_name
+          default: ${var.schema_name}
+        - name: apply_ddl
+          default: "false"
+        - name: current_user
+          default: ${var.current_user}
+        - name: permission_groups
+          default: ${var.permission_groups}
+        - name: permission_users
+          default: ${var.permission_users}
+        - name: run_id
+          default: "{{job.run_id}}"
+        - name: include_previously_failed_tables
+          default: "false"
+
+      tasks:
+        # All three tasks run in parallel with no dependencies
+        - task_key: generate_comments
+          job_cluster_key: metadata_cluster
+          notebook_task:
+            notebook_path: ../../notebooks/generate_metadata.py
+            base_parameters:
+              mode: "comment"
+              table_names: "{{job.parameters.table_names}}"
+              catalog_name: "{{job.parameters.catalog_name}}"
+              schema_name: "{{job.parameters.schema_name}}"
+              apply_ddl: "{{job.parameters.apply_ddl}}"
+              current_user: "{{job.parameters.current_user}}"
+              permission_groups: "{{job.parameters.permission_groups}}"
+              permission_users: "{{job.parameters.permission_users}}"
+              run_id: "{{job.parameters.run_id}}"
+              cleanup_control_table: "false"
+              include_previously_failed_tables: "{{job.parameters.include_previously_failed_tables}}"
+          libraries:
+            - whl: ../../dist/*.whl
+
+        - task_key: generate_pi
+          job_cluster_key: metadata_cluster
+          notebook_task:
+            notebook_path: ../../notebooks/generate_metadata.py
+            base_parameters:
+              mode: "pi"
+              table_names: "{{job.parameters.table_names}}"
+              catalog_name: "{{job.parameters.catalog_name}}"
+              schema_name: "{{job.parameters.schema_name}}"
+              apply_ddl: "{{job.parameters.apply_ddl}}"
+              current_user: "{{job.parameters.current_user}}"
+              permission_groups: "{{job.parameters.permission_groups}}"
+              permission_users: "{{job.parameters.permission_users}}"
+              run_id: "{{job.parameters.run_id}}"
+              cleanup_control_table: "false"
+              include_previously_failed_tables: "{{job.parameters.include_previously_failed_tables}}"
+          libraries:
+            - whl: ../../dist/*.whl
+
+        - task_key: generate_domain
+          job_cluster_key: metadata_cluster
+          notebook_task:
+            notebook_path: ../../notebooks/generate_metadata.py
+            base_parameters:
+              mode: "domain"
+              table_names: "{{job.parameters.table_names}}"
+              catalog_name: "{{job.parameters.catalog_name}}"
+              schema_name: "{{job.parameters.schema_name}}"
+              apply_ddl: "{{job.parameters.apply_ddl}}"
+              current_user: "{{job.parameters.current_user}}"
+              permission_groups: "{{job.parameters.permission_groups}}"
+              permission_users: "{{job.parameters.permission_users}}"
+              run_id: "{{job.parameters.run_id}}"
+              cleanup_control_table: "false"
+              include_previously_failed_tables: "{{job.parameters.include_previously_failed_tables}}"
+          libraries:
+            - whl: ../../dist/*.whl
+
+      job_clusters:
+        - job_cluster_key: metadata_cluster
+          new_cluster:
+            spark_version: 17.3.x-cpu-ml-scala2.13
+            node_type_id: ${var.node_type}
+            autoscale:
+              min_workers: 1
+              max_workers: 4

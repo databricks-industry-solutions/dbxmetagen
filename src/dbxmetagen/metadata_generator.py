@@ -5,9 +5,9 @@ from pydantic import ValidationError
 from typing import Tuple, Dict, List, Any, Union, Optional
 from openai.types.chat.chat_completion import ChatCompletion
 from pydantic import BaseModel, ConfigDict, field_validator
-from src.dbxmetagen.config import MetadataConfig
-from src.dbxmetagen.error_handling import exponential_backoff
-from src.dbxmetagen.chat_client import ChatClientFactory
+from dbxmetagen.config import MetadataConfig
+from dbxmetagen.error_handling import exponential_backoff
+from dbxmetagen.chat_client import ChatClientFactory
 
 
 class Response(BaseModel):

@@ -8,7 +8,7 @@ from unittest.mock import Mock, MagicMock
 # Add src to path for imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from src.dbxmetagen.config import _parse_bool, MetadataConfig
+from dbxmetagen.config import _parse_bool, MetadataConfig
 
 
 class TestParseBool:

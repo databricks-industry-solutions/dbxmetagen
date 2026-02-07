@@ -195,6 +195,45 @@ resources:
           libraries:
             - whl: ../../dist/*.whl
 
+        # Profiling pipeline test - validates profiling_snapshots and column_profiling_stats
+        - task_key: test_13_profiling
+          depends_on:
+            - task_key: test_12_knowledge_graph
+          job_cluster_key: e2e_ml_cluster
+          notebook_task:
+            notebook_path: ../../notebooks/integration_tests/test_13_profiling.py
+            base_parameters:
+              catalog_name: "{{job.parameters.test_catalog}}"
+              test_schema: "{{job.parameters.test_schema}}"
+          libraries:
+            - whl: ../../dist/*.whl
+
+        # Ontology pipeline test - validates entity discovery and classification
+        - task_key: test_14_ontology
+          depends_on:
+            - task_key: test_13_profiling
+          job_cluster_key: e2e_ml_cluster
+          notebook_task:
+            notebook_path: ../../notebooks/integration_tests/test_14_ontology.py
+            base_parameters:
+              catalog_name: "{{job.parameters.test_catalog}}"
+              test_schema: "{{job.parameters.test_schema}}"
+          libraries:
+            - whl: ../../dist/*.whl
+
+        # Graph validation test - validates complete graph_nodes and graph_edges state
+        - task_key: test_15_graph_validation
+          depends_on:
+            - task_key: test_14_ontology
+          job_cluster_key: e2e_ml_cluster
+          notebook_task:
+            notebook_path: ../../notebooks/integration_tests/test_15_graph_validation.py
+            base_parameters:
+              catalog_name: "{{job.parameters.test_catalog}}"
+              test_schema: "{{job.parameters.test_schema}}"
+          libraries:
+            - whl: ../../dist/*.whl
+
         # E2E tests run in parallel (no dependencies) to test different cluster configurations
         - task_key: test_e2e_serverless
           job_cluster_key: e2e_serverless_cluster

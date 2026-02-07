@@ -17,7 +17,10 @@ print(f"Schema: {schema_name}")
 
 # COMMAND ----------
 
-from src.dbxmetagen.ontology_validator import validate_ontology
+import sys
+sys.path.append("../")  # For DAB deployment; pip-installed package works without this
+
+from dbxmetagen.ontology_validator import validate_ontology
 
 result = validate_ontology(
     spark=spark,

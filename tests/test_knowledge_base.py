@@ -15,7 +15,7 @@ from unittest.mock import MagicMock, patch
 # Add src to path for imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from src.dbxmetagen.knowledge_base import (
+from dbxmetagen.knowledge_base import (
     KnowledgeBaseConfig,
     parse_table_name_parts,
     classify_has_pii,

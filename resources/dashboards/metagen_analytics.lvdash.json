@@ -1,0 +1,338 @@
+{
+  "pages": [
+    {
+      "name": "overview",
+      "displayName": "Overview",
+      "layout": [
+        {
+          "widget": {
+            "name": "total_nodes",
+            "textbox_spec": "# {{graph_overview.data[0].total_nodes}}\nTotal Nodes"
+          },
+          "position": {"x": 0, "y": 0, "width": 2, "height": 2}
+        },
+        {
+          "widget": {
+            "name": "table_nodes",
+            "textbox_spec": "# {{graph_overview.data[0].table_nodes}}\nTable Nodes"
+          },
+          "position": {"x": 2, "y": 0, "width": 2, "height": 2}
+        },
+        {
+          "widget": {
+            "name": "nodes_with_embeddings",
+            "textbox_spec": "# {{graph_overview.data[0].nodes_with_embeddings}}\nWith Embeddings"
+          },
+          "position": {"x": 4, "y": 0, "width": 2, "height": 2}
+        },
+        {
+          "widget": {
+            "name": "edge_types",
+            "queries": [{"name": "main_query", "query": {"datasetName": "edge_types_data"}}],
+            "spec": {
+              "version": 3,
+              "widgetType": "pie",
+              "encodings": {
+                "slice": {"fieldName": "relationship", "displayName": "Relationship"},
+                "angle": {"fieldName": "edge_count", "displayName": "Count"}
+              }
+            }
+          },
+          "position": {"x": 0, "y": 2, "width": 3, "height": 4}
+        },
+        {
+          "widget": {
+            "name": "domain_distribution",
+            "queries": [{"name": "main_query", "query": {"datasetName": "domain_dist_data"}}],
+            "spec": {
+              "version": 3,
+              "widgetType": "pie",
+              "encodings": {
+                "slice": {"fieldName": "domain", "displayName": "Domain"},
+                "angle": {"fieldName": "table_count", "displayName": "Tables"}
+              }
+            }
+          },
+          "position": {"x": 3, "y": 2, "width": 3, "height": 4}
+        },
+        {
+          "widget": {
+            "name": "security_distribution",
+            "queries": [{"name": "main_query", "query": {"datasetName": "security_dist_data"}}],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {"fieldName": "security_level", "displayName": "Security Level"},
+                "y": {"fieldName": "table_count", "displayName": "Table Count"}
+              }
+            }
+          },
+          "position": {"x": 0, "y": 6, "width": 6, "height": 3}
+        }
+      ]
+    },
+    {
+      "name": "similarity",
+      "displayName": "Similarity Analysis",
+      "layout": [
+        {
+          "widget": {
+            "name": "top_similar_tables",
+            "queries": [{"name": "main_query", "query": {"datasetName": "top_similar_data"}}],
+            "spec": {
+              "version": 3,
+              "widgetType": "table",
+              "encodings": {
+                "columns": [
+                  {"fieldName": "table_a", "displayName": "Table A"},
+                  {"fieldName": "table_b", "displayName": "Table B"},
+                  {"fieldName": "similarity", "displayName": "Similarity"},
+                  {"fieldName": "domain_a", "displayName": "Domain A"},
+                  {"fieldName": "domain_b", "displayName": "Domain B"}
+                ]
+              }
+            }
+          },
+          "position": {"x": 0, "y": 0, "width": 6, "height": 5}
+        },
+        {
+          "widget": {
+            "name": "potential_duplicates",
+            "queries": [{"name": "main_query", "query": {"datasetName": "duplicates_data"}}],
+            "spec": {
+              "version": 3,
+              "widgetType": "table",
+              "encodings": {
+                "columns": [
+                  {"fieldName": "table_a", "displayName": "Table A"},
+                  {"fieldName": "table_b", "displayName": "Table B"},
+                  {"fieldName": "similarity", "displayName": "Similarity"},
+                  {"fieldName": "domain", "displayName": "Domain"}
+                ]
+              }
+            }
+          },
+          "position": {"x": 0, "y": 5, "width": 6, "height": 4}
+        },
+        {
+          "widget": {
+            "name": "cross_domain_similarity",
+            "queries": [{"name": "main_query", "query": {"datasetName": "cross_domain_data"}}],
+            "spec": {
+              "version": 3,
+              "widgetType": "table",
+              "encodings": {
+                "columns": [
+                  {"fieldName": "domain_a", "displayName": "Domain A"},
+                  {"fieldName": "domain_b", "displayName": "Domain B"},
+                  {"fieldName": "similar_pairs", "displayName": "Pairs"},
+                  {"fieldName": "avg_similarity", "displayName": "Avg Similarity"}
+                ]
+              }
+            }
+          },
+          "position": {"x": 0, "y": 9, "width": 6, "height": 4}
+        }
+      ]
+    },
+    {
+      "name": "quality",
+      "displayName": "Data Quality",
+      "layout": [
+        {
+          "widget": {
+            "name": "quality_distribution",
+            "queries": [{"name": "main_query", "query": {"datasetName": "quality_dist_data"}}],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {"fieldName": "quality_tier", "displayName": "Quality Tier"},
+                "y": {"fieldName": "table_count", "displayName": "Tables"}
+              }
+            }
+          },
+          "position": {"x": 0, "y": 0, "width": 3, "height": 4}
+        },
+        {
+          "widget": {
+            "name": "quality_dimensions",
+            "queries": [{"name": "main_query", "query": {"datasetName": "quality_dims_data"}}],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {"fieldName": "dimension", "displayName": "Dimension"},
+                "y": {"fieldName": "avg_score", "displayName": "Avg Score"}
+              }
+            }
+          },
+          "position": {"x": 3, "y": 0, "width": 3, "height": 4}
+        },
+        {
+          "widget": {
+            "name": "low_quality_tables",
+            "queries": [{"name": "main_query", "query": {"datasetName": "low_quality_data"}}],
+            "spec": {
+              "version": 3,
+              "widgetType": "table",
+              "encodings": {
+                "columns": [
+                  {"fieldName": "table_short_name", "displayName": "Table"},
+                  {"fieldName": "overall", "displayName": "Overall"},
+                  {"fieldName": "completeness", "displayName": "Complete"},
+                  {"fieldName": "freshness", "displayName": "Fresh"},
+                  {"fieldName": "issue_count", "displayName": "Issues"}
+                ]
+              }
+            }
+          },
+          "position": {"x": 0, "y": 4, "width": 6, "height": 5}
+        },
+        {
+          "widget": {
+            "name": "null_rate_distribution",
+            "queries": [{"name": "main_query", "query": {"datasetName": "null_rate_data"}}],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {"fieldName": "null_rate_bucket", "displayName": "Null Rate"},
+                "y": {"fieldName": "column_count", "displayName": "Columns"}
+              }
+            }
+          },
+          "position": {"x": 0, "y": 9, "width": 6, "height": 4}
+        }
+      ]
+    },
+    {
+      "name": "ontology",
+      "displayName": "Ontology & Profiling",
+      "layout": [
+        {
+          "widget": {
+            "name": "entity_types",
+            "queries": [{"name": "main_query", "query": {"datasetName": "entity_types_data"}}],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {"fieldName": "entity_type", "displayName": "Entity Type"},
+                "y": {"fieldName": "entity_count", "displayName": "Count"}
+              }
+            }
+          },
+          "position": {"x": 0, "y": 0, "width": 6, "height": 4}
+        },
+        {
+          "widget": {
+            "name": "pii_phi_coverage",
+            "queries": [{"name": "main_query", "query": {"datasetName": "pii_phi_data"}}],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {"fieldName": "category", "displayName": "Category"},
+                "y": {"fieldName": "yes_count", "displayName": "Has It"}
+              }
+            }
+          },
+          "position": {"x": 0, "y": 4, "width": 3, "height": 4}
+        },
+        {
+          "widget": {
+            "name": "profiling_summary",
+            "queries": [{"name": "main_query", "query": {"datasetName": "profiling_summary_data"}}],
+            "spec": {
+              "version": 3,
+              "widgetType": "table",
+              "encodings": {
+                "columns": [
+                  {"fieldName": "tables_profiled", "displayName": "Tables"},
+                  {"fieldName": "total_rows", "displayName": "Total Rows"},
+                  {"fieldName": "total_size_gb", "displayName": "Size (GB)"},
+                  {"fieldName": "last_profiled", "displayName": "Last Run"}
+                ]
+              }
+            }
+          },
+          "position": {"x": 3, "y": 4, "width": 3, "height": 4}
+        }
+      ]
+    }
+  ],
+  "datasets": [
+    {
+      "name": "graph_overview",
+      "displayName": "Graph Overview",
+      "query": "SELECT \n    COUNT(*) as total_nodes,\n    SUM(CASE WHEN node_type = 'table' THEN 1 ELSE 0 END) as table_nodes,\n    SUM(CASE WHEN node_type = 'column' THEN 1 ELSE 0 END) as column_nodes,\n    SUM(CASE WHEN embedding IS NOT NULL THEN 1 ELSE 0 END) as nodes_with_embeddings\nFROM {{catalog}}.{{schema}}.graph_nodes"
+    },
+    {
+      "name": "edge_types_data",
+      "displayName": "Edge Types",
+      "query": "SELECT \n    relationship,\n    COUNT(*) as edge_count\nFROM {{catalog}}.{{schema}}.graph_edges\nGROUP BY relationship\nORDER BY edge_count DESC"
+    },
+    {
+      "name": "top_similar_data",
+      "displayName": "Top Similar Tables",
+      "query": "SELECT \n    SPLIT_PART(e.src, '.', 3) as table_a,\n    SPLIT_PART(e.dst, '.', 3) as table_b,\n    ROUND(e.weight, 3) as similarity,\n    n1.domain as domain_a,\n    n2.domain as domain_b\nFROM {{catalog}}.{{schema}}.graph_edges e\nJOIN {{catalog}}.{{schema}}.graph_nodes n1 ON e.src = n1.id\nJOIN {{catalog}}.{{schema}}.graph_nodes n2 ON e.dst = n2.id\nWHERE e.relationship = 'similar_embedding'\n  AND n1.node_type = 'table'\nORDER BY e.weight DESC\nLIMIT 20"
+    },
+    {
+      "name": "quality_dist_data",
+      "displayName": "Quality Distribution",
+      "query": "SELECT \n    CASE \n        WHEN overall_score >= 90 THEN '1. Excellent (90+)'\n        WHEN overall_score >= 70 THEN '2. Good (70-89)'\n        WHEN overall_score >= 50 THEN '3. Fair (50-69)'\n        ELSE '4. Poor (<50)'\n    END as quality_tier,\n    COUNT(*) as table_count\nFROM {{catalog}}.{{schema}}.data_quality_scores\nGROUP BY 1\nORDER BY 1"
+    },
+    {
+      "name": "quality_dims_data",
+      "displayName": "Quality Dimensions",
+      "query": "SELECT \n    'Completeness' as dimension, ROUND(AVG(completeness_score), 1) as avg_score\nFROM {{catalog}}.{{schema}}.data_quality_scores\nUNION ALL\nSELECT 'Uniqueness', ROUND(AVG(uniqueness_score), 1)\nFROM {{catalog}}.{{schema}}.data_quality_scores\nUNION ALL\nSELECT 'Freshness', ROUND(AVG(freshness_score), 1)\nFROM {{catalog}}.{{schema}}.data_quality_scores\nUNION ALL\nSELECT 'Consistency', ROUND(AVG(consistency_score), 1)\nFROM {{catalog}}.{{schema}}.data_quality_scores"
+    },
+    {
+      "name": "domain_dist_data",
+      "displayName": "Domain Distribution",
+      "query": "SELECT \n    COALESCE(domain, 'Unclassified') as domain,\n    COUNT(*) as table_count\nFROM {{catalog}}.{{schema}}.graph_nodes\nWHERE node_type = 'table'\nGROUP BY 1\nORDER BY table_count DESC"
+    },
+    {
+      "name": "pii_phi_data",
+      "displayName": "PII PHI Coverage",
+      "query": "SELECT \n    'Has PII' as category, \n    SUM(CASE WHEN has_pii THEN 1 ELSE 0 END) as yes_count,\n    SUM(CASE WHEN NOT has_pii THEN 1 ELSE 0 END) as no_count\nFROM {{catalog}}.{{schema}}.graph_nodes\nWHERE node_type = 'table'\nUNION ALL\nSELECT 'Has PHI',\n    SUM(CASE WHEN has_phi THEN 1 ELSE 0 END),\n    SUM(CASE WHEN NOT has_phi THEN 1 ELSE 0 END)\nFROM {{catalog}}.{{schema}}.graph_nodes\nWHERE node_type = 'table'"
+    },
+    {
+      "name": "entity_types_data",
+      "displayName": "Entity Types",
+      "query": "SELECT \n    entity_type,\n    COUNT(*) as entity_count,\n    ROUND(AVG(confidence), 2) as avg_confidence\nFROM {{catalog}}.{{schema}}.ontology_entities\nGROUP BY entity_type\nORDER BY entity_count DESC"
+    },
+    {
+      "name": "low_quality_data",
+      "displayName": "Low Quality Tables",
+      "query": "SELECT \n    SPLIT_PART(table_name, '.', 3) as table_short_name,\n    ROUND(overall_score, 1) as overall,\n    ROUND(completeness_score, 1) as completeness,\n    ROUND(freshness_score, 1) as freshness,\n    SIZE(quality_issues) as issue_count\nFROM {{catalog}}.{{schema}}.data_quality_scores\nWHERE overall_score < 70\nORDER BY overall_score ASC\nLIMIT 15"
+    },
+    {
+      "name": "profiling_summary_data",
+      "displayName": "Profiling Summary",
+      "query": "SELECT \n    COUNT(DISTINCT table_name) as tables_profiled,\n    SUM(row_count) as total_rows,\n    ROUND(SUM(table_size_bytes) / (1024*1024*1024), 2) as total_size_gb,\n    MAX(snapshot_time) as last_profiled\nFROM {{catalog}}.{{schema}}.profiling_snapshots"
+    },
+    {
+      "name": "cross_domain_data",
+      "displayName": "Cross Domain Similarity",
+      "query": "SELECT \n    n1.domain as domain_a,\n    n2.domain as domain_b,\n    COUNT(*) as similar_pairs,\n    ROUND(AVG(e.weight), 3) as avg_similarity\nFROM {{catalog}}.{{schema}}.graph_edges e\nJOIN {{catalog}}.{{schema}}.graph_nodes n1 ON e.src = n1.id\nJOIN {{catalog}}.{{schema}}.graph_nodes n2 ON e.dst = n2.id\nWHERE e.relationship = 'similar_embedding'\n  AND n1.node_type = 'table'\n  AND n1.domain IS NOT NULL\n  AND n2.domain IS NOT NULL\n  AND n1.domain != n2.domain\nGROUP BY n1.domain, n2.domain\nHAVING COUNT(*) >= 1\nORDER BY similar_pairs DESC\nLIMIT 10"
+    },
+    {
+      "name": "duplicates_data",
+      "displayName": "Potential Duplicates",
+      "query": "SELECT \n    SPLIT_PART(e.src, '.', 3) as table_a,\n    SPLIT_PART(e.dst, '.', 3) as table_b,\n    ROUND(e.weight, 3) as similarity,\n    n1.domain as domain\nFROM {{catalog}}.{{schema}}.graph_edges e\nJOIN {{catalog}}.{{schema}}.graph_nodes n1 ON e.src = n1.id\nJOIN {{catalog}}.{{schema}}.graph_nodes n2 ON e.dst = n2.id\nWHERE e.relationship = 'similar_embedding'\n  AND e.weight >= 0.95\n  AND n1.node_type = 'table'\nORDER BY e.weight DESC"
+    },
+    {
+      "name": "null_rate_data",
+      "displayName": "Null Rate Distribution",
+      "query": "SELECT \n    CASE \n        WHEN null_rate = 0 THEN '0%'\n        WHEN null_rate < 0.1 THEN '1-10%'\n        WHEN null_rate < 0.25 THEN '10-25%'\n        WHEN null_rate < 0.5 THEN '25-50%'\n        WHEN null_rate < 0.75 THEN '50-75%'\n        ELSE '75-100%'\n    END as null_rate_bucket,\n    COUNT(*) as column_count\nFROM {{catalog}}.{{schema}}.column_profiling_stats\nWHERE null_rate IS NOT NULL\nGROUP BY 1\nORDER BY 1"
+    },
+    {
+      "name": "security_dist_data",
+      "displayName": "Security Distribution",
+      "query": "SELECT \n    COALESCE(security_level, 'Unspecified') as security_level,\n    COUNT(*) as table_count\nFROM {{catalog}}.{{schema}}.graph_nodes\nWHERE node_type = 'table'\nGROUP BY 1\nORDER BY table_count DESC"
+    }
+  ]
+}

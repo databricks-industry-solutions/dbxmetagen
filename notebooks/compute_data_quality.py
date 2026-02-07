@@ -17,7 +17,10 @@ print(f"Schema: {schema_name}")
 
 # COMMAND ----------
 
-from src.dbxmetagen.data_quality import compute_data_quality
+import sys
+sys.path.append("../")  # For DAB deployment; pip-installed package works without this
+
+from dbxmetagen.data_quality import compute_data_quality
 
 result = compute_data_quality(
     spark=spark,

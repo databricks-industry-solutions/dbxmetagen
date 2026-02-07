@@ -21,7 +21,7 @@ class SchemaKnowledgeBaseConfig:
     schema_name: str
     source_table: str = "table_knowledge_base"
     target_table: str = "schema_knowledge_base"
-    model: str = "databricks-meta-llama-3-3-70b-instruct"
+    model: str = "databricks-gpt-oss-120b"
     
     @property
     def fully_qualified_source(self) -> str:

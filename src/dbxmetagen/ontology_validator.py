@@ -21,7 +21,7 @@ class OntologyValidatorConfig:
     """Configuration for ontology validation."""
     catalog_name: str
     schema_name: str
-    model: str = "databricks-meta-llama-3-3-70b-instruct"
+    model: str = "databricks-gpt-oss-120b"
     entities_table: str = "ontology_entities"
     kb_table: str = "table_knowledge_base"
     column_kb_table: str = "column_knowledge_base"
