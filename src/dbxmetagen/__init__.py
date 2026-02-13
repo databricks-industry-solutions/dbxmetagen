@@ -18,6 +18,7 @@ from dbxmetagen.embeddings import generate_embeddings, find_similar_nodes
 from dbxmetagen.similarity_edges import build_similarity_edges
 from dbxmetagen.ontology import build_ontology
 from dbxmetagen.ontology_validator import validate_ontology
+from dbxmetagen.fk_prediction import predict_foreign_keys
 
 __all__ = [
     "MetadataConfig",
@@ -43,4 +44,6 @@ __all__ = [
     # Ontology
     "build_ontology",
     "validate_ontology",
+    # FK prediction
+    "predict_foreign_keys",
 ]

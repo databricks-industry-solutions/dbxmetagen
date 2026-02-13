@@ -200,6 +200,54 @@ EOF
     echo "env_overrides.yml created"
 }
 
+APP_YAML_PATH="apps/dbxmetagen-app/app/app.yaml"
+
+inject_app_yaml_env() {
+    echo "Injecting env vars into $APP_YAML_PATH..."
+    cp "$APP_YAML_PATH" "${APP_YAML_PATH}.bkp"
+
+    # Read the resolved variable values
+    local wh_id="${warehouse_id:-$(awk '/^  warehouse_id:/{f=1;next} f&&/default:/{gsub(/"/,"",$2);print $2;exit}' variables.yml)}"
+    local cat_name="${catalog_name:-$(awk '/^  catalog_name:/{f=1;next} f&&/default:/{gsub(/"/,"",$2);print $2;exit}' variables.yml)}"
+    local sch_name="${schema_name:-metadata_results}"
+    local graphrag_model="databricks-claude-sonnet-4-5"
+
+    cat > "$APP_YAML_PATH" << EOF
+command:
+  - uvicorn
+  - api_server:app
+  - --host
+  - 0.0.0.0
+  - --port
+  - "8000"
+
+env:
+  - name: CATALOG_NAME
+    value: "${cat_name}"
+
+  - name: SCHEMA_NAME
+    value: "${sch_name}"
+
+  - name: WAREHOUSE_ID
+    value: "${wh_id}"
+
+  - name: GRAPHRAG_MODEL
+    value: "${graphrag_model}"
+EOF
+
+    echo "  CATALOG_NAME=${cat_name}"
+    echo "  SCHEMA_NAME=${sch_name}"
+    echo "  WAREHOUSE_ID=${wh_id}"
+    echo "  GRAPHRAG_MODEL=${graphrag_model}"
+}
+
+restore_app_yaml() {
+    if [ -f "${APP_YAML_PATH}.bkp" ]; then
+        mv "${APP_YAML_PATH}.bkp" "$APP_YAML_PATH"
+        echo "Restored original $APP_YAML_PATH"
+    fi
+}
+
 cleanup_temp_yml_files() {
     if [ -f app/deploying_user.yml ]; then
         echo "Cleaning up deploying_user.yml..."
@@ -237,6 +285,7 @@ cleanup_temp_yml_files() {
         echo "Cleaning up variables.bkp..."
         mv variables.bkp variables.yml
     fi
+    restore_app_yaml
 }
 
 update_variables_yml() {
@@ -280,6 +329,22 @@ EOF
     default: "$warehouse_id"
 EOF
         echo "Setting warehouse_id: $warehouse_id"
+    fi
+    
+    if [ -n "$catalog_name" ]; then
+        cat >> variables_override.yml << EOF
+  catalog_name:
+    default: "$catalog_name"
+EOF
+        echo "Setting catalog_name: $catalog_name"
+    fi
+    
+    if [ -n "$schema_name" ]; then
+        cat >> variables_override.yml << EOF
+  schema_name:
+    default: "$schema_name"
+EOF
+        echo "Setting schema_name: $schema_name"
     fi
     
     echo "Updated variables.yml"
@@ -434,6 +499,16 @@ create_app_env_yml
 create_env_overrides_yml
 check_for_deployed_app
 cat variables_override.yml >> variables.yml
+
+inject_app_yaml_env
+
+echo "=== Building frontend ==="
+if [ -f "apps/dbxmetagen-app/app/src/package.json" ]; then
+    (cd apps/dbxmetagen-app/app/src && npm install --silent && npm run build)
+    echo "Frontend built successfully"
+else
+    echo "No frontend package.json found, skipping build"
+fi
 
 echo "=== Deploying bundle ==="
 validate_bundle

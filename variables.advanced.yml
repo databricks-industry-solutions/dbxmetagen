@@ -1,7 +1,7 @@
 variables:
   enable_benchmarking:
     description: Enable token usage benchmarking to Delta table
-    default: false
+    default: true
   benchmark_table_name:
     description: Name of the table to log token usage benchmarks
     default: dbxmetagen_token_usage
@@ -51,4 +51,4 @@ variables:
       Key name within the secret scope for the API token. Only used when chat_completion_type is 'openai_spec' or 'custom_chat_spec'.
       This is the key name you used when storing the secret in the scope.
       Common names: 'api_key', 'token', 'openai_key', etc.
-    default: api_key    
+    default: api_key

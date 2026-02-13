@@ -180,6 +180,9 @@ class MetadataConfig:
         self.grant_permissions_after_creation = _parse_bool(
             getattr(self, "grant_permissions_after_creation", True)
         )
+        self.enable_benchmarking = _parse_bool(
+            getattr(self, "enable_benchmarking", False)
+        )
 
         # Handle review_apply_ddl if present
         if hasattr(self, "review_apply_ddl"):

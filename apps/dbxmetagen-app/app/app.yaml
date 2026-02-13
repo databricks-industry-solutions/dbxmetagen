@@ -8,12 +8,13 @@ command:
 
 env:
   - name: CATALOG_NAME
-    value: ${CATALOG_NAME}
+    value: "eswanson"
+
   - name: SCHEMA_NAME
-    value: ${SCHEMA_NAME}
+    value: "metadata_results"
+
   - name: WAREHOUSE_ID
-    value: ${WAREHOUSE_ID}
-  - name: LAKEBASE_GRAPHQL_URL
-    value: ${LAKEBASE_GRAPHQL_URL:-}
+    value: "4b9b953939869799"
+
   - name: GRAPHRAG_MODEL
-    value: ${GRAPHRAG_MODEL:-databricks-claude-sonnet-4-5}
+    value: "databricks-claude-sonnet-4-5"

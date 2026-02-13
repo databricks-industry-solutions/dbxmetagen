@@ -5,7 +5,7 @@ import logging
 from typing import Annotated, TypedDict
 
 from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_databricks import ChatDatabricks
+from databricks_langchain import ChatDatabricks
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
@@ -23,13 +23,14 @@ class AgentState(TypedDict):
 
 SYSTEM_PROMPT = """You are a knowledge graph analyst for a data catalog.
 You have access to tools that let you query and traverse a knowledge graph
-of tables, columns, schemas, and entities in a Databricks Unity Catalog.
+of tables, columns, schemas, and entities stored in a Lakebase-managed catalog.
 
 When answering a question:
 1. Start by searching for relevant nodes using query_graph_nodes.
-2. Traverse edges to discover relationships.
+2. Use traverse_graph to do multi-hop traversal from a starting node -- this
+   returns connected nodes, edges, and paths in one call.
 3. Use get_node_details for deeper info on specific nodes.
-4. Use find_similar_nodes to discover related tables/columns.
+4. Use find_similar_nodes to discover related tables/columns via embeddings.
 5. Synthesize your findings into a clear answer.
 
 Always cite specific node ids and relationships in your answer."""

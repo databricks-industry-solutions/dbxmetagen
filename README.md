@@ -44,8 +44,9 @@ For the web dashboard, batch jobs, and full pipeline:
 1. Install prerequisites: Databricks CLI, Python 3.10+, Poetry
 2. Configure:
    ```bash
-   cp example.env dev.env  # Edit with your workspace URL
+   cp example.env dev.env  # Edit with your workspace URL and catalog/schema
    ```
+   For the dashboard app to show metadata and metrics, set `catalog_name` and (optionally) `schema_name` in dev.env; deploy.sh injects these into the bundle so the app gets the correct CATALOG_NAME/SCHEMA_NAME at runtime.
 3. Deploy:
    ```bash
    ./deploy.sh --profile <your-profile> --target <your-dab-target>

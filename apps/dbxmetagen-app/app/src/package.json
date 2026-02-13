@@ -10,7 +10,8 @@
   },
   "dependencies": {
     "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react-dom": "^19.0.0",
+    "react-force-graph-2d": "^1.26.0"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.3.0",

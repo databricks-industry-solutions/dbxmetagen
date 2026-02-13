@@ -28,3 +28,12 @@ variables:
   app_service_principal_application_id:
     description: Application ID of the service principal used for the Databricks app. This service principal will be granted CAN_MANAGE permissions on the bundle resources. If not set, the app will use the current user context.
     default: "None"
+  lakebase_catalog:
+    description: "Lakebase catalog name for GraphRAG graph data"
+    default: "dbxmetagen_graphrag"
+  lakebase_instance_name:
+    description: "Lakebase instance name"
+    default: "dbxmetagen"
+  lakebase_database_name:
+    description: "PG-level database name within the Lakebase instance"
+    default: "knowledge_base"

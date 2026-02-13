@@ -10,7 +10,7 @@ poetry.lock
 .Python
 build/
 develop-eggs/
-dist/
+/dist/
 downloads/
 eggs/
 .eggs/
@@ -140,8 +140,9 @@ databricks/
 Thumbs.db
 .DS_Store
 __pycache__/
-dist/
+/dist/
 *.egg-info/
+**/node_modules/
 *.tmp
 
 # Deployment temporary files

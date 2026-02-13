@@ -923,6 +923,19 @@ def populate_log_table(df, config, current_user, base_path):
     return result_df
 
 
+def add_column_if_not_exists(spark, table_name, col_name, col_type):
+    """ADD COLUMN with graceful handling for older DBR without IF NOT EXISTS.
+    Also handles concurrent ALTER from parallel tasks hitting the same table."""
+    try:
+        spark.sql(f"ALTER TABLE {table_name} ADD COLUMN {col_name} {col_type}")
+    except Exception as e:
+        err = str(e)
+        if "already exists" in err.lower() or "COLUMN_ALREADY_EXISTS" in err or "DELTA_METADATA_CHANGED" in err:
+            pass
+        else:
+            raise
+
+
 def get_control_table(config: MetadataConfig) -> str:
     """
     Returns the control table name based on the provided configuration.
@@ -956,6 +969,7 @@ def mark_as_deleted(table_name: str, config: MetadataConfig) -> None:
     control_table = (
         f"{config.catalog_name}.{config.schema_name}.{formatted_control_table}"
     )
+    mode = config.mode or "comment"
     update_query = f"""
     UPDATE {control_table}
     SET _deleted_at = current_timestamp(),
@@ -963,6 +977,7 @@ def mark_as_deleted(table_name: str, config: MetadataConfig) -> None:
         _status = 'completed',
         _claimed_by = NULL
     WHERE table_name = '{table_name}'
+      AND (_mode = '{mode}' OR _mode IS NULL)
     """
     spark.sql(update_query)
     print(f"Marked {table_name} as deleted in the control table...")
@@ -998,7 +1013,10 @@ def claim_table(table_name: str, config: MetadataConfig, max_retries: int = 3) -
         # No task_id means not running in concurrent mode, allow processing
         return True
     
+    mode = config.mode or "comment"
+    
     # Attempt to claim: UPDATE only if status allows reprocessing and not currently claimed
+    # Uses (table_name, _mode) as composite key so different modes can run in parallel
     claim_query = f"""
     UPDATE {control_table}
     SET _claimed_by = '{task_id}',
@@ -1006,6 +1024,7 @@ def claim_table(table_name: str, config: MetadataConfig, max_retries: int = 3) -
         _updated_at = current_timestamp(),
         _status = 'in_progress'
     WHERE table_name = '{table_name}'
+      AND (_mode = '{mode}' OR _mode IS NULL)
       AND _claimed_by IS NULL
       AND (_status IS NULL OR _status IN ('queued', 'failed', 'completed'))
     """
@@ -1013,6 +1032,7 @@ def claim_table(table_name: str, config: MetadataConfig, max_retries: int = 3) -
     verify_query = f"""
     SELECT _claimed_by FROM {control_table}
     WHERE table_name = '{table_name}'
+      AND (_mode = '{mode}' OR _mode IS NULL)
     """
     
     for attempt in range(max_retries):
@@ -1058,6 +1078,7 @@ def mark_table_completed(table_name: str, config: MetadataConfig) -> None:
     control_table = (
         f"{config.catalog_name}.{config.schema_name}.{formatted_control_table}"
     )
+    mode = config.mode or "comment"
     
     update_query = f"""
     UPDATE {control_table}
@@ -1066,6 +1087,7 @@ def mark_table_completed(table_name: str, config: MetadataConfig) -> None:
         _updated_at = current_timestamp()
     WHERE table_name = '{table_name}'
       AND _run_id = '{config.run_id}'
+      AND (_mode = '{mode}' OR _mode IS NULL)
     """
     spark.sql(update_query)
     print(f"Marked table {table_name} as completed")
@@ -1085,6 +1107,7 @@ def mark_table_failed(table_name: str, config: MetadataConfig, error_message: st
     control_table = (
         f"{config.catalog_name}.{config.schema_name}.{formatted_control_table}"
     )
+    mode = config.mode or "comment"
     
     # Escape single quotes in error message to prevent SQL injection
     safe_error = error_message.replace("'", "''") if error_message else None
@@ -1096,6 +1119,7 @@ def mark_table_failed(table_name: str, config: MetadataConfig, error_message: st
         _updated_at = current_timestamp(){error_clause}
     WHERE table_name = '{table_name}'
       AND _run_id = '{config.run_id}'
+      AND (_mode = '{mode}' OR _mode IS NULL)
     """
     spark.sql(update_query)
     print(f"Marked table {table_name} as failed: {error_message or 'No error message'}")
@@ -2626,6 +2650,7 @@ def create_tables(config: MetadataConfig) -> None:
         spark.sql(
             f"""CREATE TABLE IF NOT EXISTS {config.catalog_name}.{config.schema_name}.{formatted_control_table} (
                 table_name STRING,
+                _mode STRING,
                 _updated_at TIMESTAMP,
                 _deleted_at TIMESTAMP,
                 _job_id STRING,
@@ -2636,6 +2661,9 @@ def create_tables(config: MetadataConfig) -> None:
                 _error_message STRING
             )"""
         )
+        # Backward compat: add _mode column to existing control tables
+        full_control = f"{config.catalog_name}.{config.schema_name}.{formatted_control_table}"
+        add_column_if_not_exists(spark, full_control, "_mode", "STRING")
 
 
 def instantiate_metadata_objects(
@@ -2847,16 +2875,18 @@ def setup_queue(config: MetadataConfig) -> List[str]:
     file_table_names = load_table_names_from_csv(config.source_file_path)
     
     # If include_previously_failed_tables is enabled, also include failed/abandoned tables
+    mode = config.mode or "comment"
     if spark.catalog.tableExists(control_table) and getattr(config, 'include_previously_failed_tables', False):
         timeout_minutes = getattr(config, 'claim_timeout_minutes', 60)
         run_id = config.run_id
         
-        # Build query to get tables that should be retried:
-        # 1. Failed tables from any run
-        # 2. Abandoned tables (in_progress but timed out from OTHER runs)
+        # Build query to get tables that should be retried for THIS mode:
+        # 1. Failed tables from any run (same mode)
+        # 2. Abandoned tables (in_progress but timed out from OTHER runs, same mode)
         retry_query = f"""
         SELECT table_name FROM {control_table} 
         WHERE _deleted_at IS NULL
+          AND (_mode = '{mode}' OR _mode IS NULL)
           AND (
             _status = 'failed'
             OR (
@@ -2912,7 +2942,7 @@ def ensure_fully_scoped_table_names(
 
 
 def upsert_table_names_to_control_table(
-    table_names: List[str], config: MetadataConfig, max_retries: int = 3
+    table_names: List[str], config: MetadataConfig, max_retries: int = 10
 ) -> None:
     """
     Upserts a list of table names into the control table using MERGE for concurrent safety.
@@ -2937,8 +2967,9 @@ def upsert_table_names_to_control_table(
         print("No table names to upsert.")
         return
     
+    mode = config.mode or "comment"
     table_names_df = spark.createDataFrame(
-        [(name,) for name in table_names], ["table_name"]
+        [(name, mode) for name in table_names], ["table_name", "_mode"]
     )
     table_names_df = trim_whitespace_from_df(table_names_df)
     
@@ -2953,16 +2984,20 @@ def upsert_table_names_to_control_table(
     merge_sql = f"""
         MERGE INTO {control_table} target
         USING {temp_view_name} source
-        ON target.table_name = source.table_name
+        ON target.table_name = source.table_name AND target._mode = source._mode
         WHEN NOT MATCHED THEN INSERT (
-            table_name, _updated_at, _deleted_at, _job_id, _run_id, 
+            table_name, _mode, _updated_at, _deleted_at, _job_id, _run_id, 
             _claimed_by, _claimed_at, _status, _error_message
         ) VALUES (
-            source.table_name, current_timestamp(), NULL, '{job_id}', 
+            source.table_name, source._mode, current_timestamp(), NULL, '{job_id}', 
             '{run_id}', NULL, NULL, 'queued', NULL
         )
     """
     
+    # Initial stagger so parallel tasks don't all MERGE at the same instant
+    stagger = random.uniform(0, 2)
+    time.sleep(stagger)
+
     # Retry loop for handling concurrent conflicts
     for attempt in range(max_retries):
         try:
@@ -2973,8 +3008,7 @@ def upsert_table_names_to_control_table(
             error_str = str(e)
             if "ConcurrentAppendException" in error_str or "DELTA_CONCURRENT" in error_str:
                 if attempt < max_retries - 1:
-                    # Exponential backoff with jitter
-                    wait_time = (2 ** attempt) + random.uniform(0, 1)
+                    wait_time = min((2 ** attempt) + random.uniform(0, 2 ** attempt), 30)
                     print(f"Concurrent conflict detected, retrying in {wait_time:.2f}s (attempt {attempt + 1}/{max_retries})")
                     time.sleep(wait_time)
                 else:

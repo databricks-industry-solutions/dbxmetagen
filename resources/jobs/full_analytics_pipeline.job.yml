@@ -182,10 +182,28 @@ resources:
           libraries:
             - whl: ../../dist/*.whl
 
-        # Stage 5: Final analysis (depends on all stage 4 tasks)
-        - task_key: final_analysis
+        # Stage 5: FK prediction (depends on similarity edges + profiling)
+        - task_key: predict_foreign_keys
           depends_on:
             - task_key: build_similarity_edges
+            - task_key: compute_data_quality
+          job_cluster_key: analytics_cluster
+          notebook_task:
+            notebook_path: ../../notebooks/predict_foreign_keys.py
+            base_parameters:
+              catalog_name: "{{job.parameters.catalog_name}}"
+              schema_name: "{{job.parameters.schema_name}}"
+              column_similarity_threshold: "0.75"
+              table_similarity_threshold: "0.75"
+              confidence_threshold: "0.7"
+              apply_ddl: "false"
+          libraries:
+            - whl: ../../dist/*.whl
+
+        # Stage 6: Final analysis (depends on all previous tasks)
+        - task_key: final_analysis
+          depends_on:
+            - task_key: predict_foreign_keys
             - task_key: cluster_analysis
             - task_key: compute_data_quality
             - task_key: validate_ontology

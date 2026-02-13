@@ -1,0 +1,55 @@
+resources:
+  jobs:
+    fk_prediction_job:
+      name: "${var.app_name}_fk_prediction"
+
+      email_notifications:
+        on_failure:
+          - ${var.current_user}
+
+      parameters:
+        - name: catalog_name
+          default: ${var.catalog_name}
+        - name: schema_name
+          default: ${var.schema_name}
+        - name: column_similarity_threshold
+          default: "0.75"
+        - name: table_similarity_threshold
+          default: "0.75"
+        - name: confidence_threshold
+          default: "0.7"
+        - name: sample_size
+          default: "5"
+        - name: model_endpoint
+          default: "databricks-gpt-oss-120b"
+        - name: apply_ddl
+          default: "false"
+        - name: dry_run
+          default: "true"
+
+      tasks:
+        - task_key: predict_foreign_keys
+          job_cluster_key: fk_cluster
+          notebook_task:
+            notebook_path: ../../notebooks/predict_foreign_keys.py
+            base_parameters:
+              catalog_name: "{{job.parameters.catalog_name}}"
+              schema_name: "{{job.parameters.schema_name}}"
+              column_similarity_threshold: "{{job.parameters.column_similarity_threshold}}"
+              table_similarity_threshold: "{{job.parameters.table_similarity_threshold}}"
+              confidence_threshold: "{{job.parameters.confidence_threshold}}"
+              sample_size: "{{job.parameters.sample_size}}"
+              model_endpoint: "{{job.parameters.model_endpoint}}"
+              apply_ddl: "{{job.parameters.apply_ddl}}"
+              dry_run: "{{job.parameters.dry_run}}"
+          libraries:
+            - whl: ../../dist/*.whl
+
+      job_clusters:
+        - job_cluster_key: fk_cluster
+          new_cluster:
+            spark_version: 17.3.x-cpu-ml-scala2.13
+            node_type_id: ${var.node_type}
+            autoscale:
+              min_workers: 1
+              max_workers: 4

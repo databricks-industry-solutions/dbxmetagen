@@ -136,10 +136,8 @@ class ProfilingBuilder:
         self.spark.sql(ddl)
         
         # Add column_count if missing
-        try:
-            self.spark.sql(f"ALTER TABLE {self.config.fully_qualified_snapshots} ADD COLUMN IF NOT EXISTS column_count INT")
-        except Exception:
-            pass
+        from dbxmetagen.processing import add_column_if_not_exists
+        add_column_if_not_exists(self.spark, self.config.fully_qualified_snapshots, "column_count", "INT")
         
         logger.info(f"Snapshots table {self.config.fully_qualified_snapshots} ready")
     
@@ -199,11 +197,9 @@ class ProfilingBuilder:
             ("empty_string_count", "BIGINT"),
             ("empty_string_rate", "DOUBLE")
         ]
+        from dbxmetagen.processing import add_column_if_not_exists
         for col_name, col_type in new_columns:
-            try:
-                self.spark.sql(f"ALTER TABLE {self.config.fully_qualified_column_stats} ADD COLUMN IF NOT EXISTS {col_name} {col_type}")
-            except Exception:
-                pass
+            add_column_if_not_exists(self.spark, self.config.fully_qualified_column_stats, col_name, col_type)
         
         logger.info(f"Column stats table {self.config.fully_qualified_column_stats} ready")
     

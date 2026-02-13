@@ -113,12 +113,10 @@ class DataQualityScorer:
         self.spark.sql(ddl)
         
         # Add new columns to existing tables
+        from dbxmetagen.processing import add_column_if_not_exists
         new_cols = [("metadata_score", "DOUBLE"), ("dimensions_calculated", "INT")]
         for col_name, col_type in new_cols:
-            try:
-                self.spark.sql(f"ALTER TABLE {self.config.fully_qualified_scores} ADD COLUMN IF NOT EXISTS {col_name} {col_type}")
-            except Exception:
-                pass
+            add_column_if_not_exists(self.spark, self.config.fully_qualified_scores, col_name, col_type)
         
         logger.info(f"Quality scores table {self.config.fully_qualified_scores} ready")
     

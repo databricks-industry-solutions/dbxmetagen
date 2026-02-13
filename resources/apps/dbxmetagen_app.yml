@@ -19,7 +19,18 @@ resources:
             value: ${var.schema_name}
           - name: WAREHOUSE_ID
             value: ${var.warehouse_id}
+          - name: GRAPHRAG_MODEL
+            value: databricks-claude-sonnet-4-5
       resources:
+        - name: sql_warehouse
+          sql_warehouse:
+            id: ${var.warehouse_id}
+            permission: CAN_USE
+        - name: app_database
+          database:
+            database_name: ${var.lakebase_database_name}
+            instance_name: ${var.lakebase_instance_name}
+            permission: CAN_CONNECT_AND_CREATE
         - name: metadata_generator_job
           job:
             id: ${resources.jobs.metadata_generator_job.id}
@@ -31,6 +42,14 @@ resources:
         - name: sync_ddl_job
           job:
             id: ${resources.jobs.sync_ddl_job.id}
+            permission: CAN_MANAGE_RUN
+        - name: full_analytics_pipeline_job
+          job:
+            id: ${resources.jobs.full_analytics_pipeline_job.id}
+            permission: CAN_MANAGE_RUN
+        - name: fk_prediction_job
+          job:
+            id: ${resources.jobs.fk_prediction_job.id}
             permission: CAN_MANAGE_RUN
       user_api_scopes:
         - "files.files"

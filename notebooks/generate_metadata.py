@@ -16,7 +16,7 @@
 # MAGIC %md
 # MAGIC # Library installs
 # COMMAND ----------
-# MAGIC %pip install -qqqq -r ../requirements.txt
+# MAGIC %pip install -q -r ../requirements.txt
 # MAGIC dbutils.library.restartPython()
 # COMMAND ----------
 # MAGIC %md

@@ -1,29 +1,44 @@
 import React, { useState, useEffect } from 'react'
+import { safeFetchObj, ErrorBanner } from '../App'
 
 export default function BatchJobs() {
   const [jobs, setJobs] = useState([])
   const [tableNames, setTableNames] = useState('')
   const [mode, setMode] = useState('comment')
   const [applyDdl, setApplyDdl] = useState(false)
+  const [catalogName, setCatalogName] = useState('')
+  const [schemaName, setSchemaName] = useState('')
   const [runStatus, setRunStatus] = useState(null)
   const [loading, setLoading] = useState(false)
+  const [error, setError] = useState(null)
 
   useEffect(() => {
     fetch('/api/jobs').then(r => r.json()).then(setJobs).catch(() => {})
   }, [])
 
-  const runJob = async (jobName) => {
-    if (!tableNames.trim()) return
+  useEffect(() => {
+    safeFetchObj('/api/config').then(({ data: cfg }) => {
+      if (cfg) {
+        setCatalogName(cfg.catalog_name || '')
+        setSchemaName(cfg.schema_name || '')
+      }
+    })
+  }, [])
+
+  const runJob = async (jobName, params = {}) => {
     setLoading(true)
+    setError(null)
     try {
       const res = await fetch('/api/jobs/run', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ job_name: jobName, table_names: tableNames, mode, apply_ddl: applyDdl }),
+        body: JSON.stringify({ job_name: jobName, ...params }),
       })
       const data = await res.json()
+      if (!res.ok) { setError(data.detail || 'Failed to start job'); setLoading(false); return }
       setRunStatus({ ...data, job_name: jobName, state: 'PENDING' })
-    } finally { setLoading(false) }
+    } catch (e) { setError(e.message) }
+    setLoading(false)
   }
 
   const checkStatus = async () => {
@@ -35,17 +50,17 @@ export default function BatchJobs() {
 
   return (
     <div className="space-y-6">
+      <ErrorBanner error={error} />
+
+      {/* Metadata generation */}
       <section className="bg-white rounded-lg border p-6">
         <h2 className="text-lg font-semibold mb-4">Run Metadata Generation</h2>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Table Names</label>
-            <textarea
-              value={tableNames}
-              onChange={e => setTableNames(e.target.value)}
+            <textarea value={tableNames} onChange={e => setTableNames(e.target.value)}
               placeholder="catalog.schema.table1, catalog.schema.*"
-              className="w-full border rounded-md p-2 text-sm h-24"
-            />
+              className="w-full border rounded-md p-2 text-sm h-24" />
           </div>
           <div className="space-y-3">
             <div>
@@ -63,17 +78,65 @@ export default function BatchJobs() {
           </div>
         </div>
         <div className="flex gap-3 mt-4">
-          <button onClick={() => runJob('dbxmetagen_metadata_job')} disabled={loading}
+          <button onClick={() => runJob('dbxmetagen_metadata_job', { table_names: tableNames, mode, apply_ddl: applyDdl })}
+            disabled={loading || !tableNames.trim()}
             className="px-4 py-2 bg-blue-600 text-white rounded-md text-sm hover:bg-blue-700 disabled:opacity-50">
             {loading ? 'Starting...' : 'Run Single Mode'}
           </button>
-          <button onClick={() => runJob('dbxmetagen_parallel_modes_job')} disabled={loading}
+          <button onClick={() => runJob('dbxmetagen_parallel_modes_job', { table_names: tableNames })}
+            disabled={loading || !tableNames.trim()}
             className="px-4 py-2 bg-indigo-600 text-white rounded-md text-sm hover:bg-indigo-700 disabled:opacity-50">
             Run All 3 Modes (Parallel)
           </button>
-          <button onClick={() => runJob('dbxmetagen_full_analytics_pipeline')} disabled={loading}
+        </div>
+      </section>
+
+      {/* Analytics pipeline */}
+      <section className="bg-white rounded-lg border p-6">
+        <h2 className="text-lg font-semibold mb-4">Analytics Pipeline</h2>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Catalog Name</label>
+            <input value={catalogName} onChange={e => setCatalogName(e.target.value)}
+              placeholder="e.g. eswanson" className="w-full border rounded-md p-2 text-sm" />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Schema Name</label>
+            <input value={schemaName} onChange={e => setSchemaName(e.target.value)}
+              placeholder="e.g. metadata_results" className="w-full border rounded-md p-2 text-sm" />
+          </div>
+        </div>
+        <div className="flex gap-3">
+          <button onClick={() => runJob('dbxmetagen_full_analytics_pipeline', { catalog_name: catalogName, schema_name: schemaName })}
+            disabled={loading}
             className="px-4 py-2 bg-emerald-600 text-white rounded-md text-sm hover:bg-emerald-700 disabled:opacity-50">
             Full Analytics Pipeline
+          </button>
+          <button onClick={() => runJob('sync_graph_lakebase', { catalog_name: catalogName, schema_name: schemaName })}
+            disabled={loading}
+            className="px-4 py-2 bg-violet-600 text-white rounded-md text-sm hover:bg-violet-700 disabled:opacity-50">
+            Sync Graph to Lakebase
+          </button>
+        </div>
+      </section>
+
+      {/* FK Prediction */}
+      <section className="bg-white rounded-lg border p-6">
+        <h2 className="text-lg font-semibold mb-4">Foreign Key Prediction</h2>
+        <p className="text-sm text-gray-500 mb-4">
+          Predict FK relationships between columns using embedding similarity, rule-based scoring, and AI judgment.
+          Uses the catalog/schema from the Analytics Pipeline section above.
+        </p>
+        <div className="flex gap-3">
+          <button onClick={() => runJob('fk_prediction', { catalog_name: catalogName, schema_name: schemaName })}
+            disabled={loading}
+            className="px-4 py-2 bg-amber-600 text-white rounded-md text-sm hover:bg-amber-700 disabled:opacity-50">
+            Predict Foreign Keys
+          </button>
+          <button onClick={() => runJob('fk_prediction', { catalog_name: catalogName, schema_name: schemaName, apply_ddl: 'true' })}
+            disabled={loading}
+            className="px-4 py-2 bg-red-600 text-white rounded-md text-sm hover:bg-red-700 disabled:opacity-50">
+            Predict + Apply Foreign Keys
           </button>
         </div>
       </section>

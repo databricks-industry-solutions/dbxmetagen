@@ -1,9 +1,10 @@
 bundle:
   name: dbxmetagen
-  databricks_cli_version: ">=0.234.*"
+  databricks_cli_version: ">=0.283.0"
 
 include:
   - resources/jobs/*.yml
+  - resources/apps/*.yml
   - resources/dashboards.yml
   - benchmarks/resources/jobs/benchmarks/*.yml
   - variables.yml

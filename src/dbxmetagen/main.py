@@ -217,6 +217,8 @@ def cleanup_resources(config, spark):
         print(f"Temp table cleanup failed: {e}")
 
     # Clean up control table
+    mode = config.mode or "comment"
+    mode_filter = f"AND (_mode = '{mode}' OR _mode IS NULL)"
     try:
         if (
             config.cleanup_control_table == "true"
@@ -228,34 +230,34 @@ def cleanup_resources(config, spark):
                 cleanup_failed = getattr(config, 'cleanup_failed_tables', False)
                 
                 if cleanup_failed:
-                    # Delete all entries for this run (completed AND failed)
+                    # Delete all entries for this run/mode (completed AND failed)
                     spark.sql(
-                        f"DELETE FROM {control_table_full} WHERE _run_id = '{config.run_id}'"
+                        f"DELETE FROM {control_table_full} WHERE _run_id = '{config.run_id}' {mode_filter}"
                     )
                     print(
-                        f"Cleaned up all control table rows for run_id {config.run_id}: {control_table_full}"
+                        f"Cleaned up all control table rows for run_id {config.run_id} mode {mode}: {control_table_full}"
                     )
                 else:
                     # Only delete completed entries, keep failed for potential retry
                     spark.sql(
-                        f"DELETE FROM {control_table_full} WHERE _run_id = '{config.run_id}' AND _status = 'completed'"
+                        f"DELETE FROM {control_table_full} WHERE _run_id = '{config.run_id}' AND _status = 'completed' {mode_filter}"
                     )
                     print(
-                        f"Cleaned up completed control table rows for run_id {config.run_id}: {control_table_full}"
+                        f"Cleaned up completed control table rows for run_id {config.run_id} mode {mode}: {control_table_full}"
                     )
                     # Log if there are failed entries remaining
                     failed_count = spark.sql(
-                        f"SELECT COUNT(*) as cnt FROM {control_table_full} WHERE _run_id = '{config.run_id}' AND _status = 'failed'"
+                        f"SELECT COUNT(*) as cnt FROM {control_table_full} WHERE _run_id = '{config.run_id}' AND _status = 'failed' {mode_filter}"
                     ).first().cnt
                     if failed_count > 0:
                         print(f"Note: {failed_count} failed table(s) retained for potential retry")
             elif config.job_id is not None:
                 # Fallback to job_id for backward compatibility
                 spark.sql(
-                    f"DELETE FROM {control_table_full} WHERE _job_id = '{config.job_id}'"
+                    f"DELETE FROM {control_table_full} WHERE _job_id = '{config.job_id}' {mode_filter}"
                 )
                 print(
-                    f"Cleaned up control table rows for job_id {config.job_id}: {control_table_full}"
+                    f"Cleaned up control table rows for job_id {config.job_id} mode {mode}: {control_table_full}"
                 )
             else:
                 spark.sql(f"DROP TABLE IF EXISTS {control_table_full}")
@@ -301,7 +303,17 @@ def main(kwargs):
 
     # Initialize configuration and benchmarking
     config = MetadataConfig(**kwargs)
-    experiment_name = setup_benchmarking(config)
+
+    # Fail fast if apply_ddl=true with concurrent mode execution
+    if config.apply_ddl and config.task_id:
+        raise ValueError(
+            "apply_ddl=true is not supported with concurrent task execution. "
+            "When running multiple modes in parallel on the same tables, "
+            "set apply_ddl=false. Apply DDL separately after reviewing results."
+        )
+
+    benchmarking_result = setup_benchmarking(config)
+    experiment_name, run_start_time_ms = benchmarking_result if benchmarking_result else (None, 0)
 
     # Validate override CSV (only if manual overrides are enabled)
     if getattr(config, "allow_manual_override", True):
@@ -339,7 +351,7 @@ def main(kwargs):
 
         # Log token usage if benchmarking is enabled
         if experiment_name:
-            log_token_usage(config, experiment_name)
+            log_token_usage(config, experiment_name, run_start_time_ms)
     finally:
         # Always cleanup resources, even if there were errors above
         # cleanup_resources has internal error handling to prevent masking original exceptions
