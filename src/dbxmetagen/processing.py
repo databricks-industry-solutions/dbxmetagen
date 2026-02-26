@@ -1,260 +1,260 @@
-# """Processing utilities shared among modules."""
-# import sys
-# import os
-# import shutil
-# import re
-# from abc import ABC
-# from datetime import datetime
-# from typing import List, Dict, Any, Tuple
-# import logging
-# import mlflow
-# import nest_asyncio
-# import pandas as pd
-# from pydantic import BaseModel, Field, Extra, ValidationError, ConfigDict
-# from pydantic.dataclasses import dataclass
-# from pyspark.sql import DataFrame, SparkSession, Row
-# from pyspark.sql.functions import (
-#     col,
-#     struct,
-#     to_timestamp,
-#     current_timestamp,
-#     lit,
-#     when,
-#     sum as spark_sum,
-#     max as spark_max,
-#     concat_ws,
-#     collect_list,
-#     collect_set,
-#     udf,
-#     trim,
-#     split,
-#     expr,
-#     split_part,
-#     regexp_replace,
-#     base64,
-#     to_json,
-# )
-# from pyspark.sql.types import (
-#     StructType,
-#     StructField,
-#     StringType,
-#     TimestampType,
-#     FloatType,
-#     DoubleType,
-#     BinaryType,
-# )
-# from openai import OpenAI
-# from openai.types.chat.chat_completion import (
-#     Choice,
-#     ChatCompletion,
-#     ChatCompletionMessage,
-# )
-# import pandas as pd
+"""Processing utilities shared among modules."""
+import sys
+import os
+import shutil
+import re
+from abc import ABC
+from datetime import datetime
+from typing import List, Dict, Any, Tuple
+import logging
+import mlflow
+import nest_asyncio
+import pandas as pd
+from pydantic import BaseModel, Field, Extra, ValidationError, ConfigDict
+from pydantic.dataclasses import dataclass
+from pyspark.sql import DataFrame, SparkSession, Row
+from pyspark.sql.functions import (
+    col,
+    struct,
+    to_timestamp,
+    current_timestamp,
+    lit,
+    when,
+    sum as spark_sum,
+    max as spark_max,
+    concat_ws,
+    collect_list,
+    collect_set,
+    udf,
+    trim,
+    split,
+    expr,
+    split_part,
+    regexp_replace,
+    base64,
+    to_json,
+)
+from pyspark.sql.types import (
+    StructType,
+    StructField,
+    StringType,
+    TimestampType,
+    FloatType,
+    DoubleType,
+    BinaryType,
+)
+from openai import OpenAI
+from openai.types.chat.chat_completion import (
+    Choice,
+    ChatCompletion,
+    ChatCompletionMessage,
+)
+import pandas as pd
 
-# try:
-#     from mlflow.types.llm import TokenUsageStats, ChatResponse
-# except ImportError:
-#     TokenUsageStats = None
-#     ChatResponse = None
-# from grpc._channel import _InactiveRpcError, _MultiThreadedRendezvous
-# from src.dbxmetagen.config import MetadataConfig
-# from src.dbxmetagen.sampling import determine_sampling_ratio
-# from src.dbxmetagen.prompts import Prompt, PIPrompt, CommentPrompt, PromptFactory
-# from src.dbxmetagen.error_handling import exponential_backoff, validate_csv
-# from src.dbxmetagen.comment_summarizer import TableCommentSummarizer
-# from src.dbxmetagen.metadata_generator import (
-#     Response,
-#     PIResponse,
-#     CommentResponse,
-#     PIColumnContent,
-#     MetadataGeneratorFactory,
-#     PIIdentifier,
-#     MetadataGenerator,
-#     CommentGenerator,
-# )
-# from src.dbxmetagen.overrides import (
-#     override_metadata_from_csv,
-#     apply_overrides_with_joins,
-#     build_condition,
-#     get_join_conditions,
-# )
-# from src.dbxmetagen.user_utils import sanitize_user_identifier, get_current_user
-# from src.dbxmetagen.domain_classifier import load_domain_config, classify_table_domain
+try:
+    from mlflow.types.llm import TokenUsageStats, ChatResponse
+except ImportError:
+    TokenUsageStats = None
+    ChatResponse = None
+from grpc._channel import _InactiveRpcError, _MultiThreadedRendezvous
+from src.dbxmetagen.config import MetadataConfig
+from src.dbxmetagen.sampling import determine_sampling_ratio
+from src.dbxmetagen.prompts import Prompt, PIPrompt, CommentPrompt, PromptFactory
+from src.dbxmetagen.error_handling import exponential_backoff, validate_csv
+from src.dbxmetagen.comment_summarizer import TableCommentSummarizer
+from src.dbxmetagen.metadata_generator import (
+    Response,
+    PIResponse,
+    CommentResponse,
+    PIColumnContent,
+    MetadataGeneratorFactory,
+    PIIdentifier,
+    MetadataGenerator,
+    CommentGenerator,
+)
+from src.dbxmetagen.overrides import (
+    override_metadata_from_csv,
+    apply_overrides_with_joins,
+    build_condition,
+    get_join_conditions,
+)
+from src.dbxmetagen.user_utils import sanitize_user_identifier, get_current_user
+from src.dbxmetagen.domain_classifier import load_domain_config, classify_table_domain
 
-# logging.basicConfig(
-#     level=logging.WARNING,
-#     format="%(asctime)s - %(name)s - %(levelname)s - %(funcName)s - %(message)s",
-#     datefmt="%Y-%m-%d %H:%M:%S",
-# )
-# logger = logging.getLogger(__name__)
+logging.basicConfig(
+    level=logging.WARNING,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(funcName)s - %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+logger = logging.getLogger(__name__)
 
-# # Suppress verbose PySpark Connect logging to prevent GRPC stacktraces in notebooks
-# logging.getLogger("pyspark.sql.connect.client.logging").setLevel(logging.CRITICAL)
-
-
-# def extract_concise_error(error: Exception) -> str:
-#     print(sys._getframe().f_code.co_name)
-
-#     """
-#     Extract a concise error message from an exception, removing JVM stacktraces.
-#     For tag policy violations, extracts just the relevant tag information.
-
-#     Args:
-#         error: The exception to extract the message from
-
-#     Returns:
-#         A concise error message string
-#     """
-#     error_str = str(error)
-#     if "INVALID_PARAMETER_VALUE" in error_str and "Tag value" in error_str:
-#         match = re.search(
-#             r"Tag value (\S+) is not an allowed value for tag policy key (\S+)",
-#             error_str,
-#         )
-#         if match:
-#             tag_value, tag_key = match.groups()
-#             return f"Tag policy violation: '{tag_key}' cannot be set to '{tag_value}'"
-#     return (
-#         error_str.split("JVM stacktrace:")[0].strip()
-#         if "JVM stacktrace:" in error_str
-#         else error_str
-#     )
+# Suppress verbose PySpark Connect logging to prevent GRPC stacktraces in notebooks
+logging.getLogger("pyspark.sql.connect.client.logging").setLevel(logging.CRITICAL)
 
 
-# class DDLGenerator(ABC):
-#     """DDLGenerator class."""
+def extract_concise_error(error: Exception) -> str:
+    print(sys._getframe().f_code.co_name)
 
-#     def __init__(self):
-#         print(sys._getframe().f_code.co_name)
+    """
+    Extract a concise error message from an exception, removing JVM stacktraces.
+    For tag policy violations, extracts just the relevant tag information.
 
-#         pass
+    Args:
+        error: The exception to extract the message from
 
-
-# class Input(BaseModel):
-#     """Input class."""
-
-#     ### Currently not implemented.
-#     model_config = ConfigDict(extra="forbid")
-
-#     table_name: str
-
-#     @classmethod
-#     def from_df(cls, df: DataFrame) -> Dict[str, Any]:
-#         print(sys._getframe().f_code.co_name)
-
-#         """From DataFrame class."""
-#         return {
-#             "table_name": f"{catalog_name}.{schema_name}.{table_name}",
-#             "column_contents": cls.df.toPandas().to_dict(orient="list"),
-#         }
-
-
-# def tag_table(table_name: str, tags: Dict[str, str]) -> None:
-#     print(sys._getframe().f_code.co_name)
-
-#     """
-#     Tags a table with the provided tags.
-
-#     Args:
-#         table_name (str): The name of the table to tag.
-#         tags (Dict[str, str]): A dictionary of tags to apply to the table.
-#     """
-#     spark = SparkSession.builder.getOrCreate()
-#     for key, value in tags.items():
-#         spark.sql(f"ALTER TABLE {table_name} SET TBLPROPERTIES ('{key}' = '{value}');")
+    Returns:
+        A concise error message string
+    """
+    error_str = str(error)
+    if "INVALID_PARAMETER_VALUE" in error_str and "Tag value" in error_str:
+        match = re.search(
+            r"Tag value (\S+) is not an allowed value for tag policy key (\S+)",
+            error_str,
+        )
+        if match:
+            tag_value, tag_key = match.groups()
+            return f"Tag policy violation: '{tag_key}' cannot be set to '{tag_value}'"
+    return (
+        error_str.split("JVM stacktrace:")[0].strip()
+        if "JVM stacktrace:" in error_str
+        else error_str
+    )
 
 
-# def write_to_log_table(log_data: Dict[str, Any], log_table_name: str) -> None:
-#     print(sys._getframe().f_code.co_name)
+class DDLGenerator(ABC):
+    """DDLGenerator class."""
 
-#     """
-#     Writes log data to a specified log table.
+    def __init__(self):
+        print(sys._getframe().f_code.co_name)
 
-#     Args:
-#         log_data (Dict[str, Any]): The log data to write.
-#         log_table_name (str): The name of the log table.
-#     """
-#     spark = SparkSession.builder.getOrCreate()
-
-#     # Ensure apply_ddl is a boolean to match existing table schema
-#     if "apply_ddl" in log_data:
-#         val = log_data["apply_ddl"]
-#         if isinstance(val, str):
-#             log_data["apply_ddl"] = val.lower() == "true"
-#         elif not isinstance(val, bool):
-#             log_data["apply_ddl"] = bool(val)
-
-#     log_df = spark.createDataFrame([log_data])
-
-#     log_df.write.format("delta").option("mergeSchema", "true").mode(
-#         "append"
-#     ).saveAsTable(log_table_name)
+        pass
 
 
-# def count_df_columns(df: DataFrame) -> int:
-#     print(sys._getframe().f_code.co_name)
+class Input(BaseModel):
+    """Input class."""
 
-#     """
-#     Count the number of columns in a spark dataframe and return.
-#     """
-#     return len(df.columns)
+    ### Currently not implemented.
+    model_config = ConfigDict(extra="forbid")
 
+    table_name: str
 
-# def chunk_df(df: DataFrame, columns_per_call: int = 5) -> List[DataFrame]:
-#     print(sys._getframe().f_code.co_name)
+    @classmethod
+    def from_df(cls, df: DataFrame) -> Dict[str, Any]:
+        print(sys._getframe().f_code.co_name)
 
-#     """
-#     Splits a DataFrame into multiple DataFrames, each containing a specified number of columns.
-
-#     Args:
-#         df (DataFrame): The input DataFrame to split.
-#         columns_per_chunk (int, optional): The number of columns per chunk. Defaults to 10.
-
-#     Returns:
-#         List[DataFrame]: A list of DataFrames, each containing a subset of the original columns.
-#     """
-#     col_names = df.columns
-#     n_cols = count_df_columns(df)
-#     num_chunks = (n_cols + columns_per_call - 1) // columns_per_call
-
-#     dataframes = []
-#     for i in range(num_chunks):
-#         chunk_col_names = col_names[i * columns_per_call : (i + 1) * columns_per_call]
-#         chunk_df_var = df.select(chunk_col_names)
-#         dataframes.append(chunk_df_var)
-
-#     return dataframes
+        """From DataFrame class."""
+        return {
+            "table_name": f"{catalog_name}.{schema_name}.{table_name}",
+            "column_contents": cls.df.toPandas().to_dict(orient="list"),
+        }
 
 
-# def get_extended_metadata_for_column(config, table_name, column_name):
-#     print(sys._getframe().f_code.co_name)
+def tag_table(table_name: str, tags: Dict[str, str]) -> None:
+    print(sys._getframe().f_code.co_name)
 
-#     """Get extended metadata for a column."""
-#     spark = SparkSession.builder.getOrCreate()
-#     query = f"""DESCRIBE EXTENDED {config.catalog_name}.{config.schema_name}.{table_name} `{column_name}`;"""
-#     return spark.sql(query)
+    """
+    Tags a table with the provided tags.
+
+    Args:
+        table_name (str): The name of the table to tag.
+        tags (Dict[str, str]): A dictionary of tags to apply to the table.
+    """
+    spark = SparkSession.builder.getOrCreate()
+    for key, value in tags.items():
+        spark.sql(f"ALTER TABLE {table_name} SET TBLPROPERTIES ('{key}' = '{value}');")
 
 
-# def get_column_types_from_describe(spark: SparkSession, full_table_name: str) -> dict:
-#     print(sys._getframe().f_code.co_name)
+def write_to_log_table(log_data: Dict[str, Any], log_table_name: str) -> None:
+    print(sys._getframe().f_code.co_name)
 
-#     """
-#     Get column names and types using DESCRIBE TABLE.
-#     This works even when df.schema fails (e.g., VARIANT type in Spark Connect).
+    """
+    Writes log data to a specified log table.
 
-#     Returns:
-#         dict: {column_name: data_type_string}
-#     """
-#     describe_df = spark.sql(f"DESCRIBE TABLE {full_table_name}")
-#     columns = {}
-#     for row in describe_df.collect():
-#         col_name = row["col_name"]
-#         # Skip partition info and other metadata rows
-#         if col_name and not col_name.startswith("#") and col_name != "":
-#             data_type = row["data_type"]
-#             if data_type:  # Skip empty type rows
-#                 columns[col_name] = data_type.upper()
-#     return columns
+    Args:
+        log_data (Dict[str, Any]): The log data to write.
+        log_table_name (str): The name of the log table.
+    """
+    spark = SparkSession.builder.getOrCreate()
+
+    # Ensure apply_ddl is a boolean to match existing table schema
+    if "apply_ddl" in log_data:
+        val = log_data["apply_ddl"]
+        if isinstance(val, str):
+            log_data["apply_ddl"] = val.lower() == "true"
+        elif not isinstance(val, bool):
+            log_data["apply_ddl"] = bool(val)
+
+    log_df = spark.createDataFrame([log_data])
+
+    log_df.write.format("delta").option("mergeSchema", "true").mode(
+        "append"
+    ).saveAsTable(log_table_name)
+
+
+def count_df_columns(df: DataFrame) -> int:
+    print(sys._getframe().f_code.co_name)
+
+    """
+    Count the number of columns in a spark dataframe and return.
+    """
+    return len(df.columns)
+
+
+def chunk_df(df: DataFrame, columns_per_call: int = 5) -> List[DataFrame]:
+    print(sys._getframe().f_code.co_name)
+
+    """
+    Splits a DataFrame into multiple DataFrames, each containing a specified number of columns.
+
+    Args:
+        df (DataFrame): The input DataFrame to split.
+        columns_per_chunk (int, optional): The number of columns per chunk. Defaults to 10.
+
+    Returns:
+        List[DataFrame]: A list of DataFrames, each containing a subset of the original columns.
+    """
+    col_names = df.columns
+    n_cols = count_df_columns(df)
+    num_chunks = (n_cols + columns_per_call - 1) // columns_per_call
+
+    dataframes = []
+    for i in range(num_chunks):
+        chunk_col_names = col_names[i * columns_per_call : (i + 1) * columns_per_call]
+        chunk_df_var = df.select(chunk_col_names)
+        dataframes.append(chunk_df_var)
+
+    return dataframes
+
+
+def get_extended_metadata_for_column(config, table_name, column_name):
+    print(sys._getframe().f_code.co_name)
+
+    """Get extended metadata for a column."""
+    spark = SparkSession.builder.getOrCreate()
+    query = f"""DESCRIBE EXTENDED {config.catalog_name}.{config.schema_name}.{table_name} `{column_name}`;"""
+    return spark.sql(query)
+
+
+def get_column_types_from_describe(spark: SparkSession, full_table_name: str) -> dict:
+    print(sys._getframe().f_code.co_name)
+
+    """
+    Get column names and types using DESCRIBE TABLE.
+    This works even when df.schema fails (e.g., VARIANT type in Spark Connect).
+
+    Returns:
+        dict: {column_name: data_type_string}
+    """
+    describe_df = spark.sql(f"DESCRIBE TABLE {full_table_name}")
+    columns = {}
+    for row in describe_df.collect():
+        col_name = row["col_name"]
+        # Skip partition info and other metadata rows
+        if col_name and not col_name.startswith("#") and col_name != "":
+            data_type = row["data_type"]
+            if data_type:  # Skip empty type rows
+                columns[col_name] = data_type.upper()
+    return columns
 
 
 # def read_table_with_type_conversion(
@@ -3357,127 +3357,127 @@
 #     return df.withColumn("table", split_part(col("table"), ".", -1))
 
 
-# def _create_table_comment_ddl_func():
-#     print(sys._getframe().f_code.co_name)
+def _create_table_comment_ddl_func():
+    print(sys._getframe().f_code.co_name)
 
 
-#     def table_comment_ddl(full_table_name: str, comment: str) -> str:
-#         print(sys._getframe().f_code.co_name)
+    def table_comment_ddl(full_table_name: str, comment: str) -> str:
+        print(sys._getframe().f_code.co_name)
 
-#         if comment is not None:
-#             comment = comment.replace('""', "'")
-#             comment = comment.replace('"', "'")
-#         return f"""COMMENT ON TABLE {full_table_name} IS "{comment}";"""
+        if comment is not None:
+            comment = comment.replace('""', "'")
+            comment = comment.replace('"', "'")
+        return f"""COMMENT ON TABLE {full_table_name} IS "{comment}";"""
 
-#     return table_comment_ddl
-
-
-# def _create_column_comment_ddl_func():
-#     print(sys._getframe().f_code.co_name)
-
-#     def column_comment_ddl(full_table_name: str, column_name: str, comment: str) -> str:
-#         print(sys._getframe().f_code.co_name)
-
-#         if comment is not None:
-#             comment = comment.replace('""', "'")
-#             comment = comment.replace('"', "'")
-
-#         dbr_number = os.environ.get("DATABRICKS_RUNTIME_VERSION")
-
-#         if dbr_number is None:
-#             # Default to newer syntax for serverless (assumes DBR 15+)
-#             ddl_statement = f"""COMMENT ON COLUMN {full_table_name}.`{column_name}` IS "{comment}";"""
-#         else:
-#             try:
-#                 dbr_version = float(dbr_number)
-#                 if dbr_version is None:
-#                     raise ValueError(f"Databricks runtime version is None")
-#                 if dbr_version >= 16:
-#                     ddl_statement = f"""COMMENT ON COLUMN {full_table_name}.`{column_name}` IS "{comment}";"""
-#                 elif dbr_version >= 14 and dbr_version < 16:
-#                     ddl_statement = f"""ALTER TABLE {full_table_name} ALTER COLUMN `{column_name}` COMMENT "{comment}";"""
-#                 else:
-#                     raise ValueError(
-#                         f"Unsupported Databricks runtime version: {dbr_number}"
-#                     )
-#             except ValueError as e:
-#                 ddl_statement = f"""COMMENT ON COLUMN {full_table_name}.`{column_name}` IS "{comment}";"""
-#         return ddl_statement
-
-#     return column_comment_ddl
+    return table_comment_ddl
 
 
-# def _create_table_pi_information_ddl_func(config: MetadataConfig):
-#     print(sys._getframe().f_code.co_name)
+def _create_column_comment_ddl_func():
+    print(sys._getframe().f_code.co_name)
 
-#     pi_class_tag = getattr(config, "pi_classification_tag_name", "data_classification")
-#     pi_subclass_tag = getattr(
-#         config, "pi_subclassification_tag_name", "data_subclassification"
-#     )
+    def column_comment_ddl(full_table_name: str, column_name: str, comment: str) -> str:
+        print(sys._getframe().f_code.co_name)
 
-#     def table_pi_information_ddl(
+        if comment is not None:
+            comment = comment.replace('""', "'")
+            comment = comment.replace('"', "'")
 
-#         table_name: str, classification: str, pi_type: str
-#     ) -> str:
-#         print(sys._getframe().f_code.co_name)
+        dbr_number = os.environ.get("DATABRICKS_RUNTIME_VERSION")
 
-#         return f"ALTER TABLE {table_name} SET TAGS ('{pi_class_tag}' = '{classification}', '{pi_subclass_tag}' = '{pi_type}');"
+        if dbr_number is None:
+            # Default to newer syntax for serverless (assumes DBR 15+)
+            ddl_statement = f"""COMMENT ON COLUMN {full_table_name}.`{column_name}` IS "{comment}";"""
+        else:
+            try:
+                dbr_version = float(dbr_number)
+                if dbr_version is None:
+                    raise ValueError(f"Databricks runtime version is None")
+                if dbr_version >= 16:
+                    ddl_statement = f"""COMMENT ON COLUMN {full_table_name}.`{column_name}` IS "{comment}";"""
+                elif dbr_version >= 14 and dbr_version < 16:
+                    ddl_statement = f"""ALTER TABLE {full_table_name} ALTER COLUMN `{column_name}` COMMENT "{comment}";"""
+                else:
+                    raise ValueError(
+                        f"Unsupported Databricks runtime version: {dbr_number}"
+                    )
+            except ValueError as e:
+                ddl_statement = f"""COMMENT ON COLUMN {full_table_name}.`{column_name}` IS "{comment}";"""
+        return ddl_statement
 
-#     return table_pi_information_ddl
-
-
-# def _create_pi_information_ddl_func(config: MetadataConfig):
-#     print(sys._getframe().f_code.co_name)
-
-#     pi_class_tag = getattr(config, "pi_classification_tag_name", "data_classification")
-#     pi_subclass_tag = getattr(
-#         config, "pi_subclassification_tag_name", "data_subclassification"
-#     )
-
-#     def pi_information_ddl(
-
-#         table_name: str, column_name: str, classification: str, pi_type: str
-#     ) -> str:
-#         print(sys._getframe().f_code.co_name)
-
-#         return f"ALTER TABLE {table_name} ALTER COLUMN `{column_name}` SET TAGS ('{pi_class_tag}' = '{classification}', '{pi_subclass_tag}' = '{pi_type}');"
-
-#     return pi_information_ddl
+    return column_comment_ddl
 
 
-# def _create_table_domain_ddl_func(config: MetadataConfig):
-#     print(sys._getframe().f_code.co_name)
+def _create_table_pi_information_ddl_func(config: MetadataConfig):
+    print(sys._getframe().f_code.co_name)
 
-#     domain_tag = getattr(config, "domain_tag_name", "domain")
-#     subdomain_tag = getattr(config, "subdomain_tag_name", "subdomain")
+    pi_class_tag = getattr(config, "pi_classification_tag_name", "data_classification")
+    pi_subclass_tag = getattr(
+        config, "pi_subclassification_tag_name", "data_subclassification"
+    )
 
-#     def table_domain_ddl(full_table_name: str, domain: str, subdomain: str) -> str:
-#         print(sys._getframe().f_code.co_name)
+    def table_pi_information_ddl(
 
-#         """
-#         Generate DDL for domain classification as table tags.
+        table_name: str, classification: str, pi_type: str
+    ) -> str:
+        print(sys._getframe().f_code.co_name)
 
-#         Args:
-#             full_table_name: The full table name (catalog.schema.table)
-#             domain: Primary domain classification
-#             subdomain: Subdomain classification (can be None or empty)
+        return f"ALTER TABLE {table_name} SET TAGS ('{pi_class_tag}' = '{classification}', '{pi_subclass_tag}' = '{pi_type}');"
 
-#         Returns:
-#             DDL statement to set table tags with domain information
-#         """
-#         if subdomain is None or subdomain == "None" or subdomain.strip() == "":
-#             return (
-#                 f"ALTER TABLE {full_table_name} SET TAGS ('{domain_tag}' = '{domain}');"
-#             )
-#         return f"ALTER TABLE {full_table_name} SET TAGS ('{domain_tag}' = '{domain}', '{subdomain_tag}' = '{subdomain}');"
-
-#     return table_domain_ddl
+    return table_pi_information_ddl
 
 
-# generate_table_comment_ddl = udf(_create_table_comment_ddl_func(), StringType())
-# generate_column_comment_ddl = udf(_create_column_comment_ddl_func(), StringType())
+def _create_pi_information_ddl_func(config: MetadataConfig):
+    print(sys._getframe().f_code.co_name)
 
-# # These UDFs require config and are created dynamically in their respective functions
-# # generate_table_pi_information_ddl
-# # generate_pi_information_ddl
-# # generate_table_domain_ddl
+    pi_class_tag = getattr(config, "pi_classification_tag_name", "data_classification")
+    pi_subclass_tag = getattr(
+        config, "pi_subclassification_tag_name", "data_subclassification"
+    )
+
+    def pi_information_ddl(
+
+        table_name: str, column_name: str, classification: str, pi_type: str
+    ) -> str:
+        print(sys._getframe().f_code.co_name)
+
+        return f"ALTER TABLE {table_name} ALTER COLUMN `{column_name}` SET TAGS ('{pi_class_tag}' = '{classification}', '{pi_subclass_tag}' = '{pi_type}');"
+
+    return pi_information_ddl
+
+
+def _create_table_domain_ddl_func(config: MetadataConfig):
+    print(sys._getframe().f_code.co_name)
+
+    domain_tag = getattr(config, "domain_tag_name", "domain")
+    subdomain_tag = getattr(config, "subdomain_tag_name", "subdomain")
+
+    def table_domain_ddl(full_table_name: str, domain: str, subdomain: str) -> str:
+        print(sys._getframe().f_code.co_name)
+
+        """
+        Generate DDL for domain classification as table tags.
+
+        Args:
+            full_table_name: The full table name (catalog.schema.table)
+            domain: Primary domain classification
+            subdomain: Subdomain classification (can be None or empty)
+
+        Returns:
+            DDL statement to set table tags with domain information
+        """
+        if subdomain is None or subdomain == "None" or subdomain.strip() == "":
+            return (
+                f"ALTER TABLE {full_table_name} SET TAGS ('{domain_tag}' = '{domain}');"
+            )
+        return f"ALTER TABLE {full_table_name} SET TAGS ('{domain_tag}' = '{domain}', '{subdomain_tag}' = '{subdomain}');"
+
+    return table_domain_ddl
+
+
+generate_table_comment_ddl = udf(_create_table_comment_ddl_func(), StringType())
+generate_column_comment_ddl = udf(_create_column_comment_ddl_func(), StringType())
+
+# These UDFs require config and are created dynamically in their respective functions
+# generate_table_pi_information_ddl
+# generate_pi_information_ddl
+# generate_table_domain_ddl
