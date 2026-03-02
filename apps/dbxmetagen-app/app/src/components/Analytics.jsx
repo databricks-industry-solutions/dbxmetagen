@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { safeFetch, safeFetchObj, ErrorBanner } from '../App'
+import Visualizations from './Visualizations'
 
 const NODE_TYPES = ['', 'table', 'column', 'schema']
 const EDGE_TYPES = ['', 'contains', 'same_domain', 'same_subdomain', 'same_catalog',
@@ -19,7 +20,7 @@ const NODE_COLORS = { table: '#6366f1', column: '#8b5cf6', schema: '#0ea5e9' }
 // Force graph visualization of neighbors
 // ---------------------------------------------------------------------------
 let ForceGraph2D = null
-try { ForceGraph2D = require('react-force-graph-2d').default } catch {}
+try { ForceGraph2D = require('react-force-graph-2d').default } catch { }
 
 function NeighborGraph({ selectedNode, neighbors, onNodeClick }) {
   const graphRef = useRef()
@@ -111,7 +112,7 @@ function GraphExplorer() {
       } else {
         const body = await res.text().catch(() => '')
         let msg = `Error ${res.status}`
-        try { const j = JSON.parse(body); if (j.detail) msg = j.detail } catch {}
+        try { const j = JSON.parse(body); if (j.detail) msg = j.detail } catch { }
         setAnswer({ answer: msg, steps: 0 })
       }
     } catch (e) { setAnswer({ answer: `Error: ${e.message}`, steps: 0 }) }
@@ -173,12 +174,12 @@ function GraphExplorer() {
           <h3 className="font-semibold text-sm text-slate-700 mb-3">Graph Nodes</h3>
           {nodeError
             ? <div className="text-sm py-2">
-                <p className="text-amber-600 mb-1">Graph tables not found in Lakebase.</p>
-                <p className="text-slate-400">Run the "Sync Graph to Lakebase" job from the Batch Jobs tab to create them.</p>
-              </div>
+              <p className="text-amber-600 mb-1">Graph tables not found in Lakebase.</p>
+              <p className="text-slate-400">Run the "Sync Graph to Lakebase" job from the Batch Jobs tab to create them.</p>
+            </div>
             : nodes.length === 0
-            ? <p className="text-sm text-slate-400 py-2">No graph nodes available.</p>
-            : nodes.map((n, i) => (
+              ? <p className="text-sm text-slate-400 py-2">No graph nodes available.</p>
+              : nodes.map((n, i) => (
                 <div key={i} onClick={() => exploreNode(n.id)}
                   className={`p-2.5 border-b border-slate-100 cursor-pointer hover:bg-indigo-50 transition-colors text-xs ${selectedNode === n.id ? 'bg-indigo-50 border-l-2 border-l-indigo-500' : ''}`}>
                   <span className="font-semibold text-slate-700">{n.id}</span>
@@ -229,24 +230,24 @@ function FKPredictions() {
       {predictions.length === 0
         ? <p className="text-sm text-slate-400">No FK predictions available. Run the FK prediction job first.</p>
         : <div className="overflow-x-auto max-h-96">
-            <table className="min-w-full text-sm">
-              <thead><tr>
-                {['Source Column', 'Target Column', 'Rule Score', 'AI Confidence', 'Reasoning'].map(h =>
-                  <th key={h} className="text-left px-3 py-2.5 bg-slate-50 font-semibold text-slate-600 border-b border-slate-200 text-xs uppercase tracking-wider">{h}</th>)}
-              </tr></thead>
-              <tbody>
-                {predictions.map((p, i) => (
-                  <tr key={i} className="border-b border-slate-100 hover:bg-indigo-50/30 transition-colors">
-                    <td className="px-3 py-2 text-slate-700">{p.src_column}</td>
-                    <td className="px-3 py-2 text-slate-700">{p.dst_column}</td>
-                    <td className="px-3 py-2 font-bold text-indigo-700">{Number(p.rule_score).toFixed(2)}</td>
-                    <td className="px-3 py-2 font-bold text-emerald-700">{Number(p.ai_confidence).toFixed(2)}</td>
-                    <td className="px-3 py-2 text-slate-500 text-xs max-w-xs truncate">{p.ai_reasoning}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <table className="min-w-full text-sm">
+            <thead><tr>
+              {['Source Column', 'Target Column', 'Rule Score', 'AI Confidence', 'Reasoning'].map(h =>
+                <th key={h} className="text-left px-3 py-2.5 bg-slate-50 font-semibold text-slate-600 border-b border-slate-200 text-xs uppercase tracking-wider">{h}</th>)}
+            </tr></thead>
+            <tbody>
+              {predictions.map((p, i) => (
+                <tr key={i} className="border-b border-slate-100 hover:bg-indigo-50/30 transition-colors">
+                  <td className="px-3 py-2 text-slate-700">{p.src_column}</td>
+                  <td className="px-3 py-2 text-slate-700">{p.dst_column}</td>
+                  <td className="px-3 py-2 font-bold text-indigo-700">{Number(p.rule_score).toFixed(2)}</td>
+                  <td className="px-3 py-2 font-bold text-emerald-700">{Number(p.ai_confidence).toFixed(2)}</td>
+                  <td className="px-3 py-2 text-slate-500 text-xs max-w-xs truncate">{p.ai_reasoning}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       }
     </div>
   )
@@ -270,19 +271,20 @@ export default function Analytics() {
 
   const clusterSummary = clusters.reduce((acc, c) => { acc[c.cluster] = (acc[c.cluster] || 0) + 1; return acc }, {})
 
-  const tabs = [['graph','Graph Explorer'],['fk','FK Predictions'],['clusters','Clusters'],['similarity','Similarity'],['metrics','Metrics']]
+  const tabs = [['graph', 'Graph Explorer'], ['viz', 'Visualizations'], ['fk', 'FK Predictions'], ['clusters', 'Clusters'], ['similarity', 'Similarity'], ['metrics', 'Metrics']]
 
   return (
     <div className="space-y-6">
       <ErrorBanner error={error} />
       <div className="flex gap-2 flex-wrap">
-        {tabs.map(([k,l]) => (
+        {tabs.map(([k, l]) => (
           <button key={k} onClick={() => setView(k)}
             className={`px-4 py-2 text-sm rounded-lg font-medium transition-all ${view === k ? 'bg-indigo-600 text-white shadow-sm' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>{l}</button>
         ))}
       </div>
 
       {view === 'graph' && <GraphExplorer />}
+      {view === 'viz' && <Visualizations />}
       {view === 'fk' && <FKPredictions />}
 
       {view === 'clusters' && (
@@ -291,35 +293,35 @@ export default function Analytics() {
           {Object.keys(clusterSummary).length === 0
             ? <p className="text-sm text-slate-400">No clusters available. Run the analytics pipeline first.</p>
             : <>
-                <div className="grid grid-cols-2 md:grid-cols-6 gap-3 mb-5">
-                  {Object.entries(clusterSummary).map(([k, v]) => (
-                    <div key={k} className="border border-slate-200 rounded-xl p-3 text-center bg-gradient-to-br from-white to-indigo-50/30">
-                      <p className="text-xs text-slate-400 font-medium">Cluster {k}</p>
-                      <p className="text-xl font-bold text-indigo-700">{v}</p>
-                    </div>
-                  ))}
-                </div>
-                <div className="overflow-x-auto max-h-80">
-                  <table className="min-w-full text-sm">
-                    <thead><tr>
-                      {['ID', 'Type', 'Domain', 'Cluster', 'K', 'Silhouette'].map(h =>
-                        <th key={h} className="text-left px-3 py-2.5 bg-slate-50 font-semibold text-slate-600 border-b border-slate-200 text-xs uppercase tracking-wider">{h}</th>)}
-                    </tr></thead>
-                    <tbody>
-                      {clusters.slice(0, 100).map((c, i) => (
-                        <tr key={i} className="border-b border-slate-100 hover:bg-indigo-50/30 transition-colors">
-                          <td className="px-3 py-1.5 text-slate-700">{c.id}</td>
-                          <td className="px-3 py-1.5 text-slate-600">{c.node_type}</td>
-                          <td className="px-3 py-1.5 text-slate-600">{c.domain}</td>
-                          <td className="px-3 py-1.5 font-bold text-indigo-700">{c.cluster}</td>
-                          <td className="px-3 py-1.5 text-slate-600">{c.k_value}</td>
-                          <td className="px-3 py-1.5 text-slate-600">{c.silhouette_score}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </>
+              <div className="grid grid-cols-2 md:grid-cols-6 gap-3 mb-5">
+                {Object.entries(clusterSummary).map(([k, v]) => (
+                  <div key={k} className="border border-slate-200 rounded-xl p-3 text-center bg-gradient-to-br from-white to-indigo-50/30">
+                    <p className="text-xs text-slate-400 font-medium">Cluster {k}</p>
+                    <p className="text-xl font-bold text-indigo-700">{v}</p>
+                  </div>
+                ))}
+              </div>
+              <div className="overflow-x-auto max-h-80">
+                <table className="min-w-full text-sm">
+                  <thead><tr>
+                    {['ID', 'Type', 'Domain', 'Cluster', 'K', 'Silhouette'].map(h =>
+                      <th key={h} className="text-left px-3 py-2.5 bg-slate-50 font-semibold text-slate-600 border-b border-slate-200 text-xs uppercase tracking-wider">{h}</th>)}
+                  </tr></thead>
+                  <tbody>
+                    {clusters.slice(0, 100).map((c, i) => (
+                      <tr key={i} className="border-b border-slate-100 hover:bg-indigo-50/30 transition-colors">
+                        <td className="px-3 py-1.5 text-slate-700">{c.id}</td>
+                        <td className="px-3 py-1.5 text-slate-600">{c.node_type}</td>
+                        <td className="px-3 py-1.5 text-slate-600">{c.domain}</td>
+                        <td className="px-3 py-1.5 font-bold text-indigo-700">{c.cluster}</td>
+                        <td className="px-3 py-1.5 text-slate-600">{c.k_value}</td>
+                        <td className="px-3 py-1.5 text-slate-600">{c.silhouette_score}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
           }
         </div>
       )}
@@ -330,20 +332,20 @@ export default function Analytics() {
           {simEdges.length === 0
             ? <p className="text-sm text-slate-400">No similarity edges available.</p>
             : <table className="min-w-full text-sm">
-                <thead><tr>
-                  {['Source', 'Target', 'Weight'].map(h =>
-                    <th key={h} className="text-left px-3 py-2.5 bg-slate-50 font-semibold text-slate-600 border-b border-slate-200 text-xs uppercase tracking-wider">{h}</th>)}
-                </tr></thead>
-                <tbody>
-                  {simEdges.map((e, i) => (
-                    <tr key={i} className="border-b border-slate-100 hover:bg-indigo-50/30 transition-colors">
-                      <td className="px-3 py-2 text-slate-700">{e.src}</td>
-                      <td className="px-3 py-2 text-slate-700">{e.dst}</td>
-                      <td className="px-3 py-2 font-bold text-indigo-700">{e.weight}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+              <thead><tr>
+                {['Source', 'Target', 'Weight'].map(h =>
+                  <th key={h} className="text-left px-3 py-2.5 bg-slate-50 font-semibold text-slate-600 border-b border-slate-200 text-xs uppercase tracking-wider">{h}</th>)}
+              </tr></thead>
+              <tbody>
+                {simEdges.map((e, i) => (
+                  <tr key={i} className="border-b border-slate-100 hover:bg-indigo-50/30 transition-colors">
+                    <td className="px-3 py-2 text-slate-700">{e.src}</td>
+                    <td className="px-3 py-2 text-slate-700">{e.dst}</td>
+                    <td className="px-3 py-2 font-bold text-indigo-700">{e.weight}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           }
         </div>
       )}
@@ -354,24 +356,24 @@ export default function Analytics() {
           {metrics.length === 0
             ? <p className="text-sm text-slate-400">No clustering metrics available.</p>
             : <table className="min-w-full text-sm">
-                <thead><tr>
-                  {['K', 'Phase', 'Silhouette Mean', 'WSSSE Mean', 'Runs', 'Sample Size', 'Timestamp'].map(h =>
-                    <th key={h} className="text-left px-3 py-2.5 bg-slate-50 font-semibold text-slate-600 border-b border-slate-200 text-xs uppercase tracking-wider">{h}</th>)}
-                </tr></thead>
-                <tbody>
-                  {metrics.map((m, i) => (
-                    <tr key={i} className="border-b border-slate-100 hover:bg-indigo-50/30 transition-colors">
-                      <td className="px-3 py-2 font-bold text-indigo-700">{m.k}</td>
-                      <td className="px-3 py-2 text-slate-600">{m.phase}</td>
-                      <td className="px-3 py-2 text-slate-600">{m.silhouette_mean}</td>
-                      <td className="px-3 py-2 text-slate-600">{m.wssse_mean}</td>
-                      <td className="px-3 py-2 text-slate-600">{m.n_runs}</td>
-                      <td className="px-3 py-2 text-slate-600">{m.sample_size}</td>
-                      <td className="px-3 py-2 text-slate-500 text-xs">{m.run_timestamp}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+              <thead><tr>
+                {['K', 'Phase', 'Silhouette Mean', 'WSSSE Mean', 'Runs', 'Sample Size', 'Timestamp'].map(h =>
+                  <th key={h} className="text-left px-3 py-2.5 bg-slate-50 font-semibold text-slate-600 border-b border-slate-200 text-xs uppercase tracking-wider">{h}</th>)}
+              </tr></thead>
+              <tbody>
+                {metrics.map((m, i) => (
+                  <tr key={i} className="border-b border-slate-100 hover:bg-indigo-50/30 transition-colors">
+                    <td className="px-3 py-2 font-bold text-indigo-700">{m.k}</td>
+                    <td className="px-3 py-2 text-slate-600">{m.phase}</td>
+                    <td className="px-3 py-2 text-slate-600">{m.silhouette_mean}</td>
+                    <td className="px-3 py-2 text-slate-600">{m.wssse_mean}</td>
+                    <td className="px-3 py-2 text-slate-600">{m.n_runs}</td>
+                    <td className="px-3 py-2 text-slate-600">{m.sample_size}</td>
+                    <td className="px-3 py-2 text-slate-500 text-xs">{m.run_timestamp}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           }
         </div>
       )}

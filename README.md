@@ -10,54 +10,88 @@
 - **Data profiling**: Statistical profiling and quality scoring
 - **Knowledge graph**: Graph-based metadata analytics with embeddings, similarity, and clustering
 - **Ontology discovery**: Business entity extraction and validation
-- **Web dashboard**: FastAPI + React app for metadata review, profiling, and graph exploration
+- **FK prediction**: AI-assisted foreign key relationship discovery
+- **Web dashboard**: FastAPI + React app for metadata review, profiling, graph exploration, and visualizations
 
-## Quickstart
+## Quickstart (5 minutes)
 
-1. **Clone the repo** into a Git Folder in your Databricks workspace
-   ```
-   Create Git Folder -> Clone https://github.com/databricks-industry-solutions/dbxmetagen
-   ```
+Install the package on any Databricks cluster and run from a notebook. No CLI, Asset Bundles, or repo clone needed.
 
-2. **Open the notebook**: `notebooks/generate_metadata.py`
+### 1. Install
 
-3. **Fill in the widgets**:
-   - **catalog_name** (required): Your Unity Catalog name
-   - **table_names** (required): Comma-separated list (e.g., `catalog.schema.table1`). Use `catalog.schema.*` for all tables in a schema.
-   - **mode**: Choose `comment`, `pi`, or `domain`
+In a Databricks notebook cell:
 
-4. **Run the notebook** -- metadata is generated and logged. Set `apply_ddl=true` to apply changes to Unity Catalog.
-
-### pip install
-
-dbxmetagen is pip-installable:
-
-```bash
-pip install dbxmetagen              # Core (no SpaCy/Presidio)
-pip install dbxmetagen[nlp]         # With SpaCy + Presidio for deterministic PI detection
+```python
+%pip install dbxmetagen
+dbutils.library.restartPython()
 ```
 
-### Full Deployment (DAB)
+### 2. Generate metadata
 
-For the web dashboard, batch jobs, and full pipeline:
+```python
+from dbxmetagen.main import main
 
-1. Install prerequisites: Databricks CLI, Python 3.10+, Poetry
-2. Configure:
-   ```bash
-   cp example.env dev.env  # Edit with your workspace URL and catalog/schema
-   ```
-   For the dashboard app to show metadata and metrics, set `catalog_name` and (optionally) `schema_name` in dev.env; deploy.sh injects these into the bundle so the app gets the correct CATALOG_NAME/SCHEMA_NAME at runtime.
-3. Deploy:
-   ```bash
-   ./deploy.sh --profile <your-profile> --target <your-dab-target>
-   ```
-4. Access the app at **Workspace -> Apps -> dbxmetagen-app**
-
-Or run jobs directly:
-```bash
-databricks bundle run metadata_generator_job -t <target> -p <profile> --params table_names='catalog.schema.*',mode=domain
-databricks bundle run metadata_parallel_modes_job -t <target> -p <profile> --params table_names='catalog.schema.*'
+main({
+    "catalog_name": "my_catalog",
+    "table_names": "my_catalog.my_schema.my_table",
+    "mode": "comment",              # or "pi" or "domain"
+    "schema_name": "metadata_results",
+    "model": "databricks-claude-sonnet-4-5",
+    "table_names_source": "parameter",
+})
 ```
+
+Use `"my_catalog.my_schema.*"` to process all tables in a schema.
+
+### 3. Run analytics (optional)
+
+After metadata generation, build the knowledge base and graph:
+
+```python
+from pyspark.sql import SparkSession
+from dbxmetagen import build_knowledge_base, build_knowledge_graph, generate_embeddings, build_ontology
+
+spark = SparkSession.builder.getOrCreate()
+build_knowledge_base(spark, "my_catalog", "metadata_results")
+build_knowledge_graph(spark, "my_catalog", "metadata_results")
+generate_embeddings(spark, "my_catalog", "metadata_results")
+build_ontology(spark, "my_catalog", "metadata_results")
+```
+
+See `examples/` for complete runnable notebooks:
+
+| Notebook | What it does |
+|----------|-------------|
+| `examples/01_quickstart_metadata.py` | Comment, PI, or domain generation with widgets |
+| `examples/02_analytics_pipeline.py` | Full KB, graph, embeddings, ontology, similarity, quality pipeline |
+| `examples/03_advanced_analytics.py` | FK prediction and ontology validation |
+
+## Full Deployment (DAB)
+
+For the web dashboard, batch jobs, Lakebase integration, and the full analytics pipeline as managed Databricks jobs:
+
+**Prerequisites:** Databricks CLI (>=0.283.0), Python 3.10+, Poetry 2.x, Node.js (for frontend build).
+
+1. Clone the repo and configure:
+   ```bash
+   git clone https://github.com/databricks-industry-solutions/dbxmetagen
+   cd dbxmetagen
+   cp example.env dev.env   # Edit with your workspace URL, catalog, schema, warehouse_id
+   ```
+
+2. Deploy:
+   ```bash
+   ./deploy.sh --profile <your-profile> --target dev
+   ```
+   This builds the wheel, compiles the React frontend, deploys jobs + app via Asset Bundles, and starts the dashboard.
+
+3. Access the app at **Workspace > Apps > dbxmetagen-app**
+
+4. Run jobs:
+   ```bash
+   databricks bundle run metadata_generator_job -t dev -p <profile> --params table_names='catalog.schema.*',mode=domain
+   databricks bundle run full_analytics_pipeline -t dev -p <profile>
+   ```
 
 ## Disclaimer
 
@@ -135,6 +169,21 @@ flowchart TB
     API --> UI
 ```
 
+### Pipeline overview
+
+dbxmetagen has two phases:
+
+**Phase 1 -- Core metadata generation** (`generate_metadata.py` / `main()`):
+- Runs one mode at a time: `comment`, `pi`, or `domain`
+- Writes results to `metadata_generation_log`
+- Can apply DDL directly or output to files for review
+
+**Phase 2 -- Analytics pipeline** (run after Phase 1):
+- Aggregates log data into knowledge bases (table, column, schema)
+- Builds a knowledge graph with nodes and edges
+- Generates embeddings, discovers ontology entities, computes similarity
+- Runs profiling, quality scoring, clustering, and FK prediction
+
 ### Layers
 
 | Layer | Tables | Purpose |
@@ -144,39 +193,96 @@ flowchart TB
 | **Graph** | `graph_nodes`, `graph_edges`, `node_cluster_assignments`, `clustering_metrics` | Graph analytics with embeddings, similarity edges, and K-means clustering |
 | **Ontology** | `ontology_entities`, `ontology_metrics` (stub) | Business entity discovery and validation |
 
+## API Reference
+
+Core functions exported by the `dbxmetagen` package:
+
+| Function | Description |
+|----------|-------------|
+| `main(kwargs)` | Entry point for metadata generation (comment/PI/domain) |
+| `build_knowledge_base(spark, catalog, schema)` | Build table-level knowledge base from generation log |
+| `build_column_knowledge_base(spark, catalog, schema)` | Build column-level knowledge base |
+| `build_schema_knowledge_base(spark, catalog, schema)` | Build schema-level knowledge base |
+| `extract_extended_metadata(spark, catalog, schema)` | Extract system metadata via DESCRIBE EXTENDED |
+| `build_knowledge_graph(spark, catalog, schema)` | Build graph nodes and edges from KB tables |
+| `generate_embeddings(spark, catalog, schema)` | Generate vector embeddings for graph nodes |
+| `build_similarity_edges(spark, catalog, schema)` | Create similarity edges from embeddings |
+| `build_ontology(spark, catalog, schema)` | Discover and store business entities |
+| `validate_ontology(spark, catalog, schema)` | Validate discovered entities |
+| `run_profiling(spark, catalog, schema)` | Profile tables and columns |
+| `compute_data_quality(spark, catalog, schema)` | Compute data quality scores |
+| `predict_foreign_keys(spark, catalog, schema)` | Predict FK relationships using AI + heuristics |
+
 ## Notebooks
 
 | Notebook | Purpose |
 |----------|---------|
 | `generate_metadata.py` | Primary entry point: comment, PI, and domain generation |
 | `sync_reviewed_ddl.py` | Re-apply reviewed/edited metadata from TSV or Excel |
-| `build_knowledge_base.py` | Build table + column knowledge base tables |
+| `build_knowledge_base.py` | Build table knowledge base from generation log |
 | `build_column_kb.py` | Build column-level knowledge base |
 | `build_schema_kb.py` | Build schema-level knowledge base |
 | `extract_extended_metadata.py` | Extract system metadata via DESCRIBE EXTENDED |
-| `run_profiling.py` | Profile tables and columns |
-| `compute_data_quality.py` | Compute data quality scores |
 | `build_knowledge_graph.py` | Build graph nodes and edges |
 | `generate_embeddings.py` | Generate node embeddings |
 | `build_similarity_edges.py` | Build similarity edges from embeddings |
+| `similarity_analysis.py` | Similarity analysis and cross-domain detection |
 | `build_ontology.py` | Discover and store ontology entities |
 | `validate_ontology.py` | Validate ontology entities |
+| `run_profiling.py` | Profile tables and columns |
+| `compute_data_quality.py` | Compute data quality scores |
 | `cluster_analysis.py` | K-means clustering with multi-phase optimization |
+| `update_graph_ontology.py` | Update graph with ontology edges |
+| `update_graph_quality.py` | Update graph with quality scores |
+| `final_analysis.py` | Aggregate final analysis results |
+| `predict_foreign_keys.py` | FK prediction using column similarity and AI judgment |
+| `sync_graph_to_lakebase.py` | Sync graph data to Lakebase for the dashboard |
 
 ## Configuration
 
-Most settings are in `variables.yml`. Key options:
+### Quickstart (pip install)
+
+When installed via pip, default configurations for domain classification and ontology are bundled in the wheel. Override by passing `domain_config_path` or `ontology_config_path` as kwargs.
+
+### Full deployment (DAB)
+
+Settings are in `variables.yml`. Key options:
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `allow_data` | `true` | Set `false` to prevent data from being sent to LLMs |
-| `apply_ddl` | `false` | Apply generated metadata directly to Unity Catalog |
+| `catalog_name` | (required) | Unity Catalog name |
+| `schema_name` | `metadata_results` | Output schema |
 | `model` | `databricks-claude-sonnet-4-5` | LLM endpoint for generation |
 | `mode` | `comment` | Generation mode: `comment`, `pi`, or `domain` |
+| `apply_ddl` | `false` | Apply generated metadata directly to Unity Catalog |
+| `allow_data` | `true` | Set `false` to prevent data from being sent to LLMs |
+| `include_deterministic_pi` | `true` | Enable SpaCy/Presidio for rule-based PI detection |
 | `federation_mode` | `false` | Enable for federated catalog sources (Redshift, Snowflake) |
-| `include_deterministic_pi` | `false` | Enable SpaCy/Presidio for rule-based PI detection |
 
 For full reference, see [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
+
+## Domain Classification
+
+Categorizes tables into business domains using a two-stage LLM pipeline: keyword pre-filter, then domain classification, then subdomain classification. Configured via `configurations/domain_config.yaml`.
+
+**12 default domains** (aligned with DAMA DMBOK, FHIR, OMOP):
+
+| Domain | Description |
+|--------|-------------|
+| `clinical` | Patient care, encounters, diagnoses, procedures, medications |
+| `diagnostics` | Lab results, imaging, pathology, observations |
+| `payer` | Insurance, claims, membership, benefits |
+| `pharmaceutical` | Drug development, clinical trials, manufacturing |
+| `quality_safety` | Quality measures, outcomes, patient safety |
+| `research` | Genomics, real-world evidence, clinical research |
+| `finance` | Accounting, payments, revenue cycle, billing |
+| `operations` | Supply chain, inventory, procurement, logistics |
+| `workforce` | HR, payroll, recruitment, credentialing |
+| `customer` | CRM, sales, marketing, support |
+| `technology` | IT infrastructure, security, monitoring |
+| `governance` | Legal, compliance, contracts, data governance |
+
+Customize domains and subdomains by editing the YAML file or providing your own via `domain_config_path`.
 
 ## Federation Mode
 
@@ -187,38 +293,25 @@ When `federation_mode=true`, dbxmetagen adapts for federated catalogs in Unity C
 | SELECT / spark.read.table | Works | Standard reads via federation |
 | DESCRIBE TABLE | Works | Basic column info available |
 | SHOW TABLES IN | Works | Schema listing via federation |
-| DESCRIBE DETAIL | Skipped | Delta-specific (sizeInBytes, numFiles) |
+| DESCRIBE DETAIL | Skipped | Delta-specific |
 | DESCRIBE EXTENDED | Skipped | May return limited metadata |
 | ALTER TABLE / COMMENT ON | Skipped | Cannot modify federated tables |
 | SET TAGS / UNSET TAGS | Skipped | Cannot tag federated tables |
-| AI_QUERY() | Works | Databricks SQL function |
-| Output tables (MERGE, saveAsTable) | Works | Output tables are Delta |
-
-Federation mode forces `apply_ddl=false` since DDL cannot be applied to federated source tables. All dbxmetagen output tables remain Delta.
+| Output tables | Works | All output tables are Delta |
 
 ## Dashboard App
 
-The app is in `apps/dbxmetagen-app/` and provides a FastAPI backend with a React frontend:
+The app is in `apps/dbxmetagen-app/` and provides a FastAPI backend with a React frontend. Deployed via DAB.
 
 **Tabs:**
-1. **Batch Jobs** -- Trigger and monitor metadata generation, parallel modes, and full analytics pipeline
-2. **Metadata Review** -- Browse generation log, knowledge base tables, filter by table name
-3. **Data Profiling** -- Profiling snapshots, column statistics, quality scores
-4. **Ontology** -- Entity type summary, discovered entities, validation status
-5. **Analytics & Graph** -- Clustering results, similarity edges, GraphRAG query interface
+1. **Graph Explorer** -- Browse graph nodes, filter by type, query the GraphRAG agent
+2. **Batch Jobs** -- Trigger metadata generation, analytics pipeline, and FK prediction
+3. **Metadata Review** -- Browse generation log and knowledge base tables
+4. **Data Profiling** -- Profiling snapshots, column statistics, quality scores, coverage
+5. **Ontology** -- Entity type summary, discovered entities, validation status
+6. **Visualizations** -- FK map, domain hierarchy, PII/PHI map, similarity heatmap
 
-**GraphRAG:** Natural-language queries against the knowledge graph using a LangGraph agent that iteratively traverses graph_nodes and graph_edges. Supports both Lakebase GraphQL (when available) and SQL fallback.
-
-Deploy via DAB:
-```bash
-./deploy.sh --profile <profile> --target <target>
-```
-
-## Domain Classification
-
-Categorizes tables into business domains by analyzing table metadata. Configured via `configurations/domain_config.yaml`.
-
-Default domains: Finance, Clinical, CRM, HR, Operations, Marketing, Product, IT, Legal. Customize by editing the YAML file.
+**GraphRAG:** Natural-language queries against the knowledge graph using a LangGraph agent that traverses graph_nodes and graph_edges via Lakebase.
 
 ## Jobs
 
@@ -226,30 +319,25 @@ Default domains: Finance, Clinical, CRM, HR, Operations, Marketing, Product, IT,
 |-------------|-------------|
 | `metadata_generator_job` | Single-mode metadata generation |
 | `metadata_parallel_modes_job` | All 3 modes (comment, pi, domain) in parallel |
-| `full_analytics_pipeline` | Knowledge base -> profiling -> graph -> embeddings -> clustering |
+| `full_analytics_pipeline` | KB, graph, embeddings, profiling, ontology, similarity, clustering, FK prediction |
+| `knowledge_base_job` | Knowledge base and knowledge graph only |
 | `ontology_job` | Ontology discovery and validation |
 | `profiling_job` | Table profiling and quality scoring |
+| `fk_prediction_job` | Foreign key prediction with AI judgment |
+| `sync_graph_lakebase_job` | Sync graph data to Lakebase for the dashboard |
+| `sync_reviews_job` | Sync reviewed DDL back to Unity Catalog |
 
 ## Testing
 
 ```bash
-# Unit tests
 pytest -v
-
-# Integration tests (requires Databricks cluster)
-# Run notebooks in notebooks/integration_tests/ via DAB or cluster
 
 # Build and test wheel
 poetry build && pip install dist/*.whl
 python -c "from dbxmetagen.config import MetadataConfig; print('OK')"
 ```
 
-## Current Status
-
-- Tested on DBR 17.4 LTS, 16.4 LTS, 15.4 LTS (and ML variants)
-- Serverless runtimes tested but less consistent
-- Views only work on 16.4+
-- Excel writes require ML runtimes; use TSV on standard runtimes
+Requires DBR 17.3+ (ML runtime recommended). Serverless runtimes are supported for most operations.
 
 ## Analysis of Packages Used
 
@@ -263,14 +351,19 @@ python -c "from dbxmetagen.config import MetadataConfig; print('OK')"
 | databricks-langchain | Apache 2.0 | https://github.com/databricks/databricks-ai-bridge |
 | databricks-sdk | Apache 2.0 | https://github.com/databricks/databricks-sdk-py |
 | openpyxl | MIT | https://foss.heptapod.net/openpyxl/openpyxl |
-| spacy (optional) | MIT | https://spacy.io |
-| presidio-analyzer (optional) | MIT | https://github.com/microsoft/presidio |
+| spacy | MIT | https://spacy.io |
+| presidio-analyzer | MIT | https://github.com/microsoft/presidio |
+| presidio-anonymizer | MIT | https://github.com/microsoft/presidio |
 | fastapi | MIT | https://github.com/tiangolo/fastapi |
 | langgraph | MIT | https://github.com/langchain-ai/langgraph |
 | pyyaml | MIT | https://pypi.org/project/PyYAML/ |
 | requests | Apache 2.0 | https://github.com/psf/requests |
+| nest-asyncio | BSD 2-Clause | https://github.com/erdewit/nest_asyncio |
+| grpcio | Apache 2.0 | https://github.com/grpc/grpc |
+| deprecated | MIT | https://github.com/tantale/deprecated |
+| react-force-graph-2d | MIT | https://github.com/vasturiano/react-force-graph |
 
-All packages use permissive licenses (Apache 2.0, MIT, BSD 3-Clause).
+All packages use permissive licenses (Apache 2.0, MIT, BSD).
 
 ## License
 

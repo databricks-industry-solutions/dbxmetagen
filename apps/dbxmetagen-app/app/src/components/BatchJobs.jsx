@@ -25,18 +25,24 @@ export default function BatchJobs() {
     })
   }, [])
 
-  const runJob = async (jobName, params = {}) => {
+  const findJob = (suffix) => jobs.find(j => j.name?.endsWith(suffix))
+
+  const runJob = async (jobNameSuffix, params = {}) => {
     setLoading(true)
     setError(null)
     try {
+      const match = findJob(jobNameSuffix)
+      const body = match
+        ? { job_id: match.job_id, ...params }
+        : { job_name: jobNameSuffix, ...params }
       const res = await fetch('/api/jobs/run', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ job_name: jobName, ...params }),
+        body: JSON.stringify(body),
       })
       const data = await res.json()
       if (!res.ok) { setError(data.detail || 'Failed to start job'); setLoading(false); return }
-      setRunStatus({ ...data, job_name: jobName, state: 'PENDING' })
+      setRunStatus({ ...data, job_name: match?.name || jobNameSuffix, state: 'PENDING' })
     } catch (e) { setError(e.message) }
     setLoading(false)
   }

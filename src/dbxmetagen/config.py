@@ -65,7 +65,6 @@ class MetadataConfig:
             "allow_manual_override",
             "override_csv_path",
             "tag_none_fields",
-            "pi_column_field_names",
             "max_prompt_length",
             "columns_per_call",
             "sample_size",
@@ -231,6 +230,17 @@ class MetadataConfig:
                     "[federation_mode] Warning: add_metadata=true may produce limited "
                     "results against federated tables (DESCRIBE EXTENDED may fail)."
                 )
+
+        # Two-stage domain classification options
+        self.two_stage_classification = _parse_bool(
+            getattr(self, "two_stage_classification", True)
+        )
+        self.domain_prefilter_top_n = int(
+            getattr(self, "domain_prefilter_top_n", 5)
+        )
+        self.domain_confidence_threshold = float(
+            getattr(self, "domain_confidence_threshold", 0.5)
+        )
 
         # Fallback for run_id if not provided via kwargs/YAML
         if not self.run_id:

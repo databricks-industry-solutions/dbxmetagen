@@ -8,6 +8,7 @@ maintainers = ["Eli Swanson <eli.swanson@databricks.com>"]
 license = "DB License"
 requires-poetry = ">=2.0.*"
 packages = [{ include = "dbxmetagen", from = "src" }]
+include = ["src/dbxmetagen/configurations/*.yaml"]
 
 [tool.poetry.dependencies]
 python = ">=3.10.12, <3.13.0"
@@ -41,17 +42,15 @@ pytest = ">=8.3.4"
 pyspark = "==3.5.4"
 
 [tool.pytest.ini_options]
-# Exclude integration tests and app tests from default test runs
-# App tests mock sys.modules which corrupts the namespace for other tests
-# Run app tests separately with: pytest tests/test_app_*.py -v
+# Exclude integration tests and legacy app tests from default test runs
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
-addopts = "--ignore=notebooks/integration_tests --ignore=tests/test_app_config_manager.py --ignore=tests/test_app_data_ops.py --ignore=tests/test_app_job_manager.py --ignore=tests/test_app_logic.py --ignore=tests/test_app_user_context.py"
+addopts = "--ignore=notebooks/integration_tests --ignore=tests/test_app_logic.py"
 markers = [
     "integration: marks tests as integration tests (deselect with '-m \"not integration\"')",
-    "app: marks tests as Streamlit app tests (run separately due to mocking)",
+    "app: marks tests as legacy app tests (run separately due to mocking)",
 ]
 
 [build-system]

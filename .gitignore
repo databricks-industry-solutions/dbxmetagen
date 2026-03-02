@@ -149,10 +149,6 @@ __pycache__/
 databricks.yml
 databricks_final.yml
 databricks_final.yml.tmp
-#app/deploying_user.yml #cannot be ignored because asset bundles obey gitignore
-#app/app_env.yml #cannot be ignored because asset bundles obey gitignore
-app/env_overrides.yml
-variables_override.yml
 
 # backup files
 *.bkp
@@ -166,3 +162,7 @@ variables_override.yml
 docs/*
 docs/operations/*/
 #!docs/operations/README.md
+
+.cursor/
+.github/skills/
+.ai-dev-kit

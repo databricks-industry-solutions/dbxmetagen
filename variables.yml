@@ -5,9 +5,6 @@ variables:
   schema_name:
     description: Primary schema where data, models, and files are written to for this project. This is not the source schema, which is specified elsewhere with the source table name.
     default: metadata_results
-  bundle_target:
-    description: Bundle target environment (dev/prod).
-    default: ${bundle.target}
   allow_data:
     description: Set this to false if you do not want data sent to LLMs, do not want any metadata stored in comments, and do not want metadata used that could leak data into metadata. Reduces quality of outputs. Internally sets sample_size to 0, allow_data_in_comments to false, and include_possible_data_fields_in_metadata to false.
     default: True
@@ -50,9 +47,6 @@ variables:
   job_table_names:
     description: default table names - get applied if there are no host overrides.
     default: eswanson.default.forecasting_set
-  create_test_data:
-    description: Flag to create test data during deployment. Set via --create-test-data flag in deploy_app.sh
-    default: false
   apply_ddl:
     description: Whether to apply DDL directly to the specified environment or not. Modify permissions needed, and be aware that this will alter tables.
     default: False
@@ -149,9 +143,6 @@ variables:
   current_working_directory:
     description: Working directory or bundle root.
     default: /Users/${var.current_user}/.bundle/${bundle.name}/${bundle.target}
-  pi_column_field_names:
-    description: Field names for PI columns. Not yet implemented. Will allow name changes and alternate schemas for tag names. Currently, the code must be changed.
-    default: default
   review_input_file_type:
     description: excel or tsv. allows reviewed DDL to be in either format.
     default: tsv
@@ -205,7 +196,7 @@ variables:
     default: 7
   warehouse_id:
     description: SQL warehouse ID for dashboard queries. Required for dashboard deployment.
-    default: "4b9b953939869799"
+    default: ""
   federation_mode:
     description: "Enable federation compatibility mode for running against federated catalogs (e.g., Redshift, Snowflake via Unity Catalog federation). When true: DESCRIBE DETAIL is skipped (Delta-specific), DESCRIBE EXTENDED is skipped, DDL apply is forced to false (cannot ALTER federated tables), and tag operations are disabled. SELECT, DESCRIBE TABLE, and SHOW TABLES still work. dbxmetagen output tables remain Delta."
     default: false

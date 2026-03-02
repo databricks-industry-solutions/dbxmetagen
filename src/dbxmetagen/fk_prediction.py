@@ -97,12 +97,17 @@ class FKPredictor:
 
         # Extract column short names from the column id (format: catalog.schema.table.column)
         # Fallback: carry forward dtype and rely on AI + rules
-        return candidates.withColumn("samples_a", F.lit(None).cast("array<string>")) \
-                         .withColumn("samples_b", F.lit(None).cast("array<string>"))
+        return candidates.withColumn(
+            "samples_a", F.lit(None).cast("array<string>")
+        ).withColumn("samples_b", F.lit(None).cast("array<string>"))
 
     def _sample_from_source(self, candidates: DataFrame) -> DataFrame:
         """Try to sample actual values from source tables for each column pair."""
-        rows = candidates.select("col_a", "col_b", "table_a", "table_b").distinct().collect()
+        rows = (
+            candidates.select("col_a", "col_b", "table_a", "table_b")
+            .distinct()
+            .collect()
+        )
         sampled = []
         n = self.config.sample_size
 
@@ -122,9 +127,9 @@ class FKPredictor:
         # Broadcast as UDF
         bc = self.spark.sparkContext.broadcast(sample_map)
         get_samples = F.udf(lambda cid: bc.value.get(cid, []), "array<string>")
-        return candidates \
-            .withColumn("samples_a", get_samples(F.col("col_a"))) \
-            .withColumn("samples_b", get_samples(F.col("col_b")))
+        return candidates.withColumn(
+            "samples_a", get_samples(F.col("col_a"))
+        ).withColumn("samples_b", get_samples(F.col("col_b")))
 
     # ------------------------------------------------------------------
     # Step 3: Rule-based scoring
@@ -132,40 +137,44 @@ class FKPredictor:
     def rule_score(self, candidates: DataFrame) -> DataFrame:
         """Compute a heuristic joinability score."""
         # dtype compatibility
-        dtype_score = F.when(F.col("dtype_a") == F.col("dtype_b"), 1.0) \
+        dtype_score = (
+            F.when(F.col("dtype_a") == F.col("dtype_b"), 1.0)
             .when(
-                (F.col("dtype_a").isin("string", "varchar", "char")) &
-                (F.col("dtype_b").isin("int", "bigint", "long", "integer")),
-                0.7
-            ).when(
-                (F.col("dtype_b").isin("string", "varchar", "char")) &
-                (F.col("dtype_a").isin("int", "bigint", "long", "integer")),
-                0.7
-            ).otherwise(0.3)
+                (F.col("dtype_a").isin("string", "varchar", "char"))
+                & (F.col("dtype_b").isin("int", "bigint", "long", "integer")),
+                0.7,
+            )
+            .when(
+                (F.col("dtype_b").isin("string", "varchar", "char"))
+                & (F.col("dtype_a").isin("int", "bigint", "long", "integer")),
+                0.7,
+            )
+            .otherwise(0.3)
+        )
 
         # Column name suffix heuristic (id, key, code patterns)
         id_pattern = F.when(
-            (F.lower(F.col("col_a")).rlike("(_id|_key|_code)$")) |
-            (F.lower(F.col("col_b")).rlike("(_id|_key|_code)$")),
-            0.2
+            (F.lower(F.col("col_a")).rlike("(_id|_key|_code)$"))
+            | (F.lower(F.col("col_b")).rlike("(_id|_key|_code)$")),
+            0.2,
         ).otherwise(0.0)
 
         # Value overlap (when samples available)
         overlap = F.when(
             F.col("samples_a").isNotNull() & F.col("samples_b").isNotNull(),
-            F.size(F.array_intersect("samples_a", "samples_b")) /
-            F.greatest(F.size("samples_a"), F.lit(1)).cast("double")
+            F.size(F.array_intersect("samples_a", "samples_b"))
+            / F.greatest(F.size("samples_a"), F.lit(1)).cast("double"),
         ).otherwise(F.lit(0.0))
 
         return candidates.withColumn(
             "rule_score",
             F.round(
-                F.col("col_similarity") * 0.4 +
-                dtype_score * 0.25 +
-                id_pattern * 0.15 +
-                overlap * 0.2,
-                4
-            )
+                F.col("col_similarity") * 0.4
+                + dtype_score * 0.25
+                + id_pattern * 0.15
+                + overlap * 0.2,
+                4,
+            ),
         )
 
     # ------------------------------------------------------------------
@@ -173,7 +182,13 @@ class FKPredictor:
     # ------------------------------------------------------------------
     def ai_judge(self, candidates: DataFrame) -> DataFrame:
         """Use AI_QUERY to judge FK likelihood, parsing JSON string response."""
-        from pyspark.sql.types import StructType, StructField, BooleanType, DoubleType, StringType
+        from pyspark.sql.types import (
+            StructType,
+            StructField,
+            BooleanType,
+            DoubleType,
+            StringType,
+        )
 
         candidates.createOrReplaceTempView("fk_scored")
         model = self.config.model_endpoint
@@ -196,18 +211,26 @@ class FKPredictor:
         FROM fk_scored
         WHERE rule_score >= 0.3
         """
-        schema = StructType([
-            StructField("is_fk", BooleanType()),
-            StructField("confidence", DoubleType()),
-            StructField("reasoning", StringType()),
-        ])
+        schema = StructType(
+            [
+                StructField("is_fk", BooleanType()),
+                StructField("confidence", DoubleType()),
+                StructField("reasoning", StringType()),
+            ]
+        )
         df = self.spark.sql(sql)
         parsed = df.withColumn("ai_parsed", F.from_json(F.col("ai_raw"), schema))
-        return parsed \
-            .withColumn("ai_confidence", F.coalesce(F.col("ai_parsed.confidence"), F.lit(0.0))) \
-            .withColumn("ai_reasoning", F.coalesce(F.col("ai_parsed.reasoning"), F.col("ai_raw"))) \
-            .withColumn("ai_is_fk", F.coalesce(F.col("ai_parsed.is_fk"), F.lit(False))) \
+        return (
+            parsed.withColumn(
+                "ai_confidence", F.coalesce(F.col("ai_parsed.confidence"), F.lit(0.0))
+            )
+            .withColumn(
+                "ai_reasoning",
+                F.coalesce(F.col("ai_parsed.reasoning"), F.col("ai_raw")),
+            )
+            .withColumn("ai_is_fk", F.coalesce(F.col("ai_parsed.is_fk"), F.lit(False)))
             .drop("ai_raw", "ai_parsed")
+        )
 
     # ------------------------------------------------------------------
     # Step 4b: Join validation -- sample rows and test actual joinability
@@ -217,9 +240,12 @@ class FKPredictor:
     def join_validate(self, judged: DataFrame) -> DataFrame:
         """For each predicted FK pair, sample rows from both tables and test
         the actual join rate. Adjusts confidence based on statistical fit."""
-        rows = judged.filter(F.col("ai_confidence") > 0).select(
-            "col_a", "col_b", "table_a", "table_b", "ai_confidence"
-        ).distinct().collect()
+        rows = (
+            judged.filter(F.col("ai_confidence") > 0)
+            .select("col_a", "col_b", "table_a", "table_b", "ai_confidence")
+            .distinct()
+            .collect()
+        )
 
         join_stats = []
         n = self.JOIN_SAMPLE_SIZE
@@ -241,36 +267,48 @@ class FKPredictor:
                 # Join rate relative to the smaller sample
                 min_count = min(a_count, b_count) or 1
                 join_rate = joined / min_count
-                join_stats.append((row.col_a, row.col_b, join_rate, a_count, b_count, joined))
+                join_stats.append(
+                    (row.col_a, row.col_b, join_rate, a_count, b_count, joined)
+                )
             except Exception as e:
-                logger.warning("Join validation failed for %s <-> %s: %s", row.col_a, row.col_b, e)
+                logger.warning(
+                    "Join validation failed for %s <-> %s: %s", row.col_a, row.col_b, e
+                )
                 join_stats.append((row.col_a, row.col_b, 0.0, 0, 0, 0))
 
         if not join_stats:
-            return judged.withColumn("join_rate", F.lit(0.0)) \
-                         .withColumn("join_matched", F.lit(0))
+            return judged.withColumn("join_rate", F.lit(0.0)).withColumn(
+                "join_matched", F.lit(0)
+            )
 
         stats_df = self.spark.createDataFrame(
             join_stats,
-            ["_col_a", "_col_b", "join_rate", "sample_a_count", "sample_b_count", "join_matched"]
+            [
+                "_col_a",
+                "_col_b",
+                "join_rate",
+                "sample_a_count",
+                "sample_b_count",
+                "join_matched",
+            ],
         )
 
         result = judged.join(
             stats_df,
             (judged.col_a == stats_df._col_a) & (judged.col_b == stats_df._col_b),
-            "left"
+            "left",
         ).drop("_col_a", "_col_b")
 
         # Adjust confidence: blend AI confidence with join rate evidence
         # If join_rate is near 0, it's strong evidence against FK
         # If join_rate is high (>0.5), it confirms the FK
-        result = result.withColumn(
-            "join_rate", F.coalesce(F.col("join_rate"), F.lit(0.0))
-        ).withColumn(
-            "join_matched", F.coalesce(F.col("join_matched"), F.lit(0))
-        ).withColumn(
-            "ai_confidence",
-            F.round(F.col("ai_confidence") * (0.4 + 0.6 * F.col("join_rate")), 4)
+        result = (
+            result.withColumn("join_rate", F.coalesce(F.col("join_rate"), F.lit(0.0)))
+            .withColumn("join_matched", F.coalesce(F.col("join_matched"), F.lit(0)))
+            .withColumn(
+                "ai_confidence",
+                F.round(F.col("ai_confidence") * (0.4 + 0.6 * F.col("join_rate")), 4),
+            )
         )
         return result
 
@@ -280,7 +318,8 @@ class FKPredictor:
     def write_predictions(self, df: DataFrame) -> int:
         """Write FK predictions to output table."""
         target = self.config.fq(self.config.predictions_table)
-        self.spark.sql(f"""
+        self.spark.sql(
+            f"""
         CREATE TABLE IF NOT EXISTS {target} (
             src_column STRING, dst_column STRING,
             src_table STRING, dst_table STRING,
@@ -289,22 +328,33 @@ class FKPredictor:
             join_rate DOUBLE, join_matched INT,
             final_confidence DOUBLE, created_at TIMESTAMP
         ) COMMENT 'Predicted foreign key relationships'
-        """)
+        """
+        )
 
         out = df.select(
             F.col("col_a").alias("src_column"),
             F.col("col_b").alias("dst_column"),
             F.col("table_a").alias("src_table"),
             F.col("table_b").alias("dst_table"),
-            "col_similarity", "table_similarity", "rule_score",
-            "ai_confidence", "ai_reasoning",
-            "join_rate", F.col("join_matched").cast("int").alias("join_matched"),
-            (F.col("rule_score") * 0.3 + F.col("ai_confidence") * 0.4 + F.col("join_rate") * 0.3).alias("final_confidence"),
+            "col_similarity",
+            "table_similarity",
+            "rule_score",
+            "ai_confidence",
+            "ai_reasoning",
+            "join_rate",
+            F.col("join_matched").cast("int").alias("join_matched"),
+            (
+                F.col("rule_score") * 0.3
+                + F.col("ai_confidence") * 0.4
+                + F.col("join_rate") * 0.3
+            ).alias("final_confidence"),
             F.current_timestamp().alias("created_at"),
         ).filter(F.col("ai_confidence") >= self.config.confidence_threshold)
 
         count = out.count()
-        out.write.mode("overwrite").option("overwriteSchema", "true").saveAsTable(target)
+        out.write.mode("overwrite").option("overwriteSchema", "true").saveAsTable(
+            target
+        )
         logger.info("Wrote %d FK predictions", count)
         return count
 
@@ -315,9 +365,13 @@ class FKPredictor:
         """Insert predicted_fk edges into graph_edges."""
         edges_table = self.config.fq(self.config.edges_table)
         # Remove old predicted_fk edges
-        self.spark.sql(f"DELETE FROM {edges_table} WHERE relationship = '{self.RELATIONSHIP_TYPE}'")
+        self.spark.sql(
+            f"DELETE FROM {edges_table} WHERE relationship = '{self.RELATIONSHIP_TYPE}'"
+        )
 
-        high_conf = df.filter(F.col("ai_confidence") >= self.config.confidence_threshold)
+        high_conf = df.filter(
+            F.col("ai_confidence") >= self.config.confidence_threshold
+        )
         edges = high_conf.select(
             F.col("col_a").alias("src"),
             F.col("col_b").alias("dst"),
@@ -337,22 +391,26 @@ class FKPredictor:
     # ------------------------------------------------------------------
     def generate_ddl(self, df: DataFrame) -> DataFrame:
         """Generate ALTER TABLE ADD CONSTRAINT FK statements."""
-        high_conf = df.filter(F.col("ai_confidence") >= self.config.confidence_threshold)
+        high_conf = df.filter(
+            F.col("ai_confidence") >= self.config.confidence_threshold
+        )
         ddl = high_conf.withColumn(
             "ddl_statement",
             F.concat(
-                F.lit("ALTER TABLE "), F.col("table_a"),
+                F.lit("ALTER TABLE "),
+                F.col("table_a"),
                 F.lit(" ADD CONSTRAINT fk_"),
                 F.regexp_replace(F.col("col_a"), "[^a-zA-Z0-9]", "_"),
                 F.lit("_"),
                 F.regexp_replace(F.col("col_b"), "[^a-zA-Z0-9]", "_"),
                 F.lit(" FOREIGN KEY ("),
                 F.element_at(F.split(F.col("col_a"), "\\."), -1),
-                F.lit(") REFERENCES "), F.col("table_b"),
+                F.lit(") REFERENCES "),
+                F.col("table_b"),
                 F.lit(" ("),
                 F.element_at(F.split(F.col("col_b"), "\\."), -1),
                 F.lit(");"),
-            )
+            ),
         )
         target = self.config.fq("fk_ddl_statements")
         ddl_out = ddl.select(
@@ -362,7 +420,9 @@ class FKPredictor:
             F.col("ai_confidence").alias("confidence"),
             F.current_timestamp().alias("created_at"),
         )
-        ddl_out.write.mode("overwrite").option("overwriteSchema", "true").saveAsTable(target)
+        ddl_out.write.mode("overwrite").option("overwriteSchema", "true").saveAsTable(
+            target
+        )
         return ddl_out
 
     def apply_ddl(self, ddl_df: DataFrame) -> int:
@@ -404,7 +464,11 @@ class FKPredictor:
 
         if self.config.dry_run:
             total = candidates.count()
-            logger.info("DRY RUN: %d candidates, %d would be sent to AI_QUERY", total, ai_eligible)
+            logger.info(
+                "DRY RUN: %d candidates, %d would be sent to AI_QUERY",
+                total,
+                ai_eligible,
+            )
             return {
                 "dry_run": True,
                 "candidates": total,

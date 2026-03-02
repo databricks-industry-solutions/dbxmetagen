@@ -86,17 +86,22 @@ def fq(table: str) -> str:
 # FastAPI app
 # ---------------------------------------------------------------------------
 
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("dbxmetagen API starting – catalog=%s schema=%s", CATALOG, SCHEMA)
     if pg_configured():
-        logger.info("Lakebase PG connection configured -> %s:%s/%s",
-                     os.environ.get("PGHOST"), os.environ.get("PGPORT", "5432"),
-                     os.environ.get("PGDATABASE"))
+        logger.info(
+            "Lakebase PG connection configured -> %s:%s/%s",
+            os.environ.get("PGHOST"),
+            os.environ.get("PGPORT", "5432"),
+            os.environ.get("PGDATABASE"),
+        )
         get_engine()  # eagerly create engine to fail fast on bad config
     else:
         logger.warning("PGHOST not set – add Lakebase database resource in Apps UI")
     yield
+
 
 app = FastAPI(title="dbxmetagen API", version="0.6.0", lifespan=lifespan)
 app.add_middleware(
@@ -129,6 +134,7 @@ def debug_config():
 # Request / response models
 # ---------------------------------------------------------------------------
 
+
 class JobRunRequest(BaseModel):
     job_id: Optional[int] = None
     job_name: Optional[str] = None
@@ -158,18 +164,23 @@ class GraphTraverseRequest(BaseModel):
 # Jobs endpoints
 # ---------------------------------------------------------------------------
 
+
+def _list_dbxmetagen_jobs(ws):
+    """List jobs containing 'dbxmetagen' in the name (client-side filter)."""
+    return [
+        j for j in ws.jobs.list()
+        if j.settings and j.settings.name and "dbxmetagen" in j.settings.name.lower()
+    ]
+
+
 @app.get("/api/jobs")
 def list_jobs():
     """List dbxmetagen jobs in the workspace."""
     ws = get_workspace_client()
-    results = [{"job_id": j.job_id, "name": j.settings.name if j.settings else ""}
-               for j in ws.jobs.list(name="dbxmetagen")]
-    if not results:
-        # Fallback: list all jobs and filter client-side
-        results = [{"job_id": j.job_id, "name": j.settings.name if j.settings else ""}
-                   for j in ws.jobs.list()
-                   if j.settings and j.settings.name and "dbxmetagen" in j.settings.name.lower()]
-    return results
+    return [
+        {"job_id": j.job_id, "name": j.settings.name}
+        for j in _list_dbxmetagen_jobs(ws)
+    ]
 
 
 @app.post("/api/jobs/run")
@@ -179,15 +190,21 @@ def run_job(req: JobRunRequest):
     if req.job_id:
         target_job_id = req.job_id
     elif req.job_name:
-        all_jobs = list(ws.jobs.list(name="dbxmetagen"))
-        if not all_jobs:
-            all_jobs = list(ws.jobs.list())
-        matching = [j for j in all_jobs if j.settings and j.settings.name and j.settings.name.endswith(req.job_name)]
+        all_jobs = _list_dbxmetagen_jobs(ws)
+        matching = [
+            j for j in all_jobs
+            if j.settings.name.endswith(req.job_name)
+        ]
         if not matching:
-            matching = [j for j in all_jobs if j.settings and req.job_name in (j.settings.name or "")]
+            matching = [
+                j for j in all_jobs
+                if req.job_name in j.settings.name
+            ]
         if not matching:
-            available = [j.settings.name for j in all_jobs if j.settings and j.settings.name]
-            raise HTTPException(404, detail=f"Job '{req.job_name}' not found. Available: {available}")
+            available = [j.settings.name for j in all_jobs]
+            raise HTTPException(
+                404, detail=f"Job '{req.job_name}' not found. Available: {available}"
+            )
         target_job_id = matching[0].job_id
     else:
         raise HTTPException(400, detail="Provide job_id or job_name")
@@ -214,13 +231,18 @@ def get_run_status(run_id: int):
     return {
         "run_id": run.run_id,
         "state": run.state.life_cycle_state.value if run.state else "UNKNOWN",
-        "result": run.state.result_state.value if run.state and run.state.result_state else None,
+        "result": (
+            run.state.result_state.value
+            if run.state and run.state.result_state
+            else None
+        ),
     }
 
 
 # ---------------------------------------------------------------------------
 # Metadata endpoints
 # ---------------------------------------------------------------------------
+
 
 @app.get("/api/metadata/log")
 def get_metadata_log(limit: int = 100, table_name: Optional[str] = None):
@@ -253,6 +275,7 @@ def get_schema_kb():
 # Profiling endpoints
 # ---------------------------------------------------------------------------
 
+
 @app.get("/api/profiling/snapshots")
 def get_profiling_snapshots(limit: int = 100):
     q = f"SELECT * FROM {fq('profiling_snapshots')} ORDER BY created_at DESC LIMIT {limit}"
@@ -276,6 +299,7 @@ def get_quality_scores(limit: int = 100):
 # Ontology endpoints
 # ---------------------------------------------------------------------------
 
+
 @app.get("/api/ontology/entities")
 def get_ontology_entities(limit: int = 200):
     q = f"SELECT * FROM {fq('ontology_entities')} ORDER BY confidence DESC LIMIT {limit}"
@@ -297,6 +321,7 @@ def get_ontology_summary():
 # ---------------------------------------------------------------------------
 # Analytics endpoints
 # ---------------------------------------------------------------------------
+
 
 @app.get("/api/analytics/clusters")
 def get_cluster_assignments(limit: int = 500):
@@ -329,6 +354,7 @@ def get_similarity_edges(min_weight: float = 0.8, limit: int = 200):
 # FK Predictions
 # ---------------------------------------------------------------------------
 
+
 @app.get("/api/analytics/fk-predictions")
 def get_fk_predictions(limit: int = 200):
     """Return predicted foreign key relationships."""
@@ -344,8 +370,32 @@ def get_fk_ddl():
 
 
 # ---------------------------------------------------------------------------
+# Visualization composite endpoints
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/viz/fk-map")
+def viz_fk_map():
+    """Composite data for FK Map visualization: table nodes, FK edges, clusters."""
+    tables = pg_execute(
+        "SELECT id, node_type, domain, security_level, comment "
+        "FROM public.graph_nodes WHERE node_type='table' ORDER BY id"
+    )
+    fk_edges = execute_sql(
+        f"SELECT src_table, dst_table, src_column, dst_column, final_confidence "
+        f"FROM {fq('fk_predictions')} ORDER BY final_confidence DESC LIMIT 500"
+    )
+    clusters = execute_sql(
+        f"SELECT id, cluster FROM {fq('node_cluster_assignments')} "
+        f"WHERE node_type='table' ORDER BY cluster, id"
+    )
+    return {"tables": tables, "fk_edges": fk_edges, "clusters": clusters}
+
+
+# ---------------------------------------------------------------------------
 # Unprofiled tables (information_schema coverage)
 # ---------------------------------------------------------------------------
+
 
 @app.get("/api/coverage/summary")
 def get_coverage_summary():
@@ -424,6 +474,7 @@ def get_coverage_tables(catalog: Optional[str] = None, schema: Optional[str] = N
 # Graph endpoints (used by GraphRAG and direct exploration)
 # ---------------------------------------------------------------------------
 
+
 @app.get("/api/graph/nodes")
 def get_graph_nodes(
     node_type: Optional[str] = None,
@@ -441,7 +492,9 @@ def get_graph_nodes(
 
 
 @app.get("/api/graph/edges")
-def get_graph_edges(src: Optional[str] = None, dst: Optional[str] = None, limit: int = 200):
+def get_graph_edges(
+    src: Optional[str] = None, dst: Optional[str] = None, limit: int = 200
+):
     conditions = []
     if src:
         conditions.append(f"src = '{src}'")
@@ -470,6 +523,7 @@ def get_node_neighbors(node_id: str, relationship: Optional[str] = None):
 # ---------------------------------------------------------------------------
 # Graph traversal (multi-hop against Lakebase catalog)
 # ---------------------------------------------------------------------------
+
 
 def multi_hop_traverse(
     start_node: str,
@@ -513,7 +567,11 @@ def multi_hop_traverse(
             for p in paths:
                 if p[-1] == e.get("src") and e.get("dst") not in set(p):
                     new_paths.append(p + [e["dst"]])
-                elif direction != "outgoing" and p[-1] == e.get("dst") and e.get("src") not in set(p):
+                elif (
+                    direction != "outgoing"
+                    and p[-1] == e.get("dst")
+                    and e.get("src") not in set(p)
+                ):
                     new_paths.append(p + [e["src"]])
         if new_paths:
             paths = new_paths
@@ -554,6 +612,7 @@ def graph_traverse(req: GraphTraverseRequest):
 # GraphRAG endpoint (delegates to agent)
 # ---------------------------------------------------------------------------
 
+
 @app.post("/api/graph/query")
 async def graph_rag_query(req: GraphQueryRequest):
     """Answer a natural-language question by traversing the knowledge graph."""
@@ -567,7 +626,10 @@ async def graph_rag_query(req: GraphQueryRequest):
     except Exception as exc:
         msg = str(exc)
         if "REQUEST_LIMIT_EXCEEDED" in msg or "429" in msg or "RateLimitError" in msg:
-            raise HTTPException(429, detail="Model rate limit exceeded. Try again in a minute or switch to a different model.") from exc
+            raise HTTPException(
+                429,
+                detail="Model rate limit exceeded. Try again in a minute or switch to a different model.",
+            ) from exc
         logger.error("GraphRAG agent error: %s", exc)
         raise HTTPException(500, detail=f"Agent error: {msg}") from exc
 

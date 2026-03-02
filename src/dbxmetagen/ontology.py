@@ -14,6 +14,7 @@ import os
 import re
 import json
 from dataclasses import dataclass, field
+from importlib import resources as pkg_resources
 from typing import Dict, Any, List, Optional
 from datetime import datetime
 import uuid
@@ -32,91 +33,103 @@ logger = logging.getLogger(__name__)
 # These are used when the config file cannot be loaded
 # ==============================================================================
 DEFAULT_ENTITY_DEFINITIONS = {
-    "Customer": {
-        "description": "Customer, user, or account entities",
-        "keywords": ["customer", "user", "client", "account", "member", "subscriber"],
-        "typical_attributes": ["id", "name", "email", "phone", "address"]
+    # General entities
+    "Person": {
+        "description": "People, customers, contacts, users, or employees",
+        "keywords": ["customer", "employee", "user", "contact", "person"],
+        "typical_attributes": ["id", "name", "email", "phone", "address", "created_date"],
+    },
+    "Organization": {
+        "description": "Companies, departments, facilities, or business units",
+        "keywords": ["company", "organization", "department", "facility", "tenant"],
+        "typical_attributes": ["id", "name", "type", "address", "parent_id"],
     },
     "Product": {
-        "description": "Product, item, or SKU entities",
-        "keywords": ["product", "item", "sku", "inventory", "goods", "catalog"],
-        "typical_attributes": ["id", "name", "description", "price", "category"]
+        "description": "Goods, services, SKUs, or catalog items",
+        "keywords": ["product", "item", "sku", "catalog", "offering"],
+        "typical_attributes": ["id", "name", "description", "price", "category", "status"],
     },
     "Transaction": {
-        "description": "Transaction or order entities",
-        "keywords": ["transaction", "order", "purchase", "sale", "payment", "invoice"],
-        "typical_attributes": ["id", "customer_id", "amount", "date", "status"]
-    },
-    "Employee": {
-        "description": "Employee or staff entities",
-        "keywords": ["employee", "staff", "worker", "personnel", "hr"],
-        "typical_attributes": ["id", "name", "email", "department", "role"]
+        "description": "Orders, purchases, payments, invoices, or financial events",
+        "keywords": ["transaction", "order", "payment", "invoice", "purchase"],
+        "typical_attributes": ["id", "customer_id", "amount", "date", "status", "currency"],
     },
     "Location": {
-        "description": "Location or geographic entities",
-        "keywords": ["location", "address", "site", "facility", "store", "warehouse"],
-        "typical_attributes": ["id", "name", "address", "city", "state"]
+        "description": "Addresses, sites, regions, facilities, or geographies",
+        "keywords": ["location", "address", "site", "region", "facility"],
+        "typical_attributes": ["id", "name", "address", "city", "state", "country", "zip_code"],
     },
     "Event": {
-        "description": "Event or activity entities",
-        "keywords": ["event", "activity", "log", "audit", "action", "session"],
-        "typical_attributes": ["id", "type", "timestamp", "user_id"]
+        "description": "Activities, logs, sessions, audits, or system events",
+        "keywords": ["event", "activity", "log", "audit", "session"],
+        "typical_attributes": ["id", "type", "timestamp", "user_id", "details"],
     },
     "Reference": {
-        "description": "Reference or lookup data entities",
-        "keywords": ["reference", "lookup", "code", "type", "category", "dim_", "config"],
-        "typical_attributes": ["id", "code", "name", "description"]
+        "description": "Lookup tables, codes, categories, dimensions, or configuration",
+        "keywords": ["reference", "lookup", "code", "category", "dim_"],
+        "typical_attributes": ["id", "code", "name", "description", "active"],
     },
     "Metric": {
-        "description": "Metric or aggregated data entities",
-        "keywords": ["metric", "kpi", "aggregate", "summary", "stats", "fact_"],
-        "typical_attributes": ["id", "name", "value", "period"]
+        "description": "KPIs, aggregates, facts, summaries, or analytic measures",
+        "keywords": ["metric", "kpi", "aggregate", "fact_", "summary"],
+        "typical_attributes": ["id", "name", "value", "period", "dimension"],
     },
+    "Document": {
+        "description": "Unstructured content, notes, files, or text records",
+        "keywords": ["document", "note", "file", "content", "text"],
+        "typical_attributes": ["id", "title", "body", "author", "created_date", "type"],
+    },
+    # Healthcare / Life Sciences entities
     "Patient": {
-        "description": "Patient or healthcare individual",
-        "keywords": ["patient", "person", "individual", "subject", "participant"],
-        "typical_attributes": ["id", "mrn", "name", "dob", "gender"]
-    },
-    "ClinicalNote": {
-        "description": "Clinical notes or medical documentation",
-        "keywords": ["note", "ehr", "emr", "clinical", "documentation", "record", "chart"],
-        "typical_attributes": ["id", "patient_id", "text", "date", "author"]
-    },
-    "Encounter": {
-        "description": "Healthcare encounter or visit",
-        "keywords": ["encounter", "visit", "admission", "episode", "appointment"],
-        "typical_attributes": ["id", "patient_id", "date", "type", "provider"]
-    },
-    "Diagnosis": {
-        "description": "Medical diagnosis or condition",
-        "keywords": ["diagnosis", "condition", "icd", "disease", "disorder", "problem"],
-        "typical_attributes": ["id", "code", "description", "patient_id", "date"]
-    },
-    "Medication": {
-        "description": "Medication or prescription",
-        "keywords": ["medication", "drug", "prescription", "rx", "pharmacy", "medicine"],
-        "typical_attributes": ["id", "name", "ndc", "dose", "frequency"]
-    },
-    "Procedure": {
-        "description": "Medical procedure or intervention",
-        "keywords": ["procedure", "surgery", "intervention", "cpt", "operation"],
-        "typical_attributes": ["id", "code", "description", "date", "provider"]
-    },
-    "LabResult": {
-        "description": "Laboratory test results",
-        "keywords": ["lab", "result", "test", "loinc", "specimen", "panel", "blood"],
-        "typical_attributes": ["id", "test_code", "value", "unit", "date"]
+        "description": "Individuals receiving healthcare services (FHIR Patient)",
+        "keywords": ["patient", "mrn", "subject", "participant", "beneficiary"],
+        "typical_attributes": ["id", "mrn", "name", "dob", "gender", "address"],
     },
     "Provider": {
-        "description": "Healthcare provider or practitioner",
-        "keywords": ["provider", "physician", "doctor", "nurse", "practitioner", "clinician"],
-        "typical_attributes": ["id", "npi", "name", "specialty"]
+        "description": "Practitioners, clinicians, or care team members (FHIR Practitioner)",
+        "keywords": ["provider", "physician", "practitioner", "clinician", "npi"],
+        "typical_attributes": ["id", "npi", "name", "specialty", "organization"],
+    },
+    "Encounter": {
+        "description": "Visits, admissions, or episodes of care (FHIR Encounter)",
+        "keywords": ["encounter", "visit", "admission", "episode", "appointment"],
+        "typical_attributes": ["id", "patient_id", "date", "type", "provider", "location"],
+    },
+    "Condition": {
+        "description": "Diagnoses, problems, or diseases (FHIR Condition / OMOP CONDITION_OCCURRENCE)",
+        "keywords": ["diagnosis", "condition", "icd", "disease", "problem"],
+        "typical_attributes": ["id", "code", "description", "patient_id", "date", "status"],
+    },
+    "Procedure": {
+        "description": "Medical procedures, surgeries, or interventions (FHIR Procedure)",
+        "keywords": ["procedure", "surgery", "cpt", "intervention", "operation"],
+        "typical_attributes": ["id", "code", "description", "date", "provider", "status"],
+    },
+    "Medication": {
+        "description": "Drugs, prescriptions, or medication orders (FHIR MedicationRequest)",
+        "keywords": ["medication", "drug", "prescription", "pharmacy", "ndc"],
+        "typical_attributes": ["id", "name", "ndc", "dose", "frequency", "route"],
+    },
+    "Observation": {
+        "description": "Lab results, vitals, or clinical measurements (FHIR Observation / OMOP MEASUREMENT)",
+        "keywords": ["lab", "result", "observation", "vital", "specimen"],
+        "typical_attributes": ["id", "test_code", "value", "unit", "reference_range", "date"],
+    },
+    "Claim": {
+        "description": "Insurance claims or billing submissions (FHIR Claim)",
+        "keywords": ["claim", "billing", "adjudication", "remittance", "eob"],
+        "typical_attributes": ["id", "patient_id", "amount", "service_date", "status", "payer_id"],
+    },
+    "Coverage": {
+        "description": "Insurance plans, benefits, or member coverage (FHIR Coverage)",
+        "keywords": ["coverage", "insurance", "benefit", "plan", "enrollment"],
+        "typical_attributes": ["id", "member_id", "payer", "plan_name", "start_date", "end_date"],
     },
     "DataTable": {
         "description": "Generic data table (fallback type)",
         "keywords": [],
-        "typical_attributes": ["id"]
-    }
+        "typical_attributes": ["id"],
+    },
 }
 
 
@@ -195,6 +208,19 @@ class OntologyLoader:
             except Exception as e:
                 logger.debug(f"Could not load from {path}: {e}")
         
+        # Try loading from package data (works when installed via pip)
+        try:
+            ref = pkg_resources.files("dbxmetagen").joinpath("configurations/ontology_config.yaml")
+            with pkg_resources.as_file(ref) as p:
+                if p.exists():
+                    config = yaml.safe_load(p.read_text())
+                    if config and "ontology" in config:
+                        loaded = config.get("ontology", {})
+                        logger.info("Loaded ontology config from package data")
+                        return loaded
+        except Exception:
+            pass
+
         logger.warning("Could not load ontology config file, using embedded defaults")
         return OntologyLoader._default_config()
     

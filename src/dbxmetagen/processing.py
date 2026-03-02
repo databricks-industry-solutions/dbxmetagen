@@ -1902,6 +1902,9 @@ def get_domain_classification(
         model_endpoint=config.model,
         temperature=config.temperature,
         max_tokens=config.max_tokens,
+        two_stage=getattr(config, "two_stage_classification", True),
+        prefilter_top_n=getattr(config, "domain_prefilter_top_n", 5),
+        confidence_threshold=getattr(config, "domain_confidence_threshold", 0.5),
     )
 
     return classification_result

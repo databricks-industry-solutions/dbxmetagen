@@ -18,7 +18,7 @@ resources:
           - name: SCHEMA_NAME
             value: ${var.schema_name}
           - name: WAREHOUSE_ID
-            value: ${var.warehouse_id}
+            value_from: sql_warehouse
           - name: GRAPHRAG_MODEL
             value: databricks-claude-sonnet-4-5
       resources:

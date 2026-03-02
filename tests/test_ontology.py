@@ -62,7 +62,7 @@ class TestOntologyLoader:
         config = OntologyLoader._default_config()
         definitions = config["entities"]["definitions"]
         assert len(definitions) > 0
-        assert "Customer" in definitions
+        assert "Person" in definitions
         assert "Product" in definitions
         assert "DataTable" in definitions  # Fallback type
     

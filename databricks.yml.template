@@ -6,7 +6,6 @@ include:
   - resources/jobs/*.yml
   - resources/apps/*.yml
   - resources/dashboards.yml
-  - benchmarks/resources/jobs/benchmarks/*.yml
   - variables.yml
   - variables.advanced.yml
   - resources/app_variables.yml
@@ -23,6 +22,10 @@ targets:
     default: true
     workspace:
       host: __DATABRICKS_HOST__
+    variables:
+      catalog_name: __CATALOG_NAME__
+      schema_name: __SCHEMA_NAME__
+      warehouse_id: __WAREHOUSE_ID__
     permissions:
       - user_name: ${var.deploying_user}
         level: CAN_MANAGE
@@ -32,9 +35,12 @@ targets:
     workspace:
       host: __DATABRICKS_HOST__
       root_path: ${var.current_working_directory}
+    variables:
+      catalog_name: __CATALOG_NAME__
+      schema_name: __SCHEMA_NAME__
+      warehouse_id: __WAREHOUSE_ID__
     permissions:
       - user_name: ${var.current_user}
         level: CAN_MANAGE
     run_as:
       user_name: ${var.current_user}
-
