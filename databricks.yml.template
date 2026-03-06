@@ -5,7 +5,7 @@ bundle:
 include:
   - resources/jobs/*.yml
   - resources/apps/*.yml
-  - resources/dashboards.yml
+  #- resources/dashboards.yml
   - variables.yml
   - variables.advanced.yml
   - resources/app_variables.yml
@@ -30,6 +30,20 @@ targets:
       - user_name: ${var.deploying_user}
         level: CAN_MANAGE
 
+  demo:
+    mode: development
+    default: true
+    workspace:
+      host: __DATABRICKS_HOST__
+    variables:
+      catalog_name: __CATALOG_NAME__
+      schema_name: __SCHEMA_NAME__
+      warehouse_id: __WAREHOUSE_ID__
+    permissions:
+      - user_name: ${var.deploying_user}
+        level: CAN_MANAGE
+    
+  
   prod:
     mode: production
     workspace:

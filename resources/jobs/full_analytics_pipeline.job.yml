@@ -24,6 +24,8 @@ resources:
           default: "15"
         - name: cluster_node_types
           default: "table"
+        - name: ontology_bundle
+          default: "healthcare"
 
       tasks:
         # Stage 1: Build knowledge bases (table, column, schema in parallel after table KB)
@@ -118,13 +120,15 @@ resources:
 
         - task_key: build_ontology
           depends_on:
-            - task_key: build_knowledge_graph
+            - task_key: build_knowledge_base
+            - task_key: build_column_kb
           job_cluster_key: analytics_cluster
           notebook_task:
             notebook_path: ../../notebooks/build_ontology.py
             base_parameters:
               catalog_name: "{{job.parameters.catalog_name}}"
               schema_name: "{{job.parameters.schema_name}}"
+              ontology_bundle: "{{job.parameters.ontology_bundle}}"
           libraries:
             - whl: ../../dist/*.whl
 

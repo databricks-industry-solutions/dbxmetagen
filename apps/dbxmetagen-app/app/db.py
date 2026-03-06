@@ -113,6 +113,25 @@ def pg_execute(query: str, params: Optional[dict] = None) -> list[dict]:
         if "does not exist" in msg or "UndefinedTable" in msg:
             logger.warning("PG table not found: %s", msg)
             raise HTTPException(404, detail=f"Lakebase table not found: {msg}") from exc
+        if "External authorization failed" in msg:
+            logger.error("Lakebase auth failure: %s", exc)
+            raise HTTPException(503, detail=(
+                "Lakebase authorization failed. Check that the instance is running "
+                "(not paused) and the app service principal has access. "
+                "Details: " + msg
+            )) from exc
+        if "connection refused" in msg.lower() or "could not connect" in msg.lower():
+            logger.error("Lakebase connection refused: %s", exc)
+            raise HTTPException(503, detail=(
+                "Cannot reach Lakebase instance. Verify it is running in the Databricks UI. "
+                "Details: " + msg
+            )) from exc
+        if "permission denied" in msg.lower() or "InsufficientPrivilege" in msg:
+            logger.error("Lakebase permission denied: %s", exc)
+            raise HTTPException(403, detail=(
+                "Permission denied on Lakebase table. Grant SELECT to the app service principal. "
+                "Details: " + msg
+            )) from exc
         logger.error("PG query error: %s", exc)
         raise HTTPException(500, detail=f"Lakebase query failed: {msg}") from exc
 

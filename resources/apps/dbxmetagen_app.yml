@@ -1,7 +1,7 @@
 resources:
   apps:
     dbxmetagen_app:
-      name: "${var.app_name}-app"
+      name: "${var.app_name}"
       description: "dbxmetagen dashboard: metadata review, profiling, ontology, and graph analytics"
       source_code_path: ../../apps/dbxmetagen-app/app
       config:
@@ -21,16 +21,20 @@ resources:
             value_from: sql_warehouse
           - name: GRAPHRAG_MODEL
             value: databricks-claude-sonnet-4-5
+          - name: BUNDLE_ROOT_PATH
+            value: /Workspace/Users/${var.deploying_user}/.bundle/${bundle.name}/${bundle.target}
+          - name: NODE_TYPE
+            value: ${var.node_type}
       resources:
         - name: sql_warehouse
           sql_warehouse:
             id: ${var.warehouse_id}
             permission: CAN_USE
-        - name: app_database
-          database:
-            database_name: ${var.lakebase_database_name}
-            instance_name: ${var.lakebase_instance_name}
-            permission: CAN_CONNECT_AND_CREATE
+        # - name: app_database
+        #   database:
+        #     database_name: ${var.lakebase_database_name}
+        #     instance_name: ${var.lakebase_instance_name}
+        #     permission: CAN_CONNECT_AND_CREATE
         - name: metadata_generator_job
           job:
             id: ${resources.jobs.metadata_generator_job.id}
@@ -50,6 +54,30 @@ resources:
         - name: fk_prediction_job
           job:
             id: ${resources.jobs.fk_prediction_job.id}
+            permission: CAN_MANAGE_RUN
+        - name: sync_graph_lakebase_job
+          job:
+            id: ${resources.jobs.sync_graph_lakebase_job.id}
+            permission: CAN_MANAGE_RUN
+        - name: ontology_prediction_job
+          job:
+            id: ${resources.jobs.ontology_prediction_job.id}
+            permission: CAN_MANAGE_RUN
+        - name: knowledge_base_builder_job
+          job:
+            id: ${resources.jobs.knowledge_base_builder_job.id}
+            permission: CAN_MANAGE_RUN
+        - name: profiling_job
+          job:
+            id: ${resources.jobs.profiling_job.id}
+            permission: CAN_MANAGE_RUN
+        - name: metagen_with_kb_job
+          job:
+            id: ${resources.jobs.metadata_with_knowledge_base_job.id}
+            permission: CAN_MANAGE_RUN
+        - name: semantic_layer_job
+          job:
+            id: ${resources.jobs.semantic_layer_job.id}
             permission: CAN_MANAGE_RUN
       user_api_scopes:
         - "files.files"

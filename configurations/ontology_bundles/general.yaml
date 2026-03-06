@@ -1,0 +1,187 @@
+# General Cross-Industry Ontology Bundle
+# 9 universal entity types, 6 cross-industry domains
+
+metadata:
+  name: "General Cross-Industry"
+  version: "2.0"
+  industry: "general"
+  description: "Industry-agnostic ontology with universal entity types and cross-functional domains"
+  standards_alignment: "Schema.org"
+
+ontology:
+  version: "2.0"
+  name: "General Business Ontology"
+  description: "Universal business ontology suitable for any industry"
+
+  entities:
+    auto_discover: true
+    discovery_confidence_threshold: 0.4
+
+    definitions:
+      Person:
+        description: "People, customers, contacts, users, or employees"
+        keywords: ["customer", "employee", "user", "contact", "person", "member", "staff"]
+        typical_attributes: [id, name, email, phone, address, created_date]
+      Organization:
+        description: "Companies, departments, facilities, or business units"
+        keywords: ["company", "organization", "department", "facility", "tenant", "branch", "division"]
+        typical_attributes: [id, name, type, address, parent_id]
+      Product:
+        description: "Goods, services, SKUs, or catalog items"
+        keywords: ["product", "item", "sku", "catalog", "offering", "service", "subscription"]
+        typical_attributes: [id, name, description, price, category, status]
+      Transaction:
+        description: "Orders, purchases, payments, invoices, or financial events"
+        keywords: ["transaction", "order", "payment", "invoice", "purchase", "sale", "receipt"]
+        typical_attributes: [id, customer_id, amount, date, status, currency]
+      Location:
+        description: "Addresses, sites, regions, facilities, or geographies"
+        keywords: ["location", "address", "site", "region", "facility", "warehouse", "store"]
+        typical_attributes: [id, name, address, city, state, country, zip_code]
+      Event:
+        description: "Activities, logs, sessions, audits, or system events"
+        keywords: ["event", "activity", "log", "audit", "session", "incident", "alert"]
+        typical_attributes: [id, type, timestamp, user_id, details]
+      Reference:
+        description: "Lookup tables, codes, categories, dimensions, or configuration"
+        keywords: ["reference", "lookup", "code", "category", "dim_", "type", "status"]
+        typical_attributes: [id, code, name, description, active]
+      Metric:
+        description: "KPIs, aggregates, facts, summaries, or analytic measures"
+        keywords: ["metric", "kpi", "aggregate", "fact_", "summary", "measure", "score"]
+        typical_attributes: [id, name, value, period, dimension]
+      Document:
+        description: "Unstructured content, notes, files, or text records"
+        keywords: ["document", "note", "file", "content", "text", "attachment", "report"]
+        typical_attributes: [id, title, body, author, created_date, type]
+
+  domain_entity_affinity:
+    finance: [Transaction, Person, Organization, Product, Reference, Event, Metric]
+    operations: [Product, Organization, Location, Event, Metric, Reference]
+    workforce: [Person, Organization, Location, Event, Reference]
+    customer: [Person, Organization, Product, Transaction, Event, Metric, Location]
+    technology: [Event, Metric, Reference, Organization]
+    governance: [Document, Reference, Organization, Person]
+
+  relationships:
+    types:
+      - name: owns
+        description: "Entity owns or is responsible for another"
+        inverse: owned_by
+      - name: contains
+        description: "Entity contains or includes another"
+        inverse: contained_in
+      - name: references
+        description: "Entity references another (foreign key)"
+        inverse: referenced_by
+      - name: derives_from
+        description: "Entity is derived from another (lineage)"
+        inverse: source_of
+      - name: similar_to
+        description: "Entity is semantically similar to another"
+        inverse: similar_to
+        symmetric: true
+      - name: part_of
+        description: "Entity is part of a larger entity"
+        inverse: has_part
+      - name: instance_of
+        description: "Entity is an instance of a type"
+        inverse: type_of
+
+  metrics:
+    auto_discover: false
+    definitions: []
+
+  validation:
+    min_entity_confidence: 0.5
+    max_entities_per_table: 3
+    ai_validation_enabled: true
+    classification_model: "databricks-claude-sonnet-4-6"
+
+domains:
+  finance:
+    name: "Finance"
+    description: "Accounting, payments, revenue cycle, billing, and treasury"
+    keywords: ["revenue", "billing", "ledger", "payment", "accounting", "invoice"]
+    subdomains:
+      accounting:
+        name: "Accounting"
+        keywords: ["ledger", "journal", "gl", "ap", "ar"]
+      billing:
+        name: "Billing & Payments"
+        keywords: ["billing", "payment", "invoice", "charge", "receipt"]
+      treasury:
+        name: "Treasury & Tax"
+        keywords: ["treasury", "cash", "tax", "investment", "audit"]
+
+  operations:
+    name: "Operations"
+    description: "Supply chain, inventory, procurement, logistics, and facilities"
+    keywords: ["inventory", "procurement", "logistics", "warehouse", "supply_chain"]
+    subdomains:
+      inventory:
+        name: "Inventory Management"
+        keywords: ["inventory", "stock", "warehouse", "sku", "cycle_count"]
+      procurement:
+        name: "Procurement"
+        keywords: ["procurement", "vendor", "purchase_order", "supplier", "rfp"]
+      logistics:
+        name: "Logistics"
+        keywords: ["shipping", "delivery", "carrier", "freight", "tracking"]
+
+  workforce:
+    name: "Workforce"
+    description: "HR, payroll, recruitment, and workforce management"
+    keywords: ["employee", "payroll", "recruitment", "hr", "workforce"]
+    subdomains:
+      payroll_compensation:
+        name: "Payroll & Compensation"
+        keywords: ["payroll", "salary", "compensation", "bonus", "deduction"]
+      talent:
+        name: "Talent Management"
+        keywords: ["recruitment", "candidate", "performance", "training", "hiring"]
+
+  customer:
+    name: "Customer"
+    description: "CRM, sales, marketing, customer support, and product analytics"
+    keywords: ["customer", "sales", "campaign", "support", "lead"]
+    subdomains:
+      sales:
+        name: "Sales & Pipeline"
+        keywords: ["opportunity", "deal", "quote", "pipeline", "forecast"]
+      marketing:
+        name: "Marketing"
+        keywords: ["campaign", "lead", "attribution", "email", "segment"]
+      support:
+        name: "Customer Support"
+        keywords: ["ticket", "case", "support", "resolution", "escalation"]
+
+  technology:
+    name: "Technology"
+    description: "IT infrastructure, security, monitoring, and application operations"
+    keywords: ["server", "security", "log", "monitoring", "infrastructure"]
+    subdomains:
+      security:
+        name: "Security"
+        keywords: ["security", "access", "auth", "threat", "vulnerability"]
+      monitoring:
+        name: "Monitoring & Observability"
+        keywords: ["monitoring", "alert", "log", "uptime", "incident"]
+      infrastructure:
+        name: "Infrastructure"
+        keywords: ["server", "network", "cloud", "deployment", "configuration"]
+
+  governance:
+    name: "Governance"
+    description: "Legal, regulatory compliance, contracts, data governance, and IP"
+    keywords: ["compliance", "contract", "governance", "policy", "regulation"]
+    subdomains:
+      legal:
+        name: "Legal & Contracts"
+        keywords: ["contract", "agreement", "litigation", "clause", "legal"]
+      regulatory:
+        name: "Regulatory Compliance"
+        keywords: ["regulatory", "audit", "compliance", "violation", "reporting"]
+      data_governance:
+        name: "Data Governance"
+        keywords: ["lineage", "metadata", "catalog", "quality", "governance"]

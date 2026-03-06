@@ -154,4 +154,4 @@ ontology:
     min_entity_confidence: 0.5
     max_entities_per_table: 3
     ai_validation_enabled: true
-    validation_model: "databricks-gpt-oss-120b"
+    classification_model: "databricks-claude-sonnet-4-6"

@@ -12,7 +12,6 @@ import re
 import json
 import yaml
 import logging
-from importlib import resources as pkg_resources
 from typing import Dict, Any, Optional, List
 from databricks_langchain import ChatDatabricks
 from pydantic import BaseModel, Field
@@ -80,51 +79,72 @@ class SubdomainResult(BaseModel):
     )
 
 
-def load_domain_config(config_path: str = None) -> Dict[str, Any]:
-    """Load domain configuration from YAML file"""
+def load_domain_config(config_path: str = None, bundle_path: str = None) -> Dict[str, Any]:
+    """Load domain configuration from YAML file or ontology bundle.
 
-    if config_path and os.path.exists(config_path):
-        try:
-            with open(config_path, "r") as file:
-                config = yaml.safe_load(file)
-            logger.info("Loaded domain config from %s", config_path)
-            return config
-        except Exception as e:
-            logger.warning("Could not load domain config from %s: %s", config_path, e)
+    When *bundle_path* is provided, the ``domains`` section is extracted
+    from the bundle YAML.  Otherwise falls back to *config_path* or the
+    default ``configurations/domain_config.yaml``.
+    """
+    if bundle_path:
+        resolved = _resolve_path(bundle_path)
+        if resolved:
+            try:
+                with open(resolved, "r") as f:
+                    bundle = yaml.safe_load(f)
+                if bundle and "domains" in bundle:
+                    logger.info("Loaded domain config from bundle %s", resolved)
+                    return {"version": bundle.get("metadata", {}).get("version", "1.0"),
+                            "domains": bundle["domains"]}
+            except Exception as e:
+                logger.warning("Could not extract domains from bundle %s: %s", resolved, e)
 
-    # Try default paths
-    # TODO: This should be refactored to use the ConfigManager class and evaluate which path is correct for the current environment
-    config_paths = [
+    if config_path:
+        resolved = _resolve_path(config_path)
+        if resolved:
+            try:
+                with open(resolved, "r") as f:
+                    config = yaml.safe_load(f)
+                logger.info("Loaded domain config from %s", resolved)
+                return config
+            except Exception as e:
+                logger.warning("Could not load domain config from %s: %s", resolved, e)
+
+    for path in [
         "configurations/domain_config.yaml",
         "../configurations/domain_config.yaml",
         "../../configurations/domain_config.yaml",
-    ]
-
-    for path in config_paths:
+    ]:
         try:
             if os.path.exists(path):
-                with open(path, "r") as file:
-                    config = yaml.safe_load(file)
+                with open(path, "r") as f:
+                    config = yaml.safe_load(f)
                 logger.info("Loaded domain config from %s", path)
                 return config
         except Exception as e:
             logger.warning("Could not load domain config from %s: %s", path, e)
 
-    # Try loading from package data (works when installed via pip)
-    try:
-        ref = pkg_resources.files("dbxmetagen").joinpath("configurations/domain_config.yaml")
-        with pkg_resources.as_file(ref) as p:
-            if p.exists():
-                config = yaml.safe_load(p.read_text())
-                logger.info("Loaded domain config from package data")
-                return config
-    except Exception:
-        pass
-
     logger.warning("Could not load domain config from any path, using fallback")
     return {
         "domains": {"unknown": {"name": "Unknown", "keywords": [], "subdomains": {}}}
     }
+
+
+def _resolve_path(path: str) -> Optional[str]:
+    """Return the first existing path variant, or None."""
+    candidates = [
+        path,
+        os.path.join("..", path),
+        os.path.join(os.path.dirname(__file__), "..", "..", path),
+    ]
+    try:
+        candidates.append(os.path.join(os.getcwd(), path))
+    except Exception:
+        pass
+    for p in candidates:
+        if os.path.exists(p):
+            return p
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -173,10 +193,9 @@ def keyword_prefilter(
             kws |= set(k.lower() for k in sd_info.get("keywords", []))
         scores[domain_key] = len(bag & kws)
 
-    if max(scores.values(), default=0) == 0:
-        return list(domains.keys())
-
     ranked = sorted(scores, key=lambda k: scores[k], reverse=True)
+    if top_n <= 0 or top_n >= len(ranked):
+        return ranked
     return ranked[:top_n]
 
 
@@ -603,7 +622,7 @@ def classify_table_domain(
     temperature: float = 0.1,
     max_tokens: int = 8192,
     two_stage: bool = True,
-    prefilter_top_n: int = 5,
+    prefilter_top_n: int = 0,
     confidence_threshold: float = 0.5,
 ) -> Dict[str, Any]:
     """Classify a table into a business domain.

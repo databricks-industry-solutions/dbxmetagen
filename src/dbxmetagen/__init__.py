@@ -16,9 +16,10 @@ from dbxmetagen.profiling import run_profiling
 from dbxmetagen.data_quality import compute_data_quality
 from dbxmetagen.embeddings import generate_embeddings, find_similar_nodes
 from dbxmetagen.similarity_edges import build_similarity_edges
-from dbxmetagen.ontology import build_ontology
+from dbxmetagen.ontology import build_ontology, list_available_bundles, resolve_bundle_path
 from dbxmetagen.ontology_validator import validate_ontology
 from dbxmetagen.fk_prediction import predict_foreign_keys
+from dbxmetagen.semantic_layer import generate_semantic_layer
 
 __all__ = [
     "MetadataConfig",
@@ -43,7 +44,11 @@ __all__ = [
     "build_similarity_edges",
     # Ontology
     "build_ontology",
+    "list_available_bundles",
+    "resolve_bundle_path",
     "validate_ontology",
     # FK prediction
     "predict_foreign_keys",
+    # Semantic layer
+    "generate_semantic_layer",
 ]

@@ -1,0 +1,349 @@
+# Healthcare & Life Sciences Ontology Bundle
+# Aligned with FHIR R4, OMOP CDM, and Schema.org
+
+metadata:
+  name: "Healthcare & Life Sciences"
+  version: "2.0"
+  industry: "healthcare"
+  description: "Comprehensive healthcare ontology covering clinical, payer, pharma, and cross-functional domains"
+  standards_alignment: "FHIR R4, OMOP CDM, Schema.org"
+
+ontology:
+  version: "2.0"
+  name: "Healthcare Business Ontology"
+  description: "Healthcare-focused ontology for data catalog metadata"
+
+  entities:
+    auto_discover: true
+    discovery_confidence_threshold: 0.4
+
+    definitions:
+      # General entities
+      Person:
+        description: "People, customers, contacts, users, or employees"
+        keywords: ["customer", "employee", "user", "contact", "person"]
+        typical_attributes: [id, name, email, phone, address, created_date]
+      Organization:
+        description: "Companies, departments, facilities, or business units"
+        keywords: ["company", "organization", "department", "facility", "tenant"]
+        typical_attributes: [id, name, type, address, parent_id]
+      Product:
+        description: "Goods, services, SKUs, or catalog items"
+        keywords: ["product", "item", "sku", "catalog", "offering"]
+        typical_attributes: [id, name, description, price, category, status]
+      Transaction:
+        description: "Orders, purchases, payments, invoices, or financial events"
+        keywords: ["transaction", "order", "payment", "invoice", "purchase"]
+        typical_attributes: [id, customer_id, amount, date, status, currency]
+      Location:
+        description: "Addresses, sites, regions, facilities, or geographies"
+        keywords: ["location", "address", "site", "region", "facility"]
+        typical_attributes: [id, name, address, city, state, country, zip_code]
+      Event:
+        description: "Activities, logs, sessions, audits, or system events"
+        keywords: ["event", "activity", "log", "audit", "session"]
+        typical_attributes: [id, type, timestamp, user_id, details]
+      Reference:
+        description: "Lookup tables, codes, categories, dimensions, or configuration"
+        keywords: ["reference", "lookup", "code", "category", "dim_"]
+        typical_attributes: [id, code, name, description, active]
+      Metric:
+        description: "KPIs, aggregates, facts, summaries, or analytic measures"
+        keywords: ["metric", "kpi", "aggregate", "fact_", "summary"]
+        typical_attributes: [id, name, value, period, dimension]
+      Document:
+        description: "Unstructured content, notes, files, or text records"
+        keywords: ["document", "note", "file", "content", "text"]
+        typical_attributes: [id, title, body, author, created_date, type]
+
+      # Healthcare / Life Sciences entities
+      Patient:
+        description: "Individuals receiving healthcare services (FHIR Patient)"
+        keywords: ["patient", "mrn", "subject", "participant", "beneficiary"]
+        typical_attributes: [id, mrn, name, dob, gender, address]
+      Provider:
+        description: "Practitioners, clinicians, or care team members (FHIR Practitioner)"
+        keywords: ["provider", "physician", "practitioner", "clinician", "npi"]
+        typical_attributes: [id, npi, name, specialty, organization]
+      Encounter:
+        description: "Visits, admissions, or episodes of care (FHIR Encounter)"
+        keywords: ["encounter", "visit", "admission", "episode", "appointment"]
+        typical_attributes: [id, patient_id, date, type, provider, location]
+      Condition:
+        description: "Diagnoses, problems, or diseases (FHIR Condition / OMOP CONDITION_OCCURRENCE)"
+        keywords: ["diagnosis", "condition", "icd", "disease", "problem"]
+        typical_attributes: [id, code, description, patient_id, date, status]
+      Procedure:
+        description: "Medical procedures, surgeries, or interventions (FHIR Procedure)"
+        keywords: ["procedure", "surgery", "cpt", "intervention", "operation"]
+        typical_attributes: [id, code, description, date, provider, status]
+      Medication:
+        description: "Drugs, prescriptions, or medication orders (FHIR MedicationRequest)"
+        keywords: ["medication", "drug", "prescription", "pharmacy", "ndc"]
+        typical_attributes: [id, name, ndc, dose, frequency, route]
+      Observation:
+        description: "Lab results, vitals, or clinical measurements (FHIR Observation / OMOP MEASUREMENT)"
+        keywords: ["lab", "result", "observation", "vital", "specimen"]
+        typical_attributes: [id, test_code, value, unit, reference_range, date]
+      Claim:
+        description: "Insurance claims or billing submissions (FHIR Claim)"
+        keywords: ["claim", "billing", "adjudication", "remittance", "eob"]
+        typical_attributes: [id, patient_id, amount, service_date, status, payer_id]
+      Coverage:
+        description: "Insurance plans, benefits, or member coverage (FHIR Coverage)"
+        keywords: ["coverage", "insurance", "benefit", "plan", "enrollment"]
+        typical_attributes: [id, member_id, payer, plan_name, start_date, end_date]
+
+  domain_entity_affinity:
+    clinical: [Patient, Provider, Encounter, Condition, Procedure, Medication, Observation, Claim, Coverage, Person, Organization, Location]
+    diagnostics: [Patient, Observation, Condition, Procedure, Person, Reference]
+    payer: [Claim, Coverage, Person, Organization, Transaction, Reference]
+    pharmaceutical: [Patient, Observation, Medication, Condition, Procedure, Person, Document, Reference, Organization]
+    quality_safety: [Patient, Observation, Encounter, Condition, Metric, Event]
+    research: [Patient, Observation, Medication, Condition, Procedure, Person, Document, Reference]
+    finance: [Transaction, Person, Organization, Product, Reference, Event, Metric]
+    operations: [Product, Organization, Location, Event, Metric, Reference]
+    workforce: [Person, Organization, Location, Event, Reference]
+    customer: [Person, Organization, Product, Transaction, Event, Metric, Location]
+    technology: [Event, Metric, Reference, Organization]
+    governance: [Document, Reference, Organization, Person]
+
+  relationships:
+    types:
+      - name: owns
+        description: "Entity owns or is responsible for another"
+        inverse: owned_by
+      - name: contains
+        description: "Entity contains or includes another"
+        inverse: contained_in
+      - name: references
+        description: "Entity references another (foreign key)"
+        inverse: referenced_by
+      - name: derives_from
+        description: "Entity is derived from another (lineage)"
+        inverse: source_of
+      - name: similar_to
+        description: "Entity is semantically similar to another"
+        inverse: similar_to
+        symmetric: true
+      - name: part_of
+        description: "Entity is part of a larger entity"
+        inverse: has_part
+      - name: instance_of
+        description: "Entity is an instance of a type"
+        inverse: type_of
+      - name: treats
+        description: "Provider treats a patient"
+        inverse: treated_by
+      - name: ordered_for
+        description: "Medication or procedure ordered for an encounter"
+        inverse: has_order
+
+  metrics:
+    auto_discover: false
+    definitions: []
+
+  validation:
+    min_entity_confidence: 0.5
+    max_entities_per_table: 3
+    ai_validation_enabled: true
+    classification_model: "databricks-claude-sonnet-4-6"
+
+domains:
+  clinical:
+    name: "Clinical"
+    description: "Patient care, encounters, diagnoses, procedures, medications, and clinical documentation"
+    keywords: ["patient", "encounter", "diagnosis", "medication", "clinical"]
+    subdomains:
+      patient_care:
+        name: "Patient Care"
+        description: "Patient demographics, encounters, admissions, discharges, and care episodes"
+        keywords: ["patient", "encounter", "admission", "visit", "episode"]
+      diagnosis_condition:
+        name: "Diagnosis & Conditions"
+        description: "Medical diagnoses, conditions, problem lists, and disease coding"
+        keywords: ["diagnosis", "condition", "icd", "problem", "disease"]
+      medication_orders:
+        name: "Medications & Orders"
+        description: "Prescriptions, medication administration, pharmacy, and clinical orders"
+        keywords: ["medication", "prescription", "drug", "pharmacy", "order"]
+      clinical_documentation:
+        name: "Clinical Documentation"
+        description: "Progress notes, assessments, care plans, and clinical narratives"
+        keywords: ["note", "assessment", "care_plan", "narrative", "documentation"]
+
+  diagnostics:
+    name: "Diagnostics"
+    description: "Laboratory results, imaging, pathology, vitals, and clinical observations"
+    keywords: ["lab", "imaging", "result", "observation", "specimen"]
+    subdomains:
+      laboratory:
+        name: "Laboratory"
+        description: "Lab tests, panels, specimens, and result values"
+        keywords: ["lab", "test", "specimen", "panel", "loinc"]
+      imaging:
+        name: "Imaging & Radiology"
+        description: "Radiology, MRI, CT, X-ray, and DICOM studies"
+        keywords: ["imaging", "radiology", "dicom", "mri", "xray"]
+      vitals_observations:
+        name: "Vitals & Observations"
+        description: "Vital signs, clinical measurements, and point-of-care observations"
+        keywords: ["vital", "observation", "measurement", "blood_pressure", "temperature"]
+
+  payer:
+    name: "Payer"
+    description: "Health insurance, claims processing, membership, benefits, and authorization"
+    keywords: ["claim", "insurance", "member", "benefit", "enrollment"]
+    subdomains:
+      membership:
+        name: "Membership & Enrollment"
+        description: "Member eligibility, enrollment, subscriber management, and plan assignment"
+        keywords: ["member", "enrollment", "eligibility", "subscriber", "coverage"]
+      claims:
+        name: "Claims Processing"
+        description: "Claim submission, adjudication, payment, denials, and appeals"
+        keywords: ["claim", "adjudication", "denial", "remittance", "eob"]
+      authorization:
+        name: "Authorization & Utilization"
+        description: "Prior authorization, utilization review, medical necessity, and care management"
+        keywords: ["authorization", "utilization", "preauth", "medical_necessity", "review"]
+
+  pharmaceutical:
+    name: "Pharmaceutical"
+    description: "Drug development, clinical trials, manufacturing, and regulatory operations"
+    keywords: ["drug", "clinical_trial", "manufacturing", "regulatory", "fda"]
+    subdomains:
+      clinical_development:
+        name: "Clinical Development"
+        description: "Clinical trials, protocols, subjects, adverse events, and regulatory submissions"
+        keywords: ["trial", "protocol", "adverse_event", "subject", "submission"]
+      manufacturing:
+        name: "Manufacturing & Supply"
+        description: "Drug production, batch records, GMP, quality, and distribution"
+        keywords: ["batch", "gmp", "production", "lot", "distribution"]
+      commercial:
+        name: "Commercial Operations"
+        description: "Sales force, HCP engagement, medical affairs, and territory management"
+        keywords: ["hcp", "territory", "sales_rep", "medical_affairs", "msl"]
+
+  quality_safety:
+    name: "Quality & Safety"
+    description: "Quality measures, patient outcomes, safety events, and population health"
+    keywords: ["quality", "outcome", "safety", "measure", "readmission"]
+    subdomains:
+      quality_measures:
+        name: "Quality Measures"
+        description: "HEDIS, Stars, MIPS, performance metrics, and benchmarks"
+        keywords: ["hedis", "stars", "mips", "measure", "benchmark"]
+      patient_safety:
+        name: "Patient Safety"
+        description: "Adverse events, infections, falls, safety incidents, and mortality"
+        keywords: ["safety", "adverse_event", "infection", "mortality", "incident"]
+      population_health:
+        name: "Population Health"
+        description: "Risk stratification, care gaps, preventive care, and SDOH"
+        keywords: ["population", "risk_stratification", "care_gap", "sdoh", "preventive"]
+
+  research:
+    name: "Research"
+    description: "Precision medicine, genomics, real-world evidence, and clinical research"
+    keywords: ["genomics", "research", "biomarker", "rwe", "sequencing"]
+    subdomains:
+      genomics:
+        name: "Genomics & Molecular"
+        description: "Genomic sequencing, variants, molecular profiling, and pharmacogenomics"
+        keywords: ["genomics", "variant", "sequencing", "gene", "molecular"]
+      real_world_evidence:
+        name: "Real-World Evidence"
+        description: "Observational studies, registries, cohorts, and outcomes research"
+        keywords: ["rwe", "observational", "registry", "cohort", "epidemiology"]
+
+  finance:
+    name: "Finance"
+    description: "Accounting, payments, revenue cycle, billing, coding, and treasury"
+    keywords: ["revenue", "billing", "ledger", "payment", "accounting"]
+    subdomains:
+      accounting:
+        name: "Accounting"
+        keywords: ["ledger", "journal", "gl", "ap", "ar"]
+      billing_coding:
+        name: "Billing & Coding"
+        keywords: ["billing", "coding", "cpt", "icd", "charge"]
+      treasury:
+        name: "Treasury & Tax"
+        keywords: ["treasury", "cash", "tax", "investment", "audit"]
+
+  operations:
+    name: "Operations"
+    description: "Supply chain, inventory, procurement, logistics, and facilities"
+    keywords: ["inventory", "procurement", "logistics", "warehouse", "supply_chain"]
+    subdomains:
+      inventory:
+        name: "Inventory Management"
+        keywords: ["inventory", "stock", "warehouse", "sku", "cycle_count"]
+      procurement:
+        name: "Procurement"
+        keywords: ["procurement", "vendor", "purchase_order", "supplier", "rfp"]
+      logistics:
+        name: "Logistics"
+        keywords: ["shipping", "delivery", "carrier", "freight", "tracking"]
+
+  workforce:
+    name: "Workforce"
+    description: "HR, payroll, recruitment, credentialing, and workforce management"
+    keywords: ["employee", "payroll", "recruitment", "hr", "workforce"]
+    subdomains:
+      payroll_compensation:
+        name: "Payroll & Compensation"
+        keywords: ["payroll", "salary", "compensation", "bonus", "deduction"]
+      talent:
+        name: "Talent Management"
+        keywords: ["recruitment", "candidate", "performance", "training", "hiring"]
+      credentialing:
+        name: "Credentialing"
+        keywords: ["credential", "license", "certification", "privilege", "npi"]
+
+  customer:
+    name: "Customer"
+    description: "CRM, sales, marketing, customer support, and product analytics"
+    keywords: ["customer", "sales", "campaign", "support", "lead"]
+    subdomains:
+      sales:
+        name: "Sales & Pipeline"
+        keywords: ["opportunity", "deal", "quote", "pipeline", "forecast"]
+      marketing:
+        name: "Marketing"
+        keywords: ["campaign", "lead", "attribution", "email", "segment"]
+      support:
+        name: "Customer Support"
+        keywords: ["ticket", "case", "support", "resolution", "escalation"]
+
+  technology:
+    name: "Technology"
+    description: "IT infrastructure, security, monitoring, and application operations"
+    keywords: ["server", "security", "log", "monitoring", "infrastructure"]
+    subdomains:
+      security:
+        name: "Security"
+        keywords: ["security", "access", "auth", "threat", "vulnerability"]
+      monitoring:
+        name: "Monitoring & Observability"
+        keywords: ["monitoring", "alert", "log", "uptime", "incident"]
+      infrastructure:
+        name: "Infrastructure"
+        keywords: ["server", "network", "cloud", "deployment", "configuration"]
+
+  governance:
+    name: "Governance"
+    description: "Legal, regulatory compliance, contracts, data governance, and IP"
+    keywords: ["compliance", "contract", "governance", "policy", "regulation"]
+    subdomains:
+      legal:
+        name: "Legal & Contracts"
+        keywords: ["contract", "agreement", "litigation", "clause", "legal"]
+      regulatory:
+        name: "Regulatory Compliance"
+        keywords: ["regulatory", "audit", "compliance", "violation", "reporting"]
+      data_governance:
+        name: "Data Governance"
+        keywords: ["lineage", "metadata", "catalog", "quality", "governance"]

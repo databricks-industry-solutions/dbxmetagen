@@ -11,9 +11,16 @@ export default function BatchJobs() {
   const [runStatus, setRunStatus] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
+  const [ontologyBundle, setOntologyBundle] = useState('healthcare')
+  const [bundles, setBundles] = useState([])
 
   useEffect(() => {
-    fetch('/api/jobs').then(r => r.json()).then(setJobs).catch(() => {})
+    setError(null)
+    fetch('/api/jobs').then(r => {
+      if (!r.ok) throw new Error(`${r.status} ${r.statusText}`)
+      return r.json()
+    }).then(setJobs)
+      .catch(e => setError(`Failed to load jobs: ${e.message}`))
   }, [])
 
   useEffect(() => {
@@ -23,6 +30,7 @@ export default function BatchJobs() {
         setSchemaName(cfg.schema_name || '')
       }
     })
+    fetch('/api/ontology/bundles').then(r => r.ok ? r.json() : []).then(setBundles).catch(() => {})
   }, [])
 
   const findJob = (suffix) => jobs.find(j => j.name?.endsWith(suffix))
@@ -49,9 +57,12 @@ export default function BatchJobs() {
 
   const checkStatus = async () => {
     if (!runStatus?.run_id) return
-    const res = await fetch(`/api/jobs/${runStatus.run_id}/status`)
-    const data = await res.json()
-    setRunStatus(prev => ({ ...prev, ...data }))
+    try {
+      const res = await fetch(`/api/jobs/${runStatus.run_id}/status`)
+      if (!res.ok) { setError(`Status check failed: ${res.status}`); return }
+      const data = await res.json()
+      setRunStatus(prev => ({ ...prev, ...data }))
+    } catch (e) { setError(`Status check error: ${e.message}`) }
   }
 
   return (
@@ -84,12 +95,12 @@ export default function BatchJobs() {
           </div>
         </div>
         <div className="flex gap-3 mt-4">
-          <button onClick={() => runJob('dbxmetagen_metadata_job', { table_names: tableNames, mode, apply_ddl: applyDdl })}
+          <button onClick={() => runJob('_metadata_job', { table_names: tableNames, mode, apply_ddl: applyDdl })}
             disabled={loading || !tableNames.trim()}
             className="px-4 py-2 bg-blue-600 text-white rounded-md text-sm hover:bg-blue-700 disabled:opacity-50">
             {loading ? 'Starting...' : 'Run Single Mode'}
           </button>
-          <button onClick={() => runJob('dbxmetagen_parallel_modes_job', { table_names: tableNames })}
+          <button onClick={() => runJob('_parallel_modes_job', { table_names: tableNames })}
             disabled={loading || !tableNames.trim()}
             className="px-4 py-2 bg-indigo-600 text-white rounded-md text-sm hover:bg-indigo-700 disabled:opacity-50">
             Run All 3 Modes (Parallel)
@@ -112,8 +123,8 @@ export default function BatchJobs() {
               placeholder="e.g. metadata_results" className="w-full border rounded-md p-2 text-sm" />
           </div>
         </div>
-        <div className="flex gap-3">
-          <button onClick={() => runJob('dbxmetagen_full_analytics_pipeline', { catalog_name: catalogName, schema_name: schemaName })}
+        <div className="flex gap-3 items-end">
+          <button onClick={() => runJob('_full_analytics_pipeline', { catalog_name: catalogName, schema_name: schemaName, ontology_bundle: ontologyBundle })}
             disabled={loading}
             className="px-4 py-2 bg-emerald-600 text-white rounded-md text-sm hover:bg-emerald-700 disabled:opacity-50">
             Full Analytics Pipeline
@@ -124,6 +135,36 @@ export default function BatchJobs() {
             Sync Graph to Lakebase
           </button>
         </div>
+      </section>
+
+      {/* Ontology Prediction */}
+      <section className="bg-white rounded-lg border p-6">
+        <h2 className="text-lg font-semibold mb-4">Ontology Prediction</h2>
+        <p className="text-sm text-gray-500 mb-4">
+          Discover entity types from table and column metadata, validate against ontology config, and add entity relationships to the knowledge graph.
+        </p>
+        <div className="mb-4">
+          <label className="block text-sm font-medium text-gray-700 mb-1">Ontology Bundle</label>
+          <select value={ontologyBundle} onChange={e => setOntologyBundle(e.target.value)}
+            className="w-full max-w-xs border rounded-md p-2 text-sm">
+            {bundles.length > 0 ? bundles.map(b => (
+              <option key={b.key} value={b.key}>{b.name} ({b.entity_count} entities, {b.domain_count} domains)</option>
+            )) : (
+              <>
+                <option value="healthcare">Healthcare</option>
+                <option value="general">General</option>
+              </>
+            )}
+          </select>
+          {bundles.find(b => b.key === ontologyBundle)?.description && (
+            <p className="text-xs text-gray-400 mt-1">{bundles.find(b => b.key === ontologyBundle).description}</p>
+          )}
+        </div>
+        <button onClick={() => runJob('_ontology_prediction', { catalog_name: catalogName, schema_name: schemaName, ontology_bundle: ontologyBundle })}
+          disabled={loading}
+          className="px-4 py-2 bg-teal-600 text-white rounded-md text-sm hover:bg-teal-700 disabled:opacity-50">
+          Run Ontology Prediction
+        </button>
       </section>
 
       {/* FK Prediction */}
@@ -143,6 +184,22 @@ export default function BatchJobs() {
             disabled={loading}
             className="px-4 py-2 bg-red-600 text-white rounded-md text-sm hover:bg-red-700 disabled:opacity-50">
             Predict + Apply Foreign Keys
+          </button>
+        </div>
+      </section>
+
+      {/* Semantic Layer */}
+      <section className="bg-white rounded-lg border p-6">
+        <h2 className="text-lg font-semibold mb-4">Semantic Layer</h2>
+        <p className="text-sm text-gray-500 mb-4">
+          Generate metric views from business questions and catalog metadata, then optionally create a Genie space.
+          Add questions in the Semantic Layer tab first.
+        </p>
+        <div className="flex gap-3">
+          <button onClick={() => runJob('_semantic_layer', { catalog_name: catalogName, schema_name: schemaName })}
+            disabled={loading}
+            className="px-4 py-2 bg-indigo-600 text-white rounded-md text-sm hover:bg-indigo-700 disabled:opacity-50">
+            Generate Semantic Layer
           </button>
         </div>
       </section>
@@ -169,7 +226,7 @@ export default function BatchJobs() {
       <section className="bg-white rounded-lg border p-6">
         <h2 className="text-lg font-semibold mb-3">Available Jobs</h2>
         {jobs.length === 0 ? (
-          <p className="text-sm text-gray-500">No jobs found. Deploy with Databricks Asset Bundles first.</p>
+          <p className="text-sm text-gray-500">No jobs found. Run 'databricks bundle deploy' to create jobs, then restart the app.</p>
         ) : (
           <div className="divide-y">
             {jobs.map(j => (

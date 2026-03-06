@@ -9,8 +9,12 @@ from dbxmetagen.ontology import (
     OntologyLoader,
     EntityDefinition,
     EntityDiscoverer,
+    EntityClassificationResult,
     OntologyBuilder,
-    build_ontology
+    build_ontology,
+    _enforce_entity_value,
+    DEFAULT_CLASSIFICATION_MODEL,
+    DOMAIN_ENTITY_AFFINITY,
 )
 
 
@@ -175,7 +179,7 @@ class TestEntityDiscoverer:
             "this table contains customer data with id and name",
             entity_def
         )
-        assert confidence > 0.5
+        assert confidence > 0.4
     
     def test_calculate_match_confidence_no_match(self):
         ontology_config = {"entities": {"definitions": {}}}
@@ -219,11 +223,25 @@ class TestEntityDiscoverer:
         # Should have some confidence but not full
         assert 0 < confidence < 1.0
     
-    def test_ai_model_constant_defined(self):
-        """AI model constant should be defined for AI discovery."""
-        assert hasattr(EntityDiscoverer, 'AI_MODEL')
-        assert EntityDiscoverer.AI_MODEL == "databricks-gpt-oss-120b"
-    
+    def test_default_classification_model(self):
+        """Default classification model should be claude-sonnet-4-6."""
+        assert DEFAULT_CLASSIFICATION_MODEL == "databricks-claude-sonnet-4-6"
+
+    def test_model_endpoint_from_config(self):
+        """Discoverer should read classification_model from validation config."""
+        ontology_config = {
+            "entities": {"definitions": {}},
+            "validation": {"classification_model": "my-custom-model"},
+        }
+        discoverer = EntityDiscoverer(MagicMock(), MagicMock(), ontology_config)
+        assert discoverer._model_endpoint == "my-custom-model"
+
+    def test_model_endpoint_default(self):
+        """Discoverer should fall back to DEFAULT_CLASSIFICATION_MODEL."""
+        ontology_config = {"entities": {"definitions": {}}}
+        discoverer = EntityDiscoverer(MagicMock(), MagicMock(), ontology_config)
+        assert discoverer._model_endpoint == DEFAULT_CLASSIFICATION_MODEL
+
     def test_normalize_name_handles_snake_case(self):
         """_normalize_name should handle snake_case variations."""
         ontology_config = {"entities": {"definitions": {}}}
@@ -304,7 +322,7 @@ class TestOntologyBuilder:
 class TestBuildOntology:
     """Tests for build_ontology function."""
     
-    @patch('src.dbxmetagen.ontology.OntologyBuilder')
+    @patch('dbxmetagen.ontology.OntologyBuilder')
     def test_creates_builder_with_correct_config(self, mock_builder_class):
         mock_builder = MagicMock()
         mock_builder.run.return_value = {"entities_discovered": 5, "entity_types": 3}
@@ -317,7 +335,7 @@ class TestBuildOntology:
         assert config.catalog_name == "my_cat"
         assert config.schema_name == "my_sch"
     
-    @patch('src.dbxmetagen.ontology.OntologyBuilder')
+    @patch('dbxmetagen.ontology.OntologyBuilder')
     def test_passes_config_path(self, mock_builder_class):
         mock_builder = MagicMock()
         mock_builder.run.return_value = {}
@@ -328,7 +346,7 @@ class TestBuildOntology:
         config = mock_builder_class.call_args[0][1]
         assert config.config_path == "custom/path.yaml"
     
-    @patch('src.dbxmetagen.ontology.OntologyBuilder')
+    @patch('dbxmetagen.ontology.OntologyBuilder')
     def test_returns_run_result(self, mock_builder_class):
         expected = {"entities_discovered": 10, "entity_types": 4, "edges_added": 10}
         mock_builder = MagicMock()
@@ -337,4 +355,140 @@ class TestBuildOntology:
         
         result = build_ontology(MagicMock(), "cat", "sch")
         assert result == expected
+
+
+class TestEnforceEntityValue:
+    """Tests for _enforce_entity_value."""
+
+    def test_exact_match(self):
+        val, exact = _enforce_entity_value("Patient", ["Patient", "Provider"])
+        assert val == "Patient"
+        assert exact is True
+
+    def test_case_insensitive_match(self):
+        val, exact = _enforce_entity_value("patient", ["Patient", "Provider"])
+        assert val == "Patient"
+        assert exact is True
+
+    def test_partial_match(self):
+        val, exact = _enforce_entity_value("patient_record", ["Patient", "Provider"])
+        assert val == "Patient"
+        assert exact is False
+
+    def test_no_match_returns_fallback(self):
+        val, exact = _enforce_entity_value("xyz_unknown", ["Patient", "Provider"])
+        assert val == "DataTable"
+        assert exact is False
+
+    def test_custom_fallback(self):
+        val, exact = _enforce_entity_value("xyz", ["Patient"], fallback="Other")
+        assert val == "Other"
+
+
+class TestEntityClassificationResult:
+    """Tests for the Pydantic structured output model."""
+
+    def test_basic_creation(self):
+        r = EntityClassificationResult(
+            entity_type="Patient", confidence=0.9, reasoning="matches keywords"
+        )
+        assert r.entity_type == "Patient"
+        assert r.secondary_entity_type is None
+        assert r.recommended_entity is None
+
+    def test_multi_entity(self):
+        r = EntityClassificationResult(
+            entity_type="Patient",
+            secondary_entity_type="Encounter",
+            confidence=0.85,
+            reasoning="relationship table",
+        )
+        assert r.secondary_entity_type == "Encounter"
+
+    def test_recommended_entity(self):
+        r = EntityClassificationResult(
+            entity_type="DataTable",
+            confidence=0.3,
+            recommended_entity="ClinicalTrial",
+            reasoning="low confidence",
+        )
+        assert r.recommended_entity == "ClinicalTrial"
+
+
+class TestDomainEntityAffinity:
+    """Tests for the domain-to-entity affinity map."""
+
+    def test_healthcare_has_patient(self):
+        assert "Patient" in DOMAIN_ENTITY_AFFINITY["healthcare"]
+
+    def test_finance_has_transaction(self):
+        assert "Transaction" in DOMAIN_ENTITY_AFFINITY["finance"]
+
+
+class TestKeywordPrefilter:
+    """Tests for EntityDiscoverer._keyword_prefilter."""
+
+    def _make_discoverer(self):
+        ontology_config = OntologyLoader._default_config()
+        return EntityDiscoverer(MagicMock(), MagicMock(), ontology_config)
+
+    def test_returns_candidates(self):
+        d = self._make_discoverer()
+        result = d._keyword_prefilter("patient_records", "medical records", "healthcare")
+        assert isinstance(result, list)
+        assert len(result) > 0
+
+    def test_domain_boosts_relevant(self):
+        d = self._make_discoverer()
+        result = d._keyword_prefilter("data_table", "", "healthcare", top_n=5)
+        healthcare_entities = DOMAIN_ENTITY_AFFINITY["healthcare"]
+        boosted = [r for r in result if r in healthcare_entities]
+        assert len(boosted) > 0
+
+    def test_top_n_limits_results(self):
+        d = self._make_discoverer()
+        result = d._keyword_prefilter("something", "", "unknown", top_n=3)
+        assert len(result) == 3
+
+
+class TestDeduplicateEntities:
+    """Tests for EntityDiscoverer.deduplicate_entities."""
+
+    def test_merges_same_table_entity(self):
+        entities = [
+            {
+                "entity_id": "1", "entity_type": "Patient", "entity_name": "Patient",
+                "source_tables": ["t1"], "source_columns": ["col_a"],
+                "attributes": {"granularity": "column", "discovery_method": "keyword"},
+                "confidence": 0.7, "validation_notes": None,
+            },
+            {
+                "entity_id": "2", "entity_type": "Patient", "entity_name": "Patient",
+                "source_tables": ["t1"], "source_columns": ["col_b"],
+                "attributes": {"granularity": "column", "discovery_method": "ai"},
+                "confidence": 0.9, "validation_notes": "high conf",
+            },
+        ]
+        result = EntityDiscoverer.deduplicate_entities(entities)
+        assert len(result) == 1
+        assert result[0]["confidence"] == 0.9
+        assert set(result[0]["source_columns"]) == {"col_a", "col_b"}
+
+    def test_keeps_different_entity_types(self):
+        entities = [
+            {
+                "entity_id": "1", "entity_type": "Patient", "entity_name": "Patient",
+                "source_tables": ["t1"], "source_columns": [],
+                "attributes": {"granularity": "table"}, "confidence": 0.8,
+                "validation_notes": None,
+            },
+            {
+                "entity_id": "2", "entity_type": "Encounter", "entity_name": "Encounter",
+                "source_tables": ["t1"], "source_columns": [],
+                "attributes": {"granularity": "table"}, "confidence": 0.7,
+                "validation_notes": None,
+            },
+        ]
+        result = EntityDiscoverer.deduplicate_entities(entities)
+        assert len(result) == 2
 

@@ -58,9 +58,14 @@ Entity Information:
 - Description: {description}
 - Confidence: {confidence}
 - Source Tables: {source_tables}
+- Source Columns: {source_columns}
+- Granularity: {granularity}
 
 Table Metadata:
 {table_metadata}
+
+Column Metadata:
+{column_metadata}
 
 Please respond with a JSON object containing:
 {{
@@ -107,31 +112,31 @@ Focus on entities NOT already covered by existing types. Be conservative and sug
     def validate_entity(self, entity_row) -> Dict[str, Any]:
         """Validate a single entity using AI."""
         try:
-            # Get table metadata for the entity's source tables
             source_tables = entity_row.source_tables or []
+            source_columns = entity_row.source_columns or []
+            attributes = entity_row.attributes or {}
+            granularity = attributes.get('granularity', 'table')
+
             table_metadata = self._get_table_metadata(source_tables)
-            
-            # Build prompt
+            column_metadata = self._get_column_metadata(source_tables)
+
             prompt = self.VALIDATION_PROMPT.format(
                 entity_name=entity_row.entity_name,
                 entity_type=entity_row.entity_type,
                 description=entity_row.description or "",
                 confidence=entity_row.confidence,
                 source_tables=", ".join(source_tables),
-                table_metadata=table_metadata
+                source_columns=", ".join(source_columns) if source_columns else "none",
+                granularity=granularity,
+                table_metadata=table_metadata,
+                column_metadata=column_metadata,
             )
-            
-            # Call AI
+
             result = self._call_ai(prompt)
-            
             if result:
-                return {
-                    "entity_id": entity_row.entity_id,
-                    "validation_result": result
-                }
+                return {"entity_id": entity_row.entity_id, "validation_result": result}
         except Exception as e:
             logger.warning(f"Could not validate entity {entity_row.entity_id}: {e}")
-        
         return None
     
     def _get_table_metadata(self, table_names: List[str]) -> str:
@@ -165,6 +170,33 @@ Focus on entities NOT already covered by existing types. Be conservative and sug
         except Exception as e:
             return f"Error fetching metadata: {e}"
     
+    def _get_column_metadata(self, table_names: List[str]) -> str:
+        """Get column metadata summary for tables from column_knowledge_base."""
+        if not table_names:
+            return "No columns"
+        table_list = ", ".join(f"'{t}'" for t in table_names[:5])
+        try:
+            df = self.spark.sql(f"""
+                SELECT table_name, column_name, data_type, classification, comment
+                FROM {self.config.fully_qualified_column_kb}
+                WHERE table_name IN ({table_list})
+                LIMIT 50
+            """)
+            rows = df.collect()
+            if not rows:
+                return "No column metadata found"
+            summaries = []
+            for r in rows:
+                parts = [f"  - {r.column_name} ({r.data_type or '?'})"]
+                if r.classification:
+                    parts.append(f"[{r.classification}]")
+                if r.comment:
+                    parts.append(f": {r.comment[:100]}")
+                summaries.append(" ".join(parts))
+            return "\n".join(summaries)
+        except Exception as e:
+            return f"Could not fetch column metadata: {e}"
+
     def _call_ai(self, prompt: str) -> Optional[Dict[str, Any]]:
         """Call AI_QUERY and parse response."""
         try:
@@ -190,19 +222,21 @@ Focus on entities NOT already covered by existing types. Be conservative and sug
             logger.warning(f"AI call failed: {e}")
             return None
     
-    def validate_all_entities(self) -> List[Dict[str, Any]]:
-        """Validate all discovered entities."""
-        entities_df = self.spark.sql(f"""
-            SELECT * FROM {self.config.fully_qualified_entities}
-            WHERE validated = FALSE OR validated IS NULL
-        """)
-        
+    def validate_all_entities(self, granularity: str = None) -> List[Dict[str, Any]]:
+        """Validate discovered entities, optionally filtered by granularity."""
+        filter_clause = "WHERE (validated = FALSE OR validated IS NULL)"
+        if granularity:
+            filter_clause += f" AND COALESCE(attributes['granularity'], 'table') = '{granularity}'"
+
+        entities_df = self.spark.sql(
+            f"SELECT * FROM {self.config.fully_qualified_entities} {filter_clause}"
+        )
+
         results = []
         for entity_row in entities_df.collect():
             result = self.validate_entity(entity_row)
             if result:
                 results.append(result)
-        
         return results
     
     def update_entity_validation(self, validation_results: List[Dict[str, Any]]) -> int:
@@ -234,47 +268,51 @@ Focus on entities NOT already covered by existing types. Be conservative and sug
         return updated
     
     def suggest_new_entities(self) -> List[Dict[str, Any]]:
-        """Use AI to suggest new entities from the knowledge base."""
+        """Use AI to suggest new entities from the knowledge base, including column patterns."""
         try:
-            # Get tables summary
             tables_df = self.spark.sql(f"""
-                SELECT 
-                    table_short_name,
-                    domain,
-                    SUBSTRING(comment, 1, 100) as comment_preview
-                FROM {self.config.fully_qualified_kb}
-                LIMIT 50
+                SELECT table_short_name, domain,
+                       SUBSTRING(comment, 1, 100) as comment_preview
+                FROM {self.config.fully_qualified_kb} LIMIT 50
             """)
-            
             tables_list = []
             for row in tables_df.collect():
-                summary = f"- {row.table_short_name}"
+                s = f"- {row.table_short_name}"
                 if row.domain:
-                    summary += f" [{row.domain}]"
+                    s += f" [{row.domain}]"
                 if row.comment_preview:
-                    summary += f": {row.comment_preview}..."
-                tables_list.append(summary)
-            
-            tables_summary = "\n".join(tables_list)
-            
-            # Get existing entity types
+                    s += f": {row.comment_preview}..."
+                tables_list.append(s)
+
+            # Add frequent column name patterns
+            col_patterns = ""
+            try:
+                freq_cols = self.spark.sql(f"""
+                    SELECT column_name, COUNT(*) as cnt
+                    FROM {self.config.fully_qualified_column_kb}
+                    GROUP BY column_name HAVING cnt >= 3
+                    ORDER BY cnt DESC LIMIT 20
+                """).collect()
+                if freq_cols:
+                    col_patterns = "\n\nFrequent column names across tables:\n" + "\n".join(
+                        f"- {r.column_name} (appears in {r.cnt} tables)" for r in freq_cols
+                    )
+            except Exception:
+                pass
+
             existing_df = self.spark.sql(f"""
-                SELECT DISTINCT entity_type 
-                FROM {self.config.fully_qualified_entities}
+                SELECT DISTINCT entity_type FROM {self.config.fully_qualified_entities}
             """)
             existing_types = [row.entity_type for row in existing_df.collect()]
-            
-            # Build prompt
+
             prompt = self.DISCOVERY_PROMPT.format(
-                tables_summary=tables_summary,
+                tables_summary="\n".join(tables_list) + col_patterns,
                 existing_types=", ".join(existing_types) if existing_types else "None"
             )
-            
+
             result = self._call_ai(prompt)
-            
             if result and isinstance(result, list):
                 return result
-            
             return []
         except Exception as e:
             logger.warning(f"Entity suggestion failed: {e}")
@@ -325,22 +363,27 @@ Focus on entities NOT already covered by existing types. Be conservative and sug
         return recommendations
     
     def run(self) -> Dict[str, Any]:
-        """Execute the validation pipeline."""
+        """Execute the validation pipeline for both table and column entities."""
         logger.info("Starting ontology validation")
-        
-        # Validate existing entities
-        validation_results = self.validate_all_entities()
-        updated = self.update_entity_validation(validation_results)
-        logger.info(f"Validated and updated {updated} entities")
-        
-        # Generate recommendations
+
+        # Validate table-level entities
+        table_results = self.validate_all_entities(granularity="table")
+        table_updated = self.update_entity_validation(table_results)
+        logger.info(f"Validated {table_updated} table-level entities")
+
+        # Validate column-level entities
+        col_results = self.validate_all_entities(granularity="column")
+        col_updated = self.update_entity_validation(col_results)
+        logger.info(f"Validated {col_updated} column-level entities")
+
         recommendations = self.generate_ontology_recommendations()
-        
         logger.info("Ontology validation complete")
-        
+
         return {
-            "entities_validated": updated,
-            "recommendations": recommendations
+            "entities_validated": table_updated + col_updated,
+            "table_entities_validated": table_updated,
+            "column_entities_validated": col_updated,
+            "recommendations": recommendations,
         }
 
 

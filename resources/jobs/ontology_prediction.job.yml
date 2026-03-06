@@ -1,7 +1,7 @@
 resources:
   jobs:
-    ontology_job:
-      name: "${var.app_name}_ontology_job"
+    ontology_prediction_job:
+      name: "${var.app_name}_ontology_prediction"
 
       email_notifications:
         on_failure:
@@ -14,46 +14,57 @@ resources:
           default: ${var.schema_name}
         - name: config_path
           default: "configurations/ontology_config.yaml"
+        - name: ontology_bundle
+          default: "healthcare"
 
       tasks:
-        - task_key: build_ontology
+        # Stage 1: Build knowledge bases (parallel)
+        - task_key: build_knowledge_base
           job_cluster_key: ontology_cluster
+          notebook_task:
+            notebook_path: ../../notebooks/build_knowledge_base.py
+            base_parameters:
+              catalog_name: "{{job.parameters.catalog_name}}"
+              schema_name: "{{job.parameters.schema_name}}"
+          libraries:
+            - whl: ../../dist/*.whl
 
+        - task_key: build_column_kb
+          job_cluster_key: ontology_cluster
+          notebook_task:
+            notebook_path: ../../notebooks/build_column_kb.py
+            base_parameters:
+              catalog_name: "{{job.parameters.catalog_name}}"
+              schema_name: "{{job.parameters.schema_name}}"
+          libraries:
+            - whl: ../../dist/*.whl
+
+        # Stage 2: Build ontology (table + column level)
+        - task_key: build_ontology
+          depends_on:
+            - task_key: build_knowledge_base
+            - task_key: build_column_kb
+          job_cluster_key: ontology_cluster
           notebook_task:
             notebook_path: ../../notebooks/build_ontology.py
             base_parameters:
               catalog_name: "{{job.parameters.catalog_name}}"
               schema_name: "{{job.parameters.schema_name}}"
               config_path: "{{job.parameters.config_path}}"
-
+              ontology_bundle: "{{job.parameters.ontology_bundle}}"
           libraries:
             - whl: ../../dist/*.whl
 
+        # Stage 3: Validate ontology
         - task_key: validate_ontology
           depends_on:
             - task_key: build_ontology
           job_cluster_key: ontology_cluster
-
           notebook_task:
             notebook_path: ../../notebooks/validate_ontology.py
             base_parameters:
               catalog_name: "{{job.parameters.catalog_name}}"
               schema_name: "{{job.parameters.schema_name}}"
-
-          libraries:
-            - whl: ../../dist/*.whl
-
-        - task_key: update_graph_ontology
-          depends_on:
-            - task_key: validate_ontology
-          job_cluster_key: ontology_cluster
-
-          notebook_task:
-            notebook_path: ../../notebooks/update_graph_ontology.py
-            base_parameters:
-              catalog_name: "{{job.parameters.catalog_name}}"
-              schema_name: "{{job.parameters.schema_name}}"
-
           libraries:
             - whl: ../../dist/*.whl
 

@@ -8,7 +8,6 @@ maintainers = ["Eli Swanson <eli.swanson@databricks.com>"]
 license = "DB License"
 requires-poetry = ">=2.0.*"
 packages = [{ include = "dbxmetagen", from = "src" }]
-include = ["src/dbxmetagen/configurations/*.yaml"]
 
 [tool.poetry.dependencies]
 python = ">=3.10.12, <3.13.0"
