@@ -63,6 +63,12 @@ function ReviewEditor() {
   const [fkApplyResult, setFkApplyResult] = useState(null)
   const [fkApplying, setFkApplying] = useState(false)
   const [expandedFKs, setExpandedFKs] = useState({})
+  const [recommendedEntity, setRecommendedEntity] = useState({})
+  const [recEntLoading, setRecEntLoading] = useState({})
+  const [colPropOverrides, setColPropOverrides] = useState({})
+  const [propTagApplying, setPropTagApplying] = useState({})
+  const [propTagResults, setPropTagResults] = useState({})
+  const [statusFilter, setStatusFilter] = useState('all')
 
   useEffect(() => { fetch('/api/ontology/entity-type-options').then(r => r.json()).then(d => setEntityTypeOptions(Array.isArray(d) ? d : [])).catch(() => {}) }, [])
   useEffect(() => { fetch('/api/catalogs').then(r => r.json()).then(setCatalogs).catch(() => {}) }, [])
@@ -275,12 +281,19 @@ function ReviewEditor() {
         )}
       </div>
 
-      {/* Metadata Type Filter */}
+      {/* Metadata Type Filter + Review Status Filter */}
       {reviewData.length > 0 && (
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-xs font-medium text-slate-500">Show:</span>
           {META_TYPES.map(({ key, label }) => (
             <span key={key} onClick={() => setActiveType(key)} className={`${chip} ${activeType === key ? chipOn : chipOff}`}>{label}</span>
+          ))}
+          <span className="border-l border-slate-300 h-5 mx-1" />
+          <span className="text-xs font-medium text-slate-500">Status:</span>
+          {['all', 'unreviewed', 'in_review', 'approved'].map(s => (
+            <span key={s} onClick={() => setStatusFilter(s)} className={`${chip} ${statusFilter === s ? chipOn : chipOff}`}>
+              {s === 'all' ? 'All' : s === 'in_review' ? 'In Review' : s.charAt(0).toUpperCase() + s.slice(1)}
+            </span>
           ))}
           {totalDirty > 0 && (
             <button onClick={saveChanges} disabled={saving}
@@ -294,13 +307,34 @@ function ReviewEditor() {
       {/* Combined Data View */}
       {reviewData.length > 0 && (
         <div className="space-y-3">
-          {reviewData.map((tbl, tblIdx) => (
+          {reviewData.filter(tbl => statusFilter === 'all' || (tbl.review_status || 'unreviewed') === statusFilter).map((tbl, _fi) => {
+            const tblIdx = reviewData.indexOf(tbl)
+            return (
             <div key={tbl.table_name} className="bg-dbx-oat-light rounded-xl border border-slate-200 shadow-sm overflow-hidden">
               {/* Table header row */}
-              <div className={`flex items-center gap-3 px-4 py-2.5 cursor-pointer select-none ${isTableDirty(tblIdx) ? 'bg-amber-50' : 'bg-dbx-oat'}`}
+              <div className={`flex items-center gap-2 px-4 py-2.5 cursor-pointer select-none flex-wrap ${isTableDirty(tblIdx) ? 'bg-amber-50' : 'bg-dbx-oat'}`}
                 onClick={() => setExpanded(p => ({ ...p, [tbl.table_name]: !p[tbl.table_name] }))}>
                 <span className="text-xs text-slate-400">{expanded[tbl.table_name] ? '\u25BC' : '\u25B6'}</span>
                 <span className="font-semibold text-sm text-slate-700">{tbl.table_name}</span>
+                {tbl.domain && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-700 font-medium">{tbl.domain}{tbl.subdomain ? ` / ${tbl.subdomain}` : ''}</span>}
+                {tbl.primary_entity && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-purple-100 text-purple-700 font-medium">{tbl.primary_entity.entity_type} ({Number(tbl.primary_entity.confidence ?? 0).toFixed(2)})</span>}
+                {(() => {
+                  const rs = tbl.review_status || 'unreviewed'
+                  const rsCls = rs === 'approved' ? 'bg-green-100 text-green-700' : rs === 'in_review' ? 'bg-yellow-100 text-yellow-700' : 'bg-slate-100 text-slate-500'
+                  return (
+                    <select value={rs} onClick={ev => ev.stopPropagation()} onChange={ev => {
+                      ev.stopPropagation()
+                      const newStatus = ev.target.value
+                      setReviewData(prev => prev.map((t, i) => i === tblIdx ? { ...t, review_status: newStatus } : t))
+                      fetch('/api/ontology/set-review-status', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ table_name: tbl.table_name, review_status: newStatus }) }).catch(() => {})
+                    }} className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium border-0 cursor-pointer ${rsCls}`}>
+                      <option value="unreviewed">unreviewed</option>
+                      <option value="in_review">in review</option>
+                      <option value="approved">approved</option>
+                    </select>
+                  )
+                })()}
                 <span className="text-xs text-slate-400 ml-auto">{tbl.columns?.length || 0} columns</span>
               </div>
 
@@ -376,16 +410,32 @@ function ReviewEditor() {
                                   })}</div>
                                 ) : <span className="text-[10px] text-slate-300">--</span>
                               })()}</td>}
-                              {show('ontology') && <td className="px-2 py-1">{colProp ? (
-                                <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${
-                                  colProp.property_role === 'identifier' ? 'bg-blue-100 text-blue-700' :
-                                  colProp.property_role === 'link' ? 'bg-purple-100 text-purple-700' :
-                                  colProp.property_role === 'foreign_key' ? 'bg-indigo-100 text-indigo-700' :
-                                  colProp.property_role === 'measure' ? 'bg-emerald-100 text-emerald-700' :
-                                  colProp.property_role === 'timestamp' ? 'bg-amber-100 text-amber-700' :
-                                  'bg-slate-100 text-slate-600'
-                                }`}>{colProp.property_role}{colProp.linked_entity_type ? ` -> ${colProp.linked_entity_type}` : ''}</span>
-                              ) : <span className="text-[10px] text-slate-300">--</span>}</td>}
+                              {show('ontology') && <td className="px-2 py-1">{colProp ? (() => {
+                                const cpKey = colProp.property_id
+                                const curRole = colPropOverrides[cpKey]?.property_role ?? colProp.property_role
+                                const curLinked = colPropOverrides[cpKey]?.linked_entity_type ?? colProp.linked_entity_type ?? ''
+                                return (
+                                  <div className="flex items-center gap-1">
+                                    <select value={curRole} onChange={ev => {
+                                      const nr = ev.target.value
+                                      setColPropOverrides(p => ({ ...p, [cpKey]: { ...(p[cpKey] || {}), property_role: nr } }))
+                                      fetch('/api/ontology/update-column-property', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                        body: JSON.stringify({ property_id: cpKey, property_role: nr, linked_entity_type: curLinked || null }) }).catch(() => {})
+                                    }} className="text-[10px] border border-slate-300 rounded px-1 py-0.5 bg-white">
+                                      {['identifier', 'attribute', 'measure', 'link', 'timestamp', 'foreign_key'].map(r => <option key={r} value={r}>{r}</option>)}
+                                    </select>
+                                    {(curRole === 'link' || curRole === 'foreign_key') && (
+                                      <input value={curLinked} placeholder="linked entity"
+                                        onChange={ev => setColPropOverrides(p => ({ ...p, [cpKey]: { ...(p[cpKey] || {}), linked_entity_type: ev.target.value } }))}
+                                        onBlur={ev => {
+                                          fetch('/api/ontology/update-column-property', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                            body: JSON.stringify({ property_id: cpKey, property_role: curRole, linked_entity_type: ev.target.value || null }) }).catch(() => {})
+                                        }}
+                                        className="text-[10px] border border-slate-300 rounded px-1 py-0.5 bg-white w-20" />
+                                    )}
+                                  </div>
+                                )
+                              })() : <span className="text-[10px] text-slate-300">--</span>}</td>}
                             </tr>
                           )})}
                         </tbody>
@@ -409,6 +459,62 @@ function ReviewEditor() {
                           ) : null}
                         </div>
                       )}
+                      {/* Recommended entity override */}
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">Set Recommended Entity:</span>
+                        <input value={recommendedEntity[tbl.table_name] || ''} placeholder="e.g. OrderLineItem"
+                          onChange={ev => setRecommendedEntity(p => ({ ...p, [tbl.table_name]: ev.target.value }))}
+                          className="text-xs border border-purple-300 rounded px-2 py-0.5 bg-white w-40" />
+                        <button onClick={async () => {
+                          const et = (recommendedEntity[tbl.table_name] || '').trim()
+                          if (!et) return
+                          setRecEntLoading(p => ({ ...p, [tbl.table_name]: true }))
+                          try {
+                            const r = await fetch('/api/ontology/set-recommended-entity', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({ table_name: tbl.table_name, entity_type: et }) })
+                            if (r.ok) {
+                              setRecommendedEntity(p => ({ ...p, [tbl.table_name]: '' }))
+                              loadData()
+                            }
+                          } catch {}
+                          setRecEntLoading(p => ({ ...p, [tbl.table_name]: false }))
+                        }} disabled={recEntLoading[tbl.table_name] || !(recommendedEntity[tbl.table_name] || '').trim()}
+                          className="text-[10px] px-2 py-0.5 bg-purple-600 text-white rounded hover:bg-purple-700 disabled:opacity-50">
+                          {recEntLoading[tbl.table_name] ? '...' : 'Set as Primary'}
+                        </button>
+                      </div>
+
+                      {/* Apply property tags button */}
+                      {(tbl.column_properties || []).length > 0 && (
+                        <div className="flex items-center gap-2">
+                          <button onClick={async () => {
+                            setPropTagApplying(p => ({ ...p, [tbl.table_name]: true }))
+                            const items = (tbl.column_properties || []).map(cp => ({
+                              table_name: cp.table_name, column_name: cp.column_name,
+                              property_role: colPropOverrides[cp.property_id]?.property_role ?? cp.property_role,
+                              linked_entity_type: colPropOverrides[cp.property_id]?.linked_entity_type ?? cp.linked_entity_type,
+                            }))
+                            try {
+                              const r = await fetch('/api/ontology/apply-property-tags', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ items }) })
+                              const j = await r.json().catch(() => ({}))
+                              setPropTagResults(p => ({ ...p, [tbl.table_name]: j }))
+                            } catch (err) { setPropTagResults(p => ({ ...p, [tbl.table_name]: { error: err.message } })) }
+                            setPropTagApplying(p => ({ ...p, [tbl.table_name]: false }))
+                          }} disabled={propTagApplying[tbl.table_name]}
+                            className="text-[10px] px-2 py-0.5 bg-emerald-600 text-white rounded hover:bg-emerald-700 disabled:opacity-50">
+                            {propTagApplying[tbl.table_name] ? 'Applying...' : 'Apply Property Role Tags'}
+                          </button>
+                          {propTagResults[tbl.table_name] && (() => {
+                            const pr = propTagResults[tbl.table_name]
+                            if (pr.error) return <span className="text-[10px] text-red-600">{pr.error}</span>
+                            const ok = (pr.results || []).filter(r => r.ok).length
+                            const fail = (pr.results || []).filter(r => !r.ok).length
+                            return <span className={`text-[10px] ${fail ? 'text-amber-600' : 'text-green-600'}`}>{ok} tagged{fail ? `, ${fail} failed` : ''}</span>
+                          })()}
+                        </div>
+                      )}
+
                       <div className="flex items-center justify-between">
                         <h4 className="text-xs font-semibold text-slate-500">All Ontology Entities</h4>
                         {Array.isArray(tbl.ontology_entities) && tbl.ontology_entities.filter(e => Number(e.confidence ?? 0) > 0).length > 0 && (
@@ -483,18 +589,25 @@ function ReviewEditor() {
                                     {role}
                                   </span>
                                   {e.entity_id ? (
-                                    <select value={entityTypeOverrides[e.entity_id] || e.entity_type}
-                                      onClick={ev => ev.stopPropagation()}
-                                      onChange={ev => {
-                                        const val = ev.target.value
-                                        setEntityTypeOverrides(p => ({ ...p, [e.entity_id]: val }))
-                                        fetch('/api/ontology/update-entity-type', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-                                          body: JSON.stringify({ entity_id: e.entity_id, new_entity_type: val }) }).catch(() => {})
-                                      }}
-                                      className="text-xs border border-purple-300 rounded px-1.5 py-0.5 bg-white">
-                                      {entityTypeOptions.map(t => <option key={t} value={t}>{t}</option>)}
-                                      {!entityTypeOptions.includes(e.entity_type) && <option value={e.entity_type}>{e.entity_type}</option>}
-                                    </select>
+                                    <>
+                                      <input list={`eto-${eid}`} value={entityTypeOverrides[e.entity_id] ?? e.entity_type}
+                                        onClick={ev => ev.stopPropagation()}
+                                        onChange={ev => {
+                                          const val = ev.target.value
+                                          setEntityTypeOverrides(p => ({ ...p, [e.entity_id]: val }))
+                                        }}
+                                        onBlur={ev => {
+                                          const val = (ev.target.value || '').trim()
+                                          if (val && val !== e.entity_type) {
+                                            fetch('/api/ontology/update-entity-type', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                              body: JSON.stringify({ entity_id: e.entity_id, new_entity_type: val }) }).catch(() => {})
+                                          }
+                                        }}
+                                        className="text-xs border border-purple-300 rounded px-1.5 py-0.5 bg-white w-28" />
+                                      <datalist id={`eto-${eid}`}>
+                                        {entityTypeOptions.map(t => <option key={t} value={t} />)}
+                                      </datalist>
+                                    </>
                                   ) : (
                                     <span className="text-xs font-medium text-purple-700">{e.entity_type}</span>
                                   )}
@@ -638,7 +751,7 @@ function ReviewEditor() {
                 </div>
               )}
             </div>
-          ))}
+          )})}
         </div>
       )}
 

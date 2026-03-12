@@ -100,13 +100,11 @@ def get_task_id(dbutils_instance=None):
             parent_run_id = context.get("tags", {}).get("multitaskParentRunId")
             if parent_run_id:
                 return f"{parent_run_id}_interactive"
-        # Generate a UUID as fallback for interactive/local runs
-        import uuid
-        return str(uuid.uuid4())
+        # No taskRunId or multitaskParentRunId -- not a concurrent job task
+        return None
     except Exception as e:
         print(f"Error getting task ID: {e}")
-        import uuid
-        return str(uuid.uuid4())
+        return None
 
 
 def setup_widgets(dbutils):

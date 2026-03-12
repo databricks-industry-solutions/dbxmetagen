@@ -1067,9 +1067,14 @@ def review_combined(body: ReviewCombinedRequest):
         raise HTTPException(400, "Provide at least one table or schema")
     where = " OR ".join(where_parts)
 
+    try:
+        execute_sql(f"ALTER TABLE {tbl_kb} ADD COLUMN IF NOT EXISTS review_status STRING", timeout=15)
+    except Exception:
+        pass
     tbl_rows = execute_sql(f"""
         SELECT table_name, catalog, `schema`, table_short_name, comment,
-               domain, subdomain, has_pii, has_phi
+               domain, subdomain, has_pii, has_phi,
+               COALESCE(review_status, 'unreviewed') AS review_status
         FROM {tbl_kb} WHERE {where} LIMIT 200
     """)
     if not tbl_rows:
@@ -1196,6 +1201,7 @@ def review_combined(body: ReviewCombinedRequest):
             **t,
             "has_pii": _to_bool(t.get("has_pii")),
             "has_phi": _to_bool(t.get("has_phi")),
+            "review_status": t.get("review_status", "unreviewed"),
             "columns": cols_by_table.get(tn, []),
             "primary_entity": primary_entity,
             "ontology_entities": ents,
@@ -1647,6 +1653,131 @@ def update_entity_type(body: UpdateEntityTypeBody):
             UPDATE {fq('ontology_entities')}
             SET entity_type = '{et}', entity_name = '{et}', updated_at = current_timestamp()
             WHERE entity_id = '{eid}'
+        """, timeout=30)
+        return {"ok": True}
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+class SetRecommendedEntityBody(BaseModel):
+    table_name: str
+    entity_type: str
+    entity_role: str = "primary"
+
+
+@app.post("/api/ontology/set-recommended-entity")
+def set_recommended_entity(body: SetRecommendedEntityBody):
+    """Insert a steward override entity and optionally demote previous primary."""
+    import uuid as _u
+    ent_tbl = fq("ontology_entities")
+    tbl_clean = body.table_name.strip()
+    et = body.entity_type.strip()
+    if not tbl_clean or not et:
+        raise HTTPException(400, "table_name and entity_type required")
+    if body.entity_role == "primary":
+        try:
+            execute_sql(f"""
+                UPDATE {ent_tbl}
+                SET entity_role = 'referenced', updated_at = current_timestamp()
+                WHERE entity_role = 'primary'
+                  AND EXISTS(source_tables, t -> t = '{tbl_clean}')
+            """, timeout=30)
+        except Exception as e:
+            logger.warning("Failed to demote previous primary for %s: %s", tbl_clean, e)
+    eid = str(_u.uuid4())
+    try:
+        execute_sql(f"""
+            INSERT INTO {ent_tbl}
+            (entity_id, entity_name, entity_type, source_tables, source_columns,
+             confidence, discovery_confidence, entity_role, is_canonical, auto_discovered,
+             validated, validation_notes, created_at, updated_at)
+            VALUES ('{eid}', '{et}', '{et}', ARRAY('{tbl_clean}'), ARRAY(),
+                    1.0, 1.0, '{body.entity_role}', false, false,
+                    true, 'Steward override', current_timestamp(), current_timestamp())
+        """, timeout=30)
+    except Exception as e:
+        raise HTTPException(500, f"Insert failed: {e}")
+    return {"ok": True, "entity_id": eid, "entity_type": et}
+
+
+class UpdateColumnPropertyBody(BaseModel):
+    property_id: str
+    property_role: str
+    linked_entity_type: Optional[str] = None
+
+
+@app.post("/api/ontology/update-column-property")
+def update_column_property(body: UpdateColumnPropertyBody):
+    """Upsert property_role (and optionally linked_entity_type) on a column property row."""
+    cp_tbl = fq("ontology_column_properties")
+    pid = body.property_id.replace("'", "''")
+    role = body.property_role.replace("'", "''")
+    linked = body.linked_entity_type
+    sets = [f"property_role = '{role}'", "updated_at = current_timestamp()"]
+    if linked is not None:
+        sets.append(f"linked_entity_type = '{linked.replace(chr(39), chr(39)*2)}'")
+    try:
+        execute_sql(f"UPDATE {cp_tbl} SET {', '.join(sets)} WHERE property_id = '{pid}'", timeout=30)
+        return {"ok": True}
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+class ApplyPropertyTagsBody(BaseModel):
+    items: list[dict]
+
+
+@app.post("/api/ontology/apply-property-tags")
+def apply_property_tags(body: ApplyPropertyTagsBody):
+    """Apply property_role tags to columns via ALTER TABLE ALTER COLUMN SET TAGS."""
+    results = []
+    for item in body.items:
+        tbl = (item.get("table_name") or "").strip()
+        col = (item.get("column_name") or "").strip()
+        role = (item.get("property_role") or "").strip()
+        if not (tbl and col and role):
+            continue
+        col_safe = col.replace("`", "")
+        sql = f"ALTER TABLE {tbl} ALTER COLUMN `{col_safe}` SET TAGS ('property_role' = '{role}')"
+        linked = (item.get("linked_entity_type") or "").strip()
+        try:
+            execute_sql(sql, timeout=30)
+            ok_entry = {"table": tbl, "column": col, "ok": True, "sql": sql}
+            if linked:
+                sql2 = f"ALTER TABLE {tbl} ALTER COLUMN `{col_safe}` SET TAGS ('linked_entity_type' = '{linked}')"
+                execute_sql(sql2, timeout=30)
+                ok_entry["sql2"] = sql2
+            results.append(ok_entry)
+        except Exception as e:
+            results.append({"table": tbl, "column": col, "ok": False, "sql": sql, "error": str(e)})
+    return {"results": results}
+
+
+class SetReviewStatusBody(BaseModel):
+    table_name: str
+    review_status: str
+
+
+@app.post("/api/ontology/set-review-status")
+def set_review_status(body: SetReviewStatusBody):
+    """Set review_status on a table in table_knowledge_base."""
+    tbl_kb = fq("table_knowledge_base")
+    valid = {"unreviewed", "in_review", "approved"}
+    if body.review_status not in valid:
+        raise HTTPException(400, f"review_status must be one of {valid}")
+    tname = body.table_name.strip()
+    status = body.review_status
+    try:
+        execute_sql(f"""
+            ALTER TABLE {tbl_kb} ADD COLUMN IF NOT EXISTS review_status STRING
+        """, timeout=15)
+    except Exception:
+        pass
+    try:
+        execute_sql(f"""
+            UPDATE {tbl_kb}
+            SET review_status = '{status}', updated_at = current_timestamp()
+            WHERE table_name = '{tname}'
         """, timeout=30)
         return {"ok": True}
     except Exception as e:
