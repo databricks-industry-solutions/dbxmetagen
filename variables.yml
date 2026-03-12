@@ -22,7 +22,7 @@ variables:
     default: false
   include_existing_table_comment:
     description: If there's an existing comment at the table level, include it in the payload that is used to build the metadata. This can lead to data leakage, but can also help enrich AI generated comments with existing comments, or include information that the previous comment authors wanted to include.
-    default: false
+    default: true
   include_possible_data_fields_in_metadata:
     description: There are a few fields in extended metadata if ANALYZE TABLE...COMPUTE STATISTICS... is used that in theory could leak PII or PHI. For example, if a phone number or SSN is stored as an INT, or for appointment dates that could be classified as PHI. Set this to false if you want to exclude these fields. Note that these fields are some of the most useful for tools like Genie.
     default: true
