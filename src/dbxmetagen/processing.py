@@ -927,6 +927,9 @@ def populate_log_table(df, config, current_user, base_path):
 def add_column_if_not_exists(spark, table_name, col_name, col_type):
     """ADD COLUMN with graceful handling for older DBR without IF NOT EXISTS.
     Also handles concurrent ALTER from parallel tasks hitting the same table."""
+    existing = {f.name for f in spark.table(table_name).schema.fields}
+    if col_name in existing:
+        return
     try:
         spark.sql(f"ALTER TABLE {table_name} ADD COLUMN {col_name} {col_type}")
     except Exception as e:

@@ -1067,14 +1067,23 @@ def review_combined(body: ReviewCombinedRequest):
         raise HTTPException(400, "Provide at least one table or schema")
     where = " OR ".join(where_parts)
 
+    _has_review_status = False
     try:
-        execute_sql(f"ALTER TABLE {tbl_kb} ADD COLUMN IF NOT EXISTS review_status STRING", timeout=15)
+        cols = execute_sql(f"DESCRIBE TABLE {tbl_kb}", timeout=15)
+        _has_review_status = any(r.get("col_name") == "review_status" for r in cols)
     except Exception:
         pass
+    if not _has_review_status:
+        try:
+            execute_sql(f"ALTER TABLE {tbl_kb} ADD COLUMN review_status STRING", timeout=15)
+            _has_review_status = True
+        except Exception:
+            pass
+    rs_expr = "COALESCE(review_status, 'unreviewed') AS review_status" if _has_review_status else "'unreviewed' AS review_status"
     tbl_rows = execute_sql(f"""
         SELECT table_name, catalog, `schema`, table_short_name, comment,
                domain, subdomain, has_pii, has_phi,
-               COALESCE(review_status, 'unreviewed') AS review_status
+               {rs_expr}
         FROM {tbl_kb} WHERE {where} LIMIT 200
     """)
     if not tbl_rows:
@@ -1768,9 +1777,9 @@ def set_review_status(body: SetReviewStatusBody):
     tname = body.table_name.strip()
     status = body.review_status
     try:
-        execute_sql(f"""
-            ALTER TABLE {tbl_kb} ADD COLUMN IF NOT EXISTS review_status STRING
-        """, timeout=15)
+        cols = execute_sql(f"DESCRIBE TABLE {tbl_kb}", timeout=15)
+        if not any(r.get("col_name") == "review_status" for r in cols):
+            execute_sql(f"ALTER TABLE {tbl_kb} ADD COLUMN review_status STRING", timeout=15)
     except Exception:
         pass
     try:
