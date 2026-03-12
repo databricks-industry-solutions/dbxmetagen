@@ -3,6 +3,10 @@ resources:
     full_analytics_pipeline_job:
       name: "${var.app_name}_full_analytics_pipeline"
 
+      permissions:
+        - service_principal_name: ${resources.apps.dbxmetagen_app.service_principal_client_id}
+          level: CAN_MANAGE_RUN
+
       email_notifications:
         on_failure:
           - ${var.current_user}
@@ -26,6 +30,8 @@ resources:
           default: "table"
         - name: ontology_bundle
           default: "healthcare"
+        - name: incremental
+          default: ${var.incremental}
 
       tasks:
         # Stage 1: Build knowledge bases (table, column, schema in parallel after table KB)
@@ -73,6 +79,7 @@ resources:
             base_parameters:
               catalog_name: "{{job.parameters.catalog_name}}"
               schema_name: "{{job.parameters.schema_name}}"
+              incremental: "{{job.parameters.incremental}}"
           libraries:
             - whl: ../../dist/*.whl
 
@@ -97,6 +104,7 @@ resources:
         - task_key: generate_embeddings
           depends_on:
             - task_key: build_knowledge_graph
+            - task_key: build_ontology
           job_cluster_key: analytics_cluster
           notebook_task:
             notebook_path: ../../notebooks/generate_embeddings.py
@@ -115,6 +123,7 @@ resources:
             base_parameters:
               catalog_name: "{{job.parameters.catalog_name}}"
               schema_name: "{{job.parameters.schema_name}}"
+              incremental: "{{job.parameters.incremental}}"
           libraries:
             - whl: ../../dist/*.whl
 
@@ -122,6 +131,7 @@ resources:
           depends_on:
             - task_key: build_knowledge_base
             - task_key: build_column_kb
+            - task_key: build_schema_kb
           job_cluster_key: analytics_cluster
           notebook_task:
             notebook_path: ../../notebooks/build_ontology.py
@@ -129,6 +139,7 @@ resources:
               catalog_name: "{{job.parameters.catalog_name}}"
               schema_name: "{{job.parameters.schema_name}}"
               ontology_bundle: "{{job.parameters.ontology_bundle}}"
+              incremental: "{{job.parameters.incremental}}"
           libraries:
             - whl: ../../dist/*.whl
 
@@ -198,9 +209,11 @@ resources:
               catalog_name: "{{job.parameters.catalog_name}}"
               schema_name: "{{job.parameters.schema_name}}"
               column_similarity_threshold: "0.75"
-              table_similarity_threshold: "0.75"
+              table_similarity_threshold: "0.7"
               confidence_threshold: "0.7"
               apply_ddl: "false"
+              dry_run: "false"
+              incremental: "{{job.parameters.incremental}}"
           libraries:
             - whl: ../../dist/*.whl
 
@@ -220,6 +233,20 @@ resources:
           libraries:
             - whl: ../../dist/*.whl
 
+        # Stage 7: Build vector search index (after all metadata is ready)
+        - task_key: build_vector_index
+          depends_on:
+            - task_key: final_analysis
+          job_cluster_key: analytics_cluster
+          notebook_task:
+            notebook_path: ../../notebooks/build_vector_index.py
+            base_parameters:
+              catalog_name: "{{job.parameters.catalog_name}}"
+              schema_name: "{{job.parameters.schema_name}}"
+              endpoint_name: "dbxmetagen-vs"
+          libraries:
+            - whl: ../../dist/*.whl
+
       job_clusters:
         - job_cluster_key: analytics_cluster
           new_cluster:
@@ -234,4 +261,3 @@ resources:
             spark_version: 17.3.x-cpu-ml-scala2.13
             node_type_id: ${var.node_type}
             num_workers: 1
-

@@ -24,7 +24,7 @@
 # COMMAND ----------
 import sys
 
-sys.path.append("../")  # For DAB deployment; pip-installed package works without this
+sys.path.append("../src")  # For git-clone or DAB deployment; pip-installed package works without this
 from dbxmetagen.main import main
 from dbxmetagen.databricks_utils import (
     setup_widgets,

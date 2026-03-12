@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="images/dbxmetagen_logo.png" alt="dbxmetagen logo" width="120" />
+</p>
+
 # dbxmetagen: GenAI-Assisted Metadata Generation and Management for Databricks
 
 <img src="images/DBXMetagen_arch_hl.png" alt="High-level DBXMetagen Architecture" width="800" top-margin="50">
@@ -9,9 +13,11 @@
 - **Domain classification**: Categorize tables into business domains and subdomains
 - **Data profiling**: Statistical profiling and quality scoring
 - **Knowledge graph**: Graph-based metadata analytics with embeddings, similarity, and clustering
-- **Ontology discovery**: Business entity extraction and validation
-- **FK prediction**: AI-assisted foreign key relationship discovery
-- **Web dashboard**: FastAPI + React app for metadata review, profiling, graph exploration, and visualizations
+- **Ontology discovery**: Business entity extraction and validation against standard ontologies (FHIR, OMOP, etc.)
+- **FK prediction**: AI-assisted foreign key relationship discovery using column similarity and LLM judgment
+- **Semantic layer**: Auto-generated metric views and Genie space creation from knowledge base
+- **Metadata review**: Interactive review, edit, and apply workflow for generated metadata
+- **Web dashboard**: FastAPI + React app with 8 tabs covering the full metadata lifecycle
 
 ## Quickstart (5 minutes)
 
@@ -304,12 +310,14 @@ When `federation_mode=true`, dbxmetagen adapts for federated catalogs in Unity C
 The app is in `apps/dbxmetagen-app/` and provides a FastAPI backend with a React frontend. Deployed via DAB.
 
 **Tabs:**
-1. **Graph Explorer** -- Browse graph nodes, filter by type, query the GraphRAG agent
-2. **Batch Jobs** -- Trigger metadata generation, analytics pipeline, and FK prediction
-3. **Metadata Review** -- Browse generation log and knowledge base tables
-4. **Data Profiling** -- Profiling snapshots, column statistics, quality scores, coverage
-5. **Ontology** -- Entity type summary, discovered entities, validation status
-6. **Visualizations** -- FK map, domain hierarchy, PII/PHI map, similarity heatmap
+1. **Coverage** -- Schema-wide metadata coverage summary and completeness metrics
+2. **Batch Jobs** -- Trigger and monitor all metadata generation, analytics, and sync jobs with real-time status
+3. **Metadata Review** -- Browse, edit, approve, and apply generated metadata back to Unity Catalog
+4. **Ontology** -- Entity type summary, discovered entities, validation status
+5. **Graph Explorer** -- Browse graph nodes, filter by type, query the GraphRAG agent
+6. **Foreign Key Generation** -- AI-predicted FK relationships with confidence scores and approval workflow
+7. **Semantic Layer** -- Auto-generated metric views with Genie space creation
+8. **Genie Builder** -- Create and configure Genie spaces from knowledge base tables
 
 **GraphRAG:** Natural-language queries against the knowledge graph using a LangGraph agent that traverses graph_nodes and graph_edges via Lakebase.
 
@@ -317,15 +325,17 @@ The app is in `apps/dbxmetagen-app/` and provides a FastAPI backend with a React
 
 | Job Resource | Description |
 |-------------|-------------|
-| `metadata_generator_job` | Single-mode metadata generation |
-| `metadata_parallel_modes_job` | All 3 modes (comment, pi, domain) in parallel |
-| `full_analytics_pipeline` | KB, graph, embeddings, profiling, ontology, similarity, clustering, FK prediction |
-| `knowledge_base_job` | Knowledge base and knowledge graph only |
-| `ontology_job` | Ontology discovery and validation |
-| `profiling_job` | Table profiling and quality scoring |
-| `fk_prediction_job` | Foreign key prediction with AI judgment |
+| `metadata_generator_job` | Single-mode metadata generation (comment, PI, or domain) |
+| `metadata_parallel_modes_job` | All 3 modes in parallel (comment first, then PI + domain) |
+| `metadata_with_knowledge_base_job` | Metadata generation followed by KB + knowledge graph build |
+| `full_analytics_pipeline_job` | Full pipeline: KB, graph, embeddings, profiling, ontology, similarity, clustering, FK prediction |
+| `knowledge_base_builder_job` | Knowledge base and knowledge graph only |
+| `ontology_prediction_job` | Ontology discovery and validation |
+| `profiling_job` | Table profiling, quality scoring, and graph quality update |
+| `fk_prediction_job` | Foreign key prediction with column similarity and AI judgment |
+| `semantic_layer_job` | Generate metric views and apply to Genie spaces |
 | `sync_graph_lakebase_job` | Sync graph data to Lakebase for the dashboard |
-| `sync_reviews_job` | Sync reviewed DDL back to Unity Catalog |
+| `sync_ddl_job` | Sync reviewed/edited DDL back to Unity Catalog |
 
 ## Testing
 

@@ -159,8 +159,8 @@ To add a new integration test:
 ### Example Test Structure
 
 ```python
-from src.dbxmetagen.config import MetadataConfig
-from src.dbxmetagen.main import main
+from dbxmetagen.config import MetadataConfig
+from dbxmetagen.main import main
 
 # Create config using production YAML with test overrides
 config = MetadataConfig(

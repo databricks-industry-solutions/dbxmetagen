@@ -7,6 +7,12 @@
 
 # COMMAND ----------
 
+# MAGIC # Uncomment below when running outside of a DAB-deployed job
+# MAGIC # %pip install /Workspace/Users/<your_username>/.bundle/dbxmetagen/dev/artifacts/.internal/dbxmetagen-*.whl
+# MAGIC # dbutils.library.restartPython()
+
+# COMMAND ----------
+
 dbutils.widgets.text("catalog_name", "", "Catalog Name")
 dbutils.widgets.text("schema_name", "", "Schema Name")
 dbutils.widgets.text("model_endpoint", "databricks-gpt-oss-120b", "Model Endpoint")
@@ -22,7 +28,7 @@ print(f"Model: {model_endpoint}")
 # COMMAND ----------
 
 import sys
-sys.path.append("../")
+sys.path.append("../src")  # For git-clone or DAB deployment; pip-installed package works without this
 
 from dbxmetagen.semantic_layer import SemanticLayerGenerator, SemanticLayerConfig
 

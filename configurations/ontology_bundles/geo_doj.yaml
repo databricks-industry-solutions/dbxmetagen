@@ -1,0 +1,91 @@
+# Geographic Classification Bundle (DOJ Filtering)
+# Binary geographic/non-geographic classification for location-based filtering
+
+metadata:
+  name: "Geographic Classification (DOJ)"
+  version: "1.0"
+  industry: "cross-industry"
+  description: "Simplified binary classification for DOJ geographic filtering — tags columns as Geographic or NonGeographic"
+  standards_alignment: "DOJ Geographic Filtering"
+  bundle_type: "geo_classification"
+  tag_key: "doj_geo_filter"
+
+ontology:
+  version: "1.0"
+  name: "DOJ Geographic Filter Ontology"
+  description: "Binary ontology for classifying columns by geographic relevance"
+
+  entities:
+    auto_discover: false
+    discovery_confidence_threshold: 0.5
+
+    definitions:
+      Geographic:
+        description: "Columns that represent a physical location, address, or geographic area suitable for location-based filtering"
+        keywords:
+          - "address"
+          - "addr"
+          - "street"
+          - "city"
+          - "state"
+          - "province"
+          - "zip"
+          - "zipcode"
+          - "zip_code"
+          - "postal"
+          - "postal_code"
+          - "country"
+          - "county"
+          - "region"
+          - "latitude"
+          - "lat"
+          - "longitude"
+          - "lon"
+          - "lng"
+          - "geolocation"
+          - "geo"
+          - "location"
+          - "place"
+          - "territory"
+          - "district"
+          - "fips"
+          - "cbsa"
+          - "msa"
+          - "timezone"
+          - "continent"
+          - "municipality"
+          - "borough"
+          - "parish"
+          - "ward"
+          - "precinct"
+        typical_attributes: [name, code, coordinates]
+        relationships: {}
+      NonGeographic:
+        description: "Columns that do not represent a physical location despite potentially ambiguous naming"
+        keywords:
+          - "memory_location"
+          - "file_location"
+          - "storage_location"
+          - "url"
+          - "uri"
+          - "path"
+          - "endpoint"
+        typical_attributes: [name, value]
+        relationships: {}
+
+  domain_entity_affinity: {}
+
+  relationships:
+    types: []
+
+  metrics:
+    auto_discover: false
+    definitions: []
+
+  validation:
+    min_entity_confidence: 0.5
+    max_entities_per_table: 2
+    ai_validation_enabled: true
+    classification_model: "databricks-claude-sonnet-4-6"
+
+domains: {}

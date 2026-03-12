@@ -22,44 +22,67 @@ ontology:
         description: "People, customers, contacts, users, or employees"
         keywords: ["customer", "employee", "user", "contact", "person", "member", "staff"]
         typical_attributes: [id, name, email, phone, address, created_date]
+        relationships:
+          owns: { target: Transaction, cardinality: "one-to-many" }
+          part_of: { target: Organization, cardinality: "many-to-one" }
       Organization:
         description: "Companies, departments, facilities, or business units"
         keywords: ["company", "organization", "department", "facility", "tenant", "branch", "division"]
         typical_attributes: [id, name, type, address, parent_id]
+        relationships:
+          contains: { target: Person, cardinality: "one-to-many" }
+          contains_location: { target: Location, cardinality: "one-to-many" }
+          part_of: { target: Organization, cardinality: "many-to-one" }
       Product:
         description: "Goods, services, SKUs, or catalog items"
         keywords: ["product", "item", "sku", "catalog", "offering", "service", "subscription"]
         typical_attributes: [id, name, description, price, category, status]
+        relationships:
+          references: { target: Reference, cardinality: "many-to-one" }
       Transaction:
         description: "Orders, purchases, payments, invoices, or financial events"
         keywords: ["transaction", "order", "payment", "invoice", "purchase", "sale", "receipt"]
         typical_attributes: [id, customer_id, amount, date, status, currency]
+        relationships:
+          placed_by: { target: Person, cardinality: "many-to-one" }
+          for_product: { target: Product, cardinality: "many-to-many" }
       Location:
         description: "Addresses, sites, regions, facilities, or geographies"
         keywords: ["location", "address", "site", "region", "facility", "warehouse", "store"]
         typical_attributes: [id, name, address, city, state, country, zip_code]
+        relationships:
+          part_of: { target: Organization, cardinality: "many-to-one" }
       Event:
         description: "Activities, logs, sessions, audits, or system events"
         keywords: ["event", "activity", "log", "audit", "session", "incident", "alert"]
         typical_attributes: [id, type, timestamp, user_id, details]
+        relationships:
+          references: { target: Person, cardinality: "many-to-one" }
       Reference:
         description: "Lookup tables, codes, categories, dimensions, or configuration"
         keywords: ["reference", "lookup", "code", "category", "dim_", "type", "status"]
         typical_attributes: [id, code, name, description, active]
+        relationships: {}
       Metric:
         description: "KPIs, aggregates, facts, summaries, or analytic measures"
         keywords: ["metric", "kpi", "aggregate", "fact_", "summary", "measure", "score"]
         typical_attributes: [id, name, value, period, dimension]
+        relationships:
+          derives_from: { target: Event, cardinality: "many-to-one" }
       Document:
         description: "Unstructured content, notes, files, or text records"
         keywords: ["document", "note", "file", "content", "text", "attachment", "report"]
         typical_attributes: [id, title, body, author, created_date, type]
+        relationships:
+          references: { target: Person, cardinality: "many-to-one" }
 
   domain_entity_affinity:
-    finance: [Transaction, Person, Organization, Product, Reference, Event, Metric]
+    finance:
+      [Transaction, Person, Organization, Product, Reference, Event, Metric]
     operations: [Product, Organization, Location, Event, Metric, Reference]
     workforce: [Person, Organization, Location, Event, Reference]
-    customer: [Person, Organization, Product, Transaction, Event, Metric, Location]
+    customer:
+      [Person, Organization, Product, Transaction, Event, Metric, Location]
     technology: [Event, Metric, Reference, Organization]
     governance: [Document, Reference, Organization, Person]
 
@@ -102,11 +125,12 @@ domains:
   finance:
     name: "Finance"
     description: "Accounting, payments, revenue cycle, billing, and treasury"
-    keywords: ["revenue", "billing", "ledger", "payment", "accounting", "invoice"]
+    keywords:
+      ["revenue", "billing", "ledger", "payment", "accounting", "invoice", "transaction", "cost", "budget"]
     subdomains:
       accounting:
         name: "Accounting"
-        keywords: ["ledger", "journal", "gl", "ap", "ar"]
+        keywords: ["ledger", "journal", "gl", "ap", "ar", "account", "transaction", "balance"]
       billing:
         name: "Billing & Payments"
         keywords: ["billing", "payment", "invoice", "charge", "receipt"]
@@ -117,7 +141,8 @@ domains:
   operations:
     name: "Operations"
     description: "Supply chain, inventory, procurement, logistics, and facilities"
-    keywords: ["inventory", "procurement", "logistics", "warehouse", "supply_chain"]
+    keywords:
+      ["inventory", "procurement", "logistics", "warehouse", "supply_chain", "order", "shipment", "fulfillment"]
     subdomains:
       inventory:
         name: "Inventory Management"
@@ -139,16 +164,17 @@ domains:
         keywords: ["payroll", "salary", "compensation", "bonus", "deduction"]
       talent:
         name: "Talent Management"
-        keywords: ["recruitment", "candidate", "performance", "training", "hiring"]
+        keywords:
+          ["recruitment", "candidate", "performance", "training", "hiring"]
 
   customer:
     name: "Customer"
     description: "CRM, sales, marketing, customer support, and product analytics"
-    keywords: ["customer", "sales", "campaign", "support", "lead"]
+    keywords: ["customer", "sales", "campaign", "support", "lead", "account", "contact", "order", "crm"]
     subdomains:
       sales:
         name: "Sales & Pipeline"
-        keywords: ["opportunity", "deal", "quote", "pipeline", "forecast"]
+        keywords: ["opportunity", "deal", "quote", "pipeline", "forecast", "account", "contact", "order", "invoice", "line_item", "product", "price"]
       marketing:
         name: "Marketing"
         keywords: ["campaign", "lead", "attribution", "email", "segment"]
@@ -181,7 +207,8 @@ domains:
         keywords: ["contract", "agreement", "litigation", "clause", "legal"]
       regulatory:
         name: "Regulatory Compliance"
-        keywords: ["regulatory", "audit", "compliance", "violation", "reporting"]
+        keywords:
+          ["regulatory", "audit", "compliance", "violation", "reporting"]
       data_governance:
         name: "Data Governance"
-        keywords: ["lineage", "metadata", "catalog", "quality", "governance"]
+        keywords: ["data_lineage", "data_catalog", "data_governance", "data_steward", "retention_policy"]

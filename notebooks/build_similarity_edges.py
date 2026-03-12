@@ -7,6 +7,12 @@
 
 # COMMAND ----------
 
+# MAGIC # Uncomment below when running outside of a DAB-deployed job
+# MAGIC # %pip install /Workspace/Users/<your_username>/.bundle/dbxmetagen/dev/artifacts/.internal/dbxmetagen-*.whl
+# MAGIC # dbutils.library.restartPython()
+
+# COMMAND ----------
+
 dbutils.widgets.text("catalog_name", "", "Catalog Name")
 dbutils.widgets.text("schema_name", "", "Schema Name")
 dbutils.widgets.text("similarity_threshold", "0.8", "Similarity Threshold")
@@ -27,7 +33,7 @@ print(f"Max edges per node: {max_edges_per_node}")
 # COMMAND ----------
 
 import sys
-sys.path.append("../")  # For DAB deployment; pip-installed package works without this
+sys.path.append("../src")  # For git-clone or DAB deployment; pip-installed package works without this
 
 from dbxmetagen.similarity_edges import build_similarity_edges
 

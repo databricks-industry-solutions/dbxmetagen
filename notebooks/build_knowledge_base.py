@@ -43,7 +43,7 @@ print(f"Building knowledge base in {catalog_name}.{schema_name}")
 # COMMAND ----------
 
 import sys
-sys.path.append("../")  # For DAB deployment; pip-installed package works without this
+sys.path.append("../src")  # For git-clone or DAB deployment; pip-installed package works without this
 
 from dbxmetagen.knowledge_base import (
     KnowledgeBaseConfig,

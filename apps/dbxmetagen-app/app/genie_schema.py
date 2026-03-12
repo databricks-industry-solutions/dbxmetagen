@@ -23,9 +23,56 @@ def _simplify_join_sql(sql: str) -> str:
     )
 
 
+_DATE_UNITS = {
+    "YEARS": "YEAR",
+    "QUARTERS": "QUARTER",
+    "MONTHS": "MONTH",
+    "WEEKS": "WEEK",
+    "DAYS": "DAY",
+    "HOURS": "HOUR",
+    "MINUTES": "MINUTE",
+    "SECONDS": "SECOND",
+    "MILLISECONDS": "MILLISECOND",
+    "MICROSECONDS": "MICROSECOND",
+}
+_VALID_UNITS = {
+    "YEAR",
+    "QUARTER",
+    "MONTH",
+    "WEEK",
+    "DAY",
+    "DAYOFYEAR",
+    "HOUR",
+    "MINUTE",
+    "SECOND",
+    "MILLISECOND",
+    "MICROSECOND",
+}
+
+
+def _fix_date_func_units(sql: str) -> str:
+    """Fix TIMESTAMPADD/TIMESTAMPDIFF unit arguments: strip quotes, de-pluralize."""
+
+    def _fix_unit(m):
+        func = m.group(1)
+        quote = m.group(2) or ""
+        unit = m.group(3).upper()
+        rest = m.group(4)
+        unit = _DATE_UNITS.get(unit, unit)
+        return f"{func}({unit}{rest}"
+
+    return re.sub(
+        r"(TIMESTAMPADD|TIMESTAMPDIFF)\(\s*(['\"]?)(\w+)\2\s*(,)",
+        _fix_unit,
+        sql,
+        flags=re.IGNORECASE,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Pydantic models matching the Genie API proto
 # ---------------------------------------------------------------------------
+
 
 class DataSourceRef(BaseModel):
     identifier: str
@@ -63,6 +110,9 @@ class SnippetMeasure(BaseModel):
     id: str = Field(default_factory=_hex_id)
     alias: str
     sql: list[str]
+    display_name: Optional[str] = None
+    synonyms: Optional[list[str]] = None
+    description: Optional[str] = None
 
 
 class SnippetFilter(BaseModel):
@@ -75,6 +125,9 @@ class SnippetExpression(BaseModel):
     id: str = Field(default_factory=_hex_id)
     alias: str
     sql: list[str]
+    display_name: Optional[str] = None
+    synonyms: Optional[list[str]] = None
+    description: Optional[str] = None
 
 
 class SqlSnippets(BaseModel):
@@ -110,6 +163,7 @@ class SerializedSpace(BaseModel):
 # Whitelist-only construction from raw agent/builder output
 # ---------------------------------------------------------------------------
 
+
 def _to_str_list(val) -> Optional[list[str]]:
     """Normalize a value to list[str] or None."""
     if isinstance(val, list):
@@ -127,6 +181,17 @@ def _ensure_list(val) -> list[str]:
     return []
 
 
+def _name_from_sql(sql_list: list[str]) -> str:
+    """Derive a display name from a SQL expression when the alias is empty."""
+    if not sql_list:
+        return ""
+    raw = sql_list[0].strip()
+    raw = re.sub(r"[`'\"]", "", raw)
+    if len(raw) > 60:
+        raw = raw[:57] + "..."
+    return raw
+
+
 def build_serialized_space(raw: dict) -> dict:
     """Construct a clean serialized_space dict from raw agent output.
 
@@ -135,12 +200,18 @@ def build_serialized_space(raw: dict) -> dict:
     # -- data_sources --
     ds_raw = raw.get("data_sources", {})
     tables = [
-        DataSourceRef(identifier=t["identifier"], description=_to_str_list(t.get("description")))
-        for t in ds_raw.get("tables", []) if t.get("identifier")
+        DataSourceRef(
+            identifier=t["identifier"], description=_to_str_list(t.get("description"))
+        )
+        for t in ds_raw.get("tables", [])
+        if t.get("identifier")
     ]
     mvs = [
-        DataSourceRef(identifier=m["identifier"], description=_to_str_list(m.get("description")))
-        for m in ds_raw.get("metric_views", []) if m.get("identifier")
+        DataSourceRef(
+            identifier=m["identifier"], description=_to_str_list(m.get("description"))
+        )
+        for m in ds_raw.get("metric_views", [])
+        if m.get("identifier")
     ]
 
     # -- instructions --
@@ -154,19 +225,23 @@ def build_serialized_space(raw: dict) -> dict:
     elif isinstance(text, list):
         for t in text:
             if isinstance(t, dict) and t.get("content"):
-                text_insts.append(TextInstruction(
-                    id=t.get("id") or _hex_id(),
-                    content=_ensure_list(t["content"]),
-                ))
+                text_insts.append(
+                    TextInstruction(
+                        id=t.get("id") or _hex_id(),
+                        content=_ensure_list(t["content"]),
+                    )
+                )
             elif isinstance(t, str) and t:
                 text_insts.append(TextInstruction(content=[t]))
 
     # example_sql / example_question_sqls
-    examples_raw = inst_raw.get("example_sql") or inst_raw.get("example_question_sqls") or []
+    examples_raw = (
+        inst_raw.get("example_sql") or inst_raw.get("example_question_sqls") or []
+    )
     examples = []
     for ex in examples_raw:
         q = _ensure_list(ex.get("question"))
-        s = _ensure_list(ex.get("sql"))
+        s = [_fix_date_func_units(x) for x in _ensure_list(ex.get("sql"))]
         if q and s:
             examples.append(ExampleSQL(question=q, sql=s))
 
@@ -191,35 +266,78 @@ def build_serialized_space(raw: dict) -> dict:
         split: list[str] = []
         for s in sql_list:
             s = _simplify_join_sql(s)
-            split.extend(p.strip() for p in re.split(r"\s+AND\s+", s, flags=re.IGNORECASE) if p.strip())
+            split.extend(
+                p.strip()
+                for p in re.split(r"\s+AND\s+", s, flags=re.IGNORECASE)
+                if p.strip()
+            )
 
         if left_id and right_id and split:
-            joins.append(JoinSpec(
-                left=JoinSide(identifier=left_id),
-                right=JoinSide(identifier=right_id),
-                sql=split,
-            ))
+            joins.append(
+                JoinSpec(
+                    left=JoinSide(identifier=left_id),
+                    right=JoinSide(identifier=right_id),
+                    sql=split,
+                )
+            )
 
-    # sql_snippets
+    # sql_snippets -- apply date-function autofix on all SQL
     snip_raw = inst_raw.get("sql_snippets") or raw.get("sql_snippets") or {}
-    snip_measures = [
-        SnippetMeasure(alias=m.get("alias") or m.get("name", ""), sql=_ensure_list(m.get("sql")))
-        for m in snip_raw.get("measures", []) if m.get("sql")
-    ]
-    snip_filters = [
-        SnippetFilter(
-            display_name=m.get("display_name") or m.get("name") or m.get("description", ""),
-            sql=_ensure_list(m.get("sql")),
+
+    def _fix_sql_list(sl: list[str]) -> list[str]:
+        return [_fix_date_func_units(s) for s in sl]
+
+    snip_measures = []
+    for m in snip_raw.get("measures", []):
+        sql = _fix_sql_list(_ensure_list(m.get("sql")))
+        if not sql:
+            continue
+        alias = m.get("alias") or m.get("name") or _name_from_sql(sql)
+        if not alias:
+            continue
+        snip_measures.append(SnippetMeasure(
+            alias=alias, sql=sql,
+            display_name=m.get("display_name") or alias,
+            synonyms=m.get("synonyms"),
+            description=m.get("description"),
+        ))
+
+    snip_filters = []
+    for m in snip_raw.get("filters", []):
+        sql = _fix_sql_list(_ensure_list(m.get("sql")))
+        if not sql:
+            continue
+        dn = (
+            m.get("display_name")
+            or m.get("name")
+            or m.get("description")
+            or _name_from_sql(sql)
         )
-        for m in snip_raw.get("filters", []) if m.get("sql")
-    ]
-    snip_exprs = [
-        SnippetExpression(alias=m.get("alias") or m.get("name", ""), sql=_ensure_list(m.get("sql")))
-        for m in snip_raw.get("expressions", []) if m.get("sql")
-    ]
+        if not dn:
+            continue
+        snip_filters.append(SnippetFilter(display_name=dn, sql=sql))
+
+    snip_exprs = []
+    for m in snip_raw.get("expressions", []):
+        sql = _fix_sql_list(_ensure_list(m.get("sql")))
+        if not sql:
+            continue
+        alias = m.get("alias") or m.get("name") or _name_from_sql(sql)
+        if not alias:
+            continue
+        snip_exprs.append(SnippetExpression(
+            alias=alias, sql=sql,
+            display_name=m.get("display_name") or alias,
+            synonyms=m.get("synonyms"),
+            description=m.get("description"),
+        ))
     snippets = None
     if snip_measures or snip_filters or snip_exprs:
-        snippets = SqlSnippets(measures=snip_measures, filters=snip_filters, expressions=snip_exprs)
+        snippets = SqlSnippets(
+            measures=sorted(snip_measures, key=lambda x: x.id),
+            filters=sorted(snip_filters, key=lambda x: x.id),
+            expressions=sorted(snip_exprs, key=lambda x: x.id),
+        )
 
     # -- sample_questions --
     sq_raw = raw.get("sample_questions") or []
@@ -239,11 +357,15 @@ def build_serialized_space(raw: dict) -> dict:
             metric_views=sorted(mvs, key=lambda x: x.identifier),
         ),
         instructions=Instructions(
-            text_instructions=text_insts,
+            text_instructions=sorted(text_insts, key=lambda x: x.id),
             example_question_sqls=sorted(examples, key=lambda x: x.id),
             join_specs=sorted(joins, key=lambda x: x.id),
             sql_snippets=snippets,
         ),
-        config=GenieConfig(sample_questions=sorted(sample_qs, key=lambda x: x.id)) if sample_qs else None,
+        config=(
+            GenieConfig(sample_questions=sorted(sample_qs, key=lambda x: x.id))
+            if sample_qs
+            else None
+        ),
     )
     return space.model_dump(exclude_none=True)

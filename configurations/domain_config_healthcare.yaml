@@ -1,4 +1,8 @@
-version: "1.0"
+# Legacy standalone healthcare domain config.
+# Kept for backward compatibility. Prefer using ontology bundles which
+# include both entity definitions and a domains section.
+version: "1.1"
+mutually_exclusive: false
 domains:
   clinical:
     name: "Clinical"
@@ -8,19 +12,23 @@ domains:
       patient_care:
         name: "Patient Care"
         description: "Patient demographics, encounters, admissions, discharges, and care episodes"
-        keywords: ["patient", "encounter", "admission", "visit", "episode"]
+        keywords: ["patient", "encounter", "admission", "visit", "episode", "discharge", "demographics"]
+        typical_table_patterns: ["^patient", "^encounter", "^admit", "^visit"]
       diagnosis_condition:
         name: "Diagnosis & Conditions"
         description: "Medical diagnoses, conditions, problem lists, and disease coding"
-        keywords: ["diagnosis", "condition", "icd", "problem", "disease"]
+        keywords: ["diagnosis", "condition", "icd", "problem", "disease", "snomed", "dx_"]
+        typical_table_patterns: ["^diagnosis", "^condition", "^dx_", "^problem_list"]
       medication_orders:
         name: "Medications & Orders"
         description: "Prescriptions, medication administration, pharmacy, and clinical orders"
-        keywords: ["medication", "prescription", "drug", "pharmacy", "order"]
+        keywords: ["medication", "prescription", "drug", "pharmacy", "order", "rx_", "dispense"]
+        typical_table_patterns: ["^medication", "^rx_", "^prescription", "^pharmacy"]
       clinical_documentation:
         name: "Clinical Documentation"
         description: "Progress notes, assessments, care plans, and clinical narratives"
-        keywords: ["note", "assessment", "care_plan", "narrative", "documentation"]
+        keywords: ["note", "assessment", "care_plan", "narrative", "documentation", "progress_note"]
+        typical_table_patterns: ["^note", "^care_plan", "^assessment", "^clinical_doc"]
 
   diagnostics:
     name: "Diagnostics"
@@ -30,15 +38,18 @@ domains:
       laboratory:
         name: "Laboratory"
         description: "Lab tests, panels, specimens, and result values"
-        keywords: ["lab", "test", "specimen", "panel", "loinc"]
+        keywords: ["lab", "test", "specimen", "panel", "loinc", "assay", "culture"]
+        typical_table_patterns: ["^lab_", "^specimen", "^test_result"]
       imaging:
         name: "Imaging & Radiology"
         description: "Radiology, MRI, CT, X-ray, and DICOM studies"
-        keywords: ["imaging", "radiology", "dicom", "mri", "xray"]
+        keywords: ["imaging", "radiology", "dicom", "mri", "xray", "ct_scan", "ultrasound"]
+        typical_table_patterns: ["^imaging", "^radiology", "^dicom"]
       vitals_observations:
         name: "Vitals & Observations"
         description: "Vital signs, clinical measurements, and point-of-care observations"
-        keywords: ["vital", "observation", "measurement", "blood_pressure", "temperature"]
+        keywords: ["vital", "observation", "measurement", "blood_pressure", "temperature", "heart_rate", "bmi"]
+        typical_table_patterns: ["^vital", "^observation", "^measurement"]
 
   payer:
     name: "Payer"
@@ -48,15 +59,18 @@ domains:
       membership:
         name: "Membership & Enrollment"
         description: "Member eligibility, enrollment, subscriber management, and plan assignment"
-        keywords: ["member", "enrollment", "eligibility", "subscriber", "coverage"]
+        keywords: ["member", "enrollment", "eligibility", "subscriber", "coverage", "beneficiary"]
+        typical_table_patterns: ["^member", "^enrollment", "^eligibility", "^subscriber"]
       claims:
         name: "Claims Processing"
         description: "Claim submission, adjudication, payment, denials, and appeals"
-        keywords: ["claim", "adjudication", "denial", "remittance", "eob"]
+        keywords: ["claim", "adjudication", "denial", "remittance", "eob", "appeal", "reimbursement"]
+        typical_table_patterns: ["^claim", "^adjudication", "^remittance", "^eob"]
       authorization:
         name: "Authorization & Utilization"
         description: "Prior authorization, utilization review, medical necessity, and care management"
-        keywords: ["authorization", "utilization", "preauth", "medical_necessity", "review"]
+        keywords: ["authorization", "utilization", "preauth", "medical_necessity", "review", "prior_auth"]
+        typical_table_patterns: ["^auth", "^preauth", "^utilization"]
 
   pharmaceutical:
     name: "Pharmaceutical"
@@ -66,11 +80,13 @@ domains:
       clinical_development:
         name: "Clinical Development"
         description: "Clinical trials, protocols, subjects, adverse events, and regulatory submissions"
-        keywords: ["trial", "protocol", "adverse_event", "subject", "submission"]
+        keywords: ["trial", "protocol", "adverse_event", "subject", "submission", "investigator", "site"]
+        typical_table_patterns: ["^trial", "^protocol", "^adverse_event", "^study"]
       manufacturing:
         name: "Manufacturing & Supply"
         description: "Drug production, batch records, GMP, quality, and distribution"
-        keywords: ["batch", "gmp", "production", "lot", "distribution"]
+        keywords: ["batch", "gmp", "production", "lot", "distribution", "manufacturing", "yield"]
+        typical_table_patterns: ["^batch", "^lot_", "^production", "^manufacturing"]
       commercial:
         name: "Commercial Operations"
         description: "Sales force, HCP engagement, medical affairs, and territory management"
@@ -111,12 +127,13 @@ domains:
   finance:
     name: "Finance"
     description: "Accounting, payments, revenue cycle, billing, coding, and treasury"
-    keywords: ["revenue", "billing", "ledger", "payment", "accounting"]
+    keywords: ["revenue", "billing", "ledger", "payment", "accounting", "transaction", "cost", "budget", "invoice"]
     subdomains:
       accounting:
         name: "Accounting"
         description: "General ledger, journal entries, AP/AR, and financial statements"
-        keywords: ["ledger", "journal", "gl", "ap", "ar"]
+        keywords: ["ledger", "journal", "gl", "ap", "ar", "general_ledger", "accounts_payable", "account", "transaction", "balance"]
+        typical_table_patterns: ["^gl_", "^ledger", "^journal", "^account"]
       billing_coding:
         name: "Billing & Coding"
         description: "Charge capture, CPT/ICD coding, charge master, and claim submission"
@@ -129,7 +146,7 @@ domains:
   operations:
     name: "Operations"
     description: "Supply chain, inventory, procurement, logistics, and facilities"
-    keywords: ["inventory", "procurement", "logistics", "warehouse", "supply_chain"]
+    keywords: ["inventory", "procurement", "logistics", "warehouse", "supply_chain", "order", "shipment", "fulfillment"]
     subdomains:
       inventory:
         name: "Inventory Management"
@@ -165,12 +182,12 @@ domains:
   customer:
     name: "Customer"
     description: "CRM, sales, marketing, customer support, and product analytics"
-    keywords: ["customer", "sales", "campaign", "support", "lead"]
+    keywords: ["customer", "sales", "campaign", "support", "lead", "account", "contact", "order", "crm"]
     subdomains:
       sales:
         name: "Sales & Pipeline"
         description: "Opportunities, deals, quotes, pipeline, and forecasting"
-        keywords: ["opportunity", "deal", "quote", "pipeline", "forecast"]
+        keywords: ["opportunity", "deal", "quote", "pipeline", "forecast", "account", "contact", "order", "invoice", "line_item", "product", "price"]
       marketing:
         name: "Marketing"
         description: "Campaigns, leads, attribution, digital marketing, and content"
@@ -214,4 +231,4 @@ domains:
       data_governance:
         name: "Data Governance"
         description: "Data quality, lineage, metadata management, and catalog policies"
-        keywords: ["lineage", "metadata", "catalog", "quality", "governance"]
+        keywords: ["data_lineage", "data_catalog", "data_governance", "data_steward", "retention_policy"]

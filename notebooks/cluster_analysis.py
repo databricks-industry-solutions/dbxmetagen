@@ -37,6 +37,12 @@
 # MAGIC | `clustering_metrics` | Full WSSSE + silhouette history per K per phase |
 
 # COMMAND ----------
+
+# MAGIC # Uncomment below when running outside of a DAB-deployed job
+# MAGIC # %pip install /Workspace/Users/<your_username>/.bundle/dbxmetagen/dev/artifacts/.internal/dbxmetagen-*.whl
+# MAGIC # dbutils.library.restartPython()
+
+# COMMAND ----------
 # MAGIC %md
 # MAGIC ## Parameters
 
@@ -382,11 +388,20 @@ print(
     f"Broad search sample: {broad_sample_count} nodes ({sample_fraction_broad*100:.1f}%)"
 )
 
+if broad_sample_count < min_k:
+    print(f"Sample too small ({broad_sample_count} < {min_k}), using full dataset")
+    broad_sample.unpersist()
+    broad_sample = nodes_with_vectors
+    broad_sample_count = vector_count
+
 # Test K values in steps
 k_step = max(1, (effective_max_k - min_k) // 10)
 broad_k_range = list(range(min_k, effective_max_k + 1, k_step))
 if effective_max_k not in broad_k_range:
     broad_k_range.append(effective_max_k)
+broad_k_range = [k for k in broad_k_range if k < broad_sample_count]
+if not broad_k_range:
+    broad_k_range = [min_k]
 
 print(f"Testing K values: {broad_k_range}")
 
@@ -455,6 +470,16 @@ narrow_sample_count = narrow_sample.count()
 print(
     f"Narrow search sample: {narrow_sample_count} nodes ({sample_fraction_narrow*100:.1f}%)"
 )
+
+if narrow_sample_count < min_k:
+    print(f"Narrow sample too small ({narrow_sample_count} < {min_k}), using full dataset")
+    narrow_sample.unpersist()
+    narrow_sample = nodes_with_vectors
+    narrow_sample_count = vector_count
+
+narrow_k_range = [k for k in narrow_k_range if k < narrow_sample_count]
+if not narrow_k_range:
+    narrow_k_range = [min_k]
 
 # Full evaluation with silhouette
 narrow_results = evaluate_k_range_with_silhouette(

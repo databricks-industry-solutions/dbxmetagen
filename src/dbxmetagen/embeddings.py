@@ -22,13 +22,18 @@ class EmbeddingConfig:
     catalog_name: str
     schema_name: str
     nodes_table: str = "graph_nodes"
+    ontology_entities_table: str = "ontology_entities"
     model: str = "databricks-bge-large-en"
     batch_size: int = 50
     similarity_threshold: float = 0.8
-    
+
     @property
     def fully_qualified_nodes(self) -> str:
         return f"{self.catalog_name}.{self.schema_name}.{self.nodes_table}"
+
+    @property
+    def fully_qualified_ontology_entities(self) -> str:
+        return f"{self.catalog_name}.{self.schema_name}.{self.ontology_entities_table}"
 
 
 class EmbeddingGenerator:
@@ -44,14 +49,39 @@ class EmbeddingGenerator:
         self.config = config
     
     def get_nodes_needing_embeddings(self) -> DataFrame:
-        """Get nodes that have comments but no embeddings."""
-        return self.spark.sql(f"""
-            SELECT id, comment, node_type
-            FROM {self.config.fully_qualified_nodes}
-            WHERE comment IS NOT NULL 
-              AND LENGTH(comment) > 10
-              AND embedding IS NULL
-        """)
+        """Get nodes that have comments but no embeddings. Enriches with domain and ontology entity when available."""
+        nodes = self.config.fully_qualified_nodes
+        ont = self.config.fully_qualified_ontology_entities
+        try:
+            return self.spark.sql(f"""
+                WITH table_entity AS (
+                    SELECT EXPLODE(source_tables) AS table_name, entity_type
+                    FROM {ont}
+                    WHERE confidence >= 0.4
+                ),
+                enriched AS (
+                    SELECT n.id, n.comment, n.node_type, n.domain,
+                        COALESCE(CONCAT_WS(', ', COLLECT_SET(te.entity_type)), '') AS entity_type
+                    FROM {nodes} n
+                    LEFT JOIN table_entity te
+                      ON te.table_name = CASE WHEN n.node_type = 'table' THEN n.id ELSE n.parent_id END
+                    WHERE n.comment IS NOT NULL AND LENGTH(n.comment) > 10 AND n.embedding IS NULL
+                    GROUP BY n.id, n.comment, n.node_type, n.domain
+                )
+                SELECT id, node_type,
+                    SUBSTRING(CONCAT(COALESCE(comment, ''), ' Domain: ', COALESCE(domain, ''), ' Entity: ', COALESCE(entity_type, '')), 1, 2000) AS text_to_embed
+                FROM enriched
+            """)
+        except Exception as e:
+            if "TABLE_OR_VIEW_NOT_FOUND" in str(e) or "cannot find" in str(e).lower():
+                logger.info("ontology_entities not found, using comment and domain only: %s", e)
+                return self.spark.sql(f"""
+                    SELECT id, node_type,
+                        SUBSTRING(CONCAT(COALESCE(comment, ''), ' Domain: ', COALESCE(domain, '')), 1, 2000) AS text_to_embed
+                    FROM {nodes}
+                    WHERE comment IS NOT NULL AND LENGTH(comment) > 10 AND embedding IS NULL
+                    """)
+            raise
     
     def generate_embedding_for_text(self, text: str) -> Optional[List[float]]:
         """
@@ -100,13 +130,12 @@ class EmbeddingGenerator:
         nodes_df.createOrReplaceTempView("nodes_to_embed")
         
         try:
-            # Try using AI_QUERY with TRANSFORM (more efficient)
             result = self.spark.sql(f"""
                 SELECT 
                     id,
                     AI_QUERY(
                         '{self.config.model}',
-                        SUBSTRING(comment, 1, 2000)
+                        text_to_embed
                     ) as embedding
                 FROM nodes_to_embed
             """)
@@ -114,13 +143,14 @@ class EmbeddingGenerator:
         except Exception as e:
             logger.warning(f"Batch embedding failed, falling back to row-by-row: {e}")
             return self._generate_embeddings_row_by_row(nodes_df)
-    
+
     def _generate_embeddings_row_by_row(self, nodes_df: DataFrame) -> DataFrame:
         """Fallback: Generate embeddings one row at a time."""
         results = []
-        
+        text_col = "text_to_embed" if "text_to_embed" in nodes_df.columns else "comment"
         for row in nodes_df.collect():
-            embedding = self.generate_embedding_for_text(row.comment)
+            text = getattr(row, text_col, None) or row.comment
+            embedding = self.generate_embedding_for_text(text)
             if embedding:
                 results.append((row.id, embedding))
         

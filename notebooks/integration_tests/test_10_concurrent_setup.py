@@ -12,7 +12,7 @@
 
 import sys
 
-sys.path.append("../../")  # For DAB deployment; pip-installed package works without this
+sys.path.append("../../src")  # For git-clone or DAB deployment; pip-installed package works without this
 
 from dbxmetagen.user_utils import sanitize_user_identifier, get_current_user
 

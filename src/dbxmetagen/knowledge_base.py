@@ -117,7 +117,8 @@ class KnowledgeBaseBuilder:
             has_pii BOOLEAN,
             has_phi BOOLEAN,
             created_at TIMESTAMP,
-            updated_at TIMESTAMP
+            updated_at TIMESTAMP,
+            review_updated_at TIMESTAMP
         )
         CLUSTER BY (catalog, `schema`)
         COMMENT 'Aggregated table-level metadata from dbxmetagen runs'

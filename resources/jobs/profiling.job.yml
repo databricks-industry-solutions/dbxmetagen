@@ -3,6 +3,10 @@ resources:
     profiling_job:
       name: "${var.app_name}_profiling_job"
 
+      permissions:
+        - service_principal_name: ${resources.apps.dbxmetagen_app.service_principal_client_id}
+          level: CAN_MANAGE_RUN
+
       email_notifications:
         on_failure:
           - ${var.current_user}

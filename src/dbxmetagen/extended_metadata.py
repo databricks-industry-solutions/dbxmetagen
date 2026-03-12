@@ -21,6 +21,7 @@ class ExtendedMetadataConfig:
     schema_name: str
     source_table: str = "table_knowledge_base"
     target_table: str = "extended_table_metadata"
+    incremental: bool = True
     
     @property
     def fully_qualified_source(self) -> str:
@@ -71,7 +72,23 @@ class ExtendedMetadataBuilder:
         logger.info(f"Target table {self.config.fully_qualified_target} ready")
     
     def get_tables_to_process(self) -> List[str]:
-        """Get list of tables from knowledge base to extract metadata for."""
+        """Get list of tables from knowledge base to extract metadata for.
+        When incremental, only returns tables changed since last extraction."""
+        if self.config.incremental:
+            try:
+                df = self.spark.sql(f"""
+                    SELECT DISTINCT kb.table_name
+                    FROM {self.config.fully_qualified_source} kb
+                    LEFT JOIN {self.config.fully_qualified_target} ext ON kb.table_name = ext.table_name
+                    WHERE kb.table_name IS NOT NULL
+                      AND (ext.updated_at IS NULL OR kb.updated_at > ext.updated_at)
+                """)
+                tables = [row.table_name for row in df.collect()]
+                total = self.spark.sql(f"SELECT COUNT(DISTINCT table_name) AS n FROM {self.config.fully_qualified_source} WHERE table_name IS NOT NULL").collect()[0].n
+                logger.info(f"Incremental mode: {len(tables)} tables need extended metadata out of {total}")
+                return tables
+            except Exception as e:
+                logger.warning(f"Incremental filtering failed ({e}), falling back to full refresh")
         df = self.spark.sql(f"""
             SELECT DISTINCT table_name 
             FROM {self.config.fully_qualified_source}
@@ -389,7 +406,8 @@ class ExtendedMetadataBuilder:
 def extract_extended_metadata(
     spark: SparkSession,
     catalog_name: str,
-    schema_name: str
+    schema_name: str,
+    incremental: bool = True,
 ) -> Dict[str, Any]:
     """
     Convenience function to extract extended metadata.
@@ -398,13 +416,15 @@ def extract_extended_metadata(
         spark: SparkSession instance
         catalog_name: Catalog name for source and target tables
         schema_name: Schema name for source and target tables
+        incremental: Only process tables changed since last extraction
         
     Returns:
         Dict with execution statistics
     """
     config = ExtendedMetadataConfig(
         catalog_name=catalog_name,
-        schema_name=schema_name
+        schema_name=schema_name,
+        incremental=incremental,
     )
     builder = ExtendedMetadataBuilder(spark, config)
     return builder.run()

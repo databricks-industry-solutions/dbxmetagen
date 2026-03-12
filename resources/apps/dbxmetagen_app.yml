@@ -4,27 +4,6 @@ resources:
       name: "${var.app_name}"
       description: "dbxmetagen dashboard: metadata review, profiling, ontology, and graph analytics"
       source_code_path: ../../apps/dbxmetagen-app/app
-      config:
-        command:
-          - uvicorn
-          - api_server:app
-          - --host
-          - 0.0.0.0
-          - --port
-          - "8000"
-        env:
-          - name: CATALOG_NAME
-            value: ${var.catalog_name}
-          - name: SCHEMA_NAME
-            value: ${var.schema_name}
-          - name: WAREHOUSE_ID
-            value_from: sql_warehouse
-          - name: GRAPHRAG_MODEL
-            value: databricks-claude-sonnet-4-5
-          - name: BUNDLE_ROOT_PATH
-            value: /Workspace/Users/${var.deploying_user}/.bundle/${bundle.name}/${bundle.target}
-          - name: NODE_TYPE
-            value: ${var.node_type}
       resources:
         - name: sql_warehouse
           sql_warehouse:

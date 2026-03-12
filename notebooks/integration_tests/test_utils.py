@@ -8,7 +8,7 @@ and cleaning up test artifacts in integration tests.
 
 import sys
 
-sys.path.append("../../")
+sys.path.append("../../src")  # For git-clone or DAB deployment; pip-installed package works without this
 
 from pyspark.sql import SparkSession
 from pyspark.sql.types import StructType, StructField, StringType, IntegerType

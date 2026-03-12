@@ -492,3 +492,315 @@ class TestDeduplicateEntities:
         result = EntityDiscoverer.deduplicate_entities(entities)
         assert len(result) == 2
 
+
+# ==============================================================================
+# New tests for two-layer ontology improvements
+# ==============================================================================
+
+
+class TestEntityDefinitionRelationships:
+    """Tests for EntityDefinition.relationships field."""
+
+    def test_default_relationships_empty(self):
+        entity = EntityDefinition(name="Test", description="Test")
+        assert entity.relationships == {}
+
+    def test_relationships_set_on_creation(self):
+        rels = {
+            "treated_by": {"target": "Provider", "cardinality": "many-to-many"},
+            "has_encounter": {"target": "Encounter", "cardinality": "one-to-many"},
+        }
+        entity = EntityDefinition(
+            name="Patient", description="A patient", relationships=rels
+        )
+        assert len(entity.relationships) == 2
+        assert entity.relationships["treated_by"]["target"] == "Provider"
+        assert entity.relationships["has_encounter"]["cardinality"] == "one-to-many"
+
+
+class TestRelationshipsParsing:
+    """Tests for OntologyLoader.get_entity_definitions relationship parsing."""
+
+    def test_new_relationships_format(self):
+        config = {
+            "entities": {
+                "definitions": {
+                    "Patient": {
+                        "description": "Patient entity",
+                        "keywords": ["patient"],
+                        "relationships": {
+                            "treated_by": {"target": "Provider", "cardinality": "many-to-many"},
+                            "has_encounter": {"target": "Encounter", "cardinality": "one-to-many"},
+                        },
+                    }
+                }
+            }
+        }
+        entities = OntologyLoader.get_entity_definitions(config)
+        assert len(entities) == 1
+        p = entities[0]
+        assert len(p.relationships) == 2
+        assert p.relationships["treated_by"]["target"] == "Provider"
+        assert p.relationships["has_encounter"]["cardinality"] == "one-to-many"
+
+    def test_old_typical_relationships_backward_compat(self):
+        config = {
+            "entities": {
+                "definitions": {
+                    "Person": {
+                        "description": "A person",
+                        "keywords": ["person"],
+                        "typical_relationships": ["owns", "contains"],
+                    }
+                }
+            }
+        }
+        entities = OntologyLoader.get_entity_definitions(config)
+        p = entities[0]
+        assert "owns" in p.relationships
+        assert "contains" in p.relationships
+        assert p.relationships["owns"] == {}
+
+    def test_new_format_takes_precedence(self):
+        config = {
+            "entities": {
+                "definitions": {
+                    "Order": {
+                        "description": "An order",
+                        "keywords": ["order"],
+                        "typical_relationships": ["references"],
+                        "relationships": {
+                            "placed_by": {"target": "Customer", "cardinality": "many-to-one"},
+                        },
+                    }
+                }
+            }
+        }
+        entities = OntologyLoader.get_entity_definitions(config)
+        o = entities[0]
+        assert "placed_by" in o.relationships
+        assert "references" not in o.relationships
+
+    def test_no_relationships_field(self):
+        config = {
+            "entities": {
+                "definitions": {
+                    "Ref": {"description": "Lookup", "keywords": ["ref"]}
+                }
+            }
+        }
+        entities = OntologyLoader.get_entity_definitions(config)
+        assert entities[0].relationships == {}
+
+    def test_empty_relationships_map(self):
+        config = {
+            "entities": {
+                "definitions": {
+                    "Ref": {
+                        "description": "Lookup",
+                        "keywords": ["ref"],
+                        "relationships": {},
+                    }
+                }
+            }
+        }
+        entities = OntologyLoader.get_entity_definitions(config)
+        assert entities[0].relationships == {}
+
+
+class TestBestAttributeForColumn:
+    """Tests for EntityDiscoverer._best_attribute_for_column."""
+
+    def test_exact_match(self):
+        edef = EntityDefinition(
+            name="Patient", description="Patient",
+            typical_attributes=["id", "mrn", "name", "dob"]
+        )
+        assert EntityDiscoverer._best_attribute_for_column("mrn", edef) == "mrn"
+
+    def test_prefix_stripped(self):
+        edef = EntityDefinition(
+            name="Patient", description="Patient",
+            typical_attributes=["id", "mrn", "name", "dob"]
+        )
+        assert EntityDiscoverer._best_attribute_for_column("patient_mrn", edef) == "mrn"
+
+    def test_partial_match(self):
+        edef = EntityDefinition(
+            name="Order", description="Order",
+            typical_attributes=["id", "customer_id", "total", "status"]
+        )
+        result = EntityDiscoverer._best_attribute_for_column("order_status", edef)
+        assert result == "status"
+
+    def test_no_match_returns_stripped_name(self):
+        edef = EntityDefinition(
+            name="Patient", description="Patient",
+            typical_attributes=["id", "mrn"]
+        )
+        result = EntityDiscoverer._best_attribute_for_column("patient_custom_field", edef)
+        assert result == "custom_field"
+
+    def test_no_prefix_no_match(self):
+        edef = EntityDefinition(
+            name="Patient", description="Patient",
+            typical_attributes=["id", "mrn"]
+        )
+        result = EntityDiscoverer._best_attribute_for_column("random_col", edef)
+        assert result == "random_col"
+
+
+class TestDeclaredRelationshipLookup:
+    """Tests for discover_inter_entity_relationships declared relationship lookup logic."""
+
+    def _make_builder(self, entity_defs, ontology_config=None):
+        mock_spark = MagicMock()
+        config = OntologyConfig(catalog_name="cat", schema_name="sch")
+        with patch.object(OntologyLoader, 'load_config') as mock_load:
+            mock_load.return_value = ontology_config or OntologyLoader._default_config()
+            builder = OntologyBuilder(mock_spark, config)
+        builder.discoverer.entity_definitions = entity_defs
+        return builder, mock_spark
+
+    def test_declared_rel_used_over_references(self):
+        """When a declared relationship matches (src_type, dst_type), use it."""
+        edefs = [
+            EntityDefinition(
+                name="Patient", description="Patient", keywords=["patient"],
+                relationships={"treated_by": {"target": "Provider", "cardinality": "many-to-many"}},
+            ),
+            EntityDefinition(name="Provider", description="Provider", keywords=["provider"]),
+        ]
+        builder, mock_spark = self._make_builder(edefs)
+
+        # Mock entity rows
+        ent_row1 = MagicMock()
+        ent_row1.entity_id, ent_row1.entity_name, ent_row1.entity_type = "e1", "Patient", "Patient"
+        ent_row1.source_tables = ["cat.sch.patients"]
+        ent_row2 = MagicMock()
+        ent_row2.entity_id, ent_row2.entity_name, ent_row2.entity_type = "e2", "Provider", "Provider"
+        ent_row2.source_tables = ["cat.sch.providers"]
+
+        # Mock FK row
+        fk_row = MagicMock()
+        fk_row.src_table, fk_row.dst_table = "cat.sch.patients", "cat.sch.providers"
+
+        sql_results = [
+            MagicMock(collect=MagicMock(return_value=[ent_row1, ent_row2])),
+            MagicMock(collect=MagicMock(return_value=[fk_row])),
+        ]
+        mock_spark.sql.side_effect = sql_results
+
+        result = builder.discover_inter_entity_relationships()
+        assert result["edges_added"] == 1
+        write_call = mock_spark.sql.return_value.write.mode.return_value.saveAsTable
+        # Verify the edge was written with treated_by (not references)
+        df = mock_spark.createDataFrame.call_args
+        if df:
+            rows = df[0][0]
+            assert rows[0][2] == "treated_by"
+
+    def test_undiscovered_declared_reported(self):
+        """Declared relationships with no matching FK should be reported."""
+        edefs = [
+            EntityDefinition(
+                name="Patient", description="Patient",
+                relationships={
+                    "treated_by": {"target": "Provider", "cardinality": "many-to-many"},
+                    "has_condition": {"target": "Condition", "cardinality": "one-to-many"},
+                },
+            ),
+            EntityDefinition(name="Provider", description="Provider"),
+            EntityDefinition(name="Condition", description="Condition"),
+        ]
+        builder, mock_spark = self._make_builder(edefs)
+
+        # No entities discovered, no FKs
+        mock_spark.sql.return_value.collect.return_value = []
+
+        result = builder.discover_inter_entity_relationships()
+        assert len(result["undiscovered_declared"]) == 2
+        names = {u["relationship"] for u in result["undiscovered_declared"]}
+        assert "treated_by" in names
+        assert "has_condition" in names
+
+    def test_fallback_to_references(self):
+        """When no declaration matches, fall back to 'references'."""
+        edefs = [
+            EntityDefinition(name="Event", description="Event"),
+            EntityDefinition(name="Ref", description="Reference"),
+        ]
+        builder, mock_spark = self._make_builder(edefs)
+
+        ent_row1 = MagicMock()
+        ent_row1.entity_id, ent_row1.entity_name, ent_row1.entity_type = "e1", "Event", "Event"
+        ent_row1.source_tables = ["tbl_a"]
+        ent_row2 = MagicMock()
+        ent_row2.entity_id, ent_row2.entity_name, ent_row2.entity_type = "e2", "Ref", "Ref"
+        ent_row2.source_tables = ["tbl_b"]
+
+        fk_row = MagicMock()
+        fk_row.src_table, fk_row.dst_table = "tbl_a", "tbl_b"
+
+        sql_results = [
+            MagicMock(collect=MagicMock(return_value=[ent_row1, ent_row2])),
+            MagicMock(collect=MagicMock(return_value=[fk_row])),
+        ]
+        mock_spark.sql.side_effect = sql_results
+
+        result = builder.discover_inter_entity_relationships()
+        assert result["edges_added"] == 1
+        df = mock_spark.createDataFrame.call_args
+        if df:
+            rows = df[0][0]
+            assert rows[0][2] == "references"
+
+
+class TestBundleYAMLRelationships:
+    """Tests that bundle YAML files contain structured relationships."""
+
+    @pytest.fixture(params=["healthcare", "general", "retail_cpg", "financial_services"])
+    def bundle_name(self, request):
+        return request.param
+
+    def test_bundle_has_relationships(self, bundle_name):
+        """Every entity in every bundle should have a relationships key."""
+        import os, yaml
+        bundle_dir = os.path.join(
+            os.path.dirname(__file__), "..", "configurations", "ontology_bundles"
+        )
+        path = os.path.join(bundle_dir, f"{bundle_name}.yaml")
+        with open(path) as f:
+            data = yaml.safe_load(f)
+        definitions = data.get("ontology", {}).get("entities", {}).get("definitions", {})
+        assert len(definitions) > 0, f"No definitions in {bundle_name}"
+        for name, defn in definitions.items():
+            assert "relationships" in defn, (
+                f"Entity '{name}' in bundle '{bundle_name}' missing relationships key"
+            )
+            assert isinstance(defn["relationships"], dict), (
+                f"Entity '{name}' relationships should be a dict"
+            )
+
+    def test_relationship_values_have_target(self, bundle_name):
+        """Non-empty relationships should declare a target entity."""
+        import os, yaml
+        bundle_dir = os.path.join(
+            os.path.dirname(__file__), "..", "configurations", "ontology_bundles"
+        )
+        path = os.path.join(bundle_dir, f"{bundle_name}.yaml")
+        with open(path) as f:
+            data = yaml.safe_load(f)
+        definitions = data["ontology"]["entities"]["definitions"]
+        for name, defn in definitions.items():
+            for rel_name, rel_info in defn.get("relationships", {}).items():
+                assert isinstance(rel_info, dict), (
+                    f"{name}.{rel_name} should be a dict with target/cardinality"
+                )
+                assert "target" in rel_info, (
+                    f"{name}.{rel_name} missing 'target'"
+                )
+                assert "cardinality" in rel_info, (
+                    f"{name}.{rel_name} missing 'cardinality'"
+                )
+

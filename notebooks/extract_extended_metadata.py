@@ -7,28 +7,38 @@
 
 # COMMAND ----------
 
+# MAGIC # Uncomment below when running outside of a DAB-deployed job
+# MAGIC # %pip install /Workspace/Users/<your_username>/.bundle/dbxmetagen/dev/artifacts/.internal/dbxmetagen-*.whl
+# MAGIC # dbutils.library.restartPython()
+
+# COMMAND ----------
+
 dbutils.widgets.text("catalog_name", "", "Catalog Name")
 dbutils.widgets.text("schema_name", "", "Schema Name")
+dbutils.widgets.text("incremental", "true", "Incremental (true/false)")
 
 catalog_name = dbutils.widgets.get("catalog_name")
 schema_name = dbutils.widgets.get("schema_name")
+incremental = dbutils.widgets.get("incremental").lower() == "true"
 
 if not catalog_name or not schema_name:
     raise ValueError("Both catalog_name and schema_name are required")
 
 print(f"Extracting extended metadata to {catalog_name}.{schema_name}")
+print(f"Incremental: {incremental}")
 
 # COMMAND ----------
 
 import sys
-sys.path.append("../")  # For DAB deployment; pip-installed package works without this
+sys.path.append("../src")  # For git-clone or DAB deployment; pip-installed package works without this
 
 from dbxmetagen.extended_metadata import extract_extended_metadata
 
 result = extract_extended_metadata(
     spark=spark,
     catalog_name=catalog_name,
-    schema_name=schema_name
+    schema_name=schema_name,
+    incremental=incremental,
 )
 
 print(f"Extended metadata extraction complete")

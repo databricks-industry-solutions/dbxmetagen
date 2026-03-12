@@ -12,7 +12,7 @@
 # COMMAND ----------
 
 import sys
-sys.path.append("../../")
+sys.path.append("../../src")  # For git-clone or DAB deployment; pip-installed package works without this
 
 import json
 from datetime import datetime

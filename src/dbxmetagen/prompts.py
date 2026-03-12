@@ -38,7 +38,17 @@ class Prompt(ABC):
         self.prompt_content = self.convert_to_comment_input()
         if self.config.add_metadata:
             self.add_metadata_to_comment_input()
+        if getattr(self.config, "include_lineage", False):
+            self._add_lineage()
         logger.debug("Instantiating chat completion response...")
+
+    def _add_lineage(self) -> None:
+        """Fetch lineage from system tables and attach to prompt_content."""
+        from dbxmetagen.processing import fetch_lineage  # avoid circular import
+
+        lin = fetch_lineage(self.spark, self.full_table_name)
+        if lin:
+            self.prompt_content["lineage"] = lin
 
     @abstractmethod
     def convert_to_comment_input(self) -> Dict[str, Any]:
@@ -536,6 +546,7 @@ class CommentPrompt(Prompt):
                     6. 'index' key is from Pandas to_dict() - ignore unless in 'columns' list
                     7. Return ONLY the JSON dictionary
                     8. Do not include example values in the comment if the values are PII.
+                    9. If lineage information (upstream/downstream tables) is provided, use it to understand data provenance and inform your descriptions (e.g. note that a table is derived from specific sources).
                     """,
                 },
                 {
@@ -643,6 +654,7 @@ class PIPrompt(Prompt):
                         - If Presidio finds PII, but you recognize that there is also medical information present, classify as phi with high confidence.
                         - You find PII Presidio missed: Trust your assessment, confidence 0.6-0.8.
                         - Fundamental disagreement on classification: Reduce confidence to 0.3.
+                    11. If lineage information (upstream/downstream tables) is provided, use it as additional context for understanding the data flow and purpose of the table. This can help disambiguate borderline classifications.
                     """,
                 },
                 {
@@ -746,6 +758,7 @@ class CommentNoDataPrompt(Prompt):
                     6. 'index' key is from Pandas to_dict() - ignore unless in 'columns' list
                     7. Return ONLY the JSON dictionary
                     8. Do not include example values in the comment ever.
+                    9. If lineage information (upstream/downstream tables) is provided, use it to understand data provenance and inform your descriptions (e.g. note that a table is derived from specific sources).
                     """,
                 },
                 {

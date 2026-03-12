@@ -13,6 +13,12 @@
 
 # COMMAND ----------
 
+# MAGIC # Uncomment below when running outside of a DAB-deployed job
+# MAGIC # %pip install /Workspace/Users/<your_username>/.bundle/dbxmetagen/dev/artifacts/.internal/dbxmetagen-*.whl
+# MAGIC # dbutils.library.restartPython()
+
+# COMMAND ----------
+
 # MAGIC %md
 # MAGIC ## Setup
 
@@ -56,31 +62,13 @@ WHERE e.relationship = 'similar_embedding'
 ORDER BY e.weight DESC
 """)
 
-display(similar_tables_df)
+similar_tables_df.cache()
 
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## 2. Potential Duplicates (High Similarity)
-
-# COMMAND ----------
-
-# Tables with very high similarity might be duplicates
 potential_duplicates = similar_tables_df.filter(f"similarity >= 0.95")
 print(f"Found {potential_duplicates.count()} potential duplicate table pairs")
-display(potential_duplicates)
 
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## 3. Cross-Domain Similarities
-
-# COMMAND ----------
-
-# Find tables that are similar but in different domains
 cross_domain_similar = similar_tables_df.filter("domain_a != domain_b AND domain_a IS NOT NULL AND domain_b IS NOT NULL")
 print(f"Found {cross_domain_similar.count()} cross-domain similar table pairs")
-display(cross_domain_similar)
 
 # COMMAND ----------
 

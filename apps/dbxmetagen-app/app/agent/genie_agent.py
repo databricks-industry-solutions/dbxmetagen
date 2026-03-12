@@ -32,14 +32,18 @@ sql_snippets (measures/filters/expressions from metric views): {sql_snippets}
 === USER QUESTIONS (optional guidance) ===
 {questions}
 
+=== REFERENCE: BEST PRACTICES ===
+{reference_text}
+
 === OUTPUT REQUIREMENTS ===
 Produce a JSON object with this simplified schema (post-processing will add IDs and restructure for the API):
 {{
+  "description": "<1-2 sentence description of what this Genie space helps users explore>",
   "data_sources": {{ "tables": [...], "metric_views": [...] }},
   "instructions": {{
     "text": "<markdown instructions describing the data, relationships, and business rules>",
     "example_sql": [ {{ "question": "...", "sql": "..." }}, ... ],
-    "join_specs": [ ... ],
+    "join_specs": [ {{ "left": {{ "identifier": "catalog.schema.table1" }}, "right": {{ "identifier": "catalog.schema.table2" }}, "sql": ["table1.col = table2.col"] }}, ... ],
     "sql_snippets": {{
       "filters": [ {{ "display_name": "...", "sql": ["..."] }}, ... ],
       "expressions": [ {{ "alias": "...", "display_name": "...", "sql": ["..."] }}, ... ],
@@ -52,11 +56,19 @@ Produce a JSON object with this simplified schema (post-processing will add IDs 
 RULES:
 1. Use the test_sql tool to validate every SQL expression BEFORE including it.
 2. Use sample_values to get real values for filter suggestions.
-3. Table references in SQL must be fully qualified (catalog.schema.table).
+3. Table references in SQL must be fully qualified (catalog.schema.table). Column references in sql_snippets (measures, filters, expressions) MUST use table.column format (e.g. `fact_ed_wait_times.wait_minutes`), never bare column names.
 4. Generate at least 5 example_sql pairs, 3 filters, 3 measures.
 5. Return the final JSON as your LAST message, wrapped in ```json ``` fences.
 6. Do NOT add id fields -- post-processing handles that automatically.
 7. METRIC VIEW ROUTING: metric_views listed in data_sources are APPLIED Unity Catalog objects -- Genie queries them natively via MEASURE(). sql_snippets contain measures decomposed from UNAPPLIED (validated-only) definitions plus filter suggestions. NEVER duplicate the same measure in both data_sources.metric_views and sql_snippets.measures.
+8. JOINS: If the pre-built join_specs are empty but FOREIGN KEY RELATIONSHIPS or shared column names exist in the metadata context, you MUST generate join_specs. Each join_spec needs left/right identifiers (fully qualified table names) and a sql array with join conditions using table.column format.
+9. DATE FUNCTIONS: Use Databricks/Spark SQL syntax for all date functions.
+   - TIMESTAMPADD(MONTH, 1, col) -- unit is a bare keyword, singular, NO quotes
+   - TIMESTAMPDIFF(MINUTE, start, end) -- same: bare keyword, no quotes
+   - DATE_TRUNC('MONTH', col) -- interval IS single-quoted
+   - EXTRACT(HOUR FROM col) -- use EXTRACT, not DATE_PART
+   - DATEDIFF(end, start) returns days only (2 args). For other units use TIMESTAMPDIFF.
+   NEVER use plural units (MONTHS, HOURS) or quoted units in TIMESTAMPADD/TIMESTAMPDIFF.
 """
 
 
@@ -141,6 +153,7 @@ def run_genie_agent(
         join_specs=json.dumps(context["join_specs"], indent=2),
         sql_snippets=json.dumps(context.get("sql_snippets", {}), indent=2),
         questions=questions_text,
+        reference_text=context.get("reference_text", ""),
     )
 
     agent = create_react_agent(llm, tools, prompt=system_prompt)

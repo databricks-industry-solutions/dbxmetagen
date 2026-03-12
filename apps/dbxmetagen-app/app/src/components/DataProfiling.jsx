@@ -1,15 +1,15 @@
 import React, { useState, useEffect } from 'react'
 import { safeFetch, ErrorBanner } from '../App'
 
-function StatCard({ label, value, sub, accent = 'indigo' }) {
+function StatCard({ label, value, sub, accent = 'orange' }) {
   const accents = {
-    indigo: 'border-l-indigo-500 bg-indigo-50/30',
+    orange: 'border-l-orange-500 bg-orange-50/30',
     purple: 'border-l-purple-500 bg-purple-50/30',
     emerald: 'border-l-emerald-500 bg-emerald-50/30',
     amber: 'border-l-amber-500 bg-amber-50/30',
   }
   return (
-    <div className={`bg-white border border-slate-200 border-l-4 ${accents[accent]} rounded-xl p-4 shadow-sm`}>
+    <div className={`bg-dbx-oat-light border border-slate-200 border-l-4 ${accents[accent]} rounded-xl p-4 shadow-sm`}>
       <p className="text-xs font-medium text-slate-400 uppercase tracking-wider">{label}</p>
       <p className="text-2xl font-bold text-slate-800 mt-1">{value}</p>
       {sub && <p className="text-xs text-slate-400 mt-1">{sub}</p>}
@@ -41,7 +41,7 @@ export default function DataProfiling() {
     <div className="space-y-6">
       <ErrorBanner error={error} />
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <StatCard label="Tables Profiled" value={snapshots.length} accent="indigo" />
+        <StatCard label="Tables Profiled" value={snapshots.length} accent="orange" />
         <StatCard label="Quality Scores" value={quality.length} accent="purple" />
         <StatCard label="Avg Quality" value={avgQuality} accent="emerald" />
         <StatCard label="Column Stats" value={columnStats.length} accent="amber" />
@@ -50,22 +50,22 @@ export default function DataProfiling() {
       <div className="flex gap-2">
         {[['snapshots','Snapshots'],['quality','Quality Scores']].map(([k,l]) => (
           <button key={k} onClick={() => setView(k)}
-            className={`px-4 py-2 text-sm rounded-lg font-medium transition-all ${view === k ? 'bg-indigo-600 text-white shadow-sm' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>{l}</button>
+            className={`px-4 py-2 text-sm rounded-lg font-medium transition-all ${view === k ? 'bg-dbx-lava text-white shadow-sm' : 'bg-dbx-oat text-slate-600 hover:bg-dbx-oat-dark'}`}>{l}</button>
         ))}
       </div>
 
-      <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-sm overflow-x-auto">
+      <div className="bg-dbx-oat-light rounded-xl border border-slate-200 p-4 shadow-sm overflow-x-auto">
         {view === 'snapshots' && (snapshots.length === 0
           ? <p className="text-sm text-slate-400 py-4">No snapshots available. Run a profiling job first.</p>
           : <table className="min-w-full text-sm">
               <thead><tr>
                 {['Table', 'Rows', 'Columns', 'Size (bytes)', 'Profiled At'].map(h =>
-                  <th key={h} className="text-left px-3 py-2.5 bg-slate-50 font-semibold text-slate-600 border-b border-slate-200 text-xs uppercase tracking-wider">{h}</th>)}
+                  <th key={h} className="text-left px-3 py-2.5 bg-dbx-oat font-semibold text-slate-600 border-b border-slate-200 text-xs uppercase tracking-wider">{h}</th>)}
               </tr></thead>
               <tbody>
                 {snapshots.map((s, i) => (
-                  <tr key={i} className="border-b border-slate-100 hover:bg-indigo-50/30 cursor-pointer transition-colors" onClick={() => loadColumnStats(s.table_name)}>
-                    <td className="px-3 py-2 text-indigo-600 font-medium">{s.table_name}</td>
+                  <tr key={i} className="border-b border-slate-100 hover:bg-orange-50/30 cursor-pointer transition-colors" onClick={() => loadColumnStats(s.table_name)}>
+                    <td className="px-3 py-2 text-dbx-lava font-medium">{s.table_name}</td>
                     <td className="px-3 py-2 text-slate-600">{s.row_count}</td>
                     <td className="px-3 py-2 text-slate-600">{s.column_count}</td>
                     <td className="px-3 py-2 text-slate-600">{s.table_size_bytes ?? '--'}</td>
@@ -80,13 +80,13 @@ export default function DataProfiling() {
           : <table className="min-w-full text-sm">
               <thead><tr>
                 {['Table', 'Overall', 'Completeness', 'Freshness', 'Scored At'].map(h =>
-                  <th key={h} className="text-left px-3 py-2.5 bg-slate-50 font-semibold text-slate-600 border-b border-slate-200 text-xs uppercase tracking-wider">{h}</th>)}
+                  <th key={h} className="text-left px-3 py-2.5 bg-dbx-oat font-semibold text-slate-600 border-b border-slate-200 text-xs uppercase tracking-wider">{h}</th>)}
               </tr></thead>
               <tbody>
                 {quality.map((q, i) => (
-                  <tr key={i} className="border-b border-slate-100 hover:bg-indigo-50/30 transition-colors">
+                  <tr key={i} className="border-b border-slate-100 hover:bg-orange-50/30 transition-colors">
                     <td className="px-3 py-2 text-slate-700">{q.table_name}</td>
-                    <td className="px-3 py-2 font-bold text-indigo-700">{q.overall_score}</td>
+                    <td className="px-3 py-2 font-bold text-red-700">{q.overall_score}</td>
                     <td className="px-3 py-2 text-slate-600">{q.completeness_score}</td>
                     <td className="px-3 py-2 text-slate-600">{q.freshness_score}</td>
                     <td className="px-3 py-2 text-slate-500 text-xs">{q.scored_at}</td>
@@ -102,11 +102,11 @@ export default function DataProfiling() {
             <table className="min-w-full text-sm">
               <thead><tr>
                 {['Column', 'Distinct', 'Null Rate', 'Min', 'Max', 'Pattern'].map(h =>
-                  <th key={h} className="text-left px-3 py-2.5 bg-slate-50 font-semibold text-slate-600 border-b border-slate-200 text-xs uppercase tracking-wider">{h}</th>)}
+                  <th key={h} className="text-left px-3 py-2.5 bg-dbx-oat font-semibold text-slate-600 border-b border-slate-200 text-xs uppercase tracking-wider">{h}</th>)}
               </tr></thead>
               <tbody>
                 {columnStats.map((c, i) => (
-                  <tr key={i} className="border-b border-slate-100 hover:bg-indigo-50/30 transition-colors">
+                  <tr key={i} className="border-b border-slate-100 hover:bg-orange-50/30 transition-colors">
                     <td className="px-3 py-2 font-medium text-slate-700">{c.column_name}</td>
                     <td className="px-3 py-2 text-slate-600">{c.distinct_count}</td>
                     <td className="px-3 py-2 text-slate-600">{c.null_rate}</td>

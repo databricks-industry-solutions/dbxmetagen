@@ -3,6 +3,7 @@
 # Usage: ./deploy.sh [OPTIONS]
 #   --profile PROFILE    Databricks CLI profile (default: DEFAULT)
 #   --target TARGET      Bundle target: dev or prod (default: dev)
+#   --no-app             Deploy jobs and code only (skip app build/start)
 #   --permissions        Run UC permission grants for app SPN
 #   --help               Show this help
 
@@ -11,11 +12,13 @@ set -e
 TARGET="dev"
 PROFILE="DEFAULT"
 RUN_PERMISSIONS=false
+SKIP_APP=false
 
 while [[ $# -gt 0 ]]; do
     case $1 in
         --profile)     PROFILE="$2"; shift 2 ;;
         --target)      TARGET="$2"; shift 2 ;;
+        --no-app)      SKIP_APP=true; shift ;;
         --permissions) RUN_PERMISSIONS=true; shift ;;
         --help|-h)
             sed -n '2,7p' "$0"; exit 0 ;;
@@ -82,36 +85,48 @@ sed -e "s|__DATABRICKS_HOST__|${DATABRICKS_HOST}|g" \
     -e "s|__WAREHOUSE_ID__|${warehouse_id}|g" \
     databricks.yml.template > databricks.yml
 
-# --- Build frontend ---
-echo ""
-echo "=== Building frontend ==="
-if [ -f "apps/dbxmetagen-app/app/src/package.json" ]; then
-    (cd apps/dbxmetagen-app/app/src && npm install --silent && npm run build)
-    echo "Frontend built successfully"
-else
-    echo "No frontend package.json found, skipping build"
-fi
-
-# --- Check for existing app SP ---
-APP_NAME=$(grep -m1 'default:.*dbxmetagen' resources/app_variables.yml | awk '{print $2}' | tr -d '"')
-APP_NAME="${APP_NAME:-dbxmetagen-app}-app"
-APP_SP_ID=""
-
-echo ""
-echo "=== Checking for existing app: ${APP_NAME} ==="
-APP_JSON=$(databricks apps get "${APP_NAME}" --profile "$PROFILE" --output json 2>&1) || {
-    echo "App does not exist yet -- will be created on first deploy."
-    APP_JSON=""
-}
-
-if [ -n "${APP_JSON}" ]; then
-    APP_SP_ID=$(echo "${APP_JSON}" | python3 -c "import sys,json; print(json.load(sys.stdin).get('service_principal_id',''))" 2>/dev/null || echo "")
-    if [ -n "${APP_SP_ID}" ] && [ "${APP_SP_ID}" != "None" ]; then
-        echo "Found app SP ID: ${APP_SP_ID}"
+if [ "$SKIP_APP" = false ]; then
+    # --- Build frontend ---
+    echo ""
+    echo "=== Building frontend ==="
+    if [ -f "apps/dbxmetagen-app/app/src/package.json" ]; then
+        (cd apps/dbxmetagen-app/app/src && npm install --silent && npm run build)
+        echo "Frontend built successfully"
     else
-        APP_SP_ID=""
+        echo "No frontend package.json found, skipping build"
     fi
+
+    # --- Check for existing app SP ---
+    APP_NAME=$(grep -m1 'default:.*dbxmetagen' resources/app_variables.yml | awk '{print $2}' | tr -d '"')
+    APP_NAME="${APP_NAME:-dbxmetagen-app}"
+    APP_SP_ID=""
+
+    echo ""
+    echo "=== Checking for existing app: ${APP_NAME} ==="
+    APP_JSON=$(databricks apps get "${APP_NAME}" --profile "$PROFILE" --output json 2>&1) || {
+        echo "App does not exist yet -- will be created on first deploy."
+        APP_JSON=""
+    }
+
+    if [ -n "${APP_JSON}" ]; then
+        APP_SP_ID=$(echo "${APP_JSON}" | python3 -c "import sys,json; print(json.load(sys.stdin).get('service_principal_id',''))" 2>/dev/null || echo "")
+        if [ -n "${APP_SP_ID}" ] && [ "${APP_SP_ID}" != "None" ]; then
+            echo "Found app SP ID: ${APP_SP_ID}"
+        else
+            APP_SP_ID=""
+        fi
+    fi
+else
+    echo ""
+    echo "=== Skipping app (--no-app) ==="
+    APP_SP_ID=""
 fi
+
+# --- Copy configurations into app source for deployment ---
+echo ""
+echo "=== Copying configurations into app source ==="
+cp -r configurations apps/dbxmetagen-app/app/configurations
+trap 'rm -rf apps/dbxmetagen-app/app/configurations' EXIT
 
 # --- Validate and deploy ---
 echo ""
@@ -184,14 +199,34 @@ if [ "$RUN_PERMISSIONS" = true ] && [ -n "${APP_SP_ID}" ]; then
     done
 fi
 
-# --- Start app ---
+# --- Ensure Vector Search endpoint ---
+VS_ENDPOINT="${vs_endpoint_name:-dbxmetagen-vs}"
 echo ""
-echo "=== Starting app ==="
-databricks bundle run -t "$TARGET" --profile "$PROFILE" \
-    --var "deploying_user=${CURRENT_USER}" \
-    --var "app_service_principal_application_id=${APP_SP_ID:-None}" \
-    dbxmetagen_app
+echo "=== Ensuring Vector Search endpoint: ${VS_ENDPOINT} ==="
+VS_CHECK=$(databricks api get "/api/2.0/vector-search/endpoints/${VS_ENDPOINT}" --profile "$PROFILE" 2>&1) || VS_CHECK=""
+VS_STATE=$(echo "${VS_CHECK}" | python3 -c "import sys,json; print(json.load(sys.stdin).get('endpoint_status',{}).get('state',''))" 2>/dev/null || echo "")
+if [ -n "${VS_STATE}" ] && [ "${VS_STATE}" != "" ]; then
+    echo "VS endpoint exists (state=${VS_STATE})"
+else
+    echo "Creating VS endpoint '${VS_ENDPOINT}'..."
+    databricks api post /api/2.0/vector-search/endpoints --profile "$PROFILE" \
+        --json "{\"name\": \"${VS_ENDPOINT}\", \"endpoint_type\": \"STANDARD\"}" 2>&1 || echo "  (may already exist)"
+    echo "VS endpoint creation requested"
+fi
 
-echo ""
-echo "=== Deployment complete ==="
-echo "Access your app: Databricks workspace > Apps > ${APP_NAME}"
+if [ "$SKIP_APP" = false ]; then
+    # --- Start app ---
+    echo ""
+    echo "=== Starting app ==="
+    databricks bundle run -t "$TARGET" --profile "$PROFILE" \
+        --var "deploying_user=${CURRENT_USER}" \
+        --var "app_service_principal_application_id=${APP_SP_ID:-None}" \
+        dbxmetagen_app
+
+    echo ""
+    echo "=== Deployment complete ==="
+    echo "Access your app: Databricks workspace > Apps > ${APP_NAME}"
+else
+    echo ""
+    echo "=== Deployment complete (jobs and code only) ==="
+fi

@@ -1,5 +1,6 @@
-# DAB resolves env vars from resources/apps/dbxmetagen_app.yml at deploy time.
-# These values serve as runtime defaults for the Apps runtime.
+# app.yaml is the single source of truth for Databricks Apps env vars.
+# Job IDs are injected at runtime via valueFrom referencing named resources
+# declared in resources/apps/dbxmetagen_app.yml.
 command:
   - uvicorn
   - api_server:app
@@ -16,4 +17,35 @@ env:
   - name: WAREHOUSE_ID
     valueFrom: sql_warehouse
   - name: GRAPHRAG_MODEL
+    value: "databricks-claude-sonnet-4-5"
+  - name: NODE_TYPE
+    value: "i3.2xlarge"
+  # Job IDs via valueFrom -- runtime injects resolved IDs from resources block
+  - name: METADATA_GENERATOR_JOB_ID
+    valueFrom: metadata_generator_job
+  - name: METADATA_PARALLEL_MODES_JOB_ID
+    valueFrom: metadata_parallel_modes_job
+  - name: SYNC_DDL_JOB_ID
+    valueFrom: sync_ddl_job
+  - name: FULL_ANALYTICS_PIPELINE_JOB_ID
+    valueFrom: full_analytics_pipeline_job
+  - name: FK_PREDICTION_JOB_ID
+    valueFrom: fk_prediction_job
+  - name: SYNC_GRAPH_LAKEBASE_JOB_ID
+    valueFrom: sync_graph_lakebase_job
+  - name: ONTOLOGY_PREDICTION_JOB_ID
+    valueFrom: ontology_prediction_job
+  - name: KNOWLEDGE_BASE_BUILDER_JOB_ID
+    valueFrom: knowledge_base_builder_job
+  - name: PROFILING_JOB_ID
+    valueFrom: profiling_job
+  - name: METAGEN_WITH_KB_JOB_ID
+    valueFrom: metagen_with_kb_job
+  - name: SEMANTIC_LAYER_JOB_ID
+    valueFrom: semantic_layer_job
+  - name: VECTOR_SEARCH_ENDPOINT
+    value: "dbxmetagen-vs"
+  - name: VECTOR_SEARCH_INDEX
+    value: "metadata_vs_index"
+  - name: LLM_MODEL
     value: "databricks-claude-sonnet-4-5"

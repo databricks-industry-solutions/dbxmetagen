@@ -1,0 +1,213 @@
+{
+  "sql_snippet_patterns": {
+    "description": "Templates for high-value Genie SQL snippets. Replace placeholders with actual table/column names from the metadata.",
+    "time_filters": [
+      {
+        "display_name": "Current Month",
+        "sql": "DATE_TRUNC('MONTH', {date_col}) = DATE_TRUNC('MONTH', current_date())",
+        "note": "Filter to the current calendar month"
+      },
+      {
+        "display_name": "Last 30 Days",
+        "sql": "{date_col} >= date_sub(current_date(), 30)",
+        "note": "Rolling 30-day window"
+      },
+      {
+        "display_name": "Last 7 Days",
+        "sql": "{date_col} >= date_sub(current_date(), 7)",
+        "note": "Rolling 7-day window"
+      },
+      {
+        "display_name": "Year to Date",
+        "sql": "{date_col} >= DATE_TRUNC('YEAR', current_date())",
+        "note": "From January 1 of current year"
+      },
+      {
+        "display_name": "Previous Month",
+        "sql": "DATE_TRUNC('MONTH', {date_col}) = TIMESTAMPADD(MONTH, -1, DATE_TRUNC('MONTH', current_date()))",
+        "note": "The complete previous calendar month"
+      }
+    ],
+    "analytical_measures": [
+      {
+        "alias": "pct_of_total",
+        "display_name": "Percent of Total",
+        "sql": "ROUND({value_col} * 100.0 / SUM({value_col}) OVER (), 1)",
+        "note": "Each row's share of the overall total"
+      },
+      {
+        "alias": "running_total",
+        "display_name": "Running Total",
+        "sql": "SUM({value_col}) OVER (ORDER BY {date_col} ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)",
+        "note": "Cumulative sum ordered by date"
+      },
+      {
+        "alias": "moving_avg_7d",
+        "display_name": "7-Day Moving Average",
+        "sql": "AVG({value_col}) OVER (ORDER BY {date_col} ROWS BETWEEN 6 PRECEDING AND CURRENT ROW)",
+        "note": "Rolling 7-period average"
+      },
+      {
+        "alias": "rank_by_value",
+        "display_name": "Rank",
+        "sql": "RANK() OVER (ORDER BY {value_col} DESC)",
+        "note": "Rank entities by a value descending"
+      },
+      {
+        "alias": "period_over_period",
+        "display_name": "Month-over-Month Change",
+        "sql": "{value_col} - LAG({value_col}) OVER (ORDER BY {date_col})",
+        "note": "Difference vs previous period"
+      }
+    ],
+    "entity_measures": [
+      {
+        "alias": "per_entity_avg",
+        "display_name": "Average per {entity}",
+        "sql": "SUM({value_col}) / NULLIF(COUNT(DISTINCT {entity_id_col}), 0)",
+        "note": "Revenue/cost/count per unique entity"
+      },
+      {
+        "alias": "entity_retention",
+        "display_name": "{entity} Retention Rate",
+        "sql": "COUNT(DISTINCT CASE WHEN {repeat_condition} THEN {entity_id_col} END) * 1.0 / NULLIF(COUNT(DISTINCT {entity_id_col}), 0)",
+        "note": "Fraction of entities that meet a repeat/return condition"
+      },
+      {
+        "alias": "top_n_contribution",
+        "display_name": "Top N {entity} Revenue Share",
+        "sql": "SUM(CASE WHEN rn <= 10 THEN {value_col} ELSE 0 END) / NULLIF(SUM({value_col}), 0)",
+        "note": "Concentration metric -- what fraction comes from top N"
+      }
+    ]
+  },
+
+  "instruction_templates": {
+    "description": "Templates for writing high-quality Genie text instructions. Fill in bracketed placeholders with actual schema details.",
+    "data_overview": "This space contains data about {domain_description}. The main fact table is {fact_table} which tracks {what_it_tracks}. Dimension tables include {dim_tables_list} which provide {what_they_provide}.",
+    "relationship_rules": [
+      "When joining {table_a} to {table_b}, always use {table_a}.{fk_col} = {table_b}.{pk_col}.",
+      "The {fact_table} table has one row per {grain}. Aggregations should group by the appropriate dimension.",
+      "Date columns like {date_col} store {timezone_info}. Use DATE_TRUNC for period grouping."
+    ],
+    "business_rules": [
+      "An 'active' {entity} means {definition_of_active}.",
+      "Revenue should be calculated from {revenue_col} and only include rows where {revenue_filter}.",
+      "When users ask about '{ambiguous_term}', they mean {precise_definition}."
+    ],
+    "disambiguation": [
+      "Column '{col_name}' in {table_a} refers to {meaning_a}, while '{col_name}' in {table_b} refers to {meaning_b}.",
+      "If the user asks for '{common_question}', query {correct_table} not {wrong_table}."
+    ]
+  },
+
+  "example_sql_patterns": {
+    "description": "Templates for example_sql pairs that exercise joins, aggregations, date ranges, and analytical queries. Much more valuable than trivial SELECT * queries.",
+    "aggregation_with_join": {
+      "question": "What is {measure} by {dimension_from_dim_table}?",
+      "sql": "SELECT {dim_table}.{dim_col}, {agg_func}({fact_table}.{measure_col}) AS {alias} FROM {fact_table} JOIN {dim_table} ON {fact_table}.{fk} = {dim_table}.{pk} GROUP BY {dim_table}.{dim_col} ORDER BY {alias} DESC"
+    },
+    "time_series": {
+      "question": "What is the {measure} trend by month?",
+      "sql": "SELECT DATE_TRUNC('MONTH', {date_col}) AS month, {agg_func}({measure_col}) AS {alias} FROM {table} WHERE {date_col} >= TIMESTAMPADD(MONTH, -12, current_date()) GROUP BY month ORDER BY month"
+    },
+    "top_n": {
+      "question": "Who are the top 10 {entities} by {measure}?",
+      "sql": "SELECT {entity_col}, {agg_func}({measure_col}) AS {alias} FROM {table} GROUP BY {entity_col} ORDER BY {alias} DESC LIMIT 10"
+    },
+    "comparison": {
+      "question": "How does {measure} compare between {category_a} and {category_b}?",
+      "sql": "SELECT {category_col}, {agg_func}({measure_col}) AS {alias} FROM {table} WHERE {category_col} IN ('{category_a}', '{category_b}') GROUP BY {category_col}"
+    },
+    "filtered_with_having": {
+      "question": "Which {entities} have more than {threshold} {measure}?",
+      "sql": "SELECT {entity_col}, {agg_func}({measure_col}) AS {alias} FROM {table} GROUP BY {entity_col} HAVING {alias} > {threshold} ORDER BY {alias} DESC"
+    },
+    "multi_table_analytical": {
+      "question": "What is the average {measure} per {entity} by {dim_from_another_table}?",
+      "sql": "SELECT {dim_table}.{dim_col}, {agg_func}({fact_table}.{measure_col}) / NULLIF(COUNT(DISTINCT {fact_table}.{entity_id}), 0) AS avg_{alias}_per_{entity} FROM {fact_table} JOIN {dim_table} ON {fact_table}.{fk} = {dim_table}.{pk} GROUP BY {dim_table}.{dim_col} ORDER BY avg_{alias}_per_{entity} DESC"
+    }
+  },
+
+  "sample_question_patterns": {
+    "description": "Question templates that test different SQL capabilities. Generate domain-specific variants by filling in the placeholders.",
+    "categories": {
+      "aggregation": [
+        "What is the total {measure} by {dimension}?",
+        "What is the average {measure} across all {entities}?"
+      ],
+      "time_series": [
+        "How has {measure} changed over the last 12 months?",
+        "What is the {measure} trend by quarter this year?"
+      ],
+      "ranking": [
+        "Who are the top 10 {entities} by {measure}?",
+        "Which {dimension_value} has the highest {measure}?"
+      ],
+      "comparison": [
+        "How does {measure} compare between {group_a} and {group_b}?",
+        "What is the breakdown of {measure} by {categorical_dimension}?"
+      ],
+      "ratio_and_rate": [
+        "What is the {rate_name} by {dimension}?",
+        "What percentage of {entities} have {condition}?"
+      ],
+      "cross_table": [
+        "What is {measure} by {dimension_from_related_table}?",
+        "How does {measure_from_fact} vary across {categories_from_dim_table}?"
+      ],
+      "filtering": [
+        "What is the {measure} for only {filter_condition}?",
+        "Show me {entities} where {column} is greater than {threshold}"
+      ]
+    }
+  },
+
+  "date_function_rules": {
+    "description": "Consolidated Databricks/Spark SQL date function reference. These rules apply to both metric view YAML expressions and Genie SQL snippets.",
+    "functions": {
+      "DATE_TRUNC": {
+        "syntax": "DATE_TRUNC('UNIT', column)",
+        "units": ["YEAR", "QUARTER", "MONTH", "WEEK", "DAY", "HOUR", "MINUTE", "SECOND"],
+        "note": "Unit MUST be single-quoted. Returns a timestamp truncated to the specified precision.",
+        "correct": "DATE_TRUNC('MONTH', order_date)",
+        "wrong": "DATE_TRUNC(MONTH, order_date)"
+      },
+      "EXTRACT": {
+        "syntax": "EXTRACT(UNIT FROM column)",
+        "units": ["YEAR", "QUARTER", "MONTH", "DAYOFWEEK", "DAY", "HOUR", "MINUTE", "SECOND"],
+        "note": "Unit is a bare keyword with FROM. Do NOT use DATE_PART.",
+        "correct": "EXTRACT(MONTH FROM order_date)",
+        "wrong": "DATE_PART(MONTH, order_date)"
+      },
+      "DATEDIFF": {
+        "syntax": "DATEDIFF(end_date, start_date)",
+        "note": "Returns integer days only. Two arguments only. For other units, use TIMESTAMPDIFF.",
+        "correct": "DATEDIFF(discharge_date, admission_date)",
+        "wrong": "DATEDIFF(DAY, admission_date, discharge_date)"
+      },
+      "TIMESTAMPDIFF": {
+        "syntax": "TIMESTAMPDIFF(UNIT, start, end)",
+        "units": ["YEAR", "QUARTER", "MONTH", "WEEK", "DAY", "HOUR", "MINUTE", "SECOND"],
+        "note": "Unit is a bare keyword, singular, NO quotes.",
+        "correct": "TIMESTAMPDIFF(MINUTE, arrival_time, seen_time)",
+        "wrong": "TIMESTAMPDIFF('MINUTES', arrival_time, seen_time)"
+      },
+      "TIMESTAMPADD": {
+        "syntax": "TIMESTAMPADD(UNIT, amount, column)",
+        "note": "Unit is a bare keyword, singular, NO quotes.",
+        "correct": "TIMESTAMPADD(MONTH, -1, current_date())",
+        "wrong": "TIMESTAMPADD('MONTHS', -1, current_date())"
+      },
+      "date_sub": {
+        "syntax": "date_sub(date, days)",
+        "note": "Subtracts integer days from a date. Simpler than TIMESTAMPADD for day arithmetic.",
+        "correct": "date_sub(current_date(), 30)"
+      },
+      "current_date": {
+        "syntax": "current_date()",
+        "note": "Returns today's date. Always include parentheses."
+      }
+    }
+  }
+}

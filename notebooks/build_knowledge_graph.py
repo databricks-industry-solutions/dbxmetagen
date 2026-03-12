@@ -25,6 +25,12 @@
 # MAGIC - `same_classification`: Columns with matching PII classification
 
 # COMMAND ----------
+
+# MAGIC # Uncomment below when running outside of a DAB-deployed job
+# MAGIC # %pip install /Workspace/Users/<your_username>/.bundle/dbxmetagen/dev/artifacts/.internal/dbxmetagen-*.whl
+# MAGIC # dbutils.library.restartPython()
+
+# COMMAND ----------
 # MAGIC %md
 # MAGIC ## Setup
 # MAGIC 
@@ -93,7 +99,7 @@ except:
 # COMMAND ----------
 
 import sys
-sys.path.append("../")  # For DAB deployment; pip-installed package works without this
+sys.path.append("../src")  # For git-clone or DAB deployment; pip-installed package works without this
 
 from dbxmetagen.knowledge_graph import (
     ExtendedKnowledgeGraphConfig,

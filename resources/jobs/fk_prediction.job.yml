@@ -3,6 +3,10 @@ resources:
     fk_prediction_job:
       name: "${var.app_name}_fk_prediction"
 
+      permissions:
+        - service_principal_name: ${resources.apps.dbxmetagen_app.service_principal_client_id}
+          level: CAN_MANAGE_RUN
+
       email_notifications:
         on_failure:
           - ${var.current_user}
@@ -25,7 +29,7 @@ resources:
         - name: apply_ddl
           default: "false"
         - name: dry_run
-          default: "true"
+          default: "false"
 
       tasks:
         - task_key: predict_foreign_keys

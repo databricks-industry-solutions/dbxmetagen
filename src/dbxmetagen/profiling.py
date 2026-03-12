@@ -33,6 +33,7 @@ class ProfilingConfig:
     source_table: str = "table_knowledge_base"
     snapshots_table: str = "profiling_snapshots"
     column_stats_table: str = "column_profiling_stats"
+    incremental: bool = True
     
     @property
     def fully_qualified_source(self) -> str:
@@ -204,7 +205,27 @@ class ProfilingBuilder:
         logger.info(f"Column stats table {self.config.fully_qualified_column_stats} ready")
     
     def get_tables_to_profile(self) -> List[str]:
-        """Get list of tables from knowledge base to profile."""
+        """Get list of tables from knowledge base to profile.
+        When incremental, only returns tables changed since last profiled."""
+        if self.config.incremental:
+            try:
+                df = self.spark.sql(f"""
+                    SELECT DISTINCT kb.table_name
+                    FROM {self.config.fully_qualified_source} kb
+                    LEFT JOIN (
+                        SELECT table_name, MAX(snapshot_time) AS last_profiled
+                        FROM {self.config.fully_qualified_snapshots}
+                        GROUP BY table_name
+                    ) p ON kb.table_name = p.table_name
+                    WHERE kb.table_name IS NOT NULL
+                      AND (p.last_profiled IS NULL OR kb.updated_at > p.last_profiled)
+                """)
+                tables = [row.table_name for row in df.collect()]
+                total = self.spark.sql(f"SELECT COUNT(DISTINCT table_name) AS n FROM {self.config.fully_qualified_source} WHERE table_name IS NOT NULL").collect()[0].n
+                logger.info(f"Incremental mode: {len(tables)} tables need re-profiling out of {total}")
+                return tables
+            except Exception as e:
+                logger.warning(f"Incremental filtering failed ({e}), falling back to full refresh")
         df = self.spark.sql(f"""
             SELECT DISTINCT table_name 
             FROM {self.config.fully_qualified_source}
@@ -666,7 +687,8 @@ def run_profiling(
     spark: SparkSession,
     catalog_name: str,
     schema_name: str,
-    max_tables: int = None
+    max_tables: int = None,
+    incremental: bool = True,
 ) -> Dict[str, Any]:
     """
     Convenience function to run profiling.
@@ -676,13 +698,15 @@ def run_profiling(
         catalog_name: Catalog name for tables
         schema_name: Schema name for tables
         max_tables: Maximum tables to profile
+        incremental: Only profile tables changed since last snapshot
         
     Returns:
         Dict with execution statistics
     """
     config = ProfilingConfig(
         catalog_name=catalog_name,
-        schema_name=schema_name
+        schema_name=schema_name,
+        incremental=incremental,
     )
     builder = ProfilingBuilder(spark, config)
     return builder.run(max_tables)

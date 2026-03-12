@@ -7,6 +7,7 @@ a structured context string for the ReAct agent.
 
 import json
 import logging
+import os
 import uuid
 from typing import Any, Dict, List
 
@@ -59,7 +60,10 @@ class GenieContextAssembler:
         return f"`{self.catalog}`.`{self.schema}`.`{table}`"
 
     def assemble(
-        self, table_identifiers: List[str], questions: List[str] | None = None
+        self,
+        table_identifiers: List[str],
+        questions: List[str] | None = None,
+        metric_view_names: List[str] | None = None,
     ) -> Dict[str, Any]:
         """Gather all context and pre-build deterministic sections.
 
@@ -73,8 +77,12 @@ class GenieContextAssembler:
         table_meta = self._get_table_metadata(table_identifiers)
         column_meta = self._get_column_metadata(table_identifiers)
         fk_rows = self._get_fk_predictions(table_identifiers)
-        entity_rows = self._get_ontology_entities()
-        metric_views = self._get_metric_views()
+        entity_rows = self._get_ontology_entities(table_identifiers)
+        entity_rels = self._get_entity_relationships(table_identifiers)
+        metric_views = self._get_metric_views(table_identifiers)
+        if metric_view_names:
+            names_set = set(metric_view_names)
+            metric_views = [mv for mv in metric_views if mv.get("metric_view_name") in names_set]
         value_samples = self._sample_categorical_values(column_meta)
 
         # Split metric views: applied -> data_sources, validated -> sql_snippets
@@ -82,13 +90,24 @@ class GenieContextAssembler:
         unapplied_mvs = [mv for mv in metric_views if mv.get("status") != "applied"]
 
         context_text = self._format_context(
-            table_meta, column_meta, fk_rows, entity_rows, value_samples
+            table_meta, column_meta, fk_rows, entity_rows, value_samples, entity_rels
         )
         join_specs = self._build_join_specs(fk_rows)
+        ontology_joins = self._get_ontology_join_specs(table_identifiers)
+        existing_pairs = {(j["left"]["identifier"], j["right"]["identifier"]) for j in join_specs}
+        for oj in ontology_joins:
+            pair = (oj["left"]["identifier"], oj["right"]["identifier"])
+            if pair not in existing_pairs:
+                join_specs.append(oj)
+                existing_pairs.add(pair)
         data_sources = self._build_data_sources(
             table_identifiers, table_meta, applied_mvs
         )
-        sql_snippets = self._build_sql_snippets(unapplied_mvs, value_samples)
+        sql_snippets = self._build_sql_snippets(
+            unapplied_mvs, value_samples, column_meta
+        )
+
+        reference_text = self._load_genie_reference()
 
         return {
             "context_text": context_text,
@@ -96,7 +115,39 @@ class GenieContextAssembler:
             "data_sources": data_sources,
             "sql_snippets": sql_snippets,
             "questions": questions or [],
+            "reference_text": reference_text,
         }
+
+    def _load_genie_reference(self) -> str:
+        """Load genie_reference.json and format into prompt text."""
+        candidates = [
+            os.path.join(os.path.dirname(__file__), "..", "..", "configurations", "agent_references", "genie_reference.json"),
+            os.path.join("configurations", "agent_references", "genie_reference.json"),
+        ]
+        ref = {}
+        for p in candidates:
+            p = os.path.normpath(p)
+            if os.path.isfile(p):
+                try:
+                    with open(p) as f:
+                        ref = json.load(f)
+                except Exception:
+                    pass
+                break
+        if not ref:
+            return ""
+        parts = []
+        for section_key in ["sql_snippet_patterns", "instruction_templates", "example_sql_patterns", "sample_question_patterns", "date_function_rules"]:
+            val = ref.get(section_key)
+            if not val:
+                continue
+            if isinstance(val, dict) and "description" in val:
+                parts.append(f"\n### {section_key}\n{val['description']}")
+            elif isinstance(val, str):
+                parts.append(f"\n### {section_key}\n{val}")
+            else:
+                parts.append(f"\n### {section_key}\n{json.dumps(val, indent=2)}")
+        return "\n".join(parts) if parts else ""
 
     # -- Data gathering methods -----------------------------------------------
 
@@ -133,23 +184,121 @@ class GenieContextAssembler:
             f"""
             SELECT src_table, dst_table, src_column, dst_column, final_confidence
             FROM {self._fq('fk_predictions')}
-            WHERE is_fk = true AND final_confidence >= 0.7
+            WHERE final_confidence >= 0.7
               AND src_table IN ({table_list}) AND dst_table IN ({table_list})
         """,
         )
 
-    def _get_ontology_entities(self) -> list[dict]:
-        return _safe_sql(
+    def _get_ontology_entities(self, tables: List[str] | None = None) -> list[dict]:
+        base = (
+            f"SELECT entity_type, entity_name, description, source_tables, "
+            f"source_columns, column_bindings, confidence "
+            f"FROM {self._fq('ontology_entities')} "
+            f"WHERE confidence >= 0.4"
+        )
+        rows = _safe_sql(self.ws, self.wh, base)
+        if not tables:
+            return rows
+        table_set = set(tables) | {t.split(".")[-1] for t in tables}
+        filtered = []
+        for r in rows:
+            src = r.get("source_tables") or []
+            if isinstance(src, str):
+                src = [src]
+            if any(t in table_set or t.split(".")[-1] in table_set for t in src):
+                filtered.append(r)
+        return filtered
+
+    def _get_entity_relationships(self, tables: List[str] | None = None) -> list[dict]:
+        """Fetch declared relationship edges between entities relevant to selected tables."""
+        rows = _safe_sql(
             self.ws,
             self.wh,
             f"""
-            SELECT entity_type, entity_name, description, source_tables, source_columns, confidence
-            FROM {self._fq('ontology_entities')}
-            WHERE confidence >= 0.4
+            SELECT e_src.entity_type AS src_type,
+                   e_dst.entity_type AS dst_type,
+                   ge.relationship
+            FROM {self._fq('graph_edges')} ge
+            JOIN {self._fq('ontology_entities')} e_src ON ge.src = e_src.entity_id
+            JOIN {self._fq('ontology_entities')} e_dst ON ge.dst = e_dst.entity_id
+            WHERE ge.relationship NOT IN ('is_a', 'similar_embedding')
         """,
         )
+        if not tables:
+            return rows
+        entity_rows = self._get_ontology_entities(tables)
+        relevant_types = {r.get("entity_type") for r in entity_rows}
+        return [r for r in rows if r.get("src_type") in relevant_types or r.get("dst_type") in relevant_types]
 
-    def _get_metric_views(self) -> list[dict]:
+    def _get_ontology_join_specs(self, tables: List[str]) -> list[dict]:
+        """Extract join_path specs from ontology YAML config for selected tables.
+
+        Returns list of join_spec dicts suitable for the Genie API.
+        """
+        import os, glob as _glob
+        import yaml
+
+        bundle_dirs = ["configurations/ontology_bundles", "../configurations/ontology_bundles"]
+        yamls: list[str] = []
+        for d in bundle_dirs:
+            if os.path.isdir(d):
+                yamls.extend(_glob.glob(os.path.join(d, "*.yaml")))
+        if not yamls:
+            return []
+
+        entity_rows = self._get_ontology_entities(tables)
+        type_to_tables: dict[str, set[str]] = {}
+        for e in entity_rows:
+            src = e.get("source_tables") or []
+            if isinstance(src, str):
+                src = [src]
+            for t in src:
+                type_to_tables.setdefault(e["entity_type"], set()).add(t)
+
+        table_short_set = {t.split(".")[-1].lower() for t in tables}
+
+        specs: list[dict] = []
+        for yf in yamls:
+            try:
+                with open(yf) as f:
+                    cfg = yaml.safe_load(f) or {}
+            except Exception:
+                continue
+            defs = cfg.get("ontology", cfg).get("entities", {}).get("definitions", {})
+            for ent_name, details in defs.items():
+                rels = details.get("relationships") or {}
+                if not isinstance(rels, dict):
+                    continue
+                for rel_name, rel_info in rels.items():
+                    if not isinstance(rel_info, dict):
+                        continue
+                    join_path = rel_info.get("join_path")
+                    target = rel_info.get("target")
+                    if not join_path or not target:
+                        continue
+                    # Resolve entity types to actual tables
+                    src_tables = type_to_tables.get(ent_name, set())
+                    dst_tables = type_to_tables.get(target, set())
+                    if not src_tables or not dst_tables:
+                        continue
+                    # Only emit if both sides are in the selected tables
+                    for st in src_tables:
+                        for dt in dst_tables:
+                            if st.split(".")[-1].lower() in table_short_set and dt.split(".")[-1].lower() in table_short_set:
+                                resolved_sql = join_path
+                                for old, new in [(ent_name.lower(), st.split(".")[-1]), (target.lower(), dt.split(".")[-1])]:
+                                    resolved_sql = resolved_sql.replace(old, new)
+                                specs.append({
+                                    "id": uuid.uuid4().hex[:32],
+                                    "left": {"identifier": st},
+                                    "right": {"identifier": dt},
+                                    "sql": [resolved_sql],
+                                })
+        return specs
+
+    def _get_metric_views(self, tables: List[str]) -> list[dict]:
+        table_list = ", ".join(f"'{t}'" for t in tables)
+        short_names = ", ".join(f"'{t.split('.')[-1]}'" for t in tables)
         return _safe_sql(
             self.ws,
             self.wh,
@@ -157,6 +306,7 @@ class GenieContextAssembler:
             SELECT metric_view_name, source_table, json_definition, status
             FROM {self._fq('metric_view_definitions')}
             WHERE status IN ('applied', 'validated')
+              AND (source_table IN ({table_list}) OR source_table IN ({short_names}))
         """,
         )
 
@@ -185,36 +335,69 @@ class GenieContextAssembler:
     # -- Formatting -----------------------------------------------------------
 
     def _format_context(
-        self, table_meta, column_meta, fk_rows, entity_rows, value_samples
+        self, table_meta, column_meta, fk_rows, entity_rows, value_samples,
+        entity_rels=None,
     ) -> str:
         parts = []
         col_by_table: dict[str, list] = {}
         for c in column_meta:
             col_by_table.setdefault(c["table_name"], []).append(c)
 
-        entity_map: dict[str, str] = {}
+        entity_map: dict[str, dict] = {}
         for e in entity_rows:
             src_tables = e.get("source_tables") or []
             if isinstance(src_tables, str):
                 src_tables = [src_tables]
             for t in src_tables:
-                entity_map[t] = e["entity_type"]
+                entity_map[t] = e
+                entity_map[t.split(".")[-1]] = e
+
+        # Build column binding lookup: table.column -> attribute_name
+        binding_map: dict[str, str] = {}
+        for e in entity_rows:
+            bindings = e.get("column_bindings") or []
+            if isinstance(bindings, str):
+                try:
+                    bindings = json.loads(bindings)
+                except (json.JSONDecodeError, TypeError):
+                    bindings = []
+            for b in bindings:
+                if isinstance(b, dict) and b.get("bound_column"):
+                    key = b["bound_column"] if "." in b.get("bound_column", "") else f"{b.get('bound_table', '')}.{b['bound_column']}"
+                    binding_map[key] = b.get("attribute_name", "")
+
+        # Build per-entity-type relationship summary
+        rel_summary: dict[str, list[str]] = {}
+        for r in (entity_rels or []):
+            src, dst, rel = r.get("src_type", ""), r.get("dst_type", ""), r.get("relationship", "")
+            if src and dst and rel:
+                rel_summary.setdefault(src, []).append(f"{rel} {dst}")
 
         for t in table_meta:
             tname = t["table_name"]
-            ent = entity_map.get(tname, "")
+            ent_info = entity_map.get(tname) or entity_map.get(tname.split(".")[-1])
+            ent_type = ent_info["entity_type"] if ent_info else ""
             header = f"Table: {tname}"
             if t.get("comment"):
                 header += f' (Comment: "{t["comment"]}")'
             if t.get("domain"):
                 header += f" Domain: {t['domain']}/{t.get('subdomain', '')}"
-            if ent:
-                header += f" Entity: {ent}"
+            if ent_type:
+                header += f" Entity: {ent_type}"
+                desc = ent_info.get("description", "")
+                if desc:
+                    header += f" -- {desc}"
+                rels_str = ", ".join(rel_summary.get(ent_type, []))
+                if rels_str:
+                    header += f" (related: {rels_str})"
 
             cols = col_by_table.get(tname, [])
             col_lines = []
             for c in cols:
                 line = f"  - {c['column_name']} {c.get('data_type', '')}"
+                attr = binding_map.get(f"{tname}.{c['column_name']}")
+                if attr:
+                    line += f" (={attr})"
                 if c.get("comment"):
                     line += f" : {c['comment']}"
                 if c.get("classification"):
@@ -242,6 +425,11 @@ class GenieContextAssembler:
                     f"{fk['dst_table']}.{fk['dst_column']} (confidence {fk['final_confidence']})"
                 )
 
+        if entity_rels:
+            parts.append("\nENTITY RELATIONSHIPS:")
+            for r in entity_rels:
+                parts.append(f"  {r.get('src_type', '')} --{r.get('relationship', '')}--> {r.get('dst_type', '')}")
+
         return "\n\n".join(parts)
 
     def _build_join_specs(self, fk_rows: list[dict]) -> list[dict]:
@@ -263,21 +451,40 @@ class GenieContextAssembler:
     def _build_data_sources(
         self, table_ids: List[str], table_meta: list[dict], metric_views: list[dict]
     ) -> dict:
-        meta_map = {t["table_name"]: t for t in table_meta}
+        meta_map = {}
+        for t in table_meta:
+            name = t["table_name"]
+            meta_map[name] = t
+            meta_map[name.split(".")[-1]] = t
         tables = []
         for tid in table_ids:
             entry: dict[str, Any] = {"identifier": tid}
-            meta = meta_map.get(tid, {})
+            meta = meta_map.get(tid) or meta_map.get(tid.split(".")[-1], {})
             if meta.get("comment"):
                 entry["description"] = [meta["comment"]]
             tables.append(entry)
 
         mvs = []
         for mv in metric_views:
+            desc_lines = []
+            try:
+                defn = json.loads(mv["json_definition"]) if isinstance(mv.get("json_definition"), str) else mv.get("json_definition") or {}
+                if defn.get("comment"):
+                    desc_lines.append(defn["comment"])
+                dims = defn.get("dimensions", [])
+                measures = defn.get("measures", [])
+                if dims or measures:
+                    names = [d.get("name") for d in dims if d.get("name")] + [m.get("name") for m in measures if m.get("name")]
+                    if names:
+                        desc_lines.append(f"Dimensions/measures: {', '.join(names[:12])}{'...' if len(names) > 12 else ''}")
+            except (json.JSONDecodeError, TypeError):
+                pass
+            if not desc_lines:
+                desc_lines = [f"Metric view on {mv.get('source_table', '')}"]
             mvs.append(
                 {
                     "identifier": f"{self.catalog}.{self.schema}.{mv['metric_view_name']}",
-                    "description": [f"Metric view on {mv['source_table']}"],
+                    "description": desc_lines,
                 }
             )
 
@@ -286,13 +493,108 @@ class GenieContextAssembler:
             result["metric_views"] = mvs
         return result
 
+    def _qualify(self, name: str) -> str:
+        """Ensure a table name is fully qualified (catalog.schema.table)."""
+        if name.count(".") >= 2:
+            return name
+        return f"{self.catalog}.{self.schema}.{name}"
+
+    @staticmethod
+    def _qualify_columns_in_expr(
+        expr: str, table_short: str, known_cols: set[str]
+    ) -> str:
+        """Prefix bare column references with table short name for Genie API."""
+        import re
+
+        def _replacer(m):
+            token = m.group(0)
+            if token.lower() in known_cols:
+                return f"{table_short}.{token}"
+            return token
+
+        sql_kws = {
+            "sum",
+            "count",
+            "avg",
+            "min",
+            "max",
+            "distinct",
+            "case",
+            "when",
+            "then",
+            "else",
+            "end",
+            "and",
+            "or",
+            "not",
+            "null",
+            "true",
+            "false",
+            "in",
+            "is",
+            "like",
+            "between",
+            "as",
+            "cast",
+            "if",
+            "coalesce",
+            "nullif",
+            "filter",
+            "where",
+            "date_trunc",
+            "extract",
+            "concat",
+            "upper",
+            "lower",
+            "trim",
+            "over",
+            "partition",
+            "by",
+            "order",
+            "asc",
+            "desc",
+            "timestampdiff",
+            "timestampadd",
+            "datediff",
+            "year",
+            "quarter",
+            "month",
+            "week",
+            "day",
+            "hour",
+            "minute",
+            "second",
+        }
+        known_cols_lower = {c.lower() for c in known_cols}
+
+        def _replace_token(m):
+            tok = m.group(0)
+            if tok.lower() in sql_kws:
+                return tok
+            if tok.lower() in known_cols_lower:
+                return f"{table_short}.{tok}"
+            return tok
+
+        return re.sub(r"(?<![`.\w])([A-Za-z_]\w*)(?![`.\w(])", _replace_token, expr)
+
     def _build_sql_snippets(
-        self, metric_views: list[dict], value_samples: dict
+        self,
+        metric_views: list[dict],
+        value_samples: dict,
+        column_meta: list[dict] | None = None,
     ) -> dict:
         """Decompose metric view definitions into Genie sql_snippets structure."""
         measures: list[dict] = []
         filters: list[dict] = []
         expressions: list[dict] = []
+
+        cols_by_table: dict[str, set[str]] = {}
+        for c in column_meta or []:
+            tbl = c.get("table_name", "")
+            cols_by_table.setdefault(tbl, set()).add(c["column_name"].lower())
+            cols_by_table.setdefault(tbl.split(".")[-1], set()).add(
+                c["column_name"].lower()
+            )
 
         for mv in metric_views:
             raw = mv.get("json_definition", "")
@@ -303,45 +605,63 @@ class GenieContextAssembler:
 
             source = defn.get("source", mv.get("source_table", ""))
             tbl_alias = source.split(".")[-1] if source else ""
+            known_cols = cols_by_table.get(tbl_alias, cols_by_table.get(source, set()))
 
             for m in defn.get("measures", []):
+                expr = m.get("expr", "")
+                if expr.strip().upper() in ("COUNT(*)", "COUNT(1)"):
+                    continue
+                if known_cols and tbl_alias:
+                    expr = self._qualify_columns_in_expr(expr, tbl_alias, known_cols)
                 measures.append(
                     {
                         "alias": m.get("name", ""),
-                        "display_name": m.get("name", ""),
-                        "sql": [m.get("expr", "")],
+                        "display_name": m.get("display_name") or m.get("name", ""),
+                        "sql": [expr],
                         "description": m.get("comment", f"From {tbl_alias}"),
+                        "synonyms": m.get("synonyms"),
                     }
                 )
 
             for d in defn.get("dimensions", []):
                 expr = d.get("expr", "")
                 if expr and expr != d.get("name", ""):
+                    if known_cols and tbl_alias:
+                        expr = self._qualify_columns_in_expr(
+                            expr, tbl_alias, known_cols
+                        )
                     expressions.append(
                         {
                             "alias": d.get("name", ""),
-                            "display_name": d.get("name", ""),
+                            "display_name": d.get("display_name") or d.get("name", ""),
                             "sql": [expr],
                             "description": d.get("comment", ""),
+                            "synonyms": d.get("synonyms"),
                         }
                     )
 
             if defn.get("filter"):
+                filt_expr = defn["filter"]
+                if known_cols and tbl_alias:
+                    filt_expr = self._qualify_columns_in_expr(
+                        filt_expr, tbl_alias, known_cols
+                    )
                 filters.append(
                     {
                         "display_name": f"{tbl_alias} default filter",
-                        "sql": [defn["filter"]],
+                        "sql": [filt_expr],
                     }
                 )
 
         for tbl, cols in value_samples.items():
+            fq_tbl = self._qualify(tbl)
             tbl_short = tbl.split(".")[-1]
             for col, vals in cols.items():
                 if 2 <= len(vals) <= 10:
                     filters.append(
                         {
                             "display_name": f"Filter by {col} ({tbl_short})",
-                            "sql": [f"`{tbl}`.`{col}` = '<value>'"],
+                            "sql": [f"`{fq_tbl}`.`{col}` = '<value>'"],
                         }
                     )
 

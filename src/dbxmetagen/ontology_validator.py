@@ -9,7 +9,7 @@ import logging
 import json
 import yaml
 from dataclasses import dataclass
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Set
 from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql import functions as F
 
@@ -232,11 +232,19 @@ Focus on entities NOT already covered by existing types. Be conservative and sug
             f"SELECT * FROM {self.config.fully_qualified_entities} {filter_clause}"
         )
 
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        entity_rows = entities_df.collect()
         results = []
-        for entity_row in entities_df.collect():
-            result = self.validate_entity(entity_row)
-            if result:
-                results.append(result)
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            futures = {
+                executor.submit(self.validate_entity, row): row
+                for row in entity_rows
+            }
+            for future in as_completed(futures):
+                result = future.result()
+                if result:
+                    results.append(result)
         return results
     
     def update_entity_validation(self, validation_results: List[Dict[str, Any]]) -> int:
@@ -362,7 +370,86 @@ Focus on entities NOT already covered by existing types. Be conservative and sug
         
         return recommendations
     
-    def run(self) -> Dict[str, Any]:
+    def check_consistency(self) -> List[Dict[str, Any]]:
+        """Check cross-table consistency: same entity type should have consistent classification."""
+        issues = []
+        try:
+            rows = self.spark.sql(f"""
+                SELECT entity_type, source_tables, confidence, entity_name
+                FROM {self.config.fully_qualified_entities}
+                WHERE COALESCE(attributes['granularity'], 'table') = 'table'
+            """).collect()
+
+            type_tables: Dict[str, List] = {}
+            for r in rows:
+                for t in r.source_tables or []:
+                    type_tables.setdefault(r.entity_type, []).append({
+                        "table": t, "confidence": r.confidence
+                    })
+
+            for etype, entries in type_tables.items():
+                confs = [e["confidence"] for e in entries]
+                if len(confs) >= 2:
+                    spread = max(confs) - min(confs)
+                    if spread > 0.3:
+                        issues.append({
+                            "type": "consistency",
+                            "entity_type": etype,
+                            "message": f"Confidence spread {spread:.2f} across {len(entries)} tables",
+                            "tables": [e["table"] for e in entries],
+                        })
+        except Exception as e:
+            logger.warning("Consistency check failed: %s", e)
+        return issues
+
+    def check_coverage(self, ontology_config: Optional[Dict] = None) -> List[Dict[str, Any]]:
+        """Check for entity types in config with zero matches -- potential gaps."""
+        gaps = []
+        try:
+            discovered = self.spark.sql(f"""
+                SELECT DISTINCT entity_type FROM {self.config.fully_qualified_entities}
+            """).collect()
+            discovered_types = {r.entity_type for r in discovered}
+
+            if ontology_config:
+                defined = set(ontology_config.get("entities", {}).get("definitions", {}).keys())
+                missing = defined - discovered_types - {"DataTable"}
+                for m in sorted(missing):
+                    gaps.append({
+                        "type": "coverage_gap",
+                        "entity_type": m,
+                        "message": f"Entity type '{m}' defined in config but no tables matched",
+                    })
+        except Exception as e:
+            logger.warning("Coverage check failed: %s", e)
+        return gaps
+
+    def validate_relationships(self) -> List[Dict[str, Any]]:
+        """Validate discovered inter-entity relationships make sense."""
+        issues = []
+        try:
+            edges_table = f"{self.config.catalog_name}.{self.config.schema_name}.graph_edges"
+            rels = self.spark.sql(f"""
+                SELECT e.src, e.dst, e.relationship, e.weight,
+                       s.entity_type AS src_type, d.entity_type AS dst_type
+                FROM {edges_table} e
+                JOIN {self.config.fully_qualified_entities} s ON e.src = s.entity_id
+                JOIN {self.config.fully_qualified_entities} d ON e.dst = d.entity_id
+                WHERE e.relationship NOT IN ('similar_embedding', 'instance_of', 'has_attribute', 'predicted_fk')
+            """).collect()
+
+            for r in rels:
+                if r.src_type == r.dst_type and r.relationship != "similar_to":
+                    issues.append({
+                        "type": "relationship",
+                        "message": f"Self-type relationship: {r.src_type} --{r.relationship}--> {r.dst_type}",
+                        "src": r.src, "dst": r.dst,
+                    })
+        except Exception as e:
+            logger.debug("Relationship validation skipped: %s", e)
+        return issues
+
+    def run(self, ontology_config: Optional[Dict] = None) -> Dict[str, Any]:
         """Execute the validation pipeline for both table and column entities."""
         logger.info("Starting ontology validation")
 
@@ -376,13 +463,36 @@ Focus on entities NOT already covered by existing types. Be conservative and sug
         col_updated = self.update_entity_validation(col_results)
         logger.info(f"Validated {col_updated} column-level entities")
 
+        # Cross-table consistency
+        consistency_issues = self.check_consistency()
+        if consistency_issues:
+            logger.warning("Found %d consistency issues", len(consistency_issues))
+
+        # Coverage gaps
+        coverage_gaps = self.check_coverage(ontology_config)
+        if coverage_gaps:
+            logger.warning("Found %d coverage gaps: %s",
+                           len(coverage_gaps),
+                           [g["entity_type"] for g in coverage_gaps])
+
+        # Relationship validation
+        rel_issues = self.validate_relationships()
+        if rel_issues:
+            logger.warning("Found %d relationship issues", len(rel_issues))
+
         recommendations = self.generate_ontology_recommendations()
+        recommendations["consistency_issues"] = consistency_issues
+        recommendations["coverage_gaps"] = coverage_gaps
+        recommendations["relationship_issues"] = rel_issues
         logger.info("Ontology validation complete")
 
         return {
             "entities_validated": table_updated + col_updated,
             "table_entities_validated": table_updated,
             "column_entities_validated": col_updated,
+            "consistency_issues": len(consistency_issues),
+            "coverage_gaps": len(coverage_gaps),
+            "relationship_issues": len(rel_issues),
             "recommendations": recommendations,
         }
 

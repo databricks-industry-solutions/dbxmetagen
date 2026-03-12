@@ -3,6 +3,10 @@ resources:
     metadata_generator_job:
       name: "${var.app_name}_metadata_job"
 
+      permissions:
+        - service_principal_name: ${resources.apps.dbxmetagen_app.service_principal_client_id}
+          level: CAN_MANAGE_RUN
+
       email_notifications:
         on_failure:
           - ${var.current_user}
@@ -27,6 +31,8 @@ resources:
           default: "{{job.run_id}}"
         - name: include_previously_failed_tables
           default: "false"
+        - name: apply_ddl
+          default: "false"
 
       tasks:
         - task_key: generate_metadata
@@ -43,6 +49,7 @@ resources:
               permission_users: "{{job.parameters.permission_users}}"
               run_id: "{{job.parameters.run_id}}"
               include_previously_failed_tables: "{{job.parameters.include_previously_failed_tables}}"
+              apply_ddl: "{{job.parameters.apply_ddl}}"
 
           libraries:
             - whl: ../../dist/*.whl

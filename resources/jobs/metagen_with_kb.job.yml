@@ -3,6 +3,10 @@ resources:
     metadata_with_knowledge_base_job:
       name: "${var.app_name}_metadata_with_kb_job"
 
+      permissions:
+        - service_principal_name: ${resources.apps.dbxmetagen_app.service_principal_client_id}
+          level: CAN_MANAGE_RUN
+
       email_notifications:
         on_failure:
           - ${var.current_user}

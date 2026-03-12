@@ -13,7 +13,7 @@
 
 import sys
 
-sys.path.append("../../")
+sys.path.append("../../src")  # For git-clone or DAB deployment; pip-installed package works without this
 
 from dbxmetagen.config import MetadataConfig
 from dbxmetagen.main import main

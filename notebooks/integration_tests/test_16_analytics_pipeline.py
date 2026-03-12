@@ -18,7 +18,7 @@ print(f"Testing analytics pipeline in {catalog_name}.{test_schema}")
 # COMMAND ----------
 
 import sys
-sys.path.append("../../")  # For DAB deployment; pip-installed package works without this
+sys.path.append("../../src")  # For git-clone or DAB deployment; pip-installed package works without this
 
 # COMMAND ----------
 # MAGIC %md

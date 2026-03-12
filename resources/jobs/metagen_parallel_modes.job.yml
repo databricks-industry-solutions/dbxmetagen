@@ -1,13 +1,18 @@
-# Parallel Metadata Generation: Comment + PI + Domain
+# Parallel Metadata Generation: Comment first, then PI + Domain
 #
-# Runs generate_metadata in all three modes (comment, pi, domain) in parallel
-# against the SAME set of tables. Defaults to apply_ddl=false so tables are
-# added to metadata_generation_log for downstream analysis only.
+# Runs comments first, then PI and domain in parallel (so domain/PI can use
+# existing comments when include_existing_table_comment is true). Same set of
+# tables; defaults to apply_ddl=false so tables are added to
+# metadata_generation_log for downstream analysis only.
 
 resources:
   jobs:
     metadata_parallel_modes_job:
       name: "${var.app_name}_parallel_modes_job"
+
+      permissions:
+        - service_principal_name: ${resources.apps.dbxmetagen_app.service_principal_client_id}
+          level: CAN_MANAGE_RUN
 
       email_notifications:
         on_failure:
@@ -34,7 +39,7 @@ resources:
           default: "false"
 
       tasks:
-        # All three tasks run in parallel with no dependencies
+        # Comments run first; PI and domain depend on it so they can use comments
         - task_key: generate_comments
           job_cluster_key: metadata_cluster
           notebook_task:
@@ -55,6 +60,8 @@ resources:
             - whl: ../../dist/*.whl
 
         - task_key: generate_pi
+          depends_on:
+            - task_key: generate_comments
           job_cluster_key: metadata_cluster
           notebook_task:
             notebook_path: ../../notebooks/generate_metadata.py
@@ -70,10 +77,13 @@ resources:
               run_id: "{{job.parameters.run_id}}"
               cleanup_control_table: "false"
               include_previously_failed_tables: "{{job.parameters.include_previously_failed_tables}}"
+              include_existing_table_comment: "true"
           libraries:
             - whl: ../../dist/*.whl
 
         - task_key: generate_domain
+          depends_on:
+            - task_key: generate_comments
           job_cluster_key: metadata_cluster
           notebook_task:
             notebook_path: ../../notebooks/generate_metadata.py
@@ -89,6 +99,7 @@ resources:
               run_id: "{{job.parameters.run_id}}"
               cleanup_control_table: "false"
               include_previously_failed_tables: "{{job.parameters.include_previously_failed_tables}}"
+              include_existing_table_comment: "true"
           libraries:
             - whl: ../../dist/*.whl
 

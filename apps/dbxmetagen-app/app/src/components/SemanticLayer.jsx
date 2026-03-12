@@ -44,6 +44,11 @@ export default function SemanticLayer() {
   // Per-definition action state
   const [actionLoading, setActionLoading] = useState({})
   const [createTarget, setCreateTarget] = useState({ catalog: '', schema: '' })
+  const [createError, setCreateError] = useState({})
+  const [editDefId, setEditDefId] = useState(null)
+  const [editJson, setEditJson] = useState('')
+  const [suggestLoading, setSuggestLoading] = useState(false)
+  const [suggestQLoading, setSuggestQLoading] = useState(false)
 
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
@@ -216,6 +221,23 @@ export default function SemanticLayer() {
     !tableFilter || t.toLowerCase().includes(tableFilter.toLowerCase())
   )
 
+  const suggestQuestions = async () => {
+    if (!selectedTables.length) { setError('Select tables first'); return }
+    setSuggestQLoading(true); setError(null)
+    try {
+      const fqTables = selectedTables.map(t => t.includes('.') ? t : `${selectedCatalog}.${selectedSchema}.${t}`)
+      const res = await fetch('/api/genie/generate-questions', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ table_identifiers: fqTables, count: 6, purpose: 'metric_views' }),
+      })
+      const data = await res.json()
+      if (!res.ok) { setError(data.detail || 'Failed to suggest questions'); setSuggestQLoading(false); return }
+      const newQs = (data.questions || []).join('\n')
+      setQuestionsText(prev => prev ? prev + '\n' + newQs : newQs)
+    } catch (e) { setError(e.message) }
+    setSuggestQLoading(false)
+  }
+
   // --- Generate ---
   const startGeneration = async (mode = 'replace') => {
     const lines = questionsText.split('\n').filter(l => l.trim())
@@ -281,6 +303,7 @@ export default function SemanticLayer() {
     }
     setActionLoading(prev => ({ ...prev, [defId]: 'create' }))
     setError(null)
+    setCreateError(prev => ({ ...prev, [defId]: null }))
     try {
       const res = await fetch(`/api/semantic-layer/definitions/${defId}/create`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -289,19 +312,91 @@ export default function SemanticLayer() {
       const text = await res.text()
       let data
       try { data = JSON.parse(text) } catch { data = { detail: text } }
-      if (!res.ok) setError(data.detail || 'Create failed')
-      else setError(null)
+      if (!res.ok) {
+        const msg = typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail || data)
+        setError(msg)
+        setCreateError(prev => ({ ...prev, [defId]: msg }))
+      } else {
+        setError(null)
+        setCreateError(prev => ({ ...prev, [defId]: null }))
+      }
+      refreshDefinitions()
+    } catch (e) { setError(e.message); setCreateError(prev => ({ ...prev, [defId]: e.message })) }
+    setActionLoading(prev => ({ ...prev, [defId]: null }))
+  }
+
+  const getSuggestion = async (defId) => {
+    const err = createError[defId]
+    if (!err) return
+    setSuggestLoading(true)
+    try {
+      const res = await fetch(`/api/semantic-layer/definitions/${defId}/suggest-fix`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ error_message: err }),
+      })
+      const data = await res.json().catch(() => ({}))
+      setEditJson(data.suggested_json || '')
+      setEditDefId(defId)
+    } catch (e) { setError(e.message) }
+    setSuggestLoading(false)
+  }
+
+  const openEdit = (defId) => {
+    setEditDefId(defId)
+    fetch(`/api/semantic-layer/definitions/${defId}/json`)
+      .then(r => r.json())
+      .then(data => setEditJson(data.json_definition || ''))
+      .catch(() => setEditJson('{}'))
+  }
+
+  const saveEdit = async () => {
+    if (!editDefId || !editJson.trim()) return
+    setSuggestLoading(true)
+    try {
+      const res = await fetch(`/api/semantic-layer/definitions/${editDefId}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ json_definition: editJson }),
+      })
+      if (!res.ok) { const d = await res.json().catch(() => ({})); setError(d.detail || 'Save failed') }
+      else {
+        setCreateError(prev => ({ ...prev, [editDefId]: null }))
+        setEditDefId(null)
+        setEditJson('')
+        refreshDefinitions()
+      }
+    } catch (e) { setError(e.message) }
+    setSuggestLoading(false)
+  }
+
+  const deleteDefinition = async (defId, status) => {
+    setActionLoading(prev => ({ ...prev, [defId]: 'delete' }))
+    setError(null)
+    try {
+      let url = `/api/semantic-layer/definitions/${defId}`
+      if (status === 'applied' && createTarget.catalog && createTarget.schema) {
+        url += `?drop_view=true&catalog=${encodeURIComponent(createTarget.catalog)}&schema=${encodeURIComponent(createTarget.schema)}`
+      }
+      const res = await fetch(url, { method: 'DELETE' })
+      if (!res.ok) { const data = await res.json(); setError(data.detail || 'Delete failed') }
       refreshDefinitions()
     } catch (e) { setError(e.message) }
     setActionLoading(prev => ({ ...prev, [defId]: null }))
   }
 
-  const deleteDefinition = async (defId) => {
-    setActionLoading(prev => ({ ...prev, [defId]: 'delete' }))
+  const dropDefinition = async (defId) => {
+    if (!createTarget.catalog || !createTarget.schema) {
+      setError('Set a target catalog and schema before dropping')
+      return
+    }
+    setActionLoading(prev => ({ ...prev, [defId]: 'drop' }))
     setError(null)
     try {
-      const res = await fetch(`/api/semantic-layer/definitions/${defId}`, { method: 'DELETE' })
-      if (!res.ok) { const data = await res.json(); setError(data.detail || 'Delete failed') }
+      const res = await fetch(`/api/semantic-layer/definitions/${defId}/drop`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ target_catalog: createTarget.catalog, target_schema: createTarget.schema }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) setError(data.detail || 'Drop failed')
       refreshDefinitions()
     } catch (e) { setError(e.message) }
     setActionLoading(prev => ({ ...prev, [defId]: null }))
@@ -315,15 +410,15 @@ export default function SemanticLayer() {
       applied: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900 dark:text-emerald-200',
       failed: 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200',
     }
-    return <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${colors[status] || 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300'}`}>{status}</span>
+    return <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${colors[status] || 'bg-dbx-oat text-gray-600 dark:bg-gray-700 dark:text-gray-300'}`}>{status}</span>
   }
 
   const isGenerating = taskStatus && taskStatus.status === 'running'
   const questionLines = questionsText.split('\n').filter(l => l.trim())
-  const section = "bg-white dark:bg-gray-800 rounded-lg border dark:border-gray-700 p-6"
+  const section = "bg-dbx-oat-light dark:bg-gray-800 rounded-lg border dark:border-gray-700 p-6"
   const label = "block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1"
-  const input = "w-full border dark:border-gray-600 rounded-md p-2 text-sm bg-white dark:bg-gray-700 dark:text-gray-100"
-  const btnPrimary = "px-4 py-2 bg-indigo-600 text-white rounded-md text-sm hover:bg-indigo-700 disabled:opacity-50"
+  const input = "w-full border dark:border-gray-600 rounded-md p-2 text-sm bg-dbx-oat-light dark:bg-gray-700 dark:text-gray-100"
+  const btnPrimary = "px-4 py-2 bg-dbx-lava text-white rounded-md text-sm hover:bg-red-700 disabled:opacity-50"
 
   return (
     <div className="space-y-6">
@@ -344,10 +439,10 @@ export default function SemanticLayer() {
           ) : (
             <div className="flex items-center gap-2">
               <input value={newProjectName} onChange={e => setNewProjectName(e.target.value)}
-                placeholder="Project name" className="border dark:border-gray-600 rounded px-2 py-1 text-sm bg-white dark:bg-gray-700 dark:text-gray-100 w-48"
+                placeholder="Project name" className="border dark:border-gray-600 rounded px-2 py-1 text-sm bg-dbx-oat-light dark:bg-gray-700 dark:text-gray-100 w-48"
                 onKeyDown={e => e.key === 'Enter' && createNewProject()} />
               <button onClick={createNewProject} disabled={loading || !newProjectName.trim()}
-                className="px-3 py-1 bg-indigo-600 text-white rounded text-sm hover:bg-indigo-700 disabled:opacity-50">Create</button>
+                className="px-3 py-1 bg-dbx-lava text-white rounded text-sm hover:bg-red-700 disabled:opacity-50">Create</button>
               <button onClick={() => { setShowNewProject(false); setNewProjectName('') }}
                 className="text-sm text-gray-500 dark:text-gray-400 hover:underline">Cancel</button>
             </div>
@@ -446,6 +541,10 @@ export default function SemanticLayer() {
           placeholder={"What was total revenue by region last quarter?\nHow many orders per month by product category?\nWhat is the average deal size by sales rep?"}
           className={`${input} h-32 mb-3`} />
         <div className="flex gap-3 items-center">
+          <button onClick={suggestQuestions} disabled={suggestQLoading || !selectedTables.length}
+            className="px-4 py-2 bg-amber-600 text-white rounded-md text-sm hover:bg-amber-700 disabled:opacity-50">
+            {suggestQLoading ? 'Suggesting...' : 'Suggest Questions'}
+          </button>
           <button onClick={saveProfile} disabled={loading || !profileName.trim() || !questionLines.length}
             className="px-4 py-2 bg-blue-600 text-white rounded-md text-sm hover:bg-blue-700 disabled:opacity-50">
             {activeProfileId ? 'Update Profile' : 'Save Profile'}
@@ -482,7 +581,7 @@ export default function SemanticLayer() {
           {selectedProjectId && (
             <button onClick={() => startGeneration('replace_all')}
               disabled={loading || isGenerating || !selectedTables.length || !questionLines.length}
-              className="px-4 py-2 bg-orange-600 text-white rounded-md text-sm hover:bg-orange-700 disabled:opacity-50">
+              className="px-4 py-2 bg-dbx-lava text-white rounded-md text-sm hover:bg-red-700 disabled:opacity-50">
               Regenerate All
             </button>
           )}
@@ -501,7 +600,7 @@ export default function SemanticLayer() {
           <h3 className="font-medium mb-2 dark:text-gray-100">Generation Progress</h3>
           <div className="flex items-center gap-3">
             {taskStatus.status === 'running' && (
-              <div className="h-4 w-4 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin" />
+              <div className="h-4 w-4 border-2 border-dbx-lava border-t-transparent rounded-full animate-spin" />
             )}
             <span className={`text-sm ${taskStatus.status === 'error' ? 'text-red-600 dark:text-red-400' : taskStatus.status === 'done' ? 'text-green-600 dark:text-green-400' : 'text-gray-700 dark:text-gray-300'}`}>
               {STAGES[taskStatus.stage] || taskStatus.stage}
@@ -530,13 +629,13 @@ export default function SemanticLayer() {
           </div>
 
           {/* Create Target */}
-          <div className="flex items-center gap-3 mb-4 p-3 bg-gray-50 dark:bg-gray-900 rounded-md border dark:border-gray-700">
+          <div className="flex items-center gap-3 mb-4 p-3 bg-dbx-oat dark:bg-gray-900 rounded-md border dark:border-gray-700">
             <span className="text-xs font-medium text-gray-600 dark:text-gray-400 whitespace-nowrap">Create target:</span>
             <input value={createTarget.catalog} onChange={e => setCreateTarget(prev => ({ ...prev, catalog: e.target.value }))}
-              placeholder="catalog" className="border dark:border-gray-600 rounded px-2 py-1 text-xs bg-white dark:bg-gray-700 dark:text-gray-100 w-40" />
+              placeholder="catalog" className="border dark:border-gray-600 rounded px-2 py-1 text-xs bg-dbx-oat-light dark:bg-gray-700 dark:text-gray-100 w-40" />
             <span className="text-gray-400">.</span>
             <input value={createTarget.schema} onChange={e => setCreateTarget(prev => ({ ...prev, schema: e.target.value }))}
-              placeholder="schema" className="border dark:border-gray-600 rounded px-2 py-1 text-xs bg-white dark:bg-gray-700 dark:text-gray-100 w-40" />
+              placeholder="schema" className="border dark:border-gray-600 rounded px-2 py-1 text-xs bg-dbx-oat-light dark:bg-gray-700 dark:text-gray-100 w-40" />
           </div>
 
           <div className="divide-y dark:divide-gray-700">
@@ -556,10 +655,14 @@ export default function SemanticLayer() {
                         className="text-xs text-blue-600 dark:text-blue-400 hover:underline">
                         {expandedDef === d.definition_id ? 'Hide' : 'View JSON'}
                       </button>
+                      <button onClick={() => openEdit(d.definition_id)}
+                        className="text-xs text-slate-600 dark:text-slate-400 hover:underline">
+                        Edit JSON
+                      </button>
 
                       {d.status === 'failed' && (
                         <button onClick={() => retryDefinition(d.definition_id)} disabled={!!busy}
-                          className="px-2 py-0.5 text-xs rounded bg-orange-600 text-white hover:bg-orange-700 disabled:opacity-50">
+                          className="px-2 py-0.5 text-xs rounded bg-dbx-lava text-white hover:bg-red-700 disabled:opacity-50">
                           {busy === 'retry' ? 'Retrying...' : 'Retry'}
                         </button>
                       )}
@@ -575,7 +678,13 @@ export default function SemanticLayer() {
                           </button>
                         </>
                       )}
-                      <button onClick={() => deleteDefinition(d.definition_id)} disabled={!!busy}
+                      {d.status === 'applied' && (
+                        <button onClick={() => dropDefinition(d.definition_id)} disabled={!!busy}
+                          className="px-2 py-0.5 text-xs rounded bg-amber-600 text-white hover:bg-amber-700 disabled:opacity-50">
+                          {busy === 'drop' ? 'Dropping...' : 'Drop from UC'}
+                        </button>
+                      )}
+                      <button onClick={() => deleteDefinition(d.definition_id, d.status)} disabled={!!busy}
                         className="px-2 py-0.5 text-xs rounded bg-red-600 text-white hover:bg-red-700 disabled:opacity-50">
                         {busy === 'delete' ? '...' : 'Delete'}
                       </button>
@@ -584,17 +693,48 @@ export default function SemanticLayer() {
                   {d.validation_errors && (
                     <p className="text-xs text-red-600 dark:text-red-400 mt-1">{d.validation_errors}</p>
                   )}
+                  {createError[d.definition_id] && (
+                    <div className="mt-2 p-2 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded text-xs">
+                      <p className="text-red-700 dark:text-red-300 font-medium mb-1">Create failed:</p>
+                      <p className="text-red-600 dark:text-red-400 whitespace-pre-wrap break-words">{createError[d.definition_id]}</p>
+                      <div className="flex gap-2 mt-2">
+                        <button onClick={() => getSuggestion(d.definition_id)} disabled={suggestLoading}
+                          className="px-2 py-1 bg-amber-600 text-white rounded text-xs hover:bg-amber-700 disabled:opacity-50">Get suggestion</button>
+                        <button onClick={() => openEdit(d.definition_id)}
+                          className="px-2 py-1 bg-slate-600 text-white rounded text-xs hover:bg-slate-700">Edit definition</button>
+                      </div>
+                    </div>
+                  )}
                   {d.genie_space_id && (
                     <p className="text-xs text-emerald-600 dark:text-emerald-400 mt-1">Genie space: {d.genie_space_id}</p>
                   )}
                   {expandedDef === d.definition_id && expandedJson && (
-                    <pre className="mt-2 bg-slate-50 dark:bg-gray-900 border dark:border-gray-600 rounded p-3 text-xs overflow-x-auto max-h-64 dark:text-gray-200">{expandedJson}</pre>
+                    <pre className="mt-2 bg-dbx-oat dark:bg-gray-900 border dark:border-gray-600 rounded p-3 text-xs overflow-x-auto max-h-64 dark:text-gray-200">{expandedJson}</pre>
                   )}
                 </div>
               )
             })}
           </div>
         </section>
+      )}
+
+      {editDefId && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={() => !suggestLoading && setEditDefId(null)}>
+          <div className="bg-dbx-oat-light dark:bg-gray-800 rounded-lg border dark:border-gray-700 shadow-xl max-w-3xl w-full max-h-[90vh] flex flex-col" onClick={e => e.stopPropagation()}>
+            <div className="p-3 border-b dark:border-gray-700 font-medium dark:text-gray-100">Edit definition JSON</div>
+            <textarea value={editJson} onChange={e => setEditJson(e.target.value)}
+              className="flex-1 p-3 font-mono text-xs border-0 dark:bg-gray-900 dark:text-gray-200 resize-none min-h-[200px]"
+              spellCheck={false} />
+            <div className="p-3 border-t dark:border-gray-700 flex justify-end gap-2">
+              <button onClick={() => setEditDefId(null)} disabled={suggestLoading}
+                className="px-3 py-1.5 border dark:border-gray-600 rounded text-sm">Cancel</button>
+              <button onClick={saveEdit} disabled={suggestLoading}
+                className="px-3 py-1.5 bg-dbx-lava text-white rounded text-sm hover:bg-red-700 disabled:opacity-50">
+                {suggestLoading ? 'Saving...' : 'Save'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   )

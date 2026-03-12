@@ -1,11 +1,12 @@
 """Processing utilities shared among modules."""
 
+import csv
 import os
 import shutil
 import re
 from abc import ABC
 from datetime import datetime
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Optional, Tuple
 import logging
 import mlflow
 import nest_asyncio
@@ -1164,8 +1165,13 @@ def run_log_table_ddl(config):
 
 def output_df_pandas_to_tsv(df, output_file):
     pandas_df = df.toPandas()
+    for col in pandas_df.select_dtypes(include=["object"]).columns:
+        pandas_df[col] = pandas_df[col].str.replace(r"\r?\n", " ", regex=True)
     write_header = not os.path.exists(output_file)
-    pandas_df.to_csv(output_file, sep="\t", header=write_header, index=False, mode="a")
+    pandas_df.to_csv(
+        output_file, sep="\t", header=write_header, index=False, mode="a",
+        quoting=csv.QUOTE_MINIMAL, quotechar='"', doublequote=True,
+    )
 
 
 def _export_table_to_tsv(df, config):
@@ -1831,6 +1837,52 @@ def create_and_persist_ddl(
         log_metadata_generation(column_df, config, table_name, base_path)
 
 
+def fetch_lineage(
+    spark: "SparkSession", table_name: str, limit: int = 10
+) -> Optional[Dict[str, Any]]:
+    """Query system.access.table_lineage for a single table.
+
+    Returns ``{"upstream_tables": [...], "downstream_tables": [...]}``
+    truncated to *limit* entries each, or ``None`` on any failure
+    (missing system table, access denied, etc.).
+    """
+    parts = table_name.split(".")
+    if len(parts) != 3:
+        return None
+    cat, sch, tbl = parts
+    try:
+        up = [
+            r[0]
+            for r in spark.sql(f"""
+                SELECT DISTINCT CONCAT(source_table_catalog, '.', source_table_schema, '.', source_table_name)
+                FROM system.access.table_lineage
+                WHERE target_table_catalog = '{cat}'
+                  AND target_table_schema  = '{sch}'
+                  AND target_table_name    = '{tbl}'
+                  AND source_table_name IS NOT NULL
+                LIMIT {limit}
+            """).collect()
+        ]
+        down = [
+            r[0]
+            for r in spark.sql(f"""
+                SELECT DISTINCT CONCAT(target_table_catalog, '.', target_table_schema, '.', target_table_name)
+                FROM system.access.table_lineage
+                WHERE source_table_catalog = '{cat}'
+                  AND source_table_schema  = '{sch}'
+                  AND source_table_name    = '{tbl}'
+                  AND target_table_name IS NOT NULL
+                LIMIT {limit}
+            """).collect()
+        ]
+        if not up and not down:
+            return None
+        return {"upstream_tables": up, "downstream_tables": down}
+    except Exception as e:
+        logger.warning("Could not fetch lineage for %s: %s", table_name, e)
+        return None
+
+
 # TODO: Update this to use get_generated_metadata_data_unaware() if sample size is 0 so Presidio can still use data.
 def get_domain_classification(
     config: MetadataConfig, full_table_name: str
@@ -1853,8 +1905,37 @@ def get_domain_classification(
 
     domain_config = load_domain_config(config.domain_config_path)
 
-    # Use SQL-based reading with type conversion to handle VARIANT in Spark Connect
-    df = read_table_with_type_conversion(spark, full_table_name)
+    try:
+        df = read_table_with_type_conversion(spark, full_table_name)
+    except Exception as e:
+        print(f"Skipping domain classification for {full_table_name}: unable to read table ({e})")
+        return {"domain": "unknown", "confidence": 0.0, "reasoning": f"Table unreadable: {e}"}
+
+    # --- Audit / system column filtering ---
+    # The ``domain_column_blacklist`` config variable (comma-separated string)
+    # lists column names to drop before domain classification so that
+    # ubiquitous system/audit columns (e.g. _updated_at, created_at) don't
+    # dilute the signal the LLM uses for domain prediction.
+    #
+    # Configure via:
+    #   - DAB variables.yml  →  domain_column_blacklist: "_updated_at,created_at,adh_created"
+    #   - Notebook widget    →  dbutils.widgets.text("domain_column_blacklist", "...")
+    #
+    # Only affects domain mode; comment and PII modes are unaffected.
+    raw_blacklist = getattr(config, "domain_column_blacklist", None) or ""
+    blacklist = set(
+        s.strip() for s in (raw_blacklist.split(",") if isinstance(raw_blacklist, str) else raw_blacklist) if s.strip()
+    )
+    if blacklist:
+        keep = [c for c in df.columns if c not in blacklist]
+        if keep:
+            df = df.select(keep)
+        else:
+            logger.warning(
+                "Domain classification: all columns blacklisted for %s, using all columns",
+                full_table_name,
+            )
+
     total_columns = len(df.columns)
 
     # Limit columns for domain classification to avoid massive prompts
@@ -1893,6 +1974,9 @@ def get_domain_classification(
         table_metadata["table_comments"] = prompt.prompt_content.get(
             "column_contents", {}
         ).get("table_comments", "")
+
+    if getattr(config, "include_lineage", False):
+        table_metadata["lineage"] = fetch_lineage(spark, full_table_name)
 
     # Classify the table
     classification_result = classify_table_domain(
@@ -1947,6 +2031,23 @@ def get_generated_metadata(
     return responses
 
 
+def _is_metric_view(spark: SparkSession, full_table_name: str) -> bool:
+    """Return True if *full_table_name* is a Unity Catalog metric view."""
+    parts = full_table_name.split(".")
+    if len(parts) != 3:
+        return False
+    cat, sch, tbl = parts
+    try:
+        df = spark.sql(f"""
+            SELECT table_type FROM `{cat}`.information_schema.tables
+            WHERE table_schema = '{sch}' AND table_name = '{tbl}' LIMIT 1
+        """)
+        rows = df.collect()
+        return bool(rows) and rows[0].table_type in ("METRIC_VIEW", "METRIC VIEW")
+    except Exception:
+        return False
+
+
 def get_generated_metadata_data_aware(
     spark: SparkSession, config: MetadataConfig, full_table_name: str
 ):
@@ -1961,8 +2062,16 @@ def get_generated_metadata_data_aware(
     Returns:
         List[Tuple[PIResponse, CommentResponse]]: A list of tuples containing the generated metadata.
     """
+    if _is_metric_view(spark, full_table_name):
+        print(f"Skipping metric view {full_table_name} (not supported for data-aware metadata generation)")
+        return []
+
     # Use SQL-based reading with type conversion to handle VARIANT in Spark Connect
-    df = read_table_with_type_conversion(spark, full_table_name)
+    try:
+        df = read_table_with_type_conversion(spark, full_table_name)
+    except Exception as e:
+        print(f"Skipping {full_table_name}: unable to read table ({e})")
+        return []
     responses = []
     nrows = df.count()
     chunked_dfs = chunk_df(df, config.columns_per_call)
@@ -2206,6 +2315,13 @@ def process_and_add_ddl(config: MetadataConfig, table_name: str) -> DataFrame:
     column_df, table_df = review_and_generate_metadata(config, table_name)
     column_df = split_and_hardcode_df(column_df, config)
     table_df = split_and_hardcode_df(table_df, config)
+
+    if column_df is None and table_df is None:
+        logger.warning(
+            f"Skipping {table_name}: no metadata could be generated "
+            "(table may have an unsupported data source format)"
+        )
+        return {}
 
     if config.allow_manual_override and column_df is not None:
         logger.info("Overriding metadata from CSV...")
@@ -2712,6 +2828,30 @@ class TableProcessingError(Exception):
     """Custom exception for table processing failures."""
 
 
+def table_exists_uc(spark: SparkSession, full_name: str) -> bool:
+    """
+    Check if a table exists in Unity Catalog (UC-safe).
+    spark.catalog.tableExists(full_name) can fail with DATA_SOURCE_NOT_FOUND
+    when full_name is catalog.schema.table; use information_schema instead.
+    """
+    parts = full_name.split(".")
+    if len(parts) != 3:
+        return spark.catalog.tableExists(full_name)
+    catalog_name, schema_name, table_name = parts
+    cat_esc, sch_esc, tbl_esc = (p.replace("'", "''") for p in parts)
+    try:
+        df = spark.sql(
+            f"""
+            SELECT 1 FROM `{catalog_name}`.information_schema.tables
+            WHERE table_catalog = '{cat_esc}' AND table_schema = '{sch_esc}' AND table_name = '{tbl_esc}'
+            LIMIT 1
+            """
+        )
+        return df.count() > 0
+    except Exception:
+        return False
+
+
 def generate_and_persist_metadata(config: Any) -> None:
     """
     Generates and persists comments for tables based on the provided setup and model parameters.
@@ -2739,7 +2879,7 @@ def generate_and_persist_metadata(config: Any) -> None:
                 skipped_tables.append(table)
                 continue
 
-            if not spark.catalog.tableExists(table):
+            if not table_exists_uc(spark, table):
                 msg = f"Table {table} does not exist. Deleting from control table and skipping..."
                 logger.warning(f"[generate_and_persist_metadata] {msg}")
                 mark_as_deleted(table, config)
@@ -2753,14 +2893,20 @@ def generate_and_persist_metadata(config: Any) -> None:
                 }
             else:
                 df = process_and_add_ddl(config, table)
-                logger.info(
-                    f"[generate_and_persist_metadata] Generating and persisting ddl for {table}..."
-                )
-                create_and_persist_ddl(df, config, table)
 
-                # Check if DDL application had any failures
-                status = "Table processed"
-                if config.apply_ddl and "ddl_results" in df:
+                if not df:
+                    status = "Skipped - unsupported data source format"
+                    logger.warning(
+                        f"[generate_and_persist_metadata] {table} returned no metadata (unsupported format), logging and continuing"
+                    )
+                else:
+                    logger.info(
+                        f"[generate_and_persist_metadata] Generating and persisting ddl for {table}..."
+                    )
+                    create_and_persist_ddl(df, config, table)
+                    status = "Table processed"
+
+                if df and config.apply_ddl and "ddl_results" in df:
                     ddl_results = df["ddl_results"]
                     if ddl_results.get("failed_count", 0) > 0:
                         missing_tags = ddl_results.get("missing_tags", [])
@@ -2879,7 +3025,7 @@ def setup_queue(config: MetadataConfig) -> List[str]:
     
     # If include_previously_failed_tables is enabled, also include failed/abandoned tables
     mode = config.mode or "comment"
-    if spark.catalog.tableExists(control_table) and getattr(config, 'include_previously_failed_tables', False):
+    if table_exists_uc(spark, control_table) and getattr(config, 'include_previously_failed_tables', False):
         timeout_minutes = getattr(config, 'claim_timeout_minutes', 60)
         run_id = config.run_id
         
@@ -3063,9 +3209,15 @@ def is_schema_wildcard(table_name: str) -> bool:
     return table_name.strip().endswith(".*") and table_name.count(".") == 2
 
 
+_UNREADABLE_FORMATS = frozenset({"VECTOR_INDEX_FORMAT"})
+_UNREADABLE_TABLE_TYPES = frozenset({"METRIC_VIEW", "METRIC VIEW"})
+
+
 def get_tables_in_schema(catalog_name: str, schema_name: str) -> List[str]:
     """
     Get all table names in a given catalog and schema.
+    Excludes metric views and non-readable data source formats (e.g. vector
+    search indexes) that cannot be read with standard SELECT / sample / count.
 
     Args:
         catalog_name (str): The catalog name.
@@ -3077,15 +3229,25 @@ def get_tables_in_schema(catalog_name: str, schema_name: str) -> List[str]:
     spark = SparkSession.builder.getOrCreate()
 
     try:
-        # Use SHOW TABLES to get all tables in the schema
-        tables_df = spark.sql(f"SHOW TABLES IN {catalog_name}.{schema_name}")
+        tables_df = spark.sql(f"""
+            SELECT table_name, table_type, data_source_format
+            FROM `{catalog_name}`.information_schema.tables
+            WHERE table_schema = '{schema_name}'
+              AND table_type NOT IN ('METRIC_VIEW', 'METRIC VIEW')
+        """)
+        rows = tables_df.collect()
 
-        # Extract table names and create fully qualified names
         table_names = []
-        for row in tables_df.collect():
-            table_name = row["tableName"]
-            fully_qualified_name = f"{catalog_name}.{schema_name}.{table_name}"
-            table_names.append(fully_qualified_name)
+        skipped = []
+        for row in rows:
+            fmt = (row.data_source_format or "").upper()
+            if fmt in _UNREADABLE_FORMATS:
+                skipped.append(f"{row.table_name} ({fmt})")
+            else:
+                table_names.append(f"{catalog_name}.{schema_name}.{row.table_name}")
+
+        if skipped:
+            print(f"Skipped {len(skipped)} non-readable objects: {', '.join(skipped)}")
 
         print(f"Found {len(table_names)} tables in schema {catalog_name}.{schema_name}")
         return table_names

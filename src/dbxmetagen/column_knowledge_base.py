@@ -60,7 +60,8 @@ class ColumnKnowledgeBaseBuilder:
             confidence FLOAT,
             nullable BOOLEAN,
             created_at TIMESTAMP,
-            updated_at TIMESTAMP
+            updated_at TIMESTAMP,
+            review_updated_at TIMESTAMP
         )
         CLUSTER BY (catalog, `schema`, table_short_name)
         COMMENT 'Aggregated column-level metadata from dbxmetagen runs'

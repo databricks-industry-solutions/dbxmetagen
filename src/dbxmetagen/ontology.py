@@ -20,8 +20,14 @@ import uuid
 from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql import functions as F
 from pyspark.sql.types import (
-    StructType, StructField, StringType, ArrayType, MapType,
-    DoubleType, BooleanType, TimestampType
+    StructType,
+    StructField,
+    StringType,
+    ArrayType,
+    MapType,
+    DoubleType,
+    BooleanType,
+    TimestampType,
 )
 from pydantic import BaseModel, Field
 
@@ -34,14 +40,18 @@ DEFAULT_CLASSIFICATION_MODEL = "databricks-claude-sonnet-4-6"
 # Pydantic structured output models for AI classification
 # ==============================================================================
 
+
 class EntityClassificationResult(BaseModel):
     """Structured output from LLM entity classification."""
+
     entity_type: str = Field(description="Entity type from the provided list")
     secondary_entity_type: Optional[str] = Field(
         default=None,
         description="Second entity type if the table clearly represents a relationship between two entities (e.g. patient_encounters -> Patient, Encounter). Omit if only one entity type applies.",
     )
-    confidence: float = Field(ge=0.0, le=1.0, description="Confidence score between 0.0 and 1.0")
+    confidence: float = Field(
+        ge=0.0, le=1.0, description="Confidence score between 0.0 and 1.0"
+    )
     recommended_entity: Optional[str] = Field(
         default=None,
         description="If confidence is below 0.5, suggest what entity type name this should be, even if it is not in the provided list",
@@ -49,28 +59,148 @@ class EntityClassificationResult(BaseModel):
     reasoning: str = Field(description="Brief reasoning for the classification")
 
 
+class ColumnClassificationItem(BaseModel):
+    """Single column classification within a batch response."""
+    column_name: str = Field(description="Exact column name as provided in input")
+    entity_type: str = Field(description="Entity type from the provided list")
+    confidence: float = Field(ge=0.0, le=1.0, description="Confidence 0.0-1.0")
+
+
+class BatchColumnClassificationResult(BaseModel):
+    """Batch response for classifying all columns of a single table."""
+    classifications: List[ColumnClassificationItem] = Field(
+        description="One classification per input column"
+    )
+
+
+class TableClassificationItem(BaseModel):
+    """Single table classification within a batch response."""
+    table_name: str = Field(description="Short table name as provided in input")
+    entity_type: str = Field(description="Entity type from the provided list")
+    secondary_entity_type: Optional[str] = Field(
+        default=None,
+        description="Second entity type if the table represents a relationship between two entities",
+    )
+    confidence: float = Field(ge=0.0, le=1.0, description="Confidence 0.0-1.0")
+    recommended_entity: Optional[str] = Field(
+        default=None,
+        description="If confidence is below 0.5, suggest a better entity name",
+    )
+    reasoning: str = Field(description="Brief reasoning for the classification")
+
+
+class BatchTableClassificationResult(BaseModel):
+    """Batch response for classifying multiple tables at once."""
+    classifications: List[TableClassificationItem] = Field(
+        description="One classification per input table"
+    )
+
+
 # ==============================================================================
 # Domain-to-entity affinity map (loaded from config, with embedded fallback)
 # ==============================================================================
 
 _DEFAULT_DOMAIN_ENTITY_AFFINITY: Dict[str, List[str]] = {
-    "healthcare": ["Patient", "Provider", "Encounter", "Condition", "Procedure",
-                   "Medication", "Observation", "Claim", "Coverage", "Person",
-                   "Organization", "Location"],
-    "clinical": ["Patient", "Provider", "Encounter", "Condition", "Procedure",
-                 "Medication", "Observation", "Claim", "Coverage", "Person",
-                 "Organization", "Location"],
-    "diagnostics": ["Patient", "Observation", "Condition", "Procedure", "Person", "Reference"],
-    "payer": ["Claim", "Coverage", "Person", "Organization", "Transaction", "Reference"],
-    "pharmaceutical": ["Patient", "Observation", "Medication", "Condition", "Procedure",
-                       "Person", "Document", "Reference", "Organization"],
-    "quality_safety": ["Patient", "Observation", "Encounter", "Condition", "Metric", "Event"],
-    "research": ["Patient", "Observation", "Medication", "Condition", "Procedure",
-                 "Person", "Document", "Reference"],
-    "finance": ["Transaction", "Person", "Organization", "Product", "Reference", "Event", "Metric"],
-    "operations": ["Product", "Organization", "Location", "Event", "Metric", "Reference"],
+    "healthcare": [
+        "Patient",
+        "Provider",
+        "Encounter",
+        "Condition",
+        "Procedure",
+        "Medication",
+        "Observation",
+        "Claim",
+        "Coverage",
+        "Person",
+        "Organization",
+        "Location",
+    ],
+    "clinical": [
+        "Patient",
+        "Provider",
+        "Encounter",
+        "Condition",
+        "Procedure",
+        "Medication",
+        "Observation",
+        "Claim",
+        "Coverage",
+        "Person",
+        "Organization",
+        "Location",
+    ],
+    "diagnostics": [
+        "Patient",
+        "Observation",
+        "Condition",
+        "Procedure",
+        "Person",
+        "Reference",
+    ],
+    "payer": [
+        "Claim",
+        "Coverage",
+        "Person",
+        "Organization",
+        "Transaction",
+        "Reference",
+    ],
+    "pharmaceutical": [
+        "Patient",
+        "Observation",
+        "Medication",
+        "Condition",
+        "Procedure",
+        "Person",
+        "Document",
+        "Reference",
+        "Organization",
+    ],
+    "quality_safety": [
+        "Patient",
+        "Observation",
+        "Encounter",
+        "Condition",
+        "Metric",
+        "Event",
+    ],
+    "research": [
+        "Patient",
+        "Observation",
+        "Medication",
+        "Condition",
+        "Procedure",
+        "Person",
+        "Document",
+        "Reference",
+    ],
+    "finance": [
+        "Transaction",
+        "Person",
+        "Organization",
+        "Product",
+        "Reference",
+        "Event",
+        "Metric",
+    ],
+    "operations": [
+        "Product",
+        "Organization",
+        "Location",
+        "Event",
+        "Metric",
+        "Reference",
+    ],
     "workforce": ["Person", "Organization", "Location", "Event", "Reference"],
-    "customer": ["Person", "Organization", "Product", "Transaction", "Event", "Metric", "Location"],
+    "customer": [
+        "Person",
+        "Organization",
+        "Product",
+        "Transaction",
+        "Event",
+        "Metric",
+        "Location",
+    ],
     "technology": ["Event", "Metric", "Reference", "Organization"],
     "governance": ["Document", "Reference", "Organization", "Person"],
 }
@@ -85,15 +215,20 @@ def load_domain_entity_affinity(ontology_config: Dict[str, Any]) -> Dict[str, se
 
 
 # Backward-compat: module-level reference used by tests / external callers
-DOMAIN_ENTITY_AFFINITY: Dict[str, set] = {k: set(v) for k, v in _DEFAULT_DOMAIN_ENTITY_AFFINITY.items()}
+DOMAIN_ENTITY_AFFINITY: Dict[str, set] = {
+    k: set(v) for k, v in _DEFAULT_DOMAIN_ENTITY_AFFINITY.items()
+}
 
 
 # ==============================================================================
 # Value enforcement (ported from domain_classifier)
 # ==============================================================================
 
+
 def _enforce_entity_value(
-    predicted: str, allowed: List[str], fallback: str = "DataTable",
+    predicted: str,
+    allowed: List[str],
+    fallback: str = "DataTable",
 ) -> Tuple[str, bool]:
     """Snap a predicted entity type to the nearest allowed value.
 
@@ -119,7 +254,14 @@ DEFAULT_ENTITY_DEFINITIONS = {
     "Person": {
         "description": "People, customers, contacts, users, or employees",
         "keywords": ["customer", "employee", "user", "contact", "person"],
-        "typical_attributes": ["id", "name", "email", "phone", "address", "created_date"],
+        "typical_attributes": [
+            "id",
+            "name",
+            "email",
+            "phone",
+            "address",
+            "created_date",
+        ],
     },
     "Organization": {
         "description": "Companies, departments, facilities, or business units",
@@ -129,17 +271,39 @@ DEFAULT_ENTITY_DEFINITIONS = {
     "Product": {
         "description": "Goods, services, SKUs, or catalog items",
         "keywords": ["product", "item", "sku", "catalog", "offering"],
-        "typical_attributes": ["id", "name", "description", "price", "category", "status"],
+        "typical_attributes": [
+            "id",
+            "name",
+            "description",
+            "price",
+            "category",
+            "status",
+        ],
     },
     "Transaction": {
         "description": "Orders, purchases, payments, invoices, or financial events",
         "keywords": ["transaction", "order", "payment", "invoice", "purchase"],
-        "typical_attributes": ["id", "customer_id", "amount", "date", "status", "currency"],
+        "typical_attributes": [
+            "id",
+            "customer_id",
+            "amount",
+            "date",
+            "status",
+            "currency",
+        ],
     },
     "Location": {
         "description": "Addresses, sites, regions, facilities, or geographies",
         "keywords": ["location", "address", "site", "region", "facility"],
-        "typical_attributes": ["id", "name", "address", "city", "state", "country", "zip_code"],
+        "typical_attributes": [
+            "id",
+            "name",
+            "address",
+            "city",
+            "state",
+            "country",
+            "zip_code",
+        ],
     },
     "Event": {
         "description": "Activities, logs, sessions, audits, or system events",
@@ -175,17 +339,38 @@ DEFAULT_ENTITY_DEFINITIONS = {
     "Encounter": {
         "description": "Visits, admissions, or episodes of care (FHIR Encounter)",
         "keywords": ["encounter", "visit", "admission", "episode", "appointment"],
-        "typical_attributes": ["id", "patient_id", "date", "type", "provider", "location"],
+        "typical_attributes": [
+            "id",
+            "patient_id",
+            "date",
+            "type",
+            "provider",
+            "location",
+        ],
     },
     "Condition": {
         "description": "Diagnoses, problems, or diseases (FHIR Condition / OMOP CONDITION_OCCURRENCE)",
         "keywords": ["diagnosis", "condition", "icd", "disease", "problem"],
-        "typical_attributes": ["id", "code", "description", "patient_id", "date", "status"],
+        "typical_attributes": [
+            "id",
+            "code",
+            "description",
+            "patient_id",
+            "date",
+            "status",
+        ],
     },
     "Procedure": {
         "description": "Medical procedures, surgeries, or interventions (FHIR Procedure)",
         "keywords": ["procedure", "surgery", "cpt", "intervention", "operation"],
-        "typical_attributes": ["id", "code", "description", "date", "provider", "status"],
+        "typical_attributes": [
+            "id",
+            "code",
+            "description",
+            "date",
+            "provider",
+            "status",
+        ],
     },
     "Medication": {
         "description": "Drugs, prescriptions, or medication orders (FHIR MedicationRequest)",
@@ -195,17 +380,38 @@ DEFAULT_ENTITY_DEFINITIONS = {
     "Observation": {
         "description": "Lab results, vitals, or clinical measurements (FHIR Observation / OMOP MEASUREMENT)",
         "keywords": ["lab", "result", "observation", "vital", "specimen"],
-        "typical_attributes": ["id", "test_code", "value", "unit", "reference_range", "date"],
+        "typical_attributes": [
+            "id",
+            "test_code",
+            "value",
+            "unit",
+            "reference_range",
+            "date",
+        ],
     },
     "Claim": {
         "description": "Insurance claims or billing submissions (FHIR Claim)",
         "keywords": ["claim", "billing", "adjudication", "remittance", "eob"],
-        "typical_attributes": ["id", "patient_id", "amount", "service_date", "status", "payer_id"],
+        "typical_attributes": [
+            "id",
+            "patient_id",
+            "amount",
+            "service_date",
+            "status",
+            "payer_id",
+        ],
     },
     "Coverage": {
         "description": "Insurance plans, benefits, or member coverage (FHIR Coverage)",
         "keywords": ["coverage", "insurance", "benefit", "plan", "enrollment"],
-        "typical_attributes": ["id", "member_id", "payer", "plan_name", "start_date", "end_date"],
+        "typical_attributes": [
+            "id",
+            "member_id",
+            "payer",
+            "plan_name",
+            "start_date",
+            "end_date",
+        ],
     },
     "DataTable": {
         "description": "Generic data table (fallback type)",
@@ -218,32 +424,45 @@ DEFAULT_ENTITY_DEFINITIONS = {
 @dataclass
 class OntologyConfig:
     """Configuration for ontology management."""
+
     catalog_name: str
     schema_name: str
     config_path: str = "configurations/ontology_config.yaml"
     ontology_bundle: str = ""
     entities_table: str = "ontology_entities"
     metrics_table: str = "ontology_metrics"
+    column_properties_table: str = "ontology_column_properties"
+    relationships_table: str = "ontology_relationships"
     kb_table: str = "table_knowledge_base"
     column_kb_table: str = "column_knowledge_base"
     nodes_table: str = "graph_nodes"
-    
+    incremental: bool = True
+    entity_tag_key: str = "entity_type"
+
     @property
     def fully_qualified_entities(self) -> str:
         return f"{self.catalog_name}.{self.schema_name}.{self.entities_table}"
-    
+
     @property
     def fully_qualified_metrics(self) -> str:
         return f"{self.catalog_name}.{self.schema_name}.{self.metrics_table}"
-    
+
+    @property
+    def fully_qualified_column_properties(self) -> str:
+        return f"{self.catalog_name}.{self.schema_name}.{self.column_properties_table}"
+
+    @property
+    def fully_qualified_relationships(self) -> str:
+        return f"{self.catalog_name}.{self.schema_name}.{self.relationships_table}"
+
     @property
     def fully_qualified_kb(self) -> str:
         return f"{self.catalog_name}.{self.schema_name}.{self.kb_table}"
-    
+
     @property
     def fully_qualified_column_kb(self) -> str:
         return f"{self.catalog_name}.{self.schema_name}.{self.column_kb_table}"
-    
+
     @property
     def fully_qualified_nodes(self) -> str:
         return f"{self.catalog_name}.{self.schema_name}.{self.nodes_table}"
@@ -252,10 +471,14 @@ class OntologyConfig:
 @dataclass
 class EntityDefinition:
     """Definition of a business entity."""
+
     name: str
     description: str
     keywords: List[str] = field(default_factory=list)
     typical_attributes: List[str] = field(default_factory=list)
+    relationships: Dict[str, Dict[str, str]] = field(default_factory=dict)
+    synonyms: List[str] = field(default_factory=list)
+    business_questions: List[str] = field(default_factory=list)
 
 
 BUNDLE_DIR = "configurations/ontology_bundles"
@@ -269,7 +492,9 @@ def resolve_bundle_path(bundle_name: str) -> str:
     back to ``<BUNDLE_DIR>/<bundle_name>.yaml`` (which OntologyLoader will
     then search with its own path resolution).
     """
-    filename = f"{bundle_name}.yaml" if not bundle_name.endswith(".yaml") else bundle_name
+    filename = (
+        f"{bundle_name}.yaml" if not bundle_name.endswith(".yaml") else bundle_name
+    )
     candidates = [
         os.path.join(BUNDLE_DIR, filename),
         os.path.join("..", BUNDLE_DIR, filename),
@@ -314,17 +539,21 @@ def list_available_bundles() -> List[Dict[str, Any]]:
                 with open(os.path.join(base, fname), "r") as f:
                     raw = yaml.safe_load(f)
                 meta = raw.get("metadata", {})
-                entity_count = len(raw.get("ontology", {}).get("entities", {}).get("definitions", {}))
+                entity_count = len(
+                    raw.get("ontology", {}).get("entities", {}).get("definitions", {})
+                )
                 domain_count = len(raw.get("domains", {}))
-                bundles.append({
-                    "key": bundle_key,
-                    "name": meta.get("name", bundle_key),
-                    "industry": meta.get("industry", "general"),
-                    "description": meta.get("description", ""),
-                    "standards_alignment": meta.get("standards_alignment", ""),
-                    "entity_count": entity_count,
-                    "domain_count": domain_count,
-                })
+                bundles.append(
+                    {
+                        "key": bundle_key,
+                        "name": meta.get("name", bundle_key),
+                        "industry": meta.get("industry", "general"),
+                        "description": meta.get("description", ""),
+                        "standards_alignment": meta.get("standards_alignment", ""),
+                        "entity_count": entity_count,
+                        "domain_count": domain_count,
+                    }
+                )
             except Exception as e:
                 logger.debug(f"Could not read bundle {fname}: {e}")
     return bundles
@@ -332,7 +561,7 @@ def list_available_bundles() -> List[Dict[str, Any]]:
 
 class OntologyLoader:
     """Loads and parses ontology configuration with robust fallbacks."""
-    
+
     @staticmethod
     def load_config(config_path: str) -> Dict[str, Any]:
         """Load ontology configuration from YAML file with workspace-aware paths.
@@ -362,13 +591,17 @@ class OntologyLoader:
         for path in paths_to_try:
             try:
                 if os.path.exists(path):
-                    with open(path, 'r') as f:
+                    with open(path, "r") as f:
                         config = yaml.safe_load(f)
-                    if config and 'ontology' in config:
-                        loaded_config = config.get('ontology', {})
+                    if config and "ontology" in config:
+                        loaded_config = config.get("ontology", {})
                         OntologyLoader._validate_config(loaded_config)
-                        entity_count = len(loaded_config.get('entities', {}).get('definitions', {}))
-                        logger.info(f"Loaded ontology config from {path} with {entity_count} entity definitions")
+                        entity_count = len(
+                            loaded_config.get("entities", {}).get("definitions", {})
+                        )
+                        logger.info(
+                            f"Loaded ontology config from {path} with {entity_count} entity definitions"
+                        )
                         return loaded_config
             except ValueError as e:
                 logger.error(f"Invalid ontology config at {path}: {e}")
@@ -378,7 +611,7 @@ class OntologyLoader:
 
         logger.warning("Could not load ontology config file, using embedded defaults")
         return OntologyLoader._default_config()
-    
+
     @staticmethod
     def _default_config() -> Dict[str, Any]:
         """Return default ontology configuration with embedded entity definitions."""
@@ -387,64 +620,94 @@ class OntologyLoader:
             "entities": {
                 "auto_discover": True,
                 "discovery_confidence_threshold": 0.4,  # Lowered from 0.7
-                "definitions": DEFAULT_ENTITY_DEFINITIONS
+                "definitions": DEFAULT_ENTITY_DEFINITIONS,
             },
             "relationships": {
-                "types": ["owns", "contains", "references", "derives_from", "similar_to"]
+                "types": [
+                    "owns",
+                    "contains",
+                    "references",
+                    "derives_from",
+                    "similar_to",
+                ]
             },
-            "metrics": {
-                "auto_discover": False,
-                "definitions": []
-            }
+            "metrics": {"auto_discover": False, "definitions": []},
         }
-    
+
     @staticmethod
     def _validate_config(config: Dict[str, Any]) -> None:
         """Validate ontology config structure. Raises ValueError on critical issues."""
-        entities = config.get('entities')
+        entities = config.get("entities")
         if not entities or not isinstance(entities, dict):
             raise ValueError("ontology config missing required 'entities' section")
-        
-        definitions = entities.get('definitions')
+
+        definitions = entities.get("definitions")
         if not definitions or not isinstance(definitions, dict):
-            raise ValueError("ontology config missing required 'entities.definitions' (must be non-empty dict)")
-        
+            raise ValueError(
+                "ontology config missing required 'entities.definitions' (must be non-empty dict)"
+            )
+
         for name, defn in definitions.items():
             if not isinstance(defn, dict):
-                raise ValueError(f"Entity '{name}' definition must be a dict, got {type(defn).__name__}")
-            if 'description' not in defn:
+                raise ValueError(
+                    f"Entity '{name}' definition must be a dict, got {type(defn).__name__}"
+                )
+            if "description" not in defn:
                 logger.warning(f"Entity '{name}' missing 'description'")
-            if not isinstance(defn.get('keywords', []), list):
+            if not isinstance(defn.get("keywords", []), list):
                 raise ValueError(f"Entity '{name}'.keywords must be a list")
-            if not isinstance(defn.get('typical_attributes', []), list):
+            if not isinstance(defn.get("typical_attributes", []), list):
                 raise ValueError(f"Entity '{name}'.typical_attributes must be a list")
-        
-        validation = config.get('validation', {})
+
+        validation = config.get("validation", {})
         if validation:
-            for key in ('min_entity_confidence', 'max_entities_per_table'):
+            for key in ("min_entity_confidence", "max_entities_per_table"):
                 val = validation.get(key)
                 if val is not None and not isinstance(val, (int, float)):
-                    raise ValueError(f"validation.{key} must be numeric, got {type(val).__name__}")
-    
+                    raise ValueError(
+                        f"validation.{key} must be numeric, got {type(val).__name__}"
+                    )
+
     @staticmethod
     def get_entity_definitions(config: Dict[str, Any]) -> List[EntityDefinition]:
-        """Extract entity definitions from config, using defaults if empty."""
-        definitions = config.get('entities', {}).get('definitions', {})
-        
-        # If no definitions in config, use embedded defaults
+        """Extract entity definitions from config, using defaults if empty.
+
+        Supports both the new ``relationships`` map format and the legacy
+        ``typical_relationships`` flat list.  When the new format is present
+        it takes precedence; otherwise the flat list is converted into a
+        dict keyed by relationship name with empty target/cardinality.
+        """
+        definitions = config.get("entities", {}).get("definitions", {})
+
         if not definitions:
             logger.info("No entity definitions in config, using embedded defaults")
             definitions = DEFAULT_ENTITY_DEFINITIONS
-        
+
         entities = []
         for name, details in definitions.items():
-            entities.append(EntityDefinition(
-                name=name,
-                description=details.get('description', f'{name} entity'),
-                keywords=details.get('keywords', []),
-                typical_attributes=details.get('typical_attributes', [])
-            ))
-        
+            rels: Dict[str, Dict[str, str]] = {}
+            if "relationships" in details and isinstance(details["relationships"], dict):
+                for rel_name, rel_info in details["relationships"].items():
+                    if isinstance(rel_info, dict):
+                        rels[rel_name] = {k: str(v) for k, v in rel_info.items()}
+                    else:
+                        rels[rel_name] = {"target": str(rel_info)}
+            elif "typical_relationships" in details:
+                for rel_name in details["typical_relationships"]:
+                    rels[str(rel_name)] = {}
+
+            entities.append(
+                EntityDefinition(
+                    name=name,
+                    description=details.get("description", f"{name} entity"),
+                    keywords=details.get("keywords", []),
+                    typical_attributes=details.get("typical_attributes", []),
+                    relationships=rels,
+                    synonyms=details.get("synonyms", []),
+                    business_questions=details.get("business_questions", []),
+                )
+            )
+
         logger.info(f"Loaded {len(entities)} entity definitions")
         return entities
 
@@ -460,27 +723,38 @@ class EntityDiscoverer:
     CONFIDENCE_PENALTY_SNAP = 0.1
 
     def __init__(
-        self, spark: SparkSession, config: OntologyConfig, ontology_config: Dict[str, Any],
+        self,
+        spark: SparkSession,
+        config: OntologyConfig,
+        ontology_config: Dict[str, Any],
         domain_entity_affinity: Optional[Dict[str, set]] = None,
     ):
         self.spark = spark
         self.config = config
         self.ontology_config = ontology_config
         self.entity_definitions = OntologyLoader.get_entity_definitions(ontology_config)
-        self._domain_entity_affinity = domain_entity_affinity or load_domain_entity_affinity(ontology_config)
-        self._validation_cfg = ontology_config.get('validation', {})
+        self._domain_entity_affinity = (
+            domain_entity_affinity or load_domain_entity_affinity(ontology_config)
+        )
+        self._validation_cfg = ontology_config.get("validation", {})
         self._relationship_types = {
-            r['name'] if isinstance(r, dict) else r
-            for r in ontology_config.get('relationships', {}).get('types', [])
+            r["name"] if isinstance(r, dict) else r
+            for r in ontology_config.get("relationships", {}).get("types", [])
         }
         self._model_endpoint = self._validation_cfg.get(
-            'classification_model',
+            "classification_model",
             DEFAULT_CLASSIFICATION_MODEL,
         )
-        self._entity_names = [e.name for e in self.entity_definitions if e.name != "DataTable"]
+        self._entity_names = [
+            e.name for e in self.entity_definitions if e.name != "DataTable"
+        ]
         self._stats = {
-            "keyword_matches": 0, "ai_classifications": 0, "fallback_generic": 0,
-            "column_keyword_matches": 0, "column_ai_classifications": 0, "column_fallback": 0,
+            "keyword_matches": 0,
+            "ai_classifications": 0,
+            "fallback_generic": 0,
+            "column_keyword_matches": 0,
+            "column_ai_classifications": 0,
+            "column_fallback": 0,
         }
 
     # ------------------------------------------------------------------
@@ -489,15 +763,65 @@ class EntityDiscoverer:
 
     def _get_structured_llm(self):
         from databricks_langchain import ChatDatabricks
-        llm = ChatDatabricks(endpoint=self._model_endpoint, temperature=0.0, max_tokens=512)
+
+        llm = ChatDatabricks(
+            endpoint=self._model_endpoint, temperature=0.0, max_tokens=512
+        )
         return llm.with_structured_output(EntityClassificationResult)
+
+    def _get_batch_column_llm(self):
+        from databricks_langchain import ChatDatabricks
+
+        llm = ChatDatabricks(
+            endpoint=self._model_endpoint, temperature=0.0, max_tokens=2048
+        )
+        return llm.with_structured_output(BatchColumnClassificationResult)
+
+    def _get_batch_table_llm(self):
+        from databricks_langchain import ChatDatabricks
+
+        llm = ChatDatabricks(
+            endpoint=self._model_endpoint, temperature=0.0, max_tokens=2048
+        )
+        return llm.with_structured_output(BatchTableClassificationResult)
+
+    @staticmethod
+    def _format_entity_desc(e: "EntityDefinition") -> str:
+        """Format an entity definition for use in classification prompts."""
+        line = f"- {e.name}: {e.description}"
+        if e.synonyms:
+            line += f" (also known as: {', '.join(e.synonyms)})"
+        return line
+
+    def _get_column_summary(self, table_names: List[str]) -> Dict[str, str]:
+        """Get top column names per table for enriching classification prompts."""
+        if not table_names:
+            return {}
+        tbl_clause = ", ".join(f"'{t}'" for t in table_names)
+        try:
+            rows = self.spark.sql(
+                f"SELECT table_name, column_name, data_type "
+                f"FROM {self.config.fully_qualified_column_kb} "
+                f"WHERE table_name IN ({tbl_clause}) "
+                f"ORDER BY table_name, column_name"
+            ).collect()
+        except Exception:
+            return {}
+        by_table: Dict[str, List[str]] = {}
+        for r in rows:
+            by_table.setdefault(r.table_name, []).append(f"{r.column_name} {r.data_type}")
+        return {t: ", ".join(cols[:10]) for t, cols in by_table.items()}
 
     # ------------------------------------------------------------------
     # Keyword prefilter + domain-aware boosting
     # ------------------------------------------------------------------
 
     def _keyword_prefilter(
-        self, name: str, comment: str, domain: str, top_n: int = 8,
+        self,
+        name: str,
+        comment: str,
+        domain: str,
+        top_n: int = 8,
     ) -> List[str]:
         """Score entity definitions by keyword overlap and domain affinity,
         returning the top-N candidate entity names for the LLM prompt."""
@@ -512,7 +836,8 @@ class EntityDiscoverer:
             if edef.name == "DataTable":
                 continue
             kw_score = 0.0
-            for kw in edef.keywords:
+            all_terms = list(edef.keywords) + list(edef.synonyms)
+            for kw in all_terms:
                 kw_l = kw.lower()
                 if kw_l in name_lower:
                     kw_score += 2.0
@@ -534,18 +859,55 @@ class EntityDiscoverer:
     def discover_entities_from_tables(self) -> List[Dict[str, Any]]:
         """Discover entities by matching tables to entity definitions."""
         try:
-            tables_df = self.spark.sql(f"""
-                SELECT table_name, table_short_name, comment, domain
-                FROM {self.config.fully_qualified_kb}
-            """)
-            table_count = tables_df.count()
+            if self.config.incremental:
+                try:
+                    tables_df = self.spark.sql(
+                        f"""
+                        SELECT kb.table_name, kb.table_short_name, kb.comment, kb.domain
+                        FROM {self.config.fully_qualified_kb} kb
+                        LEFT JOIN (
+                            SELECT src_table, MAX(created_at) AS last_classified
+                            FROM (
+                                SELECT EXPLODE(source_tables) AS src_table, created_at
+                                FROM {self.config.fully_qualified_entities}
+                                WHERE COALESCE(attributes['granularity'], 'table') = 'table'
+                            )
+                            GROUP BY src_table
+                        ) oe ON kb.table_name = oe.src_table
+                        WHERE kb.table_name IS NOT NULL
+                          AND (oe.last_classified IS NULL OR kb.updated_at > oe.last_classified)
+                    """
+                    )
+                    table_count = tables_df.count()
+                    total = self.spark.sql(f"SELECT COUNT(*) AS n FROM {self.config.fully_qualified_kb}").collect()[0].n
+                    logger.info(f"Incremental mode: {table_count} tables need classification out of {total}")
+                except Exception as e:
+                    logger.warning(f"Incremental filtering failed ({e}), falling back to full scan")
+                    tables_df = self.spark.sql(
+                        f"""
+                        SELECT table_name, table_short_name, comment, domain
+                        FROM {self.config.fully_qualified_kb}
+                    """
+                    )
+                    table_count = tables_df.count()
+            else:
+                tables_df = self.spark.sql(
+                    f"""
+                    SELECT table_name, table_short_name, comment, domain
+                    FROM {self.config.fully_qualified_kb}
+                """
+                )
+                table_count = tables_df.count()
         except Exception as e:
             logger.error(f"Could not read from knowledge base: {e}")
             return []
 
         if table_count == 0:
-            logger.warning(f"Knowledge base table {self.config.fully_qualified_kb} is empty. "
-                          "Run build_knowledge_base first to populate it.")
+            logger.warning(
+                f"Knowledge base table {self.config.fully_qualified_kb} is empty "
+                "or all tables are up-to-date (incremental mode). "
+                "Run build_knowledge_base first to populate it."
+            )
             return []
 
         logger.info(f"Evaluating {table_count} tables for entity classification")
@@ -562,10 +924,26 @@ class EntityDiscoverer:
                 tables_without_matches.append(row)
 
         if tables_without_matches:
-            logger.info(f"Using AI to classify {len(tables_without_matches)} unmatched tables")
-            for row in tables_without_matches:
-                entities = self._ai_classify_table(row)
-                discovered.extend(entities)
+            n = len(tables_without_matches)
+            batch_size = 15
+            chunks = [
+                tables_without_matches[i : i + batch_size]
+                for i in range(0, n, batch_size)
+            ]
+            logger.info(
+                f"Using AI to classify {n} unmatched tables in {len(chunks)} batches of <={batch_size}"
+            )
+
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                futures = {
+                    executor.submit(self._ai_classify_tables_batch, chunk): chunk
+                    for chunk in chunks
+                }
+                for future in as_completed(futures):
+                    for table_entities in future.result():
+                        discovered.extend(table_entities)
 
         logger.info(
             f"Entity discovery complete: {self._stats['keyword_matches']} keyword matches, "
@@ -579,26 +957,26 @@ class EntityDiscoverer:
         if not name:
             return []
         name = name.lower()
-        variations = [name, name.replace('_', ' '), name.replace('_', '')]
-        if name.endswith('ies'):
-            variations.append(name[:-3] + 'y')
-        elif name.endswith('es'):
+        variations = [name, name.replace("_", " "), name.replace("_", "")]
+        if name.endswith("ies"):
+            variations.append(name[:-3] + "y")
+        elif name.endswith("es"):
             variations.append(name[:-2])
-        elif name.endswith('s'):
+        elif name.endswith("s"):
             variations.append(name[:-1])
-        variations.append(name + 's')
+        variations.append(name + "s")
         return list(set(variations))
 
     def _match_table_to_entities(self, table_row) -> List[Dict[str, Any]]:
         """Match a table to potential entity definitions with flexible matching."""
         matches = []
         table_name = table_row.table_name
-        short_name = (table_row.table_short_name or '').lower()
-        comment = (table_row.comment or '').lower()
+        short_name = (table_row.table_short_name or "").lower()
+        comment = (table_row.comment or "").lower()
         name_variations = self._normalize_name(short_name)
 
-        threshold = self.ontology_config.get('entities', {}).get(
-            'discovery_confidence_threshold', 0.4
+        threshold = self.ontology_config.get("entities", {}).get(
+            "discovery_confidence_threshold", 0.4
         )
 
         for entity_def in self.entity_definitions:
@@ -606,27 +984,32 @@ class EntityDiscoverer:
                 name_variations, short_name, comment, entity_def
             )
             if confidence >= threshold:
-                matches.append({
-                    "entity_id": str(uuid.uuid4()),
-                    "entity_name": entity_def.name,
-                    "entity_type": entity_def.name,
-                    "description": entity_def.description,
-                    "source_tables": [table_name],
-                    "source_columns": [],
-                    "attributes": {
-                        "expected_attributes": str(entity_def.typical_attributes),
-                        "discovery_method": "keyword",
-                    },
-                    "confidence": confidence,
-                    "auto_discovered": True,
-                    "validated": False,
-                    "validation_notes": None,
-                })
+                matches.append(
+                    {
+                        "entity_id": str(uuid.uuid4()),
+                        "entity_name": entity_def.name,
+                        "entity_type": entity_def.name,
+                        "description": entity_def.description,
+                        "source_tables": [table_name],
+                        "source_columns": [],
+                        "attributes": {
+                            "expected_attributes": str(entity_def.typical_attributes),
+                            "discovery_method": "keyword",
+                        },
+                        "confidence": confidence,
+                        "auto_discovered": True,
+                        "validated": False,
+                        "validation_notes": None,
+                    }
+                )
         return matches
 
     def _calculate_match_confidence(
-        self, name_variations: List[str], original_name: str,
-        comment: str, entity_def: EntityDefinition,
+        self,
+        name_variations: List[str],
+        original_name: str,
+        comment: str,
+        entity_def: EntityDefinition,
     ) -> float:
         """Calculate confidence score with flexible matching."""
         score = 0.0
@@ -661,18 +1044,160 @@ class EntityDiscoverer:
     # AI classification for tables (structured output + enforce + multi-entity)
     # ------------------------------------------------------------------
 
+    def _ai_classify_tables_batch(
+        self, table_rows: List, batch_size: int = 15
+    ) -> List[List[Dict[str, Any]]]:
+        """Classify a batch of tables in one LLM call.
+
+        Returns a list parallel to table_rows, each element being the
+        list of entity dicts for that table (same format as _ai_classify_table).
+        Falls back to per-table classification on failure.
+        """
+        candidate_set: set = set()
+        for row in table_rows:
+            short = row.table_short_name or row.table_name.split(".")[-1]
+            comment = row.comment or ""
+            domain = getattr(row, "domain", None) or "unknown"
+            candidate_set.update(self._keyword_prefilter(short, comment, domain))
+
+        entity_descriptions = "\n".join(
+            self._format_entity_desc(e)
+            for e in self.entity_definitions
+            if e.name in candidate_set
+        )
+
+        col_summaries = self._get_column_summary([r.table_name for r in table_rows])
+        table_lines = []
+        for i, row in enumerate(table_rows):
+            short = row.table_short_name or row.table_name.split(".")[-1]
+            comment = (row.comment or "No description")[:400]
+            domain = getattr(row, "domain", None) or "unknown"
+            line = f"{i+1}. {short} | Domain: {domain} | {comment}"
+            cols_text = col_summaries.get(row.table_name, "")
+            if cols_text:
+                line += f" | Columns: {cols_text}"
+            table_lines.append(line)
+        tables_text = "\n".join(table_lines)
+
+        system_prompt = (
+            "You are an entity classifier for database tables. "
+            "For each table, classify it into an entity type. "
+            "If a table clearly represents a relationship between two entities, "
+            "also populate secondary_entity_type. "
+            "If your confidence is below 0.5, populate recommended_entity. "
+            "Return one classification per table, using the exact table_name provided."
+        )
+        user_prompt = (
+            f"Tables:\n{tables_text}\n\n"
+            f"Available entity types:\n{entity_descriptions}\n\n"
+            "Classify every table listed above."
+        )
+
+        try:
+            batch_llm = self._get_batch_table_llm()
+            response: BatchTableClassificationResult = batch_llm.invoke(
+                [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ]
+            )
+
+            short_to_row = {}
+            for row in table_rows:
+                short = row.table_short_name or row.table_name.split(".")[-1]
+                short_to_row[short.lower()] = row
+
+            all_results: List[List[Dict[str, Any]]] = [[] for _ in table_rows]
+            row_index = {id(r): i for i, r in enumerate(table_rows)}
+
+            for item in response.classifications:
+                matched_row = short_to_row.get(item.table_name.lower())
+                if matched_row is None:
+                    continue
+                idx = row_index.get(id(matched_row))
+                if idx is None:
+                    continue
+
+                table_name = matched_row.table_name
+                enforced, exact = _enforce_entity_value(item.entity_type, self._entity_names)
+                confidence = item.confidence
+                if not exact:
+                    confidence = max(0.0, confidence - self.CONFIDENCE_PENALTY_SNAP)
+
+                edef = next((e for e in self.entity_definitions if e.name == enforced), None)
+                attrs: Dict[str, str] = {"discovery_method": "ai_batch"}
+                if item.reasoning:
+                    attrs["reasoning"] = item.reasoning
+                if item.recommended_entity:
+                    attrs["recommended_entity"] = item.recommended_entity
+
+                all_results[idx].append({
+                    "entity_id": str(uuid.uuid4()),
+                    "entity_name": enforced,
+                    "entity_type": enforced,
+                    "description": edef.description if edef else f"Auto-classified as {enforced}",
+                    "source_tables": [table_name],
+                    "source_columns": [],
+                    "attributes": attrs,
+                    "confidence": round(confidence, 3),
+                    "auto_discovered": True,
+                    "validated": False,
+                    "validation_notes": item.reasoning,
+                })
+                self._stats["ai_classifications"] += 1
+
+                if item.secondary_entity_type:
+                    sec_enforced, sec_exact = _enforce_entity_value(
+                        item.secondary_entity_type, self._entity_names
+                    )
+                    sec_conf = item.confidence * 0.85
+                    if not sec_exact:
+                        sec_conf = max(0.0, sec_conf - self.CONFIDENCE_PENALTY_SNAP)
+                    min_conf = self._validation_cfg.get("min_entity_confidence", 0.5)
+                    if sec_conf >= min_conf and sec_enforced != enforced:
+                        sec_edef = next(
+                            (e for e in self.entity_definitions if e.name == sec_enforced), None
+                        )
+                        all_results[idx].append({
+                            "entity_id": str(uuid.uuid4()),
+                            "entity_name": sec_enforced,
+                            "entity_type": sec_enforced,
+                            "description": sec_edef.description if sec_edef else f"Secondary: {sec_enforced}",
+                            "source_tables": [table_name],
+                            "source_columns": [],
+                            "attributes": {"discovery_method": "ai_batch_secondary", "reasoning": item.reasoning or ""},
+                            "confidence": round(sec_conf, 3),
+                            "auto_discovered": True,
+                            "validated": False,
+                            "validation_notes": f"Secondary entity from batch classification of {table_name}",
+                        })
+
+            for i, row in enumerate(table_rows):
+                if not all_results[i]:
+                    all_results[i] = self._ai_classify_table(row)
+
+            return all_results
+
+        except Exception as e:
+            logger.warning(
+                f"Batch table classification failed ({len(table_rows)} tables): {e}. "
+                "Falling back to per-table classification."
+            )
+            return [self._ai_classify_table(row) for row in table_rows]
+
     def _ai_classify_table(self, table_row) -> List[Dict[str, Any]]:
         """Classify a table using structured LLM output. May return 1-2 entities
         (primary + optional secondary for relationship tables)."""
         table_name = table_row.table_name
-        short_name = table_row.table_short_name or table_name.split('.')[-1]
+        short_name = table_row.table_short_name or table_name.split(".")[-1]
         comment = table_row.comment or "No description available"
-        domain = getattr(table_row, 'domain', None) or "unknown"
+        domain = getattr(table_row, "domain", None) or "unknown"
 
         candidates = self._keyword_prefilter(short_name, comment, domain)
         entity_descriptions = "\n".join(
-            f"- {e.name}: {e.description}"
-            for e in self.entity_definitions if e.name in candidates
+            self._format_entity_desc(e)
+            for e in self.entity_definitions
+            if e.name in candidates
         )
 
         system_prompt = (
@@ -683,28 +1208,40 @@ class EntityDiscoverer:
             "If your confidence is below 0.5, populate recommended_entity with what you think "
             "the entity should really be called, even if it is not in the provided list."
         )
+        col_summary = self._get_column_summary([table_row.table_name])
+        cols_text = col_summary.get(table_row.table_name, "")
         user_prompt = (
             f"Table name: {short_name}\n"
             f"Description: {comment[:500]}\n"
-            f"Domain: {domain}\n\n"
-            f"Available entity types:\n{entity_descriptions}\n\n"
+            f"Domain: {domain}\n"
+        )
+        if cols_text:
+            user_prompt += f"Columns: {cols_text}\n"
+        user_prompt += (
+            f"\nAvailable entity types:\n{entity_descriptions}\n\n"
             "Classify this table."
         )
 
         results = []
         try:
             structured_llm = self._get_structured_llm()
-            response: EntityClassificationResult = structured_llm.invoke([
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ])
+            response: EntityClassificationResult = structured_llm.invoke(
+                [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ]
+            )
 
             # --- primary entity ---
-            enforced, exact = _enforce_entity_value(response.entity_type, self._entity_names)
+            enforced, exact = _enforce_entity_value(
+                response.entity_type, self._entity_names
+            )
             confidence = response.confidence
             if not exact:
                 confidence = max(0.0, confidence - self.CONFIDENCE_PENALTY_SNAP)
-                logger.debug(f"Snapped '{response.entity_type}' -> '{enforced}' for {short_name}")
+                logger.debug(
+                    f"Snapped '{response.entity_type}' -> '{enforced}' for {short_name}"
+                )
 
             attrs: Dict[str, str] = {"discovery_method": "ai"}
             if response.reasoning:
@@ -712,63 +1249,86 @@ class EntityDiscoverer:
             if response.recommended_entity:
                 attrs["recommended_entity"] = response.recommended_entity
 
-            edef = next((e for e in self.entity_definitions if e.name == enforced), None)
-            results.append({
-                "entity_id": str(uuid.uuid4()),
-                "entity_name": enforced,
-                "entity_type": enforced,
-                "description": edef.description if edef else f"Auto-classified as {enforced}",
-                "source_tables": [table_name],
-                "source_columns": [],
-                "attributes": attrs,
-                "confidence": round(confidence, 3),
-                "auto_discovered": True,
-                "validated": False,
-                "validation_notes": response.reasoning,
-            })
+            edef = next(
+                (e for e in self.entity_definitions if e.name == enforced), None
+            )
+            results.append(
+                {
+                    "entity_id": str(uuid.uuid4()),
+                    "entity_name": enforced,
+                    "entity_type": enforced,
+                    "description": (
+                        edef.description if edef else f"Auto-classified as {enforced}"
+                    ),
+                    "source_tables": [table_name],
+                    "source_columns": [],
+                    "attributes": attrs,
+                    "confidence": round(confidence, 3),
+                    "auto_discovered": True,
+                    "validated": False,
+                    "validation_notes": response.reasoning,
+                }
+            )
             self._stats["ai_classifications"] += 1
 
             # --- secondary entity (multi-entity support) ---
             if response.secondary_entity_type:
                 sec_enforced, sec_exact = _enforce_entity_value(
-                    response.secondary_entity_type, self._entity_names,
+                    response.secondary_entity_type,
+                    self._entity_names,
                 )
                 sec_conf = response.confidence * 0.85
                 if not sec_exact:
                     sec_conf = max(0.0, sec_conf - self.CONFIDENCE_PENALTY_SNAP)
-                min_conf = self._validation_cfg.get('min_entity_confidence', 0.5)
+                min_conf = self._validation_cfg.get("min_entity_confidence", 0.5)
                 if sec_conf >= min_conf and sec_enforced != enforced:
-                    sec_edef = next((e for e in self.entity_definitions if e.name == sec_enforced), None)
-                    results.append({
-                        "entity_id": str(uuid.uuid4()),
-                        "entity_name": sec_enforced,
-                        "entity_type": sec_enforced,
-                        "description": sec_edef.description if sec_edef else f"Secondary: {sec_enforced}",
-                        "source_tables": [table_name],
-                        "source_columns": [],
-                        "attributes": {"discovery_method": "ai_secondary", "reasoning": response.reasoning or ""},
-                        "confidence": round(sec_conf, 3),
-                        "auto_discovered": True,
-                        "validated": False,
-                        "validation_notes": f"Secondary entity from relationship table {short_name}",
-                    })
+                    sec_edef = next(
+                        (e for e in self.entity_definitions if e.name == sec_enforced),
+                        None,
+                    )
+                    results.append(
+                        {
+                            "entity_id": str(uuid.uuid4()),
+                            "entity_name": sec_enforced,
+                            "entity_type": sec_enforced,
+                            "description": (
+                                sec_edef.description
+                                if sec_edef
+                                else f"Secondary: {sec_enforced}"
+                            ),
+                            "source_tables": [table_name],
+                            "source_columns": [],
+                            "attributes": {
+                                "discovery_method": "ai_secondary",
+                                "reasoning": response.reasoning or "",
+                            },
+                            "confidence": round(sec_conf, 3),
+                            "auto_discovered": True,
+                            "validated": False,
+                            "validation_notes": f"Secondary entity from relationship table {short_name}",
+                        }
+                    )
 
         except Exception as e:
-            logger.warning(f"AI classification failed for {table_name}, using fallback: {e}")
+            logger.warning(
+                f"AI classification failed for {table_name}, using fallback: {e}"
+            )
             self._stats["fallback_generic"] += 1
-            results.append({
-                "entity_id": str(uuid.uuid4()),
-                "entity_name": "DataTable",
-                "entity_type": "DataTable",
-                "description": "Generic data table (AI classification failed)",
-                "source_tables": [table_name],
-                "source_columns": [],
-                "attributes": {"discovery_method": "ai_fallback"},
-                "confidence": 0.3,
-                "auto_discovered": True,
-                "validated": False,
-                "validation_notes": str(e),
-            })
+            results.append(
+                {
+                    "entity_id": str(uuid.uuid4()),
+                    "entity_name": "DataTable",
+                    "entity_type": "DataTable",
+                    "description": "Generic data table (AI classification failed)",
+                    "source_tables": [table_name],
+                    "source_columns": [],
+                    "attributes": {"discovery_method": "ai_fallback"},
+                    "confidence": 0.3,
+                    "auto_discovered": True,
+                    "validated": False,
+                    "validation_notes": str(e),
+                }
+            )
         return results
 
     # ------------------------------------------------------------------
@@ -778,24 +1338,62 @@ class EntityDiscoverer:
     def discover_entities_from_columns(self) -> List[Dict[str, Any]]:
         """Discover entities by matching columns to entity definitions."""
         try:
-            cols_df = self.spark.sql(f"""
-                SELECT column_name, table_name, table_short_name, comment,
-                       data_type, classification, classification_type
-                FROM {self.config.fully_qualified_column_kb}
-            """)
-            col_count = cols_df.count()
+            if self.config.incremental:
+                try:
+                    cols_df = self.spark.sql(
+                        f"""
+                        SELECT ckb.column_name, ckb.table_name, ckb.table_short_name, ckb.comment,
+                               ckb.data_type, ckb.classification, ckb.classification_type
+                        FROM {self.config.fully_qualified_column_kb} ckb
+                        INNER JOIN {self.config.fully_qualified_kb} kb ON ckb.table_name = kb.table_name
+                        LEFT JOIN (
+                            SELECT src_table, MAX(created_at) AS last_classified
+                            FROM (
+                                SELECT EXPLODE(source_tables) AS src_table, created_at
+                                FROM {self.config.fully_qualified_entities}
+                                WHERE attributes['granularity'] = 'column'
+                            )
+                            GROUP BY src_table
+                        ) oe ON ckb.table_name = oe.src_table
+                        WHERE oe.last_classified IS NULL OR kb.updated_at > oe.last_classified
+                    """
+                    )
+                    col_count = cols_df.count()
+                    total = self.spark.sql(f"SELECT COUNT(*) AS n FROM {self.config.fully_qualified_column_kb}").collect()[0].n
+                    logger.info(f"Incremental mode: {col_count} columns need classification out of {total}")
+                except Exception as e:
+                    logger.warning(f"Incremental column filtering failed ({e}), falling back to full scan")
+                    cols_df = self.spark.sql(
+                        f"""
+                        SELECT column_name, table_name, table_short_name, comment,
+                               data_type, classification, classification_type
+                        FROM {self.config.fully_qualified_column_kb}
+                    """
+                    )
+                    col_count = cols_df.count()
+            else:
+                cols_df = self.spark.sql(
+                    f"""
+                    SELECT column_name, table_name, table_short_name, comment,
+                           data_type, classification, classification_type
+                    FROM {self.config.fully_qualified_column_kb}
+                """
+                )
+                col_count = cols_df.count()
         except Exception as e:
-            logger.warning(f"Could not read column_knowledge_base, skipping column discovery: {e}")
+            logger.warning(
+                f"Could not read column_knowledge_base, skipping column discovery: {e}"
+            )
             return []
 
         if col_count == 0:
-            logger.info("column_knowledge_base is empty, skipping column discovery")
+            logger.info("column_knowledge_base is empty or all up-to-date, skipping column discovery")
             return []
 
         logger.info(f"Evaluating {col_count} columns for entity classification")
 
-        min_confidence = self._validation_cfg.get('min_entity_confidence', 0.5)
-        max_per_table = self._validation_cfg.get('max_entities_per_table', 3)
+        min_confidence = self._validation_cfg.get("min_entity_confidence", 0.5)
+        max_per_table = self._validation_cfg.get("max_entities_per_table", 3)
 
         table_entity_map: Dict[tuple, Dict[str, Any]] = {}
         unmatched = []
@@ -807,7 +1405,9 @@ class EntityDiscoverer:
                     key = (row.table_name, entity_type)
                     if key not in table_entity_map:
                         table_entity_map[key] = {
-                            "columns": [], "conf_sum": 0.0, "count": 0,
+                            "columns": [],
+                            "conf_sum": 0.0,
+                            "count": 0,
                             "table_short_name": row.table_short_name,
                         }
                     table_entity_map[key]["columns"].append(row.column_name)
@@ -819,17 +1419,42 @@ class EntityDiscoverer:
 
         if unmatched:
             logger.info(f"Using AI to classify {len(unmatched)} unmatched columns")
+            from collections import defaultdict
+
+            grouped: Dict[str, List] = defaultdict(list)
             for row in unmatched:
-                entity_type, conf = self._ai_classify_column(row)
-                key = (row.table_name, entity_type)
-                if key not in table_entity_map:
-                    table_entity_map[key] = {
-                        "columns": [], "conf_sum": 0.0, "count": 0,
-                        "table_short_name": row.table_short_name,
-                    }
-                table_entity_map[key]["columns"].append(row.column_name)
-                table_entity_map[key]["conf_sum"] += conf
-                table_entity_map[key]["count"] += 1
+                grouped[row.table_name].append(row)
+
+            logger.info(
+                f"Batching {len(unmatched)} columns across {len(grouped)} tables"
+            )
+
+            def _classify_table_cols(table_name, rows):
+                short = rows[0].table_short_name or table_name.split(".")[-1]
+                return self._ai_classify_columns_for_table(table_name, short, rows)
+
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                futures = {
+                    executor.submit(_classify_table_cols, tbl, rows): tbl
+                    for tbl, rows in grouped.items()
+                }
+                for future in as_completed(futures):
+                    tbl = futures[future]
+                    short_name = grouped[tbl][0].table_short_name
+                    for col_name, entity_type, conf in future.result():
+                        key = (tbl, entity_type)
+                        if key not in table_entity_map:
+                            table_entity_map[key] = {
+                                "columns": [],
+                                "conf_sum": 0.0,
+                                "count": 0,
+                                "table_short_name": short_name,
+                            }
+                        table_entity_map[key]["columns"].append(col_name)
+                        table_entity_map[key]["conf_sum"] += conf
+                        table_entity_map[key]["count"] += 1
 
         discovered = []
         table_groups: Dict[str, list] = {}
@@ -837,15 +1462,28 @@ class EntityDiscoverer:
             avg_conf = info["conf_sum"] / info["count"]
             if avg_conf < min_confidence:
                 continue
-            entity_def = next((e for e in self.entity_definitions if e.name == etype), None)
+            entity_def = next(
+                (e for e in self.entity_definitions if e.name == etype), None
+            )
+            bindings = []
+            if entity_def:
+                for col in info["columns"]:
+                    attr = self._best_attribute_for_column(col, entity_def)
+                    bindings.append({"attribute_name": attr, "bound_table": tbl, "bound_column": col})
             entry = {
                 "entity_id": str(uuid.uuid4()),
                 "entity_name": etype,
                 "entity_type": etype,
-                "description": entity_def.description if entity_def else f"Column-derived {etype}",
+                "description": (
+                    entity_def.description if entity_def else f"Column-derived {etype}"
+                ),
                 "source_tables": [tbl],
                 "source_columns": info["columns"],
-                "attributes": {"granularity": "column", "discovery_method": "column_keyword"},
+                "column_bindings": bindings,
+                "attributes": {
+                    "granularity": "column",
+                    "discovery_method": "column_keyword",
+                },
                 "confidence": round(avg_conf, 3),
                 "auto_discovered": True,
                 "validated": False,
@@ -870,23 +1508,29 @@ class EntityDiscoverer:
 
     def _match_column_to_entities(self, col_row) -> List[tuple]:
         """Match a column to entity definitions. Returns list of (entity_type, confidence)."""
-        col_name = (col_row.column_name or '').lower()
-        comment = (col_row.comment or '').lower()
-        classification = (col_row.classification or '').lower()
+        col_name = (col_row.column_name or "").lower()
+        comment = (col_row.comment or "").lower()
+        classification = (col_row.classification or "").lower()
         col_variations = self._normalize_name(col_name)
 
         matches = []
         for entity_def in self.entity_definitions:
             if entity_def.name == "DataTable":
                 continue
-            score = self._column_match_score(col_variations, col_name, comment, classification, entity_def)
+            score = self._column_match_score(
+                col_variations, col_name, comment, classification, entity_def
+            )
             if score >= 0.4:
                 matches.append((entity_def.name, score))
         return matches
 
     def _column_match_score(
-        self, col_variations: List[str], col_name: str, comment: str,
-        classification: str, entity_def: EntityDefinition,
+        self,
+        col_variations: List[str],
+        col_name: str,
+        comment: str,
+        classification: str,
+        entity_def: EntityDefinition,
     ) -> float:
         """Score how well a column matches an entity definition."""
         score = 0.0
@@ -908,21 +1552,113 @@ class EntityDiscoverer:
             elif kw_lower in comment:
                 score += 0.5
         entity_lower = entity_def.name.lower()
-        if re.match(rf'{entity_lower}[_\s]?id$', col_name):
+        if re.match(rf"{entity_lower}[_\s]?id$", col_name):
             score += 2.0
             max_score += 2.0
-        healthcare_entities = {"patient", "provider", "encounter", "condition",
-                               "procedure", "medication", "observation", "claim", "coverage"}
-        if classification in ('phi', 'pii') and entity_lower in healthcare_entities:
+        healthcare_entities = {
+            "patient",
+            "provider",
+            "encounter",
+            "condition",
+            "procedure",
+            "medication",
+            "observation",
+            "claim",
+            "coverage",
+        }
+        if classification in ("phi", "pii") and entity_lower in healthcare_entities:
             score += 0.5
             max_score += 0.5
         if max_score == 0:
             return 0.0
         return min(1.0, score / max_score)
 
+    @staticmethod
+    def _best_attribute_for_column(col_name: str, entity_def: EntityDefinition) -> str:
+        """Derive the best-matching business attribute for a physical column.
+
+        Strips entity-name prefixes (e.g. ``patient_mrn`` -> ``mrn``) and
+        matches against ``typical_attributes``.  Falls back to the raw
+        column name when no attribute matches.
+        """
+        cn = col_name.lower()
+        prefix = entity_def.name.lower() + "_"
+        stripped = cn[len(prefix):] if cn.startswith(prefix) else cn
+        for attr in entity_def.typical_attributes:
+            al = attr.lower()
+            if al == stripped or al == cn:
+                return attr
+        for attr in entity_def.typical_attributes:
+            al = attr.lower()
+            if al in stripped or stripped in al:
+                return attr
+        return stripped
+
     # ------------------------------------------------------------------
     # AI classification for columns (structured output + enforce)
     # ------------------------------------------------------------------
+
+    def _ai_classify_columns_for_table(
+        self, table_name: str, short_name: str, columns: List
+    ) -> List[Tuple[str, str, float]]:
+        """Classify all columns for a single table in one LLM call.
+
+        Returns list of (column_name, entity_type, confidence).
+        Falls back to per-column classification on failure.
+        """
+        entity_descriptions = "\n".join(
+            self._format_entity_desc(e)
+            for e in self.entity_definitions
+            if e.name != "DataTable"
+        )
+
+        col_lines = []
+        for row in columns:
+            cname = row.column_name or "unknown"
+            dtype = row.data_type or "unknown"
+            desc = (row.comment or "")[:200]
+            col_lines.append(f"  - {cname} ({dtype}): {desc}")
+        columns_text = "\n".join(col_lines)
+
+        system_prompt = (
+            "You are an entity classifier for database columns. "
+            "For each column, classify it into the entity type it most likely belongs to. "
+            "Return one classification per column, using the exact column_name provided."
+        )
+        user_prompt = (
+            f"Table: {short_name}\n\n"
+            f"Columns:\n{columns_text}\n\n"
+            f"Entity types:\n{entity_descriptions}\n\n"
+            "Classify every column listed above."
+        )
+
+        try:
+            batch_llm = self._get_batch_column_llm()
+            response: BatchColumnClassificationResult = batch_llm.invoke(
+                [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ]
+            )
+            results = []
+            for item in response.classifications:
+                enforced, exact = _enforce_entity_value(item.entity_type, self._entity_names)
+                conf = item.confidence
+                if not exact:
+                    conf = max(0.0, conf - self.CONFIDENCE_PENALTY_SNAP)
+                results.append((item.column_name, enforced, round(conf, 3)))
+            self._stats["column_ai_classifications"] += len(results)
+            return results
+        except Exception as e:
+            logger.warning(
+                f"Batch column classification failed for {table_name} ({len(columns)} cols): {e}. "
+                "Falling back to per-column classification."
+            )
+            results = []
+            for row in columns:
+                etype, conf = self._ai_classify_column(row)
+                results.append((row.column_name or "unknown", etype, conf))
+            return results
 
     def _ai_classify_column(self, col_row) -> Tuple[str, float]:
         """AI classification for a single column using structured output."""
@@ -932,8 +1668,9 @@ class EntityDiscoverer:
         data_type = col_row.data_type or "unknown"
 
         entity_descriptions = "\n".join(
-            f"- {e.name}: {e.description}"
-            for e in self.entity_definitions if e.name != "DataTable"
+            self._format_entity_desc(e)
+            for e in self.entity_definitions
+            if e.name != "DataTable"
         )
 
         system_prompt = (
@@ -949,11 +1686,15 @@ class EntityDiscoverer:
 
         try:
             structured_llm = self._get_structured_llm()
-            response: EntityClassificationResult = structured_llm.invoke([
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ])
-            enforced, exact = _enforce_entity_value(response.entity_type, self._entity_names)
+            response: EntityClassificationResult = structured_llm.invoke(
+                [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ]
+            )
+            enforced, exact = _enforce_entity_value(
+                response.entity_type, self._entity_names
+            )
             conf = response.confidence
             if not exact:
                 conf = max(0.0, conf - self.CONFIDENCE_PENALTY_SNAP)
@@ -989,14 +1730,18 @@ class EntityDiscoverer:
                     }
                 else:
                     existing = groups[key]
-                    existing["confidence"] = max(existing["confidence"], ent.get("confidence", 0))
+                    existing["confidence"] = max(
+                        existing["confidence"], ent.get("confidence", 0)
+                    )
                     for col in ent.get("source_columns", []):
                         if col not in existing["source_columns"]:
                             existing["source_columns"].append(col)
                     for k, v in ent.get("attributes", {}).items():
                         if k not in existing["attributes"]:
                             existing["attributes"][k] = v
-                    if ent.get("validation_notes") and not existing.get("validation_notes"):
+                    if ent.get("validation_notes") and not existing.get(
+                        "validation_notes"
+                    ):
                         existing["validation_notes"] = ent["validation_notes"]
         return list(groups.values())
 
@@ -1004,35 +1749,53 @@ class EntityDiscoverer:
 class OntologyBuilder:
     """
     Builder for creating and managing the ontology layer.
-    
+
     Creates ontology_entities and ontology_metrics tables, discovers
     entities from the knowledge base, and manages relationships.
     """
-    
-    ENTITIES_SCHEMA = StructType([
-        StructField("entity_id", StringType(), False),
-        StructField("entity_name", StringType(), True),
-        StructField("entity_type", StringType(), True),
-        StructField("description", StringType(), True),
-        StructField("source_tables", ArrayType(StringType()), True),
-        StructField("source_columns", ArrayType(StringType()), True),
-        StructField("attributes", MapType(StringType(), StringType()), True),
-        StructField("confidence", DoubleType(), True),
-        StructField("auto_discovered", BooleanType(), True),
-        StructField("validated", BooleanType(), True),
-        StructField("validation_notes", StringType(), True),
-        StructField("ontology_bundle", StringType(), True),
-        StructField("created_at", TimestampType(), True),
-        StructField("updated_at", TimestampType(), True),
-    ])
-    
+
+    _BINDING_SCHEMA = ArrayType(
+        StructType(
+            [
+                StructField("attribute_name", StringType(), True),
+                StructField("bound_table", StringType(), True),
+                StructField("bound_column", StringType(), True),
+            ]
+        )
+    )
+
+    ENTITIES_SCHEMA = StructType(
+        [
+            StructField("entity_id", StringType(), False),
+            StructField("entity_name", StringType(), True),
+            StructField("entity_type", StringType(), True),
+            StructField("description", StringType(), True),
+            StructField("source_tables", ArrayType(StringType()), True),
+            StructField("source_columns", ArrayType(StringType()), True),
+            StructField("attributes", MapType(StringType(), StringType()), True),
+            StructField("confidence", DoubleType(), True),
+            StructField("discovery_confidence", DoubleType(), True),
+            StructField("entity_role", StringType(), True),
+            StructField("is_canonical", BooleanType(), True),
+            StructField("auto_discovered", BooleanType(), True),
+            StructField("validated", BooleanType(), True),
+            StructField("validation_notes", StringType(), True),
+            StructField("ontology_bundle", StringType(), True),
+            StructField("created_at", TimestampType(), True),
+            StructField("updated_at", TimestampType(), True),
+            StructField("column_bindings", _BINDING_SCHEMA, True),
+        ]
+    )
+
     def __init__(self, spark: SparkSession, config: OntologyConfig):
         self.spark = spark
         self.config = config
         self.ontology_config = OntologyLoader.load_config(config.config_path)
         affinity = load_domain_entity_affinity(self.ontology_config)
-        self.discoverer = EntityDiscoverer(spark, config, self.ontology_config, domain_entity_affinity=affinity)
-    
+        self.discoverer = EntityDiscoverer(
+            spark, config, self.ontology_config, domain_entity_affinity=affinity
+        )
+
     def create_entities_table(self) -> None:
         """Create the ontology entities table."""
         ddl = f"""
@@ -1049,19 +1812,28 @@ class OntologyBuilder:
             validated BOOLEAN,
             validation_notes STRING,
             ontology_bundle STRING,
+            column_bindings ARRAY<STRUCT<attribute_name: STRING, bound_table: STRING, bound_column: STRING>>,
             created_at TIMESTAMP,
             updated_at TIMESTAMP
         )
         COMMENT 'Ontology entities discovered from knowledge base'
         """
         self.spark.sql(ddl)
-        # Add column if table already exists (ALTER TABLE ADD COLUMN is idempotent for existing columns in Delta)
-        try:
-            self.spark.sql(f"ALTER TABLE {self.config.fully_qualified_entities} ADD COLUMN IF NOT EXISTS ontology_bundle STRING")
-        except Exception:
-            pass
+        for col_ddl in [
+            "ontology_bundle STRING",
+            "column_bindings ARRAY<STRUCT<attribute_name: STRING, bound_table: STRING, bound_column: STRING>>",
+            "entity_role STRING",
+            "is_canonical BOOLEAN",
+            "discovery_confidence DOUBLE",
+        ]:
+            try:
+                self.spark.sql(
+                    f"ALTER TABLE {self.config.fully_qualified_entities} ADD COLUMN IF NOT EXISTS {col_ddl}"
+                )
+            except Exception:
+                pass
         logger.info(f"Entities table {self.config.fully_qualified_entities} ready")
-    
+
     def create_metrics_table(self) -> None:
         """Create the ontology metrics table.
 
@@ -1088,8 +1860,10 @@ class OntologyBuilder:
         """
         self.spark.sql(ddl)
         logger.info(f"Metrics table {self.config.fully_qualified_metrics} ready")
-    
-    def _store_entities(self, entities: List[Dict[str, Any]], view_name: str = "new_entities") -> int:
+
+    def _store_entities(
+        self, entities: List[Dict[str, Any]], view_name: str = "new_entities"
+    ) -> int:
         """Common logic to store a list of entity dicts via MERGE."""
         if not entities:
             return 0
@@ -1098,45 +1872,54 @@ class OntologyBuilder:
         now = datetime.now()
         rows = []
         for entity in entities:
-            attributes = entity.get('attributes', {})
+            attributes = entity.get("attributes", {})
             if isinstance(attributes, dict):
                 attributes = {k: str(v) for k, v in attributes.items()}
             else:
                 attributes = {}
-            rows.append((
-                entity['entity_id'],
-                entity.get('entity_name'),
-                entity.get('entity_type'),
-                entity.get('description'),
-                entity.get('source_tables', []),
-                entity.get('source_columns', []),
-                attributes,
-                float(entity.get('confidence', 0.0)),
-                bool(entity.get('auto_discovered', True)),
-                bool(entity.get('validated', False)),
-                entity.get('validation_notes'),
-                bundle_name,
-                now, now,
-            ))
+            bindings = entity.get("column_bindings") or []
+            rows.append(
+                (
+                    entity["entity_id"],
+                    entity.get("entity_name"),
+                    entity.get("entity_type"),
+                    entity.get("description"),
+                    entity.get("source_tables", []),
+                    entity.get("source_columns", []),
+                    attributes,
+                    float(entity.get("confidence", 0.0)),
+                    bool(entity.get("auto_discovered", True)),
+                    bool(entity.get("validated", False)),
+                    entity.get("validation_notes"),
+                    bundle_name,
+                    now,
+                    now,
+                    bindings,
+                )
+            )
 
         df = self.spark.createDataFrame(rows, schema=self.ENTITIES_SCHEMA)
         df.createOrReplaceTempView(view_name)
 
-        self.spark.sql(f"""
+        self.spark.sql(
+            f"""
         MERGE INTO {self.config.fully_qualified_entities} AS target
         USING {view_name} AS source
         ON target.entity_name = source.entity_name
            AND array_join(target.source_tables, ',') = array_join(source.source_tables, ',')
            AND COALESCE(target.attributes['granularity'], 'table') = COALESCE(source.attributes['granularity'], 'table')
         WHEN NOT MATCHED THEN INSERT *
-        """)
+        """
+        )
         return len(entities)
 
     def discover_and_store_entities(self) -> int:
         """Discover table-level entities, deduplicate, and store."""
         entities = self.discoverer.discover_entities_from_tables()
         if not entities:
-            logger.warning("No entities discovered. Check that table_knowledge_base has data.")
+            logger.warning(
+                "No entities discovered. Check that table_knowledge_base has data."
+            )
             return 0
         entities = EntityDiscoverer.deduplicate_entities(entities)
         stored = self._store_entities(entities, "new_table_entities")
@@ -1155,13 +1938,23 @@ class OntologyBuilder:
         return stored
 
     def backfill_source_columns(self) -> int:
-        """Update table-level entities' source_columns from column-level matches."""
+        """Update table-level entities' source_columns and column_bindings from column-level matches."""
         try:
-            self.spark.sql(f"""
+            self.spark.sql(
+                f"ALTER TABLE {self.config.fully_qualified_entities} "
+                "ADD COLUMN IF NOT EXISTS column_bindings "
+                "ARRAY<STRUCT<attribute_name: STRING, bound_table: STRING, bound_column: STRING>>"
+            )
+        except Exception:
+            pass
+        try:
+            self.spark.sql(
+                f"""
             MERGE INTO {self.config.fully_qualified_entities} AS tbl
             USING (
                 SELECT entity_name,
                        array_distinct(flatten(collect_list(source_columns))) AS cols,
+                       flatten(collect_list(COALESCE(column_bindings, array()))) AS bindings,
                        source_tables[0] AS tbl_name
                 FROM {self.config.fully_qualified_entities}
                 WHERE attributes['granularity'] = 'column'
@@ -1172,29 +1965,36 @@ class OntologyBuilder:
                AND array_contains(tbl.source_tables, col_agg.tbl_name)
                AND COALESCE(tbl.attributes['granularity'], 'table') = 'table'
             WHEN MATCHED AND SIZE(tbl.source_columns) = 0 THEN
-                UPDATE SET source_columns = col_agg.cols, updated_at = current_timestamp()
-            """)
-            logger.info("Backfilled source_columns on table-level entities")
+                UPDATE SET source_columns = col_agg.cols,
+                           column_bindings = col_agg.bindings,
+                           updated_at = current_timestamp()
+            """
+            )
+            logger.info("Backfilled source_columns and column_bindings on table-level entities")
             return 1
         except Exception as e:
             logger.warning(f"Could not backfill source_columns: {e}")
             return 0
 
-    def populate_entity_metrics(self, model_endpoint: str = "databricks-gpt-oss-120b") -> int:
+    def populate_entity_metrics(
+        self, model_endpoint: str = "databricks-gpt-oss-120b"
+    ) -> int:
         """Generate entity-level metric suggestions and populate ontology_metrics."""
-        ents = self.spark.sql(f"""
+        ents = self.spark.sql(
+            f"""
             SELECT entity_id, entity_name, entity_type, description,
                    source_tables, source_columns
             FROM {self.config.fully_qualified_entities}
             WHERE confidence >= 0.5 AND COALESCE(attributes['granularity'], 'table') = 'table'
-        """).collect()
+        """
+        ).collect()
         if not ents:
             return 0
 
         # Get column metadata for the source tables
         all_tables = set()
         for e in ents:
-            for t in (e["source_tables"] or []):
+            for t in e["source_tables"] or []:
                 all_tables.add(t)
         tbl_clause = ", ".join(f"'{t}'" for t in all_tables)
         col_meta = {}
@@ -1224,9 +2024,9 @@ class OntologyBuilder:
                 f"Description: {e['description']}\n"
                 f"Tables and columns:\n{cols_context}\n"
                 "Generate 3-5 business metrics for this entity as JSON array. "
-                "Each: {{\"metric_name\": \"...\", \"description\": \"...\", "
-                "\"aggregation_type\": \"SUM|COUNT|AVG|MIN|MAX\", "
-                "\"source_field\": \"column_name\", \"filter_condition\": \"optional WHERE clause\"}}. "
+                'Each: {{"metric_name": "...", "description": "...", '
+                '"aggregation_type": "SUM|COUNT|AVG|MIN|MAX", '
+                '"source_field": "column_name", "filter_condition": "optional WHERE clause"}}. '
                 "Only output JSON array."
             )
             escaped = prompt.replace("'", "''")
@@ -1239,11 +2039,13 @@ class OntologyBuilder:
                 text = re.sub(r"\s*```$", "", text)
                 s, end = text.find("["), text.rfind("]")
                 if s != -1 and end != -1:
-                    metrics = json.loads(text[s:end + 1])
+                    metrics = json.loads(text[s : end + 1])
                 else:
                     continue
             except Exception as ex:
-                logger.warning("AI metric generation failed for %s: %s", e["entity_name"], ex)
+                logger.warning(
+                    "AI metric generation failed for %s: %s", e["entity_name"], ex
+                )
                 continue
 
             now = datetime.now().isoformat()
@@ -1273,23 +2075,108 @@ class OntologyBuilder:
         logger.info("Populated %d ontology metrics", stored)
         return stored
 
+    def compute_ontology_metrics(self) -> int:
+        """Compute aggregate ontology health metrics and write to ontology_metrics."""
+        ent = self.config.fully_qualified_entities
+        edges = f"{self.config.catalog_name}.{self.config.schema_name}.graph_edges"
+        kb = self.config.fully_qualified_kb
+        metrics_tbl = self.config.fully_qualified_metrics
+        now = datetime.now().isoformat()
+
+        try:
+            rows = self.spark.sql(f"""
+                WITH ent AS (SELECT * FROM {ent}),
+                kb AS (SELECT DISTINCT table_name FROM {kb}),
+                covered AS (
+                    SELECT DISTINCT t.table_name
+                    FROM ent e LATERAL VIEW EXPLODE(e.source_tables) t AS table_name
+                    WHERE COALESCE(e.attributes['granularity'], 'table') = 'table'
+                ),
+                edge_counts AS (
+                    SELECT relationship, COUNT(*) as cnt FROM {edges}
+                    WHERE relationship IN ('instance_of','has_attribute','is_a','references')
+                    GROUP BY relationship
+                )
+                SELECT
+                    COUNT(DISTINCT e.entity_id) as total_entities,
+                    COUNT(DISTINCT e.entity_type) as total_entity_types,
+                    ROUND(AVG(e.confidence), 4) as avg_confidence,
+                    ROUND(COALESCE(
+                        (SELECT COUNT(*) FROM covered) * 100.0 / NULLIF((SELECT COUNT(*) FROM kb), 0)
+                    , 0), 1) as table_coverage_pct,
+                    SUM(CASE WHEN SIZE(COALESCE(e.column_bindings, ARRAY())) > 0 THEN 1 ELSE 0 END) as entities_with_bindings,
+                    SUM(CASE WHEN COALESCE(e.attributes['discovery_method'],'') LIKE '%keyword%' THEN 1 ELSE 0 END) as keyword_discovered,
+                    SUM(CASE WHEN COALESCE(e.attributes['discovery_method'],'') LIKE '%ai%' THEN 1 ELSE 0 END) as ai_discovered,
+                    SUM(CASE WHEN e.confidence < 0.5 THEN 1 ELSE 0 END) as low_confidence_count,
+                    (SELECT COALESCE(SUM(cnt),0) FROM edge_counts) as ontology_edges_total,
+                    (SELECT COALESCE(MAX(cnt),0) FROM edge_counts WHERE relationship='instance_of') as instance_of_edges,
+                    (SELECT COALESCE(MAX(cnt),0) FROM edge_counts WHERE relationship='has_attribute') as has_attribute_edges,
+                    (SELECT COALESCE(MAX(cnt),0) FROM edge_counts WHERE relationship='is_a') as is_a_edges,
+                    (SELECT COALESCE(MAX(cnt),0) FROM edge_counts WHERE relationship='references') as references_edges
+                FROM ent e
+            """).collect()[0]
+
+            metrics = [
+                ("total_entities", "Total discovered entities", str(rows.total_entities)),
+                ("total_entity_types", "Distinct entity types", str(rows.total_entity_types)),
+                ("avg_confidence", "Average entity confidence", str(rows.avg_confidence)),
+                ("table_coverage_pct", "% of KB tables with an entity", str(rows.table_coverage_pct)),
+                ("binding_completeness_pct", "% of entities with column bindings",
+                 str(round(rows.entities_with_bindings * 100.0 / max(rows.total_entities, 1), 1))),
+                ("keyword_discovered", "Entities discovered by keyword", str(rows.keyword_discovered)),
+                ("ai_discovered", "Entities discovered by AI", str(rows.ai_discovered)),
+                ("low_confidence_count", "Entities with confidence < 0.5", str(rows.low_confidence_count)),
+                ("ontology_edges_total", "Total ontology relationship edges", str(rows.ontology_edges_total)),
+                ("instance_of_edges", "Table-to-entity edges", str(rows.instance_of_edges)),
+                ("has_attribute_edges", "Entity-to-column edges", str(rows.has_attribute_edges)),
+                ("is_a_edges", "Hierarchy edges", str(rows.is_a_edges)),
+                ("references_edges", "Entity cross-reference edges", str(rows.references_edges)),
+            ]
+
+            for name, desc, val in metrics:
+                mid = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"ontology_metric_{name}"))
+                escaped_desc = desc.replace("'", "''")
+                self.spark.sql(f"""
+                    MERGE INTO {metrics_tbl} t
+                    USING (SELECT '{mid}' as metric_id) s ON t.metric_id = s.metric_id
+                    WHEN MATCHED THEN UPDATE SET
+                        sql_definition = '{val}', updated_at = '{now}'
+                    WHEN NOT MATCHED THEN INSERT (
+                        metric_id, metric_name, description, entity_id,
+                        sql_definition, uc_view_name, aggregation_type,
+                        source_field, filter_condition, created_at, updated_at
+                    ) VALUES (
+                        '{mid}', '{name}', '{escaped_desc}', NULL,
+                        '{val}', NULL, 'COMPUTED', NULL, NULL, '{now}', '{now}'
+                    )
+                """)
+
+            logger.info("Computed %d ontology metrics", len(metrics))
+            return len(metrics)
+        except Exception as e:
+            logger.warning("Failed to compute ontology metrics: %s", e)
+            return 0
+
     def apply_entity_tags(self) -> int:
-        """Apply entity_type tags to UC tables and columns from discovered entities."""
-        min_conf = self._validation_cfg.get('min_entity_confidence', 0.5)
+        """Apply entity tags to UC tables and columns from discovered entities."""
+        min_conf = self._validation_cfg.get("min_entity_confidence", 0.5)
+        tag_key = self.config.entity_tag_key
         tagged = 0
 
         # Table-level tags
         try:
-            table_ents = self.spark.sql(f"""
+            table_ents = self.spark.sql(
+                f"""
                 SELECT entity_type, EXPLODE(source_tables) AS table_name
                 FROM {self.config.fully_qualified_entities}
                 WHERE COALESCE(attributes['granularity'], 'table') = 'table'
                   AND confidence >= {min_conf}
-            """).collect()
+            """
+            ).collect()
             for row in table_ents:
                 try:
                     self.spark.sql(
-                        f"ALTER TABLE {row.table_name} SET TAGS ('entity_type' = '{row.entity_type}')"
+                        f"ALTER TABLE {row.table_name} SET TAGS ('{tag_key}' = '{row.entity_type}')"
                     )
                     tagged += 1
                 except Exception as e:
@@ -1299,32 +2186,40 @@ class OntologyBuilder:
 
         # Column-level tags
         try:
-            col_ents = self.spark.sql(f"""
+            col_ents = self.spark.sql(
+                f"""
                 SELECT entity_type, source_tables[0] AS table_name,
                        EXPLODE(source_columns) AS col_name
                 FROM {self.config.fully_qualified_entities}
                 WHERE attributes['granularity'] = 'column'
                   AND confidence >= {min_conf}
                   AND SIZE(source_columns) > 0
-            """).collect()
+            """
+            ).collect()
             for row in col_ents:
                 try:
                     self.spark.sql(
                         f"ALTER TABLE {row.table_name} ALTER COLUMN {row.col_name} "
-                        f"SET TAGS ('entity_type' = '{row.entity_type}')"
+                        f"SET TAGS ('{tag_key}' = '{row.entity_type}')"
                     )
                     tagged += 1
                 except Exception as e:
-                    logger.warning("Failed to tag column %s.%s: %s", row.table_name, row.col_name, e)
+                    logger.warning(
+                        "Failed to tag column %s.%s: %s",
+                        row.table_name,
+                        row.col_name,
+                        e,
+                    )
         except Exception as e:
             logger.warning("Could not read column-level entities for tagging: %s", e)
 
         logger.info("Applied %d entity tags to UC objects", tagged)
         return tagged
-    
+
     def get_entity_summary(self) -> DataFrame:
         """Get summary of discovered entities."""
-        return self.spark.sql(f"""
+        return self.spark.sql(
+            f"""
             SELECT 
                 entity_type,
                 COUNT(*) as entity_count,
@@ -1333,20 +2228,223 @@ class OntologyBuilder:
             FROM {self.config.fully_qualified_entities}
             GROUP BY entity_type
             ORDER BY entity_count DESC
-        """)
-    
+        """
+        )
+
+    def discover_inter_entity_relationships(self) -> Dict[str, Any]:
+        """Discover typed relationships between entities using declared relationships.
+
+        Builds a lookup from entity definitions' ``relationships`` maps.
+        For each FK-linked table pair whose entities match a declared
+        relationship, the declared name and cardinality are used.
+        Falls back to ``"references"`` when no declaration matches.
+
+        Returns a summary dict with ``edges_added`` and
+        ``undiscovered_declared`` (declared relationships not found via FKs).
+        """
+        edges_table = f"{self.config.catalog_name}.{self.config.schema_name}.graph_edges"
+        fk_table = f"{self.config.catalog_name}.{self.config.schema_name}.fk_predictions"
+        ent_table = self.config.fully_qualified_entities
+        result: Dict[str, Any] = {"edges_added": 0, "undiscovered_declared": []}
+
+        # Build declared relationship lookup: (src_type, dst_type) -> (rel_name, cardinality)
+        declared_rels: Dict[Tuple[str, str], Tuple[str, str]] = {}
+        for edef in self.discoverer.entity_definitions:
+            for rel_name, rel_info in edef.relationships.items():
+                target = rel_info.get("target", "")
+                cardinality = rel_info.get("cardinality", "")
+                if target:
+                    declared_rels[(edef.name, target)] = (rel_name, cardinality)
+
+        # Get entity-table mapping
+        try:
+            ent_rows = self.spark.sql(
+                f"SELECT entity_id, entity_name, entity_type, source_tables "
+                f"FROM {ent_table} WHERE COALESCE(attributes['granularity'], 'table') = 'table' "
+                f"AND confidence >= 0.4"
+            ).collect()
+        except Exception:
+            return result
+
+        table_to_entity: Dict[str, List[Dict]] = {}
+        for r in ent_rows:
+            for t in r.source_tables or []:
+                table_to_entity.setdefault(t, []).append(
+                    {"entity_id": r.entity_id, "entity_type": r.entity_type}
+                )
+
+        # Get FK predictions linking tables
+        fk_links: List[Tuple[str, str]] = []
+        try:
+            fk_rows = self.spark.sql(
+                f"SELECT DISTINCT src_table, dst_table FROM {fk_table} WHERE final_confidence >= 0.5"
+            ).collect()
+            fk_links = [(r.src_table, r.dst_table) for r in fk_rows]
+        except Exception:
+            logger.debug("No FK predictions available for relationship discovery")
+
+        new_edges = []
+        seen = set()
+        discovered_pairs: set = set()
+
+        for src_tbl, dst_tbl in fk_links:
+            src_ents = table_to_entity.get(src_tbl, [])
+            dst_ents = table_to_entity.get(dst_tbl, [])
+            for se in src_ents:
+                for de in dst_ents:
+                    if se["entity_id"] == de["entity_id"]:
+                        continue
+                    key = (se["entity_id"], de["entity_id"])
+                    if key in seen:
+                        continue
+                    seen.add(key)
+
+                    pair = (se["entity_type"], de["entity_type"])
+                    decl = declared_rels.get(pair)
+                    if decl:
+                        rel_type, cardinality = decl
+                        discovered_pairs.add(pair)
+                    else:
+                        rel_type, cardinality = "references", ""
+
+                    new_edges.append(
+                        (se["entity_id"], de["entity_id"], rel_type, 0.8 if decl else 0.6, cardinality)
+                    )
+
+        # Identify declared relationships that were not discovered
+        undiscovered = [
+            {"source": s, "target": t, "relationship": declared_rels[(s, t)][0]}
+            for s, t in declared_rels
+            if (s, t) not in discovered_pairs
+        ]
+        result["undiscovered_declared"] = undiscovered
+        if undiscovered:
+            logger.info(
+                "Declared relationships not found via FK: %s",
+                ", ".join(f"{u['source']}->{u['relationship']}->{u['target']}" for u in undiscovered),
+            )
+
+        if not new_edges:
+            logger.info("No inter-entity relationships discovered")
+            return result
+
+        now = datetime.now()
+        edge_df = self.spark.createDataFrame(
+            [
+                (src, dst, rel, w, now, now)
+                for src, dst, rel, w, _ in new_edges
+            ],
+            ["src", "dst", "relationship", "weight", "created_at", "updated_at"],
+        )
+        edge_df.write.mode("append").saveAsTable(edges_table)
+        logger.info("Added %d inter-entity relationship edges", len(new_edges))
+        result["edges_added"] = len(new_edges)
+        return result
+
+    def add_hierarchy_edges(self) -> int:
+        """Add is_a edges from child entity types to their parent types based on config."""
+        entity_defs = self.ontology_config.get("entities", {}).get("definitions", {})
+        parent_map: Dict[str, str] = {}
+        for name, defn in entity_defs.items():
+            parent = defn.get("parent")
+            if parent:
+                parent_map[name] = parent
+
+        if not parent_map:
+            return 0
+
+        edges_table = f"{self.config.catalog_name}.{self.config.schema_name}.graph_edges"
+        ent_table = self.config.fully_qualified_entities
+
+        try:
+            ent_rows = self.spark.sql(
+                f"SELECT entity_id, entity_type FROM {ent_table} "
+                f"WHERE COALESCE(attributes['granularity'], 'table') = 'table'"
+            ).collect()
+        except Exception:
+            return 0
+
+        type_to_ids: Dict[str, List[str]] = {}
+        for r in ent_rows:
+            type_to_ids.setdefault(r.entity_type, []).append(r.entity_id)
+
+        new_edges = []
+        for child_type, parent_type in parent_map.items():
+            child_ids = type_to_ids.get(child_type, [])
+            parent_ids = type_to_ids.get(parent_type, [])
+            if not parent_ids:
+                continue
+            parent_id = parent_ids[0]
+            for cid in child_ids:
+                new_edges.append((cid, parent_id, "is_a", 1.0))
+
+        if not new_edges:
+            return 0
+
+        edge_df = self.spark.createDataFrame(
+            [(s, d, r, w, datetime.now(), datetime.now()) for s, d, r, w in new_edges],
+            ["src", "dst", "relationship", "weight", "created_at", "updated_at"],
+        )
+        edge_df.write.mode("append").saveAsTable(edges_table)
+        logger.info("Added %d hierarchy (is_a) edges", len(new_edges))
+        return len(new_edges)
+
+    def _sync_entity_nodes_to_graph(self) -> int:
+        """Insert ontology entities into graph_nodes so edges have valid targets."""
+        nodes_table = f"{self.config.catalog_name}.{self.config.schema_name}.{self.config.nodes_table}"
+        ent_table = self.config.fully_qualified_entities
+        try:
+            self.spark.sql(f"""
+                INSERT INTO {nodes_table}
+                    (id, table_name, catalog, `schema`, table_short_name,
+                     domain, subdomain, has_pii, has_phi, security_level,
+                     comment, node_type, parent_id, data_type,
+                     quality_score, embedding, created_at, updated_at)
+                SELECT entity_id, NULL, NULL, NULL, entity_name,
+                    NULL, NULL, FALSE, FALSE, 'PUBLIC',
+                    description, 'entity', entity_type, NULL,
+                    confidence, NULL, created_at, updated_at
+                FROM {ent_table}
+                WHERE entity_id NOT IN (SELECT id FROM {nodes_table})
+            """)
+            count = self.spark.sql(
+                f"SELECT COUNT(*) as cnt FROM {nodes_table} WHERE node_type = 'entity'"
+            ).collect()[0].cnt
+            logger.info("Entity nodes in graph: %d", count)
+            return count
+        except Exception as e:
+            logger.warning("Could not sync entity nodes to graph: %s", e)
+            return 0
+
+    def _clear_ontology_edges(self) -> None:
+        """Delete existing ontology-typed edges to prevent accumulation on re-runs."""
+        edges_table = f"{self.config.catalog_name}.{self.config.schema_name}.graph_edges"
+        try:
+            self.spark.sql(
+                f"DELETE FROM {edges_table} "
+                f"WHERE relationship IN ('instance_of', 'has_attribute', 'references', 'is_a')"
+            )
+            logger.info("Cleared existing ontology edges before regeneration")
+        except Exception as e:
+            logger.warning("Could not clear ontology edges (table may not exist): %s", e)
+
     def add_entity_relationships_to_graph(self) -> int:
         """Add entity relationships to the knowledge graph edges."""
-        edges_table = f"{self.config.catalog_name}.{self.config.schema_name}.graph_edges"
+        edges_table = (
+            f"{self.config.catalog_name}.{self.config.schema_name}.graph_edges"
+        )
+        self._clear_ontology_edges()
         total = 0
 
         try:
-            # instance_of edges: table -> entity (table-level entities)
-            table_entities = self.spark.sql(f"""
+            # instance_of edges: table -> entity (all entities with source tables)
+            table_entities = self.spark.sql(
+                f"""
                 SELECT entity_id, entity_name, EXPLODE(source_tables) as table_name
                 FROM {self.config.fully_qualified_entities}
-                WHERE COALESCE(attributes['granularity'], 'table') = 'table'
-            """)
+                WHERE source_tables IS NOT NULL AND SIZE(source_tables) > 0
+            """
+            )
             if table_entities.count() > 0:
                 instance_edges = table_entities.select(
                     F.col("table_name").alias("src"),
@@ -1354,7 +2452,7 @@ class OntologyBuilder:
                     F.lit("instance_of").alias("relationship"),
                     F.lit(1.0).alias("weight"),
                     F.current_timestamp().alias("created_at"),
-                    F.current_timestamp().alias("updated_at")
+                    F.current_timestamp().alias("updated_at"),
                 )
                 instance_edges.write.mode("append").saveAsTable(edges_table)
                 total += instance_edges.count()
@@ -1363,54 +2461,124 @@ class OntologyBuilder:
 
         try:
             # has_attribute edges: entity -> column (column-level entities)
-            col_entities = self.spark.sql(f"""
+            col_entities = self.spark.sql(
+                f"""
                 SELECT entity_id, entity_name, source_tables[0] as table_name,
                        EXPLODE(source_columns) as col_name
                 FROM {self.config.fully_qualified_entities}
                 WHERE attributes['granularity'] = 'column'
                   AND SIZE(source_columns) > 0
-            """)
+            """
+            )
             if col_entities.count() > 0:
                 attr_edges = col_entities.select(
                     F.col("entity_id").alias("src"),
-                    F.concat_ws(".", F.col("table_name"), F.col("col_name")).alias("dst"),
+                    F.concat_ws(".", F.col("table_name"), F.col("col_name")).alias(
+                        "dst"
+                    ),
                     F.lit("has_attribute").alias("relationship"),
                     F.lit(1.0).alias("weight"),
                     F.current_timestamp().alias("created_at"),
-                    F.current_timestamp().alias("updated_at")
+                    F.current_timestamp().alias("updated_at"),
                 )
                 attr_edges.write.mode("append").saveAsTable(edges_table)
                 total += attr_edges.count()
 
-                # references edges: if column like <entity>_id on a different entity's table
-                # e.g., patient_id on encounters table -> references Patient entity
-                ref_edges = col_entities.alias("c").join(
-                    self.spark.sql(f"""
-                        SELECT entity_id as target_entity_id, entity_name as target_entity
+                # references edges: match columns ending in _id or _key patterns
+                # e.g. patient_id -> Patient entity (only STRING/INT/BIGINT/LONG types)
+                ref_edges_df = self.spark.sql(f"""
+                    WITH key_cols AS (
+                        SELECT oe.entity_id AS src_entity_id,
+                               oe.entity_name AS src_entity,
+                               ckb.column_name,
+                               ckb.data_type,
+                               ckb.table_name
+                        FROM {self.config.fully_qualified_entities} oe
+                        JOIN {self.config.fully_qualified_column_kb} ckb
+                          ON ARRAY_CONTAINS(oe.source_tables, ckb.table_name)
+                        WHERE COALESCE(oe.attributes['granularity'], 'table') = 'table'
+                          AND UPPER(ckb.data_type) IN ('STRING','INT','INTEGER','BIGINT','LONG')
+                          AND (LOWER(ckb.column_name) RLIKE '_(id|key|code)$')
+                    ),
+                    target_ents AS (
+                        SELECT entity_id AS target_entity_id, LOWER(entity_name) AS ent_lower
                         FROM {self.config.fully_qualified_entities}
                         WHERE COALESCE(attributes['granularity'], 'table') = 'table'
-                    """).alias("t"),
-                    F.lower(F.col("c.col_name")).contains(F.lower(F.col("t.target_entity")))
-                    & (F.col("c.entity_name") != F.col("t.target_entity")),
-                    "inner"
-                ).select(
-                    F.col("c.entity_id").alias("src"),
-                    F.col("t.target_entity_id").alias("dst"),
-                    F.lit("references").alias("relationship"),
-                    F.lit(0.8).alias("weight"),
-                    F.current_timestamp().alias("created_at"),
-                    F.current_timestamp().alias("updated_at")
-                ).dropDuplicates(["src", "dst"])
+                    )
+                    SELECT DISTINCT kc.src_entity_id AS src, te.target_entity_id AS dst,
+                           'references' AS relationship, CAST(0.8 AS DOUBLE) AS weight,
+                           CURRENT_TIMESTAMP() AS created_at, CURRENT_TIMESTAMP() AS updated_at
+                    FROM key_cols kc
+                    JOIN target_ents te
+                      ON LOWER(kc.column_name) LIKE CONCAT(te.ent_lower, '_%')
+                         AND kc.src_entity_id != te.target_entity_id
+                """)
 
-                if ref_edges.count() > 0:
-                    ref_edges.write.mode("append").saveAsTable(edges_table)
-                    total += ref_edges.count()
+                ref_count = ref_edges_df.count()
+                if ref_count > 0:
+                    ref_edges_df.write.mode("append").saveAsTable(edges_table)
+                    total += ref_count
         except Exception as e:
             logger.warning(f"Could not add column entity edges: {e}")
 
         logger.info(f"Added {total} entity edges to graph")
         return total
-    
+
+    def validate_ontology_completeness(self) -> Dict[str, Any]:
+        """Compare discovered entity types against the bundle's definitions."""
+        defined_types = {e.name for e in self.discoverer.entity_definitions if e.name != "DataTable"}
+        try:
+            discovered = self.spark.sql(
+                f"SELECT DISTINCT entity_type FROM {self.config.fully_qualified_entities}"
+            ).collect()
+            discovered_types = {r.entity_type for r in discovered}
+        except Exception:
+            discovered_types = set()
+
+        missing = defined_types - discovered_types
+        extra = discovered_types - defined_types
+
+        # Count per type
+        try:
+            counts_rows = self.spark.sql(
+                f"SELECT entity_type, COUNT(*) as cnt FROM {self.config.fully_qualified_entities} "
+                f"GROUP BY entity_type ORDER BY cnt DESC"
+            ).collect()
+            counts = {r.entity_type: r.cnt for r in counts_rows}
+        except Exception:
+            counts = {}
+
+        total = sum(counts.values())
+        over_represented = [
+            t for t, c in counts.items() if total > 0 and c / total > 0.4
+        ]
+
+        # Low confidence entities
+        try:
+            low_conf = self.spark.sql(
+                f"SELECT COUNT(*) AS n FROM {self.config.fully_qualified_entities} WHERE confidence < 0.5"
+            ).collect()[0].n
+        except Exception:
+            low_conf = 0
+
+        if missing:
+            logger.warning(f"Ontology completeness: {len(missing)} defined entity types not discovered: {missing}")
+        if over_represented:
+            logger.warning(f"Ontology completeness: over-represented types (>40%%): {over_represented}")
+        if low_conf > 0:
+            logger.info(f"Ontology completeness: {low_conf} entities with confidence < 0.5")
+
+        result = {
+            "defined_types": len(defined_types),
+            "discovered_types": len(discovered_types),
+            "missing_types": sorted(missing),
+            "extra_types": sorted(extra),
+            "over_represented": over_represented,
+            "low_confidence_count": low_conf,
+        }
+        logger.info(f"Ontology completeness: {result['discovered_types']}/{result['defined_types']} types found")
+        return result
+
     def run(self, apply_tags: bool = False) -> Dict[str, Any]:
         """Execute the ontology building pipeline.
 
@@ -1418,40 +2586,59 @@ class OntologyBuilder:
             apply_tags: If True, write entity_type tags to UC tables/columns via ALTER TABLE SET TAGS.
         """
         logger.info("Starting ontology build")
-        
+
         self.create_entities_table()
         self.create_metrics_table()
-        
+
         # Table-level entity discovery
         table_discovered = self.discover_and_store_entities()
         logger.info(f"Discovered {table_discovered} table-level entities")
-        
+
         # Column-level entity discovery
         column_discovered = self.discover_and_store_column_entities()
         logger.info(f"Discovered {column_discovered} column-level entities")
-        
+
         # Backfill source_columns on table entities from column matches
         if column_discovered > 0:
             self.backfill_source_columns()
-        
+
+        # Sync entity nodes into graph_nodes so edges have valid targets
+        self._sync_entity_nodes_to_graph()
+
         # Add relationships to graph
         edges_added = self.add_entity_relationships_to_graph()
+
+        # Add hierarchy edges (is_a) from config parent fields
+        hierarchy_edges = self.add_hierarchy_edges()
+        edges_added += hierarchy_edges
+
+        # Discover inter-entity relationships from FK predictions
+        rel_result = self.discover_inter_entity_relationships()
+        edges_added += rel_result.get("edges_added", 0)
+
+        # Validate ontology completeness
+        self.validate_ontology_completeness()
+
+        # Compute and store aggregate ontology metrics
+        self.compute_ontology_metrics()
 
         # Apply UC tags if requested
         tags_applied = 0
         if apply_tags:
             tags_applied = self.apply_entity_tags()
-        
+
         # Get summary
         try:
             summary = self.get_entity_summary()
             entity_types = summary.count()
             logger.info(f"Ontology summary: {entity_types} entity types")
             for row in summary.collect():
-                logger.info(f"  {row['entity_type']}: {row['entity_count']} entities (avg confidence: {row['avg_confidence']})")
+                logger.info(
+                    f"  {row['entity_type']}: {row['entity_count']} entities (avg confidence: {row['avg_confidence']})"
+                )
         except Exception:
             entity_types = 0
-        
+
         return {
             "entities_discovered": table_discovered,
             "column_entities_discovered": column_discovered,
@@ -1468,6 +2655,8 @@ def build_ontology(
     config_path: str = "configurations/ontology_config.yaml",
     apply_tags: bool = False,
     ontology_bundle: str = "",
+    incremental: bool = True,
+    entity_tag_key: str = "entity_type",
 ) -> Dict[str, Any]:
     """Convenience function to build the ontology.
 
@@ -1476,14 +2665,18 @@ def build_ontology(
         catalog_name: Catalog name for tables
         schema_name: Schema name for tables
         config_path: Path to ontology configuration YAML
-        apply_tags: If True, write entity_type tags to UC tables/columns
+        apply_tags: If True, write entity tags to UC tables/columns
         ontology_bundle: Optional bundle name (stored alongside entities)
+        incremental: Only classify tables/columns changed since last run
+        entity_tag_key: UC tag key used when apply_tags is True
     """
     config = OntologyConfig(
         catalog_name=catalog_name,
         schema_name=schema_name,
         config_path=config_path,
         ontology_bundle=ontology_bundle,
+        incremental=incremental,
+        entity_tag_key=entity_tag_key,
     )
     builder = OntologyBuilder(spark, config)
     return builder.run(apply_tags=apply_tags)

@@ -19,7 +19,7 @@
 import sys
 from datetime import datetime, timedelta
 
-sys.path.append("../../")
+sys.path.append("../../src")  # For git-clone or DAB deployment; pip-installed package works without this
 
 from dbxmetagen.user_utils import sanitize_user_identifier, get_current_user
 from dbxmetagen.processing import get_control_table

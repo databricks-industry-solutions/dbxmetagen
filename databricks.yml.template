@@ -2,6 +2,10 @@ bundle:
   name: dbxmetagen
   databricks_cli_version: ">=0.283.0"
 
+sync:
+  include:
+    - apps/dbxmetagen-app/app/configurations/**
+
 include:
   - resources/jobs/*.yml
   - resources/apps/*.yml

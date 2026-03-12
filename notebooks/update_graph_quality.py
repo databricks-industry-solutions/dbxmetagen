@@ -6,6 +6,12 @@
 
 # COMMAND ----------
 
+# MAGIC # Uncomment below when running outside of a DAB-deployed job
+# MAGIC # %pip install /Workspace/Users/<your_username>/.bundle/dbxmetagen/dev/artifacts/.internal/dbxmetagen-*.whl
+# MAGIC # dbutils.library.restartPython()
+
+# COMMAND ----------
+
 dbutils.widgets.text("catalog_name", "", "Catalog Name")
 dbutils.widgets.text("schema_name", "", "Schema Name")
 
@@ -36,14 +42,4 @@ WHEN MATCHED THEN UPDATE SET
 
 print("Updated graph nodes with quality scores")
 
-# COMMAND ----------
-
-# Show nodes with quality scores
-display(spark.sql(f"""
-    SELECT id, node_type, quality_score, domain
-    FROM {catalog_name}.{schema_name}.graph_nodes
-    WHERE quality_score IS NOT NULL
-    ORDER BY quality_score ASC
-    LIMIT 20
-"""))
 

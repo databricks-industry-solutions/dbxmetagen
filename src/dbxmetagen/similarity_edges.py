@@ -89,6 +89,7 @@ class SimilarityEdgeBuilder:
             FROM nodes_emb a
             CROSS JOIN nodes_emb b
             WHERE a.id < b.id
+              AND NOT (a.node_type = 'entity' AND b.node_type = 'entity')
         ),
         similarities AS (
             SELECT 

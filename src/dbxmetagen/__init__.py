@@ -11,15 +11,24 @@ from dbxmetagen.knowledge_base import build_knowledge_base
 from dbxmetagen.column_knowledge_base import build_column_knowledge_base
 from dbxmetagen.schema_knowledge_base import build_schema_knowledge_base
 from dbxmetagen.extended_metadata import extract_extended_metadata
-from dbxmetagen.knowledge_graph import build_knowledge_graph, build_extended_knowledge_graph
+from dbxmetagen.knowledge_graph import (
+    build_knowledge_graph,
+    build_extended_knowledge_graph,
+)
 from dbxmetagen.profiling import run_profiling
 from dbxmetagen.data_quality import compute_data_quality
 from dbxmetagen.embeddings import generate_embeddings, find_similar_nodes
 from dbxmetagen.similarity_edges import build_similarity_edges
-from dbxmetagen.ontology import build_ontology, list_available_bundles, resolve_bundle_path
+from dbxmetagen.ontology import (
+    build_ontology,
+    list_available_bundles,
+    resolve_bundle_path,
+)
 from dbxmetagen.ontology_validator import validate_ontology
 from dbxmetagen.fk_prediction import predict_foreign_keys
 from dbxmetagen.semantic_layer import generate_semantic_layer
+from dbxmetagen.vector_index import build_vector_index
+from dbxmetagen.geo_classifier import classify_columns_geo
 
 __all__ = [
     "MetadataConfig",
@@ -51,4 +60,6 @@ __all__ = [
     "predict_foreign_keys",
     # Semantic layer
     "generate_semantic_layer",
+    # Geo classification
+    "classify_columns_geo",
 ]

@@ -118,7 +118,13 @@ variables:
       }
   domain_config_path:
     description: Path to the domain configuration YAML file for domain classification mode
-    default: ../configurations/domain_config.yaml
+    default: ../configurations/domain_config_healthcare.yaml
+  domain_column_blacklist:
+    description: Comma-separated column names to exclude from domain classification (e.g. system columns like _updated_at, created_at that can bias results). Only affects domain mode.
+    default: "_updated_at,_created_at,created_at,updated_at"
+  include_lineage:
+    description: When true, query system.access.table_lineage on the fly and include truncated upstream/downstream table lists in LLM prompts for comment, PII, and domain modes. Requires access to system tables. Default false.
+    default: false
   use_protected_classification_for_table:
     description: Whether to use protected classification for the table.
     default: true
@@ -200,3 +206,6 @@ variables:
   federation_mode:
     description: "Enable federation compatibility mode for running against federated catalogs (e.g., Redshift, Snowflake via Unity Catalog federation). When true: DESCRIBE DETAIL is skipped (Delta-specific), DESCRIBE EXTENDED is skipped, DDL apply is forced to false (cannot ALTER federated tables), and tag operations are disabled. SELECT, DESCRIBE TABLE, and SHOW TABLES still work. dbxmetagen output tables remain Delta."
     default: false
+  incremental:
+    description: "When true, pipeline steps (profiling, extended metadata, ontology, FK prediction) only process tables that changed since their last run. Set to false for a full refresh."
+    default: true

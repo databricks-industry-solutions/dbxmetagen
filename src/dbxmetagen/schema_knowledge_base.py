@@ -125,7 +125,8 @@ class SchemaKnowledgeBaseBuilder:
             has_phi BOOLEAN,
             table_count INT,
             created_at TIMESTAMP,
-            updated_at TIMESTAMP
+            updated_at TIMESTAMP,
+            review_updated_at TIMESTAMP
         )
         COMMENT 'Aggregated schema-level metadata from table_knowledge_base'
         """
