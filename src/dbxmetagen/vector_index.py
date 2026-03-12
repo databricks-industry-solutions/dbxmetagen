@@ -88,22 +88,32 @@ class VectorIndexBuilder:
                     'Domain: ', COALESCE(t.domain, 'unknown'),
                     CASE WHEN t.subdomain IS NOT NULL THEN CONCAT(' / ', t.subdomain) ELSE '' END, '\\n',
                     COALESCE(
-                        CONCAT('Entity types: ',
-                            (SELECT CONCAT_WS(', ', COLLECT_SET(o.entity_type))
+                        CONCAT('Primary entity: ',
+                            (SELECT o.entity_type
                              FROM {cfg.fq('ontology_entities')} o
-                             WHERE ARRAY_CONTAINS(o.source_tables, t.table_name))),
+                             WHERE ARRAY_CONTAINS(o.source_tables, t.table_name)
+                               AND COALESCE(o.entity_role, 'primary') = 'primary'
+                             LIMIT 1)),
                         ''
                     ), '\\n',
                     COALESCE(
                         CONCAT('Relationships: ',
                             (SELECT CONCAT_WS('; ', COLLECT_SET(
-                                CONCAT(e_src.entity_type, ' ', ge.relationship, ' ', e_dst.entity_type)
+                                CONCAT(r.src_entity_type, ' -[', r.relationship_name, ']-> ', r.dst_entity_type)
                             ))
-                             FROM {cfg.fq('graph_edges')} ge
-                             JOIN {cfg.fq('ontology_entities')} e_src ON ge.src = e_src.entity_id
-                             JOIN {cfg.fq('ontology_entities')} e_dst ON ge.dst = e_dst.entity_id
-                             WHERE ARRAY_CONTAINS(e_src.source_tables, t.table_name)
-                               AND ge.relationship != 'is_a')),
+                             FROM {cfg.fq('ontology_relationships')} r
+                             JOIN {cfg.fq('ontology_entities')} oe ON oe.entity_type = r.src_entity_type
+                             WHERE ARRAY_CONTAINS(oe.source_tables, t.table_name))),
+                        ''
+                    ), '\\n',
+                    COALESCE(
+                        CONCAT('Column properties: ',
+                            (SELECT CONCAT_WS(', ', COLLECT_LIST(
+                                CONCAT(cp.column_name, '=', cp.property_role,
+                                       CASE WHEN cp.linked_entity_type IS NOT NULL THEN CONCAT('->', cp.linked_entity_type) ELSE '' END)
+                            ))
+                             FROM {cfg.fq('ontology_column_properties')} cp
+                             WHERE cp.table_name = t.table_name)),
                         ''
                     ), '\\n',
                     'Columns (',
@@ -191,19 +201,26 @@ class VectorIndexBuilder:
                 CONCAT('entity::', o.entity_id) AS doc_id,
                 'entity' AS doc_type,
                 CONCAT(
-                    o.entity_name, ' (', o.entity_type, ')\\n',
+                    o.entity_name, ' (', o.entity_type, ') [', COALESCE(o.entity_role, 'primary'), ']\\n',
                     COALESCE(o.description, ''), '\\n',
                     'Source tables: ', COALESCE(CONCAT_WS(', ', o.source_tables), ''), '\\n',
                     COALESCE(
-                        CONCAT('Relationships: ',
+                        CONCAT('Named relationships: ',
                             (SELECT CONCAT_WS('; ', COLLECT_SET(
-                                CONCAT(e2.src, ' -[', e2.relationship, ']-> ', e2.dst)
+                                CONCAT(r.src_entity_type, ' -[', r.relationship_name, ']-> ', r.dst_entity_type)
                             ))
-                             FROM {cfg.fq('graph_edges')} e2
-                             WHERE e2.relationship NOT IN ('similar_embedding', 'has_column')
-                               AND (e2.src LIKE CONCAT('%', o.entity_name, '%')
-                                    OR e2.dst LIKE CONCAT('%', o.entity_name, '%'))
-                             )),
+                             FROM {cfg.fq('ontology_relationships')} r
+                             WHERE r.src_entity_type = o.entity_type OR r.dst_entity_type = o.entity_type)),
+                        ''
+                    ), '\\n',
+                    COALESCE(
+                        CONCAT('Column properties: ',
+                            (SELECT CONCAT_WS(', ', COLLECT_LIST(
+                                CONCAT(cp.column_name, '=', cp.property_role,
+                                       CASE WHEN cp.linked_entity_type IS NOT NULL THEN CONCAT('->', cp.linked_entity_type) ELSE '' END)
+                            ))
+                             FROM {cfg.fq('ontology_column_properties')} cp
+                             WHERE cp.owning_entity_id = o.entity_id)),
                         ''
                     ), '\\n',
                     'Confidence: ', CAST(o.confidence AS STRING)

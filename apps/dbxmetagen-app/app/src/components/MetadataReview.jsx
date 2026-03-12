@@ -344,9 +344,12 @@ function ReviewEditor() {
                           {show('pii') && <th className="text-left px-3 py-2 text-xs font-semibold text-slate-500 uppercase">Classification</th>}
                           {show('pii') && <th className="text-left px-3 py-2 text-xs font-semibold text-slate-500 uppercase">Class. Type</th>}
                           {show('ontology') && <th className="text-left px-3 py-2 text-xs font-semibold text-slate-500 uppercase">Entity Types</th>}
+                          {show('ontology') && <th className="text-left px-3 py-2 text-xs font-semibold text-slate-500 uppercase">Property Role</th>}
                         </tr></thead>
                         <tbody>
-                          {tbl.columns.map((col, ci) => (
+                          {tbl.columns.map((col, ci) => {
+                            const colProp = (tbl.column_properties || []).find(p => p.column_name === col.column_name)
+                            return (
                             <tr key={col.column_id || ci} className={`border-b border-slate-100 ${isColDirty(tblIdx, ci) ? 'bg-amber-50' : ''} hover:bg-orange-50/30`}>
                               <td className="px-3 py-1.5 text-slate-600 font-mono text-xs truncate">{col.column_name}</td>
                               <td className="px-3 py-1.5 text-slate-400 text-xs truncate">{col.data_type}</td>
@@ -367,13 +370,24 @@ function ReviewEditor() {
                                 return ents.length > 0 ? (
                                   <div className="flex flex-wrap gap-1">{ents.map((e, ei) => {
                                     const c = Number(e.confidence ?? 0)
-                                    const cls = c <= 0 ? 'bg-red-100 text-red-700' : c < 0.5 ? 'bg-yellow-100 text-yellow-700' : 'bg-green-100 text-green-700'
+                                    const role = e.entity_role || 'primary'
+                                    const cls = role === 'primary' ? 'bg-purple-100 text-purple-700' : c <= 0 ? 'bg-red-100 text-red-700' : c < 0.5 ? 'bg-yellow-100 text-yellow-700' : 'bg-green-100 text-green-700'
                                     return <span key={ei} className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${cls}`}>{e.entity_type} ({c.toFixed(2)})</span>
                                   })}</div>
                                 ) : <span className="text-[10px] text-slate-300">--</span>
                               })()}</td>}
+                              {show('ontology') && <td className="px-2 py-1">{colProp ? (
+                                <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${
+                                  colProp.property_role === 'identifier' ? 'bg-blue-100 text-blue-700' :
+                                  colProp.property_role === 'link' ? 'bg-purple-100 text-purple-700' :
+                                  colProp.property_role === 'foreign_key' ? 'bg-indigo-100 text-indigo-700' :
+                                  colProp.property_role === 'measure' ? 'bg-emerald-100 text-emerald-700' :
+                                  colProp.property_role === 'timestamp' ? 'bg-amber-100 text-amber-700' :
+                                  'bg-slate-100 text-slate-600'
+                                }`}>{colProp.property_role}{colProp.linked_entity_type ? ` -> ${colProp.linked_entity_type}` : ''}</span>
+                              ) : <span className="text-[10px] text-slate-300">--</span>}</td>}
                             </tr>
-                          ))}
+                          )})}
                         </tbody>
                       </table>
                     </div>
@@ -382,15 +396,28 @@ function ReviewEditor() {
                   {/* Ontology Entities */}
                   {show('ontology') && (
                     <div className="space-y-2">
+                      {/* Primary entity banner */}
+                      {tbl.primary_entity && (
+                        <div className="flex items-center gap-2 px-3 py-2 bg-purple-100 border border-purple-300 rounded-lg">
+                          <span className="text-[10px] font-bold uppercase tracking-wider text-purple-500">Primary Entity</span>
+                          <span className="text-sm font-semibold text-purple-800">{tbl.primary_entity.entity_type}</span>
+                          <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${Number(tbl.primary_entity.confidence ?? 0) > 0 ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                            {Number(tbl.primary_entity.confidence ?? 0).toFixed(2)}
+                          </span>
+                          {tbl.primary_entity.validated === true || tbl.primary_entity.validated === 'true' ? (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded-full font-medium bg-blue-100 text-blue-700">validated</span>
+                          ) : null}
+                        </div>
+                      )}
                       <div className="flex items-center justify-between">
-                        <h4 className="text-xs font-semibold text-slate-500">Ontology Entities</h4>
+                        <h4 className="text-xs font-semibold text-slate-500">All Ontology Entities</h4>
                         {Array.isArray(tbl.ontology_entities) && tbl.ontology_entities.filter(e => Number(e.confidence ?? 0) > 0).length > 0 && (
                           <button onClick={async () => {
                             setOntoApplying(p => ({ ...p, [tbl.table_name]: true })); setOntoApplyResults(p => ({ ...p, [tbl.table_name]: null }))
                             const selections = tbl.ontology_entities.filter(e => Number(e.confidence ?? 0) > 0).map(e => {
                               let sc = e.source_columns
                               if (typeof sc === 'string') { try { sc = JSON.parse(sc) } catch {} }
-                              return { entity_type: entityTypeOverrides[e.entity_id] || e.entity_type, source_tables: [tbl.table_name], source_columns: Array.isArray(sc) ? sc : [] }
+                              return { entity_type: entityTypeOverrides[e.entity_id] || e.entity_type, source_tables: [tbl.table_name], source_columns: Array.isArray(sc) ? sc : [], entity_role: e.entity_role || 'primary' }
                             })
                             try {
                               const r = await fetch('/api/ontology/apply-tags', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ selections }) })
@@ -438,6 +465,8 @@ function ReviewEditor() {
                         <div className="space-y-2">
                           {tbl.ontology_entities.map((e, i) => {
                             const conf = Number(e.confidence ?? 0)
+                            const role = e.entity_role || 'primary'
+                            const isPrimary = role === 'primary'
                             const confCls = conf <= 0 ? 'bg-red-100 text-red-700' : conf < 0.5 ? 'bg-yellow-100 text-yellow-700' : 'bg-green-100 text-green-700'
                             const eid = e.entity_id || `${tblIdx}-${i}`
                             const isOpen = expandedEntities[eid]
@@ -447,9 +476,12 @@ function ReviewEditor() {
                               return []
                             })()
                             return (
-                              <div key={eid} className="border border-purple-200 rounded-lg bg-purple-50/50">
+                              <div key={eid} className={`border rounded-lg ${isPrimary ? 'border-purple-300 bg-purple-50' : 'border-slate-200 bg-slate-50/50'}`}>
                                 <div className="flex items-center gap-2 px-3 py-1.5 cursor-pointer flex-wrap" onClick={() => setExpandedEntities(p => ({ ...p, [eid]: !p[eid] }))}>
                                   <span className="text-xs text-slate-400">{isOpen ? '\u25BC' : '\u25B6'}</span>
+                                  <span className={`text-[9px] px-1 py-0.5 rounded font-bold uppercase tracking-wider ${isPrimary ? 'bg-purple-200 text-purple-700' : 'bg-slate-200 text-slate-500'}`}>
+                                    {role}
+                                  </span>
                                   {e.entity_id ? (
                                     <select value={entityTypeOverrides[e.entity_id] || e.entity_type}
                                       onClick={ev => ev.stopPropagation()}
@@ -467,7 +499,7 @@ function ReviewEditor() {
                                     <span className="text-xs font-medium text-purple-700">{e.entity_type}</span>
                                   )}
                                   <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${confCls}`}
-                                    title="Negative confidence means the AI validator rejected this entity mapping. The more negative, the stronger the rejection.">
+                                    title="Negative confidence means the AI validator rejected this entity mapping.">
                                     {conf.toFixed(2)}
                                   </span>
                                   {e.validated !== undefined && (
@@ -485,11 +517,11 @@ function ReviewEditor() {
                                     const et = entityTypeOverrides[e.entity_id] || e.entity_type
                                     try {
                                       const r = await fetch('/api/ontology/apply-tags', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-                                        body: JSON.stringify({ selections: [{ entity_type: et, source_tables: [tbl.table_name], source_columns: srcCols }] }) })
+                                        body: JSON.stringify({ selections: [{ entity_type: et, source_tables: [tbl.table_name], source_columns: srcCols, entity_role: role }] }) })
                                       const j = await r.json().catch(() => ({}))
                                       setOntoApplyResults(p => ({ ...p, [tbl.table_name]: j }))
                                     } catch (err) { setOntoApplyResults(p => ({ ...p, [tbl.table_name]: { error: err.message } })) }
-                                  }} className="ml-auto text-[10px] px-1.5 py-0.5 bg-purple-600 text-white rounded hover:bg-purple-700" title="Apply entity_type tag to table and columns">
+                                  }} className="ml-auto text-[10px] px-1.5 py-0.5 bg-purple-600 text-white rounded hover:bg-purple-700" title={isPrimary ? 'Apply entity_type tag to table and columns' : 'Apply entity_type tag to columns only'}>
                                     Apply Tag
                                   </button>
                                 </div>

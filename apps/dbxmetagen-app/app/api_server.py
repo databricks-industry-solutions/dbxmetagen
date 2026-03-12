@@ -1085,12 +1085,14 @@ def review_combined(body: ReviewCombinedRequest):
         FROM {col_kb} WHERE table_name IN ({in_clause})
     """)
 
-    onto_rows, fk_rows = [], []
+    onto_rows, fk_rows, col_prop_rows = [], [], []
     _onto_where = f"SIZE(source_tables) > 0 AND EXISTS(source_tables, t -> t IN ({in_clause}))"
     try:
         onto_rows = execute_sql(f"""
             SELECT entity_id, entity_type, entity_name, confidence,
                    source_columns, validation_notes, validated,
+                   COALESCE(entity_role, 'primary') AS entity_role,
+                   discovery_confidence,
                    EXPLODE(source_tables) as table_name
             FROM {ent_tbl}
             WHERE {_onto_where}
@@ -1105,6 +1107,19 @@ def review_combined(body: ReviewCombinedRequest):
             """)
         except Exception:
             pass
+
+    # Fetch column properties
+    cp_tbl = fq("ontology_column_properties")
+    try:
+        col_prop_rows = execute_sql(f"""
+            SELECT property_id, table_name, column_name, property_name,
+                   property_role, owning_entity_id, owning_entity_type,
+                   linked_entity_type, confidence
+            FROM {cp_tbl}
+            WHERE table_name IN ({in_clause})
+        """)
+    except Exception:
+        pass
     try:
         fk_rows = execute_sql(f"""
             SELECT src_column, src_table, dst_column, dst_table, final_confidence,
@@ -1139,6 +1154,8 @@ def review_combined(body: ReviewCombinedRequest):
             "entity_type": o["entity_type"],
             "entity_name": o["entity_name"],
             "confidence": o["confidence"],
+            "entity_role": o.get("entity_role", "primary"),
+            "discovery_confidence": o.get("discovery_confidence"),
             "source_columns": raw_cols if isinstance(raw_cols, list) else None,
             "validation_notes": o.get("validation_notes"),
             "validated": o.get("validated"),
@@ -1151,6 +1168,11 @@ def review_combined(body: ReviewCombinedRequest):
                 seen[key] = e
         onto_by_table[tbl_name] = list(seen.values())
 
+    # Build column properties lookup
+    col_props_by_table: dict = {}
+    for cp in col_prop_rows:
+        col_props_by_table.setdefault(cp["table_name"], []).append(cp)
+
     fk_by_table = {}
     for f in fk_rows:
         for tn in [f.get("src_table"), f.get("dst_table")]:
@@ -1160,10 +1182,15 @@ def review_combined(body: ReviewCombinedRequest):
     result = []
     for t in tbl_rows:
         tn = t["table_name"]
+        ents = onto_by_table.get(tn, [])
+        primary_ents = [e for e in ents if e.get("entity_role") == "primary"]
+        primary_entity = primary_ents[0] if primary_ents else None
         result.append({
             **t,
             "columns": cols_by_table.get(tn, []),
-            "ontology_entities": onto_by_table.get(tn, []),
+            "primary_entity": primary_entity,
+            "ontology_entities": ents,
+            "column_properties": col_props_by_table.get(tn, []),
             "fk_predictions": fk_by_table.get(tn, []),
         })
     return {"tables": result}
@@ -1278,6 +1305,38 @@ def get_quality_scores(limit: int = 100):
 def get_ontology_entities(limit: int = 200):
     q = f"SELECT * FROM {fq('ontology_entities')} ORDER BY confidence DESC LIMIT {limit}"
     return execute_sql(q)
+
+
+@app.get("/api/ontology/column-properties/{table_name:path}")
+def get_ontology_column_properties(table_name: str):
+    safe_tbl = _safe_sql_str(table_name)
+    q = f"""
+        SELECT property_id, table_name, column_name, property_name,
+               property_role, owning_entity_id, owning_entity_type,
+               linked_entity_type, confidence, discovery_method
+        FROM {fq('ontology_column_properties')}
+        WHERE table_name = {safe_tbl}
+        ORDER BY column_name
+    """
+    try:
+        return execute_sql(q)
+    except Exception:
+        return []
+
+
+@app.get("/api/ontology/relationships")
+def get_ontology_relationships():
+    q = f"""
+        SELECT relationship_id, src_entity_type, relationship_name,
+               dst_entity_type, cardinality, evidence_column,
+               evidence_table, source, confidence
+        FROM {fq('ontology_relationships')}
+        ORDER BY confidence DESC
+    """
+    try:
+        return execute_sql(q)
+    except Exception:
+        return []
 
 
 @app.get("/api/ontology/summary")
@@ -1445,6 +1504,7 @@ class OntologyApplyItem(BaseModel):
     entity_type: str
     source_tables: Union[list[str], str]
     source_columns: Optional[list[str]] = None
+    entity_role: Optional[str] = None
 
 
 class OntologyApplyBody(BaseModel):
@@ -1453,19 +1513,21 @@ class OntologyApplyBody(BaseModel):
 
 @app.post("/api/ontology/apply-tags")
 def ontology_apply_tags(body: OntologyApplyBody):
-    """Apply entity_type tags at table level (comma-joined) and column level, then verify."""
-    # Group entity types per table and per (table, column)
+    """Apply entity_type tags at table level (primary only) and column level, then verify."""
     table_entities: dict[str, set[str]] = {}
     col_entities: dict[tuple[str, str], set[str]] = {}
     for item in body.selections:
         tables = item.source_tables if isinstance(item.source_tables, list) else [item.source_tables]
         et = (item.entity_type or "").strip()
         cols = item.source_columns or []
+        role = (item.entity_role or "primary").strip()
         for tbl in tables:
             if not (tbl and isinstance(tbl, str) and et):
                 continue
             tbl = tbl.strip()
-            table_entities.setdefault(tbl, set()).add(et)
+            # Only primary entities get table-level tags
+            if role == "primary":
+                table_entities.setdefault(tbl, set()).add(et)
             for col in cols:
                 if col and isinstance(col, str):
                     col_entities.setdefault((tbl, col.strip()), set()).add(et)

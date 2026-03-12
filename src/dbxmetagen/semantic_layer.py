@@ -253,34 +253,41 @@ class SemanticLayerGenerator:
             f"WHERE final_confidence >= {self.config.fk_confidence_threshold}"
         )
 
-        # Ontology entities (optional)
+        # Ontology: primary entities per table
         ont_rows = self._safe_collect(
-            f"SELECT entity_type, source_tables, column_bindings FROM {fq('ontology_entities')} WHERE confidence >= 0.4"
+            f"SELECT entity_type, source_tables FROM {fq('ontology_entities')} "
+            f"WHERE COALESCE(entity_role, 'primary') = 'primary' AND confidence >= 0.4"
         )
         entity_map: dict[str, str] = {}
-        bindings_by_table: dict[str, list] = {}
         for o in ont_rows:
             for t in o.get("source_tables") or []:
                 entity_map[t] = o["entity_type"]
-            for b in o.get("column_bindings") or []:
-                if isinstance(b, dict) and b.get("bound_table"):
-                    bindings_by_table.setdefault(b["bound_table"], []).append(b)
 
-        # Relationship edges for join hints
-        edge_rows = self._safe_collect(
-            f"""SELECT e_src.entity_type AS src_type, e_dst.entity_type AS dst_type, ge.relationship
-                FROM {fq('graph_edges')} ge
-                JOIN {fq('ontology_entities')} e_src ON ge.src = e_src.entity_id
-                JOIN {fq('ontology_entities')} e_dst ON ge.dst = e_dst.entity_id
-                WHERE ge.relationship != 'is_a'"""
+        # Column properties for role-based hints
+        cp_rows = self._safe_collect(
+            f"SELECT table_name, column_name, property_role, linked_entity_type "
+            f"FROM {fq('ontology_column_properties')}"
+        )
+        col_props_by_table: dict[str, dict[str, dict]] = {}
+        for cp in cp_rows:
+            col_props_by_table.setdefault(cp["table_name"], {})[cp["column_name"]] = {
+                "role": cp.get("property_role", "attribute"),
+                "linked": cp.get("linked_entity_type"),
+            }
+
+        # Named relationships for join hints
+        rel_rows = self._safe_collect(
+            f"SELECT src_entity_type, relationship_name, dst_entity_type, cardinality "
+            f"FROM {fq('ontology_relationships')} WHERE confidence >= 0.4"
         )
         rel_by_entity: dict[str, list[str]] = {}
-        for r in edge_rows:
-            src, dst, rel = r.get("src_type", ""), r.get("dst_type", ""), r.get("relationship", "")
-            if src and dst and rel:
-                rel_by_entity.setdefault(src, []).append(f"{rel} {dst}")
+        for r in rel_rows:
+            src, dst, rn = r.get("src_entity_type", ""), r.get("dst_entity_type", ""), r.get("relationship_name", "")
+            if src and dst and rn:
+                card = r.get("cardinality", "")
+                rel_by_entity.setdefault(src, []).append(f"{rn} -> {dst} ({card})" if card else f"{rn} -> {dst}")
 
-        # Entity-specific measure suggestions (by entity type present in catalog)
+        # Entity-specific measure suggestions
         entity_suggestions = {
             "Encounter": "Consider: count by time period, average length of stay, rate by status or department; join to patient/department when questions ask for breakdown by segment or location.",
             "Patient": "Consider: counts, segmentation dimensions, per-patient averages; join to encounters/orders when analyzing activity.",
@@ -303,17 +310,21 @@ class SemanticLayerGenerator:
             tname = t["table_name"]
             ent = entity_map.get(tname, "")
             ent_str = f" Entity: {ent}" if ent else ""
-            bindings = bindings_by_table.get(tname, [])
-            binding_str = ""
-            if bindings:
-                mapping = ", ".join(f"{b.get('bound_column', '')}={b.get('attribute_name', '')}" for b in bindings[:8])
-                binding_str = f" Attribute mappings: [{mapping}]"
-            line = f"Table: {tname} (Comment: \"{t.get('comment', '')}\" Domain: {t.get('domain', '')} / {t.get('subdomain', '')}){ent_str}{binding_str}"
+            line = f"Table: {tname} (Comment: \"{t.get('comment', '')}\" Domain: {t.get('domain', '')} / {t.get('subdomain', '')}){ent_str}"
             cols = col_by_table.get(tname, [])
-            col_strs = [
-                f"  - {c['column_name']} {c.get('data_type', '')} : {c.get('comment', '')}"
-                for c in cols
-            ]
+            props = col_props_by_table.get(tname, {})
+            col_strs = []
+            for c in cols:
+                cname = c["column_name"]
+                cp = props.get(cname)
+                role_str = ""
+                if cp:
+                    role_str = f" [{cp['role']}]"
+                    if cp.get("linked"):
+                        role_str = f" [link -> {cp['linked']}]"
+                col_strs.append(
+                    f"  - {cname} {c.get('data_type', '')}{role_str} : {c.get('comment', '')}"
+                )
             parts.append(
                 line + "\n  Columns:\n" + "\n".join(col_strs) if col_strs else line
             )

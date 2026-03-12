@@ -192,7 +192,7 @@ class GenieContextAssembler:
     def _get_ontology_entities(self, tables: List[str] | None = None) -> list[dict]:
         base = (
             f"SELECT entity_type, entity_name, description, source_tables, "
-            f"source_columns, column_bindings, confidence "
+            f"source_columns, confidence, COALESCE(entity_role, 'primary') AS entity_role "
             f"FROM {self._fq('ontology_entities')} "
             f"WHERE confidence >= 0.4"
         )
@@ -209,20 +209,24 @@ class GenieContextAssembler:
                 filtered.append(r)
         return filtered
 
+    def _get_column_properties(self, tables: List[str]) -> list[dict]:
+        """Fetch column property classifications for given tables."""
+        in_clause = ", ".join(f"'{t}'" for t in tables)
+        return _safe_sql(
+            self.ws, self.wh,
+            f"SELECT table_name, column_name, property_role, linked_entity_type "
+            f"FROM {self._fq('ontology_column_properties')} "
+            f"WHERE table_name IN ({in_clause})",
+        )
+
     def _get_entity_relationships(self, tables: List[str] | None = None) -> list[dict]:
-        """Fetch declared relationship edges between entities relevant to selected tables."""
+        """Fetch named relationships from ontology_relationships table."""
         rows = _safe_sql(
-            self.ws,
-            self.wh,
-            f"""
-            SELECT e_src.entity_type AS src_type,
-                   e_dst.entity_type AS dst_type,
-                   ge.relationship
-            FROM {self._fq('graph_edges')} ge
-            JOIN {self._fq('ontology_entities')} e_src ON ge.src = e_src.entity_id
-            JOIN {self._fq('ontology_entities')} e_dst ON ge.dst = e_dst.entity_id
-            WHERE ge.relationship NOT IN ('is_a', 'similar_embedding')
-        """,
+            self.ws, self.wh,
+            f"SELECT src_entity_type AS src_type, dst_entity_type AS dst_type, "
+            f"relationship_name AS relationship, cardinality "
+            f"FROM {self._fq('ontology_relationships')} "
+            f"WHERE confidence >= 0.4",
         )
         if not tables:
             return rows
@@ -352,29 +356,18 @@ class GenieContextAssembler:
                 entity_map[t] = e
                 entity_map[t.split(".")[-1]] = e
 
-        # Build column binding lookup: table.column -> attribute_name
-        binding_map: dict[str, str] = {}
-        for e in entity_rows:
-            bindings = e.get("column_bindings") or []
-            if isinstance(bindings, str):
-                try:
-                    bindings = json.loads(bindings)
-                except (json.JSONDecodeError, TypeError):
-                    bindings = []
-            for b in bindings:
-                if isinstance(b, dict) and b.get("bound_column"):
-                    key = b["bound_column"] if "." in b.get("bound_column", "") else f"{b.get('bound_table', '')}.{b['bound_column']}"
-                    binding_map[key] = b.get("attribute_name", "")
-
         # Build per-entity-type relationship summary
         rel_summary: dict[str, list[str]] = {}
         for r in (entity_rels or []):
             src, dst, rel = r.get("src_type", ""), r.get("dst_type", ""), r.get("relationship", "")
+            card = r.get("cardinality", "")
             if src and dst and rel:
-                rel_summary.setdefault(src, []).append(f"{rel} {dst}")
+                rel_summary.setdefault(src, []).append(f"{rel} -> {dst}" + (f" ({card})" if card else ""))
 
         for t in table_meta:
             tname = t["table_name"]
+            # Use primary entity for table classification
+            primary_ents = [e for e in entity_rows if e.get("entity_role", "primary") == "primary"]
             ent_info = entity_map.get(tname) or entity_map.get(tname.split(".")[-1])
             ent_type = ent_info["entity_type"] if ent_info else ""
             header = f"Table: {tname}"
@@ -395,9 +388,6 @@ class GenieContextAssembler:
             col_lines = []
             for c in cols:
                 line = f"  - {c['column_name']} {c.get('data_type', '')}"
-                attr = binding_map.get(f"{tname}.{c['column_name']}")
-                if attr:
-                    line += f" (={attr})"
                 if c.get("comment"):
                     line += f" : {c['comment']}"
                 if c.get("classification"):
@@ -428,7 +418,8 @@ class GenieContextAssembler:
         if entity_rels:
             parts.append("\nENTITY RELATIONSHIPS:")
             for r in entity_rels:
-                parts.append(f"  {r.get('src_type', '')} --{r.get('relationship', '')}--> {r.get('dst_type', '')}")
+                card = r.get("cardinality", "")
+                parts.append(f"  {r.get('src_type', '')} --{r.get('relationship', '')}--> {r.get('dst_type', '')}" + (f" ({card})" if card else ""))
 
         return "\n\n".join(parts)
 
