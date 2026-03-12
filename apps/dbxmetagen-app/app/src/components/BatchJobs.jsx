@@ -410,7 +410,7 @@ export default function BatchJobs() {
             className="px-4 py-2 bg-slate-700 text-white rounded-md text-sm hover:bg-slate-800 disabled:opacity-50">
             {loading ? 'Starting...' : 'Run Single Mode'}
           </button>
-          <button onClick={() => runJob('_parallel_modes_job', { table_names: tableNames, ...(domainConfig ? { domain_config: domainConfig } : {}) })}
+          <button onClick={() => runJob('_parallel_modes_job', { table_names: tableNames, apply_ddl: applyDdl, ...(domainConfig ? { domain_config: domainConfig } : {}) })}
             disabled={loading || !tableNames.trim()}
             title="Run all three modes (comment, PI, domain) in parallel for faster coverage"
             className="px-4 py-2 bg-dbx-lava text-white rounded-md text-sm hover:bg-red-700 disabled:opacity-50">

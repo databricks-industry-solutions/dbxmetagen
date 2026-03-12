@@ -479,6 +479,7 @@ class EntityDefinition:
     relationships: Dict[str, Dict[str, str]] = field(default_factory=dict)
     synonyms: List[str] = field(default_factory=list)
     business_questions: List[str] = field(default_factory=list)
+    parent: Optional[str] = None
 
 
 BUNDLE_DIR = "configurations/ontology_bundles"
@@ -705,6 +706,7 @@ class OntologyLoader:
                     relationships=rels,
                     synonyms=details.get("synonyms", []),
                     business_questions=details.get("business_questions", []),
+                    parent=details.get("parent"),
                 )
             )
 
@@ -1819,19 +1821,23 @@ class OntologyBuilder:
         COMMENT 'Ontology entities discovered from knowledge base'
         """
         self.spark.sql(ddl)
-        for col_ddl in [
-            "ontology_bundle STRING",
-            "column_bindings ARRAY<STRUCT<attribute_name: STRING, bound_table: STRING, bound_column: STRING>>",
-            "entity_role STRING",
-            "is_canonical BOOLEAN",
-            "discovery_confidence DOUBLE",
-        ]:
-            try:
-                self.spark.sql(
-                    f"ALTER TABLE {self.config.fully_qualified_entities} ADD COLUMN IF NOT EXISTS {col_ddl}"
-                )
-            except Exception:
-                pass
+        existing = {f.name for f in self.spark.table(self.config.fully_qualified_entities).schema.fields}
+        new_columns = {
+            "ontology_bundle": "STRING",
+            "column_bindings": "ARRAY<STRUCT<attribute_name: STRING, bound_table: STRING, bound_column: STRING>>",
+            "entity_role": "STRING",
+            "is_canonical": "BOOLEAN",
+            "discovery_confidence": "DOUBLE",
+        }
+        for col_name, col_type in new_columns.items():
+            if col_name not in existing:
+                try:
+                    self.spark.sql(
+                        f"ALTER TABLE {self.config.fully_qualified_entities} ADD COLUMN {col_name} {col_type}"
+                    )
+                    logger.info("Added column %s to entities table", col_name)
+                except Exception as e:
+                    logger.warning("Could not add column %s: %s", col_name, e)
         logger.info(f"Entities table {self.config.fully_qualified_entities} ready")
 
     def create_metrics_table(self) -> None:
@@ -1932,6 +1938,9 @@ class OntologyBuilder:
                     entity.get("source_columns", []),
                     attributes,
                     float(entity.get("confidence", 0.0)),
+                    float(entity.get("discovery_confidence") or entity.get("confidence", 0.0)),
+                    entity.get("entity_role"),
+                    bool(entity.get("is_canonical", False)),
                     bool(entity.get("auto_discovered", True)),
                     bool(entity.get("validated", False)),
                     entity.get("validation_notes"),
@@ -2756,7 +2765,7 @@ class OntologyBuilder:
             logger.warning("classify_column_properties: cannot read column KB: %s", e)
             return 0
 
-        now = datetime.utcnow().isoformat()
+        now = datetime.utcnow()
         props = []
         for c in columns:
             tbl = c.table_name
@@ -2833,7 +2842,7 @@ class OntologyBuilder:
 
         rels: List[Dict] = []
         seen: set = set()
-        now = datetime.utcnow().isoformat()
+        now = datetime.utcnow()
 
         # From FK predictions
         try:
@@ -2920,7 +2929,7 @@ class OntologyBuilder:
 
         # From config hierarchy (is_a)
         for edef in self.discoverer.entity_definitions:
-            parent = getattr(edef, 'parent', None) or edef.raw_config.get('parent', '')
+            parent = edef.parent
             if parent:
                 key = (edef.name, parent)
                 if key not in seen:

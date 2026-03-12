@@ -1179,6 +1179,13 @@ def review_combined(body: ReviewCombinedRequest):
             if tn in tbl_names:
                 fk_by_table.setdefault(tn, []).append(f)
 
+    def _to_bool(v):
+        if isinstance(v, bool):
+            return v
+        if v is None:
+            return False
+        return str(v).lower() in ("true", "1")
+
     result = []
     for t in tbl_rows:
         tn = t["table_name"]
@@ -1187,6 +1194,8 @@ def review_combined(body: ReviewCombinedRequest):
         primary_entity = primary_ents[0] if primary_ents else None
         result.append({
             **t,
+            "has_pii": _to_bool(t.get("has_pii")),
+            "has_phi": _to_bool(t.get("has_phi")),
             "columns": cols_by_table.get(tn, []),
             "primary_entity": primary_entity,
             "ontology_entities": ents,
