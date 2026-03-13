@@ -1,7 +1,7 @@
-"""Graph traversal tools for the GraphRAG agent.
+"""Graph traversal tools for the metadata intelligence agents.
 
-Queries graph_nodes / graph_edges in Lakebase via direct PostgreSQL connection
-(SQLAlchemy engine configured in db.py).
+Queries graph_nodes / graph_edges via graph_query() which tries Lakebase PG
+first, then falls back to UC Delta tables.
 """
 
 import logging
@@ -12,9 +12,10 @@ from langchain_core.tools import tool
 logger = logging.getLogger(__name__)
 
 
-def _pg(query: str) -> list[dict]:
-    from db import pg_execute
-    return pg_execute(query)
+def _gq(query: str) -> list[dict]:
+    """Execute a graph query with automatic Lakebase PG -> UC Delta fallback."""
+    from api_server import graph_query
+    return graph_query(query)
 
 
 # ---------------------------------------------------------------------------
@@ -44,8 +45,12 @@ def query_graph_nodes(
     if search_term:
         conditions.append(f"(id LIKE '%{search_term}%' OR comment LIKE '%{search_term}%')")
     where = "WHERE " + " AND ".join(conditions) if conditions else ""
-    q = f"SELECT id, node_type, domain, security_level, comment FROM public.graph_nodes {where} LIMIT {limit}"
-    return _pg(q)
+    q = (
+        f"SELECT id, node_type, domain, security_level, display_name, "
+        f"short_description, sensitivity, status, ontology_id, ontology_type "
+        f"FROM public.graph_nodes {where} LIMIT {limit}"
+    )
+    return _gq(q)
 
 
 @tool
@@ -56,7 +61,7 @@ def get_node_details(node_id: str) -> dict:
         node_id: The node id to look up.
     """
     q = f"SELECT * FROM public.graph_nodes WHERE id = '{node_id}'"
-    rows = _pg(q)
+    rows = _gq(q)
     return rows[0] if rows else {}
 
 
@@ -70,13 +75,17 @@ def find_similar_nodes(node_id: str, min_similarity: float = 0.8, limit: int = 1
         limit: Max results.
     """
     q = f"""
-        SELECT e.dst as similar_node, e.weight as similarity, n.node_type, n.domain, n.comment
+        SELECT e.dst as similar_node, e.weight as similarity,
+               e.edge_type, e.source_system,
+               n.node_type, n.domain, n.display_name, n.short_description
         FROM public.graph_edges e
         JOIN public.graph_nodes n ON e.dst = n.id
-        WHERE e.src = '{node_id}' AND e.relationship = 'similar_embedding' AND e.weight >= {min_similarity}
+        WHERE e.src = '{node_id}'
+          AND (e.edge_type = 'similar_to' OR e.relationship = 'similar_embedding')
+          AND e.weight >= {min_similarity}
         ORDER BY e.weight DESC LIMIT {limit}
     """
-    return _pg(q)
+    return _gq(q)
 
 
 @tool
@@ -84,6 +93,7 @@ def traverse_graph(
     start_node: str,
     max_hops: int = 3,
     relationship: Optional[str] = None,
+    edge_type: Optional[str] = None,
     direction: str = "outgoing",
 ) -> dict:
     """Multi-hop graph traversal from a starting node.
@@ -95,7 +105,8 @@ def traverse_graph(
     Args:
         start_node: Node id to start traversal from.
         max_hops: Maximum number of hops (1-5).
-        relationship: Optional edge relationship filter (e.g. 'has_column', 'similar_embedding').
+        relationship: Optional edge relationship filter (e.g. 'contains', 'similar_embedding').
+        edge_type: Optional edge_type filter (contains, references, instance_of, similar_to, etc.).
         direction: 'outgoing' (follow src->dst), 'incoming' (follow dst->src), or 'both'.
     """
     from api_server import multi_hop_traverse
@@ -103,6 +114,7 @@ def traverse_graph(
         start_node=start_node,
         max_hops=min(max_hops, 5),
         relationship=relationship,
+        edge_type=edge_type,
         direction=direction,
     )
 

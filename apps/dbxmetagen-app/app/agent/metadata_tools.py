@@ -85,11 +85,17 @@ def search_metadata(query: str, doc_type_filter: Optional[str] = None, num_resul
     vs_index = f"{CATALOG}.{SCHEMA}.{VS_INDEX_SUFFIX}"
     try:
         from databricks.vector_search.client import VectorSearchClient
-        vsc = VectorSearchClient()
+        from databricks.sdk import WorkspaceClient
+        ws = WorkspaceClient()
+        _token = os.environ.get("DATABRICKS_TOKEN")
+        if not _token:
+            headers = ws.config.authenticate()
+            _token = headers.get("Authorization", "").removeprefix("Bearer ")
+        vsc = VectorSearchClient(workspace_url=ws.config.host, personal_access_token=_token)
         index = vsc.get_index(endpoint_name=VS_ENDPOINT, index_name=vs_index)
         kwargs = dict(
             query_text=query,
-            columns=["doc_id", "doc_type", "content", "table_name", "domain", "entity_type", "confidence_score"],
+            columns=["doc_id", "doc_type", "content", "node_id", "table_name", "domain", "entity_type", "confidence_score"],
             num_results=num_results,
         )
         if doc_type_filter:
@@ -217,6 +223,96 @@ def get_data_quality(table_name_or_domain: str) -> str:
         return json.dumps({"error": str(e)})
 
 
+# ---------------------------------------------------------------------------
+# Tool: VS-to-graph bridge (1-hop expansion from VS hits)
+# ---------------------------------------------------------------------------
+
+@tool
+def expand_vs_hits(
+    node_ids: list[str],
+    edge_types: Optional[list[str]] = None,
+    max_per_node: int = 5,
+) -> str:
+    """Given node_ids from vector search results, do 1-hop graph expansion.
+
+    Returns connected nodes with edge types, join expressions, and display names.
+    This bridges semantic search results into the structural knowledge graph.
+
+    Args:
+        node_ids: List of node IDs (from VS search_metadata results' node_id field).
+        edge_types: Optional filter for edge types (e.g. ['references', 'contains']).
+        max_per_node: Max neighbors per starting node.
+    """
+    from api_server import graph_query
+    all_neighbors = []
+    for nid in node_ids[:20]:
+        et_filter = ""
+        if edge_types:
+            et_list = ", ".join(f"'{t}'" for t in edge_types)
+            et_filter = f" AND e.edge_type IN ({et_list})"
+        q = f"""
+            SELECT e.src, e.dst, e.relationship, e.edge_type, e.weight,
+                   e.join_expression, e.join_confidence, e.source_system,
+                   n.node_type, n.domain, n.display_name, n.short_description
+            FROM public.graph_edges e
+            JOIN public.graph_nodes n ON n.id = CASE WHEN e.src = '{nid}' THEN e.dst ELSE e.src END
+            WHERE (e.src = '{nid}' OR e.dst = '{nid}'){et_filter}
+            LIMIT {max_per_node}
+        """
+        rows = graph_query(q)
+        for r in rows:
+            r["origin_node"] = nid
+        all_neighbors.extend(rows)
+    return json.dumps({"neighbors": all_neighbors, "count": len(all_neighbors)})
+
+
+# ---------------------------------------------------------------------------
+# Tool: Baseline-only SQL (restricted to 3 KB tables)
+# ---------------------------------------------------------------------------
+
+BASELINE_TABLES = {"table_knowledge_base", "column_knowledge_base", "schema_knowledge_base"}
+
+
+def _check_baseline_allowlist(query: str) -> Optional[str]:
+    q = query.lower()
+    prefix = f"{CATALOG.lower()}.{SCHEMA.lower()}."
+    for t in BASELINE_TABLES:
+        q = q.replace(f"{prefix}{t}", t)
+    refs = re.findall(r'\bfrom\s+(\w+)|\bjoin\s+(\w+)', q)
+    for match in refs:
+        name = match[0] or match[1]
+        if name and name not in BASELINE_TABLES:
+            return f"Table '{name}' is not allowed. Baseline agent can only query: {', '.join(sorted(BASELINE_TABLES))}"
+    return None
+
+
+@tool
+def execute_baseline_sql(query: str) -> str:
+    """Execute read-only SQL against ONLY the three core knowledge base tables.
+
+    Allowed tables (use fully-qualified {catalog}.{schema}.table or just the table name):
+    - table_knowledge_base: table_name, comment, domain, subdomain, has_pii, has_phi, row_count
+    - column_knowledge_base: table_name, column_name, comment, data_type, classification, classification_type
+    - schema_knowledge_base: catalog_name, schema_name, comment, tables_count
+    """
+    q_upper = query.strip().upper()
+    if not q_upper.startswith("SELECT"):
+        return json.dumps({"error": "Only SELECT queries are allowed"})
+    for kw in ["INSERT", "UPDATE", "DELETE", "DROP", "CREATE", "ALTER", "TRUNCATE"]:
+        if kw in q_upper:
+            return json.dumps({"error": f"Blocked keyword: {kw}"})
+    err = _check_baseline_allowlist(query)
+    if err:
+        return json.dumps({"error": err})
+    try:
+        result = _execute_query(query)
+        if result["success"]:
+            return json.dumps({"columns": result["columns"], "rows": result["rows"][:100], "row_count": result["row_count"]})
+        return json.dumps({"error": result["error"]})
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
 # Re-export existing graph tools
 from agent.tools import query_graph_nodes, get_node_details, find_similar_nodes, traverse_graph  # noqa: E402, F401
 
@@ -224,3 +320,6 @@ ALL_METADATA_TOOLS = [
     search_metadata, execute_metadata_sql, get_table_summary, get_data_quality,
     query_graph_nodes, get_node_details, find_similar_nodes, traverse_graph,
 ]
+
+GRAPHRAG_TOOLS = ALL_METADATA_TOOLS + [expand_vs_hits]
+BASELINE_TOOLS = [execute_baseline_sql]

@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import { safeFetch, ErrorBanner } from '../App'
+import { OntologyOverview } from './Ontology'
+import { FKMapViz } from './ForeignKeyGeneration'
 
 const TYPE_BADGE = {
   MANAGED: 'bg-blue-100 text-blue-700',
@@ -23,7 +25,7 @@ function MetadataBar({ label, value, total, color }) {
   )
 }
 
-export default function Coverage() {
+function CatalogCoverage() {
   const [summary, setSummary] = useState([])
   const [tables, setTables] = useState([])
   const [typeBreakdown, setTypeBreakdown] = useState([])
@@ -224,6 +226,37 @@ export default function Coverage() {
             </table>
           </div>
         </section>
+      )}
+    </div>
+  )
+}
+
+const COVERAGE_TABS = [
+  { key: 'catalog', label: 'Catalog Coverage' },
+  { key: 'ontology', label: 'Ontology Health' },
+  { key: 'fk_map', label: 'FK Map' },
+]
+
+export default function Coverage() {
+  const [tab, setTab] = useState('catalog')
+  return (
+    <div className="space-y-4">
+      <div className="flex bg-dbx-oat rounded-lg p-1">
+        {COVERAGE_TABS.map(({ key, label }) => (
+          <button key={key} onClick={() => setTab(key)}
+            className={`px-3 py-1.5 text-sm rounded-md transition-all ${tab === key ? 'bg-dbx-oat-light shadow-sm font-semibold text-red-700' : 'text-slate-500 hover:text-slate-700'}`}>{label}</button>
+        ))}
+      </div>
+      {tab === 'catalog' && <CatalogCoverage />}
+      {tab === 'ontology' && <OntologyOverview />}
+      {tab === 'fk_map' && (
+        <div className="space-y-4">
+          <section className="bg-dbx-oat-light rounded-xl border border-slate-200 p-6 shadow-sm">
+            <h2 className="text-lg font-semibold text-slate-800 mb-4">Foreign Key Map</h2>
+            <p className="text-xs text-slate-500 mb-3">Tables as nodes, FK predictions as edges. Clustered by domain similarity.</p>
+            <FKMapViz />
+          </section>
+        </div>
       )}
     </div>
   )

@@ -19,7 +19,7 @@ variables:
     default: true
   include_datatype_from_metadata:
     description: Should datatype be included in the comment generation?
-    default: false
+    default: true
   include_existing_table_comment:
     description: If there's an existing comment at the table level, include it in the payload that is used to build the metadata. This can lead to data leakage, but can also help enrich AI generated comments with existing comments, or include information that the previous comment authors wanted to include.
     default: true
@@ -117,14 +117,17 @@ variables:
       "GMC": "Global Marketing Code",
       }
   domain_config_path:
-    description: Path to the domain configuration YAML file for domain classification mode
+    description: Path to a standalone domain configuration YAML file. When set, overrides the domains section from the ontology bundle for domain prediction. Leave empty to use the ontology bundle's domains instead.
     default: ../configurations/domain_config_healthcare.yaml
+  ontology_bundle:
+    description: Ontology bundle name or path (e.g. 'general', 'healthcare'). Used by the ontology pipeline and, when domain_config_path is empty, also supplies domain definitions for domain prediction.
+    default: general
   domain_column_blacklist:
     description: Comma-separated column names to exclude from domain classification (e.g. system columns like _updated_at, created_at that can bias results). Only affects domain mode.
     default: "_updated_at,_created_at,created_at,updated_at"
   include_lineage:
     description: When true, query system.access.table_lineage on the fly and include truncated upstream/downstream table lists in LLM prompts for comment, PII, and domain modes. Requires access to system tables. Default false.
-    default: false
+    default: true
   use_protected_classification_for_table:
     description: Whether to use protected classification for the table.
     default: true

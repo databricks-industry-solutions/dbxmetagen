@@ -148,9 +148,17 @@ async def run_metadata_agent(
 ) -> Dict[str, Any]:
     """Run the metadata intelligence agent and return the response.
 
-    mode='quick': fast, limited tool subset based on intent.
-    mode='deep': full tool access, higher recursion limit.
+    mode='quick': fast ReAct agent with intent-based tool selection.
+    mode='graphrag': multi-agent (supervisor/planner/retrieval/analyst/respond) with full VS + graph.
+    mode='baseline': same multi-agent but restricted to 3 KB tables only.
+    mode='deep': legacy alias for 'graphrag'.
     """
+    if mode in ("graphrag", "baseline", "deep"):
+        from agent.deep_analysis import run_deep_analysis
+        effective_mode = "graphrag" if mode == "deep" else mode
+        return run_deep_analysis(question, mode=effective_mode, history=history)
+
+    # Quick mode: existing ReAct agent
     graph = _get_graph()
 
     messages = []
@@ -164,22 +172,11 @@ async def run_metadata_agent(
                 messages.append(AIMessage(content=content))
 
     intent = classify_intent(question)
-
-    if mode == "deep":
-        prefix = (
-            "Perform a thorough, multi-step analysis. Use multiple tools to "
-            "cross-reference data. Provide detailed findings with supporting "
-            "evidence from SQL queries and vector search results.\n\n"
-        )
-        messages.append(HumanMessage(content=prefix + question))
-        recursion_limit = 40
-    else:
-        messages.append(HumanMessage(content=question))
-        recursion_limit = 20
+    messages.append(HumanMessage(content=question))
 
     result = await graph.ainvoke(
         {"messages": messages},
-        config={"recursion_limit": recursion_limit},
+        config={"recursion_limit": 20},
     )
 
     final_msg = result["messages"][-1]

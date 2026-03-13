@@ -115,6 +115,17 @@ def fq(table: str) -> str:
 _SAFE_IDENT_RE = re.compile(r"^[a-zA-Z0-9_.\- %]*$")
 
 
+def _ensure_column(table_fqn: str, col_name: str, col_type: str = "STRING"):
+    """Add a column to a table if it doesn't already exist (schema evolution helper)."""
+    try:
+        cols = execute_sql(f"DESCRIBE TABLE {table_fqn}", timeout=15)
+        if any(r.get("col_name") == col_name for r in cols):
+            return
+        execute_sql(f"ALTER TABLE {table_fqn} ADD COLUMN {col_name} {col_type}", timeout=15)
+    except Exception as e:
+        logger.debug("_ensure_column(%s, %s) skipped: %s", table_fqn, col_name, e)
+
+
 def _safe_sql_str(s: Optional[str]) -> str:
     """Escape single quotes for SQL string literal."""
     if s is None:
@@ -173,6 +184,80 @@ def graph_query(sql: str) -> list[dict]:
     return execute_sql(uc_sql)
 
 
+def multi_hop_traverse(
+    start_node: str,
+    max_hops: int = 3,
+    relationship: str | None = None,
+    edge_type: str | None = None,
+    direction: str = "outgoing",
+) -> dict:
+    """Iterative BFS-style graph traversal with support for edge_type filtering."""
+    visited_nodes: dict[str, dict] = {}
+    edges_found: list[dict] = []
+    frontier = {start_node}
+
+    filters = []
+    if relationship:
+        filters.append(f"e.relationship = '{relationship}'")
+    if edge_type:
+        filters.append(f"e.edge_type = '{edge_type}'")
+    filter_clause = (" AND " + " AND ".join(filters)) if filters else ""
+
+    cols = (
+        "e.src, e.dst, e.relationship, e.edge_type, e.weight, "
+        "e.join_expression, e.join_confidence, e.ontology_rel, e.source_system"
+    )
+
+    for hop in range(max_hops):
+        if not frontier:
+            break
+        id_list = ", ".join(f"'{n}'" for n in frontier)
+        if direction == "outgoing":
+            q = f"SELECT {cols} FROM public.graph_edges e WHERE e.src IN ({id_list}) {filter_clause}"
+        elif direction == "incoming":
+            q = f"SELECT {cols} FROM public.graph_edges e WHERE e.dst IN ({id_list}) {filter_clause}"
+        else:
+            q = (
+                f"SELECT {cols} FROM public.graph_edges e "
+                f"WHERE (e.src IN ({id_list}) OR e.dst IN ({id_list})) {filter_clause}"
+            )
+        rows = graph_query(q)
+        next_frontier = set()
+        for r in rows:
+            edges_found.append(r)
+            for side in ("src", "dst"):
+                nid = r.get(side)
+                if nid and nid not in visited_nodes:
+                    next_frontier.add(nid)
+        frontier = next_frontier - set(visited_nodes.keys()) - {start_node}
+        # Fetch node details for new frontier
+        if frontier:
+            nid_list = ", ".join(f"'{n}'" for n in frontier)
+            nq = (
+                f"SELECT id, node_type, domain, display_name, short_description, "
+                f"sensitivity, status FROM public.graph_nodes WHERE id IN ({nid_list})"
+            )
+            for nr in graph_query(nq):
+                visited_nodes[nr["id"]] = nr
+
+    # Also fetch start node details
+    start_rows = graph_query(
+        f"SELECT id, node_type, domain, display_name, short_description "
+        f"FROM public.graph_nodes WHERE id = '{start_node}'"
+    )
+    if start_rows:
+        visited_nodes[start_node] = start_rows[0]
+
+    return {
+        "start_node": start_node,
+        "hops": max_hops,
+        "nodes": visited_nodes,
+        "edges": edges_found,
+        "node_count": len(visited_nodes),
+        "edge_count": len(edges_found),
+    }
+
+
 # ---------------------------------------------------------------------------
 # FastAPI app
 # ---------------------------------------------------------------------------
@@ -182,15 +267,26 @@ def graph_query(sql: str) -> list[dict]:
 async def lifespan(app: FastAPI):
     logger.info("dbxmetagen API starting – catalog=%s schema=%s", CATALOG, SCHEMA)
     if pg_configured():
-        logger.info(
-            "Lakebase PG connection configured -> %s:%s/%s",
-            os.environ.get("PGHOST"),
-            os.environ.get("PGPORT", "5432"),
-            os.environ.get("PGDATABASE"),
-        )
-        get_engine()  # eagerly create engine to fail fast on bad config
+        try:
+            logger.info(
+                "Lakebase PG connection configured -> %s:%s/%s",
+                os.environ.get("PGHOST"),
+                os.environ.get("PGPORT", "5432"),
+                os.environ.get("PGDATABASE"),
+            )
+            get_engine()
+            logger.info("Lakebase engine created OK")
+        except Exception as e:
+            logger.error("Lakebase engine creation failed (non-fatal): %s", e)
     else:
         logger.warning("PGHOST not set – add Lakebase database resource in Apps UI")
+
+    route_count = len([r for r in app.routes if hasattr(r, "methods")])
+    mount_count = len([r for r in app.routes if not hasattr(r, "methods")])
+    logger.info("Routes registered: %d endpoints, %d mounts", route_count, mount_count)
+    for r in app.routes:
+        if hasattr(r, "methods"):
+            logger.info("  %s %s", r.methods, r.path)
     yield
 
 
@@ -202,23 +298,45 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from starlette.responses import Response
+
+
+class DebugRoutingMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        path = request.url.path
+        method = request.method
+        if path.startswith("/api/"):
+            logger.info(">> %s %s (matched routes: %d)", method, path,
+                        len([r for r in app.routes if hasattr(r, "methods")]))
+        response: Response = await call_next(request)
+        if path.startswith("/api/") and response.status_code >= 400:
+            logger.warning("<< %s %s -> %d", method, path, response.status_code)
+        return response
+
+
+app.add_middleware(DebugRoutingMiddleware)
+
+
+@app.get("/api/health")
+def health():
+    """Simple health check that verifies routes are loaded."""
+    route_count = len([r for r in app.routes if hasattr(r, "methods")])
+    return {
+        "status": "ok",
+        "routes": route_count,
+        "route_list": [
+            {"path": r.path, "methods": list(r.methods)}
+            for r in app.routes if hasattr(r, "methods")
+        ][:20],
+    }
+
 
 @app.get("/api/config")
 def get_config():
     """Return current catalog/schema defaults for frontend forms."""
     return {"catalog_name": CATALOG, "schema_name": SCHEMA}
-
-
-@app.get("/api/debug/config")
-def debug_config():
-    """Return runtime env values for diagnostics."""
-    return {
-        "CATALOG_NAME": CATALOG,
-        "SCHEMA_NAME": SCHEMA,
-        "WAREHOUSE_ID": os.environ.get("WAREHOUSE_ID", ""),
-        "PGHOST": os.environ.get("PGHOST", ""),
-        "fq_example": fq("data_quality_scores"),
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -622,14 +740,6 @@ def jobs_health_check():
 # ---------------------------------------------------------------------------
 
 
-@app.get("/api/metadata/log")
-def get_metadata_log(limit: int = 100, table_name: Optional[str] = None):
-    """Query metadata_generation_log."""
-    where = f"WHERE table_name LIKE '%{table_name}%'" if table_name else ""
-    q = f"SELECT * FROM {fq('metadata_generation_log')} {where} ORDER BY _created_at DESC LIMIT {limit}"
-    return execute_sql(q)
-
-
 def _validate_filter(val: Optional[str], param: str) -> None:
     if val is None or val == "":
         return
@@ -637,12 +747,15 @@ def _validate_filter(val: Optional[str], param: str) -> None:
         raise HTTPException(400, f"Invalid {param}: only alphanumeric, underscore, dot, hyphen, space allowed")
 
 
+@app.get("/api/metadata/log")
+def get_metadata_log(limit: int = 100, table_name: Optional[str] = None):
+    where = f"WHERE table_name LIKE '%{table_name}%'" if table_name else ""
+    q = f"SELECT * FROM {fq('metadata_generation_log')} {where} ORDER BY _created_at DESC LIMIT {limit}"
+    return execute_sql(q)
+
+
 @app.get("/api/metadata/knowledge-base")
-def get_knowledge_base(
-    table_name: Optional[str] = None,
-    schema_name: Optional[str] = None,
-    limit: int = 100,
-):
+def get_knowledge_base(table_name: Optional[str] = None, schema_name: Optional[str] = None, limit: int = 100):
     _validate_filter(table_name, "table_name")
     _validate_filter(schema_name, "schema_name")
     clauses = []
@@ -656,11 +769,7 @@ def get_knowledge_base(
 
 
 @app.get("/api/metadata/column-kb")
-def get_column_kb(
-    table_name: Optional[str] = None,
-    column_name: Optional[str] = None,
-    limit: int = 200,
-):
+def get_column_kb(table_name: Optional[str] = None, column_name: Optional[str] = None, limit: int = 200):
     _validate_filter(table_name, "table_name")
     _validate_filter(column_name, "column_name")
     clauses = []
@@ -682,12 +791,7 @@ def get_schema_kb(schema_name: Optional[str] = None):
 
 
 @app.get("/api/metadata/geo-classifications")
-def get_geo_classifications(
-    table_name: Optional[str] = None,
-    classification: Optional[str] = None,
-    limit: int = 500,
-):
-    """Query geo_classifications table."""
+def get_geo_classifications(table_name: Optional[str] = None, classification: Optional[str] = None, limit: int = 500):
     clauses = []
     if table_name:
         _validate_filter(table_name, "table_name")
@@ -1297,30 +1401,6 @@ def export_to_volume(body: ExportVolumeRequest):
 
 
 # ---------------------------------------------------------------------------
-# Profiling endpoints
-# ---------------------------------------------------------------------------
-
-
-@app.get("/api/profiling/snapshots")
-def get_profiling_snapshots(limit: int = 100):
-    q = f"SELECT * FROM {fq('profiling_snapshots')} ORDER BY created_at DESC LIMIT {limit}"
-    return execute_sql(q)
-
-
-@app.get("/api/profiling/column-stats")
-def get_column_stats(table_name: Optional[str] = None, limit: int = 200):
-    where = f"WHERE table_name LIKE '%{table_name}%'" if table_name else ""
-    q = f"SELECT * FROM {fq('column_profiling_stats')} {where} ORDER BY table_name LIMIT {limit}"
-    return execute_sql(q)
-
-
-@app.get("/api/profiling/quality-scores")
-def get_quality_scores(limit: int = 100):
-    q = f"SELECT * FROM {fq('data_quality_scores')} ORDER BY created_at DESC LIMIT {limit}"
-    return execute_sql(q)
-
-
-# ---------------------------------------------------------------------------
 # Ontology endpoints
 # ---------------------------------------------------------------------------
 
@@ -1329,23 +1409,6 @@ def get_quality_scores(limit: int = 100):
 def get_ontology_entities(limit: int = 200):
     q = f"SELECT * FROM {fq('ontology_entities')} ORDER BY confidence DESC LIMIT {limit}"
     return execute_sql(q)
-
-
-@app.get("/api/ontology/column-properties/{table_name:path}")
-def get_ontology_column_properties(table_name: str):
-    safe_tbl = _safe_sql_str(table_name)
-    q = f"""
-        SELECT property_id, table_name, column_name, property_name,
-               property_role, owning_entity_id, owning_entity_type,
-               linked_entity_type, confidence, discovery_method
-        FROM {fq('ontology_column_properties')}
-        WHERE table_name = {safe_tbl}
-        ORDER BY column_name
-    """
-    try:
-        return execute_sql(q)
-    except Exception:
-        return []
 
 
 @app.get("/api/ontology/relationships")
@@ -1456,27 +1519,6 @@ def get_ontology_bundles():
     return _list_bundles_local()
 
 
-@app.get("/api/debug/config-paths")
-def debug_config_paths():
-    """Diagnostic endpoint: show which config paths exist and what was found."""
-    result = {"cwd": os.getcwd(), "__file__": __file__, "candidates": []}
-    for base in _CONFIG_DIR_CANDIDATES:
-        bd = os.path.join(base, "ontology_bundles")
-        base_abs = os.path.abspath(base)
-        bd_abs = os.path.abspath(bd)
-        entry = {
-            "config_dir": base, "config_dir_abs": base_abs, "config_exists": os.path.isdir(base_abs),
-            "bundle_dir": bd, "bundle_dir_abs": bd_abs, "bundle_exists": os.path.isdir(bd_abs),
-        }
-        if os.path.isdir(bd_abs):
-            entry["bundle_files"] = sorted(os.listdir(bd_abs))
-        result["candidates"].append(entry)
-    result["resolved_bundle_dir"] = _find_bundle_dir()
-    result["resolved_config_dir"] = _find_domain_config_dir()
-    result["bundle_count"] = len(_list_bundles_local())
-    return result
-
-
 def _resolve_domain_config_path(key: str) -> str:
     """Resolve a domain config key to a file path for the job parameter."""
     bundles = {b["key"]: b for b in _list_bundles_local()}
@@ -1492,17 +1534,8 @@ def _resolve_domain_config_path(key: str) -> str:
 
 @app.get("/api/domain-configs")
 def list_domain_configs():
-    """List domain config sources: ontology bundles + standalone YAML files."""
+    """List standalone domain config YAML files (not bundles -- those are in the ontology bundle dropdown)."""
     items = []
-    for b in _list_bundles_local():
-        if b.get("domain_count", 0) > 0:
-            items.append({
-                "key": b["key"],
-                "name": b.get("name", b["key"]),
-                "source": "bundle",
-                "domain_count": b["domain_count"],
-            })
-
     cfg_dir = _find_domain_config_dir()
     if cfg_dir:
         for fname in sorted(os.listdir(cfg_dir)):
@@ -1624,6 +1657,46 @@ def ontology_apply_tags(body: OntologyApplyBody):
             col_results.append({"table": tbl_clean, "column": col_name, "ok": False, "sql": sql,
                 "error": f"SQL succeeded but column tag not found -- check permissions"})
 
+    # --- Knowledge base write-back ---
+    tbl_kb = fq("table_knowledge_base")
+    col_kb = fq("column_knowledge_base")
+    # Table-level: persist primary_entity_type
+    for r in table_results:
+        if not r.get("ok"):
+            continue
+        tbl_clean = r["table"]
+        tag_val = r.get("verified", "")
+        if not tag_val:
+            continue
+        try:
+            _ensure_column(tbl_kb, "primary_entity_type")
+            execute_sql(
+                f"UPDATE {tbl_kb} SET primary_entity_type = '{tag_val.replace(chr(39), chr(39)*2)}', "
+                f"updated_at = current_timestamp() WHERE table_name = '{tbl_clean}'",
+                timeout=15,
+            )
+        except Exception as e:
+            logger.warning("KB write-back (table) failed for %s: %s", tbl_clean, e)
+    # Column-level: persist entity_type
+    for r in col_results:
+        if not r.get("ok"):
+            continue
+        tbl_clean, col_name = r["table"], r["column"]
+        tag_val = r.get("verified", "")
+        if not tag_val:
+            continue
+        try:
+            _ensure_column(col_kb, "entity_type")
+            col_safe = col_name.replace("'", "''")
+            execute_sql(
+                f"UPDATE {col_kb} SET entity_type = '{tag_val.replace(chr(39), chr(39)*2)}', "
+                f"updated_at = current_timestamp() "
+                f"WHERE table_name = '{tbl_clean}' AND column_name = '{col_safe}'",
+                timeout=15,
+            )
+        except Exception as e:
+            logger.warning("KB write-back (column entity) failed for %s.%s: %s", tbl_clean, col_name, e)
+
     return {"results": table_results, "column_results": col_results}
 
 
@@ -1650,22 +1723,6 @@ def get_entity_type_options():
 class UpdateEntityTypeBody(BaseModel):
     entity_id: str
     new_entity_type: str
-
-
-@app.post("/api/ontology/update-entity-type")
-def update_entity_type(body: UpdateEntityTypeBody):
-    """Update an entity's entity_type in the ontology_entities table."""
-    eid = body.entity_id.replace("'", "''")
-    et = body.new_entity_type.replace("'", "''")
-    try:
-        execute_sql(f"""
-            UPDATE {fq('ontology_entities')}
-            SET entity_type = '{et}', entity_name = '{et}', updated_at = current_timestamp()
-            WHERE entity_id = '{eid}'
-        """, timeout=30)
-        return {"ok": True}
-    except Exception as e:
-        raise HTTPException(500, str(e))
 
 
 class SetRecommendedEntityBody(BaseModel):
@@ -1759,6 +1816,28 @@ def apply_property_tags(body: ApplyPropertyTagsBody):
             results.append(ok_entry)
         except Exception as e:
             results.append({"table": tbl, "column": col, "ok": False, "sql": sql, "error": str(e)})
+
+    # --- Knowledge base write-back ---
+    col_kb = fq("column_knowledge_base")
+    role_lookup = {(item.get("table_name", "").strip(), item.get("column_name", "").strip()): item.get("property_role", "").strip() for item in body.items}
+    for r in results:
+        if not r.get("ok"):
+            continue
+        role_val = role_lookup.get((r["table"], r["column"]), "")
+        if not role_val:
+            continue
+        try:
+            _ensure_column(col_kb, "property_role")
+            col_safe = r["column"].replace("'", "''")
+            execute_sql(
+                f"UPDATE {col_kb} SET property_role = '{role_val.replace(chr(39), chr(39)*2)}', "
+                f"updated_at = current_timestamp() "
+                f"WHERE table_name = '{r['table']}' AND column_name = '{col_safe}'",
+                timeout=15,
+            )
+        except Exception as e:
+            logger.warning("KB write-back (property_role) failed for %s.%s: %s", r.get("table"), r.get("column"), e)
+
     return {"results": results}
 
 
@@ -1817,7 +1896,30 @@ def fk_apply_from_predictions(body: FKApplyPredictionsBody):
             execute_sql(ddl, timeout=60)
             results.append({"ddl": ddl, "ok": True})
         except Exception as e:
-            results.append({"ddl": ddl, "ok": False, "error": str(e)})
+            err = str(e)
+            if "PERMISSION_DENIED" in err and "MANAGE" in err:
+                err += " [Hint: Try 'Apply as Tags' instead -- it only requires APPLY_TAG permission.]"
+            results.append({"ddl": ddl, "ok": False, "error": err})
+    return {"results": results}
+
+
+@app.post("/api/analytics/fk-apply-as-tags")
+def fk_apply_as_tags(body: FKApplyPredictionsBody):
+    """Apply FK relationships as column tags (requires APPLY_TAG, not MANAGE).
+
+    Sets a tag like: ALTER TABLE <src_table> ALTER COLUMN <col> SET TAGS ('fk_references' = '<dst_table>.<col>')
+    """
+    results = []
+    for p in body.predictions:
+        src_col = p.src_column.split(".")[-1] if "." in p.src_column else p.src_column
+        dst_col = p.dst_column.split(".")[-1] if "." in p.dst_column else p.dst_column
+        tag_val = f"{p.dst_table}.{dst_col}"
+        sql = f"ALTER TABLE {p.src_table} ALTER COLUMN `{src_col}` SET TAGS ('fk_references' = '{tag_val}')"
+        try:
+            execute_sql(sql, timeout=60)
+            results.append({"sql": sql, "ok": True})
+        except Exception as e:
+            results.append({"sql": sql, "ok": False, "error": str(e)})
     return {"results": results}
 
 
@@ -1829,17 +1931,6 @@ def get_ontology_relationships(limit: int = 500):
         FROM {fq('graph_edges')}
         WHERE relationship NOT IN ('similar_embedding', 'shares_column_name')
         ORDER BY weight DESC LIMIT {limit}
-    """
-    return execute_sql(q)
-
-
-@app.get("/api/ontology/coverage")
-def get_ontology_coverage():
-    """Return entity_type x source_table matrix with confidence for heatmap."""
-    q = f"""
-        SELECT entity_type, source_tables, confidence
-        FROM {fq('ontology_entities')}
-        WHERE entity_type IS NOT NULL
     """
     return execute_sql(q)
 
@@ -1861,107 +1952,9 @@ def get_ontology_metrics():
         raise
 
 
-@app.get("/api/ontology/edge-summary")
-def get_ontology_edge_summary():
-    """Return edge counts by relationship type for ontology-relevant edges."""
-    q = f"""
-        SELECT relationship, COUNT(*) as count
-        FROM {fq('graph_edges')}
-        WHERE relationship IN ('instance_of', 'has_attribute', 'is_a', 'references')
-        GROUP BY relationship
-        ORDER BY count DESC
-    """
-    try:
-        return execute_sql(q)
-    except HTTPException as e:
-        if e.status_code == 404:
-            return []
-        raise
-
-
-@app.get("/api/ontology/confidence-distribution")
-def get_ontology_confidence_distribution():
-    """Return confidence band distribution for entities."""
-    q = f"""
-        SELECT
-            CASE
-                WHEN confidence < 0.4 THEN '0-0.4'
-                WHEN confidence < 0.6 THEN '0.4-0.6'
-                WHEN confidence < 0.8 THEN '0.6-0.8'
-                ELSE '0.8-1.0'
-            END as band,
-            COUNT(*) as count
-        FROM {fq('ontology_entities')}
-        WHERE entity_type IS NOT NULL
-        GROUP BY 1
-        ORDER BY 1
-    """
-    try:
-        return execute_sql(q)
-    except HTTPException as e:
-        if e.status_code == 404:
-            return []
-        raise
-
-
-@app.get("/api/ontology/compare")
-def compare_ontology_bundles(bundle_a: str = "", bundle_b: str = ""):
-    """Compare entity discoveries across two ontology bundles."""
-    if not bundle_a or not bundle_b:
-        return {"error": "Provide both bundle_a and bundle_b query params"}
-    q = f"""
-        SELECT
-            COALESCE(a.entity_type, b.entity_type) AS entity_type,
-            COALESCE(a.source_table, b.source_table) AS source_table,
-            a.confidence AS {bundle_a}_confidence,
-            b.confidence AS {bundle_b}_confidence,
-            CASE
-                WHEN a.entity_type IS NOT NULL AND b.entity_type IS NOT NULL THEN 'both'
-                WHEN a.entity_type IS NOT NULL THEN '{bundle_a}_only'
-                ELSE '{bundle_b}_only'
-            END AS presence
-        FROM (
-            SELECT entity_type, explode(source_tables) AS source_table, MAX(confidence) AS confidence
-            FROM {fq('ontology_entities')}
-            WHERE ontology_bundle = '{bundle_a}'
-            GROUP BY entity_type, source_table
-        ) a
-        FULL OUTER JOIN (
-            SELECT entity_type, explode(source_tables) AS source_table, MAX(confidence) AS confidence
-            FROM {fq('ontology_entities')}
-            WHERE ontology_bundle = '{bundle_b}'
-            GROUP BY entity_type, source_table
-        ) b ON a.entity_type = b.entity_type AND a.source_table = b.source_table
-        ORDER BY source_table, entity_type
-    """
-    return execute_sql(q)
-
-
 # ---------------------------------------------------------------------------
 # Analytics endpoints
 # ---------------------------------------------------------------------------
-
-
-@app.get("/api/analytics/clusters")
-def get_cluster_assignments(limit: int = 500):
-    q = f"SELECT * FROM {fq('node_cluster_assignments')} ORDER BY cluster, id LIMIT {limit}"
-    return execute_sql(q)
-
-
-@app.get("/api/analytics/clustering-metrics")
-def get_clustering_metrics():
-    q = f"SELECT * FROM {fq('clustering_metrics')} ORDER BY run_timestamp DESC, phase, k"
-    return execute_sql(q)
-
-
-@app.get("/api/analytics/similarity-edges")
-def get_similarity_edges(min_weight: float = 0.8, limit: int = 200):
-    q = f"""
-        SELECT * FROM public.graph_edges
-        WHERE relationship = 'similar_embedding' AND weight >= {min_weight}
-        ORDER BY weight DESC LIMIT {limit}
-    """
-    return graph_query(q)
 
 
 # ---------------------------------------------------------------------------
@@ -1997,13 +1990,16 @@ def fk_apply(body: FKApplyBody):
     for stmt in (body.statements or []):
         s = (stmt or "").strip()
         if not s or not s.upper().startswith("ALTER TABLE"):
-            results.append({"ok": False, "error": "Not an ALTER TABLE statement"})
+            results.append({"ok": False, "error": "Not an ALTER TABLE statement", "statement": s})
             continue
         try:
             execute_sql(s, timeout=60)
-            results.append({"ok": True})
+            results.append({"ok": True, "statement": s})
         except Exception as e:
-            results.append({"ok": False, "error": str(e)})
+            err = str(e)
+            if "PERMISSION_DENIED" in err and "MANAGE" in err:
+                err += " [Hint: Try 'Apply as Tags' instead -- it only requires APPLY_TAG permission.]"
+            results.append({"ok": False, "error": err, "statement": s})
     return {"results": results}
 
 
@@ -2155,144 +2151,6 @@ def get_coverage_tables(catalog: Optional[str] = None, schema: Optional[str] = N
             ORDER BY table_schema, table_name
         """
         return execute_sql(q_simple)
-
-
-# ---------------------------------------------------------------------------
-# Graph endpoints (used by GraphRAG and direct exploration)
-# ---------------------------------------------------------------------------
-
-
-@app.get("/api/graph/nodes")
-def get_graph_nodes(
-    node_type: Optional[str] = None,
-    domain: Optional[str] = None,
-    limit: int = 200,
-):
-    conditions = []
-    if node_type:
-        conditions.append(f"node_type = '{node_type}'")
-    if domain:
-        conditions.append(f"domain = '{domain}'")
-    where = "WHERE " + " AND ".join(conditions) if conditions else ""
-    q = f"SELECT id, table_short_name, node_type, domain, security_level, comment FROM public.graph_nodes {where} ORDER BY id LIMIT {limit}"
-    return graph_query(q)
-
-
-@app.get("/api/graph/edges")
-def get_graph_edges(
-    src: Optional[str] = None, dst: Optional[str] = None, limit: int = 200
-):
-    conditions = []
-    if src:
-        conditions.append(f"src = '{src}'")
-    if dst:
-        conditions.append(f"dst = '{dst}'")
-    where = "WHERE " + " AND ".join(conditions) if conditions else ""
-    q = f"SELECT * FROM public.graph_edges {where} ORDER BY weight DESC LIMIT {limit}"
-    return graph_query(q)
-
-
-@app.get("/api/graph/neighbors/{node_id}")
-def get_node_neighbors(node_id: str, relationship: Optional[str] = None):
-    """Get neighbors of a node, optionally filtered by edge relationship."""
-    rel_filter = f" AND e.relationship = '{relationship}'" if relationship else ""
-    q = f"""
-        SELECT e.dst as neighbor, e.relationship, e.weight,
-               n.table_short_name, n.node_type, n.domain, n.comment
-        FROM public.graph_edges e
-        JOIN public.graph_nodes n ON e.dst = n.id
-        WHERE e.src = '{node_id}'{rel_filter}
-        ORDER BY e.weight DESC
-    """
-    return graph_query(q)
-
-
-# ---------------------------------------------------------------------------
-# Graph traversal (multi-hop against Lakebase catalog)
-# ---------------------------------------------------------------------------
-
-
-def multi_hop_traverse(
-    start_node: str,
-    max_hops: int = 3,
-    relationship: Optional[str] = None,
-    direction: str = "outgoing",
-) -> dict:
-    """Iterative multi-hop graph traversal (Lakebase PG with UC fallback).
-
-    Returns {"nodes": [...], "edges": [...], "paths": [[node_ids...], ...]}.
-    """
-    visited_nodes: dict[str, dict] = {}
-    collected_edges: list[dict] = []
-    frontier = {start_node}
-    paths: list[list[str]] = [[start_node]]
-
-    for hop in range(max_hops):
-        if not frontier:
-            break
-        id_list = ", ".join(f"'{n}'" for n in frontier)
-        if direction == "outgoing":
-            edge_filter = f"src IN ({id_list})"
-        elif direction == "incoming":
-            edge_filter = f"dst IN ({id_list})"
-        else:
-            edge_filter = f"(src IN ({id_list}) OR dst IN ({id_list}))"
-        rel_filter = f" AND relationship = '{relationship}'" if relationship else ""
-        edge_q = f"SELECT src, dst, relationship, weight FROM public.graph_edges WHERE {edge_filter}{rel_filter}"
-        edges = graph_query(edge_q)
-        if not edges:
-            break
-        collected_edges.extend(edges)
-        next_frontier: set[str] = set()
-        for e in edges:
-            for nid in (e.get("src"), e.get("dst")):
-                if nid and nid not in visited_nodes:
-                    next_frontier.add(nid)
-        frontier = next_frontier
-        new_paths = []
-        for e in edges:
-            for p in paths:
-                if p[-1] == e.get("src") and e.get("dst") not in set(p):
-                    new_paths.append(p + [e["dst"]])
-                elif (
-                    direction != "outgoing"
-                    and p[-1] == e.get("dst")
-                    and e.get("src") not in set(p)
-                ):
-                    new_paths.append(p + [e["src"]])
-        if new_paths:
-            paths = new_paths
-
-    # Fetch details for all discovered nodes
-    all_ids = {start_node}
-    for e in collected_edges:
-        all_ids.add(e.get("src", ""))
-        all_ids.add(e.get("dst", ""))
-    all_ids.discard("")
-    if all_ids:
-        ids_sql = ", ".join(f"'{n}'" for n in all_ids)
-        node_q = f"SELECT id, node_type, domain, subdomain, security_level, comment, table_name FROM public.graph_nodes WHERE id IN ({ids_sql})"
-        node_rows = graph_query(node_q)
-        for n in node_rows:
-            visited_nodes[n["id"]] = n
-
-    return {
-        "nodes": list(visited_nodes.values()),
-        "edges": collected_edges,
-        "paths": paths,
-        "hops_completed": min(max_hops, len(paths[0]) - 1 if paths and paths[0] else 0),
-    }
-
-
-@app.post("/api/graph/traverse")
-def graph_traverse(req: GraphTraverseRequest):
-    """Multi-hop graph traversal starting from a node, querying Lakebase catalog."""
-    return multi_hop_traverse(
-        start_node=req.start_node,
-        max_hops=req.max_hops,
-        relationship=req.relationship,
-        direction=req.direction,
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -3757,216 +3615,8 @@ OUTPUT: Return ONLY the corrected JSON definition (single object, not array)."""
     }
 
 
-@app.post("/api/semantic-layer/definitions/{definition_id}/improve")
-def improve_definition(definition_id: str):
-    """Enhance a validated definition to be more sophisticated."""
-    row = _fetch_definition(definition_id)
-    defn = (
-        json.loads(row["json_definition"])
-        if isinstance(row["json_definition"], str)
-        else row["json_definition"]
-    )
-    source = defn.get("source", row.get("source_table", ""))
-
-    context = _build_sl_context([source], CATALOG, SCHEMA)
-    cx = _score_definition_complexity(defn)
-    trivial_nudge = ""
-    if cx["complexity_level"] == "trivial":
-        trivial_nudge = """
-CRITICAL: This definition is TRIVIAL (score {score}). You MUST significantly increase analytical depth:
-- Add at least one RATIO measure: e.g. SUM(x) / NULLIF(COUNT(DISTINCT y), 0)
-- Add at least one RATE measure: e.g. SUM(CASE WHEN cond THEN 1 ELSE 0 END) * 1.0 / NULLIF(COUNT(*), 0)
-- Add a FILTER measure: e.g. COUNT(*) FILTER (WHERE threshold_col > value)
-- Add a COUNT DISTINCT measure
-- Add at least one multi-tier CASE WHEN dimension
-""".format(
-            score=cx["complexity_score"]
-        )
-    ref_improve = _load_agent_reference("metric_view_reference.json", ["measure_patterns", "validation_checklist", "join_templates"])
-    prompt = f"""You are improving a validated metric view definition to make it more sophisticated.
-
-CURRENT DEFINITION:
-{json.dumps(defn, indent=2)}
-
-TABLE METADATA:
-{context}
-{trivial_nudge}
-REFERENCE: MEASURE PATTERNS & VALIDATION CHECKLIST (use these to guide improvements)
-{ref_improve}
-
-Improve this definition:
-- Add more useful dimensions (date truncations at multiple granularities, categorizations)
-- Add derived measures (ratios, running totals, averages alongside sums)
-- Add meaningful comments to all dimensions and measures
-- Use "filter" for persistent WHERE clauses and FILTER (WHERE ...) for conditional measures
-- Add joins if FK relationships exist in the metadata
-- Keep all existing valid dimensions and measures
-- ALL string literals in SQL expressions MUST be wrapped in single quotes
-
-OUTPUT: Return ONLY the improved JSON definition (single object, not array)."""
-
-    escaped = prompt.replace("'", "''")
-    rows = execute_sql(
-        f"SELECT AI_QUERY('{_DEFAULT_MODEL}', '{escaped}') as response", timeout=180
-    )
-    response = rows[0]["response"] if rows else ""
-    logger.info(
-        "Improve AI response (first 500 chars): %s",
-        response[:500] if response else "<empty>",
-    )
-
-    new_defn = _parse_single_json(response)
-    new_defn.setdefault("source", source)
-    new_defn.setdefault("name", defn.get("name", ""))
-    status, errs = _validate_definition(new_defn, new_defn.get("source", source))
-    new_id = _update_definition_row(definition_id, new_defn, status, errs)
-
-    return {
-        "definition_id": new_id,
-        "parent_id": definition_id,
-        "status": status,
-        "validation_errors": errs,
-    }
-
-
-class SuggestFixRequest(BaseModel):
-    error_message: str
-
-
-@app.post("/api/semantic-layer/definitions/{definition_id}/suggest-fix")
-def suggest_metric_view_fix(definition_id: str, req: SuggestFixRequest):
-    """Ask AI for a minimal fix to the definition given a create/DDL error. Returns suggested JSON only; does not save."""
-    row = _fetch_definition(definition_id)
-    defn_str = row.get("json_definition") or "{}"
-    if isinstance(defn_str, dict):
-        defn_str = json.dumps(defn_str)
-    err = (req.error_message or "").strip() or "Unknown error"
-    prompt = f"""This metric view creation failed with error: {err}
-
-Current definition (JSON):
-{defn_str}
-
-Suggest a minimal fix. Return ONLY the corrected JSON object (no markdown, no explanation). Keep source, name, and structure; fix only what the error indicates."""
-
-    escaped = prompt.replace("'", "''")
-    rows = execute_sql(
-        f"SELECT AI_QUERY('{_DEFAULT_MODEL}', '{escaped}') as response", timeout=180
-    )
-    response = rows[0]["response"] if rows else ""
-    try:
-        suggested = _parse_single_json(response)
-        return {"suggested_json": json.dumps(suggested, indent=2)}
-    except Exception as e:
-        return {"suggested_json": defn_str, "parse_error": str(e)}
-
-
 class PutDefinitionRequest(BaseModel):
     json_definition: str
-
-
-@app.put("/api/semantic-layer/definitions/{definition_id}")
-def put_semantic_definition(definition_id: str, req: PutDefinitionRequest):
-    """Update a definition's JSON. Optionally bump version."""
-    _ensure_semantic_layer_tables()
-    raw = (req.json_definition or "").strip()
-    try:
-        json.loads(raw)
-    except json.JSONDecodeError as e:
-        raise HTTPException(400, detail=f"Invalid JSON: {e}")
-    status_clause = ""
-    rows = execute_sql(
-        f"SELECT status FROM {fq('metric_view_definitions')} WHERE definition_id = {_safe_sql_str(definition_id)}"
-    )
-    if rows and rows[0].get("status") == "applied":
-        status_clause = ", status = 'validated'"
-    execute_sql(
-        f"UPDATE {fq('metric_view_definitions')} SET json_definition = {_safe_sql_str(raw)}{status_clause} "
-        f"WHERE definition_id = {_safe_sql_str(definition_id)}"
-    )
-    new_status = "validated" if status_clause else (rows[0]["status"] if rows else "unknown")
-    return {"definition_id": definition_id, "updated": True, "status": new_status}
-
-
-@app.post("/api/semantic-layer/definitions/{definition_id}/create")
-def create_metric_view(definition_id: str, req: MetricViewCreateRequest):
-    """Materialize a metric view definition as a UC METRIC VIEW via DDL."""
-    row = _fetch_definition(definition_id)
-    defn = (
-        json.loads(row["json_definition"])
-        if isinstance(row["json_definition"], str)
-        else row["json_definition"]
-    )
-
-    # Auto-fix expressions before building YAML
-    for item_type in ("dimensions", "measures"):
-        for item in defn.get(item_type, []):
-            if item.get("expr"):
-                item["expr"] = _autofix_expr(item["expr"])
-    if defn.get("filter"):
-        defn["filter"] = _autofix_expr(defn["filter"])
-
-    # Pre-validate each expression against the source table (auto-fix on retry)
-    source = defn.get("source", "")
-    pre_errors = []
-    if source:
-        for item_type in ("dimensions", "measures"):
-            for item in defn.get(item_type, []):
-                expr = item.get("expr", "")
-                if expr:
-                    err, fixed = _validate_expr(expr, source)
-                    if err:
-                        pre_errors.append(f"{item_type} {item.get('name', '')}: {err}")
-                    elif fixed != expr:
-                        item["expr"] = fixed
-    if pre_errors:
-        raise HTTPException(400, detail="; ".join(pre_errors))
-
-    mv_name = defn.get("name", row.get("metric_view_name", f"mv_{definition_id[:8]}"))
-    try:
-        yaml_body = _definition_to_yaml(defn)
-    except (KeyError, ValueError, TypeError) as e:
-        raise HTTPException(400, detail=f"Malformed metric view definition: {e}")
-    fq_name = f"`{req.target_catalog}`.`{req.target_schema}`.`{mv_name}`"
-    ddl = f"CREATE OR REPLACE VIEW {fq_name} WITH METRICS LANGUAGE YAML AS $$\n{yaml_body}$$"
-
-    try:
-        execute_sql(ddl)
-    except Exception as e:
-        raise HTTPException(400, detail=f"DDL execution failed: {e}")
-
-    from datetime import datetime as _dt
-
-    now = _dt.utcnow().isoformat()
-    execute_sql(
-        f"UPDATE {fq('metric_view_definitions')} SET "
-        f"status = 'applied', applied_at = '{now}' "
-        f"WHERE definition_id = '{definition_id}'"
-    )
-    return {"definition_id": definition_id, "status": "applied", "metric_view": fq_name}
-
-
-@app.post("/api/semantic-layer/definitions/{definition_id}/drop")
-def drop_metric_view(definition_id: str, req: MetricViewCreateRequest):
-    """Drop the applied UC metric view and reset status to validated."""
-    row = _fetch_definition(definition_id)
-    defn = (
-        json.loads(row["json_definition"])
-        if isinstance(row["json_definition"], str)
-        else row["json_definition"]
-    )
-    mv_name = defn.get("name", row.get("metric_view_name", ""))
-    if not mv_name:
-        raise HTTPException(400, detail="Cannot determine metric view name")
-    fq_name = f"`{req.target_catalog}`.`{req.target_schema}`.`{mv_name}`"
-    try:
-        execute_sql(f"DROP VIEW IF EXISTS {fq_name}")
-    except Exception as e:
-        raise HTTPException(400, detail=f"DROP failed: {e}")
-    execute_sql(
-        f"UPDATE {fq('metric_view_definitions')} SET status = 'validated', applied_at = NULL "
-        f"WHERE definition_id = '{definition_id}'"
-    )
-    return {"dropped": True, "definition_id": definition_id, "metric_view": fq_name}
 
 
 # ---------------------------------------------------------------------------
@@ -4242,7 +3892,35 @@ def genie_create(req: GenieCreateRequest):
     last_err: Exception | None = None
     for attempt in range(_MAX_GENIE_RETRIES + 1):
         try:
-            return _do_genie_request(transformed)
+            result = _do_genie_request(transformed)
+            # Persist to tracking table
+            try:
+                _ensure_genie_tracking_table()
+                space_id = result["space_id"]
+                ds = transformed.get("data_sources", {})
+                table_ids = [t.get("identifier") for t in ds.get("tables", []) if t.get("identifier")]
+                table_ids += [m.get("identifier") for m in ds.get("metric_views", []) if m.get("identifier")]
+                config_str = json.dumps(transformed).replace("'", "''")
+                title_esc = req.title.replace("'", "''")
+                arr_literal = ",".join(f"'{t}'" for t in table_ids)
+                if result.get("updated"):
+                    execute_sql(
+                        f"UPDATE {fq('genie_spaces')} SET title = '{title_esc}', "
+                        f"config_json = '{config_str}', updated_at = current_timestamp() "
+                        f"WHERE space_id = '{space_id}'",
+                        timeout=30,
+                    )
+                else:
+                    execute_sql(
+                        f"INSERT INTO {fq('genie_spaces')} VALUES "
+                        f"('{space_id}', '{title_esc}', ARRAY({arr_literal}), "
+                        f"'{config_str}', 1, current_timestamp(), current_timestamp(), NULL)",
+                        timeout=30,
+                    )
+                logger.info("Tracked genie space %s in genie_spaces table", space_id)
+            except Exception as track_err:
+                logger.warning("Failed to track genie space: %s", track_err)
+            return result
         except Exception as e:
             last_err = e
             err_str = str(e)
@@ -4286,7 +3964,7 @@ def _ensure_genie_tracking_table():
 def list_genie_spaces():
     _ensure_genie_tracking_table()
     return execute_sql(f"""
-        SELECT space_id, title, tables, version, created_at, updated_at
+        SELECT space_id, title, tables, config_json, version, created_at, updated_at
         FROM {fq('genie_spaces')}
         WHERE deleted_at IS NULL
         ORDER BY updated_at DESC
@@ -4330,13 +4008,16 @@ class AgentChatRequest(BaseModel):
     mode: str = "quick"
 
 
+VALID_AGENT_MODES = {"quick", "deep", "graphrag", "baseline"}
+
+
 @app.post("/api/agent/chat")
 async def agent_chat(req: AgentChatRequest):
     try:
         from agent.metadata_agent import run_metadata_agent
     except ImportError as e:
         raise HTTPException(503, detail=f"Agent not available: {e}")
-    mode = req.mode if req.mode in ("quick", "deep") else "quick"
+    mode = req.mode if req.mode in VALID_AGENT_MODES else "quick"
     try:
         result = await run_metadata_agent(req.message, history=req.history, mode=mode)
         return result
@@ -4346,6 +4027,89 @@ async def agent_chat(req: AgentChatRequest):
             raise HTTPException(429, detail="Model rate limit exceeded. Try again shortly.") from exc
         logger.error("Metadata agent error: %s", exc)
         raise HTTPException(500, detail=f"Agent error: {msg}") from exc
+
+
+# ---------------------------------------------------------------------------
+# Task-based deep analysis (background task + polling, avoids HTTP timeout)
+# ---------------------------------------------------------------------------
+
+_deep_tasks: dict[str, dict] = {}
+
+
+@app.post("/api/agent/deep/submit")
+def agent_deep_submit(req: AgentChatRequest):
+    """Submit a deep analysis (graphrag/baseline) as a background task.
+
+    Returns {"task_id": "..."} immediately. Poll GET /api/agent/deep/task/{task_id}
+    for progress and results.
+    """
+    mode = req.mode if req.mode in ("graphrag", "baseline") else "graphrag"
+    try:
+        from agent.deep_analysis import run_deep_analysis_streaming
+    except ImportError as e:
+        raise HTTPException(503, detail=f"Deep analysis agent not available: {e}")
+
+    task_id = str(_uuid.uuid4())[:12]
+    _deep_tasks[task_id] = {"status": "running", "stage": "starting", "created": time.time()}
+
+    progress_q = run_deep_analysis_streaming(req.message, mode=mode, history=req.history)
+
+    def _monitor():
+        try:
+            while True:
+                try:
+                    event = progress_q.get(timeout=300)
+                except queue.Empty:
+                    _deep_tasks[task_id] = {
+                        **_deep_tasks[task_id],
+                        "status": "error",
+                        "error": "Analysis timed out after 5 minutes.",
+                    }
+                    return
+                if event.get("stage") == "done":
+                    _deep_tasks[task_id] = {
+                        "status": "done",
+                        "stage": "done",
+                        "answer": event.get("answer", event.get("response", "")),
+                        "tool_calls": event.get("tool_calls", []),
+                        "mode": event.get("mode", mode),
+                        "routing_trace": event.get("routing_trace"),
+                        "created": _deep_tasks[task_id]["created"],
+                    }
+                    return
+                if event.get("stage") == "error":
+                    _deep_tasks[task_id] = {
+                        **_deep_tasks[task_id],
+                        "status": "error",
+                        "error": event.get("message", "Unknown error"),
+                    }
+                    return
+                _deep_tasks[task_id]["stage"] = event.get("stage", "running")
+        except Exception as e:
+            logger.error("Deep task monitor error: %s", e, exc_info=True)
+            _deep_tasks[task_id] = {
+                **_deep_tasks[task_id],
+                "status": "error",
+                "error": str(e),
+            }
+
+    threading.Thread(target=_monitor, daemon=True).start()
+
+    cutoff = time.time() - 600
+    for tid in list(_deep_tasks):
+        if _deep_tasks.get(tid, {}).get("created", 0) < cutoff:
+            _deep_tasks.pop(tid, None)
+
+    return {"task_id": task_id}
+
+
+@app.get("/api/agent/deep/task/{task_id}")
+def agent_deep_poll(task_id: str):
+    """Poll a deep analysis task for status/progress/result."""
+    task = _deep_tasks.get(task_id)
+    if not task:
+        raise HTTPException(404, detail="Task not found")
+    return task
 
 
 @app.get("/api/agent/stats")
@@ -4496,15 +4260,18 @@ def vector_search(req: VectorSearchRequest):
     try:
         from databricks.vector_search.client import VectorSearchClient
         ws = get_workspace_client()
-        try:
-            _token = ws.config.token
-        except Exception:
-            _token = None
-        vsc = VectorSearchClient(workspace_url=ws.config.host, personal_access_token=_token) if _token else VectorSearchClient(workspace_url=ws.config.host)
+        _token = os.environ.get("DATABRICKS_TOKEN")
+        if not _token:
+            headers = ws.config.authenticate()
+            _token = headers.get("Authorization", "").removeprefix("Bearer ")
+        vsc = VectorSearchClient(
+            workspace_url=ws.config.host,
+            personal_access_token=_token,
+        )
         index = vsc.get_index(endpoint_name=VS_ENDPOINT, index_name=vs_index_name)
         kwargs = dict(
             query_text=req.query,
-            columns=["doc_id", "doc_type", "content", "table_name", "domain", "entity_type", "confidence_score"],
+            columns=["doc_id", "doc_type", "content", "node_id", "table_name", "domain", "entity_type", "confidence_score"],
             num_results=min(max(req.num_results, 1), 20),
         )
         if req.doc_type:
@@ -4535,16 +4302,6 @@ def vector_sync():
         return {"status": "sync_triggered", "index": vs_index_name}
     except Exception as e:
         raise HTTPException(500, detail=f"Sync failed: {e}")
-
-
-@app.post("/api/vector/rebuild")
-def vector_rebuild():
-    """Rebuild requires Spark -- run the Build Vector Index job instead."""
-    raise HTTPException(
-        501,
-        detail="Full rebuild is not available from the app. "
-        "Run the Build Vector Index job from the Batch Jobs tab.",
-    )
 
 
 # ---------------------------------------------------------------------------

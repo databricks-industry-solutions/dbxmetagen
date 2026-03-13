@@ -8,7 +8,6 @@ Supports two modes:
 """
 
 import os
-import re
 import json
 import yaml
 import logging
@@ -97,6 +96,8 @@ def load_domain_config(
     """
     if bundle_path:
         resolved = _resolve_path(bundle_path)
+        if not resolved and not os.path.sep in bundle_path and not bundle_path.endswith(".yaml"):
+            resolved = _resolve_path(f"configurations/ontology_bundles/{bundle_path}.yaml")
         if resolved:
             try:
                 with open(resolved, "r") as f:
@@ -161,58 +162,6 @@ def _resolve_path(path: str) -> Optional[str]:
         if os.path.exists(p):
             return p
     return None
-
-
-# ---------------------------------------------------------------------------
-# Keyword pre-filter (no LLM)
-# ---------------------------------------------------------------------------
-
-_SPLIT_RE = re.compile(r"[^a-z0-9]+")
-
-
-def _tokenize(text: str) -> set:
-    """Lowercase tokenize a string into a set of words."""
-    return set(_SPLIT_RE.split(text.lower())) - {""}
-
-
-def keyword_prefilter(
-    table_name: str,
-    table_metadata: Dict[str, Any],
-    domain_config: Dict[str, Any],
-    top_n: int = 5,
-) -> List[str]:
-    """Score each domain by keyword hits and return the top N domain keys.
-
-    Tokenises the table name, column names, comments, and tags into a bag of
-    words, then counts how many of each domain's keywords appear.  Returns all
-    domains if no keywords match at all.
-    """
-    domains = domain_config.get("domains", {})
-    if not domains:
-        return []
-
-    bag = _tokenize(table_name)
-    col_contents = table_metadata.get("column_contents", {})
-    if isinstance(col_contents, dict):
-        for key in col_contents:
-            bag |= _tokenize(str(key))
-    for field in ("table_tags", "table_comments", "table_constraints"):
-        val = table_metadata.get(field, "")
-        if val:
-            bag |= _tokenize(str(val))
-
-    scores: Dict[str, int] = {}
-    for domain_key, domain_info in domains.items():
-        kws = set(k.lower() for k in domain_info.get("keywords", []))
-        # also count subdomain keywords
-        for sd_info in domain_info.get("subdomains", {}).values():
-            kws |= set(k.lower() for k in sd_info.get("keywords", []))
-        scores[domain_key] = len(bag & kws)
-
-    ranked = sorted(scores, key=lambda k: scores[k], reverse=True)
-    if top_n <= 0 or top_n >= len(ranked):
-        return ranked
-    return ranked[:top_n]
 
 
 # ---------------------------------------------------------------------------
@@ -610,21 +559,12 @@ def _classify_two_stage(
     model_endpoint: str = "databricks-claude-3-7-sonnet",
     temperature: float = 0.1,
     max_tokens: int = 8192,
-    prefilter_top_n: int = 5,
     confidence_threshold: float = 0.5,
 ) -> Dict[str, Any]:
-    """Two-stage pipeline: keyword pre-filter -> domain LLM -> subdomain LLM."""
+    """Two-stage pipeline: domain LLM -> subdomain LLM."""
     catalog, schema, table = table_name.split(".")
 
-    # Pre-filter
-    candidates = keyword_prefilter(
-        table_name,
-        table_metadata,
-        domain_config,
-        top_n=prefilter_top_n,
-    )
-    if not candidates:
-        candidates = list(domain_config.get("domains", {}).keys())
+    candidates = list(domain_config.get("domains", {}).keys())
     logger.info("Stage-1 candidates for %s: %s", table_name, candidates)
 
     # Stage 1
@@ -714,14 +654,12 @@ def classify_table_domain(
     temperature: float = 0.1,
     max_tokens: int = 8192,
     two_stage: bool = True,
-    prefilter_top_n: int = 0,
     confidence_threshold: float = 0.5,
 ) -> Dict[str, Any]:
     """Classify a table into a business domain.
 
-    When ``two_stage=True`` (default), uses the keyword pre-filter -> domain
-    LLM call -> subdomain LLM call pipeline.  Set ``two_stage=False`` to use
-    the legacy single-shot path.
+    When ``two_stage=True`` (default), uses domain LLM call -> subdomain LLM
+    call pipeline.  Set ``two_stage=False`` to use the legacy single-shot path.
 
     The return dict shape is identical in both modes so callers (processing.py,
     append_domain_table_row) need no changes.
@@ -735,7 +673,6 @@ def classify_table_domain(
                 model_endpoint=model_endpoint,
                 temperature=temperature,
                 max_tokens=max_tokens,
-                prefilter_top_n=prefilter_top_n,
                 confidence_threshold=confidence_threshold,
             )
         else:
@@ -760,7 +697,6 @@ async def classify_table_domain_async(
     temperature: float = 0.1,
     max_tokens: int = 4096,
     two_stage: bool = True,
-    prefilter_top_n: int = 5,
     confidence_threshold: float = 0.5,
 ) -> Dict[str, Any]:
     """Async wrapper around classify_table_domain."""
@@ -777,7 +713,6 @@ async def classify_table_domain_async(
             temperature=temperature,
             max_tokens=max_tokens,
             two_stage=two_stage,
-            prefilter_top_n=prefilter_top_n,
             confidence_threshold=confidence_threshold,
         ),
     )

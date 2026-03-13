@@ -1,4 +1,8 @@
-"""LangGraph agent for GraphRAG -- iterative graph traversal to answer questions."""
+"""DEPRECATED: Standalone Graph Explorer agent.
+
+Superseded by the GraphRAG Analysis mode in agent/deep_analysis.py.
+Kept for backward compatibility with any existing callers.
+"""
 
 import os
 import logging

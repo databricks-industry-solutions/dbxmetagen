@@ -91,9 +91,27 @@ class KnowledgeGraphBuilder:
         self.spark = spark
         self.config = config
     
+    # Columns to add via ALTER TABLE for forward-compatible migration.
+    # Each tuple is (column_name, column_type).
+    _NODE_MIGRATION_COLUMNS = [
+        ("node_type", "STRING"),
+        ("parent_id", "STRING"),
+        ("data_type", "STRING"),
+        ("quality_score", "DOUBLE"),
+        ("embedding", "ARRAY<FLOAT>"),
+        # Phase 1a: graph backbone enrichment
+        ("ontology_id", "STRING"),
+        ("ontology_type", "STRING"),
+        ("display_name", "STRING"),
+        ("short_description", "STRING"),
+        ("sensitivity", "STRING"),
+        ("status", "STRING"),
+        ("source_system", "STRING"),
+        ("keywords", "ARRAY<STRING>"),
+    ]
+
     def create_nodes_table(self) -> None:
         """Create the nodes table if it doesn't exist, and add new columns if missing."""
-        # Note: `schema` is a reserved word in SQL, must be escaped with backticks
         ddl = f"""
         CREATE TABLE IF NOT EXISTS {self.config.fully_qualified_nodes} (
             id STRING NOT NULL,
@@ -112,49 +130,78 @@ class KnowledgeGraphBuilder:
             data_type STRING,
             quality_score DOUBLE,
             embedding ARRAY<FLOAT>,
+            ontology_id STRING,
+            ontology_type STRING,
+            display_name STRING,
+            short_description STRING,
+            sensitivity STRING,
+            status STRING,
+            source_system STRING,
+            keywords ARRAY<STRING>,
             created_at TIMESTAMP,
             updated_at TIMESTAMP
         )
-        COMMENT 'GraphFrames nodes - tables, columns, and schemas from knowledge base'
+        COMMENT 'Graph nodes - unified backbone for tables, columns, schemas, and ontology entities'
         """
         self.spark.sql(ddl)
-        
-        # Add new columns to existing tables (migration for tables created before these columns existed)
-        new_columns = [
-            ("node_type", "STRING"),
-            ("parent_id", "STRING"),
-            ("data_type", "STRING"),
-            ("quality_score", "DOUBLE"),
-            ("embedding", "ARRAY<FLOAT>")
-        ]
-        for col_name, col_type in new_columns:
+
+        for col_name, col_type in self._NODE_MIGRATION_COLUMNS:
             try:
                 self.spark.sql(f"ALTER TABLE {self.config.fully_qualified_nodes} ADD COLUMN {col_name} {col_type}")
-                logger.info(f"Added column {col_name} to {self.config.fully_qualified_nodes}")
+                logger.info("Added column %s to %s", col_name, self.config.fully_qualified_nodes)
             except Exception as e:
-                # Column already exists - this is expected for new tables or already-migrated tables
                 if "already exists" in str(e).lower() or "FIELDS_ALREADY_EXISTS" in str(e):
                     pass
                 else:
-                    logger.debug(f"Could not add column {col_name}: {e}")
-        
-        logger.info(f"Nodes table {self.config.fully_qualified_nodes} ready")
+                    logger.debug("Could not add column %s: %s", col_name, e)
+
+        logger.info("Nodes table %s ready", self.config.fully_qualified_nodes)
     
+    _EDGE_MIGRATION_COLUMNS = [
+        ("edge_id", "STRING"),
+        ("edge_type", "STRING"),
+        ("direction", "STRING"),
+        ("join_expression", "STRING"),
+        ("join_confidence", "DOUBLE"),
+        ("ontology_rel", "STRING"),
+        ("source_system", "STRING"),
+        ("status", "STRING"),
+    ]
+
     def create_edges_table(self) -> None:
-        """Create the edges table if it doesn't exist."""
+        """Create the edges table if it doesn't exist, and add new columns if missing."""
         ddl = f"""
         CREATE TABLE IF NOT EXISTS {self.config.fully_qualified_edges} (
             src STRING NOT NULL,
             dst STRING NOT NULL,
             relationship STRING NOT NULL,
             weight DOUBLE,
+            edge_id STRING,
+            edge_type STRING,
+            direction STRING,
+            join_expression STRING,
+            join_confidence DOUBLE,
+            ontology_rel STRING,
+            source_system STRING,
+            status STRING,
             created_at TIMESTAMP,
             updated_at TIMESTAMP
         )
-        COMMENT 'GraphFrames edges - relationships between tables'
+        COMMENT 'Graph edges - typed relationships between nodes'
         """
         self.spark.sql(ddl)
-        logger.info(f"Edges table {self.config.fully_qualified_edges} ready")
+
+        for col_name, col_type in self._EDGE_MIGRATION_COLUMNS:
+            try:
+                self.spark.sql(f"ALTER TABLE {self.config.fully_qualified_edges} ADD COLUMN {col_name} {col_type}")
+                logger.info("Added column %s to %s", col_name, self.config.fully_qualified_edges)
+            except Exception as e:
+                if "already exists" in str(e).lower() or "FIELDS_ALREADY_EXISTS" in str(e):
+                    pass
+                else:
+                    logger.debug("Could not add column %s: %s", col_name, e)
+
+        logger.info("Edges table %s ready", self.config.fully_qualified_edges)
     
     def build_nodes_df(self) -> DataFrame:
         """
@@ -179,7 +226,6 @@ class KnowledgeGraphBuilder:
             FROM {self.config.fully_qualified_source}
         """)
         
-        # Add id column (required for GraphFrames) and security_level
         df = (
             df
             .withColumn("id", F.col("table_name"))
@@ -194,13 +240,27 @@ class KnowledgeGraphBuilder:
             .withColumn("data_type", F.lit(None).cast("string"))
             .withColumn("quality_score", F.lit(None).cast("double"))
             .withColumn("embedding", F.lit(None).cast("array<float>"))
+            .withColumn("display_name", F.col("table_short_name"))
+            .withColumn("short_description", F.col("comment"))
+            .withColumn("sensitivity",
+                F.when(F.col("has_phi"), F.lit("PHI"))
+                .when(F.col("has_pii"), F.lit("PII"))
+                .otherwise(F.lit("public"))
+            )
+            .withColumn("status", F.lit("discovered"))
+            .withColumn("source_system", F.lit("knowledge_graph"))
+            .withColumn("ontology_id", F.lit(None).cast("string"))
+            .withColumn("ontology_type", F.lit(None).cast("string"))
+            .withColumn("keywords", F.lit(None).cast("array<string>"))
         )
-        
+
         return df.select(
             "id", "table_name", "catalog", "schema", "table_short_name",
             "domain", "subdomain", "has_pii", "has_phi", "security_level",
             "comment", "node_type", "parent_id", "data_type", "quality_score",
-            "embedding", "created_at", "updated_at"
+            "embedding", "ontology_id", "ontology_type", "display_name",
+            "short_description", "sensitivity", "status", "source_system",
+            "keywords", "created_at", "updated_at"
         )
     
     def build_edges_for_attribute(
@@ -240,12 +300,16 @@ class KnowledgeGraphBuilder:
         edges = (
             df_a
             .join(df_b, df_a.attr_a == df_b.attr_b)
-            .filter(F.col("src") < F.col("dst"))  # Avoid duplicates and self-loops
+            .filter(F.col("src") < F.col("dst"))
             .select("src", "dst")
             .withColumn("relationship", F.lit(relationship))
             .withColumn("weight", F.lit(1.0))
+            .withColumn("edge_type", F.lit(relationship))
+            .withColumn("direction", F.lit("undirected"))
+            .withColumn("source_system", F.lit("knowledge_graph"))
+            .withColumn("status", F.lit("candidate"))
         )
-        
+
         return edges
     
     def build_all_edges_df(self, nodes_df: DataFrame) -> DataFrame:
@@ -291,17 +355,19 @@ class KnowledgeGraphBuilder:
         )
         all_edges.append(security_edges)
         
-        # Union all edges
         from functools import reduce
         combined = reduce(DataFrame.union, all_edges)
-        
-        # Add timestamps
+
         combined = (
             combined
+            .withColumn("edge_id", F.concat_ws("::", F.col("src"), F.col("dst"), F.col("relationship")))
+            .withColumn("join_expression", F.lit(None).cast("string"))
+            .withColumn("join_confidence", F.lit(None).cast("double"))
+            .withColumn("ontology_rel", F.lit(None).cast("string"))
             .withColumn("created_at", F.current_timestamp())
             .withColumn("updated_at", F.current_timestamp())
         )
-        
+
         return combined
     
     def merge_nodes(self, nodes_df: DataFrame) -> Dict[str, int]:
@@ -332,20 +398,17 @@ class KnowledgeGraphBuilder:
             target.data_type = COALESCE(source.data_type, target.data_type),
             target.quality_score = COALESCE(source.quality_score, target.quality_score),
             target.embedding = COALESCE(source.embedding, target.embedding),
+            target.ontology_id = COALESCE(source.ontology_id, target.ontology_id),
+            target.ontology_type = COALESCE(source.ontology_type, target.ontology_type),
+            target.display_name = COALESCE(source.display_name, target.display_name),
+            target.short_description = COALESCE(source.short_description, target.short_description),
+            target.sensitivity = COALESCE(source.sensitivity, target.sensitivity),
+            target.status = COALESCE(source.status, target.status),
+            target.source_system = COALESCE(source.source_system, target.source_system),
+            target.keywords = COALESCE(source.keywords, target.keywords),
             target.updated_at = source.updated_at
 
-        WHEN NOT MATCHED THEN INSERT (
-            id, table_name, catalog, `schema`, table_short_name,
-            domain, subdomain, has_pii, has_phi, security_level,
-            comment, node_type, parent_id, data_type, quality_score,
-            embedding, created_at, updated_at
-        ) VALUES (
-            source.id, source.table_name, source.catalog, source.`schema`, 
-            source.table_short_name, source.domain, source.subdomain,
-            source.has_pii, source.has_phi, source.security_level,
-            source.comment, source.node_type, source.parent_id, source.data_type,
-            source.quality_score, source.embedding, source.created_at, source.updated_at
-        )
+        WHEN NOT MATCHED THEN INSERT *
         """
         
         self.spark.sql(merge_sql)
@@ -383,11 +446,9 @@ class KnowledgeGraphBuilder:
         """
         self.spark.sql(delete_sql)
         
-        # Insert all new edges
         insert_sql = f"""
         INSERT INTO {self.config.fully_qualified_edges}
-        SELECT src, dst, relationship, weight, created_at, updated_at
-        FROM staged_edges
+        SELECT * FROM staged_edges
         """
         self.spark.sql(insert_sql)
         
@@ -417,14 +478,16 @@ class KnowledgeGraphBuilder:
 
         WHEN MATCHED THEN UPDATE SET
             target.weight = source.weight,
+            target.edge_type = COALESCE(source.edge_type, target.edge_type),
+            target.direction = COALESCE(source.direction, target.direction),
+            target.join_expression = COALESCE(source.join_expression, target.join_expression),
+            target.join_confidence = COALESCE(source.join_confidence, target.join_confidence),
+            target.ontology_rel = COALESCE(source.ontology_rel, target.ontology_rel),
+            target.source_system = COALESCE(source.source_system, target.source_system),
+            target.status = COALESCE(source.status, target.status),
             target.updated_at = source.updated_at
 
-        WHEN NOT MATCHED THEN INSERT (
-            src, dst, relationship, weight, created_at, updated_at
-        ) VALUES (
-            source.src, source.dst, source.relationship, 
-            source.weight, source.created_at, source.updated_at
-        )
+        WHEN NOT MATCHED THEN INSERT *
         """
         
         self.spark.sql(merge_sql)
@@ -583,11 +646,25 @@ class ExtendedKnowledgeGraphBuilder(KnowledgeGraphBuilder):
                 .withColumn("parent_id", F.col("table_name"))
                 .withColumn("quality_score", F.lit(None).cast("double"))
                 .withColumn("embedding", F.lit(None).cast("array<float>"))
+                .withColumn("display_name", F.col("column_name"))
+                .withColumn("short_description", F.col("comment"))
+                .withColumn("sensitivity",
+                    F.when(F.lower(F.col("classification")) == "phi", F.lit("PHI"))
+                    .when(F.lower(F.col("classification")).isin("pii", "pci"), F.lit("PII"))
+                    .otherwise(F.lit("public"))
+                )
+                .withColumn("status", F.lit("discovered"))
+                .withColumn("source_system", F.lit("knowledge_graph"))
+                .withColumn("ontology_id", F.lit(None).cast("string"))
+                .withColumn("ontology_type", F.lit(None).cast("string"))
+                .withColumn("keywords", F.lit(None).cast("array<string>"))
                 .select(
                     "id", "table_name", "catalog", "schema", "table_short_name",
                     "domain", "subdomain", "has_pii", "has_phi", "security_level",
                     "comment", "node_type", "parent_id", "data_type", "quality_score",
-                    "embedding", "created_at", "updated_at"
+                    "embedding", "ontology_id", "ontology_type", "display_name",
+                    "short_description", "sensitivity", "status", "source_system",
+                    "keywords", "created_at", "updated_at"
                 )
             )
         except Exception as e:
@@ -630,60 +707,84 @@ class ExtendedKnowledgeGraphBuilder(KnowledgeGraphBuilder):
                 .withColumn("data_type", F.lit(None).cast("string"))
                 .withColumn("quality_score", F.lit(None).cast("double"))
                 .withColumn("embedding", F.lit(None).cast("array<float>"))
+                .withColumn("display_name", F.col("schema_name"))
+                .withColumn("short_description", F.col("comment"))
+                .withColumn("sensitivity",
+                    F.when(F.col("has_phi"), F.lit("PHI"))
+                    .when(F.col("has_pii"), F.lit("PII"))
+                    .otherwise(F.lit("public"))
+                )
+                .withColumn("status", F.lit("discovered"))
+                .withColumn("source_system", F.lit("knowledge_graph"))
+                .withColumn("ontology_id", F.lit(None).cast("string"))
+                .withColumn("ontology_type", F.lit(None).cast("string"))
+                .withColumn("keywords", F.lit(None).cast("array<string>"))
                 .select(
                     "id", "table_name", "catalog", "schema", "table_short_name",
                     "domain", "subdomain", "has_pii", "has_phi", "security_level",
                     "comment", "node_type", "parent_id", "data_type", "quality_score",
-                    "embedding", "created_at", "updated_at"
+                    "embedding", "ontology_id", "ontology_type", "display_name",
+                    "short_description", "sensitivity", "status", "source_system",
+                    "keywords", "created_at", "updated_at"
                 )
             )
         except Exception as e:
             logger.warning(f"Could not build schema nodes: {e}")
             return None
     
+    _EMPTY_EDGE_SCHEMA = (
+        "src STRING, dst STRING, relationship STRING, weight DOUBLE, "
+        "edge_id STRING, edge_type STRING, direction STRING, "
+        "join_expression STRING, join_confidence DOUBLE, ontology_rel STRING, "
+        "source_system STRING, status STRING, created_at TIMESTAMP, updated_at TIMESTAMP"
+    )
+
+    def _enrich_edges(self, df: DataFrame, edge_type: str, source_sys: str = "knowledge_graph") -> DataFrame:
+        """Add standard new-schema columns to an edge DataFrame."""
+        return (
+            df
+            .withColumn("edge_id", F.concat_ws("::", F.col("src"), F.col("dst"), F.col("relationship")))
+            .withColumn("edge_type", F.lit(edge_type))
+            .withColumn("direction", F.lit("out"))
+            .withColumn("join_expression", F.lit(None).cast("string"))
+            .withColumn("join_confidence", F.lit(None).cast("double"))
+            .withColumn("ontology_rel", F.lit(None).cast("string"))
+            .withColumn("source_system", F.lit(source_sys))
+            .withColumn("status", F.lit("candidate"))
+            .withColumn("created_at", F.current_timestamp())
+            .withColumn("updated_at", F.current_timestamp())
+        )
+
     def build_containment_edges(self, nodes_df: DataFrame) -> DataFrame:
         """Build 'contains' edges for hierarchical relationships."""
         edges = []
-        
-        # Schema contains table
+
         schema_table_edges = (
             nodes_df
             .filter(F.col("node_type") == "table")
-            .select(
-                F.col("parent_id").alias("src"),
-                F.col("id").alias("dst")
-            )
+            .select(F.col("parent_id").alias("src"), F.col("id").alias("dst"))
             .filter(F.col("src").isNotNull())
             .withColumn("relationship", F.lit("contains"))
             .withColumn("weight", F.lit(1.0))
         )
         edges.append(schema_table_edges)
-        
-        # Table contains column
+
         table_column_edges = (
             nodes_df
             .filter(F.col("node_type") == "column")
-            .select(
-                F.col("parent_id").alias("src"),
-                F.col("id").alias("dst")
-            )
+            .select(F.col("parent_id").alias("src"), F.col("id").alias("dst"))
             .filter(F.col("src").isNotNull())
             .withColumn("relationship", F.lit("contains"))
             .withColumn("weight", F.lit(1.0))
         )
         edges.append(table_column_edges)
-        
+
         if edges:
             from functools import reduce
             combined = reduce(DataFrame.union, edges)
-            return (
-                combined
-                .withColumn("created_at", F.current_timestamp())
-                .withColumn("updated_at", F.current_timestamp())
-            )
-        
-        return self.spark.createDataFrame([], 
-            "src STRING, dst STRING, relationship STRING, weight DOUBLE, created_at TIMESTAMP, updated_at TIMESTAMP")
+            return self._enrich_edges(combined, "contains")
+
+        return self.spark.createDataFrame([], self._EMPTY_EDGE_SCHEMA)
     
     def build_lineage_edges(self) -> DataFrame:
         """Build 'derives_from' edges from lineage data."""
@@ -696,71 +797,74 @@ class ExtendedKnowledgeGraphBuilder(KnowledgeGraphBuilder):
                 WHERE upstream_tables IS NOT NULL
             """)
             
+            df = df.withColumn("relationship", F.lit("derives_from")).withColumn("weight", F.lit(1.0))
+            return self._enrich_edges(df, "derives_from")
+        except Exception as e:
+            logger.warning("Could not build lineage edges: %s", e)
+            return self.spark.createDataFrame([], self._EMPTY_EDGE_SCHEMA)
+
+    def build_reference_edges(self) -> DataFrame:
+        """Build 'references' edges from fk_predictions if available."""
+        fk_table = f"{self.ext_config.catalog_name}.{self.ext_config.schema_name}.fk_predictions"
+        try:
+            df = self.spark.sql(f"""
+                SELECT
+                    src_table AS src,
+                    dst_table AS dst,
+                    CONCAT(src_table, '.', src_column, ' = ', dst_table, '.', dst_column) AS join_expr,
+                    final_confidence AS conf
+                FROM {fk_table}
+                WHERE final_confidence >= 0.5
+            """)
+            if df.count() == 0:
+                return self.spark.createDataFrame([], self._EMPTY_EDGE_SCHEMA)
             return (
                 df
-                .withColumn("relationship", F.lit("derives_from"))
-                .withColumn("weight", F.lit(1.0))
+                .withColumn("relationship", F.lit("references"))
+                .withColumn("weight", F.col("conf"))
+                .withColumn("edge_id", F.concat_ws("::", F.col("src"), F.col("dst"), F.lit("references")))
+                .withColumn("edge_type", F.lit("references"))
+                .withColumn("direction", F.lit("out"))
+                .withColumn("join_expression", F.col("join_expr"))
+                .withColumn("join_confidence", F.col("conf"))
+                .withColumn("ontology_rel", F.lit(None).cast("string"))
+                .withColumn("source_system", F.lit("fk_predictions"))
+                .withColumn("status", F.lit("candidate"))
                 .withColumn("created_at", F.current_timestamp())
                 .withColumn("updated_at", F.current_timestamp())
+                .drop("join_expr", "conf")
             )
         except Exception as e:
-            logger.warning(f"Could not build lineage edges: {e}")
-            return self.spark.createDataFrame([], 
-                "src STRING, dst STRING, relationship STRING, weight DOUBLE, created_at TIMESTAMP, updated_at TIMESTAMP")
-    
-    def build_reference_edges(self) -> DataFrame:
-        """Build 'references' edges from foreign key data."""
-        try:
-            # This would require parsing the foreign_keys map from extended_metadata
-            # For now, return empty - can be enhanced when FK data is available
-            return self.spark.createDataFrame([], 
-                "src STRING, dst STRING, relationship STRING, weight DOUBLE, created_at TIMESTAMP, updated_at TIMESTAMP")
-        except Exception as e:
-            logger.warning(f"Could not build reference edges: {e}")
-            return self.spark.createDataFrame([], 
-                "src STRING, dst STRING, relationship STRING, weight DOUBLE, created_at TIMESTAMP, updated_at TIMESTAMP")
-    
+            logger.warning("Could not build reference edges: %s", e)
+            return self.spark.createDataFrame([], self._EMPTY_EDGE_SCHEMA)
+
     def build_column_classification_edges(self, nodes_df: DataFrame) -> DataFrame:
         """Build 'same_classification' edges between columns with matching PII classification."""
         try:
-            # Filter to column nodes that have a security_level (PII/PHI)
             column_nodes = nodes_df.filter(
-                (F.col("node_type") == "column") & 
+                (F.col("node_type") == "column") &
                 (F.col("security_level").isin("PII", "PHI"))
             )
-            
             if column_nodes.count() == 0:
                 logger.info("No columns with PII/PHI classification found")
-                return self.spark.createDataFrame([], 
-                    "src STRING, dst STRING, relationship STRING, weight DOUBLE, created_at TIMESTAMP, updated_at TIMESTAMP")
-            
-            # Self-join to find column pairs with same security level
-            df_a = column_nodes.select(
-                F.col("id").alias("src"),
-                F.col("security_level").alias("level_a")
-            )
-            df_b = column_nodes.select(
-                F.col("id").alias("dst"),
-                F.col("security_level").alias("level_b")
-            )
-            
+                return self.spark.createDataFrame([], self._EMPTY_EDGE_SCHEMA)
+
+            df_a = column_nodes.select(F.col("id").alias("src"), F.col("security_level").alias("level_a"))
+            df_b = column_nodes.select(F.col("id").alias("dst"), F.col("security_level").alias("level_b"))
+
             edges = (
-                df_a
-                .join(df_b, df_a.level_a == df_b.level_b)
-                .filter(F.col("src") < F.col("dst"))  # Avoid duplicates and self-loops
+                df_a.join(df_b, df_a.level_a == df_b.level_b)
+                .filter(F.col("src") < F.col("dst"))
                 .select("src", "dst")
                 .withColumn("relationship", F.lit("same_classification"))
                 .withColumn("weight", F.lit(1.0))
-                .withColumn("created_at", F.current_timestamp())
-                .withColumn("updated_at", F.current_timestamp())
             )
-            
-            logger.info(f"Built {edges.count()} same_classification edges for columns")
+            edges = self._enrich_edges(edges, "same_classification")
+            logger.info("Built same_classification edges for columns")
             return edges
         except Exception as e:
-            logger.warning(f"Could not build column classification edges: {e}")
-            return self.spark.createDataFrame([], 
-                "src STRING, dst STRING, relationship STRING, weight DOUBLE, created_at TIMESTAMP, updated_at TIMESTAMP")
+            logger.warning("Could not build column classification edges: %s", e)
+            return self.spark.createDataFrame([], self._EMPTY_EDGE_SCHEMA)
     
     def build_all_extended_edges(self, all_nodes_df: DataFrame) -> DataFrame:
         """Build all edges including extended relationship types."""

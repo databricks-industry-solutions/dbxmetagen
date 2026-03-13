@@ -64,10 +64,15 @@ class SimilarityEdgeBuilder:
         nodes_df = self.get_nodes_with_embeddings()
         node_count = nodes_df.count()
         
+        _EDGE_SCHEMA = (
+            "src STRING, dst STRING, relationship STRING, weight DOUBLE, "
+            "edge_id STRING, edge_type STRING, direction STRING, "
+            "join_expression STRING, join_confidence DOUBLE, ontology_rel STRING, "
+            "source_system STRING, status STRING, created_at TIMESTAMP, updated_at TIMESTAMP"
+        )
         if node_count < 2:
             logger.info("Not enough nodes with embeddings for similarity comparison")
-            return self.spark.createDataFrame([], 
-                "src STRING, dst STRING, relationship STRING, weight DOUBLE, created_at TIMESTAMP, updated_at TIMESTAMP")
+            return self.spark.createDataFrame([], _EDGE_SCHEMA)
         
         logger.info(f"Computing similarity between {node_count} nodes")
         
@@ -133,6 +138,14 @@ class SimilarityEdgeBuilder:
             dst,
             '{self.RELATIONSHIP_TYPE}' as relationship,
             similarity as weight,
+            CONCAT(src, '::', dst, '::{self.RELATIONSHIP_TYPE}') as edge_id,
+            'similar_to' as edge_type,
+            'undirected' as direction,
+            CAST(NULL AS STRING) as join_expression,
+            CAST(NULL AS DOUBLE) as join_confidence,
+            CAST(NULL AS STRING) as ontology_rel,
+            'embedding_similarity' as source_system,
+            'candidate' as status,
             current_timestamp() as created_at,
             current_timestamp() as updated_at
         FROM ranked
@@ -177,25 +190,39 @@ class SimilarityEdgeBuilder:
                     "weight": sim
                 })
         
+        _EDGE_SCHEMA = (
+            "src STRING, dst STRING, relationship STRING, weight DOUBLE, "
+            "edge_id STRING, edge_type STRING, direction STRING, "
+            "join_expression STRING, join_confidence DOUBLE, ontology_rel STRING, "
+            "source_system STRING, status STRING, created_at TIMESTAMP, updated_at TIMESTAMP"
+        )
         if edges:
             df = self.spark.createDataFrame(edges)
             return (
                 df
+                .withColumn("edge_id", F.concat_ws("::", F.col("src"), F.col("dst"), F.col("relationship")))
+                .withColumn("edge_type", F.lit("similar_to"))
+                .withColumn("direction", F.lit("undirected"))
+                .withColumn("join_expression", F.lit(None).cast("string"))
+                .withColumn("join_confidence", F.lit(None).cast("double"))
+                .withColumn("ontology_rel", F.lit(None).cast("string"))
+                .withColumn("source_system", F.lit("embedding_similarity"))
+                .withColumn("status", F.lit("candidate"))
                 .withColumn("created_at", F.current_timestamp())
                 .withColumn("updated_at", F.current_timestamp())
             )
-        
-        return self.spark.createDataFrame([], 
-            "src STRING, dst STRING, relationship STRING, weight DOUBLE, created_at TIMESTAMP, updated_at TIMESTAMP")
+
+        return self.spark.createDataFrame([], _EDGE_SCHEMA)
     
     def remove_existing_similarity_edges(self) -> int:
         """Remove existing similarity edges before inserting new ones."""
         delete_sql = f"""
         DELETE FROM {self.config.fully_qualified_edges}
         WHERE relationship = '{self.RELATIONSHIP_TYPE}'
+           OR source_system = 'embedding_similarity'
         """
         self.spark.sql(delete_sql)
-        return 0  # Delta doesn't return affected rows directly
+        return 0
     
     def insert_similarity_edges(self, edges_df: DataFrame) -> int:
         """Insert new similarity edges."""

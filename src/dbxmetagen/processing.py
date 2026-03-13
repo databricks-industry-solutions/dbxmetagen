@@ -1906,7 +1906,10 @@ def get_domain_classification(
 
     spark = SparkSession.builder.getOrCreate()
 
-    domain_config = load_domain_config(config.domain_config_path)
+    domain_config = load_domain_config(
+        config_path=config.domain_config_path if config.domain_config_path else None,
+        bundle_path=getattr(config, "ontology_bundle", None) if not config.domain_config_path else None,
+    )
 
     try:
         df = read_table_with_type_conversion(spark, full_table_name)
@@ -1990,7 +1993,6 @@ def get_domain_classification(
         temperature=config.temperature,
         max_tokens=config.max_tokens,
         two_stage=getattr(config, "two_stage_classification", True),
-        prefilter_top_n=getattr(config, "domain_prefilter_top_n", 5),
         confidence_threshold=getattr(config, "domain_confidence_threshold", 0.5),
     )
 

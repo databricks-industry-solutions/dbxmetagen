@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react'
 import { safeFetch, ErrorBanner } from '../App'
+import { FKApplyPanel } from './ForeignKeyGeneration'
 
 function DataTable({ data, maxRows = 100 }) {
   if (!data || data.length === 0) return <p className="text-sm text-slate-400 py-4">No data available.</p>
@@ -21,6 +22,13 @@ function DataTable({ data, maxRows = 100 }) {
     </div>
   )
 }
+
+const Tip = ({ text }) => (
+  <span className="relative group cursor-help ml-1 inline-flex">
+    <span className="text-slate-400 text-[10px] font-bold border border-slate-300 rounded-full w-3.5 h-3.5 inline-flex items-center justify-center">?</span>
+    <span className="absolute z-50 hidden group-hover:block bottom-full left-1/2 -translate-x-1/2 mb-1 w-56 text-[10px] bg-slate-800 text-white rounded-lg px-2.5 py-1.5 shadow-lg pointer-events-none">{text}</span>
+  </span>
+)
 
 // ---------------------------------------------------------------------------
 // Review Editor -- scope picker, metadata type filter, inline edit, export
@@ -68,6 +76,9 @@ function ReviewEditor() {
   const [colPropOverrides, setColPropOverrides] = useState({})
   const [propTagApplying, setPropTagApplying] = useState({})
   const [propTagResults, setPropTagResults] = useState({})
+  const [ontoConfThreshold, setOntoConfThreshold] = useState(0.5)
+  const [tableTagApplying, setTableTagApplying] = useState({})
+  const [tableTagResults, setTableTagResults] = useState({})
   const [statusFilter, setStatusFilter] = useState('all')
 
   useEffect(() => { fetch('/api/ontology/entity-type-options').then(r => r.json()).then(d => setEntityTypeOptions(Array.isArray(d) ? d : [])).catch(() => {}) }, [])
@@ -443,10 +454,31 @@ function ReviewEditor() {
                     </div>
                   )}
 
-                  {/* Ontology Entities */}
+                  {/* ═══ ZONE 1: Table Entity ═══ */}
                   {show('ontology') && (
-                    <div className="space-y-2">
-                      {/* Primary entity banner */}
+                    <div className="border-t border-slate-200 pt-3 mt-3 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <h4 className="text-xs font-semibold text-slate-600 uppercase tracking-wider flex items-center">
+                          Table Entity{tbl.primary_entity ? ` \u2014 ${tbl.primary_entity.entity_type}` : ''}
+                          <Tip text="Applies the primary entity as an entity_type tag on the table itself. Does not affect columns. Also saved to the knowledge base." />
+                        </h4>
+                        {tbl.primary_entity && (
+                          <button onClick={async () => {
+                            setTableTagApplying(p => ({ ...p, [tbl.table_name]: true }))
+                            const et = tbl.primary_entity.entity_type
+                            try {
+                              const r = await fetch('/api/ontology/apply-tags', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ selections: [{ entity_type: et, source_tables: [tbl.table_name], source_columns: [], entity_role: 'primary' }] }) })
+                              const j = await r.json().catch(() => ({}))
+                              setTableTagResults(p => ({ ...p, [tbl.table_name]: j }))
+                            } catch (err) { setTableTagResults(p => ({ ...p, [tbl.table_name]: { error: err.message } })) }
+                            setTableTagApplying(p => ({ ...p, [tbl.table_name]: false }))
+                          }} disabled={tableTagApplying[tbl.table_name]}
+                            className="text-[10px] px-2.5 py-1 bg-purple-600 text-white rounded hover:bg-purple-700 disabled:opacity-50 font-medium">
+                            {tableTagApplying[tbl.table_name] ? 'Applying...' : 'Apply Table Entity Tag'}
+                          </button>
+                        )}
+                      </div>
                       {tbl.primary_entity && (
                         <div className="flex items-center gap-2 px-3 py-2 bg-purple-100 border border-purple-300 rounded-lg">
                           <span className="text-[10px] font-bold uppercase tracking-wider text-purple-500">Primary Entity</span>
@@ -454,14 +486,25 @@ function ReviewEditor() {
                           <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${Number(tbl.primary_entity.confidence ?? 0) > 0 ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
                             {Number(tbl.primary_entity.confidence ?? 0).toFixed(2)}
                           </span>
-                          {tbl.primary_entity.validated === true || tbl.primary_entity.validated === 'true' ? (
+                          {(tbl.primary_entity.validated === true || tbl.primary_entity.validated === 'true') && (
                             <span className="text-[10px] px-1.5 py-0.5 rounded-full font-medium bg-blue-100 text-blue-700">validated</span>
-                          ) : null}
+                          )}
                         </div>
                       )}
-                      {/* Recommended entity override */}
+                      {tableTagResults[tbl.table_name] && (() => {
+                        const ar = tableTagResults[tbl.table_name]
+                        if (ar.error) return <div className="text-xs text-red-600">{String(ar.error)}</div>
+                        const ok = (ar.results || []).filter(r => r.ok)
+                        const fail = (ar.results || []).filter(r => !r.ok)
+                        return (
+                          <div className="text-xs space-y-0.5">
+                            {ok.length > 0 && <div className="text-green-600">Table tag applied.{ok.map(r => r.verified ? ` [${r.verified}]` : '').join('')}</div>}
+                            {fail.map((r, ri) => <div key={ri} className="text-red-600">{r.error || 'unknown error'}</div>)}
+                          </div>
+                        )
+                      })()}
                       <div className="flex items-center gap-2 flex-wrap">
-                        <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">Set Recommended Entity:</span>
+                        <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">Override Primary:</span>
                         <input value={recommendedEntity[tbl.table_name] || ''} placeholder="e.g. OrderLineItem"
                           onChange={ev => setRecommendedEntity(p => ({ ...p, [tbl.table_name]: ev.target.value }))}
                           className="text-xs border border-purple-300 rounded px-2 py-0.5 bg-white w-40" />
@@ -472,10 +515,7 @@ function ReviewEditor() {
                           try {
                             const r = await fetch('/api/ontology/set-recommended-entity', { method: 'POST', headers: { 'Content-Type': 'application/json' },
                               body: JSON.stringify({ table_name: tbl.table_name, entity_type: et }) })
-                            if (r.ok) {
-                              setRecommendedEntity(p => ({ ...p, [tbl.table_name]: '' }))
-                              loadData()
-                            }
+                            if (r.ok) { setRecommendedEntity(p => ({ ...p, [tbl.table_name]: '' })); loadData() }
                           } catch {}
                           setRecEntLoading(p => ({ ...p, [tbl.table_name]: false }))
                         }} disabled={recEntLoading[tbl.table_name] || !(recommendedEntity[tbl.table_name] || '').trim()}
@@ -483,58 +523,47 @@ function ReviewEditor() {
                           {recEntLoading[tbl.table_name] ? '...' : 'Set as Primary'}
                         </button>
                       </div>
+                    </div>
+                  )}
 
-                      {/* Apply property tags button */}
-                      {(tbl.column_properties || []).length > 0 && (
-                        <div className="flex items-center gap-2">
-                          <button onClick={async () => {
-                            setPropTagApplying(p => ({ ...p, [tbl.table_name]: true }))
-                            const items = (tbl.column_properties || []).map(cp => ({
-                              table_name: cp.table_name, column_name: cp.column_name,
-                              property_role: colPropOverrides[cp.property_id]?.property_role ?? cp.property_role,
-                              linked_entity_type: colPropOverrides[cp.property_id]?.linked_entity_type ?? cp.linked_entity_type,
-                            }))
-                            try {
-                              const r = await fetch('/api/ontology/apply-property-tags', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ items }) })
-                              const j = await r.json().catch(() => ({}))
-                              setPropTagResults(p => ({ ...p, [tbl.table_name]: j }))
-                            } catch (err) { setPropTagResults(p => ({ ...p, [tbl.table_name]: { error: err.message } })) }
-                            setPropTagApplying(p => ({ ...p, [tbl.table_name]: false }))
-                          }} disabled={propTagApplying[tbl.table_name]}
-                            className="text-[10px] px-2 py-0.5 bg-emerald-600 text-white rounded hover:bg-emerald-700 disabled:opacity-50">
-                            {propTagApplying[tbl.table_name] ? 'Applying...' : 'Apply Property Role Tags'}
-                          </button>
-                          {propTagResults[tbl.table_name] && (() => {
-                            const pr = propTagResults[tbl.table_name]
-                            if (pr.error) return <span className="text-[10px] text-red-600">{pr.error}</span>
-                            const ok = (pr.results || []).filter(r => r.ok).length
-                            const fail = (pr.results || []).filter(r => !r.ok).length
-                            return <span className={`text-[10px] ${fail ? 'text-amber-600' : 'text-green-600'}`}>{ok} tagged{fail ? `, ${fail} failed` : ''}</span>
+                  {/* ═══ ZONE 2: Business Concepts ═══ */}
+                  {show('ontology') && (
+                    <div className="border-t border-slate-200 pt-3 mt-3 space-y-2">
+                      <div className="flex items-center justify-between flex-wrap gap-2">
+                        <h4 className="text-xs font-semibold text-slate-600 uppercase tracking-wider flex items-center">
+                          Business Concepts
+                          {Array.isArray(tbl.ontology_entities) && (() => {
+                            const total = tbl.ontology_entities.length
+                            const above = tbl.ontology_entities.filter(e => Number(e.confidence ?? 0) >= ontoConfThreshold).length
+                            return total > 0 ? <span className="ml-1.5 text-slate-400 font-normal normal-case">{total} entities ({above} above threshold)</span> : null
                           })()}
+                          <Tip text="Applies entity_type tags to the specific columns listed in each entity's source_columns. Individual Apply buttons bypass the confidence threshold." />
+                        </h4>
+                        <div className="flex items-center gap-2">
+                          <label className="text-[10px] text-slate-500">Min Confidence:</label>
+                          <input type="number" min="0" max="1" step="0.05" value={ontoConfThreshold}
+                            onChange={ev => setOntoConfThreshold(Number(ev.target.value))}
+                            className="text-[10px] border border-slate-300 rounded px-1.5 py-0.5 bg-white w-16" />
+                          {Array.isArray(tbl.ontology_entities) && tbl.ontology_entities.filter(e => Number(e.confidence ?? 0) >= ontoConfThreshold).length > 0 && (
+                            <button onClick={async () => {
+                              setOntoApplying(p => ({ ...p, [tbl.table_name]: true })); setOntoApplyResults(p => ({ ...p, [tbl.table_name]: null }))
+                              const selections = tbl.ontology_entities.filter(e => Number(e.confidence ?? 0) >= ontoConfThreshold).map(e => {
+                                let sc = e.source_columns
+                                if (typeof sc === 'string') { try { sc = JSON.parse(sc) } catch {} }
+                                return { entity_type: entityTypeOverrides[e.entity_id] || e.entity_type, source_tables: [tbl.table_name], source_columns: Array.isArray(sc) ? sc : [], entity_role: e.entity_role || 'primary' }
+                              })
+                              try {
+                                const r = await fetch('/api/ontology/apply-tags', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ selections }) })
+                                const j = await r.json().catch(() => ({}))
+                                setOntoApplyResults(p => ({ ...p, [tbl.table_name]: j }))
+                              } catch (err) { setOntoApplyResults(p => ({ ...p, [tbl.table_name]: { error: err.message } })) }
+                              setOntoApplying(p => ({ ...p, [tbl.table_name]: false }))
+                            }} disabled={ontoApplying[tbl.table_name]}
+                              className="text-[10px] px-2.5 py-1 bg-purple-600 text-white rounded hover:bg-purple-700 disabled:opacity-50 font-medium">
+                              {ontoApplying[tbl.table_name] ? 'Applying...' : `Apply All (conf \u2265 ${ontoConfThreshold})`}
+                            </button>
+                          )}
                         </div>
-                      )}
-
-                      <div className="flex items-center justify-between">
-                        <h4 className="text-xs font-semibold text-slate-500">All Ontology Entities</h4>
-                        {Array.isArray(tbl.ontology_entities) && tbl.ontology_entities.filter(e => Number(e.confidence ?? 0) > 0).length > 0 && (
-                          <button onClick={async () => {
-                            setOntoApplying(p => ({ ...p, [tbl.table_name]: true })); setOntoApplyResults(p => ({ ...p, [tbl.table_name]: null }))
-                            const selections = tbl.ontology_entities.filter(e => Number(e.confidence ?? 0) > 0).map(e => {
-                              let sc = e.source_columns
-                              if (typeof sc === 'string') { try { sc = JSON.parse(sc) } catch {} }
-                              return { entity_type: entityTypeOverrides[e.entity_id] || e.entity_type, source_tables: [tbl.table_name], source_columns: Array.isArray(sc) ? sc : [], entity_role: e.entity_role || 'primary' }
-                            })
-                            try {
-                              const r = await fetch('/api/ontology/apply-tags', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ selections }) })
-                              const j = await r.json().catch(() => ({}))
-                              setOntoApplyResults(p => ({ ...p, [tbl.table_name]: j }))
-                            } catch (err) { setOntoApplyResults(p => ({ ...p, [tbl.table_name]: { error: err.message } })) }
-                            setOntoApplying(p => ({ ...p, [tbl.table_name]: false }))
-                          }} disabled={ontoApplying[tbl.table_name]} className="text-xs px-2 py-0.5 bg-purple-600 text-white rounded hover:bg-purple-700 disabled:opacity-50">
-                            {ontoApplying[tbl.table_name] ? 'Applying...' : 'Apply All Tags (conf > 0)'}
-                          </button>
-                        )}
                       </div>
                       {ontoApplyResults[tbl.table_name] && (() => {
                         const ar = ontoApplyResults[tbl.table_name]
@@ -592,10 +621,7 @@ function ReviewEditor() {
                                     <>
                                       <input list={`eto-${eid}`} value={entityTypeOverrides[e.entity_id] ?? e.entity_type}
                                         onClick={ev => ev.stopPropagation()}
-                                        onChange={ev => {
-                                          const val = ev.target.value
-                                          setEntityTypeOverrides(p => ({ ...p, [e.entity_id]: val }))
-                                        }}
+                                        onChange={ev => setEntityTypeOverrides(p => ({ ...p, [e.entity_id]: ev.target.value }))}
                                         onBlur={ev => {
                                           const val = (ev.target.value || '').trim()
                                           if (val && val !== e.entity_type) {
@@ -634,7 +660,8 @@ function ReviewEditor() {
                                       const j = await r.json().catch(() => ({}))
                                       setOntoApplyResults(p => ({ ...p, [tbl.table_name]: j }))
                                     } catch (err) { setOntoApplyResults(p => ({ ...p, [tbl.table_name]: { error: err.message } })) }
-                                  }} className="ml-auto text-[10px] px-1.5 py-0.5 bg-purple-600 text-white rounded hover:bg-purple-700" title={isPrimary ? 'Apply entity_type tag to table and columns' : 'Apply entity_type tag to columns only'}>
+                                  }} className="ml-auto text-[10px] px-1.5 py-0.5 bg-purple-600 text-white rounded hover:bg-purple-700"
+                                    title={isPrimary ? 'Apply entity_type tag to table and columns (ignores threshold)' : 'Apply entity_type tag to columns only (ignores threshold)'}>
                                     Apply Tag
                                   </button>
                                 </div>
@@ -651,6 +678,46 @@ function ReviewEditor() {
                           })}
                         </div>
                       )}
+                    </div>
+                  )}
+
+                  {/* ═══ ZONE 3: Column Properties ═══ */}
+                  {show('ontology') && (tbl.column_properties || []).length > 0 && (
+                    <div className="border-t border-slate-200 pt-3 mt-3 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <h4 className="text-xs font-semibold text-slate-600 uppercase tracking-wider flex items-center">
+                          Column Properties
+                          <span className="ml-1.5 text-slate-400 font-normal normal-case">{(tbl.column_properties || []).length} columns classified</span>
+                          <Tip text="Applies property_role (and linked_entity_type for links/FKs) as tags on each column. Reflects how the column functions within the entity model (identifier, attribute, measure, link, etc.). Also saved to the knowledge base." />
+                        </h4>
+                        <div className="flex items-center gap-2">
+                          <button onClick={async () => {
+                            setPropTagApplying(p => ({ ...p, [tbl.table_name]: true }))
+                            const items = (tbl.column_properties || []).map(cp => ({
+                              table_name: cp.table_name, column_name: cp.column_name,
+                              property_role: colPropOverrides[cp.property_id]?.property_role ?? cp.property_role,
+                              linked_entity_type: colPropOverrides[cp.property_id]?.linked_entity_type ?? cp.linked_entity_type,
+                            }))
+                            try {
+                              const r = await fetch('/api/ontology/apply-property-tags', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ items }) })
+                              const j = await r.json().catch(() => ({}))
+                              setPropTagResults(p => ({ ...p, [tbl.table_name]: j }))
+                            } catch (err) { setPropTagResults(p => ({ ...p, [tbl.table_name]: { error: err.message } })) }
+                            setPropTagApplying(p => ({ ...p, [tbl.table_name]: false }))
+                          }} disabled={propTagApplying[tbl.table_name]}
+                            className="text-[10px] px-2.5 py-1 bg-emerald-600 text-white rounded hover:bg-emerald-700 disabled:opacity-50 font-medium">
+                            {propTagApplying[tbl.table_name] ? 'Applying...' : 'Apply Property Role Tags'}
+                          </button>
+                        </div>
+                      </div>
+                      {propTagResults[tbl.table_name] && (() => {
+                        const pr = propTagResults[tbl.table_name]
+                        if (pr.error) return <span className="text-[10px] text-red-600">{pr.error}</span>
+                        const ok = (pr.results || []).filter(r => r.ok).length
+                        const fail = (pr.results || []).filter(r => !r.ok).length
+                        return <span className={`text-[10px] ${fail ? 'text-amber-600' : 'text-green-600'}`}>{ok} tagged{fail ? `, ${fail} failed` : ''}</span>
+                      })()}
                     </div>
                   )}
 
@@ -920,6 +987,125 @@ function EditableSchemaKB({ rows, original, setRows }) {
   )
 }
 
+function EntityTagsPanel() {
+  const [entities, setEntities] = useState([])
+  const [relationships, setRelationships] = useState([])
+  const [error, setError] = useState(null)
+  const [selected, setSelected] = useState(new Set())
+  const [applyResult, setApplyResult] = useState(null)
+  const [applying, setApplying] = useState(false)
+  const [expanded, setExpanded] = useState(new Set())
+  const shortName = id => (id || '').split('.').pop()
+
+  useEffect(() => {
+    safeFetch('/api/ontology/entities').then(r => { setEntities(r.data || []); if (r.error) setError(r.error) })
+    safeFetch('/api/ontology/relationships').then(r => { setRelationships(r.data || []) })
+  }, [])
+
+  const groupedEntities = useMemo(() => {
+    const map = new Map()
+    entities.forEach(e => {
+      const st = Array.isArray(e.source_tables) ? e.source_tables : (typeof e.source_tables === 'string' ? (() => { try { return JSON.parse(e.source_tables) } catch { return [e.source_tables] } })() : [])
+      const key = `${e.entity_type}::${st.sort().join(',')}`
+      const existing = map.get(key)
+      if (!existing || (Number(e.confidence) || 0) > (Number(existing.confidence) || 0))
+        map.set(key, { ...e, source_tables: st, _count: (existing?._count || 0) + 1 })
+      else map.set(key, { ...existing, _count: existing._count + 1 })
+    })
+    return Array.from(map.values())
+  }, [entities])
+
+  const sourceTablesList = (e) => {
+    const st = e.source_tables
+    if (Array.isArray(st)) return st
+    if (typeof st === 'string') { try { const p = JSON.parse(st); return Array.isArray(p) ? p : [st] } catch { return [st] } }
+    return []
+  }
+
+  const applyToTable = async () => {
+    if (selected.size === 0) return
+    setApplying(true); setApplyResult(null)
+    const selections = []
+    selected.forEach(i => {
+      const e = groupedEntities[i]
+      const tables = sourceTablesList(e)
+      if (e?.entity_type && tables.length) selections.push({ entity_type: e.entity_type, source_tables: tables })
+    })
+    if (!selections.length) { setApplying(false); return }
+    try {
+      const r = await fetch('/api/ontology/apply-tags', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ selections }) })
+      const j = await r.json().catch(() => ({}))
+      setApplyResult(r.ok ? j : { error: j.detail || j })
+    } catch (e) { setApplyResult({ error: e.message }) }
+    setApplying(false)
+  }
+
+  return (
+    <div className="bg-dbx-oat-light rounded-xl border border-slate-200 p-6 shadow-sm">
+      <ErrorBanner error={error} />
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="text-lg font-semibold text-slate-800">Discovered Entities</h2>
+        {selected.size > 0 && (
+          <button onClick={applyToTable} disabled={applying}
+            className="px-4 py-1.5 bg-dbx-lava text-white rounded-lg text-sm font-medium hover:bg-red-700 disabled:opacity-50">
+            Apply tags ({selected.size})
+          </button>
+        )}
+      </div>
+      {applyResult && (
+        <div className={`mb-4 text-sm ${applyResult.error ? 'text-red-600' : 'text-green-600'}`}>
+          {applyResult.error ? JSON.stringify(applyResult.error) : `Applied: ${(applyResult.results || []).filter(r => r.ok).length} ok, ${(applyResult.results || []).filter(r => !r.ok).length} failed.`}
+        </div>
+      )}
+      {groupedEntities.length === 0
+        ? <p className="text-sm text-slate-400">No entities discovered yet.</p>
+        : <div className="overflow-x-auto">
+            <table className="min-w-full text-sm">
+              <thead><tr>
+                <th className="w-10 px-2 py-2.5 bg-dbx-oat border-b border-slate-200"></th>
+                {['Entity', 'Type', 'Conf', 'Validated', 'Source Tables', 'Columns / Bindings'].map(h =>
+                  <th key={h} className="text-left px-3 py-2.5 bg-dbx-oat font-semibold text-slate-600 border-b border-slate-200 text-xs uppercase tracking-wider">{h}</th>)}
+              </tr></thead>
+              <tbody>
+                {groupedEntities.map((e, i) => {
+                  const bindings = Array.isArray(e.column_bindings) ? e.column_bindings : []
+                  const srcCols = Array.isArray(e.source_columns) ? e.source_columns : []
+                  const isExpanded = expanded.has(i)
+                  const hasDetail = bindings.length > 0 || srcCols.length > 0
+                  return (
+                    <React.Fragment key={i}>
+                      <tr className={`border-b border-slate-100 hover:bg-orange-50/30 ${selected.has(i) ? 'bg-orange-50/50' : ''}`}>
+                        <td className="px-2 py-2"><input type="checkbox" checked={selected.has(i)} onChange={() => setSelected(prev => { const n = new Set(prev); n.has(i) ? n.delete(i) : n.add(i); return n })} className="rounded border-slate-300" /></td>
+                        <td className="px-3 py-2 font-medium text-slate-700">{e.entity_name}</td>
+                        <td className="px-3 py-2"><span className="inline-block bg-orange-100 text-red-700 text-xs font-medium px-2 py-0.5 rounded-full">{e.entity_type}</span></td>
+                        <td className="px-3 py-2 text-slate-600">{Number(e.confidence).toFixed(2)}</td>
+                        <td className="px-3 py-2">{e.validated === 'true' || e.validated === true ? <span className="text-emerald-600 font-medium">Yes</span> : <span className="text-slate-400">No</span>}</td>
+                        <td className="px-3 py-2 max-w-xs truncate text-slate-500">{Array.isArray(e.source_tables) ? e.source_tables.map(shortName).join(', ') : String(e.source_tables ?? '')}</td>
+                        <td className="px-3 py-2">{hasDetail ? (
+                          <button onClick={() => setExpanded(prev => { const n = new Set(prev); n.has(i) ? n.delete(i) : n.add(i); return n })}
+                            className="text-xs text-blue-600 hover:underline">
+                            {bindings.length > 0 ? `${bindings.length} mappings` : `${srcCols.length} cols`}{isExpanded ? ' (hide)' : ' (show)'}
+                          </button>
+                        ) : <span className="text-xs text-slate-300">--</span>}</td>
+                      </tr>
+                      {isExpanded && hasDetail && (
+                        <tr className="bg-slate-50/60"><td></td><td colSpan={6} className="px-3 py-2">
+                          {bindings.length > 0 && <div className="mb-1"><span className="text-xs font-semibold text-slate-500 mr-2">Attribute mappings:</span>
+                            <span className="flex flex-wrap gap-1 mt-0.5">{bindings.map((b, bi) => <span key={bi} className="inline-block bg-indigo-50 text-indigo-700 text-xs px-1.5 py-0.5 rounded">{b.attribute_name || '?'} &larr; {shortName(b.bound_column || '')}</span>)}</span></div>}
+                          {srcCols.length > 0 && bindings.length === 0 && <div><span className="text-xs font-semibold text-slate-500 mr-2">Source columns:</span><span className="text-xs text-slate-600">{srcCols.join(', ')}</span></div>}
+                        </td></tr>
+                      )}
+                    </React.Fragment>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+      }
+    </div>
+  )
+}
+
 export default function MetadataReview() {
   const [tab, setTab] = useState('editor')
   const [data, setData] = useState([])
@@ -960,7 +1146,7 @@ export default function MetadataReview() {
     setLoading(false)
   }
 
-  useEffect(() => { if (tab !== 'editor') load(tab) }, [tab])
+  useEffect(() => { if (!['editor', 'fk_apply', 'entity_tags'].includes(tab)) load(tab) }, [tab])
 
   const getModifiedRows = () => {
     if (tab === 'kb') {
@@ -1060,12 +1246,12 @@ export default function MetadataReview() {
       <ErrorBanner error={error} />
       <div className="flex flex-wrap items-center gap-4">
         <div className="flex bg-dbx-oat rounded-lg p-1">
-          {[['editor', 'Review Editor'], ['kb', 'Table KB'], ['columns', 'Column KB'], ['schemas', 'Schema KB'], ['log', 'Generation Log']].map(([k, l]) => (
+          {[['editor', 'Review Editor'], ['fk_apply', 'FK Apply'], ['entity_tags', 'Entity Tags'], ['kb', 'Table KB'], ['columns', 'Column KB'], ['schemas', 'Schema KB'], ['log', 'Generation Log']].map(([k, l]) => (
             <button key={k} onClick={() => setTab(k)}
               className={`px-3 py-1.5 text-sm rounded-md transition-all ${tab === k ? 'bg-dbx-oat-light shadow-sm font-semibold text-red-700' : 'text-slate-500 hover:text-slate-700'}`}>{l}</button>
           ))}
         </div>
-        {tab !== 'editor' && <>
+        {!['editor', 'fk_apply', 'entity_tags'].includes(tab) && <>
           {tab === 'schemas' && (
             <input value={filterExtra} onChange={e => setFilterExtra(e.target.value)} placeholder="Filter by schema name..."
               className="border border-slate-300 rounded-lg px-3 py-1.5 text-sm w-48 focus:ring-2 focus:ring-orange-500" />
@@ -1093,7 +1279,9 @@ export default function MetadataReview() {
           )}
         </>}
       </div>
-      {tab === 'editor' ? <ReviewEditor /> : (
+      {tab === 'editor' ? <ReviewEditor /> :
+       tab === 'fk_apply' ? <FKApplyPanel /> :
+       tab === 'entity_tags' ? <EntityTagsPanel /> : (
         <div className="bg-dbx-oat-light rounded-xl border border-slate-200 p-4 shadow-sm">
           {loading ? <p className="text-sm text-slate-400 py-4">Loading...</p> : (
             tab === 'log' ? <DataTable data={data} /> : (

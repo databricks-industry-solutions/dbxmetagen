@@ -44,8 +44,9 @@ class VectorIndexConfig:
 
 
 _COLUMNS_TO_SYNC = [
-    "doc_id", "doc_type", "content", "catalog_name", "schema_name",
-    "table_name", "domain", "subdomain", "entity_type",
+    "doc_id", "doc_type", "content", "node_id",
+    "catalog_name", "schema_name", "table_name",
+    "domain", "subdomain", "entity_type",
     "has_pii", "has_phi", "security_level", "data_type",
     "confidence_score",
 ]
@@ -63,6 +64,7 @@ class VectorIndexBuilder:
                 doc_id STRING NOT NULL,
                 doc_type STRING,
                 content STRING,
+                node_id STRING,
                 catalog_name STRING,
                 schema_name STRING,
                 table_name STRING,
@@ -78,11 +80,21 @@ class VectorIndexBuilder:
             ) USING DELTA
             TBLPROPERTIES ('delta.enableChangeDataFeed' = 'true')
         """)
+        # Migration for existing tables
+        try:
+            self.spark.sql(f"ALTER TABLE {cfg.fq_documents} ADD COLUMN node_id STRING")
+            logger.info("Added node_id column to %s", cfg.fq_documents)
+        except Exception as e:
+            if "already exists" in str(e).lower() or "FIELDS_ALREADY_EXISTS" in str(e):
+                pass
+            else:
+                logger.debug("Could not add node_id column: %s", e)
 
         table_docs = f"""
             SELECT
                 CONCAT('table::', t.table_name) AS doc_id,
                 'table' AS doc_type,
+                t.table_name AS node_id,
                 CONCAT(
                     COALESCE(t.comment, t.table_short_name), '\\n',
                     'Domain: ', COALESCE(t.domain, 'unknown'),
@@ -162,6 +174,7 @@ class VectorIndexBuilder:
             SELECT
                 CONCAT('column::', c.table_name, '.', c.column_name) AS doc_id,
                 'column' AS doc_type,
+                c.column_id AS node_id,
                 CONCAT(
                     c.column_name, ' (', COALESCE(c.data_type, 'unknown'), ')\\n',
                     COALESCE(c.comment, ''), '\\n',
@@ -200,6 +213,7 @@ class VectorIndexBuilder:
             SELECT
                 CONCAT('entity::', o.entity_id) AS doc_id,
                 'entity' AS doc_type,
+                o.entity_id AS node_id,
                 CONCAT(
                     o.entity_name, ' (', o.entity_type, ') [', COALESCE(o.entity_role, 'primary'), ']\\n',
                     COALESCE(o.description, ''), '\\n',
@@ -245,6 +259,7 @@ class VectorIndexBuilder:
             SELECT
                 CONCAT('metric_view::', m.definition_id) AS doc_id,
                 'metric_view' AS doc_type,
+                m.definition_id AS node_id,
                 CONCAT(
                     COALESCE(m.metric_view_name, ''), '\\n',
                     'Source: ', COALESCE(m.source_table, ''), '\\n',
@@ -271,6 +286,7 @@ class VectorIndexBuilder:
             SELECT
                 CONCAT('fk::', f.src_table, '.', f.src_column, '->', f.dst_table, '.', f.dst_column) AS doc_id,
                 'fk_relationship' AS doc_type,
+                f.src_table AS node_id,
                 CONCAT(
                     'Foreign key: ', f.src_table, '.', f.src_column,
                     ' references ', f.dst_table, '.', f.dst_column, '\\n',

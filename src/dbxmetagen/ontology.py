@@ -2443,10 +2443,7 @@ class OntologyBuilder:
         return len(new_edges)
 
     def _sync_entity_nodes_to_graph(self) -> int:
-        """Insert ontology entities into graph_nodes so edges have valid targets.
-
-        Includes entity_role in node metadata via the data_type column.
-        """
+        """Insert ontology entities into graph_nodes so edges have valid targets."""
         nodes_table = f"{self.config.catalog_name}.{self.config.schema_name}.{self.config.nodes_table}"
         ent_table = self.config.fully_qualified_entities
         try:
@@ -2455,12 +2452,18 @@ class OntologyBuilder:
                     (id, table_name, catalog, `schema`, table_short_name,
                      domain, subdomain, has_pii, has_phi, security_level,
                      comment, node_type, parent_id, data_type,
-                     quality_score, embedding, created_at, updated_at)
+                     quality_score, embedding,
+                     ontology_id, ontology_type, display_name, short_description,
+                     sensitivity, status, source_system, keywords,
+                     created_at, updated_at)
                 SELECT entity_id, NULL, NULL, NULL, entity_name,
                     NULL, NULL, FALSE, FALSE, 'PUBLIC',
                     description, 'entity', entity_type,
                     COALESCE(entity_role, 'primary'),
-                    confidence, NULL, created_at, updated_at
+                    confidence, NULL,
+                    entity_id, entity_type, entity_name, description,
+                    'public', 'discovered', 'ontology', NULL,
+                    created_at, updated_at
                 FROM {ent_table}
                 WHERE entity_id NOT IN (SELECT id FROM {nodes_table})
             """)
@@ -2479,7 +2482,8 @@ class OntologyBuilder:
         try:
             self.spark.sql(
                 f"DELETE FROM {edges_table} "
-                f"WHERE relationship IN ('instance_of', 'has_attribute', 'has_property', 'references', 'is_a')"
+                f"WHERE source_system = 'ontology' "
+                f"   OR relationship IN ('instance_of', 'has_attribute', 'has_property', 'references', 'is_a')"
             )
             logger.info("Cleared existing ontology edges before regeneration")
         except Exception as e:
@@ -2491,7 +2495,7 @@ class OntologyBuilder:
         Uses the redesigned model:
         - instance_of: only from table to its PRIMARY entity
         - has_property: from primary entity to columns with their role
-        - references: uses named relationships from ontology_relationships
+        - Named relationships from ontology_relationships with ontology_rel
         """
         edges_table = (
             f"{self.config.catalog_name}.{self.config.schema_name}.graph_edges"
@@ -2499,8 +2503,24 @@ class OntologyBuilder:
         self._clear_ontology_edges()
         total = 0
 
+        def _add_edge_columns(df, rel: str, etype: str, ont_rel: str = None):
+            return df.select(
+                F.col("src"), F.col("dst"),
+                F.lit(rel).alias("relationship"),
+                F.col("weight") if "weight" in df.columns else F.lit(1.0).alias("weight"),
+                F.concat_ws("::", F.col("src"), F.col("dst"), F.lit(rel)).alias("edge_id"),
+                F.lit(etype).alias("edge_type"),
+                F.lit("out").alias("direction"),
+                F.lit(None).cast("string").alias("join_expression"),
+                F.lit(None).cast("double").alias("join_confidence"),
+                F.lit(ont_rel).alias("ontology_rel"),
+                F.lit("ontology").alias("source_system"),
+                F.lit("candidate").alias("status"),
+                F.current_timestamp().alias("created_at"),
+                F.current_timestamp().alias("updated_at"),
+            )
+
         try:
-            # instance_of edges: table -> PRIMARY entity only
             table_entities = self.spark.sql(f"""
                 SELECT entity_id, entity_name, EXPLODE(source_tables) as table_name
                 FROM {self.config.fully_qualified_entities}
@@ -2508,48 +2528,40 @@ class OntologyBuilder:
                   AND COALESCE(entity_role, 'primary') = 'primary'
             """)
             if table_entities.count() > 0:
-                instance_edges = table_entities.select(
+                raw = table_entities.select(
                     F.col("table_name").alias("src"),
                     F.col("entity_id").alias("dst"),
-                    F.lit("instance_of").alias("relationship"),
                     F.lit(1.0).alias("weight"),
-                    F.current_timestamp().alias("created_at"),
-                    F.current_timestamp().alias("updated_at"),
                 )
+                instance_edges = _add_edge_columns(raw, "instance_of", "instance_of")
                 instance_edges.write.mode("append").saveAsTable(edges_table)
                 total += instance_edges.count()
         except Exception as e:
-            logger.warning(f"Could not add instance_of edges: {e}")
+            logger.warning("Could not add instance_of edges: %s", e)
 
         try:
-            # has_property edges: primary entity -> column (from column_properties)
             cp_table = self.config.fully_qualified_column_properties
-            prop_edges_df = self.spark.sql(f"""
+            raw = self.spark.sql(f"""
                 SELECT owning_entity_id AS src,
                        CONCAT(table_name, '.', column_name) AS dst,
-                       'has_property' AS relationship,
-                       CAST(1.0 AS DOUBLE) AS weight,
-                       CURRENT_TIMESTAMP() AS created_at,
-                       CURRENT_TIMESTAMP() AS updated_at
+                       CAST(1.0 AS DOUBLE) AS weight
                 FROM {cp_table}
             """)
-            prop_count = prop_edges_df.count()
+            prop_count = raw.count()
             if prop_count > 0:
-                prop_edges_df.write.mode("append").saveAsTable(edges_table)
+                prop_edges = _add_edge_columns(raw, "has_property", "has_property")
+                prop_edges.write.mode("append").saveAsTable(edges_table)
                 total += prop_count
         except Exception as e:
-            logger.warning(f"Could not add has_property edges: {e}")
+            logger.warning("Could not add has_property edges: %s", e)
 
         try:
-            # Named relationship edges from ontology_relationships
             rels_table = self.config.fully_qualified_relationships
             ent_table = self.config.fully_qualified_entities
-            ref_edges_df = self.spark.sql(f"""
+            raw = self.spark.sql(f"""
                 SELECT DISTINCT se.entity_id AS src, de.entity_id AS dst,
-                       r.relationship_name AS relationship,
-                       r.confidence AS weight,
-                       CURRENT_TIMESTAMP() AS created_at,
-                       CURRENT_TIMESTAMP() AS updated_at
+                       r.relationship_name AS rel_name,
+                       r.confidence AS weight
                 FROM {rels_table} r
                 JOIN {ent_table} se ON se.entity_type = r.src_entity_type
                     AND COALESCE(se.entity_role, 'primary') = 'primary'
@@ -2557,14 +2569,30 @@ class OntologyBuilder:
                     AND COALESCE(de.entity_role, 'primary') = 'primary'
                 WHERE se.entity_id != de.entity_id
             """)
-            ref_count = ref_edges_df.count()
+            ref_count = raw.count()
             if ref_count > 0:
-                ref_edges_df.write.mode("append").saveAsTable(edges_table)
+                # Use relationship_name as the ontology_rel, edge_type stays 'references'
+                ref_edges = raw.select(
+                    F.col("src"), F.col("dst"),
+                    F.col("rel_name").alias("relationship"),
+                    F.col("weight"),
+                    F.concat_ws("::", F.col("src"), F.col("dst"), F.col("rel_name")).alias("edge_id"),
+                    F.lit("references").alias("edge_type"),
+                    F.lit("out").alias("direction"),
+                    F.lit(None).cast("string").alias("join_expression"),
+                    F.lit(None).cast("double").alias("join_confidence"),
+                    F.col("rel_name").alias("ontology_rel"),
+                    F.lit("ontology").alias("source_system"),
+                    F.lit("candidate").alias("status"),
+                    F.current_timestamp().alias("created_at"),
+                    F.current_timestamp().alias("updated_at"),
+                )
+                ref_edges.write.mode("append").saveAsTable(edges_table)
                 total += ref_count
         except Exception as e:
-            logger.warning(f"Could not add column entity edges: {e}")
+            logger.warning("Could not add ontology relationship edges: %s", e)
 
-        logger.info(f"Added {total} entity edges to graph")
+        logger.info("Added %d entity edges to graph", total)
         return total
 
     def validate_ontology_completeness(self) -> Dict[str, Any]:

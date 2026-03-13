@@ -156,10 +156,7 @@ export default function GenieBuilder() {
     }
     const created = await res.json()
     setCreatedSpace(created)
-    if (created.space_id) {
-      fetch(`/api/genie/spaces/track?space_id=${encodeURIComponent(created.space_id)}&title=${encodeURIComponent(title)}${selectedTables.map(t => `&tables=${encodeURIComponent(t)}`).join('')}&config_json=${encodeURIComponent(editedJson || '')}`, { method: 'POST' }).catch(() => {})
-      loadTrackedSpaces()
-    }
+    if (created.space_id) loadTrackedSpaces()
   }
 
   const schemas = [...new Set(tables.map(t => t.schema))]

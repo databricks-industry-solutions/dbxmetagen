@@ -103,6 +103,7 @@ class MetadataConfig:
             "generate_profiling_data",
             "embedding_model",
             "ontology_config_path",
+            "ontology_bundle",
             "similarity_threshold",
             "profiling_max_tables",
             "freshness_threshold_days",
@@ -243,6 +244,16 @@ class MetadataConfig:
         self.domain_confidence_threshold = float(
             getattr(self, "domain_confidence_threshold", 0.5)
         )
+
+        # Warn when both standalone domain config and ontology bundle are set
+        _dcp = getattr(self, "domain_config_path", None)
+        _ob = getattr(self, "ontology_bundle", None)
+        if _dcp and _ob:
+            print(
+                f"[config] Both domain_config_path='{_dcp}' and ontology_bundle='{_ob}' are set. "
+                f"Domain prediction will use the standalone file; ontology will use the bundle. "
+                f"Ensure domain keys match domain_entity_affinity keys in the bundle."
+            )
 
         # Fallback for run_id if not provided via kwargs/YAML
         if not self.run_id:

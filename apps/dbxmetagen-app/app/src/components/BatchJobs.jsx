@@ -121,7 +121,7 @@ export default function BatchJobs() {
   const [schemaName, setSchemaName] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
-  const [ontologyBundle, setOntologyBundle] = useState('healthcare')
+  const [ontologyBundle, setOntologyBundle] = useState('general')
   const [entityTagKey, setEntityTagKey] = useState('entity_type')
   const [bundles, setBundles] = useState([])
   const [domainConfig, setDomainConfig] = useState('')
@@ -404,13 +404,13 @@ export default function BatchJobs() {
           </div>
         </div>
         <div className="flex gap-3 mt-4">
-          <button onClick={() => runJob('_metadata_job', { table_names: tableNames, mode, apply_ddl: applyDdl, ...(domainConfig ? { domain_config: domainConfig } : {}) })}
+          <button onClick={() => runJob('_metadata_job', { table_names: tableNames, mode, apply_ddl: applyDdl, ontology_bundle: ontologyBundle, ...(domainConfig ? { domain_config: domainConfig } : {}) })}
             disabled={loading || !tableNames.trim()}
             title="Run a single metadata generation pass (comment, PI, or domain) for the specified tables"
             className="px-4 py-2 bg-slate-700 text-white rounded-md text-sm hover:bg-slate-800 disabled:opacity-50">
             {loading ? 'Starting...' : 'Run Single Mode'}
           </button>
-          <button onClick={() => runJob('_parallel_modes_job', { table_names: tableNames, apply_ddl: applyDdl, ...(domainConfig ? { domain_config: domainConfig } : {}) })}
+          <button onClick={() => runJob('_parallel_modes_job', { table_names: tableNames, apply_ddl: applyDdl, ontology_bundle: ontologyBundle, ...(domainConfig ? { domain_config: domainConfig } : {}) })}
             disabled={loading || !tableNames.trim()}
             title="Run all three modes (comment, PI, domain) in parallel for faster coverage"
             className="px-4 py-2 bg-dbx-lava text-white rounded-md text-sm hover:bg-red-700 disabled:opacity-50">
@@ -512,40 +512,48 @@ export default function BatchJobs() {
         </button>
       </Step>
 
-      {/* Step 4 -- Index */}
-      <Step num={4} color="bg-dbx-navy/70" title="Index" prereq="Requires: completed analytics pipeline">
+      {/* Step 4 -- Index + Sync */}
+      <Step num={4} color="bg-dbx-navy/70" title="Index + Sync" prereq="Requires: completed analytics pipeline">
         <p className="text-sm text-gray-500 mb-4">
-          Build a Vector Search index over enriched metadata for similarity search, hybrid search,
-          and agent-driven retrieval. Consolidates table, column, entity, and metric-view docs.
+          Rebuild the Knowledge Graph, Vector Index, and sync to Lakebase in one operation,
+          or run each step individually.
         </p>
-        <button onClick={() => runJob('_build_vector_index', { catalog_name: catalogName, schema_name: schemaName })}
-          disabled={loading}
-          title="Build metadata_documents table and Delta Sync vector index with managed embeddings for retrieval"
-          className="px-4 py-2 bg-dbx-lava text-white rounded-md text-sm hover:bg-red-700 disabled:opacity-50">
-          Build Vector Index
-        </button>
-      </Step>
-
-      {/* Step 5 -- Sync */}
-      <Step num={5} color="bg-dbx-navy/60" title="Sync & Integrate" prereq="After graph or DDL changes">
-        <p className="text-sm text-gray-500 mb-4">
-          Push results to downstream systems. <strong>Lakebase</strong> syncs the graph for the GraphRAG agent.
-          <strong> DDL Sync</strong> re-applies reviewed metadata edits to Unity Catalog.
-        </p>
-        <div className="flex gap-3">
+        <div className="flex flex-wrap gap-3">
+          <button onClick={async () => {
+            await runJob('_build_vector_index', { catalog_name: catalogName, schema_name: schemaName })
+            await runJob('sync_graph_lakebase', { catalog_name: catalogName, schema_name: schemaName })
+          }}
+            disabled={loading}
+            title="Rebuild Knowledge Graph + VS documents + sync to Lakebase"
+            className="px-4 py-2 bg-dbx-lava text-white rounded-md text-sm hover:bg-red-700 disabled:opacity-50">
+            Rebuild KG + VS + Sync
+          </button>
+          <button onClick={() => runJob('_build_vector_index', { catalog_name: catalogName, schema_name: schemaName })}
+            disabled={loading}
+            title="Build metadata_documents table and Delta Sync vector index"
+            className="px-3 py-1.5 bg-slate-700 text-white rounded text-sm hover:bg-slate-800 disabled:opacity-50">
+            Build Vector Index
+          </button>
           <button onClick={() => runJob('sync_graph_lakebase', { catalog_name: catalogName, schema_name: schemaName })}
             disabled={loading}
-            title="Push the knowledge graph to Lakebase PostgreSQL for the GraphRAG agent"
-            className="px-4 py-2 bg-slate-700 text-white rounded-md text-sm hover:bg-slate-800 disabled:opacity-50">
-            Sync Graph to Lakebase
-          </button>
-          <button onClick={() => runJob('_sync_ddl_job')}
-            disabled={loading}
-            title="Re-apply reviewed metadata edits (comments, tags) as ALTER statements to Unity Catalog"
-            className="px-4 py-2 bg-slate-700 text-white rounded-md text-sm hover:bg-slate-800 disabled:opacity-50">
-            Sync Reviewed DDL
+            title="Push the knowledge graph to Lakebase PostgreSQL"
+            className="px-3 py-1.5 bg-slate-700 text-white rounded text-sm hover:bg-slate-800 disabled:opacity-50">
+            Sync to Lakebase
           </button>
         </div>
+      </Step>
+
+      {/* Step 5 -- DDL Sync */}
+      <Step num={5} color="bg-dbx-navy/60" title="DDL Sync" prereq="After review edits">
+        <p className="text-sm text-gray-500 mb-4">
+          Re-apply reviewed metadata edits (comments, tags) as ALTER statements to Unity Catalog.
+        </p>
+        <button onClick={() => runJob('_sync_ddl_job')}
+          disabled={loading}
+          title="Re-apply reviewed metadata edits (comments, tags) as ALTER statements to Unity Catalog"
+          className="px-4 py-2 bg-slate-700 text-white rounded-md text-sm hover:bg-slate-800 disabled:opacity-50">
+          Sync Reviewed DDL
+        </button>
       </Step>
 
       {/* Active Runs */}

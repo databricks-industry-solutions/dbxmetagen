@@ -1,17 +1,14 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import ForceGraph2D from 'react-force-graph-2d'
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts'
 import { safeFetch, ErrorBanner } from '../App'
 
 const PALETTE = [
   '#FF3621', '#0B2026', '#6366f1', '#10b981', '#f59e0b',
   '#3b82f6', '#ec4899', '#8b5cf6', '#14b8a6', '#f97316',
 ]
-const BAND_COLORS = { '0-0.4': '#f97316', '0.4-0.6': '#eab308', '0.6-0.8': '#65a30d', '0.8-1.0': '#15803d' }
-const EDGE_COLORS = { instance_of: '#6366f1', has_attribute: '#10b981', is_a: '#3b82f6', references: '#f59e0b' }
 const shortName = id => (id || '').split('.').pop()
 
-function HealthCards({ metrics }) {
+export function HealthCards({ metrics }) {
   const m = useMemo(() => {
     const map = {}
     ;(metrics || []).forEach(r => { map[r.metric_name] = r.value })
@@ -42,41 +39,7 @@ function HealthCards({ metrics }) {
   )
 }
 
-function ConfidenceChart({ data }) {
-  if (!data || !data.length) return <p className="text-sm text-slate-400">No confidence data.</p>
-  return (
-    <ResponsiveContainer width="100%" height={220}>
-      <BarChart data={data} margin={{ top: 5, right: 20, left: 0, bottom: 5 }}>
-        <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-        <XAxis dataKey="band" tick={{ fontSize: 12 }} />
-        <YAxis tick={{ fontSize: 12 }} />
-        <Tooltip />
-        <Bar dataKey="count" radius={[4, 4, 0, 0]}>
-          {data.map((d, i) => <Cell key={i} fill={BAND_COLORS[d.band] || '#94a3b8'} />)}
-        </Bar>
-      </BarChart>
-    </ResponsiveContainer>
-  )
-}
-
-function EdgeBreakdownChart({ data }) {
-  if (!data || !data.length) return <p className="text-sm text-slate-400">No edge data.</p>
-  return (
-    <ResponsiveContainer width="100%" height={220}>
-      <BarChart data={data} layout="vertical" margin={{ top: 5, right: 20, left: 80, bottom: 5 }}>
-        <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-        <XAxis type="number" tick={{ fontSize: 12 }} />
-        <YAxis type="category" dataKey="relationship" tick={{ fontSize: 12 }} width={80} />
-        <Tooltip />
-        <Bar dataKey="count" radius={[0, 4, 4, 0]}>
-          {data.map((d, i) => <Cell key={i} fill={EDGE_COLORS[d.relationship] || '#94a3b8'} />)}
-        </Bar>
-      </BarChart>
-    </ResponsiveContainer>
-  )
-}
-
-function EntityGraph({ entities, relationships, allRelationships }) {
+export function EntityGraph({ entities, relationships, allRelationships }) {
   const graphRef = useRef()
   const [hovered, setHovered] = useState(null)
   const [selectedType, setSelectedType] = useState(null)
@@ -204,149 +167,51 @@ function EntityGraph({ entities, relationships, allRelationships }) {
   )
 }
 
-function CoverageHeatmap({ entities }) {
-  const { types, tables, matrix } = useMemo(() => {
-    const typeSet = new Set()
-    const tableSet = new Set()
-    const map = {}
-    entities.forEach(e => {
-      if (!e.entity_type) return
-      typeSet.add(e.entity_type)
-      const st = Array.isArray(e.source_tables) ? e.source_tables
-        : typeof e.source_tables === 'string' ? (() => { try { return JSON.parse(e.source_tables) } catch { return [e.source_tables] } })()
-        : []
-      st.forEach(t => {
-        const tn = shortName(t)
-        tableSet.add(tn)
-        const key = `${e.entity_type}::${tn}`
-        map[key] = Math.max(map[key] || 0, Number(e.confidence) || 0)
-      })
-    })
-    return { types: [...typeSet].sort(), tables: [...tableSet].sort(), matrix: map }
-  }, [entities])
+export function OntologyOverview() {
+  const [entities, setEntities] = useState([])
+  const [summary, setSummary] = useState([])
+  const [relationships, setRelationships] = useState([])
+  const [metrics, setMetrics] = useState([])
+  const [error, setError] = useState(null)
 
-  if (!types.length || !tables.length) return <p className="text-sm text-slate-400">No coverage data available.</p>
-
-  const cellColor = v => {
-    if (!v) return '#f1f5f9'
-    if (v >= 0.8) return '#15803d'
-    if (v >= 0.6) return '#65a30d'
-    if (v >= 0.4) return '#eab308'
-    return '#f97316'
-  }
+  useEffect(() => {
+    safeFetch('/api/ontology/entities').then(r => { setEntities(r.data || []); if (r.error) setError(r.error) })
+    safeFetch('/api/ontology/summary').then(r => { setSummary(r.data || []); if (r.error) setError(r.error) })
+    safeFetch('/api/ontology/relationships').then(r => { setRelationships(r.data || []) })
+    safeFetch('/api/ontology/metrics').then(r => { setMetrics(r.data || []) })
+  }, [])
 
   return (
-    <div className="overflow-x-auto">
-      <table className="text-xs border-collapse">
-        <thead><tr>
-          <th className="sticky left-0 bg-dbx-oat-light z-10 px-2 py-1 text-left font-semibold text-slate-600 border-b border-slate-200">Entity</th>
-          {tables.map(t => (
-            <th key={t} className="px-1 py-1 font-normal text-slate-500 border-b border-slate-200 whitespace-nowrap" style={{ writingMode: 'vertical-rl', maxHeight: 120 }}>{t}</th>
-          ))}
-        </tr></thead>
-        <tbody>
-          {types.map(type => (
-            <tr key={type}>
-              <td className="sticky left-0 bg-dbx-oat-light z-10 px-2 py-1 font-medium text-slate-700 border-b border-slate-100 whitespace-nowrap">{type}</td>
-              {tables.map(t => {
-                const v = matrix[`${type}::${t}`]
+    <div className="space-y-6">
+      <ErrorBanner error={error} />
+      <section className="bg-dbx-oat-light rounded-xl border border-slate-200 p-6 shadow-sm">
+        <h2 className="text-lg font-semibold text-slate-800 mb-4">Ontology Health</h2>
+        <HealthCards metrics={metrics} />
+        {!metrics.length && <p className="text-sm text-slate-400">No metrics computed yet. Run the ontology pipeline to generate health metrics.</p>}
+      </section>
+      <section className="bg-dbx-oat-light rounded-xl border border-slate-200 p-6 shadow-sm">
+        <h2 className="text-lg font-semibold text-slate-800 mb-4">Entity Type Summary</h2>
+        {summary.length === 0
+          ? <p className="text-sm text-slate-400">No entity types discovered yet. Run the full analytics pipeline first.</p>
+          : <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              {summary.map((s, i) => {
+                const relCount = (relationships || []).filter(r => r.src === s.entity_type || r.dst === s.entity_type).length
                 return (
-                  <td key={t} className="px-0.5 py-0.5 border-b border-slate-100" title={v ? `${type} / ${t}: ${v.toFixed(2)}` : ''}>
-                    <div className="w-5 h-5 rounded-sm mx-auto" style={{ backgroundColor: cellColor(v) }} />
-                  </td>
+                  <div key={i} className="border border-slate-200 rounded-xl p-4 bg-gradient-to-br from-white to-slate-50">
+                    <p className="font-semibold text-sm text-slate-700">{s.entity_type}</p>
+                    <p className="text-3xl font-bold text-red-700 mt-1">{s.count}</p>
+                    <p className="text-xs text-slate-400 mt-1">Avg conf: {s.avg_confidence} | Validated: {s.validated}{relCount > 0 ? ` | Rels: ${relCount}` : ''}</p>
+                  </div>
                 )
               })}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      <div className="flex items-center gap-3 mt-3 text-xs text-slate-500">
-        <span>Confidence:</span>
-        {[['#f1f5f9', 'None'], ['#f97316', '<0.4'], ['#eab308', '0.4-0.6'], ['#65a30d', '0.6-0.8'], ['#15803d', '>=0.8']].map(([c, l]) => (
-          <span key={l} className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm inline-block" style={{ backgroundColor: c }} />{l}</span>
-        ))}
-      </div>
-    </div>
-  )
-}
-
-function BindingDetail({ entities }) {
-  const [expandedType, setExpandedType] = useState(null)
-
-  const byType = useMemo(() => {
-    const map = {}
-    entities.forEach(e => {
-      if (!e.entity_type) return
-      if (!map[e.entity_type]) map[e.entity_type] = []
-      map[e.entity_type].push(e)
-    })
-    return map
-  }, [entities])
-
-  const types = Object.keys(byType).sort()
-  if (!types.length) return <p className="text-sm text-slate-400">No entities to show.</p>
-
-  return (
-    <div className="space-y-2">
-      {types.map(type => {
-        const ents = byType[type]
-        const isOpen = expandedType === type
-        const totalBindings = ents.reduce((s, e) => s + (Array.isArray(e.column_bindings) ? e.column_bindings.length : 0), 0)
-        const withBindings = ents.filter(e => Array.isArray(e.column_bindings) && e.column_bindings.length > 0).length
-
-        return (
-          <div key={type} className="border border-slate-200 rounded-lg overflow-hidden">
-            <button
-              onClick={() => setExpandedType(isOpen ? null : type)}
-              className="w-full flex items-center justify-between px-4 py-3 bg-slate-50 hover:bg-slate-100 transition-colors"
-            >
-              <div className="flex items-center gap-3">
-                <span className="inline-block bg-orange-100 text-red-700 text-xs font-medium px-2 py-0.5 rounded-full">{type}</span>
-                <span className="text-sm text-slate-600">{ents.length} entities</span>
-              </div>
-              <div className="flex items-center gap-3 text-xs text-slate-500">
-                <span>{totalBindings} bindings</span>
-                <span>{withBindings}/{ents.length} bound</span>
-                <span>{isOpen ? '\u25B2' : '\u25BC'}</span>
-              </div>
-            </button>
-            {isOpen && (
-              <div className="p-3 space-y-2 bg-white">
-                {ents.map((e, i) => {
-                  const bindings = Array.isArray(e.column_bindings) ? e.column_bindings : []
-                  const srcCols = Array.isArray(e.source_columns) ? e.source_columns : []
-                  return (
-                    <div key={i} className="border border-slate-100 rounded p-2">
-                      <div className="flex items-center gap-2 mb-1">
-                        <span className="text-sm font-medium text-slate-700">{e.entity_name}</span>
-                        <span className="text-xs text-slate-400">conf: {Number(e.confidence).toFixed(2)}</span>
-                        {e.validated === true || e.validated === 'true' ? (
-                          <span className="text-xs text-emerald-600 font-medium">validated</span>
-                        ) : null}
-                      </div>
-                      {bindings.length > 0 ? (
-                        <div className="flex flex-wrap gap-1">
-                          {bindings.map((b, bi) => (
-                            <span key={bi} className="inline-flex items-center gap-1 bg-indigo-50 text-indigo-700 text-xs px-1.5 py-0.5 rounded">
-                              <span className="font-medium">{b.attribute_name || '?'}</span>
-                              <span className="text-indigo-400">&larr;</span>
-                              <span>{shortName(b.bound_column || '')}</span>
-                            </span>
-                          ))}
-                        </div>
-                      ) : srcCols.length > 0 ? (
-                        <p className="text-xs text-slate-500">Columns: {srcCols.join(', ')}</p>
-                      ) : (
-                        <p className="text-xs text-slate-400 italic">Table-level entity -- column bindings available after column-level discovery</p>
-                      )}
-                    </div>
-                  )
-                })}
-              </div>
-            )}
-          </div>
-        )
-      })}
+            </div>
+        }
+      </section>
+      <section className="bg-dbx-oat-light rounded-xl border border-slate-200 p-6 shadow-sm">
+        <h2 className="text-lg font-semibold text-slate-800 mb-4">Entity Relationship Graph</h2>
+        <p className="text-xs text-slate-500 mb-3">Nodes = entity types (sized by table count). Click a node to see tables linked via instance_of.</p>
+        <EntityGraph entities={entities} relationships={relationships} allRelationships={relationships} />
+      </section>
     </div>
   )
 }
@@ -356,8 +221,6 @@ export default function Ontology() {
   const [summary, setSummary] = useState([])
   const [relationships, setRelationships] = useState([])
   const [metrics, setMetrics] = useState([])
-  const [edgeSummary, setEdgeSummary] = useState([])
-  const [confDist, setConfDist] = useState([])
   const [error, setError] = useState(null)
   const [selected, setSelected] = useState(new Set())
   const [applyResult, setApplyResult] = useState(null)
@@ -370,8 +233,6 @@ export default function Ontology() {
     safeFetch('/api/ontology/summary').then(r => { setSummary(r.data || []); if (r.error) setError(r.error) })
     safeFetch('/api/ontology/relationships').then(r => { setRelationships(r.data || []) })
     safeFetch('/api/ontology/metrics').then(r => { setMetrics(r.data || []) })
-    safeFetch('/api/ontology/edge-summary').then(r => { setEdgeSummary(r.data || []) })
-    safeFetch('/api/ontology/confidence-distribution').then(r => { setConfDist(r.data || []) })
   }, [])
 
   const groupedEntities = useMemo(() => {
@@ -427,9 +288,6 @@ export default function Ontology() {
 
   const tabs = [
     { key: 'graph', label: 'Relationship Graph' },
-    { key: 'charts', label: 'Health & Charts' },
-    { key: 'heatmap', label: 'Coverage Heatmap' },
-    { key: 'bindings', label: 'Binding Detail' },
     { key: 'table', label: 'Entity Table' },
   ]
 
@@ -485,39 +343,6 @@ export default function Ontology() {
               Nodes = entity types (sized by table count). Click a node to see tables linked via instance_of.
             </p>
             <EntityGraph entities={entities} relationships={relationships} allRelationships={relationships} />
-          </div>
-        )}
-
-        {tab === 'charts' && (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <div>
-              <h3 className="text-sm font-semibold text-slate-700 mb-2">Confidence Distribution</h3>
-              <p className="text-xs text-slate-500 mb-3">How entity confidence scores are distributed across bands.</p>
-              <ConfidenceChart data={confDist} />
-            </div>
-            <div>
-              <h3 className="text-sm font-semibold text-slate-700 mb-2">Edge Type Breakdown</h3>
-              <p className="text-xs text-slate-500 mb-3">Ontology-specific relationship edge counts.</p>
-              <EdgeBreakdownChart data={edgeSummary} />
-            </div>
-          </div>
-        )}
-
-        {tab === 'heatmap' && (
-          <div>
-            <p className="text-xs text-slate-500 mb-3">
-              Each cell shows the confidence of an entity type's presence on a source table. Darker green = higher confidence.
-            </p>
-            <CoverageHeatmap entities={entities} />
-          </div>
-        )}
-
-        {tab === 'bindings' && (
-          <div>
-            <p className="text-xs text-slate-500 mb-3">
-              Column-to-attribute mappings per entity type. Expand to see which columns are bound to entity attributes.
-            </p>
-            <BindingDetail entities={entities} />
           </div>
         )}
 

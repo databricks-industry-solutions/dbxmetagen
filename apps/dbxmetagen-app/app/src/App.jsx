@@ -2,17 +2,13 @@ import React, { useState, useEffect, useRef } from 'react'
 import AgentChat from './components/AgentChat'
 import BatchJobs from './components/BatchJobs'
 import MetadataReview from './components/MetadataReview'
-import Ontology from './components/Ontology'
-import Analytics from './components/Analytics'
 import Coverage from './components/Coverage'
 import SemanticLayer from './components/SemanticLayer'
 import GenieBuilder from './components/GenieBuilder'
-import ForeignKeyGeneration from './components/ForeignKeyGeneration'
 import VectorSearch from './components/VectorSearch'
 
 const COMPONENTS = {
   agent: AgentChat, coverage: Coverage, jobs: BatchJobs, metadata: MetadataReview,
-  ontology: Ontology, analytics: Analytics, fk: ForeignKeyGeneration,
   semantic: SemanticLayer, genie: GenieBuilder, vector: VectorSearch,
 }
 
@@ -32,18 +28,15 @@ const NAV_STRUCTURE = [
     description: 'Validate and correct what was built',
     defaultTab: 'metadata',
     items: [
-      { id: 'metadata', label: 'Descriptions',  desc: 'Review and correct AI-generated descriptions' },
-      { id: 'coverage', label: 'Coverage',       desc: 'Catalog health, profiling status, what\'s missing' },
-      { id: 'ontology', label: 'Ontology',       desc: 'Entity types, confidence scores, validation' },
-      { id: 'fk',       label: 'Foreign Keys',   desc: 'Review FK predictions, visualize map, apply DDL' },
+      { id: 'metadata', label: 'Review & Apply', desc: 'Review, edit, and apply AI-generated metadata' },
+      { id: 'coverage', label: 'Coverage',       desc: 'Catalog health, ontology overview, graph explorers' },
     ],
   },
   {
     category: 'Explore',
     description: 'Discover patterns and ask questions',
-    defaultTab: 'analytics',
+    defaultTab: 'agent',
     items: [
-      { id: 'analytics', label: 'Knowledge Graph', desc: 'Graph explorer, clusters, and similarity' },
       { id: 'agent',     label: 'Agent',            desc: 'Chat with the metadata agent' },
       { id: 'vector',    label: 'Search',           desc: 'Semantic search over metadata' },
     ],
@@ -99,48 +92,40 @@ const SLIDES = [
   {
     title: 'What Is a Semantic Layer?',
     body: [
-      'A semantic layer sits between raw data and the people who need it. Instead of requiring everyone to know which database table holds what, or how to join ten tables together, the semantic layer provides a shared vocabulary -- business-friendly names, descriptions, relationships, and pre-defined metrics -- so that anyone can find, trust, and use data without writing complex SQL.',
-      'Business users: find data using terms you already know. Data engineers: define once, reuse everywhere. Governance teams: one place to document, classify, and control access to every asset.',
-    ],
-  },
-  {
-    title: 'Why Does It Matter?',
-    body: [
-      'Without a semantic layer, organizations hit predictable problems: different teams calculate "revenue" differently, analysts spend hours hunting for the right table, and nobody is sure which columns contain sensitive data.',
-      'A semantic layer solves this by providing a single source of truth for definitions, relationships, and quality -- turning a data warehouse from a maze into a well-labeled library.',
+      'A shared vocabulary that sits between raw data and the people who use it -- business-friendly names, descriptions, relationships, and pre-defined metrics.',
+      'Anyone can find, trust, and use data without writing complex SQL.',
     ],
   },
   {
     title: 'The Databricks Semantic Layer',
     body: [
-      'Databricks provides the building blocks for a modern semantic layer through Unity Catalog:',
-      'Table and column comments -- descriptions that follow every asset across notebooks, SQL, and dashboards. Tags -- classify columns as PII, geographic, domain-specific, or anything else. Foreign key constraints -- declared relationships that tools and query engines can use to auto-join tables. Metric views -- reusable KPI definitions that any tool can query consistently. Genie Spaces -- natural-language SQL interfaces where business users ask questions in plain English.',
+      'Unity Catalog provides the building blocks:',
+      'Comments -- descriptions on every table and column\nTags -- classify columns (PII, domain, sensitivity)\nForeign keys -- declared relationships for auto-joins\nMetric views -- reusable KPI definitions\nGenie Spaces -- natural-language SQL for business users',
     ],
   },
   {
-    title: 'How dbxmetagen Builds Your Semantic Layer',
+    title: 'What dbxmetagen Does',
     body: [
-      'dbxmetagen uses AI to automate the most time-consuming parts of building a semantic layer. Point it at a catalog and schema, and it will:',
-      '1. Generate descriptions -- AI-written comments for every table and column, reviewed before applying.\n2. Classify data -- detect PII, PHI, geographic columns, and domain assignments.\n3. Predict foreign keys -- discover relationships using embedding similarity, rules, and AI validation.\n4. Build an ontology -- map tables and columns to business entity types with confidence scores.\n5. Define metrics -- generate Unity Catalog metric views from natural-language questions.\n6. Create Genie Spaces -- assemble everything into a Databricks Genie room for business users.',
+      'Point it at a catalog and schema. It will:',
+      '1. Generate descriptions for tables and columns\n2. Classify sensitive data (PII, PHI, domains)\n3. Predict foreign key relationships\n4. Map tables to business entity types\n5. Define metric views from questions\n6. Assemble Genie Spaces',
     ],
   },
   {
-    title: 'The Workflow: Design, Review, Explore',
+    title: 'Workflow',
     body: [
-      'Design -- Run metadata generation jobs, define metric views, and build Genie Spaces. This is where you shape the semantic layer.',
-      'Review -- Check and correct what was built: validate AI-generated descriptions, inspect catalog coverage, review ontology entity types, and approve foreign key predictions before applying them. This is where humans stay in the loop.',
-      'Explore -- Discover patterns in the knowledge graph, chat with the metadata agent, or run semantic searches. This is where everyone -- engineers, analysts, business users -- gets answers.',
+      'Design -- Generate metadata, define metrics, build Genie Spaces.',
+      'Review & Apply -- Edit and apply descriptions, tags, entity types, and foreign keys. Check coverage and ontology health.',
+      'Explore -- Chat with the metadata agent or run semantic searches.',
     ],
   },
   {
     title: 'Getting Started',
     body: [
-      '1. Go to Design > Generate Metadata and run metadata generation on your target tables.',
-      '2. Review results in Review > Descriptions -- edit any descriptions before applying.',
-      '3. Check catalog completeness in Review > Coverage and validate entity types in Review > Ontology.',
-      '4. Review predicted foreign keys in Review > Foreign Keys -- approve and apply DDL.',
-      '5. Define metric views in Design > Define Metrics and create a Genie Space in Design > Build Genie Space.',
-      '6. Explore the knowledge graph in Explore > Knowledge Graph, or ask questions via Explore > Agent.',
+      '1. Design > Generate Metadata -- run on your target tables',
+      '2. Review > Review & Apply -- edit and apply results',
+      '3. Review > Coverage -- check completeness and health',
+      '4. Design > Define Metrics / Build Genie Space',
+      '5. Explore > Agent or Search',
     ],
   },
 ]
@@ -158,23 +143,23 @@ function InfoSlides({ open, onClose }) {
   if (!open) return null
   const s = SLIDES[slide]
   return (
-    <div className="fixed inset-0 bg-black/40 z-[100] flex items-center justify-center p-4">
-      <div ref={ref} className="bg-white dark:bg-slate-800 rounded-2xl shadow-2xl max-w-lg w-full overflow-hidden">
-        <div className="flex items-center justify-between px-6 pt-5 pb-2">
+    <div className="fixed inset-0 bg-black/40 z-[100] flex items-center justify-center p-6">
+      <div ref={ref} className="bg-white dark:bg-slate-800 rounded-2xl shadow-2xl max-w-xl w-full overflow-hidden">
+        <div className="flex items-center justify-between px-8 pt-6 pb-3">
           <span className="text-xs font-medium text-stone-400 dark:text-stone-500">{slide + 1} / {SLIDES.length}</span>
           <button onClick={onClose} className="text-stone-400 hover:text-stone-600 dark:hover:text-stone-300 transition-colors">
             <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
           </button>
         </div>
-        <div className="px-6 pb-2">
+        <div className="px-8 pb-3">
           <h2 className="text-lg font-bold text-stone-800 dark:text-stone-100">{s.title}</h2>
         </div>
-        <div className="px-6 pb-6 space-y-3 max-h-[50vh] overflow-y-auto">
+        <div className="px-8 pb-8 space-y-4 max-h-[55vh] overflow-y-auto">
           {s.body.map((p, i) => (
             <p key={i} className="text-sm text-stone-600 dark:text-stone-300 leading-relaxed whitespace-pre-line">{p}</p>
           ))}
         </div>
-        <div className="flex items-center justify-between px-6 pb-5">
+        <div className="flex items-center justify-between px-8 pb-6">
           <button onClick={() => setSlide(Math.max(0, slide - 1))} disabled={slide === 0}
             className="px-3 py-1.5 text-sm font-medium rounded-lg transition-colors disabled:opacity-30 disabled:cursor-default text-stone-600 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-slate-700">
             Previous
