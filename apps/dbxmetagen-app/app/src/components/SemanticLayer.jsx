@@ -50,6 +50,13 @@ export default function SemanticLayer() {
   const [suggestLoading, setSuggestLoading] = useState(false)
   const [suggestQLoading, setSuggestQLoading] = useState(false)
 
+  // KPI Library
+  const [kpis, setKpis] = useState([])
+  const [showKpiForm, setShowKpiForm] = useState(false)
+  const [kpiDraft, setKpiDraft] = useState({ name: '', description: '', formula: '', domain: '' })
+  const [kpiEditId, setKpiEditId] = useState(null)
+  const [kpiSuggesting, setKpiSuggesting] = useState(false)
+
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
 
@@ -65,6 +72,7 @@ export default function SemanticLayer() {
     loadProjects()
     loadProfiles()
     refreshDefinitions()
+    loadKpis()
     fetch('/api/catalogs').then(r => r.json()).then(setCatalogs).catch(() => { })
   }, [])
 
@@ -236,6 +244,41 @@ export default function SemanticLayer() {
       setQuestionsText(prev => prev ? prev + '\n' + newQs : newQs)
     } catch (e) { setError(e.message) }
     setSuggestQLoading(false)
+  }
+
+  // --- KPIs ---
+  const loadKpis = async () => {
+    const { data } = await safeFetch('/api/kpis')
+    setKpis(data || [])
+  }
+  const saveKpi = async () => {
+    const body = { ...kpiDraft, target_tables: selectedTables }
+    if (kpiEditId) {
+      await fetch(`/api/kpis/${kpiEditId}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+    } else {
+      await fetch('/api/kpis', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+    }
+    setKpiDraft({ name: '', description: '', formula: '', domain: '' }); setKpiEditId(null); setShowKpiForm(false)
+    loadKpis()
+  }
+  const deleteKpi = async (id) => {
+    await fetch(`/api/kpis/${id}`, { method: 'DELETE' })
+    loadKpis()
+  }
+  const suggestKpis = async () => {
+    if (!selectedTables.length) return
+    setKpiSuggesting(true)
+    try {
+      const res = await fetch('/api/kpis/suggest', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ table_identifiers: selectedTables }) })
+      const j = await res.json()
+      for (const k of (j.kpis || [])) {
+        await fetch('/api/kpis', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...k, target_tables: selectedTables, source: 'suggested' }) })
+      }
+      loadKpis()
+    } catch (e) { setError(e.message) }
+    setKpiSuggesting(false)
   }
 
   // --- Generate ---
@@ -559,6 +602,62 @@ export default function SemanticLayer() {
             <span className="text-xs text-gray-500 dark:text-gray-400">{questionLines.length} question{questionLines.length !== 1 ? 's' : ''}</span>
           )}
         </div>
+      </section>
+
+      {/* KPI Library */}
+      <section className={section}>
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="text-lg font-semibold dark:text-gray-100">KPI Library</h2>
+          <div className="flex gap-2">
+            <button onClick={suggestKpis} disabled={kpiSuggesting || !selectedTables.length}
+              className="px-3 py-1.5 bg-teal-600 text-white rounded text-xs hover:bg-teal-700 disabled:opacity-50">
+              {kpiSuggesting ? 'Suggesting...' : 'Auto-Suggest KPIs'}
+            </button>
+            <button onClick={() => { setShowKpiForm(true); setKpiEditId(null); setKpiDraft({ name: '', description: '', formula: '', domain: '' }) }}
+              className="px-3 py-1.5 bg-dbx-blue text-white rounded text-xs hover:bg-blue-700">+ Add KPI</button>
+          </div>
+        </div>
+        <p className="text-sm text-gray-500 dark:text-gray-400 mb-3">
+          Define or auto-suggest business KPIs. These feed into metric view generation and Genie space configuration.
+        </p>
+        {showKpiForm && (
+          <div className="border border-slate-200 dark:border-slate-700 rounded-lg p-4 mb-3 space-y-2 bg-slate-50 dark:bg-slate-800/50">
+            <input value={kpiDraft.name} onChange={e => setKpiDraft(d => ({ ...d, name: e.target.value }))}
+              placeholder="KPI Name (e.g. Monthly Revenue Growth)" className="input-base w-full" />
+            <textarea value={kpiDraft.description} onChange={e => setKpiDraft(d => ({ ...d, description: e.target.value }))}
+              placeholder="Business description" rows={2} className="input-base w-full" />
+            <input value={kpiDraft.formula} onChange={e => setKpiDraft(d => ({ ...d, formula: e.target.value }))}
+              placeholder="SQL formula (e.g. SUM(orders.total_amount))" className="input-base w-full" />
+            <div className="flex gap-2">
+              <input value={kpiDraft.domain} onChange={e => setKpiDraft(d => ({ ...d, domain: e.target.value }))}
+                placeholder="Domain (e.g. sales)" className="input-base flex-1" />
+              <button onClick={saveKpi} disabled={!kpiDraft.name.trim()} className={btnPrimary}>{kpiEditId ? 'Update' : 'Save'}</button>
+              <button onClick={() => setShowKpiForm(false)} className="px-3 py-1.5 bg-slate-200 dark:bg-slate-700 rounded text-xs">Cancel</button>
+            </div>
+          </div>
+        )}
+        {kpis.length > 0 && (
+          <div className="space-y-1.5">
+            {kpis.map(k => (
+              <div key={k.kpi_id} className="flex items-start justify-between gap-3 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-sm">
+                <div className="flex-1 min-w-0">
+                  <span className="font-medium dark:text-gray-200">{k.name}</span>
+                  {k.domain && <span className="ml-2 text-xs px-1.5 py-0.5 rounded bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300">{k.domain}</span>}
+                  {k.description && <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 truncate">{k.description}</p>}
+                  {k.formula && <code className="text-xs text-gray-400 dark:text-gray-500 block mt-0.5 truncate">{k.formula}</code>}
+                </div>
+                <div className="flex gap-1 shrink-0">
+                  <button onClick={() => { setKpiEditId(k.kpi_id); setKpiDraft({ name: k.name, description: k.description || '', formula: k.formula || '', domain: k.domain || '' }); setShowKpiForm(true) }}
+                    className="text-xs text-blue-600 hover:underline">Edit</button>
+                  <button onClick={() => deleteKpi(k.kpi_id)} className="text-xs text-red-500 hover:underline">Del</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+        {kpis.length === 0 && !showKpiForm && (
+          <p className="text-xs text-gray-400 dark:text-gray-500 italic">No KPIs defined yet. Add manually or use auto-suggest.</p>
+        )}
       </section>
 
       {/* Generate */}

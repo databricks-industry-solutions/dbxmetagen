@@ -442,6 +442,7 @@ class GenieGenerateRequest(BaseModel):
     table_identifiers: list[str]
     questions: list[str] = []
     metric_view_names: list[str] = []
+    kpi_names: list[str] = []
     model_endpoint: str = "databricks-claude-3-7-sonnet"
 
 
@@ -4438,6 +4439,17 @@ def genie_generate(req: GenieGenerateRequest):
                 metric_view_names=req.metric_view_names or None,
             )
 
+            if req.kpi_names:
+                _ensure_kpi_table()
+                kpi_rows = execute_sql(f"SELECT name, description, formula, domain FROM {fq('kpi_definitions')}")
+                sel = {n.lower() for n in req.kpi_names}
+                matched = [r for r in kpi_rows if r.get("name", "").lower() in sel]
+                if matched:
+                    kpi_block = "\n\nBUSINESS KPIs (use these to inform measures, expressions, and sample questions):\n"
+                    for k in matched:
+                        kpi_block += f"- {k['name']}: {k.get('description', '')} | Formula: {k.get('formula', 'N/A')}\n"
+                    ctx["context_text"] = ctx.get("context_text", "") + kpi_block
+
             # Phase 2: agent generation
             _genie_tasks[task_id]["stage"] = "agent_running"
 
@@ -4744,6 +4756,118 @@ def delete_genie_space(space_id: str):
         timeout=30,
     )
     return {"ok": True, "space_id": space_id}
+
+
+# ---------------------------------------------------------------------------
+# KPI Library endpoints
+# ---------------------------------------------------------------------------
+
+def _ensure_kpi_table():
+    try:
+        execute_sql(f"""
+            CREATE TABLE IF NOT EXISTS {fq('kpi_definitions')} (
+                kpi_id STRING, name STRING, description STRING,
+                formula STRING, target_tables ARRAY<STRING>,
+                domain STRING, source STRING DEFAULT 'manual',
+                created_at TIMESTAMP, updated_at TIMESTAMP
+            )
+        """, timeout=30)
+    except Exception as e:
+        logger.warning("Could not create kpi_definitions table: %s", e)
+
+
+class KpiRequest(BaseModel):
+    name: str
+    description: str = ""
+    formula: str = ""
+    target_tables: list[str] = []
+    domain: str = ""
+
+
+class KpiSuggestRequest(BaseModel):
+    table_identifiers: list[str]
+    count: int = 8
+    model_endpoint: str = "databricks-claude-3-7-sonnet"
+
+
+@app.get("/api/kpis")
+def list_kpis():
+    _ensure_kpi_table()
+    return execute_sql(f"SELECT * FROM {fq('kpi_definitions')} ORDER BY updated_at DESC")
+
+
+@app.post("/api/kpis")
+def create_kpi(req: KpiRequest):
+    _ensure_kpi_table()
+    kpi_id = str(_uuid.uuid4())[:12]
+    name_esc = req.name.replace("'", "''")
+    desc_esc = req.description.replace("'", "''")
+    formula_esc = req.formula.replace("'", "''")
+    arr = ",".join("'" + t + "'" for t in req.target_tables)
+    execute_sql(
+        f"INSERT INTO {fq('kpi_definitions')} VALUES "
+        f"('{kpi_id}', '{name_esc}', '{desc_esc}', '{formula_esc}', "
+        f"ARRAY({arr}), '{req.domain}', 'manual', current_timestamp(), current_timestamp())",
+        timeout=30,
+    )
+    return {"kpi_id": kpi_id, "name": req.name}
+
+
+@app.put("/api/kpis/{kpi_id}")
+def update_kpi(kpi_id: str, req: KpiRequest):
+    _ensure_kpi_table()
+    name_esc = req.name.replace("'", "''")
+    desc_esc = req.description.replace("'", "''")
+    formula_esc = req.formula.replace("'", "''")
+    arr = ",".join("'" + t + "'" for t in req.target_tables)
+    execute_sql(
+        f"UPDATE {fq('kpi_definitions')} SET name = '{name_esc}', description = '{desc_esc}', "
+        f"formula = '{formula_esc}', target_tables = ARRAY({arr}), domain = '{req.domain}', "
+        f"updated_at = current_timestamp() WHERE kpi_id = '{kpi_id}'",
+        timeout=30,
+    )
+    return {"ok": True}
+
+
+@app.delete("/api/kpis/{kpi_id}")
+def delete_kpi(kpi_id: str):
+    _ensure_kpi_table()
+    execute_sql(f"DELETE FROM {fq('kpi_definitions')} WHERE kpi_id = '{kpi_id}'", timeout=30)
+    return {"ok": True}
+
+
+@app.post("/api/kpis/suggest")
+def suggest_kpis(req: KpiSuggestRequest):
+    wh = os.environ.get("WAREHOUSE_ID", "")
+    if not wh:
+        raise HTTPException(500, detail="WAREHOUSE_ID not configured")
+    from agent.genie_builder import GenieContextAssembler
+    from langchain_community.chat_models import ChatDatabricks
+
+    ws = get_workspace_client()
+    assembler = GenieContextAssembler(ws, wh, CATALOG, SCHEMA)
+    ctx = assembler.assemble(req.table_identifiers, questions=None)
+
+    prompt = f"""You are a business intelligence architect. Given the data model below, suggest {req.count} concrete KPIs that would bridge the semantic gap between raw data and business meaning.
+
+{ctx.get('context_text', '')}
+
+For each KPI provide:
+- name: concise business name (e.g. "Monthly Revenue Growth Rate")
+- description: 1-2 sentences explaining what it measures and why it matters
+- formula: SQL expression using fully qualified table.column references (e.g. SUM(orders.total_amount))
+- domain: business domain it belongs to (e.g. sales, finance, operations)
+
+Return ONLY a JSON array of objects with keys: name, description, formula, domain. No other text."""
+
+    llm = ChatDatabricks(endpoint=req.model_endpoint, temperature=0.5, max_tokens=4096)
+    response = llm.invoke(prompt)
+    content = response.content.strip()
+    if content.startswith("```"):
+        content = content.split("\n", 1)[1] if "\n" in content else content[3:]
+        content = content.rsplit("```", 1)[0]
+    kpis = json.loads(content)
+    return {"kpis": kpis[:req.count]}
 
 
 # ---------------------------------------------------------------------------

@@ -27,6 +27,9 @@ export default function GenieBuilder() {
   const [title, setTitle] = useState('')
   const [createdSpace, setCreatedSpace] = useState(null)
   const [trackedSpaces, setTrackedSpaces] = useState([])
+  const [kpis, setKpis] = useState([])
+  const [selectedKpis, setSelectedKpis] = useState(new Set())
+  const [showKpis, setShowKpis] = useState(false)
   const [error, setError] = useState(null)
   const [loading, setLoading] = useState(false)
   const pollRef = useRef(null)
@@ -45,6 +48,7 @@ export default function GenieBuilder() {
     })()
     fetch('/api/semantic/metric-views?status=all')
       .then(r => r.ok ? r.json() : []).then(setMetricViews).catch(() => {})
+    fetch('/api/kpis').then(r => r.ok ? r.json() : []).then(setKpis).catch(() => {})
     loadTrackedSpaces()
     return () => { if (pollRef.current) clearInterval(pollRef.current) }
   }, [])
@@ -100,7 +104,11 @@ export default function GenieBuilder() {
     const res = await fetch('/api/genie/generate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ table_identifiers: selectedTables, questions: qs, metric_view_names: [...selectedMVs] }),
+      body: JSON.stringify({
+        table_identifiers: selectedTables, questions: qs,
+        metric_view_names: [...selectedMVs],
+        kpi_names: kpis.filter(k => selectedKpis.has(k.kpi_id)).map(k => k.name),
+      }),
     })
     if (!res.ok) {
       const body = await res.json().catch(() => ({}))
@@ -267,6 +275,37 @@ export default function GenieBuilder() {
                     {mv.status === 'applied' ? 'LIVE' : mv.status?.toUpperCase()}
                   </span>
                 </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* KPIs */}
+      {kpis.length > 0 && (
+        <div className="card p-5">
+          <button onClick={() => setShowKpis(!showKpis)}
+            className="w-full flex items-center justify-between text-sm font-medium text-slate-700 dark:text-slate-300">
+            <span>KPIs ({selectedKpis.size}/{kpis.length} selected)</span>
+            <span className={`text-xs transition-transform ${showKpis ? 'rotate-90' : ''}`}>&#9654;</span>
+          </button>
+          {showKpis && (
+            <div className="mt-3 space-y-1.5 max-h-48 overflow-y-auto">
+              {kpis.map(k => (
+                <label key={k.kpi_id} className="flex items-start gap-2 text-sm cursor-pointer">
+                  <input type="checkbox" checked={selectedKpis.has(k.kpi_id)}
+                    onChange={() => {
+                      const s = new Set(selectedKpis)
+                      s.has(k.kpi_id) ? s.delete(k.kpi_id) : s.add(k.kpi_id)
+                      setSelectedKpis(s)
+                    }}
+                    className="mt-0.5 rounded" />
+                  <div className="min-w-0">
+                    <span className="font-medium dark:text-gray-200">{k.name}</span>
+                    {k.domain && <span className="ml-1.5 text-xs px-1 py-0.5 rounded bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300">{k.domain}</span>}
+                    {k.description && <p className="text-xs text-gray-500 dark:text-gray-400 truncate">{k.description}</p>}
+                  </div>
+                </label>
               ))}
             </div>
           )}

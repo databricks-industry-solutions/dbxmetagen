@@ -589,24 +589,6 @@ export default function BatchJobs() {
         </div>
       </Step>
 
-      {/* Step 5 -- DDL Sync */}
-      <Step num={5} title="DDL Sync" prereq="After review edits">
-        <p className="text-sm text-slate-500 dark:text-slate-400 mb-2">
-          Legacy / non-KB path: reads a reviewed TSV/Excel file from the volume and applies DDL directly via ALTER statements.
-        </p>
-        <p className="text-xs text-amber-600 dark:text-amber-400 mb-3">
-          For KB users, import reviewed files via the Review & Apply tab instead -- changes will be applied through the standard DDL flow.
-        </p>
-        <div className="flex items-center gap-3">
-          <input value={syncDdlFilePath} onChange={e => setSyncDdlFilePath(e.target.value)}
-            placeholder="/Volumes/catalog/schema/volume/reviewed_file.tsv"
-            className="input-base flex-1" />
-          <button onClick={() => runJob('_sync_ddl_job', { extra_params: { reviewed_file_name: syncDdlFilePath } })}
-            disabled={loading || !syncDdlFilePath.trim()}
-            className="btn-secondary btn-md">Sync Reviewed DDL</button>
-        </div>
-      </Step>
-
       {/* Active Runs */}
       {activeRuns.length > 0 && (
         <section className="card p-5">
