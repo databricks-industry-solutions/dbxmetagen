@@ -99,17 +99,33 @@ BEHAVIOR:
 # Graph construction
 # ---------------------------------------------------------------------------
 
+MAX_TOOL_ROUNDS = 8
+
 def _build_graph(tools: List[BaseTool]):
     llm = ChatDatabricks(endpoint=MODEL, temperature=0)
     llm_with_tools = llm.bind_tools(tools)
     tool_node = ToolNode(tools)
 
+    def _count_tool_rounds(messages) -> int:
+        return sum(1 for m in messages if hasattr(m, "tool_calls") and m.tool_calls)
+
     def agent_node(state: AgentState):
         intent = classify_intent(state["messages"][-1].content if hasattr(state["messages"][-1], "content") else "")
         selected = select_tools(intent)
         sys_prompt = get_system_prompt(intent, selected)
-        msgs = [SystemMessage(content=sys_prompt)] + state["messages"]
-        response = llm_with_tools.invoke(msgs)
+
+        rounds = _count_tool_rounds(state["messages"])
+        if rounds >= MAX_TOOL_ROUNDS:
+            sys_prompt += (
+                "\n\nIMPORTANT: You have already called tools many times. "
+                "Do NOT call any more tools. Synthesize your final answer "
+                "from the information you have gathered so far."
+            )
+            msgs = [SystemMessage(content=sys_prompt)] + state["messages"]
+            response = llm.invoke(msgs)
+        else:
+            msgs = [SystemMessage(content=sys_prompt)] + state["messages"]
+            response = llm_with_tools.invoke(msgs)
         return {"messages": [response]}
 
     def should_continue(state: AgentState):
@@ -176,7 +192,7 @@ async def run_metadata_agent(
 
     result = await graph.ainvoke(
         {"messages": messages},
-        config={"recursion_limit": 20},
+        config={"recursion_limit": MAX_TOOL_ROUNDS * 2 + 6},
     )
 
     final_msg = result["messages"][-1]

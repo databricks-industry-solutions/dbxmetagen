@@ -191,7 +191,7 @@ export default function GenieBuilder() {
       <ErrorBanner error={error} />
 
       {/* Table selection */}
-      <div className="bg-dbx-oat-light dark:bg-[#152E35] rounded-lg border border-slate-200 dark:border-slate-700 p-4">
+      <div className="card p-5">
         <h3 className="text-sm font-medium text-slate-700 dark:text-slate-300 mb-3">Select Tables</h3>
         {schemas.map(schema => {
           const schemaTables = tables.filter(t => t.schema === schema)
@@ -201,7 +201,7 @@ export default function GenieBuilder() {
           const isOpen = openSchemas.has(schema)
 
           return (
-            <div key={schema} className="mb-2 border border-slate-200 dark:border-slate-700 rounded-lg overflow-hidden">
+            <div key={schema} className="mb-2 card overflow-hidden">
               <button
                 onClick={() => toggleSchema(schema)}
                 className="w-full flex items-center justify-between px-3 py-2 bg-dbx-oat dark:bg-slate-700/50 hover:bg-dbx-oat dark:hover:bg-slate-700 transition-colors"
@@ -248,7 +248,7 @@ export default function GenieBuilder() {
 
       {/* Metric Views */}
       {metricViews.length > 0 && (
-        <div className="bg-dbx-oat-light dark:bg-[#152E35] rounded-lg border border-slate-200 dark:border-slate-700 p-4">
+        <div className="card p-5">
           <button onClick={() => setShowMVs(!showMVs)}
             className="w-full flex items-center justify-between text-sm font-medium text-slate-700 dark:text-slate-300">
             <span>Metric Views ({selectedMVs.size}/{metricViews.length} selected)</span>
@@ -274,7 +274,7 @@ export default function GenieBuilder() {
       )}
 
       {/* Questions */}
-      <div className="bg-dbx-oat-light dark:bg-[#152E35] rounded-lg border border-slate-200 dark:border-slate-700 p-4">
+      <div className="card p-5">
         <div className="flex items-center justify-between mb-2">
           <h3 className="text-sm font-medium text-slate-700 dark:text-slate-300">Business Questions (optional)</h3>
           <button onClick={suggestQuestions} disabled={suggestingQs || !selectedTables.length}
@@ -316,7 +316,7 @@ export default function GenieBuilder() {
       {/* Result JSON */}
       {result && (
         <div className="space-y-4">
-          <div className="bg-dbx-oat-light dark:bg-[#152E35] rounded-lg border border-slate-200 dark:border-slate-700 p-4">
+          <div className="card p-5">
             <h3 className="text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">Generated Configuration</h3>
             <textarea
               value={editedJson}
@@ -358,7 +358,7 @@ export default function GenieBuilder() {
 
       {/* Tracked Spaces */}
       {trackedSpaces.length > 0 && (
-        <div className="bg-dbx-oat-light dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 p-6 shadow-sm mt-6">
+        <div className="card p-6 mt-6">
           <h2 className="text-lg font-semibold text-slate-800 dark:text-slate-200 mb-4">My Genie Spaces</h2>
           <div className="overflow-x-auto">
             <table className="min-w-full text-sm">
@@ -368,7 +368,7 @@ export default function GenieBuilder() {
               </tr></thead>
               <tbody>
                 {trackedSpaces.map((s, i) => (
-                  <tr key={i} className="border-b border-slate-100 dark:border-slate-700 hover:bg-orange-50/30 dark:hover:bg-slate-700/50 transition-colors">
+                  <tr key={i} className="border-b border-dbx-oat-dark/20 dark:border-dbx-navy-400/10 hover:bg-dbx-teal-light/20 dark:hover:bg-dbx-navy-500/30 transition-colors">
                     <td className="px-3 py-2 font-medium text-slate-700 dark:text-slate-200">{s.title}</td>
                     <td className="px-3 py-2 font-mono text-xs text-slate-500">{s.space_id}</td>
                     <td className="px-3 py-2 text-slate-600 dark:text-slate-400">{s.version || 1}</td>

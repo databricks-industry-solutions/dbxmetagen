@@ -3,18 +3,40 @@ import { safeFetchObj, ErrorBanner } from '../App'
 
 const TERMINAL_STATES = new Set(['TERMINATED', 'SKIPPED', 'INTERNAL_ERROR'])
 
+const STEP_COLORS = {
+  1: 'border-l-dbx-lava',
+  2: 'border-l-dbx-amber',
+  3: 'border-l-dbx-teal',
+  4: 'border-l-dbx-green',
+  5: 'border-l-dbx-violet',
+}
+const STEP_NUM_COLORS = {
+  1: 'bg-dbx-lava text-white',
+  2: 'bg-dbx-amber text-white',
+  3: 'bg-dbx-teal text-white',
+  4: 'bg-dbx-green text-white',
+  5: 'bg-dbx-violet text-white',
+}
+
 function stateBadge(state, result) {
   if (!state) return null
-  let color = 'bg-dbx-oat text-gray-700'
-  if (state === 'RUNNING' || state === 'PENDING') color = 'bg-blue-100 text-blue-700'
-  if (state === 'TERMINATED' && result === 'SUCCESS') color = 'bg-green-100 text-green-700'
-  if (state === 'TERMINATED' && result === 'FAILED') color = 'bg-red-100 text-red-700'
-  if (state === 'TERMINATED' && result === 'TIMEDOUT') color = 'bg-orange-100 text-red-700'
-  if (state === 'TERMINATED' && result === 'CANCELLED') color = 'bg-gray-200 text-gray-600'
-  if (state === 'SKIPPED') color = 'bg-gray-200 text-gray-500'
-  if (state === 'INTERNAL_ERROR') color = 'bg-red-200 text-red-800'
+  let color = 'bg-dbx-oat text-slate-600 dark:bg-dbx-navy-500 dark:text-slate-300'
+  if (state === 'RUNNING' || state === 'PENDING') color = 'bg-blue-50 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300'
+  if (state === 'TERMINATED' && result === 'SUCCESS') color = 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300'
+  if (state === 'TERMINATED' && result === 'FAILED') color = 'bg-red-50 text-red-700 dark:bg-red-900/40 dark:text-red-300'
+  if (state === 'TERMINATED' && result === 'TIMEDOUT') color = 'bg-amber-50 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300'
+  if (state === 'TERMINATED' && result === 'CANCELLED') color = 'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400'
+  if (state === 'SKIPPED') color = 'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400'
+  if (state === 'INTERNAL_ERROR') color = 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300'
   const label = result ? `${state} / ${result}` : state
-  return <span className={`px-2 py-0.5 rounded text-xs font-medium ${color}`}>{label}</span>
+  return <span className={`badge ${color}`}>{label}</span>
+}
+
+function runAccentColor(run) {
+  if (!TERMINAL_STATES.has(run.state)) return 'border-l-blue-400'
+  if (run.result === 'SUCCESS') return 'border-l-emerald-400'
+  if (run.result === 'FAILED') return 'border-l-red-400'
+  return 'border-l-slate-300 dark:border-l-slate-600'
 }
 
 function TaskProgress({ tasks }) {
@@ -22,19 +44,19 @@ function TaskProgress({ tasks }) {
   const done = tasks.filter(t => TERMINAL_STATES.has(t.state)).length
   const failed = tasks.filter(t => t.result === 'FAILED').length
   return (
-    <div className="mt-2">
-      <div className="flex items-center gap-2 mb-1">
-        <span className="text-xs text-gray-500">Tasks: {done}/{tasks.length}</span>
-        {failed > 0 && <span className="text-xs text-red-600">{failed} failed</span>}
+    <div className="mt-2.5">
+      <div className="flex items-center gap-2 mb-1.5">
+        <span className="text-xs text-slate-500 dark:text-slate-400">Tasks: {done}/{tasks.length}</span>
+        {failed > 0 && <span className="text-xs text-red-600 dark:text-red-400 font-medium">{failed} failed</span>}
       </div>
-      <div className="flex gap-0.5">
+      <div className="flex gap-1">
         {tasks.map(t => {
-          let bg = 'bg-gray-200'
+          let bg = 'bg-slate-200 dark:bg-dbx-navy-500'
           if (t.state === 'RUNNING' || t.state === 'PENDING') bg = 'bg-blue-400 animate-pulse'
-          if (t.result === 'SUCCESS') bg = 'bg-green-500'
+          if (t.result === 'SUCCESS') bg = 'bg-emerald-500'
           if (t.result === 'FAILED') bg = 'bg-red-500'
-          if (t.result === 'EXCLUDED') bg = 'bg-gray-300'
-          return <div key={t.task_key} className={`h-2 flex-1 rounded-sm ${bg}`} title={`${t.task_key}: ${t.state}${t.result ? ' / ' + t.result : ''}`} />
+          if (t.result === 'EXCLUDED') bg = 'bg-slate-300 dark:bg-dbx-navy-400'
+          return <div key={t.task_key} className={`h-2.5 flex-1 rounded-full ${bg}`} title={`${t.task_key}: ${t.state}${t.result ? ' / ' + t.result : ''}`} />
         })}
       </div>
     </div>
@@ -45,10 +67,10 @@ function RunEntry({ run }) {
   const [expanded, setExpanded] = useState(false)
   const hasTasks = run.tasks && run.tasks.length > 0
   return (
-    <div className="py-3 border-b last:border-b-0">
+    <div className={`py-3 px-4 border-l-4 ${runAccentColor(run)} border-b border-dbx-oat-dark/30 dark:border-dbx-navy-400/20 last:border-b-0`}>
       <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2 min-w-0">
-          <span className="text-sm font-medium truncate">{run.job_name || 'Unknown Job'}</span>
+        <div className="flex items-center gap-2.5 min-w-0">
+          <span className="text-sm font-medium truncate text-slate-800 dark:text-slate-200">{run.job_name || 'Unknown Job'}</span>
           {stateBadge(run.state, run.result)}
           {!TERMINAL_STATES.has(run.state) && (
             <span className="inline-block w-2 h-2 bg-blue-500 rounded-full animate-pulse" title="Polling..." />
@@ -57,27 +79,27 @@ function RunEntry({ run }) {
         <div className="flex items-center gap-3 shrink-0">
           {run.run_page_url && (
             <a href={run.run_page_url} target="_blank" rel="noopener noreferrer"
-              className="text-xs text-blue-600 hover:underline">View in Databricks</a>
+              className="text-xs text-dbx-teal hover:text-dbx-teal/80 font-medium">View in Databricks</a>
           )}
           {hasTasks && (
-            <button onClick={() => setExpanded(e => !e)} className="text-xs text-gray-500 hover:text-gray-700">
+            <button onClick={() => setExpanded(e => !e)} className="text-xs text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 font-medium">
               {expanded ? 'Hide tasks' : `${run.tasks.length} tasks`}
             </button>
           )}
-          <span className="text-xs text-gray-400">#{run.run_id}</span>
+          <span className="text-xs text-slate-400 font-mono">#{run.run_id}</span>
         </div>
       </div>
       {run.state_message && run.result === 'FAILED' && (
-        <div className="mt-1 text-xs text-red-600 bg-red-50 rounded px-2 py-1 break-words">
+        <div className="mt-2 text-xs text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 rounded-lg px-3 py-2 break-words">
           {run.state_message}
         </div>
       )}
       {hasTasks && !expanded && <TaskProgress tasks={run.tasks} />}
       {hasTasks && expanded && (
-        <div className="mt-2 space-y-1">
+        <div className="mt-2.5 space-y-1 animate-slide-up">
           {run.tasks.map(t => (
-            <div key={t.task_key} className="flex items-center justify-between text-xs px-2 py-1 bg-dbx-oat rounded">
-              <span className="font-mono">{t.task_key}</span>
+            <div key={t.task_key} className="flex items-center justify-between text-xs px-3 py-1.5 bg-dbx-oat-light dark:bg-dbx-navy-500/50 rounded-lg">
+              <span className="font-mono text-slate-600 dark:text-slate-300">{t.task_key}</span>
               {stateBadge(t.state, t.result)}
             </div>
           ))}
@@ -90,22 +112,22 @@ function RunEntry({ run }) {
 function HealthWarnings({ health }) {
   if (!health || health.errors.length === 0) return null
   return (
-    <div className="bg-amber-50 border border-amber-200 rounded-lg px-4 py-3 text-sm space-y-1">
-      <span className="font-medium text-amber-800">Diagnostics:</span>
+    <div className="card border-l-4 border-l-amber-400 px-4 py-3 text-sm space-y-1">
+      <span className="font-semibold text-amber-700 dark:text-amber-400">Diagnostics:</span>
       {health.errors.map((e, i) => (
-        <p key={i} className="text-amber-700">{e}</p>
+        <p key={i} className="text-amber-600 dark:text-amber-300">{e}</p>
       ))}
     </div>
   )
 }
 
-function Step({ num, color, title, prereq, children }) {
+function Step({ num, title, prereq, children }) {
   return (
-    <section className="bg-dbx-oat-light rounded-lg border overflow-hidden">
-      <div className={`flex items-center gap-3 px-6 py-3 border-b ${color}`}>
-        <span className="flex items-center justify-center w-7 h-7 rounded-full bg-dbx-oat-light/90 text-sm font-bold">{num}</span>
-        <h2 className="text-white font-semibold">{title}</h2>
-        {prereq && <span className="ml-auto text-xs text-white/70">{prereq}</span>}
+    <section className={`card border-l-4 ${STEP_COLORS[num] || 'border-l-dbx-navy'} overflow-hidden`}>
+      <div className="flex items-center gap-3 px-6 py-4 border-b border-dbx-oat-dark/30 dark:border-dbx-navy-400/20">
+        <span className={`flex items-center justify-center w-7 h-7 rounded-lg text-xs font-bold ${STEP_NUM_COLORS[num] || 'bg-dbx-navy text-white'}`}>{num}</span>
+        <h2 className="text-base font-semibold text-slate-800 dark:text-slate-100">{title}</h2>
+        {prereq && <span className="ml-auto text-xs text-slate-400 dark:text-slate-500">{prereq}</span>}
       </div>
       <div className="p-6">{children}</div>
     </section>
@@ -131,7 +153,6 @@ export default function BatchJobs() {
   const [health, setHealth] = useState(null)
   const pollRef = useRef(null)
 
-  // Processing settings
   const [settings, setSettings] = useState({
     model: 'databricks-claude-sonnet-4-5',
     temperature: 0.1,
@@ -167,7 +188,6 @@ export default function BatchJobs() {
     return p
   }
 
-  // Load jobs, config, bundles, health check on mount
   useEffect(() => {
     setError(null)
     fetch('/api/jobs').then(r => {
@@ -195,17 +215,14 @@ export default function BatchJobs() {
         setApplyDdl(cfg.apply_ddl ?? false)
       }
     })
-    fetch('/api/ontology/bundles').then(r => r.ok ? r.json() : []).then(setBundles).catch(() => { })
-    fetch('/api/domain-configs').then(r => r.ok ? r.json() : []).then(setDomainConfigs).catch(() => { })
-    fetch('/api/jobs/health').then(r => r.ok ? r.json() : null).then(setHealth).catch(() => { })
-
-    // Load recent run history
+    fetch('/api/ontology/bundles').then(r => r.ok ? r.json() : []).then(setBundles).catch(() => {})
+    fetch('/api/domain-configs').then(r => r.ok ? r.json() : []).then(setDomainConfigs).catch(() => {})
+    fetch('/api/jobs/health').then(r => r.ok ? r.json() : null).then(setHealth).catch(() => {})
     fetch('/api/jobs/runs').then(r => r.ok ? r.json() : []).then(runs => {
       setRunHistory(runs.map(r => ({ ...r, _polling: false })))
-    }).catch(() => { })
+    }).catch(() => {})
   }, [])
 
-  // Table picker cascades
   useEffect(() => {
     fetch('/api/catalogs').then(r => r.json()).then(list => {
       setPickerCatalogs(list)
@@ -238,7 +255,6 @@ export default function BatchJobs() {
     setPickerSelected(prev => prev.includes(t) ? prev.filter(x => x !== t) : [...prev, t])
   }
 
-  // Auto-poll active runs
   const pollActiveRuns = useCallback(async () => {
     const active = runHistory.filter(r => !TERMINAL_STATES.has(r.state))
     if (active.length === 0) return
@@ -284,11 +300,8 @@ export default function BatchJobs() {
       const newRun = {
         ...data,
         job_name: match?.name || jobNameSuffix,
-        state: 'PENDING',
-        result: null,
-        tasks: [],
-        run_page_url: null,
-        state_message: null,
+        state: 'PENDING', result: null, tasks: [],
+        run_page_url: null, state_message: null,
       }
       setRunHistory(prev => [newRun, ...prev])
     } catch (e) { setError(e.message) }
@@ -304,29 +317,31 @@ export default function BatchJobs() {
       <HealthWarnings health={health} />
 
       {/* Shared config */}
-      <div className="bg-dbx-oat-light rounded-lg border p-4">
+      <div className="card p-5">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div>
-            <label className="block text-xs font-medium text-gray-500 mb-1">Catalog</label>
+            <label className="section-title mb-1.5 block">Catalog</label>
             <input value={catalogName} onChange={e => setCatalogName(e.target.value)}
-              placeholder="e.g. eswanson" className="w-full border rounded-md p-2 text-sm" />
+              placeholder="e.g. eswanson" className="input-base" />
           </div>
           <div>
-            <label className="block text-xs font-medium text-gray-500 mb-1">Schema</label>
+            <label className="section-title mb-1.5 block">Schema</label>
             <input value={schemaName} onChange={e => setSchemaName(e.target.value)}
-              placeholder="e.g. metadata_results" className="w-full border rounded-md p-2 text-sm" />
+              placeholder="e.g. metadata_results" className="input-base" />
           </div>
         </div>
 
-        <details className="mt-3">
-          <summary className="text-xs font-medium text-gray-500 cursor-pointer hover:text-gray-700 select-none">
+        <details className="mt-4 group">
+          <summary className="section-title cursor-pointer select-none flex items-center gap-1.5 py-2 border-t border-dbx-oat-dark/30 dark:border-dbx-navy-400/20 mt-3 pt-3">
+            <svg className="w-3 h-3 transition-transform group-open:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+            </svg>
             Advanced Options
           </summary>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-3">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-3 animate-slide-up">
             <div>
-              <label className="block text-xs font-medium text-gray-500 mb-1">Ontology Bundle</label>
-              <select value={ontologyBundle} onChange={e => setOntologyBundle(e.target.value)}
-                className="w-full border rounded-md p-2 text-sm">
+              <label className="section-title mb-1.5 block">Ontology Bundle</label>
+              <select value={ontologyBundle} onChange={e => setOntologyBundle(e.target.value)} className="select-base">
                 {bundles.length > 0 ? bundles.map(b => (
                   <option key={b.key} value={b.key}>{b.name} ({b.entity_count} entities)</option>
                 )) : (
@@ -335,64 +350,58 @@ export default function BatchJobs() {
               </select>
             </div>
             <div>
-              <label className="block text-xs font-medium text-gray-500 mb-1">Domain Config</label>
-              <select value={domainConfig} onChange={e => setDomainConfig(e.target.value)}
-                className="w-full border rounded-md p-2 text-sm">
+              <label className="section-title mb-1.5 block">Domain Config</label>
+              <select value={domainConfig} onChange={e => setDomainConfig(e.target.value)} className="select-base">
                 <option value="">(Use bundle domains)</option>
                 {domainConfigs.map(d => (
-                  <option key={d.key} value={d.key}>
-                    {d.name} ({d.domain_count} domains)
-                  </option>
+                  <option key={d.key} value={d.key}>{d.name} ({d.domain_count} domains)</option>
                 ))}
               </select>
             </div>
             <div>
-              <label className="block text-xs font-medium text-gray-500 mb-1">Ontology UC Tag Key</label>
+              <label className="section-title mb-1.5 block">Ontology UC Tag Key</label>
               <input value={entityTagKey} onChange={e => setEntityTagKey(e.target.value)}
-                placeholder="entity_type" title="Unity Catalog tag key used for entity type classifications (e.g. entity_type)"
-                className="w-full border rounded-md p-2 text-sm" />
+                placeholder="entity_type" title="Unity Catalog tag key used for entity type classifications"
+                className="input-base" />
             </div>
           </div>
 
-          <div className="mt-4 pt-3 border-t">
-            <span className="text-xs font-semibold text-gray-600 uppercase tracking-wide">Processing Settings</span>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-2">
+          <div className="mt-4 pt-3 border-t border-dbx-oat-dark/30 dark:border-dbx-navy-400/20">
+            <span className="section-title">Processing Settings</span>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-3">
               <div>
-                <label className="block text-xs text-gray-500 mb-0.5">Model Endpoint</label>
-                <input value={settings.model} onChange={e => setSetting('model', e.target.value)}
-                  className="w-full border rounded p-1.5 text-xs" />
+                <label className="text-xs text-slate-500 dark:text-slate-400 mb-1 block">Model Endpoint</label>
+                <input value={settings.model} onChange={e => setSetting('model', e.target.value)} className="input-base !text-xs" />
               </div>
               <div>
-                <label className="block text-xs text-gray-500 mb-0.5">Temperature</label>
+                <label className="text-xs text-slate-500 dark:text-slate-400 mb-1 block">Temperature</label>
                 <input type="number" step="0.05" min="0" max="2" value={settings.temperature}
-                  onChange={e => setSetting('temperature', parseFloat(e.target.value) || 0)}
-                  className="w-full border rounded p-1.5 text-xs" />
+                  onChange={e => setSetting('temperature', parseFloat(e.target.value) || 0)} className="input-base !text-xs" />
               </div>
               <div>
-                <label className="block text-xs text-gray-500 mb-0.5">Sample Size</label>
+                <label className="text-xs text-slate-500 dark:text-slate-400 mb-1 block">Sample Size</label>
                 <input type="number" min="0" max="100" value={settings.sample_size}
-                  onChange={e => setSetting('sample_size', parseInt(e.target.value) || 0)}
-                  className="w-full border rounded p-1.5 text-xs" />
+                  onChange={e => setSetting('sample_size', parseInt(e.target.value) || 0)} className="input-base !text-xs" />
               </div>
-              <div className="flex flex-col gap-1 pt-1">
-                <label className="flex items-center gap-1.5 text-xs">
+              <div className="flex flex-col gap-2 pt-1">
+                <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer">
                   <input type="checkbox" checked={settings.add_metadata} onChange={e => setSetting('add_metadata', e.target.checked)} />
                   Include metadata
                 </label>
-                <label className="flex items-center gap-1.5 text-xs">
+                <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer">
                   <input type="checkbox" checked={settings.use_kb_comments} onChange={e => setSetting('use_kb_comments', e.target.checked)} />
                   Use KB comments
                 </label>
               </div>
-              <label className="flex items-center gap-1.5 text-xs">
+              <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer">
                 <input type="checkbox" checked={settings.include_lineage} onChange={e => setSetting('include_lineage', e.target.checked)} />
                 Include lineage
               </label>
-              <label className="flex items-center gap-1.5 text-xs">
+              <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer">
                 <input type="checkbox" checked={settings.include_deterministic_pi} onChange={e => setSetting('include_deterministic_pi', e.target.checked)} />
                 Deterministic PI (Presidio)
               </label>
-              <label className="flex items-center gap-1.5 text-xs">
+              <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer">
                 <input type="checkbox" checked={settings.tag_none_fields} onChange={e => setSetting('tag_none_fields', e.target.checked)} />
                 Tag "None" fields
               </label>
@@ -402,278 +411,219 @@ export default function BatchJobs() {
       </div>
 
       {/* Step 1 -- Generate */}
-      <Step num={1} color="bg-dbx-navy" title="Generate Metadata" prereq="Entry point">
-        <p className="text-sm text-gray-500 mb-4">
-          <strong>Single Mode</strong> runs one pass (comment, PI, or domain).
-          <strong> All 3 Modes</strong> runs comments first, then PI + domain in parallel.
-          Results go to <code className="text-xs bg-dbx-oat px-1 rounded">metadata_generation_log</code> for review.
+      <Step num={1} title="Generate Metadata" prereq="Entry point">
+        <p className="text-sm text-slate-500 dark:text-slate-400 mb-4">
+          <strong className="text-slate-700 dark:text-slate-200">Single Mode</strong> runs one pass (comment, PI, or domain).
+          <strong className="text-slate-700 dark:text-slate-200"> All 3 Modes</strong> runs comments first, then PI + domain in parallel.
+          Results go to <code className="bg-dbx-oat dark:bg-dbx-navy-500 px-1.5 py-0.5 rounded text-xs font-mono">metadata_generation_log</code> for review.
         </p>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Table Names</label>
+            <label className="text-sm font-medium text-slate-700 dark:text-slate-200 mb-1.5 block">Table Names</label>
             <textarea value={tableNames} onChange={e => setTableNames(e.target.value)}
               placeholder="catalog.schema.table1, catalog.schema.*"
-              className="w-full border rounded-md p-2 text-sm h-20" />
+              className="textarea-base h-20" />
             <button onClick={() => setPickerOpen(o => !o)}
-              className="mt-1 text-xs text-blue-600 hover:text-blue-800 flex items-center gap-1">
-              <span>{pickerOpen ? '\u25BC' : '\u25B6'}</span> Browse Tables
+              className="btn-ghost btn-sm mt-1.5 !px-0 text-dbx-teal">
+              <svg className={`w-3 h-3 transition-transform ${pickerOpen ? 'rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+              </svg>
+              Browse Tables
             </button>
             {pickerOpen && (
-              <div className="mt-2 border rounded-lg p-3 bg-dbx-oat space-y-2">
+              <div className="mt-2 card p-3 space-y-2 animate-slide-up">
                 <div className="grid grid-cols-3 gap-2">
-                  <select value={pickerCatalog} onChange={e => setPickerCatalog(e.target.value)}
-                    className="border rounded p-1.5 text-sm">
+                  <select value={pickerCatalog} onChange={e => setPickerCatalog(e.target.value)} className="select-base !text-xs !py-1.5">
                     <option value="">Catalog...</option>
                     {pickerCatalogs.map(c => <option key={c} value={c}>{c}</option>)}
                   </select>
-                  <select value={pickerSchema} onChange={e => setPickerSchema(e.target.value)}
-                    className="border rounded p-1.5 text-sm" disabled={!pickerCatalog}>
+                  <select value={pickerSchema} onChange={e => setPickerSchema(e.target.value)} className="select-base !text-xs !py-1.5" disabled={!pickerCatalog}>
                     <option value="">Schema...</option>
                     {pickerSchemas.map(s => <option key={s} value={s}>{s}</option>)}
                   </select>
                   <input value={pickerFilter} onChange={e => setPickerFilter(e.target.value)}
-                    placeholder="Filter..." className="border rounded p-1.5 text-sm" />
+                    placeholder="Filter..." className="input-base !text-xs !py-1.5" />
                 </div>
                 {pickerTables.length > 0 && (
                   <>
-                    <div className="max-h-40 overflow-y-auto border rounded bg-dbx-oat-light p-2 grid grid-cols-2 gap-x-4 gap-y-0.5">
+                    <div className="max-h-40 overflow-y-auto scrollbar-thin border border-dbx-oat-dark/30 dark:border-dbx-navy-400/20 rounded-lg bg-dbx-oat-light dark:bg-dbx-navy/50 p-2 grid grid-cols-2 gap-x-4 gap-y-1">
                       {pickerTables
                         .filter(t => !pickerFilter || t.toLowerCase().includes(pickerFilter.toLowerCase()))
                         .map(t => (
-                          <label key={t} className="flex items-center gap-1.5 text-xs cursor-pointer hover:bg-dbx-oat px-1 py-0.5 rounded">
+                          <label key={t} className="flex items-center gap-2 text-xs cursor-pointer hover:bg-white dark:hover:bg-dbx-navy-500 px-2 py-1 rounded-lg transition-colors">
                             <input type="checkbox" checked={pickerSelected.includes(t)}
-                              onChange={() => togglePickerTable(t)} className="rounded" />
-                            {t}
+                              onChange={() => togglePickerTable(t)} />
+                            <span className="text-slate-600 dark:text-slate-300">{t}</span>
                           </label>
                         ))}
                     </div>
                     <div className="flex items-center justify-between">
-                      <div className="flex gap-2">
+                      <div className="flex gap-3">
                         <button onClick={() => {
                           const visible = pickerTables.filter(t => !pickerFilter || t.toLowerCase().includes(pickerFilter.toLowerCase()))
                           setPickerSelected(visible)
-                        }} className="text-xs text-blue-600 hover:underline">Select All</button>
+                        }} className="text-xs text-dbx-teal hover:text-dbx-teal/80 font-medium">Select All</button>
                         <button onClick={() => setPickerSelected([])}
-                          className="text-xs text-gray-500 hover:underline">Clear</button>
+                          className="text-xs text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 font-medium">Clear</button>
                       </div>
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs text-gray-500">{pickerSelected.length} selected</span>
+                      <div className="flex items-center gap-2.5">
+                        <span className="text-xs text-slate-500">{pickerSelected.length} selected</span>
                         <button onClick={addSelectedTables} disabled={pickerSelected.length === 0}
-                          className="px-3 py-1 text-xs bg-slate-700 text-white rounded hover:bg-slate-800 disabled:opacity-40">
-                          Add Selected
-                        </button>
+                          className="btn-secondary btn-sm">Add Selected</button>
                       </div>
                     </div>
                   </>
                 )}
                 {pickerCatalog && pickerSchema && pickerTables.length === 0 && (
-                  <p className="text-xs text-gray-400 italic">No tables found</p>
+                  <p className="text-xs text-slate-400 italic py-2">No tables found</p>
                 )}
               </div>
             )}
           </div>
           <div className="space-y-3">
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Mode</label>
-              <select value={mode} onChange={e => setMode(e.target.value)} className="w-full border rounded-md p-2 text-sm">
+              <label className="text-sm font-medium text-slate-700 dark:text-slate-200 mb-1.5 block">Mode</label>
+              <select value={mode} onChange={e => setMode(e.target.value)} className="select-base">
                 <option value="comment">Comment</option>
                 <option value="pi">PI Classification</option>
                 <option value="domain">Domain Classification</option>
               </select>
             </div>
-            <label className="flex items-center gap-2 text-sm">
+            <label className="flex items-center gap-2.5 text-sm text-slate-600 dark:text-slate-300 cursor-pointer">
               <input type="checkbox" checked={applyDdl} onChange={e => setApplyDdl(e.target.checked)} />
               Apply DDL directly
             </label>
           </div>
         </div>
-        <div className="flex flex-wrap gap-3 mt-4">
+        <div className="flex flex-wrap gap-3 mt-5">
           <button onClick={() => runJob('_metadata_job', { table_names: tableNames, mode, apply_ddl: applyDdl, ontology_bundle: ontologyBundle, ...(domainConfig ? { domain_config: domainConfig } : {}), extra_params: buildExtraParams() })}
-            disabled={loading || !tableNames.trim()}
-            title="Run a single metadata generation pass (comment, PI, or domain) for the specified tables"
-            className="px-4 py-2 bg-slate-700 text-white rounded-md text-sm hover:bg-slate-800 disabled:opacity-50">
-            {loading ? 'Starting...' : 'Run Single Mode'}
-          </button>
+            disabled={loading || !tableNames.trim()} title="Run a single metadata generation pass"
+            className="btn-secondary btn-md">{loading ? 'Starting...' : 'Run Single Mode'}</button>
           <button onClick={() => runJob('_parallel_modes_job', { table_names: tableNames, apply_ddl: applyDdl, ontology_bundle: ontologyBundle, ...(domainConfig ? { domain_config: domainConfig } : {}), extra_params: buildExtraParams() })}
-            disabled={loading || !tableNames.trim()}
-            title="Run all three modes (comment, PI, domain) in parallel for faster coverage"
-            className="px-4 py-2 bg-dbx-lava text-white rounded-md text-sm hover:bg-red-700 disabled:opacity-50">
-            All 3 Modes (Parallel)
-          </button>
+            disabled={loading || !tableNames.trim()} title="Run all three modes in parallel"
+            className="btn-primary btn-md">All 3 Modes (Parallel)</button>
           <button onClick={() => runJob('_kb_enriched_modes_job', { table_names: tableNames, apply_ddl: applyDdl, ontology_bundle: ontologyBundle, ...(domainConfig ? { domain_config: domainConfig } : {}), extra_params: buildExtraParams() })}
-            disabled={loading || !tableNames.trim()}
-            title="Comments -> KB build -> PI + Domain with KB-generated descriptions enriching prompts"
-            className="px-4 py-2 bg-indigo-600 text-white rounded-md text-sm hover:bg-indigo-700 disabled:opacity-50">
-            KB-Enriched Modes
-          </button>
+            disabled={loading || !tableNames.trim()} title="Comments -> KB build -> PI + Domain with KB enrichment"
+            className="btn-md bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50 transition-all">KB-Enriched Modes</button>
         </div>
-        <p className="text-xs text-gray-400 mt-2">
-          <strong>KB-Enriched Modes</strong>: Generates comments, builds the knowledge base, then runs PI + domain classification enriched with KB-generated descriptions.
+        <p className="text-xs text-slate-400 mt-2">
+          <strong className="text-slate-500">KB-Enriched Modes</strong>: Generates comments, builds the knowledge base, then runs PI + domain classification enriched with KB-generated descriptions.
         </p>
       </Step>
 
       {/* Step 2 -- Analyze */}
-      <Step num={2} color="bg-dbx-navy/90" title="Analyze" prereq="Requires: metadata generation log">
-        <p className="text-sm text-gray-500 mb-4">
-          The <strong>Full Pipeline</strong> runs everything end-to-end: knowledge bases, graph, embeddings, profiling, ontology, clustering, FK prediction, and final analysis.
-          Or run <strong>individual steps</strong> to re-run specific stages.
+      <Step num={2} title="Analyze" prereq="Requires: metadata generation log">
+        <p className="text-sm text-slate-500 dark:text-slate-400 mb-4">
+          The <strong className="text-slate-700 dark:text-slate-200">Full Pipeline</strong> runs everything end-to-end: knowledge bases, graph, embeddings, profiling, ontology, clustering, FK prediction, and final analysis.
+          Or run <strong className="text-slate-700 dark:text-slate-200">individual steps</strong> to re-run specific stages.
         </p>
         <div className="flex gap-3 mb-4">
           <button onClick={() => runJob('_full_analytics_pipeline', { catalog_name: catalogName, schema_name: schemaName, ontology_bundle: ontologyBundle, ...(domainConfig ? { domain_config: domainConfig } : {}) })}
-            disabled={loading}
-            title="Run the complete end-to-end pipeline: KB, graph, embeddings, profiling, ontology, clustering, FK prediction, analysis, and vector index"
-            className="px-4 py-2 bg-dbx-lava text-white rounded-md text-sm hover:bg-red-700 disabled:opacity-50">
-            Full Analytics Pipeline
-          </button>
+            disabled={loading} title="Run the complete end-to-end pipeline"
+            className="btn-primary btn-md">Full Analytics Pipeline</button>
         </div>
-        <details className="border rounded-lg">
-          <summary className="px-4 py-2 text-sm font-medium text-gray-600 cursor-pointer hover:bg-dbx-oat">
+        <details className="card overflow-hidden group">
+          <summary className="px-4 py-3 text-sm font-medium text-slate-600 dark:text-slate-300 cursor-pointer hover:bg-dbx-oat-light dark:hover:bg-dbx-navy-500/50 flex items-center gap-1.5 transition-colors">
+            <svg className="w-3 h-3 transition-transform group-open:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+            </svg>
             Individual steps
           </summary>
-          <div className="px-4 py-3 space-y-3 border-t bg-dbx-oat/50">
+          <div className="px-5 py-4 space-y-4 border-t border-dbx-oat-dark/30 dark:border-dbx-navy-400/20 bg-dbx-oat-light/50 dark:bg-dbx-navy/30">
             <div>
-              <h4 className="text-sm font-medium text-gray-700 mb-1">Ontology Prediction</h4>
-              <p className="text-xs text-gray-500 mb-2">
-                Isolates entity discovery + validation. Re-classify with a different bundle without re-running embeddings or profiling.
-              </p>
+              <h4 className="text-sm font-medium text-slate-700 dark:text-slate-200 mb-1">Ontology Prediction</h4>
+              <p className="text-xs text-slate-500 dark:text-slate-400 mb-2">Isolates entity discovery + validation. Re-classify with a different bundle without re-running embeddings or profiling.</p>
               <button onClick={() => runJob('_ontology_prediction', { catalog_name: catalogName, schema_name: schemaName, ontology_bundle: ontologyBundle })}
-                disabled={loading}
-                title="Classify tables into ontology entities using the selected bundle"
-                className="px-3 py-1.5 bg-slate-700 text-white rounded text-sm hover:bg-slate-800 disabled:opacity-50">
-                Run Ontology
-              </button>
+                disabled={loading} className="btn-secondary btn-sm">Run Ontology</button>
             </div>
             <div>
-              <h4 className="text-sm font-medium text-gray-700 mb-1">Foreign Key Prediction</h4>
-              <p className="text-xs text-gray-500 mb-2">
-                Requires embeddings + similarity edges. Uses column similarity, rule scoring, and LLM judgment.
-              </p>
+              <h4 className="text-sm font-medium text-slate-700 dark:text-slate-200 mb-1">Foreign Key Prediction</h4>
+              <p className="text-xs text-slate-500 dark:text-slate-400 mb-2">Requires embeddings + similarity edges. Uses column similarity, rule scoring, and LLM judgment.</p>
               <div className="flex gap-2">
                 <button onClick={() => runJob('fk_prediction', { catalog_name: catalogName, schema_name: schemaName })}
-                  disabled={loading}
-                  title="Discover FK relationships using column similarity, rule scoring, and LLM judgment"
-                  className="px-3 py-1.5 bg-slate-700 text-white rounded text-sm hover:bg-slate-800 disabled:opacity-50">
-                  Predict FKs
-                </button>
+                  disabled={loading} className="btn-secondary btn-sm">Predict FKs</button>
                 <button onClick={() => runJob('fk_prediction', { catalog_name: catalogName, schema_name: schemaName, apply_ddl: 'true' })}
-                  disabled={loading}
-                  title="Predict FKs and immediately apply them as ALTER TABLE constraints"
-                  className="px-3 py-1.5 bg-dbx-lava text-white rounded text-sm hover:bg-red-700 disabled:opacity-50">
-                  Predict + Apply
-                </button>
+                  disabled={loading} className="btn-primary btn-sm">Predict + Apply</button>
               </div>
             </div>
             <div>
-              <h4 className="text-sm font-medium text-gray-700 mb-1">Profiling</h4>
-              <p className="text-xs text-gray-500 mb-2">
-                Statistical profiling, data quality scores, and graph quality update.
-              </p>
+              <h4 className="text-sm font-medium text-slate-700 dark:text-slate-200 mb-1">Profiling</h4>
+              <p className="text-xs text-slate-500 dark:text-slate-400 mb-2">Statistical profiling, data quality scores, and graph quality update.</p>
               <button onClick={() => runJob('_profiling_job', { catalog_name: catalogName, schema_name: schemaName })}
-                disabled={loading}
-                title="Run statistical profiling, data quality scores, and graph quality updates"
-                className="px-3 py-1.5 bg-slate-700 text-white rounded text-sm hover:bg-slate-800 disabled:opacity-50">
-                Run Profiling
-              </button>
+                disabled={loading} className="btn-secondary btn-sm">Run Profiling</button>
             </div>
             <div>
-              <h4 className="text-sm font-medium text-gray-700 mb-1">Knowledge Base + Graph</h4>
-              <p className="text-xs text-gray-500 mb-2">
-                Build table/column knowledge bases and the knowledge graph with GraphFrames.
-              </p>
+              <h4 className="text-sm font-medium text-slate-700 dark:text-slate-200 mb-1">Knowledge Base + Graph</h4>
+              <p className="text-xs text-slate-500 dark:text-slate-400 mb-2">Build table/column knowledge bases and the knowledge graph with GraphFrames.</p>
               <button onClick={() => runJob('_knowledge_base_job', { catalog_name: catalogName, schema_name: schemaName })}
-                disabled={loading}
-                title="Build table/column knowledge bases and the knowledge graph with GraphFrames"
-                className="px-3 py-1.5 bg-slate-700 text-white rounded text-sm hover:bg-slate-800 disabled:opacity-50">
-                Build KB + Graph
-              </button>
+                disabled={loading} className="btn-secondary btn-sm">Build KB + Graph</button>
             </div>
           </div>
         </details>
       </Step>
 
       {/* Step 3 -- Enrich */}
-      <Step num={3} color="bg-dbx-navy/80" title="Enrich" prereq="Requires: knowledge base + analytics">
-        <p className="text-sm text-gray-500 mb-4">
-          Generate metric views from business questions (add them in the <strong>Semantic Layer</strong> tab first),
+      <Step num={3} title="Enrich" prereq="Requires: knowledge base + analytics">
+        <p className="text-sm text-slate-500 dark:text-slate-400 mb-4">
+          Generate metric views from business questions (add them in the <strong className="text-slate-700 dark:text-slate-200">Semantic Layer</strong> tab first),
           then apply as Unity Catalog metric views.
         </p>
         <button onClick={() => runJob('_semantic_layer', { catalog_name: catalogName, schema_name: schemaName })}
-          disabled={loading}
-          title="Generate metric views and Genie spaces from business questions defined in the Semantic Layer tab"
-          className="px-4 py-2 bg-dbx-lava text-white rounded-md text-sm hover:bg-red-700 disabled:opacity-50">
-          Generate Semantic Layer
-        </button>
+          disabled={loading} className="btn-primary btn-md">Generate Semantic Layer</button>
       </Step>
 
       {/* Step 4 -- Index + Sync */}
-      <Step num={4} color="bg-dbx-navy/70" title="Index + Sync" prereq="Requires: completed analytics pipeline">
-        <p className="text-sm text-gray-500 mb-4">
-          Rebuild the Knowledge Graph, Vector Index, and sync to Lakebase in one operation,
-          or run each step individually.
+      <Step num={4} title="Index + Sync" prereq="Requires: completed analytics pipeline">
+        <p className="text-sm text-slate-500 dark:text-slate-400 mb-4">
+          Rebuild the Knowledge Graph, Vector Index, and sync to Lakebase in one operation, or run each step individually.
         </p>
         <div className="flex flex-wrap gap-3">
           <button onClick={async () => {
             await runJob('_build_vector_index', { catalog_name: catalogName, schema_name: schemaName })
             await runJob('sync_graph_lakebase', { catalog_name: catalogName, schema_name: schemaName })
-          }}
-            disabled={loading}
-            title="Rebuild Knowledge Graph + VS documents + sync to Lakebase"
-            className="px-4 py-2 bg-dbx-lava text-white rounded-md text-sm hover:bg-red-700 disabled:opacity-50">
-            Rebuild KG + VS + Sync
-          </button>
+          }} disabled={loading} className="btn-primary btn-md">Rebuild KG + VS + Sync</button>
           <button onClick={() => runJob('_build_vector_index', { catalog_name: catalogName, schema_name: schemaName })}
-            disabled={loading}
-            title="Build metadata_documents table and Delta Sync vector index"
-            className="px-3 py-1.5 bg-slate-700 text-white rounded text-sm hover:bg-slate-800 disabled:opacity-50">
-            Build Vector Index
-          </button>
+            disabled={loading} className="btn-secondary btn-sm">Build Vector Index</button>
           <button onClick={() => runJob('sync_graph_lakebase', { catalog_name: catalogName, schema_name: schemaName })}
-            disabled={loading}
-            title="Push the knowledge graph to Lakebase PostgreSQL"
-            className="px-3 py-1.5 bg-slate-700 text-white rounded text-sm hover:bg-slate-800 disabled:opacity-50">
-            Sync to Lakebase
-          </button>
+            disabled={loading} className="btn-secondary btn-sm">Sync to Lakebase</button>
         </div>
       </Step>
 
       {/* Step 5 -- DDL Sync */}
-      <Step num={5} color="bg-dbx-navy/60" title="DDL Sync" prereq="After review edits">
-        <p className="text-sm text-gray-500 mb-2">
+      <Step num={5} title="DDL Sync" prereq="After review edits">
+        <p className="text-sm text-slate-500 dark:text-slate-400 mb-2">
           Legacy / non-KB path: reads a reviewed TSV/Excel file from the volume and applies DDL directly via ALTER statements.
         </p>
-        <p className="text-xs text-amber-600 mb-3">
+        <p className="text-xs text-amber-600 dark:text-amber-400 mb-3">
           For KB users, import reviewed files via the Review & Apply tab instead -- changes will be applied through the standard DDL flow.
         </p>
         <div className="flex items-center gap-3">
           <input value={syncDdlFilePath} onChange={e => setSyncDdlFilePath(e.target.value)}
             placeholder="/Volumes/catalog/schema/volume/reviewed_file.tsv"
-            className="flex-1 border border-slate-300 rounded px-3 py-1.5 text-sm" />
+            className="input-base flex-1" />
           <button onClick={() => runJob('_sync_ddl_job', { extra_params: { reviewed_file_name: syncDdlFilePath } })}
             disabled={loading || !syncDdlFilePath.trim()}
-            title="Re-apply reviewed metadata edits (comments, tags) as ALTER statements to Unity Catalog"
-            className="px-4 py-2 bg-slate-700 text-white rounded-md text-sm hover:bg-slate-800 disabled:opacity-50">
-            Sync Reviewed DDL
-          </button>
+            className="btn-secondary btn-md">Sync Reviewed DDL</button>
         </div>
       </Step>
 
       {/* Active Runs */}
       {activeRuns.length > 0 && (
-        <section className="bg-dbx-oat-light rounded-lg border p-6">
-          <div className="flex items-center gap-2 mb-3">
-            <h2 className="text-lg font-semibold">Active Runs</h2>
+        <section className="card p-5">
+          <div className="flex items-center gap-2.5 mb-4">
+            <h2 className="text-base font-semibold text-slate-800 dark:text-slate-100">Active Runs</h2>
             <span className="inline-block w-2 h-2 bg-blue-500 rounded-full animate-pulse" />
-            <span className="text-xs text-gray-400">Auto-refreshing every 5s</span>
+            <span className="text-xs text-slate-400">Auto-refreshing every 5s</span>
           </div>
           {activeRuns.map(r => <RunEntry key={r.run_id} run={r} />)}
         </section>
       )}
 
       {/* Run History */}
-      <section className="bg-dbx-oat-light rounded-lg border p-6">
-        <h2 className="text-lg font-semibold mb-3">Run History</h2>
+      <section className="card p-5">
+        <h2 className="text-base font-semibold text-slate-800 dark:text-slate-100 mb-4">Run History</h2>
         {completedRuns.length === 0 ? (
-          <p className="text-sm text-gray-500">No completed runs yet.</p>
+          <p className="text-sm text-slate-500 dark:text-slate-400">No completed runs yet.</p>
         ) : (() => {
           const PAGE_SIZE = 10
           const MAX_RUNS = 50
@@ -684,16 +634,12 @@ export default function BatchJobs() {
           return <>
             {pageRuns.map(r => <RunEntry key={r.run_id} run={r} />)}
             {totalPages > 1 && (
-              <div className="flex items-center justify-between mt-3 pt-3 border-t">
+              <div className="flex items-center justify-between mt-4 pt-4 border-t border-dbx-oat-dark/30 dark:border-dbx-navy-400/20">
                 <button onClick={() => setHistoryPage(p => Math.max(0, p - 1))} disabled={page === 0}
-                  className="px-3 py-1 text-sm rounded border hover:bg-dbx-oat disabled:opacity-40 disabled:cursor-not-allowed">
-                  Previous
-                </button>
-                <span className="text-sm text-gray-500">Page {page + 1} of {totalPages}</span>
+                  className="btn-ghost btn-sm disabled:opacity-30">Previous</button>
+                <span className="text-sm text-slate-500 dark:text-slate-400">Page {page + 1} of {totalPages}</span>
                 <button onClick={() => setHistoryPage(p => Math.min(totalPages - 1, p + 1))} disabled={page >= totalPages - 1}
-                  className="px-3 py-1 text-sm rounded border hover:bg-dbx-oat disabled:opacity-40 disabled:cursor-not-allowed">
-                  Next
-                </button>
+                  className="btn-ghost btn-sm disabled:opacity-30">Next</button>
               </div>
             )}
           </>
@@ -701,15 +647,18 @@ export default function BatchJobs() {
       </section>
 
       {/* Available Jobs */}
-      <details className="bg-dbx-oat-light rounded-lg border">
-        <summary className="px-6 py-3 text-sm font-semibold cursor-pointer hover:bg-dbx-oat">
+      <details className="card overflow-hidden group">
+        <summary className="px-5 py-3 text-sm font-semibold text-slate-700 dark:text-slate-200 cursor-pointer hover:bg-dbx-oat-light dark:hover:bg-dbx-navy-500/50 flex items-center gap-1.5 transition-colors">
+          <svg className="w-3 h-3 transition-transform group-open:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+          </svg>
           Available Jobs ({jobs.length})
         </summary>
-        <div className="px-6 pb-4 divide-y">
+        <div className="px-5 pb-4 divide-y divide-dbx-oat-dark/30 dark:divide-dbx-navy-400/20">
           {jobs.map(j => (
-            <div key={j.job_id} className="py-2 flex justify-between items-center text-sm">
-              <span>{j.name}</span>
-              <span className="text-gray-400">#{j.job_id}</span>
+            <div key={j.job_id} className="py-2.5 flex justify-between items-center text-sm">
+              <span className="text-slate-700 dark:text-slate-300">{j.name}</span>
+              <span className="text-slate-400 font-mono text-xs">#{j.job_id}</span>
             </div>
           ))}
         </div>

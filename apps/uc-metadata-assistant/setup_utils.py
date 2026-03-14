@@ -8,6 +8,7 @@ Eliminates the need for manual configuration by users.
 
 import logging
 import json
+import os
 from typing import Dict, List, Optional
 from datetime import datetime
 
@@ -22,7 +23,7 @@ class AutoSetupManager:
     def __init__(self, unity_service):
         self.unity_service = unity_service
         self.default_config = {
-            'output_catalog': 'uc_metadata_assistant',
+            'output_catalog': os.environ.get('UC_ASSISTANT_CATALOG', 'uc_metadata_assistant'),
             'output_schema': 'generated_metadata',
             'quality_schema': 'quality_metrics',
             'cache_schema': 'cache',
@@ -60,7 +61,7 @@ class AutoSetupManager:
         # Only attempt quick check if infrastructure was previously validated (avoids error on first run)
         if quick_check and not force_refresh and self._setup_cache is not None:
             try:
-                results_table = f"{setup_config['output_catalog']}.{setup_config['schema_name']}.{setup_config['results_table']}"
+                results_table = f"{setup_config['output_catalog']}.{setup_config['output_schema']}.{setup_config['results_table']}"
                 quick_sql = f"SELECT COUNT(*) FROM {results_table} LIMIT 1"
                 result = await self._execute_sql(quick_sql)
                 

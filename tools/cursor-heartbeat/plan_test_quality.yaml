@@ -1,0 +1,86 @@
+# Heartbeat Plan: Test Suite Hardening
+# Targets tests/*.py -- improve coverage, edge cases, and mock fidelity.
+
+schedule:
+  interval_minutes: 30
+  max_runs_per_day: 12
+  active_hours: "08:00-22:00"
+
+project:
+  path: "/Users/eli.swanson/Projects/solutions_accelerators/industry_solutions_dbxmetagen/dbxmetagen"
+  branch_prefix: "heartbeat/test"
+  base_branch: "apps"
+  test_command: "python -m pytest tests/ -x -q --timeout=30"
+
+scope:
+  include_patterns:
+    - "tests/*.py"
+    - "tests/conftest.py"
+  exclude_patterns:
+    - "tests/test_app_logic.py"
+    - "**/__pycache__/**"
+  max_files_changed: 3
+  max_lines_changed: 120
+
+goals:
+  system_prompt: |
+    You are a senior test engineer specializing in:
+    - pytest patterns (fixtures, parametrize, markers, conftest layering)
+    - Mock best practices (spec=True, autospec, side_effect vs return_value)
+    - Testing LLM-integrated code (deterministic assertions on stochastic outputs)
+    - PySpark testing without a live cluster (mocked SparkSession patterns)
+    - Edge case identification for data-intensive pipelines
+
+    You are reviewing the test suite of dbxmetagen, which tests an AI-powered
+    metadata generation toolkit. The suite mocks PySpark and Databricks dependencies
+    heavily via conftest.py. Tests cover: metadata generation, knowledge base ETL,
+    graph construction, embeddings, similarity, ontology, profiling, data quality,
+    domain classification, PI classification, config parsing, and concurrent tasks.
+
+  task_prompt: |
+    Review the dbxmetagen test suite and identify ONE improvement to test quality.
+
+    Constraints:
+    - Limit changes to {max_files} files and ~{max_lines} lines.
+    - Do NOT add integration tests that require a live Spark cluster or Databricks workspace.
+    - Do NOT change conftest.py fixtures in ways that break other test files.
+    - New tests must pass with the existing mock infrastructure.
+
+    High-value improvement areas:
+    1. Mock fidelity -- conftest.py mocks SparkSession, createDataFrame, etc. Find mocks
+       that don't match real Spark behavior (wrong return types, missing attributes)
+    2. Shared assertion helpers -- test_knowledge_base, test_column_knowledge_base, and
+       test_schema_knowledge_base have similar patterns; extract reusable helpers
+    3. Edge cases -- add tests for: empty tables, binary/variant-only columns, unicode
+       column names, very long column names (>255 chars), tables with 0 rows
+    4. Negative tests -- what happens when LLM returns malformed JSON? When spark.sql()
+       raises AnalysisException? When UC permissions are denied?
+    5. test_concurrent_tasks.py -- verify thread safety, race conditions on shared state
+    6. Parametrize opportunities -- find tests with duplicated setup that differ only
+       in input data; convert to @pytest.mark.parametrize
+
+    For your chosen improvement:
+    - Explain WHY it matters (1-2 sentences)
+    - Provide the exact file changes
+    - Ensure the new/modified tests actually pass with the mocked dependencies
+
+  avoid:
+    - Cosmetic-only changes (renaming, reordering)
+    - Removing existing passing tests
+    - Adding dependencies (no pytest plugins)
+    - Integration tests that need a live cluster
+    - Changing conftest.py base_config_kwargs defaults (breaks other tests)
+
+# Skills: domain knowledge injected into the system prompt for test-quality context.
+skills:
+  - databricks-python-sdk        # SDK patterns the tests should be validating
+  - databricks-unity-catalog     # UC concepts that tests exercise (tables, volumes, tags)
+  - databricks-mlflow-evaluation # Evaluation patterns relevant to testing LLM outputs
+
+# MCP tools: test plan benefits from checking real schemas to verify mock accuracy.
+mcp_tools:
+  - get_table_schema     # Compare mock schemas against real UC table schemas
+  - list_tables          # Verify test fixtures reference real table structures
+
+journal:
+  path: "tools/cursor-heartbeat/heartbeat_journal_tests.jsonl"

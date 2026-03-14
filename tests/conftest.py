@@ -11,8 +11,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 # Stub heavy Databricks/Spark deps before any dbxmetagen imports trigger them
 for _mod_name in [
     "pyspark", "pyspark.sql", "pyspark.sql.functions", "pyspark.sql.types",
-    "pyspark.sql.window", "pyspark.sql.column",
-    "pandas",
+    "pyspark.sql.window", "pyspark.sql.column", "pyspark.sql.utils",
     "databricks_langchain",
 ]:
     if _mod_name not in sys.modules:

@@ -1,6 +1,15 @@
 # Unity Catalog Metadata Assistant
 
-A production-ready Databricks app for AI-powered metadata generation, PII detection, and governance analytics. Fully self-contained with zero external dependencies.
+A self-contained Databricks app for AI-powered metadata generation, PII detection, and governance analytics. This is a standalone companion to the main **dbxmetagen** application -- it does not use the `dbxmetagen` library and has no shared code with it.
+
+For enterprise use cases including CI/CD, domain classification, ontology prediction, knowledge graphs, and semantic layer support, use the primary [dbxmetagen app](../dbxmetagen-app/).
+
+## Configuration
+
+Before deploying, you **must** set the following values:
+
+1. **`app.yaml`**: Replace `<YOUR_WAREHOUSE_ID>` and `<YOUR_WORKSPACE>` with your workspace-specific values.
+2. **`UC_ASSISTANT_CATALOG` env var** (optional): Override the default catalog name (`uc_metadata_assistant`). If not set, the app creates and uses a catalog named `uc_metadata_assistant`.
 
 ## Required Permissions
 

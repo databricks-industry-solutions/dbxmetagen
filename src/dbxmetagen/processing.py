@@ -995,6 +995,12 @@ def claim_table(table_name: str, config: MetadataConfig, max_retries: int = 3) -
     After the UPDATE, verifies that this task owns the claim.
     Includes retry logic for handling concurrent modification exceptions.
     
+    Claim conditions (any of these allows claiming):
+    1. Table is unclaimed (_claimed_by IS NULL)
+    2. Self-reclaim: same task_id already owns the claim
+    3. Timeout: claim is older than claim_timeout_minutes
+    4. Override: cleanup_control_table=true ignores all existing claims
+    
     Args:
         table_name (str): The fully qualified table name to claim.
         config (MetadataConfig): Configuration object with task_id for claim ownership.
@@ -1012,6 +1018,8 @@ def claim_table(table_name: str, config: MetadataConfig, max_retries: int = 3) -
         f"{config.catalog_name}.{config.schema_name}.{formatted_control_table}"
     )
     task_id = config.task_id
+    timeout_minutes = getattr(config, 'claim_timeout_minutes', 60)
+    cleanup_mode = getattr(config, 'cleanup_control_table', False)
     
     if not task_id:
         # No task_id means not running in concurrent mode, allow processing
@@ -1019,18 +1027,25 @@ def claim_table(table_name: str, config: MetadataConfig, max_retries: int = 3) -
     
     mode = config.mode or "comment"
     
-    # Attempt to claim: UPDATE only if status allows reprocessing and not currently claimed
-    # Uses (table_name, _mode) as composite key so different modes can run in parallel
+    if cleanup_mode:
+        where_clause = f"WHERE table_name = '{table_name}' AND (_mode = '{mode}' OR _mode IS NULL)"
+    else:
+        where_clause = f"""WHERE table_name = '{table_name}'
+      AND (_mode = '{mode}' OR _mode IS NULL)
+      AND (
+        _claimed_by IS NULL
+        OR _claimed_by = '{task_id}'
+        OR _claimed_at < current_timestamp() - INTERVAL {timeout_minutes} MINUTES
+      )
+      AND (_status IS NULL OR _status IN ('queued', 'failed', 'completed'))"""
+
     claim_query = f"""
     UPDATE {control_table}
     SET _claimed_by = '{task_id}',
         _claimed_at = current_timestamp(),
         _updated_at = current_timestamp(),
         _status = 'in_progress'
-    WHERE table_name = '{table_name}'
-      AND (_mode = '{mode}' OR _mode IS NULL)
-      AND _claimed_by IS NULL
-      AND (_status IS NULL OR _status IN ('queued', 'failed', 'completed'))
+    {where_clause}
     """
     
     verify_query = f"""
@@ -3132,7 +3147,9 @@ def upsert_table_names_to_control_table(
     table_names_df = trim_whitespace_from_df(table_names_df)
     
     # Create a unique temp view name to avoid conflicts between concurrent tasks
-    temp_view_name = f"new_table_names_{config.task_id or 'default'}".replace("-", "_")
+    # Sanitize task_id for use as view name (remove @, ., - and other special chars)
+    sanitized_task_id = re.sub(r'[^a-zA-Z0-9_]', '_', config.task_id or 'default')
+    temp_view_name = f"new_table_names_{sanitized_task_id}"
     table_names_df.createOrReplaceTempView(temp_view_name)
     
     # Escape string values for SQL

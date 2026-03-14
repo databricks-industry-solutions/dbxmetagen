@@ -82,6 +82,9 @@ def get_task_id(dbutils_instance=None):
     
     Returns a unique identifier for this task execution, used for table claiming
     in concurrent processing scenarios.
+    
+    For job tasks: returns taskRunId (unique per task execution)
+    For interactive runs: returns current_user (allows self-reclaim of abandoned tables)
     """
     try:
         if dbutils_instance:

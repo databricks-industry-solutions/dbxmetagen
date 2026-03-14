@@ -45,7 +45,7 @@ class TestColumnKnowledgeBaseBuilder:
     
     @pytest.fixture
     def mock_spark(self):
-        return MagicMock(spec=SparkSession)
+        return MagicMock()
     
     @pytest.fixture
     def config(self):

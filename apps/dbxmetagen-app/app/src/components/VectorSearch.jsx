@@ -19,8 +19,8 @@ const DOC_TYPE_COLORS = {
 }
 
 function DocTypeBadge({ type }) {
-  const color = DOC_TYPE_COLORS[type] || 'bg-dbx-oat text-gray-600'
-  return <span className={`px-2 py-0.5 rounded text-xs font-medium ${color}`}>{type}</span>
+  const color = DOC_TYPE_COLORS[type] || 'bg-dbx-oat text-slate-600 dark:bg-dbx-navy-500 dark:text-slate-300'
+  return <span className={`badge ${color}`}>{type}</span>
 }
 
 function classifyState(state) {
@@ -94,18 +94,13 @@ export default function VectorSearch() {
       <ErrorBanner error={error} />
 
       {/* Index Status */}
-      <div className="bg-dbx-oat-light rounded-lg border p-5">
+      <div className="card p-5">
         <div className="flex items-center justify-between mb-3">
-          <h2 className="text-lg font-semibold">Index Status</h2>
+          <h2 className="text-base font-semibold text-slate-800 dark:text-slate-100">Index Status</h2>
           <div className="flex gap-2">
             <button onClick={doSync} disabled={syncing || endpointMissing || endpointError}
-              className="px-3 py-1.5 bg-slate-700 text-white rounded text-sm hover:bg-slate-800 disabled:opacity-50">
-              {syncing ? 'Syncing...' : 'Sync Now'}
-            </button>
-            <button onClick={loadStatus}
-              className="px-3 py-1.5 bg-dbx-oat text-gray-600 rounded text-sm hover:bg-dbx-oat-dark">
-              Refresh
-            </button>
+              className="btn-secondary btn-sm">{syncing ? 'Syncing...' : 'Sync Now'}</button>
+            <button onClick={loadStatus} className="btn-ghost btn-sm">Refresh</button>
           </div>
         </div>
 
@@ -167,17 +162,17 @@ export default function VectorSearch() {
       </div>
 
       {/* Search Form */}
-      <div className="bg-dbx-oat-light rounded-lg border p-5">
-        <h2 className="text-lg font-semibold mb-3">Similarity Search</h2>
+      <div className="card p-5">
+        <h2 className="text-base font-semibold text-slate-800 dark:text-slate-100 mb-3">Similarity Search</h2>
         <div className="grid grid-cols-1 md:grid-cols-4 gap-3 mb-3">
           <div className="md:col-span-2">
             <input value={query} onChange={e => setQuery(e.target.value)} onKeyDown={handleKey}
               placeholder="Search metadata (e.g. 'patient encounter tables')"
-              className="w-full border rounded-md px-3 py-2 text-sm" />
+              className="input-base" />
           </div>
           <div>
             <select value={docType} onChange={e => setDocType(e.target.value)}
-              className="w-full border rounded-md px-3 py-2 text-sm">
+              className="select-base">
               {DOC_TYPES.map(dt => <option key={dt.value} value={dt.value}>{dt.label}</option>)}
             </select>
           </div>
@@ -189,9 +184,7 @@ export default function VectorSearch() {
         </div>
         <div className="flex items-center gap-3">
           <button onClick={doSearch} disabled={searching || !query.trim() || endpointMissing || endpointError}
-            className="px-4 py-2 bg-dbx-navy text-white rounded-md text-sm hover:bg-dbx-navy/90 disabled:opacity-50">
-            {searching ? 'Searching...' : 'Search'}
-          </button>
+            className="btn-secondary btn-md">{searching ? 'Searching...' : 'Search'}</button>
           <label className="flex items-center gap-2 text-sm text-gray-600">
             <input type="checkbox" checked={queryType === 'HYBRID'}
               onChange={e => setQueryType(e.target.checked ? 'HYBRID' : 'ANN')} />
@@ -202,14 +195,14 @@ export default function VectorSearch() {
 
       {/* Results */}
       {results && (
-        <div className="bg-dbx-oat-light rounded-lg border p-5 overflow-hidden">
-          <h2 className="text-lg font-semibold mb-3">
+        <div className="card p-5 overflow-hidden">
+          <h2 className="text-base font-semibold text-slate-800 dark:text-slate-100 mb-3">
             Results <span className="text-sm font-normal text-gray-500">({results.count} matches, {results.query_type})</span>
           </h2>
           {results.matches && results.matches.length > 0 ? (
             <div className="space-y-3">
               {results.matches.map((m, i) => (
-                <div key={i} className="border rounded-lg p-3 hover:bg-dbx-oat transition-colors overflow-hidden">
+                <div key={i} className="card-interactive p-4 overflow-hidden">
                   <div className="flex items-center gap-2 mb-1.5 min-w-0">
                     <DocTypeBadge type={m.doc_type} />
                     <span className="font-mono text-xs text-gray-600 truncate min-w-0 flex-1">{m.doc_id}</span>

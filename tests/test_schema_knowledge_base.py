@@ -35,7 +35,7 @@ class TestSchemaSummarizer:
     
     @pytest.fixture
     def mock_spark(self):
-        return MagicMock(spec=SparkSession)
+        return MagicMock()
     
     def test_summarize_schema_with_no_tables(self, mock_spark):
         summarizer = SchemaSummarizer(mock_spark, "test-model")
@@ -52,7 +52,7 @@ class TestSchemaKnowledgeBaseBuilder:
     
     @pytest.fixture
     def mock_spark(self):
-        return MagicMock(spec=SparkSession)
+        return MagicMock()
     
     @pytest.fixture
     def config(self):

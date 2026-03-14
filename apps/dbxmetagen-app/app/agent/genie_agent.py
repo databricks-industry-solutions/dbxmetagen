@@ -18,13 +18,14 @@ from langgraph.prebuilt import create_react_agent
 logger = logging.getLogger(__name__)
 
 _SYSTEM_PROMPT_TEMPLATE = """You are a Genie Space configuration expert. Your job is to generate a
-comprehensive `serialized_space` JSON for the Databricks Genie API based on the
-metadata context below.
+comprehensive, production-quality `serialized_space` JSON for the Databricks Genie API
+based on the metadata context below. A great Genie space is one that business users
+can immediately query in natural language and get correct, insightful answers.
 
 === METADATA CONTEXT ===
 {context_text}
 
-=== PRE-BUILT SECTIONS (use as starting point) ===
+=== PRE-BUILT SECTIONS (use as starting point, enrich and expand) ===
 data_sources: {data_sources}
 join_specs: {join_specs}
 sql_snippets (measures/filters/expressions from metric views): {sql_snippets}
@@ -46,8 +47,8 @@ Produce a JSON object with this simplified schema (post-processing will add IDs 
     "join_specs": [ {{ "left": {{ "identifier": "catalog.schema.table1" }}, "right": {{ "identifier": "catalog.schema.table2" }}, "sql": ["table1.col = table2.col"] }}, ... ],
     "sql_snippets": {{
       "filters": [ {{ "display_name": "...", "sql": ["..."] }}, ... ],
-      "expressions": [ {{ "alias": "...", "display_name": "...", "sql": ["..."] }}, ... ],
-      "measures": [ {{ "alias": "...", "display_name": "...", "sql": ["..."] }}, ... ]
+      "expressions": [ {{ "alias": "...", "display_name": "...", "sql": ["..."], "synonyms": ["..."] }}, ... ],
+      "measures": [ {{ "alias": "...", "display_name": "...", "sql": ["..."], "synonyms": ["..."], "description": "..." }}, ... ]
     }}
   }},
   "sample_questions": [ "...", ... ]
@@ -56,8 +57,8 @@ Produce a JSON object with this simplified schema (post-processing will add IDs 
 RULES:
 1. Use the test_sql tool to validate every SQL expression BEFORE including it.
 2. Use sample_values to get real values for filter suggestions.
-3. Table references in SQL must be fully qualified (catalog.schema.table). Column references in sql_snippets (measures, filters, expressions) MUST use table.column format (e.g. `fact_ed_wait_times.wait_minutes`), never bare column names.
-4. Generate at least 5 example_sql pairs, 3 filters, 3 measures.
+3. Use describe_columns to understand column semantics when metadata is sparse.
+4. Table references in SQL must be fully qualified (catalog.schema.table). Column references in sql_snippets (measures, filters, expressions) MUST use table.column format (e.g. `fact_ed_wait_times.wait_minutes`), never bare column names.
 5. Return the final JSON as your LAST message, wrapped in ```json ``` fences.
 6. Do NOT add id fields -- post-processing handles that automatically.
 7. METRIC VIEW ROUTING: metric_views listed in data_sources are APPLIED Unity Catalog objects -- Genie queries them natively via MEASURE(). sql_snippets contain measures decomposed from UNAPPLIED (validated-only) definitions plus filter suggestions. NEVER duplicate the same measure in both data_sources.metric_views and sql_snippets.measures.
@@ -69,6 +70,14 @@ RULES:
    - EXTRACT(HOUR FROM col) -- use EXTRACT, not DATE_PART
    - DATEDIFF(end, start) returns days only (2 args). For other units use TIMESTAMPDIFF.
    NEVER use plural units (MONTHS, HOURS) or quoted units in TIMESTAMPADD/TIMESTAMPDIFF.
+
+QUALITY REQUIREMENTS (critical):
+10. SYNONYMS: Every measure and expression MUST have a "synonyms" array with 1-4 business-friendly alternative names. Think about how non-technical users would ask for this metric. E.g. "total_revenue" -> ["revenue", "sales", "total sales"]. Pre-built synonyms are provided -- keep them and add more if useful.
+11. DESCRIPTIONS: Every measure MUST have a "description" explaining what it calculates and when to use it.
+12. COMPLEXITY: Generate at least 8 example_sql pairs covering: simple aggregation, multi-table join, time-series trend, top-N ranking, filtered aggregation, ratio/rate, comparison, and at least one window function. Generate at least 5 measures, 5 filters, and 3 expressions.
+13. DISAMBIGUATION: In the text instructions, explicitly disambiguate columns that appear in multiple tables (e.g. "created_date in orders vs created_date in accounts"). Also explain which table to use for common questions.
+14. FILTERS: Generate time-based filters (last 30 days, YTD, current month) for every date column, plus categorical filters for low-cardinality string columns. Each filter should have a clear display_name.
+15. SAMPLE QUESTIONS: Generate 8-12 sample questions spanning different complexity levels and covering all major tables.
 """
 
 
@@ -125,7 +134,43 @@ def _make_tools(ws: WorkspaceClient, warehouse_id: str):
         except Exception as e:
             return f"ERROR: {e}"
 
-    return [test_sql, sample_values]
+    @tool
+    def describe_columns(table: str) -> str:
+        """Get column names, types, and comments for a table. Useful when metadata
+        context is sparse and you need to understand what columns are available."""
+        q = f"DESCRIBE TABLE {table}"
+        try:
+            r = ws.statement_execution.execute_statement(
+                warehouse_id=warehouse_id,
+                statement=q,
+                wait_timeout="20s",
+                format=Format.JSON_ARRAY,
+                disposition=Disposition.INLINE,
+            )
+            state = r.status.state.value if r.status and r.status.state else "UNKNOWN"
+            if state not in ("SUCCEEDED", "CLOSED"):
+                err = r.status.error.message if r.status and r.status.error else "Unknown"
+                return f"ERROR: {err}"
+            if r.result and r.result.data_array:
+                cols = [c.name for c in r.manifest.schema.columns]
+                rows = [dict(zip(cols, row)) for row in r.result.data_array]
+                lines = []
+                for row in rows:
+                    name = row.get("col_name", "")
+                    if not name or name.startswith("#"):
+                        continue
+                    dtype = row.get("data_type", "")
+                    comment = row.get("comment", "")
+                    line = f"  {name} ({dtype})"
+                    if comment:
+                        line += f" -- {comment}"
+                    lines.append(line)
+                return "\n".join(lines) if lines else "No columns found"
+            return "No columns found"
+        except Exception as e:
+            return f"ERROR: {e}"
+
+    return [test_sql, sample_values, describe_columns]
 
 
 def run_genie_agent(
@@ -190,8 +235,56 @@ def run_genie_agent(
         )
         raise ValueError("Agent did not produce valid serialized_space JSON")
 
-    progress_queue.put({"stage": "done", "result": serialized})
+    serialized = _backfill_synonyms(serialized)
+    warnings = _validate_output(serialized)
+    if warnings:
+        logger.warning("Genie output quality warnings: %s", "; ".join(warnings))
+
+    progress_queue.put({"stage": "done", "result": serialized, "warnings": warnings})
     return serialized
+
+
+def _backfill_synonyms(raw: dict) -> dict:
+    """Ensure every measure and expression has synonyms; generate them if missing."""
+    from .genie_builder import _generate_synonyms
+
+    snippets = raw.get("instructions", {}).get("sql_snippets", {})
+    if not snippets:
+        snippets = raw.get("sql_snippets", {})
+    if not snippets:
+        return raw
+    for category in ("measures", "expressions"):
+        for item in snippets.get(category, []):
+            if not item.get("synonyms"):
+                alias = item.get("alias") or item.get("name") or ""
+                desc = item.get("description", "")
+                item["synonyms"] = _generate_synonyms(alias, comment=desc) or None
+    return raw
+
+
+def _validate_output(raw: dict) -> list[str]:
+    """Return a list of warnings about missing or thin sections."""
+    warnings = []
+    ds = raw.get("data_sources", {})
+    if not ds.get("tables"):
+        warnings.append("No tables in data_sources")
+    inst = raw.get("instructions", {})
+    examples = inst.get("example_sql") or inst.get("example_question_sqls") or []
+    if len(examples) < 5:
+        warnings.append(f"Only {len(examples)} example_sql pairs (target: 8+)")
+    snip = inst.get("sql_snippets") or raw.get("sql_snippets") or {}
+    if len(snip.get("measures", [])) < 3:
+        warnings.append(f"Only {len(snip.get('measures', []))} measures (target: 5+)")
+    if len(snip.get("filters", [])) < 3:
+        warnings.append(f"Only {len(snip.get('filters', []))} filters (target: 5+)")
+    if len(snip.get("expressions", [])) < 3:
+        warnings.append(f"Only {len(snip.get('expressions', []))} expressions (target: 3+)")
+    sqs = raw.get("sample_questions", [])
+    if len(sqs) < 8:
+        warnings.append(f"Only {len(sqs)} sample questions (target: 8+)")
+    if not inst.get("text") and not inst.get("text_instructions"):
+        warnings.append("Missing text instructions")
+    return warnings
 
 
 def _extract_json(text: str) -> Optional[dict]:

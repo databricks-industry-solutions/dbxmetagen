@@ -415,9 +415,9 @@ export default function SemanticLayer() {
 
   const isGenerating = taskStatus && taskStatus.status === 'running'
   const questionLines = questionsText.split('\n').filter(l => l.trim())
-  const section = "bg-dbx-oat-light dark:bg-gray-800 rounded-lg border dark:border-gray-700 p-6"
+  const section = "card p-6"
   const label = "block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1"
-  const input = "w-full border dark:border-gray-600 rounded-md p-2 text-sm bg-dbx-oat-light dark:bg-gray-700 dark:text-gray-100"
+  const input = "input-base"
   const btnPrimary = "px-4 py-2 bg-dbx-lava text-white rounded-md text-sm hover:bg-red-700 disabled:opacity-50"
 
   return (
@@ -439,7 +439,7 @@ export default function SemanticLayer() {
           ) : (
             <div className="flex items-center gap-2">
               <input value={newProjectName} onChange={e => setNewProjectName(e.target.value)}
-                placeholder="Project name" className="border dark:border-gray-600 rounded px-2 py-1 text-sm bg-dbx-oat-light dark:bg-gray-700 dark:text-gray-100 w-48"
+                placeholder="Project name" className="input-base w-48"
                 onKeyDown={e => e.key === 'Enter' && createNewProject()} />
               <button onClick={createNewProject} disabled={loading || !newProjectName.trim()}
                 className="px-3 py-1 bg-dbx-lava text-white rounded text-sm hover:bg-red-700 disabled:opacity-50">Create</button>
@@ -632,10 +632,10 @@ export default function SemanticLayer() {
           <div className="flex items-center gap-3 mb-4 p-3 bg-dbx-oat dark:bg-gray-900 rounded-md border dark:border-gray-700">
             <span className="text-xs font-medium text-gray-600 dark:text-gray-400 whitespace-nowrap">Create target:</span>
             <input value={createTarget.catalog} onChange={e => setCreateTarget(prev => ({ ...prev, catalog: e.target.value }))}
-              placeholder="catalog" className="border dark:border-gray-600 rounded px-2 py-1 text-xs bg-dbx-oat-light dark:bg-gray-700 dark:text-gray-100 w-40" />
+              placeholder="catalog" className="input-base !text-xs w-40" />
             <span className="text-gray-400">.</span>
             <input value={createTarget.schema} onChange={e => setCreateTarget(prev => ({ ...prev, schema: e.target.value }))}
-              placeholder="schema" className="border dark:border-gray-600 rounded px-2 py-1 text-xs bg-dbx-oat-light dark:bg-gray-700 dark:text-gray-100 w-40" />
+              placeholder="schema" className="input-base !text-xs w-40" />
           </div>
 
           <div className="divide-y dark:divide-gray-700">
@@ -720,7 +720,7 @@ export default function SemanticLayer() {
 
       {editDefId && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={() => !suggestLoading && setEditDefId(null)}>
-          <div className="bg-dbx-oat-light dark:bg-gray-800 rounded-lg border dark:border-gray-700 shadow-xl max-w-3xl w-full max-h-[90vh] flex flex-col" onClick={e => e.stopPropagation()}>
+          <div className="bg-white dark:bg-dbx-navy-600 rounded-2xl shadow-elevated max-w-3xl w-full max-h-[90vh] flex flex-col animate-slide-up" onClick={e => e.stopPropagation()}>
             <div className="p-3 border-b dark:border-gray-700 font-medium dark:text-gray-100">Edit definition JSON</div>
             <textarea value={editJson} onChange={e => setEditJson(e.target.value)}
               className="flex-1 p-3 font-mono text-xs border-0 dark:bg-gray-900 dark:text-gray-200 resize-none min-h-[200px]"

@@ -40,6 +40,9 @@ def _install_mock_modules():
     fm.FastAPI = MagicMock()
     fm.HTTPException = type("HTTPException", (Exception,), {"__init__": lambda self, *a, **kw: None})
     fm.Query = MagicMock()
+    fm.UploadFile = MagicMock()
+    fm.File = MagicMock()
+    fm.Form = MagicMock()
     sys.modules["fastapi.staticfiles"].StaticFiles = MagicMock()
     sys.modules["fastapi.middleware.cors"].CORSMiddleware = MagicMock()
 

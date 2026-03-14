@@ -12,21 +12,22 @@ const COMPONENTS = {
   semantic: SemanticLayer, genie: GenieBuilder, vector: VectorSearch,
 }
 
+const NAV_CAT_COLORS = {
+  Design: 'text-dbx-lava',
+  Review: 'text-dbx-amber-dark dark:text-dbx-amber',
+  Explore: 'text-dbx-violet dark:text-dbx-violet',
+}
+
 const NAV_STRUCTURE = [
   {
     category: 'Design',
-    description: 'Build the semantic layer',
-    defaultTab: 'jobs',
     items: [
       { id: 'jobs',     label: 'Generate Metadata', desc: 'Run metadata generation and analysis jobs' },
       { id: 'semantic', label: 'Define Metrics',     desc: 'Define metric views and KPIs' },
-      { id: 'genie',    label: 'Build Genie Space',  desc: 'Build natural-language SQL spaces' },
     ],
   },
   {
     category: 'Review',
-    description: 'Validate and correct what was built',
-    defaultTab: 'metadata',
     items: [
       { id: 'metadata', label: 'Review & Apply', desc: 'Review, edit, and apply AI-generated metadata' },
       { id: 'coverage', label: 'Coverage',       desc: 'Catalog health, ontology overview, graph explorers' },
@@ -34,23 +35,13 @@ const NAV_STRUCTURE = [
   },
   {
     category: 'Explore',
-    description: 'Discover patterns and ask questions',
-    defaultTab: 'agent',
     items: [
-      { id: 'agent',     label: 'Agent',            desc: 'Chat with the metadata agent' },
-      { id: 'vector',    label: 'Search',           desc: 'Semantic search over metadata' },
+      { id: 'agent',  label: 'Agent',  desc: 'Chat with the metadata agent' },
+      { id: 'vector', label: 'Search', desc: 'Semantic search over metadata' },
+      { id: 'genie',  label: 'Build Genie Space', desc: 'Build natural-language SQL spaces' },
     ],
   },
 ]
-
-const TAB_TO_CATEGORY = {}
-const TAB_LABEL = {}
-NAV_STRUCTURE.forEach(cat => {
-  cat.items.forEach(item => {
-    TAB_TO_CATEGORY[item.id] = cat.category
-    TAB_LABEL[item.id] = item.label
-  })
-})
 
 export async function safeFetch(url, options) {
   try {
@@ -82,8 +73,9 @@ export async function safeFetchObj(url, options) {
 export function ErrorBanner({ error }) {
   if (!error) return null
   return (
-    <div className="bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 text-red-700 dark:text-red-300 rounded-lg px-4 py-3 text-sm">
-      <span className="font-medium">API Error:</span> {error}
+    <div className="card border-l-4 border-l-red-500 px-4 py-3 text-sm animate-slide-up">
+      <span className="font-medium text-red-600 dark:text-red-400">Error:</span>{' '}
+      <span className="text-slate-600 dark:text-slate-300">{error}</span>
     </div>
   )
 }
@@ -113,9 +105,9 @@ const SLIDES = [
   {
     title: 'Workflow',
     body: [
-      'Design -- Generate metadata, define metrics, build Genie Spaces.',
+      'Design -- Generate metadata and define metrics.',
       'Review & Apply -- Edit and apply descriptions, tags, entity types, and foreign keys. Check coverage and ontology health.',
-      'Explore -- Chat with the metadata agent or run semantic searches.',
+      'Explore -- Chat with the metadata agent, run semantic searches, or build Genie Spaces.',
     ],
   },
   {
@@ -124,8 +116,8 @@ const SLIDES = [
       '1. Design > Generate Metadata -- run on your target tables',
       '2. Review > Review & Apply -- edit and apply results',
       '3. Review > Coverage -- check completeness and health',
-      '4. Design > Define Metrics / Build Genie Space',
-      '5. Explore > Agent or Search',
+      '4. Design > Define Metrics',
+      '5. Explore > Build Genie Space, Agent, or Search',
     ],
   },
 ]
@@ -143,43 +135,37 @@ function InfoSlides({ open, onClose }) {
   if (!open) return null
   const s = SLIDES[slide]
   return (
-    <div className="fixed inset-0 bg-black/40 z-[100] flex items-center justify-center p-6">
-      <div ref={ref} className="bg-white dark:bg-slate-800 rounded-2xl shadow-2xl max-w-xl w-full overflow-hidden">
+    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-[100] flex items-center justify-center p-6 animate-fade-in">
+      <div ref={ref} className="bg-white dark:bg-dbx-navy-600 rounded-2xl shadow-elevated max-w-xl w-full overflow-hidden animate-slide-up">
         <div className="flex items-center justify-between px-8 pt-6 pb-3">
-          <span className="text-xs font-medium text-stone-400 dark:text-stone-500">{slide + 1} / {SLIDES.length}</span>
-          <button onClick={onClose} className="text-stone-400 hover:text-stone-600 dark:hover:text-stone-300 transition-colors">
+          <span className="section-title">{slide + 1} / {SLIDES.length}</span>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 transition-colors p-1 rounded-lg hover:bg-slate-100 dark:hover:bg-dbx-navy-500">
             <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
           </button>
         </div>
         <div className="px-8 pb-3">
-          <h2 className="text-lg font-bold text-stone-800 dark:text-stone-100">{s.title}</h2>
+          <h2 className="text-xl font-bold text-slate-800 dark:text-slate-100">{s.title}</h2>
         </div>
-        <div className="px-8 pb-8 space-y-4 max-h-[55vh] overflow-y-auto">
+        <div className="px-8 pb-8 space-y-4 max-h-[55vh] overflow-y-auto scrollbar-thin">
           {s.body.map((p, i) => (
-            <p key={i} className="text-sm text-stone-600 dark:text-stone-300 leading-relaxed whitespace-pre-line">{p}</p>
+            <p key={i} className="text-sm text-slate-600 dark:text-slate-300 leading-relaxed whitespace-pre-line">{p}</p>
           ))}
         </div>
         <div className="flex items-center justify-between px-8 pb-6">
           <button onClick={() => setSlide(Math.max(0, slide - 1))} disabled={slide === 0}
-            className="px-3 py-1.5 text-sm font-medium rounded-lg transition-colors disabled:opacity-30 disabled:cursor-default text-stone-600 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-slate-700">
+            className="btn-ghost btn-sm disabled:opacity-30">
             Previous
           </button>
-          <div className="flex gap-1.5">
+          <div className="flex gap-2">
             {SLIDES.map((_, i) => (
               <button key={i} onClick={() => setSlide(i)}
-                className={`w-2 h-2 rounded-full transition-colors ${i === slide ? 'bg-dbx-lava' : 'bg-stone-300 dark:bg-slate-600'}`} />
+                className={`w-2 h-2 rounded-full transition-all duration-200 ${i === slide ? 'bg-dbx-lava scale-125' : 'bg-slate-300 dark:bg-dbx-navy-400 hover:bg-slate-400'}`} />
             ))}
           </div>
           {slide < SLIDES.length - 1 ? (
-            <button onClick={() => setSlide(slide + 1)}
-              className="px-3 py-1.5 text-sm font-medium rounded-lg bg-dbx-lava text-white hover:bg-dbx-lava/90 transition-colors">
-              Next
-            </button>
+            <button onClick={() => setSlide(slide + 1)} className="btn-primary btn-sm">Next</button>
           ) : (
-            <button onClick={onClose}
-              className="px-3 py-1.5 text-sm font-medium rounded-lg bg-dbx-lava text-white hover:bg-dbx-lava/90 transition-colors">
-              Done
-            </button>
+            <button onClick={onClose} className="btn-primary btn-sm">Done</button>
           )}
         </div>
       </div>
@@ -187,62 +173,21 @@ function InfoSlides({ open, onClose }) {
   )
 }
 
-function CategoryDropdown({ cat, activeTab, setActiveTab, openCategory, setOpenCategory }) {
-  const ref = useRef(null)
-  const isOpen = openCategory === cat.category
-  const activeItem = cat.items.find(i => i.id === activeTab)
-  const isActive = !!activeItem
-
-  useEffect(() => {
-    if (!isOpen) return
-    const handler = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpenCategory(null) }
-    document.addEventListener('mousedown', handler)
-    return () => document.removeEventListener('mousedown', handler)
-  }, [isOpen, setOpenCategory])
-
+function NavItem({ item, isActive, onClick }) {
   return (
-    <div ref={ref} className="relative">
-      <button
-        onClick={() => setOpenCategory(isOpen ? null : cat.category)}
-        className={`flex items-center gap-1.5 px-4 py-3 text-sm font-semibold border-b-2 transition-colors whitespace-nowrap ${
-          isActive
-            ? 'border-dbx-lava text-dbx-lava dark:text-dbx-lava'
-            : 'border-transparent text-stone-600 dark:text-stone-400 hover:text-dbx-navy dark:hover:text-dbx-oat'
-        }`}
-      >
-        <span>{cat.category}</span>
-        {isActive && <span className="font-normal text-stone-500 dark:text-stone-400">/ {activeItem.label}</span>}
-        <svg className={`w-3.5 h-3.5 transition-transform ${isOpen ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-        </svg>
-      </button>
-      {isOpen && (
-        <div className="absolute top-full left-0 mt-1 w-72 bg-white dark:bg-slate-800 border border-stone-200 dark:border-slate-600 rounded-lg shadow-lg z-50 py-1">
-          {cat.items.map(item => (
-            <button
-              key={item.id}
-              onClick={() => { setActiveTab(item.id); setOpenCategory(null) }}
-              className={`w-full text-left px-4 py-2.5 transition-colors ${
-                activeTab === item.id
-                  ? 'bg-dbx-lava/10 dark:bg-dbx-lava/20'
-                  : 'hover:bg-stone-100 dark:hover:bg-slate-700'
-              }`}
-            >
-              <div className={`text-sm font-medium ${activeTab === item.id ? 'text-dbx-lava' : 'text-stone-800 dark:text-stone-200'}`}>
-                {item.label}
-              </div>
-              <div className="text-xs text-stone-500 dark:text-stone-400 mt-0.5">{item.desc}</div>
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
+    <button onClick={onClick} title={item.desc}
+      className={`relative px-3.5 py-1.5 rounded-lg text-sm font-medium transition-all duration-200 whitespace-nowrap ${
+        isActive
+          ? 'bg-white dark:bg-dbx-navy-500 text-dbx-lava shadow-sm'
+          : 'text-slate-600 dark:text-slate-400 hover:text-dbx-navy dark:hover:text-slate-200 hover:bg-white/60 dark:hover:bg-dbx-navy-500/50'
+      }`}>
+      {item.label}
+    </button>
   )
 }
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('agent')
-  const [openCategory, setOpenCategory] = useState(null)
   const [showInfo, setShowInfo] = useState(false)
   const [dark, setDark] = useState(() => {
     if (typeof window !== 'undefined') {
@@ -253,7 +198,6 @@ export default function App() {
     return false
   })
   const ActiveComponent = COMPONENTS[activeTab]
-  const activeDesc = NAV_STRUCTURE.flatMap(c => c.items).find(i => i.id === activeTab)?.desc
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', dark)
@@ -262,63 +206,61 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-dbx-oat-light dark:bg-dbx-navy transition-colors">
-      <header className="bg-dbx-navy px-6 py-4 shadow-md flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <img src="/logo.png" alt="dbxmetagen" className="h-9 w-9" />
-          <div>
-            <h1 className="text-xl font-bold text-white tracking-tight">dbxmetagen</h1>
-            <p className="text-dbx-oat text-sm mt-0.5">Metadata generation, knowledge graph, and semantic layer</p>
+      {/* Header */}
+      <header className="bg-gradient-to-r from-dbx-navy via-dbx-navy-600 to-dbx-navy-500 px-6 py-4 shadow-md">
+        <div className="flex items-center justify-between max-w-7xl mx-auto">
+          <div className="flex items-center gap-3">
+            <div className="relative">
+              <img src="/logo.png" alt="dbxmetagen" className="h-9 w-9" />
+              <div className="absolute -bottom-0.5 left-0 right-0 h-0.5 bg-dbx-lava rounded-full" />
+            </div>
+            <div>
+              <h1 className="text-xl font-bold text-white tracking-tight">dbxmetagen</h1>
+              <p className="text-dbx-oat/60 text-xs mt-0.5">Metadata generation, knowledge graph, and semantic layer</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <button onClick={() => setShowInfo(true)}
+              className="w-8 h-8 flex items-center justify-center rounded-lg bg-white/10 backdrop-blur-sm border border-white/10 text-dbx-oat/80 hover:text-white hover:bg-white/20 transition-all text-sm font-bold"
+              title="What is dbxmetagen?">?</button>
+            <button onClick={() => setDark(d => !d)}
+              className="w-8 h-8 flex items-center justify-center rounded-lg bg-white/10 backdrop-blur-sm border border-white/10 text-dbx-oat/80 hover:text-white hover:bg-white/20 transition-all"
+              title={dark ? 'Switch to light mode' : 'Switch to dark mode'}>
+              {dark ? (
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                    d="M12 3v1m0 16v1m8.66-13.66l-.71.71M4.05 19.95l-.71.71M21 12h-1M4 12H3m16.95 7.95l-.71-.71M4.05 4.05l-.71-.71M16 12a4 4 0 11-8 0 4 4 0 018 0z" />
+                </svg>
+              ) : (
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                    d="M20.354 15.354A9 9 0 018.646 3.646 9.005 9.005 0 0012 21a9.005 9.005 0 008.354-5.646z" />
+                </svg>
+              )}
+            </button>
           </div>
         </div>
-        <div className="flex items-center gap-2">
-        <button
-          onClick={() => setShowInfo(true)}
-          className="w-8 h-8 flex items-center justify-center rounded-full border border-dbx-oat/40 text-dbx-oat hover:text-white hover:bg-white/10 transition-colors text-sm font-bold"
-          title="What is dbxmetagen?"
-        >?</button>
-        <button
-          onClick={() => setDark(d => !d)}
-          className="p-2 rounded-lg text-dbx-oat hover:text-white hover:bg-white/10 transition-colors"
-          title={dark ? 'Switch to light mode' : 'Switch to dark mode'}
-        >
-          {dark ? (
-            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                d="M12 3v1m0 16v1m8.66-13.66l-.71.71M4.05 19.95l-.71.71M21 12h-1M4 12H3m16.95 7.95l-.71-.71M4.05 4.05l-.71-.71M16 12a4 4 0 11-8 0 4 4 0 018 0z" />
-            </svg>
-          ) : (
-            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                d="M20.354 15.354A9 9 0 018.646 3.646 9.005 9.005 0 0012 21a9.005 9.005 0 008.354-5.646z" />
-            </svg>
-          )}
-        </button>
-        </div>
       </header>
+
       <InfoSlides open={showInfo} onClose={() => setShowInfo(false)} />
 
-      <nav className="bg-dbx-oat dark:bg-[#152E35] border-b border-stone-300 dark:border-slate-700 px-6 shadow-sm">
-        <div className="flex space-x-2">
-          {NAV_STRUCTURE.map(cat => (
-            <CategoryDropdown
-              key={cat.category}
-              cat={cat}
-              activeTab={activeTab}
-              setActiveTab={setActiveTab}
-              openCategory={openCategory}
-              setOpenCategory={setOpenCategory}
-            />
+      {/* Navigation */}
+      <nav className="bg-white/80 dark:bg-dbx-navy-600/80 backdrop-blur-sm border-b border-dbx-oat-dark/50 dark:border-dbx-navy-400/30 shadow-nav sticky top-0 z-40">
+        <div className="flex items-center gap-1 px-6 py-2 max-w-7xl mx-auto overflow-x-auto scrollbar-thin">
+          {NAV_STRUCTURE.map((cat, ci) => (
+            <React.Fragment key={cat.category}>
+              {ci > 0 && <div className="w-px h-6 bg-slate-200 dark:bg-dbx-navy-400/40 mx-1.5 flex-shrink-0" />}
+              <span className={`text-xs font-semibold uppercase tracking-wider mr-1 flex-shrink-0 hidden sm:inline ${NAV_CAT_COLORS[cat.category] || 'text-slate-500'}`}>{cat.category}</span>
+              {cat.items.map(item => (
+                <NavItem key={item.id} item={item} isActive={activeTab === item.id}
+                  onClick={() => setActiveTab(item.id)} />
+              ))}
+            </React.Fragment>
           ))}
         </div>
       </nav>
 
-      {activeDesc && (
-        <div className="bg-dbx-oat-light/80 dark:bg-dbx-navy/50 border-b border-stone-200 dark:border-slate-700 px-6 py-2">
-          <p className="text-xs text-stone-500 dark:text-stone-400 max-w-7xl mx-auto">{activeDesc}</p>
-        </div>
-      )}
-
-      <main className="p-6 max-w-7xl mx-auto">
+      <main className="p-6 max-w-7xl mx-auto animate-fade-in">
         {ActiveComponent && <ActiveComponent />}
       </main>
     </div>

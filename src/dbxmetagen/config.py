@@ -106,6 +106,7 @@ class MetadataConfig:
             "ontology_bundle",
             "similarity_threshold",
             "profiling_max_tables",
+            "incremental",
             "freshness_threshold_days",
             "warehouse_id",
             "use_kb_comments",

@@ -166,3 +166,7 @@ docs/operations/*/
 .cursor/
 .github/skills/
 .ai-dev-kit
+
+# Cursor Heartbeat
+tools/cursor-heartbeat/.venv/
+tools/cursor-heartbeat/heartbeat_journal*.jsonl

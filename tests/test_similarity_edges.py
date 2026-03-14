@@ -58,7 +58,7 @@ class TestSimilarityEdgeBuilder:
     
     @pytest.fixture
     def mock_spark(self):
-        return MagicMock(spec=SparkSession)
+        return MagicMock()
     
     @pytest.fixture
     def config(self):
@@ -146,7 +146,7 @@ class TestCosineSimInFallback:
 class TestBuildSimilarityEdges:
     """Tests for build_similarity_edges function."""
     
-    @patch('src.dbxmetagen.similarity_edges.SimilarityEdgeBuilder')
+    @patch('dbxmetagen.similarity_edges.SimilarityEdgeBuilder')
     def test_creates_builder_with_correct_config(self, mock_builder_class):
         mock_builder = MagicMock()
         mock_builder.run.return_value = {"edges_created": 10, "threshold": 0.8}
@@ -159,7 +159,7 @@ class TestBuildSimilarityEdges:
         assert config.catalog_name == "my_cat"
         assert config.schema_name == "my_sch"
     
-    @patch('src.dbxmetagen.similarity_edges.SimilarityEdgeBuilder')
+    @patch('dbxmetagen.similarity_edges.SimilarityEdgeBuilder')
     def test_passes_custom_threshold(self, mock_builder_class):
         mock_builder = MagicMock()
         mock_builder.run.return_value = {}
@@ -170,7 +170,7 @@ class TestBuildSimilarityEdges:
         config = mock_builder_class.call_args[0][1]
         assert config.similarity_threshold == 0.6
     
-    @patch('src.dbxmetagen.similarity_edges.SimilarityEdgeBuilder')
+    @patch('dbxmetagen.similarity_edges.SimilarityEdgeBuilder')
     def test_passes_max_edges_per_node(self, mock_builder_class):
         mock_builder = MagicMock()
         mock_builder.run.return_value = {}
@@ -181,7 +181,7 @@ class TestBuildSimilarityEdges:
         config = mock_builder_class.call_args[0][1]
         assert config.max_edges_per_node == 5
     
-    @patch('src.dbxmetagen.similarity_edges.SimilarityEdgeBuilder')
+    @patch('dbxmetagen.similarity_edges.SimilarityEdgeBuilder')
     def test_returns_run_result(self, mock_builder_class):
         expected = {"edges_created": 50, "threshold": 0.75}
         mock_builder = MagicMock()

@@ -6,15 +6,15 @@ function DataTable({ data, maxRows = 100 }) {
   if (!data || data.length === 0) return <p className="text-sm text-slate-400 py-4">No data available.</p>
   const cols = Object.keys(data[0])
   return (
-    <div className="overflow-x-auto">
+    <div className="overflow-x-auto rounded-xl shadow-card border border-dbx-oat-dark/30 dark:border-dbx-navy-400/20">
       <table className="min-w-full text-sm">
         <thead><tr>{cols.map(c =>
-          <th key={c} className="text-left px-3 py-2.5 bg-dbx-oat font-semibold text-slate-600 border-b border-slate-200 text-xs uppercase tracking-wider">{c}</th>
+          <th key={c} className="text-left px-3 py-2.5 bg-dbx-oat/80 dark:bg-dbx-navy-500/40 backdrop-blur-sm font-semibold text-slate-500 dark:text-slate-400 border-b border-dbx-oat-dark/30 dark:border-dbx-navy-400/20 text-xs uppercase tracking-wider sticky top-0">{c}</th>
         )}</tr></thead>
         <tbody>
           {data.slice(0, maxRows).map((row, i) => (
-            <tr key={i} className="border-b border-slate-100 hover:bg-orange-50/30 transition-colors">
-              {cols.map(c => <td key={c} className="px-3 py-2 max-w-xs truncate text-slate-600">{String(row[c] ?? '')}</td>)}
+            <tr key={i} className="border-b border-dbx-oat-dark/20 dark:border-dbx-navy-400/10 hover:bg-dbx-teal-light/20 dark:hover:bg-dbx-navy-500/30 transition-colors">
+              {cols.map(c => <td key={c} className="px-3 py-2 max-w-xs truncate text-slate-600 dark:text-slate-300">{String(row[c] ?? '')}</td>)}
             </tr>
           ))}
         </tbody>
@@ -24,9 +24,9 @@ function DataTable({ data, maxRows = 100 }) {
 }
 
 const Tip = ({ text }) => (
-  <span className="relative group cursor-help ml-1 inline-flex">
-    <span className="text-slate-400 text-[10px] font-bold border border-slate-300 rounded-full w-3.5 h-3.5 inline-flex items-center justify-center">?</span>
-    <span className="absolute z-50 hidden group-hover:block bottom-full left-1/2 -translate-x-1/2 mb-1 w-56 text-[10px] bg-slate-800 text-white rounded-lg px-2.5 py-1.5 shadow-lg pointer-events-none">{text}</span>
+  <span className="relative group cursor-help ml-1.5 inline-flex">
+    <span className="text-slate-400 dark:text-slate-500 text-xs font-bold border border-slate-300 dark:border-dbx-navy-400 rounded-full w-4 h-4 inline-flex items-center justify-center hover:text-dbx-teal hover:border-dbx-teal transition-colors">?</span>
+    <span className="absolute z-50 hidden group-hover:block bottom-full left-1/2 -translate-x-1/2 mb-1.5 w-60 text-xs bg-dbx-navy dark:bg-dbx-navy-600 text-white rounded-xl px-3 py-2 shadow-elevated pointer-events-none animate-fade-in">{text}</span>
   </span>
 )
 
@@ -264,10 +264,10 @@ function ReviewEditor() {
   }
 
   const show = k => activeType === k
-  const chip = 'px-3 py-1 rounded-full text-xs font-medium border cursor-pointer select-none transition-all'
-  const chipOn = 'bg-dbx-lava text-white border-red-700'
-  const chipOff = 'bg-dbx-oat text-slate-600 border-slate-300 hover:border-slate-400'
-  const inp = 'w-full border border-slate-300 rounded px-2 py-1 text-sm focus:ring-2 focus:ring-orange-500'
+  const chip = 'px-3 py-1.5 rounded-lg text-xs font-medium border cursor-pointer select-none transition-all duration-200'
+  const chipOn = 'bg-dbx-lava text-white border-dbx-lava shadow-sm'
+  const chipOff = 'bg-white dark:bg-dbx-navy/50 text-slate-600 dark:text-slate-300 border-dbx-oat-dark dark:border-dbx-navy-400/30 hover:border-dbx-navy-400 dark:hover:border-dbx-navy-400 hover:shadow-sm'
+  const inp = 'w-full border border-slate-200 dark:border-dbx-navy-400/40 rounded-lg px-2.5 py-1.5 text-sm bg-white dark:bg-dbx-navy/60 focus:outline-none focus:ring-2 focus:ring-dbx-teal/30 focus:border-dbx-teal transition-all'
 
   const classLabel = (val) => {
     const v = (val ?? '').trim().toLowerCase()
@@ -290,8 +290,8 @@ function ReviewEditor() {
       <ErrorBanner error={error} />
 
       {/* Scope Picker */}
-      <div className="bg-dbx-oat-light rounded-xl border border-slate-200 p-4 shadow-sm space-y-3">
-        <h3 className="text-sm font-semibold text-slate-700">Scope</h3>
+      <div className="card p-5 space-y-3">
+        <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200">Scope</h3>
         <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
           <div>
             <label className="block text-xs font-medium text-slate-500 mb-1">Catalog</label>
@@ -370,17 +370,17 @@ function ReviewEditor() {
           {reviewData.filter(tbl => statusFilter === 'all' || (tbl.review_status || 'unreviewed') === statusFilter).map((tbl, _fi) => {
             const tblIdx = reviewData.indexOf(tbl)
             return (
-            <div key={tbl.table_name} className="bg-dbx-oat-light rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+            <div key={tbl.table_name} className="bg-dbx-oat-light dark:bg-dbx-navy-600 rounded-xl border border-slate-200 dark:border-dbx-navy-400/30 shadow-sm overflow-hidden">
               {/* Table header row */}
-              <div className={`flex items-center gap-2 px-4 py-2.5 cursor-pointer select-none flex-wrap ${isTableDirty(tblIdx) ? 'bg-amber-50' : 'bg-dbx-oat'}`}
+              <div className={`flex items-center gap-2 px-4 py-2.5 cursor-pointer select-none flex-wrap ${isTableDirty(tblIdx) ? 'bg-amber-50 dark:bg-amber-900/20' : 'bg-dbx-oat dark:bg-dbx-navy-500/50'}`}
                 onClick={() => setExpanded(p => ({ ...p, [tbl.table_name]: !p[tbl.table_name] }))}>
                 <span className="text-xs text-slate-400">{expanded[tbl.table_name] ? '\u25BC' : '\u25B6'}</span>
-                <span className="font-semibold text-sm text-slate-700">{tbl.table_name}</span>
-                {tbl.domain && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-700 font-medium">{tbl.domain}{tbl.subdomain ? ` / ${tbl.subdomain}` : ''}</span>}
-                {tbl.primary_entity && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-purple-100 text-purple-700 font-medium">{tbl.primary_entity.entity_type} ({Number(tbl.primary_entity.confidence ?? 0).toFixed(2)})</span>}
+                <span className="font-semibold text-sm text-slate-700 dark:text-slate-200">{tbl.table_name}</span>
+                {tbl.domain && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300 font-medium">{tbl.domain}{tbl.subdomain ? ` / ${tbl.subdomain}` : ''}</span>}
+                {tbl.primary_entity && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300 font-medium">{tbl.primary_entity.entity_type} ({Number(tbl.primary_entity.confidence ?? 0).toFixed(2)})</span>}
                 {(() => {
                   const rs = tbl.review_status || 'unreviewed'
-                  const rsCls = rs === 'approved' ? 'bg-green-100 text-green-700' : rs === 'in_review' ? 'bg-yellow-100 text-yellow-700' : 'bg-slate-100 text-slate-500'
+                  const rsCls = rs === 'approved' ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300' : rs === 'in_review' ? 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/40 dark:text-yellow-300' : 'bg-slate-100 text-slate-500 dark:bg-slate-800/40 dark:text-slate-400'
                   return (
                     <select value={rs} onClick={ev => ev.stopPropagation()} onChange={ev => {
                       ev.stopPropagation()
@@ -431,22 +431,22 @@ function ReviewEditor() {
                   {(show('comments') || show('pii') || show('ontology')) && tbl.columns?.length > 0 && (
                     <div className="overflow-x-auto">
                       <table className="min-w-full text-sm table-fixed">
-                        <thead><tr className="bg-dbx-oat/50">
-                          <th className="text-left px-3 py-2 text-xs font-semibold text-slate-500 uppercase w-40">Column</th>
-                          <th className="text-left px-3 py-2 text-xs font-semibold text-slate-500 uppercase w-24">Type</th>
-                          {show('comments') && <th className="text-left px-3 py-2 text-xs font-semibold text-slate-500 uppercase">Comment</th>}
-                          {show('pii') && <th className="text-left px-3 py-2 text-xs font-semibold text-slate-500 uppercase">Classification</th>}
-                          {show('pii') && <th className="text-left px-3 py-2 text-xs font-semibold text-slate-500 uppercase">Class. Type</th>}
-                          {show('ontology') && <th className="text-left px-3 py-2 text-xs font-semibold text-slate-500 uppercase">Entity Types</th>}
-                          {show('ontology') && <th className="text-left px-3 py-2 text-xs font-semibold text-slate-500 uppercase">Property Role</th>}
+                        <thead><tr className="bg-dbx-oat/50 dark:bg-dbx-navy-500/50">
+                          <th className="text-left px-3 py-2 text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase w-40">Column</th>
+                          <th className="text-left px-3 py-2 text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase w-24">Type</th>
+                          {show('comments') && <th className="text-left px-3 py-2 text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase">Comment</th>}
+                          {show('pii') && <th className="text-left px-3 py-2 text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase">Classification</th>}
+                          {show('pii') && <th className="text-left px-3 py-2 text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase">Class. Type</th>}
+                          {show('ontology') && <th className="text-left px-3 py-2 text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase">Entity Types</th>}
+                          {show('ontology') && <th className="text-left px-3 py-2 text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase">Property Role</th>}
                         </tr></thead>
                         <tbody>
                           {tbl.columns.map((col, ci) => {
                             const colProp = (tbl.column_properties || []).find(p => p.column_name === col.column_name)
                             return (
-                            <tr key={col.column_id || ci} className={`border-b border-slate-100 ${isColDirty(tblIdx, ci) ? 'bg-amber-50' : ''} hover:bg-orange-50/30`}>
-                              <td className="px-3 py-1.5 text-slate-600 font-mono text-xs truncate">{col.column_name}</td>
-                              <td className="px-3 py-1.5 text-slate-400 text-xs truncate">{col.data_type}</td>
+                            <tr key={col.column_id || ci} className={`border-b border-slate-100 dark:border-dbx-navy-400/20 ${isColDirty(tblIdx, ci) ? 'bg-amber-50 dark:bg-amber-900/20' : ''} hover:bg-orange-50/30 dark:hover:bg-dbx-navy-500/30`}>
+                              <td className="px-3 py-1.5 text-slate-600 dark:text-slate-300 font-mono text-xs truncate">{col.column_name}</td>
+                              <td className="px-3 py-1.5 text-slate-400 dark:text-slate-500 text-xs truncate">{col.data_type}</td>
                               {show('comments') && <td className="px-2 py-1"><input value={col.comment ?? ''} onChange={e => onColChange(tblIdx, ci, 'comment', e.target.value)} className={inp} /></td>}
                               {show('pii') && <td className="px-2 py-1">
                                 <div className="flex items-center gap-1.5">
@@ -481,7 +481,7 @@ function ReviewEditor() {
                                       setColPropOverrides(p => ({ ...p, [cpKey]: { ...(p[cpKey] || {}), property_role: nr } }))
                                       fetch('/api/ontology/update-column-property', { method: 'POST', headers: { 'Content-Type': 'application/json' },
                                         body: JSON.stringify({ property_id: cpKey, property_role: nr, linked_entity_type: curLinked || null }) }).catch(() => {})
-                                    }} className="text-[10px] border border-slate-300 rounded px-1 py-0.5 bg-white">
+                                    }} className="text-[10px] border border-slate-300 dark:border-dbx-navy-400/40 rounded px-1 py-0.5 bg-white dark:bg-dbx-navy/60 dark:text-slate-200">
                                       {['identifier', 'attribute', 'measure', 'link', 'timestamp', 'foreign_key'].map(r => <option key={r} value={r}>{r}</option>)}
                                     </select>
                                     {(curRole === 'link' || curRole === 'foreign_key') && (
@@ -491,7 +491,7 @@ function ReviewEditor() {
                                           fetch('/api/ontology/update-column-property', { method: 'POST', headers: { 'Content-Type': 'application/json' },
                                             body: JSON.stringify({ property_id: cpKey, property_role: curRole, linked_entity_type: ev.target.value || null }) }).catch(() => {})
                                         }}
-                                        className="text-[10px] border border-slate-300 rounded px-1 py-0.5 bg-white w-20" />
+                                        className="text-[10px] border border-slate-300 dark:border-dbx-navy-400/40 rounded px-1 py-0.5 bg-white dark:bg-dbx-navy/60 dark:text-slate-200 w-20" />
                                     )}
                                   </div>
                                 )
@@ -505,9 +505,9 @@ function ReviewEditor() {
 
                   {/* ═══ ZONE 1: Table Entity ═══ */}
                   {show('ontology') && (
-                    <div className="border-t border-slate-200 pt-3 mt-3 space-y-2">
+                    <div className="border-t border-slate-200 dark:border-dbx-navy-400/30 pt-3 mt-3 space-y-2">
                       <div className="flex items-center justify-between">
-                        <h4 className="text-xs font-semibold text-slate-600 uppercase tracking-wider flex items-center">
+                        <h4 className="text-xs font-semibold text-slate-600 dark:text-slate-300 uppercase tracking-wider flex items-center">
                           Table Entity{tbl.primary_entity ? ` \u2014 ${tbl.primary_entity.entity_type}` : ''}
                           <Tip text="Applies the primary entity as an entity_type tag on the table itself. Does not affect columns. Also saved to the knowledge base." />
                         </h4>
@@ -529,9 +529,9 @@ function ReviewEditor() {
                         )}
                       </div>
                       {tbl.primary_entity && (
-                        <div className="flex items-center gap-2 px-3 py-2 bg-purple-100 border border-purple-300 rounded-lg">
-                          <span className="text-[10px] font-bold uppercase tracking-wider text-purple-500">Primary Entity</span>
-                          <span className="text-sm font-semibold text-purple-800">{tbl.primary_entity.entity_type}</span>
+                        <div className="flex items-center gap-2 px-3 py-2 bg-purple-100 dark:bg-purple-900/30 border border-purple-300 dark:border-purple-700/50 rounded-lg">
+                          <span className="text-[10px] font-bold uppercase tracking-wider text-purple-500 dark:text-purple-400">Primary Entity</span>
+                          <span className="text-sm font-semibold text-purple-800 dark:text-purple-200">{tbl.primary_entity.entity_type}</span>
                           <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${Number(tbl.primary_entity.confidence ?? 0) > 0 ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
                             {Number(tbl.primary_entity.confidence ?? 0).toFixed(2)}
                           </span>
@@ -553,10 +553,10 @@ function ReviewEditor() {
                         )
                       })()}
                       <div className="flex items-center gap-2 flex-wrap">
-                        <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">Override Primary:</span>
+                        <span className="text-[10px] font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Override Primary:</span>
                         <input value={recommendedEntity[tbl.table_name] || ''} placeholder="e.g. OrderLineItem"
                           onChange={ev => setRecommendedEntity(p => ({ ...p, [tbl.table_name]: ev.target.value }))}
-                          className="text-xs border border-purple-300 rounded px-2 py-0.5 bg-white w-40" />
+                          className="text-xs border border-purple-300 dark:border-purple-700/50 rounded px-2 py-0.5 bg-white dark:bg-dbx-navy/60 dark:text-slate-200 w-40" />
                         <button onClick={async () => {
                           const et = (recommendedEntity[tbl.table_name] || '').trim()
                           if (!et) return
@@ -577,9 +577,9 @@ function ReviewEditor() {
 
                   {/* ═══ ZONE 2: Business Concepts ═══ */}
                   {show('ontology') && (
-                    <div className="border-t border-slate-200 pt-3 mt-3 space-y-2">
+                    <div className="border-t border-slate-200 dark:border-dbx-navy-400/30 pt-3 mt-3 space-y-2">
                       <div className="flex items-center justify-between flex-wrap gap-2">
-                        <h4 className="text-xs font-semibold text-slate-600 uppercase tracking-wider flex items-center">
+                        <h4 className="text-xs font-semibold text-slate-600 dark:text-slate-300 uppercase tracking-wider flex items-center">
                           Business Concepts
                           {Array.isArray(tbl.ontology_entities) && (() => {
                             const total = tbl.ontology_entities.length
@@ -660,7 +660,7 @@ function ReviewEditor() {
                               return []
                             })()
                             return (
-                              <div key={eid} className={`border rounded-lg ${isPrimary ? 'border-purple-300 bg-purple-50' : 'border-slate-200 bg-slate-50/50'}`}>
+                              <div key={eid} className={`border rounded-lg ${isPrimary ? 'border-purple-300 bg-purple-50 dark:border-purple-700/50 dark:bg-purple-900/20' : 'border-slate-200 bg-slate-50/50 dark:border-dbx-navy-400/30 dark:bg-dbx-navy-500/30'}`}>
                                 <div className="flex items-center gap-2 px-3 py-1.5 cursor-pointer flex-wrap" onClick={() => setExpandedEntities(p => ({ ...p, [eid]: !p[eid] }))}>
                                   <span className="text-xs text-slate-400">{isOpen ? '\u25BC' : '\u25B6'}</span>
                                   <span className={`text-[9px] px-1 py-0.5 rounded font-bold uppercase tracking-wider ${isPrimary ? 'bg-purple-200 text-purple-700' : 'bg-slate-200 text-slate-500'}`}>
@@ -678,7 +678,7 @@ function ReviewEditor() {
                                               body: JSON.stringify({ entity_id: e.entity_id, new_entity_type: val }) }).catch(() => {})
                                           }
                                         }}
-                                        className="text-xs border border-purple-300 rounded px-1.5 py-0.5 bg-white w-28" />
+                                        className="text-xs border border-purple-300 dark:border-purple-700/50 rounded px-1.5 py-0.5 bg-white dark:bg-dbx-navy/60 dark:text-slate-200 w-28" />
                                       <datalist id={`eto-${eid}`}>
                                         {entityTypeOptions.map(t => <option key={t} value={t} />)}
                                       </datalist>
@@ -696,8 +696,8 @@ function ReviewEditor() {
                                     </span>
                                   )}
                                   {srcCols.length > 0 && (
-                                    <span className="text-[10px] text-slate-500">
-                                      {srcCols.map((c, ci) => <code key={ci} className="bg-white/80 border border-slate-200 rounded px-1 py-0.5 text-slate-600 mr-1">{c}</code>)}
+                                    <span className="text-[10px] text-slate-500 dark:text-slate-400">
+                                      {srcCols.map((c, ci) => <code key={ci} className="bg-white/80 dark:bg-dbx-navy/40 border border-slate-200 dark:border-dbx-navy-400/30 rounded px-1 py-0.5 text-slate-600 dark:text-slate-300 mr-1">{c}</code>)}
                                     </span>
                                   )}
                                   <button onClick={async (ev) => {
@@ -715,10 +715,10 @@ function ReviewEditor() {
                                   </button>
                                 </div>
                                 {isOpen && e.validation_notes && (
-                                  <div className="px-3 pb-2 border-t border-purple-200 mt-0">
+                                  <div className="px-3 pb-2 border-t border-purple-200 dark:border-purple-700/30 mt-0">
                                     <div className="mt-1.5">
-                                      <span className="text-[10px] font-semibold text-slate-500">Validation Notes:</span>
-                                      <p className="text-xs text-slate-600 italic bg-white/60 rounded p-1.5 mt-0.5">{e.validation_notes}</p>
+                                      <span className="text-[10px] font-semibold text-slate-500 dark:text-slate-400">Validation Notes:</span>
+                                      <p className="text-xs text-slate-600 dark:text-slate-300 italic bg-white/60 dark:bg-dbx-navy/40 rounded p-1.5 mt-0.5">{e.validation_notes}</p>
                                     </div>
                                   </div>
                                 )}
@@ -732,9 +732,9 @@ function ReviewEditor() {
 
                   {/* ═══ ZONE 3: Column Properties ═══ */}
                   {show('ontology') && (tbl.column_properties || []).length > 0 && (
-                    <div className="border-t border-slate-200 pt-3 mt-3 space-y-2">
+                    <div className="border-t border-slate-200 dark:border-dbx-navy-400/30 pt-3 mt-3 space-y-2">
                       <div className="flex items-center justify-between">
-                        <h4 className="text-xs font-semibold text-slate-600 uppercase tracking-wider flex items-center">
+                        <h4 className="text-xs font-semibold text-slate-600 dark:text-slate-300 uppercase tracking-wider flex items-center">
                           Column Properties
                           <span className="ml-1.5 text-slate-400 font-normal normal-case">{(tbl.column_properties || []).length} columns classified</span>
                           <Tip text="Applies property_role (and linked_entity_type for links/FKs) as tags on each column. Reflects how the column functions within the entity model (identifier, attribute, measure, link, etc.). Also saved to the knowledge base." />
@@ -774,7 +774,7 @@ function ReviewEditor() {
                   {show('fk') && (
                     <div className="space-y-2">
                       <div className="flex items-center justify-between">
-                        <h4 className="text-xs font-semibold text-slate-500">Foreign Key Predictions</h4>
+                        <h4 className="text-xs font-semibold text-slate-500 dark:text-slate-400">Foreign Key Predictions</h4>
                         {Array.isArray(tbl.fk_predictions) && tbl.fk_predictions.length > 0 && (() => {
                           const tblKey = tbl.table_name
                           const selSet = selectedFKs[tblKey] || new Set()
@@ -813,14 +813,14 @@ function ReviewEditor() {
                       ) : (
                         <div className="overflow-x-auto">
                           <table className="min-w-full text-xs">
-                            <thead><tr className="bg-dbx-oat/50">
+                            <thead><tr className="bg-dbx-oat/50 dark:bg-dbx-navy-500/50">
                               <th className="w-8 px-1 py-1"></th>
-                              <th className="text-left px-2 py-1 font-semibold text-slate-500">Src Column</th>
-                              <th className="text-left px-2 py-1 font-semibold text-slate-500">Dst Table.Column</th>
-                              <th className="text-left px-2 py-1 font-semibold text-slate-500" title="Combined final confidence">Final</th>
-                              <th className="text-left px-2 py-1 font-semibold text-slate-500" title="AI model confidence">AI</th>
-                              <th className="text-left px-2 py-1 font-semibold text-slate-500" title="Column embedding similarity">Sim</th>
-                              <th className="text-left px-2 py-1 font-semibold text-slate-500">Reasoning</th>
+                              <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400">Src Column</th>
+                              <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400">Dst Table.Column</th>
+                              <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400" title="Combined final confidence">Final</th>
+                              <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400" title="AI model confidence">AI</th>
+                              <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400" title="Column embedding similarity">Sim</th>
+                              <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400">Reasoning</th>
                             </tr></thead>
                             <tbody>
                               {tbl.fk_predictions.map((fk, i) => {
@@ -832,7 +832,7 @@ function ReviewEditor() {
                                 const isExpReasoning = expandedFKs[fkKey]
                                 return (
                                   <React.Fragment key={i}>
-                                    <tr className={`border-b border-slate-100 hover:bg-indigo-50/30 ${selSet.has(i) ? 'bg-indigo-50/50' : ''}`}>
+                                    <tr className={`border-b border-slate-100 dark:border-dbx-navy-400/20 hover:bg-indigo-50/30 dark:hover:bg-dbx-navy-500/30 ${selSet.has(i) ? 'bg-indigo-50/50 dark:bg-indigo-900/20' : ''}`}>
                                       <td className="px-1 py-1">
                                         <input type="checkbox" checked={selSet.has(i)} onChange={() => {
                                           setSelectedFKs(prev => {
@@ -842,18 +842,18 @@ function ReviewEditor() {
                                           })
                                         }} className="rounded border-slate-300" />
                                       </td>
-                                      <td className="px-2 py-1 text-slate-600 font-mono">{(fk.src_column || '').split('.').pop()}</td>
-                                      <td className="px-2 py-1 text-slate-600 font-mono">{fk.dst_table}.{(fk.dst_column || '').split('.').pop()}</td>
+                                      <td className="px-2 py-1 text-slate-600 dark:text-slate-300 font-mono">{(fk.src_column || '').split('.').pop()}</td>
+                                      <td className="px-2 py-1 text-slate-600 dark:text-slate-300 font-mono">{fk.dst_table}.{(fk.dst_column || '').split('.').pop()}</td>
                                       <td className="px-2 py-1"><span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${confCls}`}>{fconf.toFixed(2)}</span></td>
-                                      <td className="px-2 py-1 text-slate-500">{Number(fk.ai_confidence ?? 0).toFixed(2)}</td>
-                                      <td className="px-2 py-1 text-slate-500">{Number(fk.col_similarity ?? 0).toFixed(2)}</td>
-                                      <td className="px-2 py-1 text-slate-500 max-w-xs truncate cursor-pointer" title="Click to expand"
+                                      <td className="px-2 py-1 text-slate-500 dark:text-slate-400">{Number(fk.ai_confidence ?? 0).toFixed(2)}</td>
+                                      <td className="px-2 py-1 text-slate-500 dark:text-slate-400">{Number(fk.col_similarity ?? 0).toFixed(2)}</td>
+                                      <td className="px-2 py-1 text-slate-500 dark:text-slate-400 max-w-xs truncate cursor-pointer" title="Click to expand"
                                         onClick={() => setExpandedFKs(p => ({ ...p, [fkKey]: !p[fkKey] }))}>
                                         {fk.ai_reasoning || '--'}
                                       </td>
                                     </tr>
                                     {isExpReasoning && fk.ai_reasoning && (
-                                      <tr><td colSpan={7} className="px-3 py-2 bg-slate-50 text-xs text-slate-600 italic">{fk.ai_reasoning}</td></tr>
+                                      <tr><td colSpan={7} className="px-3 py-2 bg-slate-50 dark:bg-dbx-navy-500/30 text-xs text-slate-600 dark:text-slate-300 italic">{fk.ai_reasoning}</td></tr>
                                     )}
                                   </React.Fragment>
                                 )
@@ -873,11 +873,11 @@ function ReviewEditor() {
 
       {/* Export bar */}
       {reviewData.length > 0 && (
-        <div className="bg-dbx-oat-light rounded-xl border border-slate-200 p-4 shadow-sm space-y-3">
-          <h3 className="text-sm font-semibold text-slate-700">Export & Apply</h3>
+        <div className="card p-5 space-y-3">
+          <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200">Export & Apply</h3>
           <div className="flex flex-wrap items-center gap-3">
             <select value={ddlCategory} onChange={e => { setDdlCategory(e.target.value); setDdlSql(''); setDdlApplyResult(null) }}
-              className="border border-slate-300 rounded-lg px-3 py-1.5 text-sm bg-white">
+              className="border border-slate-300 dark:border-dbx-navy-400/40 rounded-lg px-3 py-1.5 text-sm bg-white dark:bg-dbx-navy/60 dark:text-slate-200">
               <option value="comments">Comments</option>
               <option value="domain">Domain Tags</option>
               <option value="sensitivity">Sensitivity Tags</option>
@@ -885,24 +885,24 @@ function ReviewEditor() {
             {ddlCategory === 'domain' && (
               <>
                 <input value={customDomainKey} onChange={e => setCustomDomainKey(e.target.value)} placeholder="domain tag key (default: domain)"
-                  className="border border-slate-300 rounded px-2 py-1.5 text-sm w-52" />
+                  className="border border-slate-300 dark:border-dbx-navy-400/40 rounded px-2 py-1.5 text-sm w-52 bg-white dark:bg-dbx-navy/60 dark:text-slate-200" />
                 <input value={customSubdomainKey} onChange={e => setCustomSubdomainKey(e.target.value)} placeholder="subdomain tag key (default: subdomain)"
-                  className="border border-slate-300 rounded px-2 py-1.5 text-sm w-56" />
+                  className="border border-slate-300 dark:border-dbx-navy-400/40 rounded px-2 py-1.5 text-sm w-56 bg-white dark:bg-dbx-navy/60 dark:text-slate-200" />
               </>
             )}
             {ddlCategory === 'sensitivity' && (
               <>
                 <input value={customSensitivityKey} onChange={e => setCustomSensitivityKey(e.target.value)} placeholder="classification tag key (default: data_classification)"
-                  className="border border-slate-300 rounded px-2 py-1.5 text-sm w-64" />
+                  className="border border-slate-300 dark:border-dbx-navy-400/40 rounded px-2 py-1.5 text-sm w-64 bg-white dark:bg-dbx-navy/60 dark:text-slate-200" />
                 <input value={customSensitivityTypeKey} onChange={e => setCustomSensitivityTypeKey(e.target.value)} placeholder="subclassification tag key (default: data_subclassification)"
-                  className="border border-slate-300 rounded px-2 py-1.5 text-sm w-68" />
+                  className="border border-slate-300 dark:border-dbx-navy-400/40 rounded px-2 py-1.5 text-sm w-68 bg-white dark:bg-dbx-navy/60 dark:text-slate-200" />
               </>
             )}
-            <button onClick={generateDdl} disabled={ddlLoading} className="px-4 py-1.5 bg-dbx-oat text-slate-700 rounded-lg text-sm font-medium hover:bg-dbx-oat-dark disabled:opacity-50">Generate DDL</button>
+            <button onClick={generateDdl} disabled={ddlLoading} className="px-4 py-1.5 bg-dbx-oat dark:bg-dbx-navy-500 text-slate-700 dark:text-slate-200 rounded-lg text-sm font-medium hover:bg-dbx-oat-dark dark:hover:bg-dbx-navy-400 disabled:opacity-50">Generate DDL</button>
             <button onClick={applyDdl} disabled={ddlLoading} className="px-4 py-1.5 bg-dbx-lava text-white rounded-lg text-sm font-medium hover:bg-red-700 disabled:opacity-50">Apply DDL</button>
-            <span className="border-l border-slate-300 h-6" />
-            <button onClick={() => exportVolume('tsv')} disabled={exportLoading} className="px-4 py-1.5 bg-dbx-oat text-slate-700 rounded-lg text-sm font-medium hover:bg-dbx-oat-dark disabled:opacity-50">Export TSV</button>
-            <button onClick={() => exportVolume('excel')} disabled={exportLoading} className="px-4 py-1.5 bg-dbx-oat text-slate-700 rounded-lg text-sm font-medium hover:bg-dbx-oat-dark disabled:opacity-50">Export Excel</button>
+            <span className="border-l border-slate-300 dark:border-dbx-navy-400/40 h-6" />
+            <button onClick={() => exportVolume('tsv')} disabled={exportLoading} className="px-4 py-1.5 bg-dbx-oat dark:bg-dbx-navy-500 text-slate-700 dark:text-slate-200 rounded-lg text-sm font-medium hover:bg-dbx-oat-dark dark:hover:bg-dbx-navy-400 disabled:opacity-50">Export TSV</button>
+            <button onClick={() => exportVolume('excel')} disabled={exportLoading} className="px-4 py-1.5 bg-dbx-oat dark:bg-dbx-navy-500 text-slate-700 dark:text-slate-200 rounded-lg text-sm font-medium hover:bg-dbx-oat-dark dark:hover:bg-dbx-navy-400 disabled:opacity-50">Export Excel</button>
             <span className="border-l border-slate-300 h-6" />
             <button onClick={openVolumeBrowser} disabled={importLoading} className="px-4 py-1.5 bg-slate-600 text-white rounded-lg text-sm font-medium hover:bg-slate-700 disabled:opacity-50">Import from Volume</button>
             <label className={`px-4 py-1.5 bg-slate-600 text-white rounded-lg text-sm font-medium hover:bg-slate-700 cursor-pointer ${importLoading ? 'opacity-50 pointer-events-none' : ''}`}>
@@ -961,8 +961,8 @@ function ReviewEditor() {
 
       {/* Volume file browser modal */}
       {showVolumeBrowser && (
-        <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-6">
-          <div className="bg-white dark:bg-slate-800 rounded-2xl shadow-2xl max-w-lg w-full max-h-[70vh] flex flex-col">
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-6 animate-fade-in">
+          <div className="bg-white dark:bg-dbx-navy-600 rounded-2xl shadow-elevated max-w-lg w-full max-h-[70vh] flex flex-col animate-slide-up">
             <div className="flex items-center justify-between px-6 pt-5 pb-3 border-b border-slate-200 dark:border-slate-600">
               <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100">Select File from Volume</h3>
               <button onClick={() => setShowVolumeBrowser(false)} className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-300">
@@ -1152,7 +1152,7 @@ function EntityTagsPanel() {
   }
 
   return (
-    <div className="bg-dbx-oat-light rounded-xl border border-slate-200 p-6 shadow-sm">
+    <div className="card p-6">
       <ErrorBanner error={error} />
       <div className="flex items-center justify-between mb-4">
         <h2 className="text-lg font-semibold text-slate-800">Discovered Entities</h2>
@@ -1356,10 +1356,10 @@ export default function MetadataReview() {
     <div className="space-y-4">
       <ErrorBanner error={error} />
       <div className="flex flex-wrap items-center gap-4">
-        <div className="flex bg-dbx-oat rounded-lg p-1">
+        <div className="inline-flex bg-dbx-oat/60 dark:bg-dbx-navy-600 rounded-xl p-1 shadow-inner-soft">
           {[['editor', 'Review Editor'], ['fk_apply', 'FK Apply'], ['entity_tags', 'Entity Tags'], ['kb', 'Table KB'], ['columns', 'Column KB'], ['schemas', 'Schema KB'], ['log', 'Generation Log']].map(([k, l]) => (
             <button key={k} onClick={() => setTab(k)}
-              className={`px-3 py-1.5 text-sm rounded-md transition-all ${tab === k ? 'bg-dbx-oat-light shadow-sm font-semibold text-red-700' : 'text-slate-500 hover:text-slate-700'}`}>{l}</button>
+              className={`px-3.5 py-1.5 text-sm rounded-lg transition-all duration-200 ${tab === k ? 'bg-white dark:bg-dbx-navy-500 shadow-sm font-semibold text-dbx-lava' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'}`}>{l}</button>
           ))}
         </div>
         {!['editor', 'fk_apply', 'entity_tags'].includes(tab) && <>

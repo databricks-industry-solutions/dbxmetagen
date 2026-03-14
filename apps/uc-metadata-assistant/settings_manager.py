@@ -8,6 +8,7 @@ Handles workspace-wide configuration for models, PII detection, and tags policy.
 
 import json
 import logging
+import os
 from typing import Dict, List, Optional, Any
 from datetime import datetime
 
@@ -24,7 +25,8 @@ class SettingsManager:
     
     def __init__(self, unity_service):
         self.unity_service = unity_service
-        self.settings_schema = "uc_metadata_assistant.settings"
+        _cat = os.environ.get("UC_ASSISTANT_CATALOG", "uc_metadata_assistant")
+        self.settings_schema = f"{_cat}.settings"
         self.settings_table = f"{self.settings_schema}.workspace_settings"
         self._initialized = False
         

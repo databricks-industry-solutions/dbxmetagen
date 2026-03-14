@@ -23,9 +23,9 @@ const INTENT_LABELS = {
 }
 
 const MODE_CONFIG = {
-  quick: { label: 'Quick Query', color: 'bg-blue-600', hoverColor: 'hover:bg-blue-700', lightBg: 'bg-blue-100 text-blue-700', desc: 'Fast ReAct with VS + graph' },
-  graphrag: { label: 'GraphRAG Analysis', color: 'bg-violet-600', hoverColor: 'hover:bg-violet-700', lightBg: 'bg-violet-100 text-violet-700', desc: 'Multi-agent with full semantic layer' },
-  baseline: { label: 'Baseline Analysis', color: 'bg-slate-600', hoverColor: 'hover:bg-slate-700', lightBg: 'bg-slate-100 text-slate-700', desc: 'Multi-agent with KB tables only' },
+  quick: { label: 'Quick Query', color: 'bg-blue-600', ring: 'ring-blue-600', lightBg: 'bg-blue-50 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300', desc: 'Fast ReAct with VS + graph', valueColor: 'text-blue-600' },
+  graphrag: { label: 'GraphRAG Analysis', color: 'bg-violet-600', ring: 'ring-violet-600', lightBg: 'bg-violet-50 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300', desc: 'Multi-agent with full semantic layer', valueColor: 'text-violet-600' },
+  baseline: { label: 'Baseline Analysis', color: 'bg-slate-600', ring: 'ring-slate-600', lightBg: 'bg-slate-50 text-slate-700 dark:bg-slate-800/40 dark:text-slate-300', desc: 'Multi-agent with KB tables only', valueColor: 'text-slate-600' },
 }
 
 const STAGE_LABELS = {
@@ -63,10 +63,10 @@ const MODE_QUESTIONS = {
 function StatCard({ label, value, sub, gradient, onClick }) {
   return (
     <div onClick={onClick}
-      className={`rounded-xl p-3.5 border bg-gradient-to-br ${gradient} ${onClick ? 'cursor-pointer hover:scale-[1.02] transition-transform' : ''}`}>
-      <p className="text-[10px] font-medium uppercase tracking-wider text-gray-500 mb-0.5">{label}</p>
-      <p className="text-xl font-bold text-dbx-lava">{value ?? '--'}</p>
-      {sub && <p className="text-[10px] text-gray-400 mt-0.5 truncate">{sub}</p>}
+      className={`rounded-xl p-4 border shadow-card bg-gradient-to-br ${gradient} ${onClick ? 'cursor-pointer hover:shadow-card-hover transition-all duration-200 hover:scale-[1.02]' : ''}`}>
+      <p className="text-xs font-medium uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1">{label}</p>
+      <p className="text-2xl font-bold text-dbx-navy dark:text-white">{value ?? '--'}</p>
+      {sub && <p className="text-xs text-slate-400 mt-1 truncate">{sub}</p>}
     </div>
   )
 }
@@ -75,29 +75,31 @@ function AgentReasoning({ intent, toolCalls }) {
   const [open, setOpen] = useState(false)
   if (!intent && (!toolCalls || toolCalls.length === 0)) return null
   return (
-    <div className="mt-2">
+    <div className="mt-2.5 pt-2.5 border-t border-slate-200/50 dark:border-dbx-navy-400/30">
       <button onClick={() => setOpen(!open)}
-        className="text-[11px] text-gray-400 hover:text-dbx-navy transition-colors flex items-center gap-1">
-        <span className="font-mono">{open ? '\u25B4' : '\u25BE'}</span>
-        {open ? 'Hide' : 'Show'} agent reasoning
-        {toolCalls?.length > 0 && <span className="text-gray-300 ml-1">({toolCalls.length} tools)</span>}
+        className="text-xs text-slate-400 hover:text-dbx-navy dark:hover:text-slate-200 transition-colors flex items-center gap-1.5">
+        <svg className={`w-3 h-3 transition-transform duration-200 ${open ? 'rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+        </svg>
+        {open ? 'Hide' : 'Show'} reasoning
+        {toolCalls?.length > 0 && <span className="badge bg-slate-100 dark:bg-dbx-navy-500 text-slate-500 dark:text-slate-400">{toolCalls.length} tools</span>}
       </button>
       {open && (
-        <div className="mt-1.5 px-3 py-2 bg-dbx-oat border rounded-lg text-xs space-y-1.5">
+        <div className="mt-2 px-3 py-2.5 bg-dbx-oat-light dark:bg-dbx-navy-500/50 border border-dbx-oat-dark/30 dark:border-dbx-navy-400/30 rounded-lg text-xs space-y-2 animate-slide-up">
           {intent && (
             <div>
-              <span className="text-gray-400">Intent:</span>{' '}
-              <span className="font-mono text-dbx-navy">{intent}</span>
-              <span className="text-gray-400 ml-2">{INTENT_LABELS[intent] || ''}</span>
+              <span className="text-slate-400">Intent:</span>{' '}
+              <span className="font-mono font-medium text-dbx-navy dark:text-slate-200">{intent}</span>
+              <span className="text-slate-400 ml-2">{INTENT_LABELS[intent] || ''}</span>
             </div>
           )}
           {toolCalls?.length > 0 && (
-            <div className="space-y-0.5">
-              <span className="text-gray-400">Tools used:</span>
+            <div className="space-y-1">
+              <span className="text-slate-400">Tools used:</span>
               {toolCalls.map((t, i) => (
                 <div key={i} className="flex items-baseline gap-2 ml-3">
-                  <span className="font-mono text-emerald-700">{t}</span>
-                  <span className="text-gray-400">{TOOL_DESCRIPTIONS[t] || ''}</span>
+                  <span className="font-mono font-medium text-emerald-600 dark:text-emerald-400">{t}</span>
+                  <span className="text-slate-400">{TOOL_DESCRIPTIONS[t] || ''}</span>
                 </div>
               ))}
             </div>
@@ -111,8 +113,8 @@ function AgentReasoning({ intent, toolCalls }) {
 function MessageBubble({ msg, onRetry }) {
   if (msg.role === 'user') {
     return (
-      <div className="flex justify-end mb-3">
-        <div className="bg-dbx-navy text-white rounded-2xl rounded-br-sm px-4 py-2.5 max-w-[80%] text-sm whitespace-pre-wrap">
+      <div className="flex justify-end mb-4">
+        <div className="bg-gradient-to-br from-dbx-navy to-dbx-navy-600 text-white rounded-2xl px-4 py-3 max-w-[80%] text-sm whitespace-pre-wrap shadow-card">
           {msg.content}
         </div>
       </div>
@@ -120,11 +122,11 @@ function MessageBubble({ msg, onRetry }) {
   }
   if (msg.role === 'error') {
     return (
-      <div className="flex justify-start mb-3">
-        <div className="bg-red-50 border border-red-200 rounded-2xl rounded-bl-sm px-4 py-2.5 max-w-[85%] text-sm">
-          <p className="text-red-700">{msg.content}</p>
+      <div className="flex justify-start mb-4 animate-slide-up">
+        <div className="card border-l-4 border-l-red-400 px-4 py-3 max-w-[85%] text-sm">
+          <p className="text-red-600 dark:text-red-400">{msg.content}</p>
           {onRetry && (
-            <button onClick={onRetry} className="mt-2 text-xs text-red-600 hover:text-red-800 underline">
+            <button onClick={onRetry} className="mt-2 text-xs text-red-500 hover:text-red-700 dark:hover:text-red-300 font-medium">
               Retry this question
             </button>
           )}
@@ -134,14 +136,14 @@ function MessageBubble({ msg, onRetry }) {
   }
   const cfg = MODE_CONFIG[msg.mode] || MODE_CONFIG.quick
   return (
-    <div className="flex justify-start mb-3">
-      <div className="bg-dbx-oat-light border rounded-2xl rounded-bl-sm px-4 py-2.5 max-w-[85%] text-sm overflow-hidden">
+    <div className="flex justify-start mb-4 animate-slide-up">
+      <div className="card px-4 py-3 max-w-[85%] text-sm overflow-hidden">
         {msg.mode && (
-          <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-medium mb-1.5 ${cfg.lightBg}`}>
+          <span className={`badge text-xs mb-2 ${cfg.lightBg}`}>
             {cfg.label}
           </span>
         )}
-        <div className="prose prose-sm max-w-none whitespace-pre-wrap break-words"
+        <div className="prose prose-sm max-w-none whitespace-pre-wrap break-words text-slate-700 dark:text-slate-300"
           dangerouslySetInnerHTML={{ __html: simpleMarkdown(msg.content) }} />
         <AgentReasoning intent={msg.intent} toolCalls={msg.tool_calls} />
       </div>
@@ -154,7 +156,7 @@ function simpleMarkdown(text) {
   return text
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-    .replace(/`([^`]+)`/g, '<code class="bg-dbx-oat px-1 rounded text-xs">$1</code>')
+    .replace(/`([^`]+)`/g, '<code class="bg-dbx-oat dark:bg-dbx-navy-500 px-1.5 py-0.5 rounded text-xs font-mono">$1</code>')
     .replace(/^### (.+)$/gm, '<h3 class="text-base font-semibold mt-3 mb-1">$1</h3>')
     .replace(/^## (.+)$/gm, '<h2 class="text-lg font-semibold mt-3 mb-1">$1</h2>')
     .replace(/^- (.+)$/gm, '<li class="ml-4 list-disc">$1</li>')
@@ -165,9 +167,9 @@ function simpleMarkdown(text) {
 function DomainItem({ label, count, onClick }) {
   return (
     <button onClick={onClick}
-      className="flex items-center justify-between w-full px-2.5 py-1.5 rounded hover:bg-dbx-navy/5 transition-colors text-left">
-      <span className="text-xs text-gray-700 truncate">{label}</span>
-      <span className="text-xs font-semibold text-dbx-navy ml-2 flex-shrink-0">{count}</span>
+      className="flex items-center justify-between w-full px-3 py-2 rounded-lg hover:bg-dbx-oat dark:hover:bg-dbx-navy-500/50 transition-all text-left group">
+      <span className="text-xs font-medium text-slate-700 dark:text-slate-300 truncate group-hover:text-dbx-navy dark:group-hover:text-white">{label}</span>
+      <span className="text-xs font-bold text-dbx-navy dark:text-dbx-teal ml-2 flex-shrink-0">{count}</span>
     </button>
   )
 }
@@ -177,26 +179,28 @@ function RetrievalTechniques() {
   return (
     <div className="mb-3">
       <button onClick={() => setOpen(!open)}
-        className="text-[11px] text-gray-400 hover:text-dbx-navy transition-colors flex items-center gap-1">
-        <span className="font-mono">{open ? '\u25B4' : '\u25BE'}</span>
-        Advanced: Retrieval Techniques
+        className="text-xs text-slate-400 hover:text-dbx-navy dark:hover:text-slate-200 transition-colors flex items-center gap-1.5">
+        <svg className={`w-3 h-3 transition-transform duration-200 ${open ? 'rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+        </svg>
+        Retrieval Techniques
       </button>
       {open && (
-        <div className="mt-1.5 px-3 py-2.5 bg-gray-50 border rounded-lg text-xs text-gray-600 space-y-3">
+        <div className="mt-2 card p-4 text-xs text-slate-600 dark:text-slate-300 space-y-3 animate-slide-up">
           <div>
-            <p className="font-semibold text-blue-700 mb-0.5">Quick Query</p>
+            <p className="font-semibold text-blue-600 dark:text-blue-400 mb-0.5">Quick Query</p>
             <p>Intent classification selects tool subset. Vector search (VS) finds semantically similar metadata documents. Graph tools do 1-hop expansion from VS hits via Lakebase PG (falls back to UC Delta).</p>
           </div>
           <div>
-            <p className="font-semibold text-violet-700 mb-0.5">GraphRAG Analysis</p>
+            <p className="font-semibold text-violet-600 dark:text-violet-400 mb-0.5">GraphRAG Analysis</p>
             <p>Multi-agent pipeline: Supervisor routes to Planner, Retrieval, Analyst, and Response subagents. Planner generates a numbered data-gathering plan using knowledge of the graph schema (node types, edge types, join expressions). Retrieval executes VS semantic search, graph traversal (multi-hop BFS with edge_type filtering), and SQL queries. node_id bridges VS hits to graph nodes for hybrid search. Analyst synthesizes evidence into findings with source citations.</p>
           </div>
           <div>
-            <p className="font-semibold text-slate-700 mb-0.5">Baseline Analysis</p>
+            <p className="font-semibold text-slate-700 dark:text-slate-300 mb-0.5">Baseline Analysis</p>
             <p>Same multi-agent pipeline as GraphRAG but restricted to three tables: table_knowledge_base, column_knowledge_base, schema_knowledge_base. No vector search, no graph traversal, no ontology, no FK predictions. Demonstrates the value added by the semantic layer.</p>
           </div>
           <div>
-            <p className="font-semibold text-gray-700 mb-0.5">Fallback Strategy</p>
+            <p className="font-semibold text-slate-700 dark:text-slate-300 mb-0.5">Fallback Strategy</p>
             <p>All graph queries try Lakebase PG first (sub-100ms), then fall back to UC Delta tables. VS queries use the Databricks Vector Search endpoint.</p>
           </div>
         </div>
@@ -331,16 +335,20 @@ export default function AgentChat() {
   const cfg = MODE_CONFIG[mode] || MODE_CONFIG.quick
 
   return (
-    <div className="flex gap-4" style={{ minHeight: 'calc(100vh - 200px)' }}>
+    <div className="flex gap-5" style={{ minHeight: 'calc(100vh - 200px)' }}>
       <ErrorBanner error={error} />
 
       {/* Left: Chat */}
       <div className="flex-1 flex flex-col min-w-0" style={{ flexBasis: '65%' }}>
-        {/* Mode selector */}
-        <div className="flex gap-2 mb-2">
+        {/* Mode selector -- segmented control */}
+        <div className="inline-flex bg-dbx-oat dark:bg-dbx-navy-600 rounded-xl p-1 mb-3 shadow-inner-soft">
           {Object.entries(MODE_CONFIG).map(([key, c]) => (
             <button key={key} onClick={() => { setMode(key); setMessages([]); setError(null) }}
-              className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${mode === key ? `${c.color} text-white shadow-sm` : 'bg-dbx-oat text-slate-600 hover:bg-dbx-oat-dark'}`}
+              className={`px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200 ${
+                mode === key
+                  ? `${c.color} text-white shadow-sm`
+                  : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'
+              }`}
               title={c.desc}>{c.label}</button>
           ))}
         </div>
@@ -348,20 +356,21 @@ export default function AgentChat() {
         <RetrievalTechniques />
 
         {/* Chat area */}
-        <div className="flex-1 bg-dbx-oat-light/40 rounded-xl border p-4 overflow-y-auto mb-3" style={{ maxHeight: '60vh' }}>
+        <div className="flex-1 card p-5 overflow-y-auto mb-3 scrollbar-thin bg-gradient-to-b from-white to-dbx-oat-light/50 dark:from-dbx-navy-600 dark:to-dbx-navy/50" style={{ maxHeight: '60vh' }}>
           {messages.length === 0 ? (
-            <div className="flex flex-col items-center justify-center h-full text-center py-10">
-              <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-dbx-navy to-dbx-navy/70 flex items-center justify-center mb-3">
-                <svg className="w-6 h-6 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <div className="flex flex-col items-center justify-center h-full text-center py-12">
+              <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-dbx-navy to-dbx-navy-500 flex items-center justify-center mb-4 shadow-card">
+                <svg className="w-7 h-7 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
                 </svg>
               </div>
-              <h2 className="text-lg font-semibold text-dbx-navy mb-1">{cfg.label}</h2>
-              <p className="text-xs text-gray-500 mb-5 max-w-md">{cfg.desc}</p>
-              <div className="flex flex-wrap gap-2 justify-center max-w-lg">
+              <h2 className="text-lg font-bold text-slate-800 dark:text-slate-100 mb-1">{cfg.label}</h2>
+              <p className="text-sm text-slate-500 dark:text-slate-400 mb-6 max-w-md">{cfg.desc}</p>
+              <div className="flex flex-wrap gap-2.5 justify-center max-w-lg">
                 {(MODE_QUESTIONS[mode] || MODE_QUESTIONS.quick).map((s, i) => (
                   <button key={i} onClick={() => send(s.query)}
-                    className="px-3 py-1.5 bg-dbx-oat-light border border-gray-200 rounded-full text-xs text-gray-600 hover:bg-dbx-navy/5 hover:border-dbx-navy/30 transition-colors">
+                    className="group flex items-center gap-2 px-4 py-2 card-interactive text-xs text-slate-600 dark:text-slate-300 hover:text-dbx-navy dark:hover:text-white">
+                    <span className="w-1.5 h-1.5 rounded-full bg-dbx-lava/60 group-hover:bg-dbx-lava transition-colors flex-shrink-0" />
                     {s.label}
                   </button>
                 ))}
@@ -374,8 +383,8 @@ export default function AgentChat() {
                   onRetry={m.role === 'error' ? () => send(m._query, m._mode) : null} />
               ))}
               {loading && (
-                <div className="flex justify-start mb-3">
-                  <div className="bg-dbx-oat-light border rounded-2xl rounded-bl-sm px-4 py-3 text-sm text-gray-400 flex items-center gap-2">
+                <div className="flex justify-start mb-4 animate-slide-up">
+                  <div className="card px-4 py-3 text-sm text-slate-400 flex items-center gap-2.5">
                     <span className="inline-block w-2 h-2 bg-dbx-lava rounded-full animate-pulse" />
                     {STAGE_LABELS[stage] || 'Thinking...'}
                   </div>
@@ -387,22 +396,22 @@ export default function AgentChat() {
         </div>
 
         {/* Input bar */}
-        <div className="flex gap-2 items-center">
+        <div className="flex gap-2.5 items-center">
           <input
             value={input}
             onChange={e => setInput(e.target.value)}
             onKeyDown={handleKey}
             placeholder={mode === 'quick' ? 'Ask about your data catalog...' : `Ask for ${cfg.label.toLowerCase()}...`}
             disabled={loading}
-            className="flex-1 border rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-dbx-navy/30 disabled:opacity-50"
+            className="input-base flex-1 !py-2.5"
           />
           <button onClick={() => send(input)} disabled={loading || !input.trim()}
-            className={`px-4 py-2.5 text-white rounded-lg text-sm font-medium disabled:opacity-50 transition-colors ${cfg.color} ${cfg.hoverColor}`}>
+            className={`btn-md ${cfg.color} text-white rounded-lg font-medium disabled:opacity-50 transition-all`}>
             Send
           </button>
           {messages.length > 0 && (
             <button onClick={clearChat} title="Clear chat"
-              className="px-2.5 py-2.5 text-gray-400 hover:text-gray-600 rounded-lg hover:bg-dbx-oat-dark transition-colors flex-shrink-0">
+              className="btn-ghost p-2.5 rounded-lg flex-shrink-0">
               <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
               </svg>
@@ -412,34 +421,34 @@ export default function AgentChat() {
       </div>
 
       {/* Right: Stats Panel */}
-      <div className="flex-shrink-0 overflow-y-auto space-y-3" style={{ width: '320px', maxHeight: 'calc(100vh - 200px)' }}>
+      <div className="flex-shrink-0 overflow-y-auto space-y-4 scrollbar-thin" style={{ width: '320px', maxHeight: 'calc(100vh - 200px)' }}>
         {stats && (
-          <div className="grid grid-cols-2 gap-2.5">
+          <div className="grid grid-cols-2 gap-3">
             <StatCard label="Tables" value={stats.tables_profiled}
-              gradient="from-blue-500/15 to-blue-600/5 border-blue-200"
+              gradient="from-blue-50 to-blue-100/50 border-blue-200/50 dark:from-blue-900/20 dark:to-blue-900/10 dark:border-blue-800/30"
               onClick={() => injectQuery('What tables exist in my catalog?')} />
             <StatCard label="Entity Types" value={stats.entity_types}
-              gradient="from-violet-500/15 to-violet-600/5 border-violet-200"
+              gradient="from-violet-50 to-violet-100/50 border-violet-200/50 dark:from-violet-900/20 dark:to-violet-900/10 dark:border-violet-800/30"
               onClick={() => injectQuery('What entity types were discovered?')} />
             <StatCard label="FK Relations" value={stats.fk_predictions}
-              gradient="from-emerald-500/15 to-emerald-600/5 border-emerald-200"
+              gradient="from-emerald-50 to-emerald-100/50 border-emerald-200/50 dark:from-emerald-900/20 dark:to-emerald-900/10 dark:border-emerald-800/30"
               onClick={() => injectQuery('Show me foreign key relationships')} />
             <StatCard label="Metric Views" value={stats.metric_views}
-              gradient="from-amber-500/15 to-amber-600/5 border-amber-200"
+              gradient="from-amber-50 to-amber-100/50 border-amber-200/50 dark:from-amber-900/20 dark:to-amber-900/10 dark:border-amber-800/30"
               onClick={() => injectQuery('What metric views are available?')} />
             <StatCard label="VS Documents" value={stats.vs_documents}
-              gradient="from-rose-500/15 to-rose-600/5 border-rose-200"
+              gradient="from-rose-50 to-rose-100/50 border-rose-200/50 dark:from-rose-900/20 dark:to-rose-900/10 dark:border-rose-800/30"
               sub={stats.vs_by_type ? Object.entries(stats.vs_by_type).map(([k,v]) => `${k}: ${v}`).join(', ') : ''} />
             <StatCard label="Quality" value={stats.avg_quality ?? '--'}
-              gradient="from-teal-500/15 to-teal-600/5 border-teal-200"
+              gradient="from-teal-50 to-teal-100/50 border-teal-200/50 dark:from-teal-900/20 dark:to-teal-900/10 dark:border-teal-800/30"
               onClick={() => injectQuery('Show me the data quality summary')} />
           </div>
         )}
 
         {domainStats?.tables_by_domain?.length > 0 && (
-          <div className="bg-dbx-oat-light rounded-xl border p-3">
-            <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Tables by Domain</h3>
-            <div className="space-y-0.5 max-h-40 overflow-y-auto">
+          <div className="card p-4">
+            <h3 className="section-title mb-3">Tables by Domain</h3>
+            <div className="space-y-0.5 max-h-44 overflow-y-auto scrollbar-thin">
               {domainStats.tables_by_domain.map((d, i) => (
                 <DomainItem key={i} label={d.domain || 'unknown'} count={d.count}
                   onClick={() => injectQuery(`Describe the ${d.domain} domain tables`)} />
@@ -449,9 +458,9 @@ export default function AgentChat() {
         )}
 
         {domainStats?.entities_by_type?.length > 0 && (
-          <div className="bg-dbx-oat-light rounded-xl border p-3">
-            <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Entity Types</h3>
-            <div className="space-y-0.5 max-h-40 overflow-y-auto">
+          <div className="card p-4">
+            <h3 className="section-title mb-3">Entity Types</h3>
+            <div className="space-y-0.5 max-h-44 overflow-y-auto scrollbar-thin">
               {domainStats.entities_by_type.map((e, i) => (
                 <DomainItem key={i} label={e.type || 'unknown'} count={e.count}
                   onClick={() => injectQuery(`Tell me about the ${e.type} entity type`)} />
@@ -461,9 +470,9 @@ export default function AgentChat() {
         )}
 
         {domainStats?.fk_by_domain?.length > 0 && (
-          <div className="bg-dbx-oat-light rounded-xl border p-3">
-            <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">FK Relations by Domain</h3>
-            <div className="space-y-0.5 max-h-32 overflow-y-auto">
+          <div className="card p-4">
+            <h3 className="section-title mb-3">FK Relations by Domain</h3>
+            <div className="space-y-0.5 max-h-36 overflow-y-auto scrollbar-thin">
               {domainStats.fk_by_domain.map((d, i) => (
                 <DomainItem key={i} label={d.domain || 'unknown'} count={d.count}
                   onClick={() => injectQuery(`Show foreign key relationships in the ${d.domain} domain`)} />

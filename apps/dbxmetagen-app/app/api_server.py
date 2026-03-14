@@ -8,6 +8,7 @@ import uuid as _uuid
 import queue
 import logging
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import yaml
 from typing import Optional, Union
@@ -2859,12 +2860,174 @@ def delete_project(project_id: str):
 _sl_tasks: dict[str, dict] = {}
 
 
-def _build_sl_context(tables: list[str], cat: str, sch: str) -> str:
-    """Build context string from knowledge base tables, scoped to selected tables. Cached 120s."""
-    cache_key = f"{cat}.{sch}:" + ",".join(sorted(tables))
+def _sl_vs_enrich(questions: list[str], selected_tables: set[str]) -> str:
+    """Phase 1a: Vector Search per question to discover relevant tables/columns."""
+    try:
+        from agent.metadata_tools import _get_vs_index, VS_INDEX_SUFFIX
+        vs_index_name = f"{CATALOG}.{SCHEMA}.{VS_INDEX_SUFFIX}"
+        index = _get_vs_index(vs_index_name)
+    except Exception:
+        return ""
+
+    seen = set()
+    lines: list[str] = []
+    for q in questions[:8]:
+        try:
+            results = index.similarity_search(
+                query_text=q,
+                columns=["doc_type", "content", "table_name", "entity_type"],
+                num_results=5,
+            )
+            cols = results.get("manifest", {}).get("columns", [])
+            col_names = [c.get("name", f"col{i}") for i, c in enumerate(cols)]
+            for row in results.get("result", {}).get("data_array", []):
+                match = dict(zip(col_names, row)) if col_names else {}
+                tname = match.get("table_name", "")
+                doc_type = match.get("doc_type", "")
+                content = (match.get("content") or "")[:200]
+                key = f"{doc_type}:{tname}:{content[:60]}"
+                if key in seen or not content:
+                    continue
+                seen.add(key)
+                is_new = tname and tname not in selected_tables
+                tag = " [NOT SELECTED - consider adding]" if is_new else ""
+                lines.append(f"  [{doc_type}] {tname}{tag}: {content}")
+        except Exception:
+            continue
+
+    if not lines:
+        return ""
+    return "\nSEMANTIC SEARCH DISCOVERIES (relevant to business questions):\n" + "\n".join(lines[:25])
+
+
+def _sl_graph_enrich(fq_tables: list[str]) -> str:
+    """Phase 1b: 1-2 hop graph traversal from selected tables."""
+    edges: list[str] = []
+    for tname in fq_tables[:10]:
+        tname_esc = tname.replace("'", "''")
+        try:
+            rows = graph_query(
+                f"SELECT e.src, e.dst, e.relationship, e.edge_type, e.weight, e.join_expression "
+                f"FROM public.graph_edges e "
+                f"WHERE (e.src = '{tname_esc}' OR e.dst = '{tname_esc}') "
+                f"AND e.edge_type IN ('references','contains','instance_of','same_domain','derives_from') "
+                f"LIMIT 20"
+            )
+            for r in rows:
+                expr = r.get("join_expression") or ""
+                expr_str = f" JOIN: {expr}" if expr else ""
+                line = f"  {r['src']} --[{r.get('relationship', r.get('edge_type', ''))}]--> {r['dst']}{expr_str}"
+                if line not in edges:
+                    edges.append(line)
+        except Exception:
+            continue
+
+    # 2-hop: find paths through intermediate nodes
+    if edges and len(fq_tables) > 1:
+        table_set = set(fq_tables)
+        try:
+            in_clause = ", ".join(f"'{t.replace(chr(39), chr(39)+chr(39))}'" for t in fq_tables)
+            hop2 = graph_query(
+                f"SELECT DISTINCT e1.src as t1, e1.dst as mid, e2.dst as t2, "
+                f"e1.relationship as r1, e2.relationship as r2, e2.join_expression "
+                f"FROM public.graph_edges e1 "
+                f"JOIN public.graph_edges e2 ON e1.dst = e2.src "
+                f"WHERE e1.src IN ({in_clause}) AND e2.dst IN ({in_clause}) "
+                f"AND e1.src != e2.dst "
+                f"AND e1.edge_type IN ('references','contains','instance_of') "
+                f"AND e2.edge_type IN ('references','contains','instance_of') "
+                f"LIMIT 10"
+            )
+            for h in hop2:
+                line = f"  {h['t1']} --[{h['r1']}]--> {h['mid']} --[{h['r2']}]--> {h['t2']}"
+                if line not in edges:
+                    edges.append(line)
+        except Exception:
+            pass
+
+    if not edges:
+        return ""
+    return "\nGRAPH RELATIONSHIPS (structural join paths and entity connections):\n" + "\n".join(edges[:30])
+
+
+def _sl_extra_sql_context(in_clause: str) -> str:
+    """Phase 1c: ontology_relationships, column_properties, existing MVs, profiling."""
+    parts: list[str] = []
+
+    # Ontology relationships
+    try:
+        rel_rows = execute_sql(
+            f"SELECT source_entity, target_entity, relationship_type, description "
+            f"FROM {fq('ontology_relationships')} LIMIT 50"
+        )
+        if rel_rows:
+            parts.append("\nONTOLOGY ENTITY RELATIONSHIPS:")
+            for r in rel_rows:
+                desc = f" ({r['description']})" if r.get("description") else ""
+                parts.append(f"  {r['source_entity']} --[{r['relationship_type']}]--> {r['target_entity']}{desc}")
+    except Exception:
+        pass
+
+    # Column properties
+    try:
+        cp_rows = execute_sql(
+            f"SELECT table_name, column_name, property_name, property_value "
+            f"FROM {fq('ontology_column_properties')} WHERE table_name IN ({in_clause}) LIMIT 100"
+        )
+        if cp_rows:
+            parts.append("\nCOLUMN PROPERTY ANNOTATIONS:")
+            by_col: dict[str, list[str]] = {}
+            for cp in cp_rows:
+                key = f"{cp['table_name']}.{cp['column_name']}"
+                by_col.setdefault(key, []).append(f"{cp['property_name']}={cp['property_value']}")
+            for col_key, props in list(by_col.items())[:40]:
+                parts.append(f"  {col_key}: {', '.join(props)}")
+    except Exception:
+        pass
+
+    # Existing metric view definitions (for deduplication)
+    try:
+        mv_rows = execute_sql(
+            f"SELECT metric_view_name, source_table, status "
+            f"FROM {fq('metric_view_definitions')} "
+            f"WHERE status NOT IN ('superseded', 'deleted') LIMIT 30"
+        )
+        if mv_rows:
+            parts.append("\nEXISTING METRIC VIEWS (avoid duplicating these):")
+            for mv in mv_rows:
+                parts.append(f"  {mv['metric_view_name']} (source: {mv['source_table']}, status: {mv['status']})")
+    except Exception:
+        pass
+
+    # Profiling summaries
+    try:
+        prof_rows = execute_sql(
+            f"SELECT table_name, column_name, distinct_count, null_count "
+            f"FROM {fq('profiling_results')} WHERE table_name IN ({in_clause}) "
+            f"AND (distinct_count IS NOT NULL OR null_count IS NOT NULL) LIMIT 100"
+        )
+        if prof_rows:
+            parts.append("\nPROFILING SUMMARIES (cardinality/nulls -- use for dimension vs measure decisions):")
+            for p in prof_rows:
+                dc = p.get("distinct_count", "?")
+                nc = p.get("null_count", "?")
+                parts.append(f"  {p['table_name']}.{p['column_name']}: distinct={dc}, nulls={nc}")
+    except Exception:
+        pass
+
+    return "\n".join(parts)
+
+
+def _build_sl_context(
+    tables: list[str], cat: str, sch: str, questions: list[str] | None = None
+) -> str:
+    """Build enriched context from KB tables, Vector Search, graph, and ontology. Cached 120s."""
+    q_key = ",".join(sorted(questions)) if questions else ""
+    cache_key = f"{cat}.{sch}:" + ",".join(sorted(tables)) + ":" + q_key
     with _sl_context_lock:
         if cache_key in _sl_context_cache:
             return _sl_context_cache[cache_key]
+
     fq_tables = []
     for t in tables:
         if "." in t:
@@ -2872,7 +3035,9 @@ def _build_sl_context(tables: list[str], cat: str, sch: str) -> str:
         else:
             fq_tables.append(f"{cat}.{sch}.{t}")
     in_clause = ", ".join(f"'{t}'" for t in fq_tables)
+    selected_set = set(fq_tables)
 
+    # --- Core SQL context (original) ---
     parts: list[str] = []
     table_rows = execute_sql(
         f"SELECT table_name, comment, domain, subdomain FROM {fq('table_knowledge_base')} "
@@ -2935,7 +3100,7 @@ def _build_sl_context(tables: list[str], cat: str, sch: str) -> str:
                 f"  {fk['src_table']}.{fk['src_column']} -> {fk['dst_table']}.{fk['dst_column']} (confidence {fk['final_confidence']})"
             )
 
-    # Include ontology metric suggestions if available
+    # Ontology metric suggestions
     metric_rows = []
     try:
         metric_rows = execute_sql(
@@ -2956,6 +3121,7 @@ def _build_sl_context(tables: list[str], cat: str, sch: str) -> str:
                 line += f" WHERE {m['filter_condition']}"
             parts.append(line)
 
+    # Fallback to information_schema when KB is empty
     if not table_rows:
         short_names = [t.split(".")[-1] for t in fq_tables]
         short_clause = ", ".join(f"'{t}'" for t in short_names)
@@ -2975,7 +3141,24 @@ def _build_sl_context(tables: list[str], cat: str, sch: str) -> str:
                 f"Table: {cat}.{sch}.{tname}\n  Columns:\n" + "\n".join(col_strs)
             )
 
-    result = "\n".join(parts)
+    # --- Phase 1 enrichment: VS, Graph, Extended SQL (parallel) ---
+    enrichment_parts: list[str] = []
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        futures = {}
+        if questions:
+            futures["vs"] = pool.submit(_sl_vs_enrich, questions, selected_set)
+        futures["graph"] = pool.submit(_sl_graph_enrich, fq_tables)
+        futures["sql_ext"] = pool.submit(_sl_extra_sql_context, in_clause)
+
+        for key, fut in futures.items():
+            try:
+                result_str = fut.result(timeout=30)
+                if result_str:
+                    enrichment_parts.append(result_str)
+            except Exception as exc:
+                logger.warning("SL context enrichment '%s' failed: %s", key, exc)
+
+    result = "\n".join(parts) + "\n".join(enrichment_parts)
     with _sl_context_lock:
         _sl_context_cache[cache_key] = result
     return result
@@ -3035,7 +3218,7 @@ RULES:
    - IN lists: department IN ('Surgery', 'Pediatrics'), NOT IN (Surgery, Pediatrics)
    - CONCAT separators: CONCAT(hospital, ' - ', department), NOT CONCAT(hospital, - , department)
    The ONLY unquoted tokens should be column names, SQL keywords, and numbers
-6. Include joins ONLY when FK relationships exist in the metadata
+6. Include joins when FK relationships OR GRAPH RELATIONSHIPS show a valid join path. Graph edges with join_expression are directly usable. Multi-hop graph paths indicate transitive join chains
 7. Every metric view MUST have at least one measure and one dimension
 8. Add a top-level "comment" describing the metric view's purpose
 9. Add a "comment" to each dimension and measure explaining what it represents
@@ -3050,6 +3233,12 @@ RULES:
     - Resources/staff/inventory: include utilization rates (active/total), efficiency ratios, and capacity measures
     Always include at least one RATIO measure (x / NULLIF(y, 0)) and one RATE measure (conditional_count * 1.0 / NULLIF(total, 0)) per metric view
 16. When FOREIGN KEY RELATIONSHIPS exist between selected tables, generate cross-table metrics that join fact tables to dimension tables. Use dimension table columns as grouping dimensions and fact table columns as measures
+17. SEMANTIC SEARCH DISCOVERIES: If the context includes tables marked "[NOT SELECTED - consider adding]", note them but do NOT generate metric views for unselected tables. Use them only to inform join patterns and relationships
+18. GRAPH RELATIONSHIPS: Use graph edges to discover multi-hop join paths between tables. If a graph edge shows Table_A --[references]--> Table_B with a join expression, use that join in metric views
+19. EXISTING METRIC VIEWS: If listed, do NOT generate metric views with the same name or covering the same analytical angle. Build on top of existing coverage instead
+20. COLUMN PROPERTY ANNOTATIONS: Use these to inform dimension vs measure choices. Columns marked is_temporal are good date dimensions; is_categorical for grouping dimensions; is_identifier for count-distinct measures
+21. ONTOLOGY ENTITY RELATIONSHIPS: Use entity-to-entity connections to generate cross-entity analytical metrics (e.g. "Patient --[treated_at]--> Hospital" suggests patient-counts-by-hospital measures)
+22. PROFILING SUMMARIES: Use distinct counts to judge cardinality. Low-cardinality columns (< 50 distinct) make good dimensions; high-cardinality columns are better as measure inputs or filters
 
 EXAMPLE:
 {_FEW_SHOT}
@@ -3478,6 +3667,54 @@ def _score_definition_complexity(defn: dict) -> dict:
     return {"complexity_score": score, "complexity_level": level}
 
 
+def _sl_self_repair(defn: dict, errors: list[str], model: str) -> dict | None:
+    """Phase 3: LLM-powered repair for a failed metric view definition. Returns fixed dict or None."""
+    source = defn.get("source", "")
+    col_context = ""
+    if source:
+        try:
+            cols = execute_sql(
+                f"SELECT column_name, data_type FROM {fq('column_knowledge_base')} "
+                f"WHERE table_name = '{source.replace(chr(39), chr(39)+chr(39))}'"
+            )
+            if cols:
+                col_context = "Available columns: " + ", ".join(
+                    f"{c['column_name']} ({c.get('data_type', '')})" for c in cols
+                )
+        except Exception:
+            pass
+
+    prompt = f"""Fix this metric view definition. It failed validation with these errors:
+
+ERRORS:
+{chr(10).join(f'  - {e}' for e in errors)}
+
+CURRENT DEFINITION:
+{json.dumps(defn, indent=2)}
+
+{col_context}
+
+Fix ONLY the broken expressions. Keep all valid parts unchanged.
+Use standard SQL: SUM, COUNT, AVG, MIN, MAX, DATE_TRUNC('MONTH', col).
+Always single-quote string literals. Only reference columns that exist.
+
+Return ONLY the fixed JSON definition (single object, not array)."""
+
+    try:
+        escaped = prompt.replace("'", "''")
+        rows = execute_sql(
+            f"SELECT AI_QUERY('{model}', '{escaped}') as response", timeout=120
+        )
+        response = rows[0]["response"] if rows else ""
+        fixed = _parse_single_json(response)
+        fixed.setdefault("source", source)
+        fixed.setdefault("name", defn.get("name", ""))
+        return fixed
+    except Exception as exc:
+        logger.warning("Self-repair AI call failed: %s", exc)
+        return None
+
+
 def _run_sl_generation(
     task_id: str,
     tables: list[str],
@@ -3517,7 +3754,7 @@ def _run_sl_generation(
                 pass
 
         task["stage"] = "building_context"
-        context = _build_sl_context(tables, cat, sch)
+        context = _build_sl_context(tables, cat, sch, questions=questions)
         if not context.strip():
             task.update(
                 {
@@ -3551,7 +3788,7 @@ def _run_sl_generation(
 
         task.update({"stage": "validating", "generated": len(definitions)})
         now = _dt.utcnow().isoformat()
-        stats = {"generated": 0, "validated": 0, "failed": 0}
+        stats = {"generated": 0, "validated": 0, "failed": 0, "repaired": 0}
 
         for defn in definitions:
             defn_id = str(_uuid.uuid4())
@@ -3581,21 +3818,44 @@ def _run_sl_generation(
                 except Exception:
                     pass
 
-            errors = _validate_definition_structure(defn)
-            if not errors:
-                for item_type in ("dimensions", "measures"):
-                    for item in defn.get(item_type, []):
-                        expr = item.get("expr", "")
-                        if source and expr:
-                            err, fixed = _validate_expr(expr, source)
-                            if err:
-                                errors.append(
-                                    f"{item_type} '{item.get('name', '')}': {err}"
-                                )
-                            elif fixed != expr:
-                                item["expr"] = fixed
+            def _validate_defn(d: dict) -> list[str]:
+                errs = _validate_definition_structure(d)
+                if not errs:
+                    for itype in ("dimensions", "measures"):
+                        for item in d.get(itype, []):
+                            expr = item.get("expr", "")
+                            if d.get("source") and expr:
+                                err, fixed_expr = _validate_expr(expr, d["source"])
+                                if err:
+                                    errs.append(f"{itype} '{item.get('name', '')}': {err}")
+                                elif fixed_expr != expr:
+                                    item["expr"] = fixed_expr
+                return errs
 
-            # Re-serialize after possible expression fixes
+            errors = _validate_defn(defn)
+
+            # Phase 3: Self-repair -- one LLM retry for failed definitions
+            if errors:
+                logger.info("Definition '%s' failed validation (%d errors), attempting self-repair", mv_name, len(errors))
+                repaired = _sl_self_repair(defn, errors, model)
+                if repaired:
+                    for itype in ("dimensions", "measures"):
+                        for item in repaired.get(itype, []):
+                            if item.get("expr"):
+                                item["expr"] = _autofix_expr(item["expr"])
+                    if repaired.get("filter"):
+                        repaired["filter"] = _autofix_expr(repaired["filter"])
+                    repair_errors = _validate_defn(repaired)
+                    if not repair_errors or len(repair_errors) < len(errors):
+                        defn = repaired
+                        errors = repair_errors
+                        mv_name = defn.get("name", mv_name)
+                        source = defn.get("source", source)
+                        if not errors:
+                            stats["repaired"] += 1
+                        logger.info("Self-repair %s for '%s' (%d remaining errors)",
+                                    "succeeded" if not errors else "improved", mv_name, len(errors))
+
             json_str = json.dumps(defn).replace("'", "''")
             status = "validated" if not errors else "failed"
             error_str = "; ".join(errors).replace("'", "''") if errors else ""
@@ -4368,17 +4628,31 @@ def genie_create(req: GenieCreateRequest):
                 title_esc = req.title.replace("'", "''")
                 arr_literal = ",".join(f"'{t}'" for t in table_ids)
                 if result.get("updated"):
+                    old_rows = execute_sql(
+                        f"SELECT COALESCE(version, 1) as version FROM {fq('genie_spaces')} "
+                        f"WHERE space_id = '{space_id}' AND COALESCE(status, 'active') = 'active' "
+                        f"AND deleted_at IS NULL ORDER BY version DESC LIMIT 1",
+                        timeout=15,
+                    )
+                    old_ver = int(old_rows[0]["version"]) if old_rows else 1
                     execute_sql(
-                        f"UPDATE {fq('genie_spaces')} SET title = '{title_esc}', "
-                        f"config_json = '{config_str}', updated_at = current_timestamp() "
-                        f"WHERE space_id = '{space_id}'",
+                        f"UPDATE {fq('genie_spaces')} SET status = 'superseded', updated_at = current_timestamp() "
+                        f"WHERE space_id = '{space_id}' AND COALESCE(status, 'active') = 'active'",
+                        timeout=30,
+                    )
+                    execute_sql(
+                        f"INSERT INTO {fq('genie_spaces')} "
+                        f"(space_id, title, tables, config_json, version, status, parent_space_id, created_at, updated_at, deleted_at) VALUES "
+                        f"('{space_id}', '{title_esc}', ARRAY({arr_literal}), "
+                        f"'{config_str}', {old_ver + 1}, 'active', '{space_id}', current_timestamp(), current_timestamp(), NULL)",
                         timeout=30,
                     )
                 else:
                     execute_sql(
-                        f"INSERT INTO {fq('genie_spaces')} VALUES "
+                        f"INSERT INTO {fq('genie_spaces')} "
+                        f"(space_id, title, tables, config_json, version, status, parent_space_id, created_at, updated_at, deleted_at) VALUES "
                         f"('{space_id}', '{title_esc}', ARRAY({arr_literal}), "
-                        f"'{config_str}', 1, current_timestamp(), current_timestamp(), NULL)",
+                        f"'{config_str}', 1, 'active', NULL, current_timestamp(), current_timestamp(), NULL)",
                         timeout=30,
                     )
                 logger.info("Tracked genie space %s in genie_spaces table", space_id)
@@ -4417,9 +4691,15 @@ def _ensure_genie_tracking_table():
             CREATE TABLE IF NOT EXISTS {fq('genie_spaces')} (
                 space_id STRING, title STRING, tables ARRAY<STRING>,
                 config_json STRING, version INT,
+                status STRING DEFAULT 'active', parent_space_id STRING,
                 created_at TIMESTAMP, updated_at TIMESTAMP, deleted_at TIMESTAMP
             )
         """, timeout=30)
+        for col, typ in [("status", "STRING DEFAULT 'active'"), ("parent_space_id", "STRING")]:
+            try:
+                execute_sql(f"ALTER TABLE {fq('genie_spaces')} ADD COLUMN {col} {typ}", timeout=15)
+            except Exception:
+                pass
     except Exception as e:
         logger.warning("Could not create genie_spaces tracking table: %s", e)
 
@@ -4428,9 +4708,9 @@ def _ensure_genie_tracking_table():
 def list_genie_spaces():
     _ensure_genie_tracking_table()
     return execute_sql(f"""
-        SELECT space_id, title, tables, config_json, version, created_at, updated_at
+        SELECT space_id, title, tables, config_json, COALESCE(version, 1) as version, created_at, updated_at
         FROM {fq('genie_spaces')}
-        WHERE deleted_at IS NULL
+        WHERE deleted_at IS NULL AND COALESCE(status, 'active') = 'active'
         ORDER BY updated_at DESC
     """)
 
@@ -4438,11 +4718,15 @@ def list_genie_spaces():
 @app.post("/api/genie/spaces/track")
 def track_genie_space(space_id: str, title: str, tables: list[str], config_json: str = ""):
     _ensure_genie_tracking_table()
-    execute_sql(f"""
-        INSERT INTO {fq('genie_spaces')}
-        VALUES ('{space_id}', '{title}', ARRAY({','.join(f"'{t}'" for t in tables)}),
-                '{config_json.replace("'", "''")}', 1, current_timestamp(), current_timestamp(), NULL)
-    """, timeout=30)
+    cfg_esc = config_json.replace("'", "''")
+    arr_literal = ",".join("'" + t + "'" for t in tables)
+    execute_sql(
+        f"INSERT INTO {fq('genie_spaces')} "
+        f"(space_id, title, tables, config_json, version, status, parent_space_id, created_at, updated_at, deleted_at) VALUES "
+        f"('{space_id}', '{title}', ARRAY({arr_literal}), "
+        f"'{cfg_esc}', 1, 'active', NULL, current_timestamp(), current_timestamp(), NULL)",
+        timeout=30,
+    )
     return {"ok": True}
 
 
@@ -4454,7 +4738,11 @@ def delete_genie_space(space_id: str):
         ws.api_client.do("DELETE", f"/api/2.0/genie/spaces/{space_id}")
     except Exception as e:
         logger.warning("Could not delete Genie space %s from Databricks: %s", space_id, e)
-    execute_sql(f"UPDATE {fq('genie_spaces')} SET deleted_at = current_timestamp() WHERE space_id = '{space_id}'", timeout=30)
+    execute_sql(
+        f"UPDATE {fq('genie_spaces')} SET deleted_at = current_timestamp() "
+        f"WHERE space_id = '{space_id}' AND deleted_at IS NULL",
+        timeout=30,
+    )
     return {"ok": True, "space_id": space_id}
 
 
@@ -4746,7 +5034,7 @@ def vector_search(req: VectorSearchRequest):
         index = _get_api_vs_index(vs_index_name)
         kwargs = dict(
             query_text=req.query,
-            columns=["doc_id", "doc_type", "content", "node_id", "table_name", "domain", "entity_type", "confidence_score"],
+            columns=["doc_id", "doc_type", "content", "table_name", "domain", "entity_type", "confidence_score"],
             num_results=min(max(req.num_results, 1), 20),
         )
         if req.doc_type:

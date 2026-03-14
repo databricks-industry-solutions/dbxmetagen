@@ -45,6 +45,74 @@ def _safe_sql(ws: WorkspaceClient, warehouse_id: str, query: str) -> list[dict]:
         return []
 
 
+_COMMON_ABBREVIATIONS = {
+    "id": "identifier", "qty": "quantity", "amt": "amount", "dt": "date",
+    "ts": "timestamp", "num": "number", "cnt": "count", "pct": "percent",
+    "avg": "average", "desc": "description", "addr": "address",
+    "acct": "account", "org": "organization", "dept": "department",
+    "mgr": "manager", "emp": "employee", "prod": "product", "cat": "category",
+    "inv": "invoice", "txn": "transaction", "bal": "balance", "ref": "reference",
+    "src": "source", "dst": "destination", "fk": "foreign key", "pk": "primary key",
+}
+
+
+_TYPE_SYNONYMS = {
+    "TIMESTAMP": ["date", "time", "datetime", "when"],
+    "DATE": ["date", "day", "when"],
+    "DECIMAL": ["amount", "value", "number"],
+    "DOUBLE": ["amount", "value", "number"],
+    "FLOAT": ["amount", "value", "number"],
+    "INT": ["count", "number"],
+    "BIGINT": ["count", "number", "identifier"],
+    "BOOLEAN": ["flag", "is", "yes/no"],
+}
+
+_DOMAIN_SYNONYMS = {
+    "customer": ["client", "buyer", "account holder"],
+    "clinical": ["patient", "medical", "healthcare"],
+    "diagnostics": ["lab", "test result", "observation"],
+    "payer": ["insurance", "coverage", "plan"],
+    "pharmaceutical": ["drug", "medication", "therapy"],
+    "sales": ["revenue", "deal", "opportunity"],
+    "marketing": ["campaign", "lead", "outreach"],
+    "support": ["ticket", "case", "service request"],
+}
+
+
+def _generate_synonyms(name: str, data_type: str = "", comment: str = "", domain: str = "") -> list[str]:
+    """Generate synonyms from a column/measure name by expanding abbreviations,
+    data type hints, domain context, and KB comments."""
+    tokens = name.replace("_", " ").split()
+    expanded = [_COMMON_ABBREVIATIONS.get(t.lower(), t) for t in tokens]
+    synonyms = set()
+    readable = " ".join(expanded)
+    if readable.lower() != name.lower():
+        synonyms.add(readable)
+    if len(tokens) > 1:
+        synonyms.add(" ".join(tokens))
+    if len(tokens) >= 3:
+        synonyms.add(" ".join(reversed(tokens[:2])) + " " + " ".join(tokens[2:]))
+    if comment:
+        first_sentence = comment.split(".")[0].strip()
+        if 3 < len(first_sentence) < 60:
+            synonyms.add(first_sentence)
+    dt_upper = data_type.upper().split("(")[0].strip() if data_type else ""
+    for dt_key, dt_syns in _TYPE_SYNONYMS.items():
+        if dt_upper == dt_key:
+            for s in dt_syns:
+                if s.lower() not in name.lower():
+                    synonyms.add(f"{' '.join(tokens)} {s}")
+                    break
+    if domain:
+        for ds in _DOMAIN_SYNONYMS.get(domain.lower(), []):
+            if ds.lower() not in name.lower() and len(tokens) > 0:
+                synonyms.add(f"{ds} {tokens[-1]}")
+                break
+    synonyms.discard(name)
+    synonyms.discard("")
+    return sorted(synonyms)[:5]
+
+
 class GenieContextAssembler:
     """Gathers metadata from knowledge bases and builds context for the Genie agent."""
 
@@ -101,7 +169,8 @@ class GenieContextAssembler:
                 join_specs.append(oj)
                 existing_pairs.add(pair)
         data_sources = self._build_data_sources(
-            table_identifiers, table_meta, applied_mvs
+            table_identifiers, table_meta, applied_mvs,
+            column_meta=column_meta, entity_rows=entity_rows,
         )
         sql_snippets = self._build_sql_snippets(
             unapplied_mvs, value_samples, column_meta
@@ -336,6 +405,33 @@ class GenieContextAssembler:
                 samples.setdefault(tbl, {})[cn] = [r["val"] for r in rows]
         return samples
 
+    # -- Synonym helpers -------------------------------------------------------
+
+    def _generate_table_synonyms(self, table_name: str, meta: dict, entity: dict | None) -> list[str]:
+        """Generate synonyms for a table from its name, domain, and entity type."""
+        parts = table_name.split(".")[-1].replace("_", " ").split()
+        syns = set()
+        syns.add(" ".join(parts))
+        domain = meta.get("domain", "")
+        if domain:
+            for ds in _DOMAIN_SYNONYMS.get(domain.lower(), []):
+                syns.add(f"{ds} {parts[-1]}" if parts else ds)
+        if entity:
+            etype = entity.get("entity_type", "")
+            if etype and etype.lower() != " ".join(parts).lower():
+                syns.add(etype.replace("_", " "))
+        syns.discard(table_name)
+        return sorted(syns)[:4]
+
+    def _generate_column_synonyms(self, col: dict, domain: str = "") -> list[str]:
+        """Generate synonyms for a single column using all available signals."""
+        return _generate_synonyms(
+            col["column_name"],
+            data_type=col.get("data_type", ""),
+            comment=col.get("comment", ""),
+            domain=domain,
+        )
+
     # -- Formatting -----------------------------------------------------------
 
     def _format_context(
@@ -384,6 +480,11 @@ class GenieContextAssembler:
                 if rels_str:
                     header += f" (related: {rels_str})"
 
+            tbl_syns = self._generate_table_synonyms(tname, t, ent_info)
+            if tbl_syns:
+                header += f"  Synonyms: {', '.join(tbl_syns)}"
+
+            domain = t.get("domain", "")
             cols = col_by_table.get(tname, [])
             col_lines = []
             for c in cols:
@@ -392,6 +493,9 @@ class GenieContextAssembler:
                     line += f" : {c['comment']}"
                 if c.get("classification"):
                     line += f" [{c['classification']}]"
+                col_syns = self._generate_column_synonyms(c, domain=domain)
+                if col_syns:
+                    line += f" (synonyms: {', '.join(col_syns)})"
                 col_lines.append(line)
 
             block = header
@@ -440,19 +544,57 @@ class GenieContextAssembler:
         return specs
 
     def _build_data_sources(
-        self, table_ids: List[str], table_meta: list[dict], metric_views: list[dict]
+        self, table_ids: List[str], table_meta: list[dict], metric_views: list[dict],
+        column_meta: list[dict] | None = None, entity_rows: list[dict] | None = None,
     ) -> dict:
         meta_map = {}
         for t in table_meta:
             name = t["table_name"]
             meta_map[name] = t
             meta_map[name.split(".")[-1]] = t
+
+        cols_by_table: dict[str, list] = {}
+        for c in (column_meta or []):
+            cols_by_table.setdefault(c["table_name"], []).append(c)
+            cols_by_table.setdefault(c["table_name"].split(".")[-1], []).append(c)
+
+        entity_map: dict[str, dict] = {}
+        for e in (entity_rows or []):
+            for t in (e.get("source_tables") or []):
+                if isinstance(t, str):
+                    entity_map[t] = e
+                    entity_map[t.split(".")[-1]] = e
+
         tables = []
         for tid in table_ids:
             entry: dict[str, Any] = {"identifier": tid}
             meta = meta_map.get(tid) or meta_map.get(tid.split(".")[-1], {})
+            desc_parts = []
             if meta.get("comment"):
-                entry["description"] = [meta["comment"]]
+                desc_parts.append(meta["comment"])
+            domain = meta.get("domain")
+            if domain:
+                sub = meta.get("subdomain", "")
+                desc_parts.append(f"Domain: {domain}" + (f"/{sub}" if sub else ""))
+            ent = entity_map.get(tid) or entity_map.get(tid.split(".")[-1])
+            if ent:
+                role = ent.get("entity_role", "primary")
+                desc_parts.append(f"Entity: {ent.get('entity_type', '')} ({role})")
+            cols = cols_by_table.get(tid, cols_by_table.get(tid.split(".")[-1], []))
+            if cols:
+                id_cols = [c["column_name"] for c in cols if c["column_name"].endswith("_id") or c["column_name"] == "id"]
+                date_cols = [c["column_name"] for c in cols if c.get("data_type", "").upper() in ("DATE", "TIMESTAMP", "DATETIME")]
+                numeric_cols = [c["column_name"] for c in cols if c.get("data_type", "").upper().split("(")[0] in ("DECIMAL", "DOUBLE", "FLOAT", "INT", "BIGINT")]
+                summary_parts = []
+                if id_cols:
+                    summary_parts.append(f"IDs: {', '.join(id_cols[:4])}")
+                if date_cols:
+                    summary_parts.append(f"Dates: {', '.join(date_cols[:4])}")
+                if numeric_cols:
+                    summary_parts.append(f"Measures: {', '.join(numeric_cols[:4])}")
+                desc_parts.append(f"Columns ({len(cols)}): {'; '.join(summary_parts) if summary_parts else ', '.join(c['column_name'] for c in cols[:6])}")
+            if desc_parts:
+                entry["description"] = desc_parts
             tables.append(entry)
 
         mvs = []
@@ -604,13 +746,15 @@ class GenieContextAssembler:
                     continue
                 if known_cols and tbl_alias:
                     expr = self._qualify_columns_in_expr(expr, tbl_alias, known_cols)
+                alias = m.get("name", "")
+                syns = m.get("synonyms") or _generate_synonyms(alias, comment=m.get("comment", ""))
                 measures.append(
                     {
-                        "alias": m.get("name", ""),
-                        "display_name": m.get("display_name") or m.get("name", ""),
+                        "alias": alias,
+                        "display_name": m.get("display_name") or alias,
                         "sql": [expr],
                         "description": m.get("comment", f"From {tbl_alias}"),
-                        "synonyms": m.get("synonyms"),
+                        "synonyms": syns or None,
                     }
                 )
 
@@ -621,13 +765,15 @@ class GenieContextAssembler:
                         expr = self._qualify_columns_in_expr(
                             expr, tbl_alias, known_cols
                         )
+                    d_alias = d.get("name", "")
+                    d_syns = d.get("synonyms") or _generate_synonyms(d_alias, comment=d.get("comment", ""))
                     expressions.append(
                         {
-                            "alias": d.get("name", ""),
-                            "display_name": d.get("display_name") or d.get("name", ""),
+                            "alias": d_alias,
+                            "display_name": d.get("display_name") or d_alias,
                             "sql": [expr],
                             "description": d.get("comment", ""),
-                            "synonyms": d.get("synonyms"),
+                            "synonyms": d_syns or None,
                         }
                     )
 

@@ -6,9 +6,9 @@ command: [
   "--host=0.0.0.0"
 ]
 
+# REQUIRED: Set these to your workspace-specific values before deploying.
 env:
   - name: 'DATABRICKS_HTTP_PATH'
-    value: '/sql/1.0/warehouses/fc63b669d98bde08'
+    value: '/sql/1.0/warehouses/<YOUR_WAREHOUSE_ID>'
   - name: 'DATABRICKS_SERVER_HOSTNAME'
-    value: 'fe-vm-mv-serverless-tixx4d.cloud.databricks.com'
-
+    value: '<YOUR_WORKSPACE>.cloud.databricks.com'
