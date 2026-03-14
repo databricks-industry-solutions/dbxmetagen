@@ -139,7 +139,7 @@ class SimilarityEdgeBuilder:
             '{self.RELATIONSHIP_TYPE}' as relationship,
             similarity as weight,
             CONCAT(src, '::', dst, '::{self.RELATIONSHIP_TYPE}') as edge_id,
-            'similar_to' as edge_type,
+            '{self.RELATIONSHIP_TYPE}' as edge_type,
             'undirected' as direction,
             CAST(NULL AS STRING) as join_expression,
             CAST(NULL AS DOUBLE) as join_confidence,
@@ -201,7 +201,7 @@ class SimilarityEdgeBuilder:
             return (
                 df
                 .withColumn("edge_id", F.concat_ws("::", F.col("src"), F.col("dst"), F.col("relationship")))
-                .withColumn("edge_type", F.lit("similar_to"))
+                .withColumn("edge_type", F.lit(self.RELATIONSHIP_TYPE))
                 .withColumn("direction", F.lit("undirected"))
                 .withColumn("join_expression", F.lit(None).cast("string"))
                 .withColumn("join_confidence", F.lit(None).cast("double"))

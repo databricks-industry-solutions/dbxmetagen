@@ -108,6 +108,7 @@ class MetadataConfig:
             "profiling_max_tables",
             "freshness_threshold_days",
             "warehouse_id",
+            "use_kb_comments",
         ],
         "yaml_advanced_file_path": "../variables.advanced.yml",
         "yaml_advanced_variable_names": [
@@ -184,6 +185,9 @@ class MetadataConfig:
         )
         self.enable_benchmarking = _parse_bool(
             getattr(self, "enable_benchmarking", False)
+        )
+        self.use_kb_comments = _parse_bool(
+            getattr(self, "use_kb_comments", False)
         )
 
         # Handle review_apply_ddl if present

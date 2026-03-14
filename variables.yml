@@ -120,8 +120,8 @@ variables:
     description: Path to a standalone domain configuration YAML file. When set, overrides the domains section from the ontology bundle for domain prediction. Leave empty to use the ontology bundle's domains instead.
     default: ../configurations/domain_config_healthcare.yaml
   ontology_bundle:
-    description: Ontology bundle name or path (e.g. 'general', 'healthcare'). Used by the ontology pipeline and, when domain_config_path is empty, also supplies domain definitions for domain prediction.
-    default: general
+    description: Ontology bundle name or path (e.g. 'general', 'healthcare'). Used by the ontology pipeline and, when domain_config_path is empty, also supplies domain definitions for domain prediction. Should align with domain_config_path industry.
+    default: healthcare
   domain_column_blacklist:
     description: Comma-separated column names to exclude from domain classification (e.g. system columns like _updated_at, created_at that can bias results). Only affects domain mode.
     default: "_updated_at,_created_at,created_at,updated_at"
@@ -208,6 +208,9 @@ variables:
     default: ""
   federation_mode:
     description: "Enable federation compatibility mode for running against federated catalogs (e.g., Redshift, Snowflake via Unity Catalog federation). When true: DESCRIBE DETAIL is skipped (Delta-specific), DESCRIBE EXTENDED is skipped, DDL apply is forced to false (cannot ALTER federated tables), and tag operations are disabled. SELECT, DESCRIBE TABLE, and SHOW TABLES still work. dbxmetagen output tables remain Delta."
+    default: false
+  use_kb_comments:
+    description: "When true, PI and domain classification prompts are enriched with comments from knowledge base tables (table_knowledge_base, column_knowledge_base) when UC table/column comments are empty. Requires the knowledge base to have been built first."
     default: false
   incremental:
     description: "When true, pipeline steps (profiling, extended metadata, ontology, FK prediction) only process tables that changed since their last run. Set to false for a full refresh."

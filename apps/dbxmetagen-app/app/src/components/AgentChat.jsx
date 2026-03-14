@@ -41,22 +41,22 @@ const STAGE_LABELS = {
 
 const MODE_QUESTIONS = {
   quick: [
-    { label: 'List PII columns', query: 'What columns contain PII or PHI data?' },
-    { label: 'Describe the orders table', query: 'What is the orders table used for and what domain is it in?' },
-    { label: 'FK relationships for customers', query: 'Show me the foreign key relationships for the customers table' },
-    { label: 'Tables in finance domain', query: 'Which tables belong to the finance domain?' },
+    { label: 'How do orders connect to accounts?', query: 'How do the order, product, and account tables relate to each other? Show the join keys and relationship paths.' },
+    { label: 'Sensitive data + connections', query: 'Which tables contain sensitive customer information (PII/PHI) and how are those tables connected to each other?' },
+    { label: 'Find "revenue" tables', query: 'Find all tables related to "revenue" and explain how they connect to the order pipeline.' },
+    { label: 'Domain map + cross-domain links', query: 'What business domain does each table belong to and which domains share the most cross-domain relationships?' },
   ],
   graphrag: [
-    { label: 'Join path: claims to demographics', query: 'Trace the complete join path from raw claims data to member demographics, including intermediate tables and join keys' },
-    { label: 'Sensitive data within 2 hops', query: 'Starting from the payments table, what PII or PHI data can be reached within 2 relationship hops? Show the traversal path.' },
-    { label: 'Patient 360 data model', query: 'Which tables should be joined to build a complete patient or customer 360 view? Use the ontology and graph relationships to find all relevant entities.' },
-    { label: 'Semantic relatives of "revenue"', query: 'Find all tables and columns semantically related to "revenue" using vector search, then expand through the knowledge graph to map their FK and ontology relationships' },
+    { label: 'How do orders connect to accounts?', query: 'How do the order, product, and account tables relate to each other? Show the join keys and relationship paths.' },
+    { label: 'Sensitive data + connections', query: 'Which tables contain sensitive customer information (PII/PHI) and how are those tables connected to each other?' },
+    { label: 'Find "revenue" tables', query: 'Find all tables related to "revenue" and explain how they connect to the order pipeline.' },
+    { label: 'Domain map + cross-domain links', query: 'What business domain does each table belong to and which domains share the most cross-domain relationships?' },
   ],
   baseline: [
-    { label: 'Join path: claims to demographics', query: 'Trace the complete join path from raw claims data to member demographics, including intermediate tables and join keys' },
-    { label: 'Sensitive data near payments', query: 'Starting from the payments table, what PII or PHI data exists in related tables? Show how they connect.' },
-    { label: 'Patient 360 data model', query: 'Which tables should be joined to build a complete patient or customer 360 view? Find all relevant entities and their relationships.' },
-    { label: 'Tables related to "revenue"', query: 'Find all tables and columns related to "revenue" and map their relationships to each other' },
+    { label: 'How do orders connect to accounts?', query: 'How do the order, product, and account tables relate to each other? Show the join keys and relationship paths.' },
+    { label: 'Sensitive data + connections', query: 'Which tables contain sensitive customer information (PII/PHI) and how are those tables connected to each other?' },
+    { label: 'Find "revenue" tables', query: 'Find all tables related to "revenue" and explain how they connect to the order pipeline.' },
+    { label: 'Domain map + cross-domain links', query: 'What business domain does each table belong to and which domains share the most cross-domain relationships?' },
   ],
 }
 

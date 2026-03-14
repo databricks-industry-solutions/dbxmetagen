@@ -417,12 +417,15 @@ domains:
     subdomains:
       accounting:
         name: "Accounting"
-        keywords: ["ledger", "journal", "gl", "ap", "ar", "account", "transaction", "balance"]
+        description: "General ledger, journal entries, AP/AR, and financial statements"
+        keywords: ["ledger", "journal", "gl", "ap", "ar", "general_ledger", "accounts_payable", "account", "transaction", "balance"]
       billing_coding:
         name: "Billing & Coding"
+        description: "Charge capture, CPT/ICD coding, charge master, and claim submission"
         keywords: ["billing", "coding", "cpt", "icd", "charge"]
       treasury:
         name: "Treasury & Tax"
+        description: "Cash management, banking, investments, tax, and compliance"
         keywords: ["treasury", "cash", "tax", "investment", "audit"]
 
   operations:
@@ -433,12 +436,15 @@ domains:
     subdomains:
       inventory:
         name: "Inventory Management"
+        description: "Stock levels, warehouse management, SKUs, and cycle counts"
         keywords: ["inventory", "stock", "warehouse", "sku", "cycle_count"]
       procurement:
         name: "Procurement"
+        description: "Purchasing, vendor management, contracts, and requisitions"
         keywords: ["procurement", "vendor", "purchase_order", "supplier", "rfp"]
       logistics:
         name: "Logistics"
+        description: "Shipping, transportation, delivery tracking, and route planning"
         keywords: ["shipping", "delivery", "carrier", "freight", "tracking"]
 
   workforce:
@@ -448,13 +454,16 @@ domains:
     subdomains:
       payroll_compensation:
         name: "Payroll & Compensation"
+        description: "Salaries, wages, bonuses, deductions, and tax withholding"
         keywords: ["payroll", "salary", "compensation", "bonus", "deduction"]
       talent:
         name: "Talent Management"
+        description: "Recruitment, hiring, performance reviews, and training"
         keywords:
           ["recruitment", "candidate", "performance", "training", "hiring"]
       credentialing:
         name: "Credentialing"
+        description: "Provider credentialing, certifications, licenses, and privileging"
         keywords: ["credential", "license", "certification", "privilege", "npi"]
 
   customer:
@@ -464,12 +473,15 @@ domains:
     subdomains:
       sales:
         name: "Sales & Pipeline"
+        description: "Opportunities, deals, quotes, pipeline, and forecasting"
         keywords: ["opportunity", "deal", "quote", "pipeline", "forecast", "account", "contact", "order", "invoice", "line_item", "product", "price"]
       marketing:
         name: "Marketing"
+        description: "Campaigns, leads, attribution, digital marketing, and content"
         keywords: ["campaign", "lead", "attribution", "email", "segment"]
       support:
         name: "Customer Support"
+        description: "Tickets, cases, service requests, SLAs, and escalations"
         keywords: ["ticket", "case", "support", "resolution", "escalation"]
 
   technology:
@@ -479,12 +491,15 @@ domains:
     subdomains:
       security:
         name: "Security"
+        description: "Access control, authentication, threat detection, and compliance"
         keywords: ["security", "access", "auth", "threat", "vulnerability"]
       monitoring:
         name: "Monitoring & Observability"
+        description: "System logs, alerts, uptime, performance metrics, and incident management"
         keywords: ["monitoring", "alert", "log", "uptime", "incident"]
       infrastructure:
         name: "Infrastructure"
+        description: "Servers, networks, cloud resources, and configuration management"
         keywords: ["server", "network", "cloud", "deployment", "configuration"]
 
   governance:
@@ -494,11 +509,14 @@ domains:
     subdomains:
       legal:
         name: "Legal & Contracts"
+        description: "Contracts, agreements, litigation, and legal documentation"
         keywords: ["contract", "agreement", "litigation", "clause", "legal"]
       regulatory:
         name: "Regulatory Compliance"
+        description: "Regulatory requirements, audits, violations, and reporting"
         keywords:
           ["regulatory", "audit", "compliance", "violation", "reporting"]
       data_governance:
         name: "Data Governance"
+        description: "Data quality, lineage, metadata management, and catalog policies"
         keywords: ["data_lineage", "data_catalog", "data_governance", "data_steward", "retention_policy"]

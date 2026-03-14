@@ -13,7 +13,8 @@ import yaml
 from typing import Optional, Union
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
+from cachetools import TTLCache, cached
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -21,6 +22,26 @@ from databricks.sdk import WorkspaceClient
 from db import pg_execute, get_engine, pg_configured
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# TTL caches -- shared across the process lifetime of the Databricks App
+# ---------------------------------------------------------------------------
+_yaml_cache = TTLCache(maxsize=32, ttl=300)
+_yaml_lock = threading.Lock()
+_job_list_cache = TTLCache(maxsize=4, ttl=30)
+_job_list_lock = threading.Lock()
+_coverage_cache = TTLCache(maxsize=16, ttl=60)
+_coverage_lock = threading.Lock()
+_sl_context_cache = TTLCache(maxsize=8, ttl=120)
+_sl_context_lock = threading.Lock()
+
+
+def invalidate_query_caches():
+    """Clear query-result caches after mutations (job submit, DDL apply, etc.)."""
+    with _coverage_lock:
+        _coverage_cache.clear()
+    with _sl_context_lock:
+        _sl_context_cache.clear()
 
 # Background Genie builder tasks: task_id -> {status, stage, result, error, created}
 _genie_tasks: dict[str, dict] = {}
@@ -335,8 +356,20 @@ def health():
 
 @app.get("/api/config")
 def get_config():
-    """Return current catalog/schema defaults for frontend forms."""
-    return {"catalog_name": CATALOG, "schema_name": SCHEMA}
+    """Return current catalog/schema defaults and processing settings for frontend."""
+    return {
+        "catalog_name": CATALOG,
+        "schema_name": SCHEMA,
+        "model": os.environ.get("MODEL", "databricks-claude-sonnet-4-5"),
+        "temperature": float(os.environ.get("TEMPERATURE", "0.1")),
+        "sample_size": int(os.environ.get("SAMPLE_SIZE", "5")),
+        "apply_ddl": os.environ.get("APPLY_DDL", "false").lower() == "true",
+        "add_metadata": os.environ.get("ADD_METADATA", "true").lower() == "true",
+        "use_kb_comments": os.environ.get("USE_KB_COMMENTS", "false").lower() == "true",
+        "include_lineage": os.environ.get("INCLUDE_LINEAGE", "false").lower() == "true",
+        "include_deterministic_pi": os.environ.get("INCLUDE_DETERMINISTIC_PI", "true").lower() == "true",
+        "tag_none_fields": os.environ.get("TAG_NONE_FIELDS", "false").lower() == "true",
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -351,6 +384,7 @@ class JobRunRequest(BaseModel):
     table_names: Optional[str] = None
     mode: Optional[str] = None
     apply_ddl: bool = False
+    use_kb_comments: bool = False
     # Analytics pipeline params
     catalog_name: Optional[str] = None
     schema_name: Optional[str] = None
@@ -431,13 +465,34 @@ class GenieCreateRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+def _get_job_with_retry(ws, job_id: int, retries: int = 3):
+    """Call ws.jobs.get with retry on transient errors (503, timeouts)."""
+    import time
+
+    transient_markers = ("temporarily unavailable", "503", "timed out", "connection")
+    for attempt in range(retries + 1):
+        try:
+            return ws.jobs.get(job_id)
+        except Exception as e:
+            msg = str(e).lower()
+            if attempt < retries and any(m in msg for m in transient_markers):
+                wait = 0.5 * (2 ** attempt)
+                logger.debug("Transient error fetching job %d, retry %d in %.1fs: %s", job_id, attempt + 1, wait, e)
+                time.sleep(wait)
+            else:
+                raise
+
+
 def _list_dbxmetagen_jobs(ws):
-    """Return project jobs using known IDs (env var), falling back to list()."""
+    """Return project jobs using known IDs (env var), falling back to list(). Cached 30s."""
+    with _job_list_lock:
+        if "jobs" in _job_list_cache:
+            return _job_list_cache["jobs"]
     if _KNOWN_JOB_IDS:
         jobs = []
         for name, job_id in _KNOWN_JOB_IDS.items():
             try:
-                j = ws.jobs.get(job_id)
+                j = _get_job_with_retry(ws, job_id)
                 jobs.append(j)
             except Exception as e:
                 logger.warning("ws.jobs.get(%s=%d) failed: %s", name, job_id, e)
@@ -446,6 +501,8 @@ def _list_dbxmetagen_jobs(ws):
             len(jobs),
             len(_KNOWN_JOB_IDS),
         )
+        with _job_list_lock:
+            _job_list_cache["jobs"] = jobs
         return jobs
 
     logger.info("No job IDs via valueFrom; falling back to ws.jobs.list()")
@@ -468,6 +525,8 @@ def _list_dbxmetagen_jobs(ws):
     logger.info(
         "Job discovery via list(): %d total, %d matched", len(all_jobs), len(matched)
     )
+    with _job_list_lock:
+        _job_list_cache["jobs"] = matched
     return matched
 
 
@@ -577,6 +636,8 @@ def run_job(req: JobRunRequest):
         params["mode"] = req.mode
     if req.apply_ddl:
         params["apply_ddl"] = "true"
+    if req.use_kb_comments:
+        params["use_kb_comments"] = "true"
     if req.catalog_name:
         params["catalog_name"] = req.catalog_name
     if req.schema_name:
@@ -595,6 +656,9 @@ def run_job(req: JobRunRequest):
             detail=f"Failed to trigger job {target_job_id}: {e}. "
             "The SPN may lack CAN_MANAGE_RUN permission on this job.",
         )
+    with _job_list_lock:
+        _job_list_cache.clear()
+    invalidate_query_caches()
     return {"run_id": run.run_id}
 
 
@@ -709,7 +773,7 @@ def jobs_health_check():
         reachable = {}
         for name, job_id in _KNOWN_JOB_IDS.items():
             try:
-                j = ws.jobs.get(job_id)
+                j = _get_job_with_retry(ws, job_id)
                 reachable[name] = {
                     "id": job_id,
                     "status": "ok",
@@ -810,6 +874,8 @@ class TableKBRow(BaseModel):
     comment: Optional[str] = None
     domain: Optional[str] = None
     subdomain: Optional[str] = None
+    has_pii: Optional[bool] = None
+    has_phi: Optional[bool] = None
 
 
 class ColumnKBRow(BaseModel):
@@ -818,6 +884,7 @@ class ColumnKBRow(BaseModel):
     column_name: Optional[str] = None
     comment: Optional[str] = None
     classification: Optional[str] = None
+    classification_type: Optional[str] = None
 
 
 class SchemaKBRow(BaseModel):
@@ -871,6 +938,10 @@ def patch_knowledge_base(body: list[TableKBRow]):
             updates.append(f"subdomain = {_safe_sql_str(row.subdomain)}")
             if old.get("subdomain") != row.subdomain:
                 _record_labeled_update("table_kb", row.table_name, "subdomain", old.get("subdomain"), row.subdomain)
+        if row.has_pii is not None:
+            updates.append(f"has_pii = {str(row.has_pii).lower()}")
+        if row.has_phi is not None:
+            updates.append(f"has_phi = {str(row.has_phi).lower()}")
         if not updates:
             continue
         updates.append("updated_at = current_timestamp()")
@@ -903,6 +974,8 @@ def patch_column_kb(body: list[ColumnKBRow]):
             updates.append(f"classification = {_safe_sql_str(row.classification)}")
             if old.get("classification") != row.classification:
                 _record_labeled_update("column_kb", entity_id, "classification", old.get("classification"), row.classification)
+        if row.classification_type is not None:
+            updates.append(f"classification_type = {_safe_sql_str(row.classification_type)}")
         if not updates:
             continue
         updates.append("updated_at = current_timestamp()")
@@ -1401,6 +1474,187 @@ def export_to_volume(body: ExportVolumeRequest):
 
 
 # ---------------------------------------------------------------------------
+# Import reviewed metadata
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/metadata/volume-files")
+def list_volume_files():
+    """List importable TSV/Excel files in the volume for the current user."""
+    volume_name = os.environ.get("VOLUME_NAME", "generated_metadata")
+    base = f"/Volumes/{CATALOG}/{SCHEMA}/{volume_name}"
+    ws = get_workspace_client()
+    results = []
+
+    def _walk(path: str, depth: int = 0):
+        if depth > 4:
+            return
+        try:
+            entries = list(ws.files.list_directory_contents(path))
+        except Exception:
+            return
+        for entry in entries:
+            ep = entry.path if hasattr(entry, "path") else str(entry)
+            name = ep.rsplit("/", 1)[-1] if "/" in ep else ep
+            if entry.is_directory if hasattr(entry, "is_directory") else False:
+                _walk(ep, depth + 1)
+            elif name.endswith((".tsv", ".xlsx", ".xls")):
+                results.append({
+                    "path": ep,
+                    "name": name,
+                    "size": getattr(entry, "file_size", None),
+                    "last_modified": str(getattr(entry, "last_modified", "")),
+                })
+
+    _walk(base)
+    return results
+
+
+def _parse_review_file(content: bytes, filename: str) -> list[dict]:
+    """Parse a TSV or Excel review file into a list of row dicts."""
+    import csv as _csv
+    if filename.endswith((".xlsx", ".xls")):
+        import openpyxl
+        wb = openpyxl.load_workbook(io.BytesIO(content), read_only=True)
+        ws_sheet = wb.active
+        rows_iter = ws_sheet.iter_rows(values_only=True)
+        headers = [str(h or "").strip() for h in next(rows_iter)]
+        return [dict(zip(headers, [str(v) if v is not None else "" for v in row])) for row in rows_iter]
+    else:
+        text = content.decode("utf-8")
+        reader = _csv.DictReader(io.StringIO(text), delimiter="\t")
+        return [row for row in reader]
+
+
+def _import_rows_to_kb(rows: list[dict]) -> dict:
+    """Split parsed rows by level and upsert into table/column KB tables."""
+    tbl_kb = fq("table_knowledge_base")
+    col_kb = fq("column_knowledge_base")
+    _ensure_labeled_updates_table()
+    _ensure_review_updated_at("table_knowledge_base")
+    _ensure_review_updated_at("column_knowledge_base")
+
+    tables_updated = 0
+    columns_updated = 0
+    skipped = 0
+    errors = []
+
+    for row in rows:
+        level = (row.get("level") or "").strip().lower()
+        table_name = (row.get("table_name") or "").strip()
+        if not table_name:
+            skipped += 1
+            continue
+
+        try:
+            if level == "table":
+                updates = []
+                for field, col in [("comment", "comment"), ("domain", "domain"), ("subdomain", "subdomain")]:
+                    val = row.get(field)
+                    if val is not None and val != "":
+                        updates.append(f"{col} = {_safe_sql_str(val)}")
+                for bool_field in ("has_pii", "has_phi"):
+                    val = (row.get(bool_field) or "").strip().lower()
+                    if val in ("true", "false"):
+                        updates.append(f"{bool_field} = {val}")
+                if updates:
+                    updates.append("updated_at = current_timestamp()")
+                    updates.append("review_updated_at = current_timestamp()")
+                    execute_sql(f"UPDATE {tbl_kb} SET {', '.join(updates)} WHERE table_name = {_safe_sql_str(table_name)}")
+                    tables_updated += 1
+                else:
+                    skipped += 1
+
+            elif level == "column":
+                col_name = (row.get("column_name") or "").strip()
+                if not col_name:
+                    skipped += 1
+                    continue
+                updates = []
+                for field, col in [("comment", "comment"), ("classification", "classification"), ("classification_type", "classification_type")]:
+                    val = row.get(field)
+                    if val is not None and val != "":
+                        updates.append(f"{col} = {_safe_sql_str(val)}")
+                if updates:
+                    updates.append("updated_at = current_timestamp()")
+                    updates.append("review_updated_at = current_timestamp()")
+                    where = f"table_name = {_safe_sql_str(table_name)} AND column_name = {_safe_sql_str(col_name)}"
+                    execute_sql(f"UPDATE {col_kb} SET {', '.join(updates)} WHERE {where}")
+                    columns_updated += 1
+                else:
+                    skipped += 1
+            else:
+                skipped += 1
+        except Exception as e:
+            errors.append(f"{table_name}: {e}")
+
+    return {"tables_updated": tables_updated, "columns_updated": columns_updated, "skipped": skipped, "errors": errors}
+
+
+class ImportReviewedRequest(BaseModel):
+    volume_path: str
+
+
+@app.post("/api/metadata/import-reviewed")
+def import_reviewed_from_volume(body: ImportReviewedRequest):
+    """Import a reviewed TSV/Excel from a volume path into KB tables."""
+    ws = get_workspace_client()
+    vp = body.volume_path.strip()
+    if not vp:
+        raise HTTPException(400, "volume_path is required")
+    try:
+        resp = ws.files.download(vp)
+        content = resp.contents.read()
+    except Exception as e:
+        raise HTTPException(404, detail=f"Cannot read volume file: {e}")
+    filename = vp.rsplit("/", 1)[-1]
+    rows = _parse_review_file(content, filename)
+    if not rows:
+        raise HTTPException(400, "File is empty or has no parseable rows")
+    result = _import_rows_to_kb(rows)
+    result["source"] = vp
+    result["total_rows"] = len(rows)
+    return result
+
+
+@app.post("/api/metadata/import-reviewed-upload")
+async def import_reviewed_upload(file: UploadFile = File(...)):
+    """Import a reviewed TSV/Excel via file upload into KB tables.
+
+    Optionally saves the uploaded file to the volume before parsing.
+    """
+    content = await file.read()
+    filename = file.filename or "upload.tsv"
+    if not filename.endswith((".tsv", ".xlsx", ".xls")):
+        raise HTTPException(400, "File must be .tsv, .xlsx, or .xls")
+
+    volume_name = os.environ.get("VOLUME_NAME", "generated_metadata")
+    ws = get_workspace_client()
+    current_user = "app"
+    try:
+        current_user = ws.current_user.me().user_name.split("@")[0]
+    except Exception:
+        pass
+    from datetime import datetime
+    current_date = datetime.now().strftime("%Y%m%d")
+    vol_path = f"/Volumes/{CATALOG}/{SCHEMA}/{volume_name}/{current_user}/reviewed_outputs/{current_date}/{filename}"
+    try:
+        ws.files.upload(vol_path, io.BytesIO(content), overwrite=True)
+    except Exception as e:
+        logger.warning("Could not save uploaded file to volume: %s", e)
+        vol_path = None
+
+    rows = _parse_review_file(content, filename)
+    if not rows:
+        raise HTTPException(400, "File is empty or has no parseable rows")
+    result = _import_rows_to_kb(rows)
+    result["total_rows"] = len(rows)
+    if vol_path:
+        result["saved_to"] = vol_path
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Ontology endpoints
 # ---------------------------------------------------------------------------
 
@@ -1472,8 +1726,9 @@ def _find_bundle_dir() -> Optional[str]:
     return None
 
 
+@cached(_yaml_cache, key=lambda: "bundles", lock=_yaml_lock)
 def _list_bundles_local() -> list[dict]:
-    """Read ontology bundle YAMLs directly (no dbxmetagen import needed)."""
+    """Read ontology bundle YAMLs directly (no dbxmetagen import needed). Cached 300s."""
     bd = _find_bundle_dir()
     if not bd:
         logger.warning("_list_bundles_local: no bundle dir found, returning empty list")
@@ -1532,9 +1787,8 @@ def _resolve_domain_config_path(key: str) -> str:
     return key
 
 
-@app.get("/api/domain-configs")
-def list_domain_configs():
-    """List standalone domain config YAML files (not bundles -- those are in the ontology bundle dropdown)."""
+@cached(_yaml_cache, key=lambda: "domain_configs", lock=_yaml_lock)
+def _list_domain_configs_cached() -> list[dict]:
     items = []
     cfg_dir = _find_domain_config_dir()
     if cfg_dir:
@@ -1555,6 +1809,12 @@ def list_domain_configs():
                 "domain_count": domain_count,
             })
     return items
+
+
+@app.get("/api/domain-configs")
+def list_domain_configs():
+    """List standalone domain config YAML files. Cached 300s."""
+    return _list_domain_configs_cached()
 
 
 class OntologyApplyItem(BaseModel):
@@ -1700,9 +1960,8 @@ def ontology_apply_tags(body: OntologyApplyBody):
     return {"results": table_results, "column_results": col_results}
 
 
-@app.get("/api/ontology/entity-type-options")
-def get_entity_type_options():
-    """Return deduplicated entity type names from all ontology bundle YAMLs."""
+@cached(_yaml_cache, key=lambda: "entity_type_options", lock=_yaml_lock)
+def _entity_type_options_cached() -> list[str]:
     bd = _find_bundle_dir()
     if not bd:
         return []
@@ -1720,9 +1979,29 @@ def get_entity_type_options():
     return sorted(types)
 
 
+@app.get("/api/ontology/entity-type-options")
+def get_entity_type_options():
+    """Return deduplicated entity type names from all ontology bundle YAMLs. Cached 300s."""
+    return _entity_type_options_cached()
+
+
 class UpdateEntityTypeBody(BaseModel):
     entity_id: str
     new_entity_type: str
+
+
+@app.post("/api/ontology/update-entity-type")
+def update_entity_type(body: UpdateEntityTypeBody):
+    """Update the entity_type for a specific ontology entity row."""
+    eid = body.entity_id.replace("'", "''")
+    new_val = body.new_entity_type.strip().replace("'", "''")
+    if not new_val:
+        raise HTTPException(400, detail="new_entity_type must not be empty")
+    execute_sql(
+        f"UPDATE {fq('ontology_entities')} SET entity_type = '{new_val}' "
+        f"WHERE entity_id = '{eid}'"
+    )
+    return {"updated": True, "entity_id": body.entity_id, "new_entity_type": body.new_entity_type}
 
 
 class SetRecommendedEntityBody(BaseModel):
@@ -2010,7 +2289,10 @@ def fk_apply(body: FKApplyBody):
 
 @app.get("/api/viz/fk-map")
 def viz_fk_map():
-    """Composite data for FK Map visualization: table nodes, FK edges, clusters."""
+    """Composite data for FK Map visualization. Cached 60s."""
+    with _coverage_lock:
+        if "fk_map" in _coverage_cache:
+            return _coverage_cache["fk_map"]
     tables = graph_query(
         "SELECT id, node_type, domain, security_level, comment "
         "FROM public.graph_nodes WHERE node_type='table' ORDER BY id"
@@ -2023,7 +2305,10 @@ def viz_fk_map():
         f"SELECT id, cluster FROM {fq('node_cluster_assignments')} "
         f"WHERE node_type='table' ORDER BY cluster, id"
     )
-    return {"tables": tables, "fk_edges": fk_edges, "clusters": clusters}
+    result = {"tables": tables, "fk_edges": fk_edges, "clusters": clusters}
+    with _coverage_lock:
+        _coverage_cache["fk_map"] = result
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -2033,11 +2318,10 @@ def viz_fk_map():
 
 @app.get("/api/coverage/summary")
 def get_coverage_summary():
-    """Count tables per catalog/schema that have NOT been profiled yet.
-
-    Uses information_schema.tables as the source of truth, joined against
-    table_knowledge_base to determine which tables have been processed.
-    """
+    """Coverage summary: profiled vs unprofiled tables. Cached 60s."""
+    with _coverage_lock:
+        if "summary" in _coverage_cache:
+            return _coverage_cache["summary"]
     q = f"""
         SELECT t.table_catalog, t.table_schema,
                COUNT(*) as total_tables,
@@ -2053,11 +2337,10 @@ def get_coverage_summary():
         ORDER BY unprofiled_tables DESC
     """
     try:
-        return execute_sql(q)
+        result = execute_sql(q)
     except HTTPException as e:
         if e.status_code != 404:
             raise
-        # Table not found -- fall back to information_schema only
         q_simple = f"""
             SELECT table_catalog, table_schema, COUNT(*) as total_tables,
                    0 as profiled_tables, COUNT(*) as unprofiled_tables
@@ -2068,12 +2351,18 @@ def get_coverage_summary():
             GROUP BY table_catalog, table_schema
             ORDER BY total_tables DESC
         """
-        return execute_sql(q_simple)
+        result = execute_sql(q_simple)
+    with _coverage_lock:
+        _coverage_cache["summary"] = result
+    return result
 
 
 @app.get("/api/coverage/type-breakdown")
 def get_coverage_type_breakdown():
-    """Count tables per table_type across the configured catalog."""
+    """Count tables per table_type. Cached 60s."""
+    with _coverage_lock:
+        if "type_breakdown" in _coverage_cache:
+            return _coverage_cache["type_breakdown"]
     q = f"""
         SELECT table_type, COUNT(*) as count
         FROM system.information_schema.tables
@@ -2082,12 +2371,19 @@ def get_coverage_type_breakdown():
         GROUP BY table_type
         ORDER BY count DESC
     """
-    return execute_sql(q)
+    result = execute_sql(q)
+    with _coverage_lock:
+        _coverage_cache["type_breakdown"] = result
+    return result
 
 
 @app.get("/api/coverage/metadata-summary")
 def get_coverage_metadata_summary(catalog: Optional[str] = None, schema: Optional[str] = None):
-    """Return metadata completeness rates, optionally filtered by catalog.schema."""
+    """Metadata completeness rates. Cached 60s."""
+    cache_key = f"meta_summary:{catalog}:{schema}"
+    with _coverage_lock:
+        if cache_key in _coverage_cache:
+            return _coverage_cache[cache_key]
     schema_filter = ""
     if catalog and schema:
         schema_filter = f" WHERE table_name LIKE '{catalog}.{schema}.%'"
@@ -2116,6 +2412,8 @@ def get_coverage_metadata_summary(catalog: Optional[str] = None, schema: Optiona
         result["with_fk"] = fks[0]["with_fk"] if fks else 0
     except Exception:
         result["with_fk"] = 0
+    with _coverage_lock:
+        _coverage_cache[cache_key] = result
     return result
 
 
@@ -2562,7 +2860,11 @@ _sl_tasks: dict[str, dict] = {}
 
 
 def _build_sl_context(tables: list[str], cat: str, sch: str) -> str:
-    """Build context string from knowledge base tables, scoped to selected tables."""
+    """Build context string from knowledge base tables, scoped to selected tables. Cached 120s."""
+    cache_key = f"{cat}.{sch}:" + ",".join(sorted(tables))
+    with _sl_context_lock:
+        if cache_key in _sl_context_cache:
+            return _sl_context_cache[cache_key]
     fq_tables = []
     for t in tables:
         if "." in t:
@@ -2673,7 +2975,10 @@ def _build_sl_context(tables: list[str], cat: str, sch: str) -> str:
                 f"Table: {cat}.{sch}.{tname}\n  Columns:\n" + "\n".join(col_strs)
             )
 
-    return "\n".join(parts)
+    result = "\n".join(parts)
+    with _sl_context_lock:
+        _sl_context_cache[cache_key] = result
+    return result
 
 
 _FEW_SHOT = """\
@@ -3619,6 +3924,165 @@ class PutDefinitionRequest(BaseModel):
     json_definition: str
 
 
+class CreateDefinitionRequest(BaseModel):
+    target_catalog: str
+    target_schema: str
+
+
+class DropDefinitionRequest(BaseModel):
+    target_catalog: str
+    target_schema: str
+
+
+class SuggestFixRequest(BaseModel):
+    error_message: str
+
+
+@app.put("/api/semantic-layer/definitions/{definition_id}")
+def update_definition(definition_id: str, req: PutDefinitionRequest):
+    """Save manual edits to a metric view definition's JSON."""
+    _ensure_semantic_layer_tables()
+    try:
+        defn = json.loads(req.json_definition)
+    except json.JSONDecodeError as e:
+        raise HTTPException(400, detail=f"Invalid JSON: {e}")
+    source = defn.get("source", "")
+    status, errs = _validate_definition(defn, source) if source else ("pending", "")
+    json_esc = json.dumps(defn).replace("'", "''")
+    err_esc = errs.replace("'", "''")
+    execute_sql(
+        f"UPDATE {fq('metric_view_definitions')} "
+        f"SET json_definition = '{json_esc}', status = '{status}', "
+        f"validation_errors = '{err_esc}' "
+        f"WHERE definition_id = '{definition_id}'"
+    )
+    return {"definition_id": definition_id, "status": status, "validation_errors": errs}
+
+
+@app.post("/api/semantic-layer/definitions/{definition_id}/create")
+def create_metric_view(definition_id: str, req: CreateDefinitionRequest):
+    """Deploy a validated definition as a real UC metric view."""
+    _ensure_semantic_layer_tables()
+    row = _fetch_definition(definition_id)
+    defn = json.loads(row["json_definition"]) if isinstance(row["json_definition"], str) else row["json_definition"]
+    mv_name = defn.get("name") or row.get("metric_view_name", "")
+    if not mv_name:
+        raise HTTPException(400, detail="Definition has no metric view name")
+    fq_mv = f"`{req.target_catalog}`.`{req.target_schema}`.`{mv_name}`"
+    yaml_body = _definition_to_yaml(defn)
+    sql = f"CREATE OR REPLACE VIEW {fq_mv}\nWITH METRICS LANGUAGE YAML AS $$\n{yaml_body}$$"
+    try:
+        execute_sql(sql, timeout=60)
+    except Exception as e:
+        raise HTTPException(400, detail=str(e))
+    execute_sql(
+        f"UPDATE {fq('metric_view_definitions')} "
+        f"SET status = 'applied', applied_at = current_timestamp() "
+        f"WHERE definition_id = '{definition_id}'"
+    )
+    return {"definition_id": definition_id, "status": "applied", "metric_view": fq_mv}
+
+
+@app.post("/api/semantic-layer/definitions/{definition_id}/improve")
+def improve_definition(definition_id: str):
+    """Ask AI to improve an existing validated/applied metric view definition."""
+    _ensure_semantic_layer_tables()
+    row = _fetch_definition(definition_id)
+    defn = json.loads(row["json_definition"]) if isinstance(row["json_definition"], str) else row["json_definition"]
+    source = defn.get("source", row.get("source_table", ""))
+    context = _build_sl_context([source], CATALOG, SCHEMA) if source else ""
+    ref_rules = _load_agent_reference("metric_view_reference.json", ["measure_patterns", "yaml_syntax_rules"])
+
+    prompt = f"""You are improving a metric view definition. Make it more comprehensive and useful.
+
+CURRENT DEFINITION:
+{json.dumps(defn, indent=2)}
+
+TABLE METADATA:
+{context}
+
+REFERENCE: BEST PRACTICES
+{ref_rules}
+
+Improvements to make:
+- Add missing measures that would be useful (ratios, rates, conditional aggregates)
+- Improve dimension coverage (time-based truncations, categorizations)
+- Ensure measure/dimension names are business-friendly
+- Add FILTER-based conditional measures where relevant
+- Keep existing measures/dimensions unless they are wrong
+- Every metric view must have at least one measure and one dimension
+
+OUTPUT: Return ONLY the improved JSON definition (single object, not array)."""
+
+    escaped = prompt.replace("'", "''")
+    rows = execute_sql(
+        f"SELECT AI_QUERY('{_DEFAULT_MODEL}', '{escaped}') as response", timeout=180
+    )
+    response = rows[0]["response"] if rows else ""
+    new_defn = _parse_single_json(response)
+    new_defn.setdefault("source", source)
+    new_defn.setdefault("name", defn.get("name", ""))
+    status, errs = _validate_definition(new_defn, new_defn.get("source", source))
+    new_id = _update_definition_row(definition_id, new_defn, status, errs)
+    return {"definition_id": new_id, "parent_id": definition_id, "status": status, "validation_errors": errs}
+
+
+@app.post("/api/semantic-layer/definitions/{definition_id}/drop")
+def drop_metric_view(definition_id: str, req: DropDefinitionRequest):
+    """Drop a deployed metric view from Unity Catalog."""
+    _ensure_semantic_layer_tables()
+    row = _fetch_definition(definition_id)
+    defn = json.loads(row["json_definition"]) if isinstance(row["json_definition"], str) else row["json_definition"]
+    mv_name = defn.get("name") or row.get("metric_view_name", "")
+    if not mv_name:
+        raise HTTPException(400, detail="Definition has no metric view name")
+    fq_mv = f"`{req.target_catalog}`.`{req.target_schema}`.`{mv_name}`"
+    try:
+        execute_sql(f"DROP VIEW IF EXISTS {fq_mv}", timeout=30)
+    except Exception as e:
+        raise HTTPException(400, detail=f"Failed to drop view: {e}")
+    execute_sql(
+        f"UPDATE {fq('metric_view_definitions')} "
+        f"SET status = 'validated', applied_at = NULL "
+        f"WHERE definition_id = '{definition_id}'"
+    )
+    return {"definition_id": definition_id, "status": "validated", "dropped": fq_mv}
+
+
+@app.post("/api/semantic-layer/definitions/{definition_id}/suggest-fix")
+def suggest_fix(definition_id: str, req: SuggestFixRequest):
+    """Ask AI to suggest a fix for a definition that failed to create."""
+    _ensure_semantic_layer_tables()
+    row = _fetch_definition(definition_id)
+    defn = json.loads(row["json_definition"]) if isinstance(row["json_definition"], str) else row["json_definition"]
+    source = defn.get("source", row.get("source_table", ""))
+
+    prompt = f"""A metric view definition failed to deploy with this error:
+
+ERROR:
+{req.error_message}
+
+DEFINITION:
+{json.dumps(defn, indent=2)}
+
+Fix the definition so it deploys successfully. Rules:
+- DATE_TRUNC requires a quoted interval: DATE_TRUNC('MONTH', col)
+- Only use columns that exist in the source table
+- All string literals must be single-quoted
+- Output ONLY the corrected JSON definition (single object, not array)."""
+
+    escaped = prompt.replace("'", "''")
+    rows = execute_sql(
+        f"SELECT AI_QUERY('{_DEFAULT_MODEL}', '{escaped}') as response", timeout=180
+    )
+    response = rows[0]["response"] if rows else ""
+    try:
+        suggested = _parse_single_json(response)
+        return {"suggested_json": json.dumps(suggested, indent=2)}
+    except Exception:
+        return {"suggested_json": response}
+
+
 # ---------------------------------------------------------------------------
 # Genie Builder endpoints
 # ---------------------------------------------------------------------------
@@ -4001,6 +4465,27 @@ def delete_genie_space(space_id: str):
 VS_ENDPOINT = os.environ.get("VECTOR_SEARCH_ENDPOINT", "dbxmetagen-vs")
 VS_INDEX_SUFFIX = os.environ.get("VECTOR_SEARCH_INDEX", "metadata_vs_index")
 
+_api_vsc = None
+_api_vs_indexes: dict = {}
+
+
+def _get_api_vs_index(index_name: str):
+    """Return a cached VectorSearchIndex for the API layer."""
+    global _api_vsc
+    if index_name in _api_vs_indexes:
+        return _api_vs_indexes[index_name]
+    if _api_vsc is None:
+        from databricks.vector_search.client import VectorSearchClient
+        ws = get_workspace_client()
+        _token = os.environ.get("DATABRICKS_TOKEN")
+        if not _token:
+            headers = ws.config.authenticate()
+            _token = headers.get("Authorization", "").removeprefix("Bearer ")
+        _api_vsc = VectorSearchClient(workspace_url=ws.config.host, personal_access_token=_token)
+    idx = _api_vsc.get_index(endpoint_name=VS_ENDPOINT, index_name=index_name)
+    _api_vs_indexes[index_name] = idx
+    return idx
+
 
 class AgentChatRequest(BaseModel):
     message: str
@@ -4258,17 +4743,7 @@ def vector_search(req: VectorSearchRequest):
     """Execute a similarity search against the metadata VS index."""
     vs_index_name = f"{CATALOG}.{SCHEMA}.{VS_INDEX_SUFFIX}"
     try:
-        from databricks.vector_search.client import VectorSearchClient
-        ws = get_workspace_client()
-        _token = os.environ.get("DATABRICKS_TOKEN")
-        if not _token:
-            headers = ws.config.authenticate()
-            _token = headers.get("Authorization", "").removeprefix("Bearer ")
-        vsc = VectorSearchClient(
-            workspace_url=ws.config.host,
-            personal_access_token=_token,
-        )
-        index = vsc.get_index(endpoint_name=VS_ENDPOINT, index_name=vs_index_name)
+        index = _get_api_vs_index(vs_index_name)
         kwargs = dict(
             query_text=req.query,
             columns=["doc_id", "doc_type", "content", "node_id", "table_name", "domain", "entity_type", "confidence_score"],

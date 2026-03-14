@@ -80,6 +80,11 @@ function ReviewEditor() {
   const [tableTagApplying, setTableTagApplying] = useState({})
   const [tableTagResults, setTableTagResults] = useState({})
   const [statusFilter, setStatusFilter] = useState('all')
+  const [importLoading, setImportLoading] = useState(false)
+  const [importResult, setImportResult] = useState(null)
+  const [showVolumeBrowser, setShowVolumeBrowser] = useState(false)
+  const [volumeFiles, setVolumeFiles] = useState([])
+  const [volumeFilesLoading, setVolumeFilesLoading] = useState(false)
 
   useEffect(() => { fetch('/api/ontology/entity-type-options').then(r => r.json()).then(d => setEntityTypeOptions(Array.isArray(d) ? d : [])).catch(() => {}) }, [])
   useEffect(() => { fetch('/api/catalogs').then(r => r.json()).then(setCatalogs).catch(() => {}) }, [])
@@ -212,6 +217,50 @@ function ReviewEditor() {
       setExportResult({ ok: true, path: j.path, rows: j.rows })
     } catch (e) { setExportResult({ ok: false, detail: e.message }) }
     setExportLoading(false)
+  }
+
+  const openVolumeBrowser = async () => {
+    setShowVolumeBrowser(true)
+    setVolumeFilesLoading(true)
+    try {
+      const res = await fetch('/api/metadata/volume-files')
+      const j = await res.json()
+      setVolumeFiles(Array.isArray(j) ? j : [])
+    } catch { setVolumeFiles([]) }
+    setVolumeFilesLoading(false)
+  }
+
+  const importFromVolume = async (volumePath) => {
+    setShowVolumeBrowser(false)
+    setImportLoading(true); setImportResult(null)
+    try {
+      const res = await fetch('/api/metadata/import-reviewed', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ volume_path: volumePath })
+      })
+      const j = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(j.detail || res.status)
+      setImportResult({ ok: true, ...j })
+      if (reviewData.length > 0) loadData()
+    } catch (e) { setImportResult({ ok: false, detail: e.message }) }
+    setImportLoading(false)
+  }
+
+  const importUpload = async (e) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    e.target.value = ''
+    setImportLoading(true); setImportResult(null)
+    try {
+      const fd = new FormData()
+      fd.append('file', file)
+      const res = await fetch('/api/metadata/import-reviewed-upload', { method: 'POST', body: fd })
+      const j = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(j.detail || res.status)
+      setImportResult({ ok: true, ...j })
+      if (reviewData.length > 0) loadData()
+    } catch (err) { setImportResult({ ok: false, detail: err.message }) }
+    setImportLoading(false)
   }
 
   const show = k => activeType === k
@@ -854,6 +903,12 @@ function ReviewEditor() {
             <span className="border-l border-slate-300 h-6" />
             <button onClick={() => exportVolume('tsv')} disabled={exportLoading} className="px-4 py-1.5 bg-dbx-oat text-slate-700 rounded-lg text-sm font-medium hover:bg-dbx-oat-dark disabled:opacity-50">Export TSV</button>
             <button onClick={() => exportVolume('excel')} disabled={exportLoading} className="px-4 py-1.5 bg-dbx-oat text-slate-700 rounded-lg text-sm font-medium hover:bg-dbx-oat-dark disabled:opacity-50">Export Excel</button>
+            <span className="border-l border-slate-300 h-6" />
+            <button onClick={openVolumeBrowser} disabled={importLoading} className="px-4 py-1.5 bg-slate-600 text-white rounded-lg text-sm font-medium hover:bg-slate-700 disabled:opacity-50">Import from Volume</button>
+            <label className={`px-4 py-1.5 bg-slate-600 text-white rounded-lg text-sm font-medium hover:bg-slate-700 cursor-pointer ${importLoading ? 'opacity-50 pointer-events-none' : ''}`}>
+              Upload File
+              <input type="file" accept=".tsv,.xlsx,.xls" onChange={importUpload} className="hidden" />
+            </label>
           </div>
           {ddlApplyResult && (ddlApplyResult.ok
             ? <p className="text-sm text-green-600">Applied {ddlApplyResult.applied} statement(s).</p>
@@ -873,12 +928,68 @@ function ReviewEditor() {
           {exportResult && (exportResult.ok
             ? <p className="text-sm text-green-600">Exported {exportResult.rows} rows to <span className="font-mono text-xs">{exportResult.path}</span></p>
             : <p className="text-sm text-red-600">{exportResult.detail}</p>)}
+          {importResult && (importResult.ok
+            ? <p className="text-sm text-green-600">Imported {importResult.total_rows} rows: {importResult.tables_updated} tables, {importResult.columns_updated} columns updated{importResult.skipped ? `, ${importResult.skipped} skipped` : ''}{importResult.saved_to ? ` (saved to ${importResult.saved_to})` : ''}</p>
+            : <p className="text-sm text-red-600">Import failed: {importResult.detail}</p>)}
           {ddlSql && (
             <div className="relative">
               <pre className="text-xs bg-dbx-oat border border-slate-200 rounded-lg p-3 overflow-auto max-h-64 whitespace-pre-wrap">{ddlSql}</pre>
               <button onClick={() => navigator.clipboard.writeText(ddlSql)} className="absolute top-2 right-2 px-2 py-1 bg-dbx-oat-light border border-slate-200 rounded text-xs hover:bg-dbx-oat">Copy</button>
             </div>
           )}
+        </div>
+      )}
+
+      {/* Standalone import section (always visible) */}
+      {reviewData.length === 0 && (
+        <div className="bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-600 p-4 shadow-sm space-y-3">
+          <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200">Import Reviewed Metadata</h3>
+          <p className="text-xs text-slate-500 dark:text-slate-400">Import a previously exported and reviewed TSV or Excel file to update the knowledge base tables.</p>
+          <div className="flex items-center gap-3">
+            <button onClick={openVolumeBrowser} disabled={importLoading} className="px-4 py-1.5 bg-slate-600 text-white rounded-lg text-sm font-medium hover:bg-slate-700 disabled:opacity-50">Import from Volume</button>
+            <label className={`px-4 py-1.5 bg-slate-600 text-white rounded-lg text-sm font-medium hover:bg-slate-700 cursor-pointer ${importLoading ? 'opacity-50 pointer-events-none' : ''}`}>
+              Upload File
+              <input type="file" accept=".tsv,.xlsx,.xls" onChange={importUpload} className="hidden" />
+            </label>
+            {importLoading && <span className="text-sm text-slate-500">Importing...</span>}
+          </div>
+          {importResult && (importResult.ok
+            ? <p className="text-sm text-green-600">Imported {importResult.total_rows} rows: {importResult.tables_updated} tables, {importResult.columns_updated} columns updated{importResult.skipped ? `, ${importResult.skipped} skipped` : ''}</p>
+            : <p className="text-sm text-red-600">Import failed: {importResult.detail}</p>)}
+        </div>
+      )}
+
+      {/* Volume file browser modal */}
+      {showVolumeBrowser && (
+        <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-6">
+          <div className="bg-white dark:bg-slate-800 rounded-2xl shadow-2xl max-w-lg w-full max-h-[70vh] flex flex-col">
+            <div className="flex items-center justify-between px-6 pt-5 pb-3 border-b border-slate-200 dark:border-slate-600">
+              <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100">Select File from Volume</h3>
+              <button onClick={() => setShowVolumeBrowser(false)} className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-300">
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto px-6 py-3">
+              {volumeFilesLoading ? (
+                <p className="text-sm text-slate-500 py-4">Loading files...</p>
+              ) : volumeFiles.length === 0 ? (
+                <p className="text-sm text-slate-400 py-4">No TSV or Excel files found in the volume.</p>
+              ) : (
+                <div className="space-y-1">
+                  {volumeFiles.map((f, i) => (
+                    <button key={i} onClick={() => importFromVolume(f.path)}
+                      className="w-full text-left px-3 py-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors">
+                      <div className="text-sm font-medium text-slate-700 dark:text-slate-200 truncate">{f.name}</div>
+                      <div className="text-xs text-slate-400 dark:text-slate-500 truncate">{f.path}</div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div className="px-6 py-3 border-t border-slate-200 dark:border-slate-600">
+              <button onClick={() => setShowVolumeBrowser(false)} className="px-4 py-1.5 text-sm text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg">Cancel</button>
+            </div>
+          </div>
         </div>
       )}
     </div>

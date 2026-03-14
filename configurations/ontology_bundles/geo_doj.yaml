@@ -1,67 +1,232 @@
-# Geographic Classification Bundle (DOJ Filtering)
-# Binary geographic/non-geographic classification for location-based filtering
+# Geographic / DOJ Filtering Ontology Bundle
+# Column-level geographic classification for location-based filtering and DOJ compliance
+# Identifies all columns that carry geographic semantics (addresses, coordinates, admin regions, postal codes)
 
 metadata:
   name: "Geographic Classification (DOJ)"
-  version: "1.0"
+  version: "2.0"
   industry: "cross-industry"
-  description: "Simplified binary classification for DOJ geographic filtering — tags columns as Geographic or NonGeographic"
-  standards_alignment: "DOJ Geographic Filtering"
-  bundle_type: "geo_classification"
+  description: "Ontology for DOJ geographic filtering — classifies tables and columns by geographic relevance with fine-grained sub-types"
+  standards_alignment: "DOJ Geographic Filtering, ISO 3166"
   tag_key: "doj_geo_filter"
 
 ontology:
-  version: "1.0"
+  version: "2.0"
   name: "DOJ Geographic Filter Ontology"
-  description: "Binary ontology for classifying columns by geographic relevance"
+  description: "Classifies geographic columns into sub-types for DOJ location-based filtering"
 
   entities:
-    auto_discover: false
-    discovery_confidence_threshold: 0.5
+    auto_discover: true
+    discovery_confidence_threshold: 0.35
 
     definitions:
       Geographic:
-        description: "Columns that represent a physical location, address, or geographic area suitable for location-based filtering"
+        description: "Any column or table representing a physical location, address component, or geographic area"
+        keywords:
+          - "address"
+          - "addr"
+          - "location"
+          - "place"
+          - "geo"
+          - "geolocation"
+          - "geography"
+          - "spatial"
+          - "map"
+          - "locale"
+          - "site"
+          - "venue"
+        synonyms: ["geographic", "locational", "positional", "spatial"]
+        typical_attributes:
+          - address
+          - city
+          - state
+          - country
+          - zip_code
+          - postal_code
+          - region
+          - county
+          - latitude
+          - longitude
+          - fips_code
+          - location
+          - place
+          - territory
+        relationships:
+          contains: { target: Address, cardinality: "one-to-many" }
+          has_coordinates: { target: GeoCoordinate, cardinality: "one-to-many" }
+          in_region: { target: AdminRegion, cardinality: "many-to-one" }
+
+      Address:
+        description: "Street addresses, mailing addresses, or physical site addresses"
+        parent: Geographic
         keywords:
           - "address"
           - "addr"
           - "street"
-          - "city"
-          - "state"
-          - "province"
-          - "zip"
-          - "zipcode"
-          - "zip_code"
-          - "postal"
-          - "postal_code"
-          - "country"
-          - "county"
-          - "region"
+          - "street_address"
+          - "mailing"
+          - "physical_address"
+          - "residence"
+          - "domicile"
+          - "address_line"
+          - "address_1"
+          - "address_2"
+          - "suite"
+          - "apt"
+          - "building"
+          - "floor"
+        synonyms: ["mailing_address", "physical_address", "street_address", "residential_address"]
+        typical_attributes:
+          - address
+          - address_line_1
+          - address_line_2
+          - street
+          - street_address
+          - suite
+          - building
+          - floor
+          - po_box
+        relationships:
+          part_of: { target: AdminRegion, cardinality: "many-to-one" }
+
+      GeoCoordinate:
+        description: "Latitude/longitude pairs, GPS coordinates, or geospatial point data"
+        parent: Geographic
+        keywords:
           - "latitude"
           - "lat"
           - "longitude"
           - "lon"
           - "lng"
+          - "long"
+          - "coord"
+          - "coordinates"
           - "geolocation"
-          - "geo"
-          - "location"
-          - "place"
-          - "territory"
-          - "district"
-          - "fips"
-          - "cbsa"
-          - "msa"
-          - "timezone"
-          - "continent"
-          - "municipality"
-          - "borough"
+          - "geo_point"
+          - "gps"
+          - "x_coord"
+          - "y_coord"
+          - "centroid"
+          - "geometry"
+          - "wkt"
+          - "geojson"
+        synonyms: ["coordinates", "gps", "lat_long", "geospatial_point"]
+        typical_attributes:
+          - latitude
+          - longitude
+          - lat
+          - lon
+          - lng
+          - coordinates
+          - geo_point
+          - centroid
+          - elevation
+          - altitude
+        relationships: {}
+
+      AdminRegion:
+        description: "Administrative or political geographic regions — countries, states, provinces, counties, districts, municipalities, or named areas"
+        parent: Geographic
+        keywords:
+          - "country"
+          - "country_code"
+          - "country_name"
+          - "state"
+          - "state_code"
+          - "state_name"
+          - "province"
+          - "county"
           - "parish"
+          - "borough"
+          - "district"
+          - "municipality"
+          - "city"
+          - "town"
+          - "village"
+          - "region"
+          - "territory"
+          - "continent"
           - "ward"
           - "precinct"
-        typical_attributes: [name, code, coordinates]
+          - "jurisdiction"
+          - "nation"
+          - "fips"
+          - "fips_code"
+          - "cbsa"
+          - "msa"
+          - "iso_country"
+          - "iso_3166"
+          - "subdivision"
+          - "census_tract"
+          - "census_block"
+        synonyms: ["political_region", "jurisdiction", "administrative_division"]
+        typical_attributes:
+          - country
+          - country_code
+          - state
+          - state_code
+          - province
+          - county
+          - city
+          - region
+          - district
+          - municipality
+          - fips_code
+          - cbsa
+          - msa
+          - continent
+          - territory
+          - census_tract
+        relationships:
+          part_of: { target: AdminRegion, cardinality: "many-to-one" }
+
+      PostalCode:
+        description: "Postal codes, ZIP codes, or mail routing codes"
+        parent: Geographic
+        keywords:
+          - "zip"
+          - "zipcode"
+          - "zip_code"
+          - "zip5"
+          - "zip4"
+          - "zip_plus_4"
+          - "postal"
+          - "postal_code"
+          - "postcode"
+          - "mail_code"
+          - "routing_code"
+        synonyms: ["zip_code", "postal_code", "postcode"]
+        typical_attributes:
+          - zip_code
+          - postal_code
+          - zip
+          - zipcode
+          - zip5
+          - zip4
+          - postcode
+        relationships:
+          within: { target: AdminRegion, cardinality: "many-to-one" }
+
+      Timezone:
+        description: "Timezone identifiers, UTC offsets, or time zone region names"
+        parent: Geographic
+        keywords:
+          - "timezone"
+          - "time_zone"
+          - "tz"
+          - "utc_offset"
+          - "gmt_offset"
+          - "iana_timezone"
+        synonyms: ["tz", "time_zone"]
+        typical_attributes:
+          - timezone
+          - time_zone
+          - tz
+          - utc_offset
         relationships: {}
+
       NonGeographic:
-        description: "Columns that do not represent a physical location despite potentially ambiguous naming"
+        description: "Columns with location-like names that do NOT represent physical geography (file paths, URLs, memory addresses)"
         keywords:
           - "memory_location"
           - "file_location"
@@ -70,22 +235,71 @@ ontology:
           - "uri"
           - "path"
           - "endpoint"
-        typical_attributes: [name, value]
+          - "file_path"
+          - "bucket"
+          - "s3_location"
+          - "blob_path"
+          - "resource_location"
+        synonyms: ["virtual_location", "logical_location"]
+        typical_attributes:
+          - url
+          - uri
+          - path
+          - file_path
+          - endpoint
         relationships: {}
 
-  domain_entity_affinity: {}
+  domain_entity_affinity:
+    geographic_data: [Geographic, Address, GeoCoordinate, AdminRegion, PostalCode, Timezone]
+    clinical: [Geographic, Address, AdminRegion, PostalCode]
+    payer: [Geographic, Address, AdminRegion, PostalCode]
+    customer: [Geographic, Address, AdminRegion, PostalCode, GeoCoordinate]
+    operations: [Geographic, Address, AdminRegion, PostalCode, GeoCoordinate]
+    workforce: [Geographic, Address, AdminRegion, PostalCode]
+    finance: [Geographic, Address, AdminRegion, PostalCode]
+    technology: [NonGeographic]
+    governance: [Geographic, AdminRegion]
 
   relationships:
-    types: []
+    types:
+      - name: contains
+        description: "Region contains sub-regions or addresses"
+        inverse: contained_in
+      - name: part_of
+        description: "Sub-region is part of a larger region"
+        inverse: has_part
+      - name: within
+        description: "Postal code within an administrative region"
+        inverse: covers
+      - name: has_coordinates
+        description: "Entity has associated geographic coordinates"
+        inverse: coordinates_of
 
   metrics:
     auto_discover: false
     definitions: []
 
   validation:
-    min_entity_confidence: 0.5
-    max_entities_per_table: 2
+    min_entity_confidence: 0.4
+    max_entities_per_table: 5
     ai_validation_enabled: true
     classification_model: "databricks-claude-sonnet-4-6"
 
-domains: {}
+domains:
+  geographic_data:
+    name: "Geographic Data"
+    description: "Tables primarily containing location, address, or spatial reference data"
+    keywords: ["address", "location", "geography", "spatial", "map", "geo", "coordinate"]
+    subdomains:
+      address_management:
+        name: "Address Management"
+        description: "Mailing addresses, physical locations, and address validation"
+        keywords: ["address", "mailing", "street", "residence", "domicile"]
+      geospatial:
+        name: "Geospatial"
+        description: "Coordinates, geometries, spatial indexes, and map data"
+        keywords: ["latitude", "longitude", "geometry", "spatial", "gps", "wkt"]
+      reference_geography:
+        name: "Reference Geography"
+        description: "Geographic lookup tables, region hierarchies, and jurisdiction codes"
+        keywords: ["fips", "cbsa", "census", "iso_3166", "region_hierarchy", "jurisdiction"]

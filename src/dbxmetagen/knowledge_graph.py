@@ -356,7 +356,7 @@ class KnowledgeGraphBuilder:
         all_edges.append(security_edges)
         
         from functools import reduce
-        combined = reduce(DataFrame.union, all_edges)
+        combined = reduce(lambda a, b: a.unionByName(b), all_edges)
 
         combined = (
             combined
@@ -408,7 +408,24 @@ class KnowledgeGraphBuilder:
             target.keywords = COALESCE(source.keywords, target.keywords),
             target.updated_at = source.updated_at
 
-        WHEN NOT MATCHED THEN INSERT *
+        WHEN NOT MATCHED THEN INSERT (
+            id, table_name, catalog, `schema`, table_short_name,
+            domain, subdomain, has_pii, has_phi, security_level, comment,
+            node_type, parent_id, data_type, quality_score, embedding,
+            ontology_id, ontology_type, display_name, short_description,
+            sensitivity, status, source_system, keywords,
+            created_at, updated_at
+        ) VALUES (
+            source.id, source.table_name, source.catalog, source.`schema`,
+            source.table_short_name, source.domain, source.subdomain,
+            source.has_pii, source.has_phi, source.security_level, source.comment,
+            source.node_type, source.parent_id, source.data_type,
+            source.quality_score, source.embedding,
+            source.ontology_id, source.ontology_type, source.display_name,
+            source.short_description, source.sensitivity, source.status,
+            source.source_system, source.keywords,
+            source.created_at, source.updated_at
+        )
         """
         
         self.spark.sql(merge_sql)
@@ -419,38 +436,29 @@ class KnowledgeGraphBuilder:
         
         return {"total_nodes": count}
     
-    def refresh_edges(self, edges_df: DataFrame) -> Dict[str, int]:
+    def refresh_edges(self, edges_df: DataFrame, source_system: str = "knowledge_graph") -> Dict[str, int]:
         """
         Refresh edges by deleting stale edges and inserting current ones.
         
-        Unlike MERGE, this properly handles the case where relationships change
-        (e.g., a table moves to a different domain - old domain edges should be removed).
+        Only deletes edges matching the given source_system to avoid destroying
+        edges from other producers (ontology, similarity, fk_predictions).
         
         Strategy:
-        1. Delete all edges involving nodes that are being updated
+        1. Delete edges involving affected nodes for this source_system only
         2. Insert all current edges
-        
-        This ensures the graph always reflects the current state of relationships.
         """
-        edges_df.createOrReplaceTempView("staged_edges")
-        
-        # Get all node IDs being updated (union of src and dst)
         affected_nodes = edges_df.select("src").union(edges_df.select(F.col("dst").alias("src"))).distinct()
         affected_nodes.createOrReplaceTempView("affected_nodes")
         
-        # Delete existing edges involving affected nodes
         delete_sql = f"""
         DELETE FROM {self.config.fully_qualified_edges}
-        WHERE src IN (SELECT src FROM affected_nodes)
-           OR dst IN (SELECT src FROM affected_nodes)
+        WHERE (src IN (SELECT src FROM affected_nodes)
+           OR dst IN (SELECT src FROM affected_nodes))
+          AND (source_system = '{source_system}' OR source_system IS NULL)
         """
         self.spark.sql(delete_sql)
         
-        insert_sql = f"""
-        INSERT INTO {self.config.fully_qualified_edges}
-        SELECT * FROM staged_edges
-        """
-        self.spark.sql(insert_sql)
+        edges_df.writeTo(self.config.fully_qualified_edges).append()
         
         count = self.spark.sql(
             f"SELECT COUNT(*) as cnt FROM {self.config.fully_qualified_edges}"
@@ -487,7 +495,16 @@ class KnowledgeGraphBuilder:
             target.status = COALESCE(source.status, target.status),
             target.updated_at = source.updated_at
 
-        WHEN NOT MATCHED THEN INSERT *
+        WHEN NOT MATCHED THEN INSERT (
+            src, dst, relationship, weight, edge_id, edge_type,
+            direction, join_expression, join_confidence, ontology_rel,
+            source_system, status, created_at, updated_at
+        ) VALUES (
+            source.src, source.dst, source.relationship, source.weight,
+            source.edge_id, source.edge_type, source.direction,
+            source.join_expression, source.join_confidence, source.ontology_rel,
+            source.source_system, source.status, source.created_at, source.updated_at
+        )
         """
         
         self.spark.sql(merge_sql)
@@ -895,7 +912,7 @@ class ExtendedKnowledgeGraphBuilder(KnowledgeGraphBuilder):
             all_edges.append(reference_edges)
         
         from functools import reduce
-        return reduce(DataFrame.union, all_edges)
+        return reduce(lambda a, b: a.unionByName(b), all_edges)
     
     def run(self, include_columns: bool = True, include_schemas: bool = True) -> Dict[str, Any]:
         """
@@ -933,7 +950,7 @@ class ExtendedKnowledgeGraphBuilder(KnowledgeGraphBuilder):
         
         # Union all nodes
         from functools import reduce
-        all_nodes_df = reduce(DataFrame.union, all_nodes)
+        all_nodes_df = reduce(lambda a, b: a.unionByName(b), all_nodes)
         total_nodes = all_nodes_df.count()
         logger.info(f"Built {total_nodes} total nodes")
         

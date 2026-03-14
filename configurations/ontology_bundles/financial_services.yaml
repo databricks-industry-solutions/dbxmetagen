@@ -271,14 +271,17 @@ domains:
     subdomains:
       retail_banking:
         name: "Retail Banking"
+        description: "Consumer accounts, checking, savings, debit, and credit card services"
         keywords:
           ["retail", "consumer", "checking", "savings", "debit", "credit_card"]
       commercial_banking:
         name: "Commercial Banking"
+        description: "Corporate accounts, treasury services, cash management, and lockbox"
         keywords:
           ["commercial", "corporate", "treasury", "cash_management", "lockbox"]
       digital_banking:
         name: "Digital Banking"
+        description: "Mobile banking, online channels, and digital customer experience"
         keywords: ["digital", "mobile", "online", "app", "channel"]
 
   capital_markets:
@@ -288,12 +291,15 @@ domains:
     subdomains:
       equities:
         name: "Equities"
+        description: "Stock trading, equity positions, IPOs, and listings"
         keywords: ["equity", "stock", "share", "ipo", "listing"]
       fixed_income:
         name: "Fixed Income"
+        description: "Bonds, treasuries, yield curves, and coupon payments"
         keywords: ["bond", "treasury", "yield", "coupon", "maturity"]
       derivatives:
         name: "Derivatives"
+        description: "Options, futures, swaps, forwards, and OTC instruments"
         keywords: ["option", "future", "swap", "forward", "otc"]
 
   insurance:
@@ -303,13 +309,16 @@ domains:
     subdomains:
       underwriting:
         name: "Underwriting"
+        description: "Risk assessment, premium rating, and actuarial analysis"
         keywords:
           ["underwriting", "risk_assessment", "premium", "rating", "actuarial"]
       claims:
         name: "Claims"
+        description: "Claim filing, loss adjustment, settlement, and subrogation"
         keywords: ["claim", "loss", "adjuster", "settlement", "subrogation"]
       policy_admin:
         name: "Policy Administration"
+        description: "Policy lifecycle, endorsements, renewals, and cancellations"
         keywords:
           ["policy", "endorsement", "renewal", "cancellation", "billing"]
 
@@ -320,12 +329,15 @@ domains:
     subdomains:
       credit_risk:
         name: "Credit Risk"
+        description: "Default probability, loss given default, exposure at default, and credit ratings"
         keywords: ["credit", "default", "probability", "lgd", "ead", "rating"]
       market_risk:
         name: "Market Risk"
+        description: "Value-at-risk, volatility, sensitivity analysis, and greeks"
         keywords: ["market", "var", "volatility", "sensitivity", "greeks"]
       operational_risk:
         name: "Operational Risk"
+        description: "Loss events, risk and control self-assessments, and incident management"
         keywords: ["operational", "loss_event", "rcsa", "incident", "control"]
 
   compliance_regulatory:
@@ -335,9 +347,11 @@ domains:
     subdomains:
       kyc_aml:
         name: "KYC & AML"
+        description: "Customer due diligence, enhanced due diligence, sanctions screening, and SARs"
         keywords: ["kyc", "aml", "cdd", "edd", "sanctions", "screening"]
       regulatory_reporting:
         name: "Regulatory Reporting"
+        description: "Regulatory filings, CCAR, DFAST, Basel reporting, and stress tests"
         keywords: ["regulatory", "filing", "report", "ccar", "dfast", "basel"]
 
   lending:
@@ -347,13 +361,16 @@ domains:
     subdomains:
       origination:
         name: "Origination"
+        description: "Loan applications, approvals, underwriting, and closing"
         keywords:
           ["origination", "application", "approval", "underwriting", "closing"]
       servicing:
         name: "Servicing"
+        description: "Payment processing, escrow management, statements, and delinquency tracking"
         keywords: ["servicing", "payment", "escrow", "statement", "delinquency"]
       collections:
         name: "Collections"
+        description: "Delinquent account management, charge-offs, recovery, and workouts"
         keywords:
           ["collections", "delinquent", "charge_off", "recovery", "workout"]
 
@@ -364,10 +381,12 @@ domains:
     subdomains:
       portfolio_management:
         name: "Portfolio Management"
+        description: "Asset allocation, rebalancing, benchmark tracking, and performance reporting"
         keywords:
           ["portfolio", "allocation", "rebalance", "benchmark", "performance"]
       advisory:
         name: "Advisory"
+        description: "Financial planning, goals-based advice, and investment recommendations"
         keywords: ["advisory", "financial_plan", "goal", "recommendation"]
 
   payments:
@@ -377,9 +396,11 @@ domains:
     subdomains:
       processing:
         name: "Payment Processing"
+        description: "Authorization, clearing, settlement, and reconciliation"
         keywords: ["processing", "authorization", "clearing", "settlement"]
       channels:
         name: "Payment Channels"
+        description: "ACH, wire transfer, real-time payments, checks, and P2P"
         keywords: ["ach", "wire", "real_time", "check", "p2p"]
 
   finance:
@@ -389,9 +410,11 @@ domains:
     subdomains:
       accounting:
         name: "Accounting"
+        description: "General ledger, journal entries, AP/AR, and financial statements"
         keywords: ["ledger", "journal", "gl", "ap", "ar"]
       treasury:
         name: "Treasury"
+        description: "Cash management, liquidity, funding, and collateral management"
         keywords: ["treasury", "cash", "liquidity", "funding", "collateral"]
 
   operations:
@@ -402,9 +425,11 @@ domains:
     subdomains:
       trade_ops:
         name: "Trade Operations"
+        description: "Trade confirmation, matching, settlement, and fail management"
         keywords: ["confirmation", "matching", "settlement", "fail"]
       reconciliation:
         name: "Reconciliation"
+        description: "Break resolution, exception handling, and nostro/vostro reconciliation"
         keywords: ["reconciliation", "break", "exception", "nostro", "vostro"]
 
   workforce:
@@ -414,9 +439,11 @@ domains:
     subdomains:
       payroll:
         name: "Payroll & Compensation"
+        description: "Salaries, wages, bonuses, and compensation structures"
         keywords: ["payroll", "salary", "compensation", "bonus"]
       talent:
         name: "Talent"
+        description: "Recruitment, hiring, performance reviews, and professional development"
         keywords: ["recruitment", "candidate", "performance", "training"]
 
   customer:
@@ -426,9 +453,11 @@ domains:
     subdomains:
       onboarding:
         name: "Client Onboarding"
+        description: "Account applications, enrollment, activation, and KYC intake"
         keywords: ["onboarding", "application", "enrollment", "activation"]
       relationship:
         name: "Relationship Management"
+        description: "Advisor assignments, client segmentation, and tier management"
         keywords: ["relationship", "advisor", "rm", "segment", "tier"]
 
   technology:
@@ -438,10 +467,12 @@ domains:
     subdomains:
       security:
         name: "Cybersecurity"
+        description: "Access control, authentication, threat detection, fraud prevention, and vulnerability management"
         keywords:
           ["security", "access", "auth", "threat", "vulnerability", "fraud"]
       monitoring:
         name: "Monitoring"
+        description: "System logs, alerts, uptime tracking, and incident management"
         keywords: ["monitoring", "alert", "log", "uptime", "incident"]
 
   governance:
@@ -451,7 +482,9 @@ domains:
     subdomains:
       legal:
         name: "Legal"
+        description: "Contracts, agreements, litigation, and legal documentation"
         keywords: ["contract", "agreement", "litigation", "clause"]
       data_governance:
         name: "Data Governance"
+        description: "Data quality, lineage, metadata management, and catalog policies"
         keywords: ["data_lineage", "data_catalog", "data_governance", "data_steward", "retention_policy"]

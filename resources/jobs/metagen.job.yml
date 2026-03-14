@@ -33,6 +33,8 @@ resources:
           default: "false"
         - name: apply_ddl
           default: "false"
+        - name: use_kb_comments
+          default: "false"
 
       tasks:
         - task_key: generate_metadata
@@ -50,6 +52,7 @@ resources:
               run_id: "{{job.parameters.run_id}}"
               include_previously_failed_tables: "{{job.parameters.include_previously_failed_tables}}"
               apply_ddl: "{{job.parameters.apply_ddl}}"
+              use_kb_comments: "{{job.parameters.use_kb_comments}}"
 
           libraries:
             - whl: ../../dist/*.whl

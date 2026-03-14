@@ -3,8 +3,8 @@ Domain classifier for dbxmetagen.
 
 Supports two modes:
 - Legacy single-shot: one LLM call picks domain + subdomain simultaneously.
-- Two-stage (default): keyword pre-filter -> domain LLM call -> subdomain LLM call.
-  This produces smaller prompts and uses the full subdomain config (descriptions + keywords).
+- Two-stage (default): domain LLM call (all domains) -> subdomain LLM call.
+  This produces focused prompts and uses the full subdomain config (descriptions + keywords).
 """
 
 import os

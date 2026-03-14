@@ -131,6 +131,19 @@ export default function BatchJobs() {
   const [health, setHealth] = useState(null)
   const pollRef = useRef(null)
 
+  // Processing settings
+  const [settings, setSettings] = useState({
+    model: 'databricks-claude-sonnet-4-5',
+    temperature: 0.1,
+    sample_size: 5,
+    add_metadata: true,
+    use_kb_comments: false,
+    include_lineage: false,
+    include_deterministic_pi: true,
+    tag_none_fields: false,
+  })
+  const setSetting = (key, value) => setSettings(prev => ({ ...prev, [key]: value }))
+
   const [pickerOpen, setPickerOpen] = useState(false)
   const [pickerCatalog, setPickerCatalog] = useState('')
   const [pickerSchema, setPickerSchema] = useState('')
@@ -139,6 +152,20 @@ export default function BatchJobs() {
   const [pickerTables, setPickerTables] = useState([])
   const [pickerSelected, setPickerSelected] = useState([])
   const [pickerFilter, setPickerFilter] = useState('')
+  const [syncDdlFilePath, setSyncDdlFilePath] = useState('')
+
+  const buildExtraParams = () => {
+    const p = {}
+    if (settings.model !== 'databricks-claude-sonnet-4-5') p.model = settings.model
+    if (settings.temperature !== 0.1) p.temperature = String(settings.temperature)
+    if (settings.sample_size !== 5) p.sample_size = String(settings.sample_size)
+    if (!settings.add_metadata) p.add_metadata = 'false'
+    if (settings.use_kb_comments) p.use_kb_comments = 'true'
+    if (settings.include_lineage) p.include_lineage = 'true'
+    if (!settings.include_deterministic_pi) p.include_deterministic_pi = 'false'
+    if (settings.tag_none_fields) p.tag_none_fields = 'true'
+    return p
+  }
 
   // Load jobs, config, bundles, health check on mount
   useEffect(() => {
@@ -154,6 +181,18 @@ export default function BatchJobs() {
       if (cfg) {
         setCatalogName(cfg.catalog_name || '')
         setSchemaName(cfg.schema_name || '')
+        setSettings(prev => ({
+          ...prev,
+          model: cfg.model ?? prev.model,
+          temperature: cfg.temperature ?? prev.temperature,
+          sample_size: cfg.sample_size ?? prev.sample_size,
+          add_metadata: cfg.add_metadata ?? prev.add_metadata,
+          use_kb_comments: cfg.use_kb_comments ?? prev.use_kb_comments,
+          include_lineage: cfg.include_lineage ?? prev.include_lineage,
+          include_deterministic_pi: cfg.include_deterministic_pi ?? prev.include_deterministic_pi,
+          tag_none_fields: cfg.tag_none_fields ?? prev.tag_none_fields,
+        }))
+        setApplyDdl(cfg.apply_ddl ?? false)
       }
     })
     fetch('/api/ontology/bundles').then(r => r.ok ? r.json() : []).then(setBundles).catch(() => { })
@@ -314,6 +353,51 @@ export default function BatchJobs() {
                 className="w-full border rounded-md p-2 text-sm" />
             </div>
           </div>
+
+          <div className="mt-4 pt-3 border-t">
+            <span className="text-xs font-semibold text-gray-600 uppercase tracking-wide">Processing Settings</span>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-2">
+              <div>
+                <label className="block text-xs text-gray-500 mb-0.5">Model Endpoint</label>
+                <input value={settings.model} onChange={e => setSetting('model', e.target.value)}
+                  className="w-full border rounded p-1.5 text-xs" />
+              </div>
+              <div>
+                <label className="block text-xs text-gray-500 mb-0.5">Temperature</label>
+                <input type="number" step="0.05" min="0" max="2" value={settings.temperature}
+                  onChange={e => setSetting('temperature', parseFloat(e.target.value) || 0)}
+                  className="w-full border rounded p-1.5 text-xs" />
+              </div>
+              <div>
+                <label className="block text-xs text-gray-500 mb-0.5">Sample Size</label>
+                <input type="number" min="0" max="100" value={settings.sample_size}
+                  onChange={e => setSetting('sample_size', parseInt(e.target.value) || 0)}
+                  className="w-full border rounded p-1.5 text-xs" />
+              </div>
+              <div className="flex flex-col gap-1 pt-1">
+                <label className="flex items-center gap-1.5 text-xs">
+                  <input type="checkbox" checked={settings.add_metadata} onChange={e => setSetting('add_metadata', e.target.checked)} />
+                  Include metadata
+                </label>
+                <label className="flex items-center gap-1.5 text-xs">
+                  <input type="checkbox" checked={settings.use_kb_comments} onChange={e => setSetting('use_kb_comments', e.target.checked)} />
+                  Use KB comments
+                </label>
+              </div>
+              <label className="flex items-center gap-1.5 text-xs">
+                <input type="checkbox" checked={settings.include_lineage} onChange={e => setSetting('include_lineage', e.target.checked)} />
+                Include lineage
+              </label>
+              <label className="flex items-center gap-1.5 text-xs">
+                <input type="checkbox" checked={settings.include_deterministic_pi} onChange={e => setSetting('include_deterministic_pi', e.target.checked)} />
+                Deterministic PI (Presidio)
+              </label>
+              <label className="flex items-center gap-1.5 text-xs">
+                <input type="checkbox" checked={settings.tag_none_fields} onChange={e => setSetting('tag_none_fields', e.target.checked)} />
+                Tag "None" fields
+              </label>
+            </div>
+          </div>
         </details>
       </div>
 
@@ -403,20 +487,29 @@ export default function BatchJobs() {
             </label>
           </div>
         </div>
-        <div className="flex gap-3 mt-4">
-          <button onClick={() => runJob('_metadata_job', { table_names: tableNames, mode, apply_ddl: applyDdl, ontology_bundle: ontologyBundle, ...(domainConfig ? { domain_config: domainConfig } : {}) })}
+        <div className="flex flex-wrap gap-3 mt-4">
+          <button onClick={() => runJob('_metadata_job', { table_names: tableNames, mode, apply_ddl: applyDdl, ontology_bundle: ontologyBundle, ...(domainConfig ? { domain_config: domainConfig } : {}), extra_params: buildExtraParams() })}
             disabled={loading || !tableNames.trim()}
             title="Run a single metadata generation pass (comment, PI, or domain) for the specified tables"
             className="px-4 py-2 bg-slate-700 text-white rounded-md text-sm hover:bg-slate-800 disabled:opacity-50">
             {loading ? 'Starting...' : 'Run Single Mode'}
           </button>
-          <button onClick={() => runJob('_parallel_modes_job', { table_names: tableNames, apply_ddl: applyDdl, ontology_bundle: ontologyBundle, ...(domainConfig ? { domain_config: domainConfig } : {}) })}
+          <button onClick={() => runJob('_parallel_modes_job', { table_names: tableNames, apply_ddl: applyDdl, ontology_bundle: ontologyBundle, ...(domainConfig ? { domain_config: domainConfig } : {}), extra_params: buildExtraParams() })}
             disabled={loading || !tableNames.trim()}
             title="Run all three modes (comment, PI, domain) in parallel for faster coverage"
             className="px-4 py-2 bg-dbx-lava text-white rounded-md text-sm hover:bg-red-700 disabled:opacity-50">
             All 3 Modes (Parallel)
           </button>
+          <button onClick={() => runJob('_kb_enriched_modes_job', { table_names: tableNames, apply_ddl: applyDdl, ontology_bundle: ontologyBundle, ...(domainConfig ? { domain_config: domainConfig } : {}), extra_params: buildExtraParams() })}
+            disabled={loading || !tableNames.trim()}
+            title="Comments -> KB build -> PI + Domain with KB-generated descriptions enriching prompts"
+            className="px-4 py-2 bg-indigo-600 text-white rounded-md text-sm hover:bg-indigo-700 disabled:opacity-50">
+            KB-Enriched Modes
+          </button>
         </div>
+        <p className="text-xs text-gray-400 mt-2">
+          <strong>KB-Enriched Modes</strong>: Generates comments, builds the knowledge base, then runs PI + domain classification enriched with KB-generated descriptions.
+        </p>
       </Step>
 
       {/* Step 2 -- Analyze */}
@@ -545,15 +638,23 @@ export default function BatchJobs() {
 
       {/* Step 5 -- DDL Sync */}
       <Step num={5} color="bg-dbx-navy/60" title="DDL Sync" prereq="After review edits">
-        <p className="text-sm text-gray-500 mb-4">
-          Re-apply reviewed metadata edits (comments, tags) as ALTER statements to Unity Catalog.
+        <p className="text-sm text-gray-500 mb-2">
+          Legacy / non-KB path: reads a reviewed TSV/Excel file from the volume and applies DDL directly via ALTER statements.
         </p>
-        <button onClick={() => runJob('_sync_ddl_job')}
-          disabled={loading}
-          title="Re-apply reviewed metadata edits (comments, tags) as ALTER statements to Unity Catalog"
-          className="px-4 py-2 bg-slate-700 text-white rounded-md text-sm hover:bg-slate-800 disabled:opacity-50">
-          Sync Reviewed DDL
-        </button>
+        <p className="text-xs text-amber-600 mb-3">
+          For KB users, import reviewed files via the Review & Apply tab instead -- changes will be applied through the standard DDL flow.
+        </p>
+        <div className="flex items-center gap-3">
+          <input value={syncDdlFilePath} onChange={e => setSyncDdlFilePath(e.target.value)}
+            placeholder="/Volumes/catalog/schema/volume/reviewed_file.tsv"
+            className="flex-1 border border-slate-300 rounded px-3 py-1.5 text-sm" />
+          <button onClick={() => runJob('_sync_ddl_job', { extra_params: { reviewed_file_name: syncDdlFilePath } })}
+            disabled={loading || !syncDdlFilePath.trim()}
+            title="Re-apply reviewed metadata edits (comments, tags) as ALTER statements to Unity Catalog"
+            className="px-4 py-2 bg-slate-700 text-white rounded-md text-sm hover:bg-slate-800 disabled:opacity-50">
+            Sync Reviewed DDL
+          </button>
+        </div>
       </Step>
 
       {/* Active Runs */}

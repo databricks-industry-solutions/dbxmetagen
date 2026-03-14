@@ -1,14 +1,14 @@
-# Parallel Metadata Generation: Comment first, then PI + Domain
+# KB-Enriched Parallel Modes: Comments -> KB build -> PI + Domain (with KB comments)
 #
-# Runs comments first, then PI and domain in parallel (so domain/PI can use
-# existing comments when include_existing_table_comment is true). Same set of
-# tables; defaults to apply_ddl=false so tables are added to
-# metadata_generation_log for downstream analysis only.
+# Generates comments first, then builds the knowledge base, then runs PI and
+# domain classification in parallel with use_kb_comments=true so that the
+# AI-generated descriptions from the KB enrich the PI/domain prompts even when
+# UC DDL comments haven't been applied.
 
 resources:
   jobs:
-    metadata_parallel_modes_job:
-      name: "${var.app_name}_parallel_modes_job"
+    metadata_kb_enriched_modes_job:
+      name: "${var.app_name}_kb_enriched_modes_job"
 
       permissions:
         - service_principal_name: ${resources.apps.dbxmetagen_app.service_principal_client_id}
@@ -37,11 +37,8 @@ resources:
           default: "{{job.run_id}}"
         - name: include_previously_failed_tables
           default: "false"
-        - name: use_kb_comments
-          default: "false"
 
       tasks:
-        # Comments run first; PI and domain depend on it so they can use comments
         - task_key: generate_comments
           job_cluster_key: metadata_cluster
           notebook_task:
@@ -61,9 +58,21 @@ resources:
           libraries:
             - whl: ../../dist/*.whl
 
-        - task_key: generate_pi
+        - task_key: build_knowledge_base
           depends_on:
             - task_key: generate_comments
+          job_cluster_key: metadata_cluster
+          notebook_task:
+            notebook_path: ../../notebooks/build_knowledge_base.py
+            base_parameters:
+              catalog_name: "{{job.parameters.catalog_name}}"
+              schema_name: "{{job.parameters.schema_name}}"
+          libraries:
+            - whl: ../../dist/*.whl
+
+        - task_key: generate_pi
+          depends_on:
+            - task_key: build_knowledge_base
           job_cluster_key: metadata_cluster
           notebook_task:
             notebook_path: ../../notebooks/generate_metadata.py
@@ -80,13 +89,13 @@ resources:
               cleanup_control_table: "false"
               include_previously_failed_tables: "{{job.parameters.include_previously_failed_tables}}"
               include_existing_table_comment: "true"
-              use_kb_comments: "{{job.parameters.use_kb_comments}}"
+              use_kb_comments: "true"
           libraries:
             - whl: ../../dist/*.whl
 
         - task_key: generate_domain
           depends_on:
-            - task_key: generate_comments
+            - task_key: build_knowledge_base
           job_cluster_key: metadata_cluster
           notebook_task:
             notebook_path: ../../notebooks/generate_metadata.py
@@ -103,7 +112,7 @@ resources:
               cleanup_control_table: "false"
               include_previously_failed_tables: "{{job.parameters.include_previously_failed_tables}}"
               include_existing_table_comment: "true"
-              use_kb_comments: "{{job.parameters.use_kb_comments}}"
+              use_kb_comments: "true"
           libraries:
             - whl: ../../dist/*.whl
 

@@ -30,6 +30,8 @@ ALLOWED_TABLES = {
 }
 
 _ws = None
+_vsc = None
+_vs_indexes: dict = {}
 
 
 def _get_ws() -> WorkspaceClient:
@@ -37,6 +39,24 @@ def _get_ws() -> WorkspaceClient:
     if _ws is None:
         _ws = WorkspaceClient()
     return _ws
+
+
+def _get_vs_index(index_name: str):
+    """Return a cached VectorSearchIndex, creating the client once."""
+    global _vsc
+    if index_name in _vs_indexes:
+        return _vs_indexes[index_name]
+    if _vsc is None:
+        from databricks.vector_search.client import VectorSearchClient
+        ws = _get_ws()
+        _token = os.environ.get("DATABRICKS_TOKEN")
+        if not _token:
+            headers = ws.config.authenticate()
+            _token = headers.get("Authorization", "").removeprefix("Bearer ")
+        _vsc = VectorSearchClient(workspace_url=ws.config.host, personal_access_token=_token)
+    idx = _vsc.get_index(endpoint_name=VS_ENDPOINT, index_name=index_name)
+    _vs_indexes[index_name] = idx
+    return idx
 
 
 def _execute_query(query: str) -> dict:
@@ -84,15 +104,7 @@ def search_metadata(query: str, doc_type_filter: Optional[str] = None, num_resul
     num_results = min(max(num_results, 1), 20)
     vs_index = f"{CATALOG}.{SCHEMA}.{VS_INDEX_SUFFIX}"
     try:
-        from databricks.vector_search.client import VectorSearchClient
-        from databricks.sdk import WorkspaceClient
-        ws = WorkspaceClient()
-        _token = os.environ.get("DATABRICKS_TOKEN")
-        if not _token:
-            headers = ws.config.authenticate()
-            _token = headers.get("Authorization", "").removeprefix("Bearer ")
-        vsc = VectorSearchClient(workspace_url=ws.config.host, personal_access_token=_token)
-        index = vsc.get_index(endpoint_name=VS_ENDPOINT, index_name=vs_index)
+        index = _get_vs_index(vs_index)
         kwargs = dict(
             query_text=query,
             columns=["doc_id", "doc_type", "content", "node_id", "table_name", "domain", "entity_type", "confidence_score"],

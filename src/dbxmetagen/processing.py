@@ -1958,6 +1958,8 @@ def get_domain_classification(
     sampled_df = sample_df(first_chunk_df, first_chunk_df.count(), config.sample_size)
 
     prompt = PromptFactory.create_prompt(config, sampled_df, full_table_name)
+    if getattr(config, "use_kb_comments", False):
+        prompt.enrich_from_knowledge_base()
     prompt_messages = prompt.create_prompt_template()
 
     # Check prompt length to avoid excessive token usage
@@ -2083,6 +2085,8 @@ def get_generated_metadata_data_aware(
     for i, chunk in enumerate(chunked_dfs):
         sampled_chunk = sample_df(chunk, nrows, config.sample_size)
         prompt = PromptFactory.create_prompt(config, sampled_chunk, full_table_name)
+        if getattr(config, "use_kb_comments", False):
+            prompt.enrich_from_knowledge_base()
         prompt_messages = prompt.create_prompt_template()
         check_token_length_against_num_words(prompt_messages, config)
         if config.registered_model_name != "default":

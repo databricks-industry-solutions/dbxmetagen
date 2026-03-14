@@ -50,6 +50,54 @@ class Prompt(ABC):
         if lin:
             self.prompt_content["lineage"] = lin
 
+    def enrich_from_knowledge_base(self) -> None:
+        """Supplement empty UC comments with descriptions from KB tables.
+
+        Queries ``table_knowledge_base`` and ``column_knowledge_base`` in the
+        target catalog/schema and injects their ``comment`` values into
+        ``self.prompt_content`` wherever the UC-sourced comment is missing.
+        Must be called **after** ``add_metadata_to_comment_input()``.
+        """
+        catalog = self.config.catalog_name
+        schema = self.config.schema_name
+        fqtn = self.full_table_name
+
+        # --- table-level comment ---
+        try:
+            tbl_kb = self.spark.sql(
+                f"SELECT comment FROM {catalog}.{schema}.table_knowledge_base "
+                f"WHERE table_name = '{fqtn}' LIMIT 1"
+            ).collect()
+        except Exception:
+            tbl_kb = []
+
+        if tbl_kb:
+            kb_comment = tbl_kb[0]["comment"]
+            cc = self.prompt_content.get("column_contents", {})
+            existing = cc.get("table_comments", "")
+            if not existing or existing == "{}" or existing == "[]":
+                cc["table_comments"] = f'[{{"table_name":"{fqtn}","comment":"{kb_comment}"}}]'
+                logger.info("KB table comment injected for %s", fqtn)
+
+        # --- column-level comments ---
+        try:
+            col_rows = self.spark.sql(
+                f"SELECT column_name, comment FROM {catalog}.{schema}.column_knowledge_base "
+                f"WHERE table_name = '{fqtn}'"
+            ).collect()
+        except Exception:
+            col_rows = []
+
+        if col_rows:
+            kb_col_map = {r["column_name"]: r["comment"] for r in col_rows if r["comment"]}
+            col_meta = self.prompt_content.get("column_contents", {}).get("column_metadata", {})
+            for col_name, kb_desc in kb_col_map.items():
+                if col_name in col_meta:
+                    existing_comment = col_meta[col_name].get("comment", "")
+                    if not existing_comment:
+                        col_meta[col_name]["comment"] = kb_desc
+            logger.info("KB column comments injected for %s (%d cols)", fqtn, len(kb_col_map))
+
     @abstractmethod
     def convert_to_comment_input(self) -> Dict[str, Any]:
         """

@@ -5,7 +5,7 @@ Discovers and manages business entities from the knowledge base,
 creating an ontology layer on top of the data catalog.
 
 Includes flexible keyword matching, AI-powered structured classification,
-value enforcement, domain-aware prefiltering, and deduplication.
+value enforcement, domain-aware scoring, and deduplication.
 """
 
 import logging
@@ -597,6 +597,8 @@ class OntologyLoader:
                     if config and "ontology" in config:
                         loaded_config = config.get("ontology", {})
                         OntologyLoader._validate_config(loaded_config)
+                        if "metadata" in config:
+                            loaded_config["_bundle_metadata"] = config["metadata"]
                         entity_count = len(
                             loaded_config.get("entities", {}).get("definitions", {})
                         )
@@ -717,7 +719,7 @@ class OntologyLoader:
 class EntityDiscoverer:
     """Discovers entities from knowledge base tables with flexible matching.
 
-    Uses structured LLM output (ChatDatabricks), keyword prefiltering with
+    Uses structured LLM output (ChatDatabricks), keyword scoring with
     domain-aware boosting, value enforcement, deduplication, and multi-entity
     support for relationship tables.
     """
@@ -815,7 +817,7 @@ class EntityDiscoverer:
         return {t: ", ".join(cols[:10]) for t, cols in by_table.items()}
 
     # ------------------------------------------------------------------
-    # Keyword prefilter + domain-aware boosting
+    # Keyword scoring + domain-aware boosting
     # ------------------------------------------------------------------
 
     def _keyword_prefilter(
@@ -823,10 +825,11 @@ class EntityDiscoverer:
         name: str,
         comment: str,
         domain: str,
-        top_n: int = 8,
+        top_n: int = 0,
     ) -> List[str]:
         """Score entity definitions by keyword overlap and domain affinity,
-        returning the top-N candidate entity names for the LLM prompt."""
+        returning the top-N candidate entity names for the LLM prompt.
+        top_n=0 (default) returns all entity types, ranked by relevance."""
         name_lower = name.lower()
         comment_lower = (comment or "").lower()
         domain_lower = (domain or "").lower()
@@ -1793,6 +1796,14 @@ class OntologyBuilder:
         self.spark = spark
         self.config = config
         self.ontology_config = OntologyLoader.load_config(config.config_path)
+        bundle_tag_key = (
+            self.ontology_config
+            .get("_bundle_metadata", {})
+            .get("tag_key")
+        )
+        if bundle_tag_key and config.entity_tag_key == "entity_type":
+            config.entity_tag_key = bundle_tag_key
+            logger.info(f"Using entity_tag_key '{bundle_tag_key}' from bundle metadata")
         affinity = load_domain_entity_affinity(self.ontology_config)
         self.discoverer = EntityDiscoverer(
             spark, config, self.ontology_config, domain_entity_affinity=affinity
@@ -2381,13 +2392,28 @@ class OntologyBuilder:
             logger.info("No inter-entity relationships discovered")
             return result
 
+        # Remove prior inter-entity ontology edges to prevent duplicates
+        try:
+            self.spark.sql(
+                f"DELETE FROM {edges_table} "
+                f"WHERE source_system = 'ontology' AND edge_type IN ('references', 'inter_entity')"
+            )
+        except Exception:
+            pass
+
         now = datetime.now()
         edge_df = self.spark.createDataFrame(
             [
-                (src, dst, rel, w, now, now)
+                (src, dst, rel, w,
+                 f"{src}::{dst}::{rel}", rel, "out",
+                 None, None, rel,
+                 "ontology", "candidate", now, now)
                 for src, dst, rel, w, _ in new_edges
             ],
-            ["src", "dst", "relationship", "weight", "created_at", "updated_at"],
+            ["src", "dst", "relationship", "weight",
+             "edge_id", "edge_type", "direction",
+             "join_expression", "join_confidence", "ontology_rel",
+             "source_system", "status", "created_at", "updated_at"],
         )
         edge_df.write.mode("append").saveAsTable(edges_table)
         logger.info("Added %d inter-entity relationship edges", len(new_edges))
@@ -2434,38 +2460,70 @@ class OntologyBuilder:
         if not new_edges:
             return 0
 
+        now = datetime.now()
         edge_df = self.spark.createDataFrame(
-            [(s, d, r, w, datetime.now(), datetime.now()) for s, d, r, w in new_edges],
-            ["src", "dst", "relationship", "weight", "created_at", "updated_at"],
+            [
+                (s, d, "is_a", w,
+                 f"{s}::{d}::is_a", "is_a", "out",
+                 None, None, "is_a",
+                 "ontology", "candidate", now, now)
+                for s, d, _, w in new_edges
+            ],
+            ["src", "dst", "relationship", "weight",
+             "edge_id", "edge_type", "direction",
+             "join_expression", "join_confidence", "ontology_rel",
+             "source_system", "status", "created_at", "updated_at"],
         )
         edge_df.write.mode("append").saveAsTable(edges_table)
         logger.info("Added %d hierarchy (is_a) edges", len(new_edges))
         return len(new_edges)
 
     def _sync_entity_nodes_to_graph(self) -> int:
-        """Insert ontology entities into graph_nodes so edges have valid targets."""
+        """Merge ontology entities into graph_nodes so edges have valid targets.
+
+        Uses MERGE to keep existing entity nodes up-to-date when confidence,
+        entity_type, or description change across runs.
+        """
         nodes_table = f"{self.config.catalog_name}.{self.config.schema_name}.{self.config.nodes_table}"
         ent_table = self.config.fully_qualified_entities
         try:
             self.spark.sql(f"""
-                INSERT INTO {nodes_table}
-                    (id, table_name, catalog, `schema`, table_short_name,
-                     domain, subdomain, has_pii, has_phi, security_level,
-                     comment, node_type, parent_id, data_type,
-                     quality_score, embedding,
-                     ontology_id, ontology_type, display_name, short_description,
-                     sensitivity, status, source_system, keywords,
-                     created_at, updated_at)
-                SELECT entity_id, NULL, NULL, NULL, entity_name,
-                    NULL, NULL, FALSE, FALSE, 'PUBLIC',
-                    description, 'entity', entity_type,
-                    COALESCE(entity_role, 'primary'),
-                    confidence, NULL,
-                    entity_id, entity_type, entity_name, description,
-                    'public', 'discovered', 'ontology', NULL,
+                MERGE INTO {nodes_table} AS target
+                USING (
+                    SELECT entity_id, entity_name, entity_type,
+                           COALESCE(entity_role, 'primary') AS entity_role,
+                           description, confidence, created_at, updated_at
+                    FROM {ent_table}
+                ) AS source
+                ON target.id = source.entity_id
+
+                WHEN MATCHED THEN UPDATE SET
+                    target.table_short_name = source.entity_name,
+                    target.comment = COALESCE(source.description, target.comment),
+                    target.quality_score = source.confidence,
+                    target.ontology_type = source.entity_type,
+                    target.display_name = source.entity_name,
+                    target.short_description = COALESCE(source.description, target.short_description),
+                    target.status = source.entity_role,
+                    target.updated_at = source.updated_at
+
+                WHEN NOT MATCHED THEN INSERT (
+                    id, table_name, catalog, `schema`, table_short_name,
+                    domain, subdomain, has_pii, has_phi, security_level,
+                    comment, node_type, parent_id, data_type,
+                    quality_score, embedding,
+                    ontology_id, ontology_type, display_name, short_description,
+                    sensitivity, status, source_system, keywords,
                     created_at, updated_at
-                FROM {ent_table}
-                WHERE entity_id NOT IN (SELECT id FROM {nodes_table})
+                ) VALUES (
+                    source.entity_id, NULL, NULL, NULL, source.entity_name,
+                    NULL, NULL, FALSE, FALSE, 'PUBLIC',
+                    source.description, 'entity', NULL, NULL,
+                    source.confidence, NULL,
+                    source.entity_id, source.entity_type, source.entity_name, source.description,
+                    'public', source.entity_role, 'ontology', NULL,
+                    source.created_at, source.updated_at
+                )
             """)
             count = self.spark.sql(
                 f"SELECT COUNT(*) as cnt FROM {nodes_table} WHERE node_type = 'entity'"
@@ -2477,13 +2535,17 @@ class OntologyBuilder:
             return 0
 
     def _clear_ontology_edges(self) -> None:
-        """Delete existing ontology-typed edges to prevent accumulation on re-runs."""
+        """Delete existing ontology-typed edges to prevent accumulation on re-runs.
+
+        Scoped to avoid deleting FK-based reference edges (source_system='fk_predictions').
+        """
         edges_table = f"{self.config.catalog_name}.{self.config.schema_name}.graph_edges"
         try:
             self.spark.sql(
                 f"DELETE FROM {edges_table} "
                 f"WHERE source_system = 'ontology' "
-                f"   OR relationship IN ('instance_of', 'has_attribute', 'has_property', 'references', 'is_a')"
+                f"   OR (relationship IN ('instance_of', 'has_attribute', 'has_property', 'is_a') "
+                f"       AND (source_system IS NULL OR source_system = 'ontology'))"
             )
             logger.info("Cleared existing ontology edges before regeneration")
         except Exception as e:
@@ -2571,13 +2633,12 @@ class OntologyBuilder:
             """)
             ref_count = raw.count()
             if ref_count > 0:
-                # Use relationship_name as the ontology_rel, edge_type stays 'references'
                 ref_edges = raw.select(
                     F.col("src"), F.col("dst"),
                     F.col("rel_name").alias("relationship"),
                     F.col("weight"),
                     F.concat_ws("::", F.col("src"), F.col("dst"), F.col("rel_name")).alias("edge_id"),
-                    F.lit("references").alias("edge_type"),
+                    F.col("rel_name").alias("edge_type"),
                     F.lit("out").alias("direction"),
                     F.lit(None).cast("string").alias("join_expression"),
                     F.lit(None).cast("double").alias("join_confidence"),
