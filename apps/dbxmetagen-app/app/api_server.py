@@ -2458,6 +2458,82 @@ def get_coverage_tables(catalog: Optional[str] = None, schema: Optional[str] = N
         return execute_sql(q_simple)
 
 
+@app.get("/api/coverage/holistic")
+def get_coverage_holistic():
+    """Single endpoint returning all metadata-type coverage counts."""
+    result = {
+        "total_tables": 0, "profiled": 0, "with_comments": 0,
+        "with_pii": 0, "with_domain": 0, "with_ontology": 0,
+        "with_fk": 0, "metric_views": 0, "metric_view_statuses": {},
+        "vs_documents": 0, "vs_by_type": {},
+        "avg_confidence": None, "entity_type_count": 0, "fk_count": 0,
+    }
+    try:
+        rows = execute_sql(f"""
+            SELECT COUNT(*) as total,
+                   SUM(CASE WHEN comment IS NOT NULL AND comment != '' THEN 1 ELSE 0 END) as with_comments,
+                   SUM(CASE WHEN has_pii = true OR has_phi = true THEN 1 ELSE 0 END) as with_pii,
+                   SUM(CASE WHEN domain IS NOT NULL AND domain != '' THEN 1 ELSE 0 END) as with_domain
+            FROM {fq('table_knowledge_base')}
+        """)
+        if rows:
+            r = rows[0]
+            result["profiled"] = int(r.get("total") or 0)
+            result["with_comments"] = int(r.get("with_comments") or 0)
+            result["with_pii"] = int(r.get("with_pii") or 0)
+            result["with_domain"] = int(r.get("with_domain") or 0)
+    except Exception:
+        pass
+    try:
+        rows = execute_sql(f"""
+            SELECT COUNT(*) as cnt FROM (
+                SELECT DISTINCT table_catalog, table_schema, table_name
+                FROM system.information_schema.tables
+                WHERE table_catalog = '{CATALOG}' AND table_schema NOT IN ('information_schema','__internal')
+                AND table_type IN ('MANAGED','EXTERNAL','VIEW','STREAMING_TABLE','MATERIALIZED_VIEW','FOREIGN')
+            )
+        """)
+        result["total_tables"] = int(rows[0]["cnt"]) if rows else 0
+    except Exception:
+        pass
+    try:
+        onto = execute_sql(f"""
+            SELECT COUNT(DISTINCT entity_type) as type_cnt,
+                   AVG(confidence) as avg_conf,
+                   COUNT(DISTINCT EXPLODE(source_tables)) as tbl_cnt
+            FROM {fq('ontology_entities')}
+        """)
+        if onto:
+            result["entity_type_count"] = int(onto[0].get("type_cnt") or 0)
+            result["avg_confidence"] = round(float(onto[0].get("avg_conf") or 0), 3) if onto[0].get("avg_conf") else None
+            result["with_ontology"] = int(onto[0].get("tbl_cnt") or 0)
+    except Exception:
+        pass
+    try:
+        fks = execute_sql(f"SELECT COUNT(*) as cnt FROM {fq('fk_predictions')} WHERE final_confidence >= 0.5")
+        result["fk_count"] = int(fks[0]["cnt"]) if fks else 0
+    except Exception:
+        pass
+    try:
+        fk_tbls = execute_sql(f"SELECT COUNT(DISTINCT src_table) + COUNT(DISTINCT dst_table) as cnt FROM {fq('fk_predictions')}")
+        result["with_fk"] = int(fk_tbls[0]["cnt"]) if fk_tbls else 0
+    except Exception:
+        pass
+    try:
+        mvs = execute_sql(f"SELECT status, COUNT(*) as cnt FROM {fq('metric_view_definitions')} GROUP BY status")
+        result["metric_view_statuses"] = {r["status"]: int(r["cnt"]) for r in mvs} if mvs else {}
+        result["metric_views"] = sum(result["metric_view_statuses"].values())
+    except Exception:
+        pass
+    try:
+        docs = execute_sql(f"SELECT doc_type, COUNT(*) AS cnt FROM {fq('metadata_documents')} GROUP BY doc_type")
+        result["vs_by_type"] = {r["doc_type"]: int(r["cnt"]) for r in docs} if docs else {}
+        result["vs_documents"] = sum(result["vs_by_type"].values())
+    except Exception:
+        pass
+    return result
+
+
 # ---------------------------------------------------------------------------
 # GraphRAG endpoint (delegates to agent)
 # ---------------------------------------------------------------------------
@@ -4928,6 +5004,7 @@ VALID_AGENT_MODES = {"quick", "deep", "graphrag", "baseline"}
 
 @app.post("/api/agent/chat")
 async def agent_chat(req: AgentChatRequest):
+    t0 = time.time()
     from agent.guardrails import validate_input
     ok, err = validate_input(req.message)
     if not ok:
@@ -4939,6 +5016,8 @@ async def agent_chat(req: AgentChatRequest):
     mode = req.mode if req.mode in VALID_AGENT_MODES else "quick"
     try:
         result = await run_metadata_agent(req.message, history=req.history, mode=mode)
+        if isinstance(result, dict):
+            result["elapsed_ms"] = int((time.time() - t0) * 1000)
         return result
     except Exception as exc:
         msg = str(exc)
@@ -4990,6 +5069,7 @@ def agent_deep_submit(req: AgentChatRequest):
                     }
                     return
                 if event.get("stage") == "done":
+                    created = _deep_tasks[task_id]["created"]
                     _deep_tasks[task_id] = {
                         "status": "done",
                         "stage": "done",
@@ -4997,7 +5077,8 @@ def agent_deep_submit(req: AgentChatRequest):
                         "tool_calls": event.get("tool_calls", []),
                         "mode": event.get("mode", mode),
                         "routing_trace": event.get("routing_trace"),
-                        "created": _deep_tasks[task_id]["created"],
+                        "created": created,
+                        "elapsed_ms": int((time.time() - created) * 1000),
                     }
                     return
                 if event.get("stage") == "error":
@@ -5063,9 +5144,22 @@ def agent_stats():
         rows = execute_sql(f"SELECT doc_type, COUNT(*) AS cnt FROM {fq('metadata_documents')} GROUP BY doc_type")
         stats["vs_documents"] = sum(r["cnt"] for r in rows) if rows else 0
         stats["vs_by_type"] = {r["doc_type"]: r["cnt"] for r in rows} if rows else {}
-    except Exception:
+    except Exception as e:
+        logger.warning("metadata_documents query failed in agent_stats: %s", e)
         stats["vs_documents"] = 0
         stats["vs_by_type"] = {}
+    if stats["vs_documents"] == 0:
+        try:
+            ws = get_workspace_client()
+            vs_index_name = f"{CATALOG}.{SCHEMA}.{VS_INDEX_SUFFIX}"
+            idx = ws.vector_search_indexes.get_index(vs_index_name)
+            if idx.status and hasattr(idx.status, "indexed_row_count"):
+                count = idx.status.indexed_row_count or 0
+                if count > 0:
+                    stats["vs_documents"] = count
+                    stats["vs_source"] = "index"
+        except Exception:
+            pass
     return stats
 
 

@@ -179,16 +179,51 @@ function InfoSlides({ open, onClose }) {
   )
 }
 
-function NavItem({ item, isActive, onClick }) {
+function NavDropdown({ cat, activeTab, onSelect }) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef(null)
+  const activeItem = cat.items.find(i => i.id === activeTab)
+  const catColor = NAV_CAT_COLORS[cat.category] || 'text-slate-500'
+
+  useEffect(() => {
+    if (!open) return
+    const handler = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false) }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [open])
+
   return (
-    <button onClick={onClick} title={item.desc}
-      className={`relative px-3.5 py-1.5 rounded-lg text-sm font-medium transition-all duration-200 whitespace-nowrap ${
-        isActive
-          ? 'bg-white dark:bg-dbx-navy-500 text-dbx-lava shadow-sm'
-          : 'text-slate-600 dark:text-slate-400 hover:text-dbx-navy dark:hover:text-slate-200 hover:bg-white/60 dark:hover:bg-dbx-navy-500/50'
-      }`}>
-      {item.label}
-    </button>
+    <div ref={ref} className="relative">
+      <button onClick={() => setOpen(!open)}
+        className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-sm font-medium transition-all duration-200 whitespace-nowrap ${
+          activeItem
+            ? 'bg-white dark:bg-dbx-navy-500 text-dbx-lava shadow-sm'
+            : 'text-slate-600 dark:text-slate-400 hover:text-dbx-navy dark:hover:text-slate-200 hover:bg-white/60 dark:hover:bg-dbx-navy-500/50'
+        }`}>
+        <span className={`text-[10px] font-semibold uppercase tracking-wider ${catColor}`}>{cat.category}</span>
+        {activeItem && <span className="text-slate-400 dark:text-slate-500 mx-0.5">/</span>}
+        {activeItem && <span>{activeItem.label}</span>}
+        <svg className={`w-3 h-3 transition-transform duration-200 ${open ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+        </svg>
+      </button>
+      {open && (
+        <div className="absolute top-full left-0 mt-1 bg-white dark:bg-dbx-navy-600 rounded-xl shadow-elevated border border-slate-200/80 dark:border-dbx-navy-400/30 py-1.5 min-w-[220px] z-50 animate-slide-up">
+          {cat.items.map(item => (
+            <button key={item.id}
+              onClick={() => { onSelect(item.id); setOpen(false) }}
+              className={`w-full text-left px-4 py-2.5 transition-colors ${
+                activeTab === item.id
+                  ? 'bg-dbx-oat-light dark:bg-dbx-navy-500/60 text-dbx-lava'
+                  : 'text-slate-700 dark:text-slate-300 hover:bg-dbx-oat-light/60 dark:hover:bg-dbx-navy-500/40'
+              }`}>
+              <span className="text-sm font-medium block">{item.label}</span>
+              <span className="text-xs text-slate-400 dark:text-slate-500">{item.desc}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -204,7 +239,6 @@ export default function App() {
     return false
   })
   const ActiveComponent = COMPONENTS[activeTab]
-  const activeCategory = NAV_STRUCTURE.find(cat => cat.items.some(i => i.id === activeTab))?.category || 'Explore'
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', dark)
@@ -253,15 +287,11 @@ export default function App() {
 
       {/* Navigation */}
       <nav className="bg-white/80 dark:bg-dbx-navy-700/90 backdrop-blur-sm border-b border-dbx-oat-dark/50 dark:border-dbx-navy-400/20 shadow-nav sticky top-0 z-40">
-        <div className="flex items-center gap-1 px-6 py-2 max-w-[90rem] mx-auto overflow-x-auto scrollbar-thin">
+        <div className="flex items-center gap-2 px-6 py-2 max-w-[90rem] mx-auto overflow-x-auto scrollbar-thin">
           {NAV_STRUCTURE.map((cat, ci) => (
             <React.Fragment key={cat.category}>
-              {ci > 0 && <div className="w-px h-6 bg-slate-200 dark:bg-dbx-navy-400/40 mx-1.5 flex-shrink-0" />}
-              <span className={`text-xs font-semibold uppercase tracking-wider mr-1 flex-shrink-0 hidden sm:inline ${NAV_CAT_COLORS[cat.category] || 'text-slate-500'}`}>{cat.category}</span>
-              {cat.items.map(item => (
-                <NavItem key={item.id} item={item} isActive={activeTab === item.id}
-                  onClick={() => setActiveTab(item.id)} />
-              ))}
+              {ci > 0 && <div className="w-px h-6 bg-slate-200 dark:bg-dbx-navy-400/40 mx-0.5 flex-shrink-0" />}
+              <NavDropdown cat={cat} activeTab={activeTab} onSelect={setActiveTab} />
             </React.Fragment>
           ))}
         </div>

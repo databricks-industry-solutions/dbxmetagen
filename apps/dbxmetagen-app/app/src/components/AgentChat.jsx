@@ -97,7 +97,7 @@ function AgentReasoning({ intent, toolCalls }) {
             <div className="space-y-1">
               <span className="text-slate-400">Tools used:</span>
               {toolCalls.map((t, i) => (
-                <div key={i} className="flex items-baseline gap-2 ml-3">
+                <div key={i} className="flex items-baseline gap-2 ml-3" title={TOOL_DESCRIPTIONS[t] || ''}>
                   <span className="font-mono font-medium text-emerald-600 dark:text-emerald-400">{t}</span>
                   <span className="text-slate-400">{TOOL_DESCRIPTIONS[t] || ''}</span>
                 </div>
@@ -135,14 +135,22 @@ function MessageBubble({ msg, onRetry }) {
     )
   }
   const cfg = MODE_CONFIG[msg.mode] || MODE_CONFIG.quick
+  const elapsed = msg.elapsed_ms
   return (
     <div className="flex justify-start mb-4 animate-slide-up">
       <div className="card px-4 py-3 max-w-[85%] text-sm overflow-hidden">
-        {msg.mode && (
-          <span className={`badge text-xs mb-2 ${cfg.lightBg}`}>
-            {cfg.label}
-          </span>
-        )}
+        <div className="flex items-center gap-2 mb-1">
+          {msg.mode && (
+            <span className={`badge text-xs ${cfg.lightBg}`}>
+              {cfg.label}
+            </span>
+          )}
+          {elapsed != null && (
+            <span className="text-[10px] text-slate-400 dark:text-slate-500 tabular-nums">
+              {elapsed >= 1000 ? `${(elapsed / 1000).toFixed(1)}s` : `${elapsed}ms`}
+            </span>
+          )}
+        </div>
         <div className="prose prose-sm max-w-none whitespace-pre-wrap break-words text-slate-700 dark:text-slate-300"
           dangerouslySetInnerHTML={{ __html: simpleMarkdown(msg.content) }} />
         <AgentReasoning intent={msg.intent} toolCalls={msg.tool_calls} />
@@ -209,6 +217,31 @@ function RetrievalTechniques() {
   )
 }
 
+function ToolsPanel() {
+  const [open, setOpen] = useState(false)
+  return (
+    <div className="card p-4">
+      <button onClick={() => setOpen(!open)}
+        className="flex items-center justify-between w-full text-left">
+        <h3 className="section-title">Available Tools</h3>
+        <svg className={`w-3.5 h-3.5 text-slate-400 transition-transform duration-200 ${open ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+        </svg>
+      </button>
+      {open && (
+        <div className="mt-3 space-y-1.5 animate-slide-up">
+          {Object.entries(TOOL_DESCRIPTIONS).map(([name, desc]) => (
+            <div key={name} className="flex items-baseline gap-2 px-2 py-1.5 rounded-lg bg-dbx-oat-light/50 dark:bg-dbx-navy-500/30">
+              <span className="font-mono text-xs font-medium text-emerald-600 dark:text-emerald-400 flex-shrink-0">{name}</span>
+              <span className="text-xs text-slate-500 dark:text-slate-400">{desc}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 export default function AgentChat() {
   const [messages, setMessages] = useState([])
   const [input, setInput] = useState('')
@@ -262,6 +295,7 @@ export default function AgentChat() {
             tool_calls: task.tool_calls || [],
             intent: null,
             mode: task.mode || useMode,
+            elapsed_ms: task.elapsed_ms,
           }])
           return
         }
@@ -298,6 +332,7 @@ export default function AgentChat() {
           tool_calls: data.tool_calls || [],
           intent: data.intent,
           mode: data.mode || useMode,
+          elapsed_ms: data.elapsed_ms,
         }])
       }
     } catch (e) {
@@ -438,7 +473,9 @@ export default function AgentChat() {
               onClick={() => injectQuery('What metric views are available?')} />
             <StatCard label="VS Documents" value={stats.vs_documents}
               gradient="from-rose-50 to-rose-100/50 border-rose-200/50 dark:from-rose-900/20 dark:to-rose-900/10 dark:border-rose-800/30"
-              sub={stats.vs_by_type ? Object.entries(stats.vs_by_type).map(([k,v]) => `${k}: ${v}`).join(', ') : ''} />
+              sub={stats.vs_source === 'index'
+                ? `${stats.vs_documents} (from VS index)`
+                : stats.vs_by_type ? Object.entries(stats.vs_by_type).map(([k,v]) => `${k}: ${v}`).join(', ') : ''} />
             <StatCard label="Quality" value={stats.avg_quality ?? '--'}
               gradient="from-teal-50 to-teal-100/50 border-teal-200/50 dark:from-teal-900/20 dark:to-teal-900/10 dark:border-teal-800/30"
               onClick={() => injectQuery('Show me the data quality summary')} />
@@ -480,6 +517,8 @@ export default function AgentChat() {
             </div>
           </div>
         )}
+
+        <ToolsPanel />
       </div>
     </div>
   )

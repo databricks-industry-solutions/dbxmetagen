@@ -222,30 +222,95 @@ function CatalogCoverage() {
   )
 }
 
-const COVERAGE_TABS = [
-  { key: 'catalog', label: 'Catalog Coverage' },
-  { key: 'ontology', label: 'Ontology Health' },
-  { key: 'fk_map', label: 'FK Map' },
+const OVERVIEW_CARDS = [
+  { key: 'profiled', label: 'Data Profiles', color: 'border-l-emerald-500', bg: 'from-emerald-50 to-emerald-100/30 dark:from-emerald-900/20 dark:to-emerald-900/10', tab: 'data' },
+  { key: 'with_comments', label: 'Descriptions', color: 'border-l-blue-500', bg: 'from-blue-50 to-blue-100/30 dark:from-blue-900/20 dark:to-blue-900/10', tab: 'data' },
+  { key: 'with_ontology', label: 'Ontology Entities', color: 'border-l-orange-500', bg: 'from-orange-50 to-orange-100/30 dark:from-orange-900/20 dark:to-orange-900/10', tab: 'ontology' },
+  { key: 'fk_count', label: 'FK Relationships', color: 'border-l-rose-500', bg: 'from-rose-50 to-rose-100/30 dark:from-rose-900/20 dark:to-rose-900/10', tab: 'graph' },
+  { key: 'metric_views', label: 'Metric Views', color: 'border-l-amber-500', bg: 'from-amber-50 to-amber-100/30 dark:from-amber-900/20 dark:to-amber-900/10', tab: 'data' },
+  { key: 'vs_documents', label: 'VS Documents', color: 'border-l-violet-500', bg: 'from-violet-50 to-violet-100/30 dark:from-violet-900/20 dark:to-violet-900/10', tab: 'data' },
 ]
 
-export default function Coverage() {
-  const [tab, setTab] = useState('catalog')
+const DETAIL_TABS = [
+  { key: 'data', label: 'Data & Descriptions' },
+  { key: 'ontology', label: 'Ontology & Entities' },
+  { key: 'graph', label: 'Relationships & Graph' },
+]
+
+function CoverageCard({ label, value, total, color, bg, onClick, sub }) {
+  const pct = total > 0 ? Math.round((value / total) * 100) : null
   return (
-    <div className="space-y-4">
-      <PageHeader title="Metadata Coverage" subtitle="Track profiling and coverage metrics" />
+    <button onClick={onClick}
+      className={`text-left rounded-xl p-4 border-l-4 ${color} border border-slate-200/60 dark:border-dbx-navy-400/25 bg-gradient-to-br ${bg} shadow-card hover:shadow-card-hover transition-all duration-200 hover:scale-[1.02]`}>
+      <p className="text-xs font-medium uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1">{label}</p>
+      <div className="flex items-baseline gap-2">
+        <span className="text-2xl font-bold text-dbx-navy dark:text-white">{value ?? '--'}</span>
+        {total != null && total > 0 && <span className="text-xs text-slate-400 dark:text-slate-500">/ {total}</span>}
+      </div>
+      {pct != null && (
+        <div className="mt-2 h-1.5 bg-slate-200/60 dark:bg-dbx-navy-500 rounded-full overflow-hidden">
+          <div className={`h-1.5 rounded-full ${color.replace('border-l-', 'bg-')} transition-all duration-500`} style={{ width: `${pct}%` }} />
+        </div>
+      )}
+      {sub && <p className="text-[10px] text-slate-400 dark:text-slate-500 mt-1.5">{sub}</p>}
+    </button>
+  )
+}
+
+export default function Coverage() {
+  const [holistic, setHolistic] = useState(null)
+  const [tab, setTab] = useState('data')
+
+  useEffect(() => {
+    fetch('/api/coverage/holistic').then(r => r.ok ? r.json() : null).then(setHolistic).catch(() => {})
+  }, [])
+
+  const h = holistic || {}
+  const total = h.total_tables || 0
+
+  return (
+    <div className="space-y-5">
+      <PageHeader title="Metadata Coverage" subtitle="Holistic view of all metadata types across your catalog" />
+
+      {/* Overview Cards */}
+      {holistic ? (
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+          {OVERVIEW_CARDS.map(c => {
+            const val = h[c.key] ?? 0
+            const showTotal = ['profiled', 'with_comments', 'with_ontology'].includes(c.key) ? total : null
+            const sub = c.key === 'with_ontology' && h.avg_confidence != null
+              ? `avg confidence: ${(h.avg_confidence * 100).toFixed(0)}%`
+              : c.key === 'vs_documents' && h.vs_by_type && Object.keys(h.vs_by_type).length > 0
+              ? Object.entries(h.vs_by_type).map(([k, v]) => `${k}: ${v}`).join(', ')
+              : c.key === 'metric_views' && h.metric_view_statuses && Object.keys(h.metric_view_statuses).length > 0
+              ? Object.entries(h.metric_view_statuses).map(([k, v]) => `${k}: ${v}`).join(', ')
+              : undefined
+            return (
+              <CoverageCard key={c.key} label={c.label} value={val} total={showTotal}
+                color={c.color} bg={c.bg} sub={sub}
+                onClick={() => setTab(c.tab)} />
+            )
+          })}
+        </div>
+      ) : (
+        <SkeletonCards count={6} />
+      )}
+
+      {/* Detail Tabs */}
       <div className="inline-flex bg-dbx-oat/60 dark:bg-dbx-navy-600 rounded-xl p-1 shadow-inner-soft">
-        {COVERAGE_TABS.map(({ key, label }) => (
+        {DETAIL_TABS.map(({ key, label }) => (
           <button key={key} onClick={() => setTab(key)}
             className={`px-3.5 py-1.5 text-sm rounded-lg transition-all duration-200 ${tab === key ? 'bg-white dark:bg-dbx-navy-500 shadow-sm font-semibold text-dbx-lava' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'}`}>{label}</button>
         ))}
       </div>
-      {tab === 'catalog' && <CatalogCoverage />}
+
+      {tab === 'data' && <CatalogCoverage />}
       {tab === 'ontology' && <OntologyOverview />}
-      {tab === 'fk_map' && (
+      {tab === 'graph' && (
         <div className="space-y-4">
           <section className="card p-6">
-            <h2 className="text-base font-semibold text-slate-800 dark:text-slate-100 mb-4">Foreign Key Map</h2>
-            <p className="text-xs text-slate-500 mb-3">Tables as nodes, FK predictions as edges. Clustered by domain similarity.</p>
+            <h2 className="text-base font-semibold text-slate-800 dark:text-slate-100 mb-2">Relationships & Graph</h2>
+            <p className="text-xs text-slate-500 dark:text-slate-400 mb-4">Tables as nodes, FK predictions as edges. Clustered by domain similarity.</p>
             <FKMapViz />
           </section>
         </div>

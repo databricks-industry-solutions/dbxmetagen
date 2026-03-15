@@ -291,19 +291,42 @@ class TestOntologyBuilder:
             return OntologyBuilder(mock_spark, config)
     
     def test_create_entities_table(self, builder, mock_spark):
+        mock_spark.table.return_value.schema.fields = []
         builder.create_entities_table()
         mock_spark.sql.assert_called()
-        call_arg = mock_spark.sql.call_args[0][0]
-        assert "ontology_entities" in call_arg
-    
+        all_sql = [c[0][0] for c in mock_spark.sql.call_args_list]
+        ddl = all_sql[0]
+        assert "ontology_entities" in ddl
+        assert "CREATE TABLE IF NOT EXISTS" in ddl
+
     def test_create_entities_table_has_required_columns(self, builder, mock_spark):
+        mock_spark.table.return_value.schema.fields = []
         builder.create_entities_table()
-        call_arg = mock_spark.sql.call_args[0][0]
-        assert "entity_id" in call_arg
-        assert "entity_name" in call_arg
-        assert "entity_type" in call_arg
-        assert "confidence" in call_arg
-        assert "auto_discovered" in call_arg
+        ddl = mock_spark.sql.call_args_list[0][0][0]
+        assert "entity_id" in ddl
+        assert "entity_name" in ddl
+        assert "entity_type" in ddl
+        assert "confidence" in ddl
+        assert "auto_discovered" in ddl
+
+    def test_create_entities_table_runs_confidence_cleanup(self, builder, mock_spark):
+        mock_spark.table.return_value.schema.fields = []
+        builder.create_entities_table()
+        all_sql = [c[0][0] for c in mock_spark.sql.call_args_list]
+        cleanup_sqls = [s for s in all_sql if "GREATEST" in s and "LEAST" in s]
+        assert len(cleanup_sqls) == 1
+        assert "confidence < 0.0 OR confidence > 1.0" in cleanup_sqls[0]
+
+    def test_create_entities_table_cleanup_tolerates_failure(self, builder, mock_spark):
+        mock_spark.table.return_value.schema.fields = []
+
+        def side_effect(sql):
+            if "GREATEST" in sql:
+                raise Exception("table is empty")
+            return MagicMock()
+
+        mock_spark.sql.side_effect = side_effect
+        builder.create_entities_table()
     
     def test_create_metrics_table(self, builder, mock_spark):
         builder.create_metrics_table()
@@ -317,6 +340,59 @@ class TestOntologyBuilder:
         call_arg = mock_spark.sql.call_args[0][0]
         assert "sql_definition" in call_arg
         assert "uc_view_name" in call_arg
+
+
+class TestStoreEntitiesConfidenceClamping:
+    """Tests that _store_entities clamps confidence to [0, 1]."""
+
+    @pytest.fixture
+    def builder(self):
+        mock_spark = MagicMock()
+        config = OntologyConfig(catalog_name="cat", schema_name="sch")
+        with patch.object(OntologyLoader, 'load_config') as mock_load:
+            mock_load.return_value = OntologyLoader._default_config()
+            b = OntologyBuilder(mock_spark, config)
+        return b
+
+    def _extract_rows(self, builder):
+        return builder.spark.createDataFrame.call_args[0][0]
+
+    def test_negative_confidence_clamped_to_zero(self, builder):
+        entities = [{
+            "entity_id": "e1", "entity_type": "Patient",
+            "source_tables": ["t1"], "confidence": -0.5,
+        }]
+        builder._store_entities(entities)
+        rows = self._extract_rows(builder)
+        assert rows[0][7] == 0.0  # confidence field
+
+    def test_confidence_above_one_clamped(self, builder):
+        entities = [{
+            "entity_id": "e2", "entity_type": "Order",
+            "source_tables": ["t2"], "confidence": 1.5,
+        }]
+        builder._store_entities(entities)
+        rows = self._extract_rows(builder)
+        assert rows[0][7] == 1.0
+
+    def test_valid_confidence_unchanged(self, builder):
+        entities = [{
+            "entity_id": "e3", "entity_type": "Product",
+            "source_tables": ["t3"], "confidence": 0.75,
+        }]
+        builder._store_entities(entities)
+        rows = self._extract_rows(builder)
+        assert rows[0][7] == 0.75
+
+    def test_discovery_confidence_clamped(self, builder):
+        entities = [{
+            "entity_id": "e4", "entity_type": "Event",
+            "source_tables": ["t4"], "confidence": 0.8,
+            "discovery_confidence": -0.3,
+        }]
+        builder._store_entities(entities)
+        rows = self._extract_rows(builder)
+        assert rows[0][8] == 0.0  # discovery_confidence field
 
 
 class TestBuildOntology:

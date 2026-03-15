@@ -12,11 +12,11 @@ const DOC_TYPES = [
 ]
 
 const DOC_TYPE_COLORS = {
-  table: 'bg-blue-100 text-blue-700',
-  column: 'bg-emerald-100 text-emerald-700',
-  entity: 'bg-violet-100 text-violet-700',
-  metric_view: 'bg-amber-100 text-amber-700',
-  fk_relationship: 'bg-rose-100 text-rose-700',
+  table: 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300',
+  column: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300',
+  entity: 'bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300',
+  metric_view: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300',
+  fk_relationship: 'bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300',
 }
 
 function DocTypeBadge({ type }) {
@@ -131,29 +131,29 @@ export default function VectorSearch() {
         ) : status ? (
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
             <div className="min-w-0">
-              <span className="text-xs text-gray-500 block">Endpoint</span>
-              <span className="font-medium">{status.endpoint_name}</span>
-              <span className={`ml-2 px-1.5 py-0.5 rounded text-xs ${status.endpoint_state === 'ONLINE' ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700'}`}>
+              <span className="text-xs text-slate-500 dark:text-slate-400 block mb-1">Endpoint</span>
+              <span className="font-medium text-slate-700 dark:text-slate-200">{status.endpoint_name}</span>
+              <span className={`ml-2 px-1.5 py-0.5 rounded text-xs ${status.endpoint_state === 'ONLINE' ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300' : 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/40 dark:text-yellow-300'}`}>
                 {status.endpoint_state}
               </span>
             </div>
             <div className="min-w-0">
-              <span className="text-xs text-gray-500 block">Index</span>
+              <span className="text-xs text-slate-500 dark:text-slate-400 block mb-1">Index</span>
               {indexMissing ? (
-                <span className="text-xs text-amber-600">Not yet created -- run Build Vector Index</span>
+                <span className="text-xs text-amber-600 dark:text-amber-400">Not yet created -- run Build Vector Index</span>
               ) : (
-                <span className="font-mono text-xs break-all">{status.index_name}</span>
+                <span className="font-mono text-xs break-all text-slate-600 dark:text-slate-300">{status.index_name}</span>
               )}
             </div>
             <div className="min-w-0">
-              <span className="text-xs text-gray-500 block">Total Documents</span>
-              <span className="text-2xl font-bold text-dbx-navy">{status.total_documents}</span>
+              <span className="text-xs text-slate-500 dark:text-slate-400 block mb-1">Total Documents</span>
+              <span className="text-3xl font-bold text-dbx-navy dark:text-white">{status.total_documents}</span>
             </div>
             <div className="min-w-0">
-              <span className="text-xs text-gray-500 block">By Type</span>
-              <div className="flex flex-wrap gap-1 mt-1">
+              <span className="text-xs text-slate-500 dark:text-slate-400 block mb-1">By Type</span>
+              <div className="flex flex-wrap gap-1.5 mt-1">
                 {Object.entries(status.doc_counts || {}).map(([k, v]) => (
-                  <span key={k} className="text-xs"><DocTypeBadge type={k} /> {v}</span>
+                  <span key={k} className="text-sm text-slate-700 dark:text-slate-200"><DocTypeBadge type={k} /> {v}</span>
                 ))}
               </div>
             </div>
@@ -179,7 +179,7 @@ export default function VectorSearch() {
             </select>
           </div>
           <div className="flex gap-2 items-center">
-            <label className="text-xs text-gray-500 whitespace-nowrap">Results: {numResults}</label>
+            <label className="text-xs text-slate-500 dark:text-slate-400 whitespace-nowrap">Results: {numResults}</label>
             <input type="range" min={1} max={20} value={numResults} onChange={e => setNumResults(Number(e.target.value))}
               className="flex-1" />
           </div>
@@ -187,7 +187,7 @@ export default function VectorSearch() {
         <div className="flex items-center gap-3">
           <button onClick={doSearch} disabled={searching || !query.trim() || endpointMissing || endpointError}
             className="btn-secondary btn-md">{searching ? 'Searching...' : 'Search'}</button>
-          <label className="flex items-center gap-2 text-sm text-gray-600">
+          <label className="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-300">
             <input type="checkbox" checked={queryType === 'HYBRID'}
               onChange={e => setQueryType(e.target.checked ? 'HYBRID' : 'ANN')} />
             Hybrid search (vector + keyword)
@@ -199,7 +199,7 @@ export default function VectorSearch() {
       {results && (
         <div className="card p-5 overflow-hidden">
           <h2 className="text-base font-semibold text-slate-800 dark:text-slate-100 mb-3">
-            Results <span className="text-sm font-normal text-gray-500">({results.count} matches, {results.query_type})</span>
+            Results <span className="text-sm font-normal text-slate-500 dark:text-slate-400">({results.count} matches, {results.query_type})</span>
           </h2>
           {results.matches && results.matches.length > 0 ? (
             <div className="space-y-3">
@@ -207,15 +207,15 @@ export default function VectorSearch() {
                 <div key={i} className="card-interactive p-4 overflow-hidden">
                   <div className="flex items-center gap-2 mb-1.5 min-w-0">
                     <DocTypeBadge type={m.doc_type} />
-                    <span className="font-mono text-xs text-gray-600 truncate min-w-0 flex-1">{m.doc_id}</span>
+                    <span className="font-mono text-xs text-slate-600 dark:text-slate-300 truncate min-w-0 flex-1">{m.doc_id}</span>
                     {m.score != null && (
-                      <span className="text-xs font-medium text-gray-500 flex-shrink-0">score: {Number(m.score).toFixed(3)}</span>
+                      <span className="text-xs font-medium text-slate-500 dark:text-slate-400 flex-shrink-0">score: {Number(m.score).toFixed(3)}</span>
                     )}
                   </div>
-                  <p className="text-sm text-gray-700 whitespace-pre-wrap line-clamp-4 max-w-full break-words">
+                  <p className="text-sm text-slate-700 dark:text-slate-300 whitespace-pre-wrap line-clamp-4 max-w-full break-words">
                     {typeof m.content === 'string' ? m.content.slice(0, 500) : JSON.stringify(m.content)}
                   </p>
-                  <div className="flex flex-wrap gap-3 mt-1.5 text-xs text-gray-400">
+                  <div className="flex flex-wrap gap-3 mt-1.5 text-xs text-slate-400 dark:text-slate-500">
                     {m.table_name && <span>table: {m.table_name}</span>}
                     {m.domain && <span>domain: {m.domain}</span>}
                     {m.entity_type && <span>entity: {m.entity_type}</span>}
