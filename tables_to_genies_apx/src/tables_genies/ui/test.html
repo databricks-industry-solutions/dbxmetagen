@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>API Test</title>
+</head>
+<body>
+    <h1>Tables to Genies - API Test</h1>
+    <button onclick="testAPI()">Test Backend API</button>
+    <pre id="result"></pre>
+    
+    <script>
+        async function testAPI() {
+            try {
+                const response = await fetch('http://localhost:8000/api/uc/catalogs');
+                const data = await response.json();
+                document.getElementById('result').textContent = JSON.stringify(data, null, 2);
+            } catch (error) {
+                document.getElementById('result').textContent = 'Error: ' + error.message;
+            }
+        }
+    </script>
+</body>
+</html>
