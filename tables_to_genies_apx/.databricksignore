@@ -1,0 +1,8 @@
+node_modules/
+.git/
+*.pyc
+__pycache__/
+.venv/
+.env
+.DS_Store
+src/tables_genies/ui/node_modules/

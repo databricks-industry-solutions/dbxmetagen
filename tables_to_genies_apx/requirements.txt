@@ -1,0 +1,8 @@
+fastapi[standard]>=0.115.0
+uvicorn[standard]>=0.32.0
+databricks-sdk>=0.20.0
+databricks-sql-connector>=3.0.0
+pydantic>=2.0.0
+networkx>=3.0
+python-louvain>=0.16
+python-dotenv>=1.0.0

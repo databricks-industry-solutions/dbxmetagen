@@ -165,3 +165,6 @@ variables_override.yml
 docs/*
 docs/operations/*/
 #!docs/operations/README.md
+
+# node modules
+**/src/tables_genies/ui/node_modules/

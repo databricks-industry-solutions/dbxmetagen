@@ -1,0 +1,12 @@
+command: ["uvicorn", "src.tables_genies.backend.main:app", "--host", "0.0.0.0", "--port", "8080"]
+
+env:
+  - name: ENRICHMENT_SCRIPT_PATH
+    value: "/Workspace/Users/yang.yang@databricks.com/tables_to_genies_apx/src/tables_genies/etl/enrich_tables_direct.py"
+  - name: DATABRICKS_SQL_WAREHOUSE_ID
+    value: "a4ed2ccbda385db9"
+
+resources:
+  - name: genie_warehouse
+    sql_warehouse:
+      id: a4ed2ccbda385db9
