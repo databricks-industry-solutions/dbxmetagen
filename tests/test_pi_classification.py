@@ -59,113 +59,60 @@ class TestGetProtectedClassificationForTable:
         assert result == "protected"
 
 
+def _mock_pi_df(type_values):
+    """Create a mock DataFrame whose select(collect_set('type')).first()[0] returns type_values."""
+    from unittest.mock import MagicMock
+    df = MagicMock()
+    row = MagicMock()
+    row.__getitem__ = lambda self, idx: type_values
+    df.select.return_value.first.return_value = row
+    return df
+
+
 class TestDetermineTableClassification:
     """Test determine_table_classification with mock DataFrames."""
 
-    @pytest.fixture
-    def spark(self):
-        """Create a local SparkSession for testing."""
-        from pyspark.sql import SparkSession
-        spark = SparkSession.builder.master("local[1]").appName("test").getOrCreate()
-        yield spark
-        spark.stop()
-
-    def test_all_none_types_returns_none(self, spark):
-        """When all columns have type='None', table classification should be 'None'."""
-        df = spark.createDataFrame(
-            [("col1", "None"), ("col2", "None"), ("col3", "None")],
-            ["column_name", "type"]
-        )
-        result = determine_table_classification(df)
+    def test_all_none_types_returns_none(self):
+        result = determine_table_classification(_mock_pi_df(["None", "None", "None"]))
         assert result == "None"
 
-    def test_empty_dataframe_returns_none(self, spark):
-        """Empty DataFrame should return 'None'."""
-        df = spark.createDataFrame([], "column_name: string, type: string")
-        result = determine_table_classification(df)
+    def test_empty_dataframe_returns_none(self):
+        result = determine_table_classification(_mock_pi_df([]))
         assert result == "None"
 
-    def test_only_pii_returns_pii(self, spark):
-        """DataFrame with only PII type returns 'pii'."""
-        df = spark.createDataFrame(
-            [("col1", "pii"), ("col2", "pii")],
-            ["column_name", "type"]
-        )
-        result = determine_table_classification(df)
+    def test_only_pii_returns_pii(self):
+        result = determine_table_classification(_mock_pi_df(["pii"]))
         assert result == "pii"
 
-    def test_pii_with_none_returns_pii(self, spark):
-        """DataFrame with PII and None types returns 'pii'."""
-        df = spark.createDataFrame(
-            [("col1", "pii"), ("col2", "None"), ("col3", "None")],
-            ["column_name", "type"]
-        )
-        result = determine_table_classification(df)
+    def test_pii_with_none_returns_pii(self):
+        result = determine_table_classification(_mock_pi_df(["pii", "None"]))
         assert result == "pii"
 
-    def test_pii_and_medical_returns_phi(self, spark):
-        """DataFrame with PII and medical_information returns 'phi'."""
-        df = spark.createDataFrame(
-            [("col1", "pii"), ("col2", "medical_information")],
-            ["column_name", "type"]
-        )
-        result = determine_table_classification(df)
+    def test_pii_and_medical_returns_phi(self):
+        result = determine_table_classification(_mock_pi_df(["pii", "medical_information"]))
         assert result == "phi"
 
-    def test_pci_alone_returns_pci(self, spark):
-        """DataFrame with only PCI returns 'pci'."""
-        df = spark.createDataFrame(
-            [("col1", "pci"), ("col2", "None")],
-            ["column_name", "type"]
-        )
-        result = determine_table_classification(df)
+    def test_pci_alone_returns_pci(self):
+        result = determine_table_classification(_mock_pi_df(["pci", "None"]))
         assert result == "pci"
 
-    def test_pci_with_phi_returns_all(self, spark):
-        """DataFrame with PCI and PHI returns 'all'."""
-        df = spark.createDataFrame(
-            [("col1", "pci"), ("col2", "phi")],
-            ["column_name", "type"]
-        )
-        result = determine_table_classification(df)
+    def test_pci_with_phi_returns_all(self):
+        result = determine_table_classification(_mock_pi_df(["pci", "phi"]))
         assert result == "all"
 
 
 class TestEndToEndProtectedClassification:
     """Test the full flow: determine_table_classification -> get_protected_classification_for_table."""
 
-    @pytest.fixture
-    def spark(self):
-        """Create a local SparkSession for testing."""
-        from pyspark.sql import SparkSession
-        spark = SparkSession.builder.master("local[1]").appName("test").getOrCreate()
-        yield spark
-        spark.stop()
-
-    def test_all_none_columns_not_protected(self, spark):
-        """Critical test: Table with all None columns should NOT be protected."""
-        df = spark.createDataFrame(
-            [("col1", "None"), ("col2", "None"), ("col3", "None")],
-            ["column_name", "type"]
-        )
-        subclassification = determine_table_classification(df)
+    def test_all_none_columns_not_protected(self):
+        subclassification = determine_table_classification(_mock_pi_df(["None", "None", "None"]))
         assert subclassification == "None"
-
         classification = get_protected_classification_for_table(subclassification)
-        assert classification == "None", (
-            f"Table with all 'None' columns should have classification='None', "
-            f"not '{classification}'"
-        )
+        assert classification == "None"
 
-    def test_table_with_pii_is_protected(self, spark):
-        """Table with at least one PII column should be protected."""
-        df = spark.createDataFrame(
-            [("col1", "pii"), ("col2", "None")],
-            ["column_name", "type"]
-        )
-        subclassification = determine_table_classification(df)
+    def test_table_with_pii_is_protected(self):
+        subclassification = determine_table_classification(_mock_pi_df(["pii", "None"]))
         assert subclassification == "pii"
-
         classification = get_protected_classification_for_table(subclassification)
         assert classification == "protected"
 

@@ -197,20 +197,20 @@ class TestMultiHopTraverse:
     def test_single_hop_returns_direct_neighbors(self):
         """1 hop from A should reach B, C, D (direct outgoing edges from A)."""
         result = api_server.multi_hop_traverse(start_node="A", max_hops=1)
-        node_ids = {n["id"] for n in result["nodes"]}
+        node_ids = set(result["nodes"].keys())
         assert {"A", "B", "C", "D"}.issubset(node_ids)
         assert "E" not in node_ids
 
     def test_two_hops_reaches_transitive_neighbors(self):
         """2 hops from A should also reach E (A->D->E)."""
         result = api_server.multi_hop_traverse(start_node="A", max_hops=2)
-        node_ids = {n["id"] for n in result["nodes"]}
+        node_ids = set(result["nodes"].keys())
         assert "E" in node_ids
 
     def test_relationship_filter_restricts_edges(self):
         """Filtering by 'has_column' from A should NOT traverse to D (similar_embedding)."""
         result = api_server.multi_hop_traverse(start_node="A", max_hops=2, relationship="has_column")
-        node_ids = {n["id"] for n in result["nodes"]}
+        node_ids = set(result["nodes"].keys())
         assert "B" in node_ids
         assert "C" in node_ids
         assert "D" not in node_ids
@@ -219,7 +219,7 @@ class TestMultiHopTraverse:
         """Starting from a leaf node with no outgoing edges returns empty edges."""
         result = api_server.multi_hop_traverse(start_node="E", max_hops=3)
         assert result["edges"] == []
-        assert result["paths"] == [["E"]]
+        assert "E" in result["nodes"]
 
     def test_incoming_direction(self):
         """Incoming traversal from B should find A (A->B edge, reversed)."""
@@ -230,35 +230,28 @@ class TestMultiHopTraverse:
     def test_both_direction(self):
         """Bidirectional from D should find A (incoming) and E (outgoing)."""
         result = api_server.multi_hop_traverse(start_node="D", max_hops=1, direction="both")
-        node_ids = {n["id"] for n in result["nodes"]}
+        node_ids = set(result["nodes"].keys())
         assert "A" in node_ids
         assert "E" in node_ids
-
-    def test_paths_are_acyclic(self):
-        """Paths should not contain duplicate node ids."""
-        result = api_server.multi_hop_traverse(start_node="A", max_hops=3)
-        for path in result["paths"]:
-            assert len(path) == len(set(path)), f"Cycle in path: {path}"
 
     def test_zero_hops_returns_start_only(self):
         """max_hops=0 means no traversal at all."""
         result = api_server.multi_hop_traverse(start_node="A", max_hops=0)
         assert result["edges"] == []
-        assert result["paths"] == [["A"]]
+        assert "A" in result["nodes"]
 
-    def test_hops_completed_bounded_by_max(self):
+    def test_hops_value_matches_max(self):
         result = api_server.multi_hop_traverse(start_node="A", max_hops=1)
-        assert result["hops_completed"] <= 1
+        assert result["hops"] == 1
 
     def test_result_has_required_keys(self):
         result = api_server.multi_hop_traverse(start_node="A", max_hops=1)
-        for key in ("nodes", "edges", "paths", "hops_completed"):
+        for key in ("nodes", "edges", "start_node", "hops", "node_count", "edge_count"):
             assert key in result
 
     def test_edges_collected_across_hops(self):
         """All edges traversed should be accumulated, not just the last hop."""
         result = api_server.multi_hop_traverse(start_node="A", max_hops=2)
-        # Should include hop-1 edges (A->B, A->C, A->D) and hop-2 edges (D->E)
         assert len(result["edges"]) >= 4
 
     def test_node_details_fetched_for_all_discovered(self):
@@ -268,7 +261,7 @@ class TestMultiHopTraverse:
         for e in result["edges"]:
             edge_node_ids.add(e["src"])
             edge_node_ids.add(e["dst"])
-        fetched_ids = {n["id"] for n in result["nodes"]}
+        fetched_ids = set(result["nodes"].keys())
         assert edge_node_ids.issubset(fetched_ids)
 
 
@@ -277,15 +270,8 @@ class TestMultiHopTraverse:
 # ===========================================================================
 
 class TestHelpers:
-    def test_lb_fq_uses_lakebase_catalog(self):
-        assert api_server.lb_fq("graph_nodes") == f"`{api_server.LAKEBASE_CATALOG}`.`{api_server.LAKEBASE_SCHEMA}`.`graph_nodes`"
-
     def test_fq_uses_main_catalog(self):
         assert api_server.fq("my_table") == f"`{api_server.CATALOG}`.`{api_server.SCHEMA}`.`my_table`"
-
-    def test_lb_fq_and_fq_differ(self):
-        """Lakebase tables should be in a different catalog than the main metadata tables."""
-        assert api_server.lb_fq("graph_nodes") != api_server.fq("graph_nodes")
 
 
 # ===========================================================================

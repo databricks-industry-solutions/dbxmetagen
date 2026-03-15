@@ -93,7 +93,7 @@ class TestBuildColumnKnowledgeBase:
     """Tests for build_column_knowledge_base function."""
     
     def test_creates_config_correctly(self):
-        with patch('src.dbxmetagen.column_knowledge_base.ColumnKnowledgeBaseBuilder') as MockBuilder:
+        with patch('dbxmetagen.column_knowledge_base.ColumnKnowledgeBaseBuilder') as MockBuilder:
             mock_builder = MagicMock()
             mock_builder.run.return_value = {"staged_count": 10, "total_records": 10}
             MockBuilder.return_value = mock_builder

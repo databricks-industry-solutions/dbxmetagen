@@ -128,16 +128,13 @@ class TestDataQualityScorer:
         assert scorer.DIMENSION_WEIGHTS["metadata"] > 0
     
     def test_scores_schema_has_all_required_fields(self, scorer):
-        """Schema should include all score dimensions."""
-        field_names = [f.name for f in scorer.SCORES_SCHEMA.fields]
-        assert "completeness_score" in field_names
-        assert "uniqueness_score" in field_names
-        assert "freshness_score" in field_names
-        assert "consistency_score" in field_names
-        assert "metadata_score" in field_names
-        assert "overall_score" in field_names
-        assert "quality_issues" in field_names
-        assert "dimensions_calculated" in field_names
+        """Scores DDL should include all score dimension columns."""
+        scorer.create_scores_table()
+        ddl = scorer.spark.sql.call_args_list[0][0][0]
+        for col_name in ["completeness_score", "uniqueness_score", "freshness_score",
+                         "consistency_score", "metadata_score", "overall_score",
+                         "quality_issues", "dimensions_calculated"]:
+            assert col_name in ddl, f"Missing column {col_name} in scores DDL"
     
     def test_safe_avg_returns_default_for_missing_column(self, scorer):
         """_safe_avg should return default when column is missing."""
@@ -157,7 +154,7 @@ class TestDataQualityScorer:
 class TestComputeDataQuality:
     """Tests for compute_data_quality function."""
     
-    @patch('src.dbxmetagen.data_quality.DataQualityScorer')
+    @patch('dbxmetagen.data_quality.DataQualityScorer')
     def test_creates_scorer_with_correct_config(self, mock_scorer_class):
         mock_scorer = MagicMock()
         mock_scorer.run.return_value = {"tables_scored": 5, "average_score": 85.0}
@@ -170,7 +167,7 @@ class TestComputeDataQuality:
         assert config.catalog_name == "my_cat"
         assert config.schema_name == "my_sch"
     
-    @patch('src.dbxmetagen.data_quality.DataQualityScorer')
+    @patch('dbxmetagen.data_quality.DataQualityScorer')
     def test_returns_run_result(self, mock_scorer_class):
         expected = {"tables_scored": 10, "average_score": 90.0, "low_quality_tables": 1}
         mock_scorer = MagicMock()

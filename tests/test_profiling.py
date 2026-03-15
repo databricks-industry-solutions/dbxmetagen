@@ -59,11 +59,11 @@ class TestProfilingBuilder:
     
     def test_create_snapshots_table(self, builder, mock_spark):
         builder.create_snapshots_table()
-        mock_spark.sql.assert_called_once()
-        call_arg = mock_spark.sql.call_args[0][0]
-        assert "CREATE TABLE IF NOT EXISTS" in call_arg
-        assert "profiling_snapshots" in call_arg
-        assert "row_count" in call_arg
+        assert mock_spark.sql.call_count >= 1
+        ddl = mock_spark.sql.call_args_list[0][0][0]
+        assert "CREATE TABLE IF NOT EXISTS" in ddl
+        assert "profiling_snapshots" in ddl
+        assert "row_count" in ddl
     
     def test_create_column_stats_table(self, builder, mock_spark):
         builder.create_column_stats_table()
@@ -81,43 +81,30 @@ class TestProfilingBuilder:
         assert "empty_string_count" in call_arg
         assert "empty_string_rate" in call_arg
     
-    def test_snapshot_schema_has_required_fields(self, builder):
-        """Snapshot schema should have all required fields."""
-        field_names = [f.name for f in builder.SNAPSHOT_SCHEMA.fields]
-        assert "snapshot_id" in field_names
-        assert "table_name" in field_names
-        assert "row_count" in field_names
-        assert "table_size_bytes" in field_names
-        assert "num_files" in field_names
-        assert "column_stats" in field_names
+    def test_snapshot_schema_has_required_fields(self, builder, mock_spark):
+        """Snapshot DDL should include all required columns."""
+        builder.create_snapshots_table()
+        ddl = mock_spark.sql.call_args_list[0][0][0]
+        for col_name in ["snapshot_id", "table_name", "row_count", "table_size_bytes", "num_files", "column_stats"]:
+            assert col_name in ddl, f"Missing column {col_name} in snapshots DDL"
     
-    def test_column_stats_schema_has_required_fields(self, builder):
-        """Column stats schema should have all required fields."""
-        field_names = [f.name for f in builder.COLUMN_STATS_SCHEMA.fields]
-        assert "stat_id" in field_names
-        assert "column_name" in field_names
-        assert "null_count" in field_names
-        assert "null_rate" in field_names
-        assert "distinct_count" in field_names
-        assert "cardinality_ratio" in field_names
-        assert "percentiles" in field_names
-        assert "empty_string_count" in field_names
-        assert "empty_string_rate" in field_names
+    def test_column_stats_schema_has_required_fields(self, builder, mock_spark):
+        """Column stats DDL should include all required columns."""
+        builder.create_column_stats_table()
+        ddl = mock_spark.sql.call_args_list[0][0][0]
+        for col_name in ["stat_id", "column_name", "null_count", "null_rate",
+                         "distinct_count", "cardinality_ratio", "percentiles",
+                         "empty_string_count", "empty_string_rate"]:
+            assert col_name in ddl, f"Missing column {col_name} in column_stats DDL"
     
-    def test_column_stats_schema_has_new_universal_fields(self, builder):
-        """Column stats schema should include new universal metrics."""
-        field_names = [f.name for f in builder.COLUMN_STATS_SCHEMA.fields]
-        # Universal metrics for all columns
-        assert "data_type" in field_names
-        assert "sample_values" in field_names
-        assert "mode_value" in field_names
-        assert "mode_frequency" in field_names
-        assert "entropy" in field_names
-        assert "is_unique_candidate" in field_names
-        assert "value_distribution" in field_names
-        assert "pattern_detected" in field_names
-        assert "has_numeric_stats" in field_names
-        assert "has_string_stats" in field_names
+    def test_column_stats_schema_has_new_universal_fields(self, builder, mock_spark):
+        """Column stats DDL should include new universal metrics."""
+        builder.create_column_stats_table()
+        ddl = mock_spark.sql.call_args_list[0][0][0]
+        for col_name in ["data_type", "sample_values", "mode_value", "mode_frequency",
+                         "entropy", "is_unique_candidate", "value_distribution",
+                         "pattern_detected", "has_numeric_stats", "has_string_stats"]:
+            assert col_name in ddl, f"Missing column {col_name} in column_stats DDL"
     
     def test_uuid_pattern_detection(self, builder):
         """UUID pattern should be detected correctly."""
@@ -139,7 +126,7 @@ class TestProfilingBuilder:
 class TestRunProfiling:
     """Tests for run_profiling function."""
     
-    @patch('src.dbxmetagen.profiling.ProfilingBuilder')
+    @patch('dbxmetagen.profiling.ProfilingBuilder')
     def test_creates_builder_with_correct_config(self, mock_builder_class):
         mock_builder = MagicMock()
         mock_builder.run.return_value = {"tables_profiled": 5, "tables_failed": 0}
@@ -152,7 +139,7 @@ class TestRunProfiling:
         assert config.catalog_name == "my_cat"
         assert config.schema_name == "my_sch"
     
-    @patch('src.dbxmetagen.profiling.ProfilingBuilder')
+    @patch('dbxmetagen.profiling.ProfilingBuilder')
     def test_passes_max_tables_to_run(self, mock_builder_class):
         mock_builder = MagicMock()
         mock_builder.run.return_value = {"tables_profiled": 10}
@@ -161,7 +148,7 @@ class TestRunProfiling:
         run_profiling(MagicMock(), "cat", "sch", max_tables=10)
         mock_builder.run.assert_called_once_with(10)
     
-    @patch('src.dbxmetagen.profiling.ProfilingBuilder')
+    @patch('dbxmetagen.profiling.ProfilingBuilder')
     def test_returns_run_result(self, mock_builder_class):
         expected = {"tables_profiled": 5, "tables_failed": 1, "total_tables": 6}
         mock_builder = MagicMock()

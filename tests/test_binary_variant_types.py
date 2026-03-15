@@ -25,8 +25,6 @@ To skip in main test runs:
 
 import pytest
 
-# Mark all tests in this module as integration tests
-pytestmark = pytest.mark.integration
 from pyspark.sql import DataFrame
 from pyspark.sql.functions import (
     col,
@@ -44,6 +42,13 @@ from pyspark.sql.types import (
 )
 import base64 as base64_lib
 from pyspark.sql import SparkSession
+
+_pyspark_real = isinstance(BinaryType, type)
+
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.skipif(not _pyspark_real, reason="PySpark types are mocked; need real PySpark"),
+]
 
 
 @pytest.fixture(scope="module")

@@ -351,7 +351,7 @@ class TestReadSourceDataQuery:
 class TestBuildKnowledgeBaseFunction:
     """Test the convenience function."""
 
-    @patch("src.dbxmetagen.knowledge_base.KnowledgeBaseBuilder")
+    @patch("dbxmetagen.knowledge_base.KnowledgeBaseBuilder")
     def test_function_creates_correct_config(self, mock_builder_class):
         """Function should create config with provided catalog/schema."""
         mock_builder = MagicMock()
@@ -369,7 +369,7 @@ class TestBuildKnowledgeBaseFunction:
         assert config.catalog_name == "my_catalog"
         assert config.schema_name == "my_schema"
 
-    @patch("src.dbxmetagen.knowledge_base.KnowledgeBaseBuilder")
+    @patch("dbxmetagen.knowledge_base.KnowledgeBaseBuilder")
     def test_function_returns_run_result(self, mock_builder_class):
         """Function should return the result from builder.run()."""
         mock_builder = MagicMock()

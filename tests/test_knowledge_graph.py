@@ -95,14 +95,12 @@ class TestCreateNodesDDL:
         builder = KnowledgeGraphBuilder(self.mock_spark, self.config)
         builder.create_nodes_table()
         
-        ddl = self.mock_spark.sql.call_args[0][0]
+        ddl = self.mock_spark.sql.call_args_list[0][0][0]
         
-        # GraphFrames requires 'id' column
         assert "id STRING NOT NULL" in ddl
-        # Other required columns (note: `schema` is escaped because it's a reserved word)
         assert "table_name STRING" in ddl
         assert "catalog STRING" in ddl
-        assert "`schema` STRING" in ddl  # Escaped reserved word
+        assert "`schema` STRING" in ddl
         assert "domain STRING" in ddl
         assert "subdomain STRING" in ddl
         assert "security_level STRING" in ddl
@@ -114,7 +112,7 @@ class TestCreateNodesDDL:
         builder = KnowledgeGraphBuilder(self.mock_spark, self.config)
         builder.create_nodes_table()
         
-        ddl = self.mock_spark.sql.call_args[0][0]
+        ddl = self.mock_spark.sql.call_args_list[0][0][0]
         assert "test_cat.test_sch.graph_nodes" in ddl
 
 
@@ -133,9 +131,8 @@ class TestCreateEdgesDDL:
         builder = KnowledgeGraphBuilder(self.mock_spark, self.config)
         builder.create_edges_table()
         
-        ddl = self.mock_spark.sql.call_args[0][0]
+        ddl = self.mock_spark.sql.call_args_list[0][0][0]
         
-        # GraphFrames requires 'src' and 'dst' columns
         assert "src STRING NOT NULL" in ddl
         assert "dst STRING NOT NULL" in ddl
         assert "relationship STRING NOT NULL" in ddl
@@ -146,7 +143,7 @@ class TestCreateEdgesDDL:
         builder = KnowledgeGraphBuilder(self.mock_spark, self.config)
         builder.create_edges_table()
         
-        ddl = self.mock_spark.sql.call_args[0][0]
+        ddl = self.mock_spark.sql.call_args_list[0][0][0]
         assert "test_cat.test_sch.graph_edges" in ddl
 
 
@@ -247,7 +244,7 @@ class TestRelationshipTypes:
 class TestBuildKnowledgeGraphFunction:
     """Test the convenience function."""
 
-    @patch("src.dbxmetagen.knowledge_graph.KnowledgeGraphBuilder")
+    @patch("dbxmetagen.knowledge_graph.KnowledgeGraphBuilder")
     def test_function_creates_correct_config(self, mock_builder_class):
         """Function should create config with provided catalog/schema."""
         mock_builder = MagicMock()
@@ -269,7 +266,7 @@ class TestBuildKnowledgeGraphFunction:
         assert config.catalog_name == "my_catalog"
         assert config.schema_name == "my_schema"
 
-    @patch("src.dbxmetagen.knowledge_graph.KnowledgeGraphBuilder")
+    @patch("dbxmetagen.knowledge_graph.KnowledgeGraphBuilder")
     def test_function_returns_run_result(self, mock_builder_class):
         """Function should return the result from builder.run()."""
         mock_builder = MagicMock()

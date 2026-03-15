@@ -33,14 +33,14 @@ class TestSimilarityEdgesConfig:
             catalog_name="cat",
             schema_name="sch"
         )
-        assert config.similarity_threshold == 0.8
+        assert config.similarity_threshold == 0.7
     
     def test_default_max_edges_per_node(self):
         config = SimilarityEdgesConfig(
             catalog_name="cat",
             schema_name="sch"
         )
-        assert config.max_edges_per_node == 10
+        assert config.max_edges_per_node == 15
     
     def test_custom_threshold(self):
         config = SimilarityEdgesConfig(

@@ -2428,18 +2428,25 @@ class OntologyBuilder:
             pass
 
         now = datetime.now()
+        from pyspark.sql.types import StructType, StructField, StringType, DoubleType, TimestampType
+        edge_schema = StructType([
+            StructField("src", StringType()), StructField("dst", StringType()),
+            StructField("relationship", StringType()), StructField("weight", DoubleType()),
+            StructField("edge_id", StringType()), StructField("edge_type", StringType()),
+            StructField("direction", StringType()), StructField("join_expression", StringType()),
+            StructField("join_confidence", DoubleType()), StructField("ontology_rel", StringType()),
+            StructField("source_system", StringType()), StructField("status", StringType()),
+            StructField("created_at", TimestampType()), StructField("updated_at", TimestampType()),
+        ])
         edge_df = self.spark.createDataFrame(
             [
-                (src, dst, rel, w,
+                (src, dst, rel, float(w),
                  f"{src}::{dst}::{rel}", rel, "out",
                  None, None, rel,
                  "ontology", "candidate", now, now)
                 for src, dst, rel, w, _ in new_edges
             ],
-            ["src", "dst", "relationship", "weight",
-             "edge_id", "edge_type", "direction",
-             "join_expression", "join_confidence", "ontology_rel",
-             "source_system", "status", "created_at", "updated_at"],
+            schema=edge_schema,
         )
         self._insert_edges_safe(edge_df, edges_table)
         logger.info("Added %d inter-entity relationship edges", len(new_edges))

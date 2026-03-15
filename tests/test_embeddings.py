@@ -117,7 +117,7 @@ class TestEmbeddingGenerator:
 class TestGenerateEmbeddings:
     """Tests for generate_embeddings function."""
     
-    @patch('src.dbxmetagen.embeddings.EmbeddingGenerator')
+    @patch('dbxmetagen.embeddings.EmbeddingGenerator')
     def test_creates_generator_with_correct_config(self, mock_gen_class):
         mock_gen = MagicMock()
         mock_gen.run.return_value = {"nodes_embedded": 10, "total_candidates": 10}
@@ -130,7 +130,7 @@ class TestGenerateEmbeddings:
         assert config.catalog_name == "my_cat"
         assert config.schema_name == "my_sch"
     
-    @patch('src.dbxmetagen.embeddings.EmbeddingGenerator')
+    @patch('dbxmetagen.embeddings.EmbeddingGenerator')
     def test_returns_run_result(self, mock_gen_class):
         expected = {"nodes_embedded": 15, "total_candidates": 20}
         mock_gen = MagicMock()
@@ -144,14 +144,15 @@ class TestGenerateEmbeddings:
 class TestFindSimilarNodes:
     """Tests for find_similar_nodes function."""
     
-    def test_returns_dataframe(self):
-        mock_spark = MagicMock()
-        mock_df = MagicMock()
-        mock_spark.sql.return_value = mock_df
+    @patch('dbxmetagen.embeddings.EmbeddingGenerator')
+    def test_returns_dataframe(self, mock_gen_class):
+        mock_gen = MagicMock()
+        expected_df = MagicMock()
+        mock_gen.find_similar_nodes.return_value = expected_df
+        mock_gen_class.return_value = mock_gen
         
-        result = find_similar_nodes(mock_spark, "cat", "sch", "node123", threshold=0.7)
+        result = find_similar_nodes(MagicMock(), "cat", "sch", similarity_threshold=0.7)
         
-        # Should call spark.sql and return a DataFrame
-        mock_spark.sql.assert_called_once()
-        assert result == mock_df
+        mock_gen.find_similar_nodes.assert_called_once()
+        assert result == expected_df
 

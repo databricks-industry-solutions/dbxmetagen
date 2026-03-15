@@ -749,7 +749,6 @@ class TestDeclaredRelationshipLookup:
         ]
         builder, mock_spark = self._make_builder(edefs)
 
-        # Mock entity rows
         ent_row1 = MagicMock()
         ent_row1.entity_id, ent_row1.entity_name, ent_row1.entity_type = "e1", "Patient", "Patient"
         ent_row1.source_tables = ["cat.sch.patients"]
@@ -757,20 +756,19 @@ class TestDeclaredRelationshipLookup:
         ent_row2.entity_id, ent_row2.entity_name, ent_row2.entity_type = "e2", "Provider", "Provider"
         ent_row2.source_tables = ["cat.sch.providers"]
 
-        # Mock FK row
         fk_row = MagicMock()
         fk_row.src_table, fk_row.dst_table = "cat.sch.patients", "cat.sch.providers"
 
         sql_results = [
             MagicMock(collect=MagicMock(return_value=[ent_row1, ent_row2])),
             MagicMock(collect=MagicMock(return_value=[fk_row])),
+            MagicMock(),  # DELETE FROM edges
+            MagicMock(),  # INSERT INTO edges (_insert_edges_safe)
         ]
         mock_spark.sql.side_effect = sql_results
 
         result = builder.discover_inter_entity_relationships()
         assert result["edges_added"] == 1
-        write_call = mock_spark.sql.return_value.write.mode.return_value.saveAsTable
-        # Verify the edge was written with treated_by (not references)
         df = mock_spark.createDataFrame.call_args
         if df:
             rows = df[0][0]
@@ -821,6 +819,8 @@ class TestDeclaredRelationshipLookup:
         sql_results = [
             MagicMock(collect=MagicMock(return_value=[ent_row1, ent_row2])),
             MagicMock(collect=MagicMock(return_value=[fk_row])),
+            MagicMock(),  # DELETE FROM edges
+            MagicMock(),  # INSERT INTO edges (_insert_edges_safe)
         ]
         mock_spark.sql.side_effect = sql_results
 
