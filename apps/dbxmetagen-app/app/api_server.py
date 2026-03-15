@@ -1384,7 +1384,12 @@ def review_combined(body: ReviewCombinedRequest):
         tn = t["table_name"]
         ents = onto_by_table.get(tn, [])
         primary_ents = [e for e in ents if e.get("entity_role") == "primary"]
-        primary_entity = primary_ents[0] if primary_ents else None
+        if primary_ents:
+            primary_entity = primary_ents[0]
+        elif ents:
+            primary_entity = max(ents, key=lambda e: float(e.get("confidence") or 0))
+        else:
+            primary_entity = None
         result.append({
             **t,
             "has_pii": _to_bool(t.get("has_pii")),
