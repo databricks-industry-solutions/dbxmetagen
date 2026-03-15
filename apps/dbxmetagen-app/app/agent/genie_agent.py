@@ -15,6 +15,8 @@ from langchain_community.chat_models import ChatDatabricks
 from langchain_core.tools import tool
 from langgraph.prebuilt import create_react_agent
 
+from agent.guardrails import GuardrailConfig, SAFETY_PROMPT_BLOCK
+
 logger = logging.getLogger(__name__)
 
 _SYSTEM_PROMPT_TEMPLATE = """You are a Genie Space configuration expert. Your job is to generate a
@@ -187,7 +189,7 @@ def run_genie_agent(
     progress_queue.put({"stage": "initializing"})
 
     tools = _make_tools(ws, warehouse_id)
-    llm = ChatDatabricks(endpoint=model_endpoint, temperature=0.1, max_tokens=16384)
+    llm = ChatDatabricks(endpoint=model_endpoint, temperature=0.1, max_tokens=16384, max_retries=3)
 
     questions_text = (
         "\n".join(f"- {q}" for q in context.get("questions", [])) or "None provided"
@@ -200,6 +202,7 @@ def run_genie_agent(
         questions=questions_text,
         reference_text=context.get("reference_text", ""),
     )
+    system_prompt += SAFETY_PROMPT_BLOCK
 
     agent = create_react_agent(llm, tools, prompt=system_prompt)
     progress_queue.put({"stage": "generating"})
@@ -213,7 +216,8 @@ def run_genie_agent(
                         "content": "Generate the complete serialized_space JSON now.",
                     }
                 ]
-            }
+            },
+            config={"recursion_limit": GuardrailConfig.MAX_RECURSION_LIMIT},
         )
     except Exception as e:
         progress_queue.put({"stage": "error", "message": str(e)})

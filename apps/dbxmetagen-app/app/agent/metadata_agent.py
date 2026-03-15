@@ -8,6 +8,8 @@ import os
 import logging
 from typing import Annotated, Dict, Any, List, Optional, TypedDict
 
+from agent.guardrails import GuardrailConfig, SAFETY_PROMPT_BLOCK, sanitize_output
+
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 from langchain_core.tools import BaseTool
 from databricks_langchain import ChatDatabricks
@@ -87,7 +89,8 @@ BEHAVIOR:
 - Use execute_metadata_sql for precise counts, filters, or aggregations.
 - Use get_table_summary for a full picture of one table.
 - When asked about relationships, check both fk_predictions and the knowledge graph.
-- Format answers in markdown with tables when presenting structured data."""
+- Format answers in markdown with tables when presenting structured data.
+""" + SAFETY_PROMPT_BLOCK
 
     if "execute_metadata_sql" in tool_names:
         prompt += f"\n\nWhen writing SQL, always use catalog/schema prefix: {CATALOG}.{SCHEMA}."
@@ -99,10 +102,10 @@ BEHAVIOR:
 # Graph construction
 # ---------------------------------------------------------------------------
 
-MAX_TOOL_ROUNDS = 8
+MAX_TOOL_ROUNDS = GuardrailConfig.MAX_AGENT_ITERATIONS
 
 def _build_graph(tools: List[BaseTool]):
-    llm = ChatDatabricks(endpoint=MODEL, temperature=0)
+    llm = ChatDatabricks(endpoint=MODEL, temperature=0, max_retries=3)
     llm_with_tools = llm.bind_tools(tools)
     tool_node = ToolNode(tools)
 
@@ -192,7 +195,7 @@ async def run_metadata_agent(
 
     result = await graph.ainvoke(
         {"messages": messages},
-        config={"recursion_limit": MAX_TOOL_ROUNDS * 2 + 6},
+        config={"recursion_limit": GuardrailConfig.MAX_RECURSION_LIMIT},
     )
 
     final_msg = result["messages"][-1]
@@ -203,7 +206,7 @@ async def run_metadata_agent(
             tool_calls_used.extend([tc["name"] for tc in msg.tool_calls])
 
     return {
-        "answer": final_msg.content,
+        "answer": sanitize_output(final_msg.content),
         "tool_calls": list(set(tool_calls_used)),
         "intent": intent,
         "steps": len(result["messages"]),

@@ -93,7 +93,7 @@ class GeoClassifier:
     def _get_llm(self):
         from databricks_langchain import ChatDatabricks
         llm = ChatDatabricks(
-            endpoint=self.config.model_endpoint, temperature=0.0, max_tokens=2048
+            endpoint=self.config.model_endpoint, temperature=0.0, max_tokens=2048, max_retries=2
         )
         return llm.with_structured_output(BatchGeoClassificationResult)
 

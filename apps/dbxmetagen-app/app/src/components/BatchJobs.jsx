@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { safeFetchObj, ErrorBanner } from '../App'
+import { PageHeader, EmptyState, Skeleton } from './ui'
 
 const TERMINAL_STATES = new Set(['TERMINATED', 'SKIPPED', 'INTERNAL_ERROR'])
 
@@ -173,7 +174,6 @@ export default function BatchJobs() {
   const [pickerTables, setPickerTables] = useState([])
   const [pickerSelected, setPickerSelected] = useState([])
   const [pickerFilter, setPickerFilter] = useState('')
-  const [syncDdlFilePath, setSyncDdlFilePath] = useState('')
 
   const buildExtraParams = () => {
     const p = {}
@@ -313,6 +313,7 @@ export default function BatchJobs() {
 
   return (
     <div className="space-y-5">
+      <PageHeader title="Batch Jobs" subtitle="Run metadata generation pipelines" badge={catalogName && schemaName ? `${catalogName}.${schemaName}` : undefined} />
       <ErrorBanner error={error} />
       <HealthWarnings health={health} />
 
@@ -605,7 +606,7 @@ export default function BatchJobs() {
       <section className="card p-5">
         <h2 className="text-base font-semibold text-slate-800 dark:text-slate-100 mb-4">Run History</h2>
         {completedRuns.length === 0 ? (
-          <p className="text-sm text-slate-500 dark:text-slate-400">No completed runs yet.</p>
+          <EmptyState title="No completed runs yet" description="Run a pipeline above to see results here" />
         ) : (() => {
           const PAGE_SIZE = 10
           const MAX_RUNS = 50

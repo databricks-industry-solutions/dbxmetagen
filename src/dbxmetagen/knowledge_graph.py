@@ -86,11 +86,11 @@ class KnowledgeGraphBuilder:
         "same_schema",
         "same_security_level"
     ]
-    
+
     def __init__(self, spark: SparkSession, config: KnowledgeGraphConfig):
         self.spark = spark
         self.config = config
-    
+
     # Columns to add via ALTER TABLE for forward-compatible migration.
     # Each tuple is (column_name, column_type).
     _NODE_MIGRATION_COLUMNS = [
@@ -109,6 +109,66 @@ class KnowledgeGraphBuilder:
         ("source_system", "STRING"),
         ("keywords", "ARRAY<STRING>"),
     ]
+
+    # Canonical column order + types for graph_edges (must match CREATE TABLE DDL).
+    _EDGE_SCHEMA = [
+        ("src", "STRING"), ("dst", "STRING"), ("relationship", "STRING"),
+        ("weight", "DOUBLE"), ("edge_id", "STRING"), ("edge_type", "STRING"),
+        ("direction", "STRING"), ("join_expression", "STRING"),
+        ("join_confidence", "DOUBLE"), ("ontology_rel", "STRING"),
+        ("source_system", "STRING"), ("status", "STRING"),
+        ("created_at", "TIMESTAMP"), ("updated_at", "TIMESTAMP"),
+    ]
+
+    # Canonical column order + types for graph_nodes (must match CREATE TABLE DDL).
+    _NODE_SCHEMA = [
+        ("id", "STRING"), ("table_name", "STRING"), ("catalog", "STRING"),
+        ("`schema`", "STRING"), ("table_short_name", "STRING"),
+        ("domain", "STRING"), ("subdomain", "STRING"),
+        ("has_pii", "BOOLEAN"), ("has_phi", "BOOLEAN"),
+        ("security_level", "STRING"), ("comment", "STRING"),
+        ("node_type", "STRING"), ("parent_id", "STRING"),
+        ("data_type", "STRING"), ("quality_score", "DOUBLE"),
+        ("embedding", "ARRAY<FLOAT>"), ("ontology_id", "STRING"),
+        ("ontology_type", "STRING"), ("display_name", "STRING"),
+        ("short_description", "STRING"), ("sensitivity", "STRING"),
+        ("status", "STRING"), ("source_system", "STRING"),
+        ("keywords", "ARRAY<STRING>"),
+        ("created_at", "TIMESTAMP"), ("updated_at", "TIMESTAMP"),
+    ]
+
+    def _align_edge_schema(self, df: DataFrame) -> DataFrame:
+        """Select and cast columns to match the canonical edge table schema."""
+        cols = []
+        for name, dtype in self._EDGE_SCHEMA:
+            col_ref = name.strip("`")
+            if col_ref in df.columns:
+                cols.append(F.col(f"`{col_ref}`").cast(dtype).alias(col_ref))
+            else:
+                cols.append(F.lit(None).cast(dtype).alias(col_ref))
+        return df.select(*cols)
+
+    def _align_node_schema(self, df: DataFrame) -> DataFrame:
+        """Select and cast columns to match the canonical node table schema."""
+        cols = []
+        for name, dtype in self._NODE_SCHEMA:
+            col_ref = name.strip("`")
+            if col_ref in df.columns:
+                cols.append(F.col(f"`{col_ref}`").cast(dtype).alias(col_ref))
+            else:
+                cols.append(F.lit(None).cast(dtype).alias(col_ref))
+        return df.select(*cols)
+
+    def _insert_edges(self, df: DataFrame, table: str = None, view_name: str = "_staged_edges"):
+        """Schema-safe INSERT into graph_edges: aligns columns and uses named SQL INSERT."""
+        target = table or self.config.fully_qualified_edges
+        aligned = self._align_edge_schema(df)
+        row_count = aligned.count()
+        logger.info("Inserting %d edges into %s (columns: %s)",
+                    row_count, target, [f.name for f in aligned.schema.fields])
+        aligned.createOrReplaceTempView(view_name)
+        col_list = ", ".join(c.strip("`") for c, _ in self._EDGE_SCHEMA)
+        self.spark.sql(f"INSERT INTO {target} ({col_list}) SELECT {col_list} FROM {view_name}")
 
     def create_nodes_table(self) -> None:
         """Create the nodes table if it doesn't exist, and add new columns if missing."""
@@ -368,13 +428,13 @@ class KnowledgeGraphBuilder:
             .withColumn("updated_at", F.current_timestamp())
         )
 
-        return combined
+        return combined.select(*[c for c, _ in self._EDGE_SCHEMA])
     
     def merge_nodes(self, nodes_df: DataFrame) -> Dict[str, int]:
         """
         Incrementally merge nodes into the nodes table.
         """
-        nodes_df.createOrReplaceTempView("staged_nodes")
+        self._align_node_schema(nodes_df).createOrReplaceTempView("staged_nodes")
         
         # Note: `schema` is a reserved word in SQL, must be escaped with backticks
         merge_sql = f"""
@@ -458,7 +518,7 @@ class KnowledgeGraphBuilder:
         """
         self.spark.sql(delete_sql)
         
-        edges_df.writeTo(self.config.fully_qualified_edges).append()
+        self._insert_edges(edges_df)
         
         count = self.spark.sql(
             f"SELECT COUNT(*) as cnt FROM {self.config.fully_qualified_edges}"
@@ -475,7 +535,7 @@ class KnowledgeGraphBuilder:
         Note: For most use cases, prefer refresh_edges() which properly handles
         relationship changes (e.g., when a table's domain changes).
         """
-        edges_df.createOrReplaceTempView("staged_edges")
+        self._align_edge_schema(edges_df).createOrReplaceTempView("staged_edges")
         
         merge_sql = f"""
         MERGE INTO {self.config.fully_qualified_edges} AS target
@@ -758,7 +818,7 @@ class ExtendedKnowledgeGraphBuilder(KnowledgeGraphBuilder):
 
     def _enrich_edges(self, df: DataFrame, edge_type: str, source_sys: str = "knowledge_graph") -> DataFrame:
         """Add standard new-schema columns to an edge DataFrame."""
-        return (
+        enriched = (
             df
             .withColumn("edge_id", F.concat_ws("::", F.col("src"), F.col("dst"), F.col("relationship")))
             .withColumn("edge_type", F.lit(edge_type))
@@ -771,6 +831,7 @@ class ExtendedKnowledgeGraphBuilder(KnowledgeGraphBuilder):
             .withColumn("created_at", F.current_timestamp())
             .withColumn("updated_at", F.current_timestamp())
         )
+        return enriched.select(*[c for c, _ in self._EDGE_SCHEMA])
 
     def build_containment_edges(self, nodes_df: DataFrame) -> DataFrame:
         """Build 'contains' edges for hierarchical relationships."""

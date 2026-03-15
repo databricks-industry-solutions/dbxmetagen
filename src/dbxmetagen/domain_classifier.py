@@ -420,7 +420,7 @@ def classify_domain_stage1(
 ) -> Dict[str, Any]:
     """Call the LLM to pick a domain from the candidate list."""
     llm = ChatDatabricks(
-        endpoint=model_endpoint, temperature=temperature, max_tokens=max_tokens
+        endpoint=model_endpoint, temperature=temperature, max_tokens=max_tokens, max_retries=2
     )
     structured_llm = llm.with_structured_output(DomainResult)
     system_prompt = generate_domain_only_prompt(domain_config, candidate_domains)
@@ -465,7 +465,7 @@ def classify_subdomain_stage2(
             )
 
     llm = ChatDatabricks(
-        endpoint=model_endpoint, temperature=temperature, max_tokens=max_tokens
+        endpoint=model_endpoint, temperature=temperature, max_tokens=max_tokens, max_retries=2
     )
     structured_llm = llm.with_structured_output(SubdomainResult)
     system_prompt = generate_subdomain_prompt(
@@ -499,7 +499,7 @@ def _classify_single_shot(
 ) -> Dict[str, Any]:
     """Original single-call classification (domain + subdomain in one shot)."""
     llm = ChatDatabricks(
-        endpoint=model_endpoint, temperature=temperature, max_tokens=max_tokens
+        endpoint=model_endpoint, temperature=temperature, max_tokens=max_tokens, max_retries=2
     )
     structured_llm = llm.with_structured_output(TableClassification)
     system_prompt = create_system_prompt(domain_config)

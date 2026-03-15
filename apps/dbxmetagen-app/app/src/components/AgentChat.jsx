@@ -114,7 +114,7 @@ function MessageBubble({ msg, onRetry }) {
   if (msg.role === 'user') {
     return (
       <div className="flex justify-end mb-4">
-        <div className="bg-gradient-to-br from-dbx-navy to-dbx-navy-600 text-white rounded-2xl px-4 py-3 max-w-[80%] text-sm whitespace-pre-wrap shadow-card">
+        <div className="bg-gradient-to-br from-dbx-violet-dark to-dbx-violet text-white rounded-2xl px-4 py-3 max-w-[80%] text-sm whitespace-pre-wrap shadow-card">
           {msg.content}
         </div>
       </div>
@@ -341,7 +341,7 @@ export default function AgentChat() {
       {/* Left: Chat */}
       <div className="flex-1 flex flex-col min-w-0" style={{ flexBasis: '65%' }}>
         {/* Mode selector -- segmented control */}
-        <div className="inline-flex bg-dbx-oat dark:bg-dbx-navy-600 rounded-xl p-1 mb-3 shadow-inner-soft">
+        <div className="inline-flex bg-dbx-oat dark:bg-dbx-navy-650 rounded-xl p-1 mb-3 shadow-inner-soft">
           {Object.entries(MODE_CONFIG).map(([key, c]) => (
             <button key={key} onClick={() => { setMode(key); setMessages([]); setError(null) }}
               className={`px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200 ${
@@ -356,7 +356,7 @@ export default function AgentChat() {
         <RetrievalTechniques />
 
         {/* Chat area */}
-        <div className="flex-1 card p-5 overflow-y-auto mb-3 scrollbar-thin bg-gradient-to-b from-white to-dbx-oat-light/50 dark:from-dbx-navy-600 dark:to-dbx-navy/50" style={{ maxHeight: '60vh' }}>
+        <div className="flex-1 card p-5 overflow-y-auto mb-3 scrollbar-thin bg-gradient-to-b from-white to-dbx-oat-light/50 dark:from-dbx-navy-650 dark:to-dbx-navy/50" style={{ maxHeight: '60vh' }}>
           {messages.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-full text-center py-12">
               <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-dbx-navy to-dbx-navy-500 flex items-center justify-center mb-4 shadow-card">

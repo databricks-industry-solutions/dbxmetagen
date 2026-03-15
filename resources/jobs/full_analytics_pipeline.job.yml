@@ -197,11 +197,10 @@ resources:
           libraries:
             - whl: ../../dist/*.whl
 
-        # Stage 5: FK prediction (depends on similarity edges + profiling)
+        # Stage 5: FK prediction (depends on similarity edges only)
         - task_key: predict_foreign_keys
           depends_on:
             - task_key: build_similarity_edges
-            - task_key: compute_data_quality
           job_cluster_key: analytics_cluster
           notebook_task:
             notebook_path: ../../notebooks/predict_foreign_keys.py

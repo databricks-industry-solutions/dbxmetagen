@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react'
 import { ErrorBanner } from '../App'
+import { PageHeader, StatCard, SkeletonCards, EmptyState } from './ui'
 
 const DOC_TYPES = [
   { value: '', label: 'All Types' },
@@ -91,6 +92,7 @@ export default function VectorSearch() {
 
   return (
     <div className="space-y-5 max-w-full overflow-hidden">
+      <PageHeader title="Vector Search" subtitle="Search and explore indexed metadata" />
       <ErrorBanner error={error} />
 
       {/* Index Status */}
@@ -157,7 +159,7 @@ export default function VectorSearch() {
             </div>
           </div>
         ) : (
-          <p className="text-sm text-gray-500">Loading status...</p>
+          <SkeletonCards count={4} />
         )}
       </div>
 
@@ -222,7 +224,7 @@ export default function VectorSearch() {
               ))}
             </div>
           ) : (
-            <p className="text-sm text-gray-500">No matches found.</p>
+            <EmptyState title="No matches found" description="Try adjusting your search query or broadening the doc type filter" />
           )}
         </div>
       )}

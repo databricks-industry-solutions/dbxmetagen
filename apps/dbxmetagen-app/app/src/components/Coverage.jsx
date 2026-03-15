@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react'
 import { safeFetch, ErrorBanner } from '../App'
+import { PageHeader, StatCard, SkeletonCards, EmptyState } from './ui'
 import { OntologyOverview } from './Ontology'
 import { FKMapViz } from './ForeignKeyGeneration'
 
@@ -81,20 +82,10 @@ function CatalogCoverage() {
     <div className="space-y-6">
       <ErrorBanner error={error} />
 
-      {/* Summary cards */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <div className="card p-5 text-center">
-          <p className="section-title">Total Tables</p>
-          <p className="text-3xl font-bold text-slate-800 dark:text-white mt-1">{totals.total}</p>
-        </div>
-        <div className="card border-l-4 border-l-dbx-green p-5 text-center">
-          <p className="text-xs text-dbx-green-dark dark:text-dbx-green font-medium uppercase tracking-wider">Profiled</p>
-          <p className="text-3xl font-bold text-dbx-green-dark dark:text-dbx-green mt-1">{totals.profiled}</p>
-        </div>
-        <div className="card border-l-4 border-l-dbx-amber p-5 text-center">
-          <p className="text-xs text-dbx-amber-dark dark:text-dbx-amber font-medium uppercase tracking-wider">Unprofiled</p>
-          <p className="text-3xl font-bold text-dbx-amber-dark dark:text-dbx-amber mt-1">{totals.unprofiled}</p>
-        </div>
+        <StatCard label="Total Tables" value={totals.total} accentColor="border-l-dbx-sky" />
+        <StatCard label="Profiled" value={totals.profiled} accentColor="border-l-dbx-green" sub={totals.total > 0 ? `${Math.round(totals.profiled / totals.total * 100)}%` : undefined} />
+        <StatCard label="Unprofiled" value={totals.unprofiled} accentColor="border-l-dbx-amber" sub={totals.total > 0 ? `${Math.round(totals.unprofiled / totals.total * 100)}%` : undefined} />
       </div>
 
       {/* Metadata Completeness */}
@@ -117,7 +108,7 @@ function CatalogCoverage() {
         <div className="flex flex-wrap gap-3">
           {typeBreakdown.map(tb => (
             <div key={tb.table_type}
-              className="bg-dbx-oat-light dark:bg-dbx-navy-600 rounded-lg border border-slate-200 dark:border-dbx-navy-400/30 px-4 py-2.5 text-center shadow-sm min-w-[100px]">
+              className="bg-dbx-oat-light dark:bg-dbx-navy-650 rounded-lg border border-slate-200 dark:border-dbx-navy-400/25 px-4 py-2.5 text-center shadow-sm min-w-[100px]">
               <span className={`px-2 py-0.5 rounded text-[10px] font-medium ${TYPE_BADGE[tb.table_type] || 'bg-gray-100 text-gray-600 dark:bg-gray-800/40 dark:text-gray-300'}`}>
                 {tb.table_type}
               </span>
@@ -131,8 +122,8 @@ function CatalogCoverage() {
       <section className="card p-6">
         <h2 className="text-base font-semibold text-slate-800 dark:text-slate-100 mb-4">Coverage by Schema</h2>
         {summary.length === 0
-          ? <p className="text-sm text-slate-400">No table information available. Ensure the catalog is accessible.</p>
-          : <div className="overflow-x-auto">
+          ? <EmptyState title="No table information available" description="Ensure the catalog is accessible and metadata generation has been run" />
+          : <div className="overflow-x-auto surface-nested">
               <table className="min-w-full text-sm">
                 <thead><tr>
                   {['Catalog', 'Schema', 'Total', 'Profiled', 'Unprofiled', ''].map(h =>
@@ -241,6 +232,7 @@ export default function Coverage() {
   const [tab, setTab] = useState('catalog')
   return (
     <div className="space-y-4">
+      <PageHeader title="Metadata Coverage" subtitle="Track profiling and coverage metrics" />
       <div className="inline-flex bg-dbx-oat/60 dark:bg-dbx-navy-600 rounded-xl p-1 shadow-inner-soft">
         {COVERAGE_TABS.map(({ key, label }) => (
           <button key={key} onClick={() => setTab(key)}

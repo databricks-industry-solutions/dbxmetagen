@@ -20,6 +20,8 @@ resources:
           default: "configurations/ontology_config.yaml"
         - name: ontology_bundle
           default: "healthcare"
+        - name: apply_ddl
+          default: "false"
 
       tasks:
         # Stage 1: Build knowledge bases (parallel)
@@ -56,6 +58,7 @@ resources:
               schema_name: "{{job.parameters.schema_name}}"
               config_path: "{{job.parameters.config_path}}"
               ontology_bundle: "{{job.parameters.ontology_bundle}}"
+              apply_ddl: "{{job.parameters.apply_ddl}}"
           libraries:
             - whl: ../../dist/*.whl
 

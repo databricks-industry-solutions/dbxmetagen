@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import ForceGraph2D from 'react-force-graph-2d'
 import { safeFetch, ErrorBanner } from '../App'
+import { PageHeader, EmptyState, SkeletonCards } from './ui'
 
 const PALETTE = [
   '#FF3621', '#0B2026', '#6366f1', '#10b981', '#f59e0b',
@@ -29,7 +30,7 @@ export function HealthCards({ metrics }) {
   return (
     <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
       {cards.map((c, i) => (
-        <div key={i} className="border border-slate-200 dark:border-dbx-navy-400/30 rounded-xl p-4 bg-gradient-to-br from-white to-slate-50 dark:from-dbx-navy-600 dark:to-dbx-navy-600">
+        <div key={i} className="border border-slate-200 dark:border-dbx-navy-400/25 rounded-xl p-4 bg-gradient-to-br from-white to-slate-50 dark:from-dbx-navy-650 dark:to-dbx-navy-700">
           <p className="text-xs text-slate-500 dark:text-slate-400 uppercase tracking-wider">{c.label}</p>
           <p className={`text-2xl font-bold mt-1 ${c.warn ? 'text-dbx-amber' : 'text-dbx-lava'}`}>{c.value ?? '--'}</p>
           {c.sub && <p className="text-xs text-slate-400 mt-0.5">{c.sub}</p>}
@@ -187,21 +188,22 @@ export function OntologyOverview() {
 
   return (
     <div className="space-y-6">
+      <PageHeader title="Ontology" subtitle="Entity types and relationships" />
       <ErrorBanner error={error} />
       <section className="card p-6">
-        <h2 className="text-lg font-semibold text-slate-800 dark:text-slate-100 mb-4">Ontology Health</h2>
+        <h2 className="heading-section mb-4">Ontology Health</h2>
         <HealthCards metrics={metrics} />
-        {!metrics.length && <p className="text-sm text-slate-400">No metrics computed yet. Run the ontology pipeline to generate health metrics.</p>}
+        {!metrics.length && <EmptyState title="No metrics computed yet" description="Run the ontology pipeline to generate health metrics" />}
       </section>
       <section className="card p-6">
-        <h2 className="text-lg font-semibold text-slate-800 dark:text-slate-100 mb-4">Entity Type Summary</h2>
+        <h2 className="heading-section mb-4">Entity Type Summary</h2>
         {summary.length === 0
-          ? <p className="text-sm text-slate-400">No entity types discovered yet. Run the full analytics pipeline first.</p>
+          ? <EmptyState title="No entity types discovered yet" description="Run the full analytics pipeline first" />
           : <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
               {summary.map((s, i) => {
                 const relCount = (relationships || []).filter(r => (r.src_entity_type || r.src) === s.entity_type || (r.dst_entity_type || r.dst) === s.entity_type).length
                 return (
-                  <div key={i} className="border border-slate-200 dark:border-dbx-navy-400/30 rounded-xl p-4 bg-gradient-to-br from-white to-slate-50 dark:from-dbx-navy-600 dark:to-dbx-navy-600">
+                  <div key={i} className="border border-slate-200 dark:border-dbx-navy-400/30 rounded-xl p-4 bg-gradient-to-br from-white to-slate-50 dark:from-dbx-navy-650 dark:to-dbx-navy-700">
                     <p className="font-semibold text-sm text-slate-700 dark:text-slate-200">{s.entity_type}</p>
                     <p className="text-3xl font-bold text-dbx-lava mt-1">{s.count}</p>
                     <p className="text-xs text-slate-400 mt-1">Avg conf: {s.avg_confidence} | Validated: {s.validated}{relCount > 0 ? ` | Rels: ${relCount}` : ''}</p>
@@ -212,7 +214,7 @@ export function OntologyOverview() {
         }
       </section>
       <section className="card p-6">
-        <h2 className="text-lg font-semibold text-slate-800 dark:text-slate-100 mb-4">Per-Table Entity Predictions</h2>
+        <h2 className="heading-section mb-4">Per-Table Entity Predictions</h2>
         {entities.length === 0
           ? <p className="text-sm text-slate-400">No entity predictions yet. Run the ontology pipeline first.</p>
           : <div className="overflow-x-auto max-h-96">
@@ -241,7 +243,7 @@ export function OntologyOverview() {
         }
       </section>
       <section className="card p-6">
-        <h2 className="text-lg font-semibold text-slate-800 dark:text-slate-100 mb-4">Entity Relationship Graph</h2>
+        <h2 className="heading-section mb-4">Entity Relationship Graph</h2>
         <p className="text-xs text-slate-500 mb-3">Nodes = entity types (sized by table count). Click a node to see tables linked via instance_of.</p>
         <EntityGraph entities={entities} relationships={relationships} allRelationships={relationships} />
       </section>
@@ -326,27 +328,28 @@ export default function Ontology() {
 
   return (
     <div className="space-y-6">
+      <PageHeader title="Ontology" subtitle="Entity types and relationships" />
       <ErrorBanner error={error} />
 
       {/* Health cards */}
       <section className="card p-6">
-        <h2 className="text-lg font-semibold text-slate-800 dark:text-slate-100 mb-4">Ontology Health</h2>
+        <h2 className="heading-section mb-4">Ontology Health</h2>
         <HealthCards metrics={metrics} />
         {!metrics.length && (
-          <p className="text-sm text-slate-400">No metrics computed yet. Run the ontology pipeline to generate health metrics.</p>
+          <EmptyState title="No metrics computed yet" description="Run the ontology pipeline to generate health metrics" />
         )}
       </section>
 
       {/* Entity Type Summary */}
       <section className="card p-6">
-        <h2 className="text-lg font-semibold text-slate-800 dark:text-slate-100 mb-4">Entity Type Summary</h2>
+        <h2 className="heading-section mb-4">Entity Type Summary</h2>
         {summary.length === 0
-          ? <p className="text-sm text-slate-400">No entity types discovered yet. Run the full analytics pipeline first.</p>
+          ? <EmptyState title="No entity types discovered yet" description="Run the full analytics pipeline first" />
           : <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
               {summary.map((s, i) => {
                 const relCount = (relationships || []).filter(r => (r.src_entity_type || r.src) === s.entity_type || (r.dst_entity_type || r.dst) === s.entity_type).length
                 return (
-                  <div key={i} className="border border-slate-200 dark:border-dbx-navy-400/30 rounded-xl p-4 bg-gradient-to-br from-white to-slate-50 dark:from-dbx-navy-600 dark:to-dbx-navy-600">
+                  <div key={i} className="border border-slate-200 dark:border-dbx-navy-400/30 rounded-xl p-4 bg-gradient-to-br from-white to-slate-50 dark:from-dbx-navy-650 dark:to-dbx-navy-700">
                     <p className="font-semibold text-sm text-slate-700 dark:text-slate-200">{s.entity_type}</p>
                     <p className="text-3xl font-bold text-dbx-lava mt-1">{s.count}</p>
                     <p className="text-xs text-slate-400 mt-1">Avg conf: {s.avg_confidence} | Validated: {s.validated}{relCount > 0 ? ` | Rels: ${relCount}` : ''}</p>

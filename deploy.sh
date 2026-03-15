@@ -122,6 +122,13 @@ else
     APP_SP_ID=""
 fi
 
+# --- Build Python package ---
+echo ""
+echo "=== Building Python package ==="
+rm -rf dist/
+poetry build
+echo "Python package built: $(ls dist/*.whl)"
+
 # --- Copy configurations into app source for deployment ---
 echo ""
 echo "=== Copying configurations into app source ==="

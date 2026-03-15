@@ -15,6 +15,7 @@ from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
 
 from agent.tools import ALL_TOOLS
+from agent.guardrails import SAFETY_PROMPT_BLOCK, sanitize_output
 
 logger = logging.getLogger(__name__)
 
@@ -37,11 +38,12 @@ When answering a question:
 4. Use find_similar_nodes to discover related tables/columns via embeddings.
 5. Synthesize your findings into a clear answer.
 
-Always cite specific node ids and relationships in your answer."""
+Always cite specific node ids and relationships in your answer.
+""" + SAFETY_PROMPT_BLOCK
 
 
 def _build_graph():
-    llm = ChatDatabricks(endpoint=MODEL, temperature=0)
+    llm = ChatDatabricks(endpoint=MODEL, temperature=0, max_retries=3)
     llm_with_tools = llm.bind_tools(ALL_TOOLS)
     tool_node = ToolNode(ALL_TOOLS)
 
@@ -85,6 +87,6 @@ async def run_graph_agent(question: str, max_hops: int = 3) -> dict:
     # Extract the final assistant message
     final_msg = result["messages"][-1]
     return {
-        "answer": final_msg.content,
+        "answer": sanitize_output(final_msg.content),
         "steps": len(result["messages"]),
     }

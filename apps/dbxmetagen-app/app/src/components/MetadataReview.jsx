@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react'
 import { safeFetch, ErrorBanner } from '../App'
 import { FKApplyPanel } from './ForeignKeyGeneration'
+import { PageHeader, EmptyState, SkeletonTable } from './ui'
 
 function DataTable({ data, maxRows = 100 }) {
   if (!data || data.length === 0) return <p className="text-sm text-slate-400 py-4">No data available.</p>
@@ -370,7 +371,7 @@ function ReviewEditor() {
           {reviewData.filter(tbl => statusFilter === 'all' || (tbl.review_status || 'unreviewed') === statusFilter).map((tbl, _fi) => {
             const tblIdx = reviewData.indexOf(tbl)
             return (
-            <div key={tbl.table_name} className="bg-dbx-oat-light dark:bg-dbx-navy-600 rounded-xl border border-slate-200 dark:border-dbx-navy-400/30 shadow-sm overflow-hidden">
+            <div key={tbl.table_name} className="bg-dbx-oat-light dark:bg-dbx-navy-650 rounded-xl border border-slate-200 dark:border-dbx-navy-400/25 shadow-sm overflow-hidden">
               {/* Table header row */}
               <div className={`flex items-center gap-2 px-4 py-2.5 cursor-pointer select-none flex-wrap ${isTableDirty(tblIdx) ? 'bg-amber-50 dark:bg-amber-900/20' : 'bg-dbx-oat dark:bg-dbx-navy-500/50'}`}
                 onClick={() => setExpanded(p => ({ ...p, [tbl.table_name]: !p[tbl.table_name] }))}>
@@ -962,7 +963,7 @@ function ReviewEditor() {
       {/* Volume file browser modal */}
       {showVolumeBrowser && (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-6 animate-fade-in">
-          <div className="bg-white dark:bg-dbx-navy-600 rounded-2xl shadow-elevated max-w-lg w-full max-h-[70vh] flex flex-col animate-slide-up">
+          <div className="bg-white dark:bg-dbx-navy-650 rounded-2xl shadow-elevated max-w-lg w-full max-h-[70vh] flex flex-col animate-slide-up">
             <div className="flex items-center justify-between px-6 pt-5 pb-3 border-b border-slate-200 dark:border-slate-600">
               <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100">Select File from Volume</h3>
               <button onClick={() => setShowVolumeBrowser(false)} className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-300">
@@ -1354,9 +1355,10 @@ export default function MetadataReview() {
 
   return (
     <div className="space-y-4">
+      <PageHeader title="Review & Apply" subtitle="Review, edit, and apply metadata changes" />
       <ErrorBanner error={error} />
       <div className="flex flex-wrap items-center gap-4">
-        <div className="inline-flex bg-dbx-oat/60 dark:bg-dbx-navy-600 rounded-xl p-1 shadow-inner-soft">
+        <div className="inline-flex bg-dbx-oat/60 dark:bg-dbx-navy-650 rounded-xl p-1 shadow-inner-soft">
           {[['editor', 'Review Editor'], ['fk_apply', 'FK Apply'], ['entity_tags', 'Entity Tags'], ['kb', 'Table KB'], ['columns', 'Column KB'], ['schemas', 'Schema KB'], ['log', 'Generation Log']].map(([k, l]) => (
             <button key={k} onClick={() => setTab(k)}
               className={`px-3.5 py-1.5 text-sm rounded-lg transition-all duration-200 ${tab === k ? 'bg-white dark:bg-dbx-navy-500 shadow-sm font-semibold text-dbx-lava' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'}`}>{l}</button>

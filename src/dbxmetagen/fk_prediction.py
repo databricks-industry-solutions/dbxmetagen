@@ -25,6 +25,7 @@ class FKPredictionConfig:
     edges_table: str = "graph_edges"
     column_kb_table: str = "column_knowledge_base"
     ontology_entities_table: str = "ontology_entities"
+    ontology_relationships_table: str = "ontology_relationships"
     predictions_table: str = "fk_predictions"
     column_similarity_threshold: float = 0.75
     table_similarity_threshold: float = 0.7  # max table similarity (exclude near-duplicate tables)
@@ -121,30 +122,192 @@ class FKPredictor:
         return df
 
     # ------------------------------------------------------------------
-    # Step 1b: Ontology entity match (optional)
+    # Step 1a: Name-based FK candidates (no embedding required)
+    # ------------------------------------------------------------------
+    def get_name_based_candidates(self) -> DataFrame:
+        """Generate FK candidates from column naming conventions like <table>_id -> id."""
+        nodes = self.config.fq(self.config.nodes_table)
+        sql = f"""
+        WITH cols AS (
+            SELECT id, parent_id, data_type,
+                   LOWER(ELEMENT_AT(SPLIT(id, '\\\\.'), -1)) AS col_short,
+                   LOWER(ELEMENT_AT(SPLIT(parent_id, '\\\\.'), -1)) AS tbl_short
+            FROM {nodes}
+            WHERE node_type = 'column'
+        ),
+        pk_cols AS (
+            SELECT * FROM cols WHERE col_short IN ('id', 'pk')
+        ),
+        fk_cols AS (
+            SELECT * FROM cols
+            WHERE col_short RLIKE '(_id|_key)$' AND col_short NOT IN ('id', 'pk')
+        ),
+        matches AS (
+            SELECT
+                fk.id AS col_a, pk.id AS col_b,
+                fk.parent_id AS table_a, pk.parent_id AS table_b,
+                fk.data_type AS dtype_a, pk.data_type AS dtype_b,
+                0.0 AS col_similarity, 0.0 AS table_similarity
+            FROM fk_cols fk
+            JOIN pk_cols pk
+              ON fk.parent_id != pk.parent_id
+              AND (
+                  REPLACE(REPLACE(fk.col_short, '_id', ''), '_key', '')
+                  = REGEXP_REPLACE(pk.tbl_short, 's$', '')
+                  OR REPLACE(REPLACE(fk.col_short, '_id', ''), '_key', '')
+                  = pk.tbl_short
+              )
+        )
+        SELECT LEAST(col_a, col_b) AS col_a, GREATEST(col_a, col_b) AS col_b,
+               col_similarity, table_a, table_b, dtype_a, dtype_b, table_similarity
+        FROM matches
+        """
+        try:
+            df = self.spark.sql(sql)
+            logger.info("Name-based FK candidates: %d", df.count())
+            return df
+        except Exception as e:
+            logger.warning("Name-based candidate generation failed: %s", e)
+            return self.spark.createDataFrame(
+                [], "col_a STRING, col_b STRING, col_similarity DOUBLE, "
+                "table_a STRING, table_b STRING, dtype_a STRING, dtype_b STRING, "
+                "table_similarity DOUBLE"
+            )
+
+    # ------------------------------------------------------------------
+    # Step 1b: Ontology-driven FK candidates
+    # ------------------------------------------------------------------
+    def get_ontology_relationship_candidates(self) -> DataFrame:
+        """Generate FK candidates from ontology_relationships entity pairs."""
+        ont_rels = self.config.fq(self.config.ontology_relationships_table)
+        ont_ent = self.config.fq(self.config.ontology_entities_table)
+        nodes = self.config.fq(self.config.nodes_table)
+        try:
+            self.spark.sql(f"SELECT 1 FROM {ont_rels} LIMIT 1").collect()
+        except Exception:
+            logger.info("ontology_relationships table not available, skipping")
+            return self.spark.createDataFrame(
+                [], "col_a STRING, col_b STRING, col_similarity DOUBLE, "
+                "table_a STRING, table_b STRING, dtype_a STRING, dtype_b STRING, "
+                "table_similarity DOUBLE"
+            )
+
+        sql = f"""
+        WITH rels AS (
+            SELECT DISTINCT src_entity_type, dst_entity_type
+            FROM {ont_rels}
+            WHERE confidence >= 0.4
+        ),
+        src_tables AS (
+            SELECT entity_type, EXPLODE(source_tables) AS table_name FROM {ont_ent}
+        ),
+        table_pairs AS (
+            SELECT st.table_name AS table_a, dt.table_name AS table_b
+            FROM rels r
+            JOIN src_tables st ON r.src_entity_type = st.entity_type
+            JOIN src_tables dt ON r.dst_entity_type = dt.entity_type
+            WHERE st.table_name != dt.table_name
+        ),
+        cols AS (
+            SELECT id, parent_id, data_type,
+                   LOWER(ELEMENT_AT(SPLIT(id, '\\\\.'), -1)) AS col_short
+            FROM {nodes} WHERE node_type = 'column'
+        ),
+        id_like_cols AS (
+            SELECT * FROM cols WHERE col_short RLIKE '(_id|_key|_code)$' OR col_short = 'id'
+        ),
+        candidate_pairs AS (
+            SELECT ca.id AS col_a, cb.id AS col_b,
+                   tp.table_a, tp.table_b,
+                   ca.data_type AS dtype_a, cb.data_type AS dtype_b,
+                   0.0 AS col_similarity, 0.0 AS table_similarity
+            FROM table_pairs tp
+            JOIN id_like_cols ca ON ca.parent_id = tp.table_a
+            JOIN id_like_cols cb ON cb.parent_id = tp.table_b
+            WHERE ca.id != cb.id
+              AND (
+                  ca.col_short = cb.col_short
+                  OR REPLACE(REPLACE(ca.col_short, '_id', ''), '_key', '')
+                     = REGEXP_REPLACE(LOWER(ELEMENT_AT(SPLIT(tp.table_b, '\\\\.'), -1)), 's$', '')
+                  OR REPLACE(REPLACE(cb.col_short, '_id', ''), '_key', '')
+                     = REGEXP_REPLACE(LOWER(ELEMENT_AT(SPLIT(tp.table_a, '\\\\.'), -1)), 's$', '')
+              )
+        )
+        SELECT LEAST(col_a, col_b) AS col_a, GREATEST(col_a, col_b) AS col_b,
+               col_similarity, table_a, table_b, dtype_a, dtype_b, table_similarity
+        FROM candidate_pairs
+        """
+        try:
+            df = self.spark.sql(sql)
+            logger.info("Ontology-driven FK candidates: %d", df.count())
+            return df
+        except Exception as e:
+            logger.warning("Ontology-driven candidate generation failed: %s", e)
+            return self.spark.createDataFrame(
+                [], "col_a STRING, col_b STRING, col_similarity DOUBLE, "
+                "table_a STRING, table_b STRING, dtype_a STRING, dtype_b STRING, "
+                "table_similarity DOUBLE"
+            )
+
+    # ------------------------------------------------------------------
+    # Step 1c: Ontology entity match (optional)
     # ------------------------------------------------------------------
     def add_entity_match(self, candidates: DataFrame) -> DataFrame:
-        """Join ontology_entities to add entity_match: 1 when both tables share same entity_type."""
+        """Join ontology_entities + ontology_relationships to score entity alignment.
+        0.25 for inter-entity relationship, 0.1 for same-entity (self-referential FK support)."""
         ont = self.config.fq(self.config.ontology_entities_table)
+        ont_rels = self.config.fq(self.config.ontology_relationships_table)
         try:
             self.spark.sql(f"SELECT 1 FROM {ont} LIMIT 1").collect()
         except Exception:
-            return candidates.withColumn("entity_match", F.lit(0.0))
+            return candidates.withColumn("entity_match", F.lit(0.0)) \
+                .withColumn("entity_type_a", F.lit(None).cast("string")) \
+                .withColumn("entity_type_b", F.lit(None).cast("string"))
         candidates.createOrReplaceTempView("fk_cand")
+
+        has_rels = False
+        try:
+            self.spark.sql(f"SELECT 1 FROM {ont_rels} LIMIT 1").collect()
+            has_rels = True
+        except Exception:
+            pass
+
+        rels_cte = ""
+        rel_join = ""
+        rel_case = "0.0"
+        if has_rels:
+            rels_cte = f""",
+            ent_rels AS (
+                SELECT DISTINCT src_entity_type, dst_entity_type
+                FROM {ont_rels} WHERE confidence >= 0.4
+            )"""
+            rel_join = """
+            LEFT JOIN ent_rels r1
+                ON ta.entity_type = r1.src_entity_type AND tb.entity_type = r1.dst_entity_type
+            LEFT JOIN ent_rels r2
+                ON ta.entity_type = r2.dst_entity_type AND tb.entity_type = r2.src_entity_type"""
+            rel_case = "CASE WHEN r1.src_entity_type IS NOT NULL OR r2.src_entity_type IS NOT NULL THEN 0.25 ELSE 0.0 END"
+
         df = self.spark.sql(f"""
             WITH table_entity AS (
                 SELECT EXPLODE(source_tables) AS table_name, entity_type
-                FROM {ont}
-                WHERE confidence >= 0.4
-            )
+                FROM {ont} WHERE confidence >= 0.4
+            ){rels_cte}
             SELECT c.*,
                 ta.entity_type AS entity_type_a,
                 tb.entity_type AS entity_type_b,
-                CASE WHEN ta.entity_type IS NOT NULL AND tb.entity_type IS NOT NULL
-                     AND ta.entity_type = tb.entity_type THEN 1.0 ELSE 0.0 END AS entity_match
+                CASE
+                    WHEN ta.entity_type IS NOT NULL AND tb.entity_type IS NOT NULL THEN
+                        GREATEST(
+                            {rel_case},
+                            CASE WHEN ta.entity_type = tb.entity_type THEN 0.1 ELSE 0.0 END
+                        )
+                    ELSE 0.0
+                END AS entity_match
             FROM fk_cand c
             LEFT JOIN table_entity ta ON c.table_a = ta.table_name
             LEFT JOIN table_entity tb ON c.table_b = tb.table_name
+            {rel_join}
         """)
         return df
 
@@ -705,7 +868,22 @@ class FKPredictor:
         logger.info("Starting FK prediction pipeline")
         self._ensure_output_tables()
 
-        candidates = self.get_candidates()
+        # Gather candidates from all sources and deduplicate
+        embedding_cands = self.get_candidates()
+        name_cands = self.get_name_based_candidates()
+        ontology_cands = self.get_ontology_relationship_candidates()
+
+        candidates = embedding_cands \
+            .unionByName(name_cands, allowMissingColumns=True) \
+            .unionByName(ontology_cands, allowMissingColumns=True)
+
+        # Dedup: keep highest col_similarity per (col_a, col_b) pair
+        dedup_w = Window.partitionBy("col_a", "col_b").orderBy(F.col("col_similarity").desc())
+        candidates = candidates.withColumn("_rn", F.row_number().over(dedup_w)) \
+            .filter(F.col("_rn") == 1).drop("_rn")
+        # Fill nulls from non-embedding sources
+        candidates = candidates.fillna(0.0, subset=["col_similarity", "table_similarity"])
+
         if candidates.count() == 0:
             logger.info("No FK candidates found")
             return {"candidates": 0, "ai_query_rows": 0, "predictions": 0, "edges": 0, "ddl_applied": 0}

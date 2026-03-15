@@ -88,6 +88,15 @@ def _check_table_allowlist(query: str) -> Optional[str]:
     return None
 
 
+def _auto_qualify(query: str, allowed: set) -> str:
+    """Replace bare allowed table names with fully-qualified catalog.schema.table."""
+    prefix = f"{CATALOG}.{SCHEMA}."
+    result = query
+    for t in allowed:
+        result = re.sub(rf'\b(?<!\.)({t})\b', f'{prefix}{t}', result)
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Tool: Vector search
 # ---------------------------------------------------------------------------
@@ -152,6 +161,7 @@ def execute_metadata_sql(query: str) -> str:
     err = _check_table_allowlist(query)
     if err:
         return json.dumps({"error": err})
+    query = _auto_qualify(query, ALLOWED_TABLES)
     try:
         result = _execute_query(query)
         if result["success"]:
@@ -316,6 +326,7 @@ def execute_baseline_sql(query: str) -> str:
     err = _check_baseline_allowlist(query)
     if err:
         return json.dumps({"error": err})
+    query = _auto_qualify(query, BASELINE_TABLES)
     try:
         result = _execute_query(query)
         if result["success"]:

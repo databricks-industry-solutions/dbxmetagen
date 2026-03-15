@@ -14,8 +14,14 @@ const COMPONENTS = {
 
 const NAV_CAT_COLORS = {
   Design: 'text-dbx-lava',
-  Review: 'text-dbx-amber-dark dark:text-dbx-amber',
+  Review: 'text-dbx-sky dark:text-dbx-sky',
   Explore: 'text-dbx-violet dark:text-dbx-violet',
+}
+
+const TAB_ACCENT = {
+  jobs: 'border-t-dbx-lava', semantic: 'border-t-dbx-lava',
+  metadata: 'border-t-dbx-sky', coverage: 'border-t-dbx-sky',
+  agent: 'border-t-dbx-teal', vector: 'border-t-dbx-teal', genie: 'border-t-dbx-teal',
 }
 
 const NAV_STRUCTURE = [
@@ -198,6 +204,7 @@ export default function App() {
     return false
   })
   const ActiveComponent = COMPONENTS[activeTab]
+  const activeCategory = NAV_STRUCTURE.find(cat => cat.items.some(i => i.id === activeTab))?.category || 'Explore'
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', dark)
@@ -207,8 +214,8 @@ export default function App() {
   return (
     <div className="min-h-screen bg-dbx-oat-light dark:bg-dbx-navy transition-colors">
       {/* Header */}
-      <header className="bg-gradient-to-r from-dbx-navy via-dbx-navy-600 to-dbx-navy-500 px-6 py-4 shadow-md">
-        <div className="flex items-center justify-between max-w-7xl mx-auto">
+      <header className="bg-gradient-to-r from-dbx-navy via-dbx-navy-700 to-dbx-navy-600 px-6 py-4 shadow-md">
+        <div className="flex items-center justify-between max-w-[90rem] mx-auto">
           <div className="flex items-center gap-3">
             <div className="relative">
               <img src="/logo.png" alt="dbxmetagen" className="h-9 w-9" />
@@ -245,8 +252,8 @@ export default function App() {
       <InfoSlides open={showInfo} onClose={() => setShowInfo(false)} />
 
       {/* Navigation */}
-      <nav className="bg-white/80 dark:bg-dbx-navy-600/80 backdrop-blur-sm border-b border-dbx-oat-dark/50 dark:border-dbx-navy-400/30 shadow-nav sticky top-0 z-40">
-        <div className="flex items-center gap-1 px-6 py-2 max-w-7xl mx-auto overflow-x-auto scrollbar-thin">
+      <nav className="bg-white/80 dark:bg-dbx-navy-700/90 backdrop-blur-sm border-b border-dbx-oat-dark/50 dark:border-dbx-navy-400/20 shadow-nav sticky top-0 z-40">
+        <div className="flex items-center gap-1 px-6 py-2 max-w-[90rem] mx-auto overflow-x-auto scrollbar-thin">
           {NAV_STRUCTURE.map((cat, ci) => (
             <React.Fragment key={cat.category}>
               {ci > 0 && <div className="w-px h-6 bg-slate-200 dark:bg-dbx-navy-400/40 mx-1.5 flex-shrink-0" />}
@@ -260,8 +267,10 @@ export default function App() {
         </div>
       </nav>
 
-      <main className="p-6 max-w-7xl mx-auto animate-fade-in">
-        {ActiveComponent && <ActiveComponent />}
+      <main className="p-6 max-w-[90rem] mx-auto">
+        <div key={activeTab} className={`border-t-2 ${TAB_ACCENT[activeTab] || 'border-t-transparent'} pt-4 animate-slide-up`}>
+          {ActiveComponent && <ActiveComponent />}
+        </div>
       </main>
     </div>
   )

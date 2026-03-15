@@ -4374,12 +4374,15 @@ Below is metadata about available tables and their business context.
 {ctx.get('context_text', '')}
 
 Generate exactly {req.count} questions that a BUSINESS LEADER would ask to track organizational performance. Rules:
+- Ground every question in the ENTITY TYPES and RELATIONSHIPS described in the metadata (e.g., if the data contains Encounters, Patients, Providers -- ask about patient visit patterns, provider utilization, encounter outcomes)
+- Every question MUST be answerable using ONLY the tables and columns described above -- do not invent data that isn't present
+- Use the domain and subdomain classifications to frame questions in the right business context
 - Think about what a CEO, CFO, VP, or department head would ask in a weekly review meeting
 - Focus on measurable outcomes: revenue growth, cost efficiency, customer satisfaction, operational throughput, quality metrics
 - Frame questions around time-based trends ("How has X changed over the past quarter?"), comparisons ("Which segment leads in Y?"), and thresholds ("Are we meeting our Z target?")
 - Prefer questions that naturally decompose into a measure (SUM, AVG, COUNT) and dimensions (time, category, region)
-- Do NOT mention column names, table names, or SQL concepts
-- Use the language of the business domain, not the data model
+- Do NOT mention column names, table names, or SQL concepts -- use business language only
+- A business user who USES the data but doesn't know the data model should understand every question
 
 Return ONLY a JSON array of strings, no other text."""
     else:
@@ -4390,11 +4393,14 @@ Below is metadata about the available tables, columns, relationships, and metric
 {ctx.get('context_text', '')}
 
 Generate exactly {req.count} questions that a BUSINESS USER would naturally ask. Rules:
+- Ground every question in the ENTITY TYPES and RELATIONSHIPS described in the metadata -- if the data models Patients, Orders, Claims, etc., ask about those specific business concepts
+- Every question MUST be answerable using ONLY the tables and columns described above -- do not invent data that isn't present
+- Use the domain and subdomain classifications to frame questions in the right business context
 - Questions should be outcome-oriented and insight-driven (e.g. "What are the top performing regions by revenue this quarter?")
 - Do NOT reference column names, table names, or technical schema details
 - Focus on trends, comparisons, rankings, anomalies, and KPIs
 - Vary the question types: aggregations, time-series trends, top-N, filters, comparisons
-- Use natural business language a non-technical executive would use
+- A business user who USES the data but doesn't know the data model should understand every question
 
 Return ONLY a JSON array of strings, no other text."""
 
@@ -4852,6 +4858,13 @@ def suggest_kpis(req: KpiSuggestRequest):
 
 {ctx.get('context_text', '')}
 
+Rules:
+- Ground each KPI in the ENTITY TYPES described in the metadata -- if there are Patients, Encounters, Claims, Orders, etc., the KPIs should measure aspects of those specific entities
+- Use the RELATIONSHIPS between entities to suggest cross-entity KPIs (e.g., encounters per patient, revenue per provider, claims per policy)
+- Each KPI's formula MUST reference only columns that exist in the provided table metadata -- do not invent columns
+- Align KPIs with the domain/subdomain classifications shown in the metadata
+- Think like a business user who works WITH the data but doesn't know the schema -- KPIs should be framed in business language
+
 For each KPI provide:
 - name: concise business name (e.g. "Monthly Revenue Growth Rate")
 - description: 1-2 sentences explaining what it measures and why it matters
@@ -4910,6 +4923,10 @@ VALID_AGENT_MODES = {"quick", "deep", "graphrag", "baseline"}
 
 @app.post("/api/agent/chat")
 async def agent_chat(req: AgentChatRequest):
+    from agent.guardrails import validate_input
+    ok, err = validate_input(req.message)
+    if not ok:
+        raise HTTPException(400, detail=err)
     try:
         from agent.metadata_agent import run_metadata_agent
     except ImportError as e:
@@ -4940,6 +4957,10 @@ def agent_deep_submit(req: AgentChatRequest):
     Returns {"task_id": "..."} immediately. Poll GET /api/agent/deep/task/{task_id}
     for progress and results.
     """
+    from agent.guardrails import validate_input
+    ok, err = validate_input(req.message)
+    if not ok:
+        raise HTTPException(400, detail=err)
     mode = req.mode if req.mode in ("graphrag", "baseline") else "graphrag"
     try:
         from agent.deep_analysis import run_deep_analysis_streaming

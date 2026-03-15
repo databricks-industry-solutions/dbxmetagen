@@ -23,11 +23,12 @@ from agent.metadata_tools import (
     execute_metadata_sql, execute_baseline_sql,
 )
 from agent.graph_skill import GRAPH_SCHEMA_CONTEXT
+from agent.guardrails import GuardrailConfig, SAFETY_PROMPT_BLOCK, sanitize_output
 
 logger = logging.getLogger(__name__)
 
 MODEL = os.environ.get("LLM_MODEL", os.environ.get("GRAPHRAG_MODEL", "databricks-claude-sonnet-4-5"))
-MAX_ITERATIONS = int(os.environ.get("MAX_SUPERVISOR_ITERATIONS", "6"))
+MAX_ITERATIONS = int(os.environ.get("MAX_SUPERVISOR_ITERATIONS", str(GuardrailConfig.MAX_DEEP_ITERATIONS)))
 
 _local = threading.local()
 
@@ -47,7 +48,7 @@ _cached_llm = None
 def _llm():
     global _cached_llm
     if _cached_llm is None:
-        _cached_llm = ChatDatabricks(endpoint=MODEL, temperature=0)
+        _cached_llm = ChatDatabricks(endpoint=MODEL, temperature=0, max_retries=3)
     return _cached_llm
 
 
@@ -74,7 +75,7 @@ class DeepAnalysisState(TypedDict):
 # ---------------------------------------------------------------------------
 
 SUPERVISOR_PROMPT = """You are a supervisor coordinating a deep analysis of a data catalog's metadata.
-
+""" + SAFETY_PROMPT_BLOCK + """
 Given the user's question and the current analysis state, decide the single next step.
 Respond with EXACTLY one word from: CLARIFY, PLAN, RETRIEVE, ANALYZE, RESPOND.
 
@@ -187,7 +188,7 @@ def supervisor_node(state: DeepAnalysisState) -> dict:
         if decision not in valid:
             decision = "RESPOND"
     except Exception as e:
-        logger.error("Supervisor LLM error: %s", e)
+        logger.warning("Supervisor LLM error (retries exhausted): %s", e)
         decision = "RESPOND"
 
     iters = len(state.get("iteration", []))
@@ -210,7 +211,7 @@ def planner_node(state: DeepAnalysisState) -> dict:
         ])
         return {"plan": resp.content, "messages": []}
     except Exception as e:
-        logger.error("Planner LLM error: %s", e)
+        logger.warning("Planner LLM error (retries exhausted): %s", e)
         return {"plan": f"1. Gather relevant data for: {state['user_query']}", "messages": []}
 
 
@@ -237,7 +238,7 @@ def retrieval_node(state: DeepAnalysisState) -> dict:
                     tools_used.extend([tc.get("name", "unknown") for tc in msg.tool_calls])
         return {"retrieved_evidence": evidence, "tool_calls_made": tools_used, "messages": []}
     except Exception as e:
-        logger.error("Retrieval error: %s", e)
+        logger.warning("Retrieval error (retries exhausted): %s", e)
         return {"retrieved_evidence": f"Error: {e}", "tool_calls_made": [], "messages": []}
 
 
@@ -265,7 +266,7 @@ def analyst_node(state: DeepAnalysisState) -> dict:
                     tools_used.extend([tc.get("name", "unknown") for tc in msg.tool_calls])
         return {"analysis_result": analysis, "tool_calls_made": tools_used, "messages": []}
     except Exception as e:
-        logger.error("Analyst error: %s", e)
+        logger.warning("Analyst error (retries exhausted): %s", e)
         return {"analysis_result": "Analysis could not be completed. Please try again.", "tool_calls_made": [], "messages": []}
 
 
@@ -368,7 +369,7 @@ def _extract_result(result: dict, mode: str) -> Dict:
     if not response:
         response = result.get("analysis_result", "Analysis complete but no output was generated.")
     tools = list(set(result.get("tool_calls_made", [])))
-    return {"answer": response, "tool_calls": tools, "mode": mode, "steps": len(result.get("iteration", []))}
+    return {"answer": sanitize_output(response), "tool_calls": tools, "mode": mode, "steps": len(result.get("iteration", []))}
 
 
 # ---------------------------------------------------------------------------
@@ -383,7 +384,7 @@ def run_deep_analysis(
     """Non-streaming deep analysis. mode is 'graphrag' or 'baseline'."""
     query = _build_query(message, history)
     state = _init_state(query, mode)
-    result = _get_graph().invoke(state)
+    result = _get_graph().invoke(state, config={"recursion_limit": GuardrailConfig.MAX_RECURSION_LIMIT})
     return _extract_result(result, mode)
 
 
@@ -408,7 +409,7 @@ def run_deep_analysis_streaming(
             _emit("starting", "Starting analysis...", agent="system")
             query = _build_query(message, history)
             state = _init_state(query, mode)
-            result = _get_graph().invoke(state)
+            result = _get_graph().invoke(state, config={"recursion_limit": GuardrailConfig.MAX_RECURSION_LIMIT})
             extracted = _extract_result(result, mode)
             q.put({
                 "stage": "done",

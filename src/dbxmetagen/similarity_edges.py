@@ -21,8 +21,8 @@ class SimilarityEdgesConfig:
     schema_name: str
     nodes_table: str = "graph_nodes"
     edges_table: str = "graph_edges"
-    similarity_threshold: float = 0.8
-    max_edges_per_node: int = 10
+    similarity_threshold: float = 0.7
+    max_edges_per_node: int = 15
     
     @property
     def fully_qualified_nodes(self) -> str:
@@ -225,12 +225,24 @@ class SimilarityEdgeBuilder:
         return 0
     
     def insert_similarity_edges(self, edges_df: DataFrame) -> int:
-        """Insert new similarity edges."""
+        """Insert new similarity edges using schema-aligned SQL INSERT."""
         if edges_df.count() == 0:
             return 0
-        
-        edges_df.write.mode("append").saveAsTable(self.config.fully_qualified_edges)
-        return edges_df.count()
+        from dbxmetagen.knowledge_graph import KnowledgeGraphBuilder
+        cols = []
+        for name, dtype in KnowledgeGraphBuilder._EDGE_SCHEMA:
+            if name in edges_df.columns:
+                cols.append(F.col(name).cast(dtype).alias(name))
+            else:
+                cols.append(F.lit(None).cast(dtype).alias(name))
+        aligned = edges_df.select(*cols)
+        aligned.createOrReplaceTempView("_staged_sim_edges")
+        col_list = ", ".join(c for c, _ in KnowledgeGraphBuilder._EDGE_SCHEMA)
+        self.spark.sql(
+            f"INSERT INTO {self.config.fully_qualified_edges} ({col_list}) "
+            f"SELECT {col_list} FROM _staged_sim_edges"
+        )
+        return aligned.count()
     
     def run(self) -> Dict[str, Any]:
         """Execute the similarity edge generation pipeline."""
@@ -259,8 +271,8 @@ def build_similarity_edges(
     spark: SparkSession,
     catalog_name: str,
     schema_name: str,
-    similarity_threshold: float = 0.8,
-    max_edges_per_node: int = 10
+    similarity_threshold: float = 0.7,
+    max_edges_per_node: int = 15
 ) -> Dict[str, Any]:
     """
     Convenience function to build similarity edges.

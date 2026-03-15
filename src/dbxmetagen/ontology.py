@@ -769,7 +769,7 @@ class EntityDiscoverer:
         from databricks_langchain import ChatDatabricks
 
         llm = ChatDatabricks(
-            endpoint=self._model_endpoint, temperature=0.0, max_tokens=512
+            endpoint=self._model_endpoint, temperature=0.0, max_tokens=512, max_retries=2
         )
         return llm.with_structured_output(EntityClassificationResult)
 
@@ -777,7 +777,7 @@ class EntityDiscoverer:
         from databricks_langchain import ChatDatabricks
 
         llm = ChatDatabricks(
-            endpoint=self._model_endpoint, temperature=0.0, max_tokens=2048
+            endpoint=self._model_endpoint, temperature=0.0, max_tokens=2048, max_retries=2
         )
         return llm.with_structured_output(BatchColumnClassificationResult)
 
@@ -785,7 +785,7 @@ class EntityDiscoverer:
         from databricks_langchain import ChatDatabricks
 
         llm = ChatDatabricks(
-            endpoint=self._model_endpoint, temperature=0.0, max_tokens=2048
+            endpoint=self._model_endpoint, temperature=0.0, max_tokens=2048, max_retries=2
         )
         return llm.with_structured_output(BatchTableClassificationResult)
 
@@ -1090,6 +1090,9 @@ class EntityDiscoverer:
             "If a table clearly represents a relationship between two entities, "
             "also populate secondary_entity_type. "
             "If your confidence is below 0.5, populate recommended_entity. "
+            "Tables with similar names, structures, or descriptions should receive similar confidence scores. "
+            "If two tables contain essentially the same data (e.g., different sample sizes of the same source), "
+            "they should get the same entity type and similar confidence. "
             "Return one classification per table, using the exact table_name provided."
         )
         user_prompt = (
@@ -1809,6 +1812,21 @@ class OntologyBuilder:
             spark, config, self.ontology_config, domain_entity_affinity=affinity
         )
 
+    def _insert_edges_safe(self, df: DataFrame, table: str):
+        """Schema-safe INSERT into graph_edges: align columns + named SQL INSERT."""
+        from dbxmetagen.knowledge_graph import KnowledgeGraphBuilder
+        cols = []
+        for name, dtype in KnowledgeGraphBuilder._EDGE_SCHEMA:
+            if name in df.columns:
+                cols.append(F.col(name).cast(dtype).alias(name))
+            else:
+                cols.append(F.lit(None).cast(dtype).alias(name))
+        aligned = df.select(*cols)
+        view = f"_staged_ont_edges_{id(df) % 10000}"
+        aligned.createOrReplaceTempView(view)
+        col_list = ", ".join(c for c, _ in KnowledgeGraphBuilder._EDGE_SCHEMA)
+        self.spark.sql(f"INSERT INTO {table} ({col_list}) SELECT {col_list} FROM {view}")
+
     def create_entities_table(self) -> None:
         """Create the ontology entities table."""
         ddl = f"""
@@ -1849,6 +1867,14 @@ class OntologyBuilder:
                     logger.info("Added column %s to entities table", col_name)
                 except Exception as e:
                     logger.warning("Could not add column %s: %s", col_name, e)
+        try:
+            self.spark.sql(
+                f"UPDATE {self.config.fully_qualified_entities} "
+                f"SET confidence = GREATEST(0.0, LEAST(1.0, confidence)) "
+                f"WHERE confidence < 0.0 OR confidence > 1.0"
+            )
+        except Exception as e:
+            logger.warning("Confidence cleanup failed (table may be empty): %s", e)
         logger.info(f"Entities table {self.config.fully_qualified_entities} ready")
 
     def create_metrics_table(self) -> None:
@@ -1948,8 +1974,8 @@ class OntologyBuilder:
                     entity.get("source_tables", []),
                     entity.get("source_columns", []),
                     attributes,
-                    float(entity.get("confidence", 0.0)),
-                    float(entity.get("discovery_confidence") or entity.get("confidence", 0.0)),
+                    max(0.0, min(1.0, float(entity.get("confidence", 0.0)))),
+                    max(0.0, min(1.0, float(entity.get("discovery_confidence") or entity.get("confidence", 0.0)))),
                     entity.get("entity_role"),
                     bool(entity.get("is_canonical", False)),
                     bool(entity.get("auto_discovered", True)),
@@ -2415,7 +2441,7 @@ class OntologyBuilder:
              "join_expression", "join_confidence", "ontology_rel",
              "source_system", "status", "created_at", "updated_at"],
         )
-        edge_df.write.mode("append").saveAsTable(edges_table)
+        self._insert_edges_safe(edge_df, edges_table)
         logger.info("Added %d inter-entity relationship edges", len(new_edges))
         result["edges_added"] = len(new_edges)
         return result
@@ -2474,7 +2500,7 @@ class OntologyBuilder:
              "join_expression", "join_confidence", "ontology_rel",
              "source_system", "status", "created_at", "updated_at"],
         )
-        edge_df.write.mode("append").saveAsTable(edges_table)
+        self._insert_edges_safe(edge_df, edges_table)
         logger.info("Added %d hierarchy (is_a) edges", len(new_edges))
         return len(new_edges)
 
@@ -2596,7 +2622,7 @@ class OntologyBuilder:
                     F.lit(1.0).alias("weight"),
                 )
                 instance_edges = _add_edge_columns(raw, "instance_of", "instance_of")
-                instance_edges.write.mode("append").saveAsTable(edges_table)
+                self._insert_edges_safe(instance_edges, edges_table)
                 total += instance_edges.count()
         except Exception as e:
             logger.warning("Could not add instance_of edges: %s", e)
@@ -2612,7 +2638,7 @@ class OntologyBuilder:
             prop_count = raw.count()
             if prop_count > 0:
                 prop_edges = _add_edge_columns(raw, "has_property", "has_property")
-                prop_edges.write.mode("append").saveAsTable(edges_table)
+                self._insert_edges_safe(prop_edges, edges_table)
                 total += prop_count
         except Exception as e:
             logger.warning("Could not add has_property edges: %s", e)
@@ -2648,7 +2674,7 @@ class OntologyBuilder:
                     F.current_timestamp().alias("created_at"),
                     F.current_timestamp().alias("updated_at"),
                 )
-                ref_edges.write.mode("append").saveAsTable(edges_table)
+                self._insert_edges_safe(ref_edges, edges_table)
                 total += ref_count
         except Exception as e:
             logger.warning("Could not add ontology relationship edges: %s", e)

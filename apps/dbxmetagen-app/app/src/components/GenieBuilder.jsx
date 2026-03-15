@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { safeFetch, safeFetchObj, ErrorBanner } from '../App'
+import { PageHeader, EmptyState, SkeletonTable } from './ui'
 
 const STAGES = {
   starting: 'Starting...',
@@ -188,13 +189,7 @@ export default function GenieBuilder() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h2 className="text-lg font-semibold text-slate-800 dark:text-slate-200">Genie Space Builder</h2>
-        <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">
-          Select tables and optionally provide business questions. An agent will generate
-          a comprehensive Genie space configuration with instructions, SQL, filters, and measures.
-        </p>
-      </div>
+      <PageHeader title="Genie Space Builder" subtitle="Select tables and optionally provide business questions to generate a Genie space configuration" />
 
       <ErrorBanner error={error} />
 
@@ -312,10 +307,40 @@ export default function GenieBuilder() {
         </div>
       )}
 
+      {/* KPIs */}
+      {kpis.length > 0 && (
+        <div className="card p-5">
+          <button onClick={() => setShowKpis(!showKpis)}
+            className="w-full flex items-center justify-between text-sm font-medium text-slate-700 dark:text-slate-300">
+            <span>KPIs ({selectedKpis.size}/{kpis.length} selected)</span>
+            <span className={`text-xs transition-transform ${showKpis ? 'rotate-90' : ''}`}>&#9654;</span>
+          </button>
+          {showKpis && (
+            <div className="mt-3 space-y-1.5 max-h-48 overflow-y-auto">
+              {kpis.map(k => (
+                <label key={k.kpi_id} className="flex items-start gap-2 text-sm cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-700/30 rounded px-2 py-1">
+                  <input type="checkbox" checked={selectedKpis.has(k.kpi_id)}
+                    onChange={() => setSelectedKpis(prev => { const n = new Set(prev); n.has(k.kpi_id) ? n.delete(k.kpi_id) : n.add(k.kpi_id); return n })}
+                    className="mt-0.5" />
+                  <div className="min-w-0">
+                    <span className="dark:text-slate-200">{k.name}</span>
+                    {k.domain && <span className="ml-1.5 text-xs px-1.5 py-0.5 rounded bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300">{k.domain}</span>}
+                    {k.description && <p className="text-xs text-slate-400 truncate">{k.description}</p>}
+                  </div>
+                </label>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Questions */}
       <div className="card p-5">
         <div className="flex items-center justify-between mb-2">
-          <h3 className="text-sm font-medium text-slate-700 dark:text-slate-300">Business Questions (optional)</h3>
+          <div>
+            <h3 className="text-sm font-medium text-slate-700 dark:text-slate-300">Business Questions (optional)</h3>
+            <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">Questions are generated based on the selected tables, their metric views, and discovered business entities.</p>
+          </div>
           <button onClick={suggestQuestions} disabled={suggestingQs || !selectedTables.length}
             className="text-xs px-3 py-1 bg-dbx-navy text-white rounded hover:bg-slate-700 disabled:opacity-50 transition-colors flex items-center gap-1.5">
             {suggestingQs && <span className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" />}
@@ -398,7 +423,7 @@ export default function GenieBuilder() {
       {/* Tracked Spaces */}
       {trackedSpaces.length > 0 && (
         <div className="card p-6 mt-6">
-          <h2 className="text-lg font-semibold text-slate-800 dark:text-slate-200 mb-4">My Genie Spaces</h2>
+          <h2 className="heading-section mb-4">My Genie Spaces</h2>
           <div className="overflow-x-auto">
             <table className="min-w-full text-sm">
               <thead><tr>

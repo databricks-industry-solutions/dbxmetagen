@@ -10,6 +10,7 @@ export default {
         'dbx-lava-dark': '#E02D1A',
         'dbx-navy': '#0B1E24',
         'dbx-navy-700': '#10262E',
+        'dbx-navy-650': '#142E38',
         'dbx-navy-600': '#1B4D5C',
         'dbx-navy-500': '#276272',
         'dbx-navy-400': '#337888',
@@ -27,6 +28,10 @@ export default {
         'dbx-violet': '#8B5CF6',
         'dbx-violet-light': '#EDE9FE',
         'dbx-violet-dark': '#7C3AED',
+        'dbx-rose': '#E11D48',
+        'dbx-rose-light': '#FFE4E6',
+        'dbx-sky': '#0EA5E9',
+        'dbx-sky-light': '#E0F2FE',
       },
       fontFamily: {
         sans: ['Inter', 'system-ui', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'Roboto', 'sans-serif'],

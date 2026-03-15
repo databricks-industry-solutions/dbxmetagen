@@ -21,14 +21,14 @@
     @apply inline-flex items-center justify-center gap-2
       bg-dbx-navy text-white font-medium rounded-lg
       hover:bg-dbx-navy-600 active:scale-[0.98]
-      dark:bg-dbx-teal/20 dark:text-dbx-teal dark:border dark:border-dbx-teal/40
-      dark:hover:bg-dbx-teal/30
+      dark:bg-dbx-violet/20 dark:text-dbx-violet-light dark:border dark:border-dbx-violet/40
+      dark:hover:bg-dbx-violet/30
       transition-all duration-150 disabled:opacity-50 disabled:pointer-events-none;
   }
   .btn-ghost {
     @apply inline-flex items-center justify-center gap-2
       text-slate-600 dark:text-slate-300 font-medium rounded-lg
-      hover:bg-dbx-oat dark:hover:bg-dbx-navy-500
+      hover:bg-dbx-oat dark:hover:bg-dbx-navy-600/80
       transition-all duration-150 disabled:opacity-50 disabled:pointer-events-none;
   }
   .btn-sm { @apply px-3 py-1.5 text-sm; }
@@ -37,11 +37,11 @@
 
   /* ── Cards ───────────────────────────────────────────── */
   .card {
-    @apply bg-white dark:bg-dbx-navy-600 rounded-xl shadow-card
-      border border-dbx-oat-dark/50 dark:border-dbx-navy-400/30;
+    @apply bg-white dark:bg-dbx-navy-650 rounded-xl shadow-card
+      border border-dbx-oat-dark/50 dark:border-dbx-navy-400/25;
   }
   .card-interactive {
-    @apply card hover:shadow-card-hover transition-shadow duration-200 cursor-pointer;
+    @apply card hover:shadow-card-hover hover:-translate-y-0.5 transition-all duration-200 cursor-pointer;
   }
 
   /* ── Form Elements ───────────────────────────────────── */
@@ -69,6 +69,22 @@
   /* ── Section Title ───────────────────────────────────── */
   .section-title {
     @apply text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400;
+  }
+
+  /* ── Typography Hierarchy ──────────────────────────── */
+  .heading-section {
+    @apply text-lg font-semibold text-slate-800 dark:text-white;
+  }
+  .heading-sub {
+    @apply text-sm font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400;
+  }
+  .text-caption {
+    @apply text-xs text-slate-400 dark:text-slate-500;
+  }
+
+  /* ── Surface Layering ──────────────────────────────── */
+  .surface-nested {
+    @apply bg-slate-50/50 dark:bg-dbx-navy-700/50 rounded-lg border border-slate-100 dark:border-dbx-navy-400/15;
   }
 
   /* ── Checkbox ────────────────────────────────────────── */

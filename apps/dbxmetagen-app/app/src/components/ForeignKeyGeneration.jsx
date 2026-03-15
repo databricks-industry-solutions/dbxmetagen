@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import ForceGraph2D from 'react-force-graph-2d'
 import { safeFetch, safeFetchObj, ErrorBanner } from '../App'
+import { PageHeader, EmptyState } from './ui'
 
 const CLUSTER_PALETTE = [
   '#6366f1', '#ec4899', '#10b981', '#f59e0b', '#3b82f6',
@@ -493,9 +494,10 @@ export default function ForeignKeyGeneration() {
 
   return (
     <div className="space-y-6">
-      <section className="bg-dbx-oat-light rounded-lg border p-6">
+      <PageHeader title="Foreign Key Predictions" subtitle="Discover and apply FK relationships" />
+      <section className="card p-6">
         <div className="flex items-center gap-3 mb-2">
-          <h2 className="text-lg font-semibold">DDL Quick Actions</h2>
+          <h2 className="heading-section">DDL Quick Actions</h2>
           <ApplyModeToggle mode={applyMode} setMode={setApplyMode} />
         </div>
         <p className="text-xs text-slate-500 mb-3">
@@ -506,11 +508,11 @@ export default function ForeignKeyGeneration() {
         </p>
         <div className="flex gap-2 mb-3">
           <button onClick={() => { loadDdlCount(); if (refreshDdlRef.current) refreshDdlRef.current() }}
-            className="px-3 py-2 bg-slate-600 text-white rounded-md text-sm hover:bg-slate-700">
+            className="btn-secondary btn-sm">
             Refresh DDL
           </button>
           <button onClick={applyAllHighConfidence} disabled={applyingAll || ddlCount === 0}
-            className="px-3 py-2 bg-dbx-lava text-white rounded-md text-sm hover:bg-red-700 disabled:opacity-50">
+            className="btn-primary btn-sm">
             {applyingAll ? 'Applying...' : `Apply All ${applyMode === 'tags' ? 'as Tags' : 'as Constraints'} (conf >= 0.8)`}
           </button>
         </div>
@@ -518,7 +520,7 @@ export default function ForeignKeyGeneration() {
       </section>
 
       <section>
-        <h2 className="text-lg font-semibold text-slate-800 mb-3">FK Map</h2>
+        <h2 className="heading-section text-slate-800 mb-3">FK Map</h2>
         <FKMapViz />
       </section>
 

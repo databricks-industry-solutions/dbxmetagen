@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { safeFetch, safeFetchObj, ErrorBanner } from '../App'
+import { PageHeader, EmptyState, Skeleton, Section } from './ui'
 
 const STAGES = {
   starting: 'Starting...',
@@ -269,12 +270,13 @@ export default function SemanticLayer() {
     if (!selectedTables.length) return
     setKpiSuggesting(true)
     try {
+      const fqTables = selectedTables.map(t => t.includes('.') ? t : `${selectedCatalog}.${selectedSchema}.${t}`)
       const res = await fetch('/api/kpis/suggest', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ table_identifiers: selectedTables }) })
+        body: JSON.stringify({ table_identifiers: fqTables }) })
       const j = await res.json()
       for (const k of (j.kpis || [])) {
         await fetch('/api/kpis', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ...k, target_tables: selectedTables, source: 'suggested' }) })
+          body: JSON.stringify({ ...k, target_tables: fqTables, source: 'suggested' }) })
       }
       loadKpis()
     } catch (e) { setError(e.message) }
@@ -465,6 +467,7 @@ export default function SemanticLayer() {
 
   return (
     <div className="space-y-6">
+      <PageHeader title="Metric Views" subtitle="Define semantic layer definitions" />
       <ErrorBanner error={error} />
 
       {/* Project Selector */}
@@ -607,7 +610,10 @@ export default function SemanticLayer() {
       {/* KPI Library */}
       <section className={section}>
         <div className="flex items-center justify-between mb-3">
-          <h2 className="text-lg font-semibold dark:text-gray-100">KPI Library</h2>
+          <div>
+            <h2 className="text-lg font-semibold dark:text-gray-100">KPI Library</h2>
+            <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">KPIs are generated based on the selected tables and their discovered ontological entities (domains, relationships, entity types).</p>
+          </div>
           <div className="flex gap-2">
             <button onClick={suggestKpis} disabled={kpiSuggesting || !selectedTables.length}
               className="px-3 py-1.5 bg-teal-600 text-white rounded text-xs hover:bg-teal-700 disabled:opacity-50">
@@ -656,7 +662,7 @@ export default function SemanticLayer() {
           </div>
         )}
         {kpis.length === 0 && !showKpiForm && (
-          <p className="text-xs text-gray-400 dark:text-gray-500 italic">No KPIs defined yet. Add manually or use auto-suggest.</p>
+          <EmptyState title="No KPIs defined yet" description="Add manually or use auto-suggest above" />
         )}
       </section>
 
