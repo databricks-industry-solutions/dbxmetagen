@@ -287,7 +287,7 @@ export default function App() {
 
       {/* Navigation */}
       <nav className="bg-white/80 dark:bg-dbx-navy-700/90 backdrop-blur-sm border-b border-dbx-oat-dark/50 dark:border-dbx-navy-400/20 shadow-nav sticky top-0 z-40">
-        <div className="flex items-center gap-2 px-6 py-2 max-w-[90rem] mx-auto overflow-x-auto scrollbar-thin">
+        <div className="flex items-center gap-2 px-6 py-2 max-w-[90rem] mx-auto">
           {NAV_STRUCTURE.map((cat, ci) => (
             <React.Fragment key={cat.category}>
               {ci > 0 && <div className="w-px h-6 bg-slate-200 dark:bg-dbx-navy-400/40 mx-0.5 flex-shrink-0" />}
