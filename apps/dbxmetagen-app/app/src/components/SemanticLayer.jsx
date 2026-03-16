@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react'
-import { safeFetch, safeFetchObj, ErrorBanner } from '../App'
+import { ErrorBanner } from '../App'
+import { cachedFetch, cachedFetchObj, TTL } from '../apiCache'
 import { PageHeader, EmptyState, Skeleton, Section } from './ui'
 
 const STAGES = {
@@ -63,7 +64,7 @@ export default function SemanticLayer() {
 
   // --- Init ---
   useEffect(() => {
-    safeFetchObj('/api/config').then(({ data: cfg }) => {
+    cachedFetchObj('/api/config', {}, TTL.CONFIG).then(({ data: cfg }) => {
       if (cfg) {
         setSelectedCatalog(cfg.catalog_name || '')
         setSelectedSchema(cfg.schema_name || '')
@@ -122,13 +123,13 @@ export default function SemanticLayer() {
   }, [taskId])
 
   const loadProjects = () => {
-    safeFetch('/api/semantic-layer/projects').then(({ data }) => {
+    cachedFetch('/api/semantic-layer/projects', {}, TTL.CONFIG).then(({ data }) => {
       if (data) setProjects(data)
     })
   }
 
   const loadProfiles = () => {
-    safeFetch('/api/semantic-layer/profiles').then(({ data }) => {
+    cachedFetch('/api/semantic-layer/profiles', {}, TTL.CONFIG).then(({ data }) => {
       if (data) setProfiles(data)
     })
   }
@@ -137,7 +138,7 @@ export default function SemanticLayer() {
     const url = selectedProjectId
       ? `/api/semantic-layer/definitions?project_id=${selectedProjectId}`
       : '/api/semantic-layer/definitions'
-    safeFetch(url).then(({ data }) => {
+    cachedFetch(url, {}, TTL.CONFIG).then(({ data }) => {
       if (data) setDefinitions(data)
     })
   }
@@ -249,7 +250,7 @@ export default function SemanticLayer() {
 
   // --- KPIs ---
   const loadKpis = async () => {
-    const { data } = await safeFetch('/api/kpis')
+    const { data } = await cachedFetch('/api/kpis', {}, TTL.CONFIG)
     setKpis(data || [])
   }
   const saveKpi = async () => {
@@ -310,7 +311,7 @@ export default function SemanticLayer() {
   // --- Definitions ---
   const loadDefinitionJson = async (defId) => {
     if (expandedDef === defId) { setExpandedDef(null); setExpandedJson(null); return }
-    const { data, error: err } = await safeFetchObj(`/api/semantic-layer/definitions/${defId}/json`)
+    const { data, error: err } = await cachedFetchObj(`/api/semantic-layer/definitions/${defId}/json`, {}, TTL.CONFIG)
     if (err) { setError(err); return }
     setExpandedDef(defId)
     try { setExpandedJson(JSON.stringify(JSON.parse(data.json_definition), null, 2)) }
@@ -467,7 +468,19 @@ export default function SemanticLayer() {
 
   return (
     <div className="space-y-6">
-      <PageHeader title="Metric Views" subtitle="Define semantic layer definitions" />
+      <div className="flex items-center justify-between">
+        <PageHeader title="Metric Views" subtitle="Define semantic layer definitions" />
+        <button onClick={async () => {
+          const res = await fetch(`/api/semantic-layer/export-sql?catalog=${encodeURIComponent(createTarget.catalog)}&schema=${encodeURIComponent(createTarget.schema)}`)
+          if (!res.ok) { setError((await res.json()).detail || 'Export failed'); return }
+          const blob = await res.blob()
+          const url = URL.createObjectURL(blob)
+          const a = document.createElement('a'); a.href = url; a.download = 'metric_views.sql'; a.click()
+          URL.revokeObjectURL(url)
+        }} className="px-4 py-2 text-sm rounded-md border border-slate-300 dark:border-dbx-navy-400 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-dbx-navy-500 transition-colors whitespace-nowrap">
+          Export SQL
+        </button>
+      </div>
       <ErrorBanner error={error} />
 
       {/* Project Selector */}

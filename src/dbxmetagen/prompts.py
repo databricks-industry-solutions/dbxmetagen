@@ -40,15 +40,86 @@ class Prompt(ABC):
             self.add_metadata_to_comment_input()
         if getattr(self.config, "include_lineage", False):
             self._add_lineage()
+        if getattr(self.config, "include_profiling_context", False):
+            self._add_profiling_context()
+        if getattr(self.config, "include_constraint_context", False):
+            self._add_constraint_context()
         logger.debug("Instantiating chat completion response...")
 
     def _add_lineage(self) -> None:
-        """Fetch lineage from system tables and attach to prompt_content."""
+        """Fetch lineage (cached or live) and attach to prompt_content."""
         from dbxmetagen.processing import fetch_lineage  # avoid circular import
 
-        lin = fetch_lineage(self.spark, self.full_table_name)
+        lin = fetch_lineage(
+            self.spark,
+            self.full_table_name,
+            catalog_name=getattr(self.config, "catalog_name", None),
+            schema_name=getattr(self.config, "schema_name", None),
+        )
         if lin:
             self.prompt_content["lineage"] = lin
+
+    def _add_profiling_context(self) -> None:
+        """Inject profiling statistics into prompt_content column metadata."""
+        catalog = getattr(self.config, "catalog_name", None)
+        schema = getattr(self.config, "schema_name", None)
+        if not catalog or not schema:
+            return
+        fqtn = self.full_table_name
+        try:
+            stats_rows = self.spark.sql(
+                f"SELECT column_name, distinct_count, null_rate, min_value, max_value "
+                f"FROM {catalog}.{schema}.column_profiling_stats "
+                f"WHERE table_name = '{fqtn}'"
+            ).collect()
+        except Exception:
+            return
+        if not stats_rows:
+            return
+        # table-level row count
+        try:
+            snap = self.spark.sql(
+                f"SELECT row_count FROM {catalog}.{schema}.profiling_snapshots "
+                f"WHERE table_name = '{fqtn}' ORDER BY snapshot_time DESC LIMIT 1"
+            ).collect()
+            if snap:
+                self.prompt_content.setdefault("profiling", {})["row_count"] = snap[0]["row_count"]
+        except Exception:
+            pass
+        col_meta = self.prompt_content.get("column_contents", {}).get("column_metadata", {})
+        for r in stats_rows:
+            cn = r["column_name"]
+            if cn in col_meta:
+                col_meta[cn]["profiling"] = {
+                    k: r[k] for k in ("distinct_count", "null_rate", "min_value", "max_value") if r[k] is not None
+                }
+
+    def _add_constraint_context(self) -> None:
+        """Inject PK/FK constraint roles into prompt_content column metadata."""
+        catalog = getattr(self.config, "catalog_name", None)
+        schema = getattr(self.config, "schema_name", None)
+        if not catalog or not schema:
+            return
+        fqtn = self.full_table_name
+        try:
+            row = self.spark.sql(
+                f"SELECT primary_key_columns, foreign_keys "
+                f"FROM {catalog}.{schema}.extended_table_metadata "
+                f"WHERE table_name = '{fqtn}' LIMIT 1"
+            ).collect()
+        except Exception:
+            return
+        if not row:
+            return
+        pk_cols = row[0]["primary_key_columns"] or []
+        fk_map = row[0]["foreign_keys"] or {}
+        col_meta = self.prompt_content.get("column_contents", {}).get("column_metadata", {})
+        for cn in pk_cols:
+            if cn in col_meta:
+                col_meta[cn]["role"] = "PRIMARY KEY"
+        for cn, ref in fk_map.items():
+            if cn in col_meta and ref:
+                col_meta[cn]["role"] = f"FOREIGN KEY -> {ref}"
 
     def enrich_from_knowledge_base(self) -> None:
         """Supplement empty UC comments with descriptions from KB tables.

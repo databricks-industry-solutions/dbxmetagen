@@ -39,6 +39,10 @@ resources:
           default: "false"
         - name: use_kb_comments
           default: "false"
+        - name: ontology_bundle
+          default: ""
+        - name: domain_config_path
+          default: ""
 
       tasks:
         # Comments run first; PI and domain depend on it so they can use comments
@@ -58,6 +62,8 @@ resources:
               run_id: "{{job.parameters.run_id}}"
               cleanup_control_table: "false"
               include_previously_failed_tables: "{{job.parameters.include_previously_failed_tables}}"
+              ontology_bundle: "{{job.parameters.ontology_bundle}}"
+              domain_config_path: "{{job.parameters.domain_config_path}}"
           libraries:
             - whl: ../../dist/*.whl
 
@@ -81,6 +87,8 @@ resources:
               include_previously_failed_tables: "{{job.parameters.include_previously_failed_tables}}"
               include_existing_table_comment: "true"
               use_kb_comments: "{{job.parameters.use_kb_comments}}"
+              ontology_bundle: "{{job.parameters.ontology_bundle}}"
+              domain_config_path: "{{job.parameters.domain_config_path}}"
           libraries:
             - whl: ../../dist/*.whl
 
@@ -104,6 +112,8 @@ resources:
               include_previously_failed_tables: "{{job.parameters.include_previously_failed_tables}}"
               include_existing_table_comment: "true"
               use_kb_comments: "{{job.parameters.use_kb_comments}}"
+              ontology_bundle: "{{job.parameters.ontology_bundle}}"
+              domain_config_path: "{{job.parameters.domain_config_path}}"
           libraries:
             - whl: ../../dist/*.whl
 

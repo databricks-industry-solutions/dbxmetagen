@@ -16,6 +16,7 @@ from contextlib import asynccontextmanager
 
 from cachetools import TTLCache, cached
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
+from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -2324,11 +2325,14 @@ def viz_fk_map():
 
 
 @app.get("/api/coverage/summary")
-def get_coverage_summary():
+def get_coverage_summary(catalog: Optional[str] = None):
     """Coverage summary: profiled vs unprofiled tables. Cached 60s."""
+    cat = catalog or CATALOG
+    cache_key = f"summary:{cat}"
     with _coverage_lock:
-        if "summary" in _coverage_cache:
-            return _coverage_cache["summary"]
+        if cache_key in _coverage_cache:
+            return _coverage_cache[cache_key]
+    _ALL_TABLE_TYPES = "('MANAGED','EXTERNAL','VIEW','STREAMING_TABLE','MATERIALIZED_VIEW','FOREIGN')"
     q = f"""
         SELECT t.table_catalog, t.table_schema,
                COUNT(*) as total_tables,
@@ -2337,9 +2341,9 @@ def get_coverage_summary():
         FROM system.information_schema.tables t
         LEFT JOIN {fq('table_knowledge_base')} kb
           ON CONCAT(t.table_catalog, '.', t.table_schema, '.', t.table_name) = kb.table_name
-        WHERE t.table_catalog = '{CATALOG}'
+        WHERE t.table_catalog = '{cat}'
           AND t.table_schema NOT IN ('information_schema', '__internal')
-          AND t.table_type = 'MANAGED'
+          AND t.table_type IN {_ALL_TABLE_TYPES}
         GROUP BY t.table_catalog, t.table_schema
         ORDER BY unprofiled_tables DESC
     """
@@ -2352,35 +2356,37 @@ def get_coverage_summary():
             SELECT table_catalog, table_schema, COUNT(*) as total_tables,
                    0 as profiled_tables, COUNT(*) as unprofiled_tables
             FROM system.information_schema.tables
-            WHERE table_catalog = '{CATALOG}'
+            WHERE table_catalog = '{cat}'
               AND table_schema NOT IN ('information_schema', '__internal')
-              AND table_type = 'MANAGED'
+              AND table_type IN {_ALL_TABLE_TYPES}
             GROUP BY table_catalog, table_schema
             ORDER BY total_tables DESC
         """
         result = execute_sql(q_simple)
     with _coverage_lock:
-        _coverage_cache["summary"] = result
+        _coverage_cache[cache_key] = result
     return result
 
 
 @app.get("/api/coverage/type-breakdown")
-def get_coverage_type_breakdown():
+def get_coverage_type_breakdown(catalog: Optional[str] = None):
     """Count tables per table_type. Cached 60s."""
+    cat = catalog or CATALOG
+    cache_key = f"type_breakdown:{cat}"
     with _coverage_lock:
-        if "type_breakdown" in _coverage_cache:
-            return _coverage_cache["type_breakdown"]
+        if cache_key in _coverage_cache:
+            return _coverage_cache[cache_key]
     q = f"""
         SELECT table_type, COUNT(*) as count
         FROM system.information_schema.tables
-        WHERE table_catalog = '{CATALOG}'
+        WHERE table_catalog = '{cat}'
           AND table_schema NOT IN ('information_schema', '__internal')
         GROUP BY table_type
         ORDER BY count DESC
     """
     result = execute_sql(q)
     with _coverage_lock:
-        _coverage_cache["type_breakdown"] = result
+        _coverage_cache[cache_key] = result
     return result
 
 
@@ -2413,9 +2419,15 @@ def get_coverage_metadata_summary(catalog: Optional[str] = None, schema: Optiona
         result["with_ontology"] = onto[0]["with_ontology"] if onto else 0
     except Exception:
         result["with_ontology"] = 0
-    fk_filter = f" WHERE src_table LIKE '{catalog}.{schema}.%' OR dst_table LIKE '{catalog}.{schema}.%'" if catalog and schema else ""
+    fk_conf_filter = " WHERE final_confidence >= 0.5"
+    if catalog and schema:
+        fk_conf_filter += f" AND (src_table LIKE '{catalog}.{schema}.%' OR dst_table LIKE '{catalog}.{schema}.%')"
     try:
-        fks = execute_sql(f"SELECT COUNT(DISTINCT src_table) + COUNT(DISTINCT dst_table) as with_fk FROM {fq('fk_predictions')}{fk_filter}")
+        fks = execute_sql(f"""SELECT COUNT(DISTINCT t) as with_fk FROM (
+            SELECT src_table AS t FROM {fq('fk_predictions')}{fk_conf_filter}
+            UNION
+            SELECT dst_table AS t FROM {fq('fk_predictions')}{fk_conf_filter}
+        )""")
         result["with_fk"] = fks[0]["with_fk"] if fks else 0
     except Exception:
         result["with_fk"] = 0
@@ -2459,8 +2471,9 @@ def get_coverage_tables(catalog: Optional[str] = None, schema: Optional[str] = N
 
 
 @app.get("/api/coverage/holistic")
-def get_coverage_holistic():
+def get_coverage_holistic(catalog: Optional[str] = None):
     """Single endpoint returning all metadata-type coverage counts."""
+    cat = catalog or CATALOG
     result = {
         "total_tables": 0, "profiled": 0, "with_comments": 0,
         "with_pii": 0, "with_domain": 0, "with_ontology": 0,
@@ -2468,32 +2481,31 @@ def get_coverage_holistic():
         "vs_documents": 0, "vs_by_type": {},
         "avg_confidence": None, "entity_type_count": 0, "fk_count": 0,
     }
+    _ALL_TYPES = "('MANAGED','EXTERNAL','VIEW','STREAMING_TABLE','MATERIALIZED_VIEW','FOREIGN')"
     try:
         rows = execute_sql(f"""
-            SELECT COUNT(*) as total,
-                   SUM(CASE WHEN comment IS NOT NULL AND comment != '' THEN 1 ELSE 0 END) as with_comments,
-                   SUM(CASE WHEN has_pii = true OR has_phi = true THEN 1 ELSE 0 END) as with_pii,
-                   SUM(CASE WHEN domain IS NOT NULL AND domain != '' THEN 1 ELSE 0 END) as with_domain
-            FROM {fq('table_knowledge_base')}
+            SELECT COUNT(*) as total_tables,
+                   COUNT(kb.table_name) as profiled,
+                   SUM(CASE WHEN kb.comment IS NOT NULL AND kb.comment != '' THEN 1 ELSE 0 END) as with_comments,
+                   SUM(CASE WHEN kb.has_pii = true OR kb.has_phi = true THEN 1 ELSE 0 END) as with_pii,
+                   SUM(CASE WHEN kb.domain IS NOT NULL AND kb.domain != '' THEN 1 ELSE 0 END) as with_domain
+            FROM (
+                SELECT DISTINCT table_catalog, table_schema, table_name
+                FROM system.information_schema.tables
+                WHERE table_catalog = '{cat}'
+                  AND table_schema NOT IN ('information_schema','__internal')
+                  AND table_type IN {_ALL_TYPES}
+            ) t
+            LEFT JOIN {fq('table_knowledge_base')} kb
+              ON CONCAT(t.table_catalog, '.', t.table_schema, '.', t.table_name) = kb.table_name
         """)
         if rows:
             r = rows[0]
-            result["profiled"] = int(r.get("total") or 0)
+            result["total_tables"] = int(r.get("total_tables") or 0)
+            result["profiled"] = int(r.get("profiled") or 0)
             result["with_comments"] = int(r.get("with_comments") or 0)
             result["with_pii"] = int(r.get("with_pii") or 0)
             result["with_domain"] = int(r.get("with_domain") or 0)
-    except Exception:
-        pass
-    try:
-        rows = execute_sql(f"""
-            SELECT COUNT(*) as cnt FROM (
-                SELECT DISTINCT table_catalog, table_schema, table_name
-                FROM system.information_schema.tables
-                WHERE table_catalog = '{CATALOG}' AND table_schema NOT IN ('information_schema','__internal')
-                AND table_type IN ('MANAGED','EXTERNAL','VIEW','STREAMING_TABLE','MATERIALIZED_VIEW','FOREIGN')
-            )
-        """)
-        result["total_tables"] = int(rows[0]["cnt"]) if rows else 0
     except Exception:
         pass
     try:
@@ -2515,7 +2527,11 @@ def get_coverage_holistic():
     except Exception:
         pass
     try:
-        fk_tbls = execute_sql(f"SELECT COUNT(DISTINCT src_table) + COUNT(DISTINCT dst_table) as cnt FROM {fq('fk_predictions')}")
+        fk_tbls = execute_sql(f"""SELECT COUNT(DISTINCT t) as cnt FROM (
+            SELECT src_table AS t FROM {fq('fk_predictions')} WHERE final_confidence >= 0.5
+            UNION
+            SELECT dst_table AS t FROM {fq('fk_predictions')} WHERE final_confidence >= 0.5
+        )""")
         result["with_fk"] = int(fk_tbls[0]["cnt"]) if fk_tbls else 0
     except Exception:
         pass
@@ -2532,6 +2548,22 @@ def get_coverage_holistic():
     except Exception:
         pass
     return result
+
+
+@app.get("/api/coverage/review-summary")
+def get_coverage_review_summary(catalog: Optional[str] = None):
+    """Count tables by review_status in table_knowledge_base."""
+    cat = catalog or CATALOG
+    try:
+        rows = execute_sql(f"""
+            SELECT COALESCE(review_status, 'unreviewed') AS status, COUNT(*) AS cnt
+            FROM {fq('table_knowledge_base')}
+            WHERE table_name LIKE '{cat}.%'
+            GROUP BY 1
+        """)
+        return rows or []
+    except Exception:
+        return []
 
 
 # ---------------------------------------------------------------------------
@@ -2959,6 +2991,7 @@ def _sl_vs_enrich(questions: list[str], selected_tables: set[str]) -> str:
                 query_text=q,
                 columns=["doc_type", "content", "table_name", "entity_type"],
                 num_results=5,
+                query_type="HYBRID",
             )
             cols = results.get("manifest", {}).get("columns", [])
             col_names = [c.get("name", f"col{i}") for i, c in enumerate(cols)]
@@ -4325,6 +4358,36 @@ def create_metric_view(definition_id: str, req: CreateDefinitionRequest):
     return {"definition_id": definition_id, "status": "applied", "metric_view": fq_mv}
 
 
+@app.get("/api/semantic-layer/export-sql")
+def export_metric_views_sql(catalog: Optional[str] = None, schema: Optional[str] = None):
+    """Generate a .sql file with CREATE VIEW WITH METRICS statements for all applied definitions."""
+    _ensure_semantic_layer_tables()
+    rows = execute_sql(
+        f"SELECT * FROM {fq('metric_view_definitions')} WHERE status = 'applied'"
+    )
+    if not rows:
+        raise HTTPException(404, detail="No applied metric view definitions found")
+    target_cat = catalog or CATALOG
+    target_sch = schema or SCHEMA
+    statements = []
+    for row in rows:
+        defn = json.loads(row["json_definition"]) if isinstance(row["json_definition"], str) else row["json_definition"]
+        mv_name = defn.get("name") or row.get("metric_view_name", "")
+        if not mv_name:
+            continue
+        fq_mv = f"`{target_cat}`.`{target_sch}`.`{mv_name}`"
+        yaml_body = _definition_to_yaml(defn)
+        statements.append(f"CREATE OR REPLACE VIEW {fq_mv}\nWITH METRICS LANGUAGE YAML AS $$\n{yaml_body}$$")
+    if not statements:
+        raise HTTPException(404, detail="No valid definitions to export")
+    body = ";\n\n".join(statements) + ";\n"
+    return Response(
+        content=body,
+        media_type="text/sql",
+        headers={"Content-Disposition": "attachment; filename=metric_views.sql"},
+    )
+
+
 @app.post("/api/semantic-layer/definitions/{definition_id}/improve")
 def improve_definition(definition_id: str):
     """Ask AI to improve an existing validated/applied metric view definition."""
@@ -5309,6 +5372,338 @@ def vector_sync():
         return {"status": "sync_triggered", "index": vs_index_name}
     except Exception as e:
         raise HTTPException(500, detail=f"Sync failed: {e}")
+
+
+# ---------------------------------------------------------------------------
+# SQL Analyst Agent (Blind vs Enriched)
+# ---------------------------------------------------------------------------
+
+_analyst_tasks: dict[str, dict] = {}
+
+
+@app.post("/api/analyst/chat")
+def analyst_chat(req: dict):
+    """Run the analyst agent in a single mode (blind or enriched)."""
+    question = req.get("question", "")
+    mode = req.get("mode", "enriched")
+    history = req.get("history", [])
+    if mode not in ("blind", "enriched"):
+        raise HTTPException(400, detail="mode must be 'blind' or 'enriched'")
+    from agent.guardrails import validate_input
+    ok, err = validate_input(question)
+    if not ok:
+        raise HTTPException(400, detail=err)
+    from agent.analyst_agent import run_analyst_single
+    task_id = str(_uuid.uuid4())[:12]
+    _analyst_tasks[task_id] = {"status": "running", "stage": f"{mode}_running", "created": time.time()}
+
+    def _run():
+        try:
+            result = run_analyst_single(question, mode, history)
+            _analyst_tasks[task_id] = {"status": "done", "result": result, "created": _analyst_tasks[task_id]["created"]}
+        except Exception as exc:
+            logger.exception("Analyst single-mode failed")
+            _analyst_tasks[task_id] = {"status": "error", "error": str(exc), "created": _analyst_tasks[task_id]["created"]}
+
+    threading.Thread(target=_run, daemon=True).start()
+    return {"task_id": task_id}
+
+
+@app.post("/api/analyst/compare")
+def analyst_compare(req: dict):
+    """Run both blind and enriched analysts in parallel for side-by-side comparison."""
+    question = req.get("question", "")
+    from agent.guardrails import validate_input
+    ok, err = validate_input(question)
+    if not ok:
+        raise HTTPException(400, detail=err)
+    from agent.analyst_agent import run_analyst_compare
+    import queue as _queue
+    task_id = str(_uuid.uuid4())[:12]
+    _analyst_tasks[task_id] = {"status": "running", "stage": "starting", "created": time.time()}
+    progress_q = _queue.Queue()
+
+    def _run():
+        try:
+            result = run_analyst_compare(question, progress_q)
+            _analyst_tasks[task_id] = {"status": "done", "result": result, "created": _analyst_tasks[task_id]["created"]}
+        except Exception as exc:
+            logger.exception("Analyst compare failed")
+            _analyst_tasks[task_id] = {"status": "error", "error": str(exc), "created": _analyst_tasks[task_id]["created"]}
+
+    def _monitor():
+        while True:
+            try:
+                event = progress_q.get(timeout=300)
+                _analyst_tasks[task_id]["stage"] = event.get("stage", _analyst_tasks[task_id].get("stage"))
+            except Exception:
+                break
+            if _analyst_tasks[task_id]["status"] in ("done", "error"):
+                break
+
+    threading.Thread(target=_run, daemon=True).start()
+    threading.Thread(target=_monitor, daemon=True).start()
+    return {"task_id": task_id}
+
+
+@app.get("/api/analyst/task/{task_id}")
+def analyst_task(task_id: str):
+    """Poll analyst task status."""
+    task = _analyst_tasks.get(task_id)
+    if not task:
+        raise HTTPException(404, detail="Task not found")
+    if task["created"] < time.time() - 600:
+        _analyst_tasks.pop(task_id, None)
+        raise HTTPException(410, detail="Task expired")
+    return task
+
+
+@app.post("/api/analyst/plot")
+def analyst_plot(req: dict):
+    """Generate a chart specification from an analyst response."""
+    content = req.get("content", "")
+    sql = req.get("sql")
+    history = req.get("history")
+    if not content:
+        raise HTTPException(400, detail="No content provided")
+    try:
+        from agent.analyst_agent import create_analyst_plot_spec
+        spec = create_analyst_plot_spec(content, sql, history)
+        return spec
+    except Exception as e:
+        logger.exception("Analyst plot error")
+        return {"no_data": True, "reason": str(e)}
+
+
+@app.post("/api/analyst/stream")
+def analyst_stream(req: dict):
+    """SSE streaming endpoint for analyst agent (single or compare mode)."""
+    question = req.get("question", "")
+    mode = req.get("mode", "compare")
+    history = req.get("history", [])
+    from agent.guardrails import validate_input
+    ok, err = validate_input(question)
+    if not ok:
+        raise HTTPException(400, detail=err)
+
+    def _sse(event: str, data: dict) -> str:
+        return f"data: {json.dumps({'event': event, **data})}\n\n"
+
+    def _single_generator(m: str):
+        from agent.analyst_agent import run_analyst_single
+        yield _sse("stage", {"stage": f"{m}_running"})
+        try:
+            result = run_analyst_single(question, m, history)
+            yield _sse("done", {"result": result})
+        except Exception as exc:
+            logger.exception("Analyst stream single-mode failed")
+            yield _sse("error", {"error": str(exc)})
+
+    def _compare_generator():
+        from agent.analyst_agent import run_analyst_single, generate_comparison_analysis
+        yield _sse("stage", {"stage": "starting"})
+        results = {"blind": None, "enriched": None}
+        errors = {"blind": None, "enriched": None}
+        done_q = queue.Queue()
+
+        def _run_mode(m):
+            try:
+                results[m] = run_analyst_single(question, m)
+            except Exception as exc:
+                logger.exception("Analyst stream %s failed", m)
+                errors[m] = str(exc)
+            done_q.put(m)
+
+        threading.Thread(target=_run_mode, args=("enriched",), daemon=True).start()
+        yield _sse("stage", {"stage": "enriched_running"})
+
+        time.sleep(4)
+        threading.Thread(target=_run_mode, args=("blind",), daemon=True).start()
+        yield _sse("stage", {"stage": "blind_running"})
+
+        for _ in range(2):
+            finished = done_q.get(timeout=600)
+            if results[finished]:
+                yield _sse("partial", {"mode": finished, "result": results[finished]})
+            elif errors[finished]:
+                yield _sse("partial", {"mode": finished, "error": errors[finished]})
+
+        blind_res = results["blind"] or {"error": errors["blind"] or "Timeout"}
+        enriched_res = results["enriched"] or {"error": errors["enriched"] or "Timeout"}
+
+        comparison = None
+        if not blind_res.get("error") and not enriched_res.get("error"):
+            yield _sse("stage", {"stage": "comparing"})
+            try:
+                comparison = generate_comparison_analysis(question, blind_res, enriched_res)
+            except Exception as exc:
+                logger.warning("Comparison analysis failed: %s", exc)
+
+        yield _sse("done", {
+            "result": {"blind": blind_res, "enriched": enriched_res, "comparison_analysis": comparison},
+        })
+
+    gen = _compare_generator() if mode == "compare" else _single_generator(mode)
+    return StreamingResponse(gen, media_type="text/event-stream")
+
+
+# ---------------------------------------------------------------------------
+# Governance & Compliance Explorer
+# ---------------------------------------------------------------------------
+
+@app.get("/api/governance/summary")
+def governance_summary():
+    """Per-schema sensitivity counts: PII/PHI/PCI columns, unclassified."""
+    try:
+        rows = execute_sql(f"""
+            SELECT c.schema, c.classification_type,
+                   COUNT(*) AS column_count,
+                   COUNT(DISTINCT c.table_name) AS table_count
+            FROM {CATALOG}.{SCHEMA}.column_knowledge_base c
+            WHERE c.classification_type IS NOT NULL
+            GROUP BY c.schema, c.classification_type
+            ORDER BY c.schema, c.classification_type
+        """)
+        return {"summary": rows}
+    except Exception as e:
+        raise HTTPException(500, detail=str(e))
+
+
+@app.get("/api/governance/gaps")
+def governance_gaps():
+    """Columns where profiling patterns suggest PII but classification is missing."""
+    try:
+        rows = execute_sql(f"""
+            SELECT cs.table_name, cs.column_name, cs.pattern_detected,
+                   cs.distinct_count, cs.null_rate,
+                   ck.classification, ck.classification_type
+            FROM {CATALOG}.{SCHEMA}.column_profiling_stats cs
+            INNER JOIN (
+                SELECT snapshot_id, table_name FROM (
+                    SELECT snapshot_id, table_name,
+                           ROW_NUMBER() OVER (PARTITION BY table_name ORDER BY snapshot_time DESC) rn
+                    FROM {CATALOG}.{SCHEMA}.profiling_snapshots
+                ) WHERE rn = 1
+            ) latest ON cs.snapshot_id = latest.snapshot_id AND cs.table_name = latest.table_name
+            LEFT JOIN {CATALOG}.{SCHEMA}.column_knowledge_base ck
+              ON cs.table_name = ck.table_name AND cs.column_name = ck.column_name
+            WHERE cs.pattern_detected IN ('email', 'phone', 'ssn', 'uuid', 'ip_address', 'credit_card')
+              AND (ck.classification IS NULL OR ck.classification = 'none' OR ck.classification = '')
+            ORDER BY cs.pattern_detected, cs.table_name
+            LIMIT 200
+        """)
+        return {"gaps": rows}
+    except Exception as e:
+        raise HTTPException(500, detail=str(e))
+
+
+@app.get("/api/governance/masking")
+def governance_masking():
+    """Classified columns that lack column mask policies."""
+    try:
+        rows = execute_sql(f"""
+            SELECT ck.table_name, ck.column_name, ck.classification, ck.classification_type,
+                   em.column_mask_policies
+            FROM {CATALOG}.{SCHEMA}.column_knowledge_base ck
+            LEFT JOIN {CATALOG}.{SCHEMA}.extended_table_metadata em
+              ON ck.table_name = em.table_name
+            WHERE ck.classification_type IN ('pii', 'phi', 'pci')
+            ORDER BY ck.classification_type DESC, ck.table_name
+            LIMIT 200
+        """)
+        return {"masking_audit": rows}
+    except Exception as e:
+        raise HTTPException(500, detail=str(e))
+
+
+@app.get("/api/governance/lineage")
+def governance_lineage(table: str = ""):
+    """Sensitive data lineage: upstream/downstream of tables with classified columns."""
+    where = f"AND ck.table_name LIKE '%{table.split('.')[-1]}%'" if table else ""
+    try:
+        rows = execute_sql(f"""
+            SELECT DISTINCT ck.table_name, ck.classification_type,
+                   em.upstream_tables, em.downstream_tables
+            FROM {CATALOG}.{SCHEMA}.column_knowledge_base ck
+            INNER JOIN {CATALOG}.{SCHEMA}.extended_table_metadata em
+              ON ck.table_name = em.table_name
+            WHERE ck.classification_type IN ('pii', 'phi', 'pci') {where}
+            LIMIT 100
+        """)
+        return {"lineage": rows}
+    except Exception as e:
+        raise HTTPException(500, detail=str(e))
+
+
+@app.post("/api/governance/chat")
+async def governance_chat(req: dict):
+    """Conversational governance agent."""
+    question = req.get("question", "")
+    history = req.get("history", [])
+    from agent.guardrails import validate_input
+    ok, err = validate_input(question)
+    if not ok:
+        raise HTTPException(400, detail=err)
+    from agent.governance_agent import run_governance_agent
+    result = await run_governance_agent(question, history)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Impact Analysis Agent
+# ---------------------------------------------------------------------------
+
+_impact_tasks: dict[str, dict] = {}
+
+
+@app.post("/api/impact/analyze")
+def impact_analyze(req: dict):
+    """Submit an impact analysis request."""
+    question = req.get("question", "")
+    from agent.guardrails import validate_input
+    ok, err = validate_input(question)
+    if not ok:
+        raise HTTPException(400, detail=err)
+    from agent.impact_agent import run_impact_analysis
+    task_id = str(_uuid.uuid4())[:12]
+    _impact_tasks[task_id] = {"status": "running", "stage": "starting", "created": time.time()}
+
+    def _run():
+        try:
+            result = run_impact_analysis(question)
+            _impact_tasks[task_id] = {"status": "done", "result": result, "created": _impact_tasks[task_id]["created"]}
+        except Exception as exc:
+            logger.exception("Impact analysis failed")
+            _impact_tasks[task_id] = {"status": "error", "error": str(exc), "created": _impact_tasks[task_id]["created"]}
+
+    threading.Thread(target=_run, daemon=True).start()
+    return {"task_id": task_id}
+
+
+@app.get("/api/impact/task/{task_id}")
+def impact_task(task_id: str):
+    """Poll impact analysis task."""
+    task = _impact_tasks.get(task_id)
+    if not task:
+        raise HTTPException(404, detail="Task not found")
+    if task["created"] < time.time() - 600:
+        _impact_tasks.pop(task_id, None)
+        raise HTTPException(410, detail="Task expired")
+    return task
+
+
+@app.post("/api/impact/chat")
+async def impact_chat(req: dict):
+    """Conversational follow-up for impact analysis."""
+    question = req.get("question", "")
+    history = req.get("history", [])
+    from agent.guardrails import validate_input
+    ok, err = validate_input(question)
+    if not ok:
+        raise HTTPException(400, detail=err)
+    from agent.impact_agent import run_impact_chat
+    result = await run_impact_chat(question, history)
+    return result
 
 
 # ---------------------------------------------------------------------------

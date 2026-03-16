@@ -1,9 +1,9 @@
 # Integration Tests Job Definition
 #
-# This job is COMMENTED OUT by default in databricks.yml to avoid cluttering
-# workspace deployments. To use integration tests:
-#   1. Uncomment the line in databricks.yml: "- resources/jobs/integration_tests.job.yml"
-#   2. Run: ./scripts/run_integration_tests.sh
+# Kept in resources/tests/ (outside the resources/jobs/ glob) so it is
+# NOT included in normal app/job deploys. The test runner script generates
+# a minimal bundle that only includes resources/tests/*.yml:
+#   ./scripts/run_integration_tests.sh
 #
 # See notebooks/integration_tests/README.md for full documentation.
 

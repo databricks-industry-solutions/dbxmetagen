@@ -6,7 +6,6 @@ separated to avoid circular imports.
 """
 
 import re
-from pyspark.sql import SparkSession
 
 
 def get_current_user() -> str:
@@ -16,6 +15,7 @@ def get_current_user() -> str:
     Returns:
         str: The current user.
     """
+    from pyspark.sql import SparkSession
     spark = SparkSession.builder.getOrCreate()
     # Use first() instead of collect() for single values - more efficient
     return spark.sql("SELECT current_user()").first()[0]

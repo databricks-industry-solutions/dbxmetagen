@@ -6,10 +6,11 @@ import Coverage from './components/Coverage'
 import SemanticLayer from './components/SemanticLayer'
 import GenieBuilder from './components/GenieBuilder'
 import VectorSearch from './components/VectorSearch'
-
+import AnalystChat from './components/AnalystChat'
 const COMPONENTS = {
   agent: AgentChat, coverage: Coverage, jobs: BatchJobs, metadata: MetadataReview,
   semantic: SemanticLayer, genie: GenieBuilder, vector: VectorSearch,
+  analyst: AnalystChat,
 }
 
 const NAV_CAT_COLORS = {
@@ -28,7 +29,7 @@ const NAV_STRUCTURE = [
   {
     category: 'Design',
     items: [
-      { id: 'jobs',     label: 'Generate Metadata', desc: 'Run metadata generation and analysis jobs' },
+      { id: 'jobs',     label: 'Generate Semantic Layer', desc: 'Build core metadata, advanced analytics, and metric views' },
       { id: 'semantic', label: 'Define Metrics',     desc: 'Define metric views and KPIs' },
     ],
   },
@@ -36,15 +37,17 @@ const NAV_STRUCTURE = [
     category: 'Review',
     items: [
       { id: 'metadata', label: 'Review & Apply', desc: 'Review, edit, and apply AI-generated metadata' },
-      { id: 'coverage', label: 'Coverage',       desc: 'Catalog health, ontology overview, graph explorers' },
+      { id: 'coverage', label: 'Coverage', desc: 'Catalog health and metadata completeness' },
     ],
   },
   {
     category: 'Explore',
     items: [
-      { id: 'agent',  label: 'Agent',  desc: 'Chat with the metadata agent' },
-      { id: 'vector', label: 'Search', desc: 'Semantic search over metadata' },
-      { id: 'genie',  label: 'Build Genie Space', desc: 'Build natural-language SQL spaces' },
+      { id: 'agent',      label: 'Agent',           desc: 'Chat with the metadata agent' },
+      { id: 'analyst',    label: 'SQL Analyst Comparison', desc: 'Demonstrate semantic layer value with side-by-side agents' },
+      { id: 'vector',     label: 'Search',           desc: 'Semantic search over metadata' },
+      // Hidden tabs (components still registered in COMPONENTS):
+      // { id: 'genie',   label: 'Build Genie Space', desc: 'Build natural-language SQL spaces' },
     ],
   },
 ]
@@ -76,12 +79,15 @@ export async function safeFetchObj(url, options) {
   } catch (e) { return { data: null, error: e.message } }
 }
 
-export function ErrorBanner({ error }) {
+export function ErrorBanner({ error, onDismiss }) {
   if (!error) return null
   return (
-    <div className="card border-l-4 border-l-red-500 px-4 py-3 text-sm animate-slide-up">
-      <span className="font-medium text-red-600 dark:text-red-400">Error:</span>{' '}
-      <span className="text-slate-600 dark:text-slate-300">{error}</span>
+    <div className="card border-l-4 border-l-red-500 px-4 py-3 text-sm animate-slide-up flex justify-between items-start">
+      <div>
+        <span className="font-medium text-red-600 dark:text-red-400">Error:</span>{' '}
+        <span className="text-slate-600 dark:text-slate-300">{error}</span>
+      </div>
+      {onDismiss && <button onClick={onDismiss} className="text-slate-400 hover:text-slate-600 ml-2">&times;</button>}
     </div>
   )
 }
@@ -98,14 +104,14 @@ const SLIDES = [
     title: 'The Databricks Semantic Layer',
     body: [
       'Unity Catalog provides the building blocks:',
-      'Comments -- descriptions on every table and column\nTags -- classify columns (PII, domain, sensitivity)\nForeign keys -- declared relationships for auto-joins\nMetric views -- reusable KPI definitions\nGenie Spaces -- natural-language SQL for business users',
+      'Comments -- descriptions on every table and column\nTags -- classify columns (PII, domain, sensitivity)\nForeign keys -- declared relationships for auto-joins\nMetric views -- reusable KPI definitions\nVector Search index -- semantic retrieval for agents and RAG\nLakebase -- graph store for GraphRAG and entity traversal\nUC tables -- persisted semantic layer (ontology, profiling, FK predictions)',
     ],
   },
   {
     title: 'What dbxmetagen Does',
     body: [
       'Point it at a catalog and schema. It will:',
-      '1. Generate descriptions for tables and columns\n2. Classify sensitive data (PII, PHI, domains)\n3. Predict foreign key relationships\n4. Map tables to business entity types\n5. Define metric views from questions\n6. Assemble Genie Spaces',
+      '1. Generate descriptions for tables and columns\n2. Classify sensitive data (PII, PHI, domains)\n3. Predict foreign key relationships\n4. Map tables to business entity types\n5. Define metric views from questions\n6. Build a hierarchical vector index\n7. Build a graph implementation for GraphRAG and entity traversal\n8. Build Genie Spaces and agents on top',
     ],
   },
   {
@@ -229,6 +235,7 @@ function NavDropdown({ cat, activeTab, onSelect }) {
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('agent')
+  const [visitedTabs, setVisitedTabs] = useState(new Set(['agent']))
   const [showInfo, setShowInfo] = useState(false)
   const [dark, setDark] = useState(() => {
     if (typeof window !== 'undefined') {
@@ -238,7 +245,15 @@ export default function App() {
     }
     return false
   })
-  const ActiveComponent = COMPONENTS[activeTab]
+
+  useEffect(() => {
+    setVisitedTabs(prev => {
+      if (prev.has(activeTab)) return prev
+      const next = new Set(prev)
+      next.add(activeTab)
+      return next
+    })
+  }, [activeTab])
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', dark)
@@ -298,9 +313,17 @@ export default function App() {
       </nav>
 
       <main className="p-6 max-w-[90rem] mx-auto">
-        <div key={activeTab} className={`border-t-2 ${TAB_ACCENT[activeTab] || 'border-t-transparent'} pt-4 animate-slide-up`}>
-          {ActiveComponent && <ActiveComponent />}
-        </div>
+        {Object.entries(COMPONENTS).map(([tabId, Comp]) => {
+          if (!visitedTabs.has(tabId)) return null
+          const isActive = tabId === activeTab
+          return (
+            <div key={tabId}
+              className={`border-t-2 ${TAB_ACCENT[tabId] || 'border-t-transparent'} pt-4 ${isActive ? 'animate-slide-up' : ''}`}
+              style={{ display: isActive ? 'block' : 'none' }}>
+              <Comp onNavigate={setActiveTab} />
+            </div>
+          )
+        })}
       </main>
     </div>
   )

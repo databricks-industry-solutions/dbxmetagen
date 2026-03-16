@@ -23,6 +23,7 @@ class SimilarityEdgesConfig:
     edges_table: str = "graph_edges"
     similarity_threshold: float = 0.7
     max_edges_per_node: int = 15
+    blocking_node_threshold: int = 5000
     
     @property
     def fully_qualified_nodes(self) -> str:
@@ -31,6 +32,14 @@ class SimilarityEdgesConfig:
     @property
     def fully_qualified_edges(self) -> str:
         return f"{self.catalog_name}.{self.schema_name}.{self.edges_table}"
+
+
+_EDGE_SCHEMA = (
+    "src STRING, dst STRING, relationship STRING, weight DOUBLE, "
+    "edge_id STRING, edge_type STRING, direction STRING, "
+    "join_expression STRING, join_confidence DOUBLE, ontology_rel STRING, "
+    "source_system STRING, status STRING, created_at TIMESTAMP, updated_at TIMESTAMP"
+)
 
 
 class SimilarityEdgeBuilder:
@@ -46,6 +55,39 @@ class SimilarityEdgeBuilder:
     def __init__(self, spark: SparkSession, config: SimilarityEdgesConfig):
         self.spark = spark
         self.config = config
+        self._cosine_impl = self._detect_cosine_impl()
+    
+    def _detect_cosine_impl(self) -> str:
+        """Detect best cosine similarity implementation. Called once at init."""
+        try:
+            self.spark.sql("SELECT vector_cosine_similarity(array(1.0), array(1.0))").collect()
+            logger.info("Using built-in vector_cosine_similarity (DBR 18.1+)")
+            return "builtin"
+        except Exception:
+            logger.info("Using Pandas UDF cosine similarity (DBR < 18.1)")
+            return "pandas_udf"
+
+    def _register_cosine_udf(self):
+        """Register a Pandas UDF for cosine similarity as a SQL function."""
+        import numpy as np
+        import pandas as pd
+        from pyspark.sql.functions import pandas_udf
+
+        @pandas_udf("double")
+        def _cosine_sim_udf(emb_a: pd.Series, emb_b: pd.Series) -> pd.Series:
+            a = np.stack(emb_a.values)
+            b = np.stack(emb_b.values)
+            dot = np.sum(a * b, axis=1)
+            norm = np.linalg.norm(a, axis=1) * np.linalg.norm(b, axis=1)
+            return pd.Series(np.where(norm > 0, dot / norm, 0.0))
+
+        self.spark.udf.register("_cosine_sim", _cosine_sim_udf)
+
+    def _cosine_sql_expr(self) -> str:
+        """Return the SQL expression for cosine similarity based on detected impl."""
+        if self._cosine_impl == "builtin":
+            return "vector_cosine_similarity(emb_a, emb_b)"
+        return "_cosine_sim(emb_a, emb_b)"
     
     def get_nodes_with_embeddings(self) -> DataFrame:
         """Get all nodes that have embeddings."""
@@ -54,22 +96,58 @@ class SimilarityEdgeBuilder:
             FROM {self.config.fully_qualified_nodes}
             WHERE embedding IS NOT NULL
         """)
+
+    def _build_pairs_sql(self, node_count: int) -> str:
+        """Build SQL for node pair generation, using blocking for large node sets."""
+        if node_count < self.config.blocking_node_threshold:
+            return """
+            SELECT a.id as src, a.node_type as src_type, a.domain as src_domain,
+                   b.id as dst, b.node_type as dst_type, b.domain as dst_domain,
+                   a.embedding as emb_a, b.embedding as emb_b
+            FROM nodes_emb a CROSS JOIN nodes_emb b
+            WHERE a.id < b.id
+              AND NOT (a.node_type = 'entity' AND b.node_type = 'entity')
+            """
+
+        logger.info(
+            f"Node count {node_count} >= threshold {self.config.blocking_node_threshold}, "
+            "using iterative blocking (intra-domain + cross-domain bridge)"
+        )
+        return """
+        SELECT a.id as src, a.node_type as src_type, a.domain as src_domain,
+               b.id as dst, b.node_type as dst_type, b.domain as dst_domain,
+               a.embedding as emb_a, b.embedding as emb_b
+        FROM nodes_emb a CROSS JOIN nodes_emb b
+        WHERE a.id < b.id
+          AND a.domain = b.domain
+          AND NOT (a.node_type = 'entity' AND b.node_type = 'entity')
+
+        UNION ALL
+
+        SELECT a.id as src, a.node_type as src_type, a.domain as src_domain,
+               b.id as dst, b.node_type as dst_type, b.domain as dst_domain,
+               a.embedding as emb_a, b.embedding as emb_b
+        FROM nodes_emb a CROSS JOIN nodes_emb b
+        WHERE a.id < b.id
+          AND a.domain != b.domain
+          AND a.node_type = 'column' AND b.node_type = 'column'
+          AND (LOWER(ELEMENT_AT(SPLIT(a.id, '\\\\.'), -1)) RLIKE '(_id|_key|_code)$'
+               OR LOWER(ELEMENT_AT(SPLIT(b.id, '\\\\.'), -1)) RLIKE '(_id|_key|_code)$')
+        """
     
     def compute_similarity_edges(self) -> DataFrame:
-        """
-        Compute similarity edges between nodes with embeddings.
+        """Compute similarity edges between nodes with embeddings.
         
-        Uses SQL-based cosine similarity calculation.
+        Uses a 3-tier cosine similarity approach:
+        - Tier 1: vector_cosine_similarity (DBR 18.1+, auto-detected)
+        - Tier 2: Pandas UDF with numpy (DBR 15.4+, default)
+        - Tier 3: Python fallback (last resort)
+        
+        Uses iterative blocking when node count exceeds blocking_node_threshold.
         """
         nodes_df = self.get_nodes_with_embeddings()
         node_count = nodes_df.count()
         
-        _EDGE_SCHEMA = (
-            "src STRING, dst STRING, relationship STRING, weight DOUBLE, "
-            "edge_id STRING, edge_type STRING, direction STRING, "
-            "join_expression STRING, join_confidence DOUBLE, ontology_rel STRING, "
-            "source_system STRING, status STRING, created_at TIMESTAMP, updated_at TIMESTAMP"
-        )
         if node_count < 2:
             logger.info("Not enough nodes with embeddings for similarity comparison")
             return self.spark.createDataFrame([], _EDGE_SCHEMA)
@@ -77,65 +155,31 @@ class SimilarityEdgeBuilder:
         logger.info(f"Computing similarity between {node_count} nodes")
         
         nodes_df.createOrReplaceTempView("nodes_emb")
-        
-        # Compute cosine similarity using SQL
-        # For large datasets, consider sampling or approximate methods
+
+        if self._cosine_impl == "pandas_udf":
+            self._register_cosine_udf()
+
+        pairs_sql = self._build_pairs_sql(node_count)
+        cosine_expr = self._cosine_sql_expr()
+
         similarity_sql = f"""
         WITH node_pairs AS (
-            SELECT 
-                a.id as src,
-                a.node_type as src_type,
-                a.domain as src_domain,
-                b.id as dst,
-                b.node_type as dst_type,
-                b.domain as dst_domain,
-                a.embedding as emb_a,
-                b.embedding as emb_b
-            FROM nodes_emb a
-            CROSS JOIN nodes_emb b
-            WHERE a.id < b.id
-              AND NOT (a.node_type = 'entity' AND b.node_type = 'entity')
+            {pairs_sql}
         ),
         similarities AS (
-            SELECT 
-                src,
-                src_type,
-                src_domain,
-                dst,
-                dst_type,
-                dst_domain,
-                -- Cosine similarity calculation
-                AGGREGATE(
-                    TRANSFORM(
-                        SEQUENCE(0, SIZE(emb_a) - 1),
-                        i -> emb_a[i] * emb_b[i]
-                    ),
-                    CAST(0 AS DOUBLE),
-                    (acc, x) -> acc + x
-                ) / NULLIF(
-                    SQRT(AGGREGATE(TRANSFORM(emb_a, x -> x * x), CAST(0 AS DOUBLE), (acc, x) -> acc + x)) *
-                    SQRT(AGGREGATE(TRANSFORM(emb_b, x -> x * x), CAST(0 AS DOUBLE), (acc, x) -> acc + x)),
-                    0
-                ) as similarity
+            SELECT src, src_type, src_domain, dst, dst_type, dst_domain,
+                   {cosine_expr} as similarity
             FROM node_pairs
         ),
         ranked AS (
-            SELECT 
-                src,
-                dst,
-                src_type,
-                dst_type,
-                src_domain,
-                dst_domain,
-                similarity,
+            SELECT src, dst, src_type, dst_type, src_domain, dst_domain, similarity,
                 ROW_NUMBER() OVER (PARTITION BY src ORDER BY similarity DESC) as rn_src,
                 ROW_NUMBER() OVER (PARTITION BY dst ORDER BY similarity DESC) as rn_dst
             FROM similarities
             WHERE similarity >= {self.config.similarity_threshold}
         )
         SELECT 
-            src,
-            dst,
+            src, dst,
             '{self.RELATIONSHIP_TYPE}' as relationship,
             similarity as weight,
             CONCAT(src, '::', dst, '::{self.RELATIONSHIP_TYPE}') as edge_id,
@@ -180,7 +224,6 @@ class SimilarityEdgeBuilder:
                     if sim >= self.config.similarity_threshold:
                         similarities.append((node_b.id, sim))
             
-            # Keep top N per node
             similarities.sort(key=lambda x: x[1], reverse=True)
             for dst, sim in similarities[:self.config.max_edges_per_node]:
                 edges.append({
@@ -190,12 +233,6 @@ class SimilarityEdgeBuilder:
                     "weight": sim
                 })
         
-        _EDGE_SCHEMA = (
-            "src STRING, dst STRING, relationship STRING, weight DOUBLE, "
-            "edge_id STRING, edge_type STRING, direction STRING, "
-            "join_expression STRING, join_confidence DOUBLE, ontology_rel STRING, "
-            "source_system STRING, status STRING, created_at TIMESTAMP, updated_at TIMESTAMP"
-        )
         if edges:
             df = self.spark.createDataFrame(edges)
             return (
@@ -248,15 +285,12 @@ class SimilarityEdgeBuilder:
         """Execute the similarity edge generation pipeline."""
         logger.info("Starting similarity edge generation")
         
-        # Remove old similarity edges
         self.remove_existing_similarity_edges()
         
-        # Compute new edges
         edges_df = self.compute_similarity_edges()
         edge_count = edges_df.count()
         logger.info(f"Computed {edge_count} similarity edges")
         
-        # Insert new edges
         inserted = self.insert_similarity_edges(edges_df)
         
         logger.info(f"Similarity edge generation complete. Edges: {inserted}")
@@ -295,4 +329,3 @@ def build_similarity_edges(
     )
     builder = SimilarityEdgeBuilder(spark, config)
     return builder.run()
-

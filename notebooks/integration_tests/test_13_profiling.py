@@ -118,9 +118,14 @@ INSERT INTO {catalog_name}.{profiling_test_schema}.test_string_data VALUES
 ('723e4567-e89b-12d3-a456-426614174006', 'sales@business.co', '2024-01-21', '12351', 'CategoryA', ''),
 ('823e4567-e89b-12d3-a456-426614174007', 'dev@startup.xyz', '2024-01-22', '12352', 'CategoryB', ''),
 ('923e4567-e89b-12d3-a456-426614174008', NULL, '2024-01-23', '12353', 'CategoryC', ''),
-('a23e4567-e89b-12d3-a456-426614174009', 'test@email.com', '2024-01-24', '12354', 'CategoryA', '')
+('a23e4567-e89b-12d3-a456-426614174009', 'test@email.com', '2024-01-24', '12354', 'CategoryA', ''),
+('b23e4567-e89b-12d3-a456-426614174010', 'ops@firm.com', '2024-01-25', '12355', 'CategoryB', ''),
+('c23e4567-e89b-12d3-a456-426614174011', 'hr@corp.com', '2024-01-26', '12356', 'CategoryC', ''),
+('d23e4567-e89b-12d3-a456-426614174012', 'cto@tech.io', '2024-01-27', '12357', 'CategoryA', ''),
+('e23e4567-e89b-12d3-a456-426614174013', 'pm@agency.co', '2024-01-28', '12358', 'CategoryB', ''),
+('f23e4567-e89b-12d3-a456-426614174014', 'qa@lab.dev', '2024-01-29', '12359', 'CategoryA', '')
 """)
-print("[SETUP] Created test_string_data with 10 rows")
+print("[SETUP] Created test_string_data with 15 rows")
 
 # COMMAND ----------
 
@@ -227,7 +232,7 @@ print("[TEST 2] PASSED: profiling_snapshots has all required columns")
 # COMMAND ----------
 
 # Test 3: Verify row counts are correct
-for table_info in [("test_numeric_data", 10), ("test_string_data", 10), ("test_mixed_data", 8)]:
+for table_info in [("test_numeric_data", 10), ("test_string_data", 15), ("test_mixed_data", 8)]:
     table_name = f"{catalog_name}.{profiling_test_schema}.{table_info[0]}"
     expected_rows = table_info[1]
     actual_rows = spark.sql(f"""
@@ -430,6 +435,13 @@ INSERT INTO {catalog_name}.{profiling_test_schema}.test_numeric_data VALUES
 (11, 500.00, 50, 299.99, 5.0),
 (12, 550.00, 55, 349.99, 4.8),
 (13, 600.00, 60, 399.99, 4.6)
+""")
+
+# Simulate KB refresh: bump updated_at so incremental mode picks up the change
+spark.sql(f"""
+UPDATE {catalog_name}.{profiling_test_schema}.table_knowledge_base
+SET updated_at = current_timestamp()
+WHERE table_name LIKE '%test_numeric_data%'
 """)
 
 # Re-run profiling

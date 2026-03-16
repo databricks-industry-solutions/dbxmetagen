@@ -50,6 +50,7 @@ class SemanticLayerConfig:
     validate_expressions: bool = True
     use_two_phase: bool = True
     validate_before_store: bool = True
+    max_context_cols_per_table: int = 100
 
     def fq(self, table: str) -> str:
         return f"{self.catalog_name}.{self.schema_name}.{table}"
@@ -162,6 +163,18 @@ class SemanticLayerGenerator:
     def __init__(self, spark: SparkSession, config: SemanticLayerConfig):
         self.spark = spark
         self.config = config
+
+    @staticmethod
+    def _prioritize_columns(cols: list, col_props: dict) -> list:
+        """Sort columns by usefulness for metric view generation."""
+        def _sort_key(c):
+            cp = col_props.get(c["column_name"], {})
+            has_link = 1 if cp.get("linked") else 0
+            has_fk_role = 1 if cp.get("role") in ("fk", "pk", "id") else 0
+            is_id_pattern = 1 if re.search(r'(_id|_key|_code)$', c["column_name"], re.I) else 0
+            has_comment = 1 if c.get("comment") else 0
+            return (-has_link, -has_fk_role, -is_id_pattern, -has_comment, c["column_name"])
+        return sorted(cols, key=_sort_key)
 
     # ------------------------------------------------------------------
     # Table creation
@@ -305,7 +318,8 @@ class SemanticLayerGenerator:
                 extra = f" Relationships: {rels_str}." if rels_str else ""
                 parts.append(f"  {ent}: {suggestion}{extra}")
 
-        # Assemble per-table context
+        # Assemble per-table context (with column cap + priority sort)
+        cap = self.config.max_context_cols_per_table
         for t in tables:
             tname = t["table_name"]
             ent = entity_map.get(tname, "")
@@ -313,6 +327,11 @@ class SemanticLayerGenerator:
             line = f"Table: {tname} (Comment: \"{t.get('comment', '')}\" Domain: {t.get('domain', '')} / {t.get('subdomain', '')}){ent_str}"
             cols = col_by_table.get(tname, [])
             props = col_props_by_table.get(tname, {})
+            if len(cols) > cap:
+                cols = self._prioritize_columns(cols, props)[:cap]
+                omitted = len(col_by_table.get(tname, [])) - cap
+            else:
+                omitted = 0
             col_strs = []
             for c in cols:
                 cname = c["column_name"]
@@ -325,6 +344,8 @@ class SemanticLayerGenerator:
                 col_strs.append(
                     f"  - {cname} {c.get('data_type', '')}{role_str} : {c.get('comment', '')}"
                 )
+            if omitted > 0:
+                col_strs.append(f"  ... ({omitted} additional columns not shown)")
             parts.append(
                 line + "\n  Columns:\n" + "\n".join(col_strs) if col_strs else line
             )

@@ -76,16 +76,8 @@ def _execute_query(query: str) -> dict:
 
 
 def _check_table_allowlist(query: str) -> Optional[str]:
-    q = query.lower()
-    prefix = f"{CATALOG.lower()}.{SCHEMA.lower()}."
-    for t in ALLOWED_TABLES:
-        q = q.replace(f"{prefix}{t}", t)
-    refs = re.findall(r'\bfrom\s+(\w+)|\bjoin\s+(\w+)', q)
-    for match in refs:
-        name = match[0] or match[1]
-        if name and name not in ALLOWED_TABLES:
-            return f"Table '{name}' is not in the allowed list: {', '.join(sorted(ALLOWED_TABLES))}"
-    return None
+    from agent.common import check_table_allowlist
+    return check_table_allowlist(query, ALLOWED_TABLES)
 
 
 def _auto_qualify(query: str, allowed: set) -> str:
@@ -121,6 +113,7 @@ def search_metadata(query: str, doc_type_filter: Optional[str] = None, num_resul
         )
         if doc_type_filter:
             kwargs["filters"] = {"doc_type": doc_type_filter}
+        kwargs["query_type"] = "HYBRID"
         results = index.similarity_search(**kwargs)
         matches = []
         cols = results.get("manifest", {}).get("columns", [])
@@ -152,12 +145,10 @@ def execute_metadata_sql(query: str) -> str:
     - profiling_results: table_name, column_name, distinct_count, null_count, min_value, max_value, avg_value
     - metadata_generation_log: table_name, mode, status, comment
     """
-    q_upper = query.strip().upper()
-    if not q_upper.startswith("SELECT"):
-        return json.dumps({"error": "Only SELECT queries are allowed"})
-    for kw in ["INSERT", "UPDATE", "DELETE", "DROP", "CREATE", "ALTER", "TRUNCATE"]:
-        if kw in q_upper:
-            return json.dumps({"error": f"Blocked keyword: {kw}"})
+    from agent.common import check_select_only
+    err = check_select_only(query)
+    if err:
+        return json.dumps({"error": err})
     err = _check_table_allowlist(query)
     if err:
         return json.dumps({"error": err})
@@ -296,16 +287,8 @@ BASELINE_TABLES = {"table_knowledge_base", "column_knowledge_base", "schema_know
 
 
 def _check_baseline_allowlist(query: str) -> Optional[str]:
-    q = query.lower()
-    prefix = f"{CATALOG.lower()}.{SCHEMA.lower()}."
-    for t in BASELINE_TABLES:
-        q = q.replace(f"{prefix}{t}", t)
-    refs = re.findall(r'\bfrom\s+(\w+)|\bjoin\s+(\w+)', q)
-    for match in refs:
-        name = match[0] or match[1]
-        if name and name not in BASELINE_TABLES:
-            return f"Table '{name}' is not allowed. Baseline agent can only query: {', '.join(sorted(BASELINE_TABLES))}"
-    return None
+    from agent.common import check_table_allowlist
+    return check_table_allowlist(query, BASELINE_TABLES)
 
 
 @tool
@@ -317,12 +300,10 @@ def execute_baseline_sql(query: str) -> str:
     - column_knowledge_base: table_name, column_name, comment, data_type, classification, classification_type
     - schema_knowledge_base: catalog_name, schema_name, comment, tables_count
     """
-    q_upper = query.strip().upper()
-    if not q_upper.startswith("SELECT"):
-        return json.dumps({"error": "Only SELECT queries are allowed"})
-    for kw in ["INSERT", "UPDATE", "DELETE", "DROP", "CREATE", "ALTER", "TRUNCATE"]:
-        if kw in q_upper:
-            return json.dumps({"error": f"Blocked keyword: {kw}"})
+    from agent.common import check_select_only
+    err = check_select_only(query)
+    if err:
+        return json.dumps({"error": err})
     err = _check_baseline_allowlist(query)
     if err:
         return json.dumps({"error": err})

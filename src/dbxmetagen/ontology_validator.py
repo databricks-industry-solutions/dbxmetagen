@@ -7,6 +7,7 @@ and suggest improvements to the ontology configuration.
 
 import logging
 import json
+import re
 import yaml
 from dataclasses import dataclass
 from typing import Dict, Any, List, Optional, Set
@@ -108,6 +109,7 @@ Focus on entities NOT already covered by existing types. Be conservative and sug
     def __init__(self, spark: SparkSession, config: OntologyValidatorConfig):
         self.spark = spark
         self.config = config
+        self._stats_failed = 0
     
     def validate_entity(self, entity_row) -> Dict[str, Any]:
         """Validate a single entity using AI."""
@@ -134,10 +136,50 @@ Focus on entities NOT already covered by existing types. Be conservative and sug
 
             result = self._call_ai(prompt)
             if result:
+                result = self._detect_contradiction(
+                    result, entity_row.entity_type
+                )
                 return {"entity_id": entity_row.entity_id, "validation_result": result}
         except Exception as e:
             logger.warning(f"Could not validate entity {entity_row.entity_id}: {e}")
         return None
+
+    @staticmethod
+    def _detect_contradiction(
+        result: Dict[str, Any], current_type: str
+    ) -> Dict[str, Any]:
+        """Reject validation when the reasoning contradicts the classified type.
+
+        If the validator suggests a different type AND its own reasoning text
+        positively references that alternative, the validation is self-contradictory.
+        """
+        suggested = (result.get("suggested_type") or "").strip()
+        reasoning = (result.get("reasoning") or "").lower()
+        if (
+            suggested
+            and suggested.lower() != current_type.lower()
+            and result.get("is_valid", False)
+        ):
+            alt = suggested.lower()
+            contradiction_phrases = [
+                f"aligns with a {alt}",
+                f"aligns with {alt}",
+                f"should be {alt}",
+                f"better classified as {alt}",
+                f"more accurately a {alt}",
+                f"represents a {alt}",
+                f"consistent with {alt}",
+            ]
+            if any(p in reasoning for p in contradiction_phrases):
+                logger.info(
+                    "Validator contradiction: reasoning favors %s over %s, rejecting",
+                    suggested, current_type,
+                )
+                result = dict(result)
+                result["is_valid"] = False
+                adj = result.get("confidence_adjustment", 0)
+                result["confidence_adjustment"] = min(adj, -0.3)
+        return result
     
     def _get_table_metadata(self, table_names: List[str]) -> str:
         """Get metadata summary for tables."""
@@ -198,32 +240,44 @@ Focus on entities NOT already covered by existing types. Be conservative and sug
             return f"Could not fetch column metadata: {e}"
 
     def _call_ai(self, prompt: str) -> Optional[Dict[str, Any]]:
-        """Call AI_QUERY and parse response."""
-        try:
-            escaped_prompt = prompt.replace("'", "''")
-            
-            result = self.spark.sql(f"""
-                SELECT AI_QUERY(
-                    '{self.config.model}',
-                    '{escaped_prompt}'
-                ) as response
-            """).collect()[0]['response']
-            
-            # Try to parse JSON from response
-            if isinstance(result, str):
-                # Find JSON in response
-                start = result.find('{')
-                end = result.rfind('}') + 1
-                if start >= 0 and end > start:
-                    return json.loads(result[start:end])
-            
-            return None
-        except Exception as e:
-            logger.warning(f"AI call failed: {e}")
-            return None
+        """Call AI_QUERY and parse response, with 1 retry on parse failure."""
+        escaped_prompt = prompt.replace("'", "''")
+        for attempt in range(2):
+            try:
+                result = self.spark.sql(f"""
+                    SELECT AI_QUERY(
+                        '{self.config.model}',
+                        '{escaped_prompt}'
+                    ) as response
+                """).collect()[0]['response']
+
+                if isinstance(result, str):
+                    cleaned = re.sub(r'```(?:json)?\s*', '', result).strip().rstrip('`')
+                    start = cleaned.find('{')
+                    end = cleaned.rfind('}') + 1
+                    if start >= 0 and end > start:
+                        return json.loads(cleaned[start:end])
+                if attempt == 0:
+                    continue
+                self._stats_failed += 1
+                return None
+            except json.JSONDecodeError as e:
+                if attempt == 0:
+                    logger.info("JSON parse failed (attempt 1), retrying: %s", e)
+                    continue
+                logger.warning("AI call JSON parse failed after retry: %s", e)
+                self._stats_failed += 1
+                return None
+            except Exception as e:
+                logger.warning("AI call failed: %s", e)
+                self._stats_failed += 1
+                return None
     
-    def validate_all_entities(self, granularity: str = None) -> List[Dict[str, Any]]:
-        """Validate discovered entities, optionally filtered by granularity."""
+    def validate_all_entities(self, granularity: str = None) -> Dict[str, Any]:
+        """Validate discovered entities, optionally filtered by granularity.
+
+        Returns dict with keys: results, total, failed.
+        """
         filter_clause = "WHERE (validated = FALSE OR validated IS NULL)"
         if granularity:
             filter_clause += f" AND COALESCE(attributes['granularity'], 'table') = '{granularity}'"
@@ -234,6 +288,7 @@ Focus on entities NOT already covered by existing types. Be conservative and sug
 
         from concurrent.futures import ThreadPoolExecutor, as_completed
 
+        self._stats_failed = 0
         entity_rows = entities_df.collect()
         results = []
         with ThreadPoolExecutor(max_workers=4) as executor:
@@ -245,7 +300,14 @@ Focus on entities NOT already covered by existing types. Be conservative and sug
                 result = future.result()
                 if result:
                     results.append(result)
-        return results
+
+        failed = self._stats_failed
+        if failed:
+            logger.warning(
+                "%d of %d entities could not be validated (AI parse errors)",
+                failed, len(entity_rows),
+            )
+        return {"results": results, "total": len(entity_rows), "failed": failed}
     
     def update_entity_validation(self, validation_results: List[Dict[str, Any]]) -> int:
         """Update entities with validation results."""
@@ -454,14 +516,18 @@ Focus on entities NOT already covered by existing types. Be conservative and sug
         logger.info("Starting ontology validation")
 
         # Validate table-level entities
-        table_results = self.validate_all_entities(granularity="table")
-        table_updated = self.update_entity_validation(table_results)
-        logger.info(f"Validated {table_updated} table-level entities")
+        table_out = self.validate_all_entities(granularity="table")
+        table_updated = self.update_entity_validation(table_out["results"])
+        table_failed = table_out["failed"]
+        logger.info(f"Validated {table_updated} table-level entities ({table_failed} parse failures)")
 
         # Validate column-level entities
-        col_results = self.validate_all_entities(granularity="column")
-        col_updated = self.update_entity_validation(col_results)
-        logger.info(f"Validated {col_updated} column-level entities")
+        col_out = self.validate_all_entities(granularity="column")
+        col_updated = self.update_entity_validation(col_out["results"])
+        col_failed = col_out["failed"]
+        logger.info(f"Validated {col_updated} column-level entities ({col_failed} parse failures)")
+
+        total_failed = table_failed + col_failed
 
         # Cross-table consistency
         consistency_issues = self.check_consistency()
@@ -486,15 +552,22 @@ Focus on entities NOT already covered by existing types. Be conservative and sug
         recommendations["relationship_issues"] = rel_issues
         logger.info("Ontology validation complete")
 
-        return {
+        result = {
             "entities_validated": table_updated + col_updated,
             "table_entities_validated": table_updated,
             "column_entities_validated": col_updated,
+            "ai_parse_failures": total_failed,
             "consistency_issues": len(consistency_issues),
             "coverage_gaps": len(coverage_gaps),
             "relationship_issues": len(rel_issues),
             "recommendations": recommendations,
         }
+        if total_failed:
+            result["message"] = (
+                f"{total_failed} entities could not be validated due to "
+                "AI response parsing errors"
+            )
+        return result
 
 
 def validate_ontology(

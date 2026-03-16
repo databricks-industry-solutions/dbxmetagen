@@ -42,29 +42,39 @@ class CommentResponse(Response):
             if isinstance(s, str):
                 stripped = s.strip()
                 if stripped.startswith("["):
-                    # Handle truncated arrays - LLM sometimes outputs stringified array
-                    # that gets cut off before the closing ]
                     if not stripped.endswith("]"):
                         if stripped.endswith('"') or stripped.endswith("'"):
                             stripped = stripped + "]"
-                    
-                    # Try parsing, with fallback for extra trailing brackets
-                    # LLM sometimes outputs "["a", "b"]]" with extra ]
-                    for attempt in range(3):  # Try removing up to 2 extra brackets
+                        else:
+                            last = stripped.rfind('",')
+                            if last == -1:
+                                last = stripped.rfind("',")
+                            if last > 0:
+                                stripped = stripped[: last + 1] + "]"
+
+                    _to_list = lambda parsed: [
+                        str(item) if not isinstance(item, str) else item
+                        for item in parsed
+                    ]
+
+                    for attempt in range(3):
                         try:
                             parsed = json.loads(stripped)
                             if isinstance(parsed, list):
-                                return True, [
-                                    str(item) if not isinstance(item, str) else item
-                                    for item in parsed
-                                ]
+                                return True, _to_list(parsed)
                             break
                         except json.JSONDecodeError:
-                            # If ends with ]] or ]]], try removing extra bracket
-                            if stripped.endswith("]]"):
+                            if attempt == 0:
+                                stripped = stripped.replace('\n', ' ').replace('\r', ' ').replace('\t', ' ')
+                            elif stripped.endswith("]]"):
                                 stripped = stripped[:-1]
                             else:
                                 break
+
+                    import re
+                    elements = re.findall(r'"((?:[^"\\]|\\.)*)"', stripped)
+                    if elements:
+                        return True, elements
             return False, s
 
         if isinstance(v, str):
@@ -92,7 +102,10 @@ class CommentResponse(Response):
                 if success:
                     expanded.extend(result)
                 else:
-                    expanded.append(str(item) if not isinstance(item, str) else item)
+                    if isinstance(item, list):
+                        expanded.append("\n\n".join(str(x) for x in item))
+                    else:
+                        expanded.append(str(item) if not isinstance(item, str) else item)
             return expanded
         else:
             raise ValueError(

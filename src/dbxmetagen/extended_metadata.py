@@ -202,63 +202,108 @@ class ExtendedMetadataBuilder:
             return result
             
         except Exception as e:
-            logger.warning(f"Could not query lineage: {e}")
+            msg = (
+                f"[dbxmetagen] Could not query lineage: {e}\n"
+                "  You may not have access to system.access.table_lineage.\n"
+                "  Continuing without lineage data."
+            )
+            logger.warning(msg)
+            print(msg)
             return self.spark.createDataFrame([], "table_name STRING, upstream_tables ARRAY<STRING>, downstream_tables ARRAY<STRING>")
     
+    def _load_fk_references(self, catalog: str) -> dict:
+        """Try referential_constraints + key_column_usage to map FK cols to referenced tables."""
+        ref_map: dict = {}
+        try:
+            rows = self.spark.sql(f"""
+                SELECT
+                    CONCAT(rc.constraint_catalog, '.', rc.constraint_schema, '.', kcu.table_name) AS src_table,
+                    kcu.column_name AS src_col,
+                    CONCAT(rc.unique_constraint_catalog, '.', rc.unique_constraint_schema, '.',
+                           kcu2.table_name, '.', kcu2.column_name) AS ref_target
+                FROM {catalog}.information_schema.referential_constraints rc
+                JOIN {catalog}.information_schema.key_column_usage kcu
+                    ON rc.constraint_catalog = kcu.constraint_catalog
+                    AND rc.constraint_schema = kcu.constraint_schema
+                    AND rc.constraint_name = kcu.constraint_name
+                JOIN {catalog}.information_schema.key_column_usage kcu2
+                    ON rc.unique_constraint_catalog = kcu2.constraint_catalog
+                    AND rc.unique_constraint_schema = kcu2.constraint_schema
+                    AND rc.unique_constraint_name = kcu2.constraint_name
+                    AND kcu.ordinal_position = kcu2.ordinal_position
+            """).collect()
+            for r in rows:
+                ref_map.setdefault(r.src_table, {})[r.src_col] = r.ref_target
+        except Exception as e:
+            logger.debug("referential_constraints unavailable for %s: %s", catalog, e)
+        return ref_map
+
     def extract_constraints(self, tables: List[str]) -> DataFrame:
         """Extract primary key and foreign key constraints."""
         if not tables:
             return self.spark.createDataFrame([], "table_name STRING, primary_key_columns ARRAY<STRING>, foreign_keys MAP<STRING, STRING>")
-        
+
         all_dfs = []
         catalogs = set(t.split(".")[0] for t in tables if "." in t)
-        
+
+        fk_ref_maps: dict = {}
         for catalog in catalogs:
+            fk_ref_maps[catalog] = self._load_fk_references(catalog)
             try:
-                # Get constraints with their columns
                 df = self.spark.sql(f"""
                     SELECT 
                         CONCAT(t.constraint_catalog, '.', t.constraint_schema, '.', t.table_name) as table_name,
                         t.constraint_type,
-                        c.column_name
+                        k.column_name
                     FROM {catalog}.information_schema.table_constraints t
-                    LEFT JOIN {catalog}.information_schema.constraint_column_usage c
-                        ON t.constraint_catalog = c.constraint_catalog 
-                        AND t.constraint_schema = c.constraint_schema 
-                        AND t.constraint_name = c.constraint_name
+                    LEFT JOIN {catalog}.information_schema.key_column_usage k
+                        ON t.constraint_catalog = k.constraint_catalog 
+                        AND t.constraint_schema = k.constraint_schema 
+                        AND t.constraint_name = k.constraint_name
                     WHERE t.constraint_type IN ('PRIMARY KEY', 'FOREIGN KEY')
                 """)
                 all_dfs.append(df)
             except Exception as e:
                 logger.warning(f"Could not query constraints for catalog {catalog}: {e}")
-        
+
         if all_dfs:
             from functools import reduce
             combined = reduce(DataFrame.union, all_dfs)
-            
-            # Aggregate by table
+
             pk_df = (
                 combined
                 .filter(F.col("constraint_type") == "PRIMARY KEY")
                 .groupBy("table_name")
                 .agg(F.collect_set("column_name").alias("primary_key_columns"))
             )
-            
-            # For foreign keys, we'd need additional join info - simplified for now
-            fk_df = (
-                combined
-                .filter(F.col("constraint_type") == "FOREIGN KEY")
-                .groupBy("table_name")
-                .agg(F.map_from_arrays(
-                    F.collect_list("column_name"),
-                    F.collect_list(F.lit(""))  # Would need ref table info
-                ).alias("foreign_keys"))
-            )
-            
+
+            # Build FK map using referential_constraints when available
+            fk_rows = combined.filter(F.col("constraint_type") == "FOREIGN KEY").collect()
+            fk_by_table: dict = {}
+            for r in fk_rows:
+                tname = r.table_name
+                col = r.column_name
+                if not tname or not col:
+                    continue
+                cat = tname.split(".")[0]
+                ref_target = fk_ref_maps.get(cat, {}).get(tname, {}).get(col, "")
+                fk_by_table.setdefault(tname, {})[col] = ref_target
+
+            if fk_by_table:
+                fk_data = [(tbl, cols) for tbl, cols in fk_by_table.items()]
+                from pyspark.sql.types import StructType, StructField, StringType, MapType
+                fk_schema = StructType([
+                    StructField("table_name", StringType()),
+                    StructField("foreign_keys", MapType(StringType(), StringType())),
+                ])
+                fk_df = self.spark.createDataFrame(fk_data, fk_schema)
+            else:
+                fk_df = self.spark.createDataFrame([], "table_name STRING, foreign_keys MAP<STRING, STRING>")
+
             result = pk_df.join(fk_df, "table_name", "full_outer")
             tables_df = self.spark.createDataFrame([(t,) for t in tables], ["filter_table"])
             return result.join(tables_df, result.table_name == tables_df.filter_table, "inner").drop("filter_table")
-        
+
         return self.spark.createDataFrame([], "table_name STRING, primary_key_columns ARRAY<STRING>, foreign_keys MAP<STRING, STRING>")
     
     def extract_table_properties(self, tables: List[str]) -> DataFrame:

@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react'
-import { safeFetch, safeFetchObj, ErrorBanner } from '../App'
+import { safeFetchObj, ErrorBanner } from '../App'
+import { cachedFetch, TTL } from '../apiCache'
 import { PageHeader, EmptyState, SkeletonTable } from './ui'
 
 const STAGES = {
@@ -37,7 +38,7 @@ export default function GenieBuilder() {
 
   useEffect(() => {
     (async () => {
-      const { data } = await safeFetch('/api/coverage/tables')
+      const { data } = await cachedFetch('/api/coverage/tables', {}, TTL.CONFIG)
       if (data.length) {
         setTables(data.map(r => ({
           id: `${r.table_catalog}.${r.table_schema}.${r.table_name}`,

@@ -1,0 +1,201 @@
+"""Shared utilities for dbxmetagen agents.
+
+Consolidates duplicated helpers: SQL guardrails, LLM setup, ReAct graph
+construction, message conversion, and profiling SQL fragments.
+"""
+
+import logging
+import os
+import re
+from typing import Annotated, Dict, List, Optional, TypedDict
+
+from databricks_langchain import ChatDatabricks
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langgraph.graph import StateGraph, START, END
+from langgraph.graph.message import add_messages
+from langgraph.prebuilt import ToolNode
+
+from agent.guardrails import GuardrailConfig
+
+logger = logging.getLogger(__name__)
+
+CATALOG = os.environ.get("CATALOG_NAME", "")
+SCHEMA = os.environ.get("SCHEMA_NAME", "")
+WAREHOUSE_ID = os.environ.get("WAREHOUSE_ID", "")
+MODEL = os.environ.get("LLM_MODEL", os.environ.get("GRAPHRAG_MODEL", "databricks-claude-sonnet-4-5"))
+
+_DML_KEYWORDS = {"INSERT", "UPDATE", "DELETE", "DROP", "CREATE", "ALTER", "TRUNCATE"}
+
+
+def fq(table: str) -> str:
+    """Fully-qualify a table name with CATALOG.SCHEMA."""
+    return f"{CATALOG}.{SCHEMA}.{table}"
+
+
+# ---------------------------------------------------------------------------
+# LLM singleton
+# ---------------------------------------------------------------------------
+
+_cached_llm = None
+
+
+def get_llm() -> ChatDatabricks:
+    global _cached_llm
+    if _cached_llm is None:
+        _cached_llm = ChatDatabricks(endpoint=MODEL, temperature=0, max_retries=6)
+    return _cached_llm
+
+
+# ---------------------------------------------------------------------------
+# SQL guardrails
+# ---------------------------------------------------------------------------
+
+def check_select_only(query: str) -> Optional[str]:
+    """Return an error string if the query is not a safe read-only statement, else None."""
+    q_upper = query.strip().upper()
+    if not q_upper.startswith("SELECT") and not q_upper.startswith("DESCRIBE") and not q_upper.startswith("SHOW"):
+        return "Only SELECT, DESCRIBE, and SHOW queries are allowed."
+    for kw in _DML_KEYWORDS:
+        if re.search(rf'\b{kw}\b', q_upper):
+            return f"Blocked keyword: {kw}"
+    return None
+
+
+def check_table_allowlist(query: str, allowed_tables: set) -> Optional[str]:
+    """Return an error string if the query references tables outside the allowed set."""
+    q = query.lower()
+    prefix = f"{CATALOG.lower()}.{SCHEMA.lower()}."
+    for t in allowed_tables:
+        q = q.replace(f"{prefix}{t}", t)
+    refs = re.findall(r'\bfrom\s+(\w+)|\bjoin\s+(\w+)', q)
+    for match in refs:
+        name = match[0] or match[1]
+        if name and name not in allowed_tables:
+            return f"Table '{name}' is not in the allowed list: {', '.join(sorted(allowed_tables))}"
+    return None
+
+
+# ---------------------------------------------------------------------------
+# ReAct graph builder
+# ---------------------------------------------------------------------------
+
+class ReactState(TypedDict):
+    messages: Annotated[list, add_messages]
+
+
+MAX_SAME_TOOL_CALLS = 2
+
+
+def build_react_graph(
+    tools: list,
+    system_prompt: str,
+    max_tool_rounds: int = GuardrailConfig.MAX_AGENT_ITERATIONS,
+):
+    """Build a generic ReAct agent graph with tool-round limiting.
+
+    Uses dynamic tool rebinding: once a tool has been called MAX_SAME_TOOL_CALLS
+    times, it is removed from the LLM's available tool list so it physically
+    cannot be called again.
+    """
+    llm = get_llm()
+    tools_by_name = {t.name: t for t in tools}
+    tool_node = ToolNode(tools)
+
+    def _count_tool_rounds(messages) -> int:
+        return sum(1 for m in messages if hasattr(m, "tool_calls") and m.tool_calls)
+
+    def _tool_call_counts(messages) -> dict:
+        counts: dict = {}
+        for m in messages:
+            if hasattr(m, "tool_calls") and m.tool_calls:
+                for tc in m.tool_calls:
+                    counts[tc["name"]] = counts.get(tc["name"], 0) + 1
+        return counts
+
+    def agent_node(state):
+        rounds = _count_tool_rounds(state["messages"])
+        prompt = system_prompt
+        budget_note = ""
+
+        tool_counts = _tool_call_counts(state["messages"])
+        overused = {n for n, c in tool_counts.items() if c >= MAX_SAME_TOOL_CALLS}
+        if overused:
+            budget_note += (
+                f"\n\nYou have already called these tools {MAX_SAME_TOOL_CALLS}+ times: "
+                f"{', '.join(overused)}. Do NOT call them again -- use what you have."
+            )
+
+        if rounds >= max_tool_rounds:
+            prompt += (
+                "\n\nIMPORTANT: You have reached the tool-call budget. "
+                "Do NOT call any more tools. Synthesize your final answer NOW "
+                "from the information you have gathered so far."
+            )
+            msgs = [SystemMessage(content=prompt + budget_note)] + state["messages"]
+            return {"messages": [llm.invoke(msgs)]}
+
+        available = [tools_by_name[n] for n in tools_by_name if n not in overused]
+        if not available:
+            msgs = [SystemMessage(content=prompt + "\n\nAll tools exhausted. Provide your final answer.")] + state["messages"]
+            return {"messages": [llm.invoke(msgs)]}
+
+        bound_llm = llm.bind_tools(available)
+        msgs = [SystemMessage(content=prompt + budget_note)] + state["messages"]
+        return {"messages": [bound_llm.invoke(msgs)]}
+
+    def should_continue(state):
+        last = state["messages"][-1]
+        if hasattr(last, "tool_calls") and last.tool_calls:
+            return "tools"
+        return END
+
+    graph = StateGraph(ReactState)
+    graph.add_node("agent", agent_node)
+    graph.add_node("tools", tool_node)
+    graph.add_edge(START, "agent")
+    graph.add_conditional_edges("agent", should_continue, {"tools": "tools", END: END})
+    graph.add_edge("tools", "agent")
+    return graph.compile()
+
+
+# ---------------------------------------------------------------------------
+# Message helpers
+# ---------------------------------------------------------------------------
+
+def history_to_messages(history: Optional[List[Dict[str, str]]], question: str) -> list:
+    """Convert a list of {role, content} dicts + a new question into LangChain messages."""
+    messages = []
+    if history:
+        for msg in history:
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+            if role == "user":
+                messages.append(HumanMessage(content=content))
+            elif role == "assistant":
+                messages.append(AIMessage(content=content))
+    messages.append(HumanMessage(content=question))
+    return messages
+
+
+def extract_tool_calls(messages: list) -> List[str]:
+    """Extract tool call names from a list of LangChain messages."""
+    names = []
+    for msg in messages:
+        if hasattr(msg, "tool_calls") and msg.tool_calls:
+            names.extend(tc["name"] for tc in msg.tool_calls)
+    return names
+
+
+# ---------------------------------------------------------------------------
+# SQL fragment: latest profiling snapshot join
+# ---------------------------------------------------------------------------
+
+def latest_profiling_join(stats_alias: str = "cs") -> str:
+    """Return the INNER JOIN subquery that selects the latest profiling snapshot per table."""
+    return f"""INNER JOIN (
+    SELECT snapshot_id, table_name FROM (
+        SELECT snapshot_id, table_name,
+               ROW_NUMBER() OVER (PARTITION BY table_name ORDER BY snapshot_time DESC) rn
+        FROM {fq('profiling_snapshots')}
+    ) WHERE rn = 1
+) latest ON {stats_alias}.snapshot_id = latest.snapshot_id AND {stats_alias}.table_name = latest.table_name"""

@@ -69,7 +69,9 @@ class TestSimilarityEdgeBuilder:
     
     @pytest.fixture
     def builder(self, mock_spark, config):
-        return SimilarityEdgeBuilder(mock_spark, config)
+        b = SimilarityEdgeBuilder(mock_spark, config)
+        mock_spark.sql.reset_mock()
+        return b
     
     def test_relationship_type_constant(self, builder):
         """Relationship type should be 'similar_embedding'."""

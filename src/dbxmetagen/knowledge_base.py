@@ -396,6 +396,66 @@ class KnowledgeBaseBuilder:
             "total_records": merge_stats["total_records"]
         }
 
+    def bootstrap(self, table_names: List[str]) -> int:
+        """Populate KB from information_schema with zero LLM calls.
+
+        Inserts only rows that don't already exist (MERGE WHEN NOT MATCHED).
+        Includes existing UC table comments. Returns the number of rows merged.
+        """
+        self.create_target_table()
+        by_catalog_schema: Dict[str, List[str]] = {}
+        for fqtn in table_names:
+            parts = fqtn.split(".")
+            if len(parts) != 3:
+                continue
+            key = f"{parts[0]}.{parts[1]}"
+            by_catalog_schema.setdefault(key, []).append(parts[2])
+
+        all_dfs = []
+        for cs_key, short_names in by_catalog_schema.items():
+            cat, sch = cs_key.split(".", 1)
+            in_clause = ", ".join(f"'{t}'" for t in short_names)
+            try:
+                df = self.spark.sql(f"""
+                    SELECT
+                        CONCAT(table_catalog, '.', table_schema, '.', table_name) AS table_name,
+                        table_catalog AS catalog,
+                        table_schema AS `schema`,
+                        table_name AS table_short_name,
+                        comment,
+                        CAST(NULL AS STRING) AS domain,
+                        CAST(NULL AS STRING) AS subdomain,
+                        false AS has_pii,
+                        false AS has_phi,
+                        current_timestamp() AS created_at,
+                        current_timestamp() AS updated_at,
+                        CAST(NULL AS TIMESTAMP) AS review_updated_at
+                    FROM {cat}.information_schema.tables
+                    WHERE table_schema = '{sch}'
+                      AND table_name IN ({in_clause})
+                      AND table_type IN ('MANAGED', 'EXTERNAL')
+                """)
+                all_dfs.append(df)
+            except Exception as e:
+                logger.warning("Bootstrap: could not query %s.information_schema.tables: %s", cat, e)
+
+        if not all_dfs:
+            return 0
+
+        from functools import reduce
+        combined = reduce(DataFrame.union, all_dfs)
+        combined.createOrReplaceTempView("_kb_bootstrap_src")
+
+        self.spark.sql(f"""
+            MERGE INTO {self.config.fully_qualified_target} AS target
+            USING _kb_bootstrap_src AS source
+            ON target.table_name = source.table_name
+            WHEN NOT MATCHED THEN INSERT *
+        """)
+        count = combined.count()
+        logger.info("Bootstrap: merged %d table rows into %s", count, self.config.fully_qualified_target)
+        return count
+
 
 def build_knowledge_base(
     spark: SparkSession,

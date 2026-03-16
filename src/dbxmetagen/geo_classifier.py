@@ -46,6 +46,7 @@ class GeoConfig:
     tag_key: str = _DEFAULT_TAG_KEY
     model_endpoint: str = "databricks-meta-llama-3-3-70b-instruct"
     column_kb_table: str = "column_knowledge_base"
+    metadata_cols_per_chunk: int = 100
 
     @property
     def fq_results(self) -> str:
@@ -97,18 +98,10 @@ class GeoClassifier:
         )
         return llm.with_structured_output(BatchGeoClassificationResult)
 
-    def _ai_classify_batch(
+    def _classify_geo_chunk(
         self, table_name: str, columns: List[Tuple[str, str, str]]
     ) -> List[Tuple[str, str, float]]:
-        """LLM classify a batch of columns for one table.
-
-        Args:
-            table_name: fully qualified table name
-            columns: list of (column_name, data_type, comment)
-
-        Returns:
-            list of (column_name, classification, confidence)
-        """
+        """LLM classify a single chunk of columns for one table."""
         col_lines = "\n".join(
             f"  - {cn} ({dt}): {desc[:200]}" for cn, dt, desc in columns
         )
@@ -123,20 +116,48 @@ class GeoClassifier:
             f"Table: {table_name}\n\nColumns:\n{col_lines}\n\n"
             "Classify each column as 'geographic' or 'non_geographic'."
         )
+        llm = self._get_llm()
+        result: BatchGeoClassificationResult = llm.invoke([
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ])
+        return [
+            (r.column_name, r.classification, round(r.confidence, 3))
+            for r in result.classifications
+        ]
 
-        try:
-            llm = self._get_llm()
-            result: BatchGeoClassificationResult = llm.invoke([
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ])
-            return [
-                (r.column_name, r.classification, round(r.confidence, 3))
-                for r in result.classifications
-            ]
-        except Exception as e:
-            logger.warning("LLM geo classification failed for %s: %s", table_name, e)
-            return [(cn, self._default, 0.3) for cn, _, _ in columns]
+    def _ai_classify_batch(
+        self, table_name: str, columns: List[Tuple[str, str, str]]
+    ) -> List[Tuple[str, str, float]]:
+        """LLM classify columns for one table, chunking if needed.
+
+        Args:
+            table_name: fully qualified table name
+            columns: list of (column_name, data_type, comment)
+
+        Returns:
+            list of (column_name, classification, confidence)
+        """
+        n = self.config.metadata_cols_per_chunk
+        if len(columns) <= n:
+            try:
+                return self._classify_geo_chunk(table_name, columns)
+            except Exception as e:
+                logger.warning("LLM geo classification failed for %s: %s", table_name, e)
+                return [(cn, self._default, 0.3) for cn, _, _ in columns]
+
+        num_chunks = -(-len(columns) // n)
+        all_results = []
+        for i in range(0, len(columns), n):
+            chunk = columns[i : i + n]
+            chunk_idx = i // n + 1
+            logger.info(f"Geo classifying {table_name}: chunk {chunk_idx}/{num_chunks} ({len(chunk)} cols)")
+            try:
+                all_results.extend(self._classify_geo_chunk(table_name, chunk))
+            except Exception as e:
+                logger.warning(f"Geo chunk {chunk_idx} failed for {table_name}: {e}")
+                all_results.extend((cn, self._default, 0.3) for cn, _, _ in chunk)
+        return all_results
 
     def ensure_table(self) -> None:
         self.spark.sql(f"""

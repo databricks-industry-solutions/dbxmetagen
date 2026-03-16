@@ -49,3 +49,5 @@ env:
     value: "metadata_vs_index"
   - name: LLM_MODEL
     value: "databricks-claude-sonnet-4-5"
+  - name: MLFLOW_EXPERIMENT
+    value: "/Shared/dbxmetagen-app/traces"

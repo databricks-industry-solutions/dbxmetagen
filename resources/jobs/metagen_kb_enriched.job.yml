@@ -37,6 +37,10 @@ resources:
           default: "{{job.run_id}}"
         - name: include_previously_failed_tables
           default: "false"
+        - name: ontology_bundle
+          default: ""
+        - name: domain_config_path
+          default: ""
 
       tasks:
         - task_key: generate_comments
@@ -55,6 +59,8 @@ resources:
               run_id: "{{job.parameters.run_id}}"
               cleanup_control_table: "false"
               include_previously_failed_tables: "{{job.parameters.include_previously_failed_tables}}"
+              ontology_bundle: "{{job.parameters.ontology_bundle}}"
+              domain_config_path: "{{job.parameters.domain_config_path}}"
           libraries:
             - whl: ../../dist/*.whl
 
@@ -90,6 +96,8 @@ resources:
               include_previously_failed_tables: "{{job.parameters.include_previously_failed_tables}}"
               include_existing_table_comment: "true"
               use_kb_comments: "true"
+              ontology_bundle: "{{job.parameters.ontology_bundle}}"
+              domain_config_path: "{{job.parameters.domain_config_path}}"
           libraries:
             - whl: ../../dist/*.whl
 
@@ -113,6 +121,8 @@ resources:
               include_previously_failed_tables: "{{job.parameters.include_previously_failed_tables}}"
               include_existing_table_comment: "true"
               use_kb_comments: "true"
+              ontology_bundle: "{{job.parameters.ontology_bundle}}"
+              domain_config_path: "{{job.parameters.domain_config_path}}"
           libraries:
             - whl: ../../dist/*.whl
 

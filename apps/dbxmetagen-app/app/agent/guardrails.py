@@ -8,11 +8,13 @@ import re
 
 class GuardrailConfig:
     MAX_INPUT_LENGTH = 10_000
-    MAX_AGENT_ITERATIONS = 10
-    MAX_RECURSION_LIMIT = 26
+    MAX_AGENT_ITERATIONS = 8
+    MAX_RECURSION_LIMIT = 20
     MAX_DEEP_ITERATIONS = 8
     MAX_BATCH_RETRIES = 3
     AGENT_TIMEOUT_SECONDS = 120
+    MAX_ANALYST_RESULT_ROWS = 500
+    ANALYST_TIMEOUT_SECONDS = 60
 
 # ---------------------------------------------------------------------------
 # Safety prompt block -- append to every agent system prompt

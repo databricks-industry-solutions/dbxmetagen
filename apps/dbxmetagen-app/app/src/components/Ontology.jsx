@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import ForceGraph2D from 'react-force-graph-2d'
-import { safeFetch, ErrorBanner } from '../App'
+import { ErrorBanner } from '../App'
+import { cachedFetch, TTL } from '../apiCache'
 import { PageHeader, EmptyState, SkeletonCards } from './ui'
 
 const PALETTE = [
@@ -16,6 +17,12 @@ export function HealthCards({ metrics }) {
     return map
   }, [metrics])
 
+  const lastUpdated = useMemo(() => {
+    const dates = (metrics || []).map(r => r.updated_at).filter(Boolean).sort().reverse()
+    if (!dates.length) return null
+    try { return new Date(dates[0]).toLocaleString() } catch { return dates[0] }
+  }, [metrics])
+
   if (!Object.keys(m).length) return null
 
   const cards = [
@@ -28,14 +35,19 @@ export function HealthCards({ metrics }) {
   ]
 
   return (
-    <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
-      {cards.map((c, i) => (
-        <div key={i} className="border border-slate-200 dark:border-dbx-navy-400/25 rounded-xl p-4 bg-gradient-to-br from-white to-slate-50 dark:from-dbx-navy-650 dark:to-dbx-navy-700">
-          <p className="text-xs text-slate-500 dark:text-slate-400 uppercase tracking-wider">{c.label}</p>
-          <p className={`text-2xl font-bold mt-1 ${c.warn ? 'text-dbx-amber' : 'text-dbx-lava'}`}>{c.value ?? '--'}</p>
-          {c.sub && <p className="text-xs text-slate-400 mt-0.5">{c.sub}</p>}
-        </div>
-      ))}
+    <div>
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+        {cards.map((c, i) => (
+          <div key={i} className="border border-slate-200 dark:border-dbx-navy-400/25 rounded-xl p-4 bg-gradient-to-br from-white to-slate-50 dark:from-dbx-navy-650 dark:to-dbx-navy-700">
+            <p className="text-xs text-slate-500 dark:text-slate-400 uppercase tracking-wider">{c.label}</p>
+            <p className={`text-2xl font-bold mt-1 ${c.warn ? 'text-dbx-amber' : 'text-dbx-lava'}`}>{c.value ?? '--'}</p>
+            {c.sub && <p className="text-xs text-slate-400 mt-0.5">{c.sub}</p>}
+          </div>
+        ))}
+      </div>
+      {lastUpdated && (
+        <p className="text-[10px] text-slate-400 dark:text-slate-500 mt-2 text-right">Pre-computed metrics, last updated: {lastUpdated}</p>
+      )}
     </div>
   )
 }
@@ -180,10 +192,10 @@ export function OntologyOverview() {
   const [error, setError] = useState(null)
 
   useEffect(() => {
-    safeFetch('/api/ontology/entities').then(r => { setEntities(r.data || []); if (r.error) setError(r.error) })
-    safeFetch('/api/ontology/summary').then(r => { setSummary(r.data || []); if (r.error) setError(r.error) })
-    safeFetch('/api/ontology/relationships').then(r => { setRelationships(r.data || []) })
-    safeFetch('/api/ontology/metrics').then(r => { setMetrics(r.data || []) })
+    cachedFetch('/api/ontology/entities', {}, TTL.DASHBOARD).then(r => { setEntities(r.data || []); if (r.error) setError(r.error) })
+    cachedFetch('/api/ontology/summary', {}, TTL.DASHBOARD).then(r => { setSummary(r.data || []); if (r.error) setError(r.error) })
+    cachedFetch('/api/ontology/relationships', {}, TTL.DASHBOARD).then(r => { setRelationships(r.data || []) })
+    cachedFetch('/api/ontology/metrics', {}, TTL.DASHBOARD).then(r => { setMetrics(r.data || []) })
   }, [])
 
   return (
@@ -264,10 +276,10 @@ export default function Ontology() {
   const [expanded, setExpanded] = useState(new Set())
 
   useEffect(() => {
-    safeFetch('/api/ontology/entities').then(r => { setEntities(r.data || []); if (r.error) setError(r.error) })
-    safeFetch('/api/ontology/summary').then(r => { setSummary(r.data || []); if (r.error) setError(r.error) })
-    safeFetch('/api/ontology/relationships').then(r => { setRelationships(r.data || []) })
-    safeFetch('/api/ontology/metrics').then(r => { setMetrics(r.data || []) })
+    cachedFetch('/api/ontology/entities', {}, TTL.DASHBOARD).then(r => { setEntities(r.data || []); if (r.error) setError(r.error) })
+    cachedFetch('/api/ontology/summary', {}, TTL.DASHBOARD).then(r => { setSummary(r.data || []); if (r.error) setError(r.error) })
+    cachedFetch('/api/ontology/relationships', {}, TTL.DASHBOARD).then(r => { setRelationships(r.data || []) })
+    cachedFetch('/api/ontology/metrics', {}, TTL.DASHBOARD).then(r => { setMetrics(r.data || []) })
   }, [])
 
   const groupedEntities = useMemo(() => {

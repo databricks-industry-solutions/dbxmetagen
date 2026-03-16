@@ -438,6 +438,7 @@ class OntologyConfig:
     nodes_table: str = "graph_nodes"
     incremental: bool = True
     entity_tag_key: str = "entity_type"
+    metadata_cols_per_chunk: int = 120
 
     @property
     def fully_qualified_entities(self) -> str:
@@ -837,6 +838,7 @@ class EntityDiscoverer:
         affinity_set = self._domain_entity_affinity.get(domain_lower, set())
 
         scored: List[Tuple[str, float]] = []
+        max_kw_only = 0.0
         for edef in self.entity_definitions:
             if edef.name == "DataTable":
                 continue
@@ -848,14 +850,27 @@ class EntityDiscoverer:
                     kw_score += 2.0
                 elif kw_l in comment_lower:
                     kw_score += 1.0
-            if edef.name in affinity_set:
-                kw_score += 1.5
-            scored.append((edef.name, kw_score))
+            max_kw_only = max(max_kw_only, kw_score)
+            has_affinity = edef.name in affinity_set
+            scored.append((edef.name, kw_score, has_affinity))
 
-        scored.sort(key=lambda x: x[1], reverse=True)
-        if top_n <= 0 or top_n >= len(scored):
-            return [s[0] for s in scored]
-        return [s[0] for s in scored[:top_n]]
+        # If a strong keyword match exists for some entity, reduce the boost
+        # for entities that scored purely from domain affinity (no keyword hit).
+        has_strong_kw_competitor = max_kw_only >= 2.0
+        final: List[Tuple[str, float]] = []
+        for ename, kw_score, has_affinity in scored:
+            total = kw_score
+            if has_affinity:
+                if kw_score == 0.0 and has_strong_kw_competitor:
+                    total += 0.75  # halved affinity when outcompeted by keywords
+                else:
+                    total += 1.5
+            final.append((ename, total))
+
+        final.sort(key=lambda x: x[1], reverse=True)
+        if top_n <= 0 or top_n >= len(final):
+            return [s[0] for s in final]
+        return [s[0] for s in final[:top_n]]
 
     # ------------------------------------------------------------------
     # Table-level discovery
@@ -1606,13 +1621,12 @@ class EntityDiscoverer:
     # AI classification for columns (structured output + enforce)
     # ------------------------------------------------------------------
 
-    def _ai_classify_columns_for_table(
-        self, table_name: str, short_name: str, columns: List
+    def _classify_column_chunk(
+        self, short_name: str, columns: List
     ) -> List[Tuple[str, str, float]]:
-        """Classify all columns for a single table in one LLM call.
+        """Classify a chunk of columns via a single LLM call.
 
         Returns list of (column_name, entity_type, confidence).
-        Falls back to per-column classification on failure.
         """
         entity_descriptions = "\n".join(
             self._format_entity_desc(e)
@@ -1631,6 +1645,11 @@ class EntityDiscoverer:
         system_prompt = (
             "You are an entity classifier for database columns. "
             "For each column, classify it into the entity type it most likely belongs to. "
+            "Classify based on what the column itself represents, not the table's domain. "
+            "Tables in specialized domains (e.g. healthcare) often contain commercial, "
+            "supply-chain, or financial columns (product_name, supplier_id, unit_price) "
+            "that should map to Product, Supplier, or Transaction -- not to domain-specific "
+            "entities like Procedure or Medication. "
             "Return one classification per column, using the exact column_name provided."
         )
         user_prompt = (
@@ -1640,33 +1659,140 @@ class EntityDiscoverer:
             "Classify every column listed above."
         )
 
+        batch_llm = self._get_batch_column_llm()
+        response: BatchColumnClassificationResult = batch_llm.invoke(
+            [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ]
+        )
+        results = []
+        for item in response.classifications:
+            enforced, exact = _enforce_entity_value(item.entity_type, self._entity_names)
+            conf = item.confidence
+            if not exact:
+                conf = max(0.0, conf - self.CONFIDENCE_PENALTY_SNAP)
+            results.append((item.column_name, enforced, round(conf, 3)))
+        self._stats["column_ai_classifications"] += len(results)
+        return results
+
+    def _ai_query_classify_columns(
+        self, columns: List
+    ) -> List[Tuple[str, str, float]]:
+        """Classify columns via Spark SQL ai_query -- batch fallback for failed chunks."""
+        entity_descriptions = "\n".join(
+            self._format_entity_desc(e)
+            for e in self.entity_definitions
+            if e.name != "DataTable"
+        )
+        entity_names_csv = ", ".join(self._entity_names)
+        escaped_desc = entity_descriptions.replace("'", "''")
+        escaped_names = entity_names_csv.replace("'", "''")
+
+        rows = [
+            {
+                "column_name": r.column_name or "unknown",
+                "table_short_name": getattr(r, "table_short_name", None) or r.table_name or "unknown",
+                "data_type": r.data_type or "unknown",
+                "comment": (r.comment or "")[:200],
+            }
+            for r in columns
+        ]
+        df = self.spark.createDataFrame(rows)
+        view_name = f"_ontology_ai_classify_cols_{uuid.uuid4().hex[:8]}"
+        df.createOrReplaceTempView(view_name)
+
+        sql = f"""
+            SELECT
+                column_name,
+                ai_query(
+                    '{self._model_endpoint}',
+                    CONCAT(
+                        'You are an entity classifier for database columns. ',
+                        'Classify this column into the entity type it most likely belongs to. ',
+                        'Classify based on what the column itself represents, not the table domain. ',
+                        'Valid entity types: {escaped_names}. ',
+                        'Entity descriptions:\\n{escaped_desc}\\n\\n',
+                        'Column: ', column_name,
+                        '\\nTable: ', table_short_name,
+                        '\\nData type: ', data_type,
+                        '\\nDescription: ', comment,
+                        '\\n\\nReturn JSON with entity_type and confidence (0-1).'
+                    ),
+                    responseFormat => 'STRUCT<result: STRUCT<entity_type: STRING, confidence: DOUBLE>>',
+                    failOnError => false
+                ) AS classification
+            FROM {view_name}
+        """
         try:
-            batch_llm = self._get_batch_column_llm()
-            response: BatchColumnClassificationResult = batch_llm.invoke(
-                [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ]
-            )
-            results = []
-            for item in response.classifications:
-                enforced, exact = _enforce_entity_value(item.entity_type, self._entity_names)
-                conf = item.confidence
+            result_rows = self.spark.sql(sql).collect()
+        except Exception as e:
+            logger.warning(f"ai_query batch classification failed: {e}. Using DataTable fallback.")
+            self.spark.catalog.dropTempView(view_name)
+            return [(r["column_name"], "DataTable", 0.2) for r in rows]
+
+        self.spark.catalog.dropTempView(view_name)
+
+        results = []
+        for rr in result_rows:
+            col_name = rr.column_name
+            cls = rr.classification
+            if cls and cls.result and cls.result.entity_type:
+                enforced, exact = _enforce_entity_value(cls.result.entity_type, self._entity_names)
+                conf = cls.result.confidence or 0.5
                 if not exact:
                     conf = max(0.0, conf - self.CONFIDENCE_PENALTY_SNAP)
-                results.append((item.column_name, enforced, round(conf, 3)))
-            self._stats["column_ai_classifications"] += len(results)
-            return results
-        except Exception as e:
-            logger.warning(
-                f"Batch column classification failed for {table_name} ({len(columns)} cols): {e}. "
-                "Falling back to per-column classification."
-            )
-            results = []
-            for row in columns:
-                etype, conf = self._ai_classify_column(row)
-                results.append((row.column_name or "unknown", etype, conf))
-            return results
+                results.append((col_name, enforced, round(conf, 3)))
+                self._stats["column_ai_classifications"] += 1
+            else:
+                results.append((col_name, "DataTable", 0.2))
+                self._stats["column_fallback"] += 1
+        return results
+
+    def _ai_classify_columns_for_table(
+        self, table_name: str, short_name: str, columns: List
+    ) -> List[Tuple[str, str, float]]:
+        """Classify all columns for a single table, chunking if needed.
+
+        Returns list of (column_name, entity_type, confidence).
+        Falls back to ai_query batch classification on chunk failure.
+        """
+        n = self.config.metadata_cols_per_chunk
+        # Merge small remainder into last chunk to avoid wasteful splits
+        if len(columns) <= n or (len(columns) <= n * 1.25):
+            try:
+                return self._classify_column_chunk(short_name, columns)
+            except Exception as e:
+                logger.warning(
+                    f"Batch column classification failed for {table_name} ({len(columns)} cols): {e}. "
+                    "Retrying with sub-chunks before ai_query fallback."
+                )
+                # Sub-chunk retry: split in half
+                mid = len(columns) // 2
+                results = []
+                for sub in (columns[:mid], columns[mid:]):
+                    try:
+                        results.extend(self._classify_column_chunk(short_name, sub))
+                    except Exception:
+                        logger.warning(
+                            f"Sub-chunk ({len(sub)} cols) also failed for {table_name}. "
+                            "Falling back to ai_query batch."
+                        )
+                        results.extend(self._ai_query_classify_columns(sub))
+                return results
+
+        num_chunks = -(-len(columns) // n)
+        all_results = []
+        for i in range(0, len(columns), n):
+            chunk = columns[i : i + n]
+            chunk_idx = i // n + 1
+            logger.info(f"Classifying {table_name}: chunk {chunk_idx}/{num_chunks} ({len(chunk)} cols)")
+            try:
+                all_results.extend(self._classify_column_chunk(short_name, chunk))
+            except Exception as e:
+                logger.warning(f"Chunk {chunk_idx} failed for {table_name}, using ai_query fallback: {e}")
+                all_results.extend(self._ai_query_classify_columns(chunk))
+        return all_results
 
     def _ai_classify_column(self, col_row) -> Tuple[str, float]:
         """AI classification for a single column using structured output."""
@@ -1919,10 +2045,13 @@ class OntologyBuilder:
             confidence DOUBLE,
             auto_discovered BOOLEAN,
             discovery_method STRING,
+            is_sensitive BOOLEAN,
+            is_surrogate_key BOOLEAN,
+            is_semi_structured BOOLEAN,
             created_at TIMESTAMP,
             updated_at TIMESTAMP
         )
-        COMMENT 'Column-level property classifications: identifier, attribute, measure, link, timestamp'
+        COMMENT 'Column-level property roles and orthogonal flags'
         """
         self.spark.sql(ddl)
         logger.info("Column properties table %s ready", self.config.fully_qualified_column_properties)
@@ -2494,6 +2623,22 @@ class OntologyBuilder:
             return 0
 
         now = datetime.now()
+        _hierarchy_schema = StructType([
+            StructField("src", StringType()),
+            StructField("dst", StringType()),
+            StructField("relationship", StringType()),
+            StructField("weight", DoubleType()),
+            StructField("edge_id", StringType()),
+            StructField("edge_type", StringType()),
+            StructField("direction", StringType()),
+            StructField("join_expression", StringType(), nullable=True),
+            StructField("join_confidence", DoubleType(), nullable=True),
+            StructField("ontology_rel", StringType()),
+            StructField("source_system", StringType()),
+            StructField("status", StringType()),
+            StructField("created_at", TimestampType()),
+            StructField("updated_at", TimestampType()),
+        ])
         edge_df = self.spark.createDataFrame(
             [
                 (s, d, "is_a", w,
@@ -2502,10 +2647,7 @@ class OntologyBuilder:
                  "ontology", "candidate", now, now)
                 for s, d, _, w in new_edges
             ],
-            ["src", "dst", "relationship", "weight",
-             "edge_id", "edge_type", "direction",
-             "join_expression", "join_confidence", "ontology_rel",
-             "source_system", "status", "created_at", "updated_at"],
+            schema=_hierarchy_schema,
         )
         self._insert_edges_safe(edge_df, edges_table)
         logger.info("Added %d hierarchy (is_a) edges", len(new_edges))
@@ -2876,10 +3018,32 @@ class OntologyBuilder:
             logger.info("classify_column_properties: no primary entities found")
             return 0
 
+        _GEO_PATTERNS = frozenset({
+            "country", "country_code", "state", "state_code", "city", "postal_code",
+            "zip_code", "zipcode", "zip", "latitude", "longitude", "lat", "lon",
+            "geo_region", "region", "county", "province", "address",
+        })
+        _HIERARCHY_PATTERNS = frozenset({
+            "year", "quarter", "month", "week", "day", "fiscal_year", "fiscal_quarter",
+            "product_category", "product_subcategory", "category", "subcategory",
+            "department", "division",
+        })
+        _TEXT_PATTERNS = frozenset({
+            "note_text", "notes", "clinical_summary", "summary", "comment",
+            "description", "text_content", "body", "narrative", "remarks",
+            "free_text", "memo", "abstract",
+        })
+        _SYSTEM_PATTERNS = frozenset({
+            "ingest_ts", "ingestion_timestamp", "batch_id", "row_hash", "source_system",
+            "etl_timestamp", "etl_batch_id", "load_date", "load_ts", "created_by_etl",
+            "upload_ts", "_rescued_data", "processing_timestamp",
+        })
+
         tbl_list = ",".join(f"'{t}'" for t in table_primary)
         try:
             columns = self.spark.sql(f"""
-                SELECT table_name, column_name, data_type
+                SELECT table_name, column_name, data_type,
+                       classification_type
                 FROM {col_kb}
                 WHERE table_name IN ({tbl_list})
             """).collect()
@@ -2899,18 +3063,40 @@ class OntologyBuilder:
 
             linked = col_entity_map.get((tbl, col))
             col_lower = col.lower()
+            cls_type = (getattr(c, "classification_type", None) or "").upper()
 
+            # Orthogonal flags
+            is_sensitive = cls_type in ("PII", "PHI", "PCI")
+            is_surrogate_key = bool(
+                re.search(r'_(sk|surrogate)$', col_lower)
+                or col_lower.endswith("_hash")
+                and re.search(r'_(id|key)$', col_lower)
+            )
+            is_semi_structured = dtype in ("MAP", "STRUCT", "ARRAY", "VARIANT")
+
+            # Role classification (order matters -- more specific first)
             if linked:
                 role = "link"
             elif re.search(r'_(id|key)$', col_lower) and col_lower in {cc.lower() for cc in pe["source_columns"]}:
                 role = "identifier"
-            elif re.search(r'_(id|key|code)$', col_lower) and linked is None:
-                # FK-like column but no entity match -- still a link candidate
+            elif re.search(r'_(id|key)$', col_lower) and linked is None:
                 role = "foreign_key"
-            elif dtype in ("INT", "INTEGER", "BIGINT", "LONG", "DOUBLE", "FLOAT", "DECIMAL"):
-                role = "measure"
+            elif dtype == "BOOLEAN" or col_lower.startswith(("is_", "has_", "flag_")):
+                role = "boolean_flag"
+            elif re.search(r'_(code|icd|cpt|loinc|ndc|drg)$', col_lower) or col_lower.endswith("_code"):
+                role = "code"
+            elif col_lower in _GEO_PATTERNS or col_lower.startswith("geo_"):
+                role = "geo"
+            elif col_lower in _SYSTEM_PATTERNS or col_lower.startswith("etl_"):
+                role = "system_metadata"
             elif dtype in ("DATE", "TIMESTAMP", "TIMESTAMP_NTZ"):
                 role = "timestamp"
+            elif col_lower in _HIERARCHY_PATTERNS:
+                role = "hierarchy_level"
+            elif dtype == "STRING" and col_lower in _TEXT_PATTERNS:
+                role = "text_freeform"
+            elif dtype in ("INT", "INTEGER", "BIGINT", "LONG", "DOUBLE", "FLOAT", "DECIMAL"):
+                role = "measure"
             else:
                 role = "attribute"
 
@@ -2926,6 +3112,9 @@ class OntologyBuilder:
                 "confidence": 1.0 if role in ("identifier", "link") else 0.8,
                 "auto_discovered": True,
                 "discovery_method": "heuristic",
+                "is_sensitive": is_sensitive,
+                "is_surrogate_key": is_surrogate_key,
+                "is_semi_structured": is_semi_structured,
                 "created_at": now,
                 "updated_at": now,
             })
@@ -2986,10 +3175,7 @@ class OntologyBuilder:
                 continue
             seen.add(key)
 
-            col_name = (fk.src_column or "").lower().replace("_id", "").replace("_key", "")
-            rel_name = f"has_{col_name}" if col_name else "references"
-
-            # Check declared relationships from config
+            rel_name = "references"
             for edef in self.discoverer.entity_definitions:
                 if edef.name == src_type:
                     for rn, ri in edef.relationships.items():
@@ -3032,8 +3218,13 @@ class OntologyBuilder:
                 continue
             seen.add(key)
 
-            col_base = re.sub(r'_(id|key|code)$', '', lr.column_name.lower())
-            rel_name = f"has_{col_base}" if col_base else "references"
+            rel_name = "references"
+            for edef in self.discoverer.entity_definitions:
+                if edef.name == src_type:
+                    for rn, ri in edef.relationships.items():
+                        if ri.get("target") == dst_type:
+                            rel_name = rn
+                            break
 
             rels.append({
                 "relationship_id": str(uuid.uuid4()),
@@ -3074,7 +3265,20 @@ class OntologyBuilder:
             logger.info("discover_named_relationships: no relationships found")
             return 0
 
-        df = self.spark.createDataFrame(rels)
+        _rels_schema = StructType([
+            StructField("relationship_id", StringType()),
+            StructField("src_entity_type", StringType()),
+            StructField("relationship_name", StringType()),
+            StructField("dst_entity_type", StringType()),
+            StructField("cardinality", StringType()),
+            StructField("evidence_column", StringType(), nullable=True),
+            StructField("evidence_table", StringType(), nullable=True),
+            StructField("source", StringType()),
+            StructField("confidence", DoubleType()),
+            StructField("created_at", TimestampType()),
+            StructField("updated_at", TimestampType()),
+        ])
+        df = self.spark.createDataFrame(rels, schema=_rels_schema)
         df.write.mode("overwrite").saveAsTable(rels_table)
         logger.info("discover_named_relationships: wrote %d relationships", len(rels))
         return len(rels)
@@ -3085,59 +3289,56 @@ class OntologyBuilder:
         Args:
             apply_tags: If True, write entity_type tags to UC tables/columns via ALTER TABLE SET TAGS.
         """
+        import time as _time
+
+        def _step(name, fn, *args, **kwargs):
+            t0 = _time.time()
+            result = fn(*args, **kwargs)
+            elapsed = _time.time() - t0
+            logger.info(f"[timing] {name}: {elapsed:.1f}s")
+            return result
+
         logger.info("Starting ontology build")
+        pipeline_start = _time.time()
 
-        self.create_entities_table()
-        self.create_metrics_table()
+        _step("create_entities_table", self.create_entities_table)
+        _step("create_metrics_table", self.create_metrics_table)
 
-        # Table-level entity discovery
-        table_discovered = self.discover_and_store_entities()
+        table_discovered = _step("discover_table_entities", self.discover_and_store_entities)
         logger.info(f"Discovered {table_discovered} table-level entities")
 
-        # Column-level entity discovery
-        column_discovered = self.discover_and_store_column_entities()
+        column_discovered = _step("discover_column_entities", self.discover_and_store_column_entities)
         logger.info(f"Discovered {column_discovered} column-level entities")
 
-        # Backfill source_columns on table entities from column matches
         if column_discovered > 0:
-            self.backfill_source_columns()
+            _step("backfill_source_columns", self.backfill_source_columns)
 
-        # --- New classification steps (Phase 2) ---
-        roles_classified = self.classify_entity_roles()
+        roles_classified = _step("classify_entity_roles", self.classify_entity_roles)
         logger.info(f"Classified {roles_classified} entity roles (primary/referenced)")
 
-        col_props = self.classify_column_properties()
+        col_props = _step("classify_column_properties", self.classify_column_properties)
         logger.info(f"Classified {col_props} column properties")
 
-        named_rels = self.discover_named_relationships()
+        named_rels = _step("discover_named_relationships", self.discover_named_relationships)
         logger.info(f"Discovered {named_rels} named relationships")
 
-        # Sync entity nodes into graph_nodes so edges have valid targets
-        self._sync_entity_nodes_to_graph()
+        _step("sync_entity_nodes_to_graph", self._sync_entity_nodes_to_graph)
 
-        # Add relationships to graph
-        edges_added = self.add_entity_relationships_to_graph()
+        edges_added = _step("add_entity_relationships_to_graph", self.add_entity_relationships_to_graph)
 
-        # Add hierarchy edges (is_a) from config parent fields
-        hierarchy_edges = self.add_hierarchy_edges()
+        hierarchy_edges = _step("add_hierarchy_edges", self.add_hierarchy_edges)
         edges_added += hierarchy_edges
 
-        # Discover inter-entity relationships from FK predictions
-        rel_result = self.discover_inter_entity_relationships()
+        rel_result = _step("discover_inter_entity_relationships", self.discover_inter_entity_relationships)
         edges_added += rel_result.get("edges_added", 0)
 
-        # Validate ontology completeness
-        self.validate_ontology_completeness()
+        _step("validate_ontology_completeness", self.validate_ontology_completeness)
+        _step("compute_ontology_metrics", self.compute_ontology_metrics)
 
-        # Compute and store aggregate ontology metrics
-        self.compute_ontology_metrics()
-
-        # Apply UC tags if requested
         tags_applied = 0
         if apply_tags:
-            tags_applied = self.apply_entity_tags()
+            tags_applied = _step("apply_entity_tags", self.apply_entity_tags)
 
-        # Get summary
         try:
             summary = self.get_entity_summary()
             entity_types = summary.count()
@@ -3148,6 +3349,9 @@ class OntologyBuilder:
                 )
         except Exception:
             entity_types = 0
+
+        total_elapsed = _time.time() - pipeline_start
+        logger.info(f"[timing] ontology_build_total: {total_elapsed:.1f}s")
 
         return {
             "entities_discovered": table_discovered,

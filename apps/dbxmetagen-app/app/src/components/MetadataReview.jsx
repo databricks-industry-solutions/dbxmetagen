@@ -10,7 +10,7 @@ function DataTable({ data, maxRows = 100 }) {
     <div className="overflow-x-auto rounded-xl shadow-card border border-dbx-oat-dark/30 dark:border-dbx-navy-400/20">
       <table className="min-w-full text-sm">
         <thead><tr>{cols.map(c =>
-          <th key={c} className="text-left px-3 py-2.5 bg-dbx-oat/80 dark:bg-dbx-navy-500/40 backdrop-blur-sm font-semibold text-slate-500 dark:text-slate-400 border-b border-dbx-oat-dark/30 dark:border-dbx-navy-400/20 text-xs uppercase tracking-wider sticky top-0">{c}</th>
+          <th key={c} className="text-left px-3 py-2.5 bg-dbx-oat/80 dark:bg-dbx-navy-500/40 backdrop-blur-sm font-semibold text-slate-700 dark:text-slate-300 border-b border-dbx-oat-dark/30 dark:border-dbx-navy-400/20 text-xs uppercase tracking-wider sticky top-0">{c}</th>
         )}</tr></thead>
         <tbody>
           {data.slice(0, maxRows).map((row, i) => (
@@ -358,6 +358,7 @@ function ReviewEditor() {
           ))}
           {totalDirty > 0 && (
             <button onClick={saveChanges} disabled={saving}
+              title="Batch-saves all edited table comments/domains and column comments/classifications to the knowledge bases."
               className="ml-auto px-4 py-1.5 bg-dbx-lava text-white rounded-lg text-sm font-medium hover:bg-red-700 shadow-sm disabled:opacity-50">
               {saving ? 'Saving...' : `Save Changes (${totalDirty})`}
             </button>
@@ -383,7 +384,7 @@ function ReviewEditor() {
                   const rs = tbl.review_status || 'unreviewed'
                   const rsCls = rs === 'approved' ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300' : rs === 'in_review' ? 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/40 dark:text-yellow-300' : 'bg-slate-100 text-slate-500 dark:bg-slate-800/40 dark:text-slate-400'
                   return (
-                    <select value={rs} onClick={ev => ev.stopPropagation()} onChange={ev => {
+                    <select value={rs} title="Saves immediately to table_knowledge_base. Tracks whether a human has reviewed this table's metadata." onClick={ev => ev.stopPropagation()} onChange={ev => {
                       ev.stopPropagation()
                       const newStatus = ev.target.value
                       setReviewData(prev => prev.map((t, i) => i === tblIdx ? { ...t, review_status: newStatus } : t))
@@ -435,11 +436,11 @@ function ReviewEditor() {
                         <thead><tr className="bg-dbx-oat/50 dark:bg-dbx-navy-500/50">
                           <th className="text-left px-3 py-2 text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase w-40">Column</th>
                           <th className="text-left px-3 py-2 text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase w-24">Type</th>
-                          {show('comments') && <th className="text-left px-3 py-2 text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase">Comment</th>}
-                          {show('pii') && <th className="text-left px-3 py-2 text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase">Classification</th>}
-                          {show('pii') && <th className="text-left px-3 py-2 text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase">Class. Type</th>}
+                          {show('comments') && <th title="Edits saved in batch via Save Changes to column_knowledge_base" className="text-left px-3 py-2 text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase">Comment</th>}
+                          {show('pii') && <th title="Edits saved in batch via Save Changes to column_knowledge_base" className="text-left px-3 py-2 text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase">Classification</th>}
+                          {show('pii') && <th title="Edits saved in batch via Save Changes to column_knowledge_base" className="text-left px-3 py-2 text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase">Class. Type</th>}
                           {show('ontology') && <th className="text-left px-3 py-2 text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase">Entity Types</th>}
-                          {show('ontology') && <th className="text-left px-3 py-2 text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase">Property Role</th>}
+                          {show('ontology') && <th title="Saves immediately to ontology_column_properties" className="text-left px-3 py-2 text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase">Property Role</th>}
                         </tr></thead>
                         <tbody>
                           {tbl.columns.map((col, ci) => {
@@ -477,7 +478,7 @@ function ReviewEditor() {
                                 const curLinked = colPropOverrides[cpKey]?.linked_entity_type ?? colProp.linked_entity_type ?? ''
                                 return (
                                   <div className="flex items-center gap-1">
-                                    <select value={curRole} onChange={ev => {
+                                    <select value={curRole} title="Saves immediately to ontology_column_properties. Defines how this column is used (grouping, aggregation, joining, etc.)." onChange={ev => {
                                       const nr = ev.target.value
                                       setColPropOverrides(p => ({ ...p, [cpKey]: { ...(p[cpKey] || {}), property_role: nr } }))
                                       fetch('/api/ontology/update-column-property', { method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -1009,14 +1010,14 @@ function EditableTableKB({ rows, original, setRows }) {
       <table className="min-w-full text-sm">
         <thead>
           <tr>
-            {otherCols.slice(0, 4).map(c => <th key={c} className="text-left px-3 py-2.5 bg-dbx-oat font-semibold text-slate-600 border-b border-slate-200 text-xs uppercase">{c}</th>)}
-            {editable.map(c => <th key={c} className="text-left px-3 py-2.5 bg-dbx-oat font-semibold text-slate-600 border-b border-slate-200 text-xs uppercase">{c}</th>)}
+            {otherCols.slice(0, 4).map(c => <th key={c} className="text-left px-3 py-2.5 bg-dbx-oat font-semibold text-slate-800 dark:text-slate-200 border-b border-slate-200 text-xs uppercase">{c}</th>)}
+            {editable.map(c => <th key={c} className="text-left px-3 py-2.5 bg-dbx-oat font-semibold text-slate-800 dark:text-slate-200 border-b border-slate-200 text-xs uppercase">{c}</th>)}
           </tr>
         </thead>
         <tbody>
           {rows.map((row, i) => (
             <tr key={i} className={`border-b border-slate-100 ${original && (editable.some(f => row[f] !== original[i]?.[f])) ? 'bg-amber-50' : ''} hover:bg-orange-50/30`}>
-              {otherCols.slice(0, 4).map(c => <td key={c} className="px-3 py-2 max-w-[12rem] truncate text-slate-600">{String(row[c] ?? '')}</td>)}
+              {otherCols.slice(0, 4).map(c => <td key={c} className="px-3 py-2 max-w-[12rem] truncate text-slate-700 dark:text-slate-300">{String(row[c] ?? '')}</td>)}
               {editable.map(f => (
                 <td key={f} className="px-2 py-1">
                   <input value={row[f] ?? ''} onChange={e => onChange(i, f, e.target.value)}
@@ -1043,14 +1044,14 @@ function EditableColumnKB({ rows, original, setRows }) {
       <table className="min-w-full text-sm">
         <thead>
           <tr>
-            {otherCols.slice(0, 5).map(c => <th key={c} className="text-left px-3 py-2.5 bg-dbx-oat font-semibold text-slate-600 border-b border-slate-200 text-xs uppercase">{c}</th>)}
-            {editable.map(c => <th key={c} className="text-left px-3 py-2.5 bg-dbx-oat font-semibold text-slate-600 border-slate-200 text-xs uppercase">{c}</th>)}
+            {otherCols.slice(0, 5).map(c => <th key={c} className="text-left px-3 py-2.5 bg-dbx-oat font-semibold text-slate-800 dark:text-slate-200 border-b border-slate-200 text-xs uppercase">{c}</th>)}
+            {editable.map(c => <th key={c} className="text-left px-3 py-2.5 bg-dbx-oat font-semibold text-slate-800 dark:text-slate-200 border-slate-200 text-xs uppercase">{c}</th>)}
           </tr>
         </thead>
         <tbody>
           {rows.map((row, i) => (
             <tr key={i} className={`border-b border-slate-100 ${original && editable.some(f => row[f] !== original[i]?.[f]) ? 'bg-amber-50' : ''} hover:bg-orange-50/30`}>
-              {otherCols.slice(0, 5).map(c => <td key={c} className="px-3 py-2 max-w-[10rem] truncate text-slate-600">{String(row[c] ?? '')}</td>)}
+              {otherCols.slice(0, 5).map(c => <td key={c} className="px-3 py-2 max-w-[10rem] truncate text-slate-700 dark:text-slate-300">{String(row[c] ?? '')}</td>)}
               {editable.map(f => (
                 <td key={f} className="px-2 py-1">
                   <input value={row[f] ?? ''} onChange={e => onChange(i, f, e.target.value)}
@@ -1077,14 +1078,14 @@ function EditableSchemaKB({ rows, original, setRows }) {
       <table className="min-w-full text-sm">
         <thead>
           <tr>
-            {otherCols.slice(0, 4).map(c => <th key={c} className="text-left px-3 py-2.5 bg-dbx-oat font-semibold text-slate-600 border-b border-slate-200 text-xs uppercase">{c}</th>)}
-            {editable.map(c => <th key={c} className="text-left px-3 py-2.5 bg-dbx-oat font-semibold text-slate-600 border-b border-slate-200 text-xs uppercase">{c}</th>)}
+            {otherCols.slice(0, 4).map(c => <th key={c} className="text-left px-3 py-2.5 bg-dbx-oat font-semibold text-slate-800 dark:text-slate-200 border-b border-slate-200 text-xs uppercase">{c}</th>)}
+            {editable.map(c => <th key={c} className="text-left px-3 py-2.5 bg-dbx-oat font-semibold text-slate-800 dark:text-slate-200 border-b border-slate-200 text-xs uppercase">{c}</th>)}
           </tr>
         </thead>
         <tbody>
           {rows.map((row, i) => (
             <tr key={i} className={`border-b border-slate-100 ${original && editable.some(f => row[f] !== original[i]?.[f]) ? 'bg-amber-50' : ''} hover:bg-orange-50/30`}>
-              {otherCols.slice(0, 4).map(c => <td key={c} className="px-3 py-2 max-w-[10rem] truncate text-slate-600">{String(row[c] ?? '')}</td>)}
+              {otherCols.slice(0, 4).map(c => <td key={c} className="px-3 py-2 max-w-[10rem] truncate text-slate-700 dark:text-slate-300">{String(row[c] ?? '')}</td>)}
               {editable.map(f => (
                 <td key={f} className="px-2 py-1">
                   <input value={row[f] ?? ''} onChange={e => onChange(i, f, e.target.value)}
@@ -1176,12 +1177,16 @@ function EntityTagsPanel() {
               <thead><tr>
                 <th className="w-10 px-2 py-2.5 bg-dbx-oat border-b border-slate-200"></th>
                 {['Entity', 'Type', 'Conf', 'Validated', 'Source Tables', 'Columns / Bindings'].map(h =>
-                  <th key={h} className="text-left px-3 py-2.5 bg-dbx-oat font-semibold text-slate-600 border-b border-slate-200 text-xs uppercase tracking-wider">{h}</th>)}
+                  <th key={h} className="text-left px-3 py-2.5 bg-dbx-oat font-semibold text-slate-800 dark:text-slate-200 border-b border-slate-200 text-xs uppercase tracking-wider">{h}</th>)}
               </tr></thead>
               <tbody>
                 {groupedEntities.map((e, i) => {
-                  const bindings = Array.isArray(e.column_bindings) ? e.column_bindings : []
-                  const srcCols = Array.isArray(e.source_columns) ? e.source_columns : []
+                  const bindings = Array.isArray(e.column_bindings) ? e.column_bindings
+                    : typeof e.column_bindings === 'string' ? (() => { try { const p = JSON.parse(e.column_bindings); return Array.isArray(p) ? p : [] } catch { return [] } })()
+                    : []
+                  const srcCols = Array.isArray(e.source_columns) ? e.source_columns
+                    : typeof e.source_columns === 'string' ? (() => { try { const p = JSON.parse(e.source_columns); return Array.isArray(p) ? p : [] } catch { return [] } })()
+                    : []
                   const isExpanded = expanded.has(i)
                   const hasDetail = bindings.length > 0 || srcCols.length > 0
                   return (
@@ -1198,7 +1203,7 @@ function EntityTagsPanel() {
                             className="text-xs text-blue-600 hover:underline">
                             {bindings.length > 0 ? `${bindings.length} mappings` : `${srcCols.length} cols`}{isExpanded ? ' (hide)' : ' (show)'}
                           </button>
-                        ) : <span className="text-xs text-slate-300">--</span>}</td>
+                        ) : <span className="text-xs text-slate-400">--</span>}</td>
                       </tr>
                       {isExpanded && hasDetail && (
                         <tr className="bg-slate-50/60"><td></td><td colSpan={6} className="px-3 py-2">
@@ -1359,7 +1364,10 @@ export default function MetadataReview() {
       <ErrorBanner error={error} />
       <div className="flex flex-wrap items-center gap-4">
         <div className="inline-flex bg-dbx-oat/60 dark:bg-dbx-navy-650 rounded-xl p-1 shadow-inner-soft">
-          {[['editor', 'Review Editor'], ['fk_apply', 'FK Apply'], ['entity_tags', 'Entity Tags'], ['kb', 'Table KB'], ['columns', 'Column KB'], ['schemas', 'Schema KB'], ['log', 'Generation Log']].map(([k, l]) => (
+          {[['editor', 'Review Editor'], ['fk_apply', 'FK Apply'], ['entity_tags', 'Entity Tags'], ['kb', 'Table KB'], ['columns', 'Column KB'], ['schemas', 'Schema KB'], ['log', 'Generation Log']]
+            // Hidden tabs (underlying code retained): fk_apply, entity_tags, kb, columns, schemas, log
+            .filter(([k]) => k === 'editor')
+            .map(([k, l]) => (
             <button key={k} onClick={() => setTab(k)}
               className={`px-3.5 py-1.5 text-sm rounded-lg transition-all duration-200 ${tab === k ? 'bg-white dark:bg-dbx-navy-500 shadow-sm font-semibold text-dbx-lava' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'}`}>{l}</button>
           ))}

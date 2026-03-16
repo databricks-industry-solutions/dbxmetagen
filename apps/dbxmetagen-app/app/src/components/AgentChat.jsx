@@ -1,5 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { ErrorBanner } from '../App'
+import simpleMarkdown from '../utils/simpleMarkdown'
+import ChatInputBar from './ChatInputBar'
+import GovernanceExplorer from './GovernanceExplorer'
+import ImpactAnalysis from './ImpactAnalysis'
 
 const TOOL_DESCRIPTIONS = {
   search_metadata: 'Semantic search over indexed metadata documents',
@@ -26,7 +30,13 @@ const MODE_CONFIG = {
   quick: { label: 'Quick Query', color: 'bg-blue-600', ring: 'ring-blue-600', lightBg: 'bg-blue-50 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300', desc: 'Fast ReAct with VS + graph', valueColor: 'text-blue-600' },
   graphrag: { label: 'GraphRAG Analysis', color: 'bg-violet-600', ring: 'ring-violet-600', lightBg: 'bg-violet-50 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300', desc: 'Multi-agent with full semantic layer', valueColor: 'text-violet-600' },
   baseline: { label: 'Baseline Analysis', color: 'bg-slate-600', ring: 'ring-slate-600', lightBg: 'bg-slate-50 text-slate-700 dark:bg-slate-800/40 dark:text-slate-300', desc: 'Multi-agent with KB tables only', valueColor: 'text-slate-600' },
+  governance: { label: 'Governance', color: 'bg-orange-600', ring: 'ring-orange-600', lightBg: 'bg-orange-50 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300', desc: 'Sensitivity, compliance & protection audit', valueColor: 'text-orange-600', embedded: true },
+  impact: { label: 'Impact Analysis', color: 'bg-rose-600', ring: 'ring-rose-600', lightBg: 'bg-rose-50 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300', desc: 'What-if analysis for schema changes', valueColor: 'text-rose-600', embedded: true },
 }
+
+// Only these modes are shown in the UI; the rest are hidden but retained in MODE_CONFIG.
+// Hidden modes: baseline, governance, impact
+const VISIBLE_MODES = new Set(['quick', 'graphrag'])
 
 const STAGE_LABELS = {
   starting: 'Starting...',
@@ -157,19 +167,6 @@ function MessageBubble({ msg, onRetry }) {
       </div>
     </div>
   )
-}
-
-function simpleMarkdown(text) {
-  if (!text) return ''
-  return text
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-    .replace(/`([^`]+)`/g, '<code class="bg-dbx-oat dark:bg-dbx-navy-500 px-1.5 py-0.5 rounded text-xs font-mono">$1</code>')
-    .replace(/^### (.+)$/gm, '<h3 class="text-base font-semibold mt-3 mb-1">$1</h3>')
-    .replace(/^## (.+)$/gm, '<h2 class="text-lg font-semibold mt-3 mb-1">$1</h2>')
-    .replace(/^- (.+)$/gm, '<li class="ml-4 list-disc">$1</li>')
-    .replace(/\n\n/g, '<br/><br/>')
-    .replace(/\n/g, '<br/>')
 }
 
 function DomainItem({ label, count, onClick }) {
@@ -358,36 +355,32 @@ export default function AgentChat() {
     setStage(null)
   }
 
-  const handleKey = (e) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault()
-      send(input)
-    }
-  }
-
   const clearChat = () => { setMessages([]); setError(null) }
   const injectQuery = (q) => send(q)
   const cfg = MODE_CONFIG[mode] || MODE_CONFIG.quick
 
   return (
-    <div className="flex gap-5" style={{ minHeight: 'calc(100vh - 200px)' }}>
+    <div style={{ minHeight: 'calc(100vh - 200px)' }}>
+      {/* Mode selector -- segmented control */}
+      <div className="flex flex-wrap bg-dbx-oat dark:bg-dbx-navy-650 rounded-xl p-1 mb-3 shadow-inner-soft">
+        {Object.entries(MODE_CONFIG).filter(([key]) => VISIBLE_MODES.has(key)).map(([key, c]) => (
+          <button key={key} onClick={() => { setMode(key); setMessages([]); setError(null) }}
+            className={`px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200 ${
+              mode === key
+                ? `${c.color} text-white shadow-sm`
+                : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'
+            }`}
+            title={c.desc}>{c.label}</button>
+        ))}
+      </div>
+
+      {mode === 'governance' ? <GovernanceExplorer embedded /> :
+       mode === 'impact' ? <ImpactAnalysis embedded /> : (
+      <div className="flex gap-5">
       <ErrorBanner error={error} />
 
       {/* Left: Chat */}
       <div className="flex-1 flex flex-col min-w-0" style={{ flexBasis: '65%' }}>
-        {/* Mode selector -- segmented control */}
-        <div className="inline-flex bg-dbx-oat dark:bg-dbx-navy-650 rounded-xl p-1 mb-3 shadow-inner-soft">
-          {Object.entries(MODE_CONFIG).map(([key, c]) => (
-            <button key={key} onClick={() => { setMode(key); setMessages([]); setError(null) }}
-              className={`px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200 ${
-                mode === key
-                  ? `${c.color} text-white shadow-sm`
-                  : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'
-              }`}
-              title={c.desc}>{c.label}</button>
-          ))}
-        </div>
-
         <RetrievalTechniques />
 
         {/* Chat area */}
@@ -431,28 +424,11 @@ export default function AgentChat() {
         </div>
 
         {/* Input bar */}
-        <div className="flex gap-2.5 items-center">
-          <input
-            value={input}
-            onChange={e => setInput(e.target.value)}
-            onKeyDown={handleKey}
-            placeholder={mode === 'quick' ? 'Ask about your data catalog...' : `Ask for ${cfg.label.toLowerCase()}...`}
-            disabled={loading}
-            className="input-base flex-1 !py-2.5"
-          />
-          <button onClick={() => send(input)} disabled={loading || !input.trim()}
-            className={`btn-md ${cfg.color} text-white rounded-lg font-medium disabled:opacity-50 transition-all`}>
-            Send
-          </button>
-          {messages.length > 0 && (
-            <button onClick={clearChat} title="Clear chat"
-              className="btn-ghost p-2.5 rounded-lg flex-shrink-0">
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-              </svg>
-            </button>
-          )}
-        </div>
+        <ChatInputBar value={input} onChange={setInput} onSubmit={() => send(input)}
+          loading={loading}
+          placeholder={mode === 'quick' ? 'Ask about your data catalog...' : `Ask for ${cfg.label.toLowerCase()}...`}
+          buttonLabel="Send" buttonColor={cfg.color}
+          onClear={messages.length > 0 ? clearChat : undefined} />
       </div>
 
       {/* Right: Stats Panel */}
@@ -520,6 +496,8 @@ export default function AgentChat() {
 
         <ToolsPanel />
       </div>
+      </div>
+      )}
     </div>
   )
 }

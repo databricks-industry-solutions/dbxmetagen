@@ -131,6 +131,8 @@ def setup_widgets(dbutils):
         "include_previously_failed_tables", "false", ["true", "false"], 
         "Include Previously Failed Tables"
     )
+    dbutils.widgets.text("ontology_bundle", "")
+    dbutils.widgets.text("domain_config_path", "")
 
 
 def get_widgets(dbutils):
@@ -148,6 +150,8 @@ def get_widgets(dbutils):
     sample_size = dbutils.widgets.get("sample_size")
     run_id = dbutils.widgets.get("run_id")
     include_previously_failed_tables = dbutils.widgets.get("include_previously_failed_tables")
+    ontology_bundle = dbutils.widgets.get("ontology_bundle")
+    domain_config_path = dbutils.widgets.get("domain_config_path")
     notebook_variables = {
         "cleanup_control_table": cleanup_control_table,
         "mode": mode,
@@ -162,6 +166,8 @@ def get_widgets(dbutils):
         "sample_size": sample_size,
         "run_id": run_id,
         "include_previously_failed_tables": include_previously_failed_tables,
+        "ontology_bundle": ontology_bundle,
+        "domain_config_path": domain_config_path,
     }
     return {k: v for k, v in notebook_variables.items() if v is not None and v != ""}
 

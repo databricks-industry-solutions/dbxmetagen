@@ -5,11 +5,14 @@ bundle:
 sync:
   include:
     - apps/dbxmetagen-app/app/configurations/**
+    - apps/dbxmetagen-app/app/src/dist/**
 
 include:
   - resources/jobs/*.yml
   - resources/apps/*.yml
   #- resources/dashboards.yml
+  # Uncomment to include test jobs (kept outside jobs/ glob):
+  #- resources/tests/*.yml
   - variables.yml
   - variables.advanced.yml
   - resources/app_variables.yml

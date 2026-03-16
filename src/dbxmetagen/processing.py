@@ -1855,19 +1855,62 @@ def create_and_persist_ddl(
         log_metadata_generation(column_df, config, table_name, base_path)
 
 
-def fetch_lineage(
-    spark: "SparkSession", table_name: str, limit: int = 10
-) -> Optional[Dict[str, Any]]:
-    """Query system.access.table_lineage for a single table.
+_lineage_unavailable = False
 
-    Returns ``{"upstream_tables": [...], "downstream_tables": [...]}``
-    truncated to *limit* entries each, or ``None`` on any failure
-    (missing system table, access denied, etc.).
+
+def _mark_lineage_unavailable(exc: Exception) -> None:
+    """Log once and suppress further system.access.table_lineage attempts."""
+    global _lineage_unavailable
+    if not _lineage_unavailable:
+        msg = (
+            f"[dbxmetagen] Lineage data unavailable: {exc}\n"
+            "  You may not have access to system.access.table_lineage.\n"
+            "  Continuing without lineage context for this run.\n"
+            "  Set include_lineage=false to suppress this warning."
+        )
+        logger.warning(msg)
+        print(msg)
+        _lineage_unavailable = True
+
+
+def fetch_lineage(
+    spark: "SparkSession",
+    table_name: str,
+    limit: int = 10,
+    catalog_name: str = None,
+    schema_name: str = None,
+) -> Optional[Dict[str, Any]]:
+    """Return upstream/downstream tables for *table_name*.
+
+    When *catalog_name* and *schema_name* are provided, the function first
+    tries to read cached lineage from ``extended_table_metadata`` (fast,
+    no system-table permissions required).  On any failure it falls back to
+    the live ``system.access.table_lineage`` queries.
     """
     parts = table_name.split(".")
     if len(parts) != 3:
         return None
     cat, sch, tbl = parts
+
+    # --- try cached lineage from extended_table_metadata first ---
+    if catalog_name and schema_name:
+        try:
+            row = spark.sql(
+                f"SELECT upstream_tables, downstream_tables "
+                f"FROM {catalog_name}.{schema_name}.extended_table_metadata "
+                f"WHERE table_name = '{table_name}' LIMIT 1"
+            ).collect()
+            if row:
+                up = row[0]["upstream_tables"] or []
+                down = row[0]["downstream_tables"] or []
+                if up or down:
+                    return {"upstream_tables": list(up), "downstream_tables": list(down)}
+        except Exception:
+            pass  # fall through to system table
+
+    # --- live system table query ---
+    if _lineage_unavailable:
+        return None
     try:
         up = [
             r[0]
@@ -1897,7 +1940,7 @@ def fetch_lineage(
             return None
         return {"upstream_tables": up, "downstream_tables": down}
     except Exception as e:
-        logger.warning("Could not fetch lineage for %s: %s", table_name, e)
+        _mark_lineage_unavailable(e)
         return None
 
 
@@ -1999,7 +2042,11 @@ def get_domain_classification(
         ).get("table_comments", "")
 
     if getattr(config, "include_lineage", False):
-        table_metadata["lineage"] = fetch_lineage(spark, full_table_name)
+        table_metadata["lineage"] = fetch_lineage(
+            spark, full_table_name,
+            catalog_name=getattr(config, "catalog_name", None),
+            schema_name=getattr(config, "schema_name", None),
+        )
 
     # Classify the table
     classification_result = classify_table_domain(

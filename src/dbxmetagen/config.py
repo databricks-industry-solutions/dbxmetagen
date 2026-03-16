@@ -110,6 +110,8 @@ class MetadataConfig:
             "freshness_threshold_days",
             "warehouse_id",
             "use_kb_comments",
+            "include_profiling_context",
+            "include_constraint_context",
         ],
         "yaml_advanced_file_path": "../variables.advanced.yml",
         "yaml_advanced_variable_names": [

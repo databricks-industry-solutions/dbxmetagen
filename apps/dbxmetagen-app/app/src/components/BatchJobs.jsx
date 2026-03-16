@@ -1,23 +1,32 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react'
-import { safeFetchObj, ErrorBanner } from '../App'
+import React, { useState, useEffect, useRef, useCallback, Component } from 'react'
+import { ErrorBanner } from '../App'
+import { cachedFetchObj, TTL } from '../apiCache'
 import { PageHeader, EmptyState, Skeleton } from './ui'
+
+class TabErrorBoundary extends Component {
+  state = { error: null }
+  static getDerivedStateFromError(error) { return { error } }
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="card p-6 border-l-4 border-l-red-400">
+          <h3 className="text-sm font-semibold text-red-700 dark:text-red-400 mb-1">Something went wrong</h3>
+          <p className="text-xs text-red-600 dark:text-red-300 break-words">{String(this.state.error)}</p>
+          <button onClick={() => this.setState({ error: null })} className="btn-ghost btn-sm mt-3 text-red-600">Retry</button>
+        </div>
+      )
+    }
+    return this.props.children
+  }
+}
 
 const TERMINAL_STATES = new Set(['TERMINATED', 'SKIPPED', 'INTERNAL_ERROR'])
 
-const STEP_COLORS = {
-  1: 'border-l-dbx-lava',
-  2: 'border-l-dbx-amber',
-  3: 'border-l-dbx-teal',
-  4: 'border-l-dbx-green',
-  5: 'border-l-dbx-violet',
-}
-const STEP_NUM_COLORS = {
-  1: 'bg-dbx-lava text-white',
-  2: 'bg-dbx-amber text-white',
-  3: 'bg-dbx-teal text-white',
-  4: 'bg-dbx-green text-white',
-  5: 'bg-dbx-violet text-white',
-}
+const TABS = [
+  { id: 'core', label: 'Generate Core Metadata', color: 'bg-dbx-lava' },
+  { id: 'advanced', label: 'Generate Advanced Metadata', color: 'bg-dbx-amber' },
+  { id: 'assets', label: 'Create Semantic Layer Assets', color: 'bg-dbx-teal' },
+]
 
 function stateBadge(state, result) {
   if (!state) return null
@@ -122,20 +131,7 @@ function HealthWarnings({ health }) {
   )
 }
 
-function Step({ num, title, prereq, children }) {
-  return (
-    <section className={`card border-l-4 ${STEP_COLORS[num] || 'border-l-dbx-navy'} overflow-hidden`}>
-      <div className="flex items-center gap-3 px-6 py-4 border-b border-dbx-oat-dark/30 dark:border-dbx-navy-400/20">
-        <span className={`flex items-center justify-center w-7 h-7 rounded-lg text-xs font-bold ${STEP_NUM_COLORS[num] || 'bg-dbx-navy text-white'}`}>{num}</span>
-        <h2 className="text-base font-semibold text-slate-800 dark:text-slate-100">{title}</h2>
-        {prereq && <span className="ml-auto text-xs text-slate-400 dark:text-slate-500">{prereq}</span>}
-      </div>
-      <div className="p-6">{children}</div>
-    </section>
-  )
-}
-
-export default function BatchJobs() {
+export default function BatchJobs({ onNavigate }) {
   const [jobs, setJobs] = useState([])
   const [tableNames, setTableNames] = useState('')
   const [mode, setMode] = useState('comment')
@@ -152,6 +148,14 @@ export default function BatchJobs() {
   const [runHistory, setRunHistory] = useState([])
   const [historyPage, setHistoryPage] = useState(0)
   const [health, setHealth] = useState(null)
+  const [activeTab, setActiveTab] = useState('core')
+  const [similarityThreshold, setSimilarityThreshold] = useState(0.8)
+  const [incremental, setIncremental] = useState(false)
+  const [clusterMinK, setClusterMinK] = useState(2)
+  const [clusterMaxK, setClusterMaxK] = useState(15)
+  const [lakebaseCatalog, setLakebaseCatalog] = useState('')
+  const [lakebaseError, setLakebaseError] = useState(null)
+  const [lakebaseLoading, setLakebaseLoading] = useState(false)
   const pollRef = useRef(null)
 
   const [settings, setSettings] = useState({
@@ -196,7 +200,7 @@ export default function BatchJobs() {
     }).then(setJobs)
       .catch(e => setError(`Failed to load jobs: ${e.message}`))
 
-    safeFetchObj('/api/config').then(({ data: cfg, error: cfgErr }) => {
+    cachedFetchObj('/api/config', {}, TTL.CONFIG).then(({ data: cfg, error: cfgErr }) => {
       if (cfgErr) setError(prev => prev ? `${prev} | Config: ${cfgErr}` : `Config load failed: ${cfgErr}`)
       if (cfg) {
         setCatalogName(cfg.catalog_name || '')
@@ -308,12 +312,27 @@ export default function BatchJobs() {
     setLoading(false)
   }
 
+  const syncLakebase = async () => {
+    setLakebaseError(null)
+    setLakebaseLoading(true)
+    try {
+      await runJob('sync_graph_lakebase', {
+        catalog_name: catalogName,
+        schema_name: schemaName,
+        ...(lakebaseCatalog ? { lakebase_catalog: lakebaseCatalog } : {}),
+      })
+    } catch (e) {
+      setLakebaseError(e.message || 'Lakebase sync failed')
+    }
+    setLakebaseLoading(false)
+  }
+
   const activeRuns = runHistory.filter(r => !TERMINAL_STATES.has(r.state))
   const completedRuns = runHistory.filter(r => TERMINAL_STATES.has(r.state))
 
   return (
     <div className="space-y-5">
-      <PageHeader title="Batch Jobs" subtitle="Run metadata generation pipelines" badge={catalogName && schemaName ? `${catalogName}.${schemaName}` : undefined} />
+      <PageHeader title="Generate Semantic Layer" subtitle="Build the full semantic metadata layer from your data catalog" badge={catalogName && schemaName ? `${catalogName}.${schemaName}` : undefined} />
       <ErrorBanner error={error} />
       <HealthWarnings health={health} />
 
@@ -323,7 +342,7 @@ export default function BatchJobs() {
           <div>
             <label className="section-title mb-1.5 block">Catalog</label>
             <input value={catalogName} onChange={e => setCatalogName(e.target.value)}
-              placeholder="e.g. eswanson" className="input-base" />
+              placeholder="e.g. my_catalog" className="input-base" />
           </div>
           <div>
             <label className="section-title mb-1.5 block">Schema</label>
@@ -411,184 +430,244 @@ export default function BatchJobs() {
         </details>
       </div>
 
-      {/* Step 1 -- Generate */}
-      <Step num={1} title="Generate Metadata" prereq="Entry point">
-        <p className="text-sm text-slate-500 dark:text-slate-400 mb-4">
-          <strong className="text-slate-700 dark:text-slate-200">Single Mode</strong> runs one pass (comment, PI, or domain).
-          <strong className="text-slate-700 dark:text-slate-200"> All 3 Modes</strong> runs comments first, then PI + domain in parallel.
-          Results go to <code className="bg-dbx-oat dark:bg-dbx-navy-500 px-1.5 py-0.5 rounded text-xs font-mono">metadata_generation_log</code> for review.
-        </p>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div>
-            <label className="text-sm font-medium text-slate-700 dark:text-slate-200 mb-1.5 block">Table Names</label>
-            <textarea value={tableNames} onChange={e => setTableNames(e.target.value)}
-              placeholder="catalog.schema.table1, catalog.schema.*"
-              className="textarea-base h-20" />
-            <button onClick={() => setPickerOpen(o => !o)}
-              className="btn-ghost btn-sm mt-1.5 !px-0 text-dbx-teal">
-              <svg className={`w-3 h-3 transition-transform ${pickerOpen ? 'rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-              </svg>
-              Browse Tables
-            </button>
-            {pickerOpen && (
-              <div className="mt-2 card p-3 space-y-2 animate-slide-up">
-                <div className="grid grid-cols-3 gap-2">
-                  <select value={pickerCatalog} onChange={e => setPickerCatalog(e.target.value)} className="select-base !text-xs !py-1.5">
-                    <option value="">Catalog...</option>
-                    {pickerCatalogs.map(c => <option key={c} value={c}>{c}</option>)}
+      {/* Tab bar */}
+      <div className="flex gap-1 bg-dbx-oat dark:bg-dbx-navy-500/50 rounded-xl p-1">
+        {TABS.map(tab => (
+          <button key={tab.id} onClick={() => setActiveTab(tab.id)}
+            className={`flex-1 py-2.5 px-4 rounded-lg text-sm font-medium transition-all ${
+              activeTab === tab.id
+                ? 'bg-white dark:bg-dbx-navy text-slate-800 dark:text-slate-100 shadow-sm'
+                : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'
+            }`}>
+            {tab.label}
+          </button>
+        ))}
+      </div>
+
+      <TabErrorBoundary key={activeTab}>
+      {/* Tab 1: Generate Core Metadata */}
+      {activeTab === 'core' && (
+        <section className="card border-l-4 border-l-dbx-lava overflow-hidden">
+          <div className="p-6 space-y-4">
+            <details className="group">
+              <summary className="text-sm font-medium text-slate-600 dark:text-slate-300 cursor-pointer select-none flex items-center gap-1.5">
+                <svg className="w-3 h-3 transition-transform group-open:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                </svg>
+                What is core metadata?
+              </summary>
+              <div className="mt-2 text-sm text-slate-500 dark:text-slate-400 bg-dbx-oat-light dark:bg-dbx-navy-500/30 rounded-lg p-4 animate-slide-up">
+                Core metadata generation uses LLMs to analyze your tables and produce three types of metadata: <strong className="text-slate-700 dark:text-slate-200">column comments</strong> (human-readable descriptions), <strong className="text-slate-700 dark:text-slate-200">PI classification</strong> (PII/PHI/PCI sensitivity labels), and <strong className="text-slate-700 dark:text-slate-200">domain classification</strong> (business domain assignments). These are written to <code className="bg-dbx-oat dark:bg-dbx-navy-500 px-1.5 py-0.5 rounded text-xs font-mono">metadata_generation_log</code> and can be reviewed before applying as DDL.
+              </div>
+            </details>
+
+            <p className="text-sm text-slate-500 dark:text-slate-400">
+              <strong className="text-slate-700 dark:text-slate-200">Single Mode</strong> runs one pass (comment, PI, or domain).
+              <strong className="text-slate-700 dark:text-slate-200"> All 3 Modes</strong> runs comments first, then PI + domain in parallel.
+            </p>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="text-sm font-medium text-slate-700 dark:text-slate-200 mb-1.5 block">Table Names</label>
+                <textarea value={tableNames} onChange={e => setTableNames(e.target.value)}
+                  placeholder="catalog.schema.table1, catalog.schema.*"
+                  className="textarea-base h-20" />
+                <button onClick={() => setPickerOpen(o => !o)}
+                  className="btn-ghost btn-sm mt-1.5 !px-0 text-dbx-teal">
+                  <svg className={`w-3 h-3 transition-transform ${pickerOpen ? 'rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                  </svg>
+                  Browse Tables
+                </button>
+                {pickerOpen && (
+                  <div className="mt-2 card p-3 space-y-2 animate-slide-up">
+                    <div className="grid grid-cols-3 gap-2">
+                      <select value={pickerCatalog} onChange={e => setPickerCatalog(e.target.value)} className="select-base !text-xs !py-1.5">
+                        <option value="">Catalog...</option>
+                        {pickerCatalogs.map(c => <option key={c} value={c}>{c}</option>)}
+                      </select>
+                      <select value={pickerSchema} onChange={e => setPickerSchema(e.target.value)} className="select-base !text-xs !py-1.5" disabled={!pickerCatalog}>
+                        <option value="">Schema...</option>
+                        {pickerSchemas.map(s => <option key={s} value={s}>{s}</option>)}
+                      </select>
+                      <input value={pickerFilter} onChange={e => setPickerFilter(e.target.value)}
+                        placeholder="Filter..." className="input-base !text-xs !py-1.5" />
+                    </div>
+                    {pickerTables.length > 0 && (
+                      <>
+                        <div className="max-h-40 overflow-y-auto scrollbar-thin border border-dbx-oat-dark/30 dark:border-dbx-navy-400/20 rounded-lg bg-dbx-oat-light dark:bg-dbx-navy/50 p-2 grid grid-cols-2 gap-x-4 gap-y-1">
+                          {pickerTables
+                            .filter(t => !pickerFilter || t.toLowerCase().includes(pickerFilter.toLowerCase()))
+                            .map(t => (
+                              <label key={t} className="flex items-center gap-2 text-xs cursor-pointer hover:bg-white dark:hover:bg-dbx-navy-500 px-2 py-1 rounded-lg transition-colors">
+                                <input type="checkbox" checked={pickerSelected.includes(t)}
+                                  onChange={() => togglePickerTable(t)} />
+                                <span className="text-slate-600 dark:text-slate-300">{t}</span>
+                              </label>
+                            ))}
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <div className="flex gap-3">
+                            <button onClick={() => {
+                              const visible = pickerTables.filter(t => !pickerFilter || t.toLowerCase().includes(pickerFilter.toLowerCase()))
+                              setPickerSelected(visible)
+                            }} className="text-xs text-dbx-teal hover:text-dbx-teal/80 font-medium">Select All</button>
+                            <button onClick={() => setPickerSelected([])}
+                              className="text-xs text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 font-medium">Clear</button>
+                          </div>
+                          <div className="flex items-center gap-2.5">
+                            <span className="text-xs text-slate-500">{pickerSelected.length} selected</span>
+                            <button onClick={addSelectedTables} disabled={pickerSelected.length === 0}
+                              className="btn-secondary btn-sm">Add Selected</button>
+                          </div>
+                        </div>
+                      </>
+                    )}
+                    {pickerCatalog && pickerSchema && pickerTables.length === 0 && (
+                      <p className="text-xs text-slate-400 italic py-2">No tables found</p>
+                    )}
+                  </div>
+                )}
+              </div>
+              <div className="space-y-3">
+                <div>
+                  <label className="text-sm font-medium text-slate-700 dark:text-slate-200 mb-1.5 block">Mode</label>
+                  <select value={mode} onChange={e => setMode(e.target.value)} className="select-base">
+                    <option value="comment">Comment</option>
+                    <option value="pi">PI Classification</option>
+                    <option value="domain">Domain Classification</option>
                   </select>
-                  <select value={pickerSchema} onChange={e => setPickerSchema(e.target.value)} className="select-base !text-xs !py-1.5" disabled={!pickerCatalog}>
-                    <option value="">Schema...</option>
-                    {pickerSchemas.map(s => <option key={s} value={s}>{s}</option>)}
-                  </select>
-                  <input value={pickerFilter} onChange={e => setPickerFilter(e.target.value)}
-                    placeholder="Filter..." className="input-base !text-xs !py-1.5" />
                 </div>
-                {pickerTables.length > 0 && (
-                  <>
-                    <div className="max-h-40 overflow-y-auto scrollbar-thin border border-dbx-oat-dark/30 dark:border-dbx-navy-400/20 rounded-lg bg-dbx-oat-light dark:bg-dbx-navy/50 p-2 grid grid-cols-2 gap-x-4 gap-y-1">
-                      {pickerTables
-                        .filter(t => !pickerFilter || t.toLowerCase().includes(pickerFilter.toLowerCase()))
-                        .map(t => (
-                          <label key={t} className="flex items-center gap-2 text-xs cursor-pointer hover:bg-white dark:hover:bg-dbx-navy-500 px-2 py-1 rounded-lg transition-colors">
-                            <input type="checkbox" checked={pickerSelected.includes(t)}
-                              onChange={() => togglePickerTable(t)} />
-                            <span className="text-slate-600 dark:text-slate-300">{t}</span>
-                          </label>
-                        ))}
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <div className="flex gap-3">
-                        <button onClick={() => {
-                          const visible = pickerTables.filter(t => !pickerFilter || t.toLowerCase().includes(pickerFilter.toLowerCase()))
-                          setPickerSelected(visible)
-                        }} className="text-xs text-dbx-teal hover:text-dbx-teal/80 font-medium">Select All</button>
-                        <button onClick={() => setPickerSelected([])}
-                          className="text-xs text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 font-medium">Clear</button>
-                      </div>
-                      <div className="flex items-center gap-2.5">
-                        <span className="text-xs text-slate-500">{pickerSelected.length} selected</span>
-                        <button onClick={addSelectedTables} disabled={pickerSelected.length === 0}
-                          className="btn-secondary btn-sm">Add Selected</button>
-                      </div>
-                    </div>
-                  </>
-                )}
-                {pickerCatalog && pickerSchema && pickerTables.length === 0 && (
-                  <p className="text-xs text-slate-400 italic py-2">No tables found</p>
-                )}
-              </div>
-            )}
-          </div>
-          <div className="space-y-3">
-            <div>
-              <label className="text-sm font-medium text-slate-700 dark:text-slate-200 mb-1.5 block">Mode</label>
-              <select value={mode} onChange={e => setMode(e.target.value)} className="select-base">
-                <option value="comment">Comment</option>
-                <option value="pi">PI Classification</option>
-                <option value="domain">Domain Classification</option>
-              </select>
-            </div>
-            <label className="flex items-center gap-2.5 text-sm text-slate-600 dark:text-slate-300 cursor-pointer">
-              <input type="checkbox" checked={applyDdl} onChange={e => setApplyDdl(e.target.checked)} />
-              Apply DDL directly
-            </label>
-          </div>
-        </div>
-        <div className="flex flex-wrap gap-3 mt-5">
-          <button onClick={() => runJob('_metadata_job', { table_names: tableNames, mode, apply_ddl: applyDdl, ontology_bundle: ontologyBundle, ...(domainConfig ? { domain_config: domainConfig } : {}), extra_params: buildExtraParams() })}
-            disabled={loading || !tableNames.trim()} title="Run a single metadata generation pass"
-            className="btn-secondary btn-md">{loading ? 'Starting...' : 'Run Single Mode'}</button>
-          <button onClick={() => runJob('_parallel_modes_job', { table_names: tableNames, apply_ddl: applyDdl, ontology_bundle: ontologyBundle, ...(domainConfig ? { domain_config: domainConfig } : {}), extra_params: buildExtraParams() })}
-            disabled={loading || !tableNames.trim()} title="Run all three modes in parallel"
-            className="btn-primary btn-md">All 3 Modes (Parallel)</button>
-          <button onClick={() => runJob('_kb_enriched_modes_job', { table_names: tableNames, apply_ddl: applyDdl, ontology_bundle: ontologyBundle, ...(domainConfig ? { domain_config: domainConfig } : {}), extra_params: buildExtraParams() })}
-            disabled={loading || !tableNames.trim()} title="Comments -> KB build -> PI + Domain with KB enrichment"
-            className="btn-md bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50 transition-all">KB-Enriched Modes</button>
-        </div>
-        <p className="text-xs text-slate-400 mt-2">
-          <strong className="text-slate-500">KB-Enriched Modes</strong>: Generates comments, builds the knowledge base, then runs PI + domain classification enriched with KB-generated descriptions.
-        </p>
-      </Step>
-
-      {/* Step 2 -- Analyze */}
-      <Step num={2} title="Analyze" prereq="Requires: metadata generation log">
-        <p className="text-sm text-slate-500 dark:text-slate-400 mb-4">
-          The <strong className="text-slate-700 dark:text-slate-200">Full Pipeline</strong> runs everything end-to-end: knowledge bases, graph, embeddings, profiling, ontology, clustering, FK prediction, and final analysis.
-          Or run <strong className="text-slate-700 dark:text-slate-200">individual steps</strong> to re-run specific stages.
-        </p>
-        <div className="flex gap-3 mb-4">
-          <button onClick={() => runJob('_full_analytics_pipeline', { catalog_name: catalogName, schema_name: schemaName, ontology_bundle: ontologyBundle, ...(domainConfig ? { domain_config: domainConfig } : {}) })}
-            disabled={loading} title="Run the complete end-to-end pipeline"
-            className="btn-primary btn-md">Full Analytics Pipeline</button>
-        </div>
-        <details className="card overflow-hidden group">
-          <summary className="px-4 py-3 text-sm font-medium text-slate-600 dark:text-slate-300 cursor-pointer hover:bg-dbx-oat-light dark:hover:bg-dbx-navy-500/50 flex items-center gap-1.5 transition-colors">
-            <svg className="w-3 h-3 transition-transform group-open:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-            </svg>
-            Individual steps
-          </summary>
-          <div className="px-5 py-4 space-y-4 border-t border-dbx-oat-dark/30 dark:border-dbx-navy-400/20 bg-dbx-oat-light/50 dark:bg-dbx-navy/30">
-            <div>
-              <h4 className="text-sm font-medium text-slate-700 dark:text-slate-200 mb-1">Ontology Prediction</h4>
-              <p className="text-xs text-slate-500 dark:text-slate-400 mb-2">Isolates entity discovery + validation. Re-classify with a different bundle without re-running embeddings or profiling.</p>
-              <button onClick={() => runJob('_ontology_prediction', { catalog_name: catalogName, schema_name: schemaName, ontology_bundle: ontologyBundle })}
-                disabled={loading} className="btn-secondary btn-sm">Run Ontology</button>
-            </div>
-            <div>
-              <h4 className="text-sm font-medium text-slate-700 dark:text-slate-200 mb-1">Foreign Key Prediction</h4>
-              <p className="text-xs text-slate-500 dark:text-slate-400 mb-2">Requires embeddings + similarity edges. Uses column similarity, rule scoring, and LLM judgment.</p>
-              <div className="flex gap-2">
-                <button onClick={() => runJob('fk_prediction', { catalog_name: catalogName, schema_name: schemaName })}
-                  disabled={loading} className="btn-secondary btn-sm">Predict FKs</button>
-                <button onClick={() => runJob('fk_prediction', { catalog_name: catalogName, schema_name: schemaName, apply_ddl: 'true' })}
-                  disabled={loading} className="btn-primary btn-sm">Predict + Apply</button>
+                <label className="flex items-center gap-2.5 text-sm text-slate-600 dark:text-slate-300 cursor-pointer">
+                  <input type="checkbox" checked={applyDdl} onChange={e => setApplyDdl(e.target.checked)} />
+                  Apply DDL directly
+                </label>
               </div>
             </div>
-            <div>
-              <h4 className="text-sm font-medium text-slate-700 dark:text-slate-200 mb-1">Profiling</h4>
-              <p className="text-xs text-slate-500 dark:text-slate-400 mb-2">Statistical profiling, data quality scores, and graph quality update.</p>
-              <button onClick={() => runJob('_profiling_job', { catalog_name: catalogName, schema_name: schemaName })}
-                disabled={loading} className="btn-secondary btn-sm">Run Profiling</button>
+            <div className="flex flex-wrap gap-3 mt-2">
+              <button onClick={() => runJob('_metadata_job', { table_names: tableNames, mode, apply_ddl: applyDdl, ontology_bundle: ontologyBundle, ...(domainConfig ? { domain_config: domainConfig } : {}), extra_params: buildExtraParams() })}
+                disabled={loading || !tableNames.trim()} title="Run a single metadata generation pass"
+                className="btn-secondary btn-md">{loading ? 'Starting...' : 'Run Single Mode'}</button>
+              <button onClick={() => runJob('_parallel_modes_job', { table_names: tableNames, apply_ddl: applyDdl, ontology_bundle: ontologyBundle, ...(domainConfig ? { domain_config: domainConfig } : {}), extra_params: buildExtraParams() })}
+                disabled={loading || !tableNames.trim()} title="Run all three modes in parallel"
+                className="btn-primary btn-md">All 3 Modes (Parallel)</button>
+              <button onClick={() => runJob('_kb_enriched_modes_job', { table_names: tableNames, apply_ddl: applyDdl, ontology_bundle: ontologyBundle, ...(domainConfig ? { domain_config: domainConfig } : {}), extra_params: buildExtraParams() })}
+                disabled={loading || !tableNames.trim()} title="Comments -> KB build -> PI + Domain with KB enrichment"
+                className="btn-md bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50 transition-all">KB-Enriched Modes</button>
             </div>
-            <div>
-              <h4 className="text-sm font-medium text-slate-700 dark:text-slate-200 mb-1">Knowledge Base + Graph</h4>
-              <p className="text-xs text-slate-500 dark:text-slate-400 mb-2">Build table/column knowledge bases and the knowledge graph with GraphFrames.</p>
-              <button onClick={() => runJob('_knowledge_base_job', { catalog_name: catalogName, schema_name: schemaName })}
-                disabled={loading} className="btn-secondary btn-sm">Build KB + Graph</button>
+            <p className="text-xs text-slate-400">
+              <strong className="text-slate-500">KB-Enriched Modes</strong>: Generates comments, builds the knowledge base, then runs PI + domain classification enriched with KB-generated descriptions.
+            </p>
+          </div>
+        </section>
+      )}
+
+      {/* Tab 2: Generate Advanced Metadata */}
+      {activeTab === 'advanced' && (
+        <section className="card border-l-4 border-l-dbx-amber overflow-hidden">
+          <div className="p-6 space-y-5">
+            <details className="group">
+              <summary className="text-sm font-medium text-slate-600 dark:text-slate-300 cursor-pointer select-none flex items-center gap-1.5">
+                <svg className="w-3 h-3 transition-transform group-open:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                </svg>
+                What is advanced metadata?
+              </summary>
+              <div className="mt-2 text-sm text-slate-500 dark:text-slate-400 bg-dbx-oat-light dark:bg-dbx-navy-500/30 rounded-lg p-4 animate-slide-up">
+                The advanced metadata pipeline builds on core metadata to produce the full semantic layer foundation: <strong className="text-slate-700 dark:text-slate-200">knowledge bases</strong> (table, column, schema), <strong className="text-slate-700 dark:text-slate-200">knowledge graph</strong> with GraphFrames, <strong className="text-slate-700 dark:text-slate-200">embeddings</strong> and similarity edges, <strong className="text-slate-700 dark:text-slate-200">ontology</strong> (entity discovery, classification, validation), <strong className="text-slate-700 dark:text-slate-200">profiling</strong> (column stats, data quality scores), <strong className="text-slate-700 dark:text-slate-200">FK prediction</strong> (foreign key relationships), <strong className="text-slate-700 dark:text-slate-200">clustering</strong>, and a <strong className="text-slate-700 dark:text-slate-200">vector search index</strong>. This runs as a single Databricks job with 15 orchestrated tasks.
+              </div>
+            </details>
+
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <div>
+                <label className="text-xs text-slate-500 dark:text-slate-400 mb-1 block">Similarity Threshold</label>
+                <input type="number" step="0.05" min="0" max="1" value={similarityThreshold}
+                  onChange={e => setSimilarityThreshold(parseFloat(e.target.value) || 0.8)}
+                  title="Controls edge creation threshold for embedding similarity"
+                  className="input-base !text-xs" />
+              </div>
+              <div>
+                <label className="text-xs text-slate-500 dark:text-slate-400 mb-1 block">Cluster Min K</label>
+                <input type="number" min="1" max="50" value={clusterMinK}
+                  onChange={e => setClusterMinK(parseInt(e.target.value) || 2)}
+                  className="input-base !text-xs" />
+              </div>
+              <div>
+                <label className="text-xs text-slate-500 dark:text-slate-400 mb-1 block">Cluster Max K</label>
+                <input type="number" min="2" max="100" value={clusterMaxK}
+                  onChange={e => setClusterMaxK(parseInt(e.target.value) || 15)}
+                  className="input-base !text-xs" />
+              </div>
+              <div className="flex items-end pb-1">
+                <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer">
+                  <input type="checkbox" checked={incremental} onChange={e => setIncremental(e.target.checked)} />
+                  Incremental mode (skip unchanged tables)
+                </label>
+              </div>
+            </div>
+
+            <button onClick={() => runJob('_full_analytics_pipeline', {
+              catalog_name: catalogName, schema_name: schemaName,
+              ontology_bundle: ontologyBundle,
+              ...(domainConfig ? { domain_config: domainConfig } : {}),
+              extra_params: {
+                similarity_threshold: String(similarityThreshold),
+                incremental: String(incremental),
+                cluster_min_k: String(clusterMinK),
+                cluster_max_k: String(clusterMaxK),
+              },
+            })} disabled={loading} className="btn-primary btn-md">
+              {loading ? 'Starting...' : 'Run Full Pipeline'}
+            </button>
+
+            {/* Lakebase sync card */}
+            <div className="mt-2 card p-4 border border-dbx-oat-dark/30 dark:border-dbx-navy-400/20 bg-dbx-oat-light/50 dark:bg-dbx-navy/30 space-y-3">
+              <div className="flex items-center gap-2">
+                <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200">Sync Knowledge Graph to Lakebase</h3>
+                <span className="relative group/tip">
+                  <svg className="w-4 h-4 text-slate-400 cursor-help" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                  <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-72 p-2 text-xs text-slate-200 bg-slate-800 rounded-lg shadow-lg opacity-0 group-hover/tip:opacity-100 pointer-events-none transition-opacity z-10">
+                    Syncs the knowledge graph (nodes, edges, entities, relationships) to Lakebase (PostgreSQL) for low-latency graph queries by the exploration agents. Requires a completed analytics pipeline and a configured Lakebase catalog.
+                  </span>
+                </span>
+              </div>
+              <div className="flex items-end gap-3">
+                <div className="flex-1">
+                  <label className="text-xs text-slate-500 dark:text-slate-400 mb-1 block">Lakebase Catalog (optional)</label>
+                  <input value={lakebaseCatalog} onChange={e => setLakebaseCatalog(e.target.value)}
+                    placeholder="e.g. lakebase_catalog" className="input-base !text-xs" />
+                </div>
+                <button onClick={syncLakebase} disabled={loading || lakebaseLoading}
+                  className="btn-secondary btn-md whitespace-nowrap">
+                  {lakebaseLoading ? 'Syncing...' : 'Sync to Lakebase'}
+                </button>
+              </div>
+              {lakebaseError && (
+                <div className="text-xs text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 rounded-lg px-3 py-2">
+                  {lakebaseError}
+                </div>
+              )}
             </div>
           </div>
-        </details>
-      </Step>
+        </section>
+      )}
 
-      {/* Step 3 -- Enrich */}
-      <Step num={3} title="Enrich" prereq="Requires: knowledge base + analytics">
-        <p className="text-sm text-slate-500 dark:text-slate-400 mb-4">
-          Generate metric views from business questions (add them in the <strong className="text-slate-700 dark:text-slate-200">Semantic Layer</strong> tab first),
-          then apply as Unity Catalog metric views.
-        </p>
-        <button onClick={() => runJob('_semantic_layer', { catalog_name: catalogName, schema_name: schemaName })}
-          disabled={loading} className="btn-primary btn-md">Generate Semantic Layer</button>
-      </Step>
-
-      {/* Step 4 -- Index + Sync */}
-      <Step num={4} title="Index + Sync" prereq="Requires: completed analytics pipeline">
-        <p className="text-sm text-slate-500 dark:text-slate-400 mb-4">
-          Rebuild the Knowledge Graph, Vector Index, and sync to Lakebase in one operation, or run each step individually.
-        </p>
-        <div className="flex flex-wrap gap-3">
-          <button onClick={async () => {
-            await runJob('_build_vector_index', { catalog_name: catalogName, schema_name: schemaName })
-            await runJob('sync_graph_lakebase', { catalog_name: catalogName, schema_name: schemaName })
-          }} disabled={loading} className="btn-primary btn-md">Rebuild KG + VS + Sync</button>
-          <button onClick={() => runJob('_build_vector_index', { catalog_name: catalogName, schema_name: schemaName })}
-            disabled={loading} className="btn-secondary btn-sm">Build Vector Index</button>
-          <button onClick={() => runJob('sync_graph_lakebase', { catalog_name: catalogName, schema_name: schemaName })}
-            disabled={loading} className="btn-secondary btn-sm">Sync to Lakebase</button>
-        </div>
-      </Step>
+      {/* Tab 3: Create Semantic Layer Assets */}
+      {activeTab === 'assets' && (
+        <section className="card border-l-4 border-l-dbx-teal overflow-hidden">
+          <div className="p-6 space-y-4">
+            <p className="text-sm text-slate-600 dark:text-slate-300">
+              Create <strong className="text-slate-700 dark:text-slate-200">metric views</strong>, manage question profiles, and generate reusable KPI definitions from the <strong className="text-slate-700 dark:text-slate-200">Define Metrics</strong> page.
+            </p>
+            <button onClick={() => onNavigate?.('semantic')} className="btn-primary btn-md">
+              Go to Define Metrics
+            </button>
+          </div>
+        </section>
+      )}
+      </TabErrorBoundary>
 
       {/* Active Runs */}
       {activeRuns.length > 0 && (

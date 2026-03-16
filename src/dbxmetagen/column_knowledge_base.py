@@ -7,7 +7,7 @@ with aggregated column metadata from comment and PI classification runs.
 
 import logging
 from dataclasses import dataclass
-from typing import Dict, Any
+from typing import Dict, Any, List
 from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql import functions as F
 from pyspark.sql.window import Window
@@ -283,6 +283,68 @@ class ColumnKnowledgeBaseBuilder:
             "staged_count": staged_count,
             "total_records": merge_stats["total_records"]
         }
+
+    def bootstrap(self, table_names: List[str]) -> int:
+        """Populate column KB from information_schema with zero LLM calls.
+
+        Inserts only rows that don't already exist (MERGE WHEN NOT MATCHED).
+        Includes data_type, nullable, and existing UC column comments.
+        """
+        self.create_target_table()
+        by_catalog_schema: Dict[str, List[str]] = {}
+        for fqtn in table_names:
+            parts = fqtn.split(".")
+            if len(parts) != 3:
+                continue
+            key = f"{parts[0]}.{parts[1]}"
+            by_catalog_schema.setdefault(key, []).append(parts[2])
+
+        all_dfs = []
+        for cs_key, short_names in by_catalog_schema.items():
+            cat, sch = cs_key.split(".", 1)
+            in_clause = ", ".join(f"'{t}'" for t in short_names)
+            try:
+                df = self.spark.sql(f"""
+                    SELECT
+                        CONCAT(table_catalog, '.', table_schema, '.', table_name, '.', column_name) AS column_id,
+                        CONCAT(table_catalog, '.', table_schema, '.', table_name) AS table_name,
+                        table_catalog AS catalog,
+                        table_schema AS `schema`,
+                        table_name AS table_short_name,
+                        column_name,
+                        comment,
+                        data_type,
+                        CAST(NULL AS STRING) AS classification,
+                        CAST(NULL AS STRING) AS classification_type,
+                        CAST(NULL AS FLOAT) AS confidence,
+                        CASE WHEN is_nullable = 'YES' THEN true ELSE false END AS nullable,
+                        current_timestamp() AS created_at,
+                        current_timestamp() AS updated_at,
+                        CAST(NULL AS TIMESTAMP) AS review_updated_at
+                    FROM {cat}.information_schema.columns
+                    WHERE table_schema = '{sch}'
+                      AND table_name IN ({in_clause})
+                """)
+                all_dfs.append(df)
+            except Exception as e:
+                logger.warning("Bootstrap: could not query %s.information_schema.columns: %s", cat, e)
+
+        if not all_dfs:
+            return 0
+
+        from functools import reduce
+        combined = reduce(DataFrame.union, all_dfs)
+        combined.createOrReplaceTempView("_ckb_bootstrap_src")
+
+        self.spark.sql(f"""
+            MERGE INTO {self.config.fully_qualified_target} AS target
+            USING _ckb_bootstrap_src AS source
+            ON target.column_id = source.column_id
+            WHEN NOT MATCHED THEN INSERT *
+        """)
+        count = combined.count()
+        logger.info("Bootstrap: merged %d column rows into %s", count, self.config.fully_qualified_target)
+        return count
 
 
 def build_column_knowledge_base(

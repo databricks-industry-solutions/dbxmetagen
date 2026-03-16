@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react'
-import { safeFetch, ErrorBanner } from '../App'
+import { ErrorBanner } from '../App'
+import { cachedFetch, cachedFetchObj, TTL } from '../apiCache'
 import { PageHeader, StatCard, SkeletonCards, EmptyState } from './ui'
 import { OntologyOverview } from './Ontology'
 import { FKMapViz } from './ForeignKeyGeneration'
@@ -26,11 +27,12 @@ function MetadataBar({ label, value, total, color }) {
   )
 }
 
-function CatalogCoverage() {
+function CatalogCoverage({ catalog }) {
   const [summary, setSummary] = useState([])
   const [tables, setTables] = useState([])
   const [typeBreakdown, setTypeBreakdown] = useState([])
   const [metaSummary, setMetaSummary] = useState(null)
+  const [reviewSummary, setReviewSummary] = useState(null)
   const [error, setError] = useState(null)
   const [selected, setSelected] = useState(null)
   const [schemaMeta, setSchemaMeta] = useState(null)
@@ -38,20 +40,24 @@ function CatalogCoverage() {
   const [typeFilter, setTypeFilter] = useState('all')
 
   useEffect(() => {
-    safeFetch('/api/coverage/summary').then(r => {
+    const catParam = catalog ? `?catalog=${encodeURIComponent(catalog)}` : ''
+    setSelected(null); setTables([]); setSchemaMeta(null); setReviewSummary(null)
+    cachedFetch(`/api/coverage/summary${catParam}`, {}, TTL.DASHBOARD).then(r => {
       setSummary(r.data)
       if (r.error) setError(r.error)
     })
-    fetch('/api/coverage/type-breakdown')
+    fetch(`/api/coverage/type-breakdown${catParam}`)
       .then(r => r.ok ? r.json() : []).then(setTypeBreakdown).catch(() => {})
     fetch('/api/coverage/metadata-summary')
       .then(r => r.ok ? r.json() : null).then(setMetaSummary).catch(() => {})
-  }, [])
+    fetch(`/api/coverage/review-summary${catParam}`)
+      .then(r => r.ok ? r.json() : []).then(setReviewSummary).catch(() => {})
+  }, [catalog])
 
   const drillDown = async (catalog, schema) => {
     setSelected({ catalog, schema })
     setSchemaMeta(null)
-    const { data, error: e } = await safeFetch(`/api/coverage/tables?catalog=${encodeURIComponent(catalog)}&schema=${encodeURIComponent(schema)}`)
+    const { data, error: e } = await cachedFetch(`/api/coverage/tables?catalog=${encodeURIComponent(catalog)}&schema=${encodeURIComponent(schema)}`, {}, TTL.DASHBOARD)
     setTables(data)
     fetch(`/api/coverage/metadata-summary?catalog=${encodeURIComponent(catalog)}&schema=${encodeURIComponent(schema)}`)
       .then(r => r.ok ? r.json() : null).then(setSchemaMeta).catch(() => {})
@@ -88,18 +94,48 @@ function CatalogCoverage() {
         <StatCard label="Unprofiled" value={totals.unprofiled} accentColor="border-l-dbx-amber" sub={totals.total > 0 ? `${Math.round(totals.unprofiled / totals.total * 100)}%` : undefined} />
       </div>
 
-      {/* Metadata Completeness */}
-      {metaSummary && metaSummary.total > 0 && (
+      {reviewSummary && reviewSummary.length > 0 && (() => {
+        const counts = { unreviewed: 0, in_review: 0, approved: 0 }
+        reviewSummary.forEach(r => { counts[r.status] = (counts[r.status] || 0) + parseInt(r.cnt || 0) })
+        const total = Object.values(counts).reduce((a, b) => a + b, 0)
+        return (
+          <section className="card border-l-4 border-l-indigo-500 p-4">
+            <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200 mb-2">Governance Review Status</h3>
+            <div className="flex gap-3">
+              <span className="inline-flex items-center gap-1.5 text-xs"><span className="w-2 h-2 rounded-full bg-slate-400" />{counts.unreviewed} unreviewed</span>
+              <span className="inline-flex items-center gap-1.5 text-xs"><span className="w-2 h-2 rounded-full bg-yellow-500" />{counts.in_review} in review</span>
+              <span className="inline-flex items-center gap-1.5 text-xs"><span className="w-2 h-2 rounded-full bg-green-500" />{counts.approved} approved</span>
+            </div>
+            {total > 0 && (
+              <div className="mt-2 flex h-2 rounded-full overflow-hidden bg-slate-200 dark:bg-dbx-navy-500">
+                {counts.approved > 0 && <div className="bg-green-500" style={{ width: `${(counts.approved / total * 100).toFixed(1)}%` }} />}
+                {counts.in_review > 0 && <div className="bg-yellow-500" style={{ width: `${(counts.in_review / total * 100).toFixed(1)}%` }} />}
+                {counts.unreviewed > 0 && <div className="bg-slate-400" style={{ width: `${(counts.unreviewed / total * 100).toFixed(1)}%` }} />}
+              </div>
+            )}
+          </section>
+        )
+      })()}
+
+      {/* Discovery & Metadata Completeness */}
+      {(totals.total > 0 || (metaSummary && metaSummary.total > 0)) && (
         <section className="card p-6">
-          <h2 className="text-lg font-semibold text-slate-800 dark:text-slate-100 mb-4">Metadata Completeness</h2>
-          <div className="space-y-2.5">
+          <h2 className="text-lg font-semibold text-slate-800 dark:text-slate-100 mb-1">Discovery Coverage</h2>
+          <p className="text-xs text-slate-400 dark:text-slate-500 mb-3">Profiled tables out of all tables in the catalog</p>
+          <div className="space-y-2.5 mb-5">
             <MetadataBar label="Profiled" value={totals.profiled} total={totals.total} color="bg-dbx-green" />
-            <MetadataBar label="Comments" value={parseInt(metaSummary.with_comments) || 0} total={parseInt(metaSummary.total)} color="bg-blue-500" />
-            <MetadataBar label="PII / PHI" value={parseInt(metaSummary.with_pii) || 0} total={parseInt(metaSummary.total)} color="bg-violet-500" />
-            <MetadataBar label="Domain" value={parseInt(metaSummary.with_domain) || 0} total={parseInt(metaSummary.total)} color="bg-amber-500" />
-            <MetadataBar label="Ontology" value={parseInt(metaSummary.with_ontology) || 0} total={parseInt(metaSummary.total)} color="bg-orange-500" />
-            <MetadataBar label="FK Relations" value={parseInt(metaSummary.with_fk) || 0} total={parseInt(metaSummary.total)} color="bg-rose-500" />
           </div>
+          {metaSummary && metaSummary.total > 0 && (<>
+            <h2 className="text-lg font-semibold text-slate-800 dark:text-slate-100 mb-1">Metadata Completeness</h2>
+            <p className="text-xs text-slate-400 dark:text-slate-500 mb-3">Enrichment rates among profiled tables ({parseInt(metaSummary.total)} tables in KB)</p>
+            <div className="space-y-2.5">
+              <MetadataBar label="Comments" value={parseInt(metaSummary.with_comments) || 0} total={parseInt(metaSummary.total)} color="bg-blue-500" />
+              <MetadataBar label="PII / PHI" value={parseInt(metaSummary.with_pii) || 0} total={parseInt(metaSummary.total)} color="bg-violet-500" />
+              <MetadataBar label="Domain" value={parseInt(metaSummary.with_domain) || 0} total={parseInt(metaSummary.total)} color="bg-amber-500" />
+              <MetadataBar label="Ontology" value={parseInt(metaSummary.with_ontology) || 0} total={parseInt(metaSummary.total)} color="bg-orange-500" />
+              <MetadataBar label="Tables with FK" value={parseInt(metaSummary.with_fk) || 0} total={parseInt(metaSummary.total)} color="bg-rose-500" />
+            </div>
+          </>)}
         </section>
       )}
 
@@ -185,13 +221,14 @@ function CatalogCoverage() {
           </div>
           {schemaMeta && schemaMeta.total > 0 && (
             <div className="mb-4 p-4 bg-white dark:bg-dbx-navy-500/50 rounded-lg border border-slate-100 dark:border-dbx-navy-400/30 space-y-2">
-              <h3 className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-2">Schema Metadata Completeness</h3>
+              <h3 className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1">Discovery Coverage</h3>
               <MetadataBar label="Profiled" value={filteredTables.filter(t => t.is_profiled === 'true' || t.is_profiled === true).length} total={filteredTables.length} color="bg-emerald-500" />
+              <h3 className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mt-3 mb-1">Metadata Completeness <span className="font-normal">({parseInt(schemaMeta.total)} in KB)</span></h3>
               <MetadataBar label="Comments" value={parseInt(schemaMeta.with_comments) || 0} total={parseInt(schemaMeta.total)} color="bg-blue-500" />
               <MetadataBar label="PII / PHI" value={parseInt(schemaMeta.with_pii) || 0} total={parseInt(schemaMeta.total)} color="bg-violet-500" />
               <MetadataBar label="Domain" value={parseInt(schemaMeta.with_domain) || 0} total={parseInt(schemaMeta.total)} color="bg-amber-500" />
               <MetadataBar label="Ontology" value={parseInt(schemaMeta.with_ontology) || 0} total={parseInt(schemaMeta.total)} color="bg-orange-500" />
-              <MetadataBar label="FK Relations" value={parseInt(schemaMeta.with_fk) || 0} total={parseInt(schemaMeta.total)} color="bg-rose-500" />
+              <MetadataBar label="Tables with FK" value={parseInt(schemaMeta.with_fk) || 0} total={parseInt(schemaMeta.total)} color="bg-rose-500" />
             </div>
           )}
           <div className="overflow-x-auto max-h-96">
@@ -225,8 +262,8 @@ function CatalogCoverage() {
 const OVERVIEW_CARDS = [
   { key: 'profiled', label: 'Data Profiles', color: 'border-l-emerald-500', bg: 'from-emerald-50 to-emerald-100/30 dark:from-emerald-900/20 dark:to-emerald-900/10', tab: 'data' },
   { key: 'with_comments', label: 'Descriptions', color: 'border-l-blue-500', bg: 'from-blue-50 to-blue-100/30 dark:from-blue-900/20 dark:to-blue-900/10', tab: 'data' },
-  { key: 'with_ontology', label: 'Ontology Entities', color: 'border-l-orange-500', bg: 'from-orange-50 to-orange-100/30 dark:from-orange-900/20 dark:to-orange-900/10', tab: 'ontology' },
-  { key: 'fk_count', label: 'FK Relationships', color: 'border-l-rose-500', bg: 'from-rose-50 to-rose-100/30 dark:from-rose-900/20 dark:to-rose-900/10', tab: 'graph' },
+  { key: 'with_ontology', label: 'Ontology Coverage', color: 'border-l-orange-500', bg: 'from-orange-50 to-orange-100/30 dark:from-orange-900/20 dark:to-orange-900/10', tab: 'ontology' },
+  { key: 'fk_count', label: 'FK Predictions', color: 'border-l-rose-500', bg: 'from-rose-50 to-rose-100/30 dark:from-rose-900/20 dark:to-rose-900/10', tab: 'graph' },
   { key: 'metric_views', label: 'Metric Views', color: 'border-l-amber-500', bg: 'from-amber-50 to-amber-100/30 dark:from-amber-900/20 dark:to-amber-900/10', tab: 'data' },
   { key: 'vs_documents', label: 'VS Documents', color: 'border-l-violet-500', bg: 'from-violet-50 to-violet-100/30 dark:from-violet-900/20 dark:to-violet-900/10', tab: 'data' },
 ]
@@ -260,26 +297,48 @@ function CoverageCard({ label, value, total, color, bg, onClick, sub }) {
 export default function Coverage() {
   const [holistic, setHolistic] = useState(null)
   const [tab, setTab] = useState('data')
+  const [catalogs, setCatalogs] = useState([])
+  const [selectedCatalog, setSelectedCatalog] = useState('')
 
   useEffect(() => {
-    fetch('/api/coverage/holistic').then(r => r.ok ? r.json() : null).then(setHolistic).catch(() => {})
+    fetch('/api/catalogs').then(r => r.ok ? r.json() : []).then(setCatalogs).catch(() => {})
+    cachedFetchObj('/api/config', {}, TTL.CONFIG).then(({ data: cfg }) => {
+      if (cfg?.catalog_name) setSelectedCatalog(cfg.catalog_name)
+    })
   }, [])
+
+  useEffect(() => {
+    if (!selectedCatalog) return
+    const catParam = `?catalog=${encodeURIComponent(selectedCatalog)}`
+    fetch(`/api/coverage/holistic${catParam}`).then(r => r.ok ? r.json() : null).then(setHolistic).catch(() => {})
+  }, [selectedCatalog])
 
   const h = holistic || {}
   const total = h.total_tables || 0
 
   return (
     <div className="space-y-5">
-      <PageHeader title="Metadata Coverage" subtitle="Holistic view of all metadata types across your catalog" />
+      <div className="flex items-center justify-between">
+        <PageHeader title="Metadata Coverage" subtitle="Holistic view of all metadata types across your catalog" />
+        {catalogs.length > 0 && (
+          <select value={selectedCatalog} onChange={e => { setSelectedCatalog(e.target.value); setHolistic(null) }}
+            className="px-3 py-1.5 text-sm rounded-lg border border-slate-300 dark:border-dbx-navy-400 bg-white dark:bg-dbx-navy-600 text-slate-700 dark:text-slate-200">
+            {catalogs.map(c => <option key={c} value={c}>{c}</option>)}
+          </select>
+        )}
+      </div>
 
       {/* Overview Cards */}
       {holistic ? (
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
           {OVERVIEW_CARDS.map(c => {
             const val = h[c.key] ?? 0
-            const showTotal = ['profiled', 'with_comments', 'with_ontology'].includes(c.key) ? total : null
-            const sub = c.key === 'with_ontology' && h.avg_confidence != null
-              ? `avg confidence: ${(h.avg_confidence * 100).toFixed(0)}%`
+            const showTotal = ['profiled', 'with_comments'].includes(c.key) ? total
+              : c.key === 'with_ontology' ? total : null
+            const sub = c.key === 'with_ontology'
+              ? `${h.entity_type_count || 0} types${h.avg_confidence != null ? `, avg conf: ${(h.avg_confidence * 100).toFixed(0)}%` : ''}`
+              : c.key === 'fk_count'
+              ? `confidence >= 50%${h.with_fk ? `, ${h.with_fk} tables involved` : ''}`
               : c.key === 'vs_documents' && h.vs_by_type && Object.keys(h.vs_by_type).length > 0
               ? Object.entries(h.vs_by_type).map(([k, v]) => `${k}: ${v}`).join(', ')
               : c.key === 'metric_views' && h.metric_view_statuses && Object.keys(h.metric_view_statuses).length > 0
@@ -296,15 +355,21 @@ export default function Coverage() {
         <SkeletonCards count={6} />
       )}
 
-      {/* Detail Tabs */}
-      <div className="inline-flex bg-dbx-oat/60 dark:bg-dbx-navy-600 rounded-xl p-1 shadow-inner-soft">
-        {DETAIL_TABS.map(({ key, label }) => (
-          <button key={key} onClick={() => setTab(key)}
-            className={`px-3.5 py-1.5 text-sm rounded-lg transition-all duration-200 ${tab === key ? 'bg-white dark:bg-dbx-navy-500 shadow-sm font-semibold text-dbx-lava' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'}`}>{label}</button>
-        ))}
-      </div>
+      {/* Detail Tabs — only 'data' shown; ontology/graph hidden but code preserved */}
+      {(() => {
+        const VISIBLE_TABS = new Set(['data'])
+        const visible = DETAIL_TABS.filter(t => VISIBLE_TABS.has(t.key))
+        return visible.length > 1 ? (
+          <div className="inline-flex bg-dbx-oat/60 dark:bg-dbx-navy-600 rounded-xl p-1 shadow-inner-soft">
+            {visible.map(({ key, label }) => (
+              <button key={key} onClick={() => setTab(key)}
+                className={`px-3.5 py-1.5 text-sm rounded-lg transition-all duration-200 ${tab === key ? 'bg-white dark:bg-dbx-navy-500 shadow-sm font-semibold text-dbx-lava' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'}`}>{label}</button>
+            ))}
+          </div>
+        ) : null
+      })()}
 
-      {tab === 'data' && <CatalogCoverage />}
+      {tab === 'data' && <CatalogCoverage catalog={selectedCatalog} />}
       {tab === 'ontology' && <OntologyOverview />}
       {tab === 'graph' && (
         <div className="space-y-4">
