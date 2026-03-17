@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react'
 import { ErrorBanner } from '../App'
 import { cachedFetch, cachedFetchObj, TTL } from '../apiCache'
 import { PageHeader, EmptyState, Skeleton, Section } from './ui'
+import { useCatalogSchemaTables } from '../hooks/useCatalogSchemaTables'
 
 const STAGES = {
   starting: 'Starting...',
@@ -18,14 +19,11 @@ export default function SemanticLayer() {
   const [newProjectName, setNewProjectName] = useState('')
   const [showNewProject, setShowNewProject] = useState(false)
 
-  // Table selection
-  const [catalogs, setCatalogs] = useState([])
-  const [schemas, setSchemas] = useState([])
-  const [allTables, setAllTables] = useState([])
-  const [selectedCatalog, setSelectedCatalog] = useState('')
-  const [selectedSchema, setSelectedSchema] = useState('')
+  // Table selection (shared cascade hook)
+  const cst = useCatalogSchemaTables()
+  const { catalogs, schemas, filtered: filteredTables, catalog: selectedCatalog, schema: selectedSchema, filter: tableFilter, setCatalog: setSelectedCatalog, setSchema: setSelectedSchema, setFilter: setTableFilter } = cst
+  const allTables = cst.tables
   const [selectedTables, setSelectedTables] = useState([])
-  const [tableFilter, setTableFilter] = useState('')
 
   // Profiles
   const [profiles, setProfiles] = useState([])
@@ -75,7 +73,6 @@ export default function SemanticLayer() {
     loadProfiles()
     refreshDefinitions()
     loadKpis()
-    fetch('/api/catalogs').then(r => r.json()).then(setCatalogs).catch(() => { })
   }, [])
 
   // Refresh definitions and pre-populate tables when project changes
@@ -91,19 +88,6 @@ export default function SemanticLayer() {
       }
     }
   }, [selectedProjectId])
-
-  // Cascade: catalog -> schemas
-  useEffect(() => {
-    if (!selectedCatalog) { setSchemas([]); return }
-    fetch(`/api/schemas?catalog=${selectedCatalog}`).then(r => r.json()).then(setSchemas).catch(() => setSchemas([]))
-  }, [selectedCatalog])
-
-  // Cascade: schema -> tables
-  useEffect(() => {
-    if (!selectedCatalog || !selectedSchema) { setAllTables([]); return }
-    fetch(`/api/tables?catalog=${selectedCatalog}&schema=${selectedSchema}`)
-      .then(r => r.json()).then(setAllTables).catch(() => setAllTables([]))
-  }, [selectedCatalog, selectedSchema])
 
   // Polling
   useEffect(() => {
@@ -162,6 +146,7 @@ export default function SemanticLayer() {
   }
 
   const deleteProject = async (pid) => {
+    if (!confirm('Delete this project?')) return
     setLoading(true); setError(null)
     try {
       await fetch(`/api/semantic-layer/projects/${pid}`, { method: 'DELETE' })
@@ -209,6 +194,7 @@ export default function SemanticLayer() {
 
   const deleteProfile = async () => {
     if (!activeProfileId) return
+    if (!confirm('Delete this profile?')) return
     setLoading(true); setError(null)
     try {
       await fetch(`/api/semantic-layer/profiles/${activeProfileId}`, { method: 'DELETE' })
@@ -226,10 +212,6 @@ export default function SemanticLayer() {
   }
   const selectAll = () => setSelectedTables([...filteredTables])
   const selectNone = () => setSelectedTables([])
-
-  const filteredTables = allTables.filter(t =>
-    !tableFilter || t.toLowerCase().includes(tableFilter.toLowerCase())
-  )
 
   const suggestQuestions = async () => {
     if (!selectedTables.length) { setError('Select tables first'); return }
@@ -254,18 +236,23 @@ export default function SemanticLayer() {
     setKpis(data || [])
   }
   const saveKpi = async () => {
-    const body = { ...kpiDraft, target_tables: selectedTables }
-    if (kpiEditId) {
-      await fetch(`/api/kpis/${kpiEditId}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
-    } else {
-      await fetch('/api/kpis', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
-    }
-    setKpiDraft({ name: '', description: '', formula: '', domain: '' }); setKpiEditId(null); setShowKpiForm(false)
-    loadKpis()
+    try {
+      const body = { ...kpiDraft, target_tables: selectedTables }
+      const res = kpiEditId
+        ? await fetch(`/api/kpis/${kpiEditId}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+        : await fetch('/api/kpis', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+      if (!res.ok) { const d = await res.json().catch(() => ({})); setError(d.detail || 'Save KPI failed'); return }
+      setKpiDraft({ name: '', description: '', formula: '', domain: '' }); setKpiEditId(null); setShowKpiForm(false)
+      loadKpis()
+    } catch (e) { setError(e.message || 'Save KPI failed') }
   }
   const deleteKpi = async (id) => {
-    await fetch(`/api/kpis/${id}`, { method: 'DELETE' })
-    loadKpis()
+    if (!confirm('Delete this KPI?')) return
+    try {
+      const res = await fetch(`/api/kpis/${id}`, { method: 'DELETE' })
+      if (!res.ok) { const d = await res.json().catch(() => ({})); setError(d.detail || 'Delete KPI failed'); return }
+      loadKpis()
+    } catch (e) { setError(e.message || 'Delete KPI failed') }
   }
   const suggestKpis = async () => {
     if (!selectedTables.length) return
@@ -415,6 +402,7 @@ export default function SemanticLayer() {
   }
 
   const deleteDefinition = async (defId, status) => {
+    if (!confirm('Delete this definition?')) return
     setActionLoading(prev => ({ ...prev, [defId]: 'delete' }))
     setError(null)
     try {
@@ -430,6 +418,7 @@ export default function SemanticLayer() {
   }
 
   const dropDefinition = async (defId) => {
+    if (!confirm('Drop this view from Unity Catalog?')) return
     if (!createTarget.catalog || !createTarget.schema) {
       setError('Set a target catalog and schema before dropping')
       return
@@ -549,7 +538,7 @@ export default function SemanticLayer() {
           <div>
             <label className={label}>Filter tables</label>
             <input value={tableFilter} onChange={e => setTableFilter(e.target.value)}
-              placeholder="Type to filter..." className={input} />
+              placeholder="Type to filter..." className={input} aria-label="Filter tables" />
           </div>
         </div>
         {allTables.length > 0 && (
@@ -697,7 +686,7 @@ export default function SemanticLayer() {
             Generate More
           </button>
           {selectedProjectId && (
-            <button onClick={() => startGeneration('replace_all')}
+            <button onClick={() => { if (!confirm('Regenerate all definitions? This will replace existing ones.')) return; startGeneration('replace_all') }}
               disabled={loading || isGenerating || !selectedTables.length || !questionLines.length}
               className="px-4 py-2 bg-dbx-lava text-white rounded-md text-sm hover:bg-red-700 disabled:opacity-50">
               Regenerate All
@@ -769,6 +758,12 @@ export default function SemanticLayer() {
                     </div>
                     <div className="flex items-center gap-2">
                       {statusBadge(d.status)}
+                      {d.complexity_level === 'trivial' && (
+                        <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400" title="Only basic COUNT/SUM measures">Trivial</span>
+                      )}
+                      {d.complexity_level === 'rich' && (
+                        <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400" title="Includes ratios, rates, or filtered aggregates">Rich</span>
+                      )}
                       <button onClick={() => loadDefinitionJson(d.definition_id)}
                         className="text-xs text-blue-600 dark:text-blue-400 hover:underline">
                         {expandedDef === d.definition_id ? 'Hide' : 'View JSON'}
@@ -837,7 +832,7 @@ export default function SemanticLayer() {
       )}
 
       {editDefId && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={() => !suggestLoading && setEditDefId(null)}>
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={() => !suggestLoading && setEditDefId(null)} role="dialog" aria-modal="true">
           <div className="bg-white dark:bg-dbx-navy-600 rounded-2xl shadow-elevated max-w-3xl w-full max-h-[90vh] flex flex-col animate-slide-up" onClick={e => e.stopPropagation()}>
             <div className="p-3 border-b dark:border-gray-700 font-medium dark:text-gray-100">Edit definition JSON</div>
             <textarea value={editJson} onChange={e => setEditJson(e.target.value)}

@@ -360,7 +360,7 @@ export default function AgentChat() {
   const cfg = MODE_CONFIG[mode] || MODE_CONFIG.quick
 
   return (
-    <div style={{ minHeight: 'calc(100vh - 200px)' }}>
+    <div className="min-h-[calc(100vh-12rem)]">
       {/* Mode selector -- segmented control */}
       <div className="flex flex-wrap bg-dbx-oat dark:bg-dbx-navy-650 rounded-xl p-1 mb-3 shadow-inner-soft">
         {Object.entries(MODE_CONFIG).filter(([key]) => VISIBLE_MODES.has(key)).map(([key, c]) => (
@@ -384,7 +384,7 @@ export default function AgentChat() {
         <RetrievalTechniques />
 
         {/* Chat area */}
-        <div className="flex-1 card p-5 overflow-y-auto mb-3 scrollbar-thin bg-gradient-to-b from-white to-dbx-oat-light/50 dark:from-dbx-navy-650 dark:to-dbx-navy/50" style={{ maxHeight: '60vh' }}>
+        <div className="flex-1 min-h-0 card p-5 overflow-y-auto mb-3 scrollbar-thin bg-gradient-to-b from-white to-dbx-oat-light/50 dark:from-dbx-navy-650 dark:to-dbx-navy/50">
           {messages.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-full text-center py-12">
               <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-dbx-navy to-dbx-navy-500 flex items-center justify-center mb-4 shadow-card">
@@ -432,7 +432,7 @@ export default function AgentChat() {
       </div>
 
       {/* Right: Stats Panel */}
-      <div className="flex-shrink-0 overflow-y-auto space-y-4 scrollbar-thin" style={{ width: '320px', maxHeight: 'calc(100vh - 200px)' }}>
+      <div className="w-80 xl:w-96 flex-shrink-0 overflow-y-auto space-y-4 scrollbar-thin max-h-[calc(100vh-12rem)]">
         {stats && (
           <div className="grid grid-cols-2 gap-3">
             <StatCard label="Tables" value={stats.tables_profiled}

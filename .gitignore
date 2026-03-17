@@ -175,3 +175,6 @@ apps/dbxmetagen-app/app/src/dist/
 
 # Tools
 tools/
+
+# Local roadmap / tech-debt tracker
+ROADMAP.md

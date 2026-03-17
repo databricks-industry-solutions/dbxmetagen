@@ -68,7 +68,7 @@ def create_spark_df_from_sample(sample_data: list, column_types: Dict[str, str])
 
 def create_model_function(
     mode: str,
-    model_endpoint: str = "databricks-claude-3-7-sonnet",
+    model_endpoint: str = "databricks-claude-sonnet-4-6",
     temperature: float = 0.1,
     max_tokens: int = 8192,
 ) -> Callable[[Dict[str, Any]], Dict[str, Any]]:
@@ -183,7 +183,7 @@ def create_model_function(
 def create_comment_claude_model() -> Callable:
     """Create model function for comment mode with Claude."""
     return create_model_function(
-        mode="comment", model_endpoint="databricks-claude-3-7-sonnet", temperature=0.1
+        mode="comment", model_endpoint="databricks-claude-sonnet-4-6", temperature=0.1
     )
 
 
@@ -199,7 +199,7 @@ def create_comment_llama_model() -> Callable:
 def create_pi_claude_model() -> Callable:
     """Create model function for PI mode with Claude."""
     return create_model_function(
-        mode="pi", model_endpoint="databricks-claude-3-7-sonnet", temperature=0.1
+        mode="pi", model_endpoint="databricks-claude-sonnet-4-6", temperature=0.1
     )
 
 

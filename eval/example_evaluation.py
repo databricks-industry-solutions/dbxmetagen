@@ -104,7 +104,7 @@ print("This will take 2-3 minutes...")
 result = runner.run_single_evaluation(
     run_name="test_claude_comment",
     mode="comment",
-    model_endpoint="databricks-claude-3-7-sonnet",
+    model_endpoint="databricks-claude-sonnet-4-6",
     temperature=0.1
 )
 
@@ -131,7 +131,7 @@ print("This will take 5-10 minutes...")
 comparison_df = runner.run_model_comparison(
     mode="comment",
     models=[
-        "databricks-claude-3-7-sonnet",
+        "databricks-claude-sonnet-4-6",
         "databricks-meta-llama-3-1-405b-instruct"
     ],
     temperature=0.1
@@ -184,7 +184,7 @@ displayHTML(f'<a href="{mlflow_url}" target="_blank">Open MLflow Experiment UI</
 
 sweep_df = runner.run_temperature_sweep(
     mode="comment",
-    model_endpoint="databricks-claude-3-7-sonnet",
+    model_endpoint="databricks-claude-sonnet-4-6",
     temperatures=[0.0, 0.1, 0.3, 0.5]
 )
 
@@ -200,7 +200,7 @@ display(sweep_df)
 pi_result = runner.run_single_evaluation(
     run_name="test_claude_pi",
     mode="pi",
-    model_endpoint="databricks-claude-3-7-sonnet",
+    model_endpoint="databricks-claude-sonnet-4-6",
     temperature=0.1
 )
 

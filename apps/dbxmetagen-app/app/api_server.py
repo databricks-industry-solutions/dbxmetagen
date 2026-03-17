@@ -45,6 +45,8 @@ def invalidate_query_caches():
     with _sl_context_lock:
         _sl_context_cache.clear()
 
+_LLM_MODEL = os.environ.get("LLM_MODEL", "databricks-claude-sonnet-4-6")
+
 # Background Genie builder tasks: task_id -> {status, stage, result, error, created}
 _genie_tasks: dict[str, dict] = {}
 
@@ -187,8 +189,8 @@ def _ensure_review_updated_at(table_key: str):
         return
     try:
         execute_sql(f"ALTER TABLE {fq(table_key)} ADD COLUMN review_updated_at TIMESTAMP")
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("_ensure_review_updated_at(%s): %s", table_key, e)
     _review_column_ensured.add(table_key)
 
 
@@ -215,15 +217,18 @@ def multi_hop_traverse(
     direction: str = "outgoing",
 ) -> dict:
     """Iterative BFS-style graph traversal with support for edge_type filtering."""
+    _validate_filter(relationship, "relationship")
+    _validate_filter(edge_type, "edge_type")
+
     visited_nodes: dict[str, dict] = {}
     edges_found: list[dict] = []
     frontier = {start_node}
 
     filters = []
     if relationship:
-        filters.append(f"e.relationship = '{relationship}'")
+        filters.append(f"e.relationship = {_safe_sql_str(relationship)}")
     if edge_type:
-        filters.append(f"e.edge_type = '{edge_type}'")
+        filters.append(f"e.edge_type = {_safe_sql_str(edge_type)}")
     filter_clause = (" AND " + " AND ".join(filters)) if filters else ""
 
     cols = (
@@ -234,7 +239,7 @@ def multi_hop_traverse(
     for hop in range(max_hops):
         if not frontier:
             break
-        id_list = ", ".join(f"'{n}'" for n in frontier)
+        id_list = ", ".join(_safe_sql_str(n) for n in frontier)
         if direction == "outgoing":
             q = f"SELECT {cols} FROM public.graph_edges e WHERE e.src IN ({id_list}) {filter_clause}"
         elif direction == "incoming":
@@ -255,7 +260,7 @@ def multi_hop_traverse(
         frontier = next_frontier - set(visited_nodes.keys()) - {start_node}
         # Fetch node details for new frontier
         if frontier:
-            nid_list = ", ".join(f"'{n}'" for n in frontier)
+            nid_list = ", ".join(_safe_sql_str(n) for n in frontier)
             nq = (
                 f"SELECT id, node_type, domain, display_name, short_description, "
                 f"sensitivity, status FROM public.graph_nodes WHERE id IN ({nid_list})"
@@ -266,7 +271,7 @@ def multi_hop_traverse(
     # Also fetch start node details
     start_rows = graph_query(
         f"SELECT id, node_type, domain, display_name, short_description "
-        f"FROM public.graph_nodes WHERE id = '{start_node}'"
+        f"FROM public.graph_nodes WHERE id = {_safe_sql_str(start_node)}"
     )
     if start_rows:
         visited_nodes[start_node] = start_rows[0]
@@ -362,7 +367,7 @@ def get_config():
     return {
         "catalog_name": CATALOG,
         "schema_name": SCHEMA,
-        "model": os.environ.get("MODEL", "databricks-claude-sonnet-4-5"),
+        "model": _LLM_MODEL,
         "temperature": float(os.environ.get("TEMPERATURE", "0.1")),
         "sample_size": int(os.environ.get("SAMPLE_SIZE", "5")),
         "apply_ddl": os.environ.get("APPLY_DDL", "false").lower() == "true",
@@ -422,7 +427,7 @@ class SemanticGenerateRequest(BaseModel):
     questions: list[str]
     catalog_name: Optional[str] = None
     schema_name: Optional[str] = None
-    model_endpoint: str = "databricks-claude-sonnet-4-6"
+    model_endpoint: str = _LLM_MODEL
     project_id: Optional[str] = None
     mode: str = (
         "replace"  # "replace" (supersede matching), "additive" (skip supersede), "replace_all" (supersede ALL in project)
@@ -444,13 +449,13 @@ class GenieGenerateRequest(BaseModel):
     questions: list[str] = []
     metric_view_names: list[str] = []
     kpi_names: list[str] = []
-    model_endpoint: str = "databricks-claude-3-7-sonnet"
+    model_endpoint: str = _LLM_MODEL
 
 
 class SuggestQuestionsRequest(BaseModel):
     table_identifiers: list[str]
     metric_view_names: list[str] = []
-    model_endpoint: str = "databricks-claude-3-7-sonnet"
+    model_endpoint: str = _LLM_MODEL
     count: int = 8
     purpose: str = "genie"  # "genie" or "metric_views"
 
@@ -816,7 +821,8 @@ def _validate_filter(val: Optional[str], param: str) -> None:
 
 @app.get("/api/metadata/log")
 def get_metadata_log(limit: int = 100, table_name: Optional[str] = None):
-    where = f"WHERE table_name LIKE '%{table_name}%'" if table_name else ""
+    _validate_filter(table_name, "table_name")
+    where = f"WHERE table_name LIKE {_safe_sql_str(f'%{table_name}%')}" if table_name else ""
     q = f"SELECT * FROM {fq('metadata_generation_log')} {where} ORDER BY _created_at DESC LIMIT {limit}"
     return execute_sql(q)
 
@@ -827,7 +833,7 @@ def get_knowledge_base(table_name: Optional[str] = None, schema_name: Optional[s
     _validate_filter(schema_name, "schema_name")
     clauses = []
     if table_name:
-        clauses.append(f"table_name LIKE '%{table_name}%'")
+        clauses.append(f"table_name LIKE {_safe_sql_str(f'%{table_name}%')}")
     if schema_name:
         clauses.append(f"`schema` = {_safe_sql_str(schema_name)}")
     where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
@@ -841,9 +847,9 @@ def get_column_kb(table_name: Optional[str] = None, column_name: Optional[str] =
     _validate_filter(column_name, "column_name")
     clauses = []
     if table_name:
-        clauses.append(f"table_name LIKE '%{table_name}%'")
+        clauses.append(f"table_name LIKE {_safe_sql_str(f'%{table_name}%')}")
     if column_name:
-        clauses.append(f"column_name LIKE '%{column_name}%'")
+        clauses.append(f"column_name LIKE {_safe_sql_str(f'%{column_name}%')}")
     where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
     q = f"SELECT * FROM {fq('column_knowledge_base')} {where} ORDER BY table_name, column_name LIMIT {limit}"
     return execute_sql(q)
@@ -1251,14 +1257,14 @@ def review_combined(body: ReviewCombinedRequest):
     try:
         cols = execute_sql(f"DESCRIBE TABLE {tbl_kb}", timeout=15)
         _has_review_status = any(r.get("col_name") == "review_status" for r in cols)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("review_combined DESCRIBE TABLE: %s", e)
     if not _has_review_status:
         try:
             execute_sql(f"ALTER TABLE {tbl_kb} ADD COLUMN review_status STRING", timeout=15)
             _has_review_status = True
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("review_combined ADD COLUMN review_status: %s", e)
     rs_expr = "COALESCE(review_status, 'unreviewed') AS review_status" if _has_review_status else "'unreviewed' AS review_status"
     tbl_rows = execute_sql(f"""
         SELECT table_name, catalog, `schema`, table_short_name, comment,
@@ -1299,8 +1305,8 @@ def review_combined(body: ReviewCombinedRequest):
                 FROM {ent_tbl}
                 WHERE {_onto_where}
             """)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Ontology fallback query also failed: %s", e)
 
     # Fetch column properties
     cp_tbl = fq("ontology_column_properties")
@@ -1312,8 +1318,8 @@ def review_combined(body: ReviewCombinedRequest):
             FROM {cp_tbl}
             WHERE table_name IN ({in_clause})
         """)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Column properties query failed: %s", e)
     try:
         fk_rows = execute_sql(f"""
             SELECT src_column, src_table, dst_column, dst_table, final_confidence,
@@ -1329,8 +1335,8 @@ def review_combined(body: ReviewCombinedRequest):
                 FROM {fk_tbl}
                 WHERE src_table IN ({in_clause}) OR dst_table IN ({in_clause})
             """)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("FK fallback query also failed: %s", e)
 
     cols_by_table = {}
     for c in col_rows:
@@ -2767,7 +2773,8 @@ def list_semantic_definitions(project_id: Optional[str] = None):
     q = (
         f"SELECT definition_id, metric_view_name, source_table, status, "
         f"validation_errors, genie_space_id, created_at, applied_at, "
-        f"COALESCE(version, 1) as version, parent_definition_id, project_id "
+        f"COALESCE(version, 1) as version, parent_definition_id, project_id, "
+        f"complexity_score, complexity_level "
         f"FROM ("
         f"  SELECT *, ROW_NUMBER() OVER ("
         f"    PARTITION BY metric_view_name, source_table "
@@ -3273,6 +3280,19 @@ def _build_sl_context(
             except Exception as exc:
                 logger.warning("SL context enrichment '%s' failed: %s", key, exc)
 
+    # KPI library enrichment (skip gracefully if table doesn't exist yet)
+    try:
+        kpi_rows = execute_sql(
+            f"SELECT name, description, formula, domain FROM {fq('kpi_definitions')}"
+        )
+        if kpi_rows:
+            kpi_block = "\nBUSINESS KPIs (use as direct templates for measures and expressions):"
+            for k in kpi_rows:
+                kpi_block += f"\n  - {k['name']}: {k.get('description', '')} | Formula: {k.get('formula', 'N/A')}"
+            parts.append(kpi_block)
+    except Exception:
+        pass
+
     result = "\n".join(parts) + "\n".join(enrichment_parts)
     with _sl_context_lock:
         _sl_context_cache[cache_key] = result
@@ -3312,7 +3332,7 @@ OUTPUT:
      {"name": "Return Rate", "expr": "SUM(CASE WHEN is_returned = TRUE THEN 1 ELSE 0 END) * 1.0 / NULLIF(COUNT(*), 0)", "comment": "Fraction of orders returned (0 to 1)"},
      {"name": "Fulfilled Revenue", "expr": "SUM(total_amount) FILTER (WHERE status = 'fulfilled')", "comment": "Revenue from fulfilled orders only"},
      {"name": "High Value Order Count", "expr": "COUNT(*) FILTER (WHERE total_amount > 1000)", "comment": "Orders above 1000 threshold"}],
-   "joins": [{"name": "customers", "source": "sales.customers", "on": "customers.id = orders.customer_id"}]}
+   "joins": [{"name": "customers", "source": "sales.customers", "on": "source.customer_id = customers.id"}]}
 ]"""
 
 
@@ -3322,38 +3342,34 @@ def _build_prompt(questions: list[str], context: str) -> str:
 
 TASK: Generate metric view definitions (as a JSON array) that enable answering the business questions below.
 
-RULES:
-1. Create metric views organized around analytical themes from the questions, not just one-to-one with tables. Multiple metric views from the same table are fine if they address different analytical angles
-2. Only reference columns that exist in the metadata below
-3. Use standard SQL aggregate functions: SUM, COUNT, AVG, MIN, MAX, COUNT(DISTINCT ...)
-4. Use DATE_TRUNC for date dimensions with SINGLE-QUOTED string intervals: DATE_TRUNC('MONTH', col), DATE_TRUNC('WEEK', col). NEVER use bare keywords like DATE_TRUNC(MONTH, col) or MONTH(col) -- always quote the interval
-5. ALWAYS single-quote ALL string literal values everywhere in expressions:
-   - Comparisons: status = 'fulfilled', NOT status = fulfilled
-   - THEN/ELSE results: CASE WHEN x = 'A' THEN 'Category A' ELSE 'Other' END, NOT THEN Category A
-   - IN lists: department IN ('Surgery', 'Pediatrics'), NOT IN (Surgery, Pediatrics)
-   - CONCAT separators: CONCAT(hospital, ' - ', department), NOT CONCAT(hospital, - , department)
-   The ONLY unquoted tokens should be column names, SQL keywords, and numbers
-6. Include joins when FK relationships OR GRAPH RELATIONSHIPS show a valid join path. Graph edges with join_expression are directly usable. Multi-hop graph paths indicate transitive join chains
-7. Every metric view MUST have at least one measure and one dimension
-8. Add a top-level "comment" describing the metric view's purpose
-9. Add a "comment" to each dimension and measure explaining what it represents
-10. Use "filter" (optional) for persistent WHERE clauses (e.g. excluding null/test rows)
-11. Use measure-level FILTER for conditional aggregation: SUM(col) FILTER (WHERE condition)
-12. If some questions are not answerable with metrics (e.g. document search, free-text lookups, SOP retrieval), generate metric views for the ones that ARE quantitative/analytical and silently ignore the rest
-13. Each metric view "name" must be unique and descriptive (e.g. staffing_efficiency_metrics, ed_throughput_analysis). Vary names based on the analytical theme, not just the table name
-14. Output ONLY a valid JSON array, no explanation
-15. When Entity types are annotated on tables, generate entity-specific analytical metrics:
-    - People/patients/users: include counts, return/readmission rates, segmentation dimensions, and per-entity averages
-    - Transactions/events/encounters: include volume counts, value sums, time-based rates, and categorical breakdowns
-    - Resources/staff/inventory: include utilization rates (active/total), efficiency ratios, and capacity measures
-    Always include at least one RATIO measure (x / NULLIF(y, 0)) and one RATE measure (conditional_count * 1.0 / NULLIF(total, 0)) per metric view
-16. When FOREIGN KEY RELATIONSHIPS exist between selected tables, generate cross-table metrics that join fact tables to dimension tables. Use dimension table columns as grouping dimensions and fact table columns as measures
-17. SEMANTIC SEARCH DISCOVERIES: If the context includes tables marked "[NOT SELECTED - consider adding]", note them but do NOT generate metric views for unselected tables. Use them only to inform join patterns and relationships
-18. GRAPH RELATIONSHIPS: Use graph edges to discover multi-hop join paths between tables. If a graph edge shows Table_A --[references]--> Table_B with a join expression, use that join in metric views
-19. EXISTING METRIC VIEWS: If listed, do NOT generate metric views with the same name or covering the same analytical angle. Build on top of existing coverage instead
-20. COLUMN PROPERTY ANNOTATIONS: Use these to inform dimension vs measure choices. Columns marked is_temporal are good date dimensions; is_categorical for grouping dimensions; is_identifier for count-distinct measures
-21. ONTOLOGY ENTITY RELATIONSHIPS: Use entity-to-entity connections to generate cross-entity analytical metrics (e.g. "Patient --[treated_at]--> Hospital" suggests patient-counts-by-hospital measures)
-22. PROFILING SUMMARIES: Use distinct counts to judge cardinality. Low-cardinality columns (< 50 distinct) make good dimensions; high-cardinality columns are better as measure inputs or filters
+ANALYTICAL QUALITY (HIGHEST PRIORITY):
+- Every metric view MUST include at least one RATIO measure (x / NULLIF(y, 0)) and one computed dimension (CASE, DATE_TRUNC)
+- Include RATE measures (conditional_count * 1.0 / NULLIF(total, 0)) for any entity with status/outcome columns
+- When BUSINESS KPIs appear in the metadata, use them as direct templates for measures and expressions
+- Organize views around analytical themes, not just one-per-table. Multiple views from the same source are encouraged if they address different analytical angles
+- When Entity types are annotated: People -> counts, rates, segmentation; Transactions -> volumes, values, time-based rates; Resources -> utilization, efficiency ratios
+- Use COLUMN PROPERTY ANNOTATIONS: is_temporal -> date dimensions; is_categorical -> grouping dims; is_identifier -> count-distinct measures
+- Use PROFILING SUMMARIES: low-cardinality (< 50 distinct) -> dimensions; high-cardinality -> measure inputs or filters
+- Skip non-quantitative questions (document search, free-text lookups) silently
+
+JOIN AND RELATIONSHIP RULES:
+- In join "on" clauses, always reference the source table as "source": "on": "source.fk_col = joined_table.pk_col"
+- Include joins when FK relationships OR GRAPH RELATIONSHIPS show a valid path
+- Graph edges with join_expression are directly usable; multi-hop paths indicate transitive join chains
+- When FKs exist, generate cross-table metrics joining fact to dimension tables
+- EXISTING METRIC VIEWS: do NOT duplicate -- build on existing coverage
+
+STRUCTURE:
+- Every view needs at least one measure, one dimension, a top-level "comment", and comments on each dimension/measure
+- Names must be unique and descriptive (e.g. staffing_efficiency_metrics, ed_throughput_analysis)
+- Use "filter" for persistent WHERE clauses; use measure-level FILTER for conditional aggregation
+- Output ONLY a valid JSON array, no explanation
+
+SQL SYNTAX REMINDERS:
+- DATE_TRUNC('MONTH', col) -- always single-quote the interval
+- Single-quote ALL string literals in comparisons, CASE results, IN lists, CONCAT separators
+- Standard aggregates: SUM, COUNT, AVG, MIN, MAX, COUNT(DISTINCT ...)
+- FILTER syntax: SUM(col) FILTER (WHERE condition)
 
 EXAMPLE:
 {_FEW_SHOT}
@@ -3830,6 +3846,20 @@ Return ONLY the fixed JSON definition (single object, not array)."""
         return None
 
 
+def _normalize_joins(defn: dict) -> dict:
+    """Rewrite join 'on' clauses to use source.col instead of raw tablename.col for the source table."""
+    source_short = (defn.get("source") or "").split(".")[-1]
+    if not source_short:
+        return defn
+    for join in defn.get("joins", []):
+        on = join.get("on", "")
+        if source_short + "." in on:
+            join["on"] = re.sub(
+                rf"\b{re.escape(source_short)}\.", "source.", on
+            )
+    return defn
+
+
 def _run_sl_generation(
     task_id: str,
     tables: list[str],
@@ -3917,6 +3947,7 @@ def _run_sl_generation(
                         item["expr"] = _autofix_expr(item["expr"])
             if defn.get("filter"):
                 defn["filter"] = _autofix_expr(defn["filter"])
+            defn = _normalize_joins(defn)
 
             json_str = json.dumps(defn).replace("'", "''")
 
@@ -3971,11 +4002,35 @@ def _run_sl_generation(
                         logger.info("Self-repair %s for '%s' (%d remaining errors)",
                                     "succeeded" if not errors else "improved", mv_name, len(errors))
 
+            # Complexity gate: enrich trivial definitions
+            cx = _score_definition_complexity(defn)
+            if cx["complexity_level"] == "trivial" and not errors:
+                enrichment_errors = [
+                    "ENRICHMENT: This metric view is analytically trivial (only basic COUNT/SUM). "
+                    "Enrich it with at least one ratio, rate, or filtered aggregate measure. "
+                    "Add computed dimensions (CASE, DATE_TRUNC) where relevant."
+                ]
+                enriched = _sl_self_repair(defn, enrichment_errors, model)
+                if enriched:
+                    for itype in ("dimensions", "measures"):
+                        for item in enriched.get(itype, []):
+                            if item.get("expr"):
+                                item["expr"] = _autofix_expr(item["expr"])
+                    if enriched.get("filter"):
+                        enriched["filter"] = _autofix_expr(enriched["filter"])
+                    enrich_errs = _validate_defn(enriched)
+                    ecx = _score_definition_complexity(enriched)
+                    if not enrich_errs and ecx["complexity_score"] > cx["complexity_score"]:
+                        defn = enriched
+                        cx = ecx
+                        mv_name = defn.get("name", mv_name)
+                        source = defn.get("source", source)
+                        logger.info("Enrichment raised '%s' from trivial to %s", mv_name, cx["complexity_level"])
+
             json_str = json.dumps(defn).replace("'", "''")
             status = "validated" if not errors else "failed"
             error_str = "; ".join(errors).replace("'", "''") if errors else ""
             proj_val = f"'{project_id}'" if project_id else "NULL"
-            cx = _score_definition_complexity(defn)
             execute_sql(
                 f"INSERT INTO {fq('metric_view_definitions')} VALUES "
                 f"('{defn_id}', '{mv_name}', '{source}', '{json_str}', '', "
@@ -4047,7 +4102,7 @@ def poll_sl_generation(task_id: str):
 # Metric-view per-definition actions (retry / improve / create)
 # ---------------------------------------------------------------------------
 
-_DEFAULT_MODEL = "databricks-claude-sonnet-4-6"
+_DEFAULT_MODEL = _LLM_MODEL
 
 
 def _fetch_definition(definition_id: str) -> dict:
@@ -4918,7 +4973,7 @@ def _ensure_kpi_table():
             CREATE TABLE IF NOT EXISTS {fq('kpi_definitions')} (
                 kpi_id STRING, name STRING, description STRING,
                 formula STRING, target_tables ARRAY<STRING>,
-                domain STRING, source STRING DEFAULT 'manual',
+                domain STRING, source STRING,
                 created_at TIMESTAMP, updated_at TIMESTAMP
             )
         """, timeout=30)
@@ -4937,7 +4992,7 @@ class KpiRequest(BaseModel):
 class KpiSuggestRequest(BaseModel):
     table_identifiers: list[str]
     count: int = 8
-    model_endpoint: str = "databricks-claude-3-7-sonnet"
+    model_endpoint: str = _LLM_MODEL
 
 
 @app.get("/api/kpis")
@@ -5205,8 +5260,8 @@ def agent_stats():
         stats["metric_views"] = 0
     try:
         rows = execute_sql(f"SELECT doc_type, COUNT(*) AS cnt FROM {fq('metadata_documents')} GROUP BY doc_type")
-        stats["vs_documents"] = sum(r["cnt"] for r in rows) if rows else 0
-        stats["vs_by_type"] = {r["doc_type"]: r["cnt"] for r in rows} if rows else {}
+        stats["vs_documents"] = sum(int(r["cnt"]) for r in rows) if rows else 0
+        stats["vs_by_type"] = {r["doc_type"]: int(r["cnt"]) for r in rows} if rows else {}
     except Exception as e:
         logger.warning("metadata_documents query failed in agent_stats: %s", e)
         stats["vs_documents"] = 0

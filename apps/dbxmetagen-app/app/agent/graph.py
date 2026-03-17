@@ -19,7 +19,7 @@ from agent.guardrails import SAFETY_PROMPT_BLOCK, sanitize_output
 
 logger = logging.getLogger(__name__)
 
-MODEL = os.environ.get("GRAPHRAG_MODEL", "databricks-claude-sonnet-4-5")
+MODEL = os.environ.get("LLM_MODEL", "databricks-claude-sonnet-4-6")
 
 
 class AgentState(TypedDict):

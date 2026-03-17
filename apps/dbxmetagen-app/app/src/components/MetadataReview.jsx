@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react'
 import { safeFetch, ErrorBanner } from '../App'
 import { FKApplyPanel } from './ForeignKeyGeneration'
 import { PageHeader, EmptyState, SkeletonTable } from './ui'
+import { useCatalogSchemaTables } from '../hooks/useCatalogSchemaTables'
 
 function DataTable({ data, maxRows = 100 }) {
   if (!data || data.length === 0) return <p className="text-sm text-slate-400 py-4">No data available.</p>
@@ -43,14 +44,11 @@ const META_TYPES = [
 ]
 
 function ReviewEditor() {
-  const [catalogs, setCatalogs] = useState([])
-  const [schemas, setSchemas] = useState([])
-  const [allTables, setAllTables] = useState([])
-  const [selectedCatalog, setSelectedCatalog] = useState('')
-  const [selectedSchema, setSelectedSchema] = useState('')
+  const cst = useCatalogSchemaTables()
+  const { catalogs, schemas, filtered: filteredTables, catalog: selectedCatalog, schema: selectedSchema, filter: tableFilter, setCatalog: setSelectedCatalog, setSchema: setSelectedSchema, setFilter: setTableFilter } = cst
+  const allTables = cst.tables
   const [scopeMode, setScopeMode] = useState('schema')
   const [selectedTables, setSelectedTables] = useState([])
-  const [tableFilter, setTableFilter] = useState('')
   const [activeType, setActiveType] = useState('comments')
   const [reviewData, setReviewData] = useState([])
   const [original, setOriginal] = useState([])
@@ -88,22 +86,6 @@ function ReviewEditor() {
   const [volumeFilesLoading, setVolumeFilesLoading] = useState(false)
 
   useEffect(() => { fetch('/api/ontology/entity-type-options').then(r => r.json()).then(d => setEntityTypeOptions(Array.isArray(d) ? d : [])).catch(() => {}) }, [])
-  useEffect(() => { fetch('/api/catalogs').then(r => r.json()).then(setCatalogs).catch(() => {}) }, [])
-  useEffect(() => {
-    if (!selectedCatalog) { setSchemas([]); return }
-    fetch(`/api/schemas?catalog=${selectedCatalog}`).then(r => r.json()).then(setSchemas).catch(() => setSchemas([]))
-  }, [selectedCatalog])
-  useEffect(() => {
-    if (!selectedCatalog || !selectedSchema) { setAllTables([]); return }
-    fetch(`/api/tables?catalog=${selectedCatalog}&schema=${selectedSchema}`)
-      .then(r => r.json()).then(setAllTables).catch(() => setAllTables([]))
-  }, [selectedCatalog, selectedSchema])
-
-  const filteredTables = useMemo(() => {
-    if (!tableFilter) return allTables
-    const f = tableFilter.toLowerCase()
-    return allTables.filter(t => t.toLowerCase().includes(f))
-  }, [allTables, tableFilter])
 
   const toggleTable = t => setSelectedTables(prev => prev.includes(t) ? prev.filter(x => x !== t) : [...prev, t])
 
@@ -200,6 +182,7 @@ function ReviewEditor() {
     setDdlSql(j.sql || j.detail || ''); setDdlLoading(false)
   }
   const applyDdl = async () => {
+    if (!confirm('Apply DDL changes to your catalog? This modifies table/column metadata.')) return
     setDdlLoading(true); setDdlApplyResult(null)
     const res = await fetch('/api/metadata/apply-ddl', { method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(ddlPayload()) })
@@ -322,7 +305,7 @@ function ReviewEditor() {
         </div>
         {scopeMode === 'table' && selectedSchema && (
           <div>
-            <input value={tableFilter} onChange={e => setTableFilter(e.target.value)} placeholder="Filter tables..." className={inp + ' mb-2 max-w-xs'} />
+            <input value={tableFilter} onChange={e => setTableFilter(e.target.value)} placeholder="Filter tables..." className={inp + ' mb-2 max-w-xs'} aria-label="Filter tables" />
             {filteredTables.length > 0 && (
               <>
                 <div className="flex gap-2 mb-1 text-xs">
@@ -387,9 +370,12 @@ function ReviewEditor() {
                     <select value={rs} title="Saves immediately to table_knowledge_base. Tracks whether a human has reviewed this table's metadata." onClick={ev => ev.stopPropagation()} onChange={ev => {
                       ev.stopPropagation()
                       const newStatus = ev.target.value
+                      const sel = ev.target
                       setReviewData(prev => prev.map((t, i) => i === tblIdx ? { ...t, review_status: newStatus } : t))
                       fetch('/api/ontology/set-review-status', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ table_name: tbl.table_name, review_status: newStatus }) }).catch(() => {})
+                        body: JSON.stringify({ table_name: tbl.table_name, review_status: newStatus }) })
+                        .then(r => { sel.style.outline = r.ok ? '2px solid #22c55e' : '2px solid #ef4444'; setTimeout(() => { sel.style.outline = '' }, 1200) })
+                        .catch(() => { sel.style.outline = '2px solid #ef4444'; setTimeout(() => { sel.style.outline = '' }, 1200) })
                     }} className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium border-0 cursor-pointer ${rsCls}`}>
                       <option value="unreviewed">unreviewed</option>
                       <option value="in_review">in review</option>
@@ -421,9 +407,9 @@ function ReviewEditor() {
                     )}
                     {show('pii') && (
                       <>
-                        <div className="flex items-center gap-2"><input type="checkbox" checked={tbl.has_pii === true} onChange={() => onTableCheckbox(tblIdx, 'has_pii')} className="rounded" />
+                        <div className="flex items-center gap-2"><input type="checkbox" checked={tbl.has_pii === true} onChange={() => onTableCheckbox(tblIdx, 'has_pii')} className="rounded" aria-label="Mark table as having PII" />
                           <span className="text-xs text-slate-600">Has PII</span></div>
-                        <div className="flex items-center gap-2"><input type="checkbox" checked={tbl.has_phi === true} onChange={() => onTableCheckbox(tblIdx, 'has_phi')} className="rounded" />
+                        <div className="flex items-center gap-2"><input type="checkbox" checked={tbl.has_phi === true} onChange={() => onTableCheckbox(tblIdx, 'has_phi')} className="rounded" aria-label="Mark table as having PHI" />
                           <span className="text-xs text-slate-600">Has PHI</span></div>
                       </>
                     )}
@@ -963,11 +949,11 @@ function ReviewEditor() {
 
       {/* Volume file browser modal */}
       {showVolumeBrowser && (
-        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-6 animate-fade-in">
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-6 animate-fade-in" role="dialog" aria-modal="true">
           <div className="bg-white dark:bg-dbx-navy-650 rounded-2xl shadow-elevated max-w-lg w-full max-h-[70vh] flex flex-col animate-slide-up">
             <div className="flex items-center justify-between px-6 pt-5 pb-3 border-b border-slate-200 dark:border-slate-600">
               <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100">Select File from Volume</h3>
-              <button onClick={() => setShowVolumeBrowser(false)} className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-300">
+              <button onClick={() => setShowVolumeBrowser(false)} className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-300" aria-label="Close">
                 <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
               </button>
             </div>
@@ -1342,6 +1328,7 @@ export default function MetadataReview() {
   }
 
   const runApplyDdl = async () => {
+    if (!confirm('Apply DDL changes to your catalog? This modifies table/column metadata.')) return
     setDdlLoading(true)
     setDdlApplyResult(null)
     const r = await fetch('/api/metadata/apply-ddl', {
@@ -1375,22 +1362,22 @@ export default function MetadataReview() {
         {!['editor', 'fk_apply', 'entity_tags'].includes(tab) && <>
           {tab === 'schemas' && (
             <input value={filterExtra} onChange={e => setFilterExtra(e.target.value)} placeholder="Filter by schema name..."
-              className="border border-slate-300 rounded-lg px-3 py-1.5 text-sm w-48 focus:ring-2 focus:ring-orange-500" />
+              className="border border-slate-300 rounded-lg px-3 py-1.5 text-sm w-48 focus:ring-2 focus:ring-orange-500" aria-label="Filter by schema name" />
           )}
           {(tab === 'kb' || tab === 'log') && (
             <>
               <input value={filterTable} onChange={e => setFilterTable(e.target.value)} placeholder="Filter by table name..."
-                className="border border-slate-300 rounded-lg px-3 py-1.5 text-sm w-48 focus:ring-2 focus:ring-orange-500" />
+                className="border border-slate-300 rounded-lg px-3 py-1.5 text-sm w-48 focus:ring-2 focus:ring-orange-500" aria-label="Filter by table name" />
               {tab === 'kb' && <input value={filterExtra} onChange={e => setFilterExtra(e.target.value)} placeholder="Schema name (exact)"
-                className="border border-slate-300 rounded-lg px-3 py-1.5 text-sm w-40 focus:ring-2 focus:ring-orange-500" />}
+                className="border border-slate-300 rounded-lg px-3 py-1.5 text-sm w-40 focus:ring-2 focus:ring-orange-500" aria-label="Filter by schema name" />}
             </>
           )}
           {tab === 'columns' && (
             <>
               <input value={filterTable} onChange={e => setFilterTable(e.target.value)} placeholder="Filter by table name..."
-                className="border border-slate-300 rounded-lg px-3 py-1.5 text-sm w-48 focus:ring-2 focus:ring-orange-500" />
+                className="border border-slate-300 rounded-lg px-3 py-1.5 text-sm w-48 focus:ring-2 focus:ring-orange-500" aria-label="Filter by table name" />
               <input value={filterExtra} onChange={e => setFilterExtra(e.target.value)} placeholder="Filter by column name..."
-                className="border border-slate-300 rounded-lg px-3 py-1.5 text-sm w-48 focus:ring-2 focus:ring-orange-500" />
+                className="border border-slate-300 rounded-lg px-3 py-1.5 text-sm w-48 focus:ring-2 focus:ring-orange-500" aria-label="Filter by column name" />
             </>
           )}
           <button onClick={() => load(tab)} className="px-4 py-1.5 bg-dbx-oat text-slate-700 rounded-lg text-sm font-medium hover:bg-dbx-oat-dark">Search</button>

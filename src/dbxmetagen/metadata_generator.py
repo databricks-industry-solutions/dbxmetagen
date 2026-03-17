@@ -1,13 +1,16 @@
 from abc import ABC, abstractmethod
 import json
+import logging
 import mlflow
 from pydantic import ValidationError
-from typing import Tuple, Dict, List, Any, Union, Optional
+from typing import Literal, Tuple, Dict, List, Any, Union, Optional
 from openai.types.chat.chat_completion import ChatCompletion
 from pydantic import BaseModel, ConfigDict, field_validator
 from dbxmetagen.config import MetadataConfig
 from dbxmetagen.error_handling import exponential_backoff
 from dbxmetagen.chat_client import ChatClientFactory
+
+logger = logging.getLogger(__name__)
 
 
 class Response(BaseModel):
@@ -16,10 +19,31 @@ class Response(BaseModel):
     columns: List[str]
 
 
+PI_CLASSIFICATIONS = Literal["pi", "phi", "pci", "medical_information", "None"]
+_VALID_CLASSIFICATIONS = {"pi", "phi", "pci", "medical_information", "None"}
+
 class PIColumnContent(BaseModel):
-    classification: str
+    classification: PI_CLASSIFICATIONS
     type: str
     confidence: float
+
+    @field_validator("classification", mode="before")
+    @classmethod
+    def normalize_classification(cls, v: str) -> str:
+        mapping = {
+            "pii": "pi", "personally_identifiable_information": "pi",
+            "protected_health_information": "phi",
+            "payment_card_information": "pci", "payment_card_industry": "pci",
+            "medical": "medical_information", "medical_info": "medical_information",
+            "none": "None", "null": "None", "n/a": "None", "": "None",
+            "non-pii/phi/pci": "None", "non_pii": "None",
+        }
+        normalized = str(v).strip().lower()
+        result = mapping.get(normalized, normalized)
+        if result not in _VALID_CLASSIFICATIONS:
+            logger.warning("Unexpected PII classification '%s' from LLM, defaulting to 'None'", v)
+            return "None"
+        return result
 
 
 class PIResponse(Response):

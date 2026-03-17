@@ -308,33 +308,6 @@ export default function GenieBuilder() {
         </div>
       )}
 
-      {/* KPIs */}
-      {kpis.length > 0 && (
-        <div className="card p-5">
-          <button onClick={() => setShowKpis(!showKpis)}
-            className="w-full flex items-center justify-between text-sm font-medium text-slate-700 dark:text-slate-300">
-            <span>KPIs ({selectedKpis.size}/{kpis.length} selected)</span>
-            <span className={`text-xs transition-transform ${showKpis ? 'rotate-90' : ''}`}>&#9654;</span>
-          </button>
-          {showKpis && (
-            <div className="mt-3 space-y-1.5 max-h-48 overflow-y-auto">
-              {kpis.map(k => (
-                <label key={k.kpi_id} className="flex items-start gap-2 text-sm cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-700/30 rounded px-2 py-1">
-                  <input type="checkbox" checked={selectedKpis.has(k.kpi_id)}
-                    onChange={() => setSelectedKpis(prev => { const n = new Set(prev); n.has(k.kpi_id) ? n.delete(k.kpi_id) : n.add(k.kpi_id); return n })}
-                    className="mt-0.5" />
-                  <div className="min-w-0">
-                    <span className="dark:text-slate-200">{k.name}</span>
-                    {k.domain && <span className="ml-1.5 text-xs px-1.5 py-0.5 rounded bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300">{k.domain}</span>}
-                    {k.description && <p className="text-xs text-slate-400 truncate">{k.description}</p>}
-                  </div>
-                </label>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-
       {/* Questions */}
       <div className="card p-5">
         <div className="flex items-center justify-between mb-2">
@@ -442,8 +415,11 @@ export default function GenieBuilder() {
                     <td className="px-3 py-2">
                       <button onClick={async () => {
                         if (!confirm(`Delete Genie space "${s.title}"?`)) return
-                        await fetch(`/api/genie/spaces/${s.space_id}`, { method: 'DELETE' })
-                        loadTrackedSpaces()
+                        try {
+                          const res = await fetch(`/api/genie/spaces/${s.space_id}`, { method: 'DELETE' })
+                          if (!res.ok) { const d = await res.json().catch(() => ({})); setError(d.detail || 'Delete failed'); return }
+                          loadTrackedSpaces()
+                        } catch (e) { setError(e.message || 'Delete failed') }
                       }} className="text-xs text-red-600 hover:text-red-800 hover:underline">Delete</button>
                     </td>
                   </tr>

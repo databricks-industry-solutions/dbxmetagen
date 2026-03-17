@@ -195,7 +195,7 @@ comment_quality_metric = make_genai_metric(
         "- Fundamentally misunderstands data\n\n"
         "Provide your score and a brief (1-2 sentence) justification."
     ),
-    model="endpoints:/databricks-claude-3-7-sonnet",
+    model="endpoints:/databricks-claude-sonnet-4-6",
     parameters={"temperature": 0.0, "max_tokens": 500},
     aggregations=["mean", "variance", "p90"],
     greater_is_better=True,
@@ -226,7 +226,7 @@ pii_accuracy_metric = make_genai_metric(
         "is correctly identified.\n\n"
         "Provide your score and justification."
     ),
-    model="endpoints:/databricks-claude-3-7-sonnet",
+    model="endpoints:/databricks-claude-sonnet-4-6",
     parameters={"temperature": 0.0, "max_tokens": 300},
     aggregations=["mean", "variance"],
     greater_is_better=True,
@@ -256,7 +256,7 @@ technical_accuracy_metric = make_genai_metric(
         "Check: data types, foreign keys, primary keys, null handling, formats, patterns.\n\n"
         "Provide score and reasoning."
     ),
-    model="endpoints:/databricks-claude-3-7-sonnet",
+    model="endpoints:/databricks-claude-sonnet-4-6",
     parameters={"temperature": 0.0, "max_tokens": 300},
     aggregations=["mean"],
     greater_is_better=True,

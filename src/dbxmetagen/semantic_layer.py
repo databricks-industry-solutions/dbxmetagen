@@ -300,20 +300,38 @@ class SemanticLayerGenerator:
                 card = r.get("cardinality", "")
                 rel_by_entity.setdefault(src, []).append(f"{rn} -> {dst} ({card})" if card else f"{rn} -> {dst}")
 
-        # Entity-specific measure suggestions
-        entity_suggestions = {
-            "Encounter": "Consider: count by time period, average length of stay, rate by status or department; join to patient/department when questions ask for breakdown by segment or location.",
-            "Patient": "Consider: counts, segmentation dimensions, per-patient averages; join to encounters/orders when analyzing activity.",
-            "Order": "Consider: revenue, order count, fulfillment rate, return rate; join to customers for segment breakdown.",
-        }
+        # Entity-specific measure suggestions (dynamic based on column metadata)
+        def _entity_suggestion(ent_type: str, ent_tables: list[str]) -> str:
+            has_temporal = any(
+                any(col_props_by_table.get(t, {}).get(c, {}).get("is_temporal") for c in [cc["column_name"] for cc in col_by_table.get(t, [])])
+                for t in ent_tables
+            )
+            has_status = any(
+                any("status" in c["column_name"].lower() or "state" in c["column_name"].lower() for c in col_by_table.get(t, []))
+                for t in ent_tables
+            )
+            has_amount = any(
+                any(kw in c["column_name"].lower() for kw in ("amount", "price", "cost", "revenue", "total") for c in col_by_table.get(t, []))
+                for t in ent_tables
+            )
+            parts_s = ["Consider: counts, key ratios, and segmentation dimensions"]
+            if has_temporal:
+                parts_s.append("time-based rates and period-over-period comparisons")
+            if has_status:
+                parts_s.append("status-based rates (e.g. fulfillment, completion, conversion)")
+            if has_amount:
+                parts_s.append("revenue/cost aggregates, per-entity averages, value distribution")
+            parts_s.append("add joins when breakdowns by related tables are needed")
+            return "; ".join(parts_s) + "."
+
         unique_entities = sorted(set(entity_map.values()))
+        entity_tables: dict[str, list[str]] = {}
+        for tname, etype in entity_map.items():
+            entity_tables.setdefault(etype, []).append(tname)
         if unique_entities:
             parts.append("\nENTITY MEASURE SUGGESTIONS (use to steer measures per entity type):")
             for ent in unique_entities:
-                suggestion = entity_suggestions.get(
-                    ent,
-                    "Consider: counts, key ratios, and dimensions relevant to the questions; add joins when breakdowns by related tables are needed.",
-                )
+                suggestion = _entity_suggestion(ent, entity_tables.get(ent, []))
                 rels_str = ", ".join(rel_by_entity.get(ent, []))
                 extra = f" Relationships: {rels_str}." if rels_str else ""
                 parts.append(f"  {ent}: {suggestion}{extra}")

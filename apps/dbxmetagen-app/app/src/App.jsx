@@ -151,7 +151,7 @@ function InfoSlides({ open, onClose }) {
       <div ref={ref} className="bg-white dark:bg-dbx-navy-600 rounded-2xl shadow-elevated max-w-xl w-full overflow-hidden animate-slide-up">
         <div className="flex items-center justify-between px-8 pt-6 pb-3">
           <span className="section-title">{slide + 1} / {SLIDES.length}</span>
-          <button onClick={onClose} className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 transition-colors p-1 rounded-lg hover:bg-slate-100 dark:hover:bg-dbx-navy-500">
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 transition-colors p-1 rounded-lg hover:bg-slate-100 dark:hover:bg-dbx-navy-500" aria-label="Close">
             <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
           </button>
         </div>
@@ -278,10 +278,11 @@ export default function App() {
           <div className="flex items-center gap-1.5">
             <button onClick={() => setShowInfo(true)}
               className="w-8 h-8 flex items-center justify-center rounded-lg bg-white/10 backdrop-blur-sm border border-white/10 text-dbx-oat/80 hover:text-white hover:bg-white/20 transition-all text-sm font-bold"
-              title="What is dbxmetagen?">?</button>
+              title="What is dbxmetagen?" aria-label="Show help">?</button>
             <button onClick={() => setDark(d => !d)}
               className="w-8 h-8 flex items-center justify-center rounded-lg bg-white/10 backdrop-blur-sm border border-white/10 text-dbx-oat/80 hover:text-white hover:bg-white/20 transition-all"
-              title={dark ? 'Switch to light mode' : 'Switch to dark mode'}>
+              title={dark ? 'Switch to light mode' : 'Switch to dark mode'}
+              aria-label="Toggle dark mode">
               {dark ? (
                 <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}

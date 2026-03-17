@@ -6,6 +6,7 @@ generates the serialized_space JSON using test_sql and sample_values tools.
 
 import json
 import logging
+import os
 import queue
 from typing import Any, Dict, Optional
 
@@ -14,6 +15,7 @@ from databricks.sdk.service.sql import Format, Disposition
 from langchain_community.chat_models import ChatDatabricks
 from langchain_core.tools import tool
 from langgraph.prebuilt import create_react_agent
+from agent.tracing import trace
 
 from agent.guardrails import GuardrailConfig, SAFETY_PROMPT_BLOCK
 
@@ -175,12 +177,13 @@ def _make_tools(ws: WorkspaceClient, warehouse_id: str):
     return [test_sql, sample_values, describe_columns]
 
 
+@trace(name="genie_generate")
 def run_genie_agent(
     ws: WorkspaceClient,
     warehouse_id: str,
     context: Dict[str, Any],
     progress_queue: queue.Queue,
-    model_endpoint: str = "databricks-claude-3-7-sonnet",
+    model_endpoint: str = os.environ.get("LLM_MODEL", "databricks-claude-sonnet-4-6"),
 ) -> Dict[str, Any]:
     """Run the Genie builder agent and emit progress events to the queue.
 

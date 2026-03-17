@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useCallback, Component } from 'reac
 import { ErrorBanner } from '../App'
 import { cachedFetchObj, TTL } from '../apiCache'
 import { PageHeader, EmptyState, Skeleton } from './ui'
+import { useCatalogSchemaTables } from '../hooks/useCatalogSchemaTables'
 
 class TabErrorBoundary extends Component {
   state = { error: null }
@@ -92,7 +93,7 @@ function RunEntry({ run }) {
               className="text-xs text-dbx-teal hover:text-dbx-teal/80 font-medium">View in Databricks</a>
           )}
           {hasTasks && (
-            <button onClick={() => setExpanded(e => !e)} className="text-xs text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 font-medium">
+            <button onClick={() => setExpanded(prev => !prev)} className="text-xs text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 font-medium" aria-label={expanded ? 'Hide tasks' : 'Show tasks'}>
               {expanded ? 'Hide tasks' : `${run.tasks.length} tasks`}
             </button>
           )}
@@ -159,7 +160,7 @@ export default function BatchJobs({ onNavigate }) {
   const pollRef = useRef(null)
 
   const [settings, setSettings] = useState({
-    model: 'databricks-claude-sonnet-4-5',
+    model: 'databricks-claude-sonnet-4-6',
     temperature: 0.1,
     sample_size: 5,
     add_metadata: true,
@@ -171,17 +172,14 @@ export default function BatchJobs({ onNavigate }) {
   const setSetting = (key, value) => setSettings(prev => ({ ...prev, [key]: value }))
 
   const [pickerOpen, setPickerOpen] = useState(false)
-  const [pickerCatalog, setPickerCatalog] = useState('')
-  const [pickerSchema, setPickerSchema] = useState('')
-  const [pickerCatalogs, setPickerCatalogs] = useState([])
-  const [pickerSchemas, setPickerSchemas] = useState([])
-  const [pickerTables, setPickerTables] = useState([])
+  const picker = useCatalogSchemaTables()
+  const { catalogs: pickerCatalogs, schemas: pickerSchemas, filtered: filteredPickerTables, catalog: pickerCatalog, schema: pickerSchema, filter: pickerFilter, setCatalog: setPickerCatalog, setSchema: setPickerSchema, setFilter: setPickerFilter } = picker
+  const pickerTables = picker.tables
   const [pickerSelected, setPickerSelected] = useState([])
-  const [pickerFilter, setPickerFilter] = useState('')
 
   const buildExtraParams = () => {
     const p = {}
-    if (settings.model !== 'databricks-claude-sonnet-4-5') p.model = settings.model
+    if (settings.model !== 'databricks-claude-sonnet-4-6') p.model = settings.model
     if (settings.temperature !== 0.1) p.temperature = String(settings.temperature)
     if (settings.sample_size !== 5) p.sample_size = String(settings.sample_size)
     if (!settings.add_metadata) p.add_metadata = 'false'
@@ -205,6 +203,7 @@ export default function BatchJobs({ onNavigate }) {
       if (cfg) {
         setCatalogName(cfg.catalog_name || '')
         setSchemaName(cfg.schema_name || '')
+        if (cfg.catalog_name) setPickerCatalog(cfg.catalog_name)
         setSettings(prev => ({
           ...prev,
           model: cfg.model ?? prev.model,
@@ -227,23 +226,7 @@ export default function BatchJobs({ onNavigate }) {
     }).catch(() => {})
   }, [])
 
-  useEffect(() => {
-    fetch('/api/catalogs').then(r => r.json()).then(list => {
-      setPickerCatalogs(list)
-      if (catalogName && list.includes(catalogName)) setPickerCatalog(catalogName)
-    }).catch(() => {})
-  }, [])
-  useEffect(() => {
-    setPickerSchemas([]); setPickerTables([]); setPickerSelected([])
-    if (!pickerCatalog) return
-    fetch(`/api/schemas?catalog=${pickerCatalog}`).then(r => r.json()).then(setPickerSchemas).catch(() => setPickerSchemas([]))
-  }, [pickerCatalog])
-  useEffect(() => {
-    setPickerTables([]); setPickerSelected([])
-    if (!pickerCatalog || !pickerSchema) return
-    fetch(`/api/tables?catalog=${pickerCatalog}&schema=${pickerSchema}`)
-      .then(r => r.json()).then(setPickerTables).catch(() => setPickerTables([]))
-  }, [pickerCatalog, pickerSchema])
+  useEffect(() => { setPickerSelected([]) }, [pickerCatalog, pickerSchema])
 
   const addSelectedTables = () => {
     if (pickerSelected.length === 0) return
@@ -319,7 +302,9 @@ export default function BatchJobs({ onNavigate }) {
       await runJob('sync_graph_lakebase', {
         catalog_name: catalogName,
         schema_name: schemaName,
-        ...(lakebaseCatalog ? { lakebase_catalog: lakebaseCatalog } : {}),
+        extra_params: {
+          ...(lakebaseCatalog ? { lakebase_catalog: lakebaseCatalog } : {}),
+        },
       })
     } catch (e) {
       setLakebaseError(e.message || 'Lakebase sync failed')
@@ -491,7 +476,7 @@ export default function BatchJobs({ onNavigate }) {
                         {pickerSchemas.map(s => <option key={s} value={s}>{s}</option>)}
                       </select>
                       <input value={pickerFilter} onChange={e => setPickerFilter(e.target.value)}
-                        placeholder="Filter..." className="input-base !text-xs !py-1.5" />
+                        placeholder="Filter..." className="input-base !text-xs !py-1.5" aria-label="Filter tables" />
                     </div>
                     {pickerTables.length > 0 && (
                       <>
@@ -615,8 +600,9 @@ export default function BatchJobs({ onNavigate }) {
                 incremental: String(incremental),
                 cluster_min_k: String(clusterMinK),
                 cluster_max_k: String(clusterMaxK),
+                ...(entityTagKey !== 'entity_type' ? { entity_tag_key: entityTagKey } : {}),
               },
-            })} disabled={loading} className="btn-primary btn-md">
+            })} disabled={loading || !catalogName.trim() || !schemaName.trim()} className="btn-primary btn-md">
               {loading ? 'Starting...' : 'Run Full Pipeline'}
             </button>
 
@@ -639,7 +625,7 @@ export default function BatchJobs({ onNavigate }) {
                   <input value={lakebaseCatalog} onChange={e => setLakebaseCatalog(e.target.value)}
                     placeholder="e.g. lakebase_catalog" className="input-base !text-xs" />
                 </div>
-                <button onClick={syncLakebase} disabled={loading || lakebaseLoading}
+                <button onClick={syncLakebase} disabled={loading || lakebaseLoading || !catalogName.trim() || !schemaName.trim()}
                   className="btn-secondary btn-md whitespace-nowrap">
                   {lakebaseLoading ? 'Syncing...' : 'Sync to Lakebase'}
                 </button>

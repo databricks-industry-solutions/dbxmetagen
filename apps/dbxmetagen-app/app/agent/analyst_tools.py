@@ -148,20 +148,20 @@ def _is_kb_table(table_name: str) -> bool:
 
 def _make_list_tables(block_kb: bool):
     @tool
-    def list_tables(catalog: str, schema: str) -> str:
+    def list_tables(catalog: str, schema_name: str) -> str:
         """List all tables in a catalog.schema. Returns table names and types.
 
         Args:
             catalog: The catalog name.
-            schema: The schema name.
+            schema_name: The schema name.
         """
-        if block_kb and catalog.lower() == CATALOG.lower() and schema.lower() == SCHEMA.lower():
+        if block_kb and catalog.lower() == CATALOG.lower() and schema_name.lower() == SCHEMA.lower():
             return json.dumps({
-                "error": f"{catalog}.{schema} contains internal metadata tables. "
+                "error": f"{catalog}.{schema_name} contains internal metadata tables. "
                 "Only list tables in the user's data schemas."
             })
         try:
-            result = _run_sql(f"SHOW TABLES IN {catalog}.{schema}", timeout="15s")
+            result = _run_sql(f"SHOW TABLES IN {catalog}.{schema_name}", timeout="15s")
             if result["success"]:
                 return json.dumps({"tables": result["rows"], "count": result["row_count"]})
             return json.dumps({"error": result["error"]})
@@ -259,7 +259,7 @@ sample_rows = _make_sample_rows(block_kb=False)
 
 
 @tool
-def query_information_schema(catalog: str, schema: str, query_type: str = "columns", table_name: str = "") -> str:
+def query_information_schema(catalog: str, schema_name: str, query_type: str = "columns", table_name: str = "") -> str:
     """Query INFORMATION_SCHEMA for detailed table/column metadata.
 
     This is the standard way to discover schema information without a semantic layer.
@@ -268,7 +268,7 @@ def query_information_schema(catalog: str, schema: str, query_type: str = "colum
 
     Args:
         catalog: The catalog name.
-        schema: The schema name.
+        schema_name: The schema name.
         query_type: One of 'columns', 'tables', or 'constraints'.
         table_name: Optional specific table to query (recommended to avoid large result sets).
     """
@@ -278,17 +278,17 @@ def query_information_schema(catalog: str, schema: str, query_type: str = "colum
         "columns": (
             f"SELECT table_name, column_name, data_type, is_nullable, column_default, comment "
             f"FROM {catalog}.information_schema.columns "
-            f"WHERE table_schema = '{schema}'{table_filter} ORDER BY table_name, ordinal_position"
+            f"WHERE table_schema = '{schema_name}'{table_filter} ORDER BY table_name, ordinal_position"
         ),
         "tables": (
             f"SELECT table_name, table_type, comment "
             f"FROM {catalog}.information_schema.tables "
-            f"WHERE table_schema = '{schema}'{table_filter} ORDER BY table_name"
+            f"WHERE table_schema = '{schema_name}'{table_filter} ORDER BY table_name"
         ),
         "constraints": (
             f"SELECT constraint_name, table_name, constraint_type "
             f"FROM {catalog}.information_schema.table_constraints "
-            f"WHERE table_schema = '{schema}'{table_filter} ORDER BY table_name"
+            f"WHERE table_schema = '{schema_name}'{table_filter} ORDER BY table_name"
         ),
     }
     if query_type not in valid_types:

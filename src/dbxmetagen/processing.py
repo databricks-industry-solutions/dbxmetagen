@@ -270,19 +270,19 @@ def read_table_with_type_conversion(
     for col_name, col_type in column_types.items():
         if col_type == "BINARY":
             # Convert BINARY to base64 string, truncated to 50 chars (enough for LLM identification)
-            print(f"Converting BINARY column '{col_name}' to base64 string (truncated)")
+            logger.debug(f"Converting BINARY column '{col_name}' to base64 string (truncated)")
             select_exprs.append(f"substr(base64(`{col_name}`), 1, 50) AS `{col_name}`")
             has_special_types = True
         elif col_type == "VARIANT":
             # Convert VARIANT to JSON string using to_json()
-            print(
+            logger.debug(
                 f"Converting VARIANT column '{col_name}' to JSON string using to_json()"
             )
             select_exprs.append(f"to_json(`{col_name}`) AS `{col_name}`")
             has_special_types = True
         elif col_type.upper().startswith("TIMESTAMP"):
             # Convert TIMESTAMP to string to avoid Arrow overflow on out-of-range dates (e.g., 9999-12-31)
-            print(f"Converting TIMESTAMP column '{col_name}' to string")
+            logger.debug(f"Converting TIMESTAMP column '{col_name}' to string")
             select_exprs.append(f"CAST(`{col_name}` AS STRING) AS `{col_name}`")
             has_special_types = True
         else:
@@ -318,8 +318,8 @@ def convert_special_types_to_string(df: DataFrame) -> DataFrame:
         schema_fields = df.schema.fields
     except Exception as e:
         # Schema access can fail with VARIANT types in Spark Connect
-        print(
-            f"Warning: Could not access DataFrame schema ({e}). "
+        logger.warning(
+            f"Could not access DataFrame schema ({e}). "
             "Special types may not be converted. Use read_table_with_type_conversion() instead."
         )
         return df
@@ -330,7 +330,7 @@ def convert_special_types_to_string(df: DataFrame) -> DataFrame:
 
         # Handle BINARY type - encode as base64, truncated to 50 chars (enough for LLM identification)
         if isinstance(col_type, BinaryType):
-            print(f"Converting BINARY column '{col_name}' to base64 string (truncated)")
+            logger.debug(f"Converting BINARY column '{col_name}' to base64 string (truncated)")
             df = df.withColumn(col_name, expr(f"substr(base64(`{col_name}`), 1, 50)"))
 
         # Handle VARIANT type - convert to JSON string using to_json()
@@ -344,7 +344,7 @@ def convert_special_types_to_string(df: DataFrame) -> DataFrame:
                 or "UNPARSED" in type_str
                 or "UNPARSED" in type_class
             ):
-                print(
+                logger.warning(
                     f"Converting VARIANT column '{col_name}' (type: {col_type}) to JSON string using to_json()"
                 )
                 df = df.withColumn(col_name, to_json(col(col_name)))
@@ -383,15 +383,14 @@ def sample_df(df: DataFrame, nrows: int, sample_size: int = 5) -> DataFrame:
     )
     result_rows = filtered_df.count()
     if result_rows < sample_size:
-        print(
-            "Not enough non-NULL rows, returning available rows, despite large proportion of NULLs. Result rows:",
+        logger.warning(
+            "Not enough non-NULL rows, returning available rows, despite large proportion of NULLs. Result rows: %s vs sample size: %s",
             result_rows,
-            "vs sample size:",
             sample_size,
         )
         return df.limit(sample_size)
 
-    print(f"Filtering {result_rows} result rows down to {sample_size} rows...")
+    logger.info(f"Filtering {result_rows} result rows down to {sample_size} rows...")
     return filtered_df.limit(sample_size)
 
 
@@ -508,10 +507,10 @@ def append_column_rows(
             for result in presidio_data.get("deterministic_results", []):
                 col = result.get("column")
                 presidio_map[col] = json.dumps(result)
-            print(f"Mapped presidio results for {len(presidio_map)} columns")
+            logger.info(f"Mapped presidio results for {len(presidio_map)} columns")
         except Exception as e:
             # Security: Do not log raw presidio data
-            print(f"Failed to parse presidio results: {e}")
+            logger.error(f"Failed to parse presidio results: {e}")
             logger.debug("Presidio parsing error details: %s", str(e)[:200])
 
     for i, (column_name, column_content) in enumerate(
@@ -633,7 +632,7 @@ def rows_to_df(rows: List[Row], config: MetadataConfig) -> DataFrame:
                     test_df = spark.createDataFrame([row], schema)
                 except Exception as row_error:
                     # Security: Do not log actual row data (may contain PII/PHI/PCI)
-                    print(
+                    logger.error(
                         f"Problematic row at index {i}: Schema mismatch - check field types"
                     )
                     logger.debug("Row error details: %s", str(row_error)[:200])
@@ -778,7 +777,7 @@ def df_to_sql_file(
     Returns:
         str: The path to the SQL file.
     """
-    print("Converting dataframe to SQL file using Spark-native operations...")
+    logger.info("Converting dataframe to SQL file using Spark-native operations...")
     selected_column_df = df.select(sql_column)
     uc_volume_path = f"/Volumes/{catalog_name}/{dest_schema_name}/{filename}.sql"
 
@@ -875,7 +874,7 @@ def df_column_to_excel_file(
                 f"Excel file was not created: {excel_file_path}"
             )
 
-        print(f"Excel file created at: {excel_file_path}")
+        logger.info(f"Excel file created at: {excel_file_path}")
         return excel_file_path
 
     except Exception as e:
@@ -984,7 +983,7 @@ def mark_as_deleted(table_name: str, config: MetadataConfig) -> None:
       AND (_mode = '{mode}' OR _mode IS NULL)
     """
     spark.sql(update_query)
-    print(f"Marked {table_name} as deleted in the control table...")
+    logger.info(f"Marked {table_name} as deleted in the control table...")
 
 
 def claim_table(table_name: str, config: MetadataConfig, max_retries: int = 3) -> bool:
@@ -1062,21 +1061,21 @@ def claim_table(table_name: str, config: MetadataConfig, max_retries: int = 3) -
             result = spark.sql(verify_query).collect()
             
             if result and result[0]["_claimed_by"] == task_id:
-                print(f"Successfully claimed table {table_name} for task {task_id}")
+                logger.info(f"Successfully claimed table {table_name} for task {task_id}")
                 return True
             else:
                 claimed_by = result[0]["_claimed_by"] if result else "unknown"
-                print(f"Table {table_name} already claimed by {claimed_by}, skipping...")
+                logger.info(f"Table {table_name} already claimed by {claimed_by}, skipping...")
                 return False
         except Exception as e:
             error_str = str(e)
             if "ConcurrentAppendException" in error_str or "DELTA_CONCURRENT" in error_str or "ConcurrentModificationException" in error_str:
                 if attempt < max_retries - 1:
                     wait_time = (2 ** attempt) + random.uniform(0, 1)
-                    print(f"Concurrent conflict during claim, retrying in {wait_time:.2f}s (attempt {attempt + 1}/{max_retries})")
+                    logger.warning(f"Concurrent conflict during claim, retrying in {wait_time:.2f}s (attempt {attempt + 1}/{max_retries})")
                     time.sleep(wait_time)
                 else:
-                    print(f"Failed to claim {table_name} after {max_retries} attempts due to concurrent conflicts")
+                    logger.error(f"Failed to claim {table_name} after {max_retries} attempts due to concurrent conflicts")
                     return False
             else:
                 raise
@@ -1109,7 +1108,7 @@ def mark_table_completed(table_name: str, config: MetadataConfig) -> None:
       AND (_mode = '{mode}' OR _mode IS NULL)
     """
     spark.sql(update_query)
-    print(f"Marked table {table_name} as completed")
+    logger.info(f"Marked table {table_name} as completed")
 
 
 def mark_table_failed(table_name: str, config: MetadataConfig, error_message: str = None) -> None:
@@ -1141,7 +1140,7 @@ def mark_table_failed(table_name: str, config: MetadataConfig, error_message: st
       AND (_mode = '{mode}' OR _mode IS NULL)
     """
     spark.sql(update_query)
-    print(f"Marked table {table_name} as failed: {error_message or 'No error message'}")
+    logger.warning(f"Marked table {table_name} as failed: {error_message or 'No error message'}")
 
 
 def run_log_table_ddl(config):
@@ -1559,19 +1558,6 @@ def write_ddl_to_volume_spark_native(
         )
 
     if output_format in ["sql", "tsv"]:
-        nrows = df.count()
-        try:
-            df.select("ddl").toPandas()
-        except Exception as e:
-            print(f"Error: {e}")
-            raise ValueError(f"Error: {e}")
-        try:
-            df.select("ddl").coalesce(1)
-        except Exception as e:
-            print(f"Error: {e}")
-            raise ValueError(f"Error: {e}")
-
-        # Use collect() - the original approach that worked on traditional clusters
         ddl_statements = df.select("ddl").collect()
 
         # Write using simple Python file I/O

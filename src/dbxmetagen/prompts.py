@@ -430,6 +430,21 @@ class Prompt(ABC):
         if self.config.include_existing_table_comment:
             self.prompt_content["column_contents"]["table_comments"] = table_comments
 
+    def _tags_to_exclude(self) -> list:
+        """Return tag names to filter out based on current mode to avoid biasing the LLM."""
+        mode = self.config.mode
+        if mode in ("pi", "comment"):
+            return [
+                getattr(self.config, "pi_classification_tag_name", "data_classification"),
+                getattr(self.config, "pi_subclassification_tag_name", "data_subclassification"),
+            ]
+        elif mode == "domain":
+            return [
+                getattr(self.config, "domain_tag_name", "domain"),
+                getattr(self.config, "subdomain_tag_name", "subdomain"),
+            ]
+        return []
+
     def get_column_tags(self) -> Dict[str, Dict[str, str]]:
         """
         Get column tags from the information schema, filtering out biasing tags based on mode.
@@ -439,31 +454,7 @@ class Prompt(ABC):
         """
         catalog_name, schema_name, table_name = self.full_table_name.split(".")
 
-        # Determine which tags to filter out based on mode
-        tags_to_exclude = []
-        if self.config.mode == "pi":
-            # Filter out existing PI classifications to avoid bias
-            pi_classification_tag = getattr(
-                self.config, "pi_classification_tag_name", "data_classification"
-            )
-            pi_subclassification_tag = getattr(
-                self.config, "pi_subclassification_tag_name", "data_subclassification"
-            )
-            tags_to_exclude = [pi_classification_tag, pi_subclassification_tag]
-        elif self.config.mode == "domain":
-            # Filter out existing domain classifications to avoid bias
-            domain_tag = getattr(self.config, "domain_tag_name", "domain")
-            subdomain_tag = getattr(self.config, "subdomain_tag_name", "subdomain")
-            tags_to_exclude = [domain_tag, subdomain_tag]
-        elif self.config.mode == "comment":
-            # Filter out PI tags for comment mode to avoid bias
-            pi_classification_tag = getattr(
-                self.config, "pi_classification_tag_name", "data_classification"
-            )
-            pi_subclassification_tag = getattr(
-                self.config, "pi_subclassification_tag_name", "data_subclassification"
-            )
-            tags_to_exclude = [pi_classification_tag, pi_subclassification_tag]
+        tags_to_exclude = self._tags_to_exclude()
 
         query = f"""
         SELECT catalog_name, schema_name, table_name, column_name, tag_name, tag_value
@@ -501,31 +492,7 @@ class Prompt(ABC):
         """
         catalog_name, schema_name, table_name = self.full_table_name.split(".")
 
-        # Determine which tags to filter out based on mode
-        tags_to_exclude = []
-        if self.config.mode == "pi":
-            # Filter out existing PI classifications to avoid bias
-            pi_classification_tag = getattr(
-                self.config, "pi_classification_tag_name", "data_classification"
-            )
-            pi_subclassification_tag = getattr(
-                self.config, "pi_subclassification_tag_name", "data_subclassification"
-            )
-            tags_to_exclude = [pi_classification_tag, pi_subclassification_tag]
-        elif self.config.mode == "domain":
-            # Filter out existing domain classifications to avoid bias
-            domain_tag = getattr(self.config, "domain_tag_name", "domain")
-            subdomain_tag = getattr(self.config, "subdomain_tag_name", "subdomain")
-            tags_to_exclude = [domain_tag, subdomain_tag]
-        elif self.config.mode == "comment":
-            # Filter out PI tags for comment mode to avoid bias
-            pi_classification_tag = getattr(
-                self.config, "pi_classification_tag_name", "data_classification"
-            )
-            pi_subclassification_tag = getattr(
-                self.config, "pi_subclassification_tag_name", "data_subclassification"
-            )
-            tags_to_exclude = [pi_classification_tag, pi_subclassification_tag]
+        tags_to_exclude = self._tags_to_exclude()
 
         query = f"""
         SELECT tag_name, tag_value

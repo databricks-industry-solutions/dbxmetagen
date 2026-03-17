@@ -24,10 +24,12 @@ from agent.metadata_tools import (
 )
 from agent.graph_skill import GRAPH_SCHEMA_CONTEXT
 from agent.guardrails import GuardrailConfig, SAFETY_PROMPT_BLOCK, sanitize_output
+from agent.tracing import trace
 
 logger = logging.getLogger(__name__)
 
-MODEL = os.environ.get("LLM_MODEL", os.environ.get("GRAPHRAG_MODEL", "databricks-claude-sonnet-4-5"))
+MODEL = os.environ.get("LLM_MODEL", "databricks-claude-sonnet-4-6")
+ROUTING_MODEL = os.environ.get("ROUTING_MODEL", "databricks-meta-llama-3-3-70b-instruct")
 MAX_ITERATIONS = int(os.environ.get("MAX_SUPERVISOR_ITERATIONS", str(GuardrailConfig.MAX_DEEP_ITERATIONS)))
 
 _local = threading.local()
@@ -50,6 +52,34 @@ def _llm():
     if _cached_llm is None:
         _cached_llm = ChatDatabricks(endpoint=MODEL, temperature=0, max_retries=3)
     return _cached_llm
+
+
+_cached_routing_llm = None
+
+
+def _routing_llm():
+    global _cached_routing_llm
+    if _cached_routing_llm is None:
+        _cached_routing_llm = ChatDatabricks(endpoint=ROUTING_MODEL, temperature=0, max_retries=3)
+    return _cached_routing_llm
+
+
+_cached_retrieval_agents: dict = {}
+_cached_analyst_agents: dict = {}
+
+
+def _get_retrieval_agent(mode: str):
+    if mode not in _cached_retrieval_agents:
+        tools = GRAPHRAG_TOOLS if mode == "graphrag" else BASELINE_TOOLS
+        _cached_retrieval_agents[mode] = create_react_agent(_llm(), tools)
+    return _cached_retrieval_agents[mode]
+
+
+def _get_analyst_agent(mode: str):
+    if mode not in _cached_analyst_agents:
+        followup_tools = [execute_metadata_sql] if mode == "graphrag" else [execute_baseline_sql]
+        _cached_analyst_agents[mode] = create_react_agent(_llm(), followup_tools)
+    return _cached_analyst_agents[mode]
 
 
 # ---------------------------------------------------------------------------
@@ -179,7 +209,7 @@ def supervisor_node(state: DeepAnalysisState) -> dict:
         parts.append("Evidence: gathered" if state.get("retrieved_evidence") else "Evidence: not yet gathered")
         parts.append("Analysis: complete" if state.get("analysis_result") else "Analysis: not complete")
 
-        resp = _llm().invoke([
+        resp = _routing_llm().invoke([
             SystemMessage(content=SUPERVISOR_PROMPT),
             HumanMessage(content="\n".join(parts)),
         ])
@@ -205,7 +235,7 @@ def planner_node(state: DeepAnalysisState) -> dict:
     mode = state.get("agent_mode", "graphrag")
     _emit("planning", "Creating analysis plan...", agent="planner")
     try:
-        resp = _llm().invoke([
+        resp = _routing_llm().invoke([
             SystemMessage(content=_planner_prompt(mode)),
             HumanMessage(content=f"User question: {state['user_query']}"),
         ])
@@ -219,8 +249,7 @@ def retrieval_node(state: DeepAnalysisState) -> dict:
     mode = state.get("agent_mode", "graphrag")
     _emit("retrieving", "Gathering evidence...", agent="retrieval")
     try:
-        tools = GRAPHRAG_TOOLS if mode == "graphrag" else BASELINE_TOOLS
-        agent = create_react_agent(_llm(), tools)
+        agent = _get_retrieval_agent(mode)
         prompt = f"Execute this plan:\n\n{state.get('plan', '')}\n\nUser question: {state['user_query']}"
         result = agent.invoke({
             "messages": [
@@ -246,8 +275,7 @@ def analyst_node(state: DeepAnalysisState) -> dict:
     mode = state.get("agent_mode", "graphrag")
     _emit("analyzing", "Interpreting results...", agent="analyst")
     try:
-        followup_tools = [execute_metadata_sql] if mode == "graphrag" else [execute_baseline_sql]
-        agent = create_react_agent(_llm(), followup_tools)
+        agent = _get_analyst_agent(mode)
         context = (
             f"User question: {state['user_query']}\n\n"
             f"Plan:\n{state.get('plan', 'N/A')}\n\n"
@@ -376,6 +404,7 @@ def _extract_result(result: dict, mode: str) -> Dict:
 # Public API
 # ---------------------------------------------------------------------------
 
+@trace(name="deep_analysis")
 def run_deep_analysis(
     message: str,
     mode: str = "graphrag",

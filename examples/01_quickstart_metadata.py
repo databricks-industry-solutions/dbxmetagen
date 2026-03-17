@@ -6,7 +6,7 @@
 # MAGIC or classify tables into business domains -- all with a single function call.
 # MAGIC
 # MAGIC **Prerequisites:** A Databricks workspace with Unity Catalog enabled and
-# MAGIC access to a foundation model endpoint (e.g. `databricks-claude-sonnet-4-5`).
+# MAGIC access to a foundation model endpoint (e.g. `databricks-claude-sonnet-4-6`).
 
 # COMMAND ----------
 # MAGIC %pip install -qqq dbxmetagen
@@ -23,7 +23,7 @@ dbutils.widgets.text("table_names", "", "Table Names - comma separated (required
 dbutils.widgets.dropdown("mode", "comment", ["comment", "pi", "domain"], "Mode")
 dbutils.widgets.text("schema_name", "metadata_results", "Output Schema")
 dbutils.widgets.dropdown("apply_ddl", "false", ["true", "false"], "Apply DDL")
-dbutils.widgets.text("model", "databricks-claude-sonnet-4-5", "Model Endpoint")
+dbutils.widgets.text("model", "databricks-claude-sonnet-4-6", "Model Endpoint")
 
 # COMMAND ----------
 # MAGIC %md

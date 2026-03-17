@@ -419,12 +419,7 @@ class FKPredictor:
     # Step 2: Sample values
     # ------------------------------------------------------------------
     def sample_values(self, candidates: DataFrame) -> DataFrame:
-        """For each candidate pair, sample distinct non-null values from each column."""
-        candidates.createOrReplaceTempView("fk_candidates")
-        n = self.config.sample_size
-
-        # Extract column short names from the column id (format: catalog.schema.table.column)
-        # Fallback: carry forward dtype and rely on AI + rules
+        """Fallback: carry forward dtype and rely on AI + rules (no source sampling)."""
         return candidates.withColumn(
             "samples_a", F.lit(None).cast("array<string>")
         ).withColumn("samples_b", F.lit(None).cast("array<string>"))
@@ -766,8 +761,6 @@ class FKPredictor:
     # ------------------------------------------------------------------
     # Step 4b: Join validation -- sample rows and test actual joinability
     # ------------------------------------------------------------------
-    JOIN_SAMPLE_SIZE = 10000
-
     def join_validate(self, judged: DataFrame) -> DataFrame:
         """Batch join validation using cached table samples."""
         rows = (

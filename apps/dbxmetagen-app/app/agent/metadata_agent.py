@@ -9,6 +9,8 @@ import logging
 from typing import Annotated, Dict, Any, List, Optional, TypedDict
 
 from agent.guardrails import GuardrailConfig, SAFETY_PROMPT_BLOCK, sanitize_output
+from agent.common import extract_token_usage
+from agent.tracing import trace
 
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 from langchain_core.tools import BaseTool
@@ -25,7 +27,7 @@ from agent.metadata_tools import (
 
 logger = logging.getLogger(__name__)
 
-MODEL = os.environ.get("LLM_MODEL", os.environ.get("GRAPHRAG_MODEL", "databricks-claude-sonnet-4-5"))
+MODEL = os.environ.get("LLM_MODEL", "databricks-claude-sonnet-4-6")
 
 
 class AgentState(TypedDict):
@@ -106,7 +108,6 @@ MAX_TOOL_ROUNDS = GuardrailConfig.MAX_AGENT_ITERATIONS
 
 def _build_graph(tools: List[BaseTool]):
     llm = ChatDatabricks(endpoint=MODEL, temperature=0, max_retries=3)
-    llm_with_tools = llm.bind_tools(tools)
     tool_node = ToolNode(tools)
 
     def _count_tool_rounds(messages) -> int:
@@ -127,8 +128,9 @@ def _build_graph(tools: List[BaseTool]):
             msgs = [SystemMessage(content=sys_prompt)] + state["messages"]
             response = llm.invoke(msgs)
         else:
+            bound = llm.bind_tools(selected)
             msgs = [SystemMessage(content=sys_prompt)] + state["messages"]
-            response = llm_with_tools.invoke(msgs)
+            response = bound.invoke(msgs)
         return {"messages": [response]}
 
     def should_continue(state: AgentState):
@@ -160,6 +162,7 @@ def _get_graph():
 # Public entry point
 # ---------------------------------------------------------------------------
 
+@trace(name="metadata_quick")
 async def run_metadata_agent(
     question: str,
     history: Optional[List[Dict[str, str]]] = None,
@@ -189,6 +192,7 @@ async def run_metadata_agent(
                 messages.append(HumanMessage(content=content))
             elif role == "assistant":
                 messages.append(AIMessage(content=content))
+        messages = messages[-8:]
 
     intent = classify_intent(question)
     messages.append(HumanMessage(content=question))
@@ -211,4 +215,5 @@ async def run_metadata_agent(
         "intent": intent,
         "steps": len(result["messages"]),
         "mode": mode,
+        "token_usage": extract_token_usage(result["messages"]),
     }

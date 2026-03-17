@@ -17,7 +17,7 @@ from langgraph.prebuilt import create_react_agent
 
 from agent.common import (
     CATALOG, SCHEMA,
-    get_llm, build_react_graph, history_to_messages, extract_tool_calls,
+    get_llm, build_react_graph, history_to_messages, extract_tool_calls, extract_token_usage,
 )
 from agent.guardrails import GuardrailConfig, SAFETY_PROMPT_BLOCK, sanitize_output
 from agent.analyst_tools import BLIND_TOOLS, ENRICHED_TOOLS, execute_query
@@ -201,20 +201,7 @@ def run_analyst_single(
             except (json.JSONDecodeError, TypeError):
                 pass
 
-    token_usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
-    for msg in result["messages"]:
-        if isinstance(msg, AIMessage) and getattr(msg, "usage_metadata", None):
-            u = msg.usage_metadata
-            token_usage["input_tokens"] += (u.get("input_tokens", 0) if isinstance(u, dict) else getattr(u, "input_tokens", 0)) or 0
-            token_usage["output_tokens"] += (u.get("output_tokens", 0) if isinstance(u, dict) else getattr(u, "output_tokens", 0)) or 0
-            token_usage["total_tokens"] += (u.get("total_tokens", 0) if isinstance(u, dict) else getattr(u, "total_tokens", 0)) or 0
-        elif isinstance(msg, AIMessage) and getattr(msg, "response_metadata", None):
-            rm = msg.response_metadata
-            tu = rm.get("token_usage") or rm.get("usage") or {}
-            if isinstance(tu, dict):
-                token_usage["input_tokens"] += tu.get("prompt_tokens", 0) or tu.get("input_tokens", 0) or 0
-                token_usage["output_tokens"] += tu.get("completion_tokens", 0) or tu.get("output_tokens", 0) or 0
-                token_usage["total_tokens"] += tu.get("total_tokens", 0) or 0
+    token_usage = extract_token_usage(result["messages"])
 
     return {
         "answer": sanitize_output(final_msg.content),

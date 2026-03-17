@@ -19,6 +19,14 @@ try:
     import mlflow as _mlflow_mod
 
     _mlflow_mod.set_tracking_uri("databricks")
+    try:
+        from databricks.sdk import WorkspaceClient
+        _ws = WorkspaceClient()
+        _parent = "/".join(MLFLOW_EXPERIMENT.split("/")[:-1])
+        if _parent:
+            _ws.workspace.mkdirs(_parent)
+    except Exception:
+        pass
     exp = _mlflow_mod.set_experiment(MLFLOW_EXPERIMENT)
     MLFLOW_EXPERIMENT_ID = exp.experiment_id
     _mlflow_mod.langchain.autolog(log_traces=True, silent=True)

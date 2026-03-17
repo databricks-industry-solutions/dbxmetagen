@@ -54,8 +54,21 @@ export function HealthCards({ metrics }) {
 
 export function EntityGraph({ entities, relationships, allRelationships }) {
   const graphRef = useRef()
+  const containerRef = useRef()
   const [hovered, setHovered] = useState(null)
   const [selectedType, setSelectedType] = useState(null)
+  const [containerWidth, setContainerWidth] = useState(800)
+
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+    const ro = new ResizeObserver(entries => {
+      for (const entry of entries) setContainerWidth(entry.contentRect.width)
+    })
+    ro.observe(el)
+    setContainerWidth(el.offsetWidth)
+    return () => ro.disconnect()
+  }, [])
 
   const instanceOfLinks = useMemo(() => {
     if (!selectedType || !allRelationships) return []
@@ -122,7 +135,8 @@ export function EntityGraph({ entities, relationships, allRelationships }) {
     }
     ctx.font = '10px Inter, sans-serif'
     ctx.textAlign = 'center'
-    ctx.fillStyle = '#1e293b'
+    const isDark = document.documentElement.classList.contains('dark')
+    ctx.fillStyle = isDark ? '#e2e8f0' : '#1e293b'
     ctx.fillText(node.label, node.x, node.y + r + 12)
   }, [hovered, selectedType])
 
@@ -146,12 +160,12 @@ export function EntityGraph({ entities, relationships, allRelationships }) {
   if (!graphData.nodes.length) return <p className="text-sm text-slate-400">No entity relationships to display.</p>
 
   return (
-    <div>
+    <div ref={containerRef}>
       <div className="border border-slate-200 dark:border-dbx-navy-400/30 rounded-xl overflow-hidden bg-dbx-oat-light dark:bg-dbx-navy-700" style={{ height: 420 }}>
         <ForceGraph2D
           ref={graphRef}
           graphData={graphData}
-          width={800}
+          width={containerWidth}
           height={420}
           nodeCanvasObject={paintNode}
           linkCanvasObject={paintLink}

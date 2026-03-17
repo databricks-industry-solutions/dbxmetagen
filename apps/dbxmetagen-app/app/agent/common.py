@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 CATALOG = os.environ.get("CATALOG_NAME", "")
 SCHEMA = os.environ.get("SCHEMA_NAME", "")
 WAREHOUSE_ID = os.environ.get("WAREHOUSE_ID", "")
-MODEL = os.environ.get("LLM_MODEL", os.environ.get("GRAPHRAG_MODEL", "databricks-claude-sonnet-4-5"))
+MODEL = os.environ.get("LLM_MODEL", "databricks-claude-sonnet-4-6")
 
 _DML_KEYWORDS = {"INSERT", "UPDATE", "DELETE", "DROP", "CREATE", "ALTER", "TRUNCATE"}
 
@@ -184,6 +184,31 @@ def extract_tool_calls(messages: list) -> List[str]:
         if hasattr(msg, "tool_calls") and msg.tool_calls:
             names.extend(tc["name"] for tc in msg.tool_calls)
     return names
+
+
+# ---------------------------------------------------------------------------
+# Token usage extraction
+# ---------------------------------------------------------------------------
+
+def extract_token_usage(messages: list) -> Dict[str, int]:
+    """Sum token usage across AIMessage instances in a message list."""
+    usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+    for msg in messages:
+        if not isinstance(msg, AIMessage):
+            continue
+        if getattr(msg, "usage_metadata", None):
+            u = msg.usage_metadata
+            usage["input_tokens"] += (u.get("input_tokens", 0) if isinstance(u, dict) else getattr(u, "input_tokens", 0)) or 0
+            usage["output_tokens"] += (u.get("output_tokens", 0) if isinstance(u, dict) else getattr(u, "output_tokens", 0)) or 0
+            usage["total_tokens"] += (u.get("total_tokens", 0) if isinstance(u, dict) else getattr(u, "total_tokens", 0)) or 0
+        elif getattr(msg, "response_metadata", None):
+            rm = msg.response_metadata
+            tu = rm.get("token_usage") or rm.get("usage") or {}
+            if isinstance(tu, dict):
+                usage["input_tokens"] += tu.get("prompt_tokens", 0) or tu.get("input_tokens", 0) or 0
+                usage["output_tokens"] += tu.get("completion_tokens", 0) or tu.get("output_tokens", 0) or 0
+                usage["total_tokens"] += tu.get("total_tokens", 0) or 0
+    return usage
 
 
 # ---------------------------------------------------------------------------

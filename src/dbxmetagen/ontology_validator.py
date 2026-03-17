@@ -122,6 +122,16 @@ Focus on entities NOT already covered by existing types. Be conservative and sug
             table_metadata = self._get_table_metadata(source_tables)
             column_metadata = self._get_column_metadata(source_tables)
 
+            if table_metadata is None or column_metadata is None:
+                return {
+                    "entity_id": entity_row.entity_id,
+                    "validation_result": {
+                        "validated": False,
+                        "confidence": 0.0,
+                        "reasoning": "Metadata unavailable -- skipped validation",
+                    },
+                }
+
             prompt = self.VALIDATION_PROMPT.format(
                 entity_name=entity_row.entity_name,
                 entity_type=entity_row.entity_type,
@@ -210,7 +220,8 @@ Focus on entities NOT already covered by existing types. Be conservative and sug
             
             return "\n".join(summaries) if summaries else "No metadata found"
         except Exception as e:
-            return f"Error fetching metadata: {e}"
+            logger.warning("Failed to fetch table metadata for %s: %s", table_names, e)
+            return None
     
     def _get_column_metadata(self, table_names: List[str]) -> str:
         """Get column metadata summary for tables from column_knowledge_base."""
@@ -237,7 +248,8 @@ Focus on entities NOT already covered by existing types. Be conservative and sug
                 summaries.append(" ".join(parts))
             return "\n".join(summaries)
         except Exception as e:
-            return f"Could not fetch column metadata: {e}"
+            logger.warning("Failed to fetch column metadata for %s: %s", table_names, e)
+            return None
 
     def _call_ai(self, prompt: str) -> Optional[Dict[str, Any]]:
         """Call AI_QUERY and parse response, with 1 retry on parse failure."""

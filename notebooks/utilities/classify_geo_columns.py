@@ -40,7 +40,7 @@ print(f"Tag key: {tag_key}")
 
 import sys
 
-sys.path.append("../src")  # For git-clone or DAB deployment; pip-installed package works without this
+sys.path.append("../../src")  # For git-clone or DAB deployment; pip-installed package works without this
 
 from dbxmetagen.geo_classifier import classify_columns_geo
 

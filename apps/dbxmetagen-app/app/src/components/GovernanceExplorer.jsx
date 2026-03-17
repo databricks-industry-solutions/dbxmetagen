@@ -149,7 +149,7 @@ export default function GovernanceExplorer({ embedded }) {
 
       <ErrorBanner error={error} onDismiss={() => setError(null)} />
 
-      <div className="grid grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <div className="border rounded-xl p-4 bg-white dark:bg-dbx-navy-600/50">
           <h3 className="text-sm font-bold text-slate-700 dark:text-slate-200 mb-3">Sensitivity Heatmap</h3>
           <SummaryPanel data={summary} loading={loading.summary} />
