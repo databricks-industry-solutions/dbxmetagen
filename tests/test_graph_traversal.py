@@ -22,7 +22,7 @@ APP_DIR = os.path.join(os.path.dirname(__file__), "..", "apps", "dbxmetagen-app"
 
 _MOCK_MODULES = [
     "fastapi", "fastapi.responses", "fastapi.staticfiles", "fastapi.middleware", "fastapi.middleware.cors",
-    "uvicorn", "databricks.sdk", "databricks",
+    "uvicorn", "cachetools", "databricks.sdk", "databricks",
     "langchain_core", "langchain_core.tools", "langchain_core.messages",
     "langchain_databricks", "langgraph", "langgraph.graph", "langgraph.graph.message",
     "langgraph.prebuilt", "requests", "pydantic",
@@ -33,7 +33,10 @@ def _install_mock_modules():
     """Insert lightweight stubs for missing third-party packages."""
     for mod_name in _MOCK_MODULES:
         if mod_name not in sys.modules:
-            sys.modules[mod_name] = types.ModuleType(mod_name)
+            mod = types.ModuleType(mod_name)
+            if any(m.startswith(mod_name + ".") for m in _MOCK_MODULES):
+                mod.__path__ = []
+            sys.modules[mod_name] = mod
 
     # FastAPI stubs
     fm = sys.modules["fastapi"]
@@ -46,6 +49,11 @@ def _install_mock_modules():
     sys.modules["fastapi.staticfiles"].StaticFiles = MagicMock()
     sys.modules["fastapi.middleware.cors"].CORSMiddleware = MagicMock()
     sys.modules["fastapi.responses"].StreamingResponse = MagicMock()
+
+    # cachetools stubs
+    cm = sys.modules["cachetools"]
+    cm.TTLCache = MagicMock()
+    cm.cached = lambda *a, **kw: (lambda fn: fn)
 
     # Pydantic BaseModel stub
     class _BaseModel:
