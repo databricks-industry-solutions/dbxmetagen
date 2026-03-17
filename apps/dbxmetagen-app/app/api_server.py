@@ -1,5 +1,6 @@
 """FastAPI backend for dbxmetagen dashboard app."""
 
+import io
 import os
 import re
 import json
@@ -1186,7 +1187,28 @@ def generate_ddl(body: GenerateDDLBody):
         raise HTTPException(400, "scope must be table, schema, column, or geo")
 
     sql = "\n".join(stmts) if stmts else "-- No DDL generated"
-    return {"sql": sql, "statements": stmts}
+
+    vol_path = None
+    if stmts:
+        from datetime import datetime
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        current_date = datetime.now().strftime("%Y%m%d")
+        volume_name = os.environ.get("VOLUME_NAME", "generated_metadata")
+        ws = get_workspace_client()
+        current_user = "app"
+        try:
+            current_user = ws.current_user.me().user_name.split("@")[0]
+        except Exception:
+            pass
+        vol_path = f"/Volumes/{CATALOG}/{SCHEMA}/{volume_name}/{current_user}/{current_date}/generated_ddl_{ddl_type}_{ts}.sql"
+        try:
+            ws.files.upload(vol_path, io.BytesIO(sql.encode("utf-8")), overwrite=True)
+            logger.info("DDL written to volume: %s", vol_path)
+        except Exception as e:
+            logger.warning("Failed to write DDL to volume: %s", e)
+            vol_path = None
+
+    return {"sql": sql, "statements": stmts, "volume_path": vol_path}
 
 
 _GOVERNED_TAG_HINT = (
@@ -2406,6 +2428,8 @@ def get_coverage_metadata_summary(catalog: Optional[str] = None, schema: Optiona
     schema_filter = ""
     if catalog and schema:
         schema_filter = f" WHERE table_name LIKE '{catalog}.{schema}.%'"
+    elif catalog:
+        schema_filter = f" WHERE table_name LIKE '{catalog}.%'"
     result = {}
     try:
         rows = execute_sql(f"""
@@ -2419,7 +2443,12 @@ def get_coverage_metadata_summary(catalog: Optional[str] = None, schema: Optiona
         result = rows[0] if rows else {}
     except Exception:
         result = {"total": 0, "with_comments": 0, "with_pii": 0, "with_domain": 0}
-    onto_filter = f" WHERE t.table_name LIKE '{catalog}.{schema}.%'" if catalog and schema else ""
+    if catalog and schema:
+        onto_filter = f" WHERE t.table_name LIKE '{catalog}.{schema}.%'"
+    elif catalog:
+        onto_filter = f" WHERE t.table_name LIKE '{catalog}.%'"
+    else:
+        onto_filter = ""
     try:
         onto = execute_sql(f"SELECT COUNT(DISTINCT t.table_name) as with_ontology FROM (SELECT EXPLODE(source_tables) as table_name FROM {fq('ontology_entities')}) t{onto_filter}")
         result["with_ontology"] = onto[0]["with_ontology"] if onto else 0
@@ -2428,6 +2457,8 @@ def get_coverage_metadata_summary(catalog: Optional[str] = None, schema: Optiona
     fk_conf_filter = " WHERE final_confidence >= 0.5"
     if catalog and schema:
         fk_conf_filter += f" AND (src_table LIKE '{catalog}.{schema}.%' OR dst_table LIKE '{catalog}.{schema}.%')"
+    elif catalog:
+        fk_conf_filter += f" AND (src_table LIKE '{catalog}.%' OR dst_table LIKE '{catalog}.%')"
     try:
         fks = execute_sql(f"""SELECT COUNT(DISTINCT t) as with_fk FROM (
             SELECT src_table AS t FROM {fq('fk_predictions')}{fk_conf_filter}
@@ -2512,47 +2543,50 @@ def get_coverage_holistic(catalog: Optional[str] = None):
             result["with_comments"] = int(r.get("with_comments") or 0)
             result["with_pii"] = int(r.get("with_pii") or 0)
             result["with_domain"] = int(r.get("with_domain") or 0)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("holistic: main coverage query failed: %s", e)
+    cat_like = f"{cat}.%"
     try:
         onto = execute_sql(f"""
             SELECT COUNT(DISTINCT entity_type) as type_cnt,
                    AVG(confidence) as avg_conf,
-                   COUNT(DISTINCT EXPLODE(source_tables)) as tbl_cnt
+                   COUNT(DISTINCT t.tbl) as tbl_cnt
             FROM {fq('ontology_entities')}
+            LATERAL VIEW EXPLODE(source_tables) t AS tbl
+            WHERE t.tbl LIKE '{cat_like}'
         """)
         if onto:
             result["entity_type_count"] = int(onto[0].get("type_cnt") or 0)
             result["avg_confidence"] = round(float(onto[0].get("avg_conf") or 0), 3) if onto[0].get("avg_conf") else None
             result["with_ontology"] = int(onto[0].get("tbl_cnt") or 0)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("holistic: ontology query failed: %s", e)
     try:
-        fks = execute_sql(f"SELECT COUNT(*) as cnt FROM {fq('fk_predictions')} WHERE final_confidence >= 0.5")
+        fks = execute_sql(f"SELECT COUNT(*) as cnt FROM {fq('fk_predictions')} WHERE final_confidence >= 0.5 AND (src_table LIKE '{cat_like}' OR dst_table LIKE '{cat_like}')")
         result["fk_count"] = int(fks[0]["cnt"]) if fks else 0
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("holistic: fk_count query failed: %s", e)
     try:
         fk_tbls = execute_sql(f"""SELECT COUNT(DISTINCT t) as cnt FROM (
-            SELECT src_table AS t FROM {fq('fk_predictions')} WHERE final_confidence >= 0.5
+            SELECT src_table AS t FROM {fq('fk_predictions')} WHERE final_confidence >= 0.5 AND src_table LIKE '{cat_like}'
             UNION
-            SELECT dst_table AS t FROM {fq('fk_predictions')} WHERE final_confidence >= 0.5
+            SELECT dst_table AS t FROM {fq('fk_predictions')} WHERE final_confidence >= 0.5 AND dst_table LIKE '{cat_like}'
         )""")
         result["with_fk"] = int(fk_tbls[0]["cnt"]) if fk_tbls else 0
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("holistic: fk_tables query failed: %s", e)
     try:
-        mvs = execute_sql(f"SELECT status, COUNT(*) as cnt FROM {fq('metric_view_definitions')} GROUP BY status")
+        mvs = execute_sql(f"SELECT status, COUNT(*) as cnt FROM {fq('metric_view_definitions')} WHERE source_table LIKE '{cat_like}' GROUP BY status")
         result["metric_view_statuses"] = {r["status"]: int(r["cnt"]) for r in mvs} if mvs else {}
         result["metric_views"] = sum(result["metric_view_statuses"].values())
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("holistic: metric_views query failed: %s", e)
     try:
-        docs = execute_sql(f"SELECT doc_type, COUNT(*) AS cnt FROM {fq('metadata_documents')} GROUP BY doc_type")
+        docs = execute_sql(f"SELECT doc_type, COUNT(*) AS cnt FROM {fq('metadata_documents')} WHERE table_name LIKE '{cat_like}' GROUP BY doc_type")
         result["vs_by_type"] = {r["doc_type"]: int(r["cnt"]) for r in docs} if docs else {}
         result["vs_documents"] = sum(result["vs_by_type"].values())
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("holistic: vs_documents query failed: %s", e)
     return result
 
 
@@ -2596,6 +2630,64 @@ async def graph_rag_query(req: GraphQueryRequest):
             ) from exc
         logger.error("GraphRAG agent error: %s", exc)
         raise HTTPException(500, detail=f"Agent error: {msg}") from exc
+
+
+# ---------------------------------------------------------------------------
+# Graph Explorer endpoints
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/graph/traverse")
+def graph_traverse_endpoint(
+    start_node: str,
+    max_hops: int = 2,
+    direction: str = "both",
+    relationship: Optional[str] = None,
+    edge_type: Optional[str] = None,
+    hide_contains: bool = True,
+):
+    """BFS traversal with optional progressive disclosure (collapse column edges)."""
+    result = multi_hop_traverse(
+        start_node=start_node,
+        max_hops=min(max_hops, 4),
+        relationship=relationship,
+        edge_type=edge_type,
+        direction=direction,
+    )
+    if hide_contains:
+        contains_count: dict[str, int] = {}
+        other_edges = []
+        for e in result["edges"]:
+            if e.get("relationship") == "contains":
+                contains_count[e["src"]] = contains_count.get(e["src"], 0) + 1
+            else:
+                other_edges.append(e)
+        result["edges"] = other_edges
+        result["collapsed_columns"] = contains_count
+    return result
+
+
+@app.get("/api/graph/nodes")
+def graph_nodes_endpoint(
+    node_type: Optional[str] = None,
+    domain: Optional[str] = None,
+    search: Optional[str] = None,
+    limit: int = 100,
+):
+    """Search graph nodes for the explorer table picker."""
+    conditions = []
+    if node_type:
+        conditions.append(f"node_type = {_safe_sql_str(node_type)}")
+    if domain:
+        conditions.append(f"domain = {_safe_sql_str(domain)}")
+    if search:
+        safe_search = search.replace("'", "''").replace("%", "\\%")
+        conditions.append(f"(id LIKE '%{safe_search}%' OR display_name LIKE '%{safe_search}%')")
+    where = "WHERE " + " AND ".join(conditions) if conditions else ""
+    return graph_query(
+        f"SELECT id, node_type, domain, display_name, short_description, sensitivity "
+        f"FROM public.graph_nodes {where} ORDER BY id LIMIT {limit}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -2647,82 +2739,44 @@ def _ensure_semantic_layer_tables():
     global _sl_tables_ensured
     if _sl_tables_ensured:
         return
-    try:
-        execute_sql(
-            f"""
-            CREATE TABLE IF NOT EXISTS {fq('semantic_layer_questions')} (
-                question_id STRING NOT NULL,
-                question_text STRING,
-                status STRING,
-                created_at TIMESTAMP,
-                processed_at TIMESTAMP
-            ) COMMENT 'Business questions for semantic layer generation'
-        """
-        )
-        execute_sql(
-            f"""
-            CREATE TABLE IF NOT EXISTS {fq('metric_view_definitions')} (
-                definition_id STRING NOT NULL,
-                metric_view_name STRING,
-                source_table STRING,
-                json_definition STRING,
-                source_questions STRING,
-                status STRING,
-                validation_errors STRING,
-                genie_space_id STRING,
-                created_at TIMESTAMP,
-                applied_at TIMESTAMP,
-                version INT DEFAULT 1,
-                parent_definition_id STRING,
-                project_id STRING
-            ) COMMENT 'Generated metric view definitions with version history'
-        """
-        )
-        # Idempotent: add columns if table pre-dates those changes
-        for col_ddl in [
-            "version INT, parent_definition_id STRING",
-            "project_id STRING",
-            "complexity_score INT, complexity_level STRING",
-        ]:
-            try:
-                execute_sql(
-                    f"ALTER TABLE {fq('metric_view_definitions')} ADD COLUMNS ({col_ddl})"
-                )
-            except Exception:
-                pass
-        execute_sql(
-            f"""
-            CREATE TABLE IF NOT EXISTS {fq('semantic_layer_profiles')} (
-                profile_id STRING NOT NULL,
-                profile_name STRING,
-                questions STRING,
-                table_patterns STRING,
-                created_at TIMESTAMP,
-                updated_at TIMESTAMP
-            ) COMMENT 'Named question profiles for semantic layer'
-        """
-        )
-        execute_sql(
-            f"""
-            CREATE TABLE IF NOT EXISTS {fq('semantic_layer_projects')} (
-                project_id STRING NOT NULL,
-                project_name STRING,
-                description STRING,
-                created_at TIMESTAMP,
-                selected_tables STRING
-            ) COMMENT 'Named projects for grouping metric view definitions'
-        """
-        )
+    _TABLE_DDLS = [
+        f"""CREATE TABLE IF NOT EXISTS {fq('semantic_layer_questions')} (
+            question_id STRING NOT NULL, question_text STRING, status STRING,
+            created_at TIMESTAMP, processed_at TIMESTAMP
+        ) COMMENT 'Business questions for semantic layer generation'""",
+        f"""CREATE TABLE IF NOT EXISTS {fq('metric_view_definitions')} (
+            definition_id STRING NOT NULL, metric_view_name STRING, source_table STRING,
+            json_definition STRING, source_questions STRING, status STRING,
+            validation_errors STRING, genie_space_id STRING, created_at TIMESTAMP,
+            applied_at TIMESTAMP, version INT DEFAULT 1, parent_definition_id STRING,
+            project_id STRING
+        ) COMMENT 'Generated metric view definitions with version history'""",
+        f"""CREATE TABLE IF NOT EXISTS {fq('semantic_layer_profiles')} (
+            profile_id STRING NOT NULL, profile_name STRING, questions STRING,
+            table_patterns STRING, created_at TIMESTAMP, updated_at TIMESTAMP
+        ) COMMENT 'Named question profiles for semantic layer'""",
+        f"""CREATE TABLE IF NOT EXISTS {fq('semantic_layer_projects')} (
+            project_id STRING NOT NULL, project_name STRING, description STRING,
+            created_at TIMESTAMP, selected_tables STRING
+        ) COMMENT 'Named projects for grouping metric view definitions'""",
+    ]
+    for ddl in _TABLE_DDLS:
+        execute_sql(ddl)
+    for col_ddl in [
+        "version INT, parent_definition_id STRING",
+        "project_id STRING",
+        "complexity_score INT, complexity_level STRING",
+    ]:
         try:
-            execute_sql(
-                f"ALTER TABLE {fq('semantic_layer_projects')} ADD COLUMNS (selected_tables STRING)"
-            )
+            execute_sql(f"ALTER TABLE {fq('metric_view_definitions')} ADD COLUMNS ({col_ddl})")
         except Exception:
             pass
-        _sl_tables_ensured = True
-        logger.info("Semantic layer tables ensured")
-    except Exception as e:
-        logger.warning("Could not ensure semantic layer tables (will retry): %s", e)
+    try:
+        execute_sql(f"ALTER TABLE {fq('semantic_layer_projects')} ADD COLUMNS (selected_tables STRING)")
+    except Exception:
+        pass
+    _sl_tables_ensured = True
+    logger.info("Semantic layer tables ensured")
 
 
 @app.get("/api/semantic-layer/questions")
@@ -4892,7 +4946,7 @@ def genie_create(req: GenieCreateRequest):
                 if inst.get("join_specs"):
                     logger.warning("Attempt %d: stripping join_specs due to proto parse error", attempt + 1)
                     inst["join_specs"] = []
-                    continue
+                continue
             break
     logger.error("Genie create/update failed: %s", last_err)
     raise HTTPException(500, detail=f"Failed to create/update Genie space: {last_err}")

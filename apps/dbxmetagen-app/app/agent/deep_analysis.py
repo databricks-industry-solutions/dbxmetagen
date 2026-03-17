@@ -5,6 +5,7 @@ Supervisor -> Planner -> Retrieval -> Analyst -> Respond (with Clarify branch).
 The agent_mode field ("graphrag" or "baseline") selects tools and prompts.
 """
 
+import json
 import logging
 import os
 import queue
@@ -13,7 +14,7 @@ from operator import add
 from typing import Annotated, Dict, List, Optional
 
 from databricks_langchain import ChatDatabricks
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langgraph.prebuilt import create_react_agent
 from langgraph.graph import StateGraph, END
 from typing_extensions import TypedDict
@@ -98,6 +99,7 @@ class DeepAnalysisState(TypedDict):
     iteration: Annotated[list, add]
     tool_calls_made: Annotated[list, add]
     agent_mode: str  # "graphrag" or "baseline"
+    graph_data: dict
 
 
 # ---------------------------------------------------------------------------
@@ -245,6 +247,24 @@ def planner_node(state: DeepAnalysisState) -> dict:
         return {"plan": f"1. Gather relevant data for: {state['user_query']}", "messages": []}
 
 
+_GRAPH_TOOLS = {"traverse_graph", "expand_vs_hits", "find_similar_nodes"}
+
+
+def _merge_graph_data(existing: dict, new_chunk: dict) -> dict:
+    """Merge a traverse_graph result into an accumulated graph_data dict."""
+    nodes = dict(existing.get("nodes") or {})
+    nodes.update(new_chunk.get("nodes") or {})
+    edges = list(existing.get("edges") or [])
+    seen = {(e.get("src"), e.get("dst"), e.get("relationship")) for e in edges}
+    for e in new_chunk.get("edges") or []:
+        key = (e.get("src"), e.get("dst"), e.get("relationship"))
+        if key not in seen:
+            edges.append(e)
+            seen.add(key)
+    start = existing.get("start_node") or new_chunk.get("start_node")
+    return {"start_node": start, "nodes": nodes, "edges": edges}
+
+
 def retrieval_node(state: DeepAnalysisState) -> dict:
     mode = state.get("agent_mode", "graphrag")
     _emit("retrieving", "Gathering evidence...", agent="retrieval")
@@ -259,13 +279,21 @@ def retrieval_node(state: DeepAnalysisState) -> dict:
         })
         evidence = ""
         tools_used = []
+        graph_data = dict(state.get("graph_data") or {})
         for msg in result.get("messages", []):
             if isinstance(msg, AIMessage):
                 if msg.content:
                     evidence = msg.content
                 if hasattr(msg, "tool_calls") and msg.tool_calls:
                     tools_used.extend([tc.get("name", "unknown") for tc in msg.tool_calls])
-        return {"retrieved_evidence": evidence, "tool_calls_made": tools_used, "messages": []}
+            elif isinstance(msg, ToolMessage) and getattr(msg, "name", "") in _GRAPH_TOOLS:
+                try:
+                    chunk = json.loads(msg.content) if isinstance(msg.content, str) else msg.content
+                    if isinstance(chunk, dict) and ("nodes" in chunk or "edges" in chunk):
+                        graph_data = _merge_graph_data(graph_data, chunk)
+                except (json.JSONDecodeError, TypeError):
+                    pass
+        return {"retrieved_evidence": evidence, "tool_calls_made": tools_used, "graph_data": graph_data, "messages": []}
     except Exception as e:
         logger.warning("Retrieval error (retries exhausted): %s", e)
         return {"retrieved_evidence": f"Error: {e}", "tool_calls_made": [], "messages": []}
@@ -378,6 +406,7 @@ def _init_state(query: str, mode: str) -> DeepAnalysisState:
         "iteration": [],
         "tool_calls_made": [],
         "agent_mode": mode,
+        "graph_data": {},
     }
 
 
@@ -397,7 +426,11 @@ def _extract_result(result: dict, mode: str) -> Dict:
     if not response:
         response = result.get("analysis_result", "Analysis complete but no output was generated.")
     tools = list(set(result.get("tool_calls_made", [])))
-    return {"answer": sanitize_output(response), "tool_calls": tools, "mode": mode, "steps": len(result.get("iteration", []))}
+    out: Dict = {"answer": sanitize_output(response), "tool_calls": tools, "mode": mode, "steps": len(result.get("iteration", []))}
+    gd = result.get("graph_data")
+    if gd and (gd.get("nodes") or gd.get("edges")):
+        out["graph_data"] = gd
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -440,13 +473,16 @@ def run_deep_analysis_streaming(
             state = _init_state(query, mode)
             result = _get_graph().invoke(state, config={"recursion_limit": GuardrailConfig.MAX_RECURSION_LIMIT})
             extracted = _extract_result(result, mode)
-            q.put({
+            done_event = {
                 "stage": "done",
                 "answer": extracted["answer"],
                 "tool_calls": extracted["tool_calls"],
                 "mode": mode,
                 "routing_trace": list(_local.routing_trace),
-            })
+            }
+            if "graph_data" in extracted:
+                done_event["graph_data"] = extracted["graph_data"]
+            q.put(done_event)
         except Exception as e:
             logger.error("Streaming deep analysis error: %s", e, exc_info=True)
             q.put({"stage": "error", "message": str(e)})

@@ -7,10 +7,11 @@ import SemanticLayer from './components/SemanticLayer'
 import GenieBuilder from './components/GenieBuilder'
 import VectorSearch from './components/VectorSearch'
 import AnalystChat from './components/AnalystChat'
+import GraphExplorer from './components/GraphExplorer'
 const COMPONENTS = {
   agent: AgentChat, coverage: Coverage, jobs: BatchJobs, metadata: MetadataReview,
   semantic: SemanticLayer, genie: GenieBuilder, vector: VectorSearch,
-  analyst: AnalystChat,
+  analyst: AnalystChat, graph: GraphExplorer,
 }
 
 const NAV_CAT_COLORS = {
@@ -23,6 +24,7 @@ const TAB_ACCENT = {
   jobs: 'border-t-dbx-lava', semantic: 'border-t-dbx-lava',
   metadata: 'border-t-dbx-sky', coverage: 'border-t-dbx-sky',
   agent: 'border-t-dbx-teal', vector: 'border-t-dbx-teal', genie: 'border-t-dbx-teal',
+  graph: 'border-t-dbx-violet',
 }
 
 const NAV_STRUCTURE = [
@@ -30,7 +32,7 @@ const NAV_STRUCTURE = [
     category: 'Design',
     items: [
       { id: 'jobs',     label: 'Generate Semantic Layer', desc: 'Build core metadata, advanced analytics, and metric views' },
-      { id: 'semantic', label: 'Define Metrics',     desc: 'Define metric views and KPIs' },
+      { id: 'semantic', label: 'Define Metrics', beta: true, desc: 'Define metric views and KPIs' },
     ],
   },
   {
@@ -41,13 +43,13 @@ const NAV_STRUCTURE = [
     ],
   },
   {
-    category: 'Explore',
+    category: 'Explore', beta: true,
     items: [
       { id: 'agent',      label: 'Agent',           desc: 'Chat with the metadata agent' },
-      { id: 'analyst',    label: 'SQL Analyst Comparison', desc: 'Demonstrate semantic layer value with side-by-side agents' },
+      { id: 'graph',      label: 'Graph Explorer',   desc: 'Traverse the knowledge graph interactively' },
+      // { id: 'analyst',    label: 'SQL Analyst Comparison', desc: 'Demonstrate semantic layer value with side-by-side agents' },
       { id: 'vector',     label: 'Search',           desc: 'Semantic search over metadata' },
-      // Hidden tabs (components still registered in COMPONENTS):
-      // { id: 'genie',   label: 'Build Genie Space', desc: 'Build natural-language SQL spaces' },
+      { id: 'genie',     label: 'Build Genie Space', desc: 'Build natural-language SQL spaces' },
     ],
   },
 ]
@@ -207,8 +209,9 @@ function NavDropdown({ cat, activeTab, onSelect }) {
             : 'text-slate-600 dark:text-slate-400 hover:text-dbx-navy dark:hover:text-slate-200 hover:bg-white/60 dark:hover:bg-dbx-navy-500/50'
         }`}>
         <span className={`text-[10px] font-semibold uppercase tracking-wider ${catColor}`}>{cat.category}</span>
+        {cat.beta && <span className="ml-1 px-1 py-0.5 text-[8px] font-bold uppercase tracking-wider bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300 rounded">Beta</span>}
         {activeItem && <span className="text-slate-400 dark:text-slate-500 mx-0.5">/</span>}
-        {activeItem && <span>{activeItem.label}</span>}
+        {activeItem && <span>{activeItem.label}{activeItem.beta && <span className="ml-1 px-1 py-0.5 text-[8px] font-bold uppercase tracking-wider bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300 rounded">Beta</span>}</span>}
         <svg className={`w-3 h-3 transition-transform duration-200 ${open ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
         </svg>
@@ -223,7 +226,7 @@ function NavDropdown({ cat, activeTab, onSelect }) {
                   ? 'bg-dbx-oat-light dark:bg-dbx-navy-500/60 text-dbx-lava'
                   : 'text-slate-700 dark:text-slate-300 hover:bg-dbx-oat-light/60 dark:hover:bg-dbx-navy-500/40'
               }`}>
-              <span className="text-sm font-medium block">{item.label}</span>
+              <span className="text-sm font-medium block">{item.label}{item.beta && <span className="ml-1.5 px-1 py-0.5 text-[8px] font-bold uppercase tracking-wider bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300 rounded align-middle">Beta</span>}</span>
               <span className="text-xs text-slate-400 dark:text-slate-500">{item.desc}</span>
             </button>
           ))}

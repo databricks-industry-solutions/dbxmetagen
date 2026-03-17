@@ -29,60 +29,31 @@ function MetadataBar({ label, value, total, color }) {
 
 function CatalogCoverage({ catalog }) {
   const [summary, setSummary] = useState([])
-  const [tables, setTables] = useState([])
   const [typeBreakdown, setTypeBreakdown] = useState([])
   const [metaSummary, setMetaSummary] = useState(null)
   const [reviewSummary, setReviewSummary] = useState(null)
   const [error, setError] = useState(null)
-  const [selected, setSelected] = useState(null)
-  const [schemaMeta, setSchemaMeta] = useState(null)
-  const [filter, setFilter] = useState('all')
-  const [typeFilter, setTypeFilter] = useState('all')
 
   useEffect(() => {
     const catParam = catalog ? `?catalog=${encodeURIComponent(catalog)}` : ''
-    setSelected(null); setTables([]); setSchemaMeta(null); setReviewSummary(null)
+    setReviewSummary(null)
     cachedFetch(`/api/coverage/summary${catParam}`, {}, TTL.DASHBOARD).then(r => {
       setSummary(r.data)
       if (r.error) setError(r.error)
     })
     fetch(`/api/coverage/type-breakdown${catParam}`)
       .then(r => r.ok ? r.json() : []).then(setTypeBreakdown).catch(() => {})
-    fetch('/api/coverage/metadata-summary')
+    fetch(`/api/coverage/metadata-summary${catParam}`)
       .then(r => r.ok ? r.json() : null).then(setMetaSummary).catch(() => {})
     fetch(`/api/coverage/review-summary${catParam}`)
       .then(r => r.ok ? r.json() : []).then(setReviewSummary).catch(() => {})
   }, [catalog])
-
-  const drillDown = async (catalog, schema) => {
-    setSelected({ catalog, schema })
-    setSchemaMeta(null)
-    const { data, error: e } = await cachedFetch(`/api/coverage/tables?catalog=${encodeURIComponent(catalog)}&schema=${encodeURIComponent(schema)}`, {}, TTL.DASHBOARD)
-    setTables(data)
-    fetch(`/api/coverage/metadata-summary?catalog=${encodeURIComponent(catalog)}&schema=${encodeURIComponent(schema)}`)
-      .then(r => r.ok ? r.json() : null).then(setSchemaMeta).catch(() => {})
-    if (e) setError(e)
-  }
 
   const totals = summary.reduce((acc, r) => ({
     total: acc.total + (parseInt(r.total_tables) || 0),
     profiled: acc.profiled + (parseInt(r.profiled_tables) || 0),
     unprofiled: acc.unprofiled + (parseInt(r.unprofiled_tables) || 0),
   }), { total: 0, profiled: 0, unprofiled: 0 })
-
-  const filteredTables = tables.filter(t => {
-    if (filter === 'profiled') return t.is_profiled === 'true' || t.is_profiled === true
-    if (filter === 'unprofiled') return t.is_profiled === 'false' || t.is_profiled === false
-    return true
-  }).filter(t => {
-    if (typeFilter === 'all') return true
-    return t.table_type === typeFilter
-  })
-
-  const typeBadge = (tt) => {
-    const cls = TYPE_BADGE[tt] || 'bg-gray-100 text-gray-600'
-    return <span className={`px-2 py-0.5 rounded text-xs font-medium ${cls}`}>{tt}</span>
-  }
 
   return (
     <div className="space-y-6">
@@ -154,107 +125,6 @@ function CatalogCoverage({ catalog }) {
         </div>
       )}
 
-      {/* Schema breakdown */}
-      <section className="card p-6">
-        <h2 className="text-base font-semibold text-slate-800 dark:text-slate-100 mb-4">Coverage by Schema</h2>
-        {summary.length === 0
-          ? <EmptyState title="No table information available" description="Ensure the catalog is accessible and metadata generation has been run" />
-          : <div className="overflow-x-auto surface-nested">
-              <table className="min-w-full text-sm">
-                <thead><tr>
-                  {['Catalog', 'Schema', 'Total', 'Profiled', 'Unprofiled', ''].map(h =>
-                    <th key={h} className="text-left px-3 py-2.5 bg-dbx-oat dark:bg-dbx-navy-500 font-semibold text-slate-600 dark:text-slate-300 border-b border-slate-200 dark:border-dbx-navy-400/30 text-xs uppercase tracking-wider">{h}</th>)}
-                </tr></thead>
-                <tbody>
-                  {summary.map((r, i) => {
-                    const pct = r.total_tables > 0 ? Math.round((r.profiled_tables / r.total_tables) * 100) : 0
-                    return (
-                      <tr key={i} className="border-b border-slate-100 dark:border-dbx-navy-400/20 hover:bg-orange-50/30 dark:hover:bg-dbx-navy-500/40 transition-colors cursor-pointer"
-                          onClick={() => drillDown(r.table_catalog, r.table_schema)}>
-                        <td className="px-3 py-2 text-slate-700 dark:text-slate-200 font-medium">{r.table_catalog}</td>
-                        <td className="px-3 py-2 text-slate-700 dark:text-slate-300">{r.table_schema}</td>
-                        <td className="px-3 py-2 text-slate-600 dark:text-slate-300">{r.total_tables}</td>
-                        <td className="px-3 py-2 text-emerald-600 dark:text-emerald-400 font-semibold">{r.profiled_tables}</td>
-                        <td className="px-3 py-2 text-amber-600 dark:text-amber-400 font-semibold">{r.unprofiled_tables}</td>
-                        <td className="px-3 py-2">
-                          <div className="w-24 bg-dbx-oat dark:bg-dbx-navy-500 rounded-full h-2">
-                            <div className="bg-emerald-500 h-2 rounded-full" style={{ width: `${pct}%` }} />
-                          </div>
-                        </td>
-                      </tr>
-                    )
-                  })}
-                </tbody>
-              </table>
-            </div>
-        }
-      </section>
-
-      {/* Drill-down table list */}
-      {selected && (
-        <section className="card p-6">
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="text-base font-semibold text-slate-800 dark:text-slate-100">
-              {selected.catalog}.{selected.schema}
-              <span className="text-sm font-normal text-slate-400 ml-2">({filteredTables.length} tables)</span>
-            </h2>
-            <div className="flex gap-3">
-              <div className="flex gap-1">
-                {[['all','All'],['profiled','Profiled'],['unprofiled','Unprofiled']].map(([k,l]) => (
-                  <button key={k} onClick={() => setFilter(k)}
-                    className={`px-3 py-1.5 text-xs rounded-lg font-medium transition-all ${
-                      filter === k ? 'bg-dbx-lava text-white' : 'bg-dbx-oat dark:bg-dbx-navy-500 text-slate-600 dark:text-slate-300 hover:bg-dbx-oat-dark dark:hover:bg-dbx-navy-400'}`}>{l}</button>
-                ))}
-              </div>
-              <div className="flex gap-1">
-                {[['all','All Types'], ...Object.keys(TYPE_BADGE).map(k => [k, k])].map(([k,l]) => {
-                  const hasType = k === 'all' || tables.some(t => t.table_type === k)
-                  if (!hasType) return null
-                  return (
-                    <button key={k} onClick={() => setTypeFilter(k)}
-                      className={`px-2 py-1.5 text-[10px] rounded-lg font-medium transition-all ${
-                        typeFilter === k ? 'bg-slate-700 dark:bg-dbx-teal text-white' : 'bg-dbx-oat dark:bg-dbx-navy-500 text-slate-600 dark:text-slate-300 hover:bg-dbx-oat-dark dark:hover:bg-dbx-navy-400'}`}>{l}</button>
-                  )
-                })}
-              </div>
-            </div>
-          </div>
-          {schemaMeta && schemaMeta.total > 0 && (
-            <div className="mb-4 p-4 bg-white dark:bg-dbx-navy-500/50 rounded-lg border border-slate-100 dark:border-dbx-navy-400/30 space-y-2">
-              <h3 className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1">Discovery Coverage</h3>
-              <MetadataBar label="Profiled" value={filteredTables.filter(t => t.is_profiled === 'true' || t.is_profiled === true).length} total={filteredTables.length} color="bg-emerald-500" />
-              <h3 className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mt-3 mb-1">Metadata Completeness <span className="font-normal">({parseInt(schemaMeta.total)} in KB)</span></h3>
-              <MetadataBar label="Comments" value={parseInt(schemaMeta.with_comments) || 0} total={parseInt(schemaMeta.total)} color="bg-blue-500" />
-              <MetadataBar label="PII / PHI" value={parseInt(schemaMeta.with_pii) || 0} total={parseInt(schemaMeta.total)} color="bg-violet-500" />
-              <MetadataBar label="Domain" value={parseInt(schemaMeta.with_domain) || 0} total={parseInt(schemaMeta.total)} color="bg-amber-500" />
-              <MetadataBar label="Ontology" value={parseInt(schemaMeta.with_ontology) || 0} total={parseInt(schemaMeta.total)} color="bg-orange-500" />
-              <MetadataBar label="Tables with FK" value={parseInt(schemaMeta.with_fk) || 0} total={parseInt(schemaMeta.total)} color="bg-rose-500" />
-            </div>
-          )}
-          <div className="overflow-x-auto max-h-96">
-            <table className="min-w-full text-sm">
-              <thead><tr>
-                {['Table', 'Type', 'Status'].map(h =>
-                  <th key={h} className="text-left px-3 py-2.5 bg-dbx-oat dark:bg-dbx-navy-500 font-semibold text-slate-600 dark:text-slate-300 border-b border-slate-200 dark:border-dbx-navy-400/30 text-xs uppercase tracking-wider">{h}</th>)}
-              </tr></thead>
-              <tbody>
-                {filteredTables.map((t, i) => (
-                  <tr key={i} className="border-b border-slate-100 dark:border-dbx-navy-400/20 hover:bg-orange-50/30 dark:hover:bg-dbx-navy-500/40 transition-colors">
-                    <td className="px-3 py-2 text-slate-700 dark:text-slate-200 font-mono text-xs">{t.table_name}</td>
-                    <td className="px-3 py-2">{typeBadge(t.table_type)}</td>
-                    <td className="px-3 py-2">
-                      {(t.is_profiled === 'true' || t.is_profiled === true)
-                        ? <span className="px-2 py-0.5 bg-emerald-50 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300 rounded text-xs font-medium">Profiled</span>
-                        : <span className="px-2 py-0.5 bg-amber-50 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300 rounded text-xs font-medium">Unprofiled</span>
-                      }
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </section>
-      )}
     </div>
   )
 }

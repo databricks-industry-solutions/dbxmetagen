@@ -8,7 +8,7 @@
 Handles setup, configuration, and running metadata generation jobs. Configures `variables.yml`, manages Unity Catalog permissions, and schedules workflows. Troubleshoots issues and coordinates with Data Stewards on output quality.
 
 **Key tasks:**
-- Deploy dbxmetagen (notebook, asset bundle, or Streamlit app)
+- Deploy dbxmetagen (notebook, asset bundle, or web app)
 - Configure model endpoints and privacy settings
 - Run metadata generation on table lists
 - Export run logs for review
@@ -18,7 +18,7 @@ Handles setup, configuration, and running metadata generation jobs. Configures `
 Reviews AI-generated metadata for accuracy and business relevance. Approves or edits descriptions and classifications before they're applied to Unity Catalog.
 
 **Review process:**
-1. Access run logs (Streamlit app or Excel/TSV exports)
+1. Access run logs (web app or Excel/TSV exports)
 2. Review generated metadata:
    - **Comments**: Check descriptions are accurate and don't expose sensitive data
    - **PI Classification**: Verify PII/PHI/PCI tags are correct
@@ -27,7 +27,7 @@ Reviews AI-generated metadata for accuracy and business relevance. Approves or e
 4. Create manual overrides CSV for recurring corrections
 
 **Review locations:**
-- Streamlit app: `/Workspace/Apps/dbxmetagen-app`
+- Web app: `/Workspace/Apps/dbxmetagen-app`
 - Exported logs: `/Volumes/{catalog}/{schema}/generated_metadata/{user}/{date}/exportable_run_logs/`
 - Reviewed outputs: `/Volumes/{catalog}/{schema}/generated_metadata/{user}/reviewed_outputs/`
 
@@ -65,7 +65,7 @@ Uses enriched metadata to discover and understand datasets. Searches Unity Catal
 2. Update `variables.yml` with your catalog/schema settings
 3. Test on 5-10 tables with `apply_ddl: false`
 4. Review output quality
-5. Deploy for production use (asset bundle or Streamlit app)
+5. Deploy for production use (asset bundle or web app)
 
 ### Bulk Generation
 1. Prepare table list (CSV or `catalog.schema.*` wildcards)

@@ -89,7 +89,7 @@ resources:
             - task_key: build_column_kb
             - task_key: build_schema_kb
             - task_key: extract_extended_metadata
-          job_cluster_key: ml_cluster
+          job_cluster_key: analytics_cluster
           notebook_task:
             notebook_path: ../../notebooks/build_knowledge_graph.py
             base_parameters:
@@ -161,7 +161,7 @@ resources:
         - task_key: cluster_analysis
           depends_on:
             - task_key: generate_embeddings
-          job_cluster_key: ml_cluster
+          job_cluster_key: analytics_cluster
           notebook_task:
             notebook_path: ../../notebooks/cluster_analysis.py
             base_parameters:
@@ -252,11 +252,5 @@ resources:
             spark_version: 17.3.x-cpu-ml-scala2.13
             node_type_id: ${var.node_type}
             autoscale:
-              min_workers: 1
+              min_workers: 2
               max_workers: 4
-
-        - job_cluster_key: ml_cluster
-          new_cluster:
-            spark_version: 17.3.x-cpu-ml-scala2.13
-            node_type_id: ${var.node_type}
-            num_workers: 1

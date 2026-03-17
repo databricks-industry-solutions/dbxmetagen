@@ -42,7 +42,7 @@ main({
     "table_names": "my_catalog.my_schema.my_table",
     "mode": "comment",              # or "pi" or "domain"
     "schema_name": "metadata_results",
-    "model": "databricks-claude-sonnet-4-5",
+    "model": "databricks-claude-sonnet-4-6",
     "table_names_source": "parameter",
 })
 ```
@@ -96,7 +96,7 @@ For the web dashboard, batch jobs, Lakebase integration, and the full analytics 
 4. Run jobs:
    ```bash
    databricks bundle run metadata_generator_job -t dev -p <profile> --params table_names='catalog.schema.*',mode=domain
-   databricks bundle run full_analytics_pipeline -t dev -p <profile>
+   databricks bundle run full_analytics_pipeline_job -t dev -p <profile>
    ```
 
 ## Disclaimer

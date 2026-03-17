@@ -21,7 +21,7 @@ from unittest.mock import patch, MagicMock
 APP_DIR = os.path.join(os.path.dirname(__file__), "..", "apps", "dbxmetagen-app", "app")
 
 _MOCK_MODULES = [
-    "fastapi", "fastapi.staticfiles", "fastapi.middleware", "fastapi.middleware.cors",
+    "fastapi", "fastapi.responses", "fastapi.staticfiles", "fastapi.middleware", "fastapi.middleware.cors",
     "uvicorn", "databricks.sdk", "databricks",
     "langchain_core", "langchain_core.tools", "langchain_core.messages",
     "langchain_databricks", "langgraph", "langgraph.graph", "langgraph.graph.message",
@@ -45,6 +45,7 @@ def _install_mock_modules():
     fm.Form = MagicMock()
     sys.modules["fastapi.staticfiles"].StaticFiles = MagicMock()
     sys.modules["fastapi.middleware.cors"].CORSMiddleware = MagicMock()
+    sys.modules["fastapi.responses"].StreamingResponse = MagicMock()
 
     # Pydantic BaseModel stub
     class _BaseModel:

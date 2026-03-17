@@ -35,7 +35,7 @@ resources:
           depends_on:
             - task_key: build_knowledge_base
           # ML cluster required - GraphFrames needs JVM dependencies not available on serverless
-          job_cluster_key: ml_cluster
+          job_cluster_key: kb_cluster
 
           notebook_task:
             notebook_path: ../../notebooks/build_knowledge_graph.py
@@ -55,10 +55,3 @@ resources:
             node_type_id: ${var.node_type}
             num_workers: 1
 
-        # ML cluster for GraphFrames - required for knowledge graph building
-        # GraphFrames needs JVM dependencies not available on serverless
-        - job_cluster_key: ml_cluster
-          new_cluster:
-            spark_version: 17.3.x-cpu-ml-scala2.13
-            node_type_id: ${var.node_type}
-            num_workers: 1

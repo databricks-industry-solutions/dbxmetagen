@@ -285,7 +285,7 @@ class CommentGenerator(MetadataGenerator):
         else:
             try:
                 dict_keys = dict_list.keys()
-            except:
+            except Exception:
                 raise TypeError("dict_list is not a list or a dictionary")
         list_matches_keys = all(item in dict_keys for item in string_list)
         keys_match_list = all(key in string_list for key in dict_keys)
@@ -359,7 +359,7 @@ class PIIdentifier(MetadataGenerator):
                 )
             else:
                 raise ValueError(
-                    f"Validation error after %s attempts: %s", max_retries, e
+                    f"Validation error after {max_retries} attempts: {e}"
                 )
 
     def _get_chat_completion(
@@ -412,7 +412,7 @@ class PIIdentifier(MetadataGenerator):
         else:
             try:
                 dict_keys = dict_list.keys()
-            except:
+            except Exception:
                 raise TypeError("dict_list is not a list or a dictionary")
         list_matches_keys = all(item in dict_keys for item in string_list)
         keys_match_list = all(key in string_list for key in dict_keys)

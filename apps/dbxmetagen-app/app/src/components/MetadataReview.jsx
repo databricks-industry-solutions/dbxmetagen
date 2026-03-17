@@ -179,7 +179,8 @@ function ReviewEditor() {
     const res = await fetch('/api/metadata/generate-ddl', { method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(ddlPayload()) })
     const j = await res.json().catch(() => ({}))
-    setDdlSql(j.sql || j.detail || ''); setDdlLoading(false)
+    const volNote = j.volume_path ? `\n-- Saved to: ${j.volume_path}` : ''
+    setDdlSql((j.sql || j.detail || '') + volNote); setDdlLoading(false)
   }
   const applyDdl = async () => {
     if (!confirm('Apply DDL changes to your catalog? This modifies table/column metadata.')) return
@@ -887,7 +888,7 @@ function ReviewEditor() {
               </>
             )}
             <button onClick={generateDdl} disabled={ddlLoading} className="px-4 py-1.5 bg-dbx-oat dark:bg-dbx-navy-500 text-slate-700 dark:text-slate-200 rounded-lg text-sm font-medium hover:bg-dbx-oat-dark dark:hover:bg-dbx-navy-400 disabled:opacity-50">Generate DDL</button>
-            <button onClick={applyDdl} disabled={ddlLoading} className="px-4 py-1.5 bg-dbx-lava text-white rounded-lg text-sm font-medium hover:bg-red-700 disabled:opacity-50">Apply DDL</button>
+            <button onClick={applyDdl} disabled={ddlLoading} className="px-4 py-1.5 bg-dbx-lava text-white rounded-lg text-sm font-medium hover:bg-red-700 disabled:opacity-50">Generate &amp; Apply DDL</button>
             <span className="border-l border-slate-300 dark:border-dbx-navy-400/40 h-6" />
             <button onClick={() => exportVolume('tsv')} disabled={exportLoading} className="px-4 py-1.5 bg-dbx-oat dark:bg-dbx-navy-500 text-slate-700 dark:text-slate-200 rounded-lg text-sm font-medium hover:bg-dbx-oat-dark dark:hover:bg-dbx-navy-400 disabled:opacity-50">Export TSV</button>
             <button onClick={() => exportVolume('excel')} disabled={exportLoading} className="px-4 py-1.5 bg-dbx-oat dark:bg-dbx-navy-500 text-slate-700 dark:text-slate-200 rounded-lg text-sm font-medium hover:bg-dbx-oat-dark dark:hover:bg-dbx-navy-400 disabled:opacity-50">Export Excel</button>
@@ -921,8 +922,8 @@ function ReviewEditor() {
             : <p className="text-sm text-red-600">Import failed: {importResult.detail}</p>)}
           {ddlSql && (
             <div className="relative">
-              <pre className="text-xs bg-dbx-oat border border-slate-200 rounded-lg p-3 overflow-auto max-h-64 whitespace-pre-wrap">{ddlSql}</pre>
-              <button onClick={() => navigator.clipboard.writeText(ddlSql)} className="absolute top-2 right-2 px-2 py-1 bg-dbx-oat-light border border-slate-200 rounded text-xs hover:bg-dbx-oat">Copy</button>
+              <pre className="text-xs text-slate-800 dark:text-slate-200 bg-dbx-oat dark:bg-dbx-navy-600 border border-slate-200 dark:border-dbx-navy-400/30 rounded-lg p-3 overflow-auto max-h-64 whitespace-pre-wrap">{ddlSql}</pre>
+              <button onClick={() => navigator.clipboard.writeText(ddlSql)} className="absolute top-2 right-2 px-2 py-1 bg-dbx-oat-light dark:bg-dbx-navy-500 border border-slate-200 dark:border-dbx-navy-400/30 rounded text-xs text-slate-700 dark:text-slate-200 hover:bg-dbx-oat dark:hover:bg-dbx-navy-400">Copy</button>
             </div>
           )}
         </div>

@@ -312,18 +312,23 @@ class VectorIndexBuilder:
             WHERE f.final_confidence >= 0.5
         """
 
+        parts = [table_docs, column_docs]
+        for tbl, sql in [
+            ("ontology_entities", entity_docs),
+            ("metric_view_definitions", metric_docs),
+            ("fk_predictions", fk_docs),
+        ]:
+            if self.spark.catalog.tableExists(cfg.fq(tbl)):
+                parts.append(sql)
+            else:
+                logger.info("Skipping %s (table does not exist)", tbl)
+
+        union_body = "\nUNION ALL\n".join(parts)
+
         union_sql = f"""
             MERGE INTO {cfg.fq_documents} AS tgt
             USING (
-                {table_docs}
-                UNION ALL
-                {column_docs}
-                UNION ALL
-                {entity_docs}
-                UNION ALL
-                {metric_docs}
-                UNION ALL
-                {fk_docs}
+                {union_body}
             ) AS src
             ON tgt.doc_id = src.doc_id
             WHEN MATCHED THEN UPDATE SET *

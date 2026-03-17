@@ -11,4 +11,4 @@ By submitting a contribution to this repository, you certify that:
 3. **You are not submitting confidential or proprietary information.**  
    Your contribution does not include anything you don’t have permission to share publicly.
 
-If you are contributing on behalf of an organization, you confirm that you have the authority to do so. You agree to confirm these terms in your pull request. Any request that does not explicitely accept the terms will be assumed to have accepted. 
+If you are contributing on behalf of an organization, you confirm that you have the authority to do so. You agree to confirm these terms in your pull request. Any request that does not explicitly accept the terms will be assumed to have accepted. 

@@ -397,11 +397,15 @@ class KnowledgeGraphBuilder:
         )
         all_edges.append(subdomain_edges)
         
-        # Same catalog edges
-        catalog_edges = self.build_edges_for_attribute(
-            nodes_df, "catalog", "same_catalog"
-        )
-        all_edges.append(catalog_edges)
+        # Same catalog edges (skip if mono-catalog -- every pair is vacuous)
+        distinct_catalogs = nodes_df.select("catalog").distinct().count()
+        if distinct_catalogs > 1:
+            catalog_edges = self.build_edges_for_attribute(
+                nodes_df, "catalog", "same_catalog"
+            )
+            all_edges.append(catalog_edges)
+        else:
+            logger.info("Single catalog detected -- skipping same_catalog edges")
         
         # Same schema edges
         schema_edges = self.build_edges_for_attribute(
@@ -409,9 +413,10 @@ class KnowledgeGraphBuilder:
         )
         all_edges.append(schema_edges)
         
-        # Same security level edges
+        # Same security level edges (exclude PUBLIC -- O(N^2) noise)
+        sensitive_nodes = nodes_df.filter(F.col("security_level").isin("PII", "PHI"))
         security_edges = self.build_edges_for_attribute(
-            nodes_df, "security_level", "same_security_level"
+            sensitive_nodes, "security_level", "same_security_level"
         )
         all_edges.append(security_edges)
         
@@ -646,6 +651,7 @@ class ExtendedKnowledgeGraphConfig(KnowledgeGraphConfig):
     column_kb_table: str = "column_knowledge_base"
     schema_kb_table: str = "schema_knowledge_base"
     extended_metadata_table: str = "extended_table_metadata"
+    fk_confidence_threshold: float = 0.7
     
     @property
     def fully_qualified_column_kb(self) -> str:
@@ -882,63 +888,85 @@ class ExtendedKnowledgeGraphBuilder(KnowledgeGraphBuilder):
             return self.spark.createDataFrame([], self._EMPTY_EDGE_SCHEMA)
 
     def build_reference_edges(self) -> DataFrame:
-        """Build 'references' edges from fk_predictions if available."""
+        """Build 'references' edges from fk_predictions at both table and column level."""
         fk_table = f"{self.ext_config.catalog_name}.{self.ext_config.schema_name}.fk_predictions"
+        threshold = self.ext_config.fk_confidence_threshold
         try:
-            df = self.spark.sql(f"""
+            raw = self.spark.sql(f"""
                 SELECT
-                    src_table AS src,
-                    dst_table AS dst,
+                    src_table, dst_table, src_column, dst_column,
                     CONCAT(src_table, '.', src_column, ' = ', dst_table, '.', dst_column) AS join_expr,
                     final_confidence AS conf
                 FROM {fk_table}
-                WHERE final_confidence >= 0.5
+                WHERE final_confidence >= {threshold}
             """)
-            if df.count() == 0:
+            if raw.count() == 0:
                 return self.spark.createDataFrame([], self._EMPTY_EDGE_SCHEMA)
-            return (
-                df
-                .withColumn("relationship", F.lit("references"))
-                .withColumn("weight", F.col("conf"))
-                .withColumn("edge_id", F.concat_ws("::", F.col("src"), F.col("dst"), F.lit("references")))
-                .withColumn("edge_type", F.lit("references"))
-                .withColumn("direction", F.lit("out"))
-                .withColumn("join_expression", F.col("join_expr"))
-                .withColumn("join_confidence", F.col("conf"))
-                .withColumn("ontology_rel", F.lit(None).cast("string"))
-                .withColumn("source_system", F.lit("fk_predictions"))
-                .withColumn("status", F.lit("candidate"))
-                .withColumn("created_at", F.current_timestamp())
-                .withColumn("updated_at", F.current_timestamp())
-                .drop("join_expr", "conf")
+
+            def _fk_edges(df, rel_suffix=""):
+                rel = "references" + rel_suffix
+                return (
+                    df
+                    .withColumn("relationship", F.lit(rel))
+                    .withColumn("weight", F.col("conf"))
+                    .withColumn("edge_id", F.concat_ws("::", F.col("src"), F.col("dst"), F.lit(rel)))
+                    .withColumn("edge_type", F.lit("references"))
+                    .withColumn("direction", F.lit("out"))
+                    .withColumn("join_expression", F.col("join_expr"))
+                    .withColumn("join_confidence", F.col("conf"))
+                    .withColumn("ontology_rel", F.lit(None).cast("string"))
+                    .withColumn("source_system", F.lit("fk_predictions"))
+                    .withColumn("status", F.lit("candidate"))
+                    .withColumn("created_at", F.current_timestamp())
+                    .withColumn("updated_at", F.current_timestamp())
+                    .drop("join_expr", "conf", "src_table", "dst_table", "src_column", "dst_column")
+                )
+
+            table_df = raw.select(
+                F.col("src_table").alias("src"), F.col("dst_table").alias("dst"),
+                "join_expr", "conf",
             )
+            table_edges = _fk_edges(table_df)
+
+            col_df = raw.select(
+                F.concat_ws(".", F.col("src_table"), F.col("src_column")).alias("src"),
+                F.concat_ws(".", F.col("dst_table"), F.col("dst_column")).alias("dst"),
+                "join_expr", "conf",
+            )
+            col_edges = _fk_edges(col_df, "_column")
+
+            return table_edges.unionByName(col_edges)
         except Exception as e:
             logger.warning("Could not build reference edges: %s", e)
             return self.spark.createDataFrame([], self._EMPTY_EDGE_SCHEMA)
 
     def build_column_classification_edges(self, nodes_df: DataFrame) -> DataFrame:
-        """Build 'same_classification' edges between columns with matching PII classification."""
+        """Build 'same_classification' edges between columns sharing the same
+        *specific* classification type (e.g. email_address, ssn) rather than
+        the coarse PII/PHI bucket."""
         try:
-            column_nodes = nodes_df.filter(
-                (F.col("node_type") == "column") &
-                (F.col("security_level").isin("PII", "PHI"))
-            )
-            if column_nodes.count() == 0:
-                logger.info("No columns with PII/PHI classification found")
+            classified = self.spark.sql(f"""
+                SELECT column_id, LOWER(TRIM(classification)) AS cls
+                FROM {self.ext_config.fully_qualified_column_kb}
+                WHERE classification IS NOT NULL
+                  AND LOWER(TRIM(classification)) NOT IN ('none', 'null', '', 'public')
+            """)
+            if classified.count() == 0:
+                logger.info("No classified columns found for same_classification edges")
                 return self.spark.createDataFrame([], self._EMPTY_EDGE_SCHEMA)
 
-            df_a = column_nodes.select(F.col("id").alias("src"), F.col("security_level").alias("level_a"))
-            df_b = column_nodes.select(F.col("id").alias("dst"), F.col("security_level").alias("level_b"))
+            df_a = classified.select(F.col("column_id").alias("src"), F.col("cls").alias("cls_a"))
+            df_b = classified.select(F.col("column_id").alias("dst"), F.col("cls").alias("cls_b"))
 
             edges = (
-                df_a.join(df_b, df_a.level_a == df_b.level_b)
+                df_a.join(df_b, df_a.cls_a == df_b.cls_b)
                 .filter(F.col("src") < F.col("dst"))
                 .select("src", "dst")
                 .withColumn("relationship", F.lit("same_classification"))
                 .withColumn("weight", F.lit(1.0))
             )
             edges = self._enrich_edges(edges, "same_classification")
-            logger.info("Built same_classification edges for columns")
+            logger.info("Built same_classification edges (specific type) for columns")
             return edges
         except Exception as e:
             logger.warning("Could not build column classification edges: %s", e)

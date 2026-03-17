@@ -1,9 +1,11 @@
-import React, { useState, useEffect, useRef } from 'react'
+import React, { useState, useEffect, useRef, lazy, Suspense } from 'react'
 import { ErrorBanner } from '../App'
 import simpleMarkdown from '../utils/simpleMarkdown'
 import ChatInputBar from './ChatInputBar'
 import GovernanceExplorer from './GovernanceExplorer'
 import ImpactAnalysis from './ImpactAnalysis'
+
+const GraphSubgraph = lazy(() => import('./GraphSubgraph'))
 
 const TOOL_DESCRIPTIONS = {
   search_metadata: 'Semantic search over indexed metadata documents',
@@ -163,6 +165,22 @@ function MessageBubble({ msg, onRetry }) {
         </div>
         <div className="prose prose-sm max-w-none whitespace-pre-wrap break-words text-slate-700 dark:text-slate-300"
           dangerouslySetInnerHTML={{ __html: simpleMarkdown(msg.content) }} />
+        {msg.graph_data && Object.keys(msg.graph_data.nodes || {}).length > 0 && (
+          <Suspense fallback={<div className="h-48 flex items-center justify-center text-xs text-slate-400">Loading graph...</div>}>
+            <div className="mt-3 border border-slate-200 dark:border-slate-600 rounded-xl overflow-hidden">
+              <div className="px-3 py-1.5 bg-slate-50 dark:bg-dbx-navy-600 flex items-center gap-2">
+                <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Graph Context</span>
+                <span className="text-[10px] text-slate-400">{Object.keys(msg.graph_data.nodes).length} nodes, {(msg.graph_data.edges || []).length} edges</span>
+              </div>
+              <GraphSubgraph
+                nodes={msg.graph_data.nodes}
+                edges={msg.graph_data.edges}
+                startNode={msg.graph_data.start_node}
+                height={300}
+              />
+            </div>
+          </Suspense>
+        )}
         <AgentReasoning intent={msg.intent} toolCalls={msg.tool_calls} />
       </div>
     </div>
@@ -293,6 +311,7 @@ export default function AgentChat() {
             intent: null,
             mode: task.mode || useMode,
             elapsed_ms: task.elapsed_ms,
+            graph_data: task.graph_data || null,
           }])
           return
         }
@@ -330,6 +349,7 @@ export default function AgentChat() {
           intent: data.intent,
           mode: data.mode || useMode,
           elapsed_ms: data.elapsed_ms,
+          graph_data: data.graph_data || null,
         }])
       }
     } catch (e) {
