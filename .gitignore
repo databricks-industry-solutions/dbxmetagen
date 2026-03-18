@@ -145,8 +145,9 @@ __pycache__/
 **/node_modules/
 *.tmp
 
-# Deployment temporary files
+# Deployment -- generated from templates by deploy.sh
 databricks.yml
+apps/dbxmetagen-app/app/app.yaml
 databricks_final.yml
 databricks_final.yml.tmp
 

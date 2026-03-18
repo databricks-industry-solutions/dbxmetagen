@@ -9,7 +9,9 @@
 # MAGIC access to a foundation model endpoint (e.g. `databricks-claude-sonnet-4-6`).
 
 # COMMAND ----------
-# MAGIC %pip install -qqq dbxmetagen
+# MAGIC %pip install -qqq -r ../requirements.txt ..
+# MAGIC # Or install directly from GitHub main branch:
+# MAGIC # %pip install -qqq git+https://github.com/databricks-industry-solutions/dbxmetagen.git@main
 # MAGIC dbutils.library.restartPython()
 
 # COMMAND ----------

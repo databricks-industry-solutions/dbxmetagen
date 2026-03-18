@@ -85,14 +85,10 @@ sed -e "s|__DATABRICKS_HOST__|${DATABRICKS_HOST}|g" \
     -e "s|__WAREHOUSE_ID__|${warehouse_id}|g" \
     databricks.yml.template > databricks.yml
 
-echo "=== Injecting env vars into app.yaml ==="
-sed -i.bak \
-    -e "s|__CATALOG_NAME__|${catalog_name}|g" \
+echo "=== Generating app.yaml from template ==="
+sed -e "s|__CATALOG_NAME__|${catalog_name}|g" \
     -e "s|__SCHEMA_NAME__|${schema_name}|g" \
-    apps/dbxmetagen-app/app/app.yaml
-rm -f apps/dbxmetagen-app/app/app.yaml.bak
-# Restore app.yaml placeholders on exit so the working tree stays clean
-APP_YAML_RESTORE=true
+    apps/dbxmetagen-app/app/app.yaml.template > apps/dbxmetagen-app/app/app.yaml
 
 if [ "$SKIP_APP" = false ]; then
     # --- Build frontend ---
@@ -144,7 +140,6 @@ echo "=== Copying configurations into app source ==="
 cp -r configurations apps/dbxmetagen-app/app/configurations
 cleanup() {
     rm -rf apps/dbxmetagen-app/app/configurations
-    [ "${APP_YAML_RESTORE:-}" = true ] && git checkout -- apps/dbxmetagen-app/app/app.yaml 2>/dev/null || true
 }
 trap cleanup EXIT
 

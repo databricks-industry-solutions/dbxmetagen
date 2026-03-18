@@ -561,6 +561,7 @@ _JOB_ENV_MAP = {
     "metadata_parallel_kb_build": "METADATA_PARALLEL_KB_BUILD_JOB_ID",
     "metadata_serverless": "METADATA_SERVERLESS_JOB_ID",
     "metadata_parallel_serverless": "METADATA_PARALLEL_SERVERLESS_JOB_ID",
+    "kb_enriched_modes": "KB_ENRICHED_MODES_JOB_ID",
 }
 
 _KNOWN_JOB_IDS: dict[str, int] = {}

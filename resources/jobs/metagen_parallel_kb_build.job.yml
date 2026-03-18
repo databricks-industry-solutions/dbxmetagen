@@ -8,6 +8,7 @@ resources:
   jobs:
     metadata_parallel_kb_build_job:
       name: "${var.app_name}_parallel_kb_build_job"
+      max_concurrent_runs: 1
 
       permissions:
         - service_principal_name: ${resources.apps.dbxmetagen_app.service_principal_client_id}

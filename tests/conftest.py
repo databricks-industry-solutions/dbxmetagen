@@ -2,6 +2,7 @@
 
 import sys
 import os
+import types
 from unittest.mock import MagicMock, patch
 import pytest
 
@@ -16,6 +17,106 @@ for _mod_name in [
 ]:
     if _mod_name not in sys.modules:
         sys.modules[_mod_name] = MagicMock()
+
+# Stub external deps that processing.py and other heavy modules import.
+# These are never installed in the test env, so they must be globally stubbed
+# (same pattern as pyspark above). Internal dbxmetagen.* submodules are NOT
+# stubbed here to avoid clobbering real implementations.
+for _mod_name in [
+    "mlflow", "mlflow.types", "mlflow.types.llm", "mlflow.tracing",
+    "mlflow.tracing.fluent",
+    "nest_asyncio",
+    "openai", "openai.types", "openai.types.chat",
+    "openai.types.chat.chat_completion",
+    "openai.types.chat.chat_completion_message",
+    "grpc", "grpc._channel",
+]:
+    if _mod_name not in sys.modules:
+        sys.modules[_mod_name] = MagicMock()
+
+# grpc._channel exception types must be real classes (not MagicMock)
+# so that `except _InactiveRpcError` works correctly
+_gc = sys.modules["grpc._channel"]
+_gc._InactiveRpcError = type("_InactiveRpcError", (Exception,), {})
+_gc._MultiThreadedRendezvous = type("_MultiThreadedRendezvous", (Exception,), {})
+
+
+# Internal dbxmetagen submodule stubs -- these must be SCOPED (not global)
+# because other tests import the real modules (e.g. dbxmetagen.prompts.Prompt).
+_INTERNAL_STUB_NAMES = [
+    "dbxmetagen.sampling", "dbxmetagen.prompts", "dbxmetagen.error_handling",
+    "dbxmetagen.comment_summarizer", "dbxmetagen.metadata_generator",
+    "dbxmetagen.user_utils", "dbxmetagen.domain_classifier",
+]
+
+_SENTINEL = object()
+
+
+def install_processing_stubs():
+    """Install temporary sys.modules stubs for internal dbxmetagen submodules
+    so dbxmetagen.processing can import. External deps (mlflow, openai, etc.)
+    are already globally stubbed above.
+
+    Only creates stub modules for entries NOT already in sys.modules.
+    Returns a dict for later restoration via uninstall_processing_stubs.
+    """
+    saved = {}
+    installed = set()
+    for mod in _INTERNAL_STUB_NAMES:
+        saved[mod] = sys.modules.get(mod, _SENTINEL)
+        if mod not in sys.modules:
+            sys.modules[mod] = types.ModuleType(mod)
+            installed.add(mod)
+
+    # Only populate attributes on stubs we actually created, to avoid
+    # corrupting real modules that are already imported.
+    if "dbxmetagen.sampling" in installed:
+        sys.modules["dbxmetagen.sampling"].determine_sampling_ratio = MagicMock()
+    if "dbxmetagen.prompts" in installed:
+        pr = sys.modules["dbxmetagen.prompts"]
+        pr.Prompt = MagicMock()
+        pr.PIPrompt = MagicMock()
+        pr.CommentPrompt = MagicMock()
+        pr.PromptFactory = MagicMock()
+    if "dbxmetagen.error_handling" in installed:
+        er = sys.modules["dbxmetagen.error_handling"]
+        er.exponential_backoff = MagicMock()
+        er.validate_csv = MagicMock()
+    if "dbxmetagen.comment_summarizer" in installed:
+        sys.modules["dbxmetagen.comment_summarizer"].TableCommentSummarizer = MagicMock()
+    if "dbxmetagen.metadata_generator" in installed:
+        mg = sys.modules["dbxmetagen.metadata_generator"]
+        for attr in ("Response", "PIResponse", "CommentResponse", "PIColumnContent",
+                     "MetadataGeneratorFactory", "PIIdentifier", "MetadataGenerator",
+                     "CommentGenerator"):
+            setattr(mg, attr, MagicMock())
+    if "dbxmetagen.user_utils" in installed:
+        uu = sys.modules["dbxmetagen.user_utils"]
+        uu.sanitize_user_identifier = MagicMock()
+        uu.get_current_user = MagicMock()
+    if "dbxmetagen.domain_classifier" in installed:
+        dc = sys.modules["dbxmetagen.domain_classifier"]
+        dc.load_domain_config = MagicMock()
+        dc.classify_table_domain = MagicMock()
+
+    return saved
+
+
+def uninstall_processing_stubs(saved):
+    """Restore sys.modules entries overwritten by install_processing_stubs."""
+    import dbxmetagen as _pkg
+    for mod, original in saved.items():
+        attr = mod.rsplit(".", 1)[-1]
+        if original is _SENTINEL:
+            sys.modules.pop(mod, None)
+            if hasattr(_pkg, attr):
+                delattr(_pkg, attr)
+        else:
+            sys.modules[mod] = original
+            setattr(_pkg, attr, original)
+    sys.modules.pop("dbxmetagen.processing", None)
+    if hasattr(_pkg, "processing"):
+        delattr(_pkg, "processing")
 
 
 @pytest.fixture

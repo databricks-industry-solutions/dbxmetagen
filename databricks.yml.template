@@ -6,6 +6,7 @@ sync:
   include:
     - apps/dbxmetagen-app/app/configurations/**
     - apps/dbxmetagen-app/app/src/dist/**
+    - apps/dbxmetagen-app/app/app.yaml
 
 include:
   - resources/jobs/*.yml
