@@ -41,6 +41,12 @@ resources:
           default: ""
         - name: domain_config_path
           default: ""
+        - name: sample_size
+          default: "5"
+        - name: include_lineage
+          default: "false"
+        - name: model
+          default: "databricks-claude-sonnet-4-6"
 
       tasks:
         - task_key: generate_comments
@@ -61,6 +67,9 @@ resources:
               include_previously_failed_tables: "{{job.parameters.include_previously_failed_tables}}"
               ontology_bundle: "{{job.parameters.ontology_bundle}}"
               domain_config_path: "{{job.parameters.domain_config_path}}"
+              sample_size: "{{job.parameters.sample_size}}"
+              include_lineage: "{{job.parameters.include_lineage}}"
+              model: "{{job.parameters.model}}"
           libraries:
             - whl: ../../dist/*.whl
 
@@ -98,6 +107,9 @@ resources:
               use_kb_comments: "true"
               ontology_bundle: "{{job.parameters.ontology_bundle}}"
               domain_config_path: "{{job.parameters.domain_config_path}}"
+              sample_size: "{{job.parameters.sample_size}}"
+              include_lineage: "{{job.parameters.include_lineage}}"
+              model: "{{job.parameters.model}}"
           libraries:
             - whl: ../../dist/*.whl
 
@@ -123,6 +135,9 @@ resources:
               use_kb_comments: "true"
               ontology_bundle: "{{job.parameters.ontology_bundle}}"
               domain_config_path: "{{job.parameters.domain_config_path}}"
+              sample_size: "{{job.parameters.sample_size}}"
+              include_lineage: "{{job.parameters.include_lineage}}"
+              model: "{{job.parameters.model}}"
           libraries:
             - whl: ../../dist/*.whl
 

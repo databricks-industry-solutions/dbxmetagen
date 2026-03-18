@@ -133,6 +133,8 @@ def setup_widgets(dbutils):
     )
     dbutils.widgets.text("ontology_bundle", "")
     dbutils.widgets.text("domain_config_path", "")
+    dbutils.widgets.text("include_lineage", "")
+    dbutils.widgets.text("model", "")
 
 
 def get_widgets(dbutils):
@@ -152,6 +154,8 @@ def get_widgets(dbutils):
     include_previously_failed_tables = dbutils.widgets.get("include_previously_failed_tables")
     ontology_bundle = dbutils.widgets.get("ontology_bundle")
     domain_config_path = dbutils.widgets.get("domain_config_path")
+    include_lineage = dbutils.widgets.get("include_lineage")
+    model = dbutils.widgets.get("model")
     notebook_variables = {
         "cleanup_control_table": cleanup_control_table,
         "mode": mode,
@@ -168,6 +172,8 @@ def get_widgets(dbutils):
         "include_previously_failed_tables": include_previously_failed_tables,
         "ontology_bundle": ontology_bundle,
         "domain_config_path": domain_config_path,
+        "include_lineage": include_lineage,
+        "model": model,
     }
     return {k: v for k, v in notebook_variables.items() if v is not None and v != ""}
 

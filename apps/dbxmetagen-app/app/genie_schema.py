@@ -192,6 +192,61 @@ def _name_from_sql(sql_list: list[str]) -> str:
     return raw
 
 
+def _split_text_into_instructions(text: str) -> list[TextInstruction]:
+    """Split a markdown string into separate TextInstruction blocks by ## headers."""
+    if not text or not isinstance(text, str):
+        return []
+    sections: list[tuple[str, str]] = []
+    current_header = ""
+    current_lines: list[str] = []
+    for line in text.split("\n"):
+        if line.startswith("## "):
+            if current_lines:
+                body = "\n".join(current_lines).strip()
+                if body:
+                    sections.append((current_header, body))
+            current_header = line.lstrip("# ").strip()
+            current_lines = []
+        else:
+            current_lines.append(line)
+    if current_lines:
+        body = "\n".join(current_lines).strip()
+        if body:
+            sections.append((current_header, body))
+    if not sections:
+        return [TextInstruction(content=[text])]
+    if len(sections) == 1 and not sections[0][0]:
+        return [TextInstruction(content=[sections[0][1]])]
+    result = []
+    for header, body in sections:
+        content = f"## {header}\n{body}" if header else body
+        result.append(TextInstruction(content=[content]))
+    return result
+
+
+def _extract_table_refs_from_sql(sql: str) -> set[str]:
+    """Extract fully-qualified or short table references from a SQL string."""
+    refs: set[str] = set()
+    for m in re.finditer(r"\bFROM\s+(`?[\w.]+`?)", sql, re.IGNORECASE):
+        refs.add(m.group(1).replace("`", ""))
+    for m in re.finditer(r"\bJOIN\s+(`?[\w.]+`?)", sql, re.IGNORECASE):
+        refs.add(m.group(1).replace("`", ""))
+    return refs
+
+
+def _dedup_join_specs(joins: list[JoinSpec]) -> list[JoinSpec]:
+    """Remove duplicate join specs (same left+right pair)."""
+    seen: set[tuple[str, str]] = set()
+    deduped: list[JoinSpec] = []
+    for j in joins:
+        key = (j.left.identifier, j.right.identifier)
+        rev_key = (j.right.identifier, j.left.identifier)
+        if key not in seen and rev_key not in seen:
+            seen.add(key)
+            deduped.append(j)
+    return deduped
+
+
 def build_serialized_space(raw: dict) -> dict:
     """Construct a clean serialized_space dict from raw agent output.
 
@@ -223,16 +278,14 @@ def build_serialized_space(raw: dict) -> dict:
     if isinstance(text, str) and text:
         text_insts = [TextInstruction(content=[text])]
     elif isinstance(text, list):
+        all_parts = []
         for t in text:
             if isinstance(t, dict) and t.get("content"):
-                text_insts.append(
-                    TextInstruction(
-                        id=t.get("id") or _hex_id(),
-                        content=_ensure_list(t["content"]),
-                    )
-                )
+                all_parts.extend(_ensure_list(t["content"]))
             elif isinstance(t, str) and t:
-                text_insts.append(TextInstruction(content=[t]))
+                all_parts.append(t)
+        if all_parts:
+            text_insts = [TextInstruction(content=["\n\n".join(all_parts)])]
 
     # example_sql / example_question_sqls
     examples_raw = (
@@ -280,6 +333,7 @@ def build_serialized_space(raw: dict) -> dict:
                     sql=split,
                 )
             )
+    joins = _dedup_join_specs(joins)
 
     # sql_snippets -- apply date-function autofix on all SQL
     snip_raw = inst_raw.get("sql_snippets") or raw.get("sql_snippets") or {}

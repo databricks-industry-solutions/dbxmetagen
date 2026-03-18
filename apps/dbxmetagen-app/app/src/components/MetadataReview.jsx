@@ -84,6 +84,8 @@ function ReviewEditor() {
   const [showVolumeBrowser, setShowVolumeBrowser] = useState(false)
   const [volumeFiles, setVolumeFiles] = useState([])
   const [volumeFilesLoading, setVolumeFilesLoading] = useState(false)
+  const [volumeFilesError, setVolumeFilesError] = useState(null)
+  const [ddlError, setDdlError] = useState(null)
 
   useEffect(() => { fetch('/api/ontology/entity-type-options').then(r => r.json()).then(d => setEntityTypeOptions(Array.isArray(d) ? d : [])).catch(() => {}) }, [])
 
@@ -175,22 +177,29 @@ function ReviewEditor() {
   })
 
   const generateDdl = async () => {
-    setDdlLoading(true); setDdlApplyResult(null)
-    const res = await fetch('/api/metadata/generate-ddl', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(ddlPayload()) })
-    const j = await res.json().catch(() => ({}))
-    const volNote = j.volume_path ? `\n-- Saved to: ${j.volume_path}` : ''
-    setDdlSql((j.sql || j.detail || '') + volNote); setDdlLoading(false)
+    setDdlLoading(true); setDdlApplyResult(null); setDdlError(null)
+    try {
+      const res = await fetch('/api/metadata/generate-ddl', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(ddlPayload()) })
+      const j = await res.json().catch(() => ({}))
+      if (!res.ok) { setDdlError(errMsg(j.detail || `Request failed (${res.status})`)); return }
+      const volNote = j.volume_path ? `\n-- Saved to: ${j.volume_path}` : ''
+      setDdlSql((j.sql || '') + volNote)
+    } catch (e) { setDdlError(e.message || 'Network error') }
+    finally { setDdlLoading(false) }
   }
   const applyDdl = async () => {
     if (!confirm('Apply DDL changes to your catalog? This modifies table/column metadata.')) return
-    setDdlLoading(true); setDdlApplyResult(null)
-    const res = await fetch('/api/metadata/apply-ddl', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(ddlPayload()) })
-    const j = await res.json().catch(() => ({}))
-    const hasErrors = j.errors && j.errors.length > 0
-    setDdlApplyResult(hasErrors ? { ok: false, applied: j.applied || 0, errors: j.errors } : { ok: true, applied: j.applied })
-    setDdlLoading(false)
+    setDdlLoading(true); setDdlApplyResult(null); setDdlError(null)
+    try {
+      const res = await fetch('/api/metadata/apply-ddl', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(ddlPayload()) })
+      const j = await res.json().catch(() => ({}))
+      if (!res.ok) { setDdlApplyResult({ ok: false, detail: errMsg(j.detail || `Request failed (${res.status})`) }); return }
+      const hasErrors = j.errors && j.errors.length > 0
+      setDdlApplyResult(hasErrors ? { ok: false, applied: j.applied || 0, errors: j.errors } : { ok: true, applied: j.applied })
+    } catch (e) { setDdlApplyResult({ ok: false, detail: e.message || 'Network error' }) }
+    finally { setDdlLoading(false) }
   }
   const exportVolume = async (fmt) => {
     setExportLoading(true); setExportResult(null)
@@ -207,12 +216,14 @@ function ReviewEditor() {
   const openVolumeBrowser = async () => {
     setShowVolumeBrowser(true)
     setVolumeFilesLoading(true)
+    setVolumeFilesError(null)
     try {
       const res = await fetch('/api/metadata/volume-files')
-      const j = await res.json()
+      const j = await res.json().catch(() => ({}))
+      if (!res.ok) { setVolumeFilesError(errMsg(j.detail || `Failed to list files (${res.status})`)); setVolumeFiles([]); return }
       setVolumeFiles(Array.isArray(j) ? j : [])
-    } catch { setVolumeFiles([]) }
-    setVolumeFilesLoading(false)
+    } catch (e) { setVolumeFilesError(e.message || 'Network error'); setVolumeFiles([]) }
+    finally { setVolumeFilesLoading(false) }
   }
 
   const importFromVolume = async (volumePath) => {
@@ -224,7 +235,7 @@ function ReviewEditor() {
         body: JSON.stringify({ volume_path: volumePath })
       })
       const j = await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error(j.detail || res.status)
+      if (!res.ok) throw new Error(errMsg(j.detail) || res.status)
       setImportResult({ ok: true, ...j })
       if (reviewData.length > 0) loadData()
     } catch (e) { setImportResult({ ok: false, detail: e.message }) }
@@ -235,19 +246,24 @@ function ReviewEditor() {
     const file = e.target.files?.[0]
     if (!file) return
     e.target.value = ''
+    const ext = file.name.split('.').pop()?.toLowerCase()
+    if (!['tsv', 'xlsx', 'xls'].includes(ext)) {
+      setImportResult({ ok: false, detail: 'Only .tsv, .xlsx, and .xls files are supported' }); return
+    }
     setImportLoading(true); setImportResult(null)
     try {
       const fd = new FormData()
       fd.append('file', file)
       const res = await fetch('/api/metadata/import-reviewed-upload', { method: 'POST', body: fd })
       const j = await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error(j.detail || res.status)
+      if (!res.ok) throw new Error(errMsg(j.detail) || res.status)
       setImportResult({ ok: true, ...j })
       if (reviewData.length > 0) loadData()
     } catch (err) { setImportResult({ ok: false, detail: err.message }) }
     setImportLoading(false)
   }
 
+  const errMsg = d => typeof d === 'string' ? d : (d ? JSON.stringify(d) : 'Unknown error')
   const show = k => activeType === k
   const chip = 'px-3 py-1.5 rounded-lg text-xs font-medium border cursor-pointer select-none transition-all duration-200'
   const chipOn = 'bg-dbx-lava text-white border-dbx-lava shadow-sm'
@@ -899,27 +915,30 @@ function ReviewEditor() {
               <input type="file" accept=".tsv,.xlsx,.xls" onChange={importUpload} className="hidden" />
             </label>
           </div>
+          {ddlError && <p className="text-sm text-red-600">{ddlError}</p>}
           {ddlApplyResult && (ddlApplyResult.ok
             ? <p className="text-sm text-green-600">Applied {ddlApplyResult.applied} statement(s).</p>
-            : <div className="space-y-2">
-                <p className="text-sm text-amber-700">Applied {ddlApplyResult.applied} of {ddlApplyResult.applied + (ddlApplyResult.errors?.length || 0)} statement(s).</p>
-                {ddlApplyResult.errors?.map((e, i) => (
-                  <div key={i} className="text-xs bg-red-50 border border-red-200 rounded p-2">
-                    <p className="text-red-700 font-mono truncate">{e.statement}</p>
-                    <p className="text-red-600 mt-1">{e.error}</p>
-                    {e.governed_tag && (
-                      <p className="text-amber-700 mt-1 font-medium">{e.hint}</p>
-                    )}
-                  </div>
-                ))}
-              </div>
+            : ddlApplyResult.detail
+              ? <p className="text-sm text-red-600">{ddlApplyResult.detail}</p>
+              : <div className="space-y-2">
+                  <p className="text-sm text-amber-700">Applied {ddlApplyResult.applied} of {ddlApplyResult.applied + (ddlApplyResult.errors?.length || 0)} statement(s).</p>
+                  {ddlApplyResult.errors?.map((e, i) => (
+                    <div key={i} className="text-xs bg-red-50 border border-red-200 rounded p-2">
+                      <p className="text-red-700 font-mono truncate">{e.statement}</p>
+                      <p className="text-red-600 mt-1">{e.error}</p>
+                      {e.governed_tag && (
+                        <p className="text-amber-700 mt-1 font-medium">{e.hint}</p>
+                      )}
+                    </div>
+                  ))}
+                </div>
           )}
           {exportResult && (exportResult.ok
             ? <p className="text-sm text-green-600">Exported {exportResult.rows} rows to <span className="font-mono text-xs">{exportResult.path}</span></p>
-            : <p className="text-sm text-red-600">{exportResult.detail}</p>)}
+            : <p className="text-sm text-red-600">{errMsg(exportResult.detail)}</p>)}
           {importResult && (importResult.ok
             ? <p className="text-sm text-green-600">Imported {importResult.total_rows} rows: {importResult.tables_updated} tables, {importResult.columns_updated} columns updated{importResult.skipped ? `, ${importResult.skipped} skipped` : ''}{importResult.saved_to ? ` (saved to ${importResult.saved_to})` : ''}</p>
-            : <p className="text-sm text-red-600">Import failed: {importResult.detail}</p>)}
+            : <p className="text-sm text-red-600">Import failed: {errMsg(importResult.detail)}</p>)}
           {ddlSql && (
             <div className="relative">
               <pre className="text-xs text-slate-800 dark:text-slate-200 bg-dbx-oat dark:bg-dbx-navy-600 border border-slate-200 dark:border-dbx-navy-400/30 rounded-lg p-3 overflow-auto max-h-64 whitespace-pre-wrap">{ddlSql}</pre>
@@ -944,7 +963,7 @@ function ReviewEditor() {
           </div>
           {importResult && (importResult.ok
             ? <p className="text-sm text-green-600">Imported {importResult.total_rows} rows: {importResult.tables_updated} tables, {importResult.columns_updated} columns updated{importResult.skipped ? `, ${importResult.skipped} skipped` : ''}</p>
-            : <p className="text-sm text-red-600">Import failed: {importResult.detail}</p>)}
+            : <p className="text-sm text-red-600">Import failed: {errMsg(importResult.detail)}</p>)}
         </div>
       )}
 
@@ -961,6 +980,8 @@ function ReviewEditor() {
             <div className="flex-1 overflow-y-auto px-6 py-3">
               {volumeFilesLoading ? (
                 <p className="text-sm text-slate-500 py-4">Loading files...</p>
+              ) : volumeFilesError ? (
+                <p className="text-sm text-red-600 py-4">{volumeFilesError}</p>
               ) : volumeFiles.length === 0 ? (
                 <p className="text-sm text-slate-400 py-4">No TSV or Excel files found in the volume.</p>
               ) : (

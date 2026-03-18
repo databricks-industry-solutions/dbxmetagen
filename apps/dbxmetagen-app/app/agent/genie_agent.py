@@ -29,10 +29,16 @@ can immediately query in natural language and get correct, insightful answers.
 === METADATA CONTEXT ===
 {context_text}
 
-=== PRE-BUILT SECTIONS (use as starting point, enrich and expand) ===
+=== PRE-BUILT SECTIONS (FINALIZED -- do NOT regenerate these) ===
 data_sources: {data_sources}
 join_specs: {join_specs}
-sql_snippets (measures/filters/expressions from metric views): {sql_snippets}
+
+=== PRE-BUILT SQL SNIPPETS (FINALIZED -- these will be merged automatically) ===
+The following measures, filters, and expressions are pre-built from validated metric views
+and sampled data. They are ALREADY CORRECT and will be merged into your output automatically.
+Do NOT include these in your sql_snippets -- only generate ADDITIONAL measures/filters/expressions
+that are NOT already covered below:
+{sql_snippets}
 
 === USER QUESTIONS (optional guidance) ===
 {questions}
@@ -78,10 +84,17 @@ RULES:
 QUALITY REQUIREMENTS (critical):
 10. SYNONYMS: Every measure and expression MUST have a "synonyms" array with 1-4 business-friendly alternative names. Think about how non-technical users would ask for this metric. E.g. "total_revenue" -> ["revenue", "sales", "total sales"]. Pre-built synonyms are provided -- keep them and add more if useful.
 11. DESCRIPTIONS: Every measure MUST have a "description" explaining what it calculates and when to use it.
-12. COMPLEXITY: Generate at least 8 example_sql pairs covering: simple aggregation, multi-table join, time-series trend, top-N ranking, filtered aggregation, ratio/rate, comparison, and at least one window function. Generate at least 5 measures, 5 filters, and 3 expressions.
+12. COMPLEXITY: Generate at least 8 example_sql pairs covering: simple aggregation, multi-table join, time-series trend, top-N ranking, filtered aggregation, ratio/rate, comparison, and at least one window function. Generate at least 5 NEW measures, 5 NEW filters, and 3 NEW expressions beyond the pre-built ones.
 13. DISAMBIGUATION: In the text instructions, explicitly disambiguate columns that appear in multiple tables (e.g. "created_date in orders vs created_date in accounts"). Also explain which table to use for common questions.
 14. FILTERS: Generate time-based filters (last 30 days, YTD, current month) for every date column, plus categorical filters for low-cardinality string columns. Each filter should have a clear display_name.
-15. SAMPLE QUESTIONS: Generate 8-12 sample questions spanning different complexity levels and covering all major tables.
+15. SAMPLE QUESTIONS vs EXAMPLE SQL (IMPORTANT -- these serve DIFFERENT purposes):
+    - "sample_questions": Shown in the Genie UI as clickable starter questions for BUSINESS USERS. Must be plain English, non-technical, no SQL jargon. 8-12 questions like "What were total sales last quarter?" or "Who are our top customers?"
+    - "example_sql": Few-shot examples that teach Genie HOW to translate natural language to SQL. Each needs a question AND working SQL. Cover diverse SQL patterns (joins, aggregations, window functions, filters). Do NOT duplicate the same question in both lists.
+
+EFFICIENCY (important -- you have a limited number of tool-call rounds):
+16. BATCH your tool calls: call test_sql, sample_values, and describe_columns in PARALLEL within a single round when possible, rather than one at a time.
+17. Focus validation on the most complex SQL (joins, window functions, CASE expressions). Simple aggregations like COUNT(*) and SUM(col) don't need test_sql validation.
+18. After finishing tool calls, your FINAL message MUST contain the complete JSON wrapped in ```json ``` fences. Budget your rounds so you always have at least one round left for the final output.
 """
 
 
@@ -177,6 +190,117 @@ def _make_tools(ws: WorkspaceClient, warehouse_id: str):
     return [test_sql, sample_values, describe_columns]
 
 
+def _extract_json_from_messages(messages: list) -> Optional[dict]:
+    """Search all AI messages (newest first) for a valid JSON object.
+
+    First pass: require at least one expected key.
+    Second pass: accept any non-trivial dict (fallback for unexpected schemas).
+    """
+    candidates: list[dict] = []
+    for msg in reversed(messages):
+        content = getattr(msg, "content", None) or ""
+        if not content or not isinstance(content, str):
+            continue
+        parsed = _extract_json(content)
+        if not parsed:
+            continue
+        if "data_sources" in parsed or "instructions" in parsed or "sample_questions" in parsed:
+            return parsed
+        if len(parsed) >= 2:
+            candidates.append(parsed)
+    if candidates:
+        logger.warning(
+            "No message had expected keys; returning best candidate with %d keys: %s",
+            len(candidates[0]), list(candidates[0].keys())[:5],
+        )
+        return candidates[0]
+    return None
+
+
+def _log_message_diagnostics(messages: list):
+    """Log information about agent messages to help debug JSON extraction failures."""
+    if not messages:
+        logger.warning("Agent produced 0 messages")
+        return
+    logger.warning("Agent produced %d messages", len(messages))
+    for i, msg in enumerate(reversed(messages)):
+        content = getattr(msg, "content", None) or ""
+        msg_type = type(msg).__name__
+        if not isinstance(content, str):
+            logger.warning("  msg[-%d] %s: content is %s (not str)", i + 1, msg_type, type(content).__name__)
+            continue
+        has_json_fence = "```json" in content or "```\n{" in content
+        has_brace = "{" in content
+        logger.warning(
+            "  msg[-%d] %s: %d chars, has_fence=%s, has_brace=%s, preview=%.200s",
+            i + 1, msg_type, len(content), has_json_fence, has_brace,
+            content[:200].replace("\n", "\\n"),
+        )
+        if i >= 4:
+            break
+
+
+def _collect_stream_messages(agent, input_msg: dict, config: dict) -> list:
+    """Run agent via stream(), collecting accumulated messages.
+
+    Streaming avoids the HTTP read-timeout that kills long invoke() calls
+    because chunks keep the connection alive.
+    """
+    messages = []
+    for chunk in agent.stream(input_msg, config=config, stream_mode="values"):
+        messages = chunk.get("messages", messages)
+    return messages
+
+
+def _messages_to_langchain(messages: list) -> list:
+    """Convert LangGraph messages to simple dicts safe for a raw LLM invoke.
+
+    Keeps only human/assistant turns (tool messages confuse a non-agent LLM).
+    Truncates to the last N messages to stay within context limits.
+    """
+    from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
+    converted = []
+    for m in messages:
+        if isinstance(m, SystemMessage):
+            converted.append({"role": "system", "content": m.content or ""})
+        elif isinstance(m, HumanMessage):
+            converted.append({"role": "user", "content": m.content or ""})
+        elif isinstance(m, AIMessage) and m.content and isinstance(m.content, str):
+            converted.append({"role": "assistant", "content": m.content})
+    # Keep system + last 6 turns to stay within context limits
+    system_msgs = [m for m in converted if m["role"] == "system"]
+    non_system = [m for m in converted if m["role"] != "system"]
+    return system_msgs + non_system[-6:]
+
+
+def _recovery_invoke(
+    messages: list,
+    model_endpoint: str,
+) -> Optional[dict]:
+    """One-shot LLM call asking the agent to output just the JSON."""
+    try:
+        converted = _messages_to_langchain(messages)
+        converted.append({
+            "role": "user",
+            "content": (
+                "Your previous response did not contain valid JSON. "
+                "Output ONLY the complete serialized_space JSON object now, "
+                "wrapped in ```json ``` fences. No explanation, no tool calls."
+            ),
+        })
+        recovery_llm = ChatDatabricks(
+            endpoint=model_endpoint, temperature=0.0, max_tokens=16384,
+            max_retries=2, request_timeout=300,
+        )
+        result = recovery_llm.invoke(converted)
+        content = getattr(result, "content", "") or ""
+        logger.info("Recovery response length: %d chars", len(content))
+        return _extract_json(content)
+    except Exception as exc:
+        logger.warning("Recovery invoke failed: %s", exc)
+        return None
+
+
 @trace(name="genie_generate")
 def run_genie_agent(
     ws: WorkspaceClient,
@@ -192,7 +316,10 @@ def run_genie_agent(
     progress_queue.put({"stage": "initializing"})
 
     tools = _make_tools(ws, warehouse_id)
-    llm = ChatDatabricks(endpoint=model_endpoint, temperature=0.1, max_tokens=16384, max_retries=3)
+    llm = ChatDatabricks(
+        endpoint=model_endpoint, temperature=0.1, max_tokens=16384,
+        max_retries=2, request_timeout=300,
+    )
 
     questions_text = (
         "\n".join(f"- {q}" for q in context.get("questions", [])) or "None provided"
@@ -210,38 +337,45 @@ def run_genie_agent(
     agent = create_react_agent(llm, tools, prompt=system_prompt)
     progress_queue.put({"stage": "generating"})
 
+    input_msg = {
+        "messages": [
+            {"role": "user", "content": "Generate the complete serialized_space JSON now."}
+        ]
+    }
+    agent_config = {"recursion_limit": max(GuardrailConfig.MAX_RECURSION_LIMIT, 30)}
+
+    messages: list = []
+    timed_out = False
     try:
-        result = agent.invoke(
-            {
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": "Generate the complete serialized_space JSON now.",
-                    }
-                ]
-            },
-            config={"recursion_limit": GuardrailConfig.MAX_RECURSION_LIMIT},
-        )
-    except Exception as e:
-        progress_queue.put({"stage": "error", "message": str(e)})
-        raise
+        messages = _collect_stream_messages(agent, input_msg, agent_config)
+    except (TimeoutError, Exception) as e:
+        err_str = str(e).lower()
+        if "timeout" in err_str or "timed out" in err_str or isinstance(e, TimeoutError):
+            logger.warning("Agent timed out, attempting recovery from partial results: %s", e)
+            timed_out = True
+        else:
+            progress_queue.put({"stage": "error", "message": str(e)})
+            raise
 
     progress_queue.put({"stage": "parsing"})
 
-    # Extract JSON from the final message
-    final_content = ""
-    for msg in reversed(result.get("messages", [])):
-        if hasattr(msg, "content") and msg.content:
-            final_content = msg.content
-            break
+    serialized = _extract_json_from_messages(messages) if messages else None
 
-    serialized = _extract_json(final_content)
+    if serialized is None:
+        _log_message_diagnostics(messages)
+        if messages:
+            logger.warning("JSON extraction failed (timed_out=%s), attempting recovery", timed_out)
+            progress_queue.put({"stage": "recovering"})
+            serialized = _recovery_invoke(messages, model_endpoint)
+
     if serialized is None:
         progress_queue.put(
             {"stage": "error", "message": "Agent did not produce valid JSON"}
         )
         raise ValueError("Agent did not produce valid serialized_space JSON")
 
+    serialized = _merge_prebuilt_snippets(serialized, context.get("sql_snippets", {}))
+    serialized = _dedup_sample_vs_example(serialized)
     serialized = _backfill_synonyms(serialized)
     warnings = _validate_output(serialized)
     if warnings:
@@ -249,6 +383,60 @@ def run_genie_agent(
 
     progress_queue.put({"stage": "done", "result": serialized, "warnings": warnings})
     return serialized
+
+
+def _merge_prebuilt_snippets(raw: dict, prebuilt: dict) -> dict:
+    """Merge pre-built sql_snippets into agent output, deduplicating by alias/display_name."""
+    if not prebuilt:
+        return raw
+    inst = raw.get("instructions", {})
+    agent_snippets = inst.get("sql_snippets") or raw.get("sql_snippets") or {}
+
+    for category, key_field in [("measures", "alias"), ("expressions", "alias"), ("filters", "display_name")]:
+        prebuilt_items = prebuilt.get(category, [])
+        if not prebuilt_items:
+            continue
+        agent_items = agent_snippets.get(category, [])
+        existing_keys = {(item.get(key_field) or "").lower() for item in agent_items}
+        for item in prebuilt_items:
+            item_key = (item.get(key_field) or "").lower()
+            if item_key and item_key not in existing_keys:
+                agent_items.append(item)
+                existing_keys.add(item_key)
+        agent_snippets[category] = agent_items
+
+    if "sql_snippets" in inst:
+        inst["sql_snippets"] = agent_snippets
+    elif "sql_snippets" in raw:
+        raw["sql_snippets"] = agent_snippets
+    else:
+        inst["sql_snippets"] = agent_snippets
+        raw["instructions"] = inst
+    return raw
+
+
+def _dedup_sample_vs_example(raw: dict) -> dict:
+    """Remove sample_questions that are near-duplicates of example_sql questions."""
+    inst = raw.get("instructions", {})
+    examples = inst.get("example_sql") or inst.get("example_question_sqls") or []
+    example_questions = set()
+    for ex in examples:
+        q = ex.get("question", "")
+        if isinstance(q, list):
+            q = q[0] if q else ""
+        example_questions.add(q.lower().strip().rstrip("?"))
+
+    sample_qs = raw.get("sample_questions", [])
+    if not sample_qs or not example_questions:
+        return raw
+
+    filtered = []
+    for sq in sample_qs:
+        q = sq if isinstance(sq, str) else (sq.get("question", [""])[0] if isinstance(sq.get("question"), list) else sq.get("question", ""))
+        if q.lower().strip().rstrip("?") not in example_questions:
+            filtered.append(sq)
+    raw["sample_questions"] = filtered
+    return raw
 
 
 def _backfill_synonyms(raw: dict) -> dict:
@@ -298,17 +486,39 @@ def _extract_json(text: str) -> Optional[dict]:
     """Extract a JSON object from text, looking for ```json fences first."""
     import re
 
-    m = re.search(r"```(?:json)?\s*\n(.*?)```", text, re.DOTALL)
+    # Try fenced block (with or without newline after fence)
+    m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
+    if not m:
+        m = re.search(r"```(?:json)?\s*\n(.*?)```", text, re.DOTALL)
     candidate = m.group(1).strip() if m else text.strip()
-    # Try to find the outermost { ... }
+
+    # Try direct json.loads first (handles the common clean case)
     start = candidate.find("{")
     if start == -1:
         return None
-    depth, end = 0, start
+    try:
+        return json.loads(candidate[start:])
+    except json.JSONDecodeError:
+        pass
+
+    # Fall back to brace-counting, but skip braces inside strings
+    depth, end, in_str, escape = 0, start, False, False
     for i in range(start, len(candidate)):
-        if candidate[i] == "{":
+        ch = candidate[i]
+        if escape:
+            escape = False
+            continue
+        if ch == "\\":
+            escape = True
+            continue
+        if ch == '"' and not escape:
+            in_str = not in_str
+            continue
+        if in_str:
+            continue
+        if ch == "{":
             depth += 1
-        elif candidate[i] == "}":
+        elif ch == "}":
             depth -= 1
             if depth == 0:
                 end = i + 1

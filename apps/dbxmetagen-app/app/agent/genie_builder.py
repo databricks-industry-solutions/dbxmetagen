@@ -210,8 +210,14 @@ class GenieContextAssembler:
             val = ref.get(section_key)
             if not val:
                 continue
-            if isinstance(val, dict) and "description" in val:
-                parts.append(f"\n### {section_key}\n{val['description']}")
+            if isinstance(val, dict):
+                desc = val.get("description", "")
+                header = f"\n### {section_key}"
+                if desc:
+                    header += f"\n{desc}"
+                parts.append(header + "\n" + json.dumps(
+                    {k: v for k, v in val.items() if k != "description"}, indent=2
+                ))
             elif isinstance(val, str):
                 parts.append(f"\n### {section_key}\n{val}")
             else:
@@ -396,10 +402,11 @@ class GenieContextAssembler:
         for col in string_cols[:50]:  # cap to avoid too many queries
             tbl = col["table_name"]
             cn = col["column_name"]
+            fq_tbl = self._qualify(tbl)
             rows = _safe_sql(
                 self.ws,
                 self.wh,
-                f"SELECT DISTINCT `{cn}` AS val FROM {tbl} WHERE `{cn}` IS NOT NULL LIMIT 15",
+                f"SELECT DISTINCT `{cn}` AS val FROM {fq_tbl} WHERE `{cn}` IS NOT NULL LIMIT 15",
             )
             if rows:
                 samples.setdefault(tbl, {})[cn] = [r["val"] for r in rows]
@@ -460,32 +467,74 @@ class GenieContextAssembler:
             if src and dst and rel:
                 rel_summary.setdefault(src, []).append(f"{rel} -> {dst}" + (f" ({card})" if card else ""))
 
+        # Build FK lookup for join info per table
+        fk_by_table: dict[str, list[str]] = {}
+        for fk in fk_rows:
+            src_short = fk["src_table"].split(".")[-1]
+            dst_short = fk["dst_table"].split(".")[-1]
+            fk_by_table.setdefault(fk["src_table"], []).append(
+                f"-> {dst_short} via {src_short}.{fk['src_column']}"
+            )
+            fk_by_table.setdefault(fk["dst_table"], []).append(
+                f"<- {src_short} via {src_short}.{fk['src_column']}"
+            )
+
         for t in table_meta:
             tname = t["table_name"]
-            # Use primary entity for table classification
-            primary_ents = [e for e in entity_rows if e.get("entity_role", "primary") == "primary"]
             ent_info = entity_map.get(tname) or entity_map.get(tname.split(".")[-1])
             ent_type = ent_info["entity_type"] if ent_info else ""
-            header = f"Table: {tname}"
+
+            cols = col_by_table.get(tname, [])
+            id_cols = [c["column_name"] for c in cols if c["column_name"].endswith("_id") or c["column_name"] == "id"]
+            date_cols = [c["column_name"] for c in cols if c.get("data_type", "").upper() in ("DATE", "TIMESTAMP", "DATETIME")]
+            numeric_cols = [c["column_name"] for c in cols
+                           if c.get("data_type", "").upper().split("(")[0] in ("DECIMAL", "DOUBLE", "FLOAT", "INT", "BIGINT")
+                           and not c["column_name"].endswith("_id") and c["column_name"] != "id"]
+            string_cols = [c["column_name"] for c in cols if c.get("data_type", "").upper() in ("STRING", "VARCHAR")]
+
+            # Classify: fact (has numeric measure columns + FK refs) vs dimension (mostly descriptive)
+            is_fact = len(numeric_cols) >= 2 and len(id_cols) >= 2
+            tbl_role = "FACT" if is_fact else "DIMENSION"
+            pk_col = id_cols[0] if id_cols else "?"
+            grain = ent_type or tname.split(".")[-1].rstrip("s")
+
+            header = f"Table: {tname} [{tbl_role}]"
             if t.get("comment"):
-                header += f' (Comment: "{t["comment"]}")'
+                header += f'\n  Description: {t["comment"]}'
             if t.get("domain"):
-                header += f" Domain: {t['domain']}/{t.get('subdomain', '')}"
+                header += f"\n  Domain: {t['domain']}/{t.get('subdomain', '')}"
+            header += f"\n  Grain: one row per {grain} (PK: {pk_col})"
             if ent_type:
-                header += f" Entity: {ent_type}"
                 desc = ent_info.get("description", "")
                 if desc:
-                    header += f" -- {desc}"
+                    header += f"\n  Entity: {ent_type} -- {desc}"
                 rels_str = ", ".join(rel_summary.get(ent_type, []))
                 if rels_str:
-                    header += f" (related: {rels_str})"
+                    header += f"\n  Relationships: {rels_str}"
+
+            # Structured column summary
+            summary_parts = []
+            if numeric_cols:
+                summary_parts.append(f"Aggregatable measures: {', '.join(numeric_cols[:6])}")
+            if date_cols:
+                summary_parts.append(f"Date columns: {', '.join(date_cols[:4])}")
+            if id_cols:
+                summary_parts.append(f"Keys: {', '.join(id_cols[:4])}")
+            if string_cols:
+                summary_parts.append(f"Categorical: {', '.join(string_cols[:4])}")
+            if summary_parts:
+                header += "\n  " + "; ".join(summary_parts)
+
+            # Joins available
+            joins_avail = fk_by_table.get(tname, [])
+            if joins_avail:
+                header += "\n  Joins: " + ", ".join(joins_avail[:4])
 
             tbl_syns = self._generate_table_synonyms(tname, t, ent_info)
             if tbl_syns:
-                header += f"  Synonyms: {', '.join(tbl_syns)}"
+                header += f"\n  Synonyms: {', '.join(tbl_syns)}"
 
             domain = t.get("domain", "")
-            cols = col_by_table.get(tname, [])
             col_lines = []
             for c in cols:
                 line = f"  - {c['column_name']} {c.get('data_type', '')}"
@@ -791,14 +840,19 @@ class GenieContextAssembler:
                 )
 
         for tbl, cols in value_samples.items():
-            fq_tbl = self._qualify(tbl)
             tbl_short = tbl.split(".")[-1]
             for col, vals in cols.items():
                 if 2 <= len(vals) <= 10:
+                    escaped = [str(v).replace("'", "''") for v in vals[:5]]
+                    if len(escaped) == 1:
+                        sql_fragment = f"{tbl_short}.{col} = '{escaped[0]}'"
+                    else:
+                        in_list = ", ".join(f"'{v}'" for v in escaped)
+                        sql_fragment = f"{tbl_short}.{col} IN ({in_list})"
                     filters.append(
                         {
                             "display_name": f"Filter by {col} ({tbl_short})",
-                            "sql": [f"`{fq_tbl}`.`{col}` = '<value>'"],
+                            "sql": [sql_fragment],
                         }
                     )
 

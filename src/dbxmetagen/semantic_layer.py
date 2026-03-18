@@ -112,50 +112,94 @@ def _format_reference_section(ref: dict, sections: list[str] | None = None) -> s
     return "\n".join(parts)
 
 
-# -- Few-shot example for the AI prompt ----------------------------------
+# -- Few-shot examples for the AI prompt (domain-aware) -------------------
 
-_FEW_SHOT_EXAMPLE = """\
+_FEW_SHOT_BY_DOMAIN = {
+    "sales": """\
 INPUT tables:
   sales.orders (Comment: "Customer orders") columns: [order_id BIGINT, customer_id BIGINT, order_date DATE, total_amount DECIMAL(10,2), region STRING, status STRING, is_returned BOOLEAN]
   sales.customers (Comment: "Customer master") columns: [id BIGINT, name STRING, segment STRING, signup_date DATE]
   FK: orders.customer_id -> customers.id (confidence 0.95)
-
 INPUT questions:
-  1. What is total revenue by region?
-  2. How many orders per month?
-  3. What is the fulfillment rate by segment?
-
+  1. What is total revenue by region?  2. How many orders per month?  3. What is the fulfillment rate by segment?
 OUTPUT:
 [
-  {
-    "name": "order_performance_metrics",
-    "source": "sales.orders",
-    "comment": "Order performance including revenue, fulfillment rates, and return analysis",
-    "filter": "status IS NOT NULL",
-    "dimensions": [
-      {"name": "Order Month", "expr": "DATE_TRUNC('MONTH', order_date)", "comment": "Month of order placement"},
-      {"name": "Order Quarter", "expr": "DATE_TRUNC('QUARTER', order_date)", "comment": "Quarter of order placement"},
-      {"name": "Region", "expr": "region", "comment": "Sales region"},
-      {"name": "Status", "expr": "status", "comment": "Order fulfillment status"},
-      {"name": "Segment", "expr": "customers.segment", "comment": "Customer segment from joined customers table"},
-      {"name": "Tier", "expr": "CASE WHEN customers.segment IN ('Enterprise', 'Strategic') THEN 'Top Tier' WHEN customers.segment = 'Mid-Market' THEN 'Growth' ELSE 'Standard' END", "comment": "Customer tier grouping"}
-    ],
-    "measures": [
-      {"name": "Total Revenue", "expr": "SUM(total_amount)", "comment": "Sum of all order values"},
-      {"name": "Order Count", "expr": "COUNT(*)", "comment": "Number of orders"},
-      {"name": "Avg Order Value", "expr": "AVG(total_amount)", "comment": "Average order amount"},
-      {"name": "Unique Customers", "expr": "COUNT(DISTINCT customer_id)", "comment": "Distinct customer count"},
-      {"name": "Revenue per Customer", "expr": "SUM(total_amount) / NULLIF(COUNT(DISTINCT customer_id), 0)", "comment": "Average revenue per unique customer"},
-      {"name": "Fulfillment Rate", "expr": "SUM(CASE WHEN status = 'fulfilled' THEN 1 ELSE 0 END) * 1.0 / NULLIF(COUNT(*), 0)", "comment": "Fraction of orders fulfilled (0 to 1)"},
-      {"name": "Return Rate", "expr": "SUM(CASE WHEN is_returned = TRUE THEN 1 ELSE 0 END) * 1.0 / NULLIF(COUNT(*), 0)", "comment": "Fraction of orders returned (0 to 1)"},
-      {"name": "Fulfilled Revenue", "expr": "SUM(total_amount) FILTER (WHERE status = 'fulfilled')", "comment": "Revenue from fulfilled orders only"},
-      {"name": "High Value Order Count", "expr": "COUNT(*) FILTER (WHERE total_amount > 1000)", "comment": "Orders above 1000 threshold"}
-    ],
-    "joins": [
-      {"name": "customers", "source": "sales.customers", "on": "source.customer_id = customers.id"}
-    ]
-  }
-]"""
+  {"name": "order_performance_metrics", "source": "sales.orders",
+   "comment": "Order performance including revenue, fulfillment rates, and return analysis",
+   "filter": "status IS NOT NULL",
+   "dimensions": [
+     {"name": "Order Month", "expr": "DATE_TRUNC('MONTH', order_date)", "comment": "Month of order placement"},
+     {"name": "Region", "expr": "region", "comment": "Sales region"},
+     {"name": "Segment", "expr": "customers.segment", "comment": "Customer segment from joined customers table"}],
+   "measures": [
+     {"name": "Total Revenue", "expr": "SUM(total_amount)", "comment": "Sum of all order values"},
+     {"name": "Avg Order Value", "expr": "AVG(total_amount)", "comment": "Average order amount"},
+     {"name": "Revenue per Customer", "expr": "SUM(total_amount) / NULLIF(COUNT(DISTINCT customer_id), 0)", "comment": "Average revenue per unique customer"},
+     {"name": "Fulfillment Rate", "expr": "SUM(CASE WHEN status = 'fulfilled' THEN 1 ELSE 0 END) * 1.0 / NULLIF(COUNT(*), 0)", "comment": "Fraction of orders fulfilled"},
+     {"name": "Fulfilled Revenue", "expr": "SUM(total_amount) FILTER (WHERE status = 'fulfilled')", "comment": "Revenue from fulfilled orders only"},
+     {"name": "30-Day Rolling Avg Revenue", "expr": "AVG(SUM(total_amount))", "window": {"order_by": "order_date", "range": "INTERVAL 30 DAYS PRECEDING"}, "comment": "Rolling 30-day average of daily revenue"}],
+   "joins": [{"name": "customers", "source": "sales.customers", "on": "source.customer_id = customers.id"}]}
+]""",
+    "healthcare": """\
+INPUT tables:
+  clinical.encounters (Comment: "Patient encounters") columns: [encounter_id BIGINT, patient_id BIGINT, provider_id BIGINT, admit_date DATE, discharge_date DATE, encounter_type STRING, department STRING, total_charges DECIMAL(12,2), status STRING]
+  clinical.patients (Comment: "Patient demographics") columns: [patient_id BIGINT, birth_date DATE, gender STRING, zip_code STRING, insurance_type STRING]
+  FK: encounters.patient_id -> patients.patient_id (confidence 0.92)
+INPUT questions:
+  1. What is the average length of stay by department?  2. What is the readmission rate within 30 days?  3. How does patient volume trend by month?
+OUTPUT:
+[
+  {"name": "encounter_throughput_metrics", "source": "clinical.encounters",
+   "comment": "Encounter volume, throughput, and clinical outcome metrics",
+   "filter": "status != 'cancelled'",
+   "dimensions": [
+     {"name": "Admit Month", "expr": "DATE_TRUNC('MONTH', admit_date)", "comment": "Month of admission"},
+     {"name": "Department", "expr": "department", "comment": "Clinical department"},
+     {"name": "Insurance Type", "expr": "insurance_type", "comment": "Patient insurance from joined patients table"}],
+   "measures": [
+     {"name": "Encounter Count", "expr": "COUNT(*)", "comment": "Total encounters"},
+     {"name": "Unique Patients", "expr": "COUNT(DISTINCT patient_id)", "comment": "Distinct patient count"},
+     {"name": "Avg Length of Stay", "expr": "AVG(DATEDIFF(discharge_date, admit_date))", "comment": "Average days from admit to discharge"},
+     {"name": "Encounters per Patient", "expr": "COUNT(*) * 1.0 / NULLIF(COUNT(DISTINCT patient_id), 0)", "comment": "Average visits per patient"},
+     {"name": "Charge per Encounter", "expr": "SUM(total_charges) / NULLIF(COUNT(*), 0)", "comment": "Average charge per encounter"}],
+   "joins": [{"name": "patients", "source": "clinical.patients", "on": "source.patient_id = patients.patient_id"}]}
+]""",
+    "finance": """\
+INPUT tables:
+  finance.transactions (Comment: "Financial transactions") columns: [txn_id BIGINT, account_id BIGINT, txn_date DATE, amount DECIMAL(12,2), txn_type STRING, category STRING, is_fraud BOOLEAN]
+  finance.accounts (Comment: "Customer accounts") columns: [account_id BIGINT, customer_name STRING, account_type STRING, opened_date DATE, region STRING]
+  FK: transactions.account_id -> accounts.account_id (confidence 0.94)
+INPUT questions:
+  1. What is the total transaction volume by category?  2. What is the fraud rate by account type?  3. How has monthly deposit growth trended?
+OUTPUT:
+[
+  {"name": "transaction_risk_metrics", "source": "finance.transactions",
+   "comment": "Transaction volume, fraud rates, and financial flow analysis",
+   "dimensions": [
+     {"name": "Transaction Month", "expr": "DATE_TRUNC('MONTH', txn_date)", "comment": "Month of transaction"},
+     {"name": "Category", "expr": "category", "comment": "Transaction category"},
+     {"name": "Account Type", "expr": "account_type", "comment": "Account classification from joined accounts"}],
+   "measures": [
+     {"name": "Transaction Count", "expr": "COUNT(*)", "comment": "Total transactions"},
+     {"name": "Total Amount", "expr": "SUM(amount)", "comment": "Sum of transaction amounts"},
+     {"name": "Fraud Rate", "expr": "SUM(CASE WHEN is_fraud = TRUE THEN 1 ELSE 0 END) * 1.0 / NULLIF(COUNT(*), 0)", "comment": "Fraction of flagged transactions"},
+     {"name": "Deposit Volume", "expr": "SUM(amount) FILTER (WHERE txn_type = 'deposit')", "comment": "Total deposit inflows"}],
+   "joins": [{"name": "accounts", "source": "finance.accounts", "on": "source.account_id = accounts.account_id"}]}
+]""",
+}
+
+
+def _select_few_shot(context: str) -> str:
+    """Pick the best few-shot example based on domain keywords in the context."""
+    ctx_lower = context.lower()
+    domain_keywords = {
+        "healthcare": ["patient", "encounter", "provider", "clinical", "diagnosis", "admit", "discharge", "readmission"],
+        "finance": ["transaction", "account", "ledger", "balance", "deposit", "withdrawal", "fraud", "loan"],
+        "sales": ["order", "customer", "revenue", "product", "invoice", "shipment", "discount"],
+    }
+    scores = {d: sum(1 for kw in kws if kw in ctx_lower) for d, kws in domain_keywords.items()}
+    best = max(scores, key=scores.get) if max(scores.values()) > 0 else "sales"
+    return _FEW_SHOT_BY_DOMAIN[best]
 
 
 class SemanticLayerGenerator:
@@ -570,6 +614,7 @@ class SemanticLayerGenerator:
 
     def _build_prompt(self, questions: List[str], context: str) -> str:
         q_block = "\n".join(f"  {i+1}. {q}" for i, q in enumerate(questions))
+        few_shot = _select_few_shot(context)
         return f"""You are a data modeler building a semantic layer for Databricks Unity Catalog.
 
 TASK: Generate metric view definitions (as a JSON array) that enable answering the business questions below.
@@ -618,7 +663,7 @@ RULES:
     - LIKE patterns MUST be quoted: product_code LIKE 'HW%', NOT product_code LIKE HW%
 
 EXAMPLE:
-{_FEW_SHOT_EXAMPLE}
+{few_shot}
 
 CATALOG METADATA:
 {context}
@@ -1304,8 +1349,9 @@ OUTPUT (one JSON object only, no array, no explanation):"""
             }
             for d in defn.get("dimensions", [])
         ]
-        mv["measures"] = [
-            {
+        measures_out = []
+        for m in defn.get("measures", []):
+            entry = {
                 k: v
                 for k, v in {
                     "name": m["name"],
@@ -1316,8 +1362,10 @@ OUTPUT (one JSON object only, no array, no explanation):"""
                 }.items()
                 if v
             }
-            for m in defn.get("measures", [])
-        ]
+            if m.get("window"):
+                entry["window"] = m["window"]
+            measures_out.append(entry)
+        mv["measures"] = measures_out
         if defn.get("joins"):
             mv["joins"] = defn["joins"]
         return yaml.dump(mv, default_flow_style=False, sort_keys=False)

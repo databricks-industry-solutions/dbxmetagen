@@ -11,7 +11,12 @@ logger = logging.getLogger(__name__)
 
 MLFLOW_ENABLED = False
 MLFLOW_EXPERIMENT_ID = None
-MLFLOW_EXPERIMENT = os.environ.get("MLFLOW_EXPERIMENT", "/Shared/dbxmetagen-app/traces")
+MLFLOW_EXPERIMENT = os.environ.get("MLFLOW_EXPERIMENT", "")
+
+if not MLFLOW_EXPERIMENT:
+    from databricks.sdk import WorkspaceClient as _WsClient
+    _me = _WsClient().current_user.me().user_name
+    MLFLOW_EXPERIMENT = f"/Users/{_me}/experiments/dbxmetagen-app/traces"
 
 _mlflow_mod = None
 

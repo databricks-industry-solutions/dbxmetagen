@@ -190,9 +190,12 @@ def _ensure_review_updated_at(table_key: str):
         return
     try:
         execute_sql(f"ALTER TABLE {fq(table_key)} ADD COLUMN review_updated_at TIMESTAMP")
+        _review_column_ensured.add(table_key)
     except Exception as e:
-        logger.debug("_ensure_review_updated_at(%s): %s", table_key, e)
-    _review_column_ensured.add(table_key)
+        if "already exists" in str(e).lower():
+            _review_column_ensured.add(table_key)
+        else:
+            logger.warning("_ensure_review_updated_at(%s) failed: %s", table_key, e)
 
 
 def graph_query(sql: str) -> list[dict]:
@@ -369,14 +372,10 @@ def get_config():
         "catalog_name": CATALOG,
         "schema_name": SCHEMA,
         "model": _LLM_MODEL,
-        "temperature": float(os.environ.get("TEMPERATURE", "0.1")),
         "sample_size": int(os.environ.get("SAMPLE_SIZE", "5")),
         "apply_ddl": os.environ.get("APPLY_DDL", "false").lower() == "true",
-        "add_metadata": os.environ.get("ADD_METADATA", "true").lower() == "true",
         "use_kb_comments": os.environ.get("USE_KB_COMMENTS", "false").lower() == "true",
         "include_lineage": os.environ.get("INCLUDE_LINEAGE", "false").lower() == "true",
-        "include_deterministic_pi": os.environ.get("INCLUDE_DETERMINISTIC_PI", "true").lower() == "true",
-        "tag_none_fields": os.environ.get("TAG_NONE_FIELDS", "false").lower() == "true",
     }
 
 
@@ -421,6 +420,7 @@ class SemanticProfileRequest(BaseModel):
     profile_name: str
     questions: list[str]
     table_patterns: list[str] = []
+    business_context: Optional[str] = None
 
 
 class SemanticGenerateRequest(BaseModel):
@@ -433,6 +433,7 @@ class SemanticGenerateRequest(BaseModel):
     mode: str = (
         "replace"  # "replace" (supersede matching), "additive" (skip supersede), "replace_all" (supersede ALL in project)
     )
+    business_context: Optional[str] = None
 
 
 class SemanticProjectRequest(BaseModel):
@@ -459,6 +460,7 @@ class SuggestQuestionsRequest(BaseModel):
     model_endpoint: str = _LLM_MODEL
     count: int = 8
     purpose: str = "genie"  # "genie" or "metric_views"
+    business_context: Optional[str] = None
 
 
 class GenieCreateRequest(BaseModel):
@@ -1064,8 +1066,8 @@ def _generate_table_ddl_rows(
             if comment:
                 stmts.append(f'COMMENT ON TABLE {full} IS "{comment}";')
         if ddl_type in ("all", "domain"):
-            domain = (r.get("domain") or "").strip()
-            subdomain = (r.get("subdomain") or "").strip()
+            domain = (r.get("domain") or "").strip().replace("'", "''")
+            subdomain = (r.get("subdomain") or "").strip().replace("'", "''")
             if domain:
                 if subdomain:
                     stmts.append(f"ALTER TABLE {full} SET TAGS ('{domain_tag}' = '{domain}', '{subdomain_tag}' = '{subdomain}');")
@@ -1089,7 +1091,7 @@ def _generate_column_ddl_rows(
             if comment:
                 stmts.append(f'COMMENT ON COLUMN {full}.`{col}` IS "{comment}";')
         if ddl_type in ("all", "sensitivity"):
-            classification = (r.get("classification") or "").strip()
+            classification = (r.get("classification") or "").strip().replace("'", "''")
             if classification and classification.lower() != "none":
                 stmts.append(
                     f"ALTER TABLE {full} ALTER COLUMN `{col}` SET TAGS "
@@ -2748,12 +2750,13 @@ def _ensure_semantic_layer_tables():
             definition_id STRING NOT NULL, metric_view_name STRING, source_table STRING,
             json_definition STRING, source_questions STRING, status STRING,
             validation_errors STRING, genie_space_id STRING, created_at TIMESTAMP,
-            applied_at TIMESTAMP, version INT DEFAULT 1, parent_definition_id STRING,
+            applied_at TIMESTAMP, version INT, parent_definition_id STRING,
             project_id STRING
         ) COMMENT 'Generated metric view definitions with version history'""",
         f"""CREATE TABLE IF NOT EXISTS {fq('semantic_layer_profiles')} (
             profile_id STRING NOT NULL, profile_name STRING, questions STRING,
-            table_patterns STRING, created_at TIMESTAMP, updated_at TIMESTAMP
+            table_patterns STRING, created_at TIMESTAMP, updated_at TIMESTAMP,
+            business_context STRING
         ) COMMENT 'Named question profiles for semantic layer'""",
         f"""CREATE TABLE IF NOT EXISTS {fq('semantic_layer_projects')} (
             project_id STRING NOT NULL, project_name STRING, description STRING,
@@ -2761,7 +2764,13 @@ def _ensure_semantic_layer_tables():
         ) COMMENT 'Named projects for grouping metric view definitions'""",
     ]
     for ddl in _TABLE_DDLS:
-        execute_sql(ddl)
+        table_name = ddl.split("IF NOT EXISTS")[-1].split("(")[0].strip() if "IF NOT EXISTS" in ddl else "unknown"
+        logger.info("Ensuring semantic layer table: %s", table_name)
+        try:
+            execute_sql(ddl)
+        except Exception as e:
+            logger.error("Failed to create table %s: %s", table_name, e)
+            raise
     for col_ddl in [
         "version INT, parent_definition_id STRING",
         "project_id STRING",
@@ -2773,6 +2782,10 @@ def _ensure_semantic_layer_tables():
             pass
     try:
         execute_sql(f"ALTER TABLE {fq('semantic_layer_projects')} ADD COLUMNS (selected_tables STRING)")
+    except Exception:
+        pass
+    try:
+        execute_sql(f"ALTER TABLE {fq('semantic_layer_profiles')} ADD COLUMNS (business_context STRING)")
     except Exception:
         pass
     _sl_tables_ensured = True
@@ -2897,7 +2910,7 @@ def delete_semantic_definition(
 @app.get("/api/semantic-layer/profiles")
 def list_profiles():
     _ensure_semantic_layer_tables()
-    q = f"SELECT profile_id, profile_name, questions, table_patterns, created_at, updated_at FROM {fq('semantic_layer_profiles')} ORDER BY updated_at DESC"
+    q = f"SELECT profile_id, profile_name, questions, table_patterns, created_at, updated_at, business_context FROM {fq('semantic_layer_profiles')} ORDER BY updated_at DESC"
     try:
         return execute_sql(q)
     except HTTPException as e:
@@ -2915,6 +2928,7 @@ def save_profile(req: SemanticProfileRequest):
     qs_json = json.dumps(req.questions).replace("'", "''")
     tp_json = json.dumps(req.table_patterns).replace("'", "''")
     name_esc = req.profile_name.replace("'", "''")
+    biz_ctx_esc = (req.business_context or "").replace("'", "''")
 
     existing = execute_sql(
         f"SELECT profile_id FROM {fq('semantic_layer_profiles')} WHERE profile_name = '{name_esc}'"
@@ -2923,14 +2937,16 @@ def save_profile(req: SemanticProfileRequest):
         pid = existing[0]["profile_id"]
         execute_sql(
             f"UPDATE {fq('semantic_layer_profiles')} "
-            f"SET questions = '{qs_json}', table_patterns = '{tp_json}', updated_at = '{now}' "
+            f"SET questions = '{qs_json}', table_patterns = '{tp_json}', "
+            f"business_context = '{biz_ctx_esc}', updated_at = '{now}' "
             f"WHERE profile_id = '{pid}'"
         )
         return {"profile_id": pid, "updated": True}
     pid = str(_uuid.uuid4())
     execute_sql(
-        f"INSERT INTO {fq('semantic_layer_profiles')} VALUES "
-        f"('{pid}', '{name_esc}', '{qs_json}', '{tp_json}', '{now}', '{now}')"
+        f"INSERT INTO {fq('semantic_layer_profiles')} "
+        f"(profile_id, profile_name, questions, table_patterns, created_at, updated_at, business_context) "
+        f"VALUES ('{pid}', '{name_esc}', '{qs_json}', '{tp_json}', '{now}', '{now}', '{biz_ctx_esc}')"
     )
     return {"profile_id": pid, "updated": False}
 
@@ -3195,7 +3211,8 @@ def _sl_extra_sql_context(in_clause: str) -> str:
 
 
 def _build_sl_context(
-    tables: list[str], cat: str, sch: str, questions: list[str] | None = None
+    tables: list[str], cat: str, sch: str, questions: list[str] | None = None,
+    business_context: str | None = None,
 ) -> str:
     """Build enriched context from KB tables, Vector Search, graph, and ontology. Cached 120s."""
     q_key = ",".join(sorted(questions)) if questions else ""
@@ -3215,6 +3232,10 @@ def _build_sl_context(
 
     # --- Core SQL context (original) ---
     parts: list[str] = []
+    if business_context and business_context.strip():
+        parts.append(
+            f"BUSINESS CONTEXT (provided by the user -- this defines the semantic frame for all analysis):\n{business_context.strip()}"
+        )
     table_rows = execute_sql(
         f"SELECT table_name, comment, domain, subdomain FROM {fq('table_knowledge_base')} "
         f"WHERE table_name IN ({in_clause})"
@@ -3240,11 +3261,11 @@ def _build_sl_context(
     ont_rows = []
     try:
         ont_rows = execute_sql(
-            f"SELECT entity_type, source_tables FROM {fq('ontology_entities')} WHERE confidence >= 0.4"
+            f"SELECT entity_type, source_tables, description FROM {fq('ontology_entities')} WHERE confidence >= 0.4"
         )
     except HTTPException:
         pass
-    entity_map: dict[str, str] = {}
+    entity_map: dict[str, dict] = {}
     for o in ont_rows:
         src_tables = o.get("source_tables") or ""
         if isinstance(src_tables, str):
@@ -3253,12 +3274,26 @@ def _build_sl_context(
             except (json.JSONDecodeError, TypeError):
                 src_tables = [src_tables] if src_tables else []
         for t in src_tables:
-            entity_map[t] = o["entity_type"]
+            entity_map[t] = {"type": o["entity_type"], "description": o.get("description", "")}
+
+    # Ontology relationships for cross-entity context
+    ont_rels = []
+    try:
+        ont_rels = execute_sql(
+            f"SELECT src_entity_type, dst_entity_type, relationship_name, cardinality "
+            f"FROM {fq('ontology_relationships')} WHERE confidence >= 0.4 LIMIT 50"
+        )
+    except (HTTPException, Exception):
+        pass
 
     for t in table_rows:
         tname = t["table_name"]
-        ent = entity_map.get(tname, "")
-        ent_str = f" Entity: {ent}" if ent else ""
+        ent_info = entity_map.get(tname, {})
+        ent_type = ent_info.get("type", "")
+        ent_desc = ent_info.get("description", "")
+        ent_str = f" Entity: {ent_type}" if ent_type else ""
+        if ent_desc:
+            ent_str += f" -- {ent_desc}"
         line = f"Table: {tname} (Comment: \"{t.get('comment', '')}\" Domain: {t.get('domain', '')} / {t.get('subdomain', '')}){ent_str}"
         cols = col_by_table.get(tname, [])
         col_strs = [
@@ -3275,6 +3310,13 @@ def _build_sl_context(
             parts.append(
                 f"  {fk['src_table']}.{fk['src_column']} -> {fk['dst_table']}.{fk['dst_column']} (confidence {fk['final_confidence']})"
             )
+
+    if ont_rels:
+        parts.append("\nENTITY RELATIONSHIPS (use for cross-entity join and metric design):")
+        for r in ont_rels:
+            card = r.get("cardinality", "")
+            card_str = f" ({card})" if card else ""
+            parts.append(f"  {r.get('src_entity_type', '')} --{r.get('relationship_name', '')}--> {r.get('dst_entity_type', '')}{card_str}")
 
     # Ontology metric suggestions
     metric_rows = []
@@ -3337,13 +3379,30 @@ def _build_sl_context(
     # KPI library enrichment (skip gracefully if table doesn't exist yet)
     try:
         kpi_rows = execute_sql(
-            f"SELECT name, description, formula, domain FROM {fq('kpi_definitions')}"
+            f"SELECT name, description, formula, domain, target_tables FROM {fq('kpi_definitions')}"
         )
         if kpi_rows:
-            kpi_block = "\nBUSINESS KPIs (use as direct templates for measures and expressions):"
+            # Filter KPIs to those whose target_tables overlap with selected tables
+            relevant = []
             for k in kpi_rows:
-                kpi_block += f"\n  - {k['name']}: {k.get('description', '')} | Formula: {k.get('formula', 'N/A')}"
-            parts.append(kpi_block)
+                kt = k.get("target_tables") or []
+                if isinstance(kt, str):
+                    try:
+                        kt = json.loads(kt)
+                    except Exception:
+                        kt = [kt]
+                kt_set = {t.lower() for t in kt} | {t.split(".")[-1].lower() for t in kt}
+                if not kt or kt_set & {t.lower() for t in fq_tables} | {t.split(".")[-1].lower() for t in fq_tables}:
+                    relevant.append(k)
+            if relevant:
+                kpi_block = (
+                    "\nREQUIRED KPIs -- you MUST implement each as a measure in an appropriate metric view.\n"
+                    "If a KPI cannot be implemented with the available columns, skip it and note why in the metric view comment."
+                )
+                for i, k in enumerate(relevant, 1):
+                    v_status = f" [{k.get('validation_status', '')}]" if k.get("validation_status") else ""
+                    kpi_block += f"\n  {i}. {k['name']} ({k.get('domain', '')}){v_status} : {k.get('description', '')} | Formula: {k.get('formula', 'N/A')}"
+                parts.append(kpi_block)
     except Exception:
         pass
 
@@ -3353,17 +3412,14 @@ def _build_sl_context(
     return result
 
 
-_FEW_SHOT = """\
+_FEW_SHOT_BY_DOMAIN = {
+    "sales": """\
 INPUT tables:
   sales.orders columns: [order_id BIGINT, customer_id BIGINT, order_date DATE, total_amount DECIMAL(10,2), region STRING, status STRING, is_returned BOOLEAN]
   sales.customers columns: [id BIGINT, name STRING, segment STRING, signup_date DATE]
   FK: orders.customer_id -> customers.id (confidence 0.95)
-
 INPUT questions:
-  1. What is total revenue by region?
-  2. How many orders per month?
-  3. What is the fulfillment rate by segment?
-
+  1. What is total revenue by region?  2. How many orders per month?  3. What is the fulfillment rate by segment?
 OUTPUT:
 [
   {"name": "order_performance_metrics", "source": "sales.orders",
@@ -3371,27 +3427,111 @@ OUTPUT:
    "filter": "status IS NOT NULL",
    "dimensions": [
      {"name": "Order Month", "expr": "DATE_TRUNC('MONTH', order_date)", "comment": "Month of order placement"},
-     {"name": "Order Quarter", "expr": "DATE_TRUNC('QUARTER', order_date)", "comment": "Quarter of order placement"},
      {"name": "Region", "expr": "region", "comment": "Sales region"},
-     {"name": "Status", "expr": "status", "comment": "Order fulfillment status"},
      {"name": "Customer Segment", "expr": "segment", "comment": "Customer segment from joined customers table"},
      {"name": "Customer Tier", "expr": "CASE WHEN segment IN ('Enterprise', 'Strategic') THEN 'Top Tier' WHEN segment = 'Mid-Market' THEN 'Growth' ELSE 'Standard' END", "comment": "Customer tier grouping"}],
    "measures": [
      {"name": "Total Revenue", "expr": "SUM(total_amount)", "comment": "Sum of all order values"},
-     {"name": "Order Count", "expr": "COUNT(*)", "comment": "Number of orders"},
      {"name": "Avg Order Value", "expr": "AVG(total_amount)", "comment": "Average order amount"},
-     {"name": "Unique Customers", "expr": "COUNT(DISTINCT customer_id)", "comment": "Distinct customer count"},
      {"name": "Revenue per Customer", "expr": "SUM(total_amount) / NULLIF(COUNT(DISTINCT customer_id), 0)", "comment": "Average revenue per unique customer"},
-     {"name": "Fulfillment Rate", "expr": "SUM(CASE WHEN status = 'fulfilled' THEN 1 ELSE 0 END) * 1.0 / NULLIF(COUNT(*), 0)", "comment": "Fraction of orders fulfilled (0 to 1)"},
-     {"name": "Return Rate", "expr": "SUM(CASE WHEN is_returned = TRUE THEN 1 ELSE 0 END) * 1.0 / NULLIF(COUNT(*), 0)", "comment": "Fraction of orders returned (0 to 1)"},
+     {"name": "Fulfillment Rate", "expr": "SUM(CASE WHEN status = 'fulfilled' THEN 1 ELSE 0 END) * 1.0 / NULLIF(COUNT(*), 0)", "comment": "Fraction of orders fulfilled"},
      {"name": "Fulfilled Revenue", "expr": "SUM(total_amount) FILTER (WHERE status = 'fulfilled')", "comment": "Revenue from fulfilled orders only"},
-     {"name": "High Value Order Count", "expr": "COUNT(*) FILTER (WHERE total_amount > 1000)", "comment": "Orders above 1000 threshold"}],
+     {"name": "30-Day Rolling Avg Revenue", "expr": "AVG(SUM(total_amount))", "window": {"order_by": "order_date", "range": "INTERVAL 30 DAYS PRECEDING"}, "comment": "Rolling 30-day average of daily revenue"}],
    "joins": [{"name": "customers", "source": "sales.customers", "on": "source.customer_id = customers.id"}]}
-]"""
+]""",
+    "healthcare": """\
+INPUT tables:
+  clinical.encounters columns: [encounter_id BIGINT, patient_id BIGINT, provider_id BIGINT, admit_date DATE, discharge_date DATE, encounter_type STRING, department STRING, total_charges DECIMAL(12,2), status STRING]
+  clinical.patients columns: [patient_id BIGINT, birth_date DATE, gender STRING, zip_code STRING, insurance_type STRING]
+  FK: encounters.patient_id -> patients.patient_id (confidence 0.92)
+INPUT questions:
+  1. What is the average length of stay by department?  2. What is the readmission rate within 30 days?  3. How does patient volume trend by month?
+OUTPUT:
+[
+  {"name": "encounter_throughput_metrics", "source": "clinical.encounters",
+   "comment": "Encounter volume, throughput, and clinical outcome metrics",
+   "filter": "status != 'cancelled'",
+   "dimensions": [
+     {"name": "Admit Month", "expr": "DATE_TRUNC('MONTH', admit_date)", "comment": "Month of admission"},
+     {"name": "Department", "expr": "department", "comment": "Clinical department"},
+     {"name": "Encounter Type", "expr": "encounter_type", "comment": "Inpatient, outpatient, ED, etc."},
+     {"name": "Insurance Type", "expr": "insurance_type", "comment": "Patient insurance from joined patients table"}],
+   "measures": [
+     {"name": "Encounter Count", "expr": "COUNT(*)", "comment": "Total encounters"},
+     {"name": "Unique Patients", "expr": "COUNT(DISTINCT patient_id)", "comment": "Distinct patient count"},
+     {"name": "Avg Length of Stay", "expr": "AVG(DATEDIFF(discharge_date, admit_date))", "comment": "Average days from admit to discharge"},
+     {"name": "Encounters per Patient", "expr": "COUNT(*) * 1.0 / NULLIF(COUNT(DISTINCT patient_id), 0)", "comment": "Average visits per patient"},
+     {"name": "Total Charges", "expr": "SUM(total_charges)", "comment": "Sum of encounter charges"},
+     {"name": "Charge per Encounter", "expr": "SUM(total_charges) / NULLIF(COUNT(*), 0)", "comment": "Average charge per encounter"}],
+   "joins": [{"name": "patients", "source": "clinical.patients", "on": "source.patient_id = patients.patient_id"}]}
+]""",
+    "finance": """\
+INPUT tables:
+  finance.transactions columns: [txn_id BIGINT, account_id BIGINT, txn_date DATE, amount DECIMAL(12,2), txn_type STRING, category STRING, is_fraud BOOLEAN]
+  finance.accounts columns: [account_id BIGINT, customer_name STRING, account_type STRING, opened_date DATE, region STRING]
+  FK: transactions.account_id -> accounts.account_id (confidence 0.94)
+INPUT questions:
+  1. What is the total transaction volume by category?  2. What is the fraud rate by account type?  3. How has monthly deposit growth trended?
+OUTPUT:
+[
+  {"name": "transaction_risk_metrics", "source": "finance.transactions",
+   "comment": "Transaction volume, fraud rates, and financial flow analysis",
+   "dimensions": [
+     {"name": "Transaction Month", "expr": "DATE_TRUNC('MONTH', txn_date)", "comment": "Month of transaction"},
+     {"name": "Category", "expr": "category", "comment": "Transaction category"},
+     {"name": "Account Type", "expr": "account_type", "comment": "Account classification from joined accounts"}],
+   "measures": [
+     {"name": "Transaction Count", "expr": "COUNT(*)", "comment": "Total transactions"},
+     {"name": "Total Amount", "expr": "SUM(amount)", "comment": "Sum of transaction amounts"},
+     {"name": "Avg Transaction Size", "expr": "AVG(amount)", "comment": "Average transaction amount"},
+     {"name": "Fraud Rate", "expr": "SUM(CASE WHEN is_fraud = TRUE THEN 1 ELSE 0 END) * 1.0 / NULLIF(COUNT(*), 0)", "comment": "Fraction of flagged transactions"},
+     {"name": "Deposit Volume", "expr": "SUM(amount) FILTER (WHERE txn_type = 'deposit')", "comment": "Total deposit inflows"}],
+   "joins": [{"name": "accounts", "source": "finance.accounts", "on": "source.account_id = accounts.account_id"}]}
+]""",
+}
+
+
+def _select_few_shot(context: str) -> str:
+    """Pick the best few-shot example based on domain keywords in the context."""
+    ctx_lower = context.lower()
+    scores: dict[str, int] = {}
+    domain_keywords = {
+        "healthcare": ["patient", "encounter", "provider", "clinical", "diagnosis", "admit", "discharge", "readmission", "icd", "npi"],
+        "finance": ["transaction", "account", "ledger", "balance", "deposit", "withdrawal", "fraud", "loan", "interest", "portfolio"],
+        "sales": ["order", "customer", "revenue", "product", "invoice", "shipment", "discount", "cart", "purchase"],
+    }
+    for domain, keywords in domain_keywords.items():
+        scores[domain] = sum(1 for kw in keywords if kw in ctx_lower)
+    best = max(scores, key=scores.get) if max(scores.values()) > 0 else "sales"
+    return _FEW_SHOT_BY_DOMAIN[best]
+
+
+def _load_reference_rules() -> str:
+    """Load anti-patterns and validation checklist from metric_view_reference.json."""
+    ref_path = os.path.join(os.path.dirname(__file__), "..", "..", "..", "configurations", "agent_references", "metric_view_reference.json")
+    try:
+        with open(ref_path) as f:
+            ref = json.load(f)
+    except Exception:
+        return ""
+    parts = []
+    if ref.get("anti_patterns"):
+        parts.append("ANTI-PATTERNS (NEVER do these):")
+        for ap in ref["anti_patterns"]:
+            parts.append(f"  - {ap}")
+    if ref.get("validation_checklist"):
+        parts.append("SELF-CHECK before outputting:")
+        for vc in ref["validation_checklist"]:
+            parts.append(f"  - {vc}")
+    return "\n".join(parts)
+
+
+_REFERENCE_RULES_BLOCK = _load_reference_rules()
 
 
 def _build_prompt(questions: list[str], context: str) -> str:
     q_block = "\n".join(f"  {i+1}. {q}" for i, q in enumerate(questions))
+    few_shot = _select_few_shot(context)
     return f"""You are a data modeler building a semantic layer for Databricks Unity Catalog.
 
 TASK: Generate metric view definitions (as a JSON array) that enable answering the business questions below.
@@ -3399,18 +3539,21 @@ TASK: Generate metric view definitions (as a JSON array) that enable answering t
 ANALYTICAL QUALITY (HIGHEST PRIORITY):
 - Every metric view MUST include at least one RATIO measure (x / NULLIF(y, 0)) and one computed dimension (CASE, DATE_TRUNC)
 - Include RATE measures (conditional_count * 1.0 / NULLIF(total, 0)) for any entity with status/outcome columns
-- When BUSINESS KPIs appear in the metadata, use them as direct templates for measures and expressions
+- Every KPI listed in the REQUIRED KPIs section MUST appear as a measure in at least one metric view. Map KPI formulas directly to measure expressions. If a KPI cannot be implemented, note why in the view comment
 - Organize views around analytical themes, not just one-per-table. Multiple views from the same source are encouraged if they address different analytical angles
 - When Entity types are annotated: People -> counts, rates, segmentation; Transactions -> volumes, values, time-based rates; Resources -> utilization, efficiency ratios
 - Use COLUMN PROPERTY ANNOTATIONS: is_temporal -> date dimensions; is_categorical -> grouping dims; is_identifier -> count-distinct measures
 - Use PROFILING SUMMARIES: low-cardinality (< 50 distinct) -> dimensions; high-cardinality -> measure inputs or filters
 - Skip non-quantitative questions (document search, free-text lookups) silently
 
-JOIN AND RELATIONSHIP RULES:
-- In join "on" clauses, always reference the source table as "source": "on": "source.fk_col = joined_table.pk_col"
+JOIN AND RELATIONSHIP RULES (MANDATORY):
+- You MUST include joins for EVERY foreign-key (FK) relationship shown in the metadata. If table A has an FK to table B, at least one metric view MUST join them.
+- In join "on" clauses, always reference the source table as "source": "on": "source.fk_col = joined_alias.pk_col"
+- COLUMN REFERENCING: Use "source.col" for source table columns, "join_alias.col" for joined table columns. Example: "source.order_date", "account.industry"
 - Include joins when FK relationships OR GRAPH RELATIONSHIPS show a valid path
 - Graph edges with join_expression are directly usable; multi-hop paths indicate transitive join chains
-- When FKs exist, generate cross-table metrics joining fact to dimension tables
+- Cross-table metrics are REQUIRED when FKs exist: join fact tables to dimension tables and produce breakdowns, ratios, or aggregations that span both
+- A metric view with NO joins when FKs exist for its source table is INCOMPLETE -- always add them
 - EXISTING METRIC VIEWS: do NOT duplicate -- build on existing coverage
 
 STRUCTURE:
@@ -3424,9 +3567,20 @@ SQL SYNTAX REMINDERS:
 - Single-quote ALL string literals in comparisons, CASE results, IN lists, CONCAT separators
 - Standard aggregates: SUM, COUNT, AVG, MIN, MAX, COUNT(DISTINCT ...)
 - FILTER syntax: SUM(col) FILTER (WHERE condition)
+- WINDOW MEASURES for rolling/cumulative KPIs: put aggregate in "expr" and add a "window" object:
+  {{"name": "30-Day Rolling Revenue", "expr": "AVG(SUM(amount))", "window": {{"order_by": "date_col", "range": "INTERVAL 30 DAYS PRECEDING"}}}}
+  Use range for time-based windows, rows for row-count windows (e.g. "UNBOUNDED PRECEDING" for cumulative)
+- For MoM/YoY growth, use FILTER on date ranges rather than window functions
+
+AGGREGATION CORRECTNESS:
+- Ratios must use NULLIF in denominator: SUM(a) / NULLIF(SUM(b), 0), NEVER SUM(a) / SUM(b)
+- AVG of a pre-aggregated value is usually wrong. For "average revenue per customer", use SUM(revenue) / NULLIF(COUNT(DISTINCT customer_id), 0), not AVG(revenue)
+- Percentages: SUM(CASE WHEN cond THEN 1 ELSE 0 END) * 100.0 / NULLIF(COUNT(*), 0)
+
+{_REFERENCE_RULES_BLOCK}
 
 EXAMPLE:
-{_FEW_SHOT}
+{few_shot}
 
 CATALOG METADATA:
 {context}
@@ -3564,19 +3718,39 @@ _SQL_KEYWORDS = {
 }
 
 
-def _extract_column_refs(expr: str) -> list[str]:
-    """Extract likely column references from a SQL expression."""
+def _extract_column_refs(expr: str) -> list[tuple[str | None, str]]:
+    """Extract column references as (alias_or_None, column_name) tuples.
+
+    ``account.industry`` -> ``("account", "industry")``
+    ``status``           -> ``(None, "status")``
+    """
     cleaned = re.sub(r"'[^']*'", "", expr)
     cleaned = re.sub(r'"[^"]*"', "", cleaned)
     func_tokens = {
         m.group(1).upper() for m in re.finditer(r"\b([a-zA-Z_]\w*)\s*\(", cleaned)
     }
-    tokens = re.findall(r"\b([a-zA-Z_]\w*)\b", cleaned)
-    return [
-        t
-        for t in tokens
-        if t.upper() not in _SQL_KEYWORDS and t.upper() not in func_tokens
-    ]
+    refs: list[tuple[str | None, str]] = []
+    seen: set[str] = set()
+    qualified_cols: set[str] = set()
+    for m in re.finditer(r"\b([a-zA-Z_]\w*)\.([a-zA-Z_]\w*)\b", cleaned):
+        alias, col = m.group(1), m.group(2)
+        if alias.upper() not in _SQL_KEYWORDS and col.upper() not in _SQL_KEYWORDS:
+            key = f"{alias}.{col}"
+            if key not in seen:
+                refs.append((alias, col))
+                seen.add(key)
+                qualified_cols.add(alias)
+                qualified_cols.add(col)
+    for tok in re.findall(r"\b([a-zA-Z_]\w*)\b", cleaned):
+        if (
+            tok.upper() not in _SQL_KEYWORDS
+            and tok.upper() not in func_tokens
+            and tok not in qualified_cols
+            and tok not in seen
+        ):
+            refs.append((None, tok))
+            seen.add(tok)
+    return refs
 
 
 def _validate_definition_structure(defn: dict) -> list[str]:
@@ -3591,26 +3765,28 @@ def _validate_definition_structure(defn: dict) -> list[str]:
 
     parts = source.split(".")
     if len(parts) != 3:
-        return errors  # can't verify without fully qualified name
+        return errors
 
     cat, sch, tbl = parts
-    existing_cols: set[str] = set()
+    source_cols: set[str] = set()
     try:
         rows = execute_sql(
             f"SELECT column_name FROM `{cat}`.information_schema.columns "
             f"WHERE table_catalog = '{cat}' AND table_schema = '{sch}' AND table_name = '{tbl}'"
         )
-        existing_cols = {r["column_name"].lower() for r in rows}
+        source_cols = {r["column_name"].lower() for r in rows}
     except Exception:
         errors.append(f"Could not verify table {source}")
         return errors
 
-    if not existing_cols:
+    if not source_cols:
         errors.append(f"Table {source} not found in information_schema")
         return errors
 
+    alias_cols: dict[str, set[str]] = {"source": source_cols, tbl: source_cols}
     for j in defn.get("joins", []):
         j_source = j.get("source", "")
+        j_alias = j.get("name", j_source.split(".")[-1])
         j_parts = j_source.split(".")
         if len(j_parts) == 3:
             try:
@@ -3618,18 +3794,35 @@ def _validate_definition_structure(defn: dict) -> list[str]:
                     f"SELECT column_name FROM `{j_parts[0]}`.information_schema.columns "
                     f"WHERE table_catalog = '{j_parts[0]}' AND table_schema = '{j_parts[1]}' AND table_name = '{j_parts[2]}'"
                 )
-                existing_cols.update(r["column_name"].lower() for r in j_rows)
+                j_cols = {r["column_name"].lower() for r in j_rows}
+                alias_cols[j_alias] = j_cols
+                alias_cols[j_parts[2]] = j_cols
             except Exception:
                 pass
+
+    all_cols = set()
+    for cs in alias_cols.values():
+        all_cols |= cs
 
     for item_type in ("dimensions", "measures"):
         for item in defn.get(item_type, []):
             col_refs = _extract_column_refs(item.get("expr", ""))
-            for col in col_refs:
-                if col.lower() not in existing_cols:
-                    errors.append(
-                        f"{item_type} '{item.get('name', '')}': column '{col}' not found in {source}"
-                    )
+            for alias, col in col_refs:
+                if alias:
+                    target = alias_cols.get(alias)
+                    if target is None:
+                        errors.append(
+                            f"{item_type} {item.get('name', '')}: column {alias} not found in {source}"
+                        )
+                    elif col.lower() not in target:
+                        errors.append(
+                            f"{item_type} {item.get('name', '')}: column {col} not found in alias {alias}"
+                        )
+                else:
+                    if col.lower() not in all_cols:
+                        errors.append(
+                            f"{item_type} {item.get('name', '')}: column {col} not found in {source}"
+                        )
 
     return errors
 
@@ -3766,6 +3959,17 @@ def _fix_concat_separators(expr: str) -> str:
     )
 
 
+def _fix_like_patterns(expr: str) -> str:
+    """Quote bare LIKE/NOT LIKE patterns: ``col LIKE HW%`` -> ``col LIKE 'HW%'``."""
+    def _repl(m):
+        prefix = m.group(1)
+        pat = m.group(2).strip()
+        if pat.startswith("'") or pat.startswith('"'):
+            return m.group(0)
+        return f"{prefix}'{pat}'"
+    return re.sub(r"(LIKE\s+)([^'\"\s(]+)", _repl, expr, flags=re.IGNORECASE)
+
+
 def _autofix_expr(expr: str) -> str:
     """Fix common AI expression mistakes before validation."""
 
@@ -3796,13 +4000,28 @@ def _autofix_expr(expr: str) -> str:
     expr = _fix_in_clause_literals(expr)
     # Fix bare separators in CONCAT-style calls
     expr = _fix_concat_separators(expr)
+    # Fix unquoted LIKE patterns: LIKE HW-% -> LIKE 'HW-%'
+    expr = _fix_like_patterns(expr)
     return expr
 
 
-def _validate_expr(expr: str, source_table: str) -> tuple:
-    """Test a SQL expression. Returns (error_or_None, possibly_fixed_expr)."""
+def _build_from_clause(source_table: str, joins: list[dict] | None = None) -> str:
+    """Build ``FROM source AS source [JOIN ...]`` clause for expression dry-runs."""
+    clause = f"{source_table} AS source"
+    for j in (joins or []):
+        j_alias = j.get("name", j.get("source", "").split(".")[-1])
+        j_src = j.get("source", "")
+        on = j.get("on", "1=1")
+        if j_src:
+            clause += f" LEFT JOIN {j_src} AS {j_alias} ON {on}"
+    return clause
+
+
+def _validate_expr(expr: str, source_table: str, joins: list[dict] | None = None) -> tuple:
+    """Test a SQL expression with optional joins. Returns (error_or_None, possibly_fixed_expr)."""
+    from_clause = _build_from_clause(source_table, joins)
     try:
-        execute_sql(f"SELECT {expr} FROM {source_table} LIMIT 0")
+        execute_sql(f"SELECT {expr} FROM {from_clause} LIMIT 0")
         return None, expr
     except Exception as e:
         err_str = str(e)
@@ -3816,7 +4035,7 @@ def _validate_expr(expr: str, source_table: str) -> tuple:
             )
             if fixed != expr:
                 try:
-                    execute_sql(f"SELECT {fixed} FROM {source_table} LIMIT 0")
+                    execute_sql(f"SELECT {fixed} FROM {from_clause} LIMIT 0")
                     return None, fixed
                 except Exception:
                     pass
@@ -3914,6 +4133,123 @@ def _normalize_joins(defn: dict) -> dict:
     return defn
 
 
+def _build_plan_prompt(questions: list[str], context: str) -> str:
+    q_block = "\n".join(f"  {i+1}. {q}" for i, q in enumerate(questions))
+    return f"""You are a data modeler planning a semantic layer for Databricks Unity Catalog.
+
+TASK: Output a PLAN only (no SQL). Reply with a single JSON object: {{ "views": [ ... ] }}.
+
+For each metric view in "views", include:
+- "name": unique snake_case name (e.g. order_performance_metrics)
+- "source": fully qualified source table (catalog.schema.table)
+- "comment": one sentence purpose
+- "joins": array of {{ "name": "<alias>", "source": "catalog.schema.table", "on": "source.<fk_col> = <alias>.<pk_col>" }}
+  MANDATORY: You MUST include joins for EVERY FK relationship shown in the metadata. If a source table has FKs to other tables, include them as joins. A view with NO joins when FKs exist is INCOMPLETE.
+- "dimensions": array of {{ "name": "Display Name", "comment": "what it is" }} (no expr)
+- "measures": array of {{ "name": "Display Name", "comment": "what it measures" }} (no expr)
+- "question_indices": array of 0-based question indices this view answers
+
+Create measures that match the business questions (ratios, rates, KPIs); avoid generic row count unless a question explicitly asks for it. Each view must have at least one dimension and one measure. Cross-table breakdowns using joined dimension tables are strongly preferred.
+
+CATALOG METADATA:
+{context}
+
+BUSINESS QUESTIONS:
+{q_block}
+
+OUTPUT (single JSON object with "views" key only, no explanation):"""
+
+
+def _build_generate_prompt_for_plan(plan_view: dict, questions: list[str], context: str) -> str:
+    q_refs = plan_view.get("question_indices", [])
+    q_block = "\n".join(f"  {i+1}. {questions[i]}" for i in q_refs if 0 <= i < len(questions))
+    plan_str = json.dumps(plan_view, indent=2)
+    return f"""You are a data modeler. Output exactly ONE JSON object for a single metric view (not an array).
+
+PLANNED VIEW (names only; you must add "expr" for each dimension and measure):
+{plan_str}
+
+RULES:
+- Output a single object with keys: name, source, comment, filter (optional), dimensions, measures, joins.
+- dimensions: array of {{ "name", "expr", "comment" }}. expr must be valid Databricks SQL using ONLY columns from the metadata below.
+- measures: array of {{ "name", "expr", "comment" }}. Use SUM, COUNT, AVG, FILTER, etc. String literals single-quoted.
+- For window measures (rolling averages, cumulative): use "window" sub-object: {{"order_by": "col", "range": "INTERVAL N DAYS PRECEDING"}}.
+- joins: You MUST implement ALL joins from the plan exactly. Use: on: source.<fk_column> = <join_name>.<pk_column>. Keep same join names as plan. If the plan includes joins, they are REQUIRED in your output. Add dimensions/measures that reference joined table columns.
+- COLUMN REFERENCING: Use "source.col" for source table columns, "join_alias.col" for joined table columns. Example: "expr": "source.order_date" or "expr": "account.industry". NEVER use bare column names when joins are present -- always qualify with the alias.
+- Ratios must use NULLIF in denominator. AVG of pre-aggregated values is usually wrong.
+- Only use column names that appear in the metadata.
+
+{_REFERENCE_RULES_BLOCK}
+
+CATALOG METADATA:
+{context}
+
+QUESTIONS this view answers:
+{q_block}
+
+OUTPUT (one JSON object only, no array, no explanation):"""
+
+
+def _parse_single_json_safe(response: str) -> dict:
+    """Like _parse_single_json but returns {} instead of raising."""
+    text = response.strip()
+    text = re.sub(r"^```(?:json)?\s*", "", text)
+    text = re.sub(r"\s*```$", "", text)
+    start = text.find("{")
+    end = text.rfind("}") + 1
+    if start == -1 or end <= start:
+        return {}
+    try:
+        return json.loads(text[start:end])
+    except json.JSONDecodeError:
+        return {}
+
+
+def _inject_fk_joins(plan_views: list[dict], tables: list[str], cat: str, sch: str):
+    """Ensure every plan view includes joins for FK relationships involving its source table."""
+    fq_tables = [t if "." in t else f"{cat}.{sch}.{t}" for t in tables]
+    in_clause = ", ".join(f"'{t}'" for t in fq_tables)
+    try:
+        fk_rows = execute_sql(
+            f"SELECT src_table, dst_table, src_column, dst_column "
+            f"FROM {fq('fk_predictions')} WHERE is_fk = 'true' AND final_confidence >= 0.7 "
+            f"AND (src_table IN ({in_clause}) OR dst_table IN ({in_clause}))"
+        )
+    except Exception:
+        return plan_views
+    if not fk_rows:
+        return plan_views
+
+    fk_by_table: dict[str, list[dict]] = {}
+    for fk in fk_rows:
+        fk_by_table.setdefault(fk["src_table"], []).append(fk)
+        fk_by_table.setdefault(fk["dst_table"], []).append(fk)
+
+    for pv in plan_views:
+        src = pv.get("source", "")
+        if not src:
+            continue
+        fks = fk_by_table.get(src, [])
+        if not fks:
+            continue
+        existing_join_sources = {j.get("source", "") for j in pv.get("joins", [])}
+        for fk in fks:
+            if fk["src_table"] == src:
+                join_table, fk_col, pk_col = fk["dst_table"], fk["src_column"], fk["dst_column"]
+            else:
+                join_table, fk_col, pk_col = fk["src_table"], fk["dst_column"], fk["src_column"]
+            if join_table in existing_join_sources:
+                continue
+            alias = join_table.split(".")[-1]
+            pv.setdefault("joins", []).append({
+                "name": alias,
+                "source": join_table,
+                "on": f"source.{fk_col} = {alias}.{pk_col}",
+            })
+            existing_join_sources.add(join_table)
+    return plan_views
+
+
 def _run_sl_generation(
     task_id: str,
     tables: list[str],
@@ -3923,15 +4259,29 @@ def _run_sl_generation(
     model: str,
     project_id: str = None,
     mode: str = "replace",
+    business_context: str = None,
 ):
-    """Background thread for in-app metric view generation."""
+    """Background thread for in-app metric view generation (two-phase)."""
     from datetime import datetime as _dt
 
     task = _sl_tasks[task_id]
     try:
         _ensure_semantic_layer_tables()
 
-        # Save selected tables to project
+        # Persist questions for traceability
+        if questions:
+            now_ts = _dt.utcnow().isoformat()
+            q_values = []
+            for q in questions:
+                q_esc = q.strip().replace("'", "''")
+                if q_esc:
+                    q_values.append(f"('{_uuid.uuid4()}', '{q_esc}', 'pending', '{now_ts}', NULL)")
+            if q_values:
+                try:
+                    execute_sql(f"INSERT INTO {fq('semantic_layer_questions')} VALUES {', '.join(q_values)}", timeout=30)
+                except Exception as exc:
+                    logger.warning("Failed to persist questions: %s", exc)
+
         if project_id and tables:
             tables_json = json.dumps(tables).replace("'", "''")
             try:
@@ -3942,7 +4292,6 @@ def _run_sl_generation(
             except Exception:
                 pass
 
-        # replace_all: supersede ALL non-superseded definitions in this project first
         if mode == "replace_all" and project_id:
             try:
                 execute_sql(
@@ -3953,28 +4302,54 @@ def _run_sl_generation(
                 pass
 
         task["stage"] = "building_context"
-        context = _build_sl_context(tables, cat, sch, questions=questions)
+        context = _build_sl_context(tables, cat, sch, questions=questions, business_context=business_context)
         if not context.strip():
-            task.update(
-                {
-                    "status": "error",
-                    "error": "No metadata found for selected tables. Run metadata generation first.",
-                }
-            )
+            task.update({"status": "error", "error": "No metadata found for selected tables. Run metadata generation first."})
             return
 
-        task["stage"] = "calling_ai"
-        prompt = _build_prompt(questions, context)
-        escaped = prompt.replace("'", "''")
-        rows = execute_sql(
-            f"SELECT AI_QUERY('{model}', '{escaped}') as response", timeout=180
-        )
-        response = rows[0]["response"] if rows else ""
-        logger.info(
-            "AI response (first 500 chars): %s",
-            response[:500] if response else "<empty>",
-        )
-        definitions = _parse_ai_json(response)
+        # Phase 1: Plan
+        task["stage"] = "planning"
+        plan_prompt = _build_plan_prompt(questions, context)
+        escaped = plan_prompt.replace("'", "''")
+        rows = execute_sql(f"SELECT AI_QUERY('{model}', '{escaped}') as response", timeout=180)
+        plan_response = rows[0]["response"] if rows else ""
+        plan_views = []
+        if plan_response:
+            try:
+                plan_data = _parse_single_json_safe(plan_response)
+                plan_views = plan_data.get("views") or []
+            except Exception:
+                pass
+
+        if plan_views:
+            plan_views = _inject_fk_joins(plan_views, tables, cat, sch)
+
+        # Phase 2: Generate each view individually, or fall back to single-shot
+        definitions = []
+        if plan_views:
+            task["stage"] = "generating"
+            task["planned"] = len(plan_views)
+            for idx, pv in enumerate(plan_views):
+                task["generating_view"] = idx + 1
+                gen_prompt = _build_generate_prompt_for_plan(pv, questions, context)
+                escaped = gen_prompt.replace("'", "''")
+                try:
+                    gen_rows = execute_sql(f"SELECT AI_QUERY('{model}', '{escaped}') as response", timeout=120)
+                    gen_resp = gen_rows[0]["response"] if gen_rows else ""
+                    defn = _parse_single_json_safe(gen_resp)
+                    if defn and defn.get("source"):
+                        defn.setdefault("name", pv.get("name", f"metric_view_{idx}"))
+                        definitions.append(defn)
+                except Exception as exc:
+                    logger.warning("Phase 2 generation failed for '%s': %s", pv.get("name", ""), exc)
+        else:
+            # Fallback to single-shot
+            task["stage"] = "calling_ai"
+            prompt = _build_prompt(questions, context)
+            escaped = prompt.replace("'", "''")
+            rows = execute_sql(f"SELECT AI_QUERY('{model}', '{escaped}') as response", timeout=180)
+            response = rows[0]["response"] if rows else ""
+            definitions = _parse_ai_json(response)
         if not definitions:
             snippet = (response[:200] + "...") if len(response) > 200 else response
             task.update(
@@ -4021,11 +4396,12 @@ def _run_sl_generation(
             def _validate_defn(d: dict) -> list[str]:
                 errs = _validate_definition_structure(d)
                 if not errs:
+                    d_joins = d.get("joins", [])
                     for itype in ("dimensions", "measures"):
                         for item in d.get(itype, []):
                             expr = item.get("expr", "")
                             if d.get("source") and expr:
-                                err, fixed_expr = _validate_expr(expr, d["source"])
+                                err, fixed_expr = _validate_expr(expr, d["source"], d_joins)
                                 if err:
                                     errs.append(f"{itype} '{item.get('name', '')}': {err}")
                                 elif fixed_expr != expr:
@@ -4094,6 +4470,35 @@ def _run_sl_generation(
             stats[status] += 1
             stats["generated"] += 1
 
+        # Post-generation: LLM coverage check
+        coverage = None
+        if stats["validated"] > 0 and questions:
+            task["stage"] = "checking_coverage"
+            try:
+                view_summaries = []
+                for defn in definitions:
+                    measures = [m.get("name", "") for m in defn.get("measures", [])]
+                    view_summaries.append(f"- {defn.get('name', '')}: measures=[{', '.join(measures)}]")
+                views_block = "\n".join(view_summaries)
+                q_block = "\n".join(f"  {i+1}. {q}" for i, q in enumerate(questions))
+                cov_prompt = f"""You are evaluating metric view coverage. For each business question, determine if it is COVERED (answerable by the generated metric views) or NOT_COVERED.
+
+GENERATED METRIC VIEWS:
+{views_block}
+
+BUSINESS QUESTIONS:
+{q_block}
+
+Return ONLY a JSON object: {{"covered": [<1-based question indices>], "not_covered": [<1-based question indices>]}}"""
+                cov_escaped = cov_prompt.replace("'", "''")
+                cov_rows = execute_sql(f"SELECT AI_QUERY('{model}', '{cov_escaped}') as response", timeout=60)
+                cov_resp = cov_rows[0]["response"] if cov_rows else ""
+                coverage = _parse_single_json_safe(cov_resp)
+                if coverage:
+                    stats["coverage"] = coverage
+            except Exception as exc:
+                logger.warning("Coverage check failed: %s", exc)
+
         task.update({"status": "done", "stage": "done", "result": stats})
 
     except Exception as e:
@@ -4132,6 +4537,7 @@ def start_sl_generation(req: SemanticGenerateRequest):
             req.model_endpoint,
             req.project_id,
             req.mode,
+            req.business_context,
         ),
         daemon=True,
     ).start()
@@ -4183,13 +4589,21 @@ def _parse_single_json(text: str) -> dict:
 
 def _validate_definition(defn: dict, source: str) -> tuple[str, str]:
     """Two-tier validation: structural then expression. Returns (status, errors_str)."""
+    for item_type in ("dimensions", "measures"):
+        for item in defn.get(item_type, []):
+            if item.get("expr"):
+                item["expr"] = _autofix_expr(item["expr"])
+    if defn.get("filter"):
+        defn["filter"] = _autofix_expr(defn["filter"])
+    defn = _normalize_joins(defn)
     errors = _validate_definition_structure(defn)
     if not errors:
+        defn_joins = defn.get("joins", [])
         for item_type in ("dimensions", "measures"):
             for item in defn.get(item_type, []):
                 expr = item.get("expr", "")
                 if source and expr:
-                    err, fixed = _validate_expr(expr, source)
+                    err, fixed = _validate_expr(expr, source, defn_joins)
                     if err:
                         errors.append(f"{item_type} {item.get('name', '')}: {err}")
                     elif fixed != expr:
@@ -4269,6 +4683,15 @@ def _definition_to_yaml(defn: dict) -> str:
         lines.append(f'    expr: "{_yaml_esc(expr)}"')
         if m.get("comment"):
             lines.append(f'    comment: "{_yaml_esc(m["comment"])}"')
+        if m.get("window"):
+            w = m["window"]
+            lines.append("    window:")
+            if w.get("order_by"):
+                lines.append(f'      order_by: "{_yaml_esc(w["order_by"])}"')
+            if w.get("range"):
+                lines.append(f'      range: "{_yaml_esc(w["range"])}"')
+            if w.get("rows"):
+                lines.append(f'      rows: "{_yaml_esc(w["rows"])}"')
     if defn.get("joins"):
         lines.append("joins:")
         for j in defn["joins"]:
@@ -4453,18 +4876,55 @@ def create_metric_view(definition_id: str, req: CreateDefinitionRequest):
     if not mv_name:
         raise HTTPException(400, detail="Definition has no metric view name")
     fq_mv = f"`{req.target_catalog}`.`{req.target_schema}`.`{mv_name}`"
+    for item_type in ("dimensions", "measures"):
+        for item in defn.get(item_type, []):
+            if item.get("expr"):
+                item["expr"] = _autofix_expr(item["expr"])
+    if defn.get("filter"):
+        defn["filter"] = _autofix_expr(defn["filter"])
     yaml_body = _definition_to_yaml(defn)
     sql = f"CREATE OR REPLACE VIEW {fq_mv}\nWITH METRICS LANGUAGE YAML AS $$\n{yaml_body}$$"
     try:
         execute_sql(sql, timeout=60)
     except Exception as e:
         raise HTTPException(400, detail=str(e))
+    # Tag as draft for governance
+    try:
+        execute_sql(f"ALTER VIEW {fq_mv} SET TBLPROPERTIES ('certification_status' = 'draft', 'generated_by' = 'dbxmetagen')", timeout=15)
+    except Exception:
+        pass
     execute_sql(
         f"UPDATE {fq('metric_view_definitions')} "
         f"SET status = 'applied', applied_at = current_timestamp() "
         f"WHERE definition_id = '{definition_id}'"
     )
     return {"definition_id": definition_id, "status": "applied", "metric_view": fq_mv}
+
+
+class CertifyRequest(BaseModel):
+    target_catalog: str
+    target_schema: str
+    status: str = "certified"
+
+
+@app.post("/api/semantic-layer/definitions/{definition_id}/certify")
+def certify_metric_view(definition_id: str, req: CertifyRequest):
+    """Promote a deployed metric view from draft to certified (or back)."""
+    _ensure_semantic_layer_tables()
+    row = _fetch_definition(definition_id)
+    defn = json.loads(row["json_definition"]) if isinstance(row["json_definition"], str) else row["json_definition"]
+    mv_name = defn.get("name") or row.get("metric_view_name", "")
+    if not mv_name:
+        raise HTTPException(400, detail="Definition has no metric view name")
+    if row.get("status") != "applied":
+        raise HTTPException(400, detail="Only applied metric views can be certified")
+    fq_mv = f"`{req.target_catalog}`.`{req.target_schema}`.`{mv_name}`"
+    cert_status = req.status.replace("'", "''")
+    try:
+        execute_sql(f"ALTER VIEW {fq_mv} SET TBLPROPERTIES ('certification_status' = '{cert_status}')", timeout=15)
+    except Exception as e:
+        raise HTTPException(400, detail=str(e))
+    return {"definition_id": definition_id, "metric_view": fq_mv, "certification_status": cert_status}
 
 
 @app.get("/api/semantic-layer/export-sql")
@@ -4619,9 +5079,13 @@ def genie_generate_questions(req: SuggestQuestionsRequest):
         metric_view_names=req.metric_view_names or None,
     )
 
+    biz_ctx_block = ""
+    if req.business_context and req.business_context.strip():
+        biz_ctx_block = f"\nBUSINESS CONTEXT (provided by the user -- this defines the semantic frame for all analysis):\n{req.business_context.strip()}\n"
+
     if req.purpose == "metric_views":
         prompt = f"""You are a business intelligence strategist. Your task is to generate questions that would drive the creation of reusable KPI metric views.
-
+{biz_ctx_block}
 Below is metadata about available tables and their business context.
 
 {ctx.get('context_text', '')}
@@ -4640,7 +5104,7 @@ Generate exactly {req.count} questions that a BUSINESS LEADER would ask to track
 Return ONLY a JSON array of strings, no other text."""
     else:
         prompt = f"""You are a data analyst helping business users explore their data through a natural language SQL interface (Databricks Genie).
-
+{biz_ctx_block}
 Below is metadata about the available tables, columns, relationships, and metric views.
 
 {ctx.get('context_text', '')}
@@ -4765,6 +5229,10 @@ def genie_generate(req: GenieGenerateRequest):
 @app.get("/api/genie/tasks/{task_id}")
 def genie_task_status(task_id: str):
     """Poll status of a Genie builder task."""
+    cutoff = time.time() - 1800
+    for tid in list(_genie_tasks):
+        if tid != task_id and _genie_tasks.get(tid, {}).get("created", 0) < cutoff:
+            _genie_tasks.pop(tid, None)
     task = _genie_tasks.get(task_id)
     if not task:
         raise HTTPException(404, detail="Task not found")
@@ -4826,6 +5294,121 @@ def _validate_serialized_space(ss: dict) -> list[str]:
     return errors
 
 
+def _collect_valid_identifiers(ss: dict) -> set[str]:
+    """Collect all identifiers (full and short names) from data_sources."""
+    ds = ss.get("data_sources", {})
+    ids: set[str] = set()
+    for t in ds.get("tables", []):
+        ident = t.get("identifier", "")
+        if ident:
+            ids.add(ident)
+            ids.add(ident.split(".")[-1])
+    for m in ds.get("metric_views", []):
+        ident = m.get("identifier", "")
+        if ident:
+            ids.add(ident)
+            ids.add(ident.split(".")[-1])
+    return ids
+
+
+def _build_genie_from_clause(ss: dict) -> str | None:
+    """Build a FROM clause with JOINs from data_sources + join_specs."""
+    ds = ss.get("data_sources", {})
+    table_ids = [t["identifier"] for t in ds.get("tables", []) if t.get("identifier")]
+    table_ids += [m["identifier"] for m in ds.get("metric_views", []) if m.get("identifier")]
+    if not table_ids:
+        return None
+
+    def _quote(ident: str) -> str:
+        return ".".join(f"`{p}`" for p in ident.split("."))
+
+    base = table_ids[0]
+    base_alias = base.split(".")[-1]
+    parts = [f"{_quote(base)} AS `{base_alias}`"]
+
+    join_specs = ss.get("instructions", {}).get("join_specs", [])
+    joined: set[str] = {base}
+    for j in join_specs:
+        left_id = j.get("left", {}).get("identifier", "")
+        right_id = j.get("right", {}).get("identifier", "")
+        join_sql = j.get("sql", [])
+        if not left_id or not right_id or not join_sql:
+            continue
+        if left_id in joined and right_id not in joined:
+            alias = right_id.split(".")[-1]
+            cond = " AND ".join(join_sql)
+            parts.append(f"LEFT JOIN {_quote(right_id)} AS `{alias}` ON {cond}")
+            joined.add(right_id)
+        elif right_id in joined and left_id not in joined:
+            alias = left_id.split(".")[-1]
+            cond = " AND ".join(join_sql)
+            parts.append(f"LEFT JOIN {_quote(left_id)} AS `{alias}` ON {cond}")
+            joined.add(left_id)
+
+    for ident in table_ids:
+        if ident not in joined:
+            alias = ident.split(".")[-1]
+            parts.append(f"LEFT JOIN {_quote(ident)} AS `{alias}` ON 1=1")
+
+    return " ".join(parts)
+
+
+def _validate_sql_expressions(ss: dict, warehouse_id: str) -> dict:
+    """Dry-run example_question_sqls and strip broken ones.
+
+    Snippets (measures/expressions/filters) are only warned about since they
+    are SQL fragments that Genie embeds into its own query context.
+    """
+    inst = ss.get("instructions", {})
+
+    example_sqls = inst.get("example_question_sqls", [])
+    valid_examples = []
+    for ex in example_sqls:
+        sqls = ex.get("sql", [])
+        sql = (sqls[0] if sqls else "").strip().rstrip(";")
+        if not sql:
+            continue
+        try:
+            execute_sql(f"{sql} LIMIT 0", warehouse_id=warehouse_id, timeout=15)
+            valid_examples.append(ex)
+        except Exception:
+            logger.warning("Stripped invalid example_sql: %s", sql[:120])
+    inst["example_question_sqls"] = valid_examples
+
+    return ss
+
+
+def _strip_out_of_scope_sql(ss: dict) -> dict:
+    """Remove SQL entries that reference tables not in data_sources."""
+    valid_ids = _collect_valid_identifiers(ss)
+    if not valid_ids:
+        return ss
+
+    from genie_schema import _extract_table_refs_from_sql
+
+    def _refs_ok(sql_list: list[str]) -> bool:
+        for sql in sql_list:
+            refs = _extract_table_refs_from_sql(sql)
+            for ref in refs:
+                short = ref.split(".")[-1]
+                if ref not in valid_ids and short not in valid_ids:
+                    return False
+        return True
+
+    inst = ss.get("instructions", {})
+    examples = inst.get("example_question_sqls", [])
+    inst["example_question_sqls"] = [
+        ex for ex in examples if _refs_ok(ex.get("sql", []))
+    ]
+
+    snippets = inst.get("sql_snippets") or {}
+    for category in ("measures", "expressions", "filters"):
+        items = snippets.get(category, [])
+        snippets[category] = [it for it in items if _refs_ok(it.get("sql", []))]
+
+    return ss
+
+
 def _validate_data_sources_exist(ss: dict, warehouse_id: str) -> list[str]:
     """Run SELECT 1 FROM identifier LIMIT 1 for each data source; return list of errors."""
     errors = []
@@ -4862,6 +5445,9 @@ def genie_create(req: GenieCreateRequest):
     if exist_errors:
         raise HTTPException(400, detail="Data source validation failed: " + "; ".join(exist_errors))
 
+    transformed = _strip_out_of_scope_sql(transformed)
+    transformed = _validate_sql_expressions(transformed, wh)
+
     def _do_genie_request(space_json):
         body = {
             "title": req.title,
@@ -4882,6 +5468,8 @@ def genie_create(req: GenieCreateRequest):
                 "title": req.title,
                 "updated": False,
             }
+
+    deploy_warnings: list[str] = []
 
     _MAX_GENIE_RETRIES = 5
     last_err: Exception | None = None
@@ -4929,6 +5517,8 @@ def genie_create(req: GenieCreateRequest):
                 logger.info("Tracked genie space %s in genie_spaces table", space_id)
             except Exception as track_err:
                 logger.warning("Failed to track genie space: %s", track_err)
+            if deploy_warnings:
+                result["warnings"] = deploy_warnings
             return result
         except Exception as e:
             last_err = e
@@ -4940,16 +5530,36 @@ def genie_create(req: GenieCreateRequest):
                     "Attempt %d: stripping unknown field '%s'", attempt + 1, bad_field
                 )
                 _strip_field(transformed, bad_field)
+                deploy_warnings.append(f"Stripped unknown API field: {bad_field}")
                 continue
             if "parse export proto" in err_str.lower() or "failed to parse" in err_str.lower():
                 inst = transformed.get("instructions", {})
-                if inst.get("join_specs"):
-                    logger.warning("Attempt %d: stripping join_specs due to proto parse error", attempt + 1)
+                join_specs = inst.get("join_specs", [])
+                if join_specs and len(join_specs) > 1:
+                    removed = join_specs.pop()
+                    left_id = removed.get("left", {}).get("identifier", "?")
+                    right_id = removed.get("right", {}).get("identifier", "?")
+                    logger.warning(
+                        "Attempt %d: removing last join_spec (%s <-> %s) due to proto parse error",
+                        attempt + 1, left_id, right_id,
+                    )
+                    deploy_warnings.append(f"Removed malformed join: {left_id} <-> {right_id}")
+                elif join_specs:
+                    removed = join_specs[0]
+                    left_id = removed.get("left", {}).get("identifier", "?")
+                    right_id = removed.get("right", {}).get("identifier", "?")
                     inst["join_specs"] = []
+                    logger.warning("Attempt %d: removed last remaining join_spec (%s <-> %s)", attempt + 1, left_id, right_id)
+                    deploy_warnings.append(f"All joins removed due to proto errors. Last: {left_id} <-> {right_id}")
+                else:
+                    break
                 continue
             break
     logger.error("Genie create/update failed: %s", last_err)
-    raise HTTPException(500, detail=f"Failed to create/update Genie space: {last_err}")
+    detail = f"Failed to create/update Genie space: {last_err}"
+    if deploy_warnings:
+        detail += f" (warnings: {'; '.join(deploy_warnings)})"
+    raise HTTPException(500, detail=detail)
 
 
 # ---------------------------------------------------------------------------
@@ -5028,11 +5638,28 @@ def _ensure_kpi_table():
                 kpi_id STRING, name STRING, description STRING,
                 formula STRING, target_tables ARRAY<STRING>,
                 domain STRING, source STRING,
-                created_at TIMESTAMP, updated_at TIMESTAMP
+                created_at TIMESTAMP, updated_at TIMESTAMP,
+                validation_status STRING, validation_error STRING
             )
         """, timeout=30)
     except Exception as e:
         logger.warning("Could not create kpi_definitions table: %s", e)
+    try:
+        execute_sql(f"ALTER TABLE {fq('kpi_definitions')} ADD COLUMNS (validation_status STRING, validation_error STRING)", timeout=15)
+    except Exception:
+        pass
+
+
+def _validate_kpi_formula(formula: str, target_tables: list[str]) -> tuple[str, str]:
+    """Dry-run a KPI formula against each target table. Returns (status, error)."""
+    if not formula or not target_tables:
+        return "skipped", ""
+    for table in target_tables:
+        try:
+            execute_sql(f"SELECT {formula} FROM {table} LIMIT 0", timeout=30)
+        except Exception as e:
+            return "invalid", f"Against {table}: {e}"
+    return "valid", ""
 
 
 class KpiRequest(BaseModel):
@@ -5047,6 +5674,8 @@ class KpiSuggestRequest(BaseModel):
     table_identifiers: list[str]
     count: int = 8
     model_endpoint: str = _LLM_MODEL
+    business_context: Optional[str] = None
+    questions: list[str] = []
 
 
 @app.get("/api/kpis")
@@ -5063,13 +5692,16 @@ def create_kpi(req: KpiRequest):
     desc_esc = req.description.replace("'", "''")
     formula_esc = req.formula.replace("'", "''")
     arr = ",".join("'" + t + "'" for t in req.target_tables)
+    v_status, v_error = _validate_kpi_formula(req.formula, req.target_tables)
+    v_error_esc = v_error.replace("'", "''")
     execute_sql(
         f"INSERT INTO {fq('kpi_definitions')} VALUES "
         f"('{kpi_id}', '{name_esc}', '{desc_esc}', '{formula_esc}', "
-        f"ARRAY({arr}), '{req.domain}', 'manual', current_timestamp(), current_timestamp())",
+        f"ARRAY({arr}), '{req.domain}', 'manual', current_timestamp(), current_timestamp(), "
+        f"'{v_status}', '{v_error_esc}')",
         timeout=30,
     )
-    return {"kpi_id": kpi_id, "name": req.name}
+    return {"kpi_id": kpi_id, "name": req.name, "validation_status": v_status, "validation_error": v_error}
 
 
 @app.put("/api/kpis/{kpi_id}")
@@ -5079,13 +5711,16 @@ def update_kpi(kpi_id: str, req: KpiRequest):
     desc_esc = req.description.replace("'", "''")
     formula_esc = req.formula.replace("'", "''")
     arr = ",".join("'" + t + "'" for t in req.target_tables)
+    v_status, v_error = _validate_kpi_formula(req.formula, req.target_tables)
+    v_error_esc = v_error.replace("'", "''")
     execute_sql(
         f"UPDATE {fq('kpi_definitions')} SET name = '{name_esc}', description = '{desc_esc}', "
         f"formula = '{formula_esc}', target_tables = ARRAY({arr}), domain = '{req.domain}', "
+        f"validation_status = '{v_status}', validation_error = '{v_error_esc}', "
         f"updated_at = current_timestamp() WHERE kpi_id = '{kpi_id}'",
         timeout=30,
     )
-    return {"ok": True}
+    return {"ok": True, "validation_status": v_status, "validation_error": v_error}
 
 
 @app.delete("/api/kpis/{kpi_id}")
@@ -5093,6 +5728,98 @@ def delete_kpi(kpi_id: str):
     _ensure_kpi_table()
     execute_sql(f"DELETE FROM {fq('kpi_definitions')} WHERE kpi_id = '{kpi_id}'", timeout=30)
     return {"ok": True}
+
+
+def _build_kpi_context(assembler, table_identifiers: list[str]) -> str:
+    """Build condensed entity-first context for KPI generation.
+
+    Leads with entity types and relationships, then per-entity summarized
+    columns grouped by role (measures, dimensions, identifiers).  Omits full
+    column listings to reduce noise and let the LLM focus on business concepts.
+    """
+    table_meta = assembler._get_table_metadata(table_identifiers)
+    column_meta = assembler._get_column_metadata(table_identifiers)
+    fk_rows = assembler._get_fk_predictions(table_identifiers)
+    entity_rows = assembler._get_ontology_entities(table_identifiers)
+    entity_rels = assembler._get_entity_relationships(table_identifiers)
+
+    col_by_table: dict[str, list] = {}
+    for c in column_meta:
+        col_by_table.setdefault(c["table_name"], []).append(c)
+
+    entity_map: dict[str, dict] = {}
+    for e in entity_rows:
+        src = e.get("source_tables") or []
+        if isinstance(src, str):
+            src = [src]
+        for t in src:
+            entity_map[t] = e
+            entity_map[t.split(".")[-1]] = e
+
+    parts: list[str] = []
+
+    # Entity overview first
+    if entity_rows:
+        parts.append("ENTITIES (the core business objects in this data):")
+        for e in entity_rows:
+            desc = e.get("description", "")
+            parts.append(f"  {e['entity_type']}: {desc}" if desc else f"  {e['entity_type']}")
+
+    if entity_rels:
+        parts.append("\nENTITY RELATIONSHIPS:")
+        for r in entity_rels:
+            card = r.get("cardinality", "")
+            parts.append(f"  {r.get('src_type', '')} --{r.get('relationship', '')}--> {r.get('dst_type', '')}" + (f" ({card})" if card else ""))
+
+    # Per-table: domain + summarized columns by role
+    measure_keywords = {"amount", "price", "cost", "revenue", "total", "charge", "fee", "balance", "salary", "quantity", "count", "sum", "rate", "percent", "score", "value"}
+    temporal_types = {"DATE", "TIMESTAMP", "DATETIME"}
+    id_keywords = {"_id", "id", "key", "code", "number", "num", "no"}
+
+    for t in table_meta:
+        tname = t["table_name"]
+        ent = entity_map.get(tname) or entity_map.get(tname.split(".")[-1])
+        header = f"\n{tname}"
+        if t.get("domain"):
+            header += f" (Domain: {t['domain']}/{t.get('subdomain', '')})"
+        if ent:
+            header += f" Entity: {ent['entity_type']}"
+        if t.get("comment"):
+            header += f" -- {t['comment']}"
+        parts.append(header)
+
+        cols = col_by_table.get(tname, [])
+        measures, dimensions, identifiers = [], [], []
+        for c in cols:
+            cn = c["column_name"].lower()
+            dt = (c.get("data_type") or "").upper()
+            comment = c.get("comment") or ""
+            label = c["column_name"]
+            if dt:
+                label += f" {dt}"
+            if comment:
+                label += f" -- {comment}"
+            if any(kw in cn for kw in id_keywords):
+                identifiers.append(label)
+            elif dt in temporal_types or "date" in cn or "time" in cn:
+                dimensions.append(label)
+            elif any(kw in cn for kw in measure_keywords) or dt in ("DECIMAL", "DOUBLE", "FLOAT", "INT", "BIGINT", "SMALLINT"):
+                measures.append(label)
+            else:
+                dimensions.append(label)
+        if identifiers:
+            parts.append(f"  Identifiers: {'; '.join(identifiers[:8])}")
+        if measures:
+            parts.append(f"  Measure columns: {'; '.join(measures[:12])}")
+        if dimensions:
+            parts.append(f"  Dimension columns: {'; '.join(dimensions[:12])}")
+
+    if fk_rows:
+        parts.append("\nFOREIGN KEY RELATIONSHIPS:")
+        for fk in fk_rows:
+            parts.append(f"  {fk['src_table']}.{fk['src_column']} -> {fk['dst_table']}.{fk['dst_column']}")
+
+    return "\n".join(parts)
 
 
 @app.post("/api/kpis/suggest")
@@ -5105,23 +5832,33 @@ def suggest_kpis(req: KpiSuggestRequest):
 
     ws = get_workspace_client()
     assembler = GenieContextAssembler(ws, wh, CATALOG, SCHEMA)
-    ctx = assembler.assemble(req.table_identifiers, questions=None)
+    kpi_context = _build_kpi_context(assembler, req.table_identifiers)
+
+    biz_ctx_block = ""
+    if req.business_context and req.business_context.strip():
+        biz_ctx_block = f"\nBUSINESS CONTEXT (provided by the user -- this defines the semantic frame for all analysis):\n{req.business_context.strip()}\n"
+
+    questions_block = ""
+    if req.questions:
+        q_list = "\n".join(f"  - {q}" for q in req.questions)
+        questions_block = f"\nBUSINESS QUESTIONS (the KPIs you generate should help answer these):\n{q_list}\n"
 
     prompt = f"""You are a business intelligence architect. Given the data model below, suggest {req.count} concrete KPIs that would bridge the semantic gap between raw data and business meaning.
-
-{ctx.get('context_text', '')}
-
+{biz_ctx_block}
+{kpi_context}
+{questions_block}
 Rules:
 - Ground each KPI in the ENTITY TYPES described in the metadata -- if there are Patients, Encounters, Claims, Orders, etc., the KPIs should measure aspects of those specific entities
 - Use the RELATIONSHIPS between entities to suggest cross-entity KPIs (e.g., encounters per patient, revenue per provider, claims per policy)
 - Each KPI's formula MUST reference only columns that exist in the provided table metadata -- do not invent columns
 - Align KPIs with the domain/subdomain classifications shown in the metadata
+- If BUSINESS QUESTIONS are provided, prioritize KPIs that directly support answering those questions
 - Think like a business user who works WITH the data but doesn't know the schema -- KPIs should be framed in business language
 
 For each KPI provide:
 - name: concise business name (e.g. "Monthly Revenue Growth Rate")
 - description: 1-2 sentences explaining what it measures and why it matters
-- formula: SQL expression using fully qualified table.column references (e.g. SUM(orders.total_amount))
+- formula: SQL expression using bare column names only -- NO catalog, schema, or table prefixes (e.g. SUM(total_amount), not SUM(schema.table.total_amount)). The source table is specified separately.
 - domain: business domain it belongs to (e.g. sales, finance, operations)
 
 Return ONLY a JSON array of objects with keys: name, description, formula, domain. No other text."""
@@ -5133,6 +5870,11 @@ Return ONLY a JSON array of objects with keys: name, description, formula, domai
         content = content.split("\n", 1)[1] if "\n" in content else content[3:]
         content = content.rsplit("```", 1)[0]
     kpis = json.loads(content)
+    for kpi in kpis:
+        tables = req.table_identifiers[:1] if req.table_identifiers else []
+        v_status, v_error = _validate_kpi_formula(kpi.get("formula", ""), tables)
+        kpi["validation_status"] = v_status
+        kpi["validation_error"] = v_error
     return {"kpis": kpis[:req.count]}
 
 
@@ -5282,6 +6024,10 @@ def agent_deep_submit(req: AgentChatRequest):
 @app.get("/api/agent/deep/task/{task_id}")
 def agent_deep_poll(task_id: str):
     """Poll a deep analysis task for status/progress/result."""
+    cutoff = time.time() - 600
+    for tid in list(_deep_tasks):
+        if tid != task_id and _deep_tasks.get(tid, {}).get("created", 0) < cutoff:
+            _deep_tasks.pop(tid, None)
     task = _deep_tasks.get(task_id)
     if not task:
         raise HTTPException(404, detail="Task not found")

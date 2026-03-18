@@ -30,6 +30,7 @@ export default function SemanticLayer() {
   const [activeProfileId, setActiveProfileId] = useState('')
   const [profileName, setProfileName] = useState('')
   const [questionsText, setQuestionsText] = useState('')
+  const [businessContext, setBusinessContext] = useState('')
 
   // Generation
   const [taskId, setTaskId] = useState(null)
@@ -160,10 +161,11 @@ export default function SemanticLayer() {
   // --- Profile actions ---
   const selectProfile = (pid) => {
     setActiveProfileId(pid)
-    if (!pid) { setProfileName(''); setQuestionsText(''); return }
+    if (!pid) { setProfileName(''); setQuestionsText(''); setBusinessContext(''); return }
     const p = profiles.find(x => x.profile_id === pid)
     if (!p) return
     setProfileName(p.profile_name || '')
+    setBusinessContext(p.business_context || '')
     try {
       const qs = JSON.parse(p.questions || '[]')
       setQuestionsText(qs.join('\n'))
@@ -182,7 +184,7 @@ export default function SemanticLayer() {
       const fqTables = selectedTables.map(t => t.includes('.') ? t : `${selectedCatalog}.${selectedSchema}.${t}`)
       const res = await fetch('/api/semantic-layer/profiles', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ profile_name: profileName, questions: lines, table_patterns: fqTables }),
+        body: JSON.stringify({ profile_name: profileName, questions: lines, table_patterns: fqTables, business_context: businessContext || undefined }),
       })
       const data = await res.json()
       if (!res.ok) { setError(data.detail || 'Failed to save profile'); setLoading(false); return }
@@ -201,6 +203,7 @@ export default function SemanticLayer() {
       setActiveProfileId('')
       setProfileName('')
       setQuestionsText('')
+      setBusinessContext('')
       loadProfiles()
     } catch (e) { setError(e.message) }
     setLoading(false)
@@ -220,7 +223,7 @@ export default function SemanticLayer() {
       const fqTables = selectedTables.map(t => t.includes('.') ? t : `${selectedCatalog}.${selectedSchema}.${t}`)
       const res = await fetch('/api/genie/generate-questions', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ table_identifiers: fqTables, count: 6, purpose: 'metric_views' }),
+        body: JSON.stringify({ table_identifiers: fqTables, count: 6, purpose: 'metric_views', business_context: businessContext || undefined }),
       })
       const data = await res.json()
       if (!res.ok) { setError(data.detail || 'Failed to suggest questions'); setSuggestQLoading(false); return }
@@ -259,8 +262,9 @@ export default function SemanticLayer() {
     setKpiSuggesting(true)
     try {
       const fqTables = selectedTables.map(t => t.includes('.') ? t : `${selectedCatalog}.${selectedSchema}.${t}`)
+      const qLines = questionsText.split('\n').filter(l => l.trim())
       const res = await fetch('/api/kpis/suggest', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ table_identifiers: fqTables }) })
+        body: JSON.stringify({ table_identifiers: fqTables, business_context: businessContext || undefined, questions: qLines.length ? qLines : undefined }) })
       const j = await res.json()
       for (const k of (j.kpis || [])) {
         await fetch('/api/kpis', { method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -281,6 +285,7 @@ export default function SemanticLayer() {
       const body = {
         tables: fqTables, questions: lines, mode,
         catalog_name: selectedCatalog, schema_name: selectedSchema,
+        business_context: businessContext || undefined,
       }
       if (selectedProjectId) body.project_id = selectedProjectId
       const res = await fetch('/api/semantic-layer/generate', {
@@ -584,6 +589,10 @@ export default function SemanticLayer() {
               placeholder="e.g. Sales Analytics Questions" className={input} />
           </div>
         </div>
+        <label className={label}>Business Context <span className="text-gray-400 font-normal">(optional -- describe your industry, strategic priorities, or key terminology to steer all generation)</span></label>
+        <textarea value={businessContext} onChange={e => setBusinessContext(e.target.value)}
+          placeholder={"e.g. We are a B2B SaaS company focused on enterprise sales. Key metrics: ARR, net revenue retention, pipeline velocity. Our fiscal year starts in February."}
+          className={`${input} h-20 mb-4`} />
         <label className={label}>Business Questions (one per line)</label>
         <textarea value={questionsText} onChange={e => setQuestionsText(e.target.value)}
           placeholder={"What was total revenue by region last quarter?\nHow many orders per month by product category?\nWhat is the average deal size by sales rep?"}

@@ -45,13 +45,16 @@ def _emit(stage: str, message: str, agent: str = ""):
         q.put({"stage": stage, "message": message})
 
 
+_cache_lock = threading.Lock()
 _cached_llm = None
 
 
 def _llm():
     global _cached_llm
     if _cached_llm is None:
-        _cached_llm = ChatDatabricks(endpoint=MODEL, temperature=0, max_retries=3)
+        with _cache_lock:
+            if _cached_llm is None:
+                _cached_llm = ChatDatabricks(endpoint=MODEL, temperature=0, max_retries=3)
     return _cached_llm
 
 
@@ -61,7 +64,9 @@ _cached_routing_llm = None
 def _routing_llm():
     global _cached_routing_llm
     if _cached_routing_llm is None:
-        _cached_routing_llm = ChatDatabricks(endpoint=ROUTING_MODEL, temperature=0, max_retries=3)
+        with _cache_lock:
+            if _cached_routing_llm is None:
+                _cached_routing_llm = ChatDatabricks(endpoint=ROUTING_MODEL, temperature=0, max_retries=3)
     return _cached_routing_llm
 
 
@@ -70,17 +75,19 @@ _cached_analyst_agents: dict = {}
 
 
 def _get_retrieval_agent(mode: str):
-    if mode not in _cached_retrieval_agents:
-        tools = GRAPHRAG_TOOLS if mode == "graphrag" else BASELINE_TOOLS
-        _cached_retrieval_agents[mode] = create_react_agent(_llm(), tools)
-    return _cached_retrieval_agents[mode]
+    with _cache_lock:
+        if mode not in _cached_retrieval_agents:
+            tools = GRAPHRAG_TOOLS if mode == "graphrag" else BASELINE_TOOLS
+            _cached_retrieval_agents[mode] = create_react_agent(_llm(), tools)
+        return _cached_retrieval_agents[mode]
 
 
 def _get_analyst_agent(mode: str):
-    if mode not in _cached_analyst_agents:
-        followup_tools = [execute_metadata_sql] if mode == "graphrag" else [execute_baseline_sql]
-        _cached_analyst_agents[mode] = create_react_agent(_llm(), followup_tools)
-    return _cached_analyst_agents[mode]
+    with _cache_lock:
+        if mode not in _cached_analyst_agents:
+            followup_tools = [execute_metadata_sql] if mode == "graphrag" else [execute_baseline_sql]
+            _cached_analyst_agents[mode] = create_react_agent(_llm(), followup_tools)
+        return _cached_analyst_agents[mode]
 
 
 # ---------------------------------------------------------------------------

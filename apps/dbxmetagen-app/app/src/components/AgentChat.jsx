@@ -6,6 +6,14 @@ import GovernanceExplorer from './GovernanceExplorer'
 import ImpactAnalysis from './ImpactAnalysis'
 
 const GraphSubgraph = lazy(() => import('./GraphSubgraph'))
+const GraphExplorer = lazy(() => import('./GraphExplorer'))
+const VectorSearch = lazy(() => import('./VectorSearch'))
+
+const SUB_TABS = [
+  { id: 'chat',   label: 'Chat' },
+  { id: 'graph',  label: 'Graph Explorer' },
+  { id: 'search', label: 'Search' },
+]
 
 const TOOL_DESCRIPTIONS = {
   search_metadata: 'Semantic search over indexed metadata documents',
@@ -258,6 +266,7 @@ function ToolsPanel() {
 }
 
 export default function AgentChat() {
+  const [subTab, setSubTab] = useState('chat')
   const [messages, setMessages] = useState([])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
@@ -381,6 +390,27 @@ export default function AgentChat() {
 
   return (
     <div className="min-h-[calc(100vh-12rem)]">
+      {/* Sub-tab bar: Chat | Graph Explorer | Search */}
+      <div className="flex items-center gap-1 mb-3 border-b border-slate-200 dark:border-dbx-navy-400/40">
+        {SUB_TABS.map(t => (
+          <button key={t.id} onClick={() => setSubTab(t.id)}
+            className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px ${
+              subTab === t.id
+                ? 'border-dbx-teal text-dbx-teal dark:text-teal-300'
+                : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'
+            }`}>{t.label}</button>
+        ))}
+      </div>
+
+      {subTab === 'graph' ? (
+        <Suspense fallback={<div className="text-sm text-slate-400 p-8">Loading Graph Explorer...</div>}>
+          <GraphExplorer />
+        </Suspense>
+      ) : subTab === 'search' ? (
+        <Suspense fallback={<div className="text-sm text-slate-400 p-8">Loading Search...</div>}>
+          <VectorSearch />
+        </Suspense>
+      ) : (<>
       {/* Mode selector -- segmented control */}
       <div className="flex flex-wrap bg-dbx-oat dark:bg-dbx-navy-650 rounded-xl p-1 mb-3 shadow-inner-soft">
         {Object.entries(MODE_CONFIG).filter(([key]) => VISIBLE_MODES.has(key)).map(([key, c]) => (
@@ -518,6 +548,7 @@ export default function AgentChat() {
       </div>
       </div>
       )}
+      </>)}
     </div>
   )
 }

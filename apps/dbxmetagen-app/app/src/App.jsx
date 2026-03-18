@@ -5,13 +5,11 @@ import MetadataReview from './components/MetadataReview'
 import Coverage from './components/Coverage'
 import SemanticLayer from './components/SemanticLayer'
 import GenieBuilder from './components/GenieBuilder'
-import VectorSearch from './components/VectorSearch'
 import AnalystChat from './components/AnalystChat'
-import GraphExplorer from './components/GraphExplorer'
 const COMPONENTS = {
   agent: AgentChat, coverage: Coverage, jobs: BatchJobs, metadata: MetadataReview,
-  semantic: SemanticLayer, genie: GenieBuilder, vector: VectorSearch,
-  analyst: AnalystChat, graph: GraphExplorer,
+  semantic: SemanticLayer, genie: GenieBuilder,
+  analyst: AnalystChat,
 }
 
 const NAV_CAT_COLORS = {
@@ -23,8 +21,7 @@ const NAV_CAT_COLORS = {
 const TAB_ACCENT = {
   jobs: 'border-t-dbx-lava', semantic: 'border-t-dbx-lava',
   metadata: 'border-t-dbx-sky', coverage: 'border-t-dbx-sky',
-  agent: 'border-t-dbx-teal', vector: 'border-t-dbx-teal', genie: 'border-t-dbx-teal',
-  graph: 'border-t-dbx-violet',
+  agent: 'border-t-dbx-teal', genie: 'border-t-dbx-teal',
 }
 
 const NAV_STRUCTURE = [
@@ -45,10 +42,8 @@ const NAV_STRUCTURE = [
   {
     category: 'Explore', beta: true,
     items: [
-      { id: 'agent',      label: 'Agent',           desc: 'Chat with the metadata agent' },
-      { id: 'graph',      label: 'Graph Explorer',   desc: 'Traverse the knowledge graph interactively' },
+      { id: 'agent',      label: 'Agent',           desc: 'Chat, graph explorer, and semantic search' },
       // { id: 'analyst',    label: 'SQL Analyst Comparison', desc: 'Demonstrate semantic layer value with side-by-side agents' },
-      { id: 'vector',     label: 'Search',           desc: 'Semantic search over metadata' },
       { id: 'genie',     label: 'Build Genie Space', desc: 'Build natural-language SQL spaces' },
     ],
   },

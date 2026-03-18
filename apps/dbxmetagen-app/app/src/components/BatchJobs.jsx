@@ -161,13 +161,9 @@ export default function BatchJobs({ onNavigate }) {
 
   const [settings, setSettings] = useState({
     model: 'databricks-claude-sonnet-4-6',
-    temperature: 0.1,
     sample_size: 5,
-    add_metadata: true,
     use_kb_comments: false,
     include_lineage: false,
-    include_deterministic_pi: true,
-    tag_none_fields: false,
   })
   const setSetting = (key, value) => setSettings(prev => ({ ...prev, [key]: value }))
 
@@ -178,15 +174,12 @@ export default function BatchJobs({ onNavigate }) {
   const [pickerSelected, setPickerSelected] = useState([])
 
   const buildExtraParams = () => {
-    const p = {}
-    if (settings.model !== 'databricks-claude-sonnet-4-6') p.model = settings.model
-    if (settings.temperature !== 0.1) p.temperature = String(settings.temperature)
-    if (settings.sample_size !== 5) p.sample_size = String(settings.sample_size)
-    if (!settings.add_metadata) p.add_metadata = 'false'
+    const p = {
+      model: settings.model,
+      sample_size: String(settings.sample_size),
+      include_lineage: String(settings.include_lineage),
+    }
     if (settings.use_kb_comments) p.use_kb_comments = 'true'
-    if (settings.include_lineage) p.include_lineage = 'true'
-    if (!settings.include_deterministic_pi) p.include_deterministic_pi = 'false'
-    if (settings.tag_none_fields) p.tag_none_fields = 'true'
     return p
   }
 
@@ -207,13 +200,9 @@ export default function BatchJobs({ onNavigate }) {
         setSettings(prev => ({
           ...prev,
           model: cfg.model ?? prev.model,
-          temperature: cfg.temperature ?? prev.temperature,
           sample_size: cfg.sample_size ?? prev.sample_size,
-          add_metadata: cfg.add_metadata ?? prev.add_metadata,
           use_kb_comments: cfg.use_kb_comments ?? prev.use_kb_comments,
           include_lineage: cfg.include_lineage ?? prev.include_lineage,
-          include_deterministic_pi: cfg.include_deterministic_pi ?? prev.include_deterministic_pi,
-          tag_none_fields: cfg.tag_none_fields ?? prev.tag_none_fields,
         }))
         setApplyDdl(cfg.apply_ddl ?? false)
       }
@@ -375,13 +364,10 @@ export default function BatchJobs({ onNavigate }) {
             <span className="section-title">Processing Settings</span>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-3">
               <div>
-                <label className="text-xs text-slate-500 dark:text-slate-400 mb-1 block">Model Endpoint</label>
-                <input value={settings.model} onChange={e => setSetting('model', e.target.value)} className="input-base !text-xs" />
-              </div>
-              <div>
-                <label className="text-xs text-slate-500 dark:text-slate-400 mb-1 block">Temperature</label>
-                <input type="number" step="0.05" min="0" max="2" value={settings.temperature}
-                  onChange={e => setSetting('temperature', parseFloat(e.target.value) || 0)} className="input-base !text-xs" />
+                <label className="text-xs text-slate-500 dark:text-slate-400 mb-1 block">Model</label>
+                <select value={settings.model} onChange={e => setSetting('model', e.target.value)} className="select-base !text-xs">
+                  <option value="databricks-claude-sonnet-4-6">Claude Sonnet 4.6</option>
+                </select>
               </div>
               <div>
                 <label className="text-xs text-slate-500 dark:text-slate-400 mb-1 block">Sample Size</label>
@@ -390,26 +376,14 @@ export default function BatchJobs({ onNavigate }) {
               </div>
               <div className="flex flex-col gap-2 pt-1">
                 <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer">
-                  <input type="checkbox" checked={settings.add_metadata} onChange={e => setSetting('add_metadata', e.target.checked)} />
-                  Include metadata
+                  <input type="checkbox" checked={settings.include_lineage} onChange={e => setSetting('include_lineage', e.target.checked)} />
+                  Include lineage
                 </label>
                 <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer">
                   <input type="checkbox" checked={settings.use_kb_comments} onChange={e => setSetting('use_kb_comments', e.target.checked)} />
                   Use KB comments
                 </label>
               </div>
-              <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer">
-                <input type="checkbox" checked={settings.include_lineage} onChange={e => setSetting('include_lineage', e.target.checked)} />
-                Include lineage
-              </label>
-              <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer">
-                <input type="checkbox" checked={settings.include_deterministic_pi} onChange={e => setSetting('include_deterministic_pi', e.target.checked)} />
-                Deterministic PI (Presidio)
-              </label>
-              <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer">
-                <input type="checkbox" checked={settings.tag_none_fields} onChange={e => setSetting('tag_none_fields', e.target.checked)} />
-                Tag "None" fields
-              </label>
             </div>
           </div>
         </details>
