@@ -6,11 +6,15 @@ with aggregated column metadata from comment and PI classification runs.
 """
 
 import logging
+import time
 from dataclasses import dataclass
 from typing import Dict, Any, List
 from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql import functions as F
 from pyspark.sql.window import Window
+
+_MERGE_MAX_RETRIES = 3
+_MERGE_BACKOFF_SECONDS = [5, 15, 45]
 
 logger = logging.getLogger(__name__)
 
@@ -176,7 +180,6 @@ class ColumnKnowledgeBaseBuilder:
     def build_staged_updates(self) -> DataFrame:
         """Build the staged updates DataFrame by joining all metadata types."""
         source_df = self.read_source_data()
-        source_df.cache()
         
         all_columns = self.get_all_columns_with_timestamps(source_df)
         column_comments = self.extract_column_comments(source_df)
@@ -213,8 +216,6 @@ class ColumnKnowledgeBaseBuilder:
             .withColumnRenamed("first_seen", "created_at")
             .withColumnRenamed("last_updated", "updated_at")
         )
-        
-        source_df.unpersist()
         
         return result.select(
             "column_id", "table_name", "catalog", 
@@ -259,7 +260,18 @@ class ColumnKnowledgeBaseBuilder:
         )
         """
         
-        self.spark.sql(merge_sql)
+        for attempt in range(_MERGE_MAX_RETRIES + 1):
+            try:
+                self.spark.sql(merge_sql)
+                break
+            except Exception as e:
+                err = str(e)
+                if attempt < _MERGE_MAX_RETRIES and ("Concurrent" in err or "DELTA_CONCURRENT" in err):
+                    wait = _MERGE_BACKOFF_SECONDS[attempt]
+                    logger.warning("MERGE conflict (attempt %d), retrying in %ds: %s", attempt + 1, wait, err[:200])
+                    time.sleep(wait)
+                else:
+                    raise
         
         count = self.spark.sql(
             f"SELECT COUNT(*) as cnt FROM {self.config.fully_qualified_target}"

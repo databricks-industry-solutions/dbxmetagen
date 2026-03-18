@@ -1,0 +1,155 @@
+# Parallel Metadata Generation + Knowledge Base Build (Serverless)
+#
+# Runs comments first, then PI and domain in parallel, then builds the table
+# and column knowledge bases in parallel -- all on serverless compute.
+# No GraphFrames / JVM dependencies; build_knowledge_base uses only Spark SQL.
+
+resources:
+  jobs:
+    metadata_parallel_serverless_job:
+      name: "${var.app_name}_parallel_serverless_job"
+      max_concurrent_runs: 1
+
+      permissions:
+        - service_principal_name: ${resources.apps.dbxmetagen_app.service_principal_client_id}
+          level: CAN_MANAGE_RUN
+
+      email_notifications:
+        on_failure:
+          - ${var.current_user}
+
+      parameters:
+        - name: table_names
+          default: ${var.job_table_names}
+        - name: catalog_name
+          default: ${var.catalog_name}
+        - name: schema_name
+          default: ${var.schema_name}
+        - name: apply_ddl
+          default: "false"
+        - name: current_user
+          default: ${var.current_user}
+        - name: permission_groups
+          default: ${var.permission_groups}
+        - name: permission_users
+          default: ${var.permission_users}
+        - name: run_id
+          default: "{{job.run_id}}"
+        - name: include_previously_failed_tables
+          default: "false"
+        - name: use_kb_comments
+          default: "false"
+        - name: ontology_bundle
+          default: ""
+        - name: domain_config_path
+          default: ""
+        - name: sample_size
+          default: "5"
+        - name: include_lineage
+          default: "false"
+        - name: model
+          default: "databricks-claude-sonnet-4-6"
+
+      tasks:
+        - task_key: generate_comments
+          environment_key: default
+          notebook_task:
+            notebook_path: ../../notebooks/generate_metadata.py
+            base_parameters:
+              mode: "comment"
+              table_names: "{{job.parameters.table_names}}"
+              catalog_name: "{{job.parameters.catalog_name}}"
+              schema_name: "{{job.parameters.schema_name}}"
+              apply_ddl: "{{job.parameters.apply_ddl}}"
+              current_user: "{{job.parameters.current_user}}"
+              permission_groups: "{{job.parameters.permission_groups}}"
+              permission_users: "{{job.parameters.permission_users}}"
+              run_id: "{{job.parameters.run_id}}"
+              cleanup_control_table: "false"
+              include_previously_failed_tables: "{{job.parameters.include_previously_failed_tables}}"
+              ontology_bundle: "{{job.parameters.ontology_bundle}}"
+              domain_config_path: "{{job.parameters.domain_config_path}}"
+              sample_size: "{{job.parameters.sample_size}}"
+              include_lineage: "{{job.parameters.include_lineage}}"
+              model: "{{job.parameters.model}}"
+
+        - task_key: generate_pi
+          depends_on:
+            - task_key: generate_comments
+          environment_key: default
+          notebook_task:
+            notebook_path: ../../notebooks/generate_metadata.py
+            base_parameters:
+              mode: "pi"
+              table_names: "{{job.parameters.table_names}}"
+              catalog_name: "{{job.parameters.catalog_name}}"
+              schema_name: "{{job.parameters.schema_name}}"
+              apply_ddl: "{{job.parameters.apply_ddl}}"
+              current_user: "{{job.parameters.current_user}}"
+              permission_groups: "{{job.parameters.permission_groups}}"
+              permission_users: "{{job.parameters.permission_users}}"
+              run_id: "{{job.parameters.run_id}}"
+              cleanup_control_table: "false"
+              include_previously_failed_tables: "{{job.parameters.include_previously_failed_tables}}"
+              include_existing_table_comment: "true"
+              use_kb_comments: "{{job.parameters.use_kb_comments}}"
+              ontology_bundle: "{{job.parameters.ontology_bundle}}"
+              domain_config_path: "{{job.parameters.domain_config_path}}"
+              sample_size: "{{job.parameters.sample_size}}"
+              include_lineage: "{{job.parameters.include_lineage}}"
+              model: "{{job.parameters.model}}"
+
+        - task_key: generate_domain
+          depends_on:
+            - task_key: generate_comments
+          environment_key: default
+          notebook_task:
+            notebook_path: ../../notebooks/generate_metadata.py
+            base_parameters:
+              mode: "domain"
+              table_names: "{{job.parameters.table_names}}"
+              catalog_name: "{{job.parameters.catalog_name}}"
+              schema_name: "{{job.parameters.schema_name}}"
+              apply_ddl: "{{job.parameters.apply_ddl}}"
+              current_user: "{{job.parameters.current_user}}"
+              permission_groups: "{{job.parameters.permission_groups}}"
+              permission_users: "{{job.parameters.permission_users}}"
+              run_id: "{{job.parameters.run_id}}"
+              cleanup_control_table: "false"
+              include_previously_failed_tables: "{{job.parameters.include_previously_failed_tables}}"
+              include_existing_table_comment: "true"
+              use_kb_comments: "{{job.parameters.use_kb_comments}}"
+              ontology_bundle: "{{job.parameters.ontology_bundle}}"
+              domain_config_path: "{{job.parameters.domain_config_path}}"
+              sample_size: "{{job.parameters.sample_size}}"
+              include_lineage: "{{job.parameters.include_lineage}}"
+              model: "{{job.parameters.model}}"
+
+        - task_key: build_knowledge_base
+          depends_on:
+            - task_key: generate_pi
+            - task_key: generate_domain
+          environment_key: default
+          notebook_task:
+            notebook_path: ../../notebooks/build_knowledge_base.py
+            base_parameters:
+              catalog_name: "{{job.parameters.catalog_name}}"
+              schema_name: "{{job.parameters.schema_name}}"
+
+        - task_key: build_column_kb
+          depends_on:
+            - task_key: generate_pi
+            - task_key: generate_domain
+          environment_key: default
+          notebook_task:
+            notebook_path: ../../notebooks/build_column_kb.py
+            base_parameters:
+              catalog_name: "{{job.parameters.catalog_name}}"
+              schema_name: "{{job.parameters.schema_name}}"
+
+      environments:
+        - environment_key: default
+          spec:
+            client: "1"
+            dependencies:
+              - ../../dist/*.whl

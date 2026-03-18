@@ -112,7 +112,7 @@ class SnippetMeasure(BaseModel):
     sql: list[str]
     display_name: Optional[str] = None
     synonyms: Optional[list[str]] = None
-    description: Optional[str] = None
+    description: Optional[str] = Field(default=None, exclude=True)
 
 
 class SnippetFilter(BaseModel):
@@ -127,7 +127,7 @@ class SnippetExpression(BaseModel):
     sql: list[str]
     display_name: Optional[str] = None
     synonyms: Optional[list[str]] = None
-    description: Optional[str] = None
+    description: Optional[str] = Field(default=None, exclude=True)
 
 
 class SqlSnippets(BaseModel):

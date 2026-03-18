@@ -14,10 +14,14 @@ import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+from conftest import install_processing_stubs, uninstall_processing_stubs
+
+_saved = install_processing_stubs()
 from dbxmetagen.processing import (
     get_protected_classification_for_table,
     determine_table_classification,
 )
+uninstall_processing_stubs(_saved)
 
 
 class TestGetProtectedClassificationForTable:

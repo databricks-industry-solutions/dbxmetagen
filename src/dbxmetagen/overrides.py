@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import logging
 from functools import reduce
-from typing import List, Dict, TYPE_CHECKING
+from typing import List, TYPE_CHECKING
 
 import pandas as pd
 
@@ -10,6 +11,8 @@ if TYPE_CHECKING:
     from pyspark.sql.column import Column
 
 from dbxmetagen.config import MetadataConfig
+
+logger = logging.getLogger(__name__)
 
 
 def override_metadata_from_csv(
@@ -28,10 +31,17 @@ def override_metadata_from_csv(
     """
     import os
 
-    # Check if CSV file exists - if not, return DataFrame unchanged
+    resolved_path = os.path.abspath(csv_path) if csv_path else None
+    logger.info(
+        "Override check: allow_manual_override=True, mode=%s, csv_path='%s', resolved='%s'",
+        config.mode, csv_path, resolved_path,
+    )
+
     if not csv_path or not os.path.exists(csv_path):
-        print(
-            f"Override CSV file not found or empty path: {csv_path}, skipping overrides"
+        logger.warning(
+            "Override CSV not found at '%s' (resolved: '%s') -- skipping overrides. "
+            "Ensure the file exists at this path relative to the notebook working directory.",
+            csv_path, resolved_path,
         )
         return df
 
@@ -39,20 +49,16 @@ def override_metadata_from_csv(
     csv_df = csv_df.where(pd.notna(csv_df), None)
 
     # CRITICAL SERVERLESS FIX: Ensure all CSV columns are treated as strings to prevent type inference
-    # Convert all columns to string type to prevent Spark Connect from inferring numeric types
     csv_df = csv_df.astype(str)
-    # Replace 'None' strings back to actual None for proper null handling
     csv_df = csv_df.replace("None", None)
 
     csv_dict = csv_df.to_dict("records")
     from pyspark.sql import SparkSession
     spark = SparkSession.builder.getOrCreate()
 
-    # Create DataFrame with explicit string schema to prevent type inference issues
     if len(csv_df) > 0:
         from pyspark.sql.types import StructType, StructField, StringType
 
-        # Create explicit string schema for all columns
         schema = StructType(
             [StructField(col_name, StringType(), True) for col_name in csv_df.columns]
         )
@@ -60,9 +66,10 @@ def override_metadata_from_csv(
     else:
         csv_spark_df = spark.createDataFrame(csv_df)
     nrows = csv_spark_df.count()
-    print("Number of rows being overridden...", nrows)
+    logger.info("Override CSV loaded: %d rows from '%s'", nrows, csv_path)
 
     if nrows == 0:
+        logger.info("No override rows to apply, returning DataFrame unchanged.")
         return df
     elif nrows < 10000:
         df = apply_overrides_with_loop(df, csv_dict, config)
@@ -73,11 +80,18 @@ def override_metadata_from_csv(
     return df
 
 
+def _is_blank(val):
+    return val is None or (isinstance(val, float) and pd.isna(val))
+
+
 def apply_overrides_with_loop(df, csv_dict, config):
     if not csv_dict:
         return df
 
     from pyspark.sql.functions import col, lit, when
+
+    applied_count = 0
+    skipped_count = 0
 
     if config.mode == "pi":
         for row in csv_dict:
@@ -85,52 +99,51 @@ def apply_overrides_with_loop(df, csv_dict, config):
             schema = row.get("schema")
             table = row.get("table")
             column = row.get("column")
-            classification_override = row["classification"]
-            type_override = row["type"]
+            classification_override = row.get("classification")
+            type_override = row.get("type")
 
             if not column:
+                skipped_count += 1
+                logger.info("PI override: skipping row with no column specified")
                 continue
 
-            # CRITICAL SERVERLESS FIX: Handle null/blank overrides properly
-            # Skip if both overrides are None/null (no override needed)
-            if (
-                classification_override is None or pd.isna(classification_override)
-            ) and (type_override is None or pd.isna(type_override)):
-                print(f"Skipping null/blank overrides for column: {column}")
+            if _is_blank(classification_override) and _is_blank(type_override):
+                skipped_count += 1
+                logger.info("PI override: skipping null/blank overrides for column '%s'", column)
                 continue
 
-            # Convert to strings to prevent type inference issues
-            if classification_override is not None and not pd.isna(
-                classification_override
-            ):
+            if not _is_blank(classification_override):
                 classification_override = str(classification_override)
-            if type_override is not None and not pd.isna(type_override):
+            if not _is_blank(type_override):
                 type_override = str(type_override)
 
             try:
                 condition = build_condition(df, table, column, schema, catalog)
 
-                # Apply classification override only if not null
-                if classification_override is not None and not pd.isna(
-                    classification_override
-                ):
+                if not _is_blank(classification_override):
                     df = df.withColumn(
                         "classification",
-                        when(
-                            condition, lit(classification_override).cast("string")
-                        ).otherwise(col("classification")),
+                        when(condition, lit(classification_override).cast("string")).otherwise(col("classification")),
+                    )
+                    logger.info(
+                        "PI override applied: column='%s' -> classification='%s' (table=%s)",
+                        column, classification_override, table or "*",
                     )
 
-                # Apply type override only if not null
-                if type_override is not None and not pd.isna(type_override):
+                if not _is_blank(type_override):
                     df = df.withColumn(
                         "type",
-                        when(condition, lit(type_override).cast("string")).otherwise(
-                            col("type")
-                        ),
+                        when(condition, lit(type_override).cast("string")).otherwise(col("type")),
                     )
+                    logger.info(
+                        "PI override applied: column='%s' -> type='%s' (table=%s)",
+                        column, type_override, table or "*",
+                    )
+
+                applied_count += 1
             except ValueError as e:
-                print(f"Skipping row due to: {e}")
+                skipped_count += 1
+                logger.warning("PI override skipped (bad condition): %s", e)
 
     elif config.mode == "comment":
         for row in csv_dict:
@@ -138,34 +151,48 @@ def apply_overrides_with_loop(df, csv_dict, config):
             schema = row.get("schema")
             table = row.get("table")
             column = row.get("column")
-            comment_override = row["comment"]
+            comment_override = row.get("comment")
 
-            if not column:
+            if _is_blank(comment_override):
+                target = column or table or "unknown"
+                skipped_count += 1
+                logger.info("Comment override: skipping null/blank comment for target '%s'", target)
                 continue
 
-            # CRITICAL SERVERLESS FIX: Ensure comment_override is treated as string
-            # Skip if comment_override is None/null (no override needed)
-            if comment_override is None or pd.isna(comment_override):
-                print(f"Skipping null/blank comment override for column: {column}")
-                continue
-
-            # Explicitly convert to string to prevent type inference issues
             comment_override = str(comment_override)
 
             try:
-                condition = build_condition(df, table, column, schema, catalog)
-                # CRITICAL: Cast the literal to string explicitly for serverless compatibility
-                df = df.withColumn(
-                    "column_content",
-                    when(condition, lit(comment_override).cast("string")).otherwise(
-                        col("column_content")
-                    ),
-                )
+                if column:
+                    condition = build_condition(df, table, column, schema, catalog)
+                    df = df.withColumn(
+                        "column_content",
+                        when(condition, lit(comment_override).cast("string")).otherwise(col("column_content")),
+                    )
+                    logger.info(
+                        "Comment override applied: column='%s' -> comment='%.60s...' (table=%s)",
+                        column, comment_override, table or "*",
+                    )
+                else:
+                    if not table:
+                        skipped_count += 1
+                        logger.warning("Comment override: skipping table-level row with no table name specified")
+                        continue
+                    base_condition = build_condition(df, table, None, schema, catalog)
+                    condition = base_condition & (col("ddl_type") == "table")
+                    df = df.withColumn(
+                        "column_content",
+                        when(condition, lit(comment_override).cast("string")).otherwise(col("column_content")),
+                    )
+                    logger.info(
+                        "Comment override applied (table-level): table='%s' -> comment='%.60s...'",
+                        table, comment_override,
+                    )
+                applied_count += 1
             except ValueError as e:
-                print(f"Skipping row due to: {e}")
+                skipped_count += 1
+                logger.warning("Comment override skipped (bad condition): %s", e)
 
     elif config.mode == "domain":
-        # Domain mode overrides work at table level only
         for row in csv_dict:
             catalog = row.get("catalog")
             schema = row.get("schema")
@@ -173,51 +200,54 @@ def apply_overrides_with_loop(df, csv_dict, config):
             domain_override = row.get("domain")
             subdomain_override = row.get("subdomain")
 
-            # Domain overrides are table-level, so column should be None or empty
             if not table:
-                print("Skipping row: table name is required for domain overrides")
+                skipped_count += 1
+                logger.warning("Domain override: skipping row with no table name specified")
                 continue
 
-            # Skip if both overrides are None/null
-            if (domain_override is None or pd.isna(domain_override)) and (
-                subdomain_override is None or pd.isna(subdomain_override)
-            ):
-                print(f"Skipping null/blank domain override for table: {table}")
+            if _is_blank(domain_override) and _is_blank(subdomain_override):
+                skipped_count += 1
+                logger.info("Domain override: skipping null/blank overrides for table '%s'", table)
                 continue
 
-            # Convert to strings
-            if domain_override is not None and not pd.isna(domain_override):
+            if not _is_blank(domain_override):
                 domain_override = str(domain_override)
-            if subdomain_override is not None and not pd.isna(subdomain_override):
+            if not _is_blank(subdomain_override):
                 subdomain_override = str(subdomain_override)
 
             try:
-                # Build condition for table-level override (no column)
                 condition = build_condition(df, table, None, schema, catalog)
 
-                # Apply domain override
-                if domain_override is not None and not pd.isna(domain_override):
+                if not _is_blank(domain_override):
                     df = df.withColumn(
                         "domain",
-                        when(condition, lit(domain_override).cast("string")).otherwise(
-                            col("domain")
-                        ),
+                        when(condition, lit(domain_override).cast("string")).otherwise(col("domain")),
+                    )
+                    logger.info(
+                        "Domain override applied: table='%s' -> domain='%s'", table, domain_override,
                     )
 
-                # Apply subdomain override
-                if subdomain_override is not None and not pd.isna(subdomain_override):
+                if not _is_blank(subdomain_override):
                     df = df.withColumn(
                         "subdomain",
-                        when(
-                            condition, lit(subdomain_override).cast("string")
-                        ).otherwise(col("subdomain")),
+                        when(condition, lit(subdomain_override).cast("string")).otherwise(col("subdomain")),
                     )
+                    logger.info(
+                        "Domain override applied: table='%s' -> subdomain='%s'", table, subdomain_override,
+                    )
+
+                applied_count += 1
             except ValueError as e:
-                print(f"Skipping row due to: {e}")
+                skipped_count += 1
+                logger.warning("Domain override skipped (bad condition): %s", e)
 
     else:
         raise ValueError("Invalid mode provided. Must be 'pi', 'comment', or 'domain'.")
 
+    logger.info(
+        "Override summary: mode=%s, applied=%d, skipped=%d, total_csv_rows=%d",
+        config.mode, applied_count, skipped_count, len(csv_dict),
+    )
     return df
 
 
@@ -278,7 +308,7 @@ def build_condition(df, table, column, schema, catalog):
     Supported parameter combinations:
     1. Only column name is provided (all other parameters are None or empty)
     2. All parameters (catalog, schema, table, column) are provided
-    3. Table-level: (catalog, schema, table) provided, column is None (for domain mode)
+    3. Table-level: (catalog, schema, table) provided, column is None (for domain/comment table overrides)
 
     Args:
         df (DataFrame): The input DataFrame.
@@ -298,13 +328,8 @@ def build_condition(df, table, column, schema, catalog):
     schema = schema if schema else None
     catalog = catalog if catalog else None
 
-    # Pattern 1: Only column name (column-level override across all tables)
     only_column = column and not any([table, schema, catalog])
-
-    # Pattern 2: All params including column (specific column in specific table)
     all_params = all([column, table, schema, catalog])
-
-    # Pattern 3: Table-level (no column, for domain mode)
     table_level = all([table, schema, catalog]) and not column
 
     if only_column:
@@ -320,7 +345,6 @@ def build_condition(df, table, column, schema, catalog):
             ],
         )
     elif table_level:
-        # Table-level condition (for domain mode)
         return reduce(
             lambda x, y: x & y,
             [
@@ -331,7 +355,8 @@ def build_condition(df, table, column, schema, catalog):
         )
     else:
         raise ValueError(
-            "Unsupported parameter combination. Supported patterns:\n"
+            f"Unsupported parameter combination: catalog={catalog!r}, schema={schema!r}, "
+            f"table={table!r}, column={column!r}. Supported patterns:\n"
             "1. Only column name (column-level override across all tables)\n"
             "2. All parameters (catalog, schema, table, column)\n"
             "3. Table-level (catalog, schema, table) with column=None"

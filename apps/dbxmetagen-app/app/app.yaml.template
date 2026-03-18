@@ -1,4 +1,7 @@
-# app.yaml is the single source of truth for Databricks Apps env vars.
+# app.yaml.template -- source of truth for Databricks Apps env vars.
+# deploy.sh generates app.yaml from this file by replacing __PLACEHOLDERS__
+# with values from your .env file. Do NOT edit app.yaml directly.
+#
 # Job IDs are injected at runtime via valueFrom referencing named resources
 # declared in resources/apps/dbxmetagen_app.yml.
 command:
@@ -11,9 +14,9 @@ command:
 
 env:
   - name: CATALOG_NAME
-    value: "eswanson_demo"
+    value: "__CATALOG_NAME__"
   - name: SCHEMA_NAME
-    value: "metadata_results"
+    value: "__SCHEMA_NAME__"
   - name: WAREHOUSE_ID
     valueFrom: sql_warehouse
   - name: GRAPHRAG_MODEL
@@ -43,6 +46,16 @@ env:
     valueFrom: metagen_with_kb_job
   - name: SEMANTIC_LAYER_JOB_ID
     valueFrom: semantic_layer_job
+  - name: METADATA_KB_BUILD_JOB_ID
+    valueFrom: metadata_kb_build_job
+  - name: METADATA_PARALLEL_KB_BUILD_JOB_ID
+    valueFrom: parallel_kb_build_job
+  - name: METADATA_SERVERLESS_JOB_ID
+    valueFrom: metadata_serverless_job
+  - name: METADATA_PARALLEL_SERVERLESS_JOB_ID
+    valueFrom: parallel_serverless_job
+  - name: KB_ENRICHED_MODES_JOB_ID
+    valueFrom: kb_enriched_modes_job
   - name: VECTOR_SEARCH_ENDPOINT
     value: "dbxmetagen-vs"
   - name: VECTOR_SEARCH_INDEX

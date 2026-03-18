@@ -6,11 +6,15 @@ with aggregated metadata from comment, domain, and PI classification runs.
 """
 
 import logging
+import time
 from dataclasses import dataclass
 from typing import Optional, Dict, Any, List
 from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql import functions as F
 from pyspark.sql.window import Window
+
+_MERGE_MAX_RETRIES = 3
+_MERGE_BACKOFF_SECONDS = [5, 15, 45]
 
 logger = logging.getLogger(__name__)
 
@@ -264,9 +268,6 @@ class KnowledgeBaseBuilder:
         """
         source_df = self.read_source_data()
         
-        # Cache the source for multiple passes
-        source_df.cache()
-        
         all_tables = self.get_all_tables_with_timestamps(source_df)
         table_comments = self.extract_table_comments(source_df)
         domain_data = self.extract_domain_data(source_df)
@@ -303,9 +304,6 @@ class KnowledgeBaseBuilder:
             .withColumnRenamed("first_seen", "created_at")
             .withColumnRenamed("last_updated", "updated_at")
         )
-        
-        # Unpersist the cached source
-        source_df.unpersist()
         
         # Rename 'schema' to escaped version for SQL compatibility
         return result.select(
@@ -360,9 +358,19 @@ class KnowledgeBaseBuilder:
         )
         """
         
-        self.spark.sql(merge_sql)
+        for attempt in range(_MERGE_MAX_RETRIES + 1):
+            try:
+                self.spark.sql(merge_sql)
+                break
+            except Exception as e:
+                err = str(e)
+                if attempt < _MERGE_MAX_RETRIES and ("Concurrent" in err or "DELTA_CONCURRENT" in err):
+                    wait = _MERGE_BACKOFF_SECONDS[attempt]
+                    logger.warning("MERGE conflict (attempt %d), retrying in %ds: %s", attempt + 1, wait, err[:200])
+                    time.sleep(wait)
+                else:
+                    raise
         
-        # Get count of records in target
         count = self.spark.sql(
             f"SELECT COUNT(*) as cnt FROM {self.config.fully_qualified_target}"
         ).collect()[0]["cnt"]

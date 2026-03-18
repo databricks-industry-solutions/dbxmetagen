@@ -56,19 +56,32 @@ class DatabricksClient(ChatClient):
     """Client for Databricks native chat completions."""
 
     def __init__(self):
-        # Get credentials from environment (should be set in Databricks runtime)
         api_key = os.environ.get("DATABRICKS_TOKEN")
+        base_url = os.environ.get("DATABRICKS_HOST")
+
+        if not api_key or not base_url:
+            try:
+                w = WorkspaceClient()
+                if not base_url:
+                    base_url = w.config.host.rstrip("/")
+                if not api_key:
+                    headers = w.config.authenticate()
+                    api_key = headers.get("Authorization", "").removeprefix("Bearer ")
+                    logger.info("Using SDK-based authentication (no PAT in environment)")
+            except Exception as e:
+                logger.warning("SDK authentication fallback failed: %s", e)
+
         if not api_key:
             raise ValueError(
-                "DATABRICKS_TOKEN not found in environment. "
-                "This should be automatically available in Databricks notebooks."
+                "Could not obtain Databricks auth token. "
+                "DATABRICKS_TOKEN not found in environment and SDK auth fallback failed. "
+                "If PAT is disabled, ensure WorkspaceClient() can authenticate "
+                "(e.g. via notebook-native auth or service principal credentials)."
             )
-
-        base_url = os.environ.get("DATABRICKS_HOST")
         if not base_url:
             raise ValueError(
-                "DATABRICKS_HOST not found in environment. "
-                "This should be set by the notebook or config."
+                "Could not determine Databricks host. "
+                "Set DATABRICKS_HOST or ensure WorkspaceClient() can resolve it."
             )
 
         self.openai_client = OpenAI(

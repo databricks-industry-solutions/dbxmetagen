@@ -11,6 +11,16 @@ from unittest.mock import MagicMock, patch
 class TestFetchLineageCached:
     """Tests for fetch_lineage with extended_table_metadata cache."""
 
+    @classmethod
+    def setup_class(cls):
+        from conftest import install_processing_stubs, uninstall_processing_stubs
+        cls._saved = install_processing_stubs()
+        cls._uninstall = uninstall_processing_stubs
+
+    @classmethod
+    def teardown_class(cls):
+        cls._uninstall(cls._saved)
+
     def test_returns_none_for_bad_table_name(self):
         from dbxmetagen.processing import fetch_lineage
         assert fetch_lineage(MagicMock(), "no_dots") is None
