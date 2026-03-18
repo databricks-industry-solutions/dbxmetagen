@@ -557,6 +557,10 @@ _JOB_ENV_MAP = {
     "profiling": "PROFILING_JOB_ID",
     "metagen_with_kb": "METAGEN_WITH_KB_JOB_ID",
     "semantic_layer": "SEMANTIC_LAYER_JOB_ID",
+    "metadata_kb_build": "METADATA_KB_BUILD_JOB_ID",
+    "metadata_parallel_kb_build": "METADATA_PARALLEL_KB_BUILD_JOB_ID",
+    "metadata_serverless": "METADATA_SERVERLESS_JOB_ID",
+    "metadata_parallel_serverless": "METADATA_PARALLEL_SERVERLESS_JOB_ID",
 }
 
 _KNOWN_JOB_IDS: dict[str, int] = {}
@@ -5529,7 +5533,11 @@ def genie_create(req: GenieCreateRequest):
                 logger.warning(
                     "Attempt %d: stripping unknown field '%s'", attempt + 1, bad_field
                 )
-                _strip_field(transformed, bad_field)
+                target = transformed.get("instructions", {}).get("sql_snippets", {})
+                if target:
+                    _strip_field(target, bad_field)
+                else:
+                    _strip_field(transformed, bad_field)
                 deploy_warnings.append(f"Stripped unknown API field: {bad_field}")
                 continue
             if "parse export proto" in err_str.lower() or "failed to parse" in err_str.lower():
@@ -5572,13 +5580,13 @@ def _ensure_genie_tracking_table():
             CREATE TABLE IF NOT EXISTS {fq('genie_spaces')} (
                 space_id STRING, title STRING, tables ARRAY<STRING>,
                 config_json STRING, version INT,
-                status STRING DEFAULT 'active', parent_space_id STRING,
+                status STRING, parent_space_id STRING,
                 created_at TIMESTAMP, updated_at TIMESTAMP, deleted_at TIMESTAMP
             )
         """, timeout=30)
-        for col, typ in [("status", "STRING DEFAULT 'active'"), ("parent_space_id", "STRING")]:
+        for col_name, typ in [("status", "STRING"), ("parent_space_id", "STRING")]:
             try:
-                execute_sql(f"ALTER TABLE {fq('genie_spaces')} ADD COLUMN {col} {typ}", timeout=15)
+                execute_sql(f"ALTER TABLE {fq('genie_spaces')} ADD COLUMN {col_name} {typ}", timeout=15)
             except Exception:
                 pass
     except Exception as e:

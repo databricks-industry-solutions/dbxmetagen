@@ -1,0 +1,109 @@
+# Single Mode Metadata + Knowledge Base Build (Classic Cluster)
+#
+# Runs a single metadata generation mode (comment, PI, or domain), then builds
+# the table and column knowledge bases in parallel so the Review tab is
+# immediately populated.
+
+resources:
+  jobs:
+    metadata_kb_build_job:
+      name: "${var.app_name}_metadata_kb_build_job"
+
+      permissions:
+        - service_principal_name: ${resources.apps.dbxmetagen_app.service_principal_client_id}
+          level: CAN_MANAGE_RUN
+
+      email_notifications:
+        on_failure:
+          - ${var.current_user}
+
+      parameters:
+        - name: table_names
+          default: ${var.job_table_names}
+        - name: mode
+          default: "comment"
+        - name: catalog_name
+          default: ${var.catalog_name}
+        - name: schema_name
+          default: ${var.schema_name}
+        - name: current_user
+          default: ${var.current_user}
+        - name: permission_groups
+          default: ${var.permission_groups}
+        - name: permission_users
+          default: ${var.permission_users}
+        - name: run_id
+          default: "{{job.run_id}}"
+        - name: include_previously_failed_tables
+          default: "false"
+        - name: apply_ddl
+          default: "false"
+        - name: use_kb_comments
+          default: "false"
+        - name: ontology_bundle
+          default: ""
+        - name: domain_config_path
+          default: ""
+        - name: sample_size
+          default: "5"
+        - name: include_lineage
+          default: "false"
+        - name: model
+          default: "databricks-claude-sonnet-4-6"
+
+      tasks:
+        - task_key: generate_metadata
+          job_cluster_key: metadata_cluster
+          notebook_task:
+            notebook_path: ../../notebooks/generate_metadata.py
+            base_parameters:
+              mode: "{{job.parameters.mode}}"
+              table_names: "{{job.parameters.table_names}}"
+              catalog_name: "{{job.parameters.catalog_name}}"
+              current_user: "{{job.parameters.current_user}}"
+              permission_groups: "{{job.parameters.permission_groups}}"
+              permission_users: "{{job.parameters.permission_users}}"
+              run_id: "{{job.parameters.run_id}}"
+              include_previously_failed_tables: "{{job.parameters.include_previously_failed_tables}}"
+              apply_ddl: "{{job.parameters.apply_ddl}}"
+              use_kb_comments: "{{job.parameters.use_kb_comments}}"
+              ontology_bundle: "{{job.parameters.ontology_bundle}}"
+              domain_config_path: "{{job.parameters.domain_config_path}}"
+              sample_size: "{{job.parameters.sample_size}}"
+              include_lineage: "{{job.parameters.include_lineage}}"
+              model: "{{job.parameters.model}}"
+          libraries:
+            - whl: ../../dist/*.whl
+
+        - task_key: build_knowledge_base
+          depends_on:
+            - task_key: generate_metadata
+          job_cluster_key: metadata_cluster
+          notebook_task:
+            notebook_path: ../../notebooks/build_knowledge_base.py
+            base_parameters:
+              catalog_name: "{{job.parameters.catalog_name}}"
+              schema_name: "{{job.parameters.schema_name}}"
+          libraries:
+            - whl: ../../dist/*.whl
+
+        - task_key: build_column_kb
+          depends_on:
+            - task_key: generate_metadata
+          job_cluster_key: metadata_cluster
+          notebook_task:
+            notebook_path: ../../notebooks/build_column_kb.py
+            base_parameters:
+              catalog_name: "{{job.parameters.catalog_name}}"
+              schema_name: "{{job.parameters.schema_name}}"
+          libraries:
+            - whl: ../../dist/*.whl
+
+      job_clusters:
+        - job_cluster_key: metadata_cluster
+          new_cluster:
+            spark_version: 17.3.x-cpu-ml-scala2.13
+            node_type_id: ${var.node_type}
+            autoscale:
+              min_workers: 2
+              max_workers: 4

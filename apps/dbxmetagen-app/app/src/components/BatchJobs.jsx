@@ -164,8 +164,24 @@ export default function BatchJobs({ onNavigate }) {
     sample_size: 5,
     use_kb_comments: false,
     include_lineage: false,
+    build_kb_after: true,
+    use_serverless: false,
   })
-  const setSetting = (key, value) => setSettings(prev => ({ ...prev, [key]: value }))
+  const setSetting = (key, value) => setSettings(prev => {
+    const next = { ...prev, [key]: value }
+    if (key === 'use_serverless' && value) next.build_kb_after = true
+    return next
+  })
+
+  const getJobSuffix = (isParallel) => {
+    if (settings.use_serverless) {
+      return isParallel ? '_parallel_serverless_job' : '_metadata_serverless_job'
+    }
+    if (settings.build_kb_after) {
+      return isParallel ? '_parallel_kb_build_job' : '_metadata_kb_build_job'
+    }
+    return isParallel ? '_parallel_modes_job' : '_metadata_job'
+  }
 
   const [pickerOpen, setPickerOpen] = useState(false)
   const picker = useCatalogSchemaTables()
@@ -384,6 +400,18 @@ export default function BatchJobs({ onNavigate }) {
                   Use KB comments
                 </label>
               </div>
+              <div className="flex flex-col gap-2 pt-1">
+                <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer" title="Build table + column knowledge base after metadata generation so the Review tab is populated">
+                  <input type="checkbox" checked={settings.build_kb_after}
+                    disabled={settings.use_serverless}
+                    onChange={e => setSetting('build_kb_after', e.target.checked)} />
+                  Build KB after
+                </label>
+                <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer" title="Run on serverless Databricks compute (faster startup, no cluster to configure)">
+                  <input type="checkbox" checked={settings.use_serverless} onChange={e => setSetting('use_serverless', e.target.checked)} />
+                  Use serverless
+                </label>
+              </div>
             </div>
           </div>
         </details>
@@ -504,17 +532,18 @@ export default function BatchJobs({ onNavigate }) {
               </div>
             </div>
             <div className="flex flex-wrap gap-3 mt-2">
-              <button onClick={() => runJob('_metadata_job', { table_names: tableNames, mode, apply_ddl: applyDdl, ontology_bundle: ontologyBundle, ...(domainConfig ? { domain_config: domainConfig } : {}), extra_params: buildExtraParams() })}
+              <button onClick={() => runJob(getJobSuffix(false), { table_names: tableNames, mode, apply_ddl: applyDdl, ontology_bundle: ontologyBundle, ...(domainConfig ? { domain_config: domainConfig } : {}), extra_params: buildExtraParams() })}
                 disabled={loading || !tableNames.trim()} title="Run a single metadata generation pass"
-                className="btn-secondary btn-md">{loading ? 'Starting...' : 'Run Single Mode'}</button>
-              <button onClick={() => runJob('_parallel_modes_job', { table_names: tableNames, apply_ddl: applyDdl, ontology_bundle: ontologyBundle, ...(domainConfig ? { domain_config: domainConfig } : {}), extra_params: buildExtraParams() })}
+                className="btn-secondary btn-md">{loading ? 'Starting...' : `Run Single Mode${settings.build_kb_after ? ' + KB' : ''}${settings.use_serverless ? ' (Serverless)' : ''}`}</button>
+              <button onClick={() => runJob(getJobSuffix(true), { table_names: tableNames, apply_ddl: applyDdl, ontology_bundle: ontologyBundle, ...(domainConfig ? { domain_config: domainConfig } : {}), extra_params: buildExtraParams() })}
                 disabled={loading || !tableNames.trim()} title="Run all three modes in parallel"
-                className="btn-primary btn-md">All 3 Modes (Parallel)</button>
+                className="btn-primary btn-md">{`All 3 Modes${settings.build_kb_after ? ' + KB' : ''}${settings.use_serverless ? ' (Serverless)' : ''}`}</button>
               <button onClick={() => runJob('_kb_enriched_modes_job', { table_names: tableNames, apply_ddl: applyDdl, ontology_bundle: ontologyBundle, ...(domainConfig ? { domain_config: domainConfig } : {}), extra_params: buildExtraParams() })}
                 disabled={loading || !tableNames.trim()} title="Comments -> KB build -> PI + Domain with KB enrichment"
                 className="btn-md bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50 transition-all">KB-Enriched Modes</button>
             </div>
             <p className="text-xs text-slate-400">
+              {settings.build_kb_after && <><strong className="text-slate-500">+ KB</strong>: Builds table + column knowledge base after generation so the Review tab is populated. </>}
               <strong className="text-slate-500">KB-Enriched Modes</strong>: Generates comments, builds the knowledge base, then runs PI + domain classification enriched with KB-generated descriptions.
             </p>
           </div>

@@ -62,6 +62,22 @@ resources:
           job:
             id: ${resources.jobs.semantic_layer_job.id}
             permission: CAN_MANAGE_RUN
+        - name: metadata_kb_build_job
+          job:
+            id: ${resources.jobs.metadata_kb_build_job.id}
+            permission: CAN_MANAGE_RUN
+        - name: parallel_kb_build_job
+          job:
+            id: ${resources.jobs.metadata_parallel_kb_build_job.id}
+            permission: CAN_MANAGE_RUN
+        - name: metadata_serverless_job
+          job:
+            id: ${resources.jobs.metadata_serverless_job.id}
+            permission: CAN_MANAGE_RUN
+        - name: parallel_serverless_job
+          job:
+            id: ${resources.jobs.metadata_parallel_serverless_job.id}
+            permission: CAN_MANAGE_RUN
       user_api_scopes:
         - "files.files"
         - "serving.serving-endpoints"
