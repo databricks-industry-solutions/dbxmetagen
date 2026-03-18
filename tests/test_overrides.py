@@ -10,6 +10,7 @@ Covers:
 """
 
 import os
+import sys
 import math
 import tempfile
 import pytest
@@ -335,19 +336,19 @@ class TestOverrideMetadataFromCSV:
             tmp = f.name
 
         try:
-            with patch("pyspark.sql.SparkSession") as mock_ss:
-                mock_spark = MagicMock()
-                mock_ss.builder.getOrCreate.return_value = mock_spark
-                mock_spark_df = MagicMock()
-                mock_spark_df.count.return_value = 1
-                mock_spark.createDataFrame.return_value = mock_spark_df
+            mock_spark_df = MagicMock()
+            mock_spark_df.count.return_value = 1
+            mock_spark = MagicMock()
+            mock_spark.createDataFrame.return_value = mock_spark_df
+            pyspark_sql = sys.modules["pyspark.sql"]
+            pyspark_sql.SparkSession.builder.getOrCreate.return_value = mock_spark
 
-                override_metadata_from_csv(df, tmp, config)
-                mock_apply.assert_called_once()
-                call_args = mock_apply.call_args
-                assert call_args.args[0] is df
-                assert len(call_args.args[1]) == 1  # 1 CSV row
-                assert call_args.args[2] is config
+            override_metadata_from_csv(df, tmp, config)
+            mock_apply.assert_called_once()
+            call_args = mock_apply.call_args
+            assert call_args.args[0] is df
+            assert len(call_args.args[1]) == 1
+            assert call_args.args[2] is config
         finally:
             os.unlink(tmp)
 
@@ -360,15 +361,15 @@ class TestOverrideMetadataFromCSV:
             tmp = f.name
 
         try:
-            with patch("pyspark.sql.SparkSession") as mock_ss:
-                mock_spark = MagicMock()
-                mock_ss.builder.getOrCreate.return_value = mock_spark
-                mock_spark_df = MagicMock()
-                mock_spark_df.count.return_value = 0
-                mock_spark.createDataFrame.return_value = mock_spark_df
+            mock_spark_df = MagicMock()
+            mock_spark_df.count.return_value = 0
+            mock_spark = MagicMock()
+            mock_spark.createDataFrame.return_value = mock_spark_df
+            pyspark_sql = sys.modules["pyspark.sql"]
+            pyspark_sql.SparkSession.builder.getOrCreate.return_value = mock_spark
 
-                result = override_metadata_from_csv(df, tmp, config)
-                assert result is df
+            result = override_metadata_from_csv(df, tmp, config)
+            assert result is df
         finally:
             os.unlink(tmp)
 
@@ -382,15 +383,15 @@ class TestOverrideMetadataFromCSV:
             tmp = f.name
 
         try:
-            with patch("pyspark.sql.SparkSession") as mock_ss:
-                mock_spark = MagicMock()
-                mock_ss.builder.getOrCreate.return_value = mock_spark
-                mock_spark_df = MagicMock()
-                mock_spark_df.count.return_value = 20000
-                mock_spark.createDataFrame.return_value = mock_spark_df
+            mock_spark_df = MagicMock()
+            mock_spark_df.count.return_value = 20000
+            mock_spark = MagicMock()
+            mock_spark.createDataFrame.return_value = mock_spark_df
+            pyspark_sql = sys.modules["pyspark.sql"]
+            pyspark_sql.SparkSession.builder.getOrCreate.return_value = mock_spark
 
-                with pytest.raises(ValueError, match="too large"):
-                    override_metadata_from_csv(df, tmp, config)
+            with pytest.raises(ValueError, match="too large"):
+                override_metadata_from_csv(df, tmp, config)
         finally:
             os.unlink(tmp)
 
