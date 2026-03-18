@@ -1,0 +1,151 @@
+# KB-Enriched Parallel Modes: Comments -> KB build -> PI + Domain (with KB comments)
+#
+# Generates comments first, then builds the knowledge base, then runs PI and
+# domain classification in parallel with use_kb_comments=true so that the
+# AI-generated descriptions from the KB enrich the PI/domain prompts even when
+# UC DDL comments haven't been applied.
+
+resources:
+  jobs:
+    metadata_kb_enriched_modes_job:
+      name: "${var.app_name}_kb_enriched_modes_job"
+
+      permissions:
+        - service_principal_name: ${resources.apps.dbxmetagen_app.service_principal_client_id}
+          level: CAN_MANAGE_RUN
+
+      email_notifications:
+        on_failure:
+          - ${var.current_user}
+
+      parameters:
+        - name: table_names
+          default: ${var.job_table_names}
+        - name: catalog_name
+          default: ${var.catalog_name}
+        - name: schema_name
+          default: ${var.schema_name}
+        - name: apply_ddl
+          default: "false"
+        - name: current_user
+          default: ${var.current_user}
+        - name: permission_groups
+          default: ${var.permission_groups}
+        - name: permission_users
+          default: ${var.permission_users}
+        - name: run_id
+          default: "{{job.run_id}}"
+        - name: include_previously_failed_tables
+          default: "false"
+        - name: ontology_bundle
+          default: ""
+        - name: domain_config_path
+          default: ""
+        - name: sample_size
+          default: "5"
+        - name: include_lineage
+          default: "false"
+        - name: model
+          default: "databricks-claude-sonnet-4-6"
+
+      tasks:
+        - task_key: generate_comments
+          job_cluster_key: metadata_cluster
+          notebook_task:
+            notebook_path: ../../notebooks/generate_metadata.py
+            base_parameters:
+              mode: "comment"
+              table_names: "{{job.parameters.table_names}}"
+              catalog_name: "{{job.parameters.catalog_name}}"
+              schema_name: "{{job.parameters.schema_name}}"
+              apply_ddl: "{{job.parameters.apply_ddl}}"
+              current_user: "{{job.parameters.current_user}}"
+              permission_groups: "{{job.parameters.permission_groups}}"
+              permission_users: "{{job.parameters.permission_users}}"
+              run_id: "{{job.parameters.run_id}}"
+              cleanup_control_table: "false"
+              include_previously_failed_tables: "{{job.parameters.include_previously_failed_tables}}"
+              ontology_bundle: "{{job.parameters.ontology_bundle}}"
+              domain_config_path: "{{job.parameters.domain_config_path}}"
+              sample_size: "{{job.parameters.sample_size}}"
+              include_lineage: "{{job.parameters.include_lineage}}"
+              model: "{{job.parameters.model}}"
+          libraries:
+            - whl: ../../dist/*.whl
+
+        - task_key: build_knowledge_base
+          depends_on:
+            - task_key: generate_comments
+          job_cluster_key: metadata_cluster
+          notebook_task:
+            notebook_path: ../../notebooks/build_knowledge_base.py
+            base_parameters:
+              catalog_name: "{{job.parameters.catalog_name}}"
+              schema_name: "{{job.parameters.schema_name}}"
+          libraries:
+            - whl: ../../dist/*.whl
+
+        - task_key: generate_pi
+          depends_on:
+            - task_key: build_knowledge_base
+          job_cluster_key: metadata_cluster
+          notebook_task:
+            notebook_path: ../../notebooks/generate_metadata.py
+            base_parameters:
+              mode: "pi"
+              table_names: "{{job.parameters.table_names}}"
+              catalog_name: "{{job.parameters.catalog_name}}"
+              schema_name: "{{job.parameters.schema_name}}"
+              apply_ddl: "{{job.parameters.apply_ddl}}"
+              current_user: "{{job.parameters.current_user}}"
+              permission_groups: "{{job.parameters.permission_groups}}"
+              permission_users: "{{job.parameters.permission_users}}"
+              run_id: "{{job.parameters.run_id}}"
+              cleanup_control_table: "false"
+              include_previously_failed_tables: "{{job.parameters.include_previously_failed_tables}}"
+              include_existing_table_comment: "true"
+              use_kb_comments: "true"
+              ontology_bundle: "{{job.parameters.ontology_bundle}}"
+              domain_config_path: "{{job.parameters.domain_config_path}}"
+              sample_size: "{{job.parameters.sample_size}}"
+              include_lineage: "{{job.parameters.include_lineage}}"
+              model: "{{job.parameters.model}}"
+          libraries:
+            - whl: ../../dist/*.whl
+
+        - task_key: generate_domain
+          depends_on:
+            - task_key: build_knowledge_base
+          job_cluster_key: metadata_cluster
+          notebook_task:
+            notebook_path: ../../notebooks/generate_metadata.py
+            base_parameters:
+              mode: "domain"
+              table_names: "{{job.parameters.table_names}}"
+              catalog_name: "{{job.parameters.catalog_name}}"
+              schema_name: "{{job.parameters.schema_name}}"
+              apply_ddl: "{{job.parameters.apply_ddl}}"
+              current_user: "{{job.parameters.current_user}}"
+              permission_groups: "{{job.parameters.permission_groups}}"
+              permission_users: "{{job.parameters.permission_users}}"
+              run_id: "{{job.parameters.run_id}}"
+              cleanup_control_table: "false"
+              include_previously_failed_tables: "{{job.parameters.include_previously_failed_tables}}"
+              include_existing_table_comment: "true"
+              use_kb_comments: "true"
+              ontology_bundle: "{{job.parameters.ontology_bundle}}"
+              domain_config_path: "{{job.parameters.domain_config_path}}"
+              sample_size: "{{job.parameters.sample_size}}"
+              include_lineage: "{{job.parameters.include_lineage}}"
+              model: "{{job.parameters.model}}"
+          libraries:
+            - whl: ../../dist/*.whl
+
+      job_clusters:
+        - job_cluster_key: metadata_cluster
+          new_cluster:
+            spark_version: 17.3.x-cpu-ml-scala2.13
+            node_type_id: ${var.node_type}
+            autoscale:
+              min_workers: 1
+              max_workers: 4

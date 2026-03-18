@@ -129,7 +129,7 @@ class EvaluationRunner:
         """
         if models is None:
             models = [
-                "databricks-claude-3-7-sonnet",
+                "databricks-claude-sonnet-4-6",
                 "databricks-meta-llama-3-1-405b-instruct",
             ]
 
@@ -241,7 +241,7 @@ def run_quick_test():
     runner.run_single_evaluation(
         run_name="test_comment_claude",
         mode="comment",
-        model_endpoint="databricks-claude-3-7-sonnet",
+        model_endpoint="databricks-claude-sonnet-4-6",
         temperature=0.1,
     )
 
@@ -263,7 +263,7 @@ def run_full_evaluation():
     runner.run_model_comparison(
         mode="comment",
         models=[
-            "databricks-claude-3-7-sonnet",
+            "databricks-claude-sonnet-4-6",
             "databricks-meta-llama-3-1-405b-instruct",
         ],
     )
@@ -275,7 +275,7 @@ def run_full_evaluation():
     runner.run_model_comparison(
         mode="pi",
         models=[
-            "databricks-claude-3-7-sonnet",
+            "databricks-claude-sonnet-4-6",
             "databricks-meta-llama-3-1-405b-instruct",
         ],
     )
@@ -286,7 +286,7 @@ def run_full_evaluation():
     print("=" * 70)
     runner.run_temperature_sweep(
         mode="comment",
-        model_endpoint="databricks-claude-3-7-sonnet",
+        model_endpoint="databricks-claude-sonnet-4-6",
         temperatures=[0.0, 0.1, 0.3],
     )
 

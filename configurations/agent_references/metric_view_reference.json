@@ -1,0 +1,201 @@
+{
+  "yaml_syntax_rules": [
+    {
+      "rule": "DATE_TRUNC requires a single-quoted interval string",
+      "correct": "DATE_TRUNC('MONTH', order_date)",
+      "wrong": "DATE_TRUNC(MONTH, order_date)",
+      "note": "The interval keyword MUST be single-quoted inside DATE_TRUNC."
+    },
+    {
+      "rule": "TIMESTAMPADD / TIMESTAMPDIFF use bare unquoted singular unit keywords",
+      "correct": "TIMESTAMPADD(MONTH, 1, col)",
+      "wrong": "TIMESTAMPADD('MONTHS', 1, col)",
+      "note": "Unit is a bare keyword (MONTH, DAY, HOUR, MINUTE, SECOND), singular, no quotes."
+    },
+    {
+      "rule": "EXTRACT uses FROM syntax",
+      "correct": "EXTRACT(HOUR FROM created_at)",
+      "wrong": "DATE_PART(HOUR, created_at)",
+      "note": "Use EXTRACT(unit FROM col), not DATE_PART."
+    },
+    {
+      "rule": "DATEDIFF takes exactly two arguments and returns days",
+      "correct": "DATEDIFF(end_date, start_date)",
+      "wrong": "DATEDIFF(DAY, start_date, end_date)",
+      "note": "For other units use TIMESTAMPDIFF(MINUTE, start, end)."
+    },
+    {
+      "rule": "All string literals must be single-quoted everywhere in expressions",
+      "correct": "status = 'fulfilled'",
+      "wrong": "status = fulfilled",
+      "note": "Applies to comparisons, CASE THEN/ELSE results, IN lists, CONCAT separators, LIKE patterns."
+    },
+    {
+      "rule": "CASE WHEN results that contain special characters must be single-quoted",
+      "correct": "THEN '0-15 min (Excellent)'",
+      "wrong": "THEN 0-15 min (Excellent)",
+      "note": "Every THEN and ELSE value that is a string literal needs quotes."
+    },
+    {
+      "rule": "LIKE patterns must be single-quoted",
+      "correct": "product_code LIKE 'HW%'",
+      "wrong": "product_code LIKE HW%"
+    },
+    {
+      "rule": "FILTER clause syntax uses parenthesized WHERE",
+      "correct": "SUM(amount) FILTER (WHERE status = 'active')",
+      "wrong": "SUM(amount) FILTER WHERE status = 'active'",
+      "note": "FILTER requires (WHERE ...) with parentheses."
+    },
+    {
+      "rule": "Join 'on' clause uses source.col = alias.col format",
+      "correct": "source.customer_id = customers.id",
+      "wrong": "catalog.schema.orders.customer_id = catalog.schema.customers.id",
+      "note": "The root table is always 'source'; joined tables use their 'name' alias. Never use fully qualified names in join on clauses."
+    },
+    {
+      "rule": "Dimension/measure expressions referencing joined table columns use alias.col",
+      "correct": "customers.segment",
+      "wrong": "catalog.schema.customers.segment",
+      "note": "Use the short join name (alias), not the fully qualified table name."
+    },
+    {
+      "rule": "Version must be string '1.1' not number 1.1",
+      "correct": "\"version\": \"1.1\"",
+      "wrong": "\"version\": 1.1"
+    },
+    {
+      "rule": "Window measures use a nested 'window' object with order_by and range/rows",
+      "correct": "{\"name\": \"30-Day Rolling Avg Revenue\", \"expr\": \"AVG(SUM(total_amount))\", \"window\": {\"order_by\": \"order_date\", \"range\": \"INTERVAL 30 DAYS PRECEDING\"}}",
+      "wrong": "{\"name\": \"30-Day Rolling Avg Revenue\", \"expr\": \"AVG(SUM(total_amount)) OVER (ORDER BY order_date RANGE INTERVAL 30 DAYS PRECEDING)\"}",
+      "note": "Window logic goes in the 'window' sub-object, NOT in the expr string. The expr contains the aggregate function only."
+    }
+  ],
+
+  "measure_patterns": {
+    "description": "Templates for non-trivial measures. Replace placeholders (col, cond, entity_col, etc.) with actual column names from the metadata.",
+    "rate": {
+      "template": "SUM(CASE WHEN {condition} THEN 1 ELSE 0 END) * 1.0 / NULLIF(COUNT(*), 0)",
+      "examples": [
+        {"name": "Fulfillment Rate", "expr": "SUM(CASE WHEN status = 'fulfilled' THEN 1 ELSE 0 END) * 1.0 / NULLIF(COUNT(*), 0)", "comment": "Fraction of orders fulfilled"},
+        {"name": "Readmission Rate", "expr": "SUM(CASE WHEN is_readmission = TRUE THEN 1 ELSE 0 END) * 1.0 / NULLIF(COUNT(*), 0)", "comment": "Fraction of encounters that are readmissions"},
+        {"name": "Conversion Rate", "expr": "SUM(CASE WHEN status = 'converted' THEN 1 ELSE 0 END) * 1.0 / NULLIF(COUNT(*), 0)", "comment": "Lead-to-customer conversion rate"}
+      ]
+    },
+    "ratio": {
+      "template": "SUM({numerator_col}) / NULLIF(COUNT(DISTINCT {denominator_col}), 0)",
+      "examples": [
+        {"name": "Revenue per Customer", "expr": "SUM(total_amount) / NULLIF(COUNT(DISTINCT customer_id), 0)", "comment": "Average revenue per unique customer"},
+        {"name": "Cost per Encounter", "expr": "SUM(total_cost) / NULLIF(COUNT(DISTINCT encounter_id), 0)", "comment": "Average cost per encounter"},
+        {"name": "Orders per Account", "expr": "COUNT(*) * 1.0 / NULLIF(COUNT(DISTINCT account_id), 0)", "comment": "Average number of orders per account"}
+      ]
+    },
+    "filtered_aggregate": {
+      "template": "SUM({col}) FILTER (WHERE {condition})",
+      "examples": [
+        {"name": "Fulfilled Revenue", "expr": "SUM(total_amount) FILTER (WHERE status = 'fulfilled')", "comment": "Revenue from fulfilled orders only"},
+        {"name": "High Value Orders", "expr": "COUNT(*) FILTER (WHERE total_amount > 1000)", "comment": "Orders above 1000 threshold"},
+        {"name": "Emergency Encounters", "expr": "COUNT(*) FILTER (WHERE encounter_type = 'emergency')", "comment": "Count of emergency encounters"}
+      ]
+    },
+    "percentage": {
+      "template": "ROUND(SUM(CASE WHEN {condition} THEN 1 ELSE 0 END) * 100.0 / NULLIF(COUNT(*), 0), 1)",
+      "examples": [
+        {"name": "Return Pct", "expr": "ROUND(SUM(CASE WHEN is_returned = TRUE THEN 1 ELSE 0 END) * 100.0 / NULLIF(COUNT(*), 0), 1)", "comment": "Percentage of orders returned"},
+        {"name": "Overdue Pct", "expr": "ROUND(SUM(CASE WHEN due_date < current_date() AND status != 'paid' THEN 1 ELSE 0 END) * 100.0 / NULLIF(COUNT(*), 0), 1)", "comment": "Percentage overdue"}
+      ]
+    },
+    "conditional_distinct": {
+      "template": "COUNT(DISTINCT {col}) FILTER (WHERE {condition})",
+      "examples": [
+        {"name": "Active Customers", "expr": "COUNT(DISTINCT customer_id) FILTER (WHERE last_order_date >= DATE_TRUNC('MONTH', current_date()))", "comment": "Customers who ordered this month"},
+        {"name": "Repeat Patients", "expr": "COUNT(DISTINCT patient_id) FILTER (WHERE visit_count > 1)", "comment": "Patients with more than one visit"}
+      ]
+    },
+    "average_with_nullif": {
+      "template": "AVG({col})",
+      "examples": [
+        {"name": "Avg Order Value", "expr": "AVG(total_amount)", "comment": "Average order amount"},
+        {"name": "Avg Wait Time", "expr": "AVG(TIMESTAMPDIFF(MINUTE, arrival_time, seen_time))", "comment": "Average minutes from arrival to being seen"},
+        {"name": "Avg Length of Stay", "expr": "AVG(DATEDIFF(discharge_date, admission_date))", "comment": "Average days of hospitalization"}
+      ]
+    },
+    "window_rolling": {
+      "template": "AVG(SUM({col})) with window: {order_by: date_col, range: INTERVAL N DAYS PRECEDING}",
+      "examples": [
+        {"name": "30-Day Rolling Avg Revenue", "expr": "AVG(SUM(total_amount))", "window": {"order_by": "order_date", "range": "INTERVAL 30 DAYS PRECEDING"}, "comment": "Rolling 30-day average of daily revenue"},
+        {"name": "7-Day Rolling Order Count", "expr": "AVG(COUNT(*))", "window": {"order_by": "order_date", "range": "INTERVAL 7 DAYS PRECEDING"}, "comment": "Rolling 7-day average of daily order counts"}
+      ]
+    },
+    "window_cumulative": {
+      "template": "SUM(SUM({col})) with window: {order_by: date_col, rows: UNBOUNDED PRECEDING}",
+      "examples": [
+        {"name": "Cumulative YTD Revenue", "expr": "SUM(SUM(total_amount))", "window": {"order_by": "order_date", "rows": "UNBOUNDED PRECEDING"}, "comment": "Running total revenue year-to-date"}
+      ]
+    }
+  },
+
+  "join_templates": {
+    "description": "Correct join format for Unity Catalog metric views. The root table is always referenced as 'source'; joined tables are referenced by their short 'name' alias.",
+    "star_schema": {
+      "description": "Fact table joins one or more dimension tables",
+      "example": {
+        "joins": [
+          {"name": "customers", "source": "catalog.schema.customers", "on": "source.customer_id = customers.id"},
+          {"name": "products", "source": "catalog.schema.products", "on": "source.product_id = products.product_id"}
+        ],
+        "dimension_in_measure": "customers.segment",
+        "note": "Dimensions from joined tables use alias.column format (e.g. customers.segment). The fact table columns use bare names (e.g. total_amount)."
+      }
+    },
+    "snowflake": {
+      "description": "Nested joins where a dimension table joins another dimension (DBR 17.1+)",
+      "example": {
+        "joins": [
+          {
+            "name": "customers",
+            "source": "catalog.schema.customers",
+            "on": "source.customer_id = customers.id",
+            "joins": [
+              {"name": "regions", "source": "catalog.schema.regions", "on": "customers.region_id = regions.id"}
+            ]
+          }
+        ]
+      }
+    },
+    "common_mistakes": [
+      "Using fully qualified names in 'on' clause: on: catalog.schema.orders.customer_id = catalog.schema.customers.id -- WRONG",
+      "Using 'using' instead of 'on' for non-trivial joins -- 'using' only works for same-named columns",
+      "Forgetting to reference joined columns with alias prefix in dimensions/measures",
+      "Using the same alias name as a column name in the source table"
+    ]
+  },
+
+  "anti_patterns": [
+    "NEVER produce a metric view whose only measure is COUNT(*) or COUNT(1). Always add at least one ratio, rate, or filtered aggregate.",
+    "NEVER use unquoted string literals in any SQL expression. Every string value must be single-quoted.",
+    "NEVER invent column names. Only reference columns that exist in the metadata context provided.",
+    "NEVER create duplicate metric views for the same analytical theme. Consolidate related measures into one view.",
+    "NEVER use plural date units (MONTHS, HOURS) or quoted units in TIMESTAMPADD/TIMESTAMPDIFF.",
+    "NEVER omit joins when FK relationships exist and the questions ask for breakdowns by attributes in another table.",
+    "NEVER use bare column names in joined table references. Always qualify with the join alias (customers.segment, not segment when it comes from a joined table).",
+    "NEVER prefix dimension names with the join alias in the display name. Use 'Industry' not 'account.Industry'.",
+    "NEVER use DATE_PART -- use EXTRACT(unit FROM col) instead.",
+    "NEVER return a metric view with zero dimensions or zero measures."
+  ],
+
+  "validation_checklist": [
+    "Every string literal in every expression is single-quoted (comparisons, CASE results, IN lists, LIKE patterns, CONCAT separators)",
+    "Every column reference exists in the provided metadata (source table or joined table)",
+    "DATE_TRUNC uses quoted interval: DATE_TRUNC('MONTH', col)",
+    "TIMESTAMPADD/TIMESTAMPDIFF use bare singular unit: TIMESTAMPADD(MONTH, 1, col)",
+    "At least one non-trivial measure exists (ratio, rate, filtered aggregate, or conditional count -- not just COUNT(*) and SUM)",
+    "Joins are included when FK relationships exist AND questions reference attributes from related tables",
+    "Join 'on' clauses use source.col = alias.col format (not fully qualified names)",
+    "Dimensions from joined tables use alias.col format in their expr",
+    "Every measure and dimension has a descriptive 'comment' field",
+    "Metric view 'name' is unique and theme-based (not just the table name)",
+    "The 'source' field is a fully qualified three-part name (catalog.schema.table)",
+    "FILTER clauses use the (WHERE ...) syntax with parentheses"
+  ]
+}

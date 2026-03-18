@@ -1,0 +1,221 @@
+resources:
+  jobs:
+    dbxmetagen_analytics_pipeline:
+      name: "dbxmetagen_analytics_pipeline"
+
+      parameters:
+        - name: catalog_name
+          default: ${var.catalog_name}
+        - name: schema_name
+          default: ${var.schema_name}
+        - name: similarity_threshold
+          default: "0.8"
+        - name: max_edges_per_node
+          default: "10"
+        - name: ontology_bundle
+          default: "healthcare"
+        - name: incremental
+          default: "true"
+
+      tasks:
+        - task_key: build_knowledge_base
+          job_cluster_key: analytics_cluster
+          notebook_task:
+            notebook_path: ${var.dbxmetagen_notebooks}/build_knowledge_base
+            base_parameters:
+              catalog_name: "{{job.parameters.catalog_name}}"
+              schema_name: "{{job.parameters.schema_name}}"
+          libraries:
+            - whl: ${var.dbxmetagen_wheel}
+
+        - task_key: build_column_kb
+          depends_on: [{task_key: build_knowledge_base}]
+          job_cluster_key: analytics_cluster
+          notebook_task:
+            notebook_path: ${var.dbxmetagen_notebooks}/build_column_kb
+            base_parameters:
+              catalog_name: "{{job.parameters.catalog_name}}"
+              schema_name: "{{job.parameters.schema_name}}"
+          libraries:
+            - whl: ${var.dbxmetagen_wheel}
+
+        - task_key: build_schema_kb
+          depends_on: [{task_key: build_knowledge_base}]
+          job_cluster_key: analytics_cluster
+          notebook_task:
+            notebook_path: ${var.dbxmetagen_notebooks}/build_schema_kb
+            base_parameters:
+              catalog_name: "{{job.parameters.catalog_name}}"
+              schema_name: "{{job.parameters.schema_name}}"
+          libraries:
+            - whl: ${var.dbxmetagen_wheel}
+
+        - task_key: extract_extended_metadata
+          depends_on: [{task_key: build_knowledge_base}]
+          job_cluster_key: analytics_cluster
+          notebook_task:
+            notebook_path: ${var.dbxmetagen_notebooks}/extract_extended_metadata
+            base_parameters:
+              catalog_name: "{{job.parameters.catalog_name}}"
+              schema_name: "{{job.parameters.schema_name}}"
+              incremental: "{{job.parameters.incremental}}"
+          libraries:
+            - whl: ${var.dbxmetagen_wheel}
+
+        - task_key: build_knowledge_graph
+          depends_on:
+            - {task_key: build_column_kb}
+            - {task_key: build_schema_kb}
+            - {task_key: extract_extended_metadata}
+          job_cluster_key: ml_cluster
+          notebook_task:
+            notebook_path: ${var.dbxmetagen_notebooks}/build_knowledge_graph
+            base_parameters:
+              catalog_name: "{{job.parameters.catalog_name}}"
+              schema_name: "{{job.parameters.schema_name}}"
+          libraries:
+            - whl: ${var.dbxmetagen_wheel}
+            - pypi: {package: graphframes}
+
+        - task_key: build_ontology
+          depends_on:
+            - {task_key: build_knowledge_base}
+            - {task_key: build_column_kb}
+            - {task_key: build_schema_kb}
+          job_cluster_key: analytics_cluster
+          notebook_task:
+            notebook_path: ${var.dbxmetagen_notebooks}/build_ontology
+            base_parameters:
+              catalog_name: "{{job.parameters.catalog_name}}"
+              schema_name: "{{job.parameters.schema_name}}"
+              ontology_bundle: "{{job.parameters.ontology_bundle}}"
+              incremental: "{{job.parameters.incremental}}"
+          libraries:
+            - whl: ${var.dbxmetagen_wheel}
+
+        - task_key: generate_embeddings
+          depends_on:
+            - {task_key: build_knowledge_graph}
+            - {task_key: build_ontology}
+          job_cluster_key: analytics_cluster
+          notebook_task:
+            notebook_path: ${var.dbxmetagen_notebooks}/generate_embeddings
+            base_parameters:
+              catalog_name: "{{job.parameters.catalog_name}}"
+              schema_name: "{{job.parameters.schema_name}}"
+          libraries:
+            - whl: ${var.dbxmetagen_wheel}
+
+        - task_key: build_similarity_edges
+          depends_on: [{task_key: generate_embeddings}]
+          job_cluster_key: analytics_cluster
+          notebook_task:
+            notebook_path: ${var.dbxmetagen_notebooks}/build_similarity_edges
+            base_parameters:
+              catalog_name: "{{job.parameters.catalog_name}}"
+              schema_name: "{{job.parameters.schema_name}}"
+              similarity_threshold: "{{job.parameters.similarity_threshold}}"
+              max_edges_per_node: "{{job.parameters.max_edges_per_node}}"
+          libraries:
+            - whl: ${var.dbxmetagen_wheel}
+
+        - task_key: cluster_analysis
+          depends_on: [{task_key: generate_embeddings}]
+          job_cluster_key: ml_cluster
+          notebook_task:
+            notebook_path: ${var.dbxmetagen_notebooks}/cluster_analysis
+            base_parameters:
+              catalog_name: "{{job.parameters.catalog_name}}"
+              schema_name: "{{job.parameters.schema_name}}"
+          libraries:
+            - whl: ${var.dbxmetagen_wheel}
+
+        - task_key: run_profiling
+          depends_on: [{task_key: build_knowledge_graph}]
+          job_cluster_key: analytics_cluster
+          notebook_task:
+            notebook_path: ${var.dbxmetagen_notebooks}/run_profiling
+            base_parameters:
+              catalog_name: "{{job.parameters.catalog_name}}"
+              schema_name: "{{job.parameters.schema_name}}"
+              incremental: "{{job.parameters.incremental}}"
+          libraries:
+            - whl: ${var.dbxmetagen_wheel}
+
+        - task_key: compute_data_quality
+          depends_on: [{task_key: run_profiling}]
+          job_cluster_key: analytics_cluster
+          notebook_task:
+            notebook_path: ${var.dbxmetagen_notebooks}/compute_data_quality
+            base_parameters:
+              catalog_name: "{{job.parameters.catalog_name}}"
+              schema_name: "{{job.parameters.schema_name}}"
+          libraries:
+            - whl: ${var.dbxmetagen_wheel}
+
+        - task_key: validate_ontology
+          depends_on: [{task_key: build_ontology}]
+          job_cluster_key: analytics_cluster
+          notebook_task:
+            notebook_path: ${var.dbxmetagen_notebooks}/validate_ontology
+            base_parameters:
+              catalog_name: "{{job.parameters.catalog_name}}"
+              schema_name: "{{job.parameters.schema_name}}"
+          libraries:
+            - whl: ${var.dbxmetagen_wheel}
+
+        - task_key: predict_foreign_keys
+          depends_on:
+            - {task_key: build_similarity_edges}
+            - {task_key: compute_data_quality}
+          job_cluster_key: analytics_cluster
+          notebook_task:
+            notebook_path: ${var.dbxmetagen_notebooks}/predict_foreign_keys
+            base_parameters:
+              catalog_name: "{{job.parameters.catalog_name}}"
+              schema_name: "{{job.parameters.schema_name}}"
+              incremental: "{{job.parameters.incremental}}"
+          libraries:
+            - whl: ${var.dbxmetagen_wheel}
+
+        - task_key: final_analysis
+          depends_on:
+            - {task_key: predict_foreign_keys}
+            - {task_key: cluster_analysis}
+            - {task_key: compute_data_quality}
+            - {task_key: validate_ontology}
+          job_cluster_key: analytics_cluster
+          notebook_task:
+            notebook_path: ${var.dbxmetagen_notebooks}/final_analysis
+            base_parameters:
+              catalog_name: "{{job.parameters.catalog_name}}"
+              schema_name: "{{job.parameters.schema_name}}"
+          libraries:
+            - whl: ${var.dbxmetagen_wheel}
+
+        - task_key: build_vector_index
+          depends_on: [{task_key: final_analysis}]
+          job_cluster_key: analytics_cluster
+          notebook_task:
+            notebook_path: ${var.dbxmetagen_notebooks}/build_vector_index
+            base_parameters:
+              catalog_name: "{{job.parameters.catalog_name}}"
+              schema_name: "{{job.parameters.schema_name}}"
+              endpoint_name: "dbxmetagen-vs"
+          libraries:
+            - whl: ${var.dbxmetagen_wheel}
+
+      job_clusters:
+        - job_cluster_key: analytics_cluster
+          new_cluster:
+            spark_version: 17.3.x-cpu-ml-scala2.13
+            node_type_id: ${var.node_type}
+            autoscale:
+              min_workers: 1
+              max_workers: 4
+
+        - job_cluster_key: ml_cluster
+          new_cluster:
+            spark_version: 17.3.x-cpu-ml-scala2.13
+            node_type_id: ${var.node_type}
+            num_workers: 1

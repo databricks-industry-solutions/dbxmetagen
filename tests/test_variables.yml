@@ -31,7 +31,7 @@ variables:
     default: comment
   model:
     description: Model
-    default: databricks-claude-3-7-sonnet
+    default: databricks-claude-sonnet-4-6
   sample_size:
     description: Sample size
     default: 5

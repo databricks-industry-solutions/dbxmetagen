@@ -21,8 +21,8 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from src.dbxmetagen.config import MetadataConfig
-from src.dbxmetagen.ddl_regenerator import (
+from dbxmetagen.config import MetadataConfig
+from dbxmetagen.ddl_regenerator import (
     get_comment_from_ddl,
     get_pii_tags_from_ddl,
     replace_comment_in_ddl,

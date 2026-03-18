@@ -2,7 +2,7 @@ import logging
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Tuple
 import pandas as pd
-from src.dbxmetagen.deterministic_pi import detect_pi
+from dbxmetagen.deterministic_pi import detect_pi
 
 from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql.functions import collect_list, struct, to_json, col
@@ -38,7 +38,136 @@ class Prompt(ABC):
         self.prompt_content = self.convert_to_comment_input()
         if self.config.add_metadata:
             self.add_metadata_to_comment_input()
+        if getattr(self.config, "include_lineage", False):
+            self._add_lineage()
+        if getattr(self.config, "include_profiling_context", False):
+            self._add_profiling_context()
+        if getattr(self.config, "include_constraint_context", False):
+            self._add_constraint_context()
         logger.debug("Instantiating chat completion response...")
+
+    def _add_lineage(self) -> None:
+        """Fetch lineage (cached or live) and attach to prompt_content."""
+        from dbxmetagen.processing import fetch_lineage  # avoid circular import
+
+        lin = fetch_lineage(
+            self.spark,
+            self.full_table_name,
+            catalog_name=getattr(self.config, "catalog_name", None),
+            schema_name=getattr(self.config, "schema_name", None),
+        )
+        if lin:
+            self.prompt_content["lineage"] = lin
+
+    def _add_profiling_context(self) -> None:
+        """Inject profiling statistics into prompt_content column metadata."""
+        catalog = getattr(self.config, "catalog_name", None)
+        schema = getattr(self.config, "schema_name", None)
+        if not catalog or not schema:
+            return
+        fqtn = self.full_table_name
+        try:
+            stats_rows = self.spark.sql(
+                f"SELECT column_name, distinct_count, null_rate, min_value, max_value "
+                f"FROM {catalog}.{schema}.column_profiling_stats "
+                f"WHERE table_name = '{fqtn}'"
+            ).collect()
+        except Exception:
+            return
+        if not stats_rows:
+            return
+        # table-level row count
+        try:
+            snap = self.spark.sql(
+                f"SELECT row_count FROM {catalog}.{schema}.profiling_snapshots "
+                f"WHERE table_name = '{fqtn}' ORDER BY snapshot_time DESC LIMIT 1"
+            ).collect()
+            if snap:
+                self.prompt_content.setdefault("profiling", {})["row_count"] = snap[0]["row_count"]
+        except Exception:
+            pass
+        col_meta = self.prompt_content.get("column_contents", {}).get("column_metadata", {})
+        for r in stats_rows:
+            cn = r["column_name"]
+            if cn in col_meta:
+                col_meta[cn]["profiling"] = {
+                    k: r[k] for k in ("distinct_count", "null_rate", "min_value", "max_value") if r[k] is not None
+                }
+
+    def _add_constraint_context(self) -> None:
+        """Inject PK/FK constraint roles into prompt_content column metadata."""
+        catalog = getattr(self.config, "catalog_name", None)
+        schema = getattr(self.config, "schema_name", None)
+        if not catalog or not schema:
+            return
+        fqtn = self.full_table_name
+        try:
+            row = self.spark.sql(
+                f"SELECT primary_key_columns, foreign_keys "
+                f"FROM {catalog}.{schema}.extended_table_metadata "
+                f"WHERE table_name = '{fqtn}' LIMIT 1"
+            ).collect()
+        except Exception:
+            return
+        if not row:
+            return
+        pk_cols = row[0]["primary_key_columns"] or []
+        fk_map = row[0]["foreign_keys"] or {}
+        col_meta = self.prompt_content.get("column_contents", {}).get("column_metadata", {})
+        for cn in pk_cols:
+            if cn in col_meta:
+                col_meta[cn]["role"] = "PRIMARY KEY"
+        for cn, ref in fk_map.items():
+            if cn in col_meta and ref:
+                col_meta[cn]["role"] = f"FOREIGN KEY -> {ref}"
+
+    def enrich_from_knowledge_base(self) -> None:
+        """Supplement empty UC comments with descriptions from KB tables.
+
+        Queries ``table_knowledge_base`` and ``column_knowledge_base`` in the
+        target catalog/schema and injects their ``comment`` values into
+        ``self.prompt_content`` wherever the UC-sourced comment is missing.
+        Must be called **after** ``add_metadata_to_comment_input()``.
+        """
+        catalog = self.config.catalog_name
+        schema = self.config.schema_name
+        fqtn = self.full_table_name
+
+        # --- table-level comment ---
+        try:
+            tbl_kb = self.spark.sql(
+                f"SELECT comment FROM {catalog}.{schema}.table_knowledge_base "
+                f"WHERE table_name = '{fqtn}' LIMIT 1"
+            ).collect()
+        except Exception:
+            tbl_kb = []
+
+        if tbl_kb:
+            kb_comment = tbl_kb[0]["comment"]
+            cc = self.prompt_content.get("column_contents", {})
+            existing = cc.get("table_comments", "")
+            if not existing or existing == "{}" or existing == "[]":
+                cc["table_comments"] = f'[{{"table_name":"{fqtn}","comment":"{kb_comment}"}}]'
+                logger.info("KB table comment injected for %s", fqtn)
+
+        # --- column-level comments ---
+        try:
+            col_rows = self.spark.sql(
+                f"SELECT column_name, comment FROM {catalog}.{schema}.column_knowledge_base "
+                f"WHERE table_name = '{fqtn}'"
+            ).collect()
+        except Exception:
+            col_rows = []
+
+        if col_rows:
+            kb_col_map = {r["column_name"]: r["comment"] for r in col_rows if r["comment"]}
+            col_meta = self.prompt_content.get("column_contents", {}).get("column_metadata", {})
+            for col_name, kb_desc in kb_col_map.items():
+                if col_name in col_meta:
+                    existing_comment = col_meta[col_name].get("comment", "")
+                    if not existing_comment:
+                        col_meta[col_name]["comment"] = kb_desc
+            logger.info("KB column comments injected for %s (%d cols)", fqtn, len(kb_col_map))
 
     @abstractmethod
     def convert_to_comment_input(self) -> Dict[str, Any]:
@@ -301,6 +430,21 @@ class Prompt(ABC):
         if self.config.include_existing_table_comment:
             self.prompt_content["column_contents"]["table_comments"] = table_comments
 
+    def _tags_to_exclude(self) -> list:
+        """Return tag names to filter out based on current mode to avoid biasing the LLM."""
+        mode = self.config.mode
+        if mode in ("pi", "comment"):
+            return [
+                getattr(self.config, "pi_classification_tag_name", "data_classification"),
+                getattr(self.config, "pi_subclassification_tag_name", "data_subclassification"),
+            ]
+        elif mode == "domain":
+            return [
+                getattr(self.config, "domain_tag_name", "domain"),
+                getattr(self.config, "subdomain_tag_name", "subdomain"),
+            ]
+        return []
+
     def get_column_tags(self) -> Dict[str, Dict[str, str]]:
         """
         Get column tags from the information schema, filtering out biasing tags based on mode.
@@ -310,31 +454,7 @@ class Prompt(ABC):
         """
         catalog_name, schema_name, table_name = self.full_table_name.split(".")
 
-        # Determine which tags to filter out based on mode
-        tags_to_exclude = []
-        if self.config.mode == "pi":
-            # Filter out existing PI classifications to avoid bias
-            pi_classification_tag = getattr(
-                self.config, "pi_classification_tag_name", "data_classification"
-            )
-            pi_subclassification_tag = getattr(
-                self.config, "pi_subclassification_tag_name", "data_subclassification"
-            )
-            tags_to_exclude = [pi_classification_tag, pi_subclassification_tag]
-        elif self.config.mode == "domain":
-            # Filter out existing domain classifications to avoid bias
-            domain_tag = getattr(self.config, "domain_tag_name", "domain")
-            subdomain_tag = getattr(self.config, "subdomain_tag_name", "subdomain")
-            tags_to_exclude = [domain_tag, subdomain_tag]
-        elif self.config.mode == "comment":
-            # Filter out PI tags for comment mode to avoid bias
-            pi_classification_tag = getattr(
-                self.config, "pi_classification_tag_name", "data_classification"
-            )
-            pi_subclassification_tag = getattr(
-                self.config, "pi_subclassification_tag_name", "data_subclassification"
-            )
-            tags_to_exclude = [pi_classification_tag, pi_subclassification_tag]
+        tags_to_exclude = self._tags_to_exclude()
 
         query = f"""
         SELECT catalog_name, schema_name, table_name, column_name, tag_name, tag_value
@@ -372,31 +492,7 @@ class Prompt(ABC):
         """
         catalog_name, schema_name, table_name = self.full_table_name.split(".")
 
-        # Determine which tags to filter out based on mode
-        tags_to_exclude = []
-        if self.config.mode == "pi":
-            # Filter out existing PI classifications to avoid bias
-            pi_classification_tag = getattr(
-                self.config, "pi_classification_tag_name", "data_classification"
-            )
-            pi_subclassification_tag = getattr(
-                self.config, "pi_subclassification_tag_name", "data_subclassification"
-            )
-            tags_to_exclude = [pi_classification_tag, pi_subclassification_tag]
-        elif self.config.mode == "domain":
-            # Filter out existing domain classifications to avoid bias
-            domain_tag = getattr(self.config, "domain_tag_name", "domain")
-            subdomain_tag = getattr(self.config, "subdomain_tag_name", "subdomain")
-            tags_to_exclude = [domain_tag, subdomain_tag]
-        elif self.config.mode == "comment":
-            # Filter out PI tags for comment mode to avoid bias
-            pi_classification_tag = getattr(
-                self.config, "pi_classification_tag_name", "data_classification"
-            )
-            pi_subclassification_tag = getattr(
-                self.config, "pi_subclassification_tag_name", "data_subclassification"
-            )
-            tags_to_exclude = [pi_classification_tag, pi_subclassification_tag]
+        tags_to_exclude = self._tags_to_exclude()
 
         query = f"""
         SELECT tag_name, tag_value
@@ -536,6 +632,7 @@ class CommentPrompt(Prompt):
                     6. 'index' key is from Pandas to_dict() - ignore unless in 'columns' list
                     7. Return ONLY the JSON dictionary
                     8. Do not include example values in the comment if the values are PII.
+                    9. If lineage information (upstream/downstream tables) is provided, use it to understand data provenance and inform your descriptions (e.g. note that a table is derived from specific sources).
                     """,
                 },
                 {
@@ -643,6 +740,7 @@ class PIPrompt(Prompt):
                         - If Presidio finds PII, but you recognize that there is also medical information present, classify as phi with high confidence.
                         - You find PII Presidio missed: Trust your assessment, confidence 0.6-0.8.
                         - Fundamental disagreement on classification: Reduce confidence to 0.3.
+                    11. If lineage information (upstream/downstream tables) is provided, use it as additional context for understanding the data flow and purpose of the table. This can help disambiguate borderline classifications.
                     """,
                 },
                 {
@@ -746,6 +844,7 @@ class CommentNoDataPrompt(Prompt):
                     6. 'index' key is from Pandas to_dict() - ignore unless in 'columns' list
                     7. Return ONLY the JSON dictionary
                     8. Do not include example values in the comment ever.
+                    9. If lineage information (upstream/downstream tables) is provided, use it to understand data provenance and inform your descriptions (e.g. note that a table is derived from specific sources).
                     """,
                 },
                 {

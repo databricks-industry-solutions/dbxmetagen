@@ -1,0 +1,57 @@
+/** @type {import('tailwindcss').Config} */
+export default {
+  darkMode: 'class',
+  content: ['./index.html', './main.jsx', './App.jsx', './components/**/*.{js,jsx}'],
+  theme: {
+    extend: {
+      colors: {
+        'dbx-lava': '#FF3621',
+        'dbx-lava-light': '#FF5C47',
+        'dbx-lava-dark': '#E02D1A',
+        'dbx-navy': '#0B1E24',
+        'dbx-navy-700': '#10262E',
+        'dbx-navy-650': '#142E38',
+        'dbx-navy-600': '#1B4D5C',
+        'dbx-navy-500': '#276272',
+        'dbx-navy-400': '#337888',
+        'dbx-oat': '#EEEDE9',
+        'dbx-oat-light': '#F9F7F4',
+        'dbx-oat-dark': '#E2E0D9',
+        'dbx-teal': '#00A3BF',
+        'dbx-teal-light': '#E0F7FA',
+        'dbx-amber': '#F59E0B',
+        'dbx-amber-light': '#FEF3C7',
+        'dbx-amber-dark': '#D97706',
+        'dbx-green': '#10B981',
+        'dbx-green-light': '#D1FAE5',
+        'dbx-green-dark': '#059669',
+        'dbx-violet': '#8B5CF6',
+        'dbx-violet-light': '#EDE9FE',
+        'dbx-violet-dark': '#7C3AED',
+        'dbx-rose': '#E11D48',
+        'dbx-rose-light': '#FFE4E6',
+        'dbx-sky': '#0EA5E9',
+        'dbx-sky-light': '#E0F2FE',
+      },
+      fontFamily: {
+        sans: ['Inter', 'system-ui', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'Roboto', 'sans-serif'],
+      },
+      boxShadow: {
+        'card': '0 1px 3px rgba(11,32,38,0.06), 0 1px 2px rgba(11,32,38,0.04)',
+        'card-hover': '0 4px 12px rgba(11,32,38,0.08), 0 2px 4px rgba(11,32,38,0.04)',
+        'elevated': '0 8px 24px rgba(11,32,38,0.12), 0 4px 8px rgba(11,32,38,0.06)',
+        'nav': '0 2px 8px rgba(11,32,38,0.05)',
+        'inner-soft': 'inset 0 1px 3px rgba(11,32,38,0.06)',
+      },
+      keyframes: {
+        fadeIn: { from: { opacity: '0' }, to: { opacity: '1' } },
+        slideUp: { from: { opacity: '0', transform: 'translateY(8px)' }, to: { opacity: '1', transform: 'translateY(0)' } },
+      },
+      animation: {
+        'fade-in': 'fadeIn 200ms ease-out',
+        'slide-up': 'slideUp 250ms ease-out',
+      },
+    },
+  },
+  plugins: [],
+}

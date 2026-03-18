@@ -1,0 +1,35 @@
+resources:
+  jobs:
+    dbxmetagen_metadata_job:
+      name: "dbxmetagen_metadata_job"
+
+      parameters:
+        - name: table_names
+          default: ""
+        - name: mode
+          default: "comment"
+        - name: catalog_name
+          default: ${var.catalog_name}
+        - name: schema_name
+          default: ${var.schema_name}
+
+      tasks:
+        - task_key: generate_metadata
+          job_cluster_key: metagen_cluster
+          notebook_task:
+            notebook_path: ${var.dbxmetagen_notebooks}/generate_metadata
+            base_parameters:
+              mode: "{{job.parameters.mode}}"
+              table_names: "{{job.parameters.table_names}}"
+              catalog_name: "{{job.parameters.catalog_name}}"
+          libraries:
+            - whl: ${var.dbxmetagen_wheel}
+
+      job_clusters:
+        - job_cluster_key: metagen_cluster
+          new_cluster:
+            spark_version: 17.3.x-cpu-ml-scala2.13
+            node_type_id: ${var.node_type}
+            autoscale:
+              min_workers: 1
+              max_workers: 4

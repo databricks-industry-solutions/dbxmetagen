@@ -1,0 +1,14 @@
+command: [
+  "flask",
+  "--app", 
+  "app_react:flask_app",
+  "run",
+  "--host=0.0.0.0"
+]
+
+# REQUIRED: Set these to your workspace-specific values before deploying.
+env:
+  - name: 'DATABRICKS_HTTP_PATH'
+    value: '/sql/1.0/warehouses/<YOUR_WAREHOUSE_ID>'
+  - name: 'DATABRICKS_SERVER_HOSTNAME'
+    value: '<YOUR_WORKSPACE>.cloud.databricks.com'

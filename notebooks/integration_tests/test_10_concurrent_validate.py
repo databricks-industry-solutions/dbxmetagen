@@ -19,11 +19,11 @@
 import sys
 from datetime import datetime, timedelta
 
-sys.path.append("../../")
+sys.path.append("../../src")  # For git-clone or DAB deployment; pip-installed package works without this
 
-from src.dbxmetagen.user_utils import sanitize_user_identifier, get_current_user
-from src.dbxmetagen.processing import get_control_table
-from src.dbxmetagen.config import MetadataConfig
+from dbxmetagen.user_utils import sanitize_user_identifier, get_current_user
+from dbxmetagen.processing import get_control_table
+from dbxmetagen.config import MetadataConfig
 
 # Setup widgets
 dbutils.widgets.text("test_catalog", "dev_integration_tests", "Test Catalog")

@@ -9,7 +9,7 @@ import json
 # Add src to path for imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from src.dbxmetagen.config import MetadataConfig
+from dbxmetagen.config import MetadataConfig
 
 
 class TestRunIdConfig:
@@ -50,7 +50,7 @@ class TestGetTaskId:
 
     def setup_method(self):
         """Import the function under test."""
-        from src.dbxmetagen.databricks_utils import get_task_id
+        from dbxmetagen.databricks_utils import get_task_id
         self.get_task_id = get_task_id
 
     def test_get_task_id_from_context_taskRunId(self):
@@ -80,43 +80,28 @@ class TestGetTaskId:
         result = self.get_task_id(mock_dbutils)
         assert result == "parent_run_456_interactive"
 
-    @patch("src.dbxmetagen.databricks_utils.WorkspaceClient")
-    def test_get_task_id_returns_user_when_no_context(self, mock_ws_client):
-        """Test that get_task_id returns current_user when no dbutils provided."""
-        mock_ws_client.return_value.current_user.me.return_value.user_name = "test@example.com"
+    def test_get_task_id_returns_none_when_no_context(self):
+        """Test that get_task_id returns None when no dbutils provided (non-concurrent)."""
         result = self.get_task_id(None)
-        assert result == "test@example.com"
+        assert result is None
 
-    @patch("src.dbxmetagen.databricks_utils.WorkspaceClient")
-    def test_get_task_id_handles_exception_returns_user(self, mock_ws_client):
-        """Test that get_task_id returns current_user on exception."""
-        mock_ws_client.return_value.current_user.me.return_value.user_name = "fallback@example.com"
+    def test_get_task_id_returns_none_on_exception(self):
+        """Test that get_task_id returns None on exception."""
         mock_dbutils = MagicMock()
         mock_dbutils.notebook.entry_point.getDbutils.side_effect = Exception("No context")
-        
         result = self.get_task_id(mock_dbutils)
-        assert result == "fallback@example.com"
+        assert result is None
 
-    @patch("src.dbxmetagen.databricks_utils.WorkspaceClient")
-    def test_get_task_id_fallback_to_uuid_when_no_user(self, mock_ws_client):
-        """Test that get_task_id falls back to UUID when user cannot be determined."""
-        mock_ws_client.return_value.current_user.me.side_effect = Exception("No user")
-        result = self.get_task_id(None)
-        # Should return a UUID fallback
-        assert result is not None
-        assert len(result) == 36
-
-    def test_get_task_id_uses_user_from_context(self):
-        """Test that get_task_id extracts user from context for interactive runs."""
+    def test_get_task_id_returns_none_when_no_task_tags(self):
+        """Test that get_task_id returns None when context has no task tags."""
         mock_dbutils = MagicMock()
         context = {
             "tags": {},
             "attributes": {"user": "interactive@example.com"}
         }
         mock_dbutils.notebook.entry_point.getDbutils().notebook().getContext().safeToJson.return_value = json.dumps(context)
-        
         result = self.get_task_id(mock_dbutils)
-        assert result == "interactive@example.com"
+        assert result is None
 
 
 class TestGetControlTable:
@@ -129,10 +114,10 @@ class TestGetControlTable:
 
     def setup_method(self):
         """Import the function under test."""
-        from src.dbxmetagen.processing import get_control_table
+        from dbxmetagen.processing import get_control_table
         self.get_control_table = get_control_table
 
-    @patch("src.dbxmetagen.processing.get_current_user")
+    @patch("dbxmetagen.processing.get_current_user")
     def test_get_control_table_returns_base_name(self, mock_user):
         """Test control table always returns base name (run_id is a column, not in name)."""
         mock_user.return_value = "test_user@example.com"
@@ -151,7 +136,7 @@ class TestGetControlTable:
         assert "123" not in result
         assert "456" not in result
 
-    @patch("src.dbxmetagen.processing.get_current_user")
+    @patch("dbxmetagen.processing.get_current_user")
     def test_get_control_table_with_cleanup_true(self, mock_user):
         """Test control table name is same regardless of cleanup flag."""
         mock_user.return_value = "test_user@example.com"
@@ -170,7 +155,7 @@ class TestGetControlTable:
         assert "123" not in result
         assert "456" not in result
 
-    @patch("src.dbxmetagen.processing.get_current_user")
+    @patch("dbxmetagen.processing.get_current_user")
     def test_get_control_table_sanitizes_user(self, mock_user):
         """Test that user email is sanitized in table name."""
         mock_user.return_value = "test.user@example.com"
@@ -193,15 +178,16 @@ class TestClaimTable:
 
     def setup_method(self):
         """Import the function under test."""
-        from src.dbxmetagen.processing import claim_table
+        from dbxmetagen.processing import claim_table
         self.claim_table = claim_table
 
-    @patch("src.dbxmetagen.processing.SparkSession")
-    @patch("src.dbxmetagen.processing.get_control_table")
+    @patch("dbxmetagen.processing.SparkSession")
+    @patch("dbxmetagen.processing.get_control_table")
     def test_claim_table_returns_true_without_task_id(self, mock_get_control, mock_spark):
         """Test that claim_table returns True when no task_id (non-concurrent mode)."""
         config = MagicMock()
         config.task_id = None
+        config.mode = "comment"
         config.catalog_name = "test_catalog"
         config.schema_name = "test_schema"
         
@@ -210,8 +196,8 @@ class TestClaimTable:
         # Should not execute any SQL when task_id is None
         mock_spark.builder.getOrCreate().sql.assert_not_called()
 
-    @patch("src.dbxmetagen.processing.SparkSession")
-    @patch("src.dbxmetagen.processing.get_control_table")
+    @patch("dbxmetagen.processing.SparkSession")
+    @patch("dbxmetagen.processing.get_control_table")
     def test_claim_table_success(self, mock_get_control, mock_spark):
         """Test successful table claim."""
         mock_get_control.return_value = "control_table"
@@ -224,14 +210,15 @@ class TestClaimTable:
         
         config = MagicMock()
         config.task_id = "task_123"
+        config.mode = "comment"
         config.catalog_name = "test_catalog"
         config.schema_name = "test_schema"
         
         result = self.claim_table("catalog.schema.table", config)
         assert result is True
 
-    @patch("src.dbxmetagen.processing.SparkSession")
-    @patch("src.dbxmetagen.processing.get_control_table")
+    @patch("dbxmetagen.processing.SparkSession")
+    @patch("dbxmetagen.processing.get_control_table")
     def test_claim_table_already_claimed(self, mock_get_control, mock_spark):
         """Test claim fails when another task already claimed the table."""
         mock_get_control.return_value = "control_table"
@@ -244,11 +231,35 @@ class TestClaimTable:
         
         config = MagicMock()
         config.task_id = "task_123"
+        config.mode = "pi"
         config.catalog_name = "test_catalog"
         config.schema_name = "test_schema"
         
         result = self.claim_table("catalog.schema.table", config)
         assert result is False
+
+    @patch("dbxmetagen.processing.SparkSession")
+    @patch("dbxmetagen.processing.get_control_table")
+    def test_claim_table_includes_mode_filter(self, mock_get_control, mock_spark):
+        """Test that claim SQL includes _mode filter for mode-aware claiming."""
+        mock_get_control.return_value = "control_table"
+        mock_spark_instance = mock_spark.builder.getOrCreate.return_value
+        mock_spark_instance.sql.return_value.collect.return_value = [
+            {"_claimed_by": "task_123"}
+        ]
+        
+        config = MagicMock()
+        config.task_id = "task_123"
+        config.mode = "domain"
+        config.catalog_name = "test_catalog"
+        config.schema_name = "test_schema"
+        
+        self.claim_table("catalog.schema.table", config)
+        
+        update_call = mock_spark_instance.sql.call_args_list[0][0][0]
+        assert "_mode = 'domain'" in update_call
+        verify_call = mock_spark_instance.sql.call_args_list[1][0][0]
+        assert "_mode = 'domain'" in verify_call
 
 
 class TestWidgetExtraction:
@@ -256,7 +267,7 @@ class TestWidgetExtraction:
 
     def setup_method(self):
         """Import functions under test."""
-        from src.dbxmetagen.databricks_utils import get_widgets, setup_widgets
+        from dbxmetagen.databricks_utils import get_widgets, setup_widgets
         self.get_widgets = get_widgets
         self.setup_widgets = setup_widgets
 
@@ -369,12 +380,12 @@ class TestMarkTableStatus:
 
     def setup_method(self):
         """Import the functions under test."""
-        from src.dbxmetagen.processing import mark_table_completed, mark_table_failed
+        from dbxmetagen.processing import mark_table_completed, mark_table_failed
         self.mark_table_completed = mark_table_completed
         self.mark_table_failed = mark_table_failed
 
-    @patch("src.dbxmetagen.processing.SparkSession")
-    @patch("src.dbxmetagen.processing.get_control_table")
+    @patch("dbxmetagen.processing.SparkSession")
+    @patch("dbxmetagen.processing.get_control_table")
     def test_mark_table_completed_executes_update(self, mock_get_control, mock_spark):
         """Test that mark_table_completed executes UPDATE SQL."""
         mock_get_control.return_value = "control_table"
@@ -384,6 +395,7 @@ class TestMarkTableStatus:
         config.catalog_name = "test_catalog"
         config.schema_name = "test_schema"
         config.run_id = "run_123"
+        config.mode = "comment"
         
         self.mark_table_completed("catalog.schema.table", config)
         
@@ -392,9 +404,10 @@ class TestMarkTableStatus:
         sql_call = mock_spark_instance.sql.call_args[0][0]
         assert "_status = 'completed'" in sql_call
         assert "run_123" in sql_call
+        assert "_mode = 'comment'" in sql_call
 
-    @patch("src.dbxmetagen.processing.SparkSession")
-    @patch("src.dbxmetagen.processing.get_control_table")
+    @patch("dbxmetagen.processing.SparkSession")
+    @patch("dbxmetagen.processing.get_control_table")
     def test_mark_table_failed_executes_update(self, mock_get_control, mock_spark):
         """Test that mark_table_failed executes UPDATE SQL with error message."""
         mock_get_control.return_value = "control_table"
@@ -404,6 +417,7 @@ class TestMarkTableStatus:
         config.catalog_name = "test_catalog"
         config.schema_name = "test_schema"
         config.run_id = "run_123"
+        config.mode = "pi"
         
         self.mark_table_failed("catalog.schema.table", config, "Test error message")
         
@@ -413,9 +427,10 @@ class TestMarkTableStatus:
         assert "_status = 'failed'" in sql_call
         assert "Test error message" in sql_call
         assert "run_123" in sql_call
+        assert "_mode = 'pi'" in sql_call
 
-    @patch("src.dbxmetagen.processing.SparkSession")
-    @patch("src.dbxmetagen.processing.get_control_table")
+    @patch("dbxmetagen.processing.SparkSession")
+    @patch("dbxmetagen.processing.get_control_table")
     def test_mark_table_failed_escapes_single_quotes(self, mock_get_control, mock_spark):
         """Test that mark_table_failed escapes single quotes in error message."""
         mock_get_control.return_value = "control_table"
@@ -425,6 +440,7 @@ class TestMarkTableStatus:
         config.catalog_name = "test_catalog"
         config.schema_name = "test_schema"
         config.run_id = "run_123"
+        config.mode = "comment"
         
         # Error message with single quotes
         self.mark_table_failed("catalog.schema.table", config, "Error: 'value' is invalid")
@@ -441,11 +457,11 @@ class TestClaimTableWithStatus:
 
     def setup_method(self):
         """Import the function under test."""
-        from src.dbxmetagen.processing import claim_table
+        from dbxmetagen.processing import claim_table
         self.claim_table = claim_table
 
-    @patch("src.dbxmetagen.processing.SparkSession")
-    @patch("src.dbxmetagen.processing.get_control_table")
+    @patch("dbxmetagen.processing.SparkSession")
+    @patch("dbxmetagen.processing.get_control_table")
     def test_claim_table_sets_status_to_in_progress(self, mock_get_control, mock_spark):
         """Test that claim_table sets _status to 'in_progress'."""
         mock_get_control.return_value = "control_table"
@@ -458,6 +474,7 @@ class TestClaimTableWithStatus:
         
         config = MagicMock()
         config.task_id = "task_123"
+        config.mode = "comment"
         config.catalog_name = "test_catalog"
         config.schema_name = "test_schema"
         config.cleanup_control_table = False
@@ -469,76 +486,10 @@ class TestClaimTableWithStatus:
         update_call = mock_spark_instance.sql.call_args_list[0][0][0]
         assert "_status = 'in_progress'" in update_call
 
-
-class TestClaimTableSelfReclaim:
-    """Test claim_table self-reclaim functionality."""
-
-    def setup_method(self):
-        """Import the function under test."""
-        from src.dbxmetagen.processing import claim_table
-        self.claim_table = claim_table
-
-    @patch("src.dbxmetagen.processing.SparkSession")
-    @patch("src.dbxmetagen.processing.get_control_table")
-    def test_claim_table_allows_self_reclaim(self, mock_get_control, mock_spark):
-        """Test that same task_id can reclaim its own in_progress table."""
-        mock_get_control.return_value = "control_table"
-        mock_spark_instance = mock_spark.builder.getOrCreate.return_value
-        
-        # Simulate successful self-reclaim
-        mock_spark_instance.sql.return_value.collect.return_value = [
-            {"_claimed_by": "user@example.com"}
-        ]
-        
-        config = MagicMock()
-        config.task_id = "user@example.com"
-        config.catalog_name = "test_catalog"
-        config.schema_name = "test_schema"
-        config.cleanup_control_table = False
-        config.claim_timeout_minutes = 60
-        
-        result = self.claim_table("catalog.schema.table", config)
-        assert result is True
-        
-        # Verify WHERE clause includes self-reclaim condition
-        update_call = mock_spark_instance.sql.call_args_list[0][0][0]
-        assert "_claimed_by = 'user@example.com'" in update_call
-
-    @patch("src.dbxmetagen.processing.SparkSession")
-    @patch("src.dbxmetagen.processing.get_control_table")
-    def test_claim_table_blocks_different_task_reclaim(self, mock_get_control, mock_spark):
-        """Test that different task_id cannot reclaim another's in_progress table."""
-        mock_get_control.return_value = "control_table"
-        mock_spark_instance = mock_spark.builder.getOrCreate.return_value
-        
-        # Simulate table claimed by different user (UPDATE didn't match)
-        mock_spark_instance.sql.return_value.collect.return_value = [
-            {"_claimed_by": "other_user@example.com"}
-        ]
-        
-        config = MagicMock()
-        config.task_id = "my_user@example.com"
-        config.catalog_name = "test_catalog"
-        config.schema_name = "test_schema"
-        config.cleanup_control_table = False
-        config.claim_timeout_minutes = 60
-        
-        result = self.claim_table("catalog.schema.table", config)
-        assert result is False
-
-
-class TestClaimTableTimeout:
-    """Test claim_table timeout functionality."""
-
-    def setup_method(self):
-        """Import the function under test."""
-        from src.dbxmetagen.processing import claim_table
-        self.claim_table = claim_table
-
-    @patch("src.dbxmetagen.processing.SparkSession")
-    @patch("src.dbxmetagen.processing.get_control_table")
-    def test_claim_table_includes_timeout_condition(self, mock_get_control, mock_spark):
-        """Test that claim query includes timeout condition."""
+    @patch("dbxmetagen.processing.SparkSession")
+    @patch("dbxmetagen.processing.get_control_table")
+    def test_claim_table_filters_by_status(self, mock_get_control, mock_spark):
+        """Test that claim_table only claims queued, failed, or completed tables."""
         mock_get_control.return_value = "control_table"
         mock_spark_instance = mock_spark.builder.getOrCreate.return_value
         
@@ -548,6 +499,7 @@ class TestClaimTableTimeout:
         
         config = MagicMock()
         config.task_id = "task_123"
+        config.mode = "comment"
         config.catalog_name = "test_catalog"
         config.schema_name = "test_schema"
         config.cleanup_control_table = False
@@ -559,26 +511,100 @@ class TestClaimTableTimeout:
         assert "INTERVAL 60 MINUTES" in update_call
         assert "_claimed_at <" in update_call
 
-    @patch("src.dbxmetagen.processing.SparkSession")
-    @patch("src.dbxmetagen.processing.get_control_table")
+
+class TestClaimTableSelfReclaim:
+    """Test claim_table self-reclaim functionality."""
+
+    def setup_method(self):
+        from dbxmetagen.processing import claim_table
+        self.claim_table = claim_table
+
+    @patch("dbxmetagen.processing.SparkSession")
+    @patch("dbxmetagen.processing.get_control_table")
+    def test_claim_table_allows_self_reclaim(self, mock_get_control, mock_spark):
+        """Test that same task_id can reclaim its own in_progress table."""
+        mock_get_control.return_value = "control_table"
+        mock_spark_instance = mock_spark.builder.getOrCreate.return_value
+        mock_spark_instance.sql.return_value.collect.return_value = [
+            {"_claimed_by": "user@example.com"}
+        ]
+        config = MagicMock()
+        config.task_id = "user@example.com"
+        config.mode = "comment"
+        config.catalog_name = "test_catalog"
+        config.schema_name = "test_schema"
+        config.cleanup_control_table = False
+        config.claim_timeout_minutes = 60
+        result = self.claim_table("catalog.schema.table", config)
+        assert result is True
+        update_call = mock_spark_instance.sql.call_args_list[0][0][0]
+        assert "_claimed_by = 'user@example.com'" in update_call
+
+    @patch("dbxmetagen.processing.SparkSession")
+    @patch("dbxmetagen.processing.get_control_table")
+    def test_claim_table_blocks_different_task_reclaim(self, mock_get_control, mock_spark):
+        """Test that different task_id cannot reclaim another's in_progress table."""
+        mock_get_control.return_value = "control_table"
+        mock_spark_instance = mock_spark.builder.getOrCreate.return_value
+        mock_spark_instance.sql.return_value.collect.return_value = [
+            {"_claimed_by": "other_user@example.com"}
+        ]
+        config = MagicMock()
+        config.task_id = "my_user@example.com"
+        config.mode = "pi"
+        config.catalog_name = "test_catalog"
+        config.schema_name = "test_schema"
+        config.cleanup_control_table = False
+        config.claim_timeout_minutes = 60
+        result = self.claim_table("catalog.schema.table", config)
+        assert result is False
+
+
+class TestClaimTableTimeout:
+    """Test claim_table timeout functionality."""
+
+    def setup_method(self):
+        from dbxmetagen.processing import claim_table
+        self.claim_table = claim_table
+
+    @patch("dbxmetagen.processing.SparkSession")
+    @patch("dbxmetagen.processing.get_control_table")
+    def test_claim_table_includes_timeout_condition(self, mock_get_control, mock_spark):
+        """Test that claim query includes timeout condition."""
+        mock_get_control.return_value = "control_table"
+        mock_spark_instance = mock_spark.builder.getOrCreate.return_value
+        mock_spark_instance.sql.return_value.collect.return_value = [
+            {"_claimed_by": "task_123"}
+        ]
+        config = MagicMock()
+        config.task_id = "task_123"
+        config.mode = "comment"
+        config.catalog_name = "test_catalog"
+        config.schema_name = "test_schema"
+        config.cleanup_control_table = False
+        config.claim_timeout_minutes = 60
+        self.claim_table("catalog.schema.table", config)
+        update_call = mock_spark_instance.sql.call_args_list[0][0][0]
+        assert "INTERVAL 60 MINUTES" in update_call
+        assert "_claimed_at <" in update_call
+
+    @patch("dbxmetagen.processing.SparkSession")
+    @patch("dbxmetagen.processing.get_control_table")
     def test_claim_table_uses_custom_timeout(self, mock_get_control, mock_spark):
         """Test that claim query uses custom timeout value."""
         mock_get_control.return_value = "control_table"
         mock_spark_instance = mock_spark.builder.getOrCreate.return_value
-        
         mock_spark_instance.sql.return_value.collect.return_value = [
             {"_claimed_by": "task_123"}
         ]
-        
         config = MagicMock()
         config.task_id = "task_123"
+        config.mode = "comment"
         config.catalog_name = "test_catalog"
         config.schema_name = "test_schema"
         config.cleanup_control_table = False
         config.claim_timeout_minutes = 120
-        
         self.claim_table("catalog.schema.table", config)
-        
         update_call = mock_spark_instance.sql.call_args_list[0][0][0]
         assert "INTERVAL 120 MINUTES" in update_call
 
@@ -587,63 +613,128 @@ class TestClaimTableCleanupOverride:
     """Test claim_table cleanup_control_table override."""
 
     def setup_method(self):
-        """Import the function under test."""
-        from src.dbxmetagen.processing import claim_table
+        from dbxmetagen.processing import claim_table
         self.claim_table = claim_table
 
-    @patch("src.dbxmetagen.processing.SparkSession")
-    @patch("src.dbxmetagen.processing.get_control_table")
+    @patch("dbxmetagen.processing.SparkSession")
+    @patch("dbxmetagen.processing.get_control_table")
     def test_claim_table_cleanup_overrides_existing_claim(self, mock_get_control, mock_spark):
         """Test that cleanup_control_table=true allows claiming any table."""
         mock_get_control.return_value = "control_table"
         mock_spark_instance = mock_spark.builder.getOrCreate.return_value
-        
         mock_spark_instance.sql.return_value.collect.return_value = [
             {"_claimed_by": "task_123"}
         ]
-        
         config = MagicMock()
         config.task_id = "task_123"
+        config.mode = "comment"
         config.catalog_name = "test_catalog"
         config.schema_name = "test_schema"
         config.cleanup_control_table = True
         config.claim_timeout_minutes = 60
-        
         result = self.claim_table("catalog.schema.table", config)
         assert result is True
-        
-        # Verify WHERE clause is simplified (no claim conditions)
         update_call = mock_spark_instance.sql.call_args_list[0][0][0]
         assert "WHERE table_name = 'catalog.schema.table'" in update_call
-        # Should NOT have the complex claim conditions
         assert "_claimed_by IS NULL" not in update_call
         assert "INTERVAL" not in update_call
 
-    @patch("src.dbxmetagen.processing.SparkSession")
-    @patch("src.dbxmetagen.processing.get_control_table")
+    @patch("dbxmetagen.processing.SparkSession")
+    @patch("dbxmetagen.processing.get_control_table")
     def test_claim_table_normal_mode_has_conditions(self, mock_get_control, mock_spark):
         """Test that cleanup_control_table=false includes all claim conditions."""
         mock_get_control.return_value = "control_table"
         mock_spark_instance = mock_spark.builder.getOrCreate.return_value
-        
         mock_spark_instance.sql.return_value.collect.return_value = [
             {"_claimed_by": "task_123"}
         ]
-        
         config = MagicMock()
         config.task_id = "task_123"
+        config.mode = "comment"
         config.catalog_name = "test_catalog"
         config.schema_name = "test_schema"
         config.cleanup_control_table = False
         config.claim_timeout_minutes = 60
-        
         self.claim_table("catalog.schema.table", config)
-        
         update_call = mock_spark_instance.sql.call_args_list[0][0][0]
-        # Should have all three claim conditions
         assert "_claimed_by IS NULL" in update_call
         assert "_claimed_by = 'task_123'" in update_call
         assert "INTERVAL 60 MINUTES" in update_call
+
+
+class TestApplyDdlParallelValidation:
+    """Test that apply_ddl=true with concurrent task execution raises ValueError."""
+
+    def test_apply_ddl_true_with_task_id_raises(self):
+        """apply_ddl=true + task_id should raise ValueError."""
+        from dbxmetagen.main import main
+        
+        kwargs = {
+            "skip_yaml_loading": True,
+            "catalog_name": "test_catalog",
+            "table_names": "test_catalog.schema.table",
+            "apply_ddl": "true",
+            "task_id": "task_123",
+            "mode": "comment",
+        }
+        with pytest.raises(ValueError, match="apply_ddl=true is not supported with concurrent task execution"):
+            main(kwargs)
+
+    def test_apply_ddl_false_with_task_id_does_not_raise(self):
+        """apply_ddl=false + task_id should NOT raise (valid parallel config)."""
+        config = MetadataConfig(
+            skip_yaml_loading=True,
+            apply_ddl="false",
+            task_id="task_123",
+            mode="comment",
+        )
+        # No error means the config is valid
+        assert config.apply_ddl is False
+        assert config.task_id == "task_123"
+
+    def test_apply_ddl_true_without_task_id_does_not_raise(self):
+        """apply_ddl=true without task_id should NOT raise (single-mode execution)."""
+        config = MetadataConfig(
+            skip_yaml_loading=True,
+            apply_ddl="true",
+            task_id=None,
+            mode="comment",
+        )
+        assert config.apply_ddl is True
+
+
+class TestModeAwareClaimDifferentModes:
+    """Test that different modes can independently claim the same table."""
+
+    def setup_method(self):
+        from dbxmetagen.processing import claim_table
+        self.claim_table = claim_table
+
+    @patch("dbxmetagen.processing.SparkSession")
+    @patch("dbxmetagen.processing.get_control_table")
+    def test_different_modes_use_different_filters(self, mock_get_control, mock_spark):
+        """Two modes should produce different _mode filters in claim SQL."""
+        mock_get_control.return_value = "control_table"
+        mock_spark_instance = mock_spark.builder.getOrCreate.return_value
+        mock_spark_instance.sql.return_value.collect.return_value = [
+            {"_claimed_by": "task_a"}
+        ]
+
+        for mode_val, task in [("comment", "task_a"), ("pi", "task_b"), ("domain", "task_c")]:
+            mock_spark_instance.sql.reset_mock()
+            mock_spark_instance.sql.return_value.collect.return_value = [
+                {"_claimed_by": task}
+            ]
+            config = MagicMock()
+            config.task_id = task
+            config.mode = mode_val
+            config.catalog_name = "cat"
+            config.schema_name = "sch"
+            
+            self.claim_table("cat.sch.tbl", config)
+            
+            update_sql = mock_spark_instance.sql.call_args_list[0][0][0]
+            assert f"_mode = '{mode_val}'" in update_sql
 
 
 if __name__ == "__main__":

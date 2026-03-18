@@ -1,10 +1,10 @@
 """Benchmarking utilities for tracking token usage."""
 
-import uuid
+import warnings
 import mlflow
 from mlflow import MlflowClient
 from pyspark.sql import SparkSession
-from datetime import datetime, timedelta
+from datetime import datetime
 from pyspark.sql.types import (
     StructType,
     StructField,
@@ -15,29 +15,30 @@ from pyspark.sql.types import (
 
 
 def setup_benchmarking(config):
-    """Setup benchmarking with run_id tagging."""
+    """Setup benchmarking with run_id tagging.
+    
+    Returns a tuple of (experiment_name, run_start_time_ms) or None if disabled.
+    """
     if not getattr(config, "enable_benchmarking", False):
         return None
 
     # Enable autologging
     mlflow.openai.autolog()
 
+    # Start an MLflow run BEFORE resolving experiment name so the fallback works
+    if not mlflow.active_run():
+        mlflow.start_run()
+
+    run_start_time_ms = mlflow.active_run().info.start_time
+
     notebook_path = config.notebook_path
     experiment_name = (
         notebook_path
         if notebook_path
-        else (
-            mlflow.get_experiment(mlflow.active_run().info.experiment_id).name
-            if mlflow.active_run()
-            else None
-        )
+        else mlflow.get_experiment(mlflow.active_run().info.experiment_id).name
     )
 
-    # Start an MLflow run if not already active, and set run_id tag
-    if not mlflow.active_run():
-        mlflow.start_run()
-
-    # Set run_id as a tag for filtering traces later
+    # Set run_id as a tag for informational purposes
     if (
         hasattr(config, "run_id")
         and config.run_id
@@ -47,12 +48,12 @@ def setup_benchmarking(config):
         mlflow.set_tag("job_id", str(config.job_id) if config.job_id else "unknown")
         print(f"Benchmarking enabled with run_id: {config.run_id}")
     else:
-        print("Benchmarking enabled without run_id (will use time-based filtering)")
+        print("Benchmarking enabled (time-based trace filtering)")
 
-    return experiment_name
+    return experiment_name, run_start_time_ms
 
 
-def log_token_usage(config, experiment_name: str):
+def log_token_usage(config, experiment_name: str, run_start_time_ms: int = 0):
     """Log token usage from MLflow traces to a Delta table."""
 
     if not getattr(config, "enable_benchmarking", False):
@@ -66,32 +67,16 @@ def log_token_usage(config, experiment_name: str):
 
         client = MlflowClient()
 
-        # Build filter to get traces from this run if run_id is available
-        filter_string = None
-        if (
-            hasattr(config, "run_id")
-            and config.run_id
-            and str(config.run_id).lower() != "none"
-        ):
-            filter_string = f"tags.run_id = '{config.run_id}'"
-            print(f"Filtering traces by run_id: {config.run_id}")
-        else:
-            print("No run_id available, using time-based filtering only")
-
+        # Search all traces in the experiment (no tag filter -- run tags != trace tags)
         traces = client.search_traces(
             experiment_ids=[exp.experiment_id],
-            filter_string=filter_string,
             max_results=50,
         )
 
-        # Also filter by time (last hour) as a fallback
-        one_hour_ago = datetime.now() - timedelta(minutes=60)
-        recent_traces = [
-            trace
-            for trace in traces
-            if datetime.fromtimestamp(trace.info.timestamp_ms / 1000) >= one_hour_ago
+        # Filter to traces created after this run started
+        traces = [
+            t for t in traces if t.info.timestamp_ms >= run_start_time_ms
         ]
-        traces = recent_traces
 
         if not traces:
             print("No traces found, skipping benchmarking")
@@ -175,7 +160,9 @@ def log_token_usage(config, experiment_name: str):
             print("No token usage data found in traces")
 
     except Exception as e:
-        print(f"Benchmarking failed: {e}")
+        msg = f"Benchmarking failed: {e}"
+        print(msg)
+        warnings.warn(msg, stacklevel=2)
     finally:
         # End the MLflow run if one was started
         if mlflow.active_run():

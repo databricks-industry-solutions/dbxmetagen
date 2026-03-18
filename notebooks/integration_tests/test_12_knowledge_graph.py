@@ -19,7 +19,7 @@
 # COMMAND ----------
 
 import sys
-sys.path.append("../../")
+sys.path.append("../../src")  # For git-clone or DAB deployment; pip-installed package works without this
 
 from datetime import datetime
 from pyspark.sql import Row
@@ -124,7 +124,7 @@ print(f"[SETUP] Inserted {len(test_kb_data)} test records")
 
 # COMMAND ----------
 
-from src.dbxmetagen.knowledge_graph import (
+from dbxmetagen.knowledge_graph import (
     KnowledgeGraphConfig,
     KnowledgeGraphBuilder,
     build_knowledge_graph

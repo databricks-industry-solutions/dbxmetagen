@@ -1,13 +1,16 @@
 from abc import ABC, abstractmethod
 import json
+import logging
 import mlflow
 from pydantic import ValidationError
-from typing import Tuple, Dict, List, Any, Union, Optional
+from typing import Literal, Tuple, Dict, List, Any, Union, Optional
 from openai.types.chat.chat_completion import ChatCompletion
 from pydantic import BaseModel, ConfigDict, field_validator
-from src.dbxmetagen.config import MetadataConfig
-from src.dbxmetagen.error_handling import exponential_backoff
-from src.dbxmetagen.chat_client import ChatClientFactory
+from dbxmetagen.config import MetadataConfig
+from dbxmetagen.error_handling import exponential_backoff
+from dbxmetagen.chat_client import ChatClientFactory
+
+logger = logging.getLogger(__name__)
 
 
 class Response(BaseModel):
@@ -16,10 +19,31 @@ class Response(BaseModel):
     columns: List[str]
 
 
+PI_CLASSIFICATIONS = Literal["pi", "phi", "pci", "medical_information", "None"]
+_VALID_CLASSIFICATIONS = {"pi", "phi", "pci", "medical_information", "None"}
+
 class PIColumnContent(BaseModel):
-    classification: str
+    classification: PI_CLASSIFICATIONS
     type: str
     confidence: float
+
+    @field_validator("classification", mode="before")
+    @classmethod
+    def normalize_classification(cls, v: str) -> str:
+        mapping = {
+            "pii": "pi", "personally_identifiable_information": "pi",
+            "protected_health_information": "phi",
+            "payment_card_information": "pci", "payment_card_industry": "pci",
+            "medical": "medical_information", "medical_info": "medical_information",
+            "none": "None", "null": "None", "n/a": "None", "": "None",
+            "non-pii/phi/pci": "None", "non_pii": "None",
+        }
+        normalized = str(v).strip().lower()
+        result = mapping.get(normalized, normalized)
+        if result not in _VALID_CLASSIFICATIONS:
+            logger.warning("Unexpected PII classification '%s' from LLM, defaulting to 'None'", v)
+            return "None"
+        return result
 
 
 class PIResponse(Response):
@@ -42,29 +66,39 @@ class CommentResponse(Response):
             if isinstance(s, str):
                 stripped = s.strip()
                 if stripped.startswith("["):
-                    # Handle truncated arrays - LLM sometimes outputs stringified array
-                    # that gets cut off before the closing ]
                     if not stripped.endswith("]"):
                         if stripped.endswith('"') or stripped.endswith("'"):
                             stripped = stripped + "]"
-                    
-                    # Try parsing, with fallback for extra trailing brackets
-                    # LLM sometimes outputs "["a", "b"]]" with extra ]
-                    for attempt in range(3):  # Try removing up to 2 extra brackets
+                        else:
+                            last = stripped.rfind('",')
+                            if last == -1:
+                                last = stripped.rfind("',")
+                            if last > 0:
+                                stripped = stripped[: last + 1] + "]"
+
+                    _to_list = lambda parsed: [
+                        str(item) if not isinstance(item, str) else item
+                        for item in parsed
+                    ]
+
+                    for attempt in range(3):
                         try:
                             parsed = json.loads(stripped)
                             if isinstance(parsed, list):
-                                return True, [
-                                    str(item) if not isinstance(item, str) else item
-                                    for item in parsed
-                                ]
+                                return True, _to_list(parsed)
                             break
                         except json.JSONDecodeError:
-                            # If ends with ]] or ]]], try removing extra bracket
-                            if stripped.endswith("]]"):
+                            if attempt == 0:
+                                stripped = stripped.replace('\n', ' ').replace('\r', ' ').replace('\t', ' ')
+                            elif stripped.endswith("]]"):
                                 stripped = stripped[:-1]
                             else:
                                 break
+
+                    import re
+                    elements = re.findall(r'"((?:[^"\\]|\\.)*)"', stripped)
+                    if elements:
+                        return True, elements
             return False, s
 
         if isinstance(v, str):
@@ -92,7 +126,10 @@ class CommentResponse(Response):
                 if success:
                     expanded.extend(result)
                 else:
-                    expanded.append(str(item) if not isinstance(item, str) else item)
+                    if isinstance(item, list):
+                        expanded.append("\n\n".join(str(x) for x in item))
+                    else:
+                        expanded.append(str(item) if not isinstance(item, str) else item)
             return expanded
         else:
             raise ValueError(
@@ -248,7 +285,7 @@ class CommentGenerator(MetadataGenerator):
         else:
             try:
                 dict_keys = dict_list.keys()
-            except:
+            except Exception:
                 raise TypeError("dict_list is not a list or a dictionary")
         list_matches_keys = all(item in dict_keys for item in string_list)
         keys_match_list = all(key in string_list for key in dict_keys)
@@ -322,7 +359,7 @@ class PIIdentifier(MetadataGenerator):
                 )
             else:
                 raise ValueError(
-                    f"Validation error after %s attempts: %s", max_retries, e
+                    f"Validation error after {max_retries} attempts: {e}"
                 )
 
     def _get_chat_completion(
@@ -375,7 +412,7 @@ class PIIdentifier(MetadataGenerator):
         else:
             try:
                 dict_keys = dict_list.keys()
-            except:
+            except Exception:
                 raise TypeError("dict_list is not a list or a dictionary")
         list_matches_keys = all(item in dict_keys for item in string_list)
         keys_match_list = all(key in string_list for key in dict_keys)

@@ -1,11 +1,12 @@
 """Processing utilities shared among modules."""
 
+import csv
 import os
 import shutil
 import re
 from abc import ABC
 from datetime import datetime
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Optional, Tuple
 import logging
 import mlflow
 import nest_asyncio
@@ -57,12 +58,12 @@ except ImportError:
     TokenUsageStats = None
     ChatResponse = None
 from grpc._channel import _InactiveRpcError, _MultiThreadedRendezvous
-from src.dbxmetagen.config import MetadataConfig
-from src.dbxmetagen.sampling import determine_sampling_ratio
-from src.dbxmetagen.prompts import Prompt, PIPrompt, CommentPrompt, PromptFactory
-from src.dbxmetagen.error_handling import exponential_backoff, validate_csv
-from src.dbxmetagen.comment_summarizer import TableCommentSummarizer
-from src.dbxmetagen.metadata_generator import (
+from dbxmetagen.config import MetadataConfig
+from dbxmetagen.sampling import determine_sampling_ratio
+from dbxmetagen.prompts import Prompt, PIPrompt, CommentPrompt, PromptFactory
+from dbxmetagen.error_handling import exponential_backoff, validate_csv
+from dbxmetagen.comment_summarizer import TableCommentSummarizer
+from dbxmetagen.metadata_generator import (
     Response,
     PIResponse,
     CommentResponse,
@@ -72,14 +73,14 @@ from src.dbxmetagen.metadata_generator import (
     MetadataGenerator,
     CommentGenerator,
 )
-from src.dbxmetagen.overrides import (
+from dbxmetagen.overrides import (
     override_metadata_from_csv,
     apply_overrides_with_joins,
     build_condition,
     get_join_conditions,
 )
-from src.dbxmetagen.user_utils import sanitize_user_identifier, get_current_user
-from src.dbxmetagen.domain_classifier import load_domain_config, classify_table_domain
+from dbxmetagen.user_utils import sanitize_user_identifier, get_current_user
+from dbxmetagen.domain_classifier import load_domain_config, classify_table_domain
 
 logging.basicConfig(
     level=logging.WARNING,
@@ -213,7 +214,13 @@ def chunk_df(df: DataFrame, columns_per_call: int = 5) -> List[DataFrame]:
 
 
 def get_extended_metadata_for_column(config, table_name, column_name):
-    """Get extended metadata for a column."""
+    """Get extended metadata for a column.
+
+    Returns None when federation_mode is enabled since DESCRIBE EXTENDED
+    is not supported on federated tables.
+    """
+    if getattr(config, "federation_mode", False):
+        return None
     spark = SparkSession.builder.getOrCreate()
     query = f"""DESCRIBE EXTENDED {config.catalog_name}.{config.schema_name}.{table_name} `{column_name}`;"""
     return spark.sql(query)
@@ -263,19 +270,19 @@ def read_table_with_type_conversion(
     for col_name, col_type in column_types.items():
         if col_type == "BINARY":
             # Convert BINARY to base64 string, truncated to 50 chars (enough for LLM identification)
-            print(f"Converting BINARY column '{col_name}' to base64 string (truncated)")
+            logger.debug(f"Converting BINARY column '{col_name}' to base64 string (truncated)")
             select_exprs.append(f"substr(base64(`{col_name}`), 1, 50) AS `{col_name}`")
             has_special_types = True
         elif col_type == "VARIANT":
             # Convert VARIANT to JSON string using to_json()
-            print(
+            logger.debug(
                 f"Converting VARIANT column '{col_name}' to JSON string using to_json()"
             )
             select_exprs.append(f"to_json(`{col_name}`) AS `{col_name}`")
             has_special_types = True
         elif col_type.upper().startswith("TIMESTAMP"):
             # Convert TIMESTAMP to string to avoid Arrow overflow on out-of-range dates (e.g., 9999-12-31)
-            print(f"Converting TIMESTAMP column '{col_name}' to string")
+            logger.debug(f"Converting TIMESTAMP column '{col_name}' to string")
             select_exprs.append(f"CAST(`{col_name}` AS STRING) AS `{col_name}`")
             has_special_types = True
         else:
@@ -311,8 +318,8 @@ def convert_special_types_to_string(df: DataFrame) -> DataFrame:
         schema_fields = df.schema.fields
     except Exception as e:
         # Schema access can fail with VARIANT types in Spark Connect
-        print(
-            f"Warning: Could not access DataFrame schema ({e}). "
+        logger.warning(
+            f"Could not access DataFrame schema ({e}). "
             "Special types may not be converted. Use read_table_with_type_conversion() instead."
         )
         return df
@@ -323,7 +330,7 @@ def convert_special_types_to_string(df: DataFrame) -> DataFrame:
 
         # Handle BINARY type - encode as base64, truncated to 50 chars (enough for LLM identification)
         if isinstance(col_type, BinaryType):
-            print(f"Converting BINARY column '{col_name}' to base64 string (truncated)")
+            logger.debug(f"Converting BINARY column '{col_name}' to base64 string (truncated)")
             df = df.withColumn(col_name, expr(f"substr(base64(`{col_name}`), 1, 50)"))
 
         # Handle VARIANT type - convert to JSON string using to_json()
@@ -337,7 +344,7 @@ def convert_special_types_to_string(df: DataFrame) -> DataFrame:
                 or "UNPARSED" in type_str
                 or "UNPARSED" in type_class
             ):
-                print(
+                logger.warning(
                     f"Converting VARIANT column '{col_name}' (type: {col_type}) to JSON string using to_json()"
                 )
                 df = df.withColumn(col_name, to_json(col(col_name)))
@@ -376,15 +383,14 @@ def sample_df(df: DataFrame, nrows: int, sample_size: int = 5) -> DataFrame:
     )
     result_rows = filtered_df.count()
     if result_rows < sample_size:
-        print(
-            "Not enough non-NULL rows, returning available rows, despite large proportion of NULLs. Result rows:",
+        logger.warning(
+            "Not enough non-NULL rows, returning available rows, despite large proportion of NULLs. Result rows: %s vs sample size: %s",
             result_rows,
-            "vs sample size:",
             sample_size,
         )
         return df.limit(sample_size)
 
-    print(f"Filtering {result_rows} result rows down to {sample_size} rows...")
+    logger.info(f"Filtering {result_rows} result rows down to {sample_size} rows...")
     return filtered_df.limit(sample_size)
 
 
@@ -501,10 +507,10 @@ def append_column_rows(
             for result in presidio_data.get("deterministic_results", []):
                 col = result.get("column")
                 presidio_map[col] = json.dumps(result)
-            print(f"Mapped presidio results for {len(presidio_map)} columns")
+            logger.info(f"Mapped presidio results for {len(presidio_map)} columns")
         except Exception as e:
             # Security: Do not log raw presidio data
-            print(f"Failed to parse presidio results: {e}")
+            logger.error(f"Failed to parse presidio results: {e}")
             logger.debug("Presidio parsing error details: %s", str(e)[:200])
 
     for i, (column_name, column_content) in enumerate(
@@ -626,7 +632,7 @@ def rows_to_df(rows: List[Row], config: MetadataConfig) -> DataFrame:
                     test_df = spark.createDataFrame([row], schema)
                 except Exception as row_error:
                     # Security: Do not log actual row data (may contain PII/PHI/PCI)
-                    print(
+                    logger.error(
                         f"Problematic row at index {i}: Schema mismatch - check field types"
                     )
                     logger.debug("Row error details: %s", str(row_error)[:200])
@@ -771,7 +777,7 @@ def df_to_sql_file(
     Returns:
         str: The path to the SQL file.
     """
-    print("Converting dataframe to SQL file using Spark-native operations...")
+    logger.info("Converting dataframe to SQL file using Spark-native operations...")
     selected_column_df = df.select(sql_column)
     uc_volume_path = f"/Volumes/{catalog_name}/{dest_schema_name}/{filename}.sql"
 
@@ -868,7 +874,7 @@ def df_column_to_excel_file(
                 f"Excel file was not created: {excel_file_path}"
             )
 
-        print(f"Excel file created at: {excel_file_path}")
+        logger.info(f"Excel file created at: {excel_file_path}")
         return excel_file_path
 
     except Exception as e:
@@ -917,6 +923,22 @@ def populate_log_table(df, config, current_user, base_path):
     return result_df
 
 
+def add_column_if_not_exists(spark, table_name, col_name, col_type):
+    """ADD COLUMN with graceful handling for older DBR without IF NOT EXISTS.
+    Also handles concurrent ALTER from parallel tasks hitting the same table."""
+    existing = {f.name for f in spark.table(table_name).schema.fields}
+    if col_name in existing:
+        return
+    try:
+        spark.sql(f"ALTER TABLE {table_name} ADD COLUMN {col_name} {col_type}")
+    except Exception as e:
+        err = str(e)
+        if "already exists" in err.lower() or "COLUMN_ALREADY_EXISTS" in err or "DELTA_METADATA_CHANGED" in err:
+            pass
+        else:
+            raise
+
+
 def get_control_table(config: MetadataConfig) -> str:
     """
     Returns the control table name based on the provided configuration.
@@ -950,6 +972,7 @@ def mark_as_deleted(table_name: str, config: MetadataConfig) -> None:
     control_table = (
         f"{config.catalog_name}.{config.schema_name}.{formatted_control_table}"
     )
+    mode = config.mode or "comment"
     update_query = f"""
     UPDATE {control_table}
     SET _deleted_at = current_timestamp(),
@@ -957,9 +980,10 @@ def mark_as_deleted(table_name: str, config: MetadataConfig) -> None:
         _status = 'completed',
         _claimed_by = NULL
     WHERE table_name = '{table_name}'
+      AND (_mode = '{mode}' OR _mode IS NULL)
     """
     spark.sql(update_query)
-    print(f"Marked {table_name} as deleted in the control table...")
+    logger.info(f"Marked {table_name} as deleted in the control table...")
 
 
 def claim_table(table_name: str, config: MetadataConfig, max_retries: int = 3) -> bool:
@@ -1000,19 +1024,20 @@ def claim_table(table_name: str, config: MetadataConfig, max_retries: int = 3) -
         # No task_id means not running in concurrent mode, allow processing
         return True
     
-    # Build WHERE clause based on mode
+    mode = config.mode or "comment"
+    
     if cleanup_mode:
-        # Override mode: claim regardless of existing claims
-        where_clause = f"WHERE table_name = '{table_name}'"
+        where_clause = f"WHERE table_name = '{table_name}' AND (_mode = '{mode}' OR _mode IS NULL)"
     else:
-        # Normal mode: claim if unclaimed, self-owned, or timed out
         where_clause = f"""WHERE table_name = '{table_name}'
+      AND (_mode = '{mode}' OR _mode IS NULL)
       AND (
         _claimed_by IS NULL
         OR _claimed_by = '{task_id}'
         OR _claimed_at < current_timestamp() - INTERVAL {timeout_minutes} MINUTES
-      )"""
-    
+      )
+      AND (_status IS NULL OR _status IN ('queued', 'failed', 'completed'))"""
+
     claim_query = f"""
     UPDATE {control_table}
     SET _claimed_by = '{task_id}',
@@ -1025,6 +1050,7 @@ def claim_table(table_name: str, config: MetadataConfig, max_retries: int = 3) -
     verify_query = f"""
     SELECT _claimed_by FROM {control_table}
     WHERE table_name = '{table_name}'
+      AND (_mode = '{mode}' OR _mode IS NULL)
     """
     
     for attempt in range(max_retries):
@@ -1035,21 +1061,21 @@ def claim_table(table_name: str, config: MetadataConfig, max_retries: int = 3) -
             result = spark.sql(verify_query).collect()
             
             if result and result[0]["_claimed_by"] == task_id:
-                print(f"Successfully claimed table {table_name} for task {task_id}")
+                logger.info(f"Successfully claimed table {table_name} for task {task_id}")
                 return True
             else:
                 claimed_by = result[0]["_claimed_by"] if result else "unknown"
-                print(f"Table {table_name} already claimed by {claimed_by}, skipping...")
+                logger.info(f"Table {table_name} already claimed by {claimed_by}, skipping...")
                 return False
         except Exception as e:
             error_str = str(e)
             if "ConcurrentAppendException" in error_str or "DELTA_CONCURRENT" in error_str or "ConcurrentModificationException" in error_str:
                 if attempt < max_retries - 1:
                     wait_time = (2 ** attempt) + random.uniform(0, 1)
-                    print(f"Concurrent conflict during claim, retrying in {wait_time:.2f}s (attempt {attempt + 1}/{max_retries})")
+                    logger.warning(f"Concurrent conflict during claim, retrying in {wait_time:.2f}s (attempt {attempt + 1}/{max_retries})")
                     time.sleep(wait_time)
                 else:
-                    print(f"Failed to claim {table_name} after {max_retries} attempts due to concurrent conflicts")
+                    logger.error(f"Failed to claim {table_name} after {max_retries} attempts due to concurrent conflicts")
                     return False
             else:
                 raise
@@ -1070,6 +1096,7 @@ def mark_table_completed(table_name: str, config: MetadataConfig) -> None:
     control_table = (
         f"{config.catalog_name}.{config.schema_name}.{formatted_control_table}"
     )
+    mode = config.mode or "comment"
     
     update_query = f"""
     UPDATE {control_table}
@@ -1078,9 +1105,10 @@ def mark_table_completed(table_name: str, config: MetadataConfig) -> None:
         _updated_at = current_timestamp()
     WHERE table_name = '{table_name}'
       AND _run_id = '{config.run_id}'
+      AND (_mode = '{mode}' OR _mode IS NULL)
     """
     spark.sql(update_query)
-    print(f"Marked table {table_name} as completed")
+    logger.info(f"Marked table {table_name} as completed")
 
 
 def mark_table_failed(table_name: str, config: MetadataConfig, error_message: str = None) -> None:
@@ -1097,6 +1125,7 @@ def mark_table_failed(table_name: str, config: MetadataConfig, error_message: st
     control_table = (
         f"{config.catalog_name}.{config.schema_name}.{formatted_control_table}"
     )
+    mode = config.mode or "comment"
     
     # Escape single quotes in error message to prevent SQL injection
     safe_error = error_message.replace("'", "''") if error_message else None
@@ -1108,9 +1137,10 @@ def mark_table_failed(table_name: str, config: MetadataConfig, error_message: st
         _updated_at = current_timestamp(){error_clause}
     WHERE table_name = '{table_name}'
       AND _run_id = '{config.run_id}'
+      AND (_mode = '{mode}' OR _mode IS NULL)
     """
     spark.sql(update_query)
-    print(f"Marked table {table_name} as failed: {error_message or 'No error message'}")
+    logger.warning(f"Marked table {table_name} as failed: {error_message or 'No error message'}")
 
 
 def run_log_table_ddl(config):
@@ -1152,8 +1182,13 @@ def run_log_table_ddl(config):
 
 def output_df_pandas_to_tsv(df, output_file):
     pandas_df = df.toPandas()
+    for col in pandas_df.select_dtypes(include=["object"]).columns:
+        pandas_df[col] = pandas_df[col].str.replace(r"\r?\n", " ", regex=True)
     write_header = not os.path.exists(output_file)
-    pandas_df.to_csv(output_file, sep="\t", header=write_header, index=False, mode="a")
+    pandas_df.to_csv(
+        output_file, sep="\t", header=write_header, index=False, mode="a",
+        quoting=csv.QUOTE_MINIMAL, quotechar='"', doublequote=True,
+    )
 
 
 def _export_table_to_tsv(df, config):
@@ -1523,19 +1558,6 @@ def write_ddl_to_volume_spark_native(
         )
 
     if output_format in ["sql", "tsv"]:
-        nrows = df.count()
-        try:
-            df.select("ddl").toPandas()
-        except Exception as e:
-            print(f"Error: {e}")
-            raise ValueError(f"Error: {e}")
-        try:
-            df.select("ddl").coalesce(1)
-        except Exception as e:
-            print(f"Error: {e}")
-            raise ValueError(f"Error: {e}")
-
-        # Use collect() - the original approach that worked on traditional clusters
         ddl_statements = df.select("ddl").collect()
 
         # Write using simple Python file I/O
@@ -1819,6 +1841,95 @@ def create_and_persist_ddl(
         log_metadata_generation(column_df, config, table_name, base_path)
 
 
+_lineage_unavailable = False
+
+
+def _mark_lineage_unavailable(exc: Exception) -> None:
+    """Log once and suppress further system.access.table_lineage attempts."""
+    global _lineage_unavailable
+    if not _lineage_unavailable:
+        msg = (
+            f"[dbxmetagen] Lineage data unavailable: {exc}\n"
+            "  You may not have access to system.access.table_lineage.\n"
+            "  Continuing without lineage context for this run.\n"
+            "  Set include_lineage=false to suppress this warning."
+        )
+        logger.warning(msg)
+        print(msg)
+        _lineage_unavailable = True
+
+
+def fetch_lineage(
+    spark: "SparkSession",
+    table_name: str,
+    limit: int = 10,
+    catalog_name: str = None,
+    schema_name: str = None,
+) -> Optional[Dict[str, Any]]:
+    """Return upstream/downstream tables for *table_name*.
+
+    When *catalog_name* and *schema_name* are provided, the function first
+    tries to read cached lineage from ``extended_table_metadata`` (fast,
+    no system-table permissions required).  On any failure it falls back to
+    the live ``system.access.table_lineage`` queries.
+    """
+    parts = table_name.split(".")
+    if len(parts) != 3:
+        return None
+    cat, sch, tbl = parts
+
+    # --- try cached lineage from extended_table_metadata first ---
+    if catalog_name and schema_name:
+        try:
+            row = spark.sql(
+                f"SELECT upstream_tables, downstream_tables "
+                f"FROM {catalog_name}.{schema_name}.extended_table_metadata "
+                f"WHERE table_name = '{table_name}' LIMIT 1"
+            ).collect()
+            if row:
+                up = row[0]["upstream_tables"] or []
+                down = row[0]["downstream_tables"] or []
+                if up or down:
+                    return {"upstream_tables": list(up), "downstream_tables": list(down)}
+        except Exception:
+            pass  # fall through to system table
+
+    # --- live system table query ---
+    if _lineage_unavailable:
+        return None
+    try:
+        up = [
+            r[0]
+            for r in spark.sql(f"""
+                SELECT DISTINCT CONCAT(source_table_catalog, '.', source_table_schema, '.', source_table_name)
+                FROM system.access.table_lineage
+                WHERE target_table_catalog = '{cat}'
+                  AND target_table_schema  = '{sch}'
+                  AND target_table_name    = '{tbl}'
+                  AND source_table_name IS NOT NULL
+                LIMIT {limit}
+            """).collect()
+        ]
+        down = [
+            r[0]
+            for r in spark.sql(f"""
+                SELECT DISTINCT CONCAT(target_table_catalog, '.', target_table_schema, '.', target_table_name)
+                FROM system.access.table_lineage
+                WHERE source_table_catalog = '{cat}'
+                  AND source_table_schema  = '{sch}'
+                  AND source_table_name    = '{tbl}'
+                  AND target_table_name IS NOT NULL
+                LIMIT {limit}
+            """).collect()
+        ]
+        if not up and not down:
+            return None
+        return {"upstream_tables": up, "downstream_tables": down}
+    except Exception as e:
+        _mark_lineage_unavailable(e)
+        return None
+
+
 # TODO: Update this to use get_generated_metadata_data_unaware() if sample size is 0 so Presidio can still use data.
 def get_domain_classification(
     config: MetadataConfig, full_table_name: str
@@ -1839,10 +1950,42 @@ def get_domain_classification(
 
     spark = SparkSession.builder.getOrCreate()
 
-    domain_config = load_domain_config(config.domain_config_path)
+    domain_config = load_domain_config(
+        config_path=config.domain_config_path if config.domain_config_path else None,
+        bundle_path=getattr(config, "ontology_bundle", None) if not config.domain_config_path else None,
+    )
 
-    # Use SQL-based reading with type conversion to handle VARIANT in Spark Connect
-    df = read_table_with_type_conversion(spark, full_table_name)
+    try:
+        df = read_table_with_type_conversion(spark, full_table_name)
+    except Exception as e:
+        print(f"Skipping domain classification for {full_table_name}: unable to read table ({e})")
+        return {"domain": "unknown", "confidence": 0.0, "reasoning": f"Table unreadable: {e}"}
+
+    # --- Audit / system column filtering ---
+    # The ``domain_column_blacklist`` config variable (comma-separated string)
+    # lists column names to drop before domain classification so that
+    # ubiquitous system/audit columns (e.g. _updated_at, created_at) don't
+    # dilute the signal the LLM uses for domain prediction.
+    #
+    # Configure via:
+    #   - DAB variables.yml  →  domain_column_blacklist: "_updated_at,created_at,adh_created"
+    #   - Notebook widget    →  dbutils.widgets.text("domain_column_blacklist", "...")
+    #
+    # Only affects domain mode; comment and PII modes are unaffected.
+    raw_blacklist = getattr(config, "domain_column_blacklist", None) or ""
+    blacklist = set(
+        s.strip() for s in (raw_blacklist.split(",") if isinstance(raw_blacklist, str) else raw_blacklist) if s.strip()
+    )
+    if blacklist:
+        keep = [c for c in df.columns if c not in blacklist]
+        if keep:
+            df = df.select(keep)
+        else:
+            logger.warning(
+                "Domain classification: all columns blacklisted for %s, using all columns",
+                full_table_name,
+            )
+
     total_columns = len(df.columns)
 
     # Limit columns for domain classification to avoid massive prompts
@@ -1859,6 +2002,8 @@ def get_domain_classification(
     sampled_df = sample_df(first_chunk_df, first_chunk_df.count(), config.sample_size)
 
     prompt = PromptFactory.create_prompt(config, sampled_df, full_table_name)
+    if getattr(config, "use_kb_comments", False):
+        prompt.enrich_from_knowledge_base()
     prompt_messages = prompt.create_prompt_template()
 
     # Check prompt length to avoid excessive token usage
@@ -1882,6 +2027,13 @@ def get_domain_classification(
             "column_contents", {}
         ).get("table_comments", "")
 
+    if getattr(config, "include_lineage", False):
+        table_metadata["lineage"] = fetch_lineage(
+            spark, full_table_name,
+            catalog_name=getattr(config, "catalog_name", None),
+            schema_name=getattr(config, "schema_name", None),
+        )
+
     # Classify the table
     classification_result = classify_table_domain(
         table_name=full_table_name,
@@ -1890,6 +2042,8 @@ def get_domain_classification(
         model_endpoint=config.model,
         temperature=config.temperature,
         max_tokens=config.max_tokens,
+        two_stage=getattr(config, "two_stage_classification", True),
+        confidence_threshold=getattr(config, "domain_confidence_threshold", 0.5),
     )
 
     return classification_result
@@ -1932,6 +2086,23 @@ def get_generated_metadata(
     return responses
 
 
+def _is_metric_view(spark: SparkSession, full_table_name: str) -> bool:
+    """Return True if *full_table_name* is a Unity Catalog metric view."""
+    parts = full_table_name.split(".")
+    if len(parts) != 3:
+        return False
+    cat, sch, tbl = parts
+    try:
+        df = spark.sql(f"""
+            SELECT table_type FROM `{cat}`.information_schema.tables
+            WHERE table_schema = '{sch}' AND table_name = '{tbl}' LIMIT 1
+        """)
+        rows = df.collect()
+        return bool(rows) and rows[0].table_type in ("METRIC_VIEW", "METRIC VIEW")
+    except Exception:
+        return False
+
+
 def get_generated_metadata_data_aware(
     spark: SparkSession, config: MetadataConfig, full_table_name: str
 ):
@@ -1946,14 +2117,24 @@ def get_generated_metadata_data_aware(
     Returns:
         List[Tuple[PIResponse, CommentResponse]]: A list of tuples containing the generated metadata.
     """
+    if _is_metric_view(spark, full_table_name):
+        print(f"Skipping metric view {full_table_name} (not supported for data-aware metadata generation)")
+        return []
+
     # Use SQL-based reading with type conversion to handle VARIANT in Spark Connect
-    df = read_table_with_type_conversion(spark, full_table_name)
+    try:
+        df = read_table_with_type_conversion(spark, full_table_name)
+    except Exception as e:
+        print(f"Skipping {full_table_name}: unable to read table ({e})")
+        return []
     responses = []
     nrows = df.count()
     chunked_dfs = chunk_df(df, config.columns_per_call)
     for i, chunk in enumerate(chunked_dfs):
         sampled_chunk = sample_df(chunk, nrows, config.sample_size)
         prompt = PromptFactory.create_prompt(config, sampled_chunk, full_table_name)
+        if getattr(config, "use_kb_comments", False):
+            prompt.enrich_from_knowledge_base()
         prompt_messages = prompt.create_prompt_template()
         check_token_length_against_num_words(prompt_messages, config)
         if config.registered_model_name != "default":
@@ -2191,6 +2372,13 @@ def process_and_add_ddl(config: MetadataConfig, table_name: str) -> DataFrame:
     column_df, table_df = review_and_generate_metadata(config, table_name)
     column_df = split_and_hardcode_df(column_df, config)
     table_df = split_and_hardcode_df(table_df, config)
+
+    if column_df is None and table_df is None:
+        logger.warning(
+            f"Skipping {table_name}: no metadata could be generated "
+            "(table may have an unsupported data source format)"
+        )
+        return {}
 
     if config.allow_manual_override and column_df is not None:
         logger.info("Overriding metadata from CSV...")
@@ -2638,6 +2826,7 @@ def create_tables(config: MetadataConfig) -> None:
         spark.sql(
             f"""CREATE TABLE IF NOT EXISTS {config.catalog_name}.{config.schema_name}.{formatted_control_table} (
                 table_name STRING,
+                _mode STRING,
                 _updated_at TIMESTAMP,
                 _deleted_at TIMESTAMP,
                 _job_id STRING,
@@ -2648,6 +2837,9 @@ def create_tables(config: MetadataConfig) -> None:
                 _error_message STRING
             )"""
         )
+        # Backward compat: add _mode column to existing control tables
+        full_control = f"{config.catalog_name}.{config.schema_name}.{formatted_control_table}"
+        add_column_if_not_exists(spark, full_control, "_mode", "STRING")
 
 
 def instantiate_metadata_objects(
@@ -2693,6 +2885,30 @@ class TableProcessingError(Exception):
     """Custom exception for table processing failures."""
 
 
+def table_exists_uc(spark: SparkSession, full_name: str) -> bool:
+    """
+    Check if a table exists in Unity Catalog (UC-safe).
+    spark.catalog.tableExists(full_name) can fail with DATA_SOURCE_NOT_FOUND
+    when full_name is catalog.schema.table; use information_schema instead.
+    """
+    parts = full_name.split(".")
+    if len(parts) != 3:
+        return spark.catalog.tableExists(full_name)
+    catalog_name, schema_name, table_name = parts
+    cat_esc, sch_esc, tbl_esc = (p.replace("'", "''") for p in parts)
+    try:
+        df = spark.sql(
+            f"""
+            SELECT 1 FROM `{catalog_name}`.information_schema.tables
+            WHERE table_catalog = '{cat_esc}' AND table_schema = '{sch_esc}' AND table_name = '{tbl_esc}'
+            LIMIT 1
+            """
+        )
+        return df.count() > 0
+    except Exception:
+        return False
+
+
 def generate_and_persist_metadata(config: Any) -> None:
     """
     Generates and persists comments for tables based on the provided setup and model parameters.
@@ -2720,7 +2936,7 @@ def generate_and_persist_metadata(config: Any) -> None:
                 skipped_tables.append(table)
                 continue
 
-            if not spark.catalog.tableExists(table):
+            if not table_exists_uc(spark, table):
                 msg = f"Table {table} does not exist. Deleting from control table and skipping..."
                 logger.warning(f"[generate_and_persist_metadata] {msg}")
                 mark_as_deleted(table, config)
@@ -2734,14 +2950,20 @@ def generate_and_persist_metadata(config: Any) -> None:
                 }
             else:
                 df = process_and_add_ddl(config, table)
-                logger.info(
-                    f"[generate_and_persist_metadata] Generating and persisting ddl for {table}..."
-                )
-                create_and_persist_ddl(df, config, table)
 
-                # Check if DDL application had any failures
-                status = "Table processed"
-                if config.apply_ddl and "ddl_results" in df:
+                if not df:
+                    status = "Skipped - unsupported data source format"
+                    logger.warning(
+                        f"[generate_and_persist_metadata] {table} returned no metadata (unsupported format), logging and continuing"
+                    )
+                else:
+                    logger.info(
+                        f"[generate_and_persist_metadata] Generating and persisting ddl for {table}..."
+                    )
+                    create_and_persist_ddl(df, config, table)
+                    status = "Table processed"
+
+                if df and config.apply_ddl and "ddl_results" in df:
                     ddl_results = df["ddl_results"]
                     if ddl_results.get("failed_count", 0) > 0:
                         missing_tags = ddl_results.get("missing_tags", [])
@@ -2859,16 +3081,18 @@ def setup_queue(config: MetadataConfig) -> List[str]:
     file_table_names = load_table_names_from_csv(config.source_file_path)
     
     # If include_previously_failed_tables is enabled, also include failed/abandoned tables
-    if spark.catalog.tableExists(control_table) and getattr(config, 'include_previously_failed_tables', False):
+    mode = config.mode or "comment"
+    if table_exists_uc(spark, control_table) and getattr(config, 'include_previously_failed_tables', False):
         timeout_minutes = getattr(config, 'claim_timeout_minutes', 60)
         run_id = config.run_id
         
-        # Build query to get tables that should be retried:
-        # 1. Failed tables from any run
-        # 2. Abandoned tables (in_progress but timed out from OTHER runs)
+        # Build query to get tables that should be retried for THIS mode:
+        # 1. Failed tables from any run (same mode)
+        # 2. Abandoned tables (in_progress but timed out from OTHER runs, same mode)
         retry_query = f"""
         SELECT table_name FROM {control_table} 
         WHERE _deleted_at IS NULL
+          AND (_mode = '{mode}' OR _mode IS NULL)
           AND (
             _status = 'failed'
             OR (
@@ -2924,7 +3148,7 @@ def ensure_fully_scoped_table_names(
 
 
 def upsert_table_names_to_control_table(
-    table_names: List[str], config: MetadataConfig, max_retries: int = 3
+    table_names: List[str], config: MetadataConfig, max_retries: int = 10
 ) -> None:
     """
     Upserts a list of table names into the control table using MERGE for concurrent safety.
@@ -2949,8 +3173,9 @@ def upsert_table_names_to_control_table(
         print("No table names to upsert.")
         return
     
+    mode = config.mode or "comment"
     table_names_df = spark.createDataFrame(
-        [(name,) for name in table_names], ["table_name"]
+        [(name, mode) for name in table_names], ["table_name", "_mode"]
     )
     table_names_df = trim_whitespace_from_df(table_names_df)
     
@@ -2967,16 +3192,20 @@ def upsert_table_names_to_control_table(
     merge_sql = f"""
         MERGE INTO {control_table} target
         USING {temp_view_name} source
-        ON target.table_name = source.table_name
+        ON target.table_name = source.table_name AND target._mode = source._mode
         WHEN NOT MATCHED THEN INSERT (
-            table_name, _updated_at, _deleted_at, _job_id, _run_id, 
+            table_name, _mode, _updated_at, _deleted_at, _job_id, _run_id, 
             _claimed_by, _claimed_at, _status, _error_message
         ) VALUES (
-            source.table_name, current_timestamp(), NULL, '{job_id}', 
+            source.table_name, source._mode, current_timestamp(), NULL, '{job_id}', 
             '{run_id}', NULL, NULL, 'queued', NULL
         )
     """
     
+    # Initial stagger so parallel tasks don't all MERGE at the same instant
+    stagger = random.uniform(0, 2)
+    time.sleep(stagger)
+
     # Retry loop for handling concurrent conflicts
     for attempt in range(max_retries):
         try:
@@ -2987,8 +3216,7 @@ def upsert_table_names_to_control_table(
             error_str = str(e)
             if "ConcurrentAppendException" in error_str or "DELTA_CONCURRENT" in error_str:
                 if attempt < max_retries - 1:
-                    # Exponential backoff with jitter
-                    wait_time = (2 ** attempt) + random.uniform(0, 1)
+                    wait_time = min((2 ** attempt) + random.uniform(0, 2 ** attempt), 30)
                     print(f"Concurrent conflict detected, retrying in {wait_time:.2f}s (attempt {attempt + 1}/{max_retries})")
                     time.sleep(wait_time)
                 else:
@@ -3040,9 +3268,15 @@ def is_schema_wildcard(table_name: str) -> bool:
     return table_name.strip().endswith(".*") and table_name.count(".") == 2
 
 
+_UNREADABLE_FORMATS = frozenset({"VECTOR_INDEX_FORMAT"})
+_UNREADABLE_TABLE_TYPES = frozenset({"METRIC_VIEW", "METRIC VIEW"})
+
+
 def get_tables_in_schema(catalog_name: str, schema_name: str) -> List[str]:
     """
     Get all table names in a given catalog and schema.
+    Excludes metric views and non-readable data source formats (e.g. vector
+    search indexes) that cannot be read with standard SELECT / sample / count.
 
     Args:
         catalog_name (str): The catalog name.
@@ -3054,15 +3288,25 @@ def get_tables_in_schema(catalog_name: str, schema_name: str) -> List[str]:
     spark = SparkSession.builder.getOrCreate()
 
     try:
-        # Use SHOW TABLES to get all tables in the schema
-        tables_df = spark.sql(f"SHOW TABLES IN {catalog_name}.{schema_name}")
+        tables_df = spark.sql(f"""
+            SELECT table_name, table_type, data_source_format
+            FROM `{catalog_name}`.information_schema.tables
+            WHERE table_schema = '{schema_name}'
+              AND table_type NOT IN ('METRIC_VIEW', 'METRIC VIEW')
+        """)
+        rows = tables_df.collect()
 
-        # Extract table names and create fully qualified names
         table_names = []
-        for row in tables_df.collect():
-            table_name = row["tableName"]
-            fully_qualified_name = f"{catalog_name}.{schema_name}.{table_name}"
-            table_names.append(fully_qualified_name)
+        skipped = []
+        for row in rows:
+            fmt = (row.data_source_format or "").upper()
+            if fmt in _UNREADABLE_FORMATS:
+                skipped.append(f"{row.table_name} ({fmt})")
+            else:
+                table_names.append(f"{catalog_name}.{schema_name}.{row.table_name}")
+
+        if skipped:
+            print(f"Skipped {len(skipped)} non-readable objects: {', '.join(skipped)}")
 
         print(f"Found {len(table_names)} tables in schema {catalog_name}.{schema_name}")
         return table_names

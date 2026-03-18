@@ -1,0 +1,405 @@
+# Retail & Consumer Packaged Goods Ontology Bundle
+
+metadata:
+  name: "Retail & CPG"
+  version: "2.0"
+  industry: "retail_cpg"
+  description: "Retail, e-commerce, and CPG ontology with customer, product, and supply chain entity types"
+  standards_alignment: "GS1, Schema.org"
+
+ontology:
+  version: "2.0"
+  name: "Retail & CPG Business Ontology"
+  description: "Entity types for retail operations, e-commerce, merchandising, and supply chain"
+
+  entities:
+    auto_discover: true
+    discovery_confidence_threshold: 0.4
+
+    definitions:
+      # General entities
+      Person:
+        description: "People, customers, contacts, users, or employees"
+        keywords: ["customer", "employee", "user", "contact", "person", "shopper", "member"]
+        typical_attributes: [id, name, email, phone, address, created_date]
+        relationships:
+          part_of: { target: Organization, cardinality: "many-to-one" }
+      Organization:
+        description: "Companies, departments, facilities, or business units"
+        keywords: ["company", "organization", "department", "facility", "tenant", "brand"]
+        typical_attributes: [id, name, type, address, parent_id]
+        relationships:
+          contains: { target: Store, cardinality: "one-to-many" }
+          part_of: { target: Organization, cardinality: "many-to-one" }
+      Transaction:
+        description: "Orders, purchases, payments, invoices, or financial events"
+        keywords: ["transaction", "order", "payment", "invoice", "purchase", "sale", "receipt"]
+        typical_attributes: [id, customer_id, amount, date, status, currency]
+        relationships:
+          placed_by: { target: Customer, cardinality: "many-to-one" }
+      Location:
+        description: "Addresses, sites, regions, facilities, or geographies"
+        keywords: ["location", "address", "site", "region", "facility"]
+        typical_attributes: [id, name, address, city, state, country, zip_code]
+        relationships: {}
+      Event:
+        description: "Activities, logs, sessions, audits, or system events"
+        keywords: ["event", "activity", "log", "audit", "session", "click", "pageview"]
+        typical_attributes: [id, type, timestamp, user_id, details]
+        relationships:
+          references: { target: Customer, cardinality: "many-to-one" }
+      Reference:
+        description: "Lookup tables, codes, categories, dimensions, or configuration"
+        keywords: ["reference", "lookup", "code", "category", "dim_"]
+        typical_attributes: [id, code, name, description, active]
+        relationships: {}
+      Metric:
+        description: "KPIs, aggregates, facts, summaries, or analytic measures"
+        keywords: ["metric", "kpi", "aggregate", "fact_", "summary"]
+        typical_attributes: [id, name, value, period, dimension]
+        relationships: {}
+      Document:
+        description: "Unstructured content, notes, files, or text records"
+        keywords: ["document", "note", "file", "content", "text"]
+        typical_attributes: [id, title, body, author, created_date, type]
+        relationships: {}
+
+      # Retail & CPG entities
+      Customer:
+        description: "Retail customers, loyalty members, or shoppers"
+        keywords: ["customer", "shopper", "member", "loyalty", "buyer", "consumer", "subscriber"]
+        typical_attributes: [id, name, email, loyalty_tier, lifetime_value, segment, first_purchase_date]
+        relationships:
+          places: { target: Order, cardinality: "one-to-many" }
+          has_return: { target: Return, cardinality: "one-to-many" }
+      Product:
+        description: "Retail products, SKUs, items, or merchandise"
+        keywords: ["product", "item", "sku", "merchandise", "upc", "gtin", "ean", "asin"]
+        typical_attributes: [id, sku, name, category, brand, price, weight, upc]
+        relationships:
+          belongs_to: { target: Category, cardinality: "many-to-one" }
+          supplied_by: { target: Supplier, cardinality: "many-to-many" }
+      Order:
+        description: "Customer orders, carts, baskets, or purchase transactions"
+        keywords: ["order", "cart", "basket", "checkout", "purchase_order", "sales_order"]
+        typical_attributes: [id, customer_id, total, status, channel, placed_date, shipped_date]
+        relationships:
+          placed_by: { target: Customer, cardinality: "many-to-one" }
+          contains: { target: Product, cardinality: "many-to-many" }
+          shipped_via: { target: Shipment, cardinality: "one-to-many" }
+          purchased_at: { target: Store, cardinality: "many-to-one" }
+      Store:
+        description: "Physical retail stores, outlets, warehouses, or distribution centers"
+        keywords: ["store", "outlet", "shop", "warehouse", "dc", "distribution_center", "fulfillment"]
+        typical_attributes: [id, name, type, address, region, format, open_date]
+        relationships:
+          has_inventory: { target: Inventory, cardinality: "one-to-many" }
+          part_of: { target: Organization, cardinality: "many-to-one" }
+      Promotion:
+        description: "Promotions, discounts, coupons, campaigns, or markdown events"
+        keywords: ["promotion", "discount", "coupon", "markdown", "deal", "offer", "promo"]
+        typical_attributes: [id, name, type, discount_value, start_date, end_date, channel]
+        relationships:
+          applies_to: { target: Product, cardinality: "many-to-many" }
+      Supplier:
+        description: "Vendors, manufacturers, distributors, or trading partners"
+        keywords: ["supplier", "vendor", "manufacturer", "distributor", "wholesaler"]
+        typical_attributes: [id, name, type, lead_time, country, payment_terms]
+        relationships:
+          supplies: { target: Product, cardinality: "many-to-many" }
+      Inventory:
+        description: "Stock levels, warehouse inventory, or on-hand quantities"
+        keywords: ["inventory", "stock", "on_hand", "available", "reserved", "reorder"]
+        typical_attributes: [id, sku, location_id, quantity, reserved, reorder_point]
+        relationships:
+          for_product: { target: Product, cardinality: "many-to-one" }
+          at_store: { target: Store, cardinality: "many-to-one" }
+      Return:
+        description: "Product returns, refunds, exchanges, or RMA records"
+        keywords: ["return", "refund", "exchange", "rma", "reversal"]
+        typical_attributes: [id, order_id, reason, amount, status, date]
+        relationships:
+          for_order: { target: Order, cardinality: "many-to-one" }
+          by_customer: { target: Customer, cardinality: "many-to-one" }
+      Shipment:
+        description: "Shipping, delivery, fulfillment, or logistics records"
+        keywords: ["shipment", "delivery", "tracking", "carrier", "fulfillment", "package"]
+        typical_attributes: [id, order_id, carrier, tracking_number, status, ship_date, delivery_date]
+        relationships:
+          for_order: { target: Order, cardinality: "many-to-one" }
+      Category:
+        description: "Product categories, departments, or merchandise hierarchies"
+        keywords: ["category", "department", "hierarchy", "classification", "taxonomy", "assortment"]
+        typical_attributes: [id, name, parent_id, level, path]
+        relationships:
+          contains: { target: Product, cardinality: "one-to-many" }
+          part_of: { target: Category, cardinality: "many-to-one" }
+
+  domain_entity_affinity:
+    merchandising: [Product, Category, Promotion, Supplier, Metric, Reference]
+    ecommerce:
+      [Customer, Order, Product, Promotion, Event, Shipment, Return, Metric]
+    store_operations:
+      [Store, Inventory, Person, Event, Metric, Location, Reference]
+    supply_chain:
+      [Supplier, Inventory, Shipment, Product, Store, Organization, Location]
+    customer_engagement: [Customer, Promotion, Order, Event, Metric, Person]
+    marketing: [Customer, Promotion, Event, Metric, Reference, Product]
+    finance: [Transaction, Order, Metric, Reference, Organization, Event]
+    operations:
+      [
+        Inventory,
+        Store,
+        Shipment,
+        Organization,
+        Location,
+        Event,
+        Metric,
+        Reference,
+      ]
+    workforce: [Person, Organization, Location, Event, Reference, Store]
+    customer:
+      [Customer, Person, Order, Product, Transaction, Event, Metric, Location]
+    technology: [Event, Metric, Reference, Organization]
+    governance: [Document, Reference, Organization, Person]
+
+  relationships:
+    types:
+      - name: owns
+        description: "Entity owns or is responsible for another"
+        inverse: owned_by
+      - name: contains
+        description: "Entity contains or includes another"
+        inverse: contained_in
+      - name: references
+        description: "Entity references another (foreign key)"
+        inverse: referenced_by
+      - name: derives_from
+        description: "Entity is derived from another (lineage)"
+        inverse: source_of
+      - name: similar_to
+        description: "Entity is semantically similar to another"
+        inverse: similar_to
+        symmetric: true
+      - name: part_of
+        description: "Entity is part of a larger entity"
+        inverse: has_part
+      - name: instance_of
+        description: "Entity is an instance of a type"
+        inverse: type_of
+      - name: supplies
+        description: "Supplier supplies a product"
+        inverse: supplied_by
+      - name: purchased_at
+        description: "Order was placed at a store or channel"
+        inverse: sold
+
+  metrics:
+    auto_discover: false
+    definitions: []
+
+  validation:
+    min_entity_confidence: 0.5
+    max_entities_per_table: 3
+    ai_validation_enabled: true
+    classification_model: "databricks-claude-sonnet-4-6"
+
+domains:
+  merchandising:
+    name: "Merchandising"
+    description: "Product assortment, pricing, planograms, and category management"
+    keywords:
+      ["product", "assortment", "planogram", "price", "category", "merchandise"]
+    subdomains:
+      assortment:
+        name: "Assortment Planning"
+        description: "Product assortment selection, planogram design, and space allocation"
+        keywords: ["assortment", "planogram", "allocation", "space"]
+      pricing:
+        name: "Pricing"
+        description: "Price optimization, markdowns, competitive pricing, and MSRP management"
+        keywords: ["price", "markdown", "optimization", "competitive", "msrp"]
+      category_management:
+        name: "Category Management"
+        description: "Category performance reviews, department hierarchies, and captain programs"
+        keywords: ["category", "department", "hierarchy", "captain", "review"]
+
+  ecommerce:
+    name: "E-Commerce"
+    description: "Online shopping, digital storefront, cart, and checkout"
+    keywords:
+      ["ecommerce", "online", "cart", "checkout", "digital", "website", "app"]
+    subdomains:
+      storefront:
+        name: "Storefront"
+        description: "Product catalog, search, browse experience, and recommendations"
+        keywords: ["catalog", "search", "browse", "recommendation", "pdp"]
+      checkout:
+        name: "Cart & Checkout"
+        description: "Shopping cart, checkout flow, payment processing, and order confirmation"
+        keywords: ["cart", "checkout", "payment", "order", "confirmation"]
+      digital_experience:
+        name: "Digital Experience"
+        description: "Clickstream analytics, session tracking, conversion rates, and bounce analysis"
+        keywords: ["click", "session", "pageview", "conversion", "bounce"]
+
+  store_operations:
+    name: "Store Operations"
+    description: "Physical store management, POS, staffing, and facilities"
+    keywords: ["store", "pos", "register", "floor", "staff"]
+    subdomains:
+      pos:
+        name: "Point of Sale"
+        description: "Register transactions, tender types, receipt generation, and barcode scanning"
+        keywords: ["pos", "register", "tender", "receipt", "scan"]
+      store_mgmt:
+        name: "Store Management"
+        description: "Floor planning, fixture management, planogram compliance, and facility maintenance"
+        keywords: ["store", "floor", "planogram", "fixture", "maintenance"]
+
+  supply_chain:
+    name: "Supply Chain"
+    description: "Procurement, logistics, warehousing, and distribution"
+    keywords:
+      ["supply_chain", "procurement", "logistics", "warehouse", "distribution"]
+    subdomains:
+      procurement:
+        name: "Procurement"
+        description: "Vendor management, purchase orders, supplier sourcing, and contract negotiation"
+        keywords:
+          ["procurement", "vendor", "purchase_order", "supplier", "sourcing"]
+      warehousing:
+        name: "Warehousing"
+        description: "Distribution center operations, pick/pack/ship, putaway, and WMS"
+        keywords: ["warehouse", "dc", "pick", "pack", "putaway", "wms"]
+      distribution:
+        name: "Distribution"
+        description: "Shipping logistics, carrier management, route optimization, and last-mile delivery"
+        keywords: ["distribution", "shipping", "carrier", "route", "delivery"]
+
+  customer_engagement:
+    name: "Customer Engagement"
+    description: "Loyalty programs, personalization, and customer analytics"
+    keywords:
+      ["loyalty", "engagement", "personalization", "segment", "retention"]
+    subdomains:
+      loyalty:
+        name: "Loyalty"
+        description: "Points programs, reward tiers, and redemption tracking"
+        keywords: ["loyalty", "points", "reward", "tier", "redemption"]
+      personalization:
+        name: "Personalization"
+        description: "Product recommendations, preference profiling, and targeted experiences"
+        keywords: ["personalization", "recommendation", "preference", "profile"]
+
+  marketing:
+    name: "Marketing"
+    description: "Campaigns, promotions, advertising, and media spend"
+    keywords: ["marketing", "campaign", "promotion", "advertising", "media"]
+    subdomains:
+      campaigns:
+        name: "Campaigns"
+        description: "Email, SMS, push notifications, and marketing attribution"
+        keywords: ["campaign", "email", "sms", "push", "attribution"]
+      promotions:
+        name: "Promotions"
+        description: "Coupons, discounts, BOGO deals, and promotional offers"
+        keywords: ["promotion", "coupon", "discount", "deal", "bogo"]
+      advertising:
+        name: "Advertising"
+        description: "Ad spend, impressions, click-through rates, and return on ad spend"
+        keywords: ["advertising", "ad", "media", "impression", "click", "roas"]
+
+  finance:
+    name: "Finance"
+    description: "Revenue, accounting, and financial operations"
+    keywords: ["revenue", "billing", "ledger", "payment", "accounting"]
+    subdomains:
+      accounting:
+        name: "Accounting"
+        description: "General ledger, journal entries, accounts payable/receivable"
+        keywords: ["ledger", "journal", "gl", "ap", "ar"]
+      revenue:
+        name: "Revenue Management"
+        description: "Revenue analysis, margin tracking, shrink reduction, and loss prevention"
+        keywords: ["revenue", "margin", "shrink", "loss_prevention"]
+
+  operations:
+    name: "Operations"
+    description: "Inventory management, replenishment, and forecasting"
+    keywords: ["inventory", "replenishment", "forecast", "demand"]
+    subdomains:
+      inventory:
+        name: "Inventory Management"
+        description: "Stock levels, on-hand quantities, safety stock, and cycle counting"
+        keywords:
+          ["inventory", "stock", "on_hand", "safety_stock", "cycle_count"]
+      demand:
+        name: "Demand Planning"
+        description: "Demand forecasting, seasonality modeling, and replenishment planning"
+        keywords: ["demand", "forecast", "planning", "seasonality"]
+
+  workforce:
+    name: "Workforce"
+    description: "Store associates, scheduling, and HR"
+    keywords: ["employee", "associate", "schedule", "payroll", "hr"]
+    subdomains:
+      scheduling:
+        name: "Scheduling"
+        description: "Shift scheduling, labor availability, and workforce allocation"
+        keywords: ["schedule", "shift", "availability", "labor"]
+      hr:
+        name: "HR"
+        description: "Payroll processing, recruitment, training, and performance management"
+        keywords: ["payroll", "recruitment", "training", "performance"]
+
+  customer:
+    name: "Customer"
+    description: "CRM, customer service, and voice of customer"
+    keywords: ["customer", "service", "support", "review", "feedback"]
+    subdomains:
+      service:
+        name: "Customer Service"
+        description: "Support tickets, case management, call center operations, and resolution tracking"
+        keywords: ["ticket", "case", "support", "resolution", "call_center"]
+      voice:
+        name: "Voice of Customer"
+        description: "Product reviews, star ratings, feedback surveys, and NPS"
+        keywords: ["review", "rating", "feedback", "nps", "survey"]
+
+  technology:
+    name: "Technology"
+    description: "IT, e-commerce platform, and data infrastructure"
+    keywords: ["server", "security", "log", "monitoring", "infrastructure"]
+    subdomains:
+      platform:
+        name: "Platform"
+        description: "APIs, integrations, microservices, and platform infrastructure"
+        keywords: ["platform", "api", "integration", "microservice"]
+      monitoring:
+        name: "Monitoring"
+        description: "System logs, alerts, uptime tracking, and incident management"
+        keywords: ["monitoring", "alert", "log", "uptime", "incident"]
+
+  governance:
+    name: "Governance"
+    description: "Legal, compliance, data governance, and privacy"
+    keywords:
+      [
+        "compliance",
+        "contract",
+        "governance",
+        "policy",
+        "regulation",
+        "gdpr",
+        "ccpa",
+      ]
+    subdomains:
+      data_governance:
+        name: "Data Governance"
+        description: "Data quality, lineage, metadata management, and catalog policies"
+        keywords: ["data_lineage", "data_catalog", "data_governance", "data_steward", "retention_policy"]
+      privacy:
+        name: "Privacy & Compliance"
+        description: "GDPR, CCPA, consent management, and PII handling"
+        keywords: ["privacy", "gdpr", "ccpa", "consent", "pii"]

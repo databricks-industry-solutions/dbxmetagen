@@ -1,0 +1,57 @@
+resources:
+  jobs:
+    semantic_layer_job:
+      name: "${var.app_name}_semantic_layer"
+
+      permissions:
+        - service_principal_name: ${resources.apps.dbxmetagen_app.service_principal_client_id}
+          level: CAN_MANAGE_RUN
+
+      email_notifications:
+        on_failure:
+          - ${var.current_user}
+
+      parameters:
+        - name: catalog_name
+          default: ${var.catalog_name}
+        - name: schema_name
+          default: ${var.schema_name}
+        - name: model_endpoint
+          default: "databricks-gpt-oss-120b"
+        - name: warehouse_id
+          default: ${var.warehouse_id}
+        - name: genie_space_name
+          default: ""
+
+      tasks:
+        - task_key: generate_semantic_layer
+          job_cluster_key: semantic_layer_cluster
+          notebook_task:
+            notebook_path: ../../notebooks/generate_semantic_layer.py
+            base_parameters:
+              catalog_name: "{{job.parameters.catalog_name}}"
+              schema_name: "{{job.parameters.schema_name}}"
+              model_endpoint: "{{job.parameters.model_endpoint}}"
+          libraries:
+            - whl: ../../dist/*.whl
+
+        - task_key: apply_metric_views
+          depends_on:
+            - task_key: generate_semantic_layer
+          job_cluster_key: semantic_layer_cluster
+          notebook_task:
+            notebook_path: ../../notebooks/apply_metric_views.py
+            base_parameters:
+              catalog_name: "{{job.parameters.catalog_name}}"
+              schema_name: "{{job.parameters.schema_name}}"
+              warehouse_id: "{{job.parameters.warehouse_id}}"
+              genie_space_name: "{{job.parameters.genie_space_name}}"
+          libraries:
+            - whl: ../../dist/*.whl
+
+      job_clusters:
+        - job_cluster_key: semantic_layer_cluster
+          new_cluster:
+            spark_version: 17.3.x-cpu-ml-scala2.13
+            node_type_id: ${var.node_type}
+            num_workers: 1

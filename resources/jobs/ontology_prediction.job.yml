@@ -1,0 +1,83 @@
+resources:
+  jobs:
+    ontology_prediction_job:
+      name: "${var.app_name}_ontology_prediction"
+
+      permissions:
+        - service_principal_name: ${resources.apps.dbxmetagen_app.service_principal_client_id}
+          level: CAN_MANAGE_RUN
+
+      email_notifications:
+        on_failure:
+          - ${var.current_user}
+
+      parameters:
+        - name: catalog_name
+          default: ${var.catalog_name}
+        - name: schema_name
+          default: ${var.schema_name}
+        - name: config_path
+          default: "configurations/ontology_config.yaml"
+        - name: ontology_bundle
+          default: "healthcare"
+        - name: apply_ddl
+          default: "false"
+
+      tasks:
+        # Stage 1: Build knowledge bases (parallel)
+        - task_key: build_knowledge_base
+          job_cluster_key: ontology_cluster
+          notebook_task:
+            notebook_path: ../../notebooks/build_knowledge_base.py
+            base_parameters:
+              catalog_name: "{{job.parameters.catalog_name}}"
+              schema_name: "{{job.parameters.schema_name}}"
+          libraries:
+            - whl: ../../dist/*.whl
+
+        - task_key: build_column_kb
+          job_cluster_key: ontology_cluster
+          notebook_task:
+            notebook_path: ../../notebooks/build_column_kb.py
+            base_parameters:
+              catalog_name: "{{job.parameters.catalog_name}}"
+              schema_name: "{{job.parameters.schema_name}}"
+          libraries:
+            - whl: ../../dist/*.whl
+
+        # Stage 2: Build ontology (table + column level)
+        - task_key: build_ontology
+          depends_on:
+            - task_key: build_knowledge_base
+            - task_key: build_column_kb
+          job_cluster_key: ontology_cluster
+          notebook_task:
+            notebook_path: ../../notebooks/build_ontology.py
+            base_parameters:
+              catalog_name: "{{job.parameters.catalog_name}}"
+              schema_name: "{{job.parameters.schema_name}}"
+              config_path: "{{job.parameters.config_path}}"
+              ontology_bundle: "{{job.parameters.ontology_bundle}}"
+              apply_ddl: "{{job.parameters.apply_ddl}}"
+          libraries:
+            - whl: ../../dist/*.whl
+
+        # Stage 3: Validate ontology
+        - task_key: validate_ontology
+          depends_on:
+            - task_key: build_ontology
+          job_cluster_key: ontology_cluster
+          notebook_task:
+            notebook_path: ../../notebooks/validate_ontology.py
+            base_parameters:
+              catalog_name: "{{job.parameters.catalog_name}}"
+              schema_name: "{{job.parameters.schema_name}}"
+          libraries:
+            - whl: ../../dist/*.whl
+
+      job_clusters:
+        - job_cluster_key: ontology_cluster
+          new_cluster:
+            spark_version: 17.3.x-cpu-ml-scala2.13
+            node_type_id: ${var.node_type}
+            num_workers: 1

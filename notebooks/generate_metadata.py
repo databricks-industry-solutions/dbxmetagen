@@ -16,7 +16,7 @@
 # MAGIC %md
 # MAGIC # Library installs
 # COMMAND ----------
-# MAGIC %pip install -qqqq -r ../requirements.txt
+# MAGIC %pip install -q -r ../requirements.txt
 # MAGIC dbutils.library.restartPython()
 # COMMAND ----------
 # MAGIC %md
@@ -24,13 +24,13 @@
 # COMMAND ----------
 import sys
 
-sys.path.append("../")
-from src.dbxmetagen.main import main
-from src.dbxmetagen.databricks_utils import (
+sys.path.append("../src")  # For git-clone or DAB deployment; pip-installed package works without this
+from dbxmetagen.main import main
+from dbxmetagen.databricks_utils import (
     setup_widgets,
     setup_notebook_variables,
 )
-from src.dbxmetagen.config import MetadataConfig
+from dbxmetagen.config import MetadataConfig
 
 setup_widgets(dbutils)
 notebook_variables = setup_notebook_variables(dbutils)

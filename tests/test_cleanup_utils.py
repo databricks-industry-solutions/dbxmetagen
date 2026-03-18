@@ -8,7 +8,7 @@ import re
 # Add src to path for imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from src.dbxmetagen.user_utils import sanitize_user_identifier
+from dbxmetagen.user_utils import sanitize_user_identifier
 
 
 class TestTempTablePatternMatching:
@@ -230,7 +230,7 @@ class TestDryRunLogic:
 
     def test_dry_run_flag_parsing(self):
         """Test that dry_run flag is parsed correctly from strings."""
-        from src.dbxmetagen.config import _parse_bool
+        from dbxmetagen.config import _parse_bool
 
         assert _parse_bool("true") is True
         assert _parse_bool("false") is False

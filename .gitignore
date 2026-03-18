@@ -10,7 +10,7 @@ poetry.lock
 .Python
 build/
 develop-eggs/
-dist/
+/dist/
 downloads/
 eggs/
 .eggs/
@@ -140,18 +140,15 @@ databricks/
 Thumbs.db
 .DS_Store
 __pycache__/
-dist/
+/dist/
 *.egg-info/
+**/node_modules/
 *.tmp
 
 # Deployment temporary files
 databricks.yml
 databricks_final.yml
 databricks_final.yml.tmp
-#app/deploying_user.yml #cannot be ignored because asset bundles obey gitignore
-#app/app_env.yml #cannot be ignored because asset bundles obey gitignore
-app/env_overrides.yml
-variables_override.yml
 
 # backup files
 *.bkp
@@ -165,3 +162,19 @@ variables_override.yml
 docs/*
 docs/operations/*/
 #!docs/operations/README.md
+
+.cursor/
+.github/skills/
+.ai-dev-kit
+
+# Frontend build output (synced via databricks.yml sync.include)
+apps/dbxmetagen-app/app/src/dist/
+
+# Backup config created by integration test runner
+.databricks.yml.backup.*
+
+# Tools
+tools/
+
+# Local roadmap / tech-debt tracker
+ROADMAP.md

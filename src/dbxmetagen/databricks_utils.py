@@ -103,33 +103,11 @@ def get_task_id(dbutils_instance=None):
             parent_run_id = context.get("tags", {}).get("multitaskParentRunId")
             if parent_run_id:
                 return f"{parent_run_id}_interactive"
-            # For interactive runs, use current_user (allows self-reclaim)
-            user = context.get("attributes", {}).get("user")
-            if user:
-                return user
-        # Try WorkspaceClient as fallback
-        try:
-            w = WorkspaceClient()
-            user = w.current_user.me().user_name
-            if user:
-                return user
-        except Exception:
-            pass
-        # Last resort: UUID (should rarely happen)
-        import uuid
-        return str(uuid.uuid4())
+        # No taskRunId or multitaskParentRunId -- not a concurrent job task
+        return None
     except Exception as e:
         print(f"Error getting task ID: {e}")
-        # Try to get user even on error
-        try:
-            w = WorkspaceClient()
-            user = w.current_user.me().user_name
-            if user:
-                return user
-        except Exception:
-            pass
-        import uuid
-        return str(uuid.uuid4())
+        return None
 
 
 def setup_widgets(dbutils):
@@ -153,6 +131,10 @@ def setup_widgets(dbutils):
         "include_previously_failed_tables", "false", ["true", "false"], 
         "Include Previously Failed Tables"
     )
+    dbutils.widgets.text("ontology_bundle", "")
+    dbutils.widgets.text("domain_config_path", "")
+    dbutils.widgets.text("include_lineage", "")
+    dbutils.widgets.text("model", "")
 
 
 def get_widgets(dbutils):
@@ -170,6 +152,10 @@ def get_widgets(dbutils):
     sample_size = dbutils.widgets.get("sample_size")
     run_id = dbutils.widgets.get("run_id")
     include_previously_failed_tables = dbutils.widgets.get("include_previously_failed_tables")
+    ontology_bundle = dbutils.widgets.get("ontology_bundle")
+    domain_config_path = dbutils.widgets.get("domain_config_path")
+    include_lineage = dbutils.widgets.get("include_lineage")
+    model = dbutils.widgets.get("model")
     notebook_variables = {
         "cleanup_control_table": cleanup_control_table,
         "mode": mode,
@@ -184,6 +170,10 @@ def get_widgets(dbutils):
         "sample_size": sample_size,
         "run_id": run_id,
         "include_previously_failed_tables": include_previously_failed_tables,
+        "ontology_bundle": ontology_bundle,
+        "domain_config_path": domain_config_path,
+        "include_lineage": include_lineage,
+        "model": model,
     }
     return {k: v for k, v in notebook_variables.items() if v is not None and v != ""}
 

@@ -1,10 +1,15 @@
+from __future__ import annotations
+
 from functools import reduce
+from typing import List, Dict, TYPE_CHECKING
+
 import pandas as pd
-from pyspark.sql import DataFrame, SparkSession
-from pyspark.sql.functions import col, lit, when
-from pyspark.sql.column import Column
-from typing import List, Dict
-from src.dbxmetagen.config import MetadataConfig
+
+if TYPE_CHECKING:
+    from pyspark.sql import DataFrame, SparkSession
+    from pyspark.sql.column import Column
+
+from dbxmetagen.config import MetadataConfig
 
 
 def override_metadata_from_csv(
@@ -40,6 +45,7 @@ def override_metadata_from_csv(
     csv_df = csv_df.replace("None", None)
 
     csv_dict = csv_df.to_dict("records")
+    from pyspark.sql import SparkSession
     spark = SparkSession.builder.getOrCreate()
 
     # Create DataFrame with explicit string schema to prevent type inference issues
@@ -70,6 +76,8 @@ def override_metadata_from_csv(
 def apply_overrides_with_loop(df, csv_dict, config):
     if not csv_dict:
         return df
+
+    from pyspark.sql.functions import col, lit, when
 
     if config.mode == "pi":
         for row in csv_dict:
@@ -226,6 +234,7 @@ def apply_overrides_with_joins(df: DataFrame, csv_spark_df: DataFrame) -> DataFr
 
     NOT FULLY IMPLEMENTED
     """
+    from pyspark.sql.functions import col, when
     join_conditions = get_join_conditions(df, csv_spark_df)
     if config.mode == "pi":
         df = (
@@ -284,6 +293,7 @@ def build_condition(df, table, column, schema, catalog):
     Raises:
         ValueError: If the combination of inputs is not one of the supported patterns.
     """
+    from pyspark.sql.functions import col
     table = table if table else None
     schema = schema if schema else None
     catalog = catalog if catalog else None

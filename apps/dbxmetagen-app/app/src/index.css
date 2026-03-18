@@ -1,0 +1,107 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply antialiased text-slate-800 dark:text-slate-200;
+  }
+  * { @apply transition-colors duration-100; }
+}
+
+@layer components {
+  /* ── Buttons ─────────────────────────────────────────── */
+  .btn-primary {
+    @apply inline-flex items-center justify-center gap-2
+      bg-dbx-lava text-white font-medium rounded-lg
+      hover:bg-dbx-lava-dark active:scale-[0.98]
+      transition-all duration-150 disabled:opacity-50 disabled:pointer-events-none;
+  }
+  .btn-secondary {
+    @apply inline-flex items-center justify-center gap-2
+      bg-dbx-navy text-white font-medium rounded-lg
+      hover:bg-dbx-navy-600 active:scale-[0.98]
+      dark:bg-dbx-violet/20 dark:text-dbx-violet-light dark:border dark:border-dbx-violet/40
+      dark:hover:bg-dbx-violet/30
+      transition-all duration-150 disabled:opacity-50 disabled:pointer-events-none;
+  }
+  .btn-ghost {
+    @apply inline-flex items-center justify-center gap-2
+      text-slate-600 dark:text-slate-300 font-medium rounded-lg
+      hover:bg-dbx-oat dark:hover:bg-dbx-navy-600/80
+      transition-all duration-150 disabled:opacity-50 disabled:pointer-events-none;
+  }
+  .btn-sm { @apply px-3 py-1.5 text-sm; }
+  .btn-md { @apply px-4 py-2 text-sm; }
+  .btn-lg { @apply px-5 py-2.5 text-sm; }
+
+  /* ── Cards ───────────────────────────────────────────── */
+  .card {
+    @apply bg-white dark:bg-dbx-navy-650 rounded-xl shadow-card
+      border border-dbx-oat-dark/50 dark:border-dbx-navy-400/25;
+  }
+  .card-interactive {
+    @apply card hover:shadow-card-hover hover:-translate-y-0.5 transition-all duration-200 cursor-pointer;
+  }
+
+  /* ── Form Elements ───────────────────────────────────── */
+  .input-base {
+    @apply w-full border border-slate-200 dark:border-dbx-navy-400/40 rounded-lg
+      px-3 py-2 text-sm bg-white dark:bg-dbx-navy/60
+      placeholder:text-slate-400 dark:placeholder:text-slate-500
+      focus:outline-none focus:ring-2 focus:ring-dbx-teal/30 focus:border-dbx-teal
+      transition-all duration-150;
+  }
+  .select-base {
+    @apply input-base appearance-none cursor-pointer
+      bg-[url('data:image/svg+xml;charset=utf-8,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2020%2020%22%20fill%3D%22%2394a3b8%22%3E%3Cpath%20fill-rule%3D%22evenodd%22%20d%3D%22M5.23%207.21a.75.75%200%20011.06.02L10%2011.168l3.71-3.938a.75.75%200%20111.08%201.04l-4.25%204.5a.75.75%200%2001-1.08%200l-4.25-4.5a.75.75%200%2001.02-1.06z%22%20clip-rule%3D%22evenodd%22%2F%3E%3C%2Fsvg%3E')]
+      bg-no-repeat bg-[right_0.5rem_center] bg-[length:1.25rem_1.25rem] pr-8;
+  }
+  .textarea-base {
+    @apply input-base resize-y min-h-[60px];
+  }
+
+  /* ── Badges ──────────────────────────────────────────── */
+  .badge {
+    @apply inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium;
+  }
+
+  /* ── Section Title ───────────────────────────────────── */
+  .section-title {
+    @apply text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400;
+  }
+
+  /* ── Typography Hierarchy ──────────────────────────── */
+  .heading-section {
+    @apply text-lg font-semibold text-slate-800 dark:text-white;
+  }
+  .heading-sub {
+    @apply text-sm font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400;
+  }
+  .text-caption {
+    @apply text-xs text-slate-400 dark:text-slate-500;
+  }
+
+  /* ── Surface Layering ──────────────────────────────── */
+  .surface-nested {
+    @apply bg-slate-50/50 dark:bg-dbx-navy-700/50 rounded-lg border border-slate-100 dark:border-dbx-navy-400/15;
+  }
+
+  /* ── Checkbox ────────────────────────────────────────── */
+  input[type="checkbox"] {
+    @apply rounded border-slate-300 dark:border-dbx-navy-400
+      text-dbx-lava focus:ring-dbx-teal/30 focus:ring-offset-0
+      cursor-pointer;
+    accent-color: #FF3621;
+  }
+}
+
+@layer utilities {
+  .scrollbar-thin {
+    scrollbar-width: thin;
+    scrollbar-color: theme('colors.dbx-oat-dark') transparent;
+  }
+  .dark .scrollbar-thin {
+    scrollbar-color: theme('colors.dbx-navy-500') transparent;
+  }
+}

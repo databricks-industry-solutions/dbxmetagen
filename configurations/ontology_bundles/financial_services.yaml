@@ -1,0 +1,490 @@
+# Financial Services Ontology Bundle
+# Aligned with BIAN (Banking Industry Architecture Network) and FIBO
+
+metadata:
+  name: "Financial Services"
+  version: "2.0"
+  industry: "financial_services"
+  description: "Banking, insurance, and capital markets ontology with financial instrument and risk entity types"
+  standards_alignment: "BIAN, FIBO, ISO 20022"
+
+ontology:
+  version: "2.0"
+  name: "Financial Services Business Ontology"
+  description: "Entity types for banking, insurance, investments, and financial operations"
+
+  entities:
+    auto_discover: true
+    discovery_confidence_threshold: 0.4
+
+    definitions:
+      # General entities
+      Person:
+        description: "People, customers, contacts, users, or employees"
+        keywords: ["customer", "employee", "user", "contact", "person", "applicant", "borrower"]
+        typical_attributes: [id, name, email, phone, address, created_date]
+        relationships:
+          has_account: { target: Account, cardinality: "one-to-many" }
+          part_of: { target: Organization, cardinality: "many-to-one" }
+      Organization:
+        description: "Companies, departments, facilities, or business units"
+        keywords: ["company", "organization", "department", "facility", "tenant", "branch", "subsidiary"]
+        typical_attributes: [id, name, type, address, parent_id]
+        relationships:
+          contains: { target: Person, cardinality: "one-to-many" }
+          part_of: { target: Organization, cardinality: "many-to-one" }
+      Product:
+        description: "Goods, services, SKUs, or catalog items"
+        keywords: ["product", "item", "sku", "catalog", "offering"]
+        typical_attributes: [id, name, description, price, category, status]
+        relationships: {}
+      Transaction:
+        description: "Orders, purchases, payments, invoices, or financial events"
+        keywords: ["transaction", "order", "payment", "invoice", "purchase", "transfer", "wire"]
+        typical_attributes: [id, customer_id, amount, date, status, currency]
+        relationships:
+          on_account: { target: Account, cardinality: "many-to-one" }
+          by_person: { target: Person, cardinality: "many-to-one" }
+      Location:
+        description: "Addresses, sites, regions, facilities, or geographies"
+        keywords: ["location", "address", "site", "region", "facility", "branch"]
+        typical_attributes: [id, name, address, city, state, country, zip_code]
+        relationships: {}
+      Event:
+        description: "Activities, logs, sessions, audits, or system events"
+        keywords: ["event", "activity", "log", "audit", "session"]
+        typical_attributes: [id, type, timestamp, user_id, details]
+        relationships:
+          references: { target: Person, cardinality: "many-to-one" }
+      Reference:
+        description: "Lookup tables, codes, categories, dimensions, or configuration"
+        keywords: ["reference", "lookup", "code", "category", "dim_"]
+        typical_attributes: [id, code, name, description, active]
+        relationships: {}
+      Metric:
+        description: "KPIs, aggregates, facts, summaries, or analytic measures"
+        keywords: ["metric", "kpi", "aggregate", "fact_", "summary"]
+        typical_attributes: [id, name, value, period, dimension]
+        relationships: {}
+      Document:
+        description: "Unstructured content, notes, files, or text records"
+        keywords: ["document", "note", "file", "content", "text", "contract", "agreement"]
+        typical_attributes: [id, title, body, author, created_date, type]
+        relationships:
+          references: { target: Person, cardinality: "many-to-one" }
+
+      # Financial Services entities
+      Account:
+        description: "Bank accounts, investment accounts, loan accounts, or general ledger accounts"
+        keywords: ["account", "deposit", "savings", "checking", "loan_account", "gl_account"]
+        typical_attributes: [id, account_number, type, balance, currency, status, open_date]
+        relationships:
+          owned_by: { target: Person, cardinality: "many-to-one" }
+          has_transaction: { target: Transaction, cardinality: "one-to-many" }
+      Portfolio:
+        description: "Investment portfolios, fund holdings, or asset allocations"
+        keywords: ["portfolio", "fund", "holding", "allocation", "basket"]
+        typical_attributes: [id, name, manager, strategy, aum, benchmark]
+        relationships:
+          contains: { target: Instrument, cardinality: "many-to-many" }
+          managed_by: { target: Person, cardinality: "many-to-one" }
+      Trade:
+        description: "Securities trades, FX transactions, or market orders"
+        keywords: ["trade", "execution", "fill", "market_order", "limit_order", "swap"]
+        typical_attributes: [id, instrument_id, side, quantity, price, timestamp, status]
+        relationships:
+          of_instrument: { target: Instrument, cardinality: "many-to-one" }
+          with_counterparty: { target: Counterparty, cardinality: "many-to-one" }
+          on_account: { target: Account, cardinality: "many-to-one" }
+      Instrument:
+        description: "Financial instruments -- equities, bonds, derivatives, currencies"
+        keywords: ["instrument", "security", "equity", "bond", "derivative", "option", "future", "isin", "cusip"]
+        typical_attributes: [id, symbol, isin, cusip, type, currency, issuer, maturity_date]
+        relationships:
+          hedges: { target: Risk, cardinality: "many-to-many" }
+      Counterparty:
+        description: "Trading counterparties, custodians, or correspondent banks"
+        keywords: ["counterparty", "custodian", "broker", "dealer", "correspondent", "clearing"]
+        typical_attributes: [id, name, type, lei, credit_rating, jurisdiction]
+        relationships:
+          has_trade: { target: Trade, cardinality: "one-to-many" }
+      Risk:
+        description: "Risk exposures, limits, VaR, stress tests, or credit scores"
+        keywords: ["risk", "exposure", "var", "stress_test", "credit_score", "limit", "collateral"]
+        typical_attributes: [id, type, value, threshold, entity_id, date]
+        relationships:
+          for_account: { target: Account, cardinality: "many-to-one" }
+          for_instrument: { target: Instrument, cardinality: "many-to-one" }
+      Compliance:
+        description: "Regulatory filings, KYC records, AML alerts, or sanctions screening"
+        keywords: ["compliance", "kyc", "aml", "sanctions", "filing", "regulatory", "sar"]
+        typical_attributes: [id, type, status, entity_id, date, resolution]
+        relationships:
+          for_person: { target: Person, cardinality: "many-to-one" }
+          for_organization: { target: Organization, cardinality: "many-to-one" }
+      Claim:
+        description: "Insurance claims, loss events, or reimbursement requests"
+        keywords: ["claim", "loss", "incident", "reimbursement", "adjudication"]
+        typical_attributes: [id, policy_id, amount, date, status, type]
+        relationships:
+          on_policy: { target: Policy, cardinality: "many-to-one" }
+          filed_by: { target: Person, cardinality: "many-to-one" }
+      Policy:
+        description: "Insurance policies, coverage terms, or underwriting records"
+        keywords: ["policy", "coverage", "underwriting", "premium", "insured", "endorsement"]
+        typical_attributes: [id, policy_number, type, premium, effective_date, expiry_date]
+        relationships:
+          held_by: { target: Person, cardinality: "many-to-one" }
+          issued_by: { target: Organization, cardinality: "many-to-one" }
+      Loan:
+        description: "Loans, mortgages, credit facilities, or lending agreements"
+        keywords: ["loan", "mortgage", "credit_facility", "lending", "origination", "amortization"]
+        typical_attributes: [id, borrower_id, principal, rate, term, status, origination_date]
+        relationships:
+          borrowed_by: { target: Person, cardinality: "many-to-one" }
+          secures: { target: Account, cardinality: "many-to-one" }
+          has_risk: { target: Risk, cardinality: "one-to-many" }
+
+  domain_entity_affinity:
+    banking:
+      [
+        Account,
+        Transaction,
+        Person,
+        Organization,
+        Loan,
+        Counterparty,
+        Reference,
+        Location,
+      ]
+    capital_markets:
+      [
+        Trade,
+        Instrument,
+        Portfolio,
+        Counterparty,
+        Risk,
+        Account,
+        Metric,
+        Reference,
+      ]
+    insurance:
+      [
+        Policy,
+        Claim,
+        Person,
+        Organization,
+        Risk,
+        Transaction,
+        Reference,
+        Document,
+      ]
+    risk_management:
+      [Risk, Counterparty, Instrument, Portfolio, Account, Metric, Event]
+    compliance_regulatory:
+      [
+        Compliance,
+        Document,
+        Person,
+        Organization,
+        Transaction,
+        Reference,
+        Event,
+      ]
+    lending:
+      [
+        Loan,
+        Account,
+        Person,
+        Organization,
+        Risk,
+        Transaction,
+        Document,
+        Reference,
+      ]
+    wealth_management:
+      [
+        Portfolio,
+        Account,
+        Instrument,
+        Person,
+        Organization,
+        Transaction,
+        Metric,
+      ]
+    payments: [Transaction, Account, Person, Organization, Reference, Event]
+    finance: [Transaction, Account, Metric, Reference, Organization, Event]
+    operations: [Product, Organization, Location, Event, Metric, Reference]
+    workforce: [Person, Organization, Location, Event, Reference]
+    customer:
+      [Person, Organization, Account, Transaction, Event, Metric, Location]
+    technology: [Event, Metric, Reference, Organization]
+    governance: [Compliance, Document, Reference, Organization, Person]
+
+  relationships:
+    types:
+      - name: owns
+        description: "Entity owns or is responsible for another"
+        inverse: owned_by
+      - name: contains
+        description: "Entity contains or includes another"
+        inverse: contained_in
+      - name: references
+        description: "Entity references another (foreign key)"
+        inverse: referenced_by
+      - name: derives_from
+        description: "Entity is derived from another (lineage)"
+        inverse: source_of
+      - name: similar_to
+        description: "Entity is semantically similar to another"
+        inverse: similar_to
+        symmetric: true
+      - name: part_of
+        description: "Entity is part of a larger entity"
+        inverse: has_part
+      - name: instance_of
+        description: "Entity is an instance of a type"
+        inverse: type_of
+      - name: hedges
+        description: "Instrument or trade hedges risk exposure"
+        inverse: hedged_by
+      - name: secures
+        description: "Collateral secures a loan or position"
+        inverse: secured_by
+
+  metrics:
+    auto_discover: false
+    definitions: []
+
+  validation:
+    min_entity_confidence: 0.5
+    max_entities_per_table: 3
+    ai_validation_enabled: true
+    classification_model: "databricks-claude-sonnet-4-6"
+
+domains:
+  banking:
+    name: "Banking"
+    description: "Retail and commercial banking, accounts, deposits, and branch operations"
+    keywords:
+      ["account", "deposit", "branch", "banking", "checking", "savings", "atm"]
+    subdomains:
+      retail_banking:
+        name: "Retail Banking"
+        description: "Consumer accounts, checking, savings, debit, and credit card services"
+        keywords:
+          ["retail", "consumer", "checking", "savings", "debit", "credit_card"]
+      commercial_banking:
+        name: "Commercial Banking"
+        description: "Corporate accounts, treasury services, cash management, and lockbox"
+        keywords:
+          ["commercial", "corporate", "treasury", "cash_management", "lockbox"]
+      digital_banking:
+        name: "Digital Banking"
+        description: "Mobile banking, online channels, and digital customer experience"
+        keywords: ["digital", "mobile", "online", "app", "channel"]
+
+  capital_markets:
+    name: "Capital Markets"
+    description: "Trading, securities, derivatives, and market operations"
+    keywords: ["trade", "security", "equity", "bond", "derivative", "exchange"]
+    subdomains:
+      equities:
+        name: "Equities"
+        description: "Stock trading, equity positions, IPOs, and listings"
+        keywords: ["equity", "stock", "share", "ipo", "listing"]
+      fixed_income:
+        name: "Fixed Income"
+        description: "Bonds, treasuries, yield curves, and coupon payments"
+        keywords: ["bond", "treasury", "yield", "coupon", "maturity"]
+      derivatives:
+        name: "Derivatives"
+        description: "Options, futures, swaps, forwards, and OTC instruments"
+        keywords: ["option", "future", "swap", "forward", "otc"]
+
+  insurance:
+    name: "Insurance"
+    description: "Property, casualty, life, and health insurance operations"
+    keywords: ["policy", "claim", "premium", "underwriting", "insured"]
+    subdomains:
+      underwriting:
+        name: "Underwriting"
+        description: "Risk assessment, premium rating, and actuarial analysis"
+        keywords:
+          ["underwriting", "risk_assessment", "premium", "rating", "actuarial"]
+      claims:
+        name: "Claims"
+        description: "Claim filing, loss adjustment, settlement, and subrogation"
+        keywords: ["claim", "loss", "adjuster", "settlement", "subrogation"]
+      policy_admin:
+        name: "Policy Administration"
+        description: "Policy lifecycle, endorsements, renewals, and cancellations"
+        keywords:
+          ["policy", "endorsement", "renewal", "cancellation", "billing"]
+
+  risk_management:
+    name: "Risk Management"
+    description: "Credit, market, operational, and liquidity risk"
+    keywords: ["risk", "exposure", "var", "stress_test", "limit"]
+    subdomains:
+      credit_risk:
+        name: "Credit Risk"
+        description: "Default probability, loss given default, exposure at default, and credit ratings"
+        keywords: ["credit", "default", "probability", "lgd", "ead", "rating"]
+      market_risk:
+        name: "Market Risk"
+        description: "Value-at-risk, volatility, sensitivity analysis, and greeks"
+        keywords: ["market", "var", "volatility", "sensitivity", "greeks"]
+      operational_risk:
+        name: "Operational Risk"
+        description: "Loss events, risk and control self-assessments, and incident management"
+        keywords: ["operational", "loss_event", "rcsa", "incident", "control"]
+
+  compliance_regulatory:
+    name: "Compliance & Regulatory"
+    description: "KYC, AML, sanctions, regulatory reporting, and audit"
+    keywords: ["compliance", "kyc", "aml", "regulatory", "sanctions", "sar"]
+    subdomains:
+      kyc_aml:
+        name: "KYC & AML"
+        description: "Customer due diligence, enhanced due diligence, sanctions screening, and SARs"
+        keywords: ["kyc", "aml", "cdd", "edd", "sanctions", "screening"]
+      regulatory_reporting:
+        name: "Regulatory Reporting"
+        description: "Regulatory filings, CCAR, DFAST, Basel reporting, and stress tests"
+        keywords: ["regulatory", "filing", "report", "ccar", "dfast", "basel"]
+
+  lending:
+    name: "Lending"
+    description: "Loan origination, servicing, collections, and mortgage operations"
+    keywords: ["loan", "mortgage", "origination", "servicing", "collections"]
+    subdomains:
+      origination:
+        name: "Origination"
+        description: "Loan applications, approvals, underwriting, and closing"
+        keywords:
+          ["origination", "application", "approval", "underwriting", "closing"]
+      servicing:
+        name: "Servicing"
+        description: "Payment processing, escrow management, statements, and delinquency tracking"
+        keywords: ["servicing", "payment", "escrow", "statement", "delinquency"]
+      collections:
+        name: "Collections"
+        description: "Delinquent account management, charge-offs, recovery, and workouts"
+        keywords:
+          ["collections", "delinquent", "charge_off", "recovery", "workout"]
+
+  wealth_management:
+    name: "Wealth Management"
+    description: "Portfolio management, advisory, trust, and private banking"
+    keywords: ["portfolio", "advisory", "wealth", "trust", "private_banking"]
+    subdomains:
+      portfolio_management:
+        name: "Portfolio Management"
+        description: "Asset allocation, rebalancing, benchmark tracking, and performance reporting"
+        keywords:
+          ["portfolio", "allocation", "rebalance", "benchmark", "performance"]
+      advisory:
+        name: "Advisory"
+        description: "Financial planning, goals-based advice, and investment recommendations"
+        keywords: ["advisory", "financial_plan", "goal", "recommendation"]
+
+  payments:
+    name: "Payments"
+    description: "Payment processing, ACH, wire transfers, and clearing"
+    keywords: ["payment", "ach", "wire", "clearing", "settlement", "remittance"]
+    subdomains:
+      processing:
+        name: "Payment Processing"
+        description: "Authorization, clearing, settlement, and reconciliation"
+        keywords: ["processing", "authorization", "clearing", "settlement"]
+      channels:
+        name: "Payment Channels"
+        description: "ACH, wire transfer, real-time payments, checks, and P2P"
+        keywords: ["ach", "wire", "real_time", "check", "p2p"]
+
+  finance:
+    name: "Finance"
+    description: "Accounting, GL, budgeting, and financial reporting"
+    keywords: ["revenue", "billing", "ledger", "payment", "accounting"]
+    subdomains:
+      accounting:
+        name: "Accounting"
+        description: "General ledger, journal entries, AP/AR, and financial statements"
+        keywords: ["ledger", "journal", "gl", "ap", "ar"]
+      treasury:
+        name: "Treasury"
+        description: "Cash management, liquidity, funding, and collateral management"
+        keywords: ["treasury", "cash", "liquidity", "funding", "collateral"]
+
+  operations:
+    name: "Operations"
+    description: "Back-office operations, reconciliation, and settlement"
+    keywords:
+      ["operations", "reconciliation", "settlement", "processing", "exception"]
+    subdomains:
+      trade_ops:
+        name: "Trade Operations"
+        description: "Trade confirmation, matching, settlement, and fail management"
+        keywords: ["confirmation", "matching", "settlement", "fail"]
+      reconciliation:
+        name: "Reconciliation"
+        description: "Break resolution, exception handling, and nostro/vostro reconciliation"
+        keywords: ["reconciliation", "break", "exception", "nostro", "vostro"]
+
+  workforce:
+    name: "Workforce"
+    description: "HR, payroll, and talent management"
+    keywords: ["employee", "payroll", "recruitment", "hr", "workforce"]
+    subdomains:
+      payroll:
+        name: "Payroll & Compensation"
+        description: "Salaries, wages, bonuses, and compensation structures"
+        keywords: ["payroll", "salary", "compensation", "bonus"]
+      talent:
+        name: "Talent"
+        description: "Recruitment, hiring, performance reviews, and professional development"
+        keywords: ["recruitment", "candidate", "performance", "training"]
+
+  customer:
+    name: "Customer"
+    description: "CRM, onboarding, sales, and customer analytics"
+    keywords: ["customer", "client", "onboarding", "relationship", "segment"]
+    subdomains:
+      onboarding:
+        name: "Client Onboarding"
+        description: "Account applications, enrollment, activation, and KYC intake"
+        keywords: ["onboarding", "application", "enrollment", "activation"]
+      relationship:
+        name: "Relationship Management"
+        description: "Advisor assignments, client segmentation, and tier management"
+        keywords: ["relationship", "advisor", "rm", "segment", "tier"]
+
+  technology:
+    name: "Technology"
+    description: "IT infrastructure, cybersecurity, and application operations"
+    keywords: ["server", "security", "log", "monitoring", "infrastructure"]
+    subdomains:
+      security:
+        name: "Cybersecurity"
+        description: "Access control, authentication, threat detection, fraud prevention, and vulnerability management"
+        keywords:
+          ["security", "access", "auth", "threat", "vulnerability", "fraud"]
+      monitoring:
+        name: "Monitoring"
+        description: "System logs, alerts, uptime tracking, and incident management"
+        keywords: ["monitoring", "alert", "log", "uptime", "incident"]
+
+  governance:
+    name: "Governance"
+    description: "Legal, contracts, data governance, and regulatory compliance"
+    keywords: ["compliance", "contract", "governance", "policy", "regulation"]
+    subdomains:
+      legal:
+        name: "Legal"
+        description: "Contracts, agreements, litigation, and legal documentation"
+        keywords: ["contract", "agreement", "litigation", "clause"]
+      data_governance:
+        name: "Data Governance"
+        description: "Data quality, lineage, metadata management, and catalog policies"
+        keywords: ["data_lineage", "data_catalog", "data_governance", "data_steward", "retention_policy"]

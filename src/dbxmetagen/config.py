@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime
 import yaml
-from src.dbxmetagen.user_utils import sanitize_user_identifier, get_current_user
+from dbxmetagen.user_utils import sanitize_user_identifier, get_current_user
 
 
 def _parse_bool(value):
@@ -65,7 +65,6 @@ class MetadataConfig:
             "allow_manual_override",
             "override_csv_path",
             "tag_none_fields",
-            "pi_column_field_names",
             "max_prompt_length",
             "columns_per_call",
             "sample_size",
@@ -89,6 +88,8 @@ class MetadataConfig:
             "current_user",
             "use_protected_classification_for_table",
             "domain_config_path",
+            "domain_column_blacklist",
+            "include_lineage",
             "grant_permissions_after_creation",
             "permission_groups",
             "permission_users",
@@ -98,6 +99,19 @@ class MetadataConfig:
             "claim_timeout_minutes",
             "cleanup_failed_tables",
             "node_type",
+            "federation_mode",
+            "generate_profiling_data",
+            "embedding_model",
+            "ontology_config_path",
+            "ontology_bundle",
+            "similarity_threshold",
+            "profiling_max_tables",
+            "incremental",
+            "freshness_threshold_days",
+            "warehouse_id",
+            "use_kb_comments",
+            "include_profiling_context",
+            "include_constraint_context",
         ],
         "yaml_advanced_file_path": "../variables.advanced.yml",
         "yaml_advanced_variable_names": [
@@ -172,6 +186,12 @@ class MetadataConfig:
         self.grant_permissions_after_creation = _parse_bool(
             getattr(self, "grant_permissions_after_creation", True)
         )
+        self.enable_benchmarking = _parse_bool(
+            getattr(self, "enable_benchmarking", False)
+        )
+        self.use_kb_comments = _parse_bool(
+            getattr(self, "use_kb_comments", False)
+        )
 
         # Handle review_apply_ddl if present
         if hasattr(self, "review_apply_ddl"):
@@ -206,6 +226,41 @@ class MetadataConfig:
         self.claim_timeout_minutes = int(
             getattr(self, "claim_timeout_minutes", 60)
         )
+
+        # Federation mode: force apply_ddl=false when reading from federated catalogs
+        self.federation_mode = _parse_bool(
+            getattr(self, "federation_mode", False)
+        )
+        if self.federation_mode:
+            self.apply_ddl = False
+            self.add_metadata = _parse_bool(getattr(self, "add_metadata", True))
+            # DESCRIBE EXTENDED won't work reliably on federated tables
+            if self.add_metadata:
+                print(
+                    "[federation_mode] Warning: add_metadata=true may produce limited "
+                    "results against federated tables (DESCRIBE EXTENDED may fail)."
+                )
+
+        # Two-stage domain classification options
+        self.two_stage_classification = _parse_bool(
+            getattr(self, "two_stage_classification", True)
+        )
+        self.domain_prefilter_top_n = int(
+            getattr(self, "domain_prefilter_top_n", 5)
+        )
+        self.domain_confidence_threshold = float(
+            getattr(self, "domain_confidence_threshold", 0.5)
+        )
+
+        # Warn when both standalone domain config and ontology bundle are set
+        _dcp = getattr(self, "domain_config_path", None)
+        _ob = getattr(self, "ontology_bundle", None)
+        if _dcp and _ob:
+            print(
+                f"[config] Both domain_config_path='{_dcp}' and ontology_bundle='{_ob}' are set. "
+                f"Domain prediction will use the standalone file; ontology will use the bundle. "
+                f"Ensure domain keys match domain_entity_affinity keys in the bundle."
+            )
 
         # Fallback for run_id if not provided via kwargs/YAML
         if not self.run_id:

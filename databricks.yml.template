@@ -1,14 +1,18 @@
 bundle:
   name: dbxmetagen
-  databricks_cli_version: ">=0.234.*"
+  databricks_cli_version: ">=0.283.0"
+
+sync:
+  include:
+    - apps/dbxmetagen-app/app/configurations/**
+    - apps/dbxmetagen-app/app/src/dist/**
 
 include:
-  - resources/jobs/metagen.job.yml
-  - resources/jobs/sync_reviews.job.yml
-  # Uncomment the line below to deploy integration tests:
-  # - resources/jobs/integration_tests.job.yml
+  - resources/jobs/*.yml
   - resources/apps/*.yml
-  - benchmarks/resources/jobs/benchmarks/*.yml
+  #- resources/dashboards.yml
+  # Uncomment to include test jobs (kept outside jobs/ glob):
+  #- resources/tests/*.yml
   - variables.yml
   - variables.advanced.yml
   - resources/app_variables.yml
@@ -25,18 +29,39 @@ targets:
     default: true
     workspace:
       host: __DATABRICKS_HOST__
+    variables:
+      catalog_name: __CATALOG_NAME__
+      schema_name: __SCHEMA_NAME__
+      warehouse_id: __WAREHOUSE_ID__
     permissions:
       - user_name: ${var.deploying_user}
         level: CAN_MANAGE
 
+  demo:
+    mode: development
+    default: true
+    workspace:
+      host: __DATABRICKS_HOST__
+    variables:
+      catalog_name: __CATALOG_NAME__
+      schema_name: __SCHEMA_NAME__
+      warehouse_id: __WAREHOUSE_ID__
+    permissions:
+      - user_name: ${var.deploying_user}
+        level: CAN_MANAGE
+    
+  
   prod:
     mode: production
     workspace:
       host: __DATABRICKS_HOST__
       root_path: ${var.current_working_directory}
+    variables:
+      catalog_name: __CATALOG_NAME__
+      schema_name: __SCHEMA_NAME__
+      warehouse_id: __WAREHOUSE_ID__
     permissions:
       - user_name: ${var.current_user}
         level: CAN_MANAGE
     run_as:
       user_name: ${var.current_user}
-

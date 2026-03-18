@@ -145,25 +145,47 @@ class TestColumnContentsValidator:
     """Test the CommentResponse column_contents validator."""
 
     def validate_column_contents(self, v):
-        """Replicate the validator logic for testing."""
-        
+        """Replicate the validator logic for testing (must match metadata_generator.py)."""
+        import re
+
         def try_parse_stringified_array(s):
-            """Try to parse a string as a JSON array."""
             if isinstance(s, str):
                 stripped = s.strip()
                 if stripped.startswith("["):
-                    # Handle truncated arrays
                     if not stripped.endswith("]"):
                         if stripped.endswith('"') or stripped.endswith("'"):
                             stripped = stripped + "]"
-                    try:
-                        parsed = json.loads(stripped)
-                        if isinstance(parsed, list):
-                            return True, [str(item) if not isinstance(item, str) else item for item in parsed]
-                    except json.JSONDecodeError:
-                        pass
+                        else:
+                            last = stripped.rfind('",')
+                            if last == -1:
+                                last = stripped.rfind("',")
+                            if last > 0:
+                                stripped = stripped[: last + 1] + "]"
+
+                    _to_list = lambda parsed: [
+                        str(item) if not isinstance(item, str) else item
+                        for item in parsed
+                    ]
+
+                    for attempt in range(3):
+                        try:
+                            parsed = json.loads(stripped)
+                            if isinstance(parsed, list):
+                                return True, _to_list(parsed)
+                            break
+                        except json.JSONDecodeError:
+                            if attempt == 0:
+                                stripped = stripped.replace('\n', ' ').replace('\r', ' ').replace('\t', ' ')
+                            elif stripped.endswith("]]"):
+                                stripped = stripped[:-1]
+                            else:
+                                break
+
+                    elements = re.findall(r'"((?:[^"\\]|\\.)*)"', stripped)
+                    if elements:
+                        return True, elements
             return False, s
-        
+
         if isinstance(v, str):
             success, result = try_parse_stringified_array(v)
             if success:
@@ -172,21 +194,22 @@ class TestColumnContentsValidator:
         elif isinstance(v, list):
             if len(v) == 1 and isinstance(v[0], list):
                 v = v[0]
-            
-            # Handle single element that is a stringified multi-element array
+
             if len(v) == 1 and isinstance(v[0], str):
                 success, result = try_parse_stringified_array(v[0])
                 if success and len(result) > 1:
                     return result
-            
-            # Process each element, expanding stringified arrays
+
             expanded = []
             for item in v:
                 success, result = try_parse_stringified_array(item)
                 if success:
                     expanded.extend(result)
                 else:
-                    expanded.append(str(item) if not isinstance(item, str) else item)
+                    if isinstance(item, list):
+                        expanded.append("\n\n".join(str(x) for x in item))
+                    else:
+                        expanded.append(str(item) if not isinstance(item, str) else item)
             return expanded
         else:
             raise ValueError("column_contents must be either a string or a list of strings")
@@ -260,6 +283,62 @@ class TestColumnContentsValidator:
         truncated = '["only one description here"'
         result = self.validate_column_contents(truncated)
         assert result == ["only one description here"]
+
+    def test_stringified_array_with_literal_newlines(self):
+        """Regression: LLM returns stringified array with literal newlines between elements."""
+        s = '["First column description.",\n"Second column description.",\n"Third column."]'
+        result = self.validate_column_contents(s)
+        assert result == ["First column description.", "Second column description.", "Third column."]
+
+    def test_stringified_array_with_newlines_inside_descriptions(self):
+        """Regression: LLM embeds literal newlines within individual descriptions."""
+        s = '["Line one\nLine two of first col", "Second col description"]'
+        result = self.validate_column_contents(s)
+        assert len(result) == 2
+        assert "Line one" in result[0]
+        assert result[1] == "Second col description"
+
+    def test_truncated_mid_word_stringified_array(self):
+        """Regression: stringified array truncated mid-word recovers complete elements."""
+        s = '["desc1", "desc2", "desc3 is trunca'
+        result = self.validate_column_contents(s)
+        assert result == ["desc1", "desc2"]
+
+    def test_truncated_mid_word_as_string_value(self):
+        """Same truncation test when passed as a top-level string value."""
+        s = '["Full description here.", "Another one.", "This one gets cut off mid-sen'
+        result = self.validate_column_contents(s)
+        assert result == ["Full description here.", "Another one."]
+
+    def test_regex_fallback_on_malformed_json(self):
+        """When json.loads fails even after cleanup, regex extracts quoted strings."""
+        s = '["good desc", bad unquoted, "another good"]'
+        result = self.validate_column_contents(s)
+        assert "good desc" in result
+        assert "another good" in result
+
+    def test_inner_list_joined_not_stringified(self):
+        """Regression: inner list items must be joined, not str()-ed into repr."""
+        result = self.validate_column_contents([["para1", "para2"], "desc2"])
+        assert result == ["para1\n\npara2", "desc2"]
+        assert "['para1'" not in result[0]
+
+    def test_all_inner_lists_joined(self):
+        """Multiple inner lists are each joined independently."""
+        result = self.validate_column_contents([["a", "b"], ["c", "d"]])
+        assert result == ["a\n\nb", "c\n\nd"]
+
+    def test_single_inner_list_unwrapped(self):
+        """Single nested list [[a,b,c]] still uses the existing unwrap logic."""
+        result = self.validate_column_contents([["desc1", "desc2", "desc3"]])
+        assert result == ["desc1", "desc2", "desc3"]
+
+    def test_realistic_stringified_array_with_special_chars(self):
+        """Realistic LLM output: stringified array with single quotes in descriptions."""
+        s = '["Unique ID following \'FUND_######\' format.", "Full legal name of the fund."]'
+        result = self.validate_column_contents(s)
+        assert len(result) == 2
+        assert "FUND_######" in result[0]
 
 
 class TestMaxPromptLengthValidation:

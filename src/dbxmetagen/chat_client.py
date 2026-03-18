@@ -6,6 +6,7 @@ Need to improve NotImplementedError, deprecated marks, and other indications of 
 
 import os
 import json
+import logging
 import re
 import requests
 import mlflow
@@ -16,7 +17,8 @@ from openai import OpenAI
 from databricks_langchain import ChatDatabricks
 from databricks.sdk import WorkspaceClient
 from pydantic import BaseModel
-import json
+
+logger = logging.getLogger(__name__)
 from openai.types.chat.chat_completion import ChatCompletion, Choice
 from openai.types.chat.chat_completion_message import ChatCompletionMessage
 
@@ -263,20 +265,24 @@ class OpenAISpecClient(ChatClient):
             response_dict = json.loads(response_text)
             return response_model(**response_dict)
         except (json.JSONDecodeError, TypeError, ValueError) as e:
-            print(f"Warning: Failed to parse structured response: {e}")
-            print(f"Raw response: {response_text}")
+            logger.warning("Failed to parse structured response: %s", e)
+            logger.debug("Raw response: %s", response_text[:500])
             if (
                 hasattr(response_model, "model_fields")
                 and "column_contents" in response_model.model_fields
             ):
+                logger.warning(
+                    "Returning empty metadata for table due to parse failure "
+                    "(model=%s)", response_model.__name__,
+                )
                 return response_model(
-                    table="unknown", columns=[], column_contents=response_text
+                    table="unknown", columns=[], column_contents=[]
                 )
             raise ValueError(
-                "Could not parse response into %s: %s", response_model.__name__, e
+                f"Could not parse response into {response_model.__name__}: {e}"
             )
         except Exception as e:
-            raise ValueError("Unexpected error parsing structured response: %s", e)
+            raise ValueError(f"Unexpected error parsing structured response: {e}")
 
 
 class CustomChatSpecClient(ChatClient):
@@ -386,21 +392,22 @@ class CustomChatSpecClient(ChatClient):
             response_dict = json.loads(response_text)
             return response_model(**response_dict)
         except (json.JSONDecodeError, TypeError, ValueError) as e:
-            print(f"Warning: Failed to parse structured response: {e}")
-            print(f"Raw response: {response_text}")
+            logger.warning("Failed to parse structured response: %s", e)
+            logger.debug("Raw response: %s", response_text[:500])
             if (
                 hasattr(response_model, "model_fields")
                 and "column_contents" in response_model.model_fields
             ):
-                # This is likely a CommentResponse or similar
+                logger.warning(
+                    "Returning empty metadata for table due to parse failure "
+                    "(model=%s)", response_model.__name__,
+                )
                 return response_model(
-                    table="unknown", columns=[], column_contents=response_text
+                    table="unknown", columns=[], column_contents=[]
                 )
-            else:
-                # Generic fallback - this may still fail but provides better error info
-                raise ValueError(
-                    "Could not parse response into {response_model.__name__}: {e}"
-                )
+            raise ValueError(
+                f"Could not parse response into {response_model.__name__}: {e}"
+            )
         except Exception as e:
             raise ValueError(f"Unexpected error parsing structured response: {e}")
 

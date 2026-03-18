@@ -1,0 +1,29 @@
+resources:
+  jobs:
+    sync_graph_lakebase_job:
+      name: "${var.app_name}_sync_graph_lakebase"
+
+      permissions:
+        - service_principal_name: ${resources.apps.dbxmetagen_app.service_principal_client_id}
+          level: CAN_MANAGE_RUN
+
+      email_notifications:
+        on_failure:
+          - ${var.current_user}
+
+      parameters:
+        - name: catalog_name
+          default: ${var.catalog_name}
+        - name: schema_name
+          default: ${var.schema_name}
+        - name: lakebase_catalog
+          default: ${var.lakebase_catalog}
+
+      tasks:
+        - task_key: sync_to_lakebase
+          notebook_task:
+            notebook_path: ../../notebooks/sync_graph_to_lakebase.py
+            base_parameters:
+              source_catalog: "{{job.parameters.catalog_name}}"
+              source_schema: "{{job.parameters.schema_name}}"
+              lakebase_catalog: "{{job.parameters.lakebase_catalog}}"

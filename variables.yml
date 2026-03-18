@@ -5,9 +5,6 @@ variables:
   schema_name:
     description: Primary schema where data, models, and files are written to for this project. This is not the source schema, which is specified elsewhere with the source table name.
     default: metadata_results
-  bundle_target:
-    description: Bundle target environment (dev/prod).
-    default: ${bundle.target}
   allow_data:
     description: Set this to false if you do not want data sent to LLMs, do not want any metadata stored in comments, and do not want metadata used that could leak data into metadata. Reduces quality of outputs. Internally sets sample_size to 0, allow_data_in_comments to false, and include_possible_data_fields_in_metadata to false.
     default: True
@@ -22,10 +19,10 @@ variables:
     default: true
   include_datatype_from_metadata:
     description: Should datatype be included in the comment generation?
-    default: false
+    default: true
   include_existing_table_comment:
     description: If there's an existing comment at the table level, include it in the payload that is used to build the metadata. This can lead to data leakage, but can also help enrich AI generated comments with existing comments, or include information that the previous comment authors wanted to include.
-    default: false
+    default: true
   include_possible_data_fields_in_metadata:
     description: There are a few fields in extended metadata if ANALYZE TABLE...COMPUTE STATISTICS... is used that in theory could leak PII or PHI. For example, if a phone number or SSN is stored as an INT, or for appointment dates that could be classified as PHI. Set this to false if you want to exclude these fields. Note that these fields are some of the most useful for tools like Genie.
     default: true
@@ -42,17 +39,14 @@ variables:
     description: Set this to true if you want all phi assumptions to be as secure as possible. Under this setting there is no 'medical information' category. Instead, all medical information is converted to PHI. Note that this will mean that any downstream masking you do, and security concerns around your data will be much more stringent.
     default: false
   model:
-    description: LLM endpoint used by model calls. Note that this is not the same as any registered model in UC that wraps the prompt engineering work, but is the serving endpoint called after prompt engineering. This can be changed to other served models as well as provisioned throughput models or external models for compliance purposes if needed. Recommend databricks-claude-3-7-sonnet for best comments, with databricks-meta-llama-3-3-70b-instruct as a backup. Sonnet will generally give more complex responses. Review security, tenancy, and cost considerations before making a decision.
-    default: databricks-claude-sonnet-4-5
+    description: LLM endpoint used by model calls. Note that this is not the same as any registered model in UC that wraps the prompt engineering work, but is the serving endpoint called after prompt engineering. This can be changed to other served models as well as provisioned throughput models or external models for compliance purposes if needed. Recommend databricks-claude-sonnet-4-6 for best comments, with databricks-meta-llama-3-3-70b-instruct as a backup. Sonnet will generally give more complex responses. Review security, tenancy, and cost considerations before making a decision.
+    default: databricks-claude-sonnet-4-6
   mode:
     description: Mode for generating metadata. Options are 'comment', 'pi', or 'domain'. Comment mode generates descriptions for tables and columns. PI mode identifies and classifies sensitive information. Domain mode classifies tables into business domains using an agent.
     default: comment
   job_table_names:
     description: default table names - get applied if there are no host overrides.
-    default: eswanson.default.forecasting_set
-  create_test_data:
-    description: Flag to create test data during deployment. Set via --create-test-data flag in deploy_app.sh
-    default: false
+    default: none
   apply_ddl:
     description: Whether to apply DDL directly to the specified environment or not. Modify permissions needed, and be aware that this will alter tables.
     default: False
@@ -123,8 +117,17 @@ variables:
       "GMC": "Global Marketing Code",
       }
   domain_config_path:
-    description: Path to the domain configuration YAML file for domain classification mode
-    default: ../configurations/domain_config.yaml
+    description: Path to a standalone domain configuration YAML file. When set, overrides the domains section from the ontology bundle for domain prediction. Leave empty to use the ontology bundle's domains instead.
+    default: ""
+  ontology_bundle:
+    description: Ontology bundle name or path (e.g. 'general', 'healthcare'). Used by the ontology pipeline and, when domain_config_path is empty, also supplies domain definitions for domain prediction. Should align with domain_config_path industry.
+    default: general
+  domain_column_blacklist:
+    description: Comma-separated column names to exclude from domain classification (e.g. system columns like _updated_at, created_at that can bias results). Only affects domain mode.
+    default: "_updated_at,_created_at,created_at,updated_at"
+  include_lineage:
+    description: When true, query system.access.table_lineage on the fly and include truncated upstream/downstream table lists in LLM prompts for comment, PII, and domain modes. Requires access to system tables. Default false.
+    default: true
   use_protected_classification_for_table:
     description: Whether to use protected classification for the table.
     default: true
@@ -149,9 +152,6 @@ variables:
   current_working_directory:
     description: Working directory or bundle root.
     default: /Users/${var.current_user}/.bundle/${bundle.name}/${bundle.target}
-  pi_column_field_names:
-    description: Field names for PI columns. Not yet implemented. Will allow name changes and alternate schemas for tag names. Currently, the code must be changed.
-    default: default
   review_input_file_type:
     description: excel or tsv. allows reviewed DDL to be in either format.
     default: tsv
@@ -185,3 +185,39 @@ variables:
   deploying_user:
     description: User deploying the bundle (for permissions).
     default: ${workspace.current_user.userName}
+  generate_profiling_data:
+    description: Enable profiling payload capture and statistics collection. When true, LLM prompts are logged and table statistics are computed.
+    default: false
+  embedding_model:
+    description: Databricks Foundation Model endpoint for generating embeddings
+    default: databricks-bge-large-en
+  ontology_config_path:
+    description: Path to ontology configuration YAML file
+    default: configurations/ontology_config.yaml
+  similarity_threshold:
+    description: Cosine similarity threshold for creating similar_embedding edges between nodes (0.0-1.0)
+    default: 0.8
+  profiling_max_tables:
+    description: Maximum number of tables to profile per run (empty for all)
+    default: ""
+  freshness_threshold_days:
+    description: Number of days before data is considered stale for quality scoring
+    default: 7
+  warehouse_id:
+    description: SQL warehouse ID for dashboard queries. Required for dashboard deployment.
+    default: ""
+  federation_mode:
+    description: "Enable federation compatibility mode for running against federated catalogs (e.g., Redshift, Snowflake via Unity Catalog federation). When true: DESCRIBE DETAIL is skipped (Delta-specific), DESCRIBE EXTENDED is skipped, DDL apply is forced to false (cannot ALTER federated tables), and tag operations are disabled. SELECT, DESCRIBE TABLE, and SHOW TABLES still work. dbxmetagen output tables remain Delta."
+    default: false
+  use_kb_comments:
+    description: "When true, PI and domain classification prompts are enriched with comments from knowledge base tables (table_knowledge_base, column_knowledge_base) when UC table/column comments are empty. Requires the knowledge base to have been built first."
+    default: false
+  incremental:
+    description: "When true, pipeline steps (profiling, extended metadata, ontology, FK prediction) only process tables that changed since their last run. Set to false for a full refresh."
+    default: true
+  include_profiling_context:
+    description: "When true, inject profiling stats (distinct_count, null_rate, min/max) into comment generation prompts. Requires profiling to have run first."
+    default: false
+  include_constraint_context:
+    description: "When true, inject PK/FK constraint roles into comment generation prompts. Requires extended metadata extraction to have run first."
+    default: false

@@ -19,12 +19,12 @@ import sys
 import os
 import pandas as pd
 
-sys.path.append("../../")
+sys.path.append("../../src")  # For git-clone or DAB deployment; pip-installed package works without this
 
-from src.dbxmetagen.config import MetadataConfig
-from src.dbxmetagen.main import main
-from src.dbxmetagen.ddl_regenerator import process_metadata_file, load_metadata_file
-from src.dbxmetagen.user_utils import sanitize_user_identifier, get_current_user
+from dbxmetagen.config import MetadataConfig
+from dbxmetagen.main import main
+from dbxmetagen.ddl_regenerator import process_metadata_file, load_metadata_file
+from dbxmetagen.user_utils import sanitize_user_identifier, get_current_user
 from datetime import datetime
 
 # Setup widgets

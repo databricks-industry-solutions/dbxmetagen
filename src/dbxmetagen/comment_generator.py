@@ -1,7 +1,7 @@
 import mlflow
-from src.dbxmetagen.metadata_generator import CommentGenerator
-from src.dbxmetagen.chat_client import ChatClientFactory
-from src.dbxmetagen.config import MetadataConfig
+from dbxmetagen.metadata_generator import CommentGenerator
+from dbxmetagen.chat_client import ChatClientFactory
+from dbxmetagen.config import MetadataConfig
 
 
 # TODO: Delete unused function - CommentGeneratorModel is not used anywhere

@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 import yaml
 import pytest
-from src.dbxmetagen.config import MetadataConfig
+from dbxmetagen.config import MetadataConfig
 
 
 class TestYAMLVariableCoverage:
@@ -43,8 +43,6 @@ class TestYAMLVariableCoverage:
         # Some params are intentionally not loaded (job-level or bundle-level only)
         # These are okay to skip
         acceptable_missing = {
-            "bundle_target",  # Bundle-level variable
-            "create_test_data",  # Deployment-time flag
             "current_working_directory",  # Runtime-determined
             "deploying_user",  # Bundle-level variable
             "job_table_names",  # Job-level default (table_names used instead)
