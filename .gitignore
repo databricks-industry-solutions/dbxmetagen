@@ -168,9 +168,6 @@ docs/operations/*/
 .github/skills/
 .ai-dev-kit
 
-# Frontend build output (synced via databricks.yml sync.include)
-apps/dbxmetagen-app/app/src/dist/
-
 # Backup config created by integration test runner
 .databricks.yml.backup.*
 
