@@ -31,6 +31,8 @@ _MOCK_MODULES = [
 
 def _install_mock_modules():
     """Insert lightweight stubs for missing third-party packages."""
+    _already_loaded = set(sys.modules) & set(_MOCK_MODULES)
+
     for mod_name in _MOCK_MODULES:
         if mod_name not in sys.modules:
             mod = types.ModuleType(mod_name)
@@ -38,40 +40,40 @@ def _install_mock_modules():
                 mod.__path__ = []
             sys.modules[mod_name] = mod
 
-    # FastAPI stubs
-    fm = sys.modules["fastapi"]
-    fm.FastAPI = MagicMock()
-    fm.HTTPException = type("HTTPException", (Exception,), {"__init__": lambda self, *a, **kw: None})
-    fm.Query = MagicMock()
-    fm.UploadFile = MagicMock()
-    fm.File = MagicMock()
-    fm.Form = MagicMock()
-    sys.modules["fastapi.staticfiles"].StaticFiles = MagicMock()
-    sys.modules["fastapi.middleware.cors"].CORSMiddleware = MagicMock()
-    sys.modules["fastapi.responses"].StreamingResponse = MagicMock()
+    if "fastapi" not in _already_loaded:
+        fm = sys.modules["fastapi"]
+        fm.FastAPI = MagicMock()
+        fm.HTTPException = type("HTTPException", (Exception,), {"__init__": lambda self, *a, **kw: None})
+        fm.Query = MagicMock()
+        fm.UploadFile = MagicMock()
+        fm.File = MagicMock()
+        fm.Form = MagicMock()
+        sys.modules["fastapi.staticfiles"].StaticFiles = MagicMock()
+        sys.modules["fastapi.middleware.cors"].CORSMiddleware = MagicMock()
+        sys.modules["fastapi.responses"].StreamingResponse = MagicMock()
 
-    # cachetools stubs
-    cm = sys.modules["cachetools"]
-    cm.TTLCache = MagicMock()
-    cm.cached = lambda *a, **kw: (lambda fn: fn)
+    if "cachetools" not in _already_loaded:
+        cm = sys.modules["cachetools"]
+        cm.TTLCache = MagicMock()
+        cm.cached = lambda *a, **kw: (lambda fn: fn)
 
-    # Pydantic BaseModel stub
-    class _BaseModel:
-        def __init_subclass__(cls, **kw):
-            super().__init_subclass__(**kw)
-    sys.modules["pydantic"].BaseModel = _BaseModel
+    if "pydantic" not in _already_loaded:
+        class _BaseModel:
+            def __init_subclass__(cls, **kw):
+                super().__init_subclass__(**kw)
+        sys.modules["pydantic"].BaseModel = _BaseModel
 
-    # Databricks SDK stub
-    sys.modules["databricks.sdk"].WorkspaceClient = MagicMock()
+    if "databricks.sdk" not in _already_loaded:
+        sys.modules["databricks.sdk"].WorkspaceClient = MagicMock()
 
-    # LangChain tool decorator stub -- just return the function with a .name/.invoke
-    def _tool(fn=None, **kw):
-        if fn is None:
-            return _tool
-        fn.name = fn.__name__
-        fn.invoke = lambda kwargs: fn(**kwargs)
-        return fn
-    sys.modules["langchain_core.tools"].tool = _tool
+    if "langchain_core.tools" not in _already_loaded:
+        def _tool(fn=None, **kw):
+            if fn is None:
+                return _tool
+            fn.name = fn.__name__
+            fn.invoke = lambda kwargs: fn(**kwargs)
+            return fn
+        sys.modules["langchain_core.tools"].tool = _tool
 
 
 _install_mock_modules()
