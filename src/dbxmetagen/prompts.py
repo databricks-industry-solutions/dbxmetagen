@@ -121,6 +121,43 @@ class Prompt(ABC):
             if cn in col_meta and ref:
                 col_meta[cn]["role"] = f"FOREIGN KEY -> {ref}"
 
+    def enrich_from_ontology(self) -> None:
+        """Inject entity type context from ontology_entities into prompt_content.
+
+        When an entity classification already exists for this table (from a prior
+        ontology discovery run), add it as context so the LLM can generate
+        better comments, PII classifications, and domain predictions.
+        """
+        catalog = getattr(self.config, "catalog_name", None)
+        schema = getattr(self.config, "schema_name", None)
+        if not catalog or not schema:
+            return
+        fqtn = self.full_table_name
+        try:
+            rows = self.spark.sql(
+                f"SELECT entity_type, confidence, entity_role "
+                f"FROM {catalog}.{schema}.ontology_entities "
+                f"WHERE ARRAY_CONTAINS(source_tables, '{fqtn}') "
+                f"AND entity_role = 'primary' "
+                f"ORDER BY confidence DESC LIMIT 1"
+            ).collect()
+        except Exception:
+            return
+        if not rows:
+            return
+        entity_type = rows[0]["entity_type"]
+        confidence = rows[0]["confidence"]
+        self.prompt_content["ontology_context"] = {
+            "entity_type": entity_type,
+            "confidence": float(confidence) if confidence else 0.0,
+            "hint": (
+                f"This table has been classified as a '{entity_type}' entity "
+                f"(confidence: {confidence:.2f}). Use this context to inform "
+                f"your descriptions -- for example, columns likely represent "
+                f"properties or relationships of a {entity_type}."
+            ),
+        }
+
     def enrich_from_knowledge_base(self) -> None:
         """Supplement empty UC comments with descriptions from KB tables.
 
@@ -653,10 +690,18 @@ class CommentPrompt(Prompt):
                 },
                 {
                     "role": "user",
-                    "content": f"""Content is here - {content} and abbreviations are here - {acro_content}""",
+                    "content": self._build_user_content(content, acro_content),
                 },
             ]
         }
+
+    @staticmethod
+    def _build_user_content(content: dict, acro_content: Any) -> str:
+        base = f"Content is here - {content} and abbreviations are here - {acro_content}"
+        ontology_ctx = content.get("ontology_context")
+        if ontology_ctx:
+            base += f"\n\nOntology context: {ontology_ctx['hint']}"
+        return base
 
 
 class PIPrompt(Prompt):

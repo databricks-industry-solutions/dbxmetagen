@@ -531,6 +531,56 @@ class KnowledgeGraphBuilder:
         
         return {"total_edges": count}
     
+    def add_inverse_edges(self, edges_df: DataFrame, edge_catalog: Optional[Dict] = None) -> DataFrame:
+        """Generate inverse edges for all directed edges using the edge catalog.
+
+        For each edge A->B with relationship R, if the edge catalog has an
+        inverse defined for R, produce B->A with the inverse relationship name.
+        Symmetric edges and edges without inverses are skipped.
+        """
+        if not edge_catalog:
+            return edges_df
+
+        from pyspark.sql import Row
+        inverse_map: Dict[str, str] = {}
+        symmetric: set = set()
+        for name, entry in edge_catalog.items():
+            if hasattr(entry, "symmetric") and entry.symmetric:
+                symmetric.add(name)
+            elif hasattr(entry, "inverse") and entry.inverse:
+                inverse_map[name] = entry.inverse
+
+        if not inverse_map:
+            return edges_df
+
+        directed_edges = edges_df.filter(
+            F.col("relationship").isin(list(inverse_map.keys()))
+        )
+        if directed_edges.rdd.isEmpty():
+            return edges_df
+
+        inv_edges = (
+            directed_edges
+            .withColumn("_orig_src", F.col("src"))
+            .withColumn("src", F.col("dst"))
+            .withColumn("dst", F.col("_orig_src"))
+            .drop("_orig_src")
+        )
+
+        mapping_expr = F.create_map(
+            *[item for k, v in inverse_map.items() for item in (F.lit(k), F.lit(v))]
+        )
+        inv_edges = (
+            inv_edges
+            .withColumn("relationship", mapping_expr[F.col("relationship")])
+            .withColumn("edge_id", F.concat_ws("::", F.col("src"), F.col("dst"), F.col("relationship")))
+            .withColumn("direction", F.lit("inverse"))
+        )
+
+        combined = edges_df.unionByName(inv_edges, allowMissingColumns=True)
+        logger.info("add_inverse_edges: added %d inverse edges", inv_edges.count())
+        return combined
+
     def merge_edges(self, edges_df: DataFrame) -> Dict[str, int]:
         """
         Incrementally merge edges into the edges table.

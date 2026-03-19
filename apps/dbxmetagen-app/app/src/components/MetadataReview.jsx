@@ -43,6 +43,28 @@ const META_TYPES = [
   { key: 'fk', label: 'Foreign Keys' },
 ]
 
+const PROPERTY_ROLE_GROUPS = [
+  { label: 'Identifiers', roles: ['primary_key', 'business_key'] },
+  { label: 'Measures', roles: ['measure', 'derived'] },
+  { label: 'Dimensions', roles: ['dimension', 'temporal', 'label'] },
+  { label: 'Relationships', roles: ['object_property', 'composite_component'] },
+  { label: 'Governance', roles: ['pii', 'audit'] },
+  { label: 'Other', roles: ['attribute'] },
+]
+
+const LEGACY_ROLE_MAP = {
+  'link': 'object_property',
+  'foreign_key': 'object_property',
+  'identifier': 'primary_key',
+  'boolean_flag': 'dimension',
+  'code': 'dimension',
+  'geo': 'composite_component',
+  'system_metadata': 'audit',
+  'timestamp': 'temporal',
+  'hierarchy_level': 'dimension',
+  'text_freeform': 'label',
+}
+
 function ReviewEditor() {
   const cst = useCatalogSchemaTables()
   const { catalogs, schemas, filtered: filteredTables, catalog: selectedCatalog, schema: selectedSchema, filter: tableFilter, setCatalog: setSelectedCatalog, setSchema: setSelectedSchema, setFilter: setTableFilter } = cst
@@ -477,19 +499,27 @@ function ReviewEditor() {
                               })()}</td>}
                               {show('ontology') && <td className="px-2 py-1">{colProp ? (() => {
                                 const cpKey = colProp.property_id
-                                const curRole = colPropOverrides[cpKey]?.property_role ?? colProp.property_role
+                                const rawRole = colPropOverrides[cpKey]?.property_role ?? colProp.property_role
+                                const curRole = (rawRole && LEGACY_ROLE_MAP[rawRole]) ?? rawRole
                                 const curLinked = colPropOverrides[cpKey]?.linked_entity_type ?? colProp.linked_entity_type ?? ''
                                 return (
                                   <div className="flex items-center gap-1">
-                                    <select value={curRole} title="Saves immediately to ontology_column_properties. Defines how this column is used (grouping, aggregation, joining, etc.)." onChange={ev => {
+                                    <select value={curRole ?? ''} title="Saves immediately to ontology_column_properties. Defines how this column is used (grouping, aggregation, joining, etc.)." onChange={ev => {
                                       const nr = ev.target.value
                                       setColPropOverrides(p => ({ ...p, [cpKey]: { ...(p[cpKey] || {}), property_role: nr } }))
                                       fetch('/api/ontology/update-column-property', { method: 'POST', headers: { 'Content-Type': 'application/json' },
                                         body: JSON.stringify({ property_id: cpKey, property_role: nr, linked_entity_type: curLinked || null }) }).catch(() => {})
                                     }} className="text-[10px] border border-slate-300 dark:border-dbx-navy-400/40 rounded px-1 py-0.5 bg-white dark:bg-dbx-navy/60 dark:text-slate-200">
-                                      {['identifier', 'attribute', 'measure', 'link', 'timestamp', 'foreign_key'].map(r => <option key={r} value={r}>{r}</option>)}
+                                      <option value="">Select role...</option>
+                                      {PROPERTY_ROLE_GROUPS.map(group => (
+                                        <optgroup key={group.label} label={group.label}>
+                                          {group.roles.map(role => (
+                                            <option key={role} value={role}>{role.replace(/_/g, ' ')}</option>
+                                          ))}
+                                        </optgroup>
+                                      ))}
                                     </select>
-                                    {(curRole === 'link' || curRole === 'foreign_key') && (
+                                    {curRole === 'object_property' && (
                                       <input value={curLinked} placeholder="linked entity"
                                         onChange={ev => setColPropOverrides(p => ({ ...p, [cpKey]: { ...(p[cpKey] || {}), linked_entity_type: ev.target.value } }))}
                                         onBlur={ev => {

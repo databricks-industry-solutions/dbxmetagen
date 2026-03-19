@@ -2,15 +2,81 @@
 
 metadata:
   name: "Retail & CPG"
-  version: "2.0"
+  version: "3.0"
   industry: "retail_cpg"
   description: "Retail, e-commerce, and CPG ontology with customer, product, and supply chain entity types"
   standards_alignment: "GS1, Schema.org"
 
 ontology:
-  version: "2.0"
+  version: "3.0"
   name: "Retail & CPG Business Ontology"
   description: "Entity types for retail operations, e-commerce, merchandising, and supply chain"
+
+  property_roles:
+    primary_key:
+      description: "Surrogate or technical row identifier"
+      maps_to_kind: "data_property"
+      semantic_role: "identifier"
+    business_key:
+      description: "Natural key meaningful to users"
+      maps_to_kind: "data_property"
+      semantic_role: "identifier"
+    measure:
+      description: "Numeric value to aggregate"
+      maps_to_kind: "data_property"
+      semantic_role: "metric"
+    dimension:
+      description: "Categorical filter or grouping attribute"
+      maps_to_kind: "data_property"
+      semantic_role: "dimension"
+    temporal:
+      description: "Date or timestamp of event"
+      maps_to_kind: "data_property"
+      semantic_role: "temporal"
+    object_property:
+      description: "FK or reference to another entity's identifier"
+      maps_to_kind: "object_property"
+      semantic_role: "relationship"
+    composite_component:
+      description: "Part of a multi-column value object"
+      maps_to_kind: "data_property"
+      semantic_role: "component"
+    label:
+      description: "Human-readable name or title"
+      maps_to_kind: "data_property"
+      semantic_role: "label"
+    pii:
+      description: "Personally identifiable information"
+      maps_to_kind: "data_property"
+      semantic_role: "pii"
+      governance_flag: true
+    audit:
+      description: "System-generated provenance column"
+      maps_to_kind: "data_property"
+      semantic_role: "provenance"
+    derived:
+      description: "Computed from other columns"
+      maps_to_kind: "data_property"
+      semantic_role: "derived"
+
+  edge_catalog:
+    instance_of: { inverse: type_of, symmetric: false, category: structural }
+    subclass_of: { inverse: superclass_of, symmetric: false, category: structural }
+    has_part: { inverse: part_of, symmetric: false, category: structural }
+    contains: { inverse: contained_in, symmetric: false, category: structural }
+    member_of: { inverse: has_member, symmetric: false, category: structural }
+    purchased_by: { inverse: purchased, domain: Transaction, range: Customer, symmetric: false, category: business }
+    sold_at: { inverse: sells, domain: Transaction, range: Store, symmetric: false, category: business }
+    in_category: { inverse: categorizes, domain: Product, range: Reference, symmetric: false, category: business }
+    supplied_by: { inverse: supplies, domain: Product, range: Supplier, symmetric: false, category: business }
+    placed_by: { inverse: placed, domain: Transaction, range: Person, symmetric: false, category: business }
+    created_by: { inverse: created, domain: Any, range: Person, symmetric: false, category: business }
+    owned_by: { inverse: owns, domain: Any, range: [Person, Organization], symmetric: false, category: business }
+    references: { inverse: referenced_by, domain: Any, range: Any, symmetric: false, category: business }
+    located_at: { inverse: location_of, domain: Any, range: Location, symmetric: false, category: business }
+    derives_from: { inverse: source_of, symmetric: false, category: lineage }
+    same_as: { symmetric: true, category: semantic }
+    similar_to: { symmetric: true, category: semantic }
 
   entities:
     auto_discover: true
@@ -72,6 +138,62 @@ ontology:
         relationships:
           places: { target: Order, cardinality: "one-to-many" }
           has_return: { target: Return, cardinality: "one-to-many" }
+        properties:
+          identifier:
+            kind: data_property
+            role: primary_key
+            typical_attributes: ["id", "customer_id", "cust_id"]
+          name:
+            kind: data_property
+            role: label
+            typical_attributes: ["name", "customer_name", "full_name"]
+          email:
+            kind: data_property
+            role: pii
+            typical_attributes: ["email", "email_address"]
+          loyalty_tier:
+            kind: data_property
+            role: dimension
+            typical_attributes: ["loyalty_tier", "tier", "segment", "membership_level"]
+          lifetime_value:
+            kind: data_property
+            role: measure
+            typical_attributes: ["lifetime_value", "ltv", "clv", "total_spend"]
+          segment:
+            kind: data_property
+            role: dimension
+            typical_attributes: ["segment", "customer_segment", "rfm_segment"]
+          first_purchase_date:
+            kind: data_property
+            role: temporal
+            typical_attributes: ["first_purchase_date", "first_order_date", "acquisition_date"]
+      LoyaltyProgram:
+        description: "Loyalty programs, rewards programs, or membership tiers"
+        keywords: ["loyalty", "rewards", "points", "membership", "tier", "program"]
+        typical_attributes: [id, name, type, points_earn_rate, redemption_rate, tier_thresholds]
+        relationships:
+          enrolled_in: { target: Customer, cardinality: "many-to-many" }
+        properties:
+          identifier:
+            kind: data_property
+            role: primary_key
+            typical_attributes: ["id", "program_id", "loyalty_program_id"]
+          name:
+            kind: data_property
+            role: label
+            typical_attributes: ["name", "program_name", "loyalty_name"]
+          type:
+            kind: data_property
+            role: dimension
+            typical_attributes: ["type", "program_type", "reward_type"]
+          points_earn_rate:
+            kind: data_property
+            role: measure
+            typical_attributes: ["points_earn_rate", "earn_rate", "points_per_dollar"]
+          redemption_rate:
+            kind: data_property
+            role: measure
+            typical_attributes: ["redemption_rate", "point_value", "cents_per_point"]
       Product:
         description: "Retail products, SKUs, items, or merchandise"
         keywords: ["product", "item", "sku", "merchandise", "upc", "gtin", "ean", "asin"]
@@ -88,6 +210,43 @@ ontology:
           contains: { target: Product, cardinality: "many-to-many" }
           shipped_via: { target: Shipment, cardinality: "one-to-many" }
           purchased_at: { target: Store, cardinality: "many-to-one" }
+        properties:
+          identifier:
+            kind: data_property
+            role: primary_key
+            typical_attributes: ["id", "order_id", "order_number"]
+          customer:
+            kind: object_property
+            role: object_property
+            edge: purchased_by
+            target_entity: Customer
+            typical_attributes: ["customer_id", "cust_id", "buyer_id"]
+          total:
+            kind: data_property
+            role: measure
+            typical_attributes: ["total", "order_total", "amount", "grand_total"]
+          status:
+            kind: data_property
+            role: dimension
+            typical_attributes: ["status", "order_status", "state"]
+          channel:
+            kind: data_property
+            role: dimension
+            typical_attributes: ["channel", "sales_channel", "order_channel"]
+          placed_date:
+            kind: data_property
+            role: temporal
+            typical_attributes: ["placed_date", "order_date", "created_at"]
+          shipped_date:
+            kind: data_property
+            role: temporal
+            typical_attributes: ["shipped_date", "ship_date", "delivery_date"]
+          store:
+            kind: object_property
+            role: object_property
+            edge: sold_at
+            target_entity: Store
+            typical_attributes: ["store_id", "location_id", "fulfillment_center_id"]
       Store:
         description: "Physical retail stores, outlets, warehouses, or distribution centers"
         keywords: ["store", "outlet", "shop", "warehouse", "dc", "distribution_center", "fulfillment"]
@@ -95,18 +254,135 @@ ontology:
         relationships:
           has_inventory: { target: Inventory, cardinality: "one-to-many" }
           part_of: { target: Organization, cardinality: "many-to-one" }
+        properties:
+          identifier:
+            kind: data_property
+            role: primary_key
+            typical_attributes: ["id", "store_id", "location_id", "warehouse_id"]
+          name:
+            kind: data_property
+            role: label
+            typical_attributes: ["name", "store_name", "location_name"]
+          type:
+            kind: data_property
+            role: dimension
+            typical_attributes: ["type", "store_type", "format"]
+          address:
+            kind: data_property
+            role: dimension
+            typical_attributes: ["address", "street", "city", "state", "zip_code"]
+          region:
+            kind: data_property
+            role: dimension
+            typical_attributes: ["region", "district", "territory"]
+          open_date:
+            kind: data_property
+            role: temporal
+            typical_attributes: ["open_date", "launch_date", "opened_at"]
+      Campaign:
+        description: "Marketing campaigns, ad campaigns, or promotional campaigns"
+        keywords: ["campaign", "marketing_campaign", "ad_campaign", "promo_campaign"]
+        typical_attributes: [id, name, type, budget, start_date, end_date, channel, status]
+        relationships:
+          targets: { target: Customer, cardinality: "many-to-many" }
+          promotes: { target: Product, cardinality: "many-to-many" }
+        properties:
+          identifier:
+            kind: data_property
+            role: primary_key
+            typical_attributes: ["id", "campaign_id", "marketing_campaign_id"]
+          name:
+            kind: data_property
+            role: label
+            typical_attributes: ["name", "campaign_name", "campaign_title"]
+          type:
+            kind: data_property
+            role: dimension
+            typical_attributes: ["type", "campaign_type", "channel"]
+          budget:
+            kind: data_property
+            role: measure
+            typical_attributes: ["budget", "campaign_budget", "spend"]
+          start_date:
+            kind: data_property
+            role: temporal
+            typical_attributes: ["start_date", "launch_date", "begin_date"]
+          end_date:
+            kind: data_property
+            role: temporal
+            typical_attributes: ["end_date", "expiry_date", "expiration_date"]
+          status:
+            kind: data_property
+            role: dimension
+            typical_attributes: ["status", "campaign_status", "state"]
       Promotion:
         description: "Promotions, discounts, coupons, campaigns, or markdown events"
         keywords: ["promotion", "discount", "coupon", "markdown", "deal", "offer", "promo"]
         typical_attributes: [id, name, type, discount_value, start_date, end_date, channel]
         relationships:
           applies_to: { target: Product, cardinality: "many-to-many" }
+        properties:
+          identifier:
+            kind: data_property
+            role: primary_key
+            typical_attributes: ["id", "promotion_id", "campaign_id", "promo_id"]
+          name:
+            kind: data_property
+            role: label
+            typical_attributes: ["name", "promotion_name", "campaign_name"]
+          type:
+            kind: data_property
+            role: dimension
+            typical_attributes: ["type", "promotion_type", "discount_type"]
+          discount_value:
+            kind: data_property
+            role: measure
+            typical_attributes: ["discount_value", "discount_amount", "discount_pct"]
+          start_date:
+            kind: data_property
+            role: temporal
+            typical_attributes: ["start_date", "effective_date", "begin_date"]
+          end_date:
+            kind: data_property
+            role: temporal
+            typical_attributes: ["end_date", "expiry_date", "expiration_date"]
+          channel:
+            kind: data_property
+            role: dimension
+            typical_attributes: ["channel", "promotion_channel", "campaign_channel"]
       Supplier:
         description: "Vendors, manufacturers, distributors, or trading partners"
         keywords: ["supplier", "vendor", "manufacturer", "distributor", "wholesaler"]
         typical_attributes: [id, name, type, lead_time, country, payment_terms]
         relationships:
           supplies: { target: Product, cardinality: "many-to-many" }
+        properties:
+          identifier:
+            kind: data_property
+            role: primary_key
+            typical_attributes: ["id", "supplier_id", "vendor_id"]
+          name:
+            kind: data_property
+            role: label
+            typical_attributes: ["name", "supplier_name", "vendor_name"]
+          type:
+            kind: data_property
+            role: dimension
+            typical_attributes: ["type", "supplier_type", "vendor_type"]
+          lead_time:
+            kind: data_property
+            role: measure
+            typical_attributes: ["lead_time", "lead_time_days", "delivery_days"]
+          country:
+            kind: data_property
+            role: dimension
+            typical_attributes: ["country", "origin_country", "supplier_country"]
+          supplies:
+            kind: object_property
+            role: object_property
+            edge: supplied_by
+            target_entity: Product
+            typical_attributes: ["product_id", "sku"]
       Inventory:
         description: "Stock levels, warehouse inventory, or on-hand quantities"
         keywords: ["inventory", "stock", "on_hand", "available", "reserved", "reorder"]
@@ -143,8 +419,8 @@ ontology:
       [Store, Inventory, Person, Event, Metric, Location, Reference]
     supply_chain:
       [Supplier, Inventory, Shipment, Product, Store, Organization, Location]
-    customer_engagement: [Customer, Promotion, Order, Event, Metric, Person]
-    marketing: [Customer, Promotion, Event, Metric, Reference, Product]
+    customer_engagement: [Customer, LoyaltyProgram, Promotion, Campaign, Order, Event, Metric, Person]
+    marketing: [Customer, Campaign, Promotion, Event, Metric, Reference, Product]
     finance: [Transaction, Order, Metric, Reference, Organization, Event]
     operations:
       [

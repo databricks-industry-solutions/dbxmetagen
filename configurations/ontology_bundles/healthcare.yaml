@@ -9,9 +9,87 @@ metadata:
   standards_alignment: "FHIR R4, OMOP CDM, Schema.org"
 
 ontology:
-  version: "2.0"
+  version: "3.0"
   name: "Healthcare Business Ontology"
   description: "Healthcare-focused ontology for data catalog metadata"
+
+  property_roles:
+    primary_key:
+      description: "Surrogate or technical row identifier"
+      maps_to_kind: "data_property"
+      semantic_role: "identifier"
+    business_key:
+      description: "Natural key meaningful to users (MRN, NPI)"
+      maps_to_kind: "data_property"
+      semantic_role: "identifier"
+    measure:
+      description: "Numeric value to aggregate"
+      maps_to_kind: "data_property"
+      semantic_role: "metric"
+    dimension:
+      description: "Categorical filter or grouping attribute"
+      maps_to_kind: "data_property"
+      semantic_role: "dimension"
+    temporal:
+      description: "Date or timestamp of event"
+      maps_to_kind: "data_property"
+      semantic_role: "temporal"
+    object_property:
+      description: "FK or reference to another entity's identifier"
+      maps_to_kind: "object_property"
+      semantic_role: "relationship"
+    composite_component:
+      description: "Part of a multi-column value object"
+      maps_to_kind: "data_property"
+      semantic_role: "component"
+    label:
+      description: "Human-readable name or title"
+      maps_to_kind: "data_property"
+      semantic_role: "label"
+    pii:
+      description: "Personally identifiable information"
+      maps_to_kind: "data_property"
+      semantic_role: "pii"
+      governance_flag: true
+    audit:
+      description: "System-generated provenance column"
+      maps_to_kind: "data_property"
+      semantic_role: "provenance"
+    derived:
+      description: "Computed from other columns"
+      maps_to_kind: "data_property"
+      semantic_role: "derived"
+
+  edge_catalog:
+    instance_of: { inverse: type_of, symmetric: false, category: structural }
+    subclass_of: { inverse: superclass_of, symmetric: false, category: structural }
+    has_part: { inverse: part_of, symmetric: false, category: structural }
+    contains: { inverse: contained_in, symmetric: false, category: structural }
+    member_of: { inverse: has_member, symmetric: false, category: structural }
+    # Healthcare business edges
+    treated_by: { inverse: treats, domain: Patient, range: Provider, symmetric: false, category: business }
+    treats: { inverse: treated_by, domain: Provider, range: Patient, symmetric: false, category: business }
+    has_encounter: { inverse: encounter_for, domain: Patient, range: Encounter, symmetric: false, category: business }
+    has_condition: { inverse: condition_of, domain: Patient, range: Condition, symmetric: false, category: business }
+    has_coverage: { inverse: covers, domain: Patient, range: Coverage, symmetric: false, category: business }
+    ordered_for: { inverse: has_order, domain: [Procedure, Medication], range: Encounter, symmetric: false, category: business }
+    performed_by: { inverse: performs, domain: Procedure, range: Provider, symmetric: false, category: business }
+    prescribed_to: { inverse: has_prescription, domain: Medication, range: Patient, symmetric: false, category: business }
+    diagnosed_in: { inverse: has_diagnosis, domain: Condition, range: Encounter, symmetric: false, category: business }
+    for_encounter: { inverse: encounter_claim, domain: Claim, range: Encounter, symmetric: false, category: business }
+    covered_by: { inverse: covers_claim, domain: Claim, range: Coverage, symmetric: false, category: business }
+    located_at: { inverse: location_of, domain: Any, range: Location, symmetric: false, category: business }
+    references: { inverse: referenced_by, domain: Any, range: Any, symmetric: false, category: business }
+    # General business edges
+    placed_by: { inverse: placed, domain: Transaction, range: Person, symmetric: false, category: business }
+    created_by: { inverse: created, domain: Any, range: Person, symmetric: false, category: business }
+    owned_by: { inverse: owns, domain: Any, range: [Person, Organization], symmetric: false, category: business }
+    # Lineage
+    derives_from: { inverse: source_of, symmetric: false, category: lineage }
+    recorded_in: { inverse: records, symmetric: false, category: lineage }
+    # Semantic
+    same_as: { symmetric: true, category: semantic }
+    similar_to: { symmetric: true, category: semantic }
 
   entities:
     auto_discover: true
@@ -100,6 +178,33 @@ ontology:
           has_encounter: { target: Encounter, cardinality: "one-to-many", join_path: "patient.patient_id = encounter.patient_id" }
           has_condition: { target: Condition, cardinality: "one-to-many", join_path: "patient.patient_id = condition.patient_id" }
           has_coverage: { target: Coverage, cardinality: "one-to-many", join_path: "patient.patient_id = coverage.member_id" }
+        properties:
+          identifier:
+            kind: data_property
+            role: primary_key
+            typical_attributes: ["id", "patient_id", "pat_id"]
+          mrn:
+            kind: data_property
+            role: business_key
+            typical_attributes: ["mrn", "medical_record_number", "patient_mrn"]
+          name:
+            kind: data_property
+            role: pii
+            typical_attributes: ["name", "full_name", "first_name", "last_name", "patient_name"]
+          dob:
+            kind: data_property
+            role: pii
+            typical_attributes: ["dob", "date_of_birth", "birth_date", "birthdate"]
+          gender:
+            kind: data_property
+            role: dimension
+            typical_attributes: ["gender", "sex", "gender_code"]
+          treated_by:
+            kind: object_property
+            role: object_property
+            edge: treated_by
+            target_entity: Provider
+            typical_attributes: ["provider_id", "attending_id", "physician_id", "pcp_id"]
       Provider:
         description: "Practitioners, clinicians, or care team members (FHIR Practitioner)"
         parent: Person
@@ -128,6 +233,41 @@ ontology:
           has_order: { target: Procedure, cardinality: "one-to-many", join_path: "encounter.encounter_id = procedure.encounter_id" }
           contains: { target: Observation, cardinality: "one-to-many", join_path: "encounter.encounter_id = observation.encounter_id" }
           located_at: { target: Location, cardinality: "many-to-one", join_path: "encounter.location_id = location.location_id" }
+        properties:
+          identifier:
+            kind: data_property
+            role: primary_key
+            typical_attributes: ["id", "encounter_id", "visit_id", "admission_id"]
+          patient:
+            kind: object_property
+            role: object_property
+            edge: has_encounter
+            target_entity: Patient
+            typical_attributes: ["patient_id", "pat_id", "subject_id"]
+          provider:
+            kind: object_property
+            role: object_property
+            edge: performed_by
+            target_entity: Provider
+            typical_attributes: ["provider_id", "attending_id", "physician_id"]
+          location:
+            kind: object_property
+            role: object_property
+            edge: located_at
+            target_entity: Location
+            typical_attributes: ["location_id", "facility_id", "department_id"]
+          encounter_date:
+            kind: data_property
+            role: temporal
+            typical_attributes: ["date", "encounter_date", "admission_date", "visit_date", "start_date"]
+          encounter_type:
+            kind: data_property
+            role: dimension
+            typical_attributes: ["type", "encounter_type", "visit_type", "class"]
+          status:
+            kind: data_property
+            role: dimension
+            typical_attributes: ["status", "encounter_status", "discharge_disposition"]
       Condition:
         description: "Diagnoses, problems, or diseases (FHIR Condition / OMOP CONDITION_OCCURRENCE)"
         keywords: ["diagnosis", "condition", "icd", "disease", "problem"]
@@ -168,6 +308,41 @@ ontology:
           references: { target: Patient, cardinality: "many-to-one" }
           for_encounter: { target: Encounter, cardinality: "many-to-one" }
           covered_by: { target: Coverage, cardinality: "many-to-one" }
+        properties:
+          identifier:
+            kind: data_property
+            role: primary_key
+            typical_attributes: ["id", "claim_id", "claim_number"]
+          patient:
+            kind: object_property
+            role: object_property
+            edge: references
+            target_entity: Patient
+            typical_attributes: ["patient_id", "member_id", "subscriber_id"]
+          amount:
+            kind: data_property
+            role: measure
+            typical_attributes: ["amount", "total_charge", "billed_amount", "paid_amount", "allowed_amount"]
+          service_date:
+            kind: data_property
+            role: temporal
+            typical_attributes: ["service_date", "claim_date", "date_of_service", "from_date"]
+          status:
+            kind: data_property
+            role: dimension
+            typical_attributes: ["status", "claim_status", "adjudication_status"]
+          encounter:
+            kind: object_property
+            role: object_property
+            edge: for_encounter
+            target_entity: Encounter
+            typical_attributes: ["encounter_id", "visit_id"]
+          payer:
+            kind: object_property
+            role: object_property
+            edge: covered_by
+            target_entity: Coverage
+            typical_attributes: ["payer_id", "plan_id", "coverage_id", "insurance_id"]
       Coverage:
         description: "Insurance plans, benefits, or member coverage (FHIR Coverage)"
         keywords: ["coverage", "insurance", "benefit", "plan", "enrollment"]

@@ -195,6 +195,9 @@ class MetadataConfig:
         self.allow_manual_override = _parse_bool(
             getattr(self, "allow_manual_override", True)
         )
+        self.use_ontology_context = _parse_bool(
+            getattr(self, "use_ontology_context", False)
+        )
 
         # Handle review_apply_ddl if present
         if hasattr(self, "review_apply_ddl"):
