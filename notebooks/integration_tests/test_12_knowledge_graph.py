@@ -203,8 +203,9 @@ edge_counts = spark.sql(f"""
 
 edge_map = {row["relationship"]: row["cnt"] for row in edge_counts.collect()}
 
-# All 5 tables are in the same catalog/schema
-assert "same_catalog" in edge_map, "Should have same_catalog edges"
+# All 5 tables are in the same catalog -- same_catalog edges are intentionally
+# skipped when there's only one distinct catalog (full mesh adds no signal).
+assert "same_catalog" not in edge_map, "same_catalog edges should be skipped for mono-catalog"
 assert "same_schema" in edge_map, "Should have same_schema edges"
 
 # 2 Customer domain tables -> 1 edge

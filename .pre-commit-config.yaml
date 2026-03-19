@@ -10,3 +10,21 @@ repos:
       - id: check-merge-conflict
       - id: debug-statements
       - id: check-docstring-first
+
+  - repo: local
+    hooks:
+      - id: rebuild-wheel
+        name: Rebuild Python wheel
+        language: system
+        entry: bash -c 'poetry build -f wheel -q && git add dist/*.whl'
+        files: (^src/|^pyproject\.toml)
+        pass_filenames: false
+        stages: [pre-commit]
+
+      - id: rebuild-frontend
+        name: Rebuild frontend
+        language: system
+        entry: bash -c 'cd apps/dbxmetagen-app/app/src && npm install --silent && npm run build && cd ../../../.. && git add apps/dbxmetagen-app/app/src/dist/'
+        files: ^apps/dbxmetagen-app/app/src/(?!dist/)
+        pass_filenames: false
+        stages: [pre-commit]
