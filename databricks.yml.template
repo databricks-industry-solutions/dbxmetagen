@@ -21,6 +21,7 @@ include:
 artifacts:
   default:
     type: whl
+    build: "echo 'Using pre-built wheel from dist/'"
     path: .
 
 targets:
