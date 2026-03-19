@@ -5782,11 +5782,17 @@ def genie_generate(req: GenieGenerateRequest):
         raise HTTPException(500, detail="WAREHOUSE_ID not configured")
 
     task_id = str(_uuid.uuid4())[:12]
+    started_at = time.time()
     _genie_tasks[task_id] = {
         "status": "running",
         "stage": "starting",
-        "created": time.time(),
+        "created": started_at,
+        "started_at": started_at,
+        "round": 0,
     }
+
+    # Total wall-clock backstop (slightly over agent's 10-min deadline so agent kills first)
+    _MONITOR_WALL_TIMEOUT = 660
 
     def _run():
         try:
@@ -5796,7 +5802,6 @@ def genie_generate(req: GenieGenerateRequest):
             ws = get_workspace_client()
             progress_q: queue.Queue = queue.Queue()
 
-            # Phase 1: deterministic context assembly
             _genie_tasks[task_id]["stage"] = "gathering_context"
             assembler = GenieContextAssembler(ws, wh, CATALOG, SCHEMA)
             ctx = assembler.assemble(
@@ -5816,39 +5821,54 @@ def genie_generate(req: GenieGenerateRequest):
                         kpi_block += f"- {k['name']}: {k.get('description', '')} | Formula: {k.get('formula', 'N/A')}\n"
                     ctx["context_text"] = ctx.get("context_text", "") + kpi_block
 
-            # Phase 2: agent generation
             _genie_tasks[task_id]["stage"] = "agent_running"
 
             def _monitor_progress():
                 while True:
+                    # Total wall-clock backstop
+                    remaining = _MONITOR_WALL_TIMEOUT - (time.time() - started_at)
+                    if remaining <= 0:
+                        elapsed = round(time.time() - started_at)
+                        rnd = _genie_tasks[task_id].get("round", 0)
+                        _genie_tasks[task_id].update({
+                            "status": "error",
+                            "error": (
+                                f"Timed out after {elapsed}s and {rnd} tool round(s). "
+                                "Try selecting fewer tables or simplifying the request."
+                            ),
+                            "elapsed_seconds": elapsed,
+                        })
+                        return
                     try:
-                        event = progress_q.get(timeout=600)
+                        event = progress_q.get(timeout=min(remaining, 30))
                     except queue.Empty:
-                        _genie_tasks[task_id].update(
-                            {
-                                "status": "error",
-                                "error": "Agent timed out after 10 minutes",
-                            }
-                        )
+                        continue
+
+                    stage = event.get("stage", "running")
+
+                    if stage == "done":
+                        _genie_tasks[task_id].update({
+                            "status": "done",
+                            "stage": "done",
+                            "result": event.get("result"),
+                            "warnings": event.get("warnings"),
+                            "elapsed_seconds": event.get("elapsed_seconds"),
+                            "rounds_completed": event.get("rounds_completed"),
+                        })
                         return
-                    if event.get("stage") == "done":
-                        _genie_tasks[task_id].update(
-                            {
-                                "status": "done",
-                                "stage": "done",
-                                "result": event.get("result"),
-                            }
-                        )
+
+                    if stage == "error":
+                        _genie_tasks[task_id].update({
+                            "status": "error",
+                            "error": event.get("message", "Unknown error"),
+                            "elapsed_seconds": event.get("elapsed_seconds"),
+                            "rounds_completed": event.get("rounds_completed"),
+                        })
                         return
-                    if event.get("stage") == "error":
-                        _genie_tasks[task_id].update(
-                            {
-                                "status": "error",
-                                "error": event.get("message", "Unknown error"),
-                            }
-                        )
-                        return
-                    _genie_tasks[task_id]["stage"] = event.get("stage", "running")
+
+                    _genie_tasks[task_id]["stage"] = stage
+                    if "round" in event:
+                        _genie_tasks[task_id]["round"] = event["round"]
 
             monitor = threading.Thread(target=_monitor_progress, daemon=True)
             monitor.start()
@@ -5856,7 +5876,14 @@ def genie_generate(req: GenieGenerateRequest):
             run_genie_agent(ws, wh, ctx, progress_q, model_endpoint=req.model_endpoint)
         except Exception as e:
             logger.error("Genie builder error: %s", e, exc_info=True)
-            _genie_tasks[task_id].update({"status": "error", "error": str(e)})
+            elapsed = round(time.time() - started_at)
+            rnd = _genie_tasks[task_id].get("round", 0)
+            _genie_tasks[task_id].update({
+                "status": "error",
+                "error": str(e),
+                "elapsed_seconds": elapsed,
+                "rounds_completed": rnd,
+            })
 
     threading.Thread(target=_run, daemon=True).start()
 
@@ -5879,7 +5906,11 @@ def genie_task_status(task_id: str):
     task = _genie_tasks.get(task_id)
     if not task:
         raise HTTPException(404, detail="Task not found")
-    return task
+    resp = dict(task)
+    if resp.get("status") == "running" and "started_at" in resp:
+        resp["elapsed_seconds"] = round(time.time() - resp["started_at"])
+    resp.pop("started_at", None)
+    return resp
 
 
 from genie_schema import build_serialized_space

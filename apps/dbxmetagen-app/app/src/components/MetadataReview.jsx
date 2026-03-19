@@ -46,7 +46,7 @@ const META_TYPES = [
 const PROPERTY_ROLE_GROUPS = [
   { label: 'Identifiers', roles: ['primary_key', 'business_key'] },
   { label: 'Measures', roles: ['measure', 'derived'] },
-  { label: 'Dimensions', roles: ['dimension', 'temporal', 'label'] },
+  { label: 'Dimensions', roles: ['dimension', 'temporal', 'geographic', 'label'] },
   { label: 'Relationships', roles: ['object_property', 'composite_component'] },
   { label: 'Governance', roles: ['pii', 'audit'] },
   { label: 'Other', roles: ['attribute'] },

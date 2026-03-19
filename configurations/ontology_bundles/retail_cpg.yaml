@@ -33,6 +33,10 @@ ontology:
       description: "Date or timestamp of event"
       maps_to_kind: "data_property"
       semantic_role: "temporal"
+    geographic:
+      description: "Location-based dimension (country, city, region, coordinates)"
+      maps_to_kind: "data_property"
+      semantic_role: "geographic"
     object_property:
       description: "FK or reference to another entity's identifier"
       maps_to_kind: "object_property"

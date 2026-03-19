@@ -3281,7 +3281,7 @@ class OntologyBuilder:
         if re.search(r'_(code|icd|cpt|loinc|ndc|drg)$', col_lower) or col_lower.endswith("_code"):
             return "dimension", "heuristic_strong", 0.75
         if col_lower in _GEO_PATTERNS or col_lower.startswith("geo_"):
-            return "composite_component", "heuristic_strong", 0.75
+            return "geographic", "heuristic_strong", 0.75
         if col_lower in _SYSTEM_PATTERNS or col_lower.startswith("etl_"):
             return "audit", "heuristic_strong", 0.80
         if dtype in ("DATE", "TIMESTAMP", "TIMESTAMP_NTZ"):
