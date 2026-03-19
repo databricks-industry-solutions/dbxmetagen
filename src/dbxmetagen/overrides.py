@@ -39,7 +39,7 @@ def _resolve_csv_path(csv_path: str | None) -> str | None:
 
 
 def override_metadata_from_csv(
-    df: DataFrame, csv_path: str, config: MetadataConfig
+    df: DataFrame, csv_path: str, config: MetadataConfig, df_label: str = ""
 ) -> DataFrame:
     """
     Overrides the type and classification in the DataFrame based on the CSV file.
@@ -48,18 +48,21 @@ def override_metadata_from_csv(
     Args:
         df (DataFrame): The input DataFrame.
         csv_path (str): The path to the CSV file.
+        config (MetadataConfig): The configuration object.
+        df_label (str): Label for diagnostic output (e.g. "column_df", "table_df").
 
     Returns:
         DataFrame: The updated DataFrame with overridden type and classification.
     """
     import os
 
+    tag = f"({df_label}) " if df_label else ""
     resolved = _resolve_csv_path(csv_path)
-    print(f"[override] mode={config.mode}, csv_path='{csv_path}', resolved='{resolved}'")
+    print(f"[override] {tag}mode={config.mode}, csv_path='{csv_path}', resolved='{resolved}'")
 
     if resolved is None:
         print(
-            f"[override] CSV not found at '{csv_path}' (cwd={os.getcwd()}) -- skipping overrides. "
+            f"[override] {tag}CSV not found at '{csv_path}' (cwd={os.getcwd()}) -- skipping overrides. "
             "Place the file next to the notebook or provide an absolute path."
         )
         return df
@@ -84,13 +87,13 @@ def override_metadata_from_csv(
     else:
         csv_spark_df = spark.createDataFrame(csv_df)
     nrows = csv_spark_df.count()
-    print(f"[override] CSV loaded: {nrows} rows from '{resolved}'")
+    print(f"[override] {tag}CSV loaded: {nrows} rows from '{resolved}'")
 
     if nrows == 0:
-        print("[override] No override rows to apply, returning DataFrame unchanged.")
+        print(f"[override] {tag}No override rows to apply, returning DataFrame unchanged.")
         return df
     elif nrows < 10000:
-        df = apply_overrides_with_loop(df, csv_dict, config)
+        df = apply_overrides_with_loop(df, csv_dict, config, df_label=df_label)
     else:
         raise ValueError(
             "CSV file is too large. Please implement a more efficient method for large datasets."
@@ -99,17 +102,43 @@ def override_metadata_from_csv(
 
 
 def _is_blank(val):
-    return val is None or (isinstance(val, float) and pd.isna(val))
+    return val is None or (isinstance(val, float) and pd.isna(val)) or val == ""
 
 
-def apply_overrides_with_loop(df, csv_dict, config):
+def _count_matches(df, condition):
+    """Count rows matching a Spark condition (triggers action)."""
+    try:
+        return df.filter(condition).count()
+    except Exception as e:
+        logger.warning("Could not verify row match count: %s", e)
+        return -1
+
+
+def _dump_column_names(df, tag=""):
+    """Print distinct column_name values from the DataFrame for diagnostics."""
+    if "column_name" not in df.columns:
+        return
+    try:
+        names = sorted(
+            r["column_name"] for r in df.select("column_name").distinct().collect()
+        )
+        print(f"[override] {tag}DataFrame column_name values: {names}")
+    except Exception as e:
+        logger.warning("Could not collect column_name values: %s", e)
+
+
+def apply_overrides_with_loop(df, csv_dict, config, df_label=""):
     if not csv_dict:
         return df
 
     from pyspark.sql.functions import col, lit, when
 
+    tag = f"({df_label}) " if df_label else ""
     applied_count = 0
     skipped_count = 0
+    zero_match_count = 0
+
+    _dump_column_names(df, tag=tag)
 
     if config.mode == "pi":
         for row in csv_dict:
@@ -122,12 +151,10 @@ def apply_overrides_with_loop(df, csv_dict, config):
 
             if not column:
                 skipped_count += 1
-                logger.info("PI override: skipping row with no column specified")
                 continue
 
             if _is_blank(classification_override) and _is_blank(type_override):
                 skipped_count += 1
-                logger.info("PI override: skipping null/blank overrides for column '%s'", column)
                 continue
 
             if not _is_blank(classification_override):
@@ -137,31 +164,34 @@ def apply_overrides_with_loop(df, csv_dict, config):
 
             try:
                 condition = build_condition(df, table, column, schema, catalog)
+                match_count = _count_matches(df, condition)
+                if match_count == 0:
+                    print(
+                        f"[override] {tag}PI override: 0 rows match column='{column}' "
+                        f"(table={table or '*'}) -- skipping"
+                    )
+                    zero_match_count += 1
+                    continue
 
                 if not _is_blank(classification_override):
                     df = df.withColumn(
                         "classification",
                         when(condition, lit(classification_override).cast("string")).otherwise(col("classification")),
                     )
-                    logger.info(
-                        "PI override applied: column='%s' -> classification='%s' (table=%s)",
-                        column, classification_override, table or "*",
-                    )
-
                 if not _is_blank(type_override):
                     df = df.withColumn(
                         "type",
                         when(condition, lit(type_override).cast("string")).otherwise(col("type")),
                     )
-                    logger.info(
-                        "PI override applied: column='%s' -> type='%s' (table=%s)",
-                        column, type_override, table or "*",
-                    )
-
                 applied_count += 1
+                print(
+                    f"[override] {tag}PI override: column='{column}' -> "
+                    f"classification={classification_override!r}, type={type_override!r} "
+                    f"({match_count} row(s) matched)"
+                )
             except ValueError as e:
                 skipped_count += 1
-                logger.warning("PI override skipped (bad condition): %s", e)
+                print(f"[override] {tag}PI override SKIPPED for column='{column}': {e}")
 
     elif config.mode == "comment":
         for row in csv_dict:
@@ -172,9 +202,7 @@ def apply_overrides_with_loop(df, csv_dict, config):
             comment_override = row.get("comment")
 
             if _is_blank(comment_override):
-                target = column or table or "unknown"
                 skipped_count += 1
-                logger.info("Comment override: skipping null/blank comment for target '%s'", target)
                 continue
 
             comment_override = str(comment_override)
@@ -182,33 +210,50 @@ def apply_overrides_with_loop(df, csv_dict, config):
             try:
                 if column:
                     condition = build_condition(df, table, column, schema, catalog)
+                    match_count = _count_matches(df, condition)
+                    if match_count == 0:
+                        print(
+                            f"[override] {tag}Comment override: 0 rows match column='{column}' "
+                            f"(table={table or '*'}) -- skipping"
+                        )
+                        zero_match_count += 1
+                        continue
                     df = df.withColumn(
                         "column_content",
                         when(condition, lit(comment_override).cast("string")).otherwise(col("column_content")),
                     )
-                    logger.info(
-                        "Comment override applied: column='%s' -> comment='%.60s...' (table=%s)",
-                        column, comment_override, table or "*",
+                    applied_count += 1
+                    print(
+                        f"[override] {tag}Comment override: column='{column}' -> "
+                        f"'{comment_override[:60]}' ({match_count} row(s) matched)"
                     )
                 else:
                     if not table:
                         skipped_count += 1
-                        logger.warning("Comment override: skipping table-level row with no table name specified")
                         continue
                     base_condition = build_condition(df, table, None, schema, catalog)
                     condition = base_condition & (col("ddl_type") == "table")
+                    match_count = _count_matches(df, condition)
+                    if match_count == 0:
+                        print(
+                            f"[override] {tag}Comment override (table-level): 0 rows match "
+                            f"table='{table}' -- skipping"
+                        )
+                        zero_match_count += 1
+                        continue
                     df = df.withColumn(
                         "column_content",
                         when(condition, lit(comment_override).cast("string")).otherwise(col("column_content")),
                     )
-                    logger.info(
-                        "Comment override applied (table-level): table='%s' -> comment='%.60s...'",
-                        table, comment_override,
+                    applied_count += 1
+                    print(
+                        f"[override] {tag}Comment override (table-level): table='{table}' -> "
+                        f"'{comment_override[:60]}' ({match_count} row(s) matched)"
                     )
-                applied_count += 1
             except ValueError as e:
                 skipped_count += 1
-                logger.warning("Comment override skipped (bad condition): %s", e)
+                target = column or table or "unknown"
+                print(f"[override] {tag}Comment override SKIPPED for target='{target}': {e}")
 
     elif config.mode == "domain":
         for row in csv_dict:
@@ -220,12 +265,10 @@ def apply_overrides_with_loop(df, csv_dict, config):
 
             if not table:
                 skipped_count += 1
-                logger.warning("Domain override: skipping row with no table name specified")
                 continue
 
             if _is_blank(domain_override) and _is_blank(subdomain_override):
                 skipped_count += 1
-                logger.info("Domain override: skipping null/blank overrides for table '%s'", table)
                 continue
 
             if not _is_blank(domain_override):
@@ -235,36 +278,41 @@ def apply_overrides_with_loop(df, csv_dict, config):
 
             try:
                 condition = build_condition(df, table, None, schema, catalog)
+                match_count = _count_matches(df, condition)
+                if match_count == 0:
+                    print(
+                        f"[override] {tag}Domain override: 0 rows match table='{table}' -- skipping"
+                    )
+                    zero_match_count += 1
+                    continue
 
                 if not _is_blank(domain_override):
                     df = df.withColumn(
                         "domain",
                         when(condition, lit(domain_override).cast("string")).otherwise(col("domain")),
                     )
-                    logger.info(
-                        "Domain override applied: table='%s' -> domain='%s'", table, domain_override,
-                    )
-
                 if not _is_blank(subdomain_override):
                     df = df.withColumn(
                         "subdomain",
                         when(condition, lit(subdomain_override).cast("string")).otherwise(col("subdomain")),
                     )
-                    logger.info(
-                        "Domain override applied: table='%s' -> subdomain='%s'", table, subdomain_override,
-                    )
-
                 applied_count += 1
+                print(
+                    f"[override] {tag}Domain override: table='{table}' -> "
+                    f"domain={domain_override!r}, subdomain={subdomain_override!r} "
+                    f"({match_count} row(s) matched)"
+                )
             except ValueError as e:
                 skipped_count += 1
-                logger.warning("Domain override skipped (bad condition): %s", e)
+                print(f"[override] {tag}Domain override SKIPPED for table='{table}': {e}")
 
     else:
         raise ValueError("Invalid mode provided. Must be 'pi', 'comment', or 'domain'.")
 
     print(
-        f"[override] Summary: mode={config.mode}, applied={applied_count}, "
-        f"skipped={skipped_count}, total_csv_rows={len(csv_dict)}"
+        f"[override] {tag}Summary: mode={config.mode}, applied={applied_count}, "
+        f"skipped={skipped_count}, zero_matches={zero_match_count}, "
+        f"total_csv_rows={len(csv_dict)}"
     )
     return df
 
@@ -321,12 +369,16 @@ def apply_overrides_with_joins(df: DataFrame, csv_spark_df: DataFrame) -> DataFr
 
 def build_condition(df, table, column, schema, catalog):
     """
-    Builds the condition for the DataFrame filtering.
+    Builds a match condition from whichever CSV fields are provided.
 
-    Supported parameter combinations:
-    1. Only column name is provided (all other parameters are None or empty)
-    2. All parameters (catalog, schema, table, column) are provided
-    3. Table-level: (catalog, schema, table) provided, column is None (for domain/comment table overrides)
+    Dynamically combines conditions for any non-empty subset of
+    (catalog, schema, table, column).  At least one field must be given.
+
+    CSV field -> DataFrame column mapping:
+        column  -> col("column_name")
+        table   -> col("table_name")
+        schema  -> col("schema")
+        catalog -> col("catalog")
 
     Args:
         df (DataFrame): The input DataFrame.
@@ -339,46 +391,32 @@ def build_condition(df, table, column, schema, catalog):
         Column: The condition column.
 
     Raises:
-        ValueError: If the combination of inputs is not one of the supported patterns.
+        ValueError: If no fields are provided at all.
     """
-    from pyspark.sql.functions import col
+    from pyspark.sql.functions import col, lower
+
     table = table if table else None
     schema = schema if schema else None
     catalog = catalog if catalog else None
 
-    only_column = column and not any([table, schema, catalog])
-    all_params = all([column, table, schema, catalog])
-    table_level = all([table, schema, catalog]) and not column
+    parts = []
+    if column:
+        parts.append(lower(col("column_name")) == column.lower())
+    if table:
+        parts.append(lower(col("table_name")) == table.lower())
+    if schema:
+        parts.append(lower(col("schema")) == schema.lower())
+    if catalog:
+        parts.append(lower(col("catalog")) == catalog.lower())
 
-    if only_column:
-        return col("column_name") == column
-    elif all_params:
-        return reduce(
-            lambda x, y: x & y,
-            [
-                col("column_name") == column,
-                col("table_name") == table,
-                col("schema") == schema,
-                col("catalog") == catalog,
-            ],
-        )
-    elif table_level:
-        return reduce(
-            lambda x, y: x & y,
-            [
-                col("table_name") == table,
-                col("schema") == schema,
-                col("catalog") == catalog,
-            ],
-        )
-    else:
+    if not parts:
         raise ValueError(
-            f"Unsupported parameter combination: catalog={catalog!r}, schema={schema!r}, "
-            f"table={table!r}, column={column!r}. Supported patterns:\n"
-            "1. Only column name (column-level override across all tables)\n"
-            "2. All parameters (catalog, schema, table, column)\n"
-            "3. Table-level (catalog, schema, table) with column=None"
+            f"No match fields provided: catalog={catalog!r}, schema={schema!r}, "
+            f"table={table!r}, column={column!r}. "
+            "At least one of (catalog, schema, table, column) must be non-empty."
         )
+
+    return reduce(lambda x, y: x & y, parts)
 
 
 def get_join_conditions(df: DataFrame, csv_spark_df: DataFrame) -> List[Column]:

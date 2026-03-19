@@ -6,6 +6,17 @@
 #   ./scripts/run_integration_tests.sh
 #
 # See notebooks/integration_tests/README.md for full documentation.
+#
+# DAG structure -- tests are grouped into parallel waves:
+#
+#   Wave A (fast, no LLM):  test_01, test_17, test_18
+#   Wave B (core metadata):  test_02..test_09 across 3 clusters in parallel
+#   Wave C (concurrent):     test_10 setup -> parallel tasks -> validate
+#   Wave D (ETL pipeline):   test_11..test_16 on ML cluster
+#   Wave E (E2E compat):     e2e_serverless, e2e_ml, e2e_standard (no deps)
+#
+# Only test_01 (widget parsing) gates Waves B/C/D -- if basic config
+# parsing fails, nothing else will work.
 
 resources:
   jobs:
@@ -25,8 +36,12 @@ resources:
           default: "{{job.run_id}}"
 
       tasks:
+        # ----------------------------------------------------------------
+        # Wave A: Fast config / parsing tests (no LLM, <1 min)
+        # ----------------------------------------------------------------
+
         - task_key: test_01_widget_parsing
-          job_cluster_key: integration_test_cluster
+          job_cluster_key: fast_test_cluster
           notebook_task:
             notebook_path: ../../notebooks/integration_tests/test_01_widget_parsing.py
             base_parameters:
@@ -35,10 +50,38 @@ resources:
           libraries:
             - whl: ../../dist/*.whl
 
+        - task_key: test_17_federation_mode
+          job_cluster_key: fast_test_cluster
+          notebook_task:
+            notebook_path: ../../notebooks/integration_tests/test_17_federation_mode.py
+            base_parameters:
+              catalog_name: "{{job.parameters.test_catalog}}"
+              test_schema: "{{job.parameters.test_schema}}"
+          libraries:
+            - whl: ../../dist/*.whl
+
+        - task_key: test_18_comment_overrides
+          job_cluster_key: fast_test_cluster
+          notebook_task:
+            notebook_path: ../../notebooks/integration_tests/test_18_comment_overrides.py
+            base_parameters:
+              test_catalog: "{{job.parameters.test_catalog}}"
+              test_schema: "{{job.parameters.test_schema}}"
+          libraries:
+            - whl: ../../dist/*.whl
+
+        # ----------------------------------------------------------------
+        # Wave B: Core metadata generation tests (LLM calls, parallel clusters)
+        # All self-contained -- each creates/drops its own test table.
+        # Split across 3 clusters for ~3x parallelism.
+        # ----------------------------------------------------------------
+
+        # --- core_cluster_a: test_02, test_03, test_09 ---
+
         - task_key: test_02_apply_ddl_false
           depends_on:
             - task_key: test_01_widget_parsing
-          job_cluster_key: integration_test_cluster
+          job_cluster_key: core_cluster_a
           notebook_task:
             notebook_path: ../../notebooks/integration_tests/test_02_apply_ddl_false.py
             base_parameters:
@@ -50,7 +93,7 @@ resources:
         - task_key: test_03_apply_ddl_true
           depends_on:
             - task_key: test_02_apply_ddl_false
-          job_cluster_key: integration_test_cluster
+          job_cluster_key: core_cluster_a
           notebook_task:
             notebook_path: ../../notebooks/integration_tests/test_03_apply_ddl_true.py
             base_parameters:
@@ -59,10 +102,24 @@ resources:
           libraries:
             - whl: ../../dist/*.whl
 
-        - task_key: test_04_modes
+        - task_key: test_09_pi_classification_none
           depends_on:
             - task_key: test_03_apply_ddl_true
-          job_cluster_key: integration_test_cluster
+          job_cluster_key: core_cluster_a
+          notebook_task:
+            notebook_path: ../../notebooks/integration_tests/test_09_pi_classification_none.py
+            base_parameters:
+              test_catalog: "{{job.parameters.test_catalog}}"
+              test_schema: "{{job.parameters.test_schema}}"
+          libraries:
+            - whl: ../../dist/*.whl
+
+        # --- core_cluster_b: test_04, test_05, test_08 ---
+
+        - task_key: test_04_modes
+          depends_on:
+            - task_key: test_01_widget_parsing
+          job_cluster_key: core_cluster_b
           notebook_task:
             notebook_path: ../../notebooks/integration_tests/test_04_modes.py
             base_parameters:
@@ -74,7 +131,7 @@ resources:
         - task_key: test_05_temp_table_cleanup
           depends_on:
             - task_key: test_04_modes
-          job_cluster_key: integration_test_cluster
+          job_cluster_key: core_cluster_b
           notebook_task:
             notebook_path: ../../notebooks/integration_tests/test_05_temp_table_cleanup.py
             base_parameters:
@@ -83,9 +140,23 @@ resources:
           libraries:
             - whl: ../../dist/*.whl
 
-        - task_key: test_06_control_table
+        - task_key: test_08_reviewed_ddl
           depends_on:
             - task_key: test_05_temp_table_cleanup
+          job_cluster_key: core_cluster_b
+          notebook_task:
+            notebook_path: ../../notebooks/integration_tests/test_08_reviewed_ddl.py
+            base_parameters:
+              test_catalog: "{{job.parameters.test_catalog}}"
+              test_schema: "{{job.parameters.test_schema}}"
+          libraries:
+            - whl: ../../dist/*.whl
+
+        # --- integration_test_cluster: test_06, test_07 ---
+
+        - task_key: test_06_control_table
+          depends_on:
+            - task_key: test_01_widget_parsing
           job_cluster_key: integration_test_cluster
           notebook_task:
             notebook_path: ../../notebooks/integration_tests/test_06_control_table.py
@@ -107,10 +178,13 @@ resources:
           libraries:
             - whl: ../../dist/*.whl
 
-        # Concurrent tasks test - validates table claiming works correctly
+        # ----------------------------------------------------------------
+        # Wave C: Concurrent task claiming test
+        # ----------------------------------------------------------------
+
         - task_key: test_10_concurrent_setup
           depends_on:
-            - task_key: test_07_permissions
+            - task_key: test_01_widget_parsing
           job_cluster_key: integration_test_cluster
           notebook_task:
             notebook_path: ../../notebooks/integration_tests/test_10_concurrent_setup.py
@@ -120,7 +194,6 @@ resources:
           libraries:
             - whl: ../../dist/*.whl
 
-        # These two tasks run in PARALLEL on separate clusters to test concurrent claiming
         - task_key: concurrent_task_1
           depends_on:
             - task_key: test_10_concurrent_setup
@@ -169,11 +242,17 @@ resources:
           libraries:
             - whl: ../../dist/*.whl
 
-        # Knowledge base ETL test
+        # ----------------------------------------------------------------
+        # Wave D: ETL pipeline tests (ML cluster, isolated schemas)
+        # test_11..test_15 are independent; test_12 -> test_16 is chained.
+        # All run on the same ML cluster (serialize), but the wave itself
+        # is parallel with Waves B and C.
+        # ----------------------------------------------------------------
+
         - task_key: test_11_knowledge_base
           depends_on:
-            - task_key: test_10_concurrent_validate
-          job_cluster_key: integration_test_cluster
+            - task_key: test_01_widget_parsing
+          job_cluster_key: e2e_ml_cluster
           notebook_task:
             notebook_path: ../../notebooks/integration_tests/test_11_knowledge_base.py
             base_parameters:
@@ -182,7 +261,6 @@ resources:
           libraries:
             - whl: ../../dist/*.whl
 
-        # Knowledge graph ETL test (uses ML cluster for GraphFrames compatibility)
         - task_key: test_12_knowledge_graph
           depends_on:
             - task_key: test_11_knowledge_base
@@ -192,13 +270,26 @@ resources:
             base_parameters:
               catalog_name: "{{job.parameters.test_catalog}}"
               test_schema: "{{job.parameters.test_schema}}"
+              skip_cleanup: "true"
           libraries:
             - whl: ../../dist/*.whl
 
-        # Profiling pipeline test - validates profiling_snapshots and column_profiling_stats
-        - task_key: test_13_profiling
+        - task_key: test_16_analytics_pipeline
           depends_on:
             - task_key: test_12_knowledge_graph
+          job_cluster_key: e2e_ml_cluster
+          notebook_task:
+            notebook_path: ../../notebooks/integration_tests/test_16_analytics_pipeline.py
+            base_parameters:
+              catalog_name: "{{job.parameters.test_catalog}}"
+              test_schema: "{{job.parameters.test_schema}}"
+              graph_test_schema: "{{tasks.test_12_knowledge_graph.values.graph_test_schema}}"
+          libraries:
+            - whl: ../../dist/*.whl
+
+        - task_key: test_13_profiling
+          depends_on:
+            - task_key: test_16_analytics_pipeline
           job_cluster_key: e2e_ml_cluster
           notebook_task:
             notebook_path: ../../notebooks/integration_tests/test_13_profiling.py
@@ -208,7 +299,6 @@ resources:
           libraries:
             - whl: ../../dist/*.whl
 
-        # Ontology pipeline test - validates entity discovery and classification
         - task_key: test_14_ontology
           depends_on:
             - task_key: test_13_profiling
@@ -221,7 +311,6 @@ resources:
           libraries:
             - whl: ../../dist/*.whl
 
-        # Graph validation test - validates complete graph_nodes and graph_edges state
         - task_key: test_15_graph_validation
           depends_on:
             - task_key: test_14_ontology
@@ -234,7 +323,11 @@ resources:
           libraries:
             - whl: ../../dist/*.whl
 
-        # E2E tests run in parallel (no dependencies) to test different cluster configurations
+        # ----------------------------------------------------------------
+        # Wave E: E2E cluster compatibility tests (no deps, fully parallel)
+        # Each runs the full pipeline on a different Spark runtime.
+        # ----------------------------------------------------------------
+
         - task_key: test_e2e_serverless
           job_cluster_key: e2e_serverless_cluster
           notebook_task:
@@ -265,7 +358,51 @@ resources:
           libraries:
             - whl: ../../dist/*.whl
 
+      # ------------------------------------------------------------------
+      # Cluster definitions
+      # ------------------------------------------------------------------
+
       job_clusters:
+        # Fast tests -- config/parsing only, no LLM
+        - job_cluster_key: fast_test_cluster
+          new_cluster:
+            spark_version: 15.4.x-cpu-ml-scala2.12
+            node_type_id: ${var.node_type}
+            num_workers: 0
+            data_security_mode: SINGLE_USER
+            spark_conf:
+              spark.databricks.cluster.profile: singleNode
+              spark.master: local[*]
+            custom_tags:
+              ResourceClass: SingleNode
+
+        # Core metadata tests -- batch A (test_02, test_03, test_09)
+        - job_cluster_key: core_cluster_a
+          new_cluster:
+            spark_version: 15.4.x-cpu-ml-scala2.12
+            node_type_id: ${var.node_type}
+            num_workers: 0
+            data_security_mode: SINGLE_USER
+            spark_conf:
+              spark.databricks.cluster.profile: singleNode
+              spark.master: local[*]
+            custom_tags:
+              ResourceClass: SingleNode
+
+        # Core metadata tests -- batch B (test_04, test_05, test_08)
+        - job_cluster_key: core_cluster_b
+          new_cluster:
+            spark_version: 15.4.x-cpu-ml-scala2.12
+            node_type_id: ${var.node_type}
+            num_workers: 0
+            data_security_mode: SINGLE_USER
+            spark_conf:
+              spark.databricks.cluster.profile: singleNode
+              spark.master: local[*]
+            custom_tags:
+              ResourceClass: SingleNode
+
+        # Core metadata tests -- batch C (test_06, test_07) + concurrent setup/validate
         - job_cluster_key: integration_test_cluster
           new_cluster:
             spark_version: 15.4.x-cpu-ml-scala2.12
@@ -278,7 +415,7 @@ resources:
             custom_tags:
               ResourceClass: SingleNode
 
-        # Separate clusters for concurrent task testing (must run in parallel)
+        # Concurrent task testing -- must be separate clusters for true parallelism
         - job_cluster_key: concurrent_cluster_1
           new_cluster:
             spark_version: 15.4.x-cpu-ml-scala2.12
@@ -303,7 +440,7 @@ resources:
             custom_tags:
               ResourceClass: SingleNode
 
-        # E2E test clusters for different runtime configurations
+        # E2E / ETL tests -- different runtime configurations
         - job_cluster_key: e2e_serverless_cluster
           new_cluster:
             spark_version: 15.4.x-photon-scala2.12
