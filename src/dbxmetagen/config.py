@@ -192,6 +192,9 @@ class MetadataConfig:
         self.use_kb_comments = _parse_bool(
             getattr(self, "use_kb_comments", False)
         )
+        self.allow_manual_override = _parse_bool(
+            getattr(self, "allow_manual_override", True)
+        )
 
         # Handle review_apply_ddl if present
         if hasattr(self, "review_apply_ddl"):

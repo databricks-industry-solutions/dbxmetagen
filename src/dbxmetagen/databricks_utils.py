@@ -135,6 +135,10 @@ def setup_widgets(dbutils):
     dbutils.widgets.text("domain_config_path", "")
     dbutils.widgets.text("include_lineage", "")
     dbutils.widgets.text("model", "")
+    dbutils.widgets.dropdown(
+        "allow_manual_override", "true", ["true", "false"], "Allow Manual Override"
+    )
+    dbutils.widgets.text("override_csv_path", "", "Override CSV Path")
 
 
 def get_widgets(dbutils):
@@ -156,6 +160,8 @@ def get_widgets(dbutils):
     domain_config_path = dbutils.widgets.get("domain_config_path")
     include_lineage = dbutils.widgets.get("include_lineage")
     model = dbutils.widgets.get("model")
+    allow_manual_override = dbutils.widgets.get("allow_manual_override")
+    override_csv_path = dbutils.widgets.get("override_csv_path")
     notebook_variables = {
         "cleanup_control_table": cleanup_control_table,
         "mode": mode,
@@ -174,6 +180,8 @@ def get_widgets(dbutils):
         "domain_config_path": domain_config_path,
         "include_lineage": include_lineage,
         "model": model,
+        "allow_manual_override": allow_manual_override,
+        "override_csv_path": override_csv_path,
     }
     return {k: v for k, v in notebook_variables.items() if v is not None and v != ""}
 

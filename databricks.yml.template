@@ -21,7 +21,6 @@ include:
 artifacts:
   default:
     type: whl
-    build: poetry build
     path: .
 
 targets:

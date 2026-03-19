@@ -2381,16 +2381,14 @@ def process_and_add_ddl(config: MetadataConfig, table_name: str) -> DataFrame:
         return {}
 
     if config.allow_manual_override:
+        csv_path = getattr(config, "override_csv_path", "metadata_overrides.csv")
+        print(f"[override] allow_manual_override=True, mode={config.mode}, csv_path='{csv_path}'")
         if column_df is not None:
-            logger.info("Applying manual overrides to column_df (mode=%s)...", config.mode)
-            column_df = override_metadata_from_csv(
-                column_df, config.override_csv_path, config
-            )
+            column_df = override_metadata_from_csv(column_df, csv_path, config)
         if table_df is not None:
-            logger.info("Applying manual overrides to table_df (mode=%s)...", config.mode)
-            table_df = override_metadata_from_csv(
-                table_df, config.override_csv_path, config
-            )
+            table_df = override_metadata_from_csv(table_df, csv_path, config)
+    else:
+        print("[override] allow_manual_override=False, skipping overrides")
 
     dfs = add_ddl_to_dfs(config, table_df, column_df, table_name)
     return dfs

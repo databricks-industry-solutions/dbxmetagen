@@ -15,6 +15,29 @@ from dbxmetagen.config import MetadataConfig
 logger = logging.getLogger(__name__)
 
 
+def _resolve_csv_path(csv_path: str | None) -> str | None:
+    """Resolve override CSV path, trying fallback locations for DAB job CWD mismatch."""
+    import os
+
+    if not csv_path:
+        return None
+    if os.path.isabs(csv_path):
+        return csv_path if os.path.exists(csv_path) else None
+
+    if os.path.exists(csv_path):
+        return os.path.abspath(csv_path)
+
+    fallbacks = [
+        os.path.join("notebooks", csv_path),
+        os.path.join("..", "notebooks", csv_path),
+    ]
+    for candidate in fallbacks:
+        if os.path.exists(candidate):
+            print(f"[override] CSV not at '{csv_path}', found at fallback '{candidate}'")
+            return os.path.abspath(candidate)
+    return None
+
+
 def override_metadata_from_csv(
     df: DataFrame, csv_path: str, config: MetadataConfig
 ) -> DataFrame:
@@ -31,24 +54,19 @@ def override_metadata_from_csv(
     """
     import os
 
-    resolved_path = os.path.abspath(csv_path) if csv_path else None
-    logger.info(
-        "Override check: allow_manual_override=True, mode=%s, csv_path='%s', resolved='%s'",
-        config.mode, csv_path, resolved_path,
-    )
+    resolved = _resolve_csv_path(csv_path)
+    print(f"[override] mode={config.mode}, csv_path='{csv_path}', resolved='{resolved}'")
 
-    if not csv_path or not os.path.exists(csv_path):
-        logger.warning(
-            "Override CSV not found at '%s' (resolved: '%s') -- skipping overrides. "
-            "Ensure the file exists at this path relative to the notebook working directory.",
-            csv_path, resolved_path,
+    if resolved is None:
+        print(
+            f"[override] CSV not found at '{csv_path}' (cwd={os.getcwd()}) -- skipping overrides. "
+            "Place the file next to the notebook or provide an absolute path."
         )
         return df
 
-    csv_df = pd.read_csv(csv_path)
+    csv_df = pd.read_csv(resolved)
     csv_df = csv_df.where(pd.notna(csv_df), None)
 
-    # CRITICAL SERVERLESS FIX: Ensure all CSV columns are treated as strings to prevent type inference
     csv_df = csv_df.astype(str)
     csv_df = csv_df.replace("None", None)
 
@@ -66,10 +84,10 @@ def override_metadata_from_csv(
     else:
         csv_spark_df = spark.createDataFrame(csv_df)
     nrows = csv_spark_df.count()
-    logger.info("Override CSV loaded: %d rows from '%s'", nrows, csv_path)
+    print(f"[override] CSV loaded: {nrows} rows from '{resolved}'")
 
     if nrows == 0:
-        logger.info("No override rows to apply, returning DataFrame unchanged.")
+        print("[override] No override rows to apply, returning DataFrame unchanged.")
         return df
     elif nrows < 10000:
         df = apply_overrides_with_loop(df, csv_dict, config)
@@ -244,9 +262,9 @@ def apply_overrides_with_loop(df, csv_dict, config):
     else:
         raise ValueError("Invalid mode provided. Must be 'pi', 'comment', or 'domain'.")
 
-    logger.info(
-        "Override summary: mode=%s, applied=%d, skipped=%d, total_csv_rows=%d",
-        config.mode, applied_count, skipped_count, len(csv_dict),
+    print(
+        f"[override] Summary: mode={config.mode}, applied={applied_count}, "
+        f"skipped={skipped_count}, total_csv_rows={len(csv_dict)}"
     )
     return df
 
