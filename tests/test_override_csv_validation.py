@@ -60,11 +60,10 @@ class TestOverrideCSVValidation:
         assert actual_path == expected_path
 
     def test_valid_override_csv_structure(self):
-        """Valid override CSV should have catalog, schema, table columns."""
-        # Create a valid temp CSV
+        """Valid override CSV should have catalog, schema, table, column, comment, classification, type columns."""
         with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as f:
-            f.write("catalog,schema,table,column,override_value\n")
-            f.write("my_catalog,my_schema,my_table,my_column,new_value\n")
+            f.write("catalog,schema,table,column,comment,classification,type\n")
+            f.write("my_catalog,my_schema,my_table,my_column,New comment,,\n")
             temp_path = f.name
 
         try:

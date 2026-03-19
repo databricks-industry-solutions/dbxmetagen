@@ -25,11 +25,13 @@ from datetime import datetime
 from pyspark.sql import Row
 
 # Get test parameters
-dbutils.widgets.text("catalog_name", "dbxmetagen_tests", "Catalog Name")
-dbutils.widgets.text("test_schema", "dev_integration_tests", "Test Schema")
+dbutils.widgets.text("catalog_name", "dev_integration_tests", "Catalog Name")
+dbutils.widgets.text("test_schema", "dbxmetagen_tests", "Test Schema")
+dbutils.widgets.dropdown("skip_cleanup", "false", ["true", "false"], "Skip Cleanup (leave schema for test_16)")
 
 catalog_name = dbutils.widgets.get("catalog_name")
 test_schema = dbutils.widgets.get("test_schema")
+skip_cleanup = dbutils.widgets.get("skip_cleanup").strip().lower() == "true"
 
 # Create unique test schema for isolation
 test_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -37,6 +39,7 @@ graph_test_schema = f"graph_test_{test_timestamp}"
 
 print(f"Test catalog: {catalog_name}")
 print(f"Test schema: {graph_test_schema}")
+print(f"Skip cleanup: {skip_cleanup}")
 
 # COMMAND ----------
 # MAGIC %md
@@ -325,9 +328,12 @@ print("[TEST 7] PASSED: product_catalog now connected to Customer domain tables"
 
 # COMMAND ----------
 
-# Drop test schema
-spark.sql(f"DROP SCHEMA IF EXISTS {catalog_name}.{graph_test_schema} CASCADE")
-print(f"[CLEANUP] Dropped test schema: {catalog_name}.{graph_test_schema}")
+if skip_cleanup:
+    print(f"[CLEANUP] Skipping cleanup -- schema {catalog_name}.{graph_test_schema} left for downstream tests")
+    dbutils.jobs.taskValues.set(key="graph_test_schema", value=graph_test_schema)
+else:
+    spark.sql(f"DROP SCHEMA IF EXISTS {catalog_name}.{graph_test_schema} CASCADE")
+    print(f"[CLEANUP] Dropped test schema: {catalog_name}.{graph_test_schema}")
 
 # COMMAND ----------
 
