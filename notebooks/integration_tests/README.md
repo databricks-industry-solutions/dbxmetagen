@@ -11,6 +11,13 @@ Integration tests verify functionality that cannot be unit tested, including:
 - Control table management
 - Mode switching (comment, pi, domain)
 - Catalog, schema, and volume permissions
+- Reviewed DDL sync workflow
+- PI classification for non-PI data
+- Federation mode guards
+- Comment override CSV matching
+- Knowledge base, graph, profiling, ontology ETL pipelines
+- Embeddings and similarity edge analytics
+- Concurrent table claiming across parallel tasks
 - Error messages and handling
 
 ## Test Structure
@@ -21,6 +28,21 @@ Each test notebook follows this pattern:
 3. **Verify**: Assert expected outcomes
 4. **Cleanup**: Remove test artifacts (in finally block)
 5. **Report**: Return pass/fail status
+
+## Parallelization
+
+Tests are organized into parallel waves to minimize wall-clock time:
+
+| Wave | Tests | Cluster(s) | Description |
+|------|-------|------------|-------------|
+| A | 01, 17, 18 | `fast_test_cluster` | Fast config/parsing tests (no LLM) |
+| B | 02, 03, 04, 05, 06, 07, 08, 09 | `core_cluster_a`, `core_cluster_b`, `integration_test_cluster` | Core metadata generation (3 clusters in parallel) |
+| C | 10 setup/validate + concurrent tasks | `integration_test_cluster` + `concurrent_cluster_1/2` | Concurrent table claiming |
+| D | 11, 12, 13, 14, 15, 16 | `e2e_ml_cluster` | ETL pipeline tests (ML runtime) |
+| E | e2e_serverless, e2e_ml, e2e_standard | own clusters | E2E cluster compatibility |
+
+Only test_01 (widget parsing) gates Waves B/C/D. Wave E has no dependencies.
+Within each cluster, tasks serialize on single-node. Across clusters, waves run in parallel.
 
 ## Running Integration Tests
 
@@ -81,13 +103,41 @@ You can run individual test notebooks in Databricks:
   - Test environment setup and cleanup
 
 ### Test Notebooks
+
+#### Wave A: Fast Config Tests
 - `test_01_widget_parsing.py`: Widget value parsing and boolean conversion
-- `test_02_apply_ddl_false.py`: Verify apply_ddl=false doesn't modify tables but generates metadata
-- `test_03_apply_ddl_true.py`: Verify apply_ddl=true modifies tables and applies comments
-- `test_04_modes.py`: Test different modes produce different outputs (comment, pi, domain)
+- `test_17_federation_mode.py`: Federation mode forces `apply_ddl=false` and skips Delta ops
+- `test_18_comment_overrides.py`: CSV override matching (column-level, table-level, case-insensitive)
+
+#### Wave B: Core Metadata Generation
+- `test_02_apply_ddl_false.py`: Verify `apply_ddl=false` generates metadata but doesn't modify tables
+- `test_03_apply_ddl_true.py`: Verify `apply_ddl=true` modifies tables and applies comments
+- `test_04_modes.py`: Test all modes produce correct outputs (comment, pi, domain)
 - `test_05_temp_table_cleanup.py`: Verify temp tables cleaned up (even on errors) and logs persist
 - `test_06_control_table.py`: Control table management, cleanup, and schema validation
-- `test_07_permissions.py`: Catalog, schema, volume permissions and grant_permissions config
+- `test_07_permissions.py`: Catalog, schema, volume permissions and `grant_permissions` config
+- `test_08_reviewed_ddl.py`: Full review workflow: generate -> export TSV -> edit -> reimport -> verify
+- `test_09_pi_classification_none.py`: Non-PI data correctly gets `classification=None`
+
+#### Wave C: Concurrent Table Claiming
+- `test_10_concurrent_setup.py`: Creates test tables for concurrent processing
+- `test_10_concurrent_validate.py`: Validates no duplicate claims after parallel tasks
+
+#### Wave D: ETL Pipeline Tests
+- `test_11_knowledge_base.py`: Knowledge base ETL from metadata_generation_log
+- `test_12_knowledge_graph.py`: Graph node/edge creation and relationship logic
+- `test_13_profiling.py`: Profiling pipeline (statistics, pattern detection, entropy)
+- `test_14_ontology.py`: Ontology entity discovery and classification
+- `test_15_graph_validation.py`: Full graph state validation (nodes, edges, security levels)
+- `test_16_analytics_pipeline.py`: Embeddings -> similarity edges (chains after test_12)
+
+#### Wave E: E2E Cluster Compatibility
+- `test_e2e_serverless.py`: Full pipeline on Photon runtime
+- `test_e2e_ml_cluster.py`: Full pipeline on ML runtime (DBR 15.4)
+- `test_e2e_standard_cluster.py`: Full pipeline on standard runtime (DBR 16.4)
+
+#### Not in Job
+- `test_apply_ddl_integration.py`: Legacy standalone script, superseded by test_02/test_03
 
 ### Configuration
 Integration tests use the **production `variables.yml`** file (located at repo root) with test-specific overrides for catalog, schema, and table names.
@@ -110,8 +160,10 @@ Integration tests use the **production `variables.yml`** file (located at repo r
 ## Test Environment
 
 Integration tests use:
-- Single-node cluster (num_workers: 0)
-- Spark 15.4.x-cpu-ml-scala2.12
+- Single-node clusters (num_workers: 0) for most tests
+- Spark 15.4.x-cpu-ml-scala2.12 (ML runtime) for ETL tests
+- Spark 16.4.x-scala2.12 (standard runtime) for compatibility test
+- Spark 15.4.x-photon-scala2.12 for serverless compatibility test
 - Test catalog: `dev_integration_tests` (configurable)
 - Test schema: `dbxmetagen_tests` (configurable)
 - Test volume: `test_volume`
@@ -129,7 +181,7 @@ Integration tests use:
 ### Individual test failed
 - Check the notebook output in the Databricks job run
 - Each test prints detailed PASS/FAIL assertions
-- Look for "❌ ASSERTION FAILED" messages
+- Look for "ASSERTION FAILED" messages
 
 ### Tests run but don't appear in bundle
 - Ensure you're using target `integration_test`: `-t integration_test`
@@ -153,8 +205,9 @@ To add a new integration test:
    - `verify_table_has_comment()` - Check table comments
    - `verify_column_has_comment()` - Check column comments
    - `verify_processing_log_exists()` - Verify processing logs
-6. Add the test task to `resources/jobs/integration_tests.job.yml`
-7. Update this README
+6. Add the test task to `resources/tests/integration_tests.job.yml`
+7. Assign it to the appropriate cluster and wave
+8. Update this README
 
 ### Example Test Structure
 
@@ -202,4 +255,3 @@ Integration tests can be run in CI/CD pipelines:
 ```
 
 Make sure your CI service principal has the necessary permissions.
-

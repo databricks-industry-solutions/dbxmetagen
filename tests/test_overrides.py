@@ -42,10 +42,17 @@ def _make_config(mode="comment", **overrides):
     return MetadataConfig(**defaults)
 
 
-def _mock_df():
-    """Return a MagicMock DataFrame whose withColumn returns itself."""
+def _mock_df(match_count=None):
+    """Return a MagicMock DataFrame whose withColumn returns itself.
+
+    Args:
+        match_count: If set, df.filter(...).count() returns this value.
+                     None means default MagicMock behavior (truthy, != 0).
+    """
     df = MagicMock()
     df.withColumn.return_value = df
+    if match_count is not None:
+        df.filter.return_value.count.return_value = match_count
     return df
 
 
@@ -63,8 +70,8 @@ class TestIsBlank:
     def test_math_nan_is_blank(self):
         assert _is_blank(math.nan) is True
 
-    def test_empty_string_is_not_blank(self):
-        assert _is_blank("") is False
+    def test_empty_string_is_blank(self):
+        assert _is_blank("") is True
 
     def test_string_value_is_not_blank(self):
         assert _is_blank("pii") is False
@@ -81,51 +88,81 @@ class TestIsBlank:
 # ===========================================================================
 
 class TestBuildCondition:
-    """Tests for build_condition pattern matching.
+    """Tests for build_condition dynamic condition building.
 
     Since PySpark col/reduce are mocked, we verify the function doesn't raise
-    for valid patterns and does raise for invalid ones.
+    for valid patterns and does raise only when no fields are provided.
     """
 
-    def test_pattern1_only_column(self):
+    def test_only_column(self):
         df = _mock_df()
         result = build_condition(df, None, "ssn", None, None)
         assert result is not None
 
-    def test_pattern1_empty_strings_treated_as_none(self):
+    def test_empty_strings_treated_as_none(self):
         df = _mock_df()
         result = build_condition(df, "", "ssn", "", "")
         assert result is not None
 
-    def test_pattern2_all_params(self):
+    def test_all_params(self):
         df = _mock_df()
         result = build_condition(df, "my_table", "my_col", "my_schema", "my_catalog")
         assert result is not None
 
-    def test_pattern3_table_level(self):
+    def test_table_level_all_three(self):
         df = _mock_df()
         result = build_condition(df, "my_table", None, "my_schema", "my_catalog")
         assert result is not None
 
-    def test_raises_for_partial_params_table_no_catalog(self):
+    def test_table_and_column(self):
         df = _mock_df()
-        with pytest.raises(ValueError, match="Unsupported parameter combination"):
-            build_condition(df, "my_table", "my_col", None, None)
+        result = build_condition(df, "my_table", "my_col", None, None)
+        assert result is not None
 
-    def test_raises_for_partial_params_schema_no_catalog(self):
+    def test_schema_and_column(self):
         df = _mock_df()
-        with pytest.raises(ValueError, match="Unsupported parameter combination"):
-            build_condition(df, None, "my_col", "my_schema", None)
+        result = build_condition(df, None, "my_col", "my_schema", None)
+        assert result is not None
 
-    def test_error_includes_param_values(self):
+    def test_schema_table_column(self):
         df = _mock_df()
-        with pytest.raises(ValueError, match="table='my_table'"):
-            build_condition(df, "my_table", "my_col", None, None)
+        result = build_condition(df, "my_table", "my_col", "my_schema", None)
+        assert result is not None
+
+    def test_table_only(self):
+        df = _mock_df()
+        result = build_condition(df, "my_table", None, None, None)
+        assert result is not None
+
+    def test_schema_and_table(self):
+        df = _mock_df()
+        result = build_condition(df, "my_table", None, "my_schema", None)
+        assert result is not None
+
+    def test_catalog_only(self):
+        df = _mock_df()
+        result = build_condition(df, None, None, None, "my_catalog")
+        assert result is not None
 
     def test_raises_for_no_params_at_all(self):
         df = _mock_df()
-        with pytest.raises(ValueError, match="Unsupported parameter combination"):
+        with pytest.raises(ValueError, match="No match fields provided"):
             build_condition(df, None, None, None, None)
+
+    def test_raises_for_all_empty_strings(self):
+        df = _mock_df()
+        with pytest.raises(ValueError, match="No match fields provided"):
+            build_condition(df, "", None, "", "")
+
+    def test_case_insensitive_column(self):
+        df = _mock_df()
+        result = build_condition(df, None, "SSN", None, None)
+        assert result is not None
+
+    def test_case_insensitive_all_params(self):
+        df = _mock_df()
+        result = build_condition(df, "My_Table", "My_Col", "My_Schema", "My_Catalog")
+        assert result is not None
 
 
 # ===========================================================================
@@ -204,6 +241,37 @@ class TestApplyOverridesWithLoop:
         apply_overrides_with_loop(df, csv_dict, config)
         df.withColumn.assert_not_called()
 
+    def test_comment_skips_empty_string_comment(self):
+        df = _mock_df()
+        config = _make_config(mode="comment")
+        csv_dict = [{"column": "name", "comment": ""}]
+
+        apply_overrides_with_loop(df, csv_dict, config)
+        df.withColumn.assert_not_called()
+
+    # --- Comment mode with partial params ---
+
+    def test_comment_column_with_table_only(self):
+        df = _mock_df()
+        config = _make_config(mode="comment")
+        csv_dict = [{"table": "orders", "column": "cust_id", "comment": "Customer ID"}]
+
+        apply_overrides_with_loop(df, csv_dict, config)
+        assert df.withColumn.call_count == 1
+        assert df.withColumn.call_args_list[0].args[0] == "column_content"
+
+    def test_comment_column_with_schema_and_table(self):
+        df = _mock_df()
+        config = _make_config(mode="comment")
+        csv_dict = [{
+            "schema": "sch", "table": "orders",
+            "column": "cust_id", "comment": "Customer ID",
+        }]
+
+        apply_overrides_with_loop(df, csv_dict, config)
+        assert df.withColumn.call_count == 1
+        assert df.withColumn.call_args_list[0].args[0] == "column_content"
+
     # --- Comment mode (table-level) ---
 
     def test_comment_table_level_applies_column_content(self):
@@ -213,6 +281,15 @@ class TestApplyOverridesWithLoop:
             "catalog": "cat", "schema": "sch", "table": "orders",
             "column": None, "comment": "Order tracking table",
         }]
+
+        apply_overrides_with_loop(df, csv_dict, config)
+        assert df.withColumn.call_count == 1
+        assert df.withColumn.call_args_list[0].args[0] == "column_content"
+
+    def test_comment_table_level_with_table_only(self):
+        df = _mock_df()
+        config = _make_config(mode="comment")
+        csv_dict = [{"table": "orders", "column": None, "comment": "Order table"}]
 
         apply_overrides_with_loop(df, csv_dict, config)
         assert df.withColumn.call_count == 1
@@ -284,6 +361,100 @@ class TestApplyOverridesWithLoop:
         with pytest.raises(ValueError, match="Invalid mode"):
             apply_overrides_with_loop(df, csv_dict, config)
 
+    # --- PI mode: partial overrides ---
+
+    def test_pi_applies_only_type_when_classification_blank(self):
+        df = _mock_df()
+        config = _make_config(mode="pi")
+        csv_dict = [{"column": "ssn", "classification": None, "type": "pii"}]
+
+        apply_overrides_with_loop(df, csv_dict, config)
+        assert df.withColumn.call_count == 1
+        assert df.withColumn.call_args_list[0].args[0] == "type"
+
+    # --- Domain mode: partial overrides ---
+
+    def test_domain_applies_only_subdomain_when_domain_blank(self):
+        df = _mock_df()
+        config = _make_config(mode="domain")
+        csv_dict = [{
+            "catalog": "cat", "schema": "sch", "table": "orders",
+            "domain": None, "subdomain": "Order Management",
+        }]
+
+        apply_overrides_with_loop(df, csv_dict, config)
+        assert df.withColumn.call_count == 1
+        assert df.withColumn.call_args_list[0].args[0] == "subdomain"
+
+    # --- Comment mode: multiple overrides ---
+
+    def test_comment_multiple_overrides_in_csv(self):
+        df = _mock_df()
+        config = _make_config(mode="comment")
+        csv_dict = [
+            {"column": "ssn", "comment": "Social Security Number"},
+            {"column": "name", "comment": "Full name"},
+            {"column": "age", "comment": ""},  # blank -> skipped
+        ]
+
+        apply_overrides_with_loop(df, csv_dict, config)
+        assert df.withColumn.call_count == 2
+        for c in df.withColumn.call_args_list:
+            assert c.args[0] == "column_content"
+
+    # --- Zero-match path (critical: tests that _count_matches==0 prevents withColumn) ---
+
+    def test_pi_zero_match_skips_override(self):
+        df = _mock_df(match_count=0)
+        config = _make_config(mode="pi")
+        csv_dict = [{"column": "nonexistent_col", "classification": "pi", "type": "pii"}]
+
+        apply_overrides_with_loop(df, csv_dict, config)
+        df.withColumn.assert_not_called()
+
+    def test_comment_column_zero_match_skips_override(self):
+        df = _mock_df(match_count=0)
+        config = _make_config(mode="comment")
+        csv_dict = [{"column": "nonexistent_col", "comment": "Some comment"}]
+
+        apply_overrides_with_loop(df, csv_dict, config)
+        df.withColumn.assert_not_called()
+
+    def test_comment_table_level_zero_match_skips_override(self):
+        df = _mock_df(match_count=0)
+        config = _make_config(mode="comment")
+        csv_dict = [{"table": "nonexistent_table", "column": None, "comment": "Table comment"}]
+
+        apply_overrides_with_loop(df, csv_dict, config)
+        df.withColumn.assert_not_called()
+
+    def test_domain_zero_match_skips_override(self):
+        df = _mock_df(match_count=0)
+        config = _make_config(mode="domain")
+        csv_dict = [{
+            "catalog": "cat", "schema": "sch", "table": "nonexistent",
+            "domain": "Sales", "subdomain": "Order Management",
+        }]
+
+        apply_overrides_with_loop(df, csv_dict, config)
+        df.withColumn.assert_not_called()
+
+    def test_pi_mix_of_matching_and_nonmatching_rows(self):
+        """When some CSV rows match and some don't, only matching ones produce withColumn."""
+        df = MagicMock()
+        df.withColumn.return_value = df
+        # First call to filter().count() returns 1, second returns 0
+        df.filter.return_value.count.side_effect = [1, 0]
+
+        config = _make_config(mode="pi")
+        csv_dict = [
+            {"column": "ssn", "classification": "pi", "type": "pii"},
+            {"column": "nonexistent", "classification": "pi", "type": "pii"},
+        ]
+
+        apply_overrides_with_loop(df, csv_dict, config)
+        assert df.withColumn.call_count == 2  # 1 matched row x 2 columns
+
     # --- Multiple rows ---
 
     def test_pi_multiple_rows_counted(self):
@@ -352,6 +523,30 @@ class TestOverrideMetadataFromCSV:
         finally:
             os.unlink(tmp)
 
+    @patch("dbxmetagen.overrides.apply_overrides_with_loop")
+    def test_df_label_passed_through_to_apply(self, mock_apply):
+        mock_apply.return_value = _mock_df()
+        df = _mock_df()
+        config = _make_config(mode="comment")
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as f:
+            f.write("catalog,schema,table,column,comment,classification,type\n")
+            f.write(",,,ssn,Some comment,,\n")
+            tmp = f.name
+
+        try:
+            mock_spark_df = MagicMock()
+            mock_spark_df.count.return_value = 1
+            mock_spark = MagicMock()
+            mock_spark.createDataFrame.return_value = mock_spark_df
+            pyspark_sql = sys.modules["pyspark.sql"]
+            pyspark_sql.SparkSession.builder.getOrCreate.return_value = mock_spark
+
+            override_metadata_from_csv(df, tmp, config, df_label="column_df")
+            assert mock_apply.call_args.kwargs.get("df_label") == "column_df"
+        finally:
+            os.unlink(tmp)
+
     def test_empty_csv_returns_df_unchanged(self):
         df = _mock_df()
         config = _make_config(mode="pi")
@@ -395,6 +590,70 @@ class TestOverrideMetadataFromCSV:
         finally:
             os.unlink(tmp)
 
+    @patch("dbxmetagen.overrides.apply_overrides_with_loop")
+    def test_blank_cells_parsed_as_none_not_nan(self, mock_apply):
+        """Blank CSV cells must become None, not the string 'nan'."""
+        mock_apply.return_value = _mock_df()
+        df = _mock_df()
+        config = _make_config(mode="pi")
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as f:
+            f.write("catalog,schema,table,column,comment,classification,type\n")
+            f.write(",,,ssn,,pi,pii\n")
+            f.write(",,,tpn,some,pi,pii\n")
+            tmp = f.name
+
+        try:
+            mock_spark_df = MagicMock()
+            mock_spark_df.count.return_value = 2
+            mock_spark = MagicMock()
+            mock_spark.createDataFrame.return_value = mock_spark_df
+            pyspark_sql = sys.modules["pyspark.sql"]
+            pyspark_sql.SparkSession.builder.getOrCreate.return_value = mock_spark
+
+            override_metadata_from_csv(df, tmp, config)
+            csv_dict = mock_apply.call_args.args[1]
+            for row in csv_dict:
+                assert row["catalog"] is None, f"Expected None, got {row['catalog']!r}"
+                assert row["schema"] is None, f"Expected None, got {row['schema']!r}"
+                assert row["table"] is None, f"Expected None, got {row['table']!r}"
+            assert csv_dict[0]["column"] == "ssn"
+            assert csv_dict[0]["comment"] is None
+            assert csv_dict[1]["column"] == "tpn"
+            assert csv_dict[1]["comment"] == "some"
+        finally:
+            os.unlink(tmp)
+
+    @patch("dbxmetagen.overrides.apply_overrides_with_loop")
+    def test_literal_nan_and_none_preserved(self, mock_apply):
+        """Literal 'nan' / 'None' typed in a cell are kept as real strings."""
+        mock_apply.return_value = _mock_df()
+        df = _mock_df()
+        config = _make_config(mode="pi")
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as f:
+            f.write("catalog,schema,table,column,comment,classification,type\n")
+            f.write("nan,None,,nan_col,None,pi,pii\n")
+            tmp = f.name
+
+        try:
+            mock_spark_df = MagicMock()
+            mock_spark_df.count.return_value = 1
+            mock_spark = MagicMock()
+            mock_spark.createDataFrame.return_value = mock_spark_df
+            pyspark_sql = sys.modules["pyspark.sql"]
+            pyspark_sql.SparkSession.builder.getOrCreate.return_value = mock_spark
+
+            override_metadata_from_csv(df, tmp, config)
+            row = mock_apply.call_args.args[1][0]
+            assert row["catalog"] == "nan", f"Literal 'nan' should be preserved, got {row['catalog']!r}"
+            assert row["schema"] == "None", f"Literal 'None' should be preserved, got {row['schema']!r}"
+            assert row["table"] is None
+            assert row["column"] == "nan_col"
+            assert row["comment"] == "None"
+        finally:
+            os.unlink(tmp)
+
 
 # ===========================================================================
 # TestProcessAndAddDdlOverrideWiring (integration)
@@ -424,7 +683,9 @@ class TestProcessAndAddDdlOverrideWiring:
             override_csv_path=csv_path,
         )
 
-    def test_override_called_on_both_dfs_comment_mode(self):
+    def test_override_column_df_only_in_comment_mode(self):
+        """In comment mode, process_and_add_ddl only overrides column_df.
+        table_df override happens inside add_ddl_to_dfs after summarization."""
         pm = self._processing_mod
         column_df = _mock_df()
         table_df = _mock_df()
@@ -433,14 +694,33 @@ class TestProcessAndAddDdlOverrideWiring:
         with (
             patch.object(pm, "review_and_generate_metadata", return_value=(column_df, table_df)),
             patch.object(pm, "split_and_hardcode_df", side_effect=lambda df, cfg: df),
-            patch.object(pm, "override_metadata_from_csv", side_effect=lambda df, p, c: df) as mock_ov,
+            patch.object(pm, "override_metadata_from_csv", side_effect=lambda df, p, c, **kw: df) as mock_ov,
+            patch.object(pm, "add_ddl_to_dfs", return_value={"r": MagicMock()}),
+        ):
+            pm.process_and_add_ddl(config, "cat.sch.my_table")
+
+            assert mock_ov.call_count == 1
+            assert mock_ov.call_args_list[0].args[0] is column_df
+            assert mock_ov.call_args_list[0].kwargs.get("df_label") == "column_df"
+
+    def test_override_both_dfs_in_pi_mode(self):
+        """In PI mode, both column_df and table_df are overridden in process_and_add_ddl."""
+        pm = self._processing_mod
+        column_df = _mock_df()
+        table_df = _mock_df()
+        config = self._make_full_config(mode="pi")
+
+        with (
+            patch.object(pm, "review_and_generate_metadata", return_value=(column_df, table_df)),
+            patch.object(pm, "split_and_hardcode_df", side_effect=lambda df, cfg: df),
+            patch.object(pm, "override_metadata_from_csv", side_effect=lambda df, p, c, **kw: df) as mock_ov,
             patch.object(pm, "add_ddl_to_dfs", return_value={"r": MagicMock()}),
         ):
             pm.process_and_add_ddl(config, "cat.sch.my_table")
 
             assert mock_ov.call_count == 2
-            assert mock_ov.call_args_list[0].args[0] is column_df
-            assert mock_ov.call_args_list[1].args[0] is table_df
+            assert mock_ov.call_args_list[0].kwargs.get("df_label") == "column_df"
+            assert mock_ov.call_args_list[1].kwargs.get("df_label") == "table_df"
 
     def test_override_not_called_when_disabled(self):
         pm = self._processing_mod
@@ -462,7 +742,7 @@ class TestProcessAndAddDdlOverrideWiring:
         with (
             patch.object(pm, "review_and_generate_metadata", return_value=(_mock_df(), None)),
             patch.object(pm, "split_and_hardcode_df", side_effect=lambda df, cfg: df),
-            patch.object(pm, "override_metadata_from_csv", side_effect=lambda df, p, c: df) as mock_ov,
+            patch.object(pm, "override_metadata_from_csv", side_effect=lambda df, p, c, **kw: df) as mock_ov,
             patch.object(pm, "add_ddl_to_dfs", return_value={"r": MagicMock()}),
         ):
             pm.process_and_add_ddl(config, "cat.sch.my_table")
@@ -471,17 +751,36 @@ class TestProcessAndAddDdlOverrideWiring:
 
     def test_override_passes_correct_csv_path(self):
         pm = self._processing_mod
-        config = self._make_full_config(csv_path="/custom/overrides.csv")
+        config = self._make_full_config(csv_path="/custom/overrides.csv", mode="pi")
 
         with (
             patch.object(pm, "review_and_generate_metadata", return_value=(_mock_df(), _mock_df())),
             patch.object(pm, "split_and_hardcode_df", side_effect=lambda df, cfg: df),
-            patch.object(pm, "override_metadata_from_csv", side_effect=lambda df, p, c: df) as mock_ov,
+            patch.object(pm, "override_metadata_from_csv", side_effect=lambda df, p, c, **kw: df) as mock_ov,
             patch.object(pm, "add_ddl_to_dfs", return_value={"r": MagicMock()}),
         ):
             pm.process_and_add_ddl(config, "cat.sch.my_table")
             for c in mock_ov.call_args_list:
                 assert c.args[1] == "/custom/overrides.csv"
+
+    def test_override_both_dfs_in_domain_mode(self):
+        """In domain mode, both column_df and table_df are overridden in process_and_add_ddl."""
+        pm = self._processing_mod
+        column_df = _mock_df()
+        table_df = _mock_df()
+        config = self._make_full_config(mode="domain")
+
+        with (
+            patch.object(pm, "review_and_generate_metadata", return_value=(column_df, table_df)),
+            patch.object(pm, "split_and_hardcode_df", side_effect=lambda df, cfg: df),
+            patch.object(pm, "override_metadata_from_csv", side_effect=lambda df, p, c, **kw: df) as mock_ov,
+            patch.object(pm, "add_ddl_to_dfs", return_value={"r": MagicMock()}),
+        ):
+            pm.process_and_add_ddl(config, "cat.sch.my_table")
+
+            assert mock_ov.call_count == 2
+            assert mock_ov.call_args_list[0].kwargs.get("df_label") == "column_df"
+            assert mock_ov.call_args_list[1].kwargs.get("df_label") == "table_df"
 
     def test_both_none_dfs_returns_empty_dict(self):
         pm = self._processing_mod
@@ -496,3 +795,109 @@ class TestProcessAndAddDdlOverrideWiring:
             result = pm.process_and_add_ddl(config, "cat.sch.my_table")
             mock_ov.assert_not_called()
             assert result == {}
+
+
+class TestAddDdlToDfsOverrideOrdering:
+    """Verify that add_ddl_to_dfs calls override_metadata_from_csv on table_df
+    AFTER summarize_table_content in comment mode."""
+
+    @classmethod
+    def setup_class(cls):
+        cls._saved = install_processing_stubs()
+        import dbxmetagen.processing as pm
+        cls._processing_mod = pm
+
+    @classmethod
+    def teardown_class(cls):
+        uninstall_processing_stubs(cls._saved)
+
+    def test_comment_mode_table_override_after_summarization(self):
+        """In comment mode, override_metadata_from_csv is called on table_df
+        AFTER summarize_table_content, so the override is not destroyed."""
+        pm = self._processing_mod
+        table_df = _mock_df()
+        column_df = _mock_df()
+        column_df.columns = ["column_content"]
+
+        config = _make_config(
+            mode="comment",
+            allow_manual_override=True,
+            override_csv_path="overrides.csv",
+            apply_ddl=False,
+        )
+
+        call_order = []
+
+        def track_summarize(df, cfg, name):
+            call_order.append("summarize_table_content")
+            return df
+
+        def track_split(df):
+            call_order.append("split_name_for_df")
+            return df
+
+        def track_override(df, path, cfg, **kw):
+            call_order.append("override_metadata_from_csv")
+            return df
+
+        with (
+            patch.object(pm, "summarize_table_content", side_effect=track_summarize),
+            patch.object(pm, "split_name_for_df", side_effect=track_split),
+            patch.object(pm, "override_metadata_from_csv", side_effect=track_override) as mock_ov,
+            patch.object(pm, "add_ddl_to_table_comment_df", return_value=MagicMock()),
+            patch.object(pm, "add_ddl_to_column_comment_df", return_value=MagicMock()),
+        ):
+            pm.add_ddl_to_dfs(config, table_df, column_df, "cat.sch.my_table")
+
+            mock_ov.assert_called_once()
+            assert mock_ov.call_args.kwargs.get("df_label") == "table_df"
+
+            assert call_order == [
+                "summarize_table_content",
+                "split_name_for_df",
+                "override_metadata_from_csv",
+            ]
+
+    def test_comment_mode_no_table_override_when_disabled(self):
+        """When allow_manual_override is False, add_ddl_to_dfs should NOT call override."""
+        pm = self._processing_mod
+        table_df = _mock_df()
+        column_df = _mock_df()
+        column_df.columns = ["column_content"]
+
+        config = _make_config(
+            mode="comment",
+            allow_manual_override=False,
+            apply_ddl=False,
+        )
+
+        with (
+            patch.object(pm, "summarize_table_content", side_effect=lambda df, cfg, name: df),
+            patch.object(pm, "split_name_for_df", side_effect=lambda df: df),
+            patch.object(pm, "override_metadata_from_csv") as mock_ov,
+            patch.object(pm, "add_ddl_to_table_comment_df", return_value=MagicMock()),
+            patch.object(pm, "add_ddl_to_column_comment_df", return_value=MagicMock()),
+        ):
+            pm.add_ddl_to_dfs(config, table_df, column_df, "cat.sch.my_table")
+            mock_ov.assert_not_called()
+
+    def test_pi_mode_no_table_override_in_add_ddl(self):
+        """In PI mode, add_ddl_to_dfs should NOT call override_metadata_from_csv
+        (it's handled in process_and_add_ddl instead)."""
+        pm = self._processing_mod
+        column_df = _mock_df()
+        table_df = _mock_df()
+
+        config = _make_config(
+            mode="pi",
+            allow_manual_override=True,
+            apply_ddl=False,
+        )
+
+        with (
+            patch.object(pm, "add_column_ddl_to_pi_df", return_value=MagicMock()),
+            patch.object(pm, "create_pi_table_df", return_value=None),
+            patch.object(pm, "override_metadata_from_csv") as mock_ov,
+        ):
+            pm.add_ddl_to_dfs(config, table_df, column_df, "cat.sch.my_table")
+            mock_ov.assert_not_called()
