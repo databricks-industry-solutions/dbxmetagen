@@ -590,6 +590,70 @@ class TestOverrideMetadataFromCSV:
         finally:
             os.unlink(tmp)
 
+    @patch("dbxmetagen.overrides.apply_overrides_with_loop")
+    def test_blank_cells_parsed_as_none_not_nan(self, mock_apply):
+        """Blank CSV cells must become None, not the string 'nan'."""
+        mock_apply.return_value = _mock_df()
+        df = _mock_df()
+        config = _make_config(mode="pi")
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as f:
+            f.write("catalog,schema,table,column,comment,classification,type\n")
+            f.write(",,,ssn,,pi,pii\n")
+            f.write(",,,tpn,some,pi,pii\n")
+            tmp = f.name
+
+        try:
+            mock_spark_df = MagicMock()
+            mock_spark_df.count.return_value = 2
+            mock_spark = MagicMock()
+            mock_spark.createDataFrame.return_value = mock_spark_df
+            pyspark_sql = sys.modules["pyspark.sql"]
+            pyspark_sql.SparkSession.builder.getOrCreate.return_value = mock_spark
+
+            override_metadata_from_csv(df, tmp, config)
+            csv_dict = mock_apply.call_args.args[1]
+            for row in csv_dict:
+                assert row["catalog"] is None, f"Expected None, got {row['catalog']!r}"
+                assert row["schema"] is None, f"Expected None, got {row['schema']!r}"
+                assert row["table"] is None, f"Expected None, got {row['table']!r}"
+            assert csv_dict[0]["column"] == "ssn"
+            assert csv_dict[0]["comment"] is None
+            assert csv_dict[1]["column"] == "tpn"
+            assert csv_dict[1]["comment"] == "some"
+        finally:
+            os.unlink(tmp)
+
+    @patch("dbxmetagen.overrides.apply_overrides_with_loop")
+    def test_literal_nan_and_none_preserved(self, mock_apply):
+        """Literal 'nan' / 'None' typed in a cell are kept as real strings."""
+        mock_apply.return_value = _mock_df()
+        df = _mock_df()
+        config = _make_config(mode="pi")
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as f:
+            f.write("catalog,schema,table,column,comment,classification,type\n")
+            f.write("nan,None,,nan_col,None,pi,pii\n")
+            tmp = f.name
+
+        try:
+            mock_spark_df = MagicMock()
+            mock_spark_df.count.return_value = 1
+            mock_spark = MagicMock()
+            mock_spark.createDataFrame.return_value = mock_spark_df
+            pyspark_sql = sys.modules["pyspark.sql"]
+            pyspark_sql.SparkSession.builder.getOrCreate.return_value = mock_spark
+
+            override_metadata_from_csv(df, tmp, config)
+            row = mock_apply.call_args.args[1][0]
+            assert row["catalog"] == "nan", f"Literal 'nan' should be preserved, got {row['catalog']!r}"
+            assert row["schema"] == "None", f"Literal 'None' should be preserved, got {row['schema']!r}"
+            assert row["table"] is None
+            assert row["column"] == "nan_col"
+            assert row["comment"] == "None"
+        finally:
+            os.unlink(tmp)
+
 
 # ===========================================================================
 # TestProcessAndAddDdlOverrideWiring (integration)

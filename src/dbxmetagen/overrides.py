@@ -67,11 +67,8 @@ def override_metadata_from_csv(
         )
         return df
 
-    csv_df = pd.read_csv(resolved)
-    csv_df = csv_df.where(pd.notna(csv_df), None)
-
-    csv_df = csv_df.astype(str)
-    csv_df = csv_df.replace("None", None)
+    csv_df = pd.read_csv(resolved, dtype=str, keep_default_na=False)
+    csv_df = csv_df.replace("", None)
 
     csv_dict = csv_df.to_dict("records")
     from pyspark.sql import SparkSession
