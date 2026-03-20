@@ -1,19 +1,14 @@
 name: Release
 
-# Disabled: databricks-industry-solutions org IP allowlist blocks GitHub-hosted
-# runners from creating releases. Re-enable the tag trigger once resolved.
 on:
+  push:
+    tags: ['v*']
   workflow_dispatch:
-    inputs:
-      confirm:
-        description: "IP allowlist blocks runners. Set to 'true' to attempt anyway."
-        required: true
-        default: "false"
 
 jobs:
   release:
     name: Build & Publish Release
-    runs-on: ubuntu-latest
+    runs-on: html_publisher
     permissions:
       contents: write
 

@@ -20,8 +20,8 @@ from pyspark.sql import Row
 from pyspark.sql.types import StructType, StructField, StringType, IntegerType, DoubleType, TimestampType
 
 # Get test parameters
-dbutils.widgets.text("catalog_name", "dbxmetagen_tests", "Catalog Name")
-dbutils.widgets.text("test_schema", "dev_integration_tests", "Test Schema")
+dbutils.widgets.text("catalog_name", "dev_integration_tests", "Catalog Name")
+dbutils.widgets.text("test_schema", "dbxmetagen_tests", "Test Schema")
 
 catalog_name = dbutils.widgets.get("catalog_name")
 test_schema = dbutils.widgets.get("test_schema")

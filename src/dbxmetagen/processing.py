@@ -2388,9 +2388,11 @@ def process_and_add_ddl(config: MetadataConfig, table_name: str) -> DataFrame:
         csv_path = getattr(config, "override_csv_path", "metadata_overrides.csv")
         print(f"[override] allow_manual_override=True, mode={config.mode}, csv_path='{csv_path}'")
         if column_df is not None:
-            column_df = override_metadata_from_csv(column_df, csv_path, config)
-        if table_df is not None:
-            table_df = override_metadata_from_csv(table_df, csv_path, config)
+            column_df = override_metadata_from_csv(column_df, csv_path, config, df_label="column_df")
+        # For comment mode, table_df override is applied INSIDE add_ddl_to_dfs
+        # after summarize_table_content so the override isn't destroyed.
+        if table_df is not None and config.mode != "comment":
+            table_df = override_metadata_from_csv(table_df, csv_path, config, df_label="table_df")
     else:
         print("[override] allow_manual_override=False, skipping overrides")
 
@@ -2467,6 +2469,11 @@ def add_ddl_to_dfs(config, table_df, column_df, table_name):
         if table_df is not None:
             summarized_table_df = summarize_table_content(table_df, config, table_name)
             summarized_table_df = split_name_for_df(summarized_table_df)
+            if config.allow_manual_override:
+                csv_path = getattr(config, "override_csv_path", "metadata_overrides.csv")
+                summarized_table_df = override_metadata_from_csv(
+                    summarized_table_df, csv_path, config, df_label="table_df"
+                )
         else:
             summarized_table_df = None
 

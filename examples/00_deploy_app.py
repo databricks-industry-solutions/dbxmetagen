@@ -62,10 +62,9 @@ print(f"Generated {output_path}")
 # MAGIC %md
 # MAGIC ## 3. Install Python dependencies
 # MAGIC
-# MAGIC The app's `requirements.txt` lists runtime dependencies.
-# MAGIC These will be installed inside the app container automatically,
-# MAGIC but the dbxmetagen wheel needs to be accessible. Install it into
-# MAGIC the repo so the app source includes it.
+# MAGIC Builds and installs the dbxmetagen package from the cloned repo source.
+# MAGIC Alternatively, download the pre-built wheel from the matching GitHub release
+# MAGIC and install via `%pip install /Volumes/.../dbxmetagen-x.y.z-py3-none-any.whl`.
 
 # COMMAND ----------
 # MAGIC %pip install -qqq -r ../requirements.txt ..
