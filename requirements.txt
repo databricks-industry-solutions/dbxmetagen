@@ -8,8 +8,11 @@ databricks-sdk==0.68.0
 openpyxl==3.1.5
 spacy==3.8.7
 presidio_analyzer==2.2.358
-presidio_anonymizer==2.2.358
-# Pre-download spaCy model to avoid runtime downloads
+# --- PI mode: spaCy model (only needed for deterministic PI detection) ---
+# Comment this line out if you do NOT use PI mode, or if you are in an
+# air-gapped environment. For air-gapped PI, install the model from a
+# Databricks Volume instead:
+#   pip install /Volumes/<catalog>/<schema>/<volume>/en_core_web_lg-3.8.0-py3-none-any.whl
 https://github.com/explosion/spacy-models/releases/download/en_core_web_lg-3.8.0/en_core_web_lg-3.8.0-py3-none-any.whl
 requests>=2.32.5
 deprecated>=1.2.13

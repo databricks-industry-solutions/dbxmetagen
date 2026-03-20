@@ -887,6 +887,7 @@ class EntityDiscoverer:
         ]
         self._property_roles = OntologyLoader.get_property_roles(ontology_config)
         self._edge_catalog_entries = OntologyLoader.get_edge_catalog(ontology_config)
+        self._bundle_geo_patterns = self._build_bundle_geo_patterns()
         self._edge_catalog = EdgeCatalog(self._edge_catalog_entries)
         self._entity_def_map: Dict[str, EntityDefinition] = {
             e.name: e for e in self.entity_definitions
@@ -899,6 +900,24 @@ class EntityDiscoverer:
             "column_ai_classifications": 0,
             "column_fallback": 0,
         }
+
+    def _build_bundle_geo_patterns(self) -> frozenset:
+        """Collect keywords + typical_attributes from Geographic entities in the bundle."""
+        geo_names = set()
+        for e in self.entity_definitions:
+            if e.name.lower() in ("geographic", "geocoordinate", "adminregion",
+                                  "postalcode", "timezone", "address", "location"):
+                geo_names.add(e.name)
+            elif e.parent and e.parent.lower() in ("geographic", "location"):
+                geo_names.add(e.name)
+        if not geo_names:
+            return frozenset()
+        patterns: set = set()
+        for e in self.entity_definitions:
+            if e.name in geo_names:
+                patterns.update(k.lower() for k in e.keywords)
+                patterns.update(a.lower() for a in e.typical_attributes)
+        return frozenset(patterns)
 
     # ------------------------------------------------------------------
     # LLM helpers
@@ -2635,29 +2654,46 @@ class OntologyBuilder:
             return 0
 
     def apply_entity_tags(self) -> int:
-        """Apply entity tags to UC tables and columns from discovered entities."""
+        """Apply entity tags to UC tables and columns from discovered entities.
+
+        Also writes an audit log to ``{schema}.entity_tag_audit_log`` for
+        compliance traceability.
+        """
+        from datetime import datetime as _dt
+
         min_conf = self._validation_cfg.get("min_entity_confidence", 0.5)
         tag_key = self.config.entity_tag_key
+        bundle_ver = self._get_bundle_version()
         tagged = 0
+        audit_rows: list = []
+        now = _dt.utcnow().isoformat()
 
         # Table-level tags
         try:
             table_ents = self.spark.sql(
                 f"""
-                SELECT entity_type, EXPLODE(source_tables) AS table_name
+                SELECT entity_type, confidence,
+                       COALESCE(attributes['discovery_method'], 'unknown') AS discovery_method,
+                       EXPLODE(source_tables) AS table_name
                 FROM {self.config.fully_qualified_entities}
                 WHERE COALESCE(attributes['granularity'], 'table') = 'table'
                   AND confidence >= {min_conf}
             """
             ).collect()
             for row in table_ents:
+                action = "failed"
                 try:
                     self.spark.sql(
                         f"ALTER TABLE {row.table_name} SET TAGS ('{tag_key}' = '{row.entity_type}')"
                     )
                     tagged += 1
+                    action = "applied"
                 except Exception as e:
                     logger.warning("Failed to tag table %s: %s", row.table_name, e)
+                audit_rows.append((
+                    now, row.table_name, None, tag_key, row.entity_type,
+                    float(row.confidence), bundle_ver, row.discovery_method, action,
+                ))
         except Exception as e:
             logger.warning("Could not read table-level entities for tagging: %s", e)
 
@@ -2665,7 +2701,9 @@ class OntologyBuilder:
         try:
             col_ents = self.spark.sql(
                 f"""
-                SELECT entity_type, source_tables[0] AS table_name,
+                SELECT entity_type, confidence,
+                       COALESCE(attributes['discovery_method'], 'unknown') AS discovery_method,
+                       source_tables[0] AS table_name,
                        EXPLODE(source_columns) AS col_name
                 FROM {self.config.fully_qualified_entities}
                 WHERE attributes['granularity'] = 'column'
@@ -2674,21 +2712,45 @@ class OntologyBuilder:
             """
             ).collect()
             for row in col_ents:
+                action = "failed"
                 try:
                     self.spark.sql(
                         f"ALTER TABLE {row.table_name} ALTER COLUMN {row.col_name} "
                         f"SET TAGS ('{tag_key}' = '{row.entity_type}')"
                     )
                     tagged += 1
+                    action = "applied"
                 except Exception as e:
                     logger.warning(
                         "Failed to tag column %s.%s: %s",
-                        row.table_name,
-                        row.col_name,
-                        e,
+                        row.table_name, row.col_name, e,
                     )
+                audit_rows.append((
+                    now, row.table_name, row.col_name, tag_key, row.entity_type,
+                    float(row.confidence), bundle_ver, row.discovery_method, action,
+                ))
         except Exception as e:
             logger.warning("Could not read column-level entities for tagging: %s", e)
+
+        # Write audit log
+        if audit_rows:
+            audit_tbl = f"{self.config.catalog_name}.{self.config.schema_name}.entity_tag_audit_log"
+            try:
+                self.spark.sql(f"""
+                    CREATE TABLE IF NOT EXISTS {audit_tbl} (
+                        timestamp STRING, table_name STRING, column_name STRING,
+                        tag_key STRING, tag_value STRING, confidence DOUBLE,
+                        bundle_version STRING, discovery_method STRING, action STRING
+                    ) USING DELTA
+                """)
+                cols = ["timestamp", "table_name", "column_name", "tag_key",
+                        "tag_value", "confidence", "bundle_version",
+                        "discovery_method", "action"]
+                audit_df = self.spark.createDataFrame(audit_rows, cols)
+                audit_df.write.mode("append").saveAsTable(audit_tbl)
+                logger.info("Wrote %d rows to %s", len(audit_rows), audit_tbl)
+            except Exception as e:
+                logger.warning("Failed to write tag audit log: %s", e)
 
         logger.info("Applied %d entity tags to UC objects", tagged)
         return tagged
@@ -2707,6 +2769,124 @@ class OntologyBuilder:
             ORDER BY entity_count DESC
         """
         )
+
+    def get_geographic_coverage_report(self) -> DataFrame:
+        """Column-level geographic classification completeness report.
+
+        Joins column_properties, entities, and column_knowledge_base to produce
+        a per-column view showing whether each column has been classified as
+        geographic, non_geographic, or remains unreviewed.
+        """
+        cp = self.config.fully_qualified_column_properties
+        ent = self.config.fully_qualified_entities
+        ckb = f"{self.config.catalog_name}.{self.config.schema_name}.{self.config.column_kb_table}"
+
+        return self.spark.sql(f"""
+            WITH all_cols AS (
+                SELECT DISTINCT table_name, column_name FROM {ckb}
+                WHERE table_name IS NOT NULL AND column_name IS NOT NULL
+            ),
+            cp_roles AS (
+                SELECT table_name, column_name, property_role, confidence
+                FROM {cp}
+            ),
+            geo_entities AS (
+                SELECT EXPLODE(source_columns) AS col_name,
+                       source_tables[0] AS table_name,
+                       entity_type AS geo_entity_subtype,
+                       confidence AS entity_confidence
+                FROM {ent}
+                WHERE attributes['granularity'] = 'column'
+                  AND (entity_type IN ('Geographic','Address','GeoCoordinate',
+                       'AdminRegion','PostalCode','Timezone','Location')
+                       OR LOWER(entity_type) LIKE '%geo%'
+                       OR LOWER(entity_type) LIKE '%location%')
+            )
+            SELECT
+                ac.table_name,
+                ac.column_name,
+                cp.property_role,
+                cp.confidence AS property_confidence,
+                ge.geo_entity_subtype,
+                ge.entity_confidence,
+                CASE
+                    WHEN cp.property_role = 'geographic' OR ge.geo_entity_subtype IS NOT NULL
+                        THEN 'geographic'
+                    WHEN cp.property_role IS NOT NULL
+                        THEN 'non_geographic'
+                    ELSE 'unreviewed'
+                END AS classification_status
+            FROM all_cols ac
+            LEFT JOIN cp_roles cp
+                ON ac.table_name = cp.table_name AND ac.column_name = cp.column_name
+            LEFT JOIN geo_entities ge
+                ON ac.table_name = ge.table_name AND ac.column_name = ge.col_name
+            ORDER BY classification_status, ac.table_name, ac.column_name
+        """)
+
+    def reconcile_geographic_classifications(self, dry_run: bool = True) -> DataFrame:
+        """Find columns where property_role and entity classification disagree on geographic status.
+
+        Args:
+            dry_run: If True (default), only report conflicts. If False, update
+                     column_properties.property_role to 'geographic' for columns
+                     bound to geographic entities.
+
+        Returns:
+            DataFrame of conflicting rows.
+        """
+        cp = self.config.fully_qualified_column_properties
+        ent = self.config.fully_qualified_entities
+
+        conflicts = self.spark.sql(f"""
+            WITH geo_bound AS (
+                SELECT EXPLODE(source_columns) AS col_name,
+                       source_tables[0] AS table_name,
+                       entity_type
+                FROM {ent}
+                WHERE attributes['granularity'] = 'column'
+                  AND (entity_type IN ('Geographic','Address','GeoCoordinate',
+                       'AdminRegion','PostalCode','Timezone','Location')
+                       OR LOWER(entity_type) LIKE '%geo%'
+                       OR LOWER(entity_type) LIKE '%location%')
+            )
+            SELECT cp.table_name, cp.column_name, cp.property_role,
+                   gb.entity_type AS geo_entity_type,
+                   CASE
+                       WHEN gb.entity_type IS NOT NULL AND cp.property_role != 'geographic'
+                           THEN 'entity_says_geo_but_role_disagrees'
+                       WHEN gb.entity_type IS NULL AND cp.property_role = 'geographic'
+                           THEN 'role_says_geo_but_no_entity'
+                   END AS conflict_type
+            FROM {cp} cp
+            LEFT JOIN geo_bound gb
+                ON cp.table_name = gb.table_name AND cp.column_name = gb.col_name
+            WHERE (gb.entity_type IS NOT NULL AND cp.property_role != 'geographic')
+               OR (gb.entity_type IS NULL AND cp.property_role = 'geographic')
+        """)
+
+        conflict_count = conflicts.count()
+        logger.info("Geographic reconciliation: %d conflicts found (dry_run=%s)",
+                     conflict_count, dry_run)
+
+        if not dry_run and conflict_count > 0:
+            fix_rows = conflicts.filter("conflict_type = 'entity_says_geo_but_role_disagrees'").collect()
+            updated = 0
+            for row in fix_rows:
+                try:
+                    self.spark.sql(f"""
+                        UPDATE {cp}
+                        SET property_role = 'geographic'
+                        WHERE table_name = '{row.table_name}'
+                          AND column_name = '{row.column_name}'
+                    """)
+                    updated += 1
+                except Exception as e:
+                    logger.warning("Failed to reconcile %s.%s: %s",
+                                   row.table_name, row.column_name, e)
+            logger.info("Reconciliation updated %d column property roles to 'geographic'", updated)
+
+        return conflicts
 
     def discover_inter_entity_relationships(self) -> Dict[str, Any]:
         """Discover typed relationships between entities using declared relationships.
@@ -3239,8 +3419,8 @@ class OntologyBuilder:
                 index[attr.lower()] = (prop.role, prop.name, prop.edge, prop.target_entity)
         return index
 
-    @staticmethod
     def _heuristic_classify(
+        self,
         col_lower: str,
         dtype: str,
         is_pk_column: bool,
@@ -3248,11 +3428,13 @@ class OntologyBuilder:
         cls_type: str,
     ) -> Tuple[str, str, float]:
         """Heuristic fallback classification. Returns (role, discovery_method, confidence)."""
-        _GEO_PATTERNS = frozenset({
+        _GEO_PATTERNS_DEFAULT = frozenset({
             "country", "country_code", "state", "state_code", "city", "postal_code",
             "zip_code", "zipcode", "zip", "latitude", "longitude", "lat", "lon",
             "geo_region", "region", "county", "province", "address",
         })
+        _bundle_geo = getattr(self.discoverer, "_bundle_geo_patterns", frozenset())
+        _GEO_PATTERNS = _bundle_geo or _GEO_PATTERNS_DEFAULT
         _HIERARCHY_PATTERNS = frozenset({
             "year", "quarter", "month", "week", "day", "fiscal_year", "fiscal_quarter",
             "product_category", "product_subcategory", "category", "subcategory",
@@ -3279,10 +3461,18 @@ class OntologyBuilder:
             return "pii", "heuristic_strong", 0.85
         if dtype == "BOOLEAN" or col_lower.startswith(("is_", "has_", "flag_")):
             return "dimension", "heuristic_weak", 0.60
-        if re.search(r'_(code|icd|cpt|loinc|ndc|drg)$', col_lower) or col_lower.endswith("_code"):
-            return "dimension", "heuristic_strong", 0.75
-        if col_lower in _GEO_PATTERNS or col_lower.startswith("geo_"):
-            return "geographic", "heuristic_strong", 0.75
+        _is_geo = col_lower in _GEO_PATTERNS or col_lower.startswith("geo_")
+        _is_code = re.search(r'_(code|icd|cpt|loinc|ndc|drg)$', col_lower) or col_lower.endswith("_code")
+        if _bundle_geo:
+            if _is_geo:
+                return "geographic", "heuristic_strong", 0.75
+            if _is_code:
+                return "dimension", "heuristic_strong", 0.75
+        else:
+            if _is_code:
+                return "dimension", "heuristic_strong", 0.75
+            if _is_geo:
+                return "geographic", "heuristic_strong", 0.75
         if col_lower in _SYSTEM_PATTERNS or col_lower.startswith("etl_"):
             return "audit", "heuristic_strong", 0.80
         if dtype in ("DATE", "TIMESTAMP", "TIMESTAMP_NTZ"):

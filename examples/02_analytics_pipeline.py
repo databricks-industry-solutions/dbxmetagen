@@ -9,7 +9,7 @@
 # MAGIC Run steps sequentially -- each depends on outputs from the previous step.
 
 # COMMAND ----------
-# MAGIC %pip install -qqq dbxmetagen
+# MAGIC %pip install -qqq git+https://github.com/databricks-industry-solutions/dbxmetagen.git@main
 # MAGIC dbutils.library.restartPython()
 
 # COMMAND ----------

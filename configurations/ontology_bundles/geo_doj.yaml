@@ -15,9 +15,52 @@ ontology:
   name: "DOJ Geographic Filter Ontology"
   description: "Classifies geographic columns into sub-types for DOJ location-based filtering"
 
+  property_roles:
+    primary_key:
+      description: "Surrogate or technical row identifier"
+      maps_to_kind: "data_property"
+      semantic_role: "identifier"
+    measure:
+      description: "Numeric value to aggregate"
+      maps_to_kind: "data_property"
+      semantic_role: "metric"
+    dimension:
+      description: "Categorical filter or grouping attribute"
+      maps_to_kind: "data_property"
+      semantic_role: "dimension"
+    temporal:
+      description: "Date or timestamp of event"
+      maps_to_kind: "data_property"
+      semantic_role: "temporal"
+    geographic:
+      description: "Location-based dimension (country, city, region, coordinates)"
+      maps_to_kind: "data_property"
+      semantic_role: "geographic"
+    object_property:
+      description: "FK or reference to another entity's identifier"
+      maps_to_kind: "object_property"
+      semantic_role: "relationship"
+    composite_component:
+      description: "Part of a multi-column value object"
+      maps_to_kind: "data_property"
+      semantic_role: "component"
+    label:
+      description: "Human-readable name or title"
+      maps_to_kind: "data_property"
+      semantic_role: "label"
+    pii:
+      description: "Personally identifiable information"
+      maps_to_kind: "data_property"
+      semantic_role: "pii"
+      governance_flag: true
+    audit:
+      description: "System-generated provenance column"
+      maps_to_kind: "data_property"
+      semantic_role: "provenance"
+
   entities:
     auto_discover: true
-    discovery_confidence_threshold: 0.35
+    discovery_confidence_threshold: 0.55
 
     definitions:
       Geographic:
@@ -280,7 +323,7 @@ ontology:
     definitions: []
 
   validation:
-    min_entity_confidence: 0.4
+    min_entity_confidence: 0.6
     max_entities_per_table: 5
     ai_validation_enabled: true
     classification_model: "databricks-claude-sonnet-4-6"

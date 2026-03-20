@@ -28,14 +28,14 @@ Install the package on any Databricks cluster and run from a notebook. No CLI, A
 In a Databricks notebook cell:
 
 ```python
-%pip install -qqq -r ../requirements.txt ..
+%pip install -qqq git+https://github.com/databricks-industry-solutions/dbxmetagen.git@main
 dbutils.library.restartPython()
 ```
 
-Or install directly from GitHub:
+Or if you cloned the repo, install from local source:
 
 ```python
-%pip install -qqq git+https://github.com/databricks-industry-solutions/dbxmetagen.git@main
+%pip install -qqq -r ../requirements.txt ..
 dbutils.library.restartPython()
 ```
 
@@ -105,22 +105,6 @@ For the web dashboard, batch jobs, Lakebase integration, and the full analytics 
    databricks bundle run metadata_generator_job -t dev -p <profile> --params table_names='catalog.schema.*',mode=domain
    databricks bundle run full_analytics_pipeline_job -t dev -p <profile>
    ```
-
-## Deploy the App (no CLI / no DABs)
-
-If you cloned this repo into your Databricks workspace and want the dashboard
-without running `deploy.sh` or installing the Databricks CLI locally:
-
-1. Open `examples/00_deploy_app.py` in a notebook
-2. Fill in the widgets (catalog, schema, warehouse ID)
-3. Run all cells -- this generates `app.yaml` and deploys the app
-
-The pre-built frontend is included in the repo, so no Node.js is required.
-The notebook installs dbxmetagen from source (`%pip install ..`). Alternatively,
-download the wheel from the [GitHub Releases](../../releases) page and install
-from a Volume: `%pip install /Volumes/<catalog>/<schema>/<volume>/dbxmetagen-<version>-py3-none-any.whl`.
-
-For the Python library only (no app), see the Quickstart above.
 
 ## Disclaimer
 
@@ -285,7 +269,7 @@ Settings are in `variables.yml`. Key options:
 | `mode` | `comment` | Generation mode: `comment`, `pi`, or `domain` |
 | `apply_ddl` | `false` | Apply generated metadata directly to Unity Catalog |
 | `allow_data` | `true` | Set `false` to prevent data from being sent to LLMs |
-| `include_deterministic_pi` | `true` | Enable SpaCy/Presidio for rule-based PI detection |
+| `include_deterministic_pi` | `true` | Enable SpaCy/Presidio for rule-based PI detection. Requires the `en_core_web_lg` spaCy model (installed via `requirements.txt` or `pip install "dbxmetagen[pi]"`). Air-gapped users can install the model from a Volume -- see `requirements.txt` for details. |
 | `federation_mode` | `false` | Enable for federated catalog sources (Redshift, Snowflake) |
 
 For full reference, see [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
@@ -363,6 +347,8 @@ The app is in `apps/dbxmetagen-app/` and provides a FastAPI backend with a React
 ## Testing
 
 ```bash
+poetry install              # core deps (comment/domain modes)
+poetry install --extras pi  # also install the spaCy model for PI dev
 pytest -v
 
 # Build and test wheel locally
@@ -389,7 +375,6 @@ Requires DBR 17.3+ (ML runtime recommended). Serverless runtimes are supported f
 | openpyxl | MIT | https://foss.heptapod.net/openpyxl/openpyxl |
 | spacy | MIT | https://spacy.io |
 | presidio-analyzer | MIT | https://github.com/microsoft/presidio |
-| presidio-anonymizer | MIT | https://github.com/microsoft/presidio |
 | fastapi | MIT | https://github.com/tiangolo/fastapi |
 | langgraph | MIT | https://github.com/langchain-ai/langgraph |
 | pyyaml | MIT | https://pypi.org/project/PyYAML/ |

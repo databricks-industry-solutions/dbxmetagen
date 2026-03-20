@@ -6,7 +6,7 @@
 # MAGIC and ontology validation. Run after 02_analytics_pipeline.
 
 # COMMAND ----------
-# MAGIC %pip install -qqq dbxmetagen
+# MAGIC %pip install -qqq git+https://github.com/databricks-industry-solutions/dbxmetagen.git@main
 # MAGIC dbutils.library.restartPython()
 
 # COMMAND ----------
