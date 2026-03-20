@@ -16,7 +16,7 @@ repos:
       - id: rebuild-wheel
         name: Rebuild Python wheel
         language: system
-        entry: bash -c 'poetry build -f wheel -q && git add dist/*.whl'
+        entry: bash -c 'poetry build -f wheel -q && git add -f dist/*.whl'
         files: (^src/|^pyproject\.toml)
         pass_filenames: false
         stages: [pre-commit]

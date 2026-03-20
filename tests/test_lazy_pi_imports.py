@@ -9,11 +9,6 @@ from unittest.mock import patch
 import pytest
 
 
-def _block_modules(*names):
-    """Return a dict suitable for patching sys.modules to simulate missing packages."""
-    return {n: None for n in names}
-
-
 class TestLazyImportModuleLoads:
     """Importing deterministic_pi must succeed even when spacy/presidio are absent."""
 

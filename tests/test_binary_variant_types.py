@@ -7,22 +7,6 @@ to string format for LLM processing.
 Run with: pytest tests/test_binary_variant_types.py -v
 """
 
-"""
-Integration tests for BINARY and VARIANT type handling.
-
-These tests verify that BINARY and VARIANT columns are correctly converted
-to string format for LLM processing.
-
-Note: These tests require PySpark and should be run separately from the main
-test suite to avoid SparkContext conflicts.
-
-Run these tests with:
-    pytest tests/test_binary_variant_types.py -v
-    
-To skip in main test runs:
-    pytest tests/ -m "not integration"
-"""
-
 import pytest
 
 from pyspark.sql import DataFrame

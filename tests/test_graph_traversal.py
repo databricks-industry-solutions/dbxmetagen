@@ -22,11 +22,22 @@ APP_DIR = os.path.join(os.path.dirname(__file__), "..", "apps", "dbxmetagen-app"
 
 _MOCK_MODULES = [
     "fastapi", "fastapi.responses", "fastapi.staticfiles", "fastapi.middleware", "fastapi.middleware.cors",
-    "uvicorn", "cachetools", "databricks.sdk", "databricks",
+    "starlette", "starlette.middleware", "starlette.middleware.base", "starlette.requests", "starlette.responses",
+    "sqlalchemy", "sqlalchemy.orm",
+    "uvicorn", "cachetools", "databricks.sdk", "databricks", "databricks.sdk.service", "databricks.sdk.service.sql",
     "langchain_core", "langchain_core.tools", "langchain_core.messages",
-    "langchain_databricks", "langgraph", "langgraph.graph", "langgraph.graph.message",
+    "langchain_databricks", "langchain_community", "langchain_community.chat_models",
+    "langgraph", "langgraph.graph", "langgraph.graph.message",
     "langgraph.prebuilt", "requests", "pydantic",
 ]
+
+
+class _AutoMockModule(types.ModuleType):
+    """Module stub that returns MagicMock for any missing attribute."""
+    def __getattr__(self, name):
+        mock = MagicMock()
+        setattr(self, name, mock)
+        return mock
 
 
 def _install_mock_modules():
@@ -35,36 +46,32 @@ def _install_mock_modules():
 
     for mod_name in _MOCK_MODULES:
         if mod_name not in sys.modules:
-            mod = types.ModuleType(mod_name)
+            mod = _AutoMockModule(mod_name)
             if any(m.startswith(mod_name + ".") for m in _MOCK_MODULES):
                 mod.__path__ = []
             sys.modules[mod_name] = mod
 
+    # Specific overrides for behaviour the tests or app code depend on
     if "fastapi" not in _already_loaded:
         fm = sys.modules["fastapi"]
-        fm.FastAPI = MagicMock()
         fm.HTTPException = type("HTTPException", (Exception,), {"__init__": lambda self, *a, **kw: None})
-        fm.Query = MagicMock()
-        fm.UploadFile = MagicMock()
-        fm.File = MagicMock()
-        fm.Form = MagicMock()
-        sys.modules["fastapi.staticfiles"].StaticFiles = MagicMock()
-        sys.modules["fastapi.middleware.cors"].CORSMiddleware = MagicMock()
-        sys.modules["fastapi.responses"].StreamingResponse = MagicMock()
+
+    if "starlette.middleware.base" not in _already_loaded:
+        sys.modules["starlette.middleware.base"].BaseHTTPMiddleware = type(
+            "BaseHTTPMiddleware", (), {"__init__": lambda self, *a, **kw: None}
+        )
+
+    if "sqlalchemy.orm" not in _already_loaded:
+        sys.modules["sqlalchemy.orm"].DeclarativeBase = type("DeclarativeBase", (), {})
 
     if "cachetools" not in _already_loaded:
-        cm = sys.modules["cachetools"]
-        cm.TTLCache = MagicMock()
-        cm.cached = lambda *a, **kw: (lambda fn: fn)
+        sys.modules["cachetools"].cached = lambda *a, **kw: (lambda fn: fn)
 
     if "pydantic" not in _already_loaded:
         class _BaseModel:
             def __init_subclass__(cls, **kw):
                 super().__init_subclass__(**kw)
         sys.modules["pydantic"].BaseModel = _BaseModel
-
-    if "databricks.sdk" not in _already_loaded:
-        sys.modules["databricks.sdk"].WorkspaceClient = MagicMock()
 
     if "langchain_core.tools" not in _already_loaded:
         def _tool(fn=None, **kw):

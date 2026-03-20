@@ -21,6 +21,8 @@
 
 ## Quickstart (5 minutes)
 
+**Prerequisites:** A Databricks workspace with Unity Catalog enabled and a Foundation Model endpoint (e.g. `databricks-claude-sonnet-4-6`).
+
 Install the package on any Databricks cluster and run from a notebook. No CLI, Asset Bundles, or repo clone needed.
 
 ### 1. Install
@@ -228,28 +230,7 @@ Core functions exported by the `dbxmetagen` package:
 
 ## Notebooks
 
-| Notebook | Purpose |
-|----------|---------|
-| `generate_metadata.py` | Primary entry point: comment, PI, and domain generation |
-| `sync_reviewed_ddl.py` | Re-apply reviewed/edited metadata from TSV or Excel |
-| `build_knowledge_base.py` | Build table knowledge base from generation log |
-| `build_column_kb.py` | Build column-level knowledge base |
-| `build_schema_kb.py` | Build schema-level knowledge base |
-| `extract_extended_metadata.py` | Extract system metadata via DESCRIBE EXTENDED |
-| `build_knowledge_graph.py` | Build graph nodes and edges |
-| `generate_embeddings.py` | Generate node embeddings |
-| `build_similarity_edges.py` | Build similarity edges from embeddings |
-| `similarity_analysis.py` | Similarity analysis and cross-domain detection |
-| `build_ontology.py` | Discover and store ontology entities |
-| `validate_ontology.py` | Validate ontology entities |
-| `run_profiling.py` | Profile tables and columns |
-| `compute_data_quality.py` | Compute data quality scores |
-| `cluster_analysis.py` | K-means clustering with multi-phase optimization |
-| `update_graph_ontology.py` | Update graph with ontology edges |
-| `update_graph_quality.py` | Update graph with quality scores |
-| `final_analysis.py` | Aggregate final analysis results |
-| `predict_foreign_keys.py` | FK prediction using column similarity and AI judgment |
-| `sync_graph_to_lakebase.py` | Sync graph data to Lakebase for the dashboard |
+All notebooks live in `notebooks/`. The primary entry point is `generate_metadata.py` (used by all DAB jobs for comment, PI, and domain generation). Analytics notebooks (KB, graph, profiling, ontology, FK prediction, etc.) are orchestrated by the DAB pipeline jobs listed below.
 
 ## Configuration
 
@@ -265,11 +246,11 @@ Settings are in `variables.yml`. Key options:
 |---------|---------|-------------|
 | `catalog_name` | (required) | Unity Catalog name |
 | `schema_name` | `metadata_results` | Output schema |
-| `model` | `databricks-claude-sonnet-4-5` | LLM endpoint for generation |
+| `model` | `databricks-claude-sonnet-4-6` | LLM endpoint for generation |
 | `mode` | `comment` | Generation mode: `comment`, `pi`, or `domain` |
 | `apply_ddl` | `false` | Apply generated metadata directly to Unity Catalog |
 | `allow_data` | `true` | Set `false` to prevent data from being sent to LLMs |
-| `include_deterministic_pi` | `true` | Enable SpaCy/Presidio for rule-based PI detection. Requires the `en_core_web_lg` spaCy model (installed via `requirements.txt` or `pip install "dbxmetagen[pi]"`). Air-gapped users can install the model from a Volume -- see `requirements.txt` for details. |
+| `include_deterministic_pi` | `true` | Enable SpaCy/Presidio for rule-based PI detection (requires `en_core_web_lg` model -- see [Configuration docs](docs/CONFIGURATION.md)) |
 | `federation_mode` | `false` | Enable for federated catalog sources (Redshift, Snowflake) |
 
 For full reference, see [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
@@ -393,7 +374,3 @@ This project is licensed under the Databricks DB License.
 ## Acknowledgements
 
 Thanks to James McCall, Diego Malaver, Aaron Zavora, and Charles Linville for discussions around dbxmetagen.
-
-For detailed configuration options, see [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
-
-For user workflows and team roles, see [docs/PERSONAS_AND_WORKFLOWS.md](docs/PERSONAS_AND_WORKFLOWS.md).
