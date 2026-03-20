@@ -1,2 +1,4 @@
 catalog,schema,table,column,comment,classification,type
 ,,,ssn,,pi,pii
+,,tpn_orders,tpn_order_amount,"Sales data, including returns",,
+,,tpn_orders,,"Order tracking, including ""returns"" and refunds",,

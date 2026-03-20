@@ -67,7 +67,37 @@ def override_metadata_from_csv(
         )
         return df
 
-    csv_df = pd.read_csv(resolved, dtype=str, keep_default_na=False)
+    import csv as _csv
+
+    # Pre-validate field counts with csv.reader (pandas silently shifts data
+    # when a row has more fields than the header -- no error, no warning).
+    with open(resolved, newline="") as _fh:
+        reader = _csv.reader(_fh, skipinitialspace=True)
+        header_row = next(reader)
+        expected_n = len(header_row)
+        for line_no, row in enumerate(reader, start=2):
+            if len(row) != expected_n:
+                raise ValueError(
+                    f"Override CSV '{resolved}' line {line_no} has {len(row)} fields "
+                    f"but the header has {expected_n}. This usually means a value "
+                    "contains a comma without being wrapped in double quotes. "
+                    'Wrap the value like: "Sales data, including returns"'
+                )
+
+    csv_df = pd.read_csv(resolved, dtype=str, keep_default_na=False, skipinitialspace=True)
+
+    _KNOWN_COLUMNS = {
+        "catalog", "schema", "table", "column",
+        "comment", "classification", "type",
+        "domain", "subdomain",
+    }
+    unknown_cols = set(csv_df.columns) - _KNOWN_COLUMNS
+    if unknown_cols:
+        logger.warning(
+            "Override CSV has unrecognized columns %s -- they will be ignored. "
+            "Expected columns: %s", unknown_cols, sorted(_KNOWN_COLUMNS),
+        )
+
     csv_df = csv_df.replace("", None)
 
     csv_dict = csv_df.to_dict("records")

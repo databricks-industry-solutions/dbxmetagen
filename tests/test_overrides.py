@@ -591,8 +591,8 @@ class TestOverrideMetadataFromCSV:
             os.unlink(tmp)
 
     @patch("dbxmetagen.overrides.apply_overrides_with_loop")
-    def test_blank_cells_parsed_as_none_not_nan(self, mock_apply):
-        """Blank CSV cells must become None, not the string 'nan'."""
+    def test_blank_cells_parsed_as_blank_not_string_nan(self, mock_apply):
+        """Blank CSV cells must be treated as blank (None or NaN), never string 'nan'."""
         mock_apply.return_value = _mock_df()
         df = _mock_df()
         config = _make_config(mode="pi")
@@ -614,11 +614,11 @@ class TestOverrideMetadataFromCSV:
             override_metadata_from_csv(df, tmp, config)
             csv_dict = mock_apply.call_args.args[1]
             for row in csv_dict:
-                assert row["catalog"] is None, f"Expected None, got {row['catalog']!r}"
-                assert row["schema"] is None, f"Expected None, got {row['schema']!r}"
-                assert row["table"] is None, f"Expected None, got {row['table']!r}"
+                assert _is_blank(row["catalog"]), f"Expected blank, got {row['catalog']!r}"
+                assert _is_blank(row["schema"]), f"Expected blank, got {row['schema']!r}"
+                assert _is_blank(row["table"]), f"Expected blank, got {row['table']!r}"
             assert csv_dict[0]["column"] == "ssn"
-            assert csv_dict[0]["comment"] is None
+            assert _is_blank(csv_dict[0]["comment"])
             assert csv_dict[1]["column"] == "tpn"
             assert csv_dict[1]["comment"] == "some"
         finally:
@@ -648,7 +648,7 @@ class TestOverrideMetadataFromCSV:
             row = mock_apply.call_args.args[1][0]
             assert row["catalog"] == "nan", f"Literal 'nan' should be preserved, got {row['catalog']!r}"
             assert row["schema"] == "None", f"Literal 'None' should be preserved, got {row['schema']!r}"
-            assert row["table"] is None
+            assert _is_blank(row["table"])
             assert row["column"] == "nan_col"
             assert row["comment"] == "None"
         finally:
@@ -901,3 +901,134 @@ class TestAddDdlToDfsOverrideOrdering:
         ):
             pm.add_ddl_to_dfs(config, table_df, column_df, "cat.sch.my_table")
             mock_ov.assert_not_called()
+
+
+# ===========================================================================
+# TestCSVParsingRobustness
+# ===========================================================================
+
+class TestCSVParsingRobustness:
+    """Test that override CSV parsing handles commas, quotes, unicode, and
+    misformed rows correctly after the skipinitialspace + validation fixes."""
+
+    HEADER = "catalog,schema,table,column,comment,classification,type\n"
+
+    def _write_csv(self, *data_lines):
+        f = tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False)
+        f.write(self.HEADER)
+        for line in data_lines:
+            f.write(line + "\n")
+        f.close()
+        return f.name
+
+    def _run_csv(self, tmp, mode="comment"):
+        """Call override_metadata_from_csv with a mock Spark, return the csv_dict
+        passed to apply_overrides_with_loop."""
+        df = _mock_df()
+        config = _make_config(mode=mode)
+        with patch("dbxmetagen.overrides.apply_overrides_with_loop") as mock_apply:
+            mock_apply.return_value = df
+            mock_spark_df = MagicMock()
+            mock_spark_df.count.return_value = 1
+            mock_spark = MagicMock()
+            mock_spark.createDataFrame.return_value = mock_spark_df
+            pyspark_sql = sys.modules["pyspark.sql"]
+            pyspark_sql.SparkSession.builder.getOrCreate.return_value = mock_spark
+
+            override_metadata_from_csv(df, tmp, config)
+            return mock_apply.call_args.args[1]
+
+    # --- Commas ---
+
+    def test_comment_with_comma_quoted(self):
+        tmp = self._write_csv(',,,ssn,"He said hello, goodbye",,')
+        try:
+            rows = self._run_csv(tmp)
+            assert rows[0]["comment"] == "He said hello, goodbye"
+        finally:
+            os.unlink(tmp)
+
+    def test_comment_with_comma_space_before_quote(self):
+        """Leading space + quoted field should parse correctly with skipinitialspace."""
+        tmp = self._write_csv(',,,ssn, "Sales data, including returns",,')
+        try:
+            rows = self._run_csv(tmp)
+            assert rows[0]["comment"] == "Sales data, including returns"
+        finally:
+            os.unlink(tmp)
+
+    # --- Quotes ---
+
+    def test_comment_with_embedded_double_quotes(self):
+        tmp = self._write_csv(',,,ssn,"He said ""hello"" to me",,')
+        try:
+            rows = self._run_csv(tmp)
+            assert rows[0]["comment"] == 'He said "hello" to me'
+        finally:
+            os.unlink(tmp)
+
+    def test_comment_with_single_quotes(self):
+        tmp = self._write_csv(",,,ssn,it's a test,,")
+        try:
+            rows = self._run_csv(tmp)
+            assert rows[0]["comment"] == "it's a test"
+        finally:
+            os.unlink(tmp)
+
+    # --- Special characters ---
+
+    def test_comment_with_parentheses_and_semicolons(self):
+        tmp = self._write_csv(",,,ssn,(a; b),,")
+        try:
+            rows = self._run_csv(tmp)
+            assert rows[0]["comment"] == "(a; b)"
+        finally:
+            os.unlink(tmp)
+
+    def test_unicode_characters_in_comment(self):
+        tmp = self._write_csv(",,,name,Nom complet de l'utilisateur,,")
+        try:
+            rows = self._run_csv(tmp)
+            assert "complet" in rows[0]["comment"]
+        finally:
+            os.unlink(tmp)
+
+    # --- Table-level comment ---
+
+    def test_table_level_comment_with_comma(self):
+        tmp = self._write_csv(',,orders,,"Order tracking, including returns",,')
+        try:
+            rows = self._run_csv(tmp)
+            assert rows[0]["comment"] == "Order tracking, including returns"
+            assert _is_blank(rows[0]["column"])
+            assert rows[0]["table"] == "orders"
+        finally:
+            os.unlink(tmp)
+
+    # --- Misparse detection ---
+
+    def test_unquoted_comma_raises(self):
+        """An unquoted comma that creates extra columns should raise ValueError."""
+        f = tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False)
+        f.write(self.HEADER)
+        # 8 fields instead of 7 -- the unquoted comma in comment splits it
+        f.write(",,,ssn,hello, world,,\n")
+        f.close()
+        try:
+            with pytest.raises(ValueError, match="fields"):
+                self._run_csv(f.name)
+        finally:
+            os.unlink(f.name)
+
+    def test_unknown_column_does_not_raise(self):
+        """Extra known-ish columns (like domain) should not raise."""
+        f = tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False)
+        f.write("catalog,schema,table,column,comment,classification,type,domain\n")
+        f.write(",,,ssn,A comment,,,finance\n")
+        f.close()
+        try:
+            rows = self._run_csv(f.name)
+            assert rows[0]["comment"] == "A comment"
+            assert rows[0]["domain"] == "finance"
+        finally:
+            os.unlink(f.name)
