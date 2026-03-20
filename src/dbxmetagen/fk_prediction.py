@@ -27,18 +27,19 @@ class FKPredictionConfig:
     ontology_entities_table: str = "ontology_entities"
     ontology_relationships_table: str = "ontology_relationships"
     predictions_table: str = "fk_predictions"
-    column_similarity_threshold: float = 0.75
-    table_similarity_threshold: float = 0.7  # max table similarity (exclude near-duplicate tables)
+    column_similarity_threshold: float = 0.85
+    table_similarity_threshold: float = 0.9  # max table similarity (exclude near-duplicate tables)
     sample_size: int = 5
     confidence_threshold: float = 0.7
     model_endpoint: str = "databricks-gpt-oss-120b"
     apply_ddl: bool = False
     dry_run: bool = False
     ontology_match_bonus_weight: float = 0.15
-    rule_score_min_for_ai: float = 0.5
+    rule_score_min_for_ai: float = 0.65
     incremental: bool = True
     max_candidates_per_table_pair: int = 10
     cardinality_sample_rows: int = 100000
+    max_ai_candidates: int = 500
 
     def fq(self, table: str) -> str:
         return f"{self.catalog_name}.{self.schema_name}.{table}"
@@ -711,6 +712,14 @@ class FKPredictor:
         model = self.config.model_endpoint
 
         sql = f"""
+        WITH kb_dedup AS (
+            SELECT column_id, comment,
+                   ROW_NUMBER() OVER (PARTITION BY column_id ORDER BY column_id) AS _kb_rn
+            FROM {col_kb}
+        ),
+        kb AS (
+            SELECT column_id, comment FROM kb_dedup WHERE _kb_rn = 1
+        )
         SELECT s.*,
             kb_a.comment AS comment_a, kb_b.comment AS comment_b,
             AI_QUERY(
@@ -731,8 +740,8 @@ class FKPredictor:
                 )
             ) AS ai_raw
         FROM fk_scored s
-        LEFT JOIN {col_kb} kb_a ON s.col_a = kb_a.column_id
-        LEFT JOIN {col_kb} kb_b ON s.col_b = kb_b.column_id
+        LEFT JOIN kb kb_a ON s.col_a = kb_a.column_id
+        LEFT JOIN kb kb_b ON s.col_b = kb_b.column_id
         WHERE s.rule_score >= {self.config.rule_score_min_for_ai}
         """
         schema = StructType(
@@ -914,6 +923,10 @@ class FKPredictor:
         high_conf = df.filter(
             F.col("ai_confidence") >= self.config.confidence_threshold
         )
+        # Dedup by (col_a, col_b) keeping highest confidence
+        w = Window.partitionBy("col_a", "col_b").orderBy(F.col("ai_confidence").desc())
+        high_conf = high_conf.withColumn("_rn", F.row_number().over(w)) \
+            .filter(F.col("_rn") == 1).drop("_rn")
         edges = high_conf.select(
             F.col("col_a").alias("src"),
             F.col("col_b").alias("dst"),
@@ -1060,6 +1073,19 @@ class FKPredictor:
         min_rule = self.config.rule_score_min_for_ai
         ai_eligible = candidates.filter(F.col("rule_score") >= min_rule).count()
 
+        # Cap AI candidates to control cost
+        max_ai = self.config.max_ai_candidates
+        if ai_eligible > max_ai:
+            logger.info("Capping AI candidates from %d to %d (top by rule_score)", ai_eligible, max_ai)
+            w = Window.orderBy(F.col("rule_score").desc())
+            candidates = candidates.withColumn("_ai_rn", F.row_number().over(w))
+            below_gate = candidates.filter(F.col("rule_score") < min_rule)
+            above_gate = candidates.filter(
+                (F.col("rule_score") >= min_rule) & (F.col("_ai_rn") <= max_ai)
+            )
+            candidates = above_gate.unionByName(below_gate).drop("_ai_rn")
+            ai_eligible = max_ai
+
         if self.config.dry_run:
             total = candidates.count()
             logger.info(
@@ -1111,8 +1137,8 @@ def predict_foreign_keys(
     spark: SparkSession,
     catalog_name: str,
     schema_name: str,
-    column_similarity_threshold: float = 0.75,
-    table_similarity_threshold: float = 0.75,
+    column_similarity_threshold: float = 0.85,
+    table_similarity_threshold: float = 0.9,
     confidence_threshold: float = 0.7,
     sample_size: int = 5,
     model_endpoint: str = "databricks-gpt-oss-120b",

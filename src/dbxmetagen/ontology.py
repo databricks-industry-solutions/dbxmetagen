@@ -590,6 +590,7 @@ def resolve_bundle_path(bundle_name: str) -> str:
     try:
         cwd = os.getcwd()
         candidates.append(os.path.join(cwd, BUNDLE_DIR, filename))
+        candidates.append(os.path.join(cwd, "..", BUNDLE_DIR, filename))
     except Exception:
         pass
 
@@ -3737,6 +3738,7 @@ class OntologyBuilder:
         """)
         logger.info("Stored discovery diff report %s", report_id)
 
+    def run(self, apply_tags=False):
         """Execute the ontology building pipeline.
 
         Args:

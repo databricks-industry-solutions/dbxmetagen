@@ -17,9 +17,9 @@ resources:
         - name: schema_name
           default: ${var.schema_name}
         - name: column_similarity_threshold
-          default: "0.65"
+          default: "0.85"
         - name: table_similarity_threshold
-          default: "0.75"
+          default: "0.9"
         - name: confidence_threshold
           default: "0.7"
         - name: sample_size
