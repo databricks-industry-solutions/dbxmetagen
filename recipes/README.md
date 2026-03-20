@@ -6,12 +6,14 @@ from another project.
 ## Usage
 
 1. Copy the recipe YAML(s) you need into your project's `resources/` folder
-2. Define the required variables in your `databricks.yml`:
+2. Download the wheel from [GitHub Releases](../../releases) and upload to a Volume,
+   or build locally with `poetry build` and upload `dist/*.whl`
+3. Define the required variables in your `databricks.yml`:
 
 ```yaml
 variables:
   dbxmetagen_wheel:
-    default: "/Volumes/my_catalog/my_schema/dbxmetagen/dbxmetagen-0.5.3-py3-none-any.whl"
+    default: "/Volumes/my_catalog/my_schema/dbxmetagen/dbxmetagen-<version>-py3-none-any.whl"
   dbxmetagen_notebooks:
     default: "/Workspace/Shared/dbxmetagen"
   catalog_name:
@@ -22,7 +24,7 @@ variables:
     default: "i3.xlarge"
 ```
 
-3. Run `databricks bundle deploy` and `databricks bundle run <job_name>`
+4. Run `databricks bundle deploy` and `databricks bundle run <job_name>`
 
 ## Available Recipes
 

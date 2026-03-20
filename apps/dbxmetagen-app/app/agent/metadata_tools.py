@@ -168,40 +168,49 @@ def execute_metadata_sql(query: str) -> str:
 
 @tool
 def get_table_summary(table_name: str) -> str:
-    """Get a comprehensive summary of a specific table including columns, domain, entity types, FK relationships, and quality.
+    """Get a comprehensive summary of a table: metadata, top columns, FK relationships, and entity types in a single call.
+
+    This tool is expensive -- only use it when you need a full picture of ONE table.
+    For simple lookups, prefer execute_metadata_sql.
 
     Args:
         table_name: Fully qualified table name (catalog.schema.table) or short name.
     """
-    fq_prefix = f"{CATALOG}.{SCHEMA}."
-    try:
-        tbl = _execute_query(f"""
+    short = table_name.split(".")[-1]
+    fq = f"{CATALOG}.{SCHEMA}."
+    query = f"""
+        WITH tbl AS (
             SELECT table_name, comment, domain, subdomain, has_pii, has_phi, row_count
-            FROM {fq_prefix}table_knowledge_base
-            WHERE table_name LIKE '%{table_name.split('.')[-1]}%' LIMIT 1
-        """)
-        cols = _execute_query(f"""
+            FROM {fq}table_knowledge_base WHERE table_name LIKE '%{short}%' LIMIT 1
+        ),
+        cols AS (
             SELECT column_name, data_type, comment, classification
-            FROM {fq_prefix}column_knowledge_base
-            WHERE table_name LIKE '%{table_name.split('.')[-1]}%'
-        """)
-        fks = _execute_query(f"""
+            FROM {fq}column_knowledge_base WHERE table_name LIKE '%{short}%' LIMIT 30
+        ),
+        fks AS (
             SELECT src_table, src_column, dst_table, dst_column, ROUND(final_confidence, 2) AS confidence
-            FROM {fq_prefix}fk_predictions
-            WHERE (src_table LIKE '%{table_name.split('.')[-1]}%' OR dst_table LIKE '%{table_name.split('.')[-1]}%')
-              AND final_confidence >= 0.5
-        """)
-        entities = _execute_query(f"""
-            SELECT entity_name, entity_type, confidence
-            FROM {fq_prefix}ontology_entities
-            WHERE ARRAY_CONTAINS(source_tables, (SELECT table_name FROM {fq_prefix}table_knowledge_base WHERE table_name LIKE '%{table_name.split('.')[-1]}%' LIMIT 1))
-        """)
-        return json.dumps({
-            "table": tbl.get("rows", []),
-            "columns": cols.get("rows", []),
-            "foreign_keys": fks.get("rows", []),
-            "entities": entities.get("rows", []),
-        })
+            FROM {fq}fk_predictions
+            WHERE (src_table LIKE '%{short}%' OR dst_table LIKE '%{short}%') AND final_confidence >= 0.5
+        )
+        SELECT 'table' AS _section, TO_JSON(STRUCT(*)) AS _data FROM tbl
+        UNION ALL
+        SELECT 'column', TO_JSON(STRUCT(*)) FROM cols
+        UNION ALL
+        SELECT 'fk', TO_JSON(STRUCT(*)) FROM fks
+    """
+    try:
+        result = _execute_query(query)
+        sections: dict = {"table": [], "columns": [], "foreign_keys": []}
+        for row in result.get("rows", []):
+            sec = row.get("_section", "")
+            data = json.loads(row.get("_data", "{}"))
+            if sec == "table":
+                sections["table"].append(data)
+            elif sec == "column":
+                sections["columns"].append(data)
+            elif sec == "fk":
+                sections["foreign_keys"].append(data)
+        return json.dumps(sections)
     except Exception as e:
         return json.dumps({"error": str(e)})
 

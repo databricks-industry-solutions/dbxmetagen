@@ -9,9 +9,7 @@
 # MAGIC access to a foundation model endpoint (e.g. `databricks-claude-sonnet-4-6`).
 
 # COMMAND ----------
-# MAGIC %pip install -qqq -r ../requirements.txt ..
-# MAGIC # Or install directly from GitHub main branch:
-# MAGIC # %pip install -qqq git+https://github.com/databricks-industry-solutions/dbxmetagen.git@main
+# MAGIC %pip install -qqq git+https://github.com/databricks-industry-solutions/dbxmetagen.git@main
 # MAGIC dbutils.library.restartPython()
 
 # COMMAND ----------
@@ -43,3 +41,47 @@ main({
     "model": dbutils.widgets.get("model"),
     "table_names_source": "parameter",
 })
+
+# COMMAND ----------
+# MAGIC %md
+# MAGIC ## (Optional) Build Analytics Layer
+# MAGIC
+# MAGIC After generating metadata, you can build the knowledge base, knowledge graph,
+# MAGIC embeddings, ontology, and data quality scores. Uncomment and run the cells below.
+
+# COMMAND ----------
+# from pyspark.sql import SparkSession
+# from dbxmetagen import (
+#     build_knowledge_base,
+#     build_column_knowledge_base,
+#     build_schema_knowledge_base,
+#     extract_extended_metadata,
+#     build_knowledge_graph,
+#     generate_embeddings,
+#     build_ontology,
+#     build_similarity_edges,
+#     compute_data_quality,
+#     run_profiling,
+# )
+#
+# spark = SparkSession.builder.getOrCreate()
+# catalog = dbutils.widgets.get("catalog_name")
+# schema = dbutils.widgets.get("schema_name")
+#
+# # Stage 1: Knowledge base
+# build_knowledge_base(spark, catalog, schema)
+# build_column_knowledge_base(spark, catalog, schema)
+# build_schema_knowledge_base(spark, catalog, schema)
+# extract_extended_metadata(spark, catalog, schema)
+#
+# # Stage 2: Knowledge graph
+# build_knowledge_graph(spark, catalog, schema)
+#
+# # Stage 3: Embeddings, profiling, ontology
+# generate_embeddings(spark, catalog, schema)
+# run_profiling(spark, catalog, schema)
+# build_ontology(spark, catalog, schema)
+#
+# # Stage 4: Similarity & quality
+# build_similarity_edges(spark, catalog, schema)
+# compute_data_quality(spark, catalog, schema)

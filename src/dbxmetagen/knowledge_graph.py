@@ -23,6 +23,7 @@ from typing import Dict, Any, List, Optional
 from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql import functions as F
 from pyspark.sql.types import ArrayType, FloatType
+from pyspark.sql.window import Window
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +36,7 @@ class KnowledgeGraphConfig:
     source_table: str = "table_knowledge_base"
     nodes_table: str = "graph_nodes"
     edges_table: str = "graph_edges"
+    max_edges_group_size: int = 500
     
     @property
     def fully_qualified_source(self) -> str:
@@ -327,27 +329,37 @@ class KnowledgeGraphBuilder:
         self, 
         source_df: DataFrame, 
         attribute: str,
-        relationship: str
+        relationship: str,
+        max_group_size: int = 500
     ) -> DataFrame:
         """
         Build edges between tables that share the same attribute value.
         
         Uses self-join to find pairs of tables with matching attribute.
         Only creates edges where src < dst to avoid duplicates.
+        Groups larger than max_group_size are randomly sampled down to
+        prevent O(n^2) edge explosion at scale.
         
         Args:
             source_df: DataFrame with id and attribute columns
             attribute: Column name to match on
             relationship: Name for this relationship type
+            max_group_size: Cap per attribute value to bound self-join cost
             
         Returns:
             DataFrame with src, dst, relationship columns
         """
-        # Filter to tables that have a value for this attribute
         df_with_attr = source_df.filter(F.col(attribute).isNotNull())
         
-        # Self-join to find pairs with same attribute value
-        # Use src < dst to avoid duplicate pairs and self-loops
+        # Cap large groups to prevent quadratic edge explosion
+        w = Window.partitionBy(attribute).orderBy(F.rand())
+        df_with_attr = (
+            df_with_attr
+            .withColumn("_rn", F.row_number().over(w))
+            .filter(F.col("_rn") <= max_group_size)
+            .drop("_rn")
+        )
+        
         df_a = df_with_attr.select(
             F.col("id").alias("src"),
             F.col(attribute).alias("attr_a")
@@ -383,17 +395,18 @@ class KnowledgeGraphBuilder:
         - same_schema: tables in the same schema
         - same_security_level: tables with same PII/PHI status
         """
+        cap = self.config.max_edges_group_size
         all_edges = []
         
         # Same domain edges
         domain_edges = self.build_edges_for_attribute(
-            nodes_df, "domain", "same_domain"
+            nodes_df, "domain", "same_domain", max_group_size=cap
         )
         all_edges.append(domain_edges)
         
         # Same subdomain edges
         subdomain_edges = self.build_edges_for_attribute(
-            nodes_df, "subdomain", "same_subdomain"
+            nodes_df, "subdomain", "same_subdomain", max_group_size=cap
         )
         all_edges.append(subdomain_edges)
         
@@ -401,7 +414,7 @@ class KnowledgeGraphBuilder:
         distinct_catalogs = nodes_df.select("catalog").distinct().count()
         if distinct_catalogs > 1:
             catalog_edges = self.build_edges_for_attribute(
-                nodes_df, "catalog", "same_catalog"
+                nodes_df, "catalog", "same_catalog", max_group_size=cap
             )
             all_edges.append(catalog_edges)
         else:
@@ -409,14 +422,14 @@ class KnowledgeGraphBuilder:
         
         # Same schema edges
         schema_edges = self.build_edges_for_attribute(
-            nodes_df, "schema", "same_schema"
+            nodes_df, "schema", "same_schema", max_group_size=cap
         )
         all_edges.append(schema_edges)
         
         # Same security level edges (exclude PUBLIC -- O(N^2) noise)
         sensitive_nodes = nodes_df.filter(F.col("security_level").isin("PII", "PHI"))
         security_edges = self.build_edges_for_attribute(
-            sensitive_nodes, "security_level", "same_security_level"
+            sensitive_nodes, "security_level", "same_security_level", max_group_size=cap
         )
         all_edges.append(security_edges)
         
@@ -531,6 +544,56 @@ class KnowledgeGraphBuilder:
         
         return {"total_edges": count}
     
+    def add_inverse_edges(self, edges_df: DataFrame, edge_catalog: Optional[Dict] = None) -> DataFrame:
+        """Generate inverse edges for all directed edges using the edge catalog.
+
+        For each edge A->B with relationship R, if the edge catalog has an
+        inverse defined for R, produce B->A with the inverse relationship name.
+        Symmetric edges and edges without inverses are skipped.
+        """
+        if not edge_catalog:
+            return edges_df
+
+        from pyspark.sql import Row
+        inverse_map: Dict[str, str] = {}
+        symmetric: set = set()
+        for name, entry in edge_catalog.items():
+            if hasattr(entry, "symmetric") and entry.symmetric:
+                symmetric.add(name)
+            elif hasattr(entry, "inverse") and entry.inverse:
+                inverse_map[name] = entry.inverse
+
+        if not inverse_map:
+            return edges_df
+
+        directed_edges = edges_df.filter(
+            F.col("relationship").isin(list(inverse_map.keys()))
+        )
+        if directed_edges.rdd.isEmpty():
+            return edges_df
+
+        inv_edges = (
+            directed_edges
+            .withColumn("_orig_src", F.col("src"))
+            .withColumn("src", F.col("dst"))
+            .withColumn("dst", F.col("_orig_src"))
+            .drop("_orig_src")
+        )
+
+        mapping_expr = F.create_map(
+            *[item for k, v in inverse_map.items() for item in (F.lit(k), F.lit(v))]
+        )
+        inv_edges = (
+            inv_edges
+            .withColumn("relationship", mapping_expr[F.col("relationship")])
+            .withColumn("edge_id", F.concat_ws("::", F.col("src"), F.col("dst"), F.col("relationship")))
+            .withColumn("direction", F.lit("inverse"))
+        )
+
+        combined = edges_df.unionByName(inv_edges, allowMissingColumns=True)
+        logger.info("add_inverse_edges: added %d inverse edges", inv_edges.count())
+        return combined
+
     def merge_edges(self, edges_df: DataFrame) -> Dict[str, int]:
         """
         Incrementally merge edges into the edges table.

@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "dbxmetagen"
-version = "0.6.2"
+version = "0.6.3"
 description = "Generates comments and identifies and classifies other metadata for Delta tables in Databricks."
 readme = "README.md"
 authors = ["Eli Swanson <eli.swanson@databricks.com>"]
@@ -20,14 +20,18 @@ databricks-langchain = "==0.2.0"
 databricks-sdk = "==0.68.0"
 openpyxl = "==3.1.5"
 spacy = "==3.8.7"
-en-core-web-lg = { url = "https://github.com/explosion/spacy-models/releases/download/en_core_web_lg-3.8.0/en_core_web_lg-3.8.0-py3-none-any.whl" }
+en-core-web-lg = { url = "https://github.com/explosion/spacy-models/releases/download/en_core_web_lg-3.8.0/en_core_web_lg-3.8.0-py3-none-any.whl", optional = true }
 presidio_analyzer = "==2.2.358"
-presidio_anonymizer = "==2.2.358"
 deprecated = "==1.2.13"
 pyyaml = "==6.0.1"
 requests = "==2.32.5"
 nest-asyncio = "^1.6.0"
 grpcio = "^1.76.0"
+
+# To install the spaCy model for PI mode during local dev:
+#   poetry install --extras pi   (or --all-extras)
+[tool.poetry.extras]
+pi = ["en-core-web-lg"]
 
 [tool.poetry.scripts]
 main = "dbxmetagen.main:main"

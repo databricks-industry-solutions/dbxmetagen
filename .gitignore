@@ -11,6 +11,7 @@ poetry.lock
 build/
 develop-eggs/
 dist/*.tar.gz
+dist/*.whl
 downloads/
 eggs/
 .eggs/

@@ -15,8 +15,8 @@
 
 dbutils.widgets.text("catalog_name", "", "Catalog Name")
 dbutils.widgets.text("schema_name", "", "Schema Name")
-dbutils.widgets.text("column_similarity_threshold", "0.75", "Column Similarity Threshold")
-dbutils.widgets.text("table_similarity_threshold", "0.7", "Table Similarity Threshold (max; exclude above)")
+dbutils.widgets.text("column_similarity_threshold", "0.85", "Column Similarity Threshold")
+dbutils.widgets.text("table_similarity_threshold", "0.9", "Table Similarity Threshold (max; exclude above)")
 dbutils.widgets.text("confidence_threshold", "0.7", "Confidence Threshold")
 dbutils.widgets.text("sample_size", "5", "Sample Size")
 dbutils.widgets.text("model_endpoint", "databricks-gpt-oss-120b", "Model Endpoint")

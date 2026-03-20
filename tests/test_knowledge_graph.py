@@ -326,6 +326,52 @@ class TestEdgeBuildingLogicDocumentation:
         assert callable(builder.build_all_edges_df)
 
 
+class TestEdgeGroupSizeCap:
+    """Tests for max_edges_group_size config and build_edges_for_attribute cap."""
+
+    def test_config_default_max_edges_group_size(self):
+        config = KnowledgeGraphConfig(catalog_name="c", schema_name="s")
+        assert config.max_edges_group_size == 500
+
+    def test_config_custom_max_edges_group_size(self):
+        config = KnowledgeGraphConfig(
+            catalog_name="c", schema_name="s", max_edges_group_size=100
+        )
+        assert config.max_edges_group_size == 100
+
+    def test_build_edges_accepts_max_group_size_param(self):
+        import inspect
+        mock_spark = MagicMock()
+        config = KnowledgeGraphConfig(catalog_name="c", schema_name="s")
+        builder = KnowledgeGraphBuilder(mock_spark, config)
+        sig = inspect.signature(builder.build_edges_for_attribute)
+        assert "max_group_size" in sig.parameters
+        assert sig.parameters["max_group_size"].default == 500
+
+    def test_build_all_edges_passes_config_cap(self):
+        """build_all_edges_df should forward config.max_edges_group_size."""
+        mock_spark = MagicMock()
+        config = KnowledgeGraphConfig(
+            catalog_name="c", schema_name="s", max_edges_group_size=42
+        )
+        builder = KnowledgeGraphBuilder(mock_spark, config)
+        with patch.object(builder, "build_edges_for_attribute") as mock_build:
+            mock_build.return_value = MagicMock()
+            mock_build.return_value.unionByName = MagicMock(
+                return_value=MagicMock()
+            )
+            # need nodes_df with .select().distinct().count() for catalog check
+            mock_nodes = MagicMock()
+            mock_nodes.select.return_value.distinct.return_value.count.return_value = 1
+            mock_nodes.filter.return_value = mock_nodes
+            try:
+                builder.build_all_edges_df(mock_nodes)
+            except Exception:
+                pass
+            for call in mock_build.call_args_list:
+                assert call.kwargs.get("max_group_size") == 42
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
 

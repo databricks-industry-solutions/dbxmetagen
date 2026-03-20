@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import queue
+import time
 from typing import Any, Dict, Optional
 
 from databricks.sdk import WorkspaceClient
@@ -240,16 +241,47 @@ def _log_message_diagnostics(messages: list):
             break
 
 
-def _collect_stream_messages(agent, input_msg: dict, config: dict) -> list:
+GENIE_WALL_TIMEOUT = 600  # 10 minutes hard deadline
+
+
+def _count_tool_messages(messages: list) -> int:
+    """Count ToolMessage instances to determine the current tool round."""
+    from langchain_core.messages import ToolMessage
+    rounds = 0
+    prev_was_tool = False
+    for m in messages:
+        is_tool = isinstance(m, ToolMessage)
+        if is_tool and not prev_was_tool:
+            rounds += 1
+        prev_was_tool = is_tool
+    return rounds
+
+
+def _collect_stream_messages(
+    agent,
+    input_msg: dict,
+    config: dict,
+    progress_queue: queue.Queue | None = None,
+    deadline: float | None = None,
+) -> tuple[list, int, bool]:
     """Run agent via stream(), collecting accumulated messages.
 
-    Streaming avoids the HTTP read-timeout that kills long invoke() calls
-    because chunks keep the connection alive.
+    Returns (messages, tool_round_count, timed_out).
     """
     messages = []
+    last_round = 0
+    timed_out = False
     for chunk in agent.stream(input_msg, config=config, stream_mode="values"):
         messages = chunk.get("messages", messages)
-    return messages
+        current_round = _count_tool_messages(messages)
+        if current_round > last_round and progress_queue:
+            progress_queue.put({"stage": "tool_round", "round": current_round})
+            last_round = current_round
+        if deadline and time.time() > deadline:
+            timed_out = True
+            logger.warning("Genie agent hit %ds wall-clock deadline at round %d", GENIE_WALL_TIMEOUT, current_round)
+            break
+    return messages, last_round, timed_out
 
 
 def _messages_to_langchain(messages: list) -> list:
@@ -313,6 +345,20 @@ def run_genie_agent(
 
     Returns the final serialized_space dict or raises on failure.
     """
+    start_time = time.time()
+    deadline = start_time + GENIE_WALL_TIMEOUT
+
+    def _elapsed() -> float:
+        return round(time.time() - start_time, 1)
+
+    def _error_event(message: str, *, rounds: int = 0) -> dict:
+        return {
+            "stage": "error",
+            "message": message,
+            "elapsed_seconds": _elapsed(),
+            "rounds_completed": rounds,
+        }
+
     progress_queue.put({"stage": "initializing"})
 
     tools = _make_tools(ws, warehouse_id)
@@ -346,15 +392,21 @@ def run_genie_agent(
 
     messages: list = []
     timed_out = False
+    round_count = 0
     try:
-        messages = _collect_stream_messages(agent, input_msg, agent_config)
-    except (TimeoutError, Exception) as e:
+        messages, round_count, timed_out = _collect_stream_messages(
+            agent, input_msg, agent_config,
+            progress_queue=progress_queue,
+            deadline=deadline,
+        )
+    except Exception as e:
+        round_count = _count_tool_messages(messages) if messages else 0
         err_str = str(e).lower()
         if "timeout" in err_str or "timed out" in err_str or isinstance(e, TimeoutError):
-            logger.warning("Agent timed out, attempting recovery from partial results: %s", e)
+            logger.warning("Agent exception timeout after %.1fs, %d rounds: %s", _elapsed(), round_count, e)
             timed_out = True
         else:
-            progress_queue.put({"stage": "error", "message": str(e)})
+            progress_queue.put(_error_event(f"Agent error: {e}", rounds=round_count))
             raise
 
     progress_queue.put({"stage": "parsing"})
@@ -364,15 +416,23 @@ def run_genie_agent(
     if serialized is None:
         _log_message_diagnostics(messages)
         if messages:
-            logger.warning("JSON extraction failed (timed_out=%s), attempting recovery", timed_out)
+            reason = "timed out" if timed_out else "no valid JSON in output"
+            logger.warning(
+                "JSON extraction failed (%s) after %.1fs, %d rounds -- attempting recovery",
+                reason, _elapsed(), round_count,
+            )
             progress_queue.put({"stage": "recovering"})
             serialized = _recovery_invoke(messages, model_endpoint)
 
     if serialized is None:
-        progress_queue.put(
-            {"stage": "error", "message": "Agent did not produce valid JSON"}
+        detail = (
+            f"Agent did not produce valid JSON after {_elapsed():.0f}s "
+            f"and {round_count} tool round(s)."
         )
-        raise ValueError("Agent did not produce valid serialized_space JSON")
+        if timed_out:
+            detail += " The 10-minute timeout was reached. Try selecting fewer tables."
+        progress_queue.put(_error_event(detail, rounds=round_count))
+        raise ValueError(detail)
 
     serialized = _merge_prebuilt_snippets(serialized, context.get("sql_snippets", {}))
     serialized = _dedup_sample_vs_example(serialized)
@@ -381,7 +441,13 @@ def run_genie_agent(
     if warnings:
         logger.warning("Genie output quality warnings: %s", "; ".join(warnings))
 
-    progress_queue.put({"stage": "done", "result": serialized, "warnings": warnings})
+    progress_queue.put({
+        "stage": "done",
+        "result": serialized,
+        "warnings": warnings,
+        "elapsed_seconds": _elapsed(),
+        "rounds_completed": round_count,
+    })
     return serialized
 
 

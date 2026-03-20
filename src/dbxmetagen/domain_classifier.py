@@ -65,6 +65,10 @@ class DomainResult(BaseModel):
         default=None,
         description="Your own suggested domain name if you think a better domain exists outside the provided list",
     )
+    second_choice_domain: Optional[str] = Field(
+        default=None,
+        description="Runner-up domain key from the provided list",
+    )
     reasoning: str = Field(description="Brief reasoning for the domain choice")
 
 
@@ -216,7 +220,12 @@ def generate_domain_only_prompt(
         desc = info.get("description", "")
         kws = info.get("keywords", [])
         kw_text = f"  Keywords: {', '.join(kws)}" if kws else ""
-        entries.append(f"- **{dk}** ({name}): {desc}\n{kw_text}")
+        subs = info.get("subdomains", {})
+        sub_text = ""
+        if subs:
+            sub_names = ", ".join(f"{k} ({subs[k].get('name', k)})" for k in subs)
+            sub_text = f"\n  Subdomains: {sub_names}"
+        entries.append(f"- **{dk}** ({name}): {desc}\n{kw_text}{sub_text}")
 
     domain_block = "\n".join(entries)
     domain_keys = ", ".join(candidate_domains)
@@ -227,10 +236,13 @@ Choose ONLY from these domain keys: {domain_keys}
 
 {domain_block}
 
-Respond with the domain key, a confidence score (0.0-1.0), and brief reasoning.
+Before selecting your final answer, briefly consider your top 3 candidate domains and why each might or might not fit. Then select the best one.
+Pay special attention to the table comment and upstream/downstream lineage — these often contain the strongest domain signals and should outweigh column names when they conflict.
+
+Respond with the domain key, a confidence score (0.0-1.0), and brief reasoning that includes your top-3 consideration.
 Lower your confidence if the table doesn't clearly fit any listed domain.
-ALWAYS provide a recommended_domain — your own suggested domain name that you believe would be a better fit for this table than any of the listed options. This should be a concise, descriptive domain name not in the provided list.
-If upstream/downstream lineage tables are provided, use them as additional signal for domain classification."""
+ALWAYS provide a recommended_domain — your own suggested domain name if you think a better domain exists outside the provided list.
+Also provide second_choice_domain — the runner-up domain key from the list above."""
 
 
 def generate_subdomain_prompt(
@@ -337,6 +349,22 @@ Be thorough, accurate, and provide detailed explanations for your classification
 # ---------------------------------------------------------------------------
 
 
+def _normalize(s: str) -> str:
+    """Strip underscores, hyphens, spaces and lowercase for fuzzy comparison."""
+    return s.lower().strip().replace("_", "").replace("-", "").replace(" ", "")
+
+
+def _trigram_overlap(a: str, b: str) -> float:
+    """Character-trigram Jaccard similarity (0.0-1.0)."""
+    if len(a) < 3 or len(b) < 3:
+        return 0.0
+    ta = {a[i:i+3] for i in range(len(a) - 2)}
+    tb = {b[i:i+3] for i in range(len(b) - 2)}
+    inter = len(ta & tb)
+    union = len(ta | tb)
+    return inter / union if union else 0.0
+
+
 def _enforce_value(
     predicted: str,
     allowed: List[str],
@@ -348,11 +376,31 @@ def _enforce_value(
     """
     low = predicted.lower().strip()
     allowed_map = {a.lower(): a for a in allowed}
+
+    # 1. Exact case-insensitive match
     if low in allowed_map:
         return allowed_map[low], True
+
+    # 2. Substring containment
     for a_low, a_orig in allowed_map.items():
         if a_low in low or low in a_low:
             return a_orig, False
+
+    # 3. Normalized match (strip underscores, hyphens, spaces)
+    norm_pred = _normalize(predicted)
+    for a_low, a_orig in allowed_map.items():
+        if _normalize(a_low) == norm_pred:
+            return a_orig, False
+
+    # 4. Trigram overlap fallback (threshold 0.4)
+    best_score, best_orig = 0.0, None
+    for a_low, a_orig in allowed_map.items():
+        score = _trigram_overlap(_normalize(a_low), norm_pred)
+        if score > best_score:
+            best_score, best_orig = score, a_orig
+    if best_score >= 0.4 and best_orig:
+        return best_orig, False
+
     return fallback, False
 
 
@@ -366,27 +414,25 @@ def _build_user_message(table_name: str, table_metadata: Dict[str, Any]) -> str:
     cc.pop("column_metadata", None)
     cc.pop("lineage", None)
 
-    msg = f"""Please classify the following table:
+    msg = f"Please classify the following table:\n\nTable: {table_name}\n"
 
-Table: {table_name}
-
-Column Information:
-{json.dumps(cc, indent=2)}
-"""
-    if table_metadata.get("table_tags"):
-        msg += f"\nTable Tags:\n{table_metadata['table_tags']}\n"
-    if table_metadata.get("table_constraints"):
-        msg += f"\nTable Constraints:\n{table_metadata['table_constraints']}\n"
     if table_metadata.get("table_comments"):
-        msg += f"\nExisting Table Comment:\n{table_metadata['table_comments']}\n"
-    if table_metadata.get("column_metadata"):
-        msg += f"\nColumn Metadata:\n{json.dumps(table_metadata['column_metadata'], indent=2)}\n"
+        msg += f"\nExisting Table Comment (important domain signal):\n{table_metadata['table_comments']}\n"
     if table_metadata.get("lineage"):
         lin = table_metadata["lineage"]
         if lin.get("upstream_tables"):
             msg += f"\nUpstream Tables (data sources):\n{', '.join(lin['upstream_tables'])}\n"
         if lin.get("downstream_tables"):
             msg += f"\nDownstream Tables (consumers):\n{', '.join(lin['downstream_tables'])}\n"
+
+    msg += f"\nColumn Information:\n{json.dumps(cc, indent=2)}\n"
+
+    if table_metadata.get("table_tags"):
+        msg += f"\nTable Tags:\n{table_metadata['table_tags']}\n"
+    if table_metadata.get("table_constraints"):
+        msg += f"\nTable Constraints:\n{table_metadata['table_constraints']}\n"
+    if table_metadata.get("column_metadata"):
+        msg += f"\nColumn Metadata:\n{json.dumps(table_metadata['column_metadata'], indent=2)}\n"
     return msg
 
 
@@ -450,14 +496,19 @@ def classify_subdomain_stage2(
     model_endpoint: str = "databricks-claude-sonnet-4-6",
     temperature: float = 0.1,
     max_tokens: int = 4096,
+    second_choice_domain: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Call the LLM to pick a subdomain within the chosen domain."""
     include_secondary = None
     if domain_confidence < confidence_threshold:
         domains = domain_config.get("domains", {})
-        others = [k for k in domains if k != domain_key]
-        if others:
-            include_secondary = others[0]
+        if second_choice_domain and second_choice_domain in domains:
+            include_secondary = second_choice_domain
+        else:
+            others = [k for k in domains if k != domain_key]
+            if others:
+                include_secondary = others[0]
+        if include_secondary:
             logger.info(
                 "Low domain confidence (%.2f); expanding stage-2 to include %s",
                 domain_confidence,
@@ -609,6 +660,7 @@ def _classify_two_stage(
         model_endpoint=model_endpoint,
         temperature=temperature,
         max_tokens=max_tokens,
+        second_choice_domain=s1.get("second_choice_domain"),
     )
 
     # Enforce subdomain value against config
@@ -635,6 +687,7 @@ def _classify_two_stage(
         "subdomain": s2["subdomain"],
         "confidence": combined_confidence,
         "recommended_domain": s1.get("recommended_domain"),
+        "second_choice_domain": s1.get("second_choice_domain"),
         "recommended_subdomain": s2.get("recommended_subdomain"),
         "reasoning": f"[Domain] {s1['reasoning']} [Subdomain] {s2['reasoning']}",
         "metadata_summary": s2.get("metadata_summary"),

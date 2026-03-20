@@ -21,6 +21,8 @@
 
 ## Quickstart (5 minutes)
 
+**Prerequisites:** A Databricks workspace with Unity Catalog enabled and a Foundation Model endpoint (e.g. `databricks-claude-sonnet-4-6`).
+
 Install the package on any Databricks cluster and run from a notebook. No CLI, Asset Bundles, or repo clone needed.
 
 ### 1. Install
@@ -28,14 +30,14 @@ Install the package on any Databricks cluster and run from a notebook. No CLI, A
 In a Databricks notebook cell:
 
 ```python
-%pip install -qqq -r ../requirements.txt ..
+%pip install -qqq git+https://github.com/databricks-industry-solutions/dbxmetagen.git@main
 dbutils.library.restartPython()
 ```
 
-Or install directly from GitHub:
+Or if you cloned the repo, install from local source:
 
 ```python
-%pip install -qqq git+https://github.com/databricks-industry-solutions/dbxmetagen.git@main
+%pip install -qqq -r ../requirements.txt ..
 dbutils.library.restartPython()
 ```
 
@@ -105,19 +107,6 @@ For the web dashboard, batch jobs, Lakebase integration, and the full analytics 
    databricks bundle run metadata_generator_job -t dev -p <profile> --params table_names='catalog.schema.*',mode=domain
    databricks bundle run full_analytics_pipeline_job -t dev -p <profile>
    ```
-
-## Deploy the App (no CLI / no DABs)
-
-If you cloned this repo into your Databricks workspace and want the dashboard
-without running `deploy.sh` or installing the Databricks CLI locally:
-
-1. Open `examples/00_deploy_app.py` in a notebook
-2. Fill in the widgets (catalog, schema, warehouse ID)
-3. Run all cells -- this generates `app.yaml` and deploys the app
-
-The pre-built frontend is included in the repo, so no Node.js is required.
-
-For the Python library only (no app), see the Quickstart above.
 
 ## Disclaimer
 
@@ -241,28 +230,7 @@ Core functions exported by the `dbxmetagen` package:
 
 ## Notebooks
 
-| Notebook | Purpose |
-|----------|---------|
-| `generate_metadata.py` | Primary entry point: comment, PI, and domain generation |
-| `sync_reviewed_ddl.py` | Re-apply reviewed/edited metadata from TSV or Excel |
-| `build_knowledge_base.py` | Build table knowledge base from generation log |
-| `build_column_kb.py` | Build column-level knowledge base |
-| `build_schema_kb.py` | Build schema-level knowledge base |
-| `extract_extended_metadata.py` | Extract system metadata via DESCRIBE EXTENDED |
-| `build_knowledge_graph.py` | Build graph nodes and edges |
-| `generate_embeddings.py` | Generate node embeddings |
-| `build_similarity_edges.py` | Build similarity edges from embeddings |
-| `similarity_analysis.py` | Similarity analysis and cross-domain detection |
-| `build_ontology.py` | Discover and store ontology entities |
-| `validate_ontology.py` | Validate ontology entities |
-| `run_profiling.py` | Profile tables and columns |
-| `compute_data_quality.py` | Compute data quality scores |
-| `cluster_analysis.py` | K-means clustering with multi-phase optimization |
-| `update_graph_ontology.py` | Update graph with ontology edges |
-| `update_graph_quality.py` | Update graph with quality scores |
-| `final_analysis.py` | Aggregate final analysis results |
-| `predict_foreign_keys.py` | FK prediction using column similarity and AI judgment |
-| `sync_graph_to_lakebase.py` | Sync graph data to Lakebase for the dashboard |
+All notebooks live in `notebooks/`. The primary entry point is `generate_metadata.py` (used by all DAB jobs for comment, PI, and domain generation). Analytics notebooks (KB, graph, profiling, ontology, FK prediction, etc.) are orchestrated by the DAB pipeline jobs listed below.
 
 ## Configuration
 
@@ -278,11 +246,11 @@ Settings are in `variables.yml`. Key options:
 |---------|---------|-------------|
 | `catalog_name` | (required) | Unity Catalog name |
 | `schema_name` | `metadata_results` | Output schema |
-| `model` | `databricks-claude-sonnet-4-5` | LLM endpoint for generation |
+| `model` | `databricks-claude-sonnet-4-6` | LLM endpoint for generation |
 | `mode` | `comment` | Generation mode: `comment`, `pi`, or `domain` |
 | `apply_ddl` | `false` | Apply generated metadata directly to Unity Catalog |
 | `allow_data` | `true` | Set `false` to prevent data from being sent to LLMs |
-| `include_deterministic_pi` | `true` | Enable SpaCy/Presidio for rule-based PI detection |
+| `include_deterministic_pi` | `true` | Enable SpaCy/Presidio for rule-based PI detection (requires `en_core_web_lg` model -- see [Configuration docs](docs/CONFIGURATION.md)) |
 | `federation_mode` | `false` | Enable for federated catalog sources (Redshift, Snowflake) |
 
 For full reference, see [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
@@ -360,12 +328,17 @@ The app is in `apps/dbxmetagen-app/` and provides a FastAPI backend with a React
 ## Testing
 
 ```bash
+poetry install              # core deps (comment/domain modes)
+poetry install --extras pi  # also install the spaCy model for PI dev
 pytest -v
 
-# Build and test wheel
-poetry build && pip install dist/*.whl
+# Build and test wheel locally
+poetry build
+pip install dist/*.whl
 python -c "from dbxmetagen.config import MetadataConfig; print('OK')"
 ```
+
+Wheels are built automatically by CI on tagged releases (see `.github/workflows/release.yml`).
 
 Requires DBR 17.3+ (ML runtime recommended). Serverless runtimes are supported for most operations.
 
@@ -383,7 +356,6 @@ Requires DBR 17.3+ (ML runtime recommended). Serverless runtimes are supported f
 | openpyxl | MIT | https://foss.heptapod.net/openpyxl/openpyxl |
 | spacy | MIT | https://spacy.io |
 | presidio-analyzer | MIT | https://github.com/microsoft/presidio |
-| presidio-anonymizer | MIT | https://github.com/microsoft/presidio |
 | fastapi | MIT | https://github.com/tiangolo/fastapi |
 | langgraph | MIT | https://github.com/langchain-ai/langgraph |
 | pyyaml | MIT | https://pypi.org/project/PyYAML/ |
@@ -402,7 +374,3 @@ This project is licensed under the Databricks DB License.
 ## Acknowledgements
 
 Thanks to James McCall, Diego Malaver, Aaron Zavora, and Charles Linville for discussions around dbxmetagen.
-
-For detailed configuration options, see [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
-
-For user workflows and team roles, see [docs/PERSONAS_AND_WORKFLOWS.md](docs/PERSONAS_AND_WORKFLOWS.md).

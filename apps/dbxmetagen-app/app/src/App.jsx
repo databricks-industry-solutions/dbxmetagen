@@ -3,12 +3,13 @@ import AgentChat from './components/AgentChat'
 import BatchJobs from './components/BatchJobs'
 import MetadataReview from './components/MetadataReview'
 import Coverage from './components/Coverage'
+import EntityBrowser from './components/EntityBrowser'
 import SemanticLayer from './components/SemanticLayer'
 import GenieBuilder from './components/GenieBuilder'
 import AnalystChat from './components/AnalystChat'
 const COMPONENTS = {
   agent: AgentChat, coverage: Coverage, jobs: BatchJobs, metadata: MetadataReview,
-  semantic: SemanticLayer, genie: GenieBuilder,
+  entities: EntityBrowser, semantic: SemanticLayer, genie: GenieBuilder,
   analyst: AnalystChat,
 }
 
@@ -20,7 +21,7 @@ const NAV_CAT_COLORS = {
 
 const TAB_ACCENT = {
   jobs: 'border-t-dbx-lava', semantic: 'border-t-dbx-lava',
-  metadata: 'border-t-dbx-sky', coverage: 'border-t-dbx-sky',
+  metadata: 'border-t-dbx-sky', coverage: 'border-t-dbx-sky', entities: 'border-t-dbx-sky',
   agent: 'border-t-dbx-teal', genie: 'border-t-dbx-teal',
 }
 
@@ -37,6 +38,7 @@ const NAV_STRUCTURE = [
     items: [
       { id: 'metadata', label: 'Review & Apply', desc: 'Review, edit, and apply AI-generated metadata' },
       { id: 'coverage', label: 'Coverage', desc: 'Catalog health and metadata completeness' },
+      { id: 'entities', label: 'Entity Browser', desc: 'Entity-first navigation with conformance view' },
     ],
   },
   {

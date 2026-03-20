@@ -1,14 +1,9 @@
+from __future__ import annotations
+
 import os
 import json
 import logging
 from typing import Dict, Any, List, Tuple, Optional
-from presidio_analyzer import (
-    AnalyzerEngine,
-    PatternRecognizer,
-    RecognizerResult,
-    Pattern,
-)
-import spacy
 from datetime import datetime
 
 from dbxmetagen.config import MetadataConfig
@@ -37,6 +32,13 @@ def luhn_checksum(card_number):
 
 def get_analyzer_engine(add_pci: bool = True, add_phi: bool = True) -> AnalyzerEngine:
     """Initialize Presidio AnalyzerEngine with PCI/PHI recognizers."""
+    try:
+        from presidio_analyzer import AnalyzerEngine, PatternRecognizer, Pattern
+    except ImportError as exc:
+        raise ImportError(
+            "presidio_analyzer is required for deterministic PI detection. "
+            "Install it with: pip install presidio_analyzer"
+        ) from exc
     analyzer = AnalyzerEngine()
 
     if add_pci:
@@ -324,15 +326,26 @@ def process_table(
 
 def ensure_spacy_model(model_name: str = "en_core_web_lg"):
     """
-    Load pre-installed spaCy model. Model should be installed via requirements.txt.
+    Load pre-installed spaCy model. Model should be installed via
+    requirements-pi.txt, a Volume path, or ``pip install "dbxmetagen[pi]"``.
     """
+    try:
+        import spacy
+    except ImportError as exc:
+        raise ImportError(
+            "spacy is required for deterministic PI detection. "
+            "Install it with: pip install spacy"
+        ) from exc
     try:
         return spacy.load(model_name)
     except OSError as exc:
         logging.error("Error loading spaCy model: %s", exc)
         raise RuntimeError(
-            f"spaCy model '{model_name}' not found. "
-            f"Ensure it's installed via requirements.txt or run: python -m spacy download {model_name}"
+            f"spaCy model '{model_name}' not found. Install it with one of:\n"
+            f"  pip install \"dbxmetagen[pi]\"                          # from wheel extras\n"
+            f"  pip install -r requirements-pi.txt                    # from requirements file\n"
+            f"  pip install /Volumes/<catalog>/<schema>/<vol>/{model_name}-*.whl  # from a Volume (air-gapped)\n"
+            f"  python -m spacy download {model_name}                 # direct download"
         )
 
 

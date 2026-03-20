@@ -3,15 +3,85 @@
 
 metadata:
   name: "Financial Services"
-  version: "2.0"
+  version: "3.0"
   industry: "financial_services"
   description: "Banking, insurance, and capital markets ontology with financial instrument and risk entity types"
   standards_alignment: "BIAN, FIBO, ISO 20022"
 
 ontology:
-  version: "2.0"
+  version: "3.0"
   name: "Financial Services Business Ontology"
   description: "Entity types for banking, insurance, investments, and financial operations"
+
+  property_roles:
+    primary_key:
+      description: "Surrogate or technical row identifier"
+      maps_to_kind: "data_property"
+      semantic_role: "identifier"
+    business_key:
+      description: "Natural key meaningful to users"
+      maps_to_kind: "data_property"
+      semantic_role: "identifier"
+    measure:
+      description: "Numeric value to aggregate"
+      maps_to_kind: "data_property"
+      semantic_role: "metric"
+    dimension:
+      description: "Categorical filter or grouping attribute"
+      maps_to_kind: "data_property"
+      semantic_role: "dimension"
+    temporal:
+      description: "Date or timestamp of event"
+      maps_to_kind: "data_property"
+      semantic_role: "temporal"
+    geographic:
+      description: "Location-based dimension (country, city, region, coordinates)"
+      maps_to_kind: "data_property"
+      semantic_role: "geographic"
+    object_property:
+      description: "FK or reference to another entity's identifier"
+      maps_to_kind: "object_property"
+      semantic_role: "relationship"
+    composite_component:
+      description: "Part of a multi-column value object"
+      maps_to_kind: "data_property"
+      semantic_role: "component"
+    label:
+      description: "Human-readable name or title"
+      maps_to_kind: "data_property"
+      semantic_role: "label"
+    pii:
+      description: "Personally identifiable information"
+      maps_to_kind: "data_property"
+      semantic_role: "pii"
+      governance_flag: true
+    audit:
+      description: "System-generated provenance column"
+      maps_to_kind: "data_property"
+      semantic_role: "provenance"
+    derived:
+      description: "Computed from other columns"
+      maps_to_kind: "data_property"
+      semantic_role: "derived"
+
+  edge_catalog:
+    instance_of: { inverse: type_of, symmetric: false, category: structural }
+    subclass_of: { inverse: superclass_of, symmetric: false, category: structural }
+    has_part: { inverse: part_of, symmetric: false, category: structural }
+    contains: { inverse: contained_in, symmetric: false, category: structural }
+    member_of: { inverse: has_member, symmetric: false, category: structural }
+    has_account: { inverse: account_of, domain: Person, range: Account, symmetric: false, category: business }
+    holds: { inverse: held_by, domain: [Person, Organization], range: Portfolio, symmetric: false, category: business }
+    issued_by: { inverse: issues, domain: [Loan, Policy, Instrument], range: Organization, symmetric: false, category: business }
+    covers: { inverse: covered_by, domain: Policy, range: [Person, Organization], symmetric: false, category: business }
+    placed_by: { inverse: placed, domain: Transaction, range: Person, symmetric: false, category: business }
+    created_by: { inverse: created, domain: Any, range: Person, symmetric: false, category: business }
+    owned_by: { inverse: owns, domain: Any, range: [Person, Organization], symmetric: false, category: business }
+    references: { inverse: referenced_by, domain: Any, range: Reference, symmetric: false, category: business }
+    located_at: { inverse: location_of, domain: Any, range: Location, symmetric: false, category: business }
+    derives_from: { inverse: source_of, symmetric: false, category: lineage }
+    same_as: { symmetric: true, category: semantic }
+    similar_to: { symmetric: true, category: semantic }
 
   entities:
     auto_discover: true
@@ -81,6 +151,41 @@ ontology:
         relationships:
           owned_by: { target: Person, cardinality: "many-to-one" }
           has_transaction: { target: Transaction, cardinality: "one-to-many" }
+        properties:
+          identifier:
+            kind: data_property
+            role: primary_key
+            typical_attributes: ["id", "account_id"]
+          account_number:
+            kind: data_property
+            role: business_key
+            typical_attributes: ["account_number", "acct_number", "account_no"]
+          balance:
+            kind: data_property
+            role: measure
+            typical_attributes: ["balance", "current_balance", "available_balance"]
+          type:
+            kind: data_property
+            role: dimension
+            typical_attributes: ["type", "account_type", "product_type"]
+          status:
+            kind: data_property
+            role: dimension
+            typical_attributes: ["status", "account_status", "state"]
+          currency:
+            kind: data_property
+            role: dimension
+            typical_attributes: ["currency", "currency_code"]
+          open_date:
+            kind: data_property
+            role: temporal
+            typical_attributes: ["open_date", "opened_date", "created_date"]
+          owned_by:
+            kind: object_property
+            role: object_property
+            edge: owned_by
+            target_entity: Person
+            typical_attributes: ["owner_id", "customer_id", "person_id"]
       Portfolio:
         description: "Investment portfolios, fund holdings, or asset allocations"
         keywords: ["portfolio", "fund", "holding", "allocation", "basket"]
@@ -88,6 +193,33 @@ ontology:
         relationships:
           contains: { target: Instrument, cardinality: "many-to-many" }
           managed_by: { target: Person, cardinality: "many-to-one" }
+        properties:
+          identifier:
+            kind: data_property
+            role: primary_key
+            typical_attributes: ["id", "portfolio_id"]
+          name:
+            kind: data_property
+            role: label
+            typical_attributes: ["name", "portfolio_name"]
+          aum:
+            kind: data_property
+            role: measure
+            typical_attributes: ["aum", "assets_under_management", "total_value"]
+          strategy:
+            kind: data_property
+            role: dimension
+            typical_attributes: ["strategy", "investment_strategy", "style"]
+          benchmark:
+            kind: data_property
+            role: dimension
+            typical_attributes: ["benchmark", "benchmark_index"]
+          managed_by:
+            kind: object_property
+            role: object_property
+            edge: held_by
+            target_entity: Person
+            typical_attributes: ["manager", "manager_id", "advisor_id"]
       Trade:
         description: "Securities trades, FX transactions, or market orders"
         keywords: ["trade", "execution", "fill", "market_order", "limit_order", "swap"]
@@ -102,6 +234,41 @@ ontology:
         typical_attributes: [id, symbol, isin, cusip, type, currency, issuer, maturity_date]
         relationships:
           hedges: { target: Risk, cardinality: "many-to-many" }
+        properties:
+          identifier:
+            kind: data_property
+            role: primary_key
+            typical_attributes: ["id", "instrument_id", "security_id"]
+          symbol:
+            kind: data_property
+            role: business_key
+            typical_attributes: ["symbol", "ticker", "ticker_symbol"]
+          isin:
+            kind: data_property
+            role: business_key
+            typical_attributes: ["isin", "isin_code"]
+          cusip:
+            kind: data_property
+            role: business_key
+            typical_attributes: ["cusip", "cusip_id"]
+          type:
+            kind: data_property
+            role: dimension
+            typical_attributes: ["type", "instrument_type", "asset_class"]
+          currency:
+            kind: data_property
+            role: dimension
+            typical_attributes: ["currency", "currency_code"]
+          maturity_date:
+            kind: data_property
+            role: temporal
+            typical_attributes: ["maturity_date", "maturity", "expiry_date"]
+          issued_by:
+            kind: object_property
+            role: object_property
+            edge: issued_by
+            target_entity: Organization
+            typical_attributes: ["issuer", "issuer_id", "issuing_org_id"]
       Counterparty:
         description: "Trading counterparties, custodians, or correspondent banks"
         keywords: ["counterparty", "custodian", "broker", "dealer", "correspondent", "clearing"]
@@ -115,6 +282,39 @@ ontology:
         relationships:
           for_account: { target: Account, cardinality: "many-to-one" }
           for_instrument: { target: Instrument, cardinality: "many-to-one" }
+        properties:
+          identifier:
+            kind: data_property
+            role: primary_key
+            typical_attributes: ["id", "risk_id", "assessment_id"]
+          value:
+            kind: data_property
+            role: measure
+            typical_attributes: ["value", "var", "exposure", "credit_score"]
+          threshold:
+            kind: data_property
+            role: measure
+            typical_attributes: ["threshold", "limit", "max_exposure"]
+          type:
+            kind: data_property
+            role: dimension
+            typical_attributes: ["type", "risk_type", "exposure_type"]
+          date:
+            kind: data_property
+            role: temporal
+            typical_attributes: ["date", "as_of_date", "assessment_date"]
+          for_account:
+            kind: object_property
+            role: object_property
+            edge: references
+            target_entity: Account
+            typical_attributes: ["entity_id", "account_id"]
+          for_instrument:
+            kind: object_property
+            role: object_property
+            edge: references
+            target_entity: Instrument
+            typical_attributes: ["instrument_id", "security_id"]
       Compliance:
         description: "Regulatory filings, KYC records, AML alerts, or sanctions screening"
         keywords: ["compliance", "kyc", "aml", "sanctions", "filing", "regulatory", "sar"]
@@ -136,6 +336,43 @@ ontology:
         relationships:
           held_by: { target: Person, cardinality: "many-to-one" }
           issued_by: { target: Organization, cardinality: "many-to-one" }
+        properties:
+          identifier:
+            kind: data_property
+            role: primary_key
+            typical_attributes: ["id", "policy_id"]
+          policy_number:
+            kind: data_property
+            role: business_key
+            typical_attributes: ["policy_number", "policy_no", "policy_ref"]
+          premium:
+            kind: data_property
+            role: measure
+            typical_attributes: ["premium", "annual_premium", "premium_amount"]
+          type:
+            kind: data_property
+            role: dimension
+            typical_attributes: ["type", "policy_type", "coverage_type"]
+          effective_date:
+            kind: data_property
+            role: temporal
+            typical_attributes: ["effective_date", "start_date", "inception_date"]
+          expiry_date:
+            kind: data_property
+            role: temporal
+            typical_attributes: ["expiry_date", "end_date", "expiration_date"]
+          held_by:
+            kind: object_property
+            role: object_property
+            edge: covers
+            target_entity: [Person, Organization]
+            typical_attributes: ["insured_id", "policyholder_id", "holder_id"]
+          issued_by:
+            kind: object_property
+            role: object_property
+            edge: issued_by
+            target_entity: Organization
+            typical_attributes: ["issuer_id", "carrier_id", "underwriter_id"]
       Loan:
         description: "Loans, mortgages, credit facilities, or lending agreements"
         keywords: ["loan", "mortgage", "credit_facility", "lending", "origination", "amortization"]
@@ -144,6 +381,43 @@ ontology:
           borrowed_by: { target: Person, cardinality: "many-to-one" }
           secures: { target: Account, cardinality: "many-to-one" }
           has_risk: { target: Risk, cardinality: "one-to-many" }
+        properties:
+          identifier:
+            kind: data_property
+            role: primary_key
+            typical_attributes: ["id", "loan_id"]
+          principal:
+            kind: data_property
+            role: measure
+            typical_attributes: ["principal", "loan_amount", "original_principal"]
+          rate:
+            kind: data_property
+            role: measure
+            typical_attributes: ["rate", "interest_rate", "apr"]
+          term:
+            kind: data_property
+            role: measure
+            typical_attributes: ["term", "term_months", "loan_term"]
+          status:
+            kind: data_property
+            role: dimension
+            typical_attributes: ["status", "loan_status", "state"]
+          origination_date:
+            kind: data_property
+            role: temporal
+            typical_attributes: ["origination_date", "originated_date", "funding_date"]
+          borrowed_by:
+            kind: object_property
+            role: object_property
+            edge: owned_by
+            target_entity: Person
+            typical_attributes: ["borrower_id", "customer_id", "applicant_id"]
+          issued_by:
+            kind: object_property
+            role: object_property
+            edge: issued_by
+            target_entity: Organization
+            typical_attributes: ["lender_id", "issuer_id", "originating_org_id"]
 
   domain_entity_affinity:
     banking:

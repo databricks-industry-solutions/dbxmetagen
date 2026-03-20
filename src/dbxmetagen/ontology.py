@@ -433,11 +433,12 @@ class OntologyConfig:
     metrics_table: str = "ontology_metrics"
     column_properties_table: str = "ontology_column_properties"
     relationships_table: str = "ontology_relationships"
+    discovery_diff_table: str = "discovery_diff_report"
     kb_table: str = "table_knowledge_base"
     column_kb_table: str = "column_knowledge_base"
     nodes_table: str = "graph_nodes"
     incremental: bool = True
-    entity_tag_key: str = "entity_type"
+    entity_tag_key: str = "ontology.entity_type"
     metadata_cols_per_chunk: int = 120
 
     @property
@@ -457,6 +458,10 @@ class OntologyConfig:
         return f"{self.catalog_name}.{self.schema_name}.{self.relationships_table}"
 
     @property
+    def fully_qualified_discovery_diff(self) -> str:
+        return f"{self.catalog_name}.{self.schema_name}.{self.discovery_diff_table}"
+
+    @property
     def fully_qualified_kb(self) -> str:
         return f"{self.catalog_name}.{self.schema_name}.{self.kb_table}"
 
@@ -467,6 +472,85 @@ class OntologyConfig:
     @property
     def fully_qualified_nodes(self) -> str:
         return f"{self.catalog_name}.{self.schema_name}.{self.nodes_table}"
+
+
+@dataclass
+class PropertyDefinition:
+    """Formal property definition from ontology bundle."""
+
+    name: str
+    kind: str  # "data_property" or "object_property"
+    role: str  # references property_roles taxonomy
+    typical_attributes: List[str] = field(default_factory=list)
+    edge: Optional[str] = None  # edge catalog name for object_properties
+    target_entity: Optional[Any] = None  # str or list of str
+    datatype: Optional[str] = None
+    composite_columns: Optional[List[str]] = None
+
+
+@dataclass
+class EdgeCatalogEntry:
+    """Entry in the global edge catalog."""
+
+    name: str
+    inverse: Optional[str] = None
+    domain: Optional[Any] = None  # str, list of str, or "Any"
+    range: Optional[Any] = None
+    symmetric: bool = False
+    category: str = "business"
+
+    def _matches(self, constraint: Any, entity_type: str) -> bool:
+        if constraint is None or constraint == "Any":
+            return True
+        if isinstance(constraint, list):
+            return entity_type in constraint
+        return constraint == entity_type
+
+    def matches_domain(self, entity_type: str) -> bool:
+        return self._matches(self.domain, entity_type)
+
+    def matches_range(self, entity_type: str) -> bool:
+        return self._matches(self.range, entity_type)
+
+    def validate_edge(self, src_entity: str, dst_entity: str) -> bool:
+        return self.matches_domain(src_entity) and self.matches_range(dst_entity)
+
+
+class EdgeCatalog:
+    """Utility wrapper around a dict of EdgeCatalogEntry objects."""
+
+    def __init__(self, entries: Dict[str, "EdgeCatalogEntry"]):
+        self._entries = entries
+
+    def get(self, name: str) -> Optional[EdgeCatalogEntry]:
+        return self._entries.get(name)
+
+    def get_inverse(self, name: str) -> Optional[str]:
+        entry = self._entries.get(name)
+        return entry.inverse if entry else None
+
+    def find_edge(self, src_entity: str, dst_entity: str) -> Optional[EdgeCatalogEntry]:
+        """Find the best matching edge for a (src, dst) entity pair."""
+        for entry in self._entries.values():
+            if entry.validate_edge(src_entity, dst_entity):
+                return entry
+        return None
+
+    def validate(self, edge_name: str, src_entity: str, dst_entity: str) -> Tuple[bool, str]:
+        """Validate an edge. Returns (valid, message)."""
+        entry = self._entries.get(edge_name)
+        if not entry:
+            return False, f"Edge '{edge_name}' not in catalog"
+        if not entry.validate_edge(src_entity, dst_entity):
+            return False, (
+                f"Edge '{edge_name}' domain/range violation: "
+                f"{src_entity}->{dst_entity} (expected {entry.domain}->{entry.range})"
+            )
+        return True, "ok"
+
+    @property
+    def entries(self) -> Dict[str, EdgeCatalogEntry]:
+        return self._entries
 
 
 @dataclass
@@ -481,6 +565,7 @@ class EntityDefinition:
     synonyms: List[str] = field(default_factory=list)
     business_questions: List[str] = field(default_factory=list)
     parent: Optional[str] = None
+    properties: List[PropertyDefinition] = field(default_factory=list)
 
 
 BUNDLE_DIR = "configurations/ontology_bundles"
@@ -505,6 +590,7 @@ def resolve_bundle_path(bundle_name: str) -> str:
     try:
         cwd = os.getcwd()
         candidates.append(os.path.join(cwd, BUNDLE_DIR, filename))
+        candidates.append(os.path.join(cwd, "..", BUNDLE_DIR, filename))
     except Exception:
         pass
 
@@ -680,6 +766,9 @@ class OntologyLoader:
         ``typical_relationships`` flat list.  When the new format is present
         it takes precedence; otherwise the flat list is converted into a
         dict keyed by relationship name with empty target/cardinality.
+
+        Also parses the ``properties`` block per entity into
+        ``PropertyDefinition`` objects for bundle-driven classification.
         """
         definitions = config.get("entities", {}).get("definitions", {})
 
@@ -700,6 +789,25 @@ class OntologyLoader:
                 for rel_name in details["typical_relationships"]:
                     rels[str(rel_name)] = {}
 
+            props: List[PropertyDefinition] = []
+            raw_props = details.get("properties", {})
+            if isinstance(raw_props, dict):
+                for prop_name, prop_info in raw_props.items():
+                    if not isinstance(prop_info, dict):
+                        continue
+                    props.append(
+                        PropertyDefinition(
+                            name=prop_name,
+                            kind=prop_info.get("kind", "data_property"),
+                            role=prop_info.get("role", "attribute"),
+                            typical_attributes=prop_info.get("typical_attributes", []),
+                            edge=prop_info.get("edge"),
+                            target_entity=prop_info.get("target_entity"),
+                            datatype=prop_info.get("datatype"),
+                            composite_columns=prop_info.get("composite_columns"),
+                        )
+                    )
+
             entities.append(
                 EntityDefinition(
                     name=name,
@@ -710,11 +818,35 @@ class OntologyLoader:
                     synonyms=details.get("synonyms", []),
                     business_questions=details.get("business_questions", []),
                     parent=details.get("parent"),
+                    properties=props,
                 )
             )
 
         logger.info(f"Loaded {len(entities)} entity definitions")
         return entities
+
+    @staticmethod
+    def get_property_roles(config: Dict[str, Any]) -> Dict[str, Dict[str, str]]:
+        """Extract the global property_roles taxonomy from config."""
+        return config.get("property_roles", {})
+
+    @staticmethod
+    def get_edge_catalog(config: Dict[str, Any]) -> Dict[str, EdgeCatalogEntry]:
+        """Extract the global edge catalog from config."""
+        raw = config.get("edge_catalog", {})
+        catalog: Dict[str, EdgeCatalogEntry] = {}
+        for edge_name, info in raw.items():
+            if not isinstance(info, dict):
+                continue
+            catalog[edge_name] = EdgeCatalogEntry(
+                name=edge_name,
+                inverse=info.get("inverse"),
+                domain=info.get("domain"),
+                range=info.get("range"),
+                symmetric=info.get("symmetric", False),
+                category=info.get("category", "business"),
+            )
+        return catalog
 
 
 class EntityDiscoverer:
@@ -753,6 +885,13 @@ class EntityDiscoverer:
         self._entity_names = [
             e.name for e in self.entity_definitions if e.name != "DataTable"
         ]
+        self._property_roles = OntologyLoader.get_property_roles(ontology_config)
+        self._edge_catalog_entries = OntologyLoader.get_edge_catalog(ontology_config)
+        self._bundle_geo_patterns = self._build_bundle_geo_patterns()
+        self._edge_catalog = EdgeCatalog(self._edge_catalog_entries)
+        self._entity_def_map: Dict[str, EntityDefinition] = {
+            e.name: e for e in self.entity_definitions
+        }
         self._stats = {
             "keyword_matches": 0,
             "ai_classifications": 0,
@@ -761,6 +900,24 @@ class EntityDiscoverer:
             "column_ai_classifications": 0,
             "column_fallback": 0,
         }
+
+    def _build_bundle_geo_patterns(self) -> frozenset:
+        """Collect keywords + typical_attributes from Geographic entities in the bundle."""
+        geo_names = set()
+        for e in self.entity_definitions:
+            if e.name.lower() in ("geographic", "geocoordinate", "adminregion",
+                                  "postalcode", "timezone", "address", "location"):
+                geo_names.add(e.name)
+            elif e.parent and e.parent.lower() in ("geographic", "location"):
+                geo_names.add(e.name)
+        if not geo_names:
+            return frozenset()
+        patterns: set = set()
+        for e in self.entity_definitions:
+            if e.name in geo_names:
+                patterns.update(k.lower() for k in e.keywords)
+                patterns.update(a.lower() for a in e.typical_attributes)
+        return frozenset(patterns)
 
     # ------------------------------------------------------------------
     # LLM helpers
@@ -1617,6 +1774,66 @@ class EntityDiscoverer:
                 return attr
         return stripped
 
+    def compute_conformance(
+        self,
+        table_entities: List[Dict[str, Any]],
+        column_properties: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Compare discovered columns vs bundle declared properties per table.
+
+        Returns per-table conformance metrics: declared_properties, matched_properties,
+        extra_columns, missing_properties, conformance_score, missing, extras.
+        """
+        results: List[Dict[str, Any]] = []
+        table_entity: Dict[str, str] = {}
+        for r in table_entities:
+            for t in r.get("source_tables") or []:
+                if r.get("entity_role") == "primary":
+                    table_entity[t] = r.get("entity_type", "")
+
+        cols_by_table: Dict[str, set] = {}
+        matched_by_table: Dict[str, set] = {}
+        for cp in column_properties:
+            tbl = cp.get("table_name")
+            col = cp.get("column_name")
+            if not tbl or not col:
+                continue
+            cols_by_table.setdefault(tbl, set()).add(col)
+            dm = cp.get("discovery_method") or ""
+            if "bundle" in dm.lower() or dm == "bundle_match":
+                matched_by_table.setdefault(tbl, set()).add(col)
+
+        for tbl, entity_type in table_entity.items():
+            if not entity_type:
+                continue
+            edef = self._entity_def_map.get(entity_type)
+            declared_attrs: set = set()
+            if edef and edef.properties:
+                for prop in edef.properties:
+                    for attr in prop.typical_attributes:
+                        declared_attrs.add(attr.lower())
+            declared_count = len(declared_attrs)
+            discovered = cols_by_table.get(tbl, set())
+            matched = matched_by_table.get(tbl, set())
+            matched_count = len(matched)
+            missing = [a for a in declared_attrs if not any(
+                c.lower() == a or a in c.lower() for c in discovered
+            )]
+            extras = [c for c in discovered if c.lower() not in declared_attrs]
+            score = matched_count / declared_count if declared_count > 0 else 1.0
+            results.append({
+                "table_name": tbl,
+                "entity_type": entity_type,
+                "declared_properties": declared_count,
+                "matched_properties": matched_count,
+                "extra_columns": len(extras),
+                "missing_properties": len(missing),
+                "conformance_score": round(score, 2),
+                "missing": missing[:20],
+                "extras": sorted(extras)[:20],
+            })
+        return results
+
     # ------------------------------------------------------------------
     # AI classification for columns (structured output + enforce)
     # ------------------------------------------------------------------
@@ -1915,6 +2132,8 @@ class OntologyBuilder:
             StructField("validated", BooleanType(), True),
             StructField("validation_notes", StringType(), True),
             StructField("ontology_bundle", StringType(), True),
+            StructField("bundle_version", StringType(), True),
+            StructField("discovery_timestamp", TimestampType(), True),
             StructField("created_at", TimestampType(), True),
             StructField("updated_at", TimestampType(), True),
             StructField("column_bindings", _BINDING_SCHEMA, True),
@@ -1930,13 +2149,19 @@ class OntologyBuilder:
             .get("_bundle_metadata", {})
             .get("tag_key")
         )
-        if bundle_tag_key and config.entity_tag_key == "entity_type":
+        if bundle_tag_key and config.entity_tag_key in ("entity_type", "ontology.entity_type"):
             config.entity_tag_key = bundle_tag_key
             logger.info(f"Using entity_tag_key '{bundle_tag_key}' from bundle metadata")
         affinity = load_domain_entity_affinity(self.ontology_config)
         self.discoverer = EntityDiscoverer(
             spark, config, self.ontology_config, domain_entity_affinity=affinity
         )
+
+    def _get_bundle_version(self) -> str:
+        """Get bundle version from ontology config (ontology.version or metadata.version)."""
+        ont = self.ontology_config.get("ontology", {}) or {}
+        meta = self.ontology_config.get("metadata", {}) or {}
+        return str(ont.get("version") or meta.get("version") or "1.0")
 
     def _insert_edges_safe(self, df: DataFrame, table: str):
         """Schema-safe INSERT into graph_edges: align columns + named SQL INSERT."""
@@ -1983,6 +2208,8 @@ class OntologyBuilder:
             "entity_role": "STRING",
             "is_canonical": "BOOLEAN",
             "discovery_confidence": "DOUBLE",
+            "bundle_version": "STRING",
+            "discovery_timestamp": "TIMESTAMP",
         }
         for col_name, col_type in new_columns.items():
             if col_name not in existing:
@@ -2054,7 +2281,39 @@ class OntologyBuilder:
         COMMENT 'Column-level property roles and orthogonal flags'
         """
         self.spark.sql(ddl)
+        existing = set()
+        try:
+            existing = {f.name for f in self.spark.table(self.config.fully_qualified_column_properties).schema.fields}
+        except Exception:
+            pass
+        for col_name, col_type in [("bundle_version", "STRING"), ("discovery_timestamp", "TIMESTAMP")]:
+            if col_name not in existing:
+                try:
+                    self.spark.sql(
+                        f"ALTER TABLE {self.config.fully_qualified_column_properties} ADD COLUMN {col_name} {col_type}"
+                    )
+                    logger.info("Added column %s to column properties table", col_name)
+                except Exception as e:
+                    logger.warning("Could not add column %s: %s", col_name, e)
         logger.info("Column properties table %s ready", self.config.fully_qualified_column_properties)
+
+    def create_discovery_diff_table(self) -> None:
+        """Create the discovery diff report table for storing run diffs."""
+        ddl = f"""
+        CREATE TABLE IF NOT EXISTS {self.config.fully_qualified_discovery_diff} (
+            report_id STRING NOT NULL,
+            catalog STRING,
+            schema STRING,
+            bundle_version STRING,
+            previous_version STRING,
+            timestamp TIMESTAMP,
+            diff_json STRING,
+            created_at TIMESTAMP
+        )
+        COMMENT 'Discovery diff reports from ontology runs'
+        """
+        self.spark.sql(ddl)
+        logger.info("Discovery diff table %s ready", self.config.fully_qualified_discovery_diff)
 
     def create_relationships_table(self) -> None:
         """Create the ontology relationships table for named entity-to-entity relationships."""
@@ -2078,7 +2337,11 @@ class OntologyBuilder:
         logger.info("Relationships table %s ready", self.config.fully_qualified_relationships)
 
     def _store_entities(
-        self, entities: List[Dict[str, Any]], view_name: str = "new_entities"
+        self,
+        entities: List[Dict[str, Any]],
+        view_name: str = "new_entities",
+        bundle_version: Optional[str] = None,
+        discovery_timestamp: Optional[datetime] = None,
     ) -> int:
         """Common logic to store a list of entity dicts via MERGE."""
         if not entities:
@@ -2086,6 +2349,8 @@ class OntologyBuilder:
 
         bundle_name = self.config.ontology_bundle or None
         now = datetime.now()
+        version = bundle_version or self._get_bundle_version()
+        ts = discovery_timestamp or now
         rows = []
         for entity in entities:
             attributes = entity.get("attributes", {})
@@ -2111,6 +2376,8 @@ class OntologyBuilder:
                     bool(entity.get("validated", False)),
                     entity.get("validation_notes"),
                     bundle_name,
+                    version,
+                    ts,
                     now,
                     now,
                     bindings,
@@ -2141,7 +2408,12 @@ class OntologyBuilder:
             )
             return 0
         entities = EntityDiscoverer.deduplicate_entities(entities)
-        stored = self._store_entities(entities, "new_table_entities")
+        now = datetime.now()
+        stored = self._store_entities(
+            entities, "new_table_entities",
+            bundle_version=self._get_bundle_version(),
+            discovery_timestamp=now,
+        )
         logger.info(f"Stored {stored} table-level entities (after dedup)")
         return stored
 
@@ -2152,7 +2424,12 @@ class OntologyBuilder:
             logger.info("No column-level entities discovered")
             return 0
         entities = EntityDiscoverer.deduplicate_entities(entities)
-        stored = self._store_entities(entities, "new_column_entities")
+        now = datetime.now()
+        stored = self._store_entities(
+            entities, "new_column_entities",
+            bundle_version=self._get_bundle_version(),
+            discovery_timestamp=now,
+        )
         logger.info(f"Stored {stored} column-level entities (after dedup)")
         return stored
 
@@ -2377,29 +2654,46 @@ class OntologyBuilder:
             return 0
 
     def apply_entity_tags(self) -> int:
-        """Apply entity tags to UC tables and columns from discovered entities."""
+        """Apply entity tags to UC tables and columns from discovered entities.
+
+        Also writes an audit log to ``{schema}.entity_tag_audit_log`` for
+        compliance traceability.
+        """
+        from datetime import datetime as _dt
+
         min_conf = self._validation_cfg.get("min_entity_confidence", 0.5)
         tag_key = self.config.entity_tag_key
+        bundle_ver = self._get_bundle_version()
         tagged = 0
+        audit_rows: list = []
+        now = _dt.utcnow().isoformat()
 
         # Table-level tags
         try:
             table_ents = self.spark.sql(
                 f"""
-                SELECT entity_type, EXPLODE(source_tables) AS table_name
+                SELECT entity_type, confidence,
+                       COALESCE(attributes['discovery_method'], 'unknown') AS discovery_method,
+                       EXPLODE(source_tables) AS table_name
                 FROM {self.config.fully_qualified_entities}
                 WHERE COALESCE(attributes['granularity'], 'table') = 'table'
                   AND confidence >= {min_conf}
             """
             ).collect()
             for row in table_ents:
+                action = "failed"
                 try:
                     self.spark.sql(
                         f"ALTER TABLE {row.table_name} SET TAGS ('{tag_key}' = '{row.entity_type}')"
                     )
                     tagged += 1
+                    action = "applied"
                 except Exception as e:
                     logger.warning("Failed to tag table %s: %s", row.table_name, e)
+                audit_rows.append((
+                    now, row.table_name, None, tag_key, row.entity_type,
+                    float(row.confidence), bundle_ver, row.discovery_method, action,
+                ))
         except Exception as e:
             logger.warning("Could not read table-level entities for tagging: %s", e)
 
@@ -2407,7 +2701,9 @@ class OntologyBuilder:
         try:
             col_ents = self.spark.sql(
                 f"""
-                SELECT entity_type, source_tables[0] AS table_name,
+                SELECT entity_type, confidence,
+                       COALESCE(attributes['discovery_method'], 'unknown') AS discovery_method,
+                       source_tables[0] AS table_name,
                        EXPLODE(source_columns) AS col_name
                 FROM {self.config.fully_qualified_entities}
                 WHERE attributes['granularity'] = 'column'
@@ -2416,21 +2712,45 @@ class OntologyBuilder:
             """
             ).collect()
             for row in col_ents:
+                action = "failed"
                 try:
                     self.spark.sql(
                         f"ALTER TABLE {row.table_name} ALTER COLUMN {row.col_name} "
                         f"SET TAGS ('{tag_key}' = '{row.entity_type}')"
                     )
                     tagged += 1
+                    action = "applied"
                 except Exception as e:
                     logger.warning(
                         "Failed to tag column %s.%s: %s",
-                        row.table_name,
-                        row.col_name,
-                        e,
+                        row.table_name, row.col_name, e,
                     )
+                audit_rows.append((
+                    now, row.table_name, row.col_name, tag_key, row.entity_type,
+                    float(row.confidence), bundle_ver, row.discovery_method, action,
+                ))
         except Exception as e:
             logger.warning("Could not read column-level entities for tagging: %s", e)
+
+        # Write audit log
+        if audit_rows:
+            audit_tbl = f"{self.config.catalog_name}.{self.config.schema_name}.entity_tag_audit_log"
+            try:
+                self.spark.sql(f"""
+                    CREATE TABLE IF NOT EXISTS {audit_tbl} (
+                        timestamp STRING, table_name STRING, column_name STRING,
+                        tag_key STRING, tag_value STRING, confidence DOUBLE,
+                        bundle_version STRING, discovery_method STRING, action STRING
+                    ) USING DELTA
+                """)
+                cols = ["timestamp", "table_name", "column_name", "tag_key",
+                        "tag_value", "confidence", "bundle_version",
+                        "discovery_method", "action"]
+                audit_df = self.spark.createDataFrame(audit_rows, cols)
+                audit_df.write.mode("append").saveAsTable(audit_tbl)
+                logger.info("Wrote %d rows to %s", len(audit_rows), audit_tbl)
+            except Exception as e:
+                logger.warning("Failed to write tag audit log: %s", e)
 
         logger.info("Applied %d entity tags to UC objects", tagged)
         return tagged
@@ -2449,6 +2769,124 @@ class OntologyBuilder:
             ORDER BY entity_count DESC
         """
         )
+
+    def get_geographic_coverage_report(self) -> DataFrame:
+        """Column-level geographic classification completeness report.
+
+        Joins column_properties, entities, and column_knowledge_base to produce
+        a per-column view showing whether each column has been classified as
+        geographic, non_geographic, or remains unreviewed.
+        """
+        cp = self.config.fully_qualified_column_properties
+        ent = self.config.fully_qualified_entities
+        ckb = f"{self.config.catalog_name}.{self.config.schema_name}.{self.config.column_kb_table}"
+
+        return self.spark.sql(f"""
+            WITH all_cols AS (
+                SELECT DISTINCT table_name, column_name FROM {ckb}
+                WHERE table_name IS NOT NULL AND column_name IS NOT NULL
+            ),
+            cp_roles AS (
+                SELECT table_name, column_name, property_role, confidence
+                FROM {cp}
+            ),
+            geo_entities AS (
+                SELECT EXPLODE(source_columns) AS col_name,
+                       source_tables[0] AS table_name,
+                       entity_type AS geo_entity_subtype,
+                       confidence AS entity_confidence
+                FROM {ent}
+                WHERE attributes['granularity'] = 'column'
+                  AND (entity_type IN ('Geographic','Address','GeoCoordinate',
+                       'AdminRegion','PostalCode','Timezone','Location')
+                       OR LOWER(entity_type) LIKE '%geo%'
+                       OR LOWER(entity_type) LIKE '%location%')
+            )
+            SELECT
+                ac.table_name,
+                ac.column_name,
+                cp.property_role,
+                cp.confidence AS property_confidence,
+                ge.geo_entity_subtype,
+                ge.entity_confidence,
+                CASE
+                    WHEN cp.property_role = 'geographic' OR ge.geo_entity_subtype IS NOT NULL
+                        THEN 'geographic'
+                    WHEN cp.property_role IS NOT NULL
+                        THEN 'non_geographic'
+                    ELSE 'unreviewed'
+                END AS classification_status
+            FROM all_cols ac
+            LEFT JOIN cp_roles cp
+                ON ac.table_name = cp.table_name AND ac.column_name = cp.column_name
+            LEFT JOIN geo_entities ge
+                ON ac.table_name = ge.table_name AND ac.column_name = ge.col_name
+            ORDER BY classification_status, ac.table_name, ac.column_name
+        """)
+
+    def reconcile_geographic_classifications(self, dry_run: bool = True) -> DataFrame:
+        """Find columns where property_role and entity classification disagree on geographic status.
+
+        Args:
+            dry_run: If True (default), only report conflicts. If False, update
+                     column_properties.property_role to 'geographic' for columns
+                     bound to geographic entities.
+
+        Returns:
+            DataFrame of conflicting rows.
+        """
+        cp = self.config.fully_qualified_column_properties
+        ent = self.config.fully_qualified_entities
+
+        conflicts = self.spark.sql(f"""
+            WITH geo_bound AS (
+                SELECT EXPLODE(source_columns) AS col_name,
+                       source_tables[0] AS table_name,
+                       entity_type
+                FROM {ent}
+                WHERE attributes['granularity'] = 'column'
+                  AND (entity_type IN ('Geographic','Address','GeoCoordinate',
+                       'AdminRegion','PostalCode','Timezone','Location')
+                       OR LOWER(entity_type) LIKE '%geo%'
+                       OR LOWER(entity_type) LIKE '%location%')
+            )
+            SELECT cp.table_name, cp.column_name, cp.property_role,
+                   gb.entity_type AS geo_entity_type,
+                   CASE
+                       WHEN gb.entity_type IS NOT NULL AND cp.property_role != 'geographic'
+                           THEN 'entity_says_geo_but_role_disagrees'
+                       WHEN gb.entity_type IS NULL AND cp.property_role = 'geographic'
+                           THEN 'role_says_geo_but_no_entity'
+                   END AS conflict_type
+            FROM {cp} cp
+            LEFT JOIN geo_bound gb
+                ON cp.table_name = gb.table_name AND cp.column_name = gb.col_name
+            WHERE (gb.entity_type IS NOT NULL AND cp.property_role != 'geographic')
+               OR (gb.entity_type IS NULL AND cp.property_role = 'geographic')
+        """)
+
+        conflict_count = conflicts.count()
+        logger.info("Geographic reconciliation: %d conflicts found (dry_run=%s)",
+                     conflict_count, dry_run)
+
+        if not dry_run and conflict_count > 0:
+            fix_rows = conflicts.filter("conflict_type = 'entity_says_geo_but_role_disagrees'").collect()
+            updated = 0
+            for row in fix_rows:
+                try:
+                    self.spark.sql(f"""
+                        UPDATE {cp}
+                        SET property_role = 'geographic'
+                        WHERE table_name = '{row.table_name}'
+                          AND column_name = '{row.column_name}'
+                    """)
+                    updated += 1
+                except Exception as e:
+                    logger.warning("Failed to reconcile %s.%s: %s",
+                                   row.table_name, row.column_name, e)
+            logger.info("Reconciliation updated %d column property roles to 'geographic'", updated)
+
+        return conflicts
 
     def discover_inter_entity_relationships(self) -> Dict[str, Any]:
         """Discover typed relationships between entities using declared relationships.
@@ -2970,8 +3408,92 @@ class OntologyBuilder:
                      len(primary_ids), len(referenced_ids))
         return updated
 
+    def _build_bundle_property_index(self, entity_type: str) -> Dict[str, Tuple[str, str, Optional[str], Optional[Any]]]:
+        """Build column_name_lower -> (role, property_name, edge, target_entity) from bundle properties."""
+        edef = self.discoverer._entity_def_map.get(entity_type)
+        if not edef or not edef.properties:
+            return {}
+        index: Dict[str, Tuple[str, str, Optional[str], Optional[Any]]] = {}
+        for prop in edef.properties:
+            for attr in prop.typical_attributes:
+                index[attr.lower()] = (prop.role, prop.name, prop.edge, prop.target_entity)
+        return index
+
+    def _heuristic_classify(
+        self,
+        col_lower: str,
+        dtype: str,
+        is_pk_column: bool,
+        linked_entity: Optional[str],
+        cls_type: str,
+    ) -> Tuple[str, str, float]:
+        """Heuristic fallback classification. Returns (role, discovery_method, confidence)."""
+        _GEO_PATTERNS_DEFAULT = frozenset({
+            "country", "country_code", "state", "state_code", "city", "postal_code",
+            "zip_code", "zipcode", "zip", "latitude", "longitude", "lat", "lon",
+            "geo_region", "region", "county", "province", "address",
+        })
+        _bundle_geo = getattr(self.discoverer, "_bundle_geo_patterns", frozenset())
+        _GEO_PATTERNS = _bundle_geo or _GEO_PATTERNS_DEFAULT
+        _HIERARCHY_PATTERNS = frozenset({
+            "year", "quarter", "month", "week", "day", "fiscal_year", "fiscal_quarter",
+            "product_category", "product_subcategory", "category", "subcategory",
+            "department", "division",
+        })
+        _TEXT_PATTERNS = frozenset({
+            "note_text", "notes", "clinical_summary", "summary", "comment",
+            "description", "text_content", "body", "narrative", "remarks",
+            "free_text", "memo", "abstract",
+        })
+        _SYSTEM_PATTERNS = frozenset({
+            "ingest_ts", "ingestion_timestamp", "batch_id", "row_hash", "source_system",
+            "etl_timestamp", "etl_batch_id", "load_date", "load_ts", "created_by_etl",
+            "upload_ts", "_rescued_data", "processing_timestamp",
+        })
+
+        if linked_entity:
+            return "object_property", "heuristic_strong", 0.80
+        if is_pk_column:
+            return "primary_key", "heuristic_strong", 0.85
+        if re.search(r'_(id|key)$', col_lower):
+            return "object_property", "heuristic_strong", 0.75
+        if cls_type in ("PII", "PHI"):
+            return "pii", "heuristic_strong", 0.85
+        if dtype == "BOOLEAN" or col_lower.startswith(("is_", "has_", "flag_")):
+            return "dimension", "heuristic_weak", 0.60
+        _is_geo = col_lower in _GEO_PATTERNS or col_lower.startswith("geo_")
+        _is_code = re.search(r'_(code|icd|cpt|loinc|ndc|drg)$', col_lower) or col_lower.endswith("_code")
+        if _bundle_geo:
+            if _is_geo:
+                return "geographic", "heuristic_strong", 0.75
+            if _is_code:
+                return "dimension", "heuristic_strong", 0.75
+        else:
+            if _is_code:
+                return "dimension", "heuristic_strong", 0.75
+            if _is_geo:
+                return "geographic", "heuristic_strong", 0.75
+        if col_lower in _SYSTEM_PATTERNS or col_lower.startswith("etl_"):
+            return "audit", "heuristic_strong", 0.80
+        if dtype in ("DATE", "TIMESTAMP", "TIMESTAMP_NTZ"):
+            return "temporal", "heuristic_strong", 0.80
+        if col_lower in _HIERARCHY_PATTERNS:
+            return "dimension", "heuristic_weak", 0.60
+        if dtype == "STRING" and col_lower in _TEXT_PATTERNS:
+            return "label", "heuristic_weak", 0.55
+        if dtype in ("INT", "INTEGER", "BIGINT", "LONG", "DOUBLE", "FLOAT", "DECIMAL"):
+            return "measure", "heuristic_weak", 0.60
+        return "dimension", "fallback", 0.40
+
     def classify_column_properties(self) -> int:
-        """Populate ontology_column_properties for every column in tables with a primary entity."""
+        """Populate ontology_column_properties for every column in tables with a primary entity.
+
+        Uses a two-tier classification strategy:
+        1. **Bundle match**: check column name against entity's formal property
+           definitions (typical_attributes). High confidence (0.95).
+        2. **Heuristic fallback**: regex/type-based cascade for unmatched columns.
+           Variable confidence (0.40-0.85).
+        """
         ent_table = self.config.fully_qualified_entities
         col_kb = self.config.fully_qualified_column_kb
         cp_table = self.config.fully_qualified_column_properties
@@ -2988,7 +3510,6 @@ class OntologyBuilder:
             logger.warning("classify_column_properties: cannot read primary entities: %s", e)
             return 0
 
-        # Build lookup: table_name -> (entity_id, entity_type, source_columns)
         table_primary: Dict[str, Dict] = {}
         for r in primary_ents:
             for t in r.source_tables or []:
@@ -2998,7 +3519,6 @@ class OntologyBuilder:
                     "source_columns": set(r.source_columns or []),
                 }
 
-        # Build lookup of column-level (referenced) entities for link detection
         try:
             ref_ents = self.spark.sql(f"""
                 SELECT entity_type, source_tables, source_columns
@@ -3018,26 +3538,12 @@ class OntologyBuilder:
             logger.info("classify_column_properties: no primary entities found")
             return 0
 
-        _GEO_PATTERNS = frozenset({
-            "country", "country_code", "state", "state_code", "city", "postal_code",
-            "zip_code", "zipcode", "zip", "latitude", "longitude", "lat", "lon",
-            "geo_region", "region", "county", "province", "address",
-        })
-        _HIERARCHY_PATTERNS = frozenset({
-            "year", "quarter", "month", "week", "day", "fiscal_year", "fiscal_quarter",
-            "product_category", "product_subcategory", "category", "subcategory",
-            "department", "division",
-        })
-        _TEXT_PATTERNS = frozenset({
-            "note_text", "notes", "clinical_summary", "summary", "comment",
-            "description", "text_content", "body", "narrative", "remarks",
-            "free_text", "memo", "abstract",
-        })
-        _SYSTEM_PATTERNS = frozenset({
-            "ingest_ts", "ingestion_timestamp", "batch_id", "row_hash", "source_system",
-            "etl_timestamp", "etl_batch_id", "load_date", "load_ts", "created_by_etl",
-            "upload_ts", "_rescued_data", "processing_timestamp",
-        })
+        # Pre-build bundle property indices per entity type
+        bundle_indices: Dict[str, Dict] = {}
+        for pe_info in table_primary.values():
+            etype = pe_info["entity_type"]
+            if etype not in bundle_indices:
+                bundle_indices[etype] = self._build_bundle_property_index(etype)
 
         tbl_list = ",".join(f"'{t}'" for t in table_primary)
         try:
@@ -3053,6 +3559,7 @@ class OntologyBuilder:
 
         now = datetime.utcnow()
         props = []
+        bundle_match_count = 0
         for c in columns:
             tbl = c.table_name
             col = c.column_name
@@ -3064,57 +3571,52 @@ class OntologyBuilder:
             linked = col_entity_map.get((tbl, col))
             col_lower = col.lower()
             cls_type = (getattr(c, "classification_type", None) or "").upper()
-
-            # Orthogonal flags
             is_sensitive = cls_type in ("PII", "PHI", "PCI")
             is_surrogate_key = bool(
                 re.search(r'_(sk|surrogate)$', col_lower)
-                or col_lower.endswith("_hash")
-                and re.search(r'_(id|key)$', col_lower)
+                or (col_lower.endswith("_hash") and re.search(r'_(id|key)$', col_lower))
             )
             is_semi_structured = dtype in ("MAP", "STRUCT", "ARRAY", "VARIANT")
 
-            # Role classification (order matters -- more specific first)
-            if linked:
-                role = "link"
-            elif re.search(r'_(id|key)$', col_lower) and col_lower in {cc.lower() for cc in pe["source_columns"]}:
-                role = "identifier"
-            elif re.search(r'_(id|key)$', col_lower) and linked is None:
-                role = "foreign_key"
-            elif dtype == "BOOLEAN" or col_lower.startswith(("is_", "has_", "flag_")):
-                role = "boolean_flag"
-            elif re.search(r'_(code|icd|cpt|loinc|ndc|drg)$', col_lower) or col_lower.endswith("_code"):
-                role = "code"
-            elif col_lower in _GEO_PATTERNS or col_lower.startswith("geo_"):
-                role = "geo"
-            elif col_lower in _SYSTEM_PATTERNS or col_lower.startswith("etl_"):
-                role = "system_metadata"
-            elif dtype in ("DATE", "TIMESTAMP", "TIMESTAMP_NTZ"):
-                role = "timestamp"
-            elif col_lower in _HIERARCHY_PATTERNS:
-                role = "hierarchy_level"
-            elif dtype == "STRING" and col_lower in _TEXT_PATTERNS:
-                role = "text_freeform"
-            elif dtype in ("INT", "INTEGER", "BIGINT", "LONG", "DOUBLE", "FLOAT", "DECIMAL"):
-                role = "measure"
+            # Tier 1: Bundle property match
+            bindex = bundle_indices.get(pe["entity_type"], {})
+            bundle_hit = bindex.get(col_lower)
+
+            if bundle_hit:
+                role, prop_name, edge, target_entity = bundle_hit
+                linked_from_bundle = target_entity
+                if isinstance(linked_from_bundle, list):
+                    linked_from_bundle = linked_from_bundle[0] if linked_from_bundle else None
+                confidence = 0.95
+                discovery_method = "bundle_match"
+                if role == "object_property" and linked_from_bundle:
+                    linked = str(linked_from_bundle)
+                bundle_match_count += 1
             else:
-                role = "attribute"
+                # Tier 2: Heuristic fallback
+                is_pk = col_lower in {cc.lower() for cc in pe["source_columns"]}
+                role, discovery_method, confidence = self._heuristic_classify(
+                    col_lower, dtype, is_pk, linked, cls_type
+                )
+                prop_name = col
 
             props.append({
                 "property_id": str(uuid.uuid4()),
                 "table_name": tbl,
                 "column_name": col,
-                "property_name": col,
+                "property_name": prop_name,
                 "property_role": role,
                 "owning_entity_id": pe["entity_id"],
                 "owning_entity_type": pe["entity_type"],
                 "linked_entity_type": linked,
-                "confidence": 1.0 if role in ("identifier", "link") else 0.8,
+                "confidence": confidence,
                 "auto_discovered": True,
-                "discovery_method": "heuristic",
+                "discovery_method": discovery_method,
                 "is_sensitive": is_sensitive,
                 "is_surrogate_key": is_surrogate_key,
                 "is_semi_structured": is_semi_structured,
+                "bundle_version": self._get_bundle_version(),
+                "discovery_timestamp": now,
                 "created_at": now,
                 "updated_at": now,
             })
@@ -3123,20 +3625,61 @@ class OntologyBuilder:
             return 0
 
         df = self.spark.createDataFrame(props)
-        # Overwrite existing data for these tables
         df.write.mode("overwrite").saveAsTable(cp_table)
-        logger.info("classify_column_properties: wrote %d column properties", len(props))
+        logger.info(
+            "classify_column_properties: wrote %d properties (%d bundle_match, %d heuristic/fallback)",
+            len(props), bundle_match_count, len(props) - bundle_match_count,
+        )
         return len(props)
 
+    def _resolve_edge_name(self, src_type: str, dst_type: str, column_name: Optional[str] = None) -> str:
+        """Resolve the best edge name for a (src, dst) entity pair using edge catalog.
+
+        Priority:
+        1. Bundle property definition (if column_name matches a typed object_property)
+        2. Entity relationship config (legacy relationships block)
+        3. Edge catalog domain/range match
+        4. Fallback to 'references'
+        """
+        catalog = self.discoverer._edge_catalog
+        edef = self.discoverer._entity_def_map.get(src_type)
+
+        # Check bundle property definitions for column-level edge name
+        if edef and column_name:
+            col_lower = (column_name or "").lower()
+            for prop in edef.properties:
+                if prop.kind == "object_property" and prop.edge:
+                    if col_lower in [a.lower() for a in prop.typical_attributes]:
+                        entry = catalog.get(prop.edge)
+                        if entry and entry.validate_edge(src_type, dst_type):
+                            return prop.edge
+
+        # Check legacy relationships block
+        if edef:
+            for rn, ri in edef.relationships.items():
+                if ri.get("target") == dst_type:
+                    if catalog.get(rn):
+                        return rn
+                    return rn
+
+        # Search edge catalog by domain/range match
+        match = catalog.find_edge(src_type, dst_type)
+        if match:
+            return match.name
+
+        return "references"
+
     def discover_named_relationships(self) -> int:
-        """Populate ontology_relationships from FK predictions and column link patterns."""
+        """Populate ontology_relationships from FK predictions and column link patterns.
+
+        Uses the edge catalog for named relationship resolution and domain/range validation.
+        """
         ent_table = self.config.fully_qualified_entities
         fk_table = f"{self.config.catalog_name}.{self.config.schema_name}.fk_predictions"
         rels_table = self.config.fully_qualified_relationships
 
         self.create_relationships_table()
 
-        # Build entity lookup: table -> primary entity type
         try:
             primary_rows = self.spark.sql(f"""
                 SELECT entity_type, EXPLODE(source_tables) AS table_name
@@ -3154,6 +3697,8 @@ class OntologyBuilder:
         rels: List[Dict] = []
         seen: set = set()
         now = datetime.utcnow()
+        catalog = self.discoverer._edge_catalog
+        validation_warnings: List[str] = []
 
         # From FK predictions
         try:
@@ -3175,13 +3720,10 @@ class OntologyBuilder:
                 continue
             seen.add(key)
 
-            rel_name = "references"
-            for edef in self.discoverer.entity_definitions:
-                if edef.name == src_type:
-                    for rn, ri in edef.relationships.items():
-                        if ri.get("target") == dst_type:
-                            rel_name = rn
-                            break
+            rel_name = self._resolve_edge_name(src_type, dst_type, fk.src_column)
+            valid, msg = catalog.validate(rel_name, src_type, dst_type)
+            if not valid and rel_name != "references":
+                validation_warnings.append(msg)
 
             rels.append({
                 "relationship_id": str(uuid.uuid4()),
@@ -3197,13 +3739,13 @@ class OntologyBuilder:
                 "updated_at": now,
             })
 
-        # From column_properties link columns
+        # From column_properties object_property columns (and legacy 'link' role)
         cp_table = self.config.fully_qualified_column_properties
         try:
             link_rows = self.spark.sql(f"""
                 SELECT DISTINCT owning_entity_type, linked_entity_type, column_name, table_name
                 FROM {cp_table}
-                WHERE property_role = 'link' AND linked_entity_type IS NOT NULL
+                WHERE property_role IN ('object_property', 'link') AND linked_entity_type IS NOT NULL
             """).collect()
         except Exception:
             link_rows = []
@@ -3218,13 +3760,10 @@ class OntologyBuilder:
                 continue
             seen.add(key)
 
-            rel_name = "references"
-            for edef in self.discoverer.entity_definitions:
-                if edef.name == src_type:
-                    for rn, ri in edef.relationships.items():
-                        if ri.get("target") == dst_type:
-                            rel_name = rn
-                            break
+            rel_name = self._resolve_edge_name(src_type, dst_type, lr.column_name)
+            valid, msg = catalog.validate(rel_name, src_type, dst_type)
+            if not valid and rel_name != "references":
+                validation_warnings.append(msg)
 
             rels.append({
                 "relationship_id": str(uuid.uuid4()),
@@ -3240,7 +3779,7 @@ class OntologyBuilder:
                 "updated_at": now,
             })
 
-        # From config hierarchy (is_a)
+        # From config hierarchy (subclass_of)
         for edef in self.discoverer.entity_definitions:
             parent = edef.parent
             if parent:
@@ -3250,7 +3789,7 @@ class OntologyBuilder:
                     rels.append({
                         "relationship_id": str(uuid.uuid4()),
                         "src_entity_type": edef.name,
-                        "relationship_name": "is_a",
+                        "relationship_name": "subclass_of",
                         "dst_entity_type": parent,
                         "cardinality": "1:1",
                         "evidence_column": None,
@@ -3260,6 +3799,10 @@ class OntologyBuilder:
                         "created_at": now,
                         "updated_at": now,
                     })
+
+        if validation_warnings:
+            for w in validation_warnings[:10]:
+                logger.warning("edge_catalog validation: %s", w)
 
         if not rels:
             logger.info("discover_named_relationships: no relationships found")
@@ -3283,7 +3826,109 @@ class OntologyBuilder:
         logger.info("discover_named_relationships: wrote %d relationships", len(rels))
         return len(rels)
 
-    def run(self, apply_tags: bool = False) -> Dict[str, Any]:
+    def _snapshot_ontology_state(self) -> Dict[str, Any]:
+        """Read current ontology tables into Python dicts for diff comparison."""
+        snapshot: Dict[str, Any] = {"entities": {}, "columns": {}, "relationships": set()}
+        ent_tbl = self.config.fully_qualified_entities
+        cp_tbl = self.config.fully_qualified_column_properties
+        rel_tbl = self.config.fully_qualified_relationships
+        try:
+            for r in self.spark.sql(f"SELECT entity_name, entity_type, source_tables, confidence, "
+                                    f"COALESCE(attributes['granularity'], 'table') AS granularity "
+                                    f"FROM {ent_tbl}").collect():
+                key = (r.entity_name, ",".join(sorted(r.source_tables or [])), r.granularity)
+                snapshot["entities"][key] = {"name": r.entity_name, "type": r.entity_type, "confidence": float(r.confidence or 0)}
+        except Exception as e:
+            logger.debug("Snapshot entities failed: %s", e)
+        try:
+            for r in self.spark.sql(f"SELECT table_name, column_name, property_role, confidence "
+                                    f"FROM {cp_tbl}").collect():
+                key = (r.table_name, r.column_name)
+                snapshot["columns"][key] = {"role": r.property_role, "confidence": float(r.confidence or 0)}
+        except Exception as e:
+            logger.debug("Snapshot columns failed: %s", e)
+        try:
+            for r in self.spark.sql(f"SELECT src_entity_type, relationship_name, dst_entity_type "
+                                    f"FROM {rel_tbl}").collect():
+                snapshot["relationships"].add((r.src_entity_type, r.relationship_name, r.dst_entity_type))
+        except Exception as e:
+            logger.debug("Snapshot relationships failed: %s", e)
+        return snapshot
+
+    def generate_discovery_diff(
+        self,
+        before: Dict[str, Any],
+        after: Dict[str, Any],
+        bundle_version: str,
+        previous_version: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Compare before/after ontology snapshots and return a diff report."""
+        ts = datetime.now().isoformat()
+        entity_changes: Dict[str, List] = {"added": [], "removed": [], "changed": []}
+        col_changes: Dict[str, List] = {"role_changed": [], "new_columns": [], "removed_columns": []}
+        rel_changes: Dict[str, List] = {"added": [], "removed": []}
+
+        before_ents = before.get("entities", {})
+        after_ents = after.get("entities", {})
+        for key in set(after_ents) - set(before_ents):
+            entity_changes["added"].append(after_ents[key]["name"])
+        for key in set(before_ents) - set(after_ents):
+            entity_changes["removed"].append(before_ents[key]["name"])
+        entity_changes["added"] = sorted(set(entity_changes["added"]))
+        entity_changes["removed"] = sorted(set(entity_changes["removed"]))
+        for key in set(before_ents) & set(after_ents):
+            b, a = before_ents[key], after_ents[key]
+            if abs((b.get("confidence") or 0) - (a.get("confidence") or 0)) > 0.001:
+                entity_changes["changed"].append({
+                    "name": a["name"], "field": "confidence",
+                    "old": b.get("confidence"), "new": a.get("confidence"),
+                })
+
+        before_cols = before.get("columns", {})
+        after_cols = after.get("columns", {})
+        for key in set(after_cols) - set(before_cols):
+            col = after_cols[key]
+            col_changes["new_columns"].append({"table": key[0], "column": key[1], "role": col.get("role")})
+        for key in set(before_cols) - set(after_cols):
+            col = before_cols[key]
+            col_changes["removed_columns"].append({"table": key[0], "column": key[1], "role": col.get("role")})
+        for key in set(before_cols) & set(after_cols):
+            if (before_cols[key].get("role") or "") != (after_cols[key].get("role") or ""):
+                col_changes["role_changed"].append({
+                    "table": key[0], "column": key[1],
+                    "old_role": before_cols[key].get("role"), "new_role": after_cols[key].get("role"),
+                })
+
+        before_rels = before.get("relationships", set())
+        after_rels = after.get("relationships", set())
+        rel_changes["added"] = [{"src": r[0], "rel": r[1], "dst": r[2]} for r in after_rels - before_rels]
+        rel_changes["removed"] = [{"src": r[0], "rel": r[1], "dst": r[2]} for r in before_rels - after_rels]
+
+        return {
+            "bundle_version": bundle_version,
+            "previous_version": previous_version,
+            "timestamp": ts,
+            "entity_changes": entity_changes,
+            "column_changes": col_changes,
+            "relationship_changes": rel_changes,
+        }
+
+    def _store_discovery_diff(self, diff: Dict[str, Any]) -> None:
+        """Store discovery diff report in discovery_diff_report table."""
+        self.create_discovery_diff_table()
+        report_id = str(uuid.uuid4())
+        diff_json = json.dumps(diff).replace("'", "''")
+        esc_bv = (diff.get("bundle_version") or "").replace("'", "''")
+        esc_pv = (str(diff.get("previous_version") or "")).replace("'", "''")
+        self.spark.sql(f"""
+            INSERT INTO {self.config.fully_qualified_discovery_diff}
+            (report_id, catalog, schema, bundle_version, previous_version, timestamp, diff_json, created_at)
+            VALUES ('{report_id}', '{self.config.catalog_name}', '{self.config.schema_name}',
+                    '{esc_bv}', '{esc_pv}', current_timestamp(), '{diff_json}', current_timestamp())
+        """)
+        logger.info("Stored discovery diff report %s", report_id)
+
+    def run(self, apply_tags=False):
         """Execute the ontology building pipeline.
 
         Args:
@@ -3300,6 +3945,18 @@ class OntologyBuilder:
 
         logger.info("Starting ontology build")
         pipeline_start = _time.time()
+
+        before_snapshot = self._snapshot_ontology_state()
+        previous_version = None
+        try:
+            row = self.spark.sql(
+                f"SELECT MAX(bundle_version) AS v FROM {self.config.fully_qualified_entities} "
+                "WHERE bundle_version IS NOT NULL"
+            ).collect()
+            if row and row[0].v:
+                previous_version = str(row[0].v)
+        except Exception:
+            pass
 
         _step("create_entities_table", self.create_entities_table)
         _step("create_metrics_table", self.create_metrics_table)
@@ -3353,6 +4010,16 @@ class OntologyBuilder:
         total_elapsed = _time.time() - pipeline_start
         logger.info(f"[timing] ontology_build_total: {total_elapsed:.1f}s")
 
+        after_snapshot = self._snapshot_ontology_state()
+        bundle_version = self._get_bundle_version()
+        diff = self.generate_discovery_diff(
+            before_snapshot, after_snapshot, bundle_version, previous_version
+        )
+        try:
+            self._store_discovery_diff(diff)
+        except Exception as e:
+            logger.warning("Could not store discovery diff: %s", e)
+
         return {
             "entities_discovered": table_discovered,
             "column_entities_discovered": column_discovered,
@@ -3362,6 +4029,7 @@ class OntologyBuilder:
             "roles_classified": roles_classified,
             "column_properties": col_props,
             "named_relationships": named_rels,
+            "discovery_diff": diff,
         }
 
 
@@ -3373,7 +4041,7 @@ def build_ontology(
     apply_tags: bool = False,
     ontology_bundle: str = "",
     incremental: bool = True,
-    entity_tag_key: str = "entity_type",
+    entity_tag_key: str = "ontology.entity_type",
 ) -> Dict[str, Any]:
     """Convenience function to build the ontology.
 
