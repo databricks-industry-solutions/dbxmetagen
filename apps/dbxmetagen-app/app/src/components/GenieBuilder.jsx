@@ -9,9 +9,18 @@ const STAGES = {
   initializing: 'Initializing agent...',
   agent_running: 'Agent generating configuration...',
   generating: 'Generating SQL & instructions...',
+  tool_round: 'Agent validating SQL...',
   parsing: 'Parsing output...',
+  recovering: 'Recovering partial result...',
   done: 'Complete',
   error: 'Failed',
+}
+
+function formatElapsed(seconds) {
+  if (!seconds && seconds !== 0) return ''
+  const m = Math.floor(seconds / 60)
+  const s = seconds % 60
+  return m > 0 ? `${m}m ${s}s` : `${s}s`
 }
 
 export default function GenieBuilder() {
@@ -35,6 +44,18 @@ export default function GenieBuilder() {
   const [error, setError] = useState(null)
   const [loading, setLoading] = useState(false)
   const pollRef = useRef(null)
+  const [elapsed, setElapsed] = useState(0)
+  const timerRef = useRef(null)
+
+  useEffect(() => {
+    if (loading) {
+      setElapsed(0)
+      timerRef.current = setInterval(() => setElapsed(e => e + 1), 1000)
+    } else {
+      if (timerRef.current) clearInterval(timerRef.current)
+    }
+    return () => { if (timerRef.current) clearInterval(timerRef.current) }
+  }, [loading])
 
   useEffect(() => {
     (async () => {
@@ -138,9 +159,10 @@ export default function GenieBuilder() {
         setResult(data.result)
         setEditedJson(JSON.stringify(data.result, null, 2))
         setLoading(false)
+        setError(null)
       } else if (data.status === 'error') {
         clearInterval(pollRef.current)
-        setError(data.error || 'Agent failed')
+        setError(null)
         setLoading(false)
       }
     }, 3000)
@@ -342,18 +364,52 @@ export default function GenieBuilder() {
       {/* Progress */}
       {taskStatus && taskStatus.status === 'running' && (
         <div className="bg-orange-50 dark:bg-orange-900/30 border border-orange-200 dark:border-red-700 rounded-lg px-4 py-3">
-          <div className="flex items-center gap-2">
-            <div className="w-4 h-4 border-2 border-orange-400 border-t-transparent rounded-full animate-spin" />
-            <span className="text-sm font-medium text-red-700 dark:text-orange-300">
-              {STAGES[taskStatus.stage] || taskStatus.stage}
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <div className="w-4 h-4 border-2 border-orange-400 border-t-transparent rounded-full animate-spin" />
+              <span className="text-sm font-medium text-red-700 dark:text-orange-300">
+                {STAGES[taskStatus.stage] || taskStatus.stage}
+              </span>
+              {taskStatus.round > 0 && (
+                <span className="text-xs px-1.5 py-0.5 rounded bg-orange-200 dark:bg-orange-800 text-orange-700 dark:text-orange-200">
+                  Round {taskStatus.round}
+                </span>
+              )}
+            </div>
+            <span className="text-xs text-slate-500 dark:text-slate-400 tabular-nums">
+              {formatElapsed(taskStatus.elapsed_seconds ?? elapsed)}
             </span>
           </div>
+        </div>
+      )}
+
+      {/* Error detail (shown instead of generic banner when we have diagnostics) */}
+      {taskStatus && taskStatus.status === 'error' && !loading && (
+        <div className="bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-700 rounded-lg px-4 py-3 space-y-1.5">
+          <p className="text-sm font-medium text-red-700 dark:text-red-300">
+            {taskStatus.error || 'Generation failed'}
+          </p>
+          {(taskStatus.elapsed_seconds || taskStatus.rounds_completed) ? (
+            <p className="text-xs text-red-600/70 dark:text-red-400/70">
+              Completed {taskStatus.rounds_completed ?? 0} tool round(s) in {formatElapsed(taskStatus.elapsed_seconds ?? elapsed)}.
+            </p>
+          ) : null}
         </div>
       )}
 
       {/* Result JSON */}
       {result && (
         <div className="space-y-4">
+          {taskStatus && taskStatus.status === 'done' && taskStatus.elapsed_seconds != null && (
+            <div className="bg-emerald-50 dark:bg-emerald-900/30 border border-emerald-200 dark:border-emerald-700 rounded-lg px-4 py-2 text-xs text-emerald-700 dark:text-emerald-300">
+              Generated in {formatElapsed(taskStatus.elapsed_seconds)} ({taskStatus.rounds_completed ?? 0} tool rounds)
+              {taskStatus.warnings?.length > 0 && (
+                <span className="ml-2 text-amber-600 dark:text-amber-400">
+                  -- {taskStatus.warnings.length} quality warning(s)
+                </span>
+              )}
+            </div>
+          )}
           <div className="card p-5">
             <h3 className="text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">Generated Configuration</h3>
             <textarea

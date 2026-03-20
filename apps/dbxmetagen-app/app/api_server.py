@@ -12,12 +12,13 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import yaml
+from collections import Counter
 from typing import Optional, Union
 from contextlib import asynccontextmanager
 
 from cachetools import TTLCache, cached
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form
-from fastapi.responses import StreamingResponse
+from fastapi import Body, FastAPI, HTTPException, Query, UploadFile, File, Form
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -157,6 +158,11 @@ def _safe_sql_str(s: Optional[str]) -> str:
     if s is None:
         return "NULL"
     return "'" + str(s).replace("\\", "\\\\").replace("'", "''") + "'"
+
+
+def _esc_sql(s) -> str:
+    """Escape single quotes for use inside SQL string literal."""
+    return str(s or "").replace("'", "''")
 
 
 _labeled_table_ensured = False
@@ -1702,6 +1708,55 @@ async def import_reviewed_upload(file: UploadFile = File(...)):
 # ---------------------------------------------------------------------------
 
 
+@app.get("/api/ontology/discovery-diff")
+def get_discovery_diff(
+    catalog: Optional[str] = Query(None, description="Catalog name (default: env CATALOG_NAME)"),
+    schema: Optional[str] = Query(None, description="Schema name (default: env SCHEMA_NAME)"),
+):
+    """Return the latest discovery diff report for the given catalog/schema."""
+    cat = catalog or CATALOG
+    sch = schema or SCHEMA
+    if not cat or not sch:
+        raise HTTPException(400, "catalog and schema required (or set CATALOG_NAME, SCHEMA_NAME)")
+    if not _SAFE_IDENT_RE.match(cat) or not _SAFE_IDENT_RE.match(sch):
+        raise HTTPException(400, "Invalid catalog or schema")
+    tbl = f"`{cat}`.`{sch}`.`discovery_diff_report`"
+    try:
+        rows = execute_sql(
+            f"SELECT diff_json, bundle_version, previous_version, timestamp "
+            f"FROM {tbl} ORDER BY created_at DESC LIMIT 1",
+            timeout=15,
+        )
+    except Exception as e:
+        if _NOT_FOUND_RE.search(str(e)):
+            raise HTTPException(404, f"discovery_diff_report not found: {e}")
+        raise HTTPException(500, str(e))
+    if not rows:
+        return {
+            "bundle_version": None,
+            "previous_version": None,
+            "timestamp": None,
+            "entity_changes": {"added": [], "removed": [], "changed": []},
+            "column_changes": {"role_changed": [], "new_columns": [], "removed_columns": []},
+            "relationship_changes": {"added": [], "removed": []},
+        }
+    r = rows[0]
+    diff_json = r.get("diff_json")
+    if diff_json:
+        try:
+            return json.loads(diff_json)
+        except Exception:
+            pass
+    return {
+        "bundle_version": r.get("bundle_version"),
+        "previous_version": r.get("previous_version"),
+        "timestamp": r.get("timestamp"),
+        "entity_changes": {"added": [], "removed": [], "changed": []},
+        "column_changes": {"role_changed": [], "new_columns": [], "removed_columns": []},
+        "relationship_changes": {"added": [], "removed": []},
+    }
+
+
 @app.get("/api/ontology/entities")
 def get_ontology_entities(limit: int = 200):
     q = f"SELECT * FROM {fq('ontology_entities')} ORDER BY confidence DESC LIMIT {limit}"
@@ -1817,6 +1872,346 @@ def get_ontology_bundles():
     return _list_bundles_local()
 
 
+@app.get("/api/ontology/edge-catalog")
+def get_edge_catalog(
+    catalog: Optional[str] = Query(None, description="Catalog name (default: env CATALOG_NAME)"),
+    schema: Optional[str] = Query(None, description="Schema name (default: env SCHEMA_NAME)"),
+    bundle: str = Query("general", description="Ontology bundle key for edge definitions"),
+):
+    """Return the edge catalog from the bundle YAML and ontology_relationships counts."""
+    cat = catalog or CATALOG
+    sch = schema or SCHEMA
+    if not cat or not sch:
+        return {"edges": []}
+    _validate_filter(cat, "catalog")
+    _validate_filter(sch, "schema")
+    rel_table = f"`{cat}`.`{sch}`.`ontology_relationships`"
+
+    path = _resolve_bundle_path_local(bundle)
+    ec = {}
+    if os.path.exists(path):
+        try:
+            with open(path, "r") as f:
+                raw = yaml.safe_load(f)
+            ec = raw.get("ontology", {}).get("edge_catalog", {}) or {}
+        except Exception as e:
+            logger.warning("edge-catalog YAML load failed: %s", e)
+
+    rel_counts = {}
+    rel_valid_invalid = {}
+    try:
+        rel_rows = execute_sql(
+            f"SELECT relationship_name, COUNT(*) as cnt, "
+            f"SUM(CASE WHEN validated = true THEN 1 ELSE 0 END) as valid_cnt "
+            f"FROM {rel_table} GROUP BY relationship_name",
+            timeout=15,
+        )
+        for r in rel_rows:
+            name = r["relationship_name"]
+            cnt = r["cnt"]
+            valid = r.get("valid_cnt") or 0
+            rel_counts[name] = cnt
+            rel_valid_invalid[name] = {"valid": int(valid), "invalid": int(cnt - valid)}
+    except Exception:
+        try:
+            rel_rows = execute_sql(
+                f"SELECT relationship_name, COUNT(*) as cnt FROM {rel_table} GROUP BY relationship_name",
+                timeout=15,
+            )
+            for r in rel_rows:
+                rel_counts[r["relationship_name"]] = r["cnt"]
+                rel_valid_invalid[r["relationship_name"]] = {"valid": r["cnt"], "invalid": 0}
+        except Exception:
+            pass
+
+    edges = []
+    seen = set()
+    for name, spec in (ec or {}).items():
+        seen.add(name)
+        vi = rel_valid_invalid.get(name, {"valid": 0, "invalid": 0})
+        cnt = rel_counts.get(name, 0)
+        if isinstance(spec, dict):
+            edges.append({
+                "name": name,
+                "inverse": spec.get("inverse"),
+                "domain": spec.get("domain"),
+                "range": spec.get("range"),
+                "symmetric": spec.get("symmetric", False),
+                "category": spec.get("category", "structural"),
+                "count": cnt,
+                "valid": vi["valid"],
+                "invalid": vi["invalid"],
+            })
+        else:
+            edges.append({
+                "name": name,
+                "inverse": None,
+                "domain": None,
+                "range": None,
+                "symmetric": False,
+                "category": "structural",
+                "count": cnt,
+                "valid": vi["valid"],
+                "invalid": vi["invalid"],
+            })
+
+    for name, cnt in rel_counts.items():
+        if name not in seen:
+            vi = rel_valid_invalid.get(name, {"valid": cnt, "invalid": 0})
+            edges.append({
+                "name": name,
+                "inverse": None,
+                "domain": None,
+                "range": None,
+                "symmetric": False,
+                "category": "structural",
+                "count": cnt,
+                "valid": vi["valid"],
+                "invalid": vi["invalid"],
+            })
+    return {"edges": edges}
+
+
+@app.get("/api/ontology/entities-summary")
+def get_ontology_entities_summary(
+    catalog: Optional[str] = Query(None),
+    schema: Optional[str] = Query(None),
+):
+    """Return per-entity summary: table count, column count, avg confidence, bundle vs heuristic, roles, tables list."""
+    ent_tbl = fq("ontology_entities")
+    cp_tbl = fq("ontology_column_properties")
+    where_ent = "source_tables IS NOT NULL AND SIZE(source_tables) > 0"
+    where_cp = "1=1"
+    if catalog and schema and _SAFE_IDENT_RE.match(catalog) and _SAFE_IDENT_RE.match(schema):
+        prefix = f"{catalog}.{schema}."
+        where_ent = f"{where_ent} AND EXISTS(source_tables, t -> t LIKE '{_esc_sql(prefix)}%')"
+        where_cp = f"table_name LIKE '{_esc_sql(prefix)}%'"
+
+    entities = []
+    try:
+        ent_rows = execute_sql(
+            f"""
+            SELECT entity_type, EXPLODE(source_tables) AS table_name
+            FROM {ent_tbl}
+            WHERE {where_ent}
+            """,
+            timeout=30,
+        )
+        tables_by_entity = {}
+        for r in ent_rows:
+            et = r.get("entity_type")
+            tn = r.get("table_name")
+            if et and tn:
+                tables_by_entity.setdefault(et, set()).add(tn)
+    except Exception as e:
+        logger.debug("entities-summary entities failed: %s", e)
+        return {"entities": []}
+
+    try:
+        cp_cols = execute_sql(f"DESCRIBE TABLE {cp_tbl}", timeout=10)
+        has_discovery = any(c.get("col_name") == "discovery_method" for c in cp_cols)
+    except Exception:
+        has_discovery = False
+
+    try:
+        agg_expr = """
+            owning_entity_type,
+            COUNT(*) AS column_count,
+            ROUND(AVG(confidence), 2) AS avg_confidence,
+            COUNT(DISTINCT table_name) AS table_count
+        """
+        if has_discovery:
+            agg_expr += """,
+            SUM(CASE WHEN COALESCE(discovery_method, '') LIKE '%bundle%' OR discovery_method = 'bundle_match' THEN 1 ELSE 0 END) AS bundle_matches,
+            SUM(CASE WHEN NOT (COALESCE(discovery_method, '') LIKE '%bundle%' OR discovery_method = 'bundle_match') THEN 1 ELSE 0 END) AS heuristic_matches
+        """
+        else:
+            agg_expr += """,
+            0 AS bundle_matches,
+            COUNT(*) AS heuristic_matches
+        """
+        cp_agg = execute_sql(
+            f"""
+            SELECT {agg_expr}
+            FROM {cp_tbl}
+            WHERE owning_entity_type IS NOT NULL AND {where_cp}
+            GROUP BY owning_entity_type
+            """,
+            timeout=30,
+        )
+    except Exception as e:
+        logger.debug("entities-summary column props failed: %s", e)
+        cp_agg = []
+
+    try:
+        role_rows = execute_sql(
+            f"""
+            SELECT owning_entity_type, property_role, COUNT(*) AS cnt
+            FROM {cp_tbl}
+            WHERE owning_entity_type IS NOT NULL AND property_role IS NOT NULL AND {where_cp}
+            GROUP BY owning_entity_type, property_role
+            """,
+            timeout=20,
+        )
+        roles_by_entity = {}
+        for r in role_rows:
+            et = r["owning_entity_type"]
+            role = r["property_role"] or "attribute"
+            cnt = int(r["cnt"] or 0)
+            roles_by_entity.setdefault(et, {})[role] = cnt
+    except Exception:
+        roles_by_entity = {}
+
+    entity_types = set(tables_by_entity.keys())
+    for row in cp_agg:
+        entity_types.add(row["owning_entity_type"])
+
+    for et in sorted(entity_types):
+        tables = sorted(tables_by_entity.get(et, []))
+        table_count = len(tables)
+        row = next((r for r in cp_agg if r["owning_entity_type"] == et), None)
+        col_count = int(row["column_count"]) if row else 0
+        avg_conf = float(row["avg_confidence"] or 0) if row else 0
+        bundle_m = int(row.get("bundle_matches") or 0) if row else 0
+        heur_m = int(row.get("heuristic_matches") or 0) if row else 0
+        if table_count == 0 and row:
+            table_count = int(row.get("table_count") or 0)
+        entities.append({
+            "entity_type": et,
+            "table_count": table_count,
+            "column_count": col_count,
+            "avg_confidence": round(avg_conf, 2),
+            "bundle_matches": bundle_m,
+            "heuristic_matches": heur_m,
+            "roles": roles_by_entity.get(et, {}),
+            "tables": tables,
+        })
+    return {"entities": entities}
+
+
+@app.get("/api/ontology/entity-summary")
+def get_entity_summary():
+    """Return entity types with table/column/relationship counts from ontology tables."""
+    ent_tbl = fq("ontology_entities")
+    cp_tbl = fq("ontology_column_properties")
+    rel_tbl = fq("ontology_relationships")
+    entities = []
+    try:
+        # Entity summary: entity_type, table_count, role (prefer primary)
+        summary_rows = execute_sql(
+            f"""
+            SELECT entity_type, COUNT(DISTINCT t) AS table_count,
+                   COALESCE(MAX(CASE WHEN COALESCE(entity_role, 'primary') = 'primary' THEN 'primary' END), 'secondary') AS role
+            FROM (
+                SELECT entity_type, COALESCE(entity_role, 'primary') AS entity_role, EXPLODE(source_tables) AS t
+                FROM {ent_tbl}
+                WHERE source_tables IS NOT NULL AND SIZE(source_tables) > 0
+            ) sub
+            GROUP BY entity_type
+            ORDER BY table_count DESC
+            """,
+            timeout=30,
+        )
+        entity_by_type = {r["entity_type"]: {"entity_type": r["entity_type"], "table_count": r["table_count"], "role": r.get("role", "primary")} for r in summary_rows}
+    except Exception as e:
+        logger.debug("entity-summary table count failed: %s", e)
+        return {"entities": []}
+    try:
+        col_counts = execute_sql(
+            f"""
+            SELECT owning_entity_type, COUNT(*) AS cnt
+            FROM {cp_tbl}
+            WHERE owning_entity_type IS NOT NULL
+            GROUP BY owning_entity_type
+            """,
+            timeout=15,
+        )
+        for r in col_counts:
+            et = r["owning_entity_type"]
+            if et in entity_by_type:
+                entity_by_type[et]["column_count"] = r["cnt"]
+            else:
+                entity_by_type[et] = {"entity_type": et, "table_count": 0, "column_count": r["cnt"]}
+    except Exception:
+        pass
+    try:
+        rel_counts = execute_sql(
+            f"""
+            SELECT src_entity_type AS et FROM {rel_tbl} WHERE src_entity_type IS NOT NULL
+            UNION ALL
+            SELECT dst_entity_type AS et FROM {rel_tbl} WHERE dst_entity_type IS NOT NULL
+            """,
+            timeout=15,
+        )
+        rel_by_type = Counter(r["et"] for r in rel_counts)
+        for et, cnt in rel_by_type.items():
+            if et in entity_by_type:
+                entity_by_type[et]["relationship_count"] = cnt
+            else:
+                entity_by_type[et] = {"entity_type": et, "table_count": 0, "relationship_count": cnt}
+    except Exception:
+        pass
+    for e in entity_by_type.values():
+        e.setdefault("column_count", 0)
+        e.setdefault("relationship_count", 0)
+        entities.append(e)
+    return {"entities": entities}
+
+
+@app.get("/api/ontology/entity-detail")
+def get_entity_detail(entity_type: str):
+    """Return tables and column properties for a specific entity type."""
+    if not entity_type or not _SAFE_IDENT_RE.match(entity_type.replace(".", "x")):
+        return {"tables": [], "properties": []}
+    ent_tbl = fq("ontology_entities")
+    cp_tbl = fq("ontology_column_properties")
+    tables = []
+    properties = []
+    try:
+        # Tables from ontology_entities where entity_type matches
+        rows = execute_sql(
+            f"""
+            SELECT entity_type, EXPLODE(source_tables) AS table_name
+            FROM {ent_tbl}
+            WHERE entity_type = '{entity_type.replace("'", "''")}'
+              AND source_tables IS NOT NULL AND SIZE(source_tables) > 0
+            """,
+            timeout=30,
+        )
+        tables = sorted(set(r["table_name"] for r in rows if r.get("table_name")))
+    except Exception as e:
+        logger.debug("entity-detail tables failed: %s", e)
+    try:
+        prop_rows = execute_sql(
+            f"""
+            SELECT table_name, column_name, property_role, confidence, linked_entity_type
+            FROM {cp_tbl}
+            WHERE owning_entity_type = '{entity_type.replace("'", "''")}'
+            ORDER BY table_name, column_name
+            """,
+            timeout=15,
+        )
+        properties = [dict(r) for r in prop_rows]
+    except Exception as e:
+        logger.debug("entity-detail properties failed: %s", e)
+    try:
+        # Merge description from bundle if available
+        bundles = _list_bundles_local()
+        for b in bundles:
+            path = _resolve_bundle_path_local(b["key"])
+            if os.path.exists(path):
+                with open(path, "r") as f:
+                    raw = yaml.safe_load(f)
+                defs = raw.get("ontology", {}).get("entities", {}).get("definitions", {})
+                if entity_type in defs:
+                    desc = defs[entity_type].get("description")
+                    if desc:
+                        return {"tables": tables, "properties": properties, "description": desc}
+    except Exception:
+        pass
+    return {"tables": tables, "properties": properties}
+
+
 def _resolve_domain_config_path(key: str) -> str:
     """Resolve a domain config key to a file path for the job parameter."""
     bundles = {b["key"]: b for b in _list_bundles_local()}
@@ -1871,136 +2266,248 @@ class OntologyApplyBody(BaseModel):
     selections: list[OntologyApplyItem]
 
 
-@app.post("/api/ontology/apply-tags")
-def ontology_apply_tags(body: OntologyApplyBody):
-    """Apply entity_type tags at table level (primary only) and column level, then verify."""
-    table_entities: dict[str, set[str]] = {}
-    col_entities: dict[tuple[str, str], set[str]] = {}
-    for item in body.selections:
-        tables = item.source_tables if isinstance(item.source_tables, list) else [item.source_tables]
-        et = (item.entity_type or "").strip()
-        cols = item.source_columns or []
-        role = (item.entity_role or "primary").strip()
-        for tbl in tables:
-            if not (tbl and isinstance(tbl, str) and et):
-                continue
-            tbl = tbl.strip()
-            # Only primary entities get table-level tags
-            if role == "primary":
-                table_entities.setdefault(tbl, set()).add(et)
-            for col in cols:
-                if col and isinstance(col, str):
-                    col_entities.setdefault((tbl, col.strip()), set()).add(et)
-
+def _apply_ontology_tags_from_tables() -> dict:
+    """Read ontology_entities and ontology_column_properties, apply ontology.* UC tags to tables/columns."""
+    wh_id = os.environ.get("WAREHOUSE_ID", "")
+    if not wh_id:
+        raise HTTPException(500, detail="WAREHOUSE_ID not configured")
+    ent_tbl = fq("ontology_entities")
+    cp_tbl = fq("ontology_column_properties")
+    tkb_tbl = fq("table_knowledge_base")
+    rel_tbl = fq("ontology_relationships")
     table_results = []
     col_results = []
 
-    # --- Table-level tags ---
-    for tbl_clean, ets in table_entities.items():
-        if not _SAFE_IDENT_RE.match(tbl_clean.replace(".", "x")):
-            table_results.append({"table": tbl_clean, "ok": False, "error": "Invalid table name"})
-            continue
-        tag_val = ",".join(sorted(ets)).replace("'", "''")
-        sql = f"ALTER TABLE {tbl_clean} SET TAGS ('entity_type' = '{tag_val}')"
-        try:
-            execute_sql(sql, timeout=30)
-        except Exception as e:
-            table_results.append({"table": tbl_clean, "ok": False, "sql": sql, "error": str(e)})
-            continue
-        parts = tbl_clean.split(".")
-        verified = None
-        if len(parts) == 3:
-            cat, sch, tname = [p.strip("`") for p in parts]
+    # Table-level: ontology.entity_type, ontology.domain, ontology.confidence from ontology_entities
+    try:
+        ent_q = f"""
+            SELECT e.entity_type, e.confidence, e.source_tables, e.entity_role,
+                   COALESCE(e.attributes['granularity'], 'table') AS granularity
+            FROM {ent_tbl} e
+            WHERE e.confidence >= 0.5
+        """
+        entities = execute_sql(ent_q, warehouse_id=wh_id, timeout=60)
+    except Exception as e:
+        raise HTTPException(404, detail=f"ontology_entities not found: {e}")
+
+    try:
+        tkb = execute_sql(f"SELECT table_name, domain FROM {tkb_tbl}", warehouse_id=wh_id, timeout=30)
+        tkb_domain = {r["table_name"]: (r.get("domain") or "") for r in tkb}
+    except Exception:
+        tkb_domain = {}
+
+    seen_tables: dict[str, dict] = {}
+    for e in entities:
+        tables = e.get("source_tables") or []
+        if isinstance(tables, str):
             try:
-                rows = execute_sql(
-                    f"SELECT tag_value FROM system.information_schema.table_tags "
-                    f"WHERE catalog_name = '{cat}' AND schema_name = '{sch}' "
-                    f"AND table_name = '{tname}' AND tag_name = 'entity_type'",
-                    timeout=15,
-                )
-                verified = rows[0]["tag_value"] if rows else None
-            except Exception as ve:
-                logger.warning("Table tag verification failed for %s: %s", tbl_clean, ve)
-        if verified is not None:
-            table_results.append({"table": tbl_clean, "ok": True, "sql": sql, "verified": verified})
+                tables = json.loads(tables) if tables.startswith("[") else [tables]
+            except Exception:
+                tables = [tables]
+        et = (e.get("entity_type") or "").strip()
+        conf = e.get("confidence")
+        conf_str = str(round(float(conf), 2)) if conf is not None else "0"
+        role = (e.get("entity_role") or "primary").strip()
+        gran = (e.get("granularity") or "table").strip()
+        if not et or gran != "table" or role != "primary":
+            continue
+        for tbl in tables:
+            if not tbl or not isinstance(tbl, str):
+                continue
+            tbl = tbl.strip()
+            domain = tkb_domain.get(tbl, "")
+            prev = seen_tables.get(tbl)
+            conf_f = float(conf or 0)
+            if prev:
+                if et not in prev["entity_type"]:
+                    prev["entity_type"] = prev["entity_type"] + "," + et
+                prev["conf_max"] = max(prev.get("conf_max", 0), conf_f)
+                if domain:
+                    prev["domain"] = domain
+            else:
+                seen_tables[tbl] = {"entity_type": et, "conf_max": conf_f, "domain": domain}
+
+    for tbl, vals in seen_tables.items():
+        if not _SAFE_IDENT_RE.match(tbl.replace(".", "x")):
+            continue
+        conf_str = str(round(vals.get("conf_max", 0), 2))
+        tags = [f"('ontology.entity_type' = '{_esc_sql(vals['entity_type'])}')"]
+        tags.append(f"('ontology.confidence' = '{conf_str}')")
+        if vals.get("domain"):
+            tags.append(f"('ontology.domain' = '{_esc_sql(vals['domain'])}')")
+        sql = f"ALTER TABLE {tbl} SET TAGS ({', '.join(tags)})"
+        try:
+            execute_sql(sql, warehouse_id=wh_id, timeout=30)
+            table_results.append({"table": tbl, "ok": True})
+        except Exception as ex:
+            table_results.append({"table": tbl, "ok": False, "error": str(ex)})
+
+    # Column-level: ontology.property_role, ontology.edge, ontology.linked_entity, ontology.confidence
+    try:
+        cp_q = f"""
+            SELECT table_name, column_name, property_role, confidence, linked_entity_type
+            FROM {cp_tbl}
+            WHERE confidence >= 0.5
+        """
+        props = execute_sql(cp_q, warehouse_id=wh_id, timeout=60)
+    except Exception:
+        props = []
+
+    try:
+        rels = execute_sql(
+            f"SELECT evidence_table, evidence_column, relationship_name FROM {rel_tbl}",
+            warehouse_id=wh_id, timeout=30,
+        )
+        rel_edge = {(r.get("evidence_table"), r.get("evidence_column")): (r.get("relationship_name") or "") for r in rels}
+    except Exception:
+        rel_edge = {}
+
+    for p in props:
+        tbl = (p.get("table_name") or "").strip()
+        col = (p.get("column_name") or "").strip()
+        role = (p.get("property_role") or "").strip()
+        linked = (p.get("linked_entity_type") or "").strip()
+        conf = p.get("confidence")
+        conf_str = str(round(float(conf), 2)) if conf is not None else "0"
+        if not tbl or not col or not _SAFE_IDENT_RE.match(tbl.replace(".", "x")):
+            continue
+        col_safe = col.replace("`", "")
+        edge = rel_edge.get((tbl, col), "")
+        tags = [f"('ontology.property_role' = '{_esc_sql(role)}')"]
+        tags.append(f"('ontology.confidence' = '{conf_str}')")
+        if edge:
+            tags.append(f"('ontology.edge' = '{_esc_sql(edge)}')")
+        if linked:
+            tags.append(f"('ontology.linked_entity' = '{_esc_sql(linked)}')")
+        sql = f"ALTER TABLE {tbl} ALTER COLUMN `{col_safe}` SET TAGS ({', '.join(tags)})"
+        try:
+            execute_sql(sql, warehouse_id=wh_id, timeout=30)
+            col_results.append({"table": tbl, "column": col, "ok": True})
+        except Exception as ex:
+            col_results.append({"table": tbl, "column": col, "ok": False, "error": str(ex)})
+
+    t_ok = sum(1 for r in table_results if r.get("ok"))
+    t_fail = len(table_results) - t_ok
+    c_ok = sum(1 for r in col_results if r.get("ok"))
+    c_fail = len(col_results) - c_ok
+    summary = {
+        "tables_tagged": t_ok,
+        "tables_failed": t_fail,
+        "columns_tagged": c_ok,
+        "columns_failed": c_fail,
+    }
+    return {
+        "summary": summary,
+        "table_results": table_results,
+        "column_results": col_results,
+        "results": table_results,  # backward compat for MetadataReview
+    }
+
+
+@app.post("/api/ontology/apply-tags")
+def ontology_apply_tags(body: Optional[OntologyApplyBody] = Body(default=None)):
+    """Apply ontology.* namespaced UC tags from ontology_entities and ontology_column_properties.
+    Reads from ontology tables and applies: ontology.entity_type, ontology.domain, ontology.confidence
+    at table level; ontology.property_role, ontology.edge, ontology.linked_entity, ontology.confidence
+    at column level. Returns a summary of tags applied."""
+    return _apply_ontology_tags_from_tables()
+
+
+@app.post("/api/ontology/apply-all-tags")
+def ontology_apply_all_tags():
+    """Alias for apply-tags: read ontology tables and apply ontology.* namespaced UC tags."""
+    return _apply_ontology_tags_from_tables()
+
+
+@app.get("/api/ontology/export")
+def export_ontology_jsonld(
+    catalog: str = Query(..., description="Catalog name"),
+    schema: str = Query(..., description="Schema name"),
+    format: str = Query("jsonld", description="jsonld or jsonld_download"),
+):
+    """Export discovered ontology as JSON-LD from ontology_entities, ontology_column_properties, ontology_relationships."""
+    if not _SAFE_IDENT_RE.match(catalog) or not _SAFE_IDENT_RE.match(schema):
+        raise HTTPException(400, detail="Invalid catalog or schema")
+    wh_id = os.environ.get("WAREHOUSE_ID", "")
+    if not wh_id:
+        raise HTTPException(500, detail="WAREHOUSE_ID not configured")
+    base = f"`{catalog}`.`{schema}`"
+
+    entities_rows = []
+    rels_rows = []
+    try:
+        entities_rows = execute_sql(f"SELECT * FROM {base}.`ontology_entities`", warehouse_id=wh_id, timeout=60)
+    except HTTPException as he:
+        if he.status_code == 404:
+            pass
         else:
-            table_results.append({"table": tbl_clean, "ok": False, "sql": sql,
-                "error": f"SQL succeeded but tag not found -- check APPLY TAG permissions"})
+            raise
+    except Exception:
+        pass
 
-    # --- Column-level tags ---
-    for (tbl_clean, col_name), ets in col_entities.items():
-        if not _SAFE_IDENT_RE.match(tbl_clean.replace(".", "x")):
-            continue
-        tag_val = ",".join(sorted(ets)).replace("'", "''")
-        col_safe = col_name.replace("`", "")
-        sql = f"ALTER TABLE {tbl_clean} ALTER COLUMN `{col_safe}` SET TAGS ('entity_type' = '{tag_val}')"
-        try:
-            execute_sql(sql, timeout=30)
-        except Exception as e:
-            col_results.append({"table": tbl_clean, "column": col_name, "ok": False, "sql": sql, "error": str(e)})
-            continue
-        parts = tbl_clean.split(".")
-        verified = None
-        if len(parts) == 3:
-            cat, sch, tname = [p.strip("`") for p in parts]
-            try:
-                rows = execute_sql(
-                    f"SELECT tag_value FROM system.information_schema.column_tags "
-                    f"WHERE catalog_name = '{cat}' AND schema_name = '{sch}' "
-                    f"AND table_name = '{tname}' AND column_name = '{col_safe}' "
-                    f"AND tag_name = 'entity_type'",
-                    timeout=15,
-                )
-                verified = rows[0]["tag_value"] if rows else None
-            except Exception as ve:
-                logger.warning("Column tag verification failed for %s.%s: %s", tbl_clean, col_name, ve)
-        if verified is not None:
-            col_results.append({"table": tbl_clean, "column": col_name, "ok": True, "sql": sql, "verified": verified})
+    try:
+        rels_rows = execute_sql(f"SELECT * FROM {base}.`ontology_relationships`", warehouse_id=wh_id, timeout=60)
+    except HTTPException as he:
+        if he.status_code == 404:
+            pass
         else:
-            col_results.append({"table": tbl_clean, "column": col_name, "ok": False, "sql": sql,
-                "error": f"SQL succeeded but column tag not found -- check permissions"})
+            raise
+    except Exception:
+        pass
 
-    # --- Knowledge base write-back ---
-    tbl_kb = fq("table_knowledge_base")
-    col_kb = fq("column_knowledge_base")
-    # Table-level: persist primary_entity_type
-    for r in table_results:
-        if not r.get("ok"):
-            continue
-        tbl_clean = r["table"]
-        tag_val = r.get("verified", "")
-        if not tag_val:
-            continue
-        try:
-            _ensure_column(tbl_kb, "primary_entity_type")
-            execute_sql(
-                f"UPDATE {tbl_kb} SET primary_entity_type = '{tag_val.replace(chr(39), chr(39)*2)}', "
-                f"updated_at = current_timestamp() WHERE table_name = '{tbl_clean}'",
-                timeout=15,
-            )
-        except Exception as e:
-            logger.warning("KB write-back (table) failed for %s: %s", tbl_clean, e)
-    # Column-level: persist entity_type
-    for r in col_results:
-        if not r.get("ok"):
-            continue
-        tbl_clean, col_name = r["table"], r["column"]
-        tag_val = r.get("verified", "")
-        if not tag_val:
-            continue
-        try:
-            _ensure_column(col_kb, "entity_type")
-            col_safe = col_name.replace("'", "''")
-            execute_sql(
-                f"UPDATE {col_kb} SET entity_type = '{tag_val.replace(chr(39), chr(39)*2)}', "
-                f"updated_at = current_timestamp() "
-                f"WHERE table_name = '{tbl_clean}' AND column_name = '{col_safe}'",
-                timeout=15,
-            )
-        except Exception as e:
-            logger.warning("KB write-back (column entity) failed for %s.%s: %s", tbl_clean, col_name, e)
+    try:
+        _ = execute_sql(f"SELECT 1 FROM {base}.`ontology_column_properties` LIMIT 1", warehouse_id=wh_id, timeout=15)
+    except Exception:
+        pass
 
-    return {"results": table_results, "column_results": col_results}
+    context = {
+        "schema": "https://schema.org/",
+        "ontology": "urn:dbxmetagen:ontology:",
+        "entity_type": "ontology:entityType",
+        "property_role": "ontology:propertyRole",
+        "confidence": "ontology:confidence",
+        "source_tables": "ontology:sourceTables",
+    }
+    graph = []
+    for e in entities_rows:
+        et = e.get("entity_type") or ""
+        if not et:
+            continue
+        src_tables = e.get("source_tables") or []
+        if isinstance(src_tables, str):
+            src_tables = [src_tables] if src_tables else []
+        node = {
+            "@id": f"ontology:Entity/{et}",
+            "@type": "schema:Thing",
+            "entity_type": et,
+            "schema:name": et,
+            "confidence": e.get("confidence"),
+            "source_tables": src_tables,
+        }
+        graph.append(node)
+
+    for r in rels_rows:
+        src = r.get("src_entity_type") or ""
+        dst = r.get("dst_entity_type") or ""
+        name = r.get("relationship_name") or "references"
+        rel_id = f"{src}_{name}_{dst}"
+        graph.append({
+            "@id": f"ontology:Relationship/{rel_id}",
+            "@type": "ontology:Relationship",
+            "ontology:from": {"@id": f"ontology:Entity/{src}"},
+            "ontology:to": {"@id": f"ontology:Entity/{dst}"},
+            "ontology:relationshipName": name,
+        })
+
+    result = {"@context": context, "@graph": graph}
+    if format == "jsonld_download":
+        body = json.dumps(result, indent=2)
+        return StreamingResponse(
+            iter([body]),
+            media_type="application/ld+json",
+            headers={"Content-Disposition": "attachment; filename=ontology.jsonld"},
+        )
+    return JSONResponse(content=result)
 
 
 @cached(_yaml_cache, key=lambda: "entity_type_options", lock=_yaml_lock)
@@ -2163,6 +2670,137 @@ def apply_property_tags(body: ApplyPropertyTagsBody):
     return {"results": results}
 
 
+@app.get("/api/ontology/override-stats")
+def get_override_stats(
+    catalog: Optional[str] = Query(None),
+    schema: Optional[str] = Query(None),
+    bundle: str = Query("general", description="Ontology bundle key"),
+):
+    """Track steward overrides and suggest bundle refinements from override patterns."""
+    cp_tbl = fq("ontology_column_properties")
+    ent_tbl = fq("ontology_entities")
+    where_cp = "1=1"
+    where_ent = "entity_role = 'primary' AND source_tables IS NOT NULL AND SIZE(source_tables) > 0"
+    if catalog and schema and _SAFE_IDENT_RE.match(catalog) and _SAFE_IDENT_RE.match(schema):
+        prefix = f"{catalog}.{schema}."
+        where_ent = f"{where_ent} AND EXISTS(source_tables, t -> t LIKE '{_esc_sql(prefix)}%')"
+        where_cp = f"table_name LIKE '{_esc_sql(prefix)}%'"
+
+    try:
+        cp_cols = execute_sql(f"DESCRIBE TABLE {cp_tbl}", timeout=10)
+        has_dm = any(c.get("col_name") == "discovery_method" for c in cp_cols)
+    except Exception:
+        has_dm = False
+
+    cp_rows = []
+    try:
+        cols = "table_name, column_name, property_role, owning_entity_type, property_name" + (", discovery_method" if has_dm else "")
+        cp_rows = execute_sql(f"SELECT {cols} FROM {cp_tbl} WHERE {where_cp}", timeout=30)
+    except Exception as e:
+        logger.debug("override-stats cp failed: %s", e)
+
+    path = _resolve_bundle_path_local(bundle)
+    bundle_role_by_entity_col = {}
+    if os.path.exists(path):
+        try:
+            with open(path, "r") as f:
+                raw = yaml.safe_load(f)
+            defs = raw.get("ontology", {}).get("entities", {}).get("definitions", {})
+            for ename, espec in (defs or {}).items():
+                for pname, pval in (espec.get("properties") or {}).items():
+                    role = pval.get("role", "")
+                    for attr in (pval.get("typical_attributes") or []):
+                        bundle_role_by_entity_col[(ename, str(attr).lower())] = role
+        except Exception as e:
+            logger.debug("override-stats bundle load failed: %s", e)
+
+    overrides = []
+    for r in cp_rows:
+        dm = r.get("discovery_method") or ""
+        if "bundle" not in dm.lower() and dm != "bundle_match":
+            continue
+        et = r.get("owning_entity_type")
+        col = (r.get("column_name") or "").lower()
+        current_role = (r.get("property_role") or "").strip()
+        bundle_role = bundle_role_by_entity_col.get((et, col)) if et else None
+        if bundle_role and current_role and current_role != bundle_role:
+            overrides.append({
+                "entity_type": et,
+                "column_name": r.get("column_name"),
+                "original_role": bundle_role,
+                "overridden_to": current_role,
+                "property_name": r.get("property_name"),
+            })
+
+    patterns = []
+    pattern_key_counts = {}
+    for o in overrides:
+        col = o["column_name"] or ""
+        pattern = "*_date" if col.endswith("_date") else ("*_id" if col.endswith("_id") else col)
+        key = (o["entity_type"], pattern, o["original_role"], o["overridden_to"])
+        pattern_key_counts[key] = pattern_key_counts.get(key, 0) + 1
+
+    for (et, pat, orig, over), cnt in pattern_key_counts.items():
+        patterns.append({
+            "entity_type": et,
+            "column_pattern": pat,
+            "original_role": orig,
+            "overridden_to": over,
+            "count": cnt,
+            "suggestion": f"Consider adding '{pat}' to {et}.properties with role '{over}'",
+        })
+
+    suggested = []
+    prop_overrides = {}
+    for o in overrides:
+        prop = o.get("property_name") or o["column_name"]
+        key = (o["entity_type"], prop, o["overridden_to"])
+        prop_overrides[key] = prop_overrides.get(key, 0) + 1
+    for (entity, prop, role), cnt in sorted(prop_overrides.items(), key=lambda x: -x[1]):
+        suggested.append({
+            "entity": entity,
+            "property": prop,
+            "suggested_role": role,
+            "evidence_count": cnt,
+            "suggestion_id": f"{entity}|{prop}|{role}",
+        })
+
+    return {
+        "override_count": len(overrides),
+        "patterns": patterns,
+        "suggested_bundle_updates": suggested,
+    }
+
+
+class ApplySuggestionsBody(BaseModel):
+    suggestion_ids: list[str]
+
+
+@app.post("/api/ontology/apply-suggestions")
+def apply_suggestions(body: ApplySuggestionsBody):
+    """Apply suggested property_role updates to ontology_column_properties."""
+    cp_tbl = fq("ontology_column_properties")
+    applied = 0
+    for sid in body.suggestion_ids or []:
+        parts = sid.split("|")
+        if len(parts) != 3:
+            continue
+        entity, property_name, role = parts[0], parts[1], parts[2]
+        entity_esc = entity.replace("'", "''")
+        prop_esc = property_name.replace("'", "''")
+        role_esc = role.replace("'", "''")
+        try:
+            execute_sql(
+                f"UPDATE {cp_tbl} SET property_role = '{role_esc}', updated_at = current_timestamp() "
+                f"WHERE owning_entity_type = '{entity_esc}' AND (property_name = '{prop_esc}' OR column_name = '{prop_esc}')",
+                timeout=30,
+            )
+            applied += 1
+        except Exception as e:
+            logger.warning("apply-suggestions failed for %s: %s", sid, e)
+    return {"applied": applied, "suggestion_ids": body.suggestion_ids}
+
+
 class SetReviewStatusBody(BaseModel):
     table_name: str
     review_status: str
@@ -2245,8 +2883,8 @@ def fk_apply_as_tags(body: FKApplyPredictionsBody):
     return {"results": results}
 
 
-@app.get("/api/ontology/relationships")
-def get_ontology_relationships(limit: int = 500):
+@app.get("/api/ontology/graph-edges")
+def get_ontology_graph_edges(limit: int = 500):
     """Return entity-level relationship edges for the ontology graph visualization."""
     q = f"""
         SELECT src, dst, relationship, weight
@@ -5144,11 +5782,17 @@ def genie_generate(req: GenieGenerateRequest):
         raise HTTPException(500, detail="WAREHOUSE_ID not configured")
 
     task_id = str(_uuid.uuid4())[:12]
+    started_at = time.time()
     _genie_tasks[task_id] = {
         "status": "running",
         "stage": "starting",
-        "created": time.time(),
+        "created": started_at,
+        "started_at": started_at,
+        "round": 0,
     }
+
+    # Total wall-clock backstop (slightly over agent's 10-min deadline so agent kills first)
+    _MONITOR_WALL_TIMEOUT = 660
 
     def _run():
         try:
@@ -5158,7 +5802,6 @@ def genie_generate(req: GenieGenerateRequest):
             ws = get_workspace_client()
             progress_q: queue.Queue = queue.Queue()
 
-            # Phase 1: deterministic context assembly
             _genie_tasks[task_id]["stage"] = "gathering_context"
             assembler = GenieContextAssembler(ws, wh, CATALOG, SCHEMA)
             ctx = assembler.assemble(
@@ -5178,39 +5821,54 @@ def genie_generate(req: GenieGenerateRequest):
                         kpi_block += f"- {k['name']}: {k.get('description', '')} | Formula: {k.get('formula', 'N/A')}\n"
                     ctx["context_text"] = ctx.get("context_text", "") + kpi_block
 
-            # Phase 2: agent generation
             _genie_tasks[task_id]["stage"] = "agent_running"
 
             def _monitor_progress():
                 while True:
+                    # Total wall-clock backstop
+                    remaining = _MONITOR_WALL_TIMEOUT - (time.time() - started_at)
+                    if remaining <= 0:
+                        elapsed = round(time.time() - started_at)
+                        rnd = _genie_tasks[task_id].get("round", 0)
+                        _genie_tasks[task_id].update({
+                            "status": "error",
+                            "error": (
+                                f"Timed out after {elapsed}s and {rnd} tool round(s). "
+                                "Try selecting fewer tables or simplifying the request."
+                            ),
+                            "elapsed_seconds": elapsed,
+                        })
+                        return
                     try:
-                        event = progress_q.get(timeout=600)
+                        event = progress_q.get(timeout=min(remaining, 30))
                     except queue.Empty:
-                        _genie_tasks[task_id].update(
-                            {
-                                "status": "error",
-                                "error": "Agent timed out after 10 minutes",
-                            }
-                        )
+                        continue
+
+                    stage = event.get("stage", "running")
+
+                    if stage == "done":
+                        _genie_tasks[task_id].update({
+                            "status": "done",
+                            "stage": "done",
+                            "result": event.get("result"),
+                            "warnings": event.get("warnings"),
+                            "elapsed_seconds": event.get("elapsed_seconds"),
+                            "rounds_completed": event.get("rounds_completed"),
+                        })
                         return
-                    if event.get("stage") == "done":
-                        _genie_tasks[task_id].update(
-                            {
-                                "status": "done",
-                                "stage": "done",
-                                "result": event.get("result"),
-                            }
-                        )
+
+                    if stage == "error":
+                        _genie_tasks[task_id].update({
+                            "status": "error",
+                            "error": event.get("message", "Unknown error"),
+                            "elapsed_seconds": event.get("elapsed_seconds"),
+                            "rounds_completed": event.get("rounds_completed"),
+                        })
                         return
-                    if event.get("stage") == "error":
-                        _genie_tasks[task_id].update(
-                            {
-                                "status": "error",
-                                "error": event.get("message", "Unknown error"),
-                            }
-                        )
-                        return
-                    _genie_tasks[task_id]["stage"] = event.get("stage", "running")
+
+                    _genie_tasks[task_id]["stage"] = stage
+                    if "round" in event:
+                        _genie_tasks[task_id]["round"] = event["round"]
 
             monitor = threading.Thread(target=_monitor_progress, daemon=True)
             monitor.start()
@@ -5218,7 +5876,14 @@ def genie_generate(req: GenieGenerateRequest):
             run_genie_agent(ws, wh, ctx, progress_q, model_endpoint=req.model_endpoint)
         except Exception as e:
             logger.error("Genie builder error: %s", e, exc_info=True)
-            _genie_tasks[task_id].update({"status": "error", "error": str(e)})
+            elapsed = round(time.time() - started_at)
+            rnd = _genie_tasks[task_id].get("round", 0)
+            _genie_tasks[task_id].update({
+                "status": "error",
+                "error": str(e),
+                "elapsed_seconds": elapsed,
+                "rounds_completed": rnd,
+            })
 
     threading.Thread(target=_run, daemon=True).start()
 
@@ -5241,7 +5906,11 @@ def genie_task_status(task_id: str):
     task = _genie_tasks.get(task_id)
     if not task:
         raise HTTPException(404, detail="Task not found")
-    return task
+    resp = dict(task)
+    if resp.get("status") == "running" and "started_at" in resp:
+        resp["elapsed_seconds"] = round(time.time() - resp["started_at"])
+    resp.pop("started_at", None)
+    return resp
 
 
 from genie_schema import build_serialized_space

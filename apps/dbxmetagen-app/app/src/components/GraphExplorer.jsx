@@ -2,6 +2,7 @@ import React, { useState, useCallback, useEffect, useMemo } from 'react'
 import { safeFetch, ErrorBanner } from '../App'
 import { PageHeader, EmptyState } from './ui'
 import GraphSubgraph from './GraphSubgraph'
+import EdgeCatalogViewer from './EdgeCatalogViewer'
 
 const EDGE_TYPES = [
   { value: '', label: 'All edges' },
@@ -12,18 +13,23 @@ const EDGE_TYPES = [
   { value: 'contains', label: 'Contains' },
 ]
 
-export default function GraphExplorer({ initialNode }) {
+export default function GraphExplorer({ initialNode, initialEdgeType }) {
   const [search, setSearch] = useState('')
   const [nodePicker, setNodePicker] = useState([])
   const [pickerLoading, setPickerLoading] = useState(false)
   const [selectedNode, setSelectedNode] = useState(initialNode || '')
   const [maxHops, setMaxHops] = useState(2)
-  const [edgeType, setEdgeType] = useState('')
+  const [edgeType, setEdgeType] = useState(initialEdgeType || '')
   const [hideContains, setHideContains] = useState(true)
   const [graphResult, setGraphResult] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
   const [detailNode, setDetailNode] = useState(null)
+  const [edgeCatalogOpen, setEdgeCatalogOpen] = useState(false)
+
+  useEffect(() => {
+    if (initialEdgeType != null) setEdgeType(initialEdgeType)
+  }, [initialEdgeType])
 
   useEffect(() => {
     if (!search || search.length < 2) { setNodePicker([]); return }
@@ -64,6 +70,11 @@ export default function GraphExplorer({ initialNode }) {
     setSelectedNode(nodeId)
     doTraverse(nodeId)
   }, [doTraverse])
+
+  const handleViewEdgeInGraph = useCallback((edgeName) => {
+    setEdgeType(edgeName)
+    if (selectedNode) doTraverse()
+  }, [selectedNode, doTraverse])
 
   const stats = useMemo(() => {
     if (!graphResult) return null
@@ -197,6 +208,23 @@ export default function GraphExplorer({ initialNode }) {
       ) : (
         !loading && <EmptyState icon="diagram-3" title="No graph loaded" subtitle="Search for a table above and click Traverse to explore the knowledge graph." />
       )}
+
+      <div className="card overflow-hidden mt-4">
+        <button
+          onClick={() => setEdgeCatalogOpen(o => !o)}
+          className="w-full flex items-center justify-between px-4 py-3 text-left hover:bg-slate-50 dark:hover:bg-dbx-navy-500/30 transition-colors"
+          aria-expanded={edgeCatalogOpen}
+        >
+          <h4 className="text-sm font-semibold text-slate-700 dark:text-slate-200">Edge Catalog</h4>
+          <span className="text-slate-400 text-sm">{edgeCatalogOpen ? '▼' : '▶'}</span>
+        </button>
+        {edgeCatalogOpen && (
+          <EdgeCatalogViewer
+            bundleKey="general"
+            onViewInGraph={handleViewEdgeInGraph}
+          />
+        )}
+      </div>
     </div>
   )
 }

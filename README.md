@@ -116,6 +116,9 @@ without running `deploy.sh` or installing the Databricks CLI locally:
 3. Run all cells -- this generates `app.yaml` and deploys the app
 
 The pre-built frontend is included in the repo, so no Node.js is required.
+The notebook installs dbxmetagen from source (`%pip install ..`). Alternatively,
+download the wheel from the [GitHub Releases](../../releases) page and install
+from a Volume: `%pip install /Volumes/<catalog>/<schema>/<volume>/dbxmetagen-<version>-py3-none-any.whl`.
 
 For the Python library only (no app), see the Quickstart above.
 
@@ -362,10 +365,13 @@ The app is in `apps/dbxmetagen-app/` and provides a FastAPI backend with a React
 ```bash
 pytest -v
 
-# Build and test wheel
-poetry build && pip install dist/*.whl
+# Build and test wheel locally
+poetry build
+pip install dist/*.whl
 python -c "from dbxmetagen.config import MetadataConfig; print('OK')"
 ```
+
+Wheels are built automatically by CI on tagged releases (see `.github/workflows/release.yml`).
 
 Requires DBR 17.3+ (ML runtime recommended). Serverless runtimes are supported for most operations.
 

@@ -3,15 +3,97 @@
 
 metadata:
   name: "General Cross-Industry"
-  version: "2.0"
+  version: "3.0"
   industry: "general"
   description: "Industry-agnostic ontology with universal entity types and cross-functional domains"
   standards_alignment: "Schema.org"
 
 ontology:
-  version: "2.0"
+  version: "3.0"
   name: "General Business Ontology"
   description: "Universal business ontology suitable for any industry"
+
+  # Global property role taxonomy
+  property_roles:
+    primary_key:
+      description: "Surrogate or technical row identifier"
+      maps_to_kind: "data_property"
+      semantic_role: "identifier"
+    business_key:
+      description: "Natural key meaningful to users"
+      maps_to_kind: "data_property"
+      semantic_role: "identifier"
+    measure:
+      description: "Numeric value to aggregate"
+      maps_to_kind: "data_property"
+      semantic_role: "metric"
+    dimension:
+      description: "Categorical filter or grouping attribute"
+      maps_to_kind: "data_property"
+      semantic_role: "dimension"
+    temporal:
+      description: "Date or timestamp of event"
+      maps_to_kind: "data_property"
+      semantic_role: "temporal"
+    geographic:
+      description: "Location-based dimension (country, city, region, coordinates)"
+      maps_to_kind: "data_property"
+      semantic_role: "geographic"
+    object_property:
+      description: "FK or reference to another entity's identifier"
+      maps_to_kind: "object_property"
+      semantic_role: "relationship"
+    composite_component:
+      description: "Part of a multi-column value object"
+      maps_to_kind: "data_property"
+      semantic_role: "component"
+    label:
+      description: "Human-readable name or title"
+      maps_to_kind: "data_property"
+      semantic_role: "label"
+    pii:
+      description: "Personally identifiable information"
+      maps_to_kind: "data_property"
+      semantic_role: "pii"
+      governance_flag: true
+    audit:
+      description: "System-generated provenance column"
+      maps_to_kind: "data_property"
+      semantic_role: "provenance"
+    derived:
+      description: "Computed from other columns"
+      maps_to_kind: "data_property"
+      semantic_role: "derived"
+
+  # Global edge catalog
+  edge_catalog:
+    # Structural
+    instance_of: { inverse: type_of, symmetric: false, category: structural }
+    subclass_of: { inverse: superclass_of, symmetric: false, category: structural }
+    has_part: { inverse: part_of, symmetric: false, category: structural }
+    contains: { inverse: contained_in, symmetric: false, category: structural }
+    member_of: { inverse: has_member, symmetric: false, category: structural }
+    # Business
+    placed_by: { inverse: placed, domain: Transaction, range: Person, symmetric: false, category: business }
+    created_by: { inverse: created, domain: Any, range: Person, symmetric: false, category: business }
+    owned_by: { inverse: owns, domain: Any, range: [Person, Organization], symmetric: false, category: business }
+    employs: { inverse: employed_by, domain: Organization, range: Person, symmetric: false, category: business }
+    references: { inverse: referenced_by, domain: Any, range: Reference, symmetric: false, category: business }
+    located_at: { inverse: location_of, domain: Any, range: Location, symmetric: false, category: business }
+    for_product: { inverse: sold_via, domain: Transaction, range: Product, symmetric: false, category: business }
+    billed_to: { inverse: billing_target_of, domain: Transaction, range: [Person, Organization], symmetric: false, category: business }
+    assigned_to: { inverse: assigned_from, domain: [Event, Document], range: Person, symmetric: false, category: business }
+    applies_to: { inverse: subject_of, domain: [Document, Reference], range: Any, symmetric: false, category: business }
+    # Lineage
+    derives_from: { inverse: source_of, symmetric: false, category: lineage }
+    recorded_in: { inverse: records, symmetric: false, category: lineage }
+    supersedes: { inverse: superseded_by, symmetric: false, category: lineage }
+    # Semantic
+    same_as: { symmetric: true, category: semantic }
+    equivalent_class: { symmetric: true, category: semantic }
+    close_match: { symmetric: true, category: semantic }
+    similar_to: { symmetric: true, category: semantic }
+    related_to: { symmetric: true, category: semantic }
 
   entities:
     auto_discover: true
@@ -25,6 +107,33 @@ ontology:
         relationships:
           owns: { target: Transaction, cardinality: "one-to-many" }
           part_of: { target: Organization, cardinality: "many-to-one" }
+        properties:
+          identifier:
+            kind: data_property
+            role: primary_key
+            typical_attributes: ["id", "person_id", "user_id", "customer_id", "employee_id"]
+          name:
+            kind: data_property
+            role: label
+            typical_attributes: ["name", "full_name", "first_name", "last_name", "display_name"]
+          email:
+            kind: data_property
+            role: pii
+            typical_attributes: ["email", "email_address"]
+          phone:
+            kind: data_property
+            role: pii
+            typical_attributes: ["phone", "phone_number", "mobile"]
+          part_of:
+            kind: object_property
+            role: object_property
+            edge: member_of
+            target_entity: Organization
+            typical_attributes: ["org_id", "company_id", "department_id"]
+          created_at:
+            kind: data_property
+            role: audit
+            typical_attributes: ["created_at", "created_date", "create_date"]
       Organization:
         description: "Companies, departments, facilities, or business units"
         keywords: ["company", "organization", "department", "facility", "tenant", "branch", "division"]
@@ -33,12 +142,52 @@ ontology:
           contains: { target: Person, cardinality: "one-to-many" }
           contains_location: { target: Location, cardinality: "one-to-many" }
           part_of: { target: Organization, cardinality: "many-to-one" }
+        properties:
+          identifier:
+            kind: data_property
+            role: primary_key
+            typical_attributes: ["id", "org_id", "organization_id", "company_id"]
+          name:
+            kind: data_property
+            role: label
+            typical_attributes: ["name", "org_name", "company_name"]
+          type:
+            kind: data_property
+            role: dimension
+            typical_attributes: ["type", "org_type", "category"]
+          parent:
+            kind: object_property
+            role: object_property
+            edge: has_part
+            target_entity: Organization
+            typical_attributes: ["parent_id", "parent_org_id"]
       Product:
         description: "Goods, services, SKUs, or catalog items"
         keywords: ["product", "item", "sku", "catalog", "offering", "service", "subscription"]
         typical_attributes: [id, name, description, price, category, status]
         relationships:
           references: { target: Reference, cardinality: "many-to-one" }
+        properties:
+          identifier:
+            kind: data_property
+            role: primary_key
+            typical_attributes: ["id", "product_id", "sku", "item_id"]
+          name:
+            kind: data_property
+            role: label
+            typical_attributes: ["name", "product_name", "item_name", "title"]
+          price:
+            kind: data_property
+            role: measure
+            typical_attributes: ["price", "unit_price", "list_price", "msrp"]
+          category:
+            kind: data_property
+            role: dimension
+            typical_attributes: ["category", "product_category", "type", "product_type"]
+          status:
+            kind: data_property
+            role: dimension
+            typical_attributes: ["status", "product_status", "active"]
       Transaction:
         description: "Orders, purchases, payments, invoices, or financial events"
         keywords: ["transaction", "order", "payment", "invoice", "purchase", "sale", "receipt"]
@@ -46,35 +195,181 @@ ontology:
         relationships:
           placed_by: { target: Person, cardinality: "many-to-one" }
           for_product: { target: Product, cardinality: "many-to-many" }
+        properties:
+          identifier:
+            kind: data_property
+            role: primary_key
+            typical_attributes: ["id", "order_id", "transaction_id", "invoice_id", "payment_id"]
+          business_key:
+            kind: data_property
+            role: business_key
+            typical_attributes: ["order_number", "invoice_number", "transaction_ref", "confirmation_number"]
+          amount:
+            kind: data_property
+            role: measure
+            typical_attributes: ["amount", "total", "total_amount", "price", "subtotal", "net_amount"]
+          currency:
+            kind: data_property
+            role: dimension
+            typical_attributes: ["currency", "currency_code"]
+          status:
+            kind: data_property
+            role: dimension
+            typical_attributes: ["status", "order_status", "payment_status", "state"]
+          occurred_at:
+            kind: data_property
+            role: temporal
+            typical_attributes: ["order_date", "transaction_date", "created_date", "date", "payment_date"]
+          placed_by:
+            kind: object_property
+            role: object_property
+            edge: placed_by
+            target_entity: Person
+            typical_attributes: ["customer_id", "user_id", "buyer_id", "person_id"]
+          for_product:
+            kind: object_property
+            role: object_property
+            edge: for_product
+            target_entity: Product
+            typical_attributes: ["product_id", "item_id", "sku"]
+          billed_to:
+            kind: object_property
+            role: object_property
+            edge: billed_to
+            target_entity: [Person, Organization]
+            typical_attributes: ["account_id", "billing_account_id"]
       Location:
         description: "Addresses, sites, regions, facilities, or geographies"
         keywords: ["location", "address", "site", "region", "facility", "warehouse", "store"]
         typical_attributes: [id, name, address, city, state, country, zip_code]
         relationships:
           part_of: { target: Organization, cardinality: "many-to-one" }
+        properties:
+          identifier:
+            kind: data_property
+            role: primary_key
+            typical_attributes: ["id", "location_id", "site_id"]
+          name:
+            kind: data_property
+            role: label
+            typical_attributes: ["name", "location_name", "site_name"]
+          city:
+            kind: data_property
+            role: composite_component
+            typical_attributes: ["city", "shipping_city", "billing_city"]
+          state:
+            kind: data_property
+            role: composite_component
+            typical_attributes: ["state", "shipping_state", "province", "region"]
+          country:
+            kind: data_property
+            role: composite_component
+            typical_attributes: ["country", "country_code"]
+          zip:
+            kind: data_property
+            role: composite_component
+            typical_attributes: ["zip", "zip_code", "postal_code"]
       Event:
         description: "Activities, logs, sessions, audits, or system events"
         keywords: ["event", "activity", "log", "audit", "session", "incident", "alert"]
         typical_attributes: [id, type, timestamp, user_id, details]
         relationships:
           references: { target: Person, cardinality: "many-to-one" }
+        properties:
+          identifier:
+            kind: data_property
+            role: primary_key
+            typical_attributes: ["id", "event_id", "log_id", "session_id"]
+          type:
+            kind: data_property
+            role: dimension
+            typical_attributes: ["type", "event_type", "category"]
+          occurred_at:
+            kind: data_property
+            role: temporal
+            typical_attributes: ["timestamp", "event_time", "created_at", "logged_at"]
+          actor:
+            kind: object_property
+            role: object_property
+            edge: created_by
+            target_entity: Person
+            typical_attributes: ["user_id", "actor_id", "performed_by"]
       Reference:
         description: "Lookup tables, codes, categories, dimensions, or configuration"
         keywords: ["reference", "lookup", "code", "category", "dim_", "type", "status"]
         typical_attributes: [id, code, name, description, active]
         relationships: {}
+        properties:
+          identifier:
+            kind: data_property
+            role: primary_key
+            typical_attributes: ["id", "code", "reference_id"]
+          name:
+            kind: data_property
+            role: label
+            typical_attributes: ["name", "description", "label", "display_name"]
+          active:
+            kind: data_property
+            role: dimension
+            typical_attributes: ["active", "is_active", "status", "enabled"]
       Metric:
         description: "KPIs, aggregates, facts, summaries, or analytic measures"
         keywords: ["metric", "kpi", "aggregate", "fact_", "summary", "measure", "score"]
         typical_attributes: [id, name, value, period, dimension]
         relationships:
           derives_from: { target: Event, cardinality: "many-to-one" }
+        properties:
+          identifier:
+            kind: data_property
+            role: primary_key
+            typical_attributes: ["id", "metric_id"]
+          name:
+            kind: data_property
+            role: label
+            typical_attributes: ["name", "metric_name", "kpi_name"]
+          value:
+            kind: data_property
+            role: measure
+            typical_attributes: ["value", "score", "amount", "count", "total"]
+          period:
+            kind: data_property
+            role: temporal
+            typical_attributes: ["period", "date", "month", "quarter", "year"]
+          source:
+            kind: object_property
+            role: object_property
+            edge: derives_from
+            target_entity: Event
+            typical_attributes: ["source_id", "event_id"]
       Document:
         description: "Unstructured content, notes, files, or text records"
         keywords: ["document", "note", "file", "content", "text", "attachment", "report"]
         typical_attributes: [id, title, body, author, created_date, type]
         relationships:
           references: { target: Person, cardinality: "many-to-one" }
+        properties:
+          identifier:
+            kind: data_property
+            role: primary_key
+            typical_attributes: ["id", "document_id", "doc_id", "file_id"]
+          title:
+            kind: data_property
+            role: label
+            typical_attributes: ["title", "name", "subject", "filename"]
+          body:
+            kind: data_property
+            role: dimension
+            typical_attributes: ["body", "content", "text", "description"]
+          author:
+            kind: object_property
+            role: object_property
+            edge: created_by
+            target_entity: Person
+            typical_attributes: ["author", "author_id", "created_by"]
+          created_at:
+            kind: data_property
+            role: temporal
+            typical_attributes: ["created_date", "created_at", "published_date"]
 
   domain_entity_affinity:
     finance:

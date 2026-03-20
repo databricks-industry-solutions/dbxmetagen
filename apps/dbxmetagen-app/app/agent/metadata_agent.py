@@ -29,9 +29,13 @@ logger = logging.getLogger(__name__)
 
 MODEL = os.environ.get("LLM_MODEL", "databricks-claude-sonnet-4-6")
 
+QUICK_MAX_TOOL_ROUNDS = 4
+
 
 class AgentState(TypedDict):
     messages: Annotated[list, add_messages]
+    intent: str
+    tools: list
 
 
 # ---------------------------------------------------------------------------
@@ -70,28 +74,24 @@ def select_tools(intent: str) -> List[BaseTool]:
 def get_system_prompt(intent: str, tools: List[BaseTool]) -> str:  # noqa: ARG001
     tool_names = [t.name for t in tools]
     prompt = f"""You are a metadata intelligence assistant for a Databricks data catalog.
-You help data engineers, analysts, and governance teams understand their data:
-- What tables and columns exist, what they mean, and how they relate
-- Data quality and profiling insights
-- Ontology entity classifications and domain structure
-- Foreign key relationships and join patterns
-- Metric view definitions and business KPIs
+You help data engineers, analysts, and governance teams understand their data.
 
 Available knowledge base tables in {CATALOG}.{SCHEMA}:
-- table_knowledge_base: Table-level metadata (comment, domain, subdomain, has_pii, has_phi, row_count)
-- column_knowledge_base: Column-level metadata (comment, data_type, classification)
-- ontology_entities: Discovered entity types (entity_name, entity_type, source_tables, confidence)
-- fk_predictions: FK relationships (src_table, src_column, dst_table, dst_column, final_confidence, cardinality)
-- metric_view_definitions: Generated metric views (metric_view_name, source_table, source_questions, json_definition, status)
-- profiling_results: Statistical profiling (table_name, column_name, distinct_count, null_count)
+- table_knowledge_base: table_name, comment, domain, subdomain, has_pii, has_phi, row_count
+- column_knowledge_base: table_name, column_name, comment, data_type, classification
+- ontology_entities: entity_name, entity_type, source_tables, confidence
+- fk_predictions: src_table, src_column, dst_table, dst_column, final_confidence, cardinality
+- metric_view_definitions: metric_view_name, source_table, json_definition, status
+- profiling_results: table_name, column_name, distinct_count, null_count
 
-BEHAVIOR:
-- Always start with search_metadata to gather relevant context before running SQL queries. You may call it multiple times with different queries or doc_type filters.
-- Be concise and data-driven. Cite specific table/column names.
-- Use execute_metadata_sql for precise counts, filters, or aggregations.
-- Use get_table_summary for a full picture of one table.
-- When asked about relationships, check both fk_predictions and the knowledge graph.
-- Format answers in markdown with tables when presenting structured data.
+EFFICIENCY RULES (you MUST follow these):
+1. Answer in at most 3 tool rounds. Plan ahead.
+2. Call ALL tools you need in PARALLEL in a single round -- do not call them one at a time.
+3. On round 1, call search_metadata AND any SQL queries you already know you need simultaneously.
+4. get_table_summary is expensive (4 SQL queries internally). Only call it when you truly need a full table picture, and for at most 1 table.
+5. If search_metadata returns enough info, answer immediately without further SQL.
+6. Be concise and data-driven. Cite specific table/column names.
+7. Format answers in markdown with tables when presenting structured data.
 """ + SAFETY_PROMPT_BLOCK
 
     if "execute_metadata_sql" in tool_names:
@@ -104,8 +104,6 @@ BEHAVIOR:
 # Graph construction
 # ---------------------------------------------------------------------------
 
-MAX_TOOL_ROUNDS = GuardrailConfig.MAX_AGENT_ITERATIONS
-
 def _build_graph(tools: List[BaseTool]):
     llm = ChatDatabricks(endpoint=MODEL, temperature=0, max_retries=3)
     tool_node = ToolNode(tools)
@@ -114,20 +112,22 @@ def _build_graph(tools: List[BaseTool]):
         return sum(1 for m in messages if hasattr(m, "tool_calls") and m.tool_calls)
 
     def agent_node(state: AgentState):
-        intent = classify_intent(state["messages"][-1].content if hasattr(state["messages"][-1], "content") else "")
-        selected = select_tools(intent)
+        intent = state.get("intent", "general")
+        selected = state.get("tools") or select_tools(intent)
         sys_prompt = get_system_prompt(intent, selected)
 
         rounds = _count_tool_rounds(state["messages"])
-        if rounds >= MAX_TOOL_ROUNDS:
+        if rounds >= QUICK_MAX_TOOL_ROUNDS:
             sys_prompt += (
-                "\n\nIMPORTANT: You have already called tools many times. "
+                "\n\nIMPORTANT: You have used all your tool rounds. "
                 "Do NOT call any more tools. Synthesize your final answer "
                 "from the information you have gathered so far."
             )
             msgs = [SystemMessage(content=sys_prompt)] + state["messages"]
             response = llm.invoke(msgs)
         else:
+            remaining = QUICK_MAX_TOOL_ROUNDS - rounds
+            sys_prompt += f"\n\nYou have {remaining} tool round(s) remaining. Use them wisely."
             bound = llm.bind_tools(selected)
             msgs = [SystemMessage(content=sys_prompt)] + state["messages"]
             response = bound.invoke(msgs)
@@ -180,7 +180,6 @@ async def run_metadata_agent(
         effective_mode = "graphrag" if mode == "deep" else mode
         return run_deep_analysis(question, mode=effective_mode, history=history)
 
-    # Quick mode: existing ReAct agent
     graph = _get_graph()
 
     messages = []
@@ -195,10 +194,11 @@ async def run_metadata_agent(
         messages = messages[-8:]
 
     intent = classify_intent(question)
+    selected_tools = select_tools(intent)
     messages.append(HumanMessage(content=question))
 
     result = await graph.ainvoke(
-        {"messages": messages},
+        {"messages": messages, "intent": intent, "tools": selected_tools},
         config={"recursion_limit": GuardrailConfig.MAX_RECURSION_LIMIT},
     )
 
