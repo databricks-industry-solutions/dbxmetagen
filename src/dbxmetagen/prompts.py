@@ -15,6 +15,16 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def _format_lineage_section(lineage: dict) -> str:
+    """Format a lineage dict as labeled text for LLM prompts."""
+    parts = []
+    if lineage.get("upstream_tables"):
+        parts.append(f"Upstream Tables (data sources): {', '.join(lineage['upstream_tables'])}")
+    if lineage.get("downstream_tables"):
+        parts.append(f"Downstream Tables (consumers): {', '.join(lineage['downstream_tables'])}")
+    return "\n\n".join(parts)
+
+
 class Prompt(ABC):
     """Prompt class for generating prompts for the database metadata classifier.
 
@@ -697,7 +707,10 @@ class CommentPrompt(Prompt):
 
     @staticmethod
     def _build_user_content(content: dict, acro_content: Any) -> str:
+        lineage = content.pop("lineage", None)
         base = f"Content is here - {content} and abbreviations are here - {acro_content}"
+        if lineage:
+            base += "\n\n" + _format_lineage_section(lineage)
         ontology_ctx = content.get("ontology_context")
         if ontology_ctx:
             base += f"\n\nOntology context: {ontology_ctx['hint']}"
@@ -830,11 +843,17 @@ class PIPrompt(Prompt):
                 },
                 {
                     "role": "user",
-                    "content": f"""{content} + {acro_content}. Deterministic results from Presidio or other outside checks to consider to help check your outputs are here: {self.deterministic_results}.
-                    """,
+                    "content": self._build_pi_user_content(content, acro_content),
                 },
             ]
         }
+
+    def _build_pi_user_content(self, content: dict, acro_content: Any) -> str:
+        lineage = content.pop("lineage", None)
+        base = f"{content} + {acro_content}. Deterministic results from Presidio or other outside checks to consider to help check your outputs are here: {self.deterministic_results}."
+        if lineage:
+            base += "\n\n" + _format_lineage_section(lineage)
+        return base
 
 
 class CommentNoDataPrompt(Prompt):
@@ -910,10 +929,18 @@ class CommentNoDataPrompt(Prompt):
                 },
                 {
                     "role": "user",
-                    "content": f"""Content is here - {content} and abbreviations are here - {acro_content}""",
+                    "content": self._build_nodata_user_content(content, acro_content),
                 },
             ]
         }
+
+    @staticmethod
+    def _build_nodata_user_content(content: dict, acro_content: Any) -> str:
+        lineage = content.pop("lineage", None)
+        base = f"Content is here - {content} and abbreviations are here - {acro_content}"
+        if lineage:
+            base += "\n\n" + _format_lineage_section(lineage)
+        return base
 
 
 class DomainPrompt(Prompt):

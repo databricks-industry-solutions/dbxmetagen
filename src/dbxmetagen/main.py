@@ -1,5 +1,6 @@
 """Entry point to dbxmetagen generate metadata."""
 
+import logging
 import os
 from pyspark.sql import SparkSession
 from dbxmetagen.error_handling import validate_csv
@@ -18,6 +19,8 @@ from dbxmetagen.databricks_utils import (
     grant_user_permissions,
     grant_group_permissions,
 )
+
+_logger = logging.getLogger(__name__)
 
 
 def get_dbr_version():
@@ -53,13 +56,12 @@ def validate_runtime_compatibility(dbr_version, config):
 def setup_mode_dependencies(config):
     """Setup mode-specific dependencies and validate configurations."""
     if config.mode == "pi":
-        if config.include_deterministic_pi or config.include_deterministic_pi == "true":
+        if config.include_deterministic_pi:
             ensure_spacy_model(config.spacy_model_names)
 
     elif config.mode == "domain":
         if not os.path.exists(config.domain_config_path):
-            print(f"Warning: Domain config not found at {config.domain_config_path}")
-            print("Domain classification will use fallback configuration")
+            _logger.warning("Domain config not found at %s, using fallback", config.domain_config_path)
 
     elif config.mode == "comment":
         pass

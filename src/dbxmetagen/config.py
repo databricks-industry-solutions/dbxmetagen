@@ -1,9 +1,12 @@
 """Configuration class for dbxmetagen."""
 
+import logging
 import uuid
 from datetime import datetime
 import yaml
 from dbxmetagen.user_utils import sanitize_user_identifier, get_current_user
+
+_logger = logging.getLogger(__name__)
 
 
 def _parse_bool(value):
@@ -126,6 +129,7 @@ class MetadataConfig:
             "custom_endpoint_secret_scope",
             "custom_endpoint_secret_key",
             "build_knowledge_graph",
+            "presidio_score_threshold",
         ],
     }
     MODEL_PARAMS = {}
@@ -198,6 +202,18 @@ class MetadataConfig:
         self.use_ontology_context = _parse_bool(
             getattr(self, "use_ontology_context", False)
         )
+        self.include_lineage = _parse_bool(
+            getattr(self, "include_lineage", True)
+        )
+        self.include_deterministic_pi = _parse_bool(
+            getattr(self, "include_deterministic_pi", True)
+        )
+        self.incremental = _parse_bool(
+            getattr(self, "incremental", True)
+        )
+        self.build_knowledge_graph = _parse_bool(
+            getattr(self, "build_knowledge_graph", False)
+        )
 
         # Handle review_apply_ddl if present
         if hasattr(self, "review_apply_ddl"):
@@ -212,6 +228,12 @@ class MetadataConfig:
             self.sample_size = 0
             self.filter_data_from_metadata = True
             self.include_possible_data_fields_in_metadata = False
+
+        if getattr(self, "filter_data_from_metadata", False) and self.allow_data:
+            _logger.warning(
+                "filter_data_from_metadata is set but has no effect unless allow_data=false. "
+                "To prevent data from reaching metadata, set allow_data=false instead."
+            )
 
         self.columns_per_call = int(getattr(self, "columns_per_call", 5))
         self.sample_size = int(getattr(self, "sample_size", 5))

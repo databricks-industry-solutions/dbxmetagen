@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import logging
 from functools import reduce
 from typing import List, TYPE_CHECKING
@@ -67,12 +68,10 @@ def override_metadata_from_csv(
         )
         return df
 
-    import csv as _csv
-
     # Pre-validate field counts with csv.reader (pandas silently shifts data
     # when a row has more fields than the header -- no error, no warning).
     with open(resolved, newline="") as _fh:
-        reader = _csv.reader(_fh, skipinitialspace=True)
+        reader = csv.reader(_fh, skipinitialspace=True)
         header_row = next(reader)
         expected_n = len(header_row)
         for line_no, row in enumerate(reader, start=2):
@@ -81,7 +80,8 @@ def override_metadata_from_csv(
                     f"Override CSV '{resolved}' line {line_no} has {len(row)} fields "
                     f"but the header has {expected_n}. This usually means a value "
                     "contains a comma without being wrapped in double quotes. "
-                    'Wrap the value like: "Sales data, including returns"'
+                    'Wrap the value like: "Sales data, including returns"\n'
+                    f"Row content: {','.join(row)}"
                 )
 
     csv_df = pd.read_csv(resolved, dtype=str, keep_default_na=False, skipinitialspace=True)

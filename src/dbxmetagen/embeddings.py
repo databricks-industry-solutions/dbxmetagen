@@ -176,7 +176,7 @@ class EmbeddingGenerator:
         
         # Return count of updated nodes
         return embeddings_df.count()
-    
+
     def compute_cosine_similarity(self, vec1: List[float], vec2: List[float]) -> float:
         """Compute cosine similarity between two vectors."""
         if not vec1 or not vec2 or len(vec1) != len(vec2):

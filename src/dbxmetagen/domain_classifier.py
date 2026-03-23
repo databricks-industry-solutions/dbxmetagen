@@ -372,8 +372,18 @@ def _enforce_value(
 ) -> tuple:
     """Snap a predicted value to the nearest allowed value.
 
+    Tier order (first match wins):
+      1. Exact case-insensitive
+      2. Normalized exact (strip ``_``, ``-``, spaces)
+      3. Longest substring containment
+      4. Trigram Jaccard >= 0.5
+      5. Fallback
+
     Returns ``(value, was_exact_match)``.
     """
+    if not predicted or not predicted.strip():
+        return fallback, False
+
     low = predicted.lower().strip()
     allowed_map = {a.lower(): a for a in allowed}
 
@@ -381,24 +391,35 @@ def _enforce_value(
     if low in allowed_map:
         return allowed_map[low], True
 
-    # 2. Substring containment
-    for a_low, a_orig in allowed_map.items():
-        if a_low in low or low in a_low:
-            return a_orig, False
-
-    # 3. Normalized match (strip underscores, hyphens, spaces)
+    # 2. Normalized exact match (strip separators) -- checked before substring
+    #    so that "data engineering" matches "data_engineering" instead of "data".
     norm_pred = _normalize(predicted)
     for a_low, a_orig in allowed_map.items():
         if _normalize(a_low) == norm_pred:
             return a_orig, False
 
-    # 4. Trigram overlap fallback (threshold 0.4)
+    # 3. Longest substring containment -- prefer the longest allowed key that
+    #    matches to avoid short prefixes stealing from longer keys.
+    #    Checked on both raw-lowered and normalized forms so that separator
+    #    differences (spaces vs underscores) don't block longer matches.
+    best_len, best_orig = -1, None
+    for a_low, a_orig in allowed_map.items():
+        norm_a = _normalize(a_low)
+        raw_hit = a_low in low or low in a_low
+        norm_hit = norm_pred and norm_a and (norm_a in norm_pred or norm_pred in norm_a)
+        if raw_hit or norm_hit:
+            if len(a_low) > best_len:
+                best_len, best_orig = len(a_low), a_orig
+    if best_orig:
+        return best_orig, False
+
+    # 4. Trigram overlap fallback (threshold 0.5)
     best_score, best_orig = 0.0, None
     for a_low, a_orig in allowed_map.items():
         score = _trigram_overlap(_normalize(a_low), norm_pred)
         if score > best_score:
             best_score, best_orig = score, a_orig
-    if best_score >= 0.4 and best_orig:
+    if best_score >= 0.5 and best_orig:
         return best_orig, False
 
     return fallback, False
@@ -445,6 +466,8 @@ def _error_result(table_name: str, error: Exception) -> Dict[str, Any]:
         "domain": "unknown",
         "subdomain": None,
         "confidence": 0.0,
+        "recommended_domain": None,
+        "recommended_subdomain": None,
         "reasoning": f"Classification failed: {str(error)}",
         "metadata_summary": "Error during classification",
     }
@@ -504,10 +527,6 @@ def classify_subdomain_stage2(
         domains = domain_config.get("domains", {})
         if second_choice_domain and second_choice_domain in domains:
             include_secondary = second_choice_domain
-        else:
-            others = [k for k in domains if k != domain_key]
-            if others:
-                include_secondary = others[0]
         if include_secondary:
             logger.info(
                 "Low domain confidence (%.2f); expanding stage-2 to include %s",

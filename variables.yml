@@ -126,7 +126,7 @@ variables:
     description: Comma-separated column names to exclude from domain classification (e.g. system columns like _updated_at, created_at that can bias results). Only affects domain mode.
     default: "_updated_at,_created_at,created_at,updated_at"
   include_lineage:
-    description: When true, query system.access.table_lineage on the fly and include truncated upstream/downstream table lists in LLM prompts for comment, PII, and domain modes. Requires access to system tables. Default false.
+    description: When true, query system.access.table_lineage on the fly and include truncated upstream/downstream table lists in LLM prompts for comment, PII, and domain modes. Requires access to system tables. Default true.
     default: true
   use_protected_classification_for_table:
     description: Whether to use protected classification for the table.

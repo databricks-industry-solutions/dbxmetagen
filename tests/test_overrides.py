@@ -794,7 +794,8 @@ class TestProcessAndAddDdlOverrideWiring:
         ):
             result = pm.process_and_add_ddl(config, "cat.sch.my_table")
             mock_ov.assert_not_called()
-            assert result == {}
+            assert "_skip_reason" in result
+            assert len(result) == 1
 
 
 class TestAddDdlToDfsOverrideOrdering:
@@ -1020,15 +1021,33 @@ class TestCSVParsingRobustness:
         finally:
             os.unlink(f.name)
 
-    def test_unknown_column_does_not_raise(self):
-        """Extra known-ish columns (like domain) should not raise."""
+    def test_unknown_column_warns_but_does_not_raise(self):
+        """A truly unknown column should trigger a warning but not an error."""
+        f = tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False)
+        f.write("catalog,schema,table,column,comment,classification,type,bogus_col\n")
+        f.write(",,,ssn,A comment,,,whatever\n")
+        f.close()
+        try:
+            with patch("dbxmetagen.overrides.logger") as mock_logger:
+                rows = self._run_csv(f.name)
+                assert rows[0]["comment"] == "A comment"
+                mock_logger.warning.assert_called_once()
+                warn_msg = mock_logger.warning.call_args[0][0]
+                assert "unrecognized columns" in warn_msg
+        finally:
+            os.unlink(f.name)
+
+    def test_known_extra_column_does_not_warn(self):
+        """Known optional columns like domain should not trigger a warning."""
         f = tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False)
         f.write("catalog,schema,table,column,comment,classification,type,domain\n")
         f.write(",,,ssn,A comment,,,finance\n")
         f.close()
         try:
-            rows = self._run_csv(f.name)
-            assert rows[0]["comment"] == "A comment"
-            assert rows[0]["domain"] == "finance"
+            with patch("dbxmetagen.overrides.logger") as mock_logger:
+                rows = self._run_csv(f.name)
+                assert rows[0]["comment"] == "A comment"
+                assert rows[0]["domain"] == "finance"
+                mock_logger.warning.assert_not_called()
         finally:
             os.unlink(f.name)

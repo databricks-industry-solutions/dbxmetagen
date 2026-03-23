@@ -2336,6 +2336,25 @@ class OntologyBuilder:
         self.spark.sql(ddl)
         logger.info("Relationships table %s ready", self.config.fully_qualified_relationships)
 
+    def _purge_stale_bundle_entities(self, current_bundle: str) -> int:
+        """Remove auto-discovered, unvalidated entities from a different bundle."""
+        if not current_bundle:
+            return 0
+        esc = current_bundle.replace("'", "''")
+        result = self.spark.sql(
+            f"""
+            DELETE FROM {self.config.fully_qualified_entities}
+            WHERE bundle_name IS NOT NULL
+              AND bundle_name != '{esc}'
+              AND auto_discovered = TRUE
+              AND validated = FALSE
+            """
+        )
+        count = result.first()[0] if result.first() else 0
+        if count:
+            logger.info("Purged %d stale entities from previous bundle (keeping validated)", count)
+        return count
+
     def _store_entities(
         self,
         entities: List[Dict[str, Any]],
@@ -2343,7 +2362,7 @@ class OntologyBuilder:
         bundle_version: Optional[str] = None,
         discovery_timestamp: Optional[datetime] = None,
     ) -> int:
-        """Common logic to store a list of entity dicts via MERGE."""
+        """Store entity dicts via MERGE (insert new, update existing)."""
         if not entities:
             return 0
 
@@ -2394,6 +2413,13 @@ class OntologyBuilder:
         ON target.entity_name = source.entity_name
            AND array_join(target.source_tables, ',') = array_join(source.source_tables, ',')
            AND COALESCE(target.attributes['granularity'], 'table') = COALESCE(source.attributes['granularity'], 'table')
+        WHEN MATCHED AND target.auto_discovered = TRUE AND target.validated = FALSE THEN UPDATE SET
+            target.confidence = source.confidence,
+            target.source_columns = source.source_columns,
+            target.attributes = source.attributes,
+            target.column_bindings = source.column_bindings,
+            target.bundle_version = source.bundle_version,
+            target.updated_at = source.updated_at
         WHEN NOT MATCHED THEN INSERT *
         """
         )
@@ -2401,6 +2427,10 @@ class OntologyBuilder:
 
     def discover_and_store_entities(self) -> int:
         """Discover table-level entities, deduplicate, and store."""
+        bundle_name = self.config.ontology_bundle or None
+        if bundle_name:
+            self._purge_stale_bundle_entities(bundle_name)
+
         entities = self.discoverer.discover_entities_from_tables()
         if not entities:
             logger.warning(
@@ -3426,6 +3456,7 @@ class OntologyBuilder:
         is_pk_column: bool,
         linked_entity: Optional[str],
         cls_type: str,
+        table_name: str = "",
     ) -> Tuple[str, str, float]:
         """Heuristic fallback classification. Returns (role, discovery_method, confidence)."""
         _GEO_PATTERNS_DEFAULT = frozenset({
@@ -3456,7 +3487,11 @@ class OntologyBuilder:
         if is_pk_column:
             return "primary_key", "heuristic_strong", 0.85
         if re.search(r'_(id|key)$', col_lower):
-            return "object_property", "heuristic_strong", 0.75
+            # Self-referencing PK detection: e.g. order_id on the orders table
+            table_short = table_name.rsplit(".", 1)[-1].lower().rstrip("s") if table_name else ""
+            if table_short and (col_lower == f"{table_short}_id" or col_lower == f"{table_short}_key"):
+                return "primary_key", "heuristic_strong", 0.80
+            return "object_property", "heuristic_weak", 0.55
         if cls_type in ("PII", "PHI"):
             return "pii", "heuristic_strong", 0.85
         if dtype == "BOOLEAN" or col_lower.startswith(("is_", "has_", "flag_")):
@@ -3596,7 +3631,7 @@ class OntologyBuilder:
                 # Tier 2: Heuristic fallback
                 is_pk = col_lower in {cc.lower() for cc in pe["source_columns"]}
                 role, discovery_method, confidence = self._heuristic_classify(
-                    col_lower, dtype, is_pk, linked, cls_type
+                    col_lower, dtype, is_pk, linked, cls_type, table_name=tbl,
                 )
                 prop_name = col
 
