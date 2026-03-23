@@ -307,7 +307,7 @@ export default function AgentChat() {
         setMessages(prev => [...prev, { role: 'error', content: submitErr || 'No task ID returned', _query: text, _mode: useMode }])
         return
       }
-      for (let i = 0; i < 150; i++) {
+      for (let i = 0; i < 300; i++) {
         await new Promise(r => setTimeout(r, 2000))
         const pollRes = await fetch(`/api/agent/deep/task/${task_id}`)
         if (!pollRes.ok) continue
@@ -330,7 +330,7 @@ export default function AgentChat() {
         }
         if (task.stage) setStage(task.stage)
       }
-      setMessages(prev => [...prev, { role: 'error', content: 'Analysis timed out after 5 minutes', _query: text, _mode: useMode }])
+      setMessages(prev => [...prev, { role: 'error', content: 'Analysis timed out after 10 minutes', _query: text, _mode: useMode }])
     } catch (e) {
       setMessages(prev => [...prev, { role: 'error', content: e.message, _query: text, _mode: useMode }])
     }

@@ -944,7 +944,7 @@ class TestPurgeStaleBundleEntities:
         sql_calls = [c[0][0] for c in builder.spark.sql.call_args_list]
         delete_sqls = [s for s in sql_calls if "DELETE FROM" in s]
         assert len(delete_sqls) == 1
-        assert "bundle_name != 'general'" in delete_sqls[0]
+        assert "ontology_bundle != 'general'" in delete_sqls[0]
         assert "auto_discovered = TRUE" in delete_sqls[0]
         assert "validated = FALSE" in delete_sqls[0]
 

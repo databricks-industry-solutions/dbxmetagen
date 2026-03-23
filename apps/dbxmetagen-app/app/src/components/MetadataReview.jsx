@@ -1420,6 +1420,10 @@ export default function MetadataReview() {
       <div className="flex flex-wrap items-center gap-4">
         <div className="inline-flex bg-dbx-oat/60 dark:bg-dbx-navy-650 rounded-xl p-1 shadow-inner-soft">
           {[['editor', 'Review Editor'], ['fk_apply', 'FK Apply'], ['entity_tags', 'Entity Tags'], ['kb', 'Table KB'], ['columns', 'Column KB'], ['schemas', 'Schema KB'], ['log', 'Generation Log']]
+            // NOTE: Only 'editor' and 'log' are shipped for now.
+            // The other tabs (fk_apply, entity_tags, kb, columns, schemas) are stubbed out
+            // for future release -- keep the code but hide the tabs until ready.
+            .filter(([k]) => ['editor', 'log'].includes(k))
             .map(([k, l]) => (
             <button key={k} onClick={() => setTab(k)}
               className={`px-3.5 py-1.5 text-sm rounded-lg transition-all duration-200 ${tab === k ? 'bg-white dark:bg-dbx-navy-500 shadow-sm font-semibold text-dbx-lava' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'}`}>{l}</button>

@@ -2344,8 +2344,8 @@ class OntologyBuilder:
         result = self.spark.sql(
             f"""
             DELETE FROM {self.config.fully_qualified_entities}
-            WHERE bundle_name IS NOT NULL
-              AND bundle_name != '{esc}'
+            WHERE ontology_bundle IS NOT NULL
+              AND ontology_bundle != '{esc}'
               AND auto_discovered = TRUE
               AND validated = FALSE
             """
