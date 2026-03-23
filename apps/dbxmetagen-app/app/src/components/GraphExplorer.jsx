@@ -32,24 +32,6 @@ export default function GraphExplorer({ initialNode, initialEdgeType }) {
     if (initialEdgeType != null) setEdgeType(initialEdgeType)
   }, [initialEdgeType])
 
-  useEffect(() => {
-    if (initialNode && !autoTraversed.current && !graphResult) {
-      autoTraversed.current = true
-      doTraverse(initialNode)
-    }
-  }, [initialNode, graphResult, doTraverse])
-
-  useEffect(() => {
-    if (!search || search.length < 2) { setNodePicker([]); return }
-    const t = setTimeout(async () => {
-      setPickerLoading(true)
-      const { data } = await safeFetch(`/api/graph/nodes?search=${encodeURIComponent(search)}&node_type=table&limit=20`)
-      setNodePicker(data || [])
-      setPickerLoading(false)
-    }, 300)
-    return () => clearTimeout(t)
-  }, [search])
-
   const doTraverse = useCallback(async (nodeId) => {
     const node = nodeId || selectedNode
     if (!node) return
@@ -68,6 +50,24 @@ export default function GraphExplorer({ initialNode, initialEdgeType }) {
     }
     setLoading(false)
   }, [selectedNode, maxHops, edgeType, hideContains])
+
+  useEffect(() => {
+    if (initialNode && !autoTraversed.current && !graphResult) {
+      autoTraversed.current = true
+      doTraverse(initialNode)
+    }
+  }, [initialNode, graphResult, doTraverse])
+
+  useEffect(() => {
+    if (!search || search.length < 2) { setNodePicker([]); return }
+    const t = setTimeout(async () => {
+      setPickerLoading(true)
+      const { data } = await safeFetch(`/api/graph/nodes?search=${encodeURIComponent(search)}&node_type=table&limit=20`)
+      setNodePicker(data || [])
+      setPickerLoading(false)
+    }, 300)
+    return () => clearTimeout(t)
+  }, [search])
 
   const handleNodeClick = useCallback((nodeId) => {
     const info = graphResult?.nodes?.[nodeId]
