@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect, useMemo } from 'react'
+import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react'
 import { safeFetch, ErrorBanner } from '../App'
 import { PageHeader, EmptyState } from './ui'
 import GraphSubgraph from './GraphSubgraph'
@@ -26,21 +26,11 @@ export default function GraphExplorer({ initialNode, initialEdgeType }) {
   const [error, setError] = useState(null)
   const [detailNode, setDetailNode] = useState(null)
   const [edgeCatalogOpen, setEdgeCatalogOpen] = useState(false)
+  const autoTraversed = useRef(false)
 
   useEffect(() => {
     if (initialEdgeType != null) setEdgeType(initialEdgeType)
   }, [initialEdgeType])
-
-  useEffect(() => {
-    if (!search || search.length < 2) { setNodePicker([]); return }
-    const t = setTimeout(async () => {
-      setPickerLoading(true)
-      const { data } = await safeFetch(`/api/graph/nodes?search=${encodeURIComponent(search)}&node_type=table&limit=20`)
-      setNodePicker(data || [])
-      setPickerLoading(false)
-    }, 300)
-    return () => clearTimeout(t)
-  }, [search])
 
   const doTraverse = useCallback(async (nodeId) => {
     const node = nodeId || selectedNode
@@ -60,6 +50,24 @@ export default function GraphExplorer({ initialNode, initialEdgeType }) {
     }
     setLoading(false)
   }, [selectedNode, maxHops, edgeType, hideContains])
+
+  useEffect(() => {
+    if (initialNode && !autoTraversed.current && !graphResult) {
+      autoTraversed.current = true
+      doTraverse(initialNode)
+    }
+  }, [initialNode, graphResult, doTraverse])
+
+  useEffect(() => {
+    if (!search || search.length < 2) { setNodePicker([]); return }
+    const t = setTimeout(async () => {
+      setPickerLoading(true)
+      const { data } = await safeFetch(`/api/graph/nodes?search=${encodeURIComponent(search)}&node_type=table&limit=20`)
+      setNodePicker(data || [])
+      setPickerLoading(false)
+    }, 300)
+    return () => clearTimeout(t)
+  }, [search])
 
   const handleNodeClick = useCallback((nodeId) => {
     const info = graphResult?.nodes?.[nodeId]
@@ -107,8 +115,10 @@ export default function GraphExplorer({ initialNode, initialEdgeType }) {
               aria-label="Search graph nodes"
               className="input-base"
             />
-            {nodePicker.length > 0 && search && (
+            {search && search.length >= 2 && (
               <div className="card absolute z-30 mt-1 w-80 max-h-60 overflow-auto p-0">
+                {pickerLoading && <p className="px-3 py-2 text-xs text-slate-400 animate-pulse">Searching...</p>}
+                {!pickerLoading && nodePicker.length === 0 && <p className="px-3 py-2 text-xs text-slate-400">No results</p>}
                 {nodePicker.map(n => (
                   <button key={n.id} className="w-full text-left px-3 py-2 text-sm hover:bg-dbx-oat dark:hover:bg-dbx-navy-600 truncate"
                     onClick={() => { setSelectedNode(n.id); setSearch(''); setNodePicker([]) }}>
@@ -146,7 +156,7 @@ export default function GraphExplorer({ initialNode, initialEdgeType }) {
         </div>
       </div>
 
-      {error && <ErrorBanner message={error} />}
+      {error && <ErrorBanner error={error} onDismiss={() => setError(null)} />}
 
       {graphResult ? (
         <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">

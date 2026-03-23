@@ -880,3 +880,187 @@ class TestBundleYAMLRelationships:
                     f"{name}.{rel_name} missing 'cardinality'"
                 )
 
+
+# ======================================================================
+# _store_entities MERGE update + _purge_stale_bundle_entities
+# ======================================================================
+
+
+class TestStoreEntitiesMergeUpdate:
+    """Tests that _store_entities emits a MERGE with WHEN MATCHED THEN UPDATE."""
+
+    @pytest.fixture
+    def builder(self):
+        mock_spark = MagicMock()
+        config = OntologyConfig(catalog_name="cat", schema_name="sch")
+        with patch.object(OntologyLoader, 'load_config') as mock_load:
+            mock_load.return_value = OntologyLoader._default_config()
+            b = OntologyBuilder(mock_spark, config)
+        return b
+
+    def test_merge_contains_when_matched(self, builder):
+        entities = [{"entity_id": "e1", "entity_type": "T", "source_tables": ["t1"], "confidence": 0.8}]
+        builder._store_entities(entities)
+        sql_calls = [c[0][0] for c in builder.spark.sql.call_args_list]
+        merge_sql = [s for s in sql_calls if "MERGE INTO" in s]
+        assert len(merge_sql) == 1
+        assert "WHEN MATCHED" in merge_sql[0]
+        assert "auto_discovered = TRUE" in merge_sql[0]
+        assert "validated = FALSE" in merge_sql[0]
+
+    def test_merge_does_not_overwrite_validated(self, builder):
+        """WHEN MATCHED guard ensures validated entities are never overwritten."""
+        entities = [{"entity_id": "e1", "entity_type": "T", "source_tables": ["t1"], "confidence": 0.9}]
+        builder._store_entities(entities)
+        merge_sql = [c[0][0] for c in builder.spark.sql.call_args_list if "MERGE" in c[0][0]][0]
+        assert "validated = FALSE" in merge_sql
+
+    def test_merge_updates_expected_columns(self, builder):
+        entities = [{"entity_id": "e1", "entity_type": "T", "source_tables": ["t1"], "confidence": 0.5}]
+        builder._store_entities(entities)
+        merge_sql = [c[0][0] for c in builder.spark.sql.call_args_list if "MERGE" in c[0][0]][0]
+        for col in ("confidence", "source_columns", "attributes", "column_bindings", "bundle_version", "updated_at"):
+            assert f"target.{col} = source.{col}" in merge_sql
+
+
+class TestPurgeStaleBundleEntities:
+    """Tests for _purge_stale_bundle_entities."""
+
+    @pytest.fixture
+    def builder(self):
+        mock_spark = MagicMock()
+        config = OntologyConfig(catalog_name="cat", schema_name="sch", ontology_bundle="general")
+        with patch.object(OntologyLoader, 'load_config') as mock_load:
+            mock_load.return_value = OntologyLoader._default_config()
+            b = OntologyBuilder(mock_spark, config)
+        return b
+
+    def test_purge_emits_delete_sql(self, builder):
+        mock_result = MagicMock()
+        mock_result.first.return_value = [3]
+        builder.spark.sql.return_value = mock_result
+
+        builder._purge_stale_bundle_entities("general")
+        sql_calls = [c[0][0] for c in builder.spark.sql.call_args_list]
+        delete_sqls = [s for s in sql_calls if "DELETE FROM" in s]
+        assert len(delete_sqls) == 1
+        assert "ontology_bundle != 'general'" in delete_sqls[0]
+        assert "auto_discovered = TRUE" in delete_sqls[0]
+        assert "validated = FALSE" in delete_sqls[0]
+
+    def test_purge_skips_when_no_bundle(self, builder):
+        count = builder._purge_stale_bundle_entities("")
+        assert count == 0
+        builder.spark.sql.assert_not_called()
+
+    def test_purge_preserves_validated_entities(self, builder):
+        mock_result = MagicMock()
+        mock_result.first.return_value = [0]
+        builder.spark.sql.return_value = mock_result
+
+        builder._purge_stale_bundle_entities("general")
+        sql = builder.spark.sql.call_args[0][0]
+        assert "validated = FALSE" in sql
+
+    def test_discover_and_store_calls_purge_when_bundle_set(self, builder):
+        builder.discoverer.discover_entities_from_tables = MagicMock(return_value=[])
+        builder.discover_and_store_entities()
+        sql_calls = [c[0][0] for c in builder.spark.sql.call_args_list]
+        delete_sqls = [s for s in sql_calls if "DELETE FROM" in s]
+        assert len(delete_sqls) == 1
+
+    def test_discover_and_store_skips_purge_when_no_bundle(self):
+        mock_spark = MagicMock()
+        config = OntologyConfig(catalog_name="cat", schema_name="sch", ontology_bundle=None)
+        with patch.object(OntologyLoader, 'load_config') as mock_load:
+            mock_load.return_value = OntologyLoader._default_config()
+            builder = OntologyBuilder(mock_spark, config)
+        builder.discoverer.discover_entities_from_tables = MagicMock(return_value=[])
+        builder.discover_and_store_entities()
+        sql_calls = [c[0][0] for c in mock_spark.sql.call_args_list]
+        delete_sqls = [s for s in sql_calls if "DELETE FROM" in s]
+        assert len(delete_sqls) == 0
+
+
+# ======================================================================
+# _heuristic_classify improvements
+# ======================================================================
+
+
+class TestHeuristicClassifyImprovements:
+    """Tests for self-referencing PK detection and downgraded _id/_key confidence."""
+
+    @pytest.fixture
+    def classifier(self):
+        mock_spark = MagicMock()
+        config = OntologyConfig(catalog_name="cat", schema_name="sch")
+        with patch.object(OntologyLoader, 'load_config') as mock_load:
+            mock_load.return_value = OntologyLoader._default_config()
+            builder = OntologyBuilder(mock_spark, config)
+        return builder
+
+    def test_self_referencing_pk_order_id_on_orders(self, classifier):
+        """order_id on cat.sch.orders -> primary_key, not object_property."""
+        role, method, conf = classifier._heuristic_classify(
+            "order_id", "BIGINT", False, None, "", table_name="cat.sch.orders",
+        )
+        assert role == "primary_key"
+        assert conf >= 0.80
+
+    def test_self_referencing_pk_customer_key_on_customers(self, classifier):
+        """customer_key on cat.sch.customers -> primary_key."""
+        role, method, conf = classifier._heuristic_classify(
+            "customer_key", "BIGINT", False, None, "", table_name="cat.sch.customers",
+        )
+        assert role == "primary_key"
+
+    def test_foreign_key_customer_id_on_orders(self, classifier):
+        """customer_id on cat.sch.orders -> object_property (not self-referencing)."""
+        role, method, conf = classifier._heuristic_classify(
+            "customer_id", "BIGINT", False, None, "", table_name="cat.sch.orders",
+        )
+        assert role == "object_property"
+        assert conf == 0.55
+        assert method == "heuristic_weak"
+
+    def test_ambiguous_id_column_low_confidence(self, classifier):
+        """Generic _id column without linked_entity gets low confidence."""
+        role, method, conf = classifier._heuristic_classify(
+            "region_id", "INT", False, None, "", table_name="cat.sch.orders",
+        )
+        assert role == "object_property"
+        assert conf == 0.55
+        assert method == "heuristic_weak"
+
+    def test_linked_entity_still_high_confidence(self, classifier):
+        """Column with linked_entity should remain object_property at 0.80."""
+        role, method, conf = classifier._heuristic_classify(
+            "provider_id", "BIGINT", False, "Provider", "", table_name="cat.sch.encounters",
+        )
+        assert role == "object_property"
+        assert conf == 0.80
+        assert method == "heuristic_strong"
+
+    def test_explicit_pk_column_still_primary_key(self, classifier):
+        """Column already in entity source_columns (is_pk_column=True) -> primary_key."""
+        role, method, conf = classifier._heuristic_classify(
+            "patient_id", "BIGINT", True, None, "", table_name="cat.sch.encounters",
+        )
+        assert role == "primary_key"
+        assert conf == 0.85
+
+    def test_no_table_name_falls_back_to_object_property(self, classifier):
+        """Without table_name, can't detect self-referencing PK."""
+        role, method, conf = classifier._heuristic_classify(
+            "order_id", "BIGINT", False, None, "",
+        )
+        assert role == "object_property"
+        assert conf == 0.55
+
+    def test_plural_table_strip(self, classifier):
+        """Plural table name: patient_id on patients -> primary_key."""
+        role, _, _ = classifier._heuristic_classify(
+            "patient_id", "BIGINT", False, None, "", table_name="cat.sch.patients",
+        )
+        assert role == "primary_key"
+

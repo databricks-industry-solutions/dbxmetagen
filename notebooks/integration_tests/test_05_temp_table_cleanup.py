@@ -46,15 +46,18 @@ try:
     print(f"  Current user: {current_user}")
     print(f"  Sanitized user: {sanitized_user}")
 
+    # Clean up stale temp tables from prior runs
+    stale_temps = test_utils.find_temp_tables(sanitized_user)
+    if stale_temps:
+        print(f"  Cleaning {len(stale_temps)} stale temp table(s) from prior runs")
+        for t in stale_temps:
+            spark.sql(f"DROP TABLE IF EXISTS {test_catalog}.{test_schema}.{t}")
+
     # Test 1: Successful run should clean up temp tables
     print("\nTest 1: Successful run cleans up temp tables")
     test_table = test_utils.create_test_table(
         "test_cleanup_success", with_comment=False
     )
-
-    # Check for temp tables before run
-    temp_tables_before = test_utils.find_temp_tables(sanitized_user)
-    print(f"  Temp tables before run: {len(temp_tables_before)}")
 
     # Create config using production YAML with test overrides
     config = MetadataConfig(
@@ -66,15 +69,20 @@ try:
         grant_permissions_after_creation="false",  # Override for tests
     )
 
+    # Get the exact temp table name that main() will create and should clean up
+    expected_temp = config.get_temp_metadata_log_table_name()
+    print(f"  Expected temp table: {expected_temp}")
+
     # Run successfully
     main(config.__dict__)
 
-    # Check temp tables after successful run - should be cleaned up
-    temp_tables_after = test_utils.find_temp_tables(sanitized_user)
-    print(f"  Temp tables after successful run: {len(temp_tables_after)}")
+    # Check if THIS run's specific temp table was cleaned up
+    this_table_exists = spark.catalog.tableExists(expected_temp)
+    print(f"  This run's temp table still exists: {this_table_exists}")
 
-    test_utils.assert_equals(
-        len(temp_tables_after), 0, "Temp tables cleaned up after successful run"
+    test_utils.assert_true(
+        not this_table_exists,
+        "This run's temp table cleaned up after successful run"
     )
 
     # Verify metadata_generation_log persists after cleanup
@@ -98,6 +106,9 @@ try:
         grant_permissions_after_creation="false",  # Override for tests
     )
 
+    expected_fail_temp = config_fail.get_temp_metadata_log_table_name()
+    print(f"  Expected fail temp table: {expected_fail_temp}")
+
     # This should fail, but we expect temp table cleanup to still happen
     try:
         print("  Attempting run with invalid catalog (expected to fail)...")
@@ -106,14 +117,12 @@ try:
     except Exception as e:
         print(f"  [OK] Run failed as expected: {type(e).__name__}")
 
-    # Even after failure, temp tables should be cleaned
-    temp_tables_after_fail = test_utils.find_temp_tables(sanitized_user)
-    print(f"  Temp tables after failed run: {len(temp_tables_after_fail)}")
+    # Check if the failed run's specific temp table was cleaned up
+    fail_table_exists = spark.catalog.tableExists(expected_fail_temp)
+    print(f"  Failed run's temp table still exists: {fail_table_exists}")
 
-    # Note: This assertion may fail if the error happens before temp tables are created
-    # In that case, we just verify no temp tables are left behind
     test_utils.assert_true(
-        len(temp_tables_after_fail) == 0, "No temp tables left behind after failed run"
+        not fail_table_exists, "Failed run's temp table cleaned up"
     )
 
     # Test 3: Control tables

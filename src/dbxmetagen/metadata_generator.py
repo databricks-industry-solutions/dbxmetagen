@@ -219,7 +219,7 @@ class CommentGenerator(MetadataGenerator):
             return chat_response, response_payload
         except (ValidationError, json.JSONDecodeError, AttributeError, ValueError) as e:
             if retries < max_retries:
-                print(f"Attempt {retries + 1} failed, retrying due to {e}...")
+                logger.warning("Attempt %d failed, retrying: %s", retries + 1, e)
                 return self.get_comment_response(
                     config,
                     content,
@@ -231,7 +231,6 @@ class CommentGenerator(MetadataGenerator):
                     max_retries,
                 )
             else:
-                print("Validation error - response")
                 raise ValueError(f"Validation error after {max_retries} attempts: {e}")
 
     def _get_chat_completion(
@@ -242,13 +241,13 @@ class CommentGenerator(MetadataGenerator):
         max_tokens: int,
         temperature: float,
         retries: int = 0,
-        max_retries: int = 0,
+        max_retries: int = 3,
     ) -> ChatCompletion:
         try:
             return self.predict_chat_response(prompt_content)
         except Exception as e:
             if retries < max_retries:
-                print(f"[RETRY] Error: {e}. Retrying in {2 ** retries} seconds...")
+                logger.warning("[RETRY] Error: %s. Retrying in %ds...", e, 2 ** retries)
                 exponential_backoff(retries)
                 return self._get_chat_completion(
                     config,
@@ -260,7 +259,6 @@ class CommentGenerator(MetadataGenerator):
                     max_retries,
                 )
             else:
-                print(f"Failed after {max_retries} retries.")
                 raise e
 
     def _parse_response(self, response: str) -> Dict[str, Any]:
@@ -337,7 +335,7 @@ class PIIdentifier(MetadataGenerator):
         max_tokens: int,
         temperature: float,
         retries: int = 0,
-        max_retries: int = 0,
+        max_retries: int = 5,
     ) -> Tuple[PIResponse, Dict[str, Any]]:
         try:
             chat_response = self._get_chat_completion(
@@ -370,12 +368,13 @@ class PIIdentifier(MetadataGenerator):
         max_tokens: int,
         temperature: float,
         retries: int = 0,
-        max_retries: int = 0,
+        max_retries: int = 3,
     ) -> ChatCompletion:
         try:
             return self.predict_chat_response(prompt_content)
         except Exception as e:
             if retries < max_retries:
+                logger.warning("[PI RETRY] Error: %s. Retrying in %ds...", e, 2 ** retries)
                 exponential_backoff(retries)
                 return self._get_chat_completion(
                     config,
@@ -387,7 +386,6 @@ class PIIdentifier(MetadataGenerator):
                     max_retries,
                 )
             else:
-                print(f"Failed after {max_retries} retries.")
                 raise e
 
     def _parse_response(self, response: str) -> Dict[str, Any]:

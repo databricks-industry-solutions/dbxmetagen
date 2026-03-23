@@ -21,6 +21,11 @@ class TestFetchLineageCached:
     def teardown_class(cls):
         cls._uninstall(cls._saved)
 
+    def setup_method(self):
+        import dbxmetagen.processing as proc
+        proc._lineage_cache.clear()
+        proc._lineage_unavailable = False
+
     def test_returns_none_for_bad_table_name(self):
         from dbxmetagen.processing import fetch_lineage
         assert fetch_lineage(MagicMock(), "no_dots") is None
@@ -435,3 +440,220 @@ class TestColumnKnowledgeBaseBootstrap:
         info_calls = [s for s in sql_calls if "information_schema.columns" in s]
         # Should have queries for 2 distinct catalog.schema combos
         assert len(info_calls) == 2
+
+
+# ======================================================================
+# validate_optional_tables pre-flight check
+# ======================================================================
+class TestValidateOptionalTables:
+
+    @classmethod
+    def setup_class(cls):
+        from conftest import install_processing_stubs, uninstall_processing_stubs
+        cls._saved = install_processing_stubs()
+        cls._uninstall = uninstall_processing_stubs
+
+    @classmethod
+    def teardown_class(cls):
+        cls._uninstall(cls._saved)
+
+    def setup_method(self):
+        import dbxmetagen.processing as proc
+        proc._ext_metadata_unavailable = False
+
+    def _make_config(self, **overrides):
+        defaults = dict(
+            catalog_name="cat", schema_name="sch",
+            include_lineage=True, include_constraint_context=False,
+            include_profiling_context=False, use_ontology_context=False,
+            use_kb_comments=False,
+        )
+        defaults.update(overrides)
+        cfg = MagicMock()
+        for k, v in defaults.items():
+            setattr(cfg, k, v)
+        return cfg
+
+    @patch("dbxmetagen.processing.table_exists_uc", return_value=False)
+    def test_disables_constraint_flag_when_ext_metadata_missing(self, mock_exists):
+        from dbxmetagen.processing import validate_optional_tables
+        config = self._make_config(include_constraint_context=True)
+        validate_optional_tables(MagicMock(), config)
+        assert config.include_constraint_context is False
+
+    @patch("dbxmetagen.processing.table_exists_uc", return_value=False)
+    def test_sets_ext_metadata_unavailable_when_lineage_enabled(self, mock_exists):
+        import dbxmetagen.processing as proc
+        from dbxmetagen.processing import validate_optional_tables
+        config = self._make_config(include_lineage=True)
+        validate_optional_tables(MagicMock(), config)
+        assert proc._ext_metadata_unavailable is True
+        assert config.include_lineage is True  # NOT disabled
+
+    @patch("dbxmetagen.processing.table_exists_uc", return_value=True)
+    def test_leaves_flags_alone_when_tables_exist(self, mock_exists):
+        import dbxmetagen.processing as proc
+        from dbxmetagen.processing import validate_optional_tables
+        config = self._make_config(
+            include_lineage=True, include_constraint_context=True,
+            include_profiling_context=True, use_ontology_context=True,
+            use_kb_comments=True,
+        )
+        validate_optional_tables(MagicMock(), config)
+        assert config.include_constraint_context is True
+        assert config.include_profiling_context is True
+        assert config.use_ontology_context is True
+        assert config.use_kb_comments is True
+        assert proc._ext_metadata_unavailable is False
+
+    @patch("dbxmetagen.processing.table_exists_uc", return_value=False)
+    def test_skips_disabled_flags(self, mock_exists):
+        from dbxmetagen.processing import validate_optional_tables
+        config = self._make_config(include_lineage=False)
+        validate_optional_tables(MagicMock(), config)
+        mock_exists.assert_not_called()
+
+    @patch("dbxmetagen.processing.table_exists_uc", return_value=False)
+    def test_disables_profiling_when_stats_table_missing(self, mock_exists):
+        from dbxmetagen.processing import validate_optional_tables
+        config = self._make_config(include_profiling_context=True, include_lineage=False)
+        validate_optional_tables(MagicMock(), config)
+        assert config.include_profiling_context is False
+
+    @patch("dbxmetagen.processing.table_exists_uc", return_value=False)
+    def test_disables_kb_when_tables_missing(self, mock_exists):
+        from dbxmetagen.processing import validate_optional_tables
+        config = self._make_config(use_kb_comments=True, include_lineage=False)
+        validate_optional_tables(MagicMock(), config)
+        assert config.use_kb_comments is False
+
+    @patch("dbxmetagen.processing.table_exists_uc", return_value=False)
+    def test_logs_warning_for_missing_table(self, mock_exists):
+        from dbxmetagen.processing import validate_optional_tables
+        config = self._make_config(include_lineage=True)
+        with patch("dbxmetagen.processing.logger") as mock_logger:
+            validate_optional_tables(MagicMock(), config)
+            assert mock_logger.warning.called
+            warn_msg = mock_logger.warning.call_args[0][0]
+            assert "not found" in warn_msg
+
+    def test_noop_when_no_catalog_schema(self):
+        from dbxmetagen.processing import validate_optional_tables
+        config = self._make_config(catalog_name=None, schema_name=None)
+        validate_optional_tables(MagicMock(), config)
+
+
+# ======================================================================
+# fetch_lineage respects _ext_metadata_unavailable flag
+# ======================================================================
+class TestFetchLineageExtMetadataFlag:
+
+    @classmethod
+    def setup_class(cls):
+        from conftest import install_processing_stubs, uninstall_processing_stubs
+        cls._saved = install_processing_stubs()
+        cls._uninstall = uninstall_processing_stubs
+
+    @classmethod
+    def teardown_class(cls):
+        cls._uninstall(cls._saved)
+
+    def setup_method(self):
+        import dbxmetagen.processing as proc
+        proc._ext_metadata_unavailable = False
+        proc._lineage_cache.clear()
+        proc._lineage_unavailable = False
+
+    def teardown_method(self):
+        import dbxmetagen.processing as proc
+        proc._ext_metadata_unavailable = False
+
+    def test_skips_cache_when_ext_metadata_unavailable(self):
+        import dbxmetagen.processing as proc
+        from dbxmetagen.processing import fetch_lineage
+        proc._ext_metadata_unavailable = True
+
+        mock_spark = MagicMock()
+        mock_spark.sql.return_value.collect.return_value = []
+
+        result = fetch_lineage(
+            mock_spark, "cat.sch.tbl",
+            catalog_name="out_cat", schema_name="out_sch",
+        )
+        # Should go straight to system table, not extended_table_metadata
+        sql_calls = [c[0][0] for c in mock_spark.sql.call_args_list]
+        assert not any("extended_table_metadata" in s for s in sql_calls)
+
+    def test_uses_cache_when_ext_metadata_available(self):
+        import dbxmetagen.processing as proc
+        from dbxmetagen.processing import fetch_lineage
+        proc._ext_metadata_unavailable = False
+
+        mock_spark = MagicMock()
+        mock_row = MagicMock()
+        mock_row.__getitem__ = lambda self, k: {
+            "upstream_tables": ["a.b.up1"],
+            "downstream_tables": ["a.b.dn1"],
+        }[k]
+        mock_spark.sql.return_value.collect.return_value = [mock_row]
+
+        result = fetch_lineage(
+            mock_spark, "cat.sch.tbl",
+            catalog_name="out_cat", schema_name="out_sch",
+        )
+        sql_arg = mock_spark.sql.call_args[0][0]
+        assert "extended_table_metadata" in sql_arg
+        assert result == {"upstream_tables": ["a.b.up1"], "downstream_tables": ["a.b.dn1"]}
+
+
+# ======================================================================
+# Early-return dict shape in get_domain_classification
+# ======================================================================
+class TestGetDomainClassificationEarlyReturn:
+    """When read_table_with_type_conversion raises, get_domain_classification
+    must return a dict with every key that append_domain_table_row accesses."""
+
+    @classmethod
+    def setup_class(cls):
+        from conftest import install_processing_stubs, uninstall_processing_stubs
+        cls._saved = install_processing_stubs()
+        cls._uninstall = uninstall_processing_stubs
+
+    @classmethod
+    def teardown_class(cls):
+        cls._uninstall(cls._saved)
+
+    REQUIRED_KEYS = [
+        "domain", "subdomain", "confidence", "recommended_domain",
+        "recommended_subdomain", "reasoning", "metadata_summary",
+    ]
+
+    def test_unreadable_table_returns_all_keys(self):
+        from dbxmetagen.processing import get_domain_classification
+        mock_config = MagicMock()
+        mock_config.domain_config_path = None
+        mock_config.ontology_bundle = None
+
+        with patch("dbxmetagen.processing.SparkSession") as mock_ss, \
+             patch("dbxmetagen.processing.load_domain_config", return_value={"domains": {}}), \
+             patch("dbxmetagen.processing.read_table_with_type_conversion", side_effect=RuntimeError("table gone")):
+            result = get_domain_classification(mock_config, "cat.sch.tbl")
+
+        for key in self.REQUIRED_KEYS:
+            assert key in result, f"Early-return missing key: {key}"
+        assert result["domain"] == "unknown"
+        assert result["confidence"] == 0.0
+
+    def test_confidence_is_numeric(self):
+        from dbxmetagen.processing import get_domain_classification
+        mock_config = MagicMock()
+        mock_config.domain_config_path = None
+        mock_config.ontology_bundle = None
+
+        with patch("dbxmetagen.processing.SparkSession"), \
+             patch("dbxmetagen.processing.load_domain_config", return_value={"domains": {}}), \
+             patch("dbxmetagen.processing.read_table_with_type_conversion", side_effect=RuntimeError("boom")):
+            result = get_domain_classification(mock_config, "cat.sch.tbl")
+
+        formatted = f"{result['confidence']:.2f}"
+        assert formatted == "0.00"

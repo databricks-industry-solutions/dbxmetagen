@@ -335,6 +335,58 @@ print("PASSED")
 # COMMAND ----------
 
 # MAGIC %md
+# MAGIC ## Test 10: Column comment with commas (quoted in CSV)
+
+# COMMAND ----------
+
+print("--- Test 10: column comment with commas (quoted) ---")
+
+df = make_comment_df([
+    Row("cat.sch.orders", "cat.sch.orders", "column", "amount", "Old amount comment", "cat", "sch", "orders"),
+])
+
+csv_path = write_csv([
+    {"catalog": "", "schema": "", "table": "orders", "column": "amount",
+     "comment": "Sales data, including returns", "classification": "", "type": ""},
+])
+
+config = make_config()
+result = override_metadata_from_csv(df, csv_path, config)
+row = result.collect()[0]
+
+assert row["column_content"] == "Sales data, including returns", f"Comma in comment not preserved: {row['column_content']}"
+os.unlink(csv_path)
+print("PASSED")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Test 11: Table comment with commas (quoted in CSV)
+
+# COMMAND ----------
+
+print("--- Test 11: table comment with commas (quoted) ---")
+
+df = make_comment_df([
+    Row("cat.sch.orders", "cat.sch.orders", "table", "None", "Old table comment", "cat", "sch", "orders"),
+])
+
+csv_path = write_csv([
+    {"catalog": "cat", "schema": "sch", "table": "orders", "column": "",
+     "comment": "Order tracking, including returns, refunds", "classification": "", "type": ""},
+])
+
+config = make_config()
+result = override_metadata_from_csv(df, csv_path, config)
+row = result.collect()[0]
+
+assert row["column_content"] == "Order tracking, including returns, refunds", f"Comma in table comment not preserved: {row['column_content']}"
+os.unlink(csv_path)
+print("PASSED")
+
+# COMMAND ----------
+
+# MAGIC %md
 # MAGIC ## Summary
 
 # COMMAND ----------

@@ -42,7 +42,9 @@ export default function GenieBuilder() {
   const [selectedKpis, setSelectedKpis] = useState(new Set())
   const [showKpis, setShowKpis] = useState(false)
   const [error, setError] = useState(null)
+  const [fetchErrors, setFetchErrors] = useState({})
   const [loading, setLoading] = useState(false)
+  const [tablesLoading, setTablesLoading] = useState(true)
   const pollRef = useRef(null)
   const [elapsed, setElapsed] = useState(0)
   const timerRef = useRef(null)
@@ -59,6 +61,7 @@ export default function GenieBuilder() {
 
   useEffect(() => {
     (async () => {
+      setTablesLoading(true)
       const { data } = await cachedFetch('/api/coverage/tables', {}, TTL.CONFIG)
       if (data.length) {
         setTables(data.map(r => ({
@@ -68,10 +71,13 @@ export default function GenieBuilder() {
           tableType: r.table_type,
         })))
       }
+      setTablesLoading(false)
     })()
     fetch('/api/semantic/metric-views?status=all')
-      .then(r => r.ok ? r.json() : []).then(setMetricViews).catch(() => {})
-    fetch('/api/kpis').then(r => r.ok ? r.json() : []).then(setKpis).catch(() => {})
+      .then(r => r.ok ? r.json() : []).then(setMetricViews)
+      .catch(e => setFetchErrors(prev => ({ ...prev, metricViews: e.message })))
+    fetch('/api/kpis').then(r => r.ok ? r.json() : []).then(setKpis)
+      .catch(e => setFetchErrors(prev => ({ ...prev, kpis: e.message })))
     loadTrackedSpaces()
     return () => { if (pollRef.current) clearInterval(pollRef.current) }
   }, [])
@@ -269,8 +275,16 @@ export default function GenieBuilder() {
             </div>
           )
         })}
-        {!tables.length && <p className="text-sm text-slate-400">Loading tables...</p>}
+        {!tables.length && tablesLoading && <SkeletonTable rows={3} cols={3} />}
+        {!tables.length && !tablesLoading && <p className="text-sm text-slate-400">No tables found in this schema.</p>}
       </div>
+
+      {fetchErrors.metricViews && (
+        <p className="text-xs text-amber-600 dark:text-amber-400 px-1">Could not load metric views. <button onClick={() => { setFetchErrors(p => ({ ...p, metricViews: null })); fetch('/api/semantic/metric-views?status=all').then(r => r.ok ? r.json() : []).then(setMetricViews).catch(e => setFetchErrors(p => ({ ...p, metricViews: e.message }))) }} className="underline">Retry</button></p>
+      )}
+      {fetchErrors.kpis && (
+        <p className="text-xs text-amber-600 dark:text-amber-400 px-1">Could not load KPIs. <button onClick={() => { setFetchErrors(p => ({ ...p, kpis: null })); fetch('/api/kpis').then(r => r.ok ? r.json() : []).then(setKpis).catch(e => setFetchErrors(p => ({ ...p, kpis: e.message }))) }} className="underline">Retry</button></p>
+      )}
 
       {/* Metric Views */}
       {metricViews.length > 0 && (
@@ -404,21 +418,46 @@ export default function GenieBuilder() {
             <div className="bg-emerald-50 dark:bg-emerald-900/30 border border-emerald-200 dark:border-emerald-700 rounded-lg px-4 py-2 text-xs text-emerald-700 dark:text-emerald-300">
               Generated in {formatElapsed(taskStatus.elapsed_seconds)} ({taskStatus.rounds_completed ?? 0} tool rounds)
               {taskStatus.warnings?.length > 0 && (
-                <span className="ml-2 text-amber-600 dark:text-amber-400">
-                  -- {taskStatus.warnings.length} quality warning(s)
-                </span>
+                <details className="inline-block ml-2">
+                  <summary className="cursor-pointer text-amber-600 dark:text-amber-400">{taskStatus.warnings.length} quality warning(s)</summary>
+                  <ul className="mt-1 ml-4 list-disc text-amber-600 dark:text-amber-400 space-y-0.5">
+                    {taskStatus.warnings.map((w, i) => <li key={i}>{w}</li>)}
+                  </ul>
+                </details>
               )}
             </div>
           )}
-          <div className="card p-5">
-            <h3 className="text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">Generated Configuration</h3>
-            <textarea
-              value={editedJson}
-              onChange={e => setEditedJson(e.target.value)}
-              rows={20}
-              className="w-full font-mono text-xs border border-slate-200 dark:border-slate-600 rounded-md p-3 bg-dbx-oat dark:bg-slate-900 text-slate-800 dark:text-slate-200"
-            />
-          </div>
+          {(() => {
+            let parsed = null; try { parsed = JSON.parse(editedJson) } catch {}
+            return parsed ? (
+              <div className="card p-5 space-y-2">
+                <h3 className="text-sm font-medium text-slate-700 dark:text-slate-300">Config Preview</h3>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+                  <div><span className="text-slate-500">Name</span><p className="font-medium text-slate-800 dark:text-slate-200 truncate">{parsed.title || parsed.name || '(untitled)'}</p></div>
+                  <div><span className="text-slate-500">Tables</span><p className="font-medium">{parsed.table_identifiers?.length || 0}</p></div>
+                  <div><span className="text-slate-500">Instructions</span><p className="font-medium">{parsed.instructions?.length || 0}</p></div>
+                  <div><span className="text-slate-500">Sample Queries</span><p className="font-medium">{parsed.sample_questions?.length || parsed.curated_questions?.length || 0}</p></div>
+                </div>
+                {parsed.description && <p className="text-xs text-slate-500 truncate">{parsed.description}</p>}
+              </div>
+            ) : null
+          })()}
+          <details className="card overflow-hidden group">
+            <summary className="px-5 py-3 text-sm font-medium text-slate-700 dark:text-slate-300 cursor-pointer select-none flex items-center gap-1.5">
+              <svg className="w-3 h-3 transition-transform group-open:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+              </svg>
+              Edit Raw JSON
+            </summary>
+            <div className="px-5 pb-5">
+              <textarea
+                value={editedJson}
+                onChange={e => setEditedJson(e.target.value)}
+                rows={20}
+                className="w-full font-mono text-xs border border-slate-200 dark:border-slate-600 rounded-md p-3 bg-dbx-oat dark:bg-slate-900 text-slate-800 dark:text-slate-200"
+              />
+            </div>
+          </details>
 
           <div className="flex items-end gap-3">
             <div className="flex-1">

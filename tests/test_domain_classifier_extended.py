@@ -25,11 +25,19 @@ from dbxmetagen.domain_classifier import (
 )
 
 
-# ── _enforce_value: 4-tier matching contract ─────────────────────────────
+# ── _enforce_value: 5-tier matching contract ─────────────────────────────
 
 
 class TestEnforceValueTiers:
-    """Each tier must be tested independently and in priority order."""
+    """Each tier must be tested independently and in priority order.
+
+    Tier order:
+      1. Exact case-insensitive
+      2. Normalized exact (strip separators)
+      3. Longest substring containment
+      4. Trigram Jaccard >= 0.5
+      5. Fallback
+    """
 
     # Tier 1: Exact case-insensitive
     def test_tier1_exact_lowercase(self):
@@ -44,34 +52,34 @@ class TestEnforceValueTiers:
         val, exact = _enforce_value("  clinical  ", ["clinical", "finance"])
         assert val == "clinical" and exact is True
 
-    # Tier 2: Substring containment
-    def test_tier2_predicted_contains_allowed(self):
-        val, exact = _enforce_value("clinical_extended_v2", ["clinical", "finance"])
-        assert val == "clinical" and exact is False
-
-    def test_tier2_allowed_contains_predicted(self):
-        val, exact = _enforce_value("clin", ["clinical", "finance"])
-        assert val == "clinical" and exact is False
-
-    def test_tier2_ambiguous_substring_first_wins(self):
-        """When two allowed values are substrings, the first one matched wins."""
-        val, _ = _enforce_value("clinical_development_research", ["clinical", "research"])
-        assert val in ("clinical", "research")
-
-    # Tier 3: Normalized match (strip separators)
-    def test_tier3_underscore_to_none(self):
+    # Tier 2: Normalized exact match (strip separators)
+    def test_tier2_underscore_to_none(self):
         val, exact = _enforce_value("real_world_evidence", ["realworldevidence", "genomics"])
         assert val == "realworldevidence" and exact is False
 
-    def test_tier3_hyphen_to_underscore(self):
+    def test_tier2_hyphen_to_underscore(self):
         val, exact = _enforce_value("real-world-evidence", ["real_world_evidence", "genomics"])
         assert val == "real_world_evidence" and exact is False
 
-    def test_tier3_space_to_underscore(self):
+    def test_tier2_space_to_underscore(self):
         val, exact = _enforce_value("patient care", ["patient_care", "billing"])
         assert val == "patient_care" and exact is False
 
-    # Tier 4: Trigram overlap
+    # Tier 3: Longest substring containment
+    def test_tier3_predicted_contains_allowed(self):
+        val, exact = _enforce_value("clinical_extended_v2", ["clinical", "finance"])
+        assert val == "clinical" and exact is False
+
+    def test_tier3_allowed_contains_predicted(self):
+        val, exact = _enforce_value("clin", ["clinical", "finance"])
+        assert val == "clinical" and exact is False
+
+    def test_tier3_ambiguous_substring_longest_wins(self):
+        """When two allowed values are substrings, the longest match wins."""
+        val, _ = _enforce_value("clinical_development_research", ["clinical", "research"])
+        assert val in ("clinical", "research")
+
+    # Tier 4: Trigram overlap (>= 0.5)
     def test_tier4_typo_correction(self):
         val, exact = _enforce_value("pharmaceutcal", ["pharmaceutical", "clinical"])
         assert val == "pharmaceutical" and exact is False
@@ -80,12 +88,12 @@ class TestEnforceValueTiers:
         val, exact = _enforce_value("clinicl", ["clinical", "zzzzzz"])
         assert val == "clinical" and exact is False
 
-    # Fallback
-    def test_fallback_completely_unrelated(self):
+    # Tier 5: Fallback
+    def test_tier5_completely_unrelated(self):
         val, exact = _enforce_value("xyzzy_foobar_baz", ["clinical", "finance"])
         assert val == "unknown" and exact is False
 
-    def test_fallback_custom(self):
+    def test_tier5_custom_fallback(self):
         val, exact = _enforce_value("xyzzy", ["clinical"], fallback="unclassified")
         assert val == "unclassified" and exact is False
 
@@ -99,11 +107,11 @@ class TestEnforceValueEdgeCases:
 
     def test_empty_predicted(self):
         val, exact = _enforce_value("", ["clinical", "finance"])
-        assert exact is False
+        assert val == "unknown" and exact is False
 
     def test_predicted_is_only_separators(self):
         val, exact = _enforce_value("___---   ", ["clinical"])
-        assert exact is False
+        assert val == "unknown" and exact is False
 
     def test_single_char_allowed(self):
         val, exact = _enforce_value("a", ["a", "b"])
@@ -484,6 +492,16 @@ class TestTwoStagePipeline:
         assert result["schema"] == "my_sch"
         assert result["table"] == "my_tbl"
 
+    @patch("dbxmetagen.domain_classifier.classify_subdomain_stage2")
+    @patch("dbxmetagen.domain_classifier.classify_domain_stage1")
+    def test_subdomain_snap_penalizes_confidence(self, mock_s1, mock_s2):
+        """If stage-2 returns a subdomain needing snapping, confidence drops by 0.1."""
+        mock_s1.return_value = self._mock_stage1(domain="clinical", confidence=0.9)
+        mock_s2.return_value = self._mock_stage2(subdomain="Patient Care", confidence=0.85)
+        result = classify_table_domain("cat.sch.tbl", {}, self.SAMPLE_CONFIG, two_stage=True)
+        assert result["subdomain"] == "patient_care"
+        assert result["confidence"] <= 0.75
+
 
 # ── classify_table_domain error handling ─────────────────────────────────
 
@@ -503,3 +521,395 @@ class TestClassifyErrorHandling:
             result = classify_table_domain("cat.sch.tbl", {}, {"domains": {}}, two_stage=False)
         assert result["domain"] == "unknown"
         assert "parse fail" in result["reasoning"]
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# _enforce_value: revised tier ordering + robustness
+# ══════════════════════════════════════════════════════════════════════════
+
+
+class TestEnforceValueEmptyGuard:
+    """Empty / whitespace-only predictions must return fallback immediately."""
+
+    def test_empty_string_returns_fallback(self):
+        val, exact = _enforce_value("", ["clinical", "finance"])
+        assert val == "unknown" and exact is False
+
+    def test_whitespace_only_returns_fallback(self):
+        val, exact = _enforce_value("   ", ["clinical", "finance"])
+        assert val == "unknown" and exact is False
+
+    def test_none_like_empty_returns_fallback(self):
+        val, exact = _enforce_value("\t\n", ["clinical"])
+        assert val == "unknown" and exact is False
+
+    def test_empty_with_custom_fallback(self):
+        val, exact = _enforce_value("", ["a"], fallback="unclassified")
+        assert val == "unclassified"
+
+
+class TestEnforceValueNormalizedBeforeSubstring:
+    """Tier 2 (normalized exact) must run before tier 3 (substring) so that
+    'data engineering' matches 'data_engineering' instead of 'data'."""
+
+    def test_space_variant_matches_underscore_key(self):
+        val, exact = _enforce_value("data engineering", ["data", "data_engineering"])
+        assert val == "data_engineering"
+
+    def test_hyphen_variant_matches_underscore_key(self):
+        val, exact = _enforce_value("data-engineering", ["data", "data_engineering"])
+        assert val == "data_engineering"
+
+    def test_space_variant_patient_care(self):
+        val, exact = _enforce_value("Patient Care", ["patient_care", "patient"])
+        assert val == "patient_care"
+
+    def test_space_variant_quality_safety(self):
+        val, exact = _enforce_value("quality safety", ["quality", "quality_safety"])
+        assert val == "quality_safety"
+
+    def test_space_variant_real_world_evidence(self):
+        val, exact = _enforce_value("real world evidence", ["research", "real_world_evidence"])
+        assert val == "real_world_evidence"
+
+
+class TestEnforceValueLongestSubstringWins:
+    """Tier 3 (substring) must prefer the longest matching key."""
+
+    def test_data_governance_beats_data(self):
+        val, _ = _enforce_value("data_governance_policy", ["data", "data_governance", "analytics"])
+        assert val == "data_governance"
+
+    def test_clinical_documentation_beats_clinical(self):
+        val, _ = _enforce_value("clinical_documentation_notes", ["clinical", "clinical_documentation"])
+        assert val == "clinical_documentation"
+
+    def test_quality_safety_beats_quality(self):
+        """'quality' is a substring of 'quality_safety_metrics', but 'quality_safety' is longer."""
+        val, _ = _enforce_value("quality_safety_metrics", ["quality", "quality_safety"])
+        assert val == "quality_safety"
+
+    def test_sales_analytics_beats_sales(self):
+        val, _ = _enforce_value("sales_analytics_quarterly", ["sales", "sales_analytics"])
+        assert val == "sales_analytics"
+
+
+class TestEnforceValueTrigramThreshold:
+    """Trigram threshold is 0.5 (raised from 0.4)."""
+
+    def test_close_typo_still_matches(self):
+        val, exact = _enforce_value("pharmaceutcal", ["pharmaceutical", "clinical"])
+        assert val == "pharmaceutical" and exact is False
+
+    def test_moderate_typo_still_matches(self):
+        val, exact = _enforce_value("clinicl", ["clinical", "zzzzzz"])
+        assert val == "clinical" and exact is False
+
+    def test_distant_string_does_not_match(self):
+        """A string with only ~40% overlap should NOT match at the 0.5 threshold."""
+        val, exact = _enforce_value("abc_xyz_foo", ["clinical", "finance", "operations"])
+        assert val == "unknown"
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Integration-quality validation: real config keys, realistic LLM outputs
+# ══════════════════════════════════════════════════════════════════════════
+
+
+class TestEnforceValueHealthcareConfig:
+    """Test _enforce_value against the FULL healthcare domain config (12 domains, ~30 subdomains).
+    These simulate realistic LLM outputs and verify correct snapping."""
+
+    DOMAIN_KEYS = [
+        "clinical", "diagnostics", "payer", "pharmaceutical", "quality_safety",
+        "research", "finance", "operations", "workforce", "customer",
+        "technology", "governance",
+    ]
+
+    CLINICAL_SUBDOMAINS = [
+        "patient_care", "diagnosis_condition", "medication_orders", "clinical_documentation",
+    ]
+
+    DIAGNOSTICS_SUBDOMAINS = ["laboratory", "imaging", "vitals_observations"]
+
+    GOVERNANCE_SUBDOMAINS = ["legal", "regulatory", "data_governance"]
+
+    # --- Domain-level: exact keys ---
+    @pytest.mark.parametrize("key", DOMAIN_KEYS)
+    def test_exact_domain_key(self, key):
+        val, exact = _enforce_value(key, self.DOMAIN_KEYS)
+        assert val == key and exact is True
+
+    @pytest.mark.parametrize("key", DOMAIN_KEYS)
+    def test_exact_domain_key_upper(self, key):
+        val, exact = _enforce_value(key.upper(), self.DOMAIN_KEYS)
+        assert val == key and exact is True
+
+    # --- Domain-level: LLM returns display name ---
+    @pytest.mark.parametrize("display,expected", [
+        ("Clinical", "clinical"),
+        ("Quality & Safety", "quality_safety"),
+        ("Quality Safety", "quality_safety"),
+        ("Diagnostics", "diagnostics"),
+        ("Pharmaceutical", "pharmaceutical"),
+    ])
+    def test_display_name_resolves(self, display, expected):
+        val, _ = _enforce_value(display, self.DOMAIN_KEYS)
+        assert val == expected
+
+    # --- Domain-level: LLM returns partial or extended name ---
+    @pytest.mark.parametrize("predicted,expected", [
+        ("clinical_data", "clinical"),
+        ("payer_claims", "payer"),
+        ("research_genomics", "research"),
+        ("financial", "finance"),
+        ("tech", "technology"),
+        ("govern", "governance"),
+    ])
+    def test_partial_domain_resolves(self, predicted, expected):
+        val, _ = _enforce_value(predicted, self.DOMAIN_KEYS)
+        assert val == expected
+
+    # --- Domain-level: common typos (must have >= 0.5 trigram overlap) ---
+    @pytest.mark.parametrize("typo,expected", [
+        ("clinicall", "clinical"),
+        ("diagnotics", "diagnostics"),
+        ("pharmaceutcal", "pharmaceutical"),
+        ("operatons", "operations"),
+    ])
+    def test_typo_resolves(self, typo, expected):
+        val, _ = _enforce_value(typo, self.DOMAIN_KEYS)
+        assert val == expected
+
+    @pytest.mark.parametrize("mangled", [
+        "clincial",       # letter transposition -- trigram overlap < 0.5
+        "govenrance",     # rearranged middle -- trigram overlap < 0.5
+    ])
+    def test_severe_typo_falls_to_unknown(self, mangled):
+        """Severely mangled names must NOT match at the 0.5 trigram threshold."""
+        val, _ = _enforce_value(mangled, self.DOMAIN_KEYS)
+        assert val == "unknown"
+
+    # --- Subdomain-level: exact keys ---
+    @pytest.mark.parametrize("key", CLINICAL_SUBDOMAINS)
+    def test_exact_clinical_subdomain(self, key):
+        val, exact = _enforce_value(key, self.CLINICAL_SUBDOMAINS)
+        assert val == key and exact is True
+
+    # --- Subdomain-level: LLM returns display name ---
+    @pytest.mark.parametrize("display,expected", [
+        ("Patient Care", "patient_care"),
+        ("Diagnosis & Conditions", "diagnosis_condition"),
+        ("Medications & Orders", "medication_orders"),
+        ("Clinical Documentation", "clinical_documentation"),
+    ])
+    def test_clinical_subdomain_display_name(self, display, expected):
+        val, _ = _enforce_value(display, self.CLINICAL_SUBDOMAINS)
+        assert val == expected
+
+    # --- Governance subdomains: overlapping keys (data_governance vs governance) ---
+    def test_governance_subdomain_data_governance(self):
+        val, _ = _enforce_value("data governance", self.GOVERNANCE_SUBDOMAINS)
+        assert val == "data_governance"
+
+    def test_governance_subdomain_regulatory(self):
+        val, _ = _enforce_value("Regulatory Compliance", self.GOVERNANCE_SUBDOMAINS)
+        assert val == "regulatory"
+
+
+class TestEnforceValueGeneralConfig:
+    """Test against the general.yaml bundle (6 domains, ~15 subdomains)."""
+
+    DOMAIN_KEYS = ["finance", "operations", "workforce", "customer", "technology", "governance"]
+
+    CUSTOMER_SUBDOMAINS = ["sales", "marketing", "support"]
+
+    @pytest.mark.parametrize("predicted,expected", [
+        ("finance", "finance"),
+        ("Finance", "finance"),
+        ("FINANCE", "finance"),
+        ("customer", "customer"),
+        ("Customer Support", "customer"),
+        ("workforce management", "workforce"),
+        ("tech", "technology"),
+    ])
+    def test_general_domain_resolution(self, predicted, expected):
+        val, _ = _enforce_value(predicted, self.DOMAIN_KEYS)
+        assert val == expected
+
+    @pytest.mark.parametrize("predicted,expected", [
+        ("Sales & Pipeline", "sales"),
+        ("marketing", "marketing"),
+        ("Customer Support", "support"),
+    ])
+    def test_customer_subdomain_resolution(self, predicted, expected):
+        val, _ = _enforce_value(predicted, self.CUSTOMER_SUBDOMAINS)
+        assert val == expected
+
+
+class TestEnforceValueCustomOverlappingConfigs:
+    """Stress test with adversarial custom configs that have many overlapping prefixes."""
+
+    def test_20_domain_config_exact_match(self):
+        keys = [
+            "data", "data_engineering", "data_science", "data_governance", "data_quality",
+            "analytics", "analytics_engineering", "machine_learning", "ml_ops",
+            "product", "product_analytics", "marketing", "marketing_analytics",
+            "finance", "financial_planning", "hr", "hr_analytics",
+            "security", "security_ops", "compliance",
+        ]
+        for k in keys:
+            val, exact = _enforce_value(k, keys)
+            assert val == k and exact is True, f"Expected exact match for '{k}', got '{val}'"
+
+    def test_overlapping_prefix_data_engineering_space(self):
+        keys = ["data", "data_engineering", "data_science", "data_governance"]
+        val, _ = _enforce_value("data engineering", keys)
+        assert val == "data_engineering"
+
+    def test_overlapping_prefix_data_science_extended(self):
+        keys = ["data", "data_engineering", "data_science", "data_governance"]
+        val, _ = _enforce_value("data_science_platform", keys)
+        assert val == "data_science"
+
+    def test_overlapping_prefix_data_governance_policy(self):
+        keys = ["data", "data_engineering", "data_science", "data_governance"]
+        val, _ = _enforce_value("data governance policy", keys)
+        assert val == "data_governance"
+
+    def test_overlapping_analytics_vs_analytics_engineering(self):
+        keys = ["analytics", "analytics_engineering"]
+        val, _ = _enforce_value("analytics_engineering_team", keys)
+        assert val == "analytics_engineering"
+
+    def test_overlapping_ml_vs_ml_ops(self):
+        keys = ["machine_learning", "ml_ops"]
+        val, _ = _enforce_value("ml_ops_pipeline", keys)
+        assert val == "ml_ops"
+
+
+class TestEnforceValueNeverReturnsWrongKey:
+    """Negative tests: ensure unrelated strings don't match valid domains."""
+
+    DOMAIN_KEYS = [
+        "clinical", "diagnostics", "payer", "pharmaceutical", "quality_safety",
+        "research", "finance", "operations", "workforce", "customer",
+        "technology", "governance",
+    ]
+
+    @pytest.mark.parametrize("garbage", [
+        "zebra_crossing_data", "12345", "___", "the quick brown fox",
+        "definitely_not_a_domain", "asdfghjkl", "banana_split_sundae",
+    ])
+    def test_garbage_returns_unknown(self, garbage):
+        val, exact = _enforce_value(garbage, self.DOMAIN_KEYS)
+        assert val == "unknown", f"'{garbage}' should not match any domain, got '{val}'"
+        assert exact is False
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Early-return dict shape in get_domain_classification
+# ══════════════════════════════════════════════════════════════════════════
+
+
+class TestEarlyReturnDictShape:
+    """The early-return dict from get_domain_classification must have every key
+    that append_domain_table_row accesses."""
+
+    REQUIRED_KEYS = [
+        "domain", "subdomain", "confidence", "recommended_domain",
+        "recommended_subdomain", "reasoning", "metadata_summary",
+    ]
+
+    def test_error_result_has_all_keys(self):
+        result = _error_result("cat.sch.tbl", Exception("boom"))
+        for key in self.REQUIRED_KEYS:
+            assert key in result, f"_error_result missing key: {key}"
+
+    def test_confidence_is_formattable_as_float(self):
+        result = _error_result("cat.sch.tbl", Exception("boom"))
+        formatted = f"{result['confidence']:.2f}"
+        assert formatted == "0.00"
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# classify_subdomain_stage2: no arbitrary secondary domain injection
+# ══════════════════════════════════════════════════════════════════════════
+
+
+class TestSecondaryDomainExpansion:
+    """When second_choice_domain is invalid, stage-2 must NOT inject a random domain."""
+
+    SAMPLE_CONFIG = {
+        "domains": {
+            "clinical": {
+                "name": "Clinical", "keywords": ["patient"],
+                "subdomains": {"patient_care": {"name": "Patient Care", "keywords": ["patient"]}},
+            },
+            "finance": {
+                "name": "Finance", "keywords": ["revenue"],
+                "subdomains": {"accounting": {"name": "Accounting", "keywords": ["ledger"]}},
+            },
+            "technology": {
+                "name": "Technology", "keywords": ["server"],
+                "subdomains": {"security": {"name": "Security", "keywords": ["auth"]}},
+            },
+        }
+    }
+
+    @patch("dbxmetagen.domain_classifier.classify_subdomain_stage2")
+    @patch("dbxmetagen.domain_classifier.classify_domain_stage1")
+    def test_no_secondary_when_second_choice_missing(self, mock_s1, mock_s2):
+        mock_s1.return_value = {
+            "domain": "technology", "confidence": 0.3,
+            "recommended_domain": None, "second_choice_domain": None,
+            "reasoning": "test",
+        }
+        mock_s2.return_value = {
+            "subdomain": "security", "confidence": 0.7,
+            "recommended_subdomain": None, "reasoning": "r", "metadata_summary": "s",
+        }
+        classify_table_domain(
+            "cat.sch.tbl", {}, self.SAMPLE_CONFIG,
+            two_stage=True, confidence_threshold=0.5,
+        )
+        _, kwargs = mock_s2.call_args
+        assert kwargs.get("second_choice_domain") is None
+
+    @patch("dbxmetagen.domain_classifier.classify_subdomain_stage2")
+    @patch("dbxmetagen.domain_classifier.classify_domain_stage1")
+    def test_no_secondary_when_second_choice_invalid(self, mock_s1, mock_s2):
+        mock_s1.return_value = {
+            "domain": "technology", "confidence": 0.3,
+            "recommended_domain": None, "second_choice_domain": "nonexistent_domain",
+            "reasoning": "test",
+        }
+        mock_s2.return_value = {
+            "subdomain": "security", "confidence": 0.7,
+            "recommended_subdomain": None, "reasoning": "r", "metadata_summary": "s",
+        }
+        classify_table_domain(
+            "cat.sch.tbl", {}, self.SAMPLE_CONFIG,
+            two_stage=True, confidence_threshold=0.5,
+        )
+        _, kwargs = mock_s2.call_args
+        assert kwargs.get("second_choice_domain") == "nonexistent_domain"
+
+    @patch("dbxmetagen.domain_classifier.classify_subdomain_stage2")
+    @patch("dbxmetagen.domain_classifier.classify_domain_stage1")
+    def test_valid_second_choice_still_passed(self, mock_s1, mock_s2):
+        mock_s1.return_value = {
+            "domain": "technology", "confidence": 0.3,
+            "recommended_domain": None, "second_choice_domain": "clinical",
+            "reasoning": "test",
+        }
+        mock_s2.return_value = {
+            "subdomain": "security", "confidence": 0.7,
+            "recommended_subdomain": None, "reasoning": "r", "metadata_summary": "s",
+        }
+        classify_table_domain(
+            "cat.sch.tbl", {}, self.SAMPLE_CONFIG,
+            two_stage=True, confidence_threshold=0.5,
+        )
+        _, kwargs = mock_s2.call_args
+        assert kwargs["second_choice_domain"] == "clinical"

@@ -54,7 +54,7 @@ emb_config = EmbeddingConfig(
     schema_name=graph_test_schema,
 )
 generator = EmbeddingGenerator(spark, emb_config)
-result = generator.generate_all_embeddings()
+result = generator.run()
 print(f"Embeddings generated: {result}")
 
 emb_count = spark.sql(f"""
@@ -79,8 +79,8 @@ sim_config = SimilarityEdgesConfig(
     max_edges_per_node=5,
 )
 builder = SimilarityEdgeBuilder(spark, sim_config)
-edges_added = builder.build_edges()
-print(f"Similarity edges added: {edges_added}")
+sim_result = builder.run()
+print(f"Similarity edges result: {sim_result}")
 
 # COMMAND ----------
 # MAGIC %md

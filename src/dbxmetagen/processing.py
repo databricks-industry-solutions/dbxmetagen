@@ -513,6 +513,14 @@ def append_column_rows(
             logger.error(f"Failed to parse presidio results: {e}")
             logger.debug("Presidio parsing error details: %s", str(e)[:200])
 
+    n_cols = len(response.columns)
+    n_contents = len(response.column_contents)
+    if n_cols != n_contents:
+        logger.warning(
+            "LLM response column count mismatch: %d columns vs %d contents. "
+            "Truncating to shorter list.", n_cols, n_contents
+        )
+
     for i, (column_name, column_content) in enumerate(
         zip(response.columns, response.column_contents)
     ):
@@ -1619,6 +1627,7 @@ def create_and_persist_ddl(
     current_user = get_current_user()
     current_user_sanitized = sanitize_user_identifier(current_user)
     current_date = datetime.now().strftime("%Y%m%d")
+    base_path = None
     if config.volume_name:
         base_path = f"/Volumes/{config.catalog_name}/{config.schema_name}/{config.volume_name}/{current_user_sanitized}/{current_date}"
         table_df = df[f"{config.mode}_table_df"]
@@ -1828,20 +1837,25 @@ def create_and_persist_ddl(
             unioned_df, config, modified_path, table_name, current_user, current_date
         )
     else:
-        print(
-            "Volume name provided as None in configuration. Not writing DDL to volume..."
+        logger.warning(
+            "Volume name not configured. Not writing DDL to volume."
         )
-        table_df = populate_log_table(
-            df["comment_table_df"], config, current_user, base_path
-        )
-        log_metadata_generation(table_df, config, table_name, base_path)
-        column_df = populate_log_table(
-            df["comment_column_df"], config, current_user, base_path
-        )
-        log_metadata_generation(column_df, config, table_name, base_path)
+        table_key = f"{config.mode}_table_df"
+        column_key = f"{config.mode}_column_df"
+        if table_key in df and df[table_key] is not None:
+            table_df = populate_log_table(
+                df[table_key], config, current_user, base_path
+            )
+            log_metadata_generation(table_df, config, table_name, base_path)
+        if column_key in df and df[column_key] is not None:
+            column_df = populate_log_table(
+                df[column_key], config, current_user, base_path
+            )
+            log_metadata_generation(column_df, config, table_name, base_path)
 
 
 _lineage_unavailable = False
+_lineage_cache: Dict[str, Optional[Dict[str, Any]]] = {}
 
 
 def _mark_lineage_unavailable(exc: Exception) -> None:
@@ -1872,14 +1886,22 @@ def fetch_lineage(
     tries to read cached lineage from ``extended_table_metadata`` (fast,
     no system-table permissions required).  On any failure it falls back to
     the live ``system.access.table_lineage`` queries.
+
+    Results (including ``None``) are cached per *table_name* for the
+    lifetime of the process so that comment + PI + domain modes don't
+    each re-run the same SQL.
     """
+    if table_name in _lineage_cache:
+        return _lineage_cache[table_name]
+
     parts = table_name.split(".")
     if len(parts) != 3:
+        _lineage_cache[table_name] = None
         return None
     cat, sch, tbl = parts
 
     # --- try cached lineage from extended_table_metadata first ---
-    if catalog_name and schema_name:
+    if catalog_name and schema_name and not _ext_metadata_unavailable:
         try:
             row = spark.sql(
                 f"SELECT upstream_tables, downstream_tables "
@@ -1890,12 +1912,15 @@ def fetch_lineage(
                 up = row[0]["upstream_tables"] or []
                 down = row[0]["downstream_tables"] or []
                 if up or down:
-                    return {"upstream_tables": list(up), "downstream_tables": list(down)}
+                    result = {"upstream_tables": list(up), "downstream_tables": list(down)}
+                    _lineage_cache[table_name] = result
+                    return result
         except Exception:
             pass  # fall through to system table
 
     # --- live system table query ---
     if _lineage_unavailable:
+        _lineage_cache[table_name] = None
         return None
     try:
         up = [
@@ -1923,10 +1948,14 @@ def fetch_lineage(
             """).collect()
         ]
         if not up and not down:
+            _lineage_cache[table_name] = None
             return None
-        return {"upstream_tables": up, "downstream_tables": down}
+        result = {"upstream_tables": up, "downstream_tables": down}
+        _lineage_cache[table_name] = result
+        return result
     except Exception as e:
         _mark_lineage_unavailable(e)
+        _lineage_cache[table_name] = None
         return None
 
 
@@ -1959,7 +1988,15 @@ def get_domain_classification(
         df = read_table_with_type_conversion(spark, full_table_name)
     except Exception as e:
         print(f"Skipping domain classification for {full_table_name}: unable to read table ({e})")
-        return {"domain": "unknown", "confidence": 0.0, "reasoning": f"Table unreadable: {e}"}
+        return {
+            "domain": "unknown",
+            "subdomain": None,
+            "confidence": 0.0,
+            "recommended_domain": None,
+            "recommended_subdomain": None,
+            "reasoning": f"Table unreadable: {e}",
+            "metadata_summary": f"Table unreadable: {e}",
+        }
 
     # --- Audit / system column filtering ---
     # The ``domain_column_blacklist`` config variable (comma-separated string)
@@ -1998,8 +2035,10 @@ def get_domain_classification(
         f"Domain classification for {full_table_name}: Using {columns_used}/{total_columns} columns (limited by columns_per_call={config.columns_per_call})"
     )
 
-    # Sample rows from the limited column set
-    sampled_df = sample_df(first_chunk_df, first_chunk_df.count(), config.sample_size)
+    # Bound row count to avoid full table scan for domain classification
+    bounded_df = first_chunk_df.limit(int(config.sample_size) * 100)
+    nrows = bounded_df.count()
+    sampled_df = sample_df(bounded_df, nrows, config.sample_size)
 
     prompt = PromptFactory.create_prompt(config, sampled_df, full_table_name)
     if getattr(config, "use_kb_comments", False):
@@ -2030,11 +2069,7 @@ def get_domain_classification(
         ).get("table_comments", "")
 
     if getattr(config, "include_lineage", False):
-        table_metadata["lineage"] = fetch_lineage(
-            spark, full_table_name,
-            catalog_name=getattr(config, "catalog_name", None),
-            schema_name=getattr(config, "schema_name", None),
-        )
+        table_metadata["lineage"] = prompt.prompt_content.get("lineage")
 
     # Classify the table
     classification_result = classify_table_domain(
@@ -2380,9 +2415,9 @@ def process_and_add_ddl(config: MetadataConfig, table_name: str) -> DataFrame:
     if column_df is None and table_df is None:
         logger.warning(
             f"Skipping {table_name}: no metadata could be generated "
-            "(table may have an unsupported data source format)"
+            "(table may be unreadable, have no columns, or use an unsupported format)"
         )
-        return {}
+        return {"_skip_reason": "No metadata generated (table may be unreadable or have no columns)"}
 
     if config.allow_manual_override:
         csv_path = getattr(config, "override_csv_path", "metadata_overrides.csv")
@@ -2635,18 +2670,19 @@ def print_ddl_summary(results, config):
                     else fail["statement"]
                 )
                 print(f"\n#{i} Statement preview: {stmt_preview}")
-                print(f"Error: {fail['error'][:200]}...")  # Truncate long errors
+                err_msg = fail['error'][:200] + ("..." if len(fail['error']) > 200 else "")
+                print(f"Error: {err_msg}")
 
         if results["column_results"] and results["column_results"]["failed_statements"]:
             for i, fail in enumerate(results["column_results"]["failed_statements"], 1):
-                # Security: Do not print full DDL (may contain sensitive data in comments)
                 stmt_preview = (
                     fail["statement"][:100] + "..."
                     if len(fail["statement"]) > 100
                     else fail["statement"]
                 )
                 print(f"\n#{i} Statement preview: {stmt_preview}")
-                print(f"Error: {fail['error'][:200]}...")
+                err_msg = fail['error'][:200] + ("..." if len(fail['error']) > 200 else "")
+                print(f"Error: {err_msg}")
 
     # Show missing tags
     if results["all_missing_tags"]:
@@ -2920,8 +2956,92 @@ def table_exists_uc(spark: SparkSession, full_name: str) -> bool:
             """
         )
         return df.count() > 0
-    except Exception:
-        return False
+    except Exception as e:
+        err_str = str(e).upper()
+        if "TABLE_OR_VIEW_NOT_FOUND" in err_str or "SCHEMA_NOT_FOUND" in err_str:
+            return False
+        logger.error("table_exists_uc failed for %s: %s", full_name, e)
+        raise
+
+
+_ext_metadata_unavailable = False
+
+_OPTIONAL_TABLE_DEPS = {
+    "extended_table_metadata": {
+        "disable_flags": ["include_constraint_context"],
+        "warn_flags": ["include_lineage"],
+        "created_by": "Extract Extended Metadata step",
+    },
+    "column_profiling_stats": {
+        "disable_flags": ["include_profiling_context"],
+        "warn_flags": [],
+        "created_by": "Profiling step",
+    },
+    "profiling_snapshots": {
+        "disable_flags": ["include_profiling_context"],
+        "warn_flags": [],
+        "created_by": "Profiling step",
+    },
+    "ontology_entities": {
+        "disable_flags": ["use_ontology_context"],
+        "warn_flags": [],
+        "created_by": "Ontology Discovery step",
+    },
+    "table_knowledge_base": {
+        "disable_flags": ["use_kb_comments"],
+        "warn_flags": [],
+        "created_by": "Build Knowledge Base step",
+    },
+    "column_knowledge_base": {
+        "disable_flags": ["use_kb_comments"],
+        "warn_flags": [],
+        "created_by": "Build Knowledge Base step",
+    },
+}
+
+
+def validate_optional_tables(spark: "SparkSession", config: Any) -> None:
+    """Check prerequisite tables for enabled optional features, disabling features whose tables are missing.
+
+    For most features (constraint, profiling, ontology, KB) the config flag is
+    set to False so the enrichment method is never called.  For ``include_lineage``
+    the flag stays True (live lineage still works) but a module-level flag is set
+    so ``fetch_lineage`` skips the ``extended_table_metadata`` cache lookup.
+    """
+    global _ext_metadata_unavailable
+    catalog = getattr(config, "catalog_name", None)
+    schema = getattr(config, "schema_name", None)
+    if not catalog or not schema:
+        return
+
+    for table_short, dep in _OPTIONAL_TABLE_DEPS.items():
+        all_flags = dep["disable_flags"] + dep["warn_flags"]
+        if not any(getattr(config, f, False) for f in all_flags):
+            continue
+
+        fqn = f"{catalog}.{schema}.{table_short}"
+        if table_exists_uc(spark, fqn):
+            continue
+
+        for flag in dep["disable_flags"]:
+            if getattr(config, flag, False):
+                logger.warning(
+                    "[dbxmetagen] %s not found. %s disabled for this run. "
+                    "Run the '%s' to create it.",
+                    fqn, flag, dep["created_by"],
+                )
+                setattr(config, flag, False)
+
+        for flag in dep["warn_flags"]:
+            if getattr(config, flag, False):
+                if table_short == "extended_table_metadata":
+                    _ext_metadata_unavailable = True
+                    logger.warning(
+                        "[dbxmetagen] %s not found. Lineage cache disabled for this run. "
+                        "Live lineage from system tables will still be used. "
+                        "Run the '%s' to enable cached lineage.",
+                        fqn, dep["created_by"],
+                    )
 
 
 def generate_and_persist_metadata(config: Any) -> None:
@@ -2937,6 +3057,8 @@ def generate_and_persist_metadata(config: Any) -> None:
     spark = SparkSession.builder.getOrCreate()
     logger = logging.getLogger("metadata_processing")
     logger.setLevel(logging.INFO)
+
+    validate_optional_tables(spark, config)
     
     skipped_tables = []
 
@@ -2966,17 +3088,21 @@ def generate_and_persist_metadata(config: Any) -> None:
             else:
                 df = process_and_add_ddl(config, table)
 
-                if not df:
-                    status = "Skipped - unsupported data source format"
+                if not df or (isinstance(df, dict) and "_skip_reason" in df and len(df) == 1):
+                    skip_reason = df.get("_skip_reason", "unknown") if isinstance(df, dict) else "unknown"
+                    status = f"Skipped - {skip_reason}"
                     logger.warning(
-                        f"[generate_and_persist_metadata] {table} returned no metadata (unsupported format), logging and continuing"
+                        "[generate_and_persist_metadata] %s skipped: %s", table, skip_reason
                     )
                 else:
                     logger.info(
                         f"[generate_and_persist_metadata] Generating and persisting ddl for {table}..."
                     )
                     create_and_persist_ddl(df, config, table)
-                    status = "Table processed"
+                    if config.apply_ddl:
+                        status = "Table processed"
+                    else:
+                        status = "Table processed (DDL not applied - review mode)"
 
                 if df and config.apply_ddl and "ddl_results" in df:
                     ddl_results = df["ddl_results"]
@@ -3012,13 +3138,13 @@ def generate_and_persist_metadata(config: Any) -> None:
                 "apply_ddl": config.apply_ddl,
                 "_updated_at": str(datetime.now()),
             }
-            # Mark table as failed in control table
             if config.control_table:
-                mark_table_failed(table, config, str(tpe))
-            raise  # Optionally re-raise if you want to halt further processing
+                try:
+                    mark_table_failed(table, config, str(tpe))
+                except Exception as ct_err:
+                    logger.warning("Could not update control table for %s: %s", table, ct_err)
 
         except Exception as e:
-            # Extract concise error message
             concise_error = extract_concise_error(e)
             logger.error(
                 "[generate_and_persist_metadata] Error for %s: %s", table, concise_error
@@ -3032,14 +3158,15 @@ def generate_and_persist_metadata(config: Any) -> None:
                 "apply_ddl": config.apply_ddl,
                 "_updated_at": str(datetime.now()),
             }
-            # Mark table as failed in control table
             if config.control_table:
-                mark_table_failed(table, config, concise_error)
-            raise
+                try:
+                    mark_table_failed(table, config, concise_error)
+                except Exception as ct_err:
+                    logger.warning("Could not update control table for %s: %s", table, ct_err)
 
         finally:
             try:
-                print("\n\n\nTrying to write to log table...\n\n\n")
+                logger.debug("Writing to log table...")
                 write_to_log_table(
                     log_dict,
                     f"{config.catalog_name}.{config.schema_name}.table_processing_log",
@@ -3054,7 +3181,7 @@ def generate_and_persist_metadata(config: Any) -> None:
                     table,
                     concise_log_err,
                 )
-            print(f"Finished processing table {table} and writing to log table.")
+            logger.info("Finished processing table %s.", table)
     
     # Log summary of skipped tables for concurrent task visibility
     if skipped_tables:

@@ -330,7 +330,7 @@ class KnowledgeGraphBuilder:
         source_df: DataFrame, 
         attribute: str,
         relationship: str,
-        max_group_size: int = 500
+        max_group_size: int,
     ) -> DataFrame:
         """
         Build edges between tables that share the same attribute value.
@@ -352,7 +352,7 @@ class KnowledgeGraphBuilder:
         df_with_attr = source_df.filter(F.col(attribute).isNotNull())
         
         # Cap large groups to prevent quadratic edge explosion
-        w = Window.partitionBy(attribute).orderBy(F.rand())
+        w = Window.partitionBy(attribute).orderBy(F.rand(seed=42))
         df_with_attr = (
             df_with_attr
             .withColumn("_rn", F.row_number().over(w))
@@ -526,15 +526,16 @@ class KnowledgeGraphBuilder:
         2. Insert all current edges
         """
         affected_nodes = edges_df.select("src").union(edges_df.select(F.col("dst").alias("src"))).distinct()
-        affected_nodes.createOrReplaceTempView("affected_nodes")
-        
-        delete_sql = f"""
-        DELETE FROM {self.config.fully_qualified_edges}
-        WHERE (src IN (SELECT src FROM affected_nodes)
-           OR dst IN (SELECT src FROM affected_nodes))
-          AND (source_system = '{source_system}' OR source_system IS NULL)
-        """
-        self.spark.sql(delete_sql)
+        affected_ids = [row.src for row in affected_nodes.collect()]
+
+        if affected_ids:
+            id_list = ", ".join(f"'{n}'" for n in affected_ids)
+            delete_sql = f"""
+            DELETE FROM {self.config.fully_qualified_edges}
+            WHERE (src IN ({id_list}) OR dst IN ({id_list}))
+              AND (source_system = '{source_system}' OR source_system IS NULL)
+            """
+            self.spark.sql(delete_sql)
         
         self._insert_edges(edges_df)
         

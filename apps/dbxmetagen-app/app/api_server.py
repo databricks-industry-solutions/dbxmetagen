@@ -2266,8 +2266,13 @@ class OntologyApplyBody(BaseModel):
     selections: list[OntologyApplyItem]
 
 
-def _apply_ontology_tags_from_tables() -> dict:
-    """Read ontology_entities and ontology_column_properties, apply ontology.* UC tags to tables/columns."""
+def _apply_ontology_tags_from_tables(
+    selections: Optional[list] = None,
+) -> dict:
+    """Read ontology_entities and ontology_column_properties, apply ontology.* UC tags to tables/columns.
+
+    When *selections* is provided, only matching (entity_type, source_table) pairs are applied.
+    """
     wh_id = os.environ.get("WAREHOUSE_ID", "")
     if not wh_id:
         raise HTTPException(500, detail="WAREHOUSE_ID not configured")
@@ -2277,6 +2282,21 @@ def _apply_ontology_tags_from_tables() -> dict:
     rel_tbl = fq("ontology_relationships")
     table_results = []
     col_results = []
+
+    # Build allowed set from selections for filtering
+    allowed_pairs: Optional[set] = None
+    allowed_tables: Optional[set] = None
+    if selections:
+        allowed_pairs = set()
+        allowed_tables = set()
+        for sel in selections:
+            et = sel.get("entity_type", "") if isinstance(sel, dict) else getattr(sel, "entity_type", "")
+            tbls = sel.get("source_tables", []) if isinstance(sel, dict) else getattr(sel, "source_tables", [])
+            if isinstance(tbls, str):
+                tbls = [tbls]
+            for t in tbls:
+                allowed_pairs.add((et.strip(), t.strip()))
+                allowed_tables.add(t.strip())
 
     # Table-level: ontology.entity_type, ontology.domain, ontology.confidence from ontology_entities
     try:
@@ -2315,6 +2335,8 @@ def _apply_ontology_tags_from_tables() -> dict:
             if not tbl or not isinstance(tbl, str):
                 continue
             tbl = tbl.strip()
+            if allowed_pairs is not None and (et, tbl) not in allowed_pairs:
+                continue
             domain = tkb_domain.get(tbl, "")
             prev = seen_tables.get(tbl)
             conf_f = float(conf or 0)
@@ -2371,6 +2393,8 @@ def _apply_ontology_tags_from_tables() -> dict:
         conf_str = str(round(float(conf), 2)) if conf is not None else "0"
         if not tbl or not col or not _SAFE_IDENT_RE.match(tbl.replace(".", "x")):
             continue
+        if allowed_tables is not None and tbl not in allowed_tables:
+            continue
         col_safe = col.replace("`", "")
         edge = rel_edge.get((tbl, col), "")
         tags = [f"('ontology.property_role' = '{_esc_sql(role)}')"]
@@ -2410,7 +2434,10 @@ def ontology_apply_tags(body: Optional[OntologyApplyBody] = Body(default=None)):
     Reads from ontology tables and applies: ontology.entity_type, ontology.domain, ontology.confidence
     at table level; ontology.property_role, ontology.edge, ontology.linked_entity, ontology.confidence
     at column level. Returns a summary of tags applied."""
-    return _apply_ontology_tags_from_tables()
+    sels = None
+    if body and body.selections:
+        sels = [s.model_dump() for s in body.selections]
+    return _apply_ontology_tags_from_tables(selections=sels)
 
 
 @app.post("/api/ontology/apply-all-tags")
@@ -6652,12 +6679,12 @@ def agent_deep_submit(req: AgentChatRequest):
         try:
             while True:
                 try:
-                    event = progress_q.get(timeout=300)
+                    event = progress_q.get(timeout=600)
                 except queue.Empty:
                     _deep_tasks[task_id] = {
                         **_deep_tasks[task_id],
                         "status": "error",
-                        "error": "Analysis timed out after 5 minutes.",
+                        "error": "Analysis timed out after 10 minutes.",
                     }
                     return
                 if event.get("stage") == "done":

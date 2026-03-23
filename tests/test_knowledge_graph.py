@@ -346,7 +346,7 @@ class TestEdgeGroupSizeCap:
         builder = KnowledgeGraphBuilder(mock_spark, config)
         sig = inspect.signature(builder.build_edges_for_attribute)
         assert "max_group_size" in sig.parameters
-        assert sig.parameters["max_group_size"].default == 500
+        assert sig.parameters["max_group_size"].default is inspect.Parameter.empty
 
     def test_build_all_edges_passes_config_cap(self):
         """build_all_edges_df should forward config.max_edges_group_size."""

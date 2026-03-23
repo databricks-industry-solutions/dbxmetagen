@@ -60,6 +60,9 @@ export default function SemanticLayer() {
 
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
+  const [activeTab, setActiveTab] = useState('setup')
+  const [defFilter, setDefFilter] = useState('')
+  const [defStatusFilter, setDefStatusFilter] = useState('all')
 
   // --- Init ---
   useEffect(() => {
@@ -477,6 +480,29 @@ export default function SemanticLayer() {
       </div>
       <ErrorBanner error={error} />
 
+      {/* Unified catalog/schema display */}
+      {(selectedCatalog || selectedSchema) && (
+        <div className="text-xs text-slate-500 dark:text-slate-400 px-1">
+          Scope: <span className="font-medium text-slate-700 dark:text-slate-200">{selectedCatalog || '?'}.{selectedSchema || '?'}</span>
+          {createTarget.catalog && createTarget.catalog !== selectedCatalog && (
+            <span className="ml-3">Target: <span className="font-medium text-slate-700 dark:text-slate-200">{createTarget.catalog}.{createTarget.schema}</span></span>
+          )}
+        </div>
+      )}
+
+      {/* Tab Bar */}
+      <div className="inline-flex bg-dbx-oat/60 dark:bg-dbx-navy-600 rounded-xl p-1 shadow-inner-soft">
+        {[['setup', 'Setup'], ['questions', 'Questions & KPIs'], ['generate', 'Generate'], ['definitions', 'Definitions']].map(([k, l]) => (
+          <button key={k} onClick={() => setActiveTab(k)}
+            className={`px-3.5 py-1.5 text-sm rounded-lg transition-all duration-200 ${activeTab === k ? 'bg-white dark:bg-dbx-navy-500 shadow-sm font-semibold text-dbx-lava' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'}`}>{l}
+            {k === 'definitions' && definitions.length > 0 && <span className="ml-1 text-[10px] text-slate-400">{definitions.length}</span>}
+          </button>
+        ))}
+      </div>
+
+      {/* === Setup Tab === */}
+      {activeTab === 'setup' && <>
+
       {/* Project Selector */}
       <section className={section}>
         <div className="flex items-center gap-4">
@@ -567,6 +593,11 @@ export default function SemanticLayer() {
           <p className="text-sm text-gray-500 dark:text-gray-400 italic">No managed tables found in {selectedCatalog}.{selectedSchema}</p>
         )}
       </section>
+
+      </>}
+
+      {/* === Questions & KPIs Tab === */}
+      {activeTab === 'questions' && <>
 
       {/* Question Profiles */}
       <section className={section}>
@@ -677,6 +708,11 @@ export default function SemanticLayer() {
         )}
       </section>
 
+      </>}
+
+      {/* === Generate Tab === */}
+      {activeTab === 'generate' && <>
+
       {/* Generate */}
       <section className={section}>
         <h2 className="text-lg font-semibold mb-2 dark:text-gray-100">Generate Metric Views</h2>
@@ -736,8 +772,23 @@ export default function SemanticLayer() {
         </section>
       )}
 
+      </>}
+
+      {/* === Definitions Tab === */}
+      {activeTab === 'definitions' && <>
+
       {/* Definitions */}
-      {definitions.length > 0 && (
+      {definitions.length === 0 ? (
+        <section className={section}>
+          <p className="text-sm text-slate-400 text-center py-6">No metric view definitions yet. Generate some from the Generate tab.</p>
+        </section>
+      ) : (() => {
+        const filtered = definitions.filter(d => {
+          if (defStatusFilter !== 'all' && d.status !== defStatusFilter) return false
+          if (defFilter && !d.metric_view_name?.toLowerCase().includes(defFilter.toLowerCase()) && !d.source_table?.toLowerCase().includes(defFilter.toLowerCase())) return false
+          return true
+        })
+        return (
         <section className={section}>
           <div className="flex items-center justify-between mb-3">
             <h2 className="text-lg font-semibold dark:text-gray-100">Metric View Definitions ({definitions.length})</h2>
@@ -754,18 +805,33 @@ export default function SemanticLayer() {
               placeholder="schema" className="input-base !text-xs w-40" />
           </div>
 
+          {/* Filters (4.2) */}
+          <div className="flex items-center gap-2 mb-3">
+            <input value={defFilter} onChange={e => setDefFilter(e.target.value)} placeholder="Filter by name or table..."
+              className="input-base !text-xs w-56" />
+            <div className="inline-flex bg-dbx-oat/60 dark:bg-dbx-navy-600 rounded-lg p-0.5">
+              {['all', 'validated', 'applied', 'failed'].map(s => (
+                <button key={s} onClick={() => setDefStatusFilter(s)}
+                  className={`px-2 py-0.5 text-[10px] rounded-md transition-colors ${defStatusFilter === s ? 'bg-white dark:bg-dbx-navy-500 shadow-sm font-semibold' : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}`}>
+                  {s === 'all' ? 'All' : s.charAt(0).toUpperCase() + s.slice(1)}
+                </button>
+              ))}
+            </div>
+            {(defFilter || defStatusFilter !== 'all') && <span className="text-xs text-slate-400">{filtered.length} of {definitions.length}</span>}
+          </div>
+
           <div className="divide-y dark:divide-gray-700">
-            {definitions.map(d => {
+            {filtered.map(d => {
               const busy = actionLoading[d.definition_id]
               return (
                 <div key={d.definition_id} className="py-3">
-                  <div className="flex justify-between items-center">
-                    <div>
+                  <div className="flex justify-between items-start gap-2">
+                    <div className="min-w-0">
                       <span className="font-medium text-sm dark:text-gray-100">{d.metric_view_name}</span>
                       {d.version && d.version > 1 && <span className="text-purple-500 dark:text-purple-400 text-xs ml-1">v{d.version}</span>}
                       <span className="text-gray-400 dark:text-gray-500 text-xs ml-2">{d.source_table}</span>
                     </div>
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-1 flex-shrink-0">
                       {statusBadge(d.status)}
                       {d.complexity_level === 'trivial' && (
                         <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400" title="Only basic COUNT/SUM measures">Trivial</span>
@@ -773,43 +839,45 @@ export default function SemanticLayer() {
                       {d.complexity_level === 'rich' && (
                         <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400" title="Includes ratios, rates, or filtered aggregates">Rich</span>
                       )}
-                      <button onClick={() => loadDefinitionJson(d.definition_id)}
-                        className="text-xs text-blue-600 dark:text-blue-400 hover:underline">
-                        {expandedDef === d.definition_id ? 'Hide' : 'View JSON'}
-                      </button>
-                      <button onClick={() => openEdit(d.definition_id)}
-                        className="text-xs text-slate-600 dark:text-slate-400 hover:underline">
-                        Edit JSON
-                      </button>
-
-                      {d.status === 'failed' && (
-                        <button onClick={() => retryDefinition(d.definition_id)} disabled={!!busy}
-                          className="px-2 py-0.5 text-xs rounded bg-dbx-lava text-white hover:bg-red-700 disabled:opacity-50">
-                          {busy === 'retry' ? 'Retrying...' : 'Retry'}
-                        </button>
-                      )}
-                      {(d.status === 'validated' || d.status === 'applied') && (
-                        <>
-                          <button onClick={() => improveDefinition(d.definition_id)} disabled={!!busy}
-                            className="px-2 py-0.5 text-xs rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50">
-                            {busy === 'improve' ? 'Improving...' : 'Improve'}
+                      {/* Compact action menu */}
+                      <details className="relative">
+                        <summary className="px-1.5 py-0.5 text-xs text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 cursor-pointer select-none rounded hover:bg-slate-100 dark:hover:bg-dbx-navy-500">Actions</summary>
+                        <div className="absolute right-0 mt-1 z-20 bg-white dark:bg-dbx-navy-600 border dark:border-gray-600 rounded-lg shadow-lg py-1 min-w-[140px]">
+                          <button onClick={() => loadDefinitionJson(d.definition_id)} className="w-full text-left px-3 py-1.5 text-xs hover:bg-slate-50 dark:hover:bg-dbx-navy-500">
+                            {expandedDef === d.definition_id ? 'Hide JSON' : 'View JSON'}
                           </button>
-                          <button onClick={() => createDefinition(d.definition_id)} disabled={!!busy}
-                            className="px-2 py-0.5 text-xs rounded bg-green-600 text-white hover:bg-green-700 disabled:opacity-50">
-                            {busy === 'create' ? 'Creating...' : d.status === 'applied' ? 'Re-apply' : 'Create'}
+                          <button onClick={() => openEdit(d.definition_id)} className="w-full text-left px-3 py-1.5 text-xs hover:bg-slate-50 dark:hover:bg-dbx-navy-500">Edit JSON</button>
+                          {d.status === 'failed' && (
+                            <button onClick={() => retryDefinition(d.definition_id)} disabled={!!busy}
+                              className="w-full text-left px-3 py-1.5 text-xs text-dbx-lava hover:bg-red-50 dark:hover:bg-red-900/20 disabled:opacity-50">
+                              {busy === 'retry' ? 'Retrying...' : 'Retry'}
+                            </button>
+                          )}
+                          {(d.status === 'validated' || d.status === 'applied') && (
+                            <>
+                              <button onClick={() => improveDefinition(d.definition_id)} disabled={!!busy}
+                                className="w-full text-left px-3 py-1.5 text-xs text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20 disabled:opacity-50">
+                                {busy === 'improve' ? 'Improving...' : 'Improve'}
+                              </button>
+                              <button onClick={() => createDefinition(d.definition_id)} disabled={!!busy}
+                                className="w-full text-left px-3 py-1.5 text-xs text-green-600 hover:bg-green-50 dark:hover:bg-green-900/20 disabled:opacity-50">
+                                {busy === 'create' ? 'Creating...' : d.status === 'applied' ? 'Re-apply' : 'Create in UC'}
+                              </button>
+                            </>
+                          )}
+                          {d.status === 'applied' && (
+                            <button onClick={() => dropDefinition(d.definition_id)} disabled={!!busy}
+                              className="w-full text-left px-3 py-1.5 text-xs text-amber-600 hover:bg-amber-50 dark:hover:bg-amber-900/20 disabled:opacity-50">
+                              {busy === 'drop' ? 'Dropping...' : 'Drop from UC'}
+                            </button>
+                          )}
+                          <hr className="my-1 dark:border-gray-600" />
+                          <button onClick={() => deleteDefinition(d.definition_id, d.status)} disabled={!!busy}
+                            className="w-full text-left px-3 py-1.5 text-xs text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 disabled:opacity-50">
+                            {busy === 'delete' ? 'Deleting...' : 'Delete'}
                           </button>
-                        </>
-                      )}
-                      {d.status === 'applied' && (
-                        <button onClick={() => dropDefinition(d.definition_id)} disabled={!!busy}
-                          className="px-2 py-0.5 text-xs rounded bg-amber-600 text-white hover:bg-amber-700 disabled:opacity-50">
-                          {busy === 'drop' ? 'Dropping...' : 'Drop from UC'}
-                        </button>
-                      )}
-                      <button onClick={() => deleteDefinition(d.definition_id, d.status)} disabled={!!busy}
-                        className="px-2 py-0.5 text-xs rounded bg-red-600 text-white hover:bg-red-700 disabled:opacity-50">
-                        {busy === 'delete' ? '...' : 'Delete'}
-                      </button>
+                        </div>
+                      </details>
                     </div>
                   </div>
                   {d.validation_errors && (
@@ -836,9 +904,12 @@ export default function SemanticLayer() {
                 </div>
               )
             })}
+            {filtered.length === 0 && <p className="text-xs text-slate-400 py-4 text-center">No definitions match this filter.</p>}
           </div>
         </section>
-      )}
+      )})()}
+
+      </>}
 
       {editDefId && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={() => !suggestLoading && setEditDefId(null)} role="dialog" aria-modal="true">

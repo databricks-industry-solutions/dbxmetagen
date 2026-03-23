@@ -346,6 +346,44 @@ print(f"[TEST 12] PASSED: new_provider_data classified as '{provider_entity[0]['
 
 # COMMAND ----------
 # MAGIC %md
+# MAGIC ## Test Ontology Bundle Path
+
+# COMMAND ----------
+
+# Test 13: Run with ontology_bundle="general" to exercise _purge_stale_bundle_entities
+from dbxmetagen.ontology import resolve_bundle_path
+
+general_config = resolve_bundle_path("general")
+print(f"[TEST 13] Resolved bundle 'general' -> {general_config}")
+
+entity_count_before = spark.sql(f"""
+    SELECT COUNT(*) as cnt FROM {catalog_name}.{ontology_test_schema}.ontology_entities
+""").collect()[0]["cnt"]
+
+result3 = build_ontology(
+    spark=spark,
+    catalog_name=catalog_name,
+    schema_name=ontology_test_schema,
+    config_path=general_config,
+    ontology_bundle="general",
+)
+
+entity_count_after = spark.sql(f"""
+    SELECT COUNT(*) as cnt FROM {catalog_name}.{ontology_test_schema}.ontology_entities
+""").collect()[0]["cnt"]
+
+assert entity_count_after > 0, "Entities should exist after bundle run"
+
+bundle_tagged = spark.sql(f"""
+    SELECT COUNT(*) as cnt FROM {catalog_name}.{ontology_test_schema}.ontology_entities
+    WHERE ontology_bundle = 'general'
+""").collect()[0]["cnt"]
+
+assert bundle_tagged > 0, "Some entities should be tagged with ontology_bundle='general'"
+print(f"[TEST 13] PASSED: bundle run succeeded ({entity_count_after} entities, {bundle_tagged} tagged 'general')")
+
+# COMMAND ----------
+# MAGIC %md
 # MAGIC ## Cleanup
 
 # COMMAND ----------

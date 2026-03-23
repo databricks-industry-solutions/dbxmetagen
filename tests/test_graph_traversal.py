@@ -385,3 +385,87 @@ class TestToolRegistration:
     def test_traverse_graph_is_registered(self):
         """The agent must have traverse_graph for multi-hop queries."""
         assert any(t.name == "traverse_graph" for t in agent_tools.ALL_TOOLS)
+
+
+# ===========================================================================
+# Tests: apply-tags selection filtering
+# ===========================================================================
+
+
+class TestApplyTagsSelectionFiltering:
+    """Tests that _apply_ontology_tags_from_tables respects selections."""
+
+    def _mock_execute_sql(self, entities=None, tkb=None, props=None, rels=None):
+        """Return a side_effect for execute_sql that serves canned data by query shape."""
+        def _side_effect(query, **kw):
+            q = query.strip().upper()
+            if "ONTOLOGY_ENTITIES" in q:
+                return entities or []
+            if "TABLE_KNOWLEDGE_BASE" in q:
+                return tkb or []
+            if "ONTOLOGY_COLUMN_PROPERTIES" in q:
+                return props or []
+            if "ONTOLOGY_RELATIONSHIPS" in q:
+                return rels or []
+            if "ALTER TABLE" in q:
+                return []
+            return []
+        return _side_effect
+
+    @patch.dict(os.environ, {"WAREHOUSE_ID": "wh123", "CATALOG_NAME": "c", "SCHEMA_NAME": "s"})
+    @patch.object(api_server, "execute_sql")
+    def test_no_selections_applies_all(self, mock_sql):
+        entities = [
+            {"entity_type": "Patient", "confidence": 0.9, "source_tables": '["c.s.patients"]',
+             "entity_role": "primary", "granularity": "table"},
+            {"entity_type": "Order", "confidence": 0.8, "source_tables": '["c.s.orders"]',
+             "entity_role": "primary", "granularity": "table"},
+        ]
+        mock_sql.side_effect = self._mock_execute_sql(entities=entities)
+        result = api_server._apply_ontology_tags_from_tables(selections=None)
+        alter_calls = [c for c in mock_sql.call_args_list if "ALTER TABLE" in c[0][0]]
+        assert len(alter_calls) == 2
+
+    @patch.dict(os.environ, {"WAREHOUSE_ID": "wh123", "CATALOG_NAME": "c", "SCHEMA_NAME": "s"})
+    @patch.object(api_server, "execute_sql")
+    def test_selections_filters_to_matching_entity(self, mock_sql):
+        entities = [
+            {"entity_type": "Patient", "confidence": 0.9, "source_tables": '["c.s.patients"]',
+             "entity_role": "primary", "granularity": "table"},
+            {"entity_type": "Order", "confidence": 0.8, "source_tables": '["c.s.orders"]',
+             "entity_role": "primary", "granularity": "table"},
+        ]
+        mock_sql.side_effect = self._mock_execute_sql(entities=entities)
+        sels = [{"entity_type": "Patient", "source_tables": ["c.s.patients"]}]
+        result = api_server._apply_ontology_tags_from_tables(selections=sels)
+        alter_calls = [c for c in mock_sql.call_args_list if "ALTER TABLE" in c[0][0]]
+        assert len(alter_calls) == 1
+        assert "patients" in alter_calls[0][0][0]
+
+    @patch.dict(os.environ, {"WAREHOUSE_ID": "wh123", "CATALOG_NAME": "c", "SCHEMA_NAME": "s"})
+    @patch.object(api_server, "execute_sql")
+    def test_selections_filters_column_tags(self, mock_sql):
+        props = [
+            {"table_name": "c.s.patients", "column_name": "mrn", "property_role": "primary_key",
+             "confidence": 0.9, "linked_entity_type": ""},
+            {"table_name": "c.s.orders", "column_name": "order_id", "property_role": "primary_key",
+             "confidence": 0.85, "linked_entity_type": ""},
+        ]
+        mock_sql.side_effect = self._mock_execute_sql(entities=[], props=props)
+        sels = [{"entity_type": "Patient", "source_tables": ["c.s.patients"]}]
+        result = api_server._apply_ontology_tags_from_tables(selections=sels)
+        alter_calls = [c for c in mock_sql.call_args_list if "ALTER TABLE" in c[0][0] and "ALTER COLUMN" in c[0][0]]
+        assert len(alter_calls) == 1
+        assert "patients" in alter_calls[0][0][0]
+
+    @patch.dict(os.environ, {"WAREHOUSE_ID": "wh123", "CATALOG_NAME": "c", "SCHEMA_NAME": "s"})
+    @patch.object(api_server, "execute_sql")
+    def test_empty_selections_applies_all(self, mock_sql):
+        entities = [
+            {"entity_type": "Order", "confidence": 0.8, "source_tables": '["c.s.orders"]',
+             "entity_role": "primary", "granularity": "table"},
+        ]
+        mock_sql.side_effect = self._mock_execute_sql(entities=entities)
+        result = api_server._apply_ontology_tags_from_tables(selections=[])
+        alter_calls = [c for c in mock_sql.call_args_list if "ALTER TABLE" in c[0][0]]
+        assert len(alter_calls) == 1

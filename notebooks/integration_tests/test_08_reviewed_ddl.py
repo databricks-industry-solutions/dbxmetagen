@@ -85,17 +85,28 @@ try:
     current_date = datetime.now().strftime("%Y%m%d")
     export_dir = f"/Volumes/{test_catalog}/{test_schema}/test_volume/{user_sanitized}/{current_date}/exportable_run_logs"
 
-    # List files to find our table's export
+    # The exported filename uses mode + log_timestamp (not the table name)
+    expected_tsv_name = f"review_metadata_{config_initial.mode}_{config_initial.log_timestamp}.tsv"
+    simple_table_name = test_table.split(".")[-1]
+
     try:
         export_files = dbutils.fs.ls(export_dir)
         tsv_file = None
-        simple_table_name = test_table.split(".")[-1]
 
+        # First try exact match by expected name
         for file_info in export_files:
-            if simple_table_name in file_info.name and file_info.name.endswith(".tsv"):
+            if file_info.name == expected_tsv_name:
                 tsv_file = file_info.path
-                print(f"  [OK] Found TSV file: {file_info.name}")
+                print(f"  [OK] Found expected TSV file: {file_info.name}")
                 break
+
+        # Fallback: any .tsv file in the directory
+        if tsv_file is None:
+            for file_info in export_files:
+                if file_info.name.endswith(".tsv"):
+                    tsv_file = file_info.path
+                    print(f"  [OK] Found TSV file (fallback): {file_info.name}")
+                    break
 
         test_utils.assert_not_none(tsv_file, "TSV export file exists")
 
@@ -106,8 +117,8 @@ try:
     # Step 3: Manually modify the TSV file (simulate review)
     print("\nStep 3: Simulate manual review - modify comments")
 
-    # Read the TSV
-    tsv_path_local = tsv_file.replace("dbfs:", "/dbfs")
+    # Read the TSV -- UC Volumes are accessible directly at /Volumes/
+    tsv_path_local = tsv_file.replace("dbfs:", "")
     df = pd.read_csv(tsv_path_local, sep="\t", dtype=str)
 
     print(f"  Loaded {len(df)} rows from TSV")
@@ -131,13 +142,12 @@ try:
 
     # Save the reviewed TSV to reviewed_outputs directory
     reviewed_dir = f"/Volumes/{test_catalog}/{test_schema}/test_volume/{user_sanitized}/reviewed_outputs"
-    os.makedirs(reviewed_dir.replace("dbfs:", "/dbfs"), exist_ok=True)
+    os.makedirs(reviewed_dir, exist_ok=True)
 
     reviewed_file_name = f"{simple_table_name}_comment.tsv"
     reviewed_file_path = f"{reviewed_dir}/{reviewed_file_name}"
-    reviewed_file_local = reviewed_file_path.replace("dbfs:", "/dbfs")
 
-    df.to_csv(reviewed_file_local, sep="\t", index=False)
+    df.to_csv(reviewed_file_path, sep="\t", index=False)
     print(f"  [OK] Saved reviewed file: {reviewed_file_name}")
 
     # Step 4: Process the reviewed file to apply changes
@@ -196,7 +206,7 @@ try:
             reviewed_sql_found = True
 
             # Read and verify content
-            sql_content = open(file_info.path.replace("dbfs:", "/dbfs"), "r").read()
+            sql_content = open(file_info.path.replace("dbfs:", ""), "r").read()
             test_utils.assert_contains(
                 sql_content,
                 "REVIEWED: This is a manually reviewed table comment",

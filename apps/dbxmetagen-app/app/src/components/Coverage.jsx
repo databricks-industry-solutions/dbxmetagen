@@ -33,6 +33,14 @@ function CatalogCoverage({ catalog }) {
   const [metaSummary, setMetaSummary] = useState(null)
   const [reviewSummary, setReviewSummary] = useState(null)
   const [error, setError] = useState(null)
+  const [sectionErrors, setSectionErrors] = useState({})
+
+  function loadSection(url, key, setter, fallback) {
+    setSectionErrors(prev => ({ ...prev, [key]: null }))
+    fetch(url)
+      .then(r => r.ok ? r.json() : fallback).then(setter)
+      .catch(e => setSectionErrors(prev => ({ ...prev, [key]: e.message })))
+  }
 
   useEffect(() => {
     const catParam = catalog ? `?catalog=${encodeURIComponent(catalog)}` : ''
@@ -41,12 +49,9 @@ function CatalogCoverage({ catalog }) {
       setSummary(r.data)
       if (r.error) setError(r.error)
     })
-    fetch(`/api/coverage/type-breakdown${catParam}`)
-      .then(r => r.ok ? r.json() : []).then(setTypeBreakdown).catch(() => {})
-    fetch(`/api/coverage/metadata-summary${catParam}`)
-      .then(r => r.ok ? r.json() : null).then(setMetaSummary).catch(() => {})
-    fetch(`/api/coverage/review-summary${catParam}`)
-      .then(r => r.ok ? r.json() : []).then(setReviewSummary).catch(() => {})
+    loadSection(`/api/coverage/type-breakdown${catParam}`, 'typeBreakdown', setTypeBreakdown, [])
+    loadSection(`/api/coverage/metadata-summary${catParam}`, 'metaSummary', setMetaSummary, null)
+    loadSection(`/api/coverage/review-summary${catParam}`, 'reviewSummary', setReviewSummary, [])
   }, [catalog])
 
   const totals = summary.reduce((acc, r) => ({
@@ -144,11 +149,12 @@ const DETAIL_TABS = [
   { key: 'graph', label: 'Relationships & Graph' },
 ]
 
-function CoverageCard({ label, value, total, color, bg, onClick, sub }) {
+function CoverageCard({ label, value, total, color, bg, onClick, sub, disabled }) {
   const pct = total > 0 ? Math.round((value / total) * 100) : null
+  const Tag = disabled ? 'div' : 'button'
   return (
-    <button onClick={onClick}
-      className={`text-left rounded-xl p-4 border-l-4 ${color} border border-slate-200/60 dark:border-dbx-navy-400/25 bg-gradient-to-br ${bg} shadow-card hover:shadow-card-hover transition-all duration-200 hover:scale-[1.02]`}>
+    <Tag onClick={disabled ? undefined : onClick}
+      className={`text-left rounded-xl p-4 border-l-4 ${color} border border-slate-200/60 dark:border-dbx-navy-400/25 bg-gradient-to-br ${bg} shadow-card transition-all duration-200 ${disabled ? 'cursor-default' : 'hover:shadow-card-hover hover:scale-[1.02]'}`}>
       <p className="text-xs font-medium uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1">{label}</p>
       <div className="flex items-baseline gap-2">
         <span className="text-2xl font-bold text-dbx-navy dark:text-white">{value ?? '--'}</span>
@@ -160,9 +166,11 @@ function CoverageCard({ label, value, total, color, bg, onClick, sub }) {
         </div>
       )}
       {sub && <p className="text-[10px] text-slate-400 dark:text-slate-500 mt-1.5">{sub}</p>}
-    </button>
+    </Tag>
   )
 }
+
+const ACTIVE_TABS = new Set(['data'])
 
 export default function Coverage() {
   const [holistic, setHolistic] = useState(null)
@@ -199,7 +207,11 @@ export default function Coverage() {
       </div>
 
       {/* Overview Cards */}
-      {holistic ? (
+      {!selectedCatalog ? (
+        <div className="card p-8 text-center">
+          <p className="text-sm text-slate-500 dark:text-slate-400">Select a catalog above to view coverage</p>
+        </div>
+      ) : holistic ? (
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
           {OVERVIEW_CARDS.map(c => {
             const val = h[c.key] ?? 0
@@ -214,9 +226,10 @@ export default function Coverage() {
               : c.key === 'metric_views' && h.metric_view_statuses && Object.keys(h.metric_view_statuses).length > 0
               ? Object.entries(h.metric_view_statuses).map(([k, v]) => `${k}: ${v}`).join(', ')
               : undefined
+            const cardDisabled = !ACTIVE_TABS.has(c.tab)
             return (
               <CoverageCard key={c.key} label={c.label} value={val} total={showTotal}
-                color={c.color} bg={c.bg} sub={sub}
+                color={c.color} bg={c.bg} sub={sub} disabled={cardDisabled}
                 onClick={() => setTab(c.tab)} />
             )
           })}
