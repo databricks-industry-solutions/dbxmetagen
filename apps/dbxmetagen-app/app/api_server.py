@@ -6679,12 +6679,12 @@ def agent_deep_submit(req: AgentChatRequest):
         try:
             while True:
                 try:
-                    event = progress_q.get(timeout=300)
+                    event = progress_q.get(timeout=600)
                 except queue.Empty:
                     _deep_tasks[task_id] = {
                         **_deep_tasks[task_id],
                         "status": "error",
-                        "error": "Analysis timed out after 5 minutes.",
+                        "error": "Analysis timed out after 10 minutes.",
                     }
                     return
                 if event.get("stage") == "done":

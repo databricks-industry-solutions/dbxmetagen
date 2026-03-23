@@ -154,7 +154,7 @@ STRATEGY:
 2. Use expand_vs_hits to bridge VS hits into graph for structural context.
 3. Use traverse_graph with edge_type filters for targeted exploration.
 4. Use execute_metadata_sql for precise counts/aggregations.
-Keep the plan to 3-6 steps."""
+Keep the plan to 3-4 steps."""
     else:
         return base + f"""
 
@@ -165,7 +165,7 @@ The Retrieval agent can ONLY query these three tables in {CATALOG}.{SCHEMA}:
 
 Available tool: execute_baseline_sql (read-only SELECT on the 3 tables above).
 No vector search, no graph traversal, no ontology, no FK predictions.
-Keep the plan to 3-5 steps."""
+Keep the plan to 2-3 steps."""
 
 
 def _retrieval_prompt(mode: str) -> str:
