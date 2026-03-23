@@ -139,7 +139,7 @@ export default function BatchJobs({ onNavigate }) {
   const [applyDdl, setApplyDdl] = useState(false)
   const [catalogName, setCatalogName] = useState('')
   const [schemaName, setSchemaName] = useState('')
-  const [loading, setLoading] = useState(false)
+  const [runningAction, setRunningAction] = useState(null)
   const [error, setError] = useState(null)
   const [ontologyBundle, setOntologyBundle] = useState('general')
   const [entityTagKey, setEntityTagKey] = useState('entity_type')
@@ -156,7 +156,6 @@ export default function BatchJobs({ onNavigate }) {
   const [clusterMaxK, setClusterMaxK] = useState(15)
   const [lakebaseCatalog, setLakebaseCatalog] = useState('')
   const [lakebaseError, setLakebaseError] = useState(null)
-  const [lakebaseLoading, setLakebaseLoading] = useState(false)
   const pollRef = useRef(null)
 
   const [settings, setSettings] = useState({
@@ -274,8 +273,8 @@ export default function BatchJobs({ onNavigate }) {
 
   const findJob = (suffix) => jobs.find(j => j.name?.endsWith(suffix))
 
-  const runJob = async (jobNameSuffix, params = {}) => {
-    setLoading(true)
+  const runJob = async (jobNameSuffix, params = {}, actionKey = 'default') => {
+    setRunningAction(actionKey)
     setError(null)
     try {
       const match = findJob(jobNameSuffix)
@@ -288,7 +287,7 @@ export default function BatchJobs({ onNavigate }) {
         body: JSON.stringify(body),
       })
       const data = await res.json()
-      if (!res.ok) { setError(data.detail || 'Failed to start job'); setLoading(false); return }
+      if (!res.ok) { setError(data.detail || 'Failed to start job'); setRunningAction(null); return }
       const newRun = {
         ...data,
         job_name: match?.name || jobNameSuffix,
@@ -297,12 +296,11 @@ export default function BatchJobs({ onNavigate }) {
       }
       setRunHistory(prev => [newRun, ...prev])
     } catch (e) { setError(e.message) }
-    setLoading(false)
+    setRunningAction(null)
   }
 
   const syncLakebase = async () => {
     setLakebaseError(null)
-    setLakebaseLoading(true)
     try {
       await runJob('sync_graph_lakebase', {
         catalog_name: catalogName,
@@ -310,11 +308,10 @@ export default function BatchJobs({ onNavigate }) {
         extra_params: {
           ...(lakebaseCatalog ? { lakebase_catalog: lakebaseCatalog } : {}),
         },
-      })
+      }, 'lakebase')
     } catch (e) {
       setLakebaseError(e.message || 'Lakebase sync failed')
     }
-    setLakebaseLoading(false)
   }
 
   const activeRuns = runHistory.filter(r => !TERMINAL_STATES.has(r.state))
@@ -381,9 +378,9 @@ export default function BatchJobs({ onNavigate }) {
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-3">
               <div>
                 <label className="text-xs text-slate-500 dark:text-slate-400 mb-1 block">Model</label>
-                <select value={settings.model} onChange={e => setSetting('model', e.target.value)} className="select-base !text-xs">
-                  <option value="databricks-claude-sonnet-4-6">Claude Sonnet 4.6</option>
-                </select>
+                <div className="px-3 py-2 text-xs font-medium text-slate-700 dark:text-slate-300 bg-dbx-oat-light dark:bg-dbx-navy-500/50 border border-slate-200 dark:border-dbx-navy-400/25 rounded-lg">
+                  {settings.model}
+                </div>
               </div>
               <div>
                 <label className="text-xs text-slate-500 dark:text-slate-400 mb-1 block">Sample Size</label>
@@ -532,15 +529,15 @@ export default function BatchJobs({ onNavigate }) {
               </div>
             </div>
             <div className="flex flex-wrap gap-3 mt-2">
-              <button onClick={() => runJob(getJobSuffix(false), { table_names: tableNames, mode, apply_ddl: applyDdl, ontology_bundle: ontologyBundle, ...(domainConfig ? { domain_config: domainConfig } : {}), extra_params: buildExtraParams() })}
-                disabled={loading || !tableNames.trim()} title="Run a single metadata generation pass"
-                className="btn-secondary btn-md">{loading ? 'Starting...' : `Run Single Mode${settings.build_kb_after ? ' + KB' : ''}${settings.use_serverless ? ' (Serverless)' : ''}`}</button>
-              <button onClick={() => runJob(getJobSuffix(true), { table_names: tableNames, apply_ddl: applyDdl, ontology_bundle: ontologyBundle, ...(domainConfig ? { domain_config: domainConfig } : {}), extra_params: buildExtraParams() })}
-                disabled={loading || !tableNames.trim()} title="Run all three modes in parallel"
-                className="btn-primary btn-md">{`All 3 Modes${settings.build_kb_after ? ' + KB' : ''}${settings.use_serverless ? ' (Serverless)' : ''}`}</button>
-              <button onClick={() => runJob('_kb_enriched_modes_job', { table_names: tableNames, apply_ddl: applyDdl, ontology_bundle: ontologyBundle, ...(domainConfig ? { domain_config: domainConfig } : {}), extra_params: buildExtraParams() })}
-                disabled={loading || !tableNames.trim()} title="Comments -> KB build -> PI + Domain with KB enrichment"
-                className="btn-md bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50 transition-all">KB-Enriched Modes</button>
+              <button onClick={() => runJob(getJobSuffix(false), { table_names: tableNames, mode, apply_ddl: applyDdl, ontology_bundle: ontologyBundle, ...(domainConfig ? { domain_config: domainConfig } : {}), extra_params: buildExtraParams() }, 'single')}
+                disabled={!!runningAction || !tableNames.trim()} title="Run a single metadata generation pass"
+                className="btn-secondary btn-md">{runningAction === 'single' ? 'Starting...' : `Run Single Mode${settings.build_kb_after ? ' + KB' : ''}${settings.use_serverless ? ' (Serverless)' : ''}`}</button>
+              <button onClick={() => runJob(getJobSuffix(true), { table_names: tableNames, apply_ddl: applyDdl, ontology_bundle: ontologyBundle, ...(domainConfig ? { domain_config: domainConfig } : {}), extra_params: buildExtraParams() }, 'all3')}
+                disabled={!!runningAction || !tableNames.trim()} title="Run all three modes in parallel"
+                className="btn-primary btn-md">{runningAction === 'all3' ? 'Starting...' : `All 3 Modes${settings.build_kb_after ? ' + KB' : ''}${settings.use_serverless ? ' (Serverless)' : ''}`}</button>
+              <button onClick={() => runJob('_kb_enriched_modes_job', { table_names: tableNames, apply_ddl: applyDdl, ontology_bundle: ontologyBundle, ...(domainConfig ? { domain_config: domainConfig } : {}), extra_params: buildExtraParams() }, 'kb_enriched')}
+                disabled={!!runningAction || !tableNames.trim()} title="Comments -> KB build -> PI + Domain with KB enrichment"
+                className="btn-md bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50 transition-all">{runningAction === 'kb_enriched' ? 'Starting...' : 'KB-Enriched Modes'}</button>
             </div>
             <p className="text-xs text-slate-400">
               {settings.build_kb_after && <><strong className="text-slate-500">+ KB</strong>: Builds table + column knowledge base after generation so the Review tab is populated. </>}
@@ -605,8 +602,8 @@ export default function BatchJobs({ onNavigate }) {
                 cluster_max_k: String(clusterMaxK),
                 ...(entityTagKey !== 'entity_type' ? { entity_tag_key: entityTagKey } : {}),
               },
-            })} disabled={loading || !catalogName.trim() || !schemaName.trim()} className="btn-primary btn-md">
-              {loading ? 'Starting...' : 'Run Full Pipeline'}
+            }, 'pipeline')} disabled={!!runningAction || !catalogName.trim() || !schemaName.trim()} className="btn-primary btn-md">
+              {runningAction === 'pipeline' ? 'Starting...' : 'Run Full Pipeline'}
             </button>
 
             {/* Lakebase sync card */}
@@ -628,9 +625,9 @@ export default function BatchJobs({ onNavigate }) {
                   <input value={lakebaseCatalog} onChange={e => setLakebaseCatalog(e.target.value)}
                     placeholder="e.g. lakebase_catalog" className="input-base !text-xs" />
                 </div>
-                <button onClick={syncLakebase} disabled={loading || lakebaseLoading || !catalogName.trim() || !schemaName.trim()}
+                <button onClick={syncLakebase} disabled={!!runningAction || !catalogName.trim() || !schemaName.trim()}
                   className="btn-secondary btn-md whitespace-nowrap">
-                  {lakebaseLoading ? 'Syncing...' : 'Sync to Lakebase'}
+                  {runningAction === 'lakebase' ? 'Syncing...' : 'Sync to Lakebase'}
                 </button>
               </div>
               {lakebaseError && (
@@ -692,6 +689,9 @@ export default function BatchJobs({ onNavigate }) {
                 <button onClick={() => setHistoryPage(p => Math.min(totalPages - 1, p + 1))} disabled={page >= totalPages - 1}
                   className="btn-ghost btn-sm disabled:opacity-30">Next</button>
               </div>
+            )}
+            {runHistory.length >= 50 && (
+              <p className="text-xs text-slate-400 mt-2 text-center">Showing 50 most recent runs</p>
             )}
           </>
         })()}

@@ -79,23 +79,29 @@ function GapsPanel({ data, loading }) {
 function MaskingPanel({ data, loading }) {
   if (loading) return <div className="animate-pulse h-32 bg-slate-100 dark:bg-slate-800 rounded-xl" />
   if (!data?.length) return <p className="text-xs text-emerald-600">All classified columns have masking policies.</p>
+  const shown = data.slice(0, 50)
   return (
-    <div className="overflow-x-auto max-h-48 overflow-y-auto">
-      <table className="w-full text-xs">
-        <thead><tr className="border-b sticky top-0 bg-white dark:bg-dbx-navy-600">
-          <th className="text-left py-1.5 px-2 font-medium text-slate-500">Table</th>
-          <th className="text-left py-1.5 px-2 font-medium text-slate-500">Column</th>
-          <th className="text-left py-1.5 px-2 font-medium text-slate-500">Classification</th>
-        </tr></thead>
-        <tbody>{data.slice(0, 50).map((r, i) => (
-          <tr key={i} className="border-b border-slate-100 dark:border-slate-700">
-            <td className="py-1.5 px-2 text-slate-700 dark:text-slate-300 truncate max-w-[150px]">{r.table_name?.split('.').pop()}</td>
-            <td className="py-1.5 px-2 font-mono text-slate-600 dark:text-slate-400">{r.column_name}</td>
-            <td className="py-1.5 px-2"><Badge type={r.classification_type} /></td>
-          </tr>
-        ))}</tbody>
-      </table>
-    </div>
+    <>
+      <div className="overflow-x-auto max-h-48 overflow-y-auto">
+        <table className="w-full text-xs">
+          <thead><tr className="border-b sticky top-0 bg-white dark:bg-dbx-navy-600">
+            <th className="text-left py-1.5 px-2 font-medium text-slate-500">Table</th>
+            <th className="text-left py-1.5 px-2 font-medium text-slate-500">Column</th>
+            <th className="text-left py-1.5 px-2 font-medium text-slate-500">Classification</th>
+          </tr></thead>
+          <tbody>{shown.map((r, i) => (
+            <tr key={i} className="border-b border-slate-100 dark:border-slate-700">
+              <td className="py-1.5 px-2 text-slate-700 dark:text-slate-300 truncate max-w-[150px]">{r.table_name?.split('.').pop()}</td>
+              <td className="py-1.5 px-2 font-mono text-slate-600 dark:text-slate-400">{r.column_name}</td>
+              <td className="py-1.5 px-2"><Badge type={r.classification_type} /></td>
+            </tr>
+          ))}</tbody>
+        </table>
+      </div>
+      {data.length > 50 && (
+        <p className="text-xs text-slate-400 mt-2">Showing 50 of {data.length} unmasked columns. Check Unity Catalog for the full list.</p>
+      )}
+    </>
   )
 }
 
@@ -104,16 +110,25 @@ export default function GovernanceExplorer({ embedded }) {
   const [gaps, setGaps] = useState(null)
   const [masking, setMasking] = useState(null)
   const [loading, setLoading] = useState({ summary: true, gaps: true, masking: true })
+  const [panelError, setPanelError] = useState({ summary: null, gaps: null, masking: null })
   const [error, setError] = useState(null)
   const [messages, setMessages] = useState([])
   const [chatInput, setChatInput] = useState('')
   const [chatLoading, setChatLoading] = useState(false)
   const chatEndRef = useRef(null)
 
+  function loadPanel(endpoint, key, setter, extract) {
+    setPanelError(p => ({ ...p, [key]: null }))
+    setLoading(l => ({ ...l, [key]: true }))
+    fetch(endpoint).then(r => r.json())
+      .then(d => { setter(extract(d)); setLoading(l => ({ ...l, [key]: false })) })
+      .catch(e => { setPanelError(p => ({ ...p, [key]: e.message })); setLoading(l => ({ ...l, [key]: false })) })
+  }
+
   useEffect(() => {
-    fetch('/api/governance/summary').then(r => r.json()).then(d => { setSummary(d.summary || []); setLoading(l => ({ ...l, summary: false })) }).catch(() => setLoading(l => ({ ...l, summary: false })))
-    fetch('/api/governance/gaps').then(r => r.json()).then(d => { setGaps(d.gaps || []); setLoading(l => ({ ...l, gaps: false })) }).catch(() => setLoading(l => ({ ...l, gaps: false })))
-    fetch('/api/governance/masking').then(r => r.json()).then(d => { setMasking(d.masking_audit || []); setLoading(l => ({ ...l, masking: false })) }).catch(() => setLoading(l => ({ ...l, masking: false })))
+    loadPanel('/api/governance/summary', 'summary', setSummary, d => d.summary || [])
+    loadPanel('/api/governance/gaps', 'gaps', setGaps, d => d.gaps || [])
+    loadPanel('/api/governance/masking', 'masking', setMasking, d => d.masking_audit || [])
   }, [])
 
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages, chatLoading])
@@ -151,22 +166,37 @@ export default function GovernanceExplorer({ embedded }) {
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <div className="border rounded-xl p-4 bg-white dark:bg-dbx-navy-600/50">
-          <h3 className="text-sm font-bold text-slate-700 dark:text-slate-200 mb-3">Sensitivity Heatmap</h3>
-          <SummaryPanel data={summary} loading={loading.summary} />
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="text-sm font-bold text-slate-700 dark:text-slate-200">Sensitivity Heatmap</h3>
+            <button onClick={() => handleChat('What are the most sensitive schemas and why?')} className="text-[10px] text-blue-500 hover:underline">Ask about this</button>
+          </div>
+          {panelError.summary
+            ? <p className="text-xs text-red-500">Could not load summary. <button onClick={() => loadPanel('/api/governance/summary', 'summary', setSummary, d => d.summary || [])} className="underline">Retry</button></p>
+            : <SummaryPanel data={summary} loading={loading.summary} />}
         </div>
         <div className="border rounded-xl p-4 bg-white dark:bg-dbx-navy-600/50">
           <div className="flex items-center justify-between mb-3">
             <h3 className="text-sm font-bold text-amber-700 dark:text-amber-400">Classification Gaps</h3>
-            {gaps && <span className="text-xs text-amber-500 font-bold">{gaps.length} found</span>}
+            <div className="flex items-center gap-2">
+              {gaps && <span className="text-xs text-amber-500 font-bold">{gaps.length} found</span>}
+              <button onClick={() => handleChat('Which classification gaps should I prioritize?')} className="text-[10px] text-blue-500 hover:underline">Ask about this</button>
+            </div>
           </div>
-          <GapsPanel data={gaps} loading={loading.gaps} />
+          {panelError.gaps
+            ? <p className="text-xs text-red-500">Could not load gaps. <button onClick={() => loadPanel('/api/governance/gaps', 'gaps', setGaps, d => d.gaps || [])} className="underline">Retry</button></p>
+            : <GapsPanel data={gaps} loading={loading.gaps} />}
         </div>
         <div className="border rounded-xl p-4 bg-white dark:bg-dbx-navy-600/50">
           <div className="flex items-center justify-between mb-3">
             <h3 className="text-sm font-bold text-red-700 dark:text-red-400">Unmasked Sensitive Columns</h3>
-            {masking && <span className="text-xs text-red-500 font-bold">{masking.length} found</span>}
+            <div className="flex items-center gap-2">
+              {masking && <span className="text-xs text-red-500 font-bold">{masking.length} found</span>}
+              <button onClick={() => handleChat('Which unmasked columns are highest risk?')} className="text-[10px] text-blue-500 hover:underline">Ask about this</button>
+            </div>
           </div>
-          <MaskingPanel data={masking} loading={loading.masking} />
+          {panelError.masking
+            ? <p className="text-xs text-red-500">Could not load masking audit. <button onClick={() => loadPanel('/api/governance/masking', 'masking', setMasking, d => d.masking_audit || [])} className="underline">Retry</button></p>
+            : <MaskingPanel data={masking} loading={loading.masking} />}
         </div>
       </div>
 

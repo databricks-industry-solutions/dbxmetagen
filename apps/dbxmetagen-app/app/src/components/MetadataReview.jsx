@@ -366,26 +366,32 @@ function ReviewEditor() {
 
       {/* Metadata Type Filter + Review Status Filter */}
       {reviewData.length > 0 && (
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="text-xs font-medium text-slate-500">Show:</span>
-          {META_TYPES.map(({ key, label }) => (
-            <span key={key} onClick={() => setActiveType(key)} className={`${chip} ${activeType === key ? chipOn : chipOff}`}>{label}</span>
-          ))}
-          <span className="border-l border-slate-300 h-5 mx-1" />
-          <span className="text-xs font-medium text-slate-500">Status:</span>
-          {['all', 'unreviewed', 'in_review', 'approved'].map(s => (
-            <span key={s} onClick={() => setStatusFilter(s)} className={`${chip} ${statusFilter === s ? chipOn : chipOff}`}>
-              {s === 'all' ? 'All' : s === 'in_review' ? 'In Review' : s.charAt(0).toUpperCase() + s.slice(1)}
-            </span>
-          ))}
-          {totalDirty > 0 && (
-            <button onClick={saveChanges} disabled={saving}
-              title="Batch-saves all edited table comments/domains and column comments/classifications to the knowledge bases."
-              className="ml-auto px-4 py-1.5 bg-dbx-lava text-white rounded-lg text-sm font-medium hover:bg-red-700 shadow-sm disabled:opacity-50">
-              {saving ? 'Saving...' : `Save Changes (${totalDirty})`}
-            </button>
-          )}
-        </div>
+        <>
+          <div className="text-[10px] text-slate-400 dark:text-slate-500 flex items-center gap-3 px-1">
+            <span className="flex items-center gap-1"><span className="inline-block w-2 h-2 rounded-full bg-green-400" /> Review status &amp; property roles save instantly</span>
+            <span className="flex items-center gap-1"><span className="inline-block w-2 h-2 rounded-full bg-amber-400" /> Comments &amp; classifications require Save Changes</span>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs font-medium text-slate-500">Show:</span>
+            {META_TYPES.map(({ key, label }) => (
+              <span key={key} onClick={() => setActiveType(key)} className={`${chip} ${activeType === key ? chipOn : chipOff}`}>{label}</span>
+            ))}
+            <span className="border-l border-slate-300 h-5 mx-1" />
+            <span className="text-xs font-medium text-slate-500">Status:</span>
+            {['all', 'unreviewed', 'in_review', 'approved'].map(s => (
+              <span key={s} onClick={() => setStatusFilter(s)} className={`${chip} ${statusFilter === s ? chipOn : chipOff}`}>
+                {s === 'all' ? 'All' : s === 'in_review' ? 'In Review' : s.charAt(0).toUpperCase() + s.slice(1)}
+              </span>
+            ))}
+            {totalDirty > 0 && (
+              <button onClick={saveChanges} disabled={saving}
+                title="Batch-saves all edited table comments/domains and column comments/classifications to the knowledge bases."
+                className="ml-auto px-4 py-1.5 bg-dbx-lava text-white rounded-lg text-sm font-medium hover:bg-red-700 shadow-sm disabled:opacity-50">
+                {saving ? 'Saving...' : `Save Changes (${totalDirty})`}
+              </button>
+            )}
+          </div>
+        </>
       )}
 
       {/* Combined Data View */}
@@ -426,9 +432,13 @@ function ReviewEditor() {
               </div>
 
               {expanded[tbl.table_name] && (
-                <div className="px-4 pb-4 space-y-3">
+                <div className="px-4 pb-4 space-y-1">
                   {/* Table-level fields */}
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3 pt-3">
+                  <details open className="group/tbl">
+                    <summary className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide cursor-pointer select-none py-2 hover:text-slate-700 dark:hover:text-slate-200">
+                      Table Properties
+                    </summary>
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3 pt-1 pb-2">
                     {show('comments') && (
                       <div className="col-span-4">
                         <label className="block text-xs font-medium text-slate-500 mb-1">Table Comment</label>
@@ -453,9 +463,14 @@ function ReviewEditor() {
                       </>
                     )}
                   </div>
+                  </details>
 
                   {/* Column rows */}
                   {(show('comments') || show('pii') || show('ontology')) && tbl.columns?.length > 0 && (
+                  <details open className="group/cols">
+                    <summary className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide cursor-pointer select-none py-2 hover:text-slate-700 dark:hover:text-slate-200">
+                      Columns ({tbl.columns.length})
+                    </summary>
                     <div className="overflow-x-auto">
                       <table className="min-w-full text-sm table-fixed">
                         <thead><tr className="bg-dbx-oat/50 dark:bg-dbx-navy-500/50">
@@ -536,6 +551,7 @@ function ReviewEditor() {
                         </tbody>
                       </table>
                     </div>
+                  </details>
                   )}
 
                   {/* ═══ ZONE 1: Table Entity ═══ */}
@@ -1404,8 +1420,6 @@ export default function MetadataReview() {
       <div className="flex flex-wrap items-center gap-4">
         <div className="inline-flex bg-dbx-oat/60 dark:bg-dbx-navy-650 rounded-xl p-1 shadow-inner-soft">
           {[['editor', 'Review Editor'], ['fk_apply', 'FK Apply'], ['entity_tags', 'Entity Tags'], ['kb', 'Table KB'], ['columns', 'Column KB'], ['schemas', 'Schema KB'], ['log', 'Generation Log']]
-            // Hidden tabs (underlying code retained): fk_apply, entity_tags, kb, columns, schemas, log
-            .filter(([k]) => k === 'editor')
             .map(([k, l]) => (
             <button key={k} onClick={() => setTab(k)}
               className={`px-3.5 py-1.5 text-sm rounded-lg transition-all duration-200 ${tab === k ? 'bg-white dark:bg-dbx-navy-500 shadow-sm font-semibold text-dbx-lava' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'}`}>{l}</button>
