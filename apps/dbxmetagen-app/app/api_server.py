@@ -204,15 +204,26 @@ def _ensure_review_updated_at(table_key: str):
             logger.warning("_ensure_review_updated_at(%s) failed: %s", table_key, e)
 
 
+_pg_fallback_warned = False
+
+
 def graph_query(sql: str) -> list[dict]:
     """Query graph tables: try Lakebase PG first, fall back to UC Delta tables."""
+    global _pg_fallback_warned
     if pg_configured():
         try:
             return pg_execute(sql)
         except HTTPException:
-            logger.warning("PG graph query failed, falling back to UC")
+            if not _pg_fallback_warned:
+                logger.warning("Lakebase PG not connected, using UC Delta for graph queries")
+                _pg_fallback_warned = True
         except Exception as e:
-            logger.warning("PG graph query unexpected error: %s, falling back to UC", e)
+            if not _pg_fallback_warned:
+                logger.warning("Lakebase PG not connected (%s), using UC Delta for graph queries", e)
+                _pg_fallback_warned = True
+    elif not _pg_fallback_warned:
+        logger.info("Lakebase not configured (PGHOST not set), using UC Delta for graph queries")
+        _pg_fallback_warned = True
     uc_sql = sql.replace("public.graph_nodes", fq("graph_nodes")).replace(
         "public.graph_edges", fq("graph_edges")
     )
@@ -458,6 +469,9 @@ class GenieGenerateRequest(BaseModel):
     metric_view_names: list[str] = []
     kpi_names: list[str] = []
     model_endpoint: str = _LLM_MODEL
+    business_context: Optional[str] = None
+    refinement_feedback: Optional[str] = None
+    prior_result: Optional[dict] = None
 
 
 class SuggestQuestionsRequest(BaseModel):
@@ -2482,10 +2496,24 @@ def export_ontology_jsonld(
     except Exception:
         pass
 
+    col_props_rows = []
     try:
-        _ = execute_sql(f"SELECT 1 FROM {base}.`ontology_column_properties` LIMIT 1", warehouse_id=wh_id, timeout=15)
+        col_props_rows = execute_sql(
+            f"SELECT * FROM {base}.`ontology_column_properties`",
+            warehouse_id=wh_id, timeout=60,
+        )
     except Exception:
         pass
+
+    _SCHEMA_ORG_TYPE_MAP = {
+        "Person": "schema:Person",
+        "Organization": "schema:Organization",
+        "Product": "schema:Product",
+        "Event": "schema:Event",
+        "Location": "schema:Place",
+        "Patient": "schema:Patient",
+        "Document": "schema:DigitalDocument",
+    }
 
     context = {
         "schema": "https://schema.org/",
@@ -2503,9 +2531,10 @@ def export_ontology_jsonld(
         src_tables = e.get("source_tables") or []
         if isinstance(src_tables, str):
             src_tables = [src_tables] if src_tables else []
+        schema_type = _SCHEMA_ORG_TYPE_MAP.get(et, "schema:Thing")
         node = {
             "@id": f"ontology:Entity/{et}",
-            "@type": "schema:Thing",
+            "@type": schema_type,
             "entity_type": et,
             "schema:name": et,
             "confidence": e.get("confidence"),
@@ -2524,6 +2553,24 @@ def export_ontology_jsonld(
             "ontology:from": {"@id": f"ontology:Entity/{src}"},
             "ontology:to": {"@id": f"ontology:Entity/{dst}"},
             "ontology:relationshipName": name,
+        })
+
+    for cp in col_props_rows:
+        entity = cp.get("owning_entity_type") or ""
+        col = cp.get("column_name") or ""
+        tbl = cp.get("table_name") or ""
+        if not entity or not col:
+            continue
+        prop_id = f"{tbl}.{col}".replace("`", "")
+        graph.append({
+            "@id": f"ontology:Property/{prop_id}",
+            "@type": "ontology:ColumnProperty",
+            "ontology:owningEntity": {"@id": f"ontology:Entity/{entity}"},
+            "ontology:columnName": col,
+            "ontology:tableName": tbl,
+            "property_role": cp.get("property_role"),
+            "confidence": cp.get("confidence"),
+            "ontology:discoveryMethod": cp.get("discovery_method"),
         })
 
     result = {"@context": context, "@graph": graph}
@@ -3714,6 +3761,21 @@ def delete_project(project_id: str):
         f"WHERE project_id = '{project_id}'"
     )
     return {"deleted": True}
+
+
+class ProjectTablesUpdate(BaseModel):
+    selected_tables: list[str]
+
+
+@app.patch("/api/semantic-layer/projects/{project_id}/tables")
+def update_project_tables(project_id: str, req: ProjectTablesUpdate):
+    _ensure_semantic_layer_tables()
+    tables_json = json.dumps(req.selected_tables).replace("'", "''")
+    execute_sql(
+        f"UPDATE {fq('semantic_layer_projects')} SET selected_tables = '{tables_json}' "
+        f"WHERE project_id = '{project_id}'"
+    )
+    return {"project_id": project_id, "selected_tables": req.selected_tables}
 
 
 # --- In-app metric view generation ---
@@ -5837,6 +5899,14 @@ def genie_generate(req: GenieGenerateRequest):
                 metric_view_names=req.metric_view_names or None,
             )
 
+            if req.business_context and req.business_context.strip():
+                biz_block = (
+                    "\n\nBUSINESS CONTEXT (provided by the user -- this defines the semantic frame for all analysis):\n"
+                    + req.business_context.strip()
+                    + "\n"
+                )
+                ctx["context_text"] = biz_block + ctx.get("context_text", "")
+
             if req.kpi_names:
                 _ensure_kpi_table()
                 kpi_rows = execute_sql(f"SELECT name, description, formula, domain FROM {fq('kpi_definitions')}")
@@ -5864,6 +5934,7 @@ def genie_generate(req: GenieGenerateRequest):
                                 "Try selecting fewer tables or simplifying the request."
                             ),
                             "elapsed_seconds": elapsed,
+                            "rounds_completed": rnd,
                         })
                         return
                     try:
@@ -5900,12 +5971,20 @@ def genie_generate(req: GenieGenerateRequest):
             monitor = threading.Thread(target=_monitor_progress, daemon=True)
             monitor.start()
 
-            run_genie_agent(ws, wh, ctx, progress_q, model_endpoint=req.model_endpoint)
+            run_genie_agent(
+                ws, wh, ctx, progress_q,
+                model_endpoint=req.model_endpoint,
+                refinement_feedback=req.refinement_feedback,
+                prior_result=req.prior_result,
+            )
         except Exception as e:
             logger.error("Genie builder error: %s", e, exc_info=True)
             elapsed = round(time.time() - started_at)
-            rnd = _genie_tasks[task_id].get("round", 0)
-            _genie_tasks[task_id].update({
+            task = _genie_tasks[task_id]
+            if task.get("status") == "error":
+                return  # _monitor_progress already recorded the error
+            rnd = max(task.get("round", 0), task.get("rounds_completed", 0))
+            task.update({
                 "status": "error",
                 "error": str(e),
                 "elapsed_seconds": elapsed,
@@ -6106,6 +6185,27 @@ def _strip_out_of_scope_sql(ss: dict) -> dict:
     for category in ("measures", "expressions", "filters"):
         items = snippets.get(category, [])
         snippets[category] = [it for it in items if _refs_ok(it.get("sql", []))]
+
+    # Filter join_specs: check table.column refs in join SQL
+    join_specs = inst.get("join_specs", [])
+    if join_specs:
+        valid_short = {v.split(".")[-1].lower() for v in valid_ids}
+        all_valid = valid_ids | valid_short
+        valid_joins = []
+        for js in join_specs:
+            sql_list = js.get("sql", [])
+            # Join SQL uses table.column format (no FROM/JOIN keywords), extract table refs
+            join_refs = set()
+            for sql in sql_list:
+                join_refs.update(m.lower() for m in re.findall(r'\b(\w+)\.\w+', sql))
+            if join_refs and all(ref in all_valid for ref in join_refs):
+                valid_joins.append(js)
+            elif not join_refs:
+                valid_joins.append(js)  # No table refs to check — keep it
+            else:
+                bad = join_refs - all_valid
+                logger.warning("Stripped out-of-scope join_spec referencing: %s", bad)
+        inst["join_specs"] = valid_joins
 
     return ss
 
@@ -6428,6 +6528,13 @@ def update_kpi(kpi_id: str, req: KpiRequest):
     return {"ok": True, "validation_status": v_status, "validation_error": v_error}
 
 
+@app.delete("/api/kpis")
+def delete_all_kpis():
+    _ensure_kpi_table()
+    execute_sql(f"DELETE FROM {fq('kpi_definitions')}", timeout=30)
+    return {"ok": True}
+
+
 @app.delete("/api/kpis/{kpi_id}")
 def delete_kpi(kpi_id: str):
     _ensure_kpi_table()
@@ -6647,6 +6754,29 @@ async def agent_chat(req: AgentChatRequest):
 
 
 # ---------------------------------------------------------------------------
+# Plot generation from agent responses
+# ---------------------------------------------------------------------------
+
+class PlotRequest(BaseModel):
+    content: str
+    history: list = []
+
+
+@app.post("/api/agent/plot")
+def agent_plot(req: PlotRequest):
+    """Generate a chart specification from an agent response."""
+    if not req.content:
+        return {"no_data": True, "reason": "No content provided"}
+    try:
+        from agent.metadata_agent import create_plot_spec
+        spec = create_plot_spec(req.content, req.history)
+        return spec
+    except Exception as e:
+        logger.error("Plot agent error: %s", e, exc_info=True)
+        return {"no_data": True, "reason": str(e)}
+
+
+# ---------------------------------------------------------------------------
 # Task-based deep analysis (background task + polling, avoids HTTP timeout)
 # ---------------------------------------------------------------------------
 
@@ -6671,7 +6801,7 @@ def agent_deep_submit(req: AgentChatRequest):
         raise HTTPException(503, detail=f"Deep analysis agent not available: {e}")
 
     task_id = str(_uuid.uuid4())[:12]
-    _deep_tasks[task_id] = {"status": "running", "stage": "starting", "created": time.time()}
+    _deep_tasks[task_id] = {"status": "running", "stage": "starting", "message": "", "steps": [], "elapsed_ms": 0, "created": time.time()}
 
     progress_q = run_deep_analysis_streaming(req.message, mode=mode, history=req.history)
 
@@ -6679,16 +6809,17 @@ def agent_deep_submit(req: AgentChatRequest):
         try:
             while True:
                 try:
-                    event = progress_q.get(timeout=600)
+                    event = progress_q.get(timeout=300)
                 except queue.Empty:
                     _deep_tasks[task_id] = {
                         **_deep_tasks[task_id],
                         "status": "error",
-                        "error": "Analysis timed out after 10 minutes.",
+                        "error": "Analysis timed out after 5 minutes.",
                     }
                     return
                 if event.get("stage") == "done":
                     created = _deep_tasks[task_id]["created"]
+                    prev_steps = _deep_tasks[task_id].get("steps", [])
                     _deep_tasks[task_id] = {
                         "status": "done",
                         "stage": "done",
@@ -6696,6 +6827,7 @@ def agent_deep_submit(req: AgentChatRequest):
                         "tool_calls": event.get("tool_calls", []),
                         "mode": event.get("mode", mode),
                         "routing_trace": event.get("routing_trace"),
+                        "steps": prev_steps,
                         "created": created,
                         "elapsed_ms": int((time.time() - created) * 1000),
                     }
@@ -6707,7 +6839,14 @@ def agent_deep_submit(req: AgentChatRequest):
                         "error": event.get("message", "Unknown error"),
                     }
                     return
-                _deep_tasks[task_id]["stage"] = event.get("stage", "running")
+                stage = event.get("stage", "running")
+                msg = event.get("message", "")
+                _deep_tasks[task_id]["stage"] = stage
+                _deep_tasks[task_id]["message"] = msg
+                _deep_tasks[task_id].setdefault("steps", []).append({
+                    "stage": stage, "message": msg, "ts": time.time(),
+                })
+                _deep_tasks[task_id]["elapsed_ms"] = int((time.time() - _deep_tasks[task_id]["created"]) * 1000)
         except Exception as e:
             logger.error("Deep task monitor error: %s", e, exc_info=True)
             _deep_tasks[task_id] = {
@@ -6742,7 +6881,7 @@ def agent_deep_poll(task_id: str):
 @app.get("/api/agent/stats")
 def agent_stats():
     """Summary statistics for the agent landing page."""
-    stats = {}
+    stats = {"lakebase_connected": pg_configured()}
     try:
         rows = execute_sql(f"SELECT COUNT(*) AS cnt FROM {fq('table_knowledge_base')}")
         stats["tables_profiled"] = rows[0]["cnt"] if rows else 0

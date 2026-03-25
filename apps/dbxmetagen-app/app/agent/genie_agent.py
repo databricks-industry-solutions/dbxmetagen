@@ -30,11 +30,18 @@ can immediately query in natural language and get correct, insightful answers.
 === METADATA CONTEXT ===
 {context_text}
 
-=== PRE-BUILT SECTIONS (FINALIZED -- do NOT regenerate these) ===
+=== PRE-BUILT DATA SOURCES (FINALIZED -- do NOT regenerate) ===
 data_sources: {data_sources}
-join_specs: {join_specs}
 
-=== PRE-BUILT SQL SNIPPETS (FINALIZED -- these will be merged automatically) ===
+=== PRE-BUILT JOIN SPECS (will be merged automatically -- do NOT duplicate) ===
+The following join_specs are pre-built from FK predictions, ontology relationships,
+and metric view joins. They will be merged into your output automatically.
+Only generate ADDITIONAL join_specs for relationships NOT already covered below.
+If no pre-built joins exist and FK relationships or shared columns appear in context,
+you MUST generate join_specs.
+{join_specs}
+
+=== PRE-BUILT SQL SNIPPETS (will be merged automatically -- do NOT duplicate) ===
 The following measures, filters, and expressions are pre-built from validated metric views
 and sampled data. They are ALREADY CORRECT and will be merged into your output automatically.
 Do NOT include these in your sql_snippets -- only generate ADDITIONAL measures/filters/expressions
@@ -73,7 +80,7 @@ RULES:
 5. Return the final JSON as your LAST message, wrapped in ```json ``` fences.
 6. Do NOT add id fields -- post-processing handles that automatically.
 7. METRIC VIEW ROUTING: metric_views listed in data_sources are APPLIED Unity Catalog objects -- Genie queries them natively via MEASURE(). sql_snippets contain measures decomposed from UNAPPLIED (validated-only) definitions plus filter suggestions. NEVER duplicate the same measure in both data_sources.metric_views and sql_snippets.measures.
-8. JOINS: If the pre-built join_specs are empty but FOREIGN KEY RELATIONSHIPS or shared column names exist in the metadata context, you MUST generate join_specs. Each join_spec needs left/right identifiers (fully qualified table names) and a sql array with join conditions using table.column format.
+8. JOINS: Pre-built join_specs are merged automatically after generation. Generate ADDITIONAL join_specs only for relationships not already covered by the pre-built set. If no pre-built joins exist but FOREIGN KEY RELATIONSHIPS or shared column names exist in the metadata context, you MUST generate join_specs. Each join_spec needs left/right identifiers (fully qualified table names) and a sql array with join conditions using table.column format.
 9. DATE FUNCTIONS: Use Databricks/Spark SQL syntax for all date functions.
    - TIMESTAMPADD(MONTH, 1, col) -- unit is a bare keyword, singular, NO quotes
    - TIMESTAMPDIFF(MINUTE, start, end) -- same: bare keyword, no quotes
@@ -92,10 +99,11 @@ QUALITY REQUIREMENTS (critical):
     - "sample_questions": Shown in the Genie UI as clickable starter questions for BUSINESS USERS. Must be plain English, non-technical, no SQL jargon. 8-12 questions like "What were total sales last quarter?" or "Who are our top customers?"
     - "example_sql": Few-shot examples that teach Genie HOW to translate natural language to SQL. Each needs a question AND working SQL. Cover diverse SQL patterns (joins, aggregations, window functions, filters). Do NOT duplicate the same question in both lists.
 
-EFFICIENCY (important -- you have a limited number of tool-call rounds):
+EFFICIENCY (important -- aim for 3-5 tool-call rounds for comprehensive coverage):
 16. BATCH your tool calls: call test_sql, sample_values, and describe_columns in PARALLEL within a single round when possible, rather than one at a time.
 17. Focus validation on the most complex SQL (joins, window functions, CASE expressions). Simple aggregations like COUNT(*) and SUM(col) don't need test_sql validation.
-18. After finishing tool calls, your FINAL message MUST contain the complete JSON wrapped in ```json ``` fences. Budget your rounds so you always have at least one round left for the final output.
+18. Use your rounds strategically: Round 1-2 for describe_columns + sample_values exploration. Round 2-3 for test_sql validation of complex queries. Round 3-4 for additional sample_values or fixing broken SQL. Final round for the complete JSON output.
+19. After finishing tool calls, your FINAL message MUST contain the complete JSON wrapped in ```json ``` fences. Budget your rounds so you always have at least one round left for the final output.
 """
 
 
@@ -308,16 +316,29 @@ def _messages_to_langchain(messages: list) -> list:
 def _recovery_invoke(
     messages: list,
     model_endpoint: str,
+    context: Optional[Dict[str, Any]] = None,
 ) -> Optional[dict]:
     """One-shot LLM call asking the agent to output just the JSON."""
     try:
         converted = _messages_to_langchain(messages)
+        hint = ""
+        if context:
+            if context.get("join_specs"):
+                js_json = json.dumps(context["join_specs"])
+                if len(js_json) < 3000:  # avoid blowing up the recovery prompt
+                    hint += f"\nUse these pre-built join_specs: {js_json}"
+                else:
+                    hint += f"\nThere are {len(context['join_specs'])} pre-built join_specs. Include them in instructions.join_specs."
+            if context.get("sql_snippets"):
+                sn_json = json.dumps(context["sql_snippets"])
+                if len(sn_json) < 3000:
+                    hint += f"\nUse these pre-built sql_snippets: {sn_json}"
         converted.append({
             "role": "user",
             "content": (
                 "Your previous response did not contain valid JSON. "
                 "Output ONLY the complete serialized_space JSON object now, "
-                "wrapped in ```json ``` fences. No explanation, no tool calls."
+                f"wrapped in ```json ``` fences. No explanation, no tool calls.{hint}"
             ),
         })
         recovery_llm = ChatDatabricks(
@@ -333,6 +354,53 @@ def _recovery_invoke(
         return None
 
 
+def _summarize_prior_result(prior: dict) -> str:
+    """Build a compact summary of a prior Genie config for refinement context.
+
+    Keeps the description, truncated instructions text, sample questions, and
+    first few example SQL questions.  Omits full data_sources, join_specs, and
+    sql_snippets (those are force-merged post-generation anyway).
+    """
+    parts = []
+    if prior.get("description"):
+        parts.append(f"Description: {prior['description']}")
+
+    ds = prior.get("data_sources", {})
+    tables = ds.get("tables", [])
+    mvs = ds.get("metric_views", [])
+    parts.append(f"Data sources: {len(tables)} tables, {len(mvs)} metric views (managed automatically)")
+
+    inst = prior.get("instructions", {})
+    text = inst.get("text") or ""
+    if isinstance(text, list):
+        text = "\n".join(str(t) for t in text)
+    if text:
+        preview = text[:500] + ("..." if len(text) > 500 else "")
+        parts.append(f"Instructions text (preview): {preview}")
+
+    joins = inst.get("join_specs") or prior.get("join_specs") or []
+    parts.append(f"Join specs: {len(joins)} (managed automatically)")
+
+    snips = inst.get("sql_snippets") or prior.get("sql_snippets") or {}
+    parts.append(
+        f"SQL snippets: {len(snips.get('measures', []))} measures, "
+        f"{len(snips.get('filters', []))} filters, "
+        f"{len(snips.get('expressions', []))} expressions (managed automatically)"
+    )
+
+    examples = inst.get("example_sql") or inst.get("example_question_sqls") or []
+    if examples:
+        preview_qs = [ex.get("question", [""])[0] if isinstance(ex.get("question"), list) else ex.get("question", "") for ex in examples[:4]]
+        parts.append(f"Example SQL ({len(examples)} total), first questions: {preview_qs}")
+
+    sqs = prior.get("sample_questions", [])
+    if sqs:
+        sq_list = [q if isinstance(q, str) else q.get("question", [""])[0] if isinstance(q.get("question"), list) else q.get("question", "") for q in sqs]
+        parts.append(f"Sample questions ({len(sq_list)}): {sq_list}")
+
+    return "Previously generated config summary:\n" + "\n".join(f"- {p}" for p in parts)
+
+
 @trace(name="genie_generate")
 def run_genie_agent(
     ws: WorkspaceClient,
@@ -340,6 +408,8 @@ def run_genie_agent(
     context: Dict[str, Any],
     progress_queue: queue.Queue,
     model_endpoint: str = os.environ.get("LLM_MODEL", "databricks-claude-sonnet-4-6"),
+    refinement_feedback: Optional[str] = None,
+    prior_result: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Run the Genie builder agent and emit progress events to the queue.
 
@@ -364,7 +434,7 @@ def run_genie_agent(
     tools = _make_tools(ws, warehouse_id)
     llm = ChatDatabricks(
         endpoint=model_endpoint, temperature=0.1, max_tokens=16384,
-        max_retries=2, request_timeout=300,
+        max_retries=1, request_timeout=180,
     )
 
     questions_text = (
@@ -380,14 +450,41 @@ def run_genie_agent(
     )
     system_prompt += SAFETY_PROMPT_BLOCK
 
+    prompt_chars = len(system_prompt)
+    prompt_tokens_est = prompt_chars // 4  # rough estimate
+    logger.info(
+        "Genie agent prompt: %d chars (~%dk tokens), %d tables, %d join_specs, %d snippet items",
+        prompt_chars, prompt_tokens_est // 1000,
+        len(context.get("data_sources", {}).get("tables", [])),
+        len(context.get("join_specs", [])),
+        sum(len(context.get("sql_snippets", {}).get(k, [])) for k in ("measures", "filters", "expressions")),
+    )
+    if prompt_tokens_est > 14000:
+        logger.warning(
+            "Genie prompt is very large (~%dk tokens). Generation may be slow or timeout. "
+            "Consider selecting fewer tables.", prompt_tokens_est // 1000,
+        )
+
     agent = create_react_agent(llm, tools, prompt=system_prompt)
     progress_queue.put({"stage": "generating"})
 
-    input_msg = {
-        "messages": [
-            {"role": "user", "content": "Generate the complete serialized_space JSON now."}
-        ]
-    }
+    if prior_result and refinement_feedback:
+        summary = _summarize_prior_result(prior_result)
+        input_msg = {
+            "messages": [
+                {"role": "user", "content": "Generate the complete serialized_space JSON now."},
+                {"role": "assistant", "content": summary},
+                {"role": "user", "content": (
+                    f"Here is feedback on the config above. Revise and regenerate the complete JSON:\n\n{refinement_feedback}"
+                )},
+            ]
+        }
+    else:
+        input_msg = {
+            "messages": [
+                {"role": "user", "content": "Generate the complete serialized_space JSON now."}
+            ]
+        }
     agent_config = {"recursion_limit": max(GuardrailConfig.MAX_RECURSION_LIMIT, 30)}
 
     messages: list = []
@@ -400,7 +497,8 @@ def run_genie_agent(
             deadline=deadline,
         )
     except Exception as e:
-        round_count = _count_tool_messages(messages) if messages else 0
+        counted = _count_tool_messages(messages) if messages else 0
+        round_count = max(round_count, counted)
         err_str = str(e).lower()
         if "timeout" in err_str or "timed out" in err_str or isinstance(e, TimeoutError):
             logger.warning("Agent exception timeout after %.1fs, %d rounds: %s", _elapsed(), round_count, e)
@@ -422,7 +520,7 @@ def run_genie_agent(
                 reason, _elapsed(), round_count,
             )
             progress_queue.put({"stage": "recovering"})
-            serialized = _recovery_invoke(messages, model_endpoint)
+            serialized = _recovery_invoke(messages, model_endpoint, context=context)
 
     if serialized is None:
         detail = (
@@ -435,6 +533,8 @@ def run_genie_agent(
         raise ValueError(detail)
 
     serialized = _merge_prebuilt_snippets(serialized, context.get("sql_snippets", {}))
+    serialized = _merge_prebuilt_join_specs(serialized, context.get("join_specs", []))
+    serialized = _merge_prebuilt_data_sources(serialized, context.get("data_sources", {}))
     serialized = _dedup_sample_vs_example(serialized)
     serialized = _backfill_synonyms(serialized)
     warnings = _validate_output(serialized)
@@ -478,6 +578,77 @@ def _merge_prebuilt_snippets(raw: dict, prebuilt: dict) -> dict:
     else:
         inst["sql_snippets"] = agent_snippets
         raw["instructions"] = inst
+    return raw
+
+
+def _merge_prebuilt_join_specs(raw: dict, prebuilt_joins: list) -> dict:
+    """Force-merge pre-built join_specs into agent output.
+
+    Pre-built joins win for the same (left, right) pair. Agent can only
+    add NEW joins for pairs not already covered. Dedup uses short table
+    names in both orientations to handle FQ vs short identifier mismatches.
+    """
+    if not prebuilt_joins:
+        return raw
+    inst = raw.get("instructions", {})
+    agent_joins = inst.get("join_specs") or raw.get("join_specs") or []
+
+    prebuilt_pairs = set()
+    for j in prebuilt_joins:
+        l = j.get("left", {}).get("identifier", "").split(".")[-1].lower()
+        r = j.get("right", {}).get("identifier", "").split(".")[-1].lower()
+        prebuilt_pairs.add(tuple(sorted([l, r])))
+
+    filtered_agent = []
+    for j in agent_joins:
+        l = j.get("left", {}).get("identifier", "").split(".")[-1].lower()
+        r = j.get("right", {}).get("identifier", "").split(".")[-1].lower()
+        pair = tuple(sorted([l, r]))
+        if pair not in prebuilt_pairs:
+            filtered_agent.append(j)
+
+    merged = prebuilt_joins + filtered_agent
+
+    # Always store inside instructions so build_serialized_space finds them
+    inst["join_specs"] = merged
+    raw["instructions"] = inst
+    raw.pop("join_specs", None)  # remove top-level if agent put them there
+    return raw
+
+
+def _merge_prebuilt_data_sources(raw: dict, prebuilt_ds: dict) -> dict:
+    """Force-merge pre-built data_sources into agent output.
+
+    Pre-built tables/MVs are the canonical set (user-selected).  If the agent
+    included a matching entry, prefer the agent's version (may have enriched
+    descriptions from tool calls).  Any pre-built entries the agent omitted are
+    added back.  Agent entries not in the pre-built set are discarded.
+    """
+    if not prebuilt_ds:
+        return raw
+    agent_ds = raw.get("data_sources", {})
+
+    for section in ("tables", "metric_views"):
+        prebuilt_items = prebuilt_ds.get(section, [])
+        if not prebuilt_items:
+            continue
+        prebuilt_by_id = {item["identifier"].lower(): item for item in prebuilt_items}
+        agent_by_id = {}
+        for item in agent_ds.get(section, []):
+            key = item.get("identifier", "").lower()
+            if key:
+                agent_by_id[key] = item
+
+        merged = []
+        for key, pb_item in prebuilt_by_id.items():
+            agent_item = agent_by_id.get(key)
+            if agent_item and agent_item.get("description"):
+                merged.append(agent_item)
+            else:
+                merged.append(pb_item)
+        agent_ds[section] = merged
+
+    raw["data_sources"] = agent_ds
     return raw
 
 
@@ -545,6 +716,19 @@ def _validate_output(raw: dict) -> list[str]:
         warnings.append(f"Only {len(sqs)} sample questions (target: 8+)")
     if not inst.get("text") and not inst.get("text_instructions"):
         warnings.append("Missing text instructions")
+    # Join connectivity check (metric views are self-contained, only count raw tables)
+    joins = inst.get("join_specs") or raw.get("join_specs") or []
+    table_count = len(ds.get("tables", []))
+    if table_count > 1 and not joins:
+        warnings.append(
+            f"{table_count} tables but no join_specs -- "
+            "tables may be unreachable by Genie"
+        )
+    elif table_count > 1 and len(joins) < table_count - 1:
+        warnings.append(
+            f"Only {len(joins)} join_specs for {table_count} tables "
+            f"(need {table_count - 1} for full connectivity)"
+        )
     return warnings
 
 

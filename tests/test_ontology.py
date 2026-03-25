@@ -11,6 +11,9 @@ from dbxmetagen.ontology import (
     EntityDiscoverer,
     EntityClassificationResult,
     OntologyBuilder,
+    EdgeCatalog,
+    EdgeCatalogEntry,
+    PropertyDefinition,
     build_ontology,
     _enforce_entity_value,
     DEFAULT_CLASSIFICATION_MODEL,
@@ -1063,4 +1066,188 @@ class TestHeuristicClassifyImprovements:
             "patient_id", "BIGINT", False, None, "", table_name="cat.sch.patients",
         )
         assert role == "primary_key"
+
+
+class TestHeuristicNeverReturnsLink:
+    """Belt-and-suspenders: verify _heuristic_classify never returns 'link'."""
+
+    @pytest.fixture
+    def classifier(self):
+        mock_spark = MagicMock()
+        config = OntologyConfig(catalog_name="cat", schema_name="sch")
+        with patch.object(OntologyLoader, 'load_config') as mock_load:
+            mock_load.return_value = OntologyLoader._default_config()
+            builder = OntologyBuilder(mock_spark, config)
+        return builder
+
+    _REPRESENTATIVE_COLUMNS = [
+        ("order_id", "BIGINT", False, None, "", "cat.sch.orders"),
+        ("customer_id", "BIGINT", False, None, "", "cat.sch.orders"),
+        ("patient_id", "BIGINT", True, None, "", "cat.sch.encounters"),
+        ("provider_id", "BIGINT", False, "Provider", "", "cat.sch.encounters"),
+        ("name", "STRING", False, None, "", "cat.sch.customers"),
+        ("amount", "DECIMAL", False, None, "", "cat.sch.transactions"),
+        ("created_at", "TIMESTAMP", False, None, "", "cat.sch.logs"),
+        ("country_code", "STRING", False, None, "", "cat.sch.addresses"),
+        ("is_active", "BOOLEAN", False, None, "", "cat.sch.users"),
+        ("ssn", "STRING", False, None, "PII", "cat.sch.patients"),
+        ("icd_code", "STRING", False, None, "", "cat.sch.diagnoses"),
+        ("etl_timestamp", "TIMESTAMP", False, None, "", "cat.sch.raw"),
+        ("notes", "STRING", False, None, "", "cat.sch.encounters"),
+        ("year", "INT", False, None, "", "cat.sch.dim_time"),
+        ("unknown_field", "STRUCT", False, None, "", "cat.sch.misc"),
+    ]
+
+    @pytest.mark.parametrize("col,dtype,is_pk,linked,cls_type,tbl", _REPRESENTATIVE_COLUMNS)
+    def test_never_returns_link(self, classifier, col, dtype, is_pk, linked, cls_type, tbl):
+        role, method, conf = classifier._heuristic_classify(col, dtype, is_pk, linked, cls_type, table_name=tbl)
+        assert role != "link", f"_heuristic_classify returned 'link' for {col} on {tbl}"
+
+
+class TestEdgeCatalogInverse:
+    """Tests for EdgeCatalog inverse lookup and validation."""
+
+    def test_get_inverse_returns_name(self):
+        entries = {
+            "placed_by": EdgeCatalogEntry(name="placed_by", inverse="placed", domain="Transaction", range="Person"),
+        }
+        catalog = EdgeCatalog(entries)
+        assert catalog.get_inverse("placed_by") == "placed"
+
+    def test_get_inverse_returns_none_when_missing(self):
+        entries = {
+            "references": EdgeCatalogEntry(name="references"),
+        }
+        catalog = EdgeCatalog(entries)
+        assert catalog.get_inverse("references") is None
+
+    def test_get_inverse_unknown_edge(self):
+        catalog = EdgeCatalog({})
+        assert catalog.get_inverse("nonexistent") is None
+
+    def test_validate_edge_domain_range(self):
+        entries = {
+            "placed_by": EdgeCatalogEntry(name="placed_by", inverse="placed", domain="Transaction", range="Person"),
+        }
+        catalog = EdgeCatalog(entries)
+        valid, _ = catalog.validate("placed_by", "Transaction", "Person")
+        assert valid
+        valid2, msg = catalog.validate("placed_by", "Person", "Transaction")
+        assert not valid2
+
+    def test_find_edge_by_domain_range(self):
+        entries = {
+            "belongs_to": EdgeCatalogEntry(name="belongs_to", domain="Product", range="Organization"),
+        }
+        catalog = EdgeCatalog(entries)
+        match = catalog.find_edge("Product", "Organization")
+        assert match is not None
+        assert match.name == "belongs_to"
+        assert catalog.find_edge("Organization", "Product") is None
+
+
+class TestResolveEdgeName:
+    """Tests for _resolve_edge_name with bundle property edge definitions."""
+
+    @pytest.fixture
+    def builder(self):
+        mock_spark = MagicMock()
+        config = OntologyConfig(catalog_name="cat", schema_name="sch")
+        with patch.object(OntologyLoader, 'load_config') as mock_load:
+            mock_load.return_value = OntologyLoader._default_config()
+            builder = OntologyBuilder(mock_spark, config)
+
+        edef = EntityDefinition(
+            name="Transaction",
+            description="A business transaction",
+            parent=None,
+            keywords=["order"],
+            properties=[
+                PropertyDefinition(
+                    name="placed_by",
+                    kind="object_property",
+                    role="object_property",
+                    typical_attributes=["customer_id", "buyer_id"],
+                    edge="placed_by",
+                    target_entity="Person",
+                ),
+            ],
+            relationships={"contains": {"target": "Product"}},
+        )
+        builder.discoverer._entity_def_map = {"Transaction": edef}
+        builder.discoverer._edge_catalog = EdgeCatalog({
+            "placed_by": EdgeCatalogEntry(
+                name="placed_by", inverse="placed",
+                domain="Transaction", range="Person",
+            ),
+            "contains": EdgeCatalogEntry(
+                name="contains", inverse="contained_in",
+                domain="Transaction", range="Product",
+            ),
+        })
+        return builder
+
+    def test_bundle_property_edge_match(self, builder):
+        """Column matching bundle property with edge -> returns that edge name."""
+        name = builder._resolve_edge_name("Transaction", "Person", "customer_id")
+        assert name == "placed_by"
+
+    def test_legacy_relationship_block(self, builder):
+        """No column match but legacy relationships block has target -> returns that name."""
+        name = builder._resolve_edge_name("Transaction", "Product", "product_id")
+        assert name == "contains"
+
+    def test_fallback_to_references(self, builder):
+        """No match at all -> returns 'references'."""
+        name = builder._resolve_edge_name("Transaction", "Location", "location_id")
+        assert name == "references"
+
+
+class TestBuildBundlePropertyIndex:
+    """Tests for _build_bundle_property_index bundle-match tier."""
+
+    @pytest.fixture
+    def builder(self):
+        mock_spark = MagicMock()
+        config = OntologyConfig(catalog_name="cat", schema_name="sch")
+        with patch.object(OntologyLoader, 'load_config') as mock_load:
+            mock_load.return_value = OntologyLoader._default_config()
+            builder = OntologyBuilder(mock_spark, config)
+
+        edef = EntityDefinition(
+            name="Transaction",
+            description="A business transaction",
+            parent=None,
+            keywords=["order"],
+            properties=[
+                PropertyDefinition(
+                    name="amount", kind="data_property", role="measure",
+                    typical_attributes=["total_amount", "order_amount", "amount"],
+                ),
+                PropertyDefinition(
+                    name="placed_by", kind="object_property", role="object_property",
+                    typical_attributes=["customer_id", "buyer_id"],
+                    edge="placed_by", target_entity="Person",
+                ),
+            ],
+            relationships={},
+        )
+        builder.discoverer._entity_def_map = {"Transaction": edef}
+        return builder
+
+    def test_index_maps_typical_attributes(self, builder):
+        index = builder._build_bundle_property_index("Transaction")
+        assert "total_amount" in index
+        assert index["total_amount"][0] == "measure"
+        assert "customer_id" in index
+        assert index["customer_id"][0] == "object_property"
+        assert index["customer_id"][2] == "placed_by"
+
+    def test_index_empty_for_unknown_entity(self, builder):
+        assert builder._build_bundle_property_index("Unknown") == {}
+
+    def test_index_case_insensitive(self, builder):
+        index = builder._build_bundle_property_index("Transaction")
+        assert "total_amount" in index
+        assert "TOTAL_AMOUNT" not in index
 

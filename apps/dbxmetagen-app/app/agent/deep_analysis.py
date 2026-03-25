@@ -10,6 +10,7 @@ import logging
 import os
 import queue
 import threading
+import time
 from operator import add
 from typing import Annotated, Dict, List, Optional
 
@@ -25,7 +26,7 @@ from agent.metadata_tools import (
 )
 from agent.graph_skill import GRAPH_SCHEMA_CONTEXT
 from agent.guardrails import GuardrailConfig, SAFETY_PROMPT_BLOCK, sanitize_output
-from agent.tracing import trace
+from agent.tracing import trace, ensure_mlflow_context, get_mlflow
 
 logger = logging.getLogger(__name__)
 
@@ -74,11 +75,17 @@ _cached_retrieval_agents: dict = {}
 _cached_analyst_agents: dict = {}
 
 
+RETRIEVAL_RECURSION_LIMIT = 14  # ~6 tool calls (each costs 2 steps: AI msg + tool result)
+ANALYST_RECURSION_LIMIT = 8    # ~3 follow-up SQL queries
+
+
 def _get_retrieval_agent(mode: str):
     with _cache_lock:
         if mode not in _cached_retrieval_agents:
             tools = GRAPHRAG_TOOLS if mode == "graphrag" else BASELINE_TOOLS
-            _cached_retrieval_agents[mode] = create_react_agent(_llm(), tools)
+            _cached_retrieval_agents[mode] = create_react_agent(
+                _llm(), tools, recursion_limit=RETRIEVAL_RECURSION_LIMIT,
+            )
         return _cached_retrieval_agents[mode]
 
 
@@ -86,7 +93,9 @@ def _get_analyst_agent(mode: str):
     with _cache_lock:
         if mode not in _cached_analyst_agents:
             followup_tools = [execute_metadata_sql] if mode == "graphrag" else [execute_baseline_sql]
-            _cached_analyst_agents[mode] = create_react_agent(_llm(), followup_tools)
+            _cached_analyst_agents[mode] = create_react_agent(
+                _llm(), followup_tools, recursion_limit=ANALYST_RECURSION_LIMIT,
+            )
         return _cached_analyst_agents[mode]
 
 
@@ -210,8 +219,11 @@ Be concise. Lead with the most impactful finding."""
 # Sub-agent nodes
 # ---------------------------------------------------------------------------
 
+@trace(name="supervisor", span_type="CHAIN")
 def supervisor_node(state: DeepAnalysisState) -> dict:
-    _emit("routing", "Deciding next step...", agent="supervisor")
+    iters = len(state.get("iteration", []))
+    step_label = f"Step {iters + 1}/{MAX_ITERATIONS}"
+    _emit("routing", f"{step_label}: Deciding next step...", agent="supervisor")
     try:
         parts = [f"User question: {state['user_query']}"]
         parts.append(f"Plan exists: {'yes' if state.get('plan') else 'no'}")
@@ -230,19 +242,21 @@ def supervisor_node(state: DeepAnalysisState) -> dict:
         logger.warning("Supervisor LLM error (retries exhausted): %s", e)
         decision = "RESPOND"
 
-    iters = len(state.get("iteration", []))
     if iters >= MAX_ITERATIONS:
         decision = "RESPOND" if state.get("analysis_result") else (
             "ANALYZE" if state.get("retrieved_evidence") else "RESPOND"
         )
 
-    _emit("routing", f"Next: {decision}", agent="supervisor")
+    _DECISION_LABELS = {"PLAN": "Planning", "RETRIEVE": "Retrieving data", "ANALYZE": "Analyzing", "RESPOND": "Composing answer", "CLARIFY": "Clarifying"}
+    _emit("routing", f"{step_label}: {_DECISION_LABELS.get(decision, decision)}", agent="supervisor")
     return {"next_step": decision, "iteration": [1]}
 
 
+@trace(name="planner", span_type="CHAIN")
 def planner_node(state: DeepAnalysisState) -> dict:
     mode = state.get("agent_mode", "graphrag")
-    _emit("planning", "Creating analysis plan...", agent="planner")
+    mode_label = "GraphRAG" if mode == "graphrag" else "Baseline"
+    _emit("planning", f"Creating {mode_label} analysis plan...", agent="planner")
     try:
         resp = _routing_llm().invoke([
             SystemMessage(content=_planner_prompt(mode)),
@@ -272,43 +286,91 @@ def _merge_graph_data(existing: dict, new_chunk: dict) -> dict:
     return {"start_node": start, "nodes": nodes, "edges": edges}
 
 
+def _run_inner_agent_streamed(agent, input_msgs, timeout_s, stage, agent_name, graph_tools=None):
+    """Run an inner ReAct agent with streaming, heartbeat, and wall-clock timeout.
+
+    Returns (final_text, tools_used, graph_data_updates).
+    """
+    final_text = ""
+    tools_used = []
+    graph_data = {}
+    t0 = time.time()
+    tool_count = 0
+    done = threading.Event()
+
+    def _heartbeat():
+        while not done.wait(15):
+            elapsed = int(time.time() - t0)
+            _emit(stage, f"Still working... ({elapsed}s, {tool_count} tool calls so far)", agent=agent_name)
+
+    hb = threading.Thread(target=_heartbeat, daemon=True)
+    hb.start()
+    try:
+        logger.info("[%s] Starting inner agent stream (timeout=%ss)", agent_name, timeout_s)
+        for event in agent.stream({"messages": input_msgs}):
+            elapsed = time.time() - t0
+            if elapsed > timeout_s:
+                logger.warning("[%s] Wall-clock timeout after %.1fs", agent_name, elapsed)
+                _emit(stage, f"Time limit reached after {int(elapsed)}s, using results so far", agent=agent_name)
+                break
+            for _node, node_out in event.items():
+                for msg in node_out.get("messages", []):
+                    if isinstance(msg, AIMessage):
+                        if msg.content:
+                            final_text = msg.content
+                        if hasattr(msg, "tool_calls") and msg.tool_calls:
+                            names = [tc.get("name", "unknown") for tc in msg.tool_calls]
+                            tools_used.extend(names)
+                            tool_count += len(names)
+                            logger.info("[%s] Calling: %s (%.1fs)", agent_name, ", ".join(names), elapsed)
+                            _emit(stage, f"Calling {', '.join(names)}...", agent=agent_name)
+                    elif isinstance(msg, ToolMessage):
+                        tool_name = getattr(msg, "name", "tool")
+                        logger.info("[%s] Got result from %s (%.1fs)", agent_name, tool_name, elapsed)
+                        _emit(stage, f"Got result from {tool_name} ({int(elapsed)}s)", agent=agent_name)
+                        if graph_tools and tool_name in graph_tools:
+                            try:
+                                chunk = json.loads(msg.content) if isinstance(msg.content, str) else msg.content
+                                if isinstance(chunk, dict) and ("nodes" in chunk or "edges" in chunk):
+                                    graph_data = _merge_graph_data(graph_data, chunk)
+                            except (json.JSONDecodeError, TypeError):
+                                pass
+        total = round(time.time() - t0, 1)
+        logger.info("[%s] Finished in %.1fs with %d tool calls", agent_name, total, len(tools_used))
+    finally:
+        done.set()
+    return final_text, tools_used, graph_data
+
+
+@trace(name="retrieval", span_type="RETRIEVER")
 def retrieval_node(state: DeepAnalysisState) -> dict:
     mode = state.get("agent_mode", "graphrag")
-    _emit("retrieving", "Gathering evidence...", agent="retrieval")
+    tool_suite = "graph + vector search + SQL" if mode == "graphrag" else "SQL queries"
+    _emit("retrieving", f"Gathering evidence via {tool_suite}...", agent="retrieval")
     try:
         agent = _get_retrieval_agent(mode)
         prompt = f"Execute this plan:\n\n{state.get('plan', '')}\n\nUser question: {state['user_query']}"
-        result = agent.invoke({
-            "messages": [
-                SystemMessage(content=_retrieval_prompt(mode)),
-                HumanMessage(content=prompt),
-            ]
-        })
-        evidence = ""
-        tools_used = []
-        graph_data = dict(state.get("graph_data") or {})
-        for msg in result.get("messages", []):
-            if isinstance(msg, AIMessage):
-                if msg.content:
-                    evidence = msg.content
-                if hasattr(msg, "tool_calls") and msg.tool_calls:
-                    tools_used.extend([tc.get("name", "unknown") for tc in msg.tool_calls])
-            elif isinstance(msg, ToolMessage) and getattr(msg, "name", "") in _GRAPH_TOOLS:
-                try:
-                    chunk = json.loads(msg.content) if isinstance(msg.content, str) else msg.content
-                    if isinstance(chunk, dict) and ("nodes" in chunk or "edges" in chunk):
-                        graph_data = _merge_graph_data(graph_data, chunk)
-                except (json.JSONDecodeError, TypeError):
-                    pass
+        input_msgs = [SystemMessage(content=_retrieval_prompt(mode)), HumanMessage(content=prompt)]
+        evidence, tools_used, new_graph = _run_inner_agent_streamed(
+            agent, input_msgs, GuardrailConfig.AGENT_TIMEOUT_SECONDS,
+            "retrieving", "retrieval", graph_tools=_GRAPH_TOOLS,
+        )
+        graph_data = _merge_graph_data(dict(state.get("graph_data") or {}), new_graph) if new_graph else dict(state.get("graph_data") or {})
+        summary = f"Retrieval complete -- {len(tools_used)} tool call(s)"
+        if tools_used:
+            summary += f": {', '.join(dict.fromkeys(tools_used))}"
+        _emit("retrieving", summary, agent="retrieval")
         return {"retrieved_evidence": evidence, "tool_calls_made": tools_used, "graph_data": graph_data, "messages": []}
     except Exception as e:
-        logger.warning("Retrieval error (retries exhausted): %s", e)
+        logger.warning("Retrieval error: %s", e, exc_info=True)
+        _emit("retrieving", f"Retrieval error: {e}", agent="retrieval")
         return {"retrieved_evidence": f"Error: {e}", "tool_calls_made": [], "messages": []}
 
 
+@trace(name="analyst", span_type="CHAIN")
 def analyst_node(state: DeepAnalysisState) -> dict:
     mode = state.get("agent_mode", "graphrag")
-    _emit("analyzing", "Interpreting results...", agent="analyst")
+    _emit("analyzing", "Running analysis on gathered evidence...", agent="analyst")
     try:
         agent = _get_analyst_agent(mode)
         context = (
@@ -316,23 +378,23 @@ def analyst_node(state: DeepAnalysisState) -> dict:
             f"Plan:\n{state.get('plan', 'N/A')}\n\n"
             f"Retrieved Evidence:\n{state.get('retrieved_evidence', 'N/A')}"
         )
-        result = agent.invoke({
-            "messages": [SystemMessage(content=ANALYST_PROMPT), HumanMessage(content=context)]
-        })
-        analysis = ""
-        tools_used = []
-        for msg in result.get("messages", []):
-            if isinstance(msg, AIMessage):
-                if msg.content and len(msg.content) > len(analysis):
-                    analysis = msg.content
-                if hasattr(msg, "tool_calls") and msg.tool_calls:
-                    tools_used.extend([tc.get("name", "unknown") for tc in msg.tool_calls])
+        input_msgs = [SystemMessage(content=ANALYST_PROMPT), HumanMessage(content=context)]
+        analysis, tools_used, _ = _run_inner_agent_streamed(
+            agent, input_msgs, GuardrailConfig.AGENT_TIMEOUT_SECONDS,
+            "analyzing", "analyst",
+        )
+        summary = f"Analysis complete -- {len(tools_used)} follow-up query(s)"
+        if tools_used:
+            summary += f": {', '.join(dict.fromkeys(tools_used))}"
+        _emit("analyzing", summary, agent="analyst")
         return {"analysis_result": analysis, "tool_calls_made": tools_used, "messages": []}
     except Exception as e:
-        logger.warning("Analyst error (retries exhausted): %s", e)
+        logger.warning("Analyst error: %s", e, exc_info=True)
+        _emit("analyzing", f"Analysis error: {e}", agent="analyst")
         return {"analysis_result": "Analysis could not be completed. Please try again.", "tool_calls_made": [], "messages": []}
 
 
+@trace(name="respond", span_type="CHAIN")
 def respond_node(state: DeepAnalysisState) -> dict:
     _emit("responding", "Preparing final response...", agent="respond")
     if state.get("needs_clarification"):
@@ -349,6 +411,7 @@ def respond_node(state: DeepAnalysisState) -> dict:
         return {"messages": [AIMessage(content="The AI model is temporarily unavailable. Please try again.")]}
 
 
+@trace(name="clarify", span_type="CHAIN")
 def clarify_node(state: DeepAnalysisState) -> dict:
     _emit("clarifying", "Asking for clarification...", agent="clarify")
     try:
@@ -474,12 +537,18 @@ def run_deep_analysis_streaming(
     def _run():
         _local.progress_queue = q
         _local.routing_trace = []
+        ensure_mlflow_context()
+        mlflow = get_mlflow()
         try:
             _emit("starting", "Starting analysis...", agent="system")
+            logger.info("[deep_analysis] Starting mode=%s query=%s", mode, message[:120])
+            t0 = time.time()
             query = _build_query(message, history)
             state = _init_state(query, mode)
             result = _get_graph().invoke(state, config={"recursion_limit": GuardrailConfig.MAX_RECURSION_LIMIT})
             extracted = _extract_result(result, mode)
+            elapsed = round(time.time() - t0, 1)
+            logger.info("[deep_analysis] Completed in %.1fs, tools=%s", elapsed, extracted.get("tool_calls"))
             done_event = {
                 "stage": "done",
                 "answer": extracted["answer"],
@@ -490,6 +559,16 @@ def run_deep_analysis_streaming(
             if "graph_data" in extracted:
                 done_event["graph_data"] = extracted["graph_data"]
             q.put(done_event)
+            if mlflow:
+                try:
+                    mlflow.log_text(
+                        json.dumps({"mode": mode, "query": message[:200], "elapsed_s": elapsed,
+                                    "tools": extracted.get("tool_calls", []),
+                                    "answer_len": len(extracted.get("answer", ""))}, indent=2),
+                        artifact_file="deep_analysis_result.json",
+                    )
+                except Exception:
+                    pass
         except Exception as e:
             logger.error("Streaming deep analysis error: %s", e, exc_info=True)
             q.put({"stage": "error", "message": str(e)})

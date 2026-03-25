@@ -29,6 +29,7 @@ export default function GenieBuilder() {
   const [metricViews, setMetricViews] = useState([])
   const [selectedMVs, setSelectedMVs] = useState(new Set())
   const [showMVs, setShowMVs] = useState(false)
+  const [businessContext, setBusinessContext] = useState('')
   const [questions, setQuestions] = useState('')
   const [suggestingQs, setSuggestingQs] = useState(false)
   const [taskId, setTaskId] = useState(null)
@@ -42,8 +43,12 @@ export default function GenieBuilder() {
   const [selectedKpis, setSelectedKpis] = useState(new Set())
   const [showKpis, setShowKpis] = useState(false)
   const [error, setError] = useState(null)
+  const [createError, setCreateError] = useState(null)
   const [fetchErrors, setFetchErrors] = useState({})
   const [loading, setLoading] = useState(false)
+  const [creating, setCreating] = useState(false)
+  const [refineFeedback, setRefineFeedback] = useState('')
+  const [showRefine, setShowRefine] = useState(false)
   const [tablesLoading, setTablesLoading] = useState(true)
   const pollRef = useRef(null)
   const [elapsed, setElapsed] = useState(0)
@@ -116,7 +121,7 @@ export default function GenieBuilder() {
       const res = await fetch('/api/genie/generate-questions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ table_identifiers: selectedTables, metric_view_names: [...selectedMVs] }),
+        body: JSON.stringify({ table_identifiers: selectedTables, metric_view_names: [...selectedMVs], business_context: businessContext || undefined }),
       })
       if (!res.ok) { const b = await res.json().catch(() => ({})); setError(b.detail || `Error ${res.status}`); return }
       const { questions: qs } = await res.json()
@@ -126,22 +131,29 @@ export default function GenieBuilder() {
     finally { setSuggestingQs(false) }
   }
 
-  const startGeneration = async () => {
+  const startGeneration = async ({ feedback, priorResult } = {}) => {
     if (!selectedTables.length) return setError('Select at least one table')
-    setError(null); setResult(null); setCreatedSpace(null); setLoading(true)
+    setError(null); setCreatedSpace(null); setCreateError(null); setLoading(true)
+    if (!feedback) { setResult(null) }
     const qs = questions.split('\n').map(q => q.trim()).filter(Boolean)
+    const body = {
+      table_identifiers: selectedTables, questions: qs,
+      metric_view_names: [...selectedMVs],
+      kpi_names: kpis.filter(k => selectedKpis.has(k.kpi_id)).map(k => k.name),
+      business_context: businessContext || undefined,
+    }
+    if (feedback && priorResult) {
+      body.refinement_feedback = feedback
+      body.prior_result = priorResult
+    }
     const res = await fetch('/api/genie/generate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        table_identifiers: selectedTables, questions: qs,
-        metric_view_names: [...selectedMVs],
-        kpi_names: kpis.filter(k => selectedKpis.has(k.kpi_id)).map(k => k.name),
-      }),
+      body: JSON.stringify(body),
     })
     if (!res.ok) {
-      const body = await res.json().catch(() => ({}))
-      setError(body.detail || `Error ${res.status}`); setLoading(false); return
+      const b = await res.json().catch(() => ({}))
+      setError(b.detail || `Error ${res.status}`); setLoading(false); return
     }
     const { task_id } = await res.json()
     setTaskId(task_id); setTaskStatus({ status: 'running', stage: 'starting' })
@@ -166,6 +178,7 @@ export default function GenieBuilder() {
         setEditedJson(JSON.stringify(data.result, null, 2))
         setLoading(false)
         setError(null)
+        setRefineFeedback('')
       } else if (data.status === 'error') {
         clearInterval(pollRef.current)
         setError(null)
@@ -175,26 +188,33 @@ export default function GenieBuilder() {
   }
 
   const createSpace = async () => {
-    if (!title.trim()) return setError('Enter a title for the Genie space')
-    setError(null)
+    if (!title.trim()) return setCreateError('Enter a title for the Genie space')
+    setCreateError(null); setCreating(true)
     let parsed
-    try { parsed = JSON.parse(editedJson) } catch { return setError('Invalid JSON') }
-    const res = await fetch('/api/genie/create', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        title: title.trim(),
-        description: parsed.description || undefined,
-        serialized_space: parsed,
-      }),
-    })
-    if (!res.ok) {
-      const body = await res.json().catch(() => ({}))
-      return setError(body.detail || `Error ${res.status}`)
+    try { parsed = JSON.parse(editedJson) } catch { setCreating(false); return setCreateError('Invalid JSON') }
+    try {
+      const res = await fetch('/api/genie/create', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: title.trim(),
+          description: parsed.description || undefined,
+          serialized_space: parsed,
+        }),
+      })
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}))
+        setCreateError(body.detail || `Error ${res.status}`)
+        setCreating(false)
+        return
+      }
+      const created = await res.json()
+      setCreatedSpace(created)
+      if (created.space_id) loadTrackedSpaces()
+    } catch (e) {
+      setCreateError(e.message || 'Network error creating Genie space')
     }
-    const created = await res.json()
-    setCreatedSpace(created)
-    if (created.space_id) loadTrackedSpaces()
+    setCreating(false)
   }
 
   const schemas = [...new Set(tables.map(t => t.schema))]
@@ -344,6 +364,19 @@ export default function GenieBuilder() {
         </div>
       )}
 
+      {/* Business Context */}
+      <div className="card p-5">
+        <h3 className="text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Business Context (optional)</h3>
+        <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">Describe your business, priorities, and key terminology. This steers question suggestions, measure generation, and sample questions toward what matters to your users.</p>
+        <textarea
+          value={businessContext}
+          onChange={e => setBusinessContext(e.target.value)}
+          rows={2}
+          placeholder="e.g. We are a B2B SaaS company focused on ARR growth, net revenue retention, and pipeline velocity. Our CFO reviews quarterly cohort metrics."
+          className="w-full border border-slate-200 dark:border-slate-600 rounded-md px-3 py-2 text-sm bg-dbx-oat-light dark:bg-slate-700 text-slate-800 dark:text-slate-200 placeholder-slate-400"
+        />
+      </div>
+
       {/* Questions */}
       <div className="card p-5">
         <div className="flex items-center justify-between mb-2">
@@ -366,9 +399,16 @@ export default function GenieBuilder() {
         />
       </div>
 
+      {/* Table count warning (tables + metric views both count toward complexity) */}
+      {(selectedTables.length + selectedMVs.size) > 10 && (
+        <div className="bg-amber-50 dark:bg-amber-900/30 border border-amber-200 dark:border-amber-700 rounded-lg px-4 py-2.5 text-sm text-amber-700 dark:text-amber-300">
+          You have {selectedTables.length} table{selectedTables.length !== 1 ? 's' : ''}{selectedMVs.size > 0 ? ` + ${selectedMVs.size} metric view${selectedMVs.size !== 1 ? 's' : ''}` : ''} selected. Generation may be slow or fail with many sources. Start with 3-5 tables to test, then expand.
+        </div>
+      )}
+
       {/* Generate button */}
       <button
-        onClick={startGeneration}
+        onClick={() => startGeneration()}
         disabled={loading || !selectedTables.length}
         className="px-5 py-2.5 bg-dbx-lava text-white text-sm font-medium rounded-lg hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
       >
@@ -408,6 +448,11 @@ export default function GenieBuilder() {
               Completed {taskStatus.rounds_completed ?? 0} tool round(s) in {formatElapsed(taskStatus.elapsed_seconds ?? elapsed)}.
             </p>
           ) : null}
+          {(selectedTables.length + selectedMVs.size) > 5 && (
+            <p className="text-xs text-red-600/70 dark:text-red-400/70 mt-1">
+              Tip: Try reducing the number of selected tables or metric views and re-running.
+            </p>
+          )}
         </div>
       )}
 
@@ -429,19 +474,75 @@ export default function GenieBuilder() {
           )}
           {(() => {
             let parsed = null; try { parsed = JSON.parse(editedJson) } catch {}
-            return parsed ? (
+            if (!parsed) return null
+            const ds = parsed.data_sources || {}
+            const tblCount = (ds.tables?.length || 0)
+            const mvCount = (ds.metric_views?.length || 0)
+            const instrText = parsed.instructions?.text
+            const exampleSqlCount = parsed.instructions?.example_sql?.length || 0
+            const joinCount = parsed.instructions?.join_specs?.length || 0
+            const snippetFilters = parsed.instructions?.sql_snippets?.filters?.length || 0
+            const snippetMeasures = parsed.instructions?.sql_snippets?.measures?.length || 0
+            const snippetExprs = parsed.instructions?.sql_snippets?.expressions?.length || 0
+            const sampleQCount = parsed.sample_questions?.length || 0
+            return (
               <div className="card p-5 space-y-2">
                 <h3 className="text-sm font-medium text-slate-700 dark:text-slate-300">Config Preview</h3>
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
-                  <div><span className="text-slate-500">Name</span><p className="font-medium text-slate-800 dark:text-slate-200 truncate">{parsed.title || parsed.name || '(untitled)'}</p></div>
-                  <div><span className="text-slate-500">Tables</span><p className="font-medium">{parsed.table_identifiers?.length || 0}</p></div>
-                  <div><span className="text-slate-500">Instructions</span><p className="font-medium">{parsed.instructions?.length || 0}</p></div>
-                  <div><span className="text-slate-500">Sample Queries</span><p className="font-medium">{parsed.sample_questions?.length || parsed.curated_questions?.length || 0}</p></div>
+                <div className="grid grid-cols-2 md:grid-cols-5 gap-3 text-xs">
+                  <div><span className="text-slate-500">Tables</span><p className="font-medium">{tblCount}{mvCount > 0 ? ` + ${mvCount} MVs` : ''}</p></div>
+                  <div><span className="text-slate-500">Example SQL</span><p className="font-medium">{exampleSqlCount}</p></div>
+                  <div><span className="text-slate-500">Joins</span><p className="font-medium">{joinCount}</p></div>
+                  <div><span className="text-slate-500">Snippets</span><p className="font-medium">{snippetFilters + snippetMeasures + snippetExprs} ({snippetFilters}F / {snippetMeasures}M / {snippetExprs}E)</p></div>
+                  <div><span className="text-slate-500">Sample Qs</span><p className="font-medium">{sampleQCount}</p></div>
                 </div>
-                {parsed.description && <p className="text-xs text-slate-500 truncate">{parsed.description}</p>}
+                {parsed.description && <p className="text-xs text-slate-500 mt-1 line-clamp-2">{parsed.description}</p>}
+                {instrText && <p className="text-xs text-slate-400 mt-1">Instructions: {instrText.length.toLocaleString()} chars</p>}
               </div>
-            ) : null
+            )
           })()}
+          {/* Regenerate / Refine */}
+          <div className="card p-4 space-y-3">
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => startGeneration()}
+                disabled={loading}
+                className="px-4 py-2 text-xs font-medium rounded-md border border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-300 hover:bg-dbx-oat dark:hover:bg-slate-700 disabled:opacity-50 transition-colors"
+              >
+                Regenerate
+              </button>
+              <button
+                onClick={() => setShowRefine(!showRefine)}
+                disabled={loading}
+                className="px-4 py-2 text-xs font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 transition-colors"
+              >
+                {showRefine ? 'Hide Feedback' : 'Refine with Feedback'}
+              </button>
+            </div>
+            {showRefine && (
+              <div className="space-y-2">
+                <textarea
+                  value={refineFeedback}
+                  onChange={e => setRefineFeedback(e.target.value)}
+                  rows={2}
+                  placeholder="e.g. Add more time-based filters, improve the description, add window function examples..."
+                  className="w-full border border-slate-200 dark:border-slate-600 rounded-md px-3 py-2 text-sm bg-dbx-oat-light dark:bg-slate-700 text-slate-800 dark:text-slate-200 placeholder-slate-400"
+                />
+                <button
+                  onClick={() => {
+                    if (!refineFeedback.trim()) return setError('Enter feedback first')
+                    let prior; try { prior = JSON.parse(editedJson) } catch { prior = result }
+                    startGeneration({ feedback: refineFeedback.trim(), priorResult: prior })
+                    setShowRefine(false)
+                  }}
+                  disabled={loading || !refineFeedback.trim()}
+                  className="px-4 py-2 text-xs font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 transition-colors"
+                >
+                  Apply Feedback & Regenerate
+                </button>
+              </div>
+            )}
+          </div>
+
           <details className="card overflow-hidden group">
             <summary className="px-5 py-3 text-sm font-medium text-slate-700 dark:text-slate-300 cursor-pointer select-none flex items-center gap-1.5">
               <svg className="w-3 h-3 transition-transform group-open:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -473,13 +574,37 @@ export default function GenieBuilder() {
             </div>
             <button
               onClick={createSpace}
-              disabled={!title.trim()}
+              disabled={!title.trim() || creating}
               title="Create a Databricks Genie space from the selected tables with AI-generated instructions and example queries"
-              className="px-5 py-2.5 bg-emerald-600 text-white text-sm font-medium rounded-lg hover:bg-emerald-700 disabled:opacity-50 transition-colors"
+              className="px-5 py-2.5 bg-emerald-600 text-white text-sm font-medium rounded-lg hover:bg-emerald-700 disabled:opacity-50 transition-colors flex items-center gap-1.5"
             >
-              Create Genie Space
+              {creating && <span className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" />}
+              {creating ? 'Creating...' : 'Create Genie Space'}
             </button>
           </div>
+
+          {createError && (
+            <div className="bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-700 rounded-lg px-4 py-3 text-sm space-y-1">
+              <p className="font-medium text-red-700 dark:text-red-300">
+                {createError.includes('Data source validation failed') ? 'Some data sources could not be found' : 'Failed to create Genie space'}
+              </p>
+              {createError.includes('Data source validation failed') ? (
+                <div className="text-xs text-red-600 dark:text-red-400 space-y-1">
+                  {createError.replace('Data source validation failed: ', '').split('; ').map((item, i) => {
+                    const match = item.match(/data_sources identifier '([^']+)'/)
+                    return (
+                      <p key={i}>
+                        <span className="font-mono bg-red-100 dark:bg-red-900/50 px-1 rounded">{match ? match[1] : item.split(':')[0]}</span>
+                        {' '}-- table or view not found. It may need to be re-applied as a metric view, or removed from the config.
+                      </p>
+                    )
+                  })}
+                </div>
+              ) : (
+                <p className="text-xs text-red-600 dark:text-red-400">{createError}</p>
+              )}
+            </div>
+          )}
 
           {createdSpace && (
             <div className="bg-emerald-50 dark:bg-emerald-900/30 border border-emerald-200 dark:border-emerald-700 rounded-lg px-4 py-3 text-sm text-emerald-700 dark:text-emerald-300">

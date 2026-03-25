@@ -16,7 +16,7 @@ MLFLOW_EXPERIMENT = os.environ.get("MLFLOW_EXPERIMENT", "")
 if not MLFLOW_EXPERIMENT:
     from databricks.sdk import WorkspaceClient as _WsClient
     _me = _WsClient().current_user.me().user_name
-    MLFLOW_EXPERIMENT = f"/Users/{_me}/experiments/dbxmetagen-app/traces"
+    MLFLOW_EXPERIMENT = f"/Users/{_me}/experiments/dbxmetagen_app_traces"
 
 _mlflow_mod = None
 
@@ -50,16 +50,22 @@ except Exception as _exc:  # noqa: BLE001
 
 
 def ensure_mlflow_context():
-    """Re-apply MLflow experiment context in the current thread.
+    """Re-apply MLflow experiment context and autolog in the current thread.
 
     Call this at the start of any threaded agent execution to ensure the
-    experiment is set (MLflow experiment state can be thread-local in some
-    versions).
+    experiment is set and langchain autolog is active (both can be
+    thread-local in some MLflow versions).
     """
     if _mlflow_mod is None or not MLFLOW_ENABLED:
         return
     try:
         _mlflow_mod.set_tracking_uri("databricks")
         _mlflow_mod.set_experiment(MLFLOW_EXPERIMENT)
+        _mlflow_mod.langchain.autolog(log_traces=True, silent=True)
     except Exception as exc:
         logger.debug("ensure_mlflow_context: %s", exc)
+
+
+def get_mlflow():
+    """Return the mlflow module (or None if unavailable)."""
+    return _mlflow_mod if MLFLOW_ENABLED else None

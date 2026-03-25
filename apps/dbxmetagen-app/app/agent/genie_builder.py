@@ -161,13 +161,25 @@ class GenieContextAssembler:
             table_meta, column_meta, fk_rows, entity_rows, value_samples, entity_rels
         )
         join_specs = self._build_join_specs(fk_rows)
+        # Build dedup set using short names (handles FQ vs short identifier mismatches)
+        existing_pairs: set[tuple] = set()
+        for js in join_specs:
+            l = js["left"]["identifier"].split(".")[-1].lower()
+            r = js["right"]["identifier"].split(".")[-1].lower()
+            existing_pairs.add(tuple(sorted([l, r])))
+        # Merge ontology joins
         ontology_joins = self._get_ontology_join_specs(table_identifiers)
-        existing_pairs = {(j["left"]["identifier"], j["right"]["identifier"]) for j in join_specs}
         for oj in ontology_joins:
-            pair = (oj["left"]["identifier"], oj["right"]["identifier"])
+            l = oj["left"]["identifier"].split(".")[-1].lower()
+            r = oj["right"]["identifier"].split(".")[-1].lower()
+            pair = tuple(sorted([l, r]))
             if pair not in existing_pairs:
                 join_specs.append(oj)
                 existing_pairs.add(pair)
+        # Merge metric view joins (all MVs, not just applied — joins are structural)
+        selected_shorts = {t.split(".")[-1].lower() for t in table_identifiers}
+        mv_join_specs = self._extract_mv_join_specs(metric_views, existing_pairs, selected_shorts)
+        join_specs.extend(mv_join_specs)
         data_sources = self._build_data_sources(
             table_identifiers, table_meta, applied_mvs,
             column_meta=column_meta, entity_rows=entity_rows,
@@ -378,7 +390,7 @@ class GenieContextAssembler:
     def _get_metric_views(self, tables: List[str]) -> list[dict]:
         table_list = ", ".join(f"'{t}'" for t in tables)
         short_names = ", ".join(f"'{t.split('.')[-1]}'" for t in tables)
-        return _safe_sql(
+        rows = _safe_sql(
             self.ws,
             self.wh,
             f"""
@@ -388,6 +400,27 @@ class GenieContextAssembler:
               AND (source_table IN ({table_list}) OR source_table IN ({short_names}))
         """,
         )
+        verified = []
+        for mv in rows:
+            if mv.get("status") == "applied":
+                fq_name = f"`{self.catalog}`.`{self.schema}`.`{mv['metric_view_name']}`"
+                try:
+                    r = self.ws.statement_execution.execute_statement(
+                        warehouse_id=self.wh,
+                        statement=f"SELECT 1 FROM {fq_name} LIMIT 1",
+                        wait_timeout="15s",
+                        format=Format.JSON_ARRAY,
+                        disposition=Disposition.INLINE,
+                    )
+                    state = r.status.state.value if r.status and r.status.state else "UNKNOWN"
+                    if state not in ("SUCCEEDED", "CLOSED"):
+                        logger.warning("Metric view %s marked applied but not found in UC -- skipping", mv["metric_view_name"])
+                        continue
+                except Exception:
+                    logger.warning("Metric view %s existence check failed -- skipping", mv["metric_view_name"])
+                    continue
+            verified.append(mv)
+        return verified
 
     def _sample_categorical_values(
         self, columns: list[dict]
@@ -590,6 +623,52 @@ class GenieContextAssembler:
                     ],
                 }
             )
+        return specs
+
+    def _extract_mv_join_specs(
+        self, metric_views: list[dict], existing_pairs: set[tuple],
+        selected_short_names: set[str] | None = None,
+    ) -> list[dict]:
+        """Extract join_specs from metric view json_definition.joins[].
+
+        Only emits a join when BOTH tables are in the selected data sources.
+        FK/ontology joins take priority (existing_pairs checked first).
+        """
+        specs = []
+        for mv in metric_views:
+            jd = mv.get("json_definition") or {}
+            if isinstance(jd, str):
+                try:
+                    jd = json.loads(jd)
+                except (json.JSONDecodeError, TypeError):
+                    continue
+            joins = jd.get("joins", [])
+            source_table = mv.get("source_table", "")
+            left_short = source_table.split(".")[-1].lower()
+            for j in joins:
+                target_fq = j.get("source", "") or j.get("table", "")
+                if not target_fq:
+                    continue
+                right_short = target_fq.split(".")[-1].lower()
+                # Only emit if target table is in the selected data sources
+                if selected_short_names and right_short not in selected_short_names:
+                    continue
+                pair = tuple(sorted([left_short, right_short]))
+                if pair in existing_pairs:
+                    continue
+                on_clause = j.get("on", "")
+                alias = j.get("name", right_short)
+                sql = on_clause.replace("source.", f"{left_short}.")
+                if alias.lower() != right_short:
+                    sql = sql.replace(f"{alias}.", f"{right_short}.")
+                if sql:
+                    existing_pairs.add(pair)
+                    specs.append({
+                        "id": uuid.uuid4().hex[:32],
+                        "left": {"identifier": source_table},
+                        "right": {"identifier": target_fq},
+                        "sql": [sql],
+                    })
         return specs
 
     def _build_data_sources(

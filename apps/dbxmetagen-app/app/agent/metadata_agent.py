@@ -4,6 +4,7 @@ Combines vector search over metadata_documents, SQL queries on knowledge-base
 tables, and Lakebase graph traversal to answer questions about the data catalog.
 """
 
+import json as _json
 import os
 import logging
 from typing import Annotated, Dict, Any, List, Optional, TypedDict
@@ -17,7 +18,7 @@ from langchain_core.tools import BaseTool
 from databricks_langchain import ChatDatabricks
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
-from langgraph.prebuilt import ToolNode
+from langgraph.prebuilt import ToolNode, create_react_agent
 
 from agent.metadata_tools import (
     search_metadata, execute_metadata_sql, get_table_summary, get_data_quality,  # noqa: F401
@@ -217,3 +218,69 @@ async def run_metadata_agent(
         "mode": mode,
         "token_usage": extract_token_usage(result["messages"]),
     }
+
+
+# ---------------------------------------------------------------------------
+# Plot generation agent
+# ---------------------------------------------------------------------------
+
+PLOT_SYSTEM_PROMPT = f"""You are a data visualization agent for a metadata intelligence platform.
+
+You will receive the text of an agent response about data catalog metadata.
+Your job is to determine if the response contains data that can be plotted, and if so,
+run a SQL query to get precise numbers and return a chart specification.
+
+Available tables in {CATALOG}.{SCHEMA}:
+- table_knowledge_base: table_name, comment, domain, subdomain, has_pii, has_phi, row_count
+- column_knowledge_base: table_name, column_name, comment, data_type, classification, classification_type
+- ontology_entities: entity_id, entity_name, entity_type, description, source_tables, confidence
+- fk_predictions: src_table, src_column, dst_table, dst_column, final_confidence, cardinality
+- metric_view_definitions: definition_id, metric_view_name, source_table, status
+- profiling_results: table_name, column_name, distinct_count, null_count, min_value, max_value
+- metadata_generation_log: table_name, mode, status, comment
+
+Use the execute_metadata_sql tool to query the data, then return ONLY a JSON object (no markdown, no extra text) in this exact format:
+
+If data IS suitable for plotting:
+{{"type": "bar"|"line"|"pie"|"area", "title": "Chart Title", "data": [{{"name": "Label", "value": 123}}, ...], "xKey": "name", "yKeys": ["value"], "text": "Brief one-sentence caption"}}
+
+For multi-series data use multiple yKeys:
+{{"type": "bar", "title": "...", "data": [{{"name": "X", "series1": 10, "series2": 20}}, ...], "xKey": "name", "yKeys": ["series1", "series2"], "text": "..."}}
+
+If data is NOT suitable for plotting:
+{{"no_data": true, "reason": "Brief explanation why"}}
+
+Rules:
+- Always query the database for precise numbers -- do not invent data.
+- Choose the chart type that best represents the data (bar for comparisons, line for time series, pie for proportions).
+- Keep data arrays to 20 items or fewer. Aggregate if needed.
+- Return ONLY the JSON object, nothing else."""
+
+
+def create_plot_spec(content: str, history: Optional[List[Dict]] = None) -> Dict:
+    """Use an LLM agent to query KB tables and return a chart spec."""
+    try:
+        llm = ChatDatabricks(endpoint=MODEL, temperature=0, max_retries=3)
+        agent = create_react_agent(llm, [execute_metadata_sql])
+        context = f"Agent response to visualize:\n\n{content}"
+        if history:
+            recent = history[-4:]
+            context = "Recent conversation:\n" + "\n".join(
+                f"{m['role']}: {m['content'][:300]}" for m in recent
+            ) + f"\n\nAgent response to visualize:\n\n{content}"
+
+        result = agent.invoke({
+            "messages": [SystemMessage(content=PLOT_SYSTEM_PROMPT), HumanMessage(content=context)]
+        })
+
+        for msg in reversed(result.get("messages", [])):
+            if isinstance(msg, AIMessage) and msg.content:
+                text = msg.content.strip()
+                if text.startswith("```"):
+                    text = text.split("\n", 1)[1] if "\n" in text else text[3:]
+                    text = text.rsplit("```", 1)[0].strip()
+                return _json.loads(text)
+        return {"no_data": True, "reason": "Agent did not produce a chart specification."}
+    except Exception as e:
+        logger.error(f"Plot agent error: {e}", exc_info=True)
+        return {"no_data": True, "reason": f"Error generating chart: {e}"}

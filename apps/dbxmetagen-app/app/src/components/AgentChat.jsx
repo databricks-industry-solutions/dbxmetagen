@@ -4,6 +4,7 @@ import simpleMarkdown from '../utils/simpleMarkdown'
 import ChatInputBar from './ChatInputBar'
 import GovernanceExplorer from './GovernanceExplorer'
 import ImpactAnalysis from './ImpactAnalysis'
+import ChartRenderer from './ChartRenderer'
 
 const GraphSubgraph = lazy(() => import('./GraphSubgraph'))
 const GraphExplorer = lazy(() => import('./GraphExplorer'))
@@ -130,7 +131,7 @@ function AgentReasoning({ intent, toolCalls }) {
   )
 }
 
-function MessageBubble({ msg, onRetry }) {
+function MessageBubble({ msg, onRetry, chart, plotLoading, onGeneratePlot }) {
   if (msg.role === 'user') {
     return (
       <div className="flex justify-end mb-4">
@@ -156,6 +157,8 @@ function MessageBubble({ msg, onRetry }) {
   }
   const cfg = MODE_CONFIG[msg.mode] || MODE_CONFIG.quick
   const elapsed = msg.elapsed_ms
+  const isError = msg.content?.startsWith('I encountered an error') || msg.content?.startsWith('Deep analysis error')
+  const showPlotButton = !isError && !chart && !plotLoading
   return (
     <div className="flex justify-start mb-4 animate-slide-up">
       <div className="card px-4 py-3 max-w-[85%] text-sm overflow-hidden">
@@ -189,6 +192,50 @@ function MessageBubble({ msg, onRetry }) {
             </div>
           </Suspense>
         )}
+
+        {chart && <ChartRenderer spec={chart} />}
+        {chart?.no_data && (
+          <p className="mt-2 text-xs text-slate-500 italic">{chart.reason}</p>
+        )}
+
+        {plotLoading && (
+          <div className="mt-3 flex items-center gap-2 text-xs text-slate-400 dark:text-slate-500">
+            <div className="w-3 h-3 border-2 border-emerald-500 dark:border-emerald-400 border-t-transparent rounded-full animate-spin" />
+            Generating chart...
+          </div>
+        )}
+
+        {showPlotButton && onGeneratePlot && (
+          <button onClick={onGeneratePlot}
+            className="mt-3 px-3 py-1.5 text-xs bg-slate-100 dark:bg-dbx-navy-500/50 text-slate-600 dark:text-slate-300 border border-slate-300 dark:border-dbx-navy-400/40 rounded-lg hover:bg-emerald-50 dark:hover:bg-emerald-500/20 hover:text-emerald-700 dark:hover:text-emerald-300 hover:border-emerald-300 dark:hover:border-emerald-500/30 transition-all flex items-center gap-1.5"
+            title="Use an AI agent to generate a chart from this response">
+            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+            </svg>
+            Generate Plot
+          </button>
+        )}
+
+        {msg.tool_calls && msg.tool_calls.length > 0 && (
+          <div className="mt-3 space-y-1.5">
+            <div className="flex flex-wrap gap-1.5">
+              {msg.tool_calls.map((tool, i) => (
+                <span key={i} className="relative group text-xs px-2 py-1 bg-emerald-100 dark:bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 rounded-md cursor-help">
+                  {tool}
+                  <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 px-2.5 py-1.5 bg-slate-800 text-slate-200 text-[11px] rounded-lg shadow-lg border border-slate-700/50 whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50">
+                    {TOOL_DESCRIPTIONS[tool] || tool}
+                  </span>
+                </span>
+              ))}
+            </div>
+            <div className="text-[11px] text-slate-500 leading-relaxed">
+              {msg.tool_calls.map((tool, i) => (
+                <span key={i}>{i > 0 && ' | '}<span className="text-slate-400 dark:text-slate-400">{tool}</span>: {TOOL_DESCRIPTIONS[tool] || 'Unknown tool'}</span>
+              ))}
+            </div>
+          </div>
+        )}
+
         <AgentReasoning intent={msg.intent} toolCalls={msg.tool_calls} />
       </div>
     </div>
@@ -271,11 +318,17 @@ export default function AgentChat() {
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
   const [stage, setStage] = useState(null)
+  const [deepSteps, setDeepSteps] = useState([])
+  const [deepMessage, setDeepMessage] = useState('')
+  const [deepElapsedMs, setDeepElapsedMs] = useState(0)
+  const [elapsedSec, setElapsedSec] = useState(0)
   const [error, setError] = useState(null)
   const [stats, setStats] = useState(null)
   const [domainStats, setDomainStats] = useState(null)
   const [suggestions, setSuggestions] = useState([])
   const [mode, setMode] = useState('quick')
+  const [chartData, setChartData] = useState({})
+  const [plotLoading, setPlotLoading] = useState({})
   const chatEndRef = useRef(null)
 
   useEffect(() => {
@@ -288,8 +341,17 @@ export default function AgentChat() {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, loading])
 
+  useEffect(() => {
+    if (!loading) { setElapsedSec(0); return }
+    const t = setInterval(() => setElapsedSec(s => s + 1), 1000)
+    return () => clearInterval(t)
+  }, [loading])
+
   const sendDeepAnalysis = async (text, useMode) => {
     setStage('starting')
+    setDeepSteps([])
+    setDeepMessage('')
+    setDeepElapsedMs(0)
     try {
       const history = messages.filter(m => m.role !== 'error').map(m => ({ role: m.role, content: m.content }))
       const submitRes = await fetch('/api/agent/deep/submit', {
@@ -329,8 +391,11 @@ export default function AgentChat() {
           return
         }
         if (task.stage) setStage(task.stage)
+        if (task.message) setDeepMessage(task.message)
+        if (task.steps) setDeepSteps(task.steps)
+        if (task.elapsed_ms != null) setDeepElapsedMs(task.elapsed_ms)
       }
-      setMessages(prev => [...prev, { role: 'error', content: 'Analysis timed out after 10 minutes', _query: text, _mode: useMode }])
+      setMessages(prev => [...prev, { role: 'error', content: 'Analysis timed out after 5 minutes', _query: text, _mode: useMode }])
     } catch (e) {
       setMessages(prev => [...prev, { role: 'error', content: e.message, _query: text, _mode: useMode }])
     }
@@ -382,9 +447,32 @@ export default function AgentChat() {
     }
     setLoading(false)
     setStage(null)
+    setDeepSteps([])
+    setDeepMessage('')
+    setDeepElapsedMs(0)
   }
 
-  const clearChat = () => { setMessages([]); setError(null) }
+  const generatePlot = async (idx) => {
+    const msg = messages[idx]
+    if (!msg || msg.role === 'user') return
+    setPlotLoading(prev => ({ ...prev, [idx]: true }))
+    try {
+      const history = messages.slice(0, idx + 1).map(m => ({ role: m.role, content: m.content }))
+      const res = await fetch('/api/agent/plot', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: msg.content, history }),
+      })
+      const spec = await res.json()
+      setChartData(prev => ({ ...prev, [idx]: spec }))
+    } catch (err) {
+      setChartData(prev => ({ ...prev, [idx]: { no_data: true, reason: err.message } }))
+    } finally {
+      setPlotLoading(prev => ({ ...prev, [idx]: false }))
+    }
+  }
+
+  const clearChat = () => { setMessages([]); setError(null); setChartData({}); setPlotLoading({}) }
   const injectQuery = (q) => send(q)
   const cfg = MODE_CONFIG[mode] || MODE_CONFIG.quick
 
@@ -456,15 +544,45 @@ export default function AgentChat() {
             </div>
           ) : (
             <>
-              {messages.map((m, i) => (
-                <MessageBubble key={i} msg={m}
-                  onRetry={m.role === 'error' ? () => send(m._query, m._mode) : null} />
-              ))}
+              {messages.map((m, i) => {
+                const chart = chartData[i] && !chartData[i].no_data ? chartData[i] : (chartData[i]?.no_data ? chartData[i] : null)
+                return (
+                  <MessageBubble key={i} msg={m}
+                    onRetry={m.role === 'error' ? () => send(m._query, m._mode) : null}
+                    chart={chart}
+                    plotLoading={!!plotLoading[i]}
+                    onGeneratePlot={() => generatePlot(i)} />
+                )
+              })}
               {loading && (
                 <div className="flex justify-start mb-4 animate-slide-up">
-                  <div className="card px-4 py-3 text-sm text-slate-400 flex items-center gap-2.5">
-                    <span className="inline-block w-2 h-2 bg-dbx-lava rounded-full animate-pulse" />
-                    {STAGE_LABELS[stage] || 'Thinking...'}
+                  <div className="card px-4 py-3 text-sm text-slate-500 dark:text-slate-400 max-w-md w-full">
+                    <div className="flex items-center gap-2.5 mb-1">
+                      <span className="inline-block w-2 h-2 bg-dbx-lava rounded-full animate-pulse flex-shrink-0" />
+                      <span className="font-medium text-slate-700 dark:text-slate-200">
+                        {deepMessage || STAGE_LABELS[stage] || 'Thinking...'}
+                      </span>
+                      {elapsedSec > 0 && (
+                        <span className="ml-auto text-xs tabular-nums text-slate-400">
+                          {Math.floor(elapsedSec / 60)}:{String(elapsedSec % 60).padStart(2, '0')}
+                        </span>
+                      )}
+                    </div>
+                    {deepSteps.length > 0 && (
+                      <details className="mt-2">
+                        <summary className="cursor-pointer text-xs text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 select-none">
+                          {deepSteps.length} step{deepSteps.length !== 1 ? 's' : ''} completed
+                        </summary>
+                        <div className="mt-1.5 max-h-40 overflow-y-auto scrollbar-thin space-y-0.5 pl-1">
+                          {deepSteps.map((s, i) => (
+                            <div key={i} className="flex items-start gap-2 text-xs text-slate-400">
+                              <span className="w-4 text-right tabular-nums flex-shrink-0">{i + 1}.</span>
+                              <span className="truncate">{s.message || STAGE_LABELS[s.stage] || s.stage}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </details>
+                    )}
                   </div>
                 </div>
               )}

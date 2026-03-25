@@ -7,9 +7,22 @@ import { useCatalogSchemaTables } from '../hooks/useCatalogSchemaTables'
 const STAGES = {
   starting: 'Starting...',
   building_context: 'Building metadata context...',
+  planning: 'Planning generation strategy...',
+  generating: 'Generating metric view definitions...',
   calling_ai: 'Generating metric views with AI...',
+  checking_coverage: 'Checking question coverage...',
   validating: 'Validating expressions...',
   done: 'Complete',
+}
+
+function kpiMatchesTables(k, selectedTables) {
+  const kt = Array.isArray(k.target_tables) ? k.target_tables : []
+  if (!kt.length) return true
+  const sel = selectedTables.map(t => t.toLowerCase())
+  return kt.some(t => {
+    const tl = t.toLowerCase()
+    return sel.includes(tl) || sel.some(s => s.endsWith('.' + tl) || s === tl)
+  })
 }
 
 export default function SemanticLayer() {
@@ -57,6 +70,7 @@ export default function SemanticLayer() {
   const [kpiDraft, setKpiDraft] = useState({ name: '', description: '', formula: '', domain: '' })
   const [kpiEditId, setKpiEditId] = useState(null)
   const [kpiSuggesting, setKpiSuggesting] = useState(false)
+  const [showOtherKpis, setShowOtherKpis] = useState(false)
 
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
@@ -80,6 +94,7 @@ export default function SemanticLayer() {
   }, [])
 
   // Refresh definitions and pre-populate tables when project changes
+  const skipNextSaveRef = useRef(true)
   useEffect(() => {
     refreshDefinitions()
     if (selectedProjectId) {
@@ -87,7 +102,10 @@ export default function SemanticLayer() {
       if (proj?.selected_tables) {
         try {
           const tbls = JSON.parse(proj.selected_tables)
-          if (Array.isArray(tbls) && tbls.length) setSelectedTables(tbls)
+          if (Array.isArray(tbls) && tbls.length) {
+            skipNextSaveRef.current = true
+            setSelectedTables(tbls)
+          }
         } catch { /* ignore */ }
       }
     }
@@ -103,12 +121,27 @@ export default function SemanticLayer() {
         setTaskStatus(data)
         if (data.status === 'done' || data.status === 'error') {
           clearInterval(pollRef.current)
-          if (data.status === 'done') refreshDefinitions()
+          if (data.status === 'done') { refreshDefinitions(); loadProjects() }
         }
       } catch { clearInterval(pollRef.current) }
     }, 2000)
     return () => clearInterval(pollRef.current)
   }, [taskId])
+
+  // Auto-save table selection to the project whenever it changes (debounced 500ms)
+  const saveTimerRef = useRef(null)
+  useEffect(() => {
+    if (!selectedProjectId) return
+    if (skipNextSaveRef.current) { skipNextSaveRef.current = false; return }
+    clearTimeout(saveTimerRef.current)
+    saveTimerRef.current = setTimeout(() => {
+      fetch(`/api/semantic-layer/projects/${selectedProjectId}/tables`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ selected_tables: selectedTables }),
+      }).catch(() => {})
+    }, 500)
+    return () => clearTimeout(saveTimerRef.current)
+  }, [selectedTables, selectedProjectId])
 
   const loadProjects = () => {
     cachedFetch('/api/semantic-layer/projects', {}, TTL.CONFIG).then(({ data }) => {
@@ -175,7 +208,7 @@ export default function SemanticLayer() {
     } catch { setQuestionsText(p.questions || '') }
     try {
       const tbls = JSON.parse(p.table_patterns || '[]')
-      if (tbls.length) setSelectedTables(prev => [...new Set([...prev, ...tbls])])
+      if (tbls.length) { skipNextSaveRef.current = true; setSelectedTables(tbls) }
     } catch { /* ignore */ }
   }
 
@@ -212,12 +245,19 @@ export default function SemanticLayer() {
     setLoading(false)
   }
 
-  // --- Table selection ---
+  // --- Table selection (stores FQ names: catalog.schema.table) ---
+  const fqTable = (t) => t.includes('.') ? t : `${selectedCatalog}.${selectedSchema}.${t}`
   const toggleTable = (t) => {
-    setSelectedTables(prev => prev.includes(t) ? prev.filter(x => x !== t) : [...prev, t])
+    const fq = fqTable(t)
+    setSelectedTables(prev => prev.includes(fq) ? prev.filter(x => x !== fq) : [...prev, fq])
   }
-  const selectAll = () => setSelectedTables([...filteredTables])
-  const selectNone = () => setSelectedTables([])
+  const selectAll = () => setSelectedTables(prev => [...new Set([...prev, ...filteredTables.map(fqTable)])])
+  const selectNone = () => {
+    const prefix = `${selectedCatalog}.${selectedSchema}.`.toLowerCase()
+    setSelectedTables(prev => prev.filter(t => !t.toLowerCase().startsWith(prefix)))
+  }
+  const isTableSelected = (t) => selectedTables.includes(fqTable(t))
+  const removeTable = (fq) => setSelectedTables(prev => prev.filter(x => x !== fq))
 
   const suggestQuestions = async () => {
     if (!selectedTables.length) { setError('Select tables first'); return }
@@ -259,6 +299,14 @@ export default function SemanticLayer() {
       if (!res.ok) { const d = await res.json().catch(() => ({})); setError(d.detail || 'Delete KPI failed'); return }
       loadKpis()
     } catch (e) { setError(e.message || 'Delete KPI failed') }
+  }
+  const deleteAllKpis = async () => {
+    if (!confirm(`Delete all ${kpis.length} KPIs? This cannot be undone.`)) return
+    try {
+      const res = await fetch('/api/kpis', { method: 'DELETE' })
+      if (!res.ok) { const d = await res.json().catch(() => ({})); setError(d.detail || 'Delete all KPIs failed'); return }
+      loadKpis()
+    } catch (e) { setError(e.message || 'Delete all KPIs failed') }
   }
   const suggestKpis = async () => {
     if (!selectedTables.length) return
@@ -492,12 +540,17 @@ export default function SemanticLayer() {
 
       {/* Tab Bar */}
       <div className="inline-flex bg-dbx-oat/60 dark:bg-dbx-navy-600 rounded-xl p-1 shadow-inner-soft">
-        {[['setup', 'Setup'], ['questions', 'Questions & KPIs'], ['generate', 'Generate'], ['definitions', 'Definitions']].map(([k, l]) => (
-          <button key={k} onClick={() => setActiveTab(k)}
-            className={`px-3.5 py-1.5 text-sm rounded-lg transition-all duration-200 ${activeTab === k ? 'bg-white dark:bg-dbx-navy-500 shadow-sm font-semibold text-dbx-lava' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'}`}>{l}
-            {k === 'definitions' && definitions.length > 0 && <span className="ml-1 text-[10px] text-slate-400">{definitions.length}</span>}
-          </button>
-        ))}
+        {[['setup', 'Setup'], ['questions', 'Questions & KPIs'], ['generate', 'Generate'], ['definitions', 'Definitions']].map(([k, l]) => {
+          const count = k === 'setup' && selectedTables.length ? `${selectedTables.length} tables`
+            : k === 'questions' ? [questionLines.length && `${questionLines.length}q`, kpis.length && `${kpis.length} KPIs`].filter(Boolean).join(', ') || ''
+            : k === 'definitions' && definitions.length ? `${definitions.length}` : ''
+          return (
+            <button key={k} onClick={() => setActiveTab(k)}
+              className={`px-3.5 py-1.5 text-sm rounded-lg transition-all duration-200 ${activeTab === k ? 'bg-white dark:bg-dbx-navy-500 shadow-sm font-semibold text-dbx-lava' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'}`}>
+              {l}{count && <span className="ml-1 text-[10px] text-slate-400">({count})</span>}
+            </button>
+          )
+        })}
       </div>
 
       {/* === Setup Tab === */}
@@ -552,7 +605,7 @@ export default function SemanticLayer() {
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
           <div>
             <label className={label}>Catalog</label>
-            <select value={selectedCatalog} onChange={e => { setSelectedCatalog(e.target.value); setSelectedSchema(''); setSelectedTables([]) }}
+            <select value={selectedCatalog} onChange={e => { setSelectedCatalog(e.target.value); setSelectedSchema('') }}
               className={input}>
               <option value="">-- select --</option>
               {catalogs.map(c => <option key={c} value={c}>{c}</option>)}
@@ -560,7 +613,7 @@ export default function SemanticLayer() {
           </div>
           <div>
             <label className={label}>Schema</label>
-            <select value={selectedSchema} onChange={e => { setSelectedSchema(e.target.value); setSelectedTables([]) }}
+            <select value={selectedSchema} onChange={e => setSelectedSchema(e.target.value)}
               className={input} disabled={!selectedCatalog}>
               <option value="">-- select --</option>
               {schemas.map(s => <option key={s} value={s}>{s}</option>)}
@@ -576,13 +629,13 @@ export default function SemanticLayer() {
           <>
             <div className="flex gap-2 mb-2 text-xs">
               <button onClick={selectAll} className="text-blue-600 dark:text-blue-400 hover:underline">Select all ({filteredTables.length})</button>
-              <button onClick={selectNone} className="text-blue-600 dark:text-blue-400 hover:underline">Clear</button>
-              <span className="text-gray-400 ml-auto">{selectedTables.length} selected</span>
+              <button onClick={selectNone} className="text-blue-600 dark:text-blue-400 hover:underline">Clear schema</button>
+              <span className="text-gray-400 ml-auto">{selectedTables.length} selected total</span>
             </div>
             <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-1 max-h-48 overflow-y-auto border dark:border-gray-600 rounded-md p-2">
               {filteredTables.map(t => (
                 <label key={t} className="flex items-center gap-1.5 text-xs cursor-pointer py-0.5 dark:text-gray-200">
-                  <input type="checkbox" checked={selectedTables.includes(t)} onChange={() => toggleTable(t)} className="rounded" />
+                  <input type="checkbox" checked={isTableSelected(t)} onChange={() => toggleTable(t)} className="rounded" />
                   {t}
                 </label>
               ))}
@@ -591,6 +644,22 @@ export default function SemanticLayer() {
         )}
         {selectedCatalog && selectedSchema && allTables.length === 0 && (
           <p className="text-sm text-gray-500 dark:text-gray-400 italic">No managed tables found in {selectedCatalog}.{selectedSchema}</p>
+        )}
+        {selectedTables.length > 0 && (
+          <div className="mt-4">
+            <div className="flex items-center gap-2 mb-2">
+              <span className="text-xs font-medium text-slate-600 dark:text-slate-300">Selected Tables ({selectedTables.length})</span>
+              <button onClick={() => setSelectedTables([])} className="text-xs text-red-500 hover:underline">Clear all</button>
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {selectedTables.map(t => (
+                <span key={t} className="inline-flex items-center gap-1 px-2 py-1 text-xs bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-md text-slate-700 dark:text-slate-300">
+                  {t}
+                  <button onClick={() => removeTable(t)} className="text-slate-400 hover:text-red-500 ml-0.5">&times;</button>
+                </span>
+              ))}
+            </div>
+          </div>
         )}
       </section>
 
@@ -663,6 +732,10 @@ export default function SemanticLayer() {
             </button>
             <button onClick={() => { setShowKpiForm(true); setKpiEditId(null); setKpiDraft({ name: '', description: '', formula: '', domain: '' }) }}
               className="px-3 py-1.5 bg-dbx-blue text-white rounded text-xs hover:bg-blue-700">+ Add KPI</button>
+            {kpis.length > 0 && (
+              <button onClick={deleteAllKpis}
+                className="px-3 py-1.5 bg-red-600 text-white rounded text-xs hover:bg-red-700">Delete All</button>
+            )}
           </div>
         </div>
         <p className="text-sm text-gray-500 dark:text-gray-400 mb-3">
@@ -684,25 +757,52 @@ export default function SemanticLayer() {
             </div>
           </div>
         )}
-        {kpis.length > 0 && (
-          <div className="space-y-1.5">
-            {kpis.map(k => (
-              <div key={k.kpi_id} className="flex items-start justify-between gap-3 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-sm">
-                <div className="flex-1 min-w-0">
-                  <span className="font-medium dark:text-gray-200">{k.name}</span>
-                  {k.domain && <span className="ml-2 text-xs px-1.5 py-0.5 rounded bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300">{k.domain}</span>}
-                  {k.description && <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 truncate">{k.description}</p>}
-                  {k.formula && <code className="text-xs text-gray-400 dark:text-gray-500 block mt-0.5 truncate">{k.formula}</code>}
-                </div>
-                <div className="flex gap-1 shrink-0">
-                  <button onClick={() => { setKpiEditId(k.kpi_id); setKpiDraft({ name: k.name, description: k.description || '', formula: k.formula || '', domain: k.domain || '' }); setShowKpiForm(true) }}
-                    className="text-xs text-blue-600 hover:underline">Edit</button>
-                  <button onClick={() => deleteKpi(k.kpi_id)} className="text-xs text-red-500 hover:underline">Del</button>
-                </div>
+        {kpis.length > 0 && (() => {
+          const KpiRow = ({ k, dimmed }) => (
+            <div className={`flex items-start justify-between gap-3 border rounded-lg px-3 py-2 text-sm ${dimmed ? 'border-slate-200/60 dark:border-slate-700/50 opacity-60' : 'border-slate-200 dark:border-slate-700'}`}>
+              <div className="flex-1 min-w-0">
+                <span className="font-medium dark:text-gray-200">{k.name}</span>
+                {k.domain && <span className="ml-2 text-xs px-1.5 py-0.5 rounded bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300">{k.domain}</span>}
+                {k.description && <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 truncate">{k.description}</p>}
+                {k.formula && <code className="text-xs text-gray-400 dark:text-gray-500 block mt-0.5 truncate">{k.formula}</code>}
               </div>
-            ))}
-          </div>
-        )}
+              <div className="flex gap-1 shrink-0">
+                <button onClick={() => { setKpiEditId(k.kpi_id); setKpiDraft({ name: k.name, description: k.description || '', formula: k.formula || '', domain: k.domain || '' }); setShowKpiForm(true) }}
+                  className="text-xs text-blue-600 hover:underline">Edit</button>
+                <button onClick={() => deleteKpi(k.kpi_id)} className="text-xs text-red-500 hover:underline">Del</button>
+              </div>
+            </div>
+          )
+          if (!selectedTables.length) return (
+            <div>
+              <p className="text-xs text-slate-400 dark:text-slate-500 mb-2">Select tables in Setup to see which KPIs are relevant.</p>
+              <div className="space-y-1.5">{kpis.map(k => <KpiRow key={k.kpi_id} k={k} />)}</div>
+            </div>
+          )
+          const relevant = kpis.filter(k => kpiMatchesTables(k, selectedTables))
+          const other = kpis.filter(k => !kpiMatchesTables(k, selectedTables))
+          return (
+            <div className="space-y-3">
+              {relevant.length > 0 && (
+                <div>
+                  <h4 className="text-xs font-semibold text-slate-500 dark:text-slate-400 mb-1.5 uppercase tracking-wide">Relevant to selected tables ({relevant.length})</h4>
+                  <div className="space-y-1.5">{relevant.map(k => <KpiRow key={k.kpi_id} k={k} />)}</div>
+                </div>
+              )}
+              {other.length > 0 && (
+                <div>
+                  <button onClick={() => setShowOtherKpis(p => !p)} className="text-xs font-semibold text-slate-400 dark:text-slate-500 uppercase tracking-wide hover:text-slate-600 dark:hover:text-slate-300 flex items-center gap-1">
+                    <span className={`transition-transform ${showOtherKpis ? 'rotate-90' : ''}`}>&#9654;</span>
+                    Other KPIs ({other.length})
+                  </button>
+                  {showOtherKpis && (
+                    <div className="space-y-1.5 mt-1.5">{other.map(k => <KpiRow key={k.kpi_id} k={k} dimmed />)}</div>
+                  )}
+                </div>
+              )}
+            </div>
+          )
+        })()}
         {kpis.length === 0 && !showKpiForm && (
           <EmptyState title="No KPIs defined yet" description="Add manually or use auto-suggest above" />
         )}
@@ -711,9 +811,65 @@ export default function SemanticLayer() {
       </>}
 
       {/* === Generate Tab === */}
-      {activeTab === 'generate' && <>
+      {activeTab === 'generate' && (() => {
+        const relevantKpis = kpis.filter(k => kpiMatchesTables(k, selectedTables))
+        return <>
 
-      {/* Generate */}
+      {/* Generation inputs summary */}
+      <section className={section}>
+        <h2 className="text-lg font-semibold mb-3 dark:text-gray-100">Generation Inputs</h2>
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-3 text-sm">
+          <div className="p-3 rounded-lg bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700">
+            <span className="text-xs text-slate-500 dark:text-slate-400 block mb-1">Project</span>
+            <span className="font-medium dark:text-gray-200">
+              {selectedProjectId ? projects.find(p => p.project_id === selectedProjectId)?.project_name || 'Unknown' : 'None'}
+            </span>
+          </div>
+          <div className="p-3 rounded-lg bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700">
+            <span className="text-xs text-slate-500 dark:text-slate-400 block mb-1">Tables</span>
+            <span className={`font-medium ${selectedTables.length ? 'dark:text-gray-200' : 'text-amber-600 dark:text-amber-400'}`}>
+              {selectedTables.length || 'None selected'}
+            </span>
+            {selectedTables.length > 0 && selectedTables.length <= 5 && (
+              <p className="text-xs text-slate-400 mt-0.5 truncate">{selectedTables.join(', ')}</p>
+            )}
+          </div>
+          <div className="p-3 rounded-lg bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700">
+            <span className="text-xs text-slate-500 dark:text-slate-400 block mb-1">Questions</span>
+            <span className={`font-medium ${questionLines.length ? 'dark:text-gray-200' : 'text-amber-600 dark:text-amber-400'}`}>
+              {questionLines.length || 'None'}
+            </span>
+          </div>
+          <div className="p-3 rounded-lg bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700">
+            <span className="text-xs text-slate-500 dark:text-slate-400 block mb-1">Business Context</span>
+            <span className="font-medium dark:text-gray-200 text-xs">
+              {businessContext ? (businessContext.length > 80 ? businessContext.slice(0, 80) + '...' : businessContext) : 'None'}
+            </span>
+          </div>
+          <div className="p-3 rounded-lg bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700">
+            <span className="text-xs text-slate-500 dark:text-slate-400 block mb-1">Matching KPIs</span>
+            <span className="font-medium dark:text-gray-200">
+              {selectedTables.length ? `${relevantKpis.length} of ${kpis.length}` : `${kpis.length} total`}
+            </span>
+          </div>
+        </div>
+        {(!selectedTables.length || !questionLines.length) && (
+          <div className="flex gap-2 mt-3">
+            {!selectedTables.length && (
+              <button onClick={() => setActiveTab('setup')} className="text-xs text-blue-600 dark:text-blue-400 hover:underline">
+                Select tables in Setup
+              </button>
+            )}
+            {!questionLines.length && (
+              <button onClick={() => setActiveTab('questions')} className="text-xs text-blue-600 dark:text-blue-400 hover:underline">
+                Add questions in Questions & KPIs
+              </button>
+            )}
+          </div>
+        )}
+      </section>
+
+      {/* Generate actions */}
       <section className={section}>
         <h2 className="text-lg font-semibold mb-2 dark:text-gray-100">Generate Metric Views</h2>
         <p className="text-sm text-gray-500 dark:text-gray-400 mb-4">
@@ -738,12 +894,6 @@ export default function SemanticLayer() {
             </button>
           )}
         </div>
-        {!selectedTables.length && questionLines.length > 0 && (
-          <span className="text-xs text-amber-600 dark:text-amber-400 mt-2 block">Select tables above first</span>
-        )}
-        {selectedTables.length > 0 && !questionLines.length && (
-          <span className="text-xs text-amber-600 dark:text-amber-400 mt-2 block">Add questions above first</span>
-        )}
       </section>
 
       {/* Generation Progress */}
@@ -772,10 +922,18 @@ export default function SemanticLayer() {
         </section>
       )}
 
-      </>}
+      </>})()}
 
       {/* === Definitions Tab === */}
       {activeTab === 'definitions' && <>
+
+      <div className="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
+        <span>Showing definitions for:</span>
+        <span className="font-medium text-slate-700 dark:text-slate-200">
+          {selectedProjectId ? projects.find(p => p.project_id === selectedProjectId)?.project_name : 'All projects'}
+        </span>
+        <button onClick={() => setActiveTab('setup')} className="text-blue-600 dark:text-blue-400 hover:underline ml-1">Change</button>
+      </div>
 
       {/* Definitions */}
       {definitions.length === 0 ? (
