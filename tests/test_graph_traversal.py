@@ -73,14 +73,19 @@ def _install_mock_modules():
                 super().__init_subclass__(**kw)
         sys.modules["pydantic"].BaseModel = _BaseModel
 
-    if "langchain_core.tools" not in _already_loaded:
-        def _tool(fn=None, **kw):
-            if fn is None:
-                return _tool
-            fn.name = fn.__name__
-            fn.invoke = lambda kwargs: fn(**kwargs)
-            return fn
-        sys.modules["langchain_core.tools"].tool = _tool
+    # Always override @tool regardless of whether langchain_core was pre-loaded,
+    # so the stub is used even when the real package is installed.
+    def _tool(fn=None, **kw):
+        if fn is None:
+            return _tool
+        fn.name = fn.__name__
+        fn.invoke = lambda kwargs: fn(**kwargs)
+        return fn
+    lc_tools = sys.modules.get("langchain_core.tools")
+    if lc_tools is None:
+        lc_tools = _AutoMockModule("langchain_core.tools")
+        sys.modules["langchain_core.tools"] = lc_tools
+    lc_tools.tool = _tool
 
 
 _install_mock_modules()
@@ -199,9 +204,16 @@ EDGES = [
 
 @pytest.fixture(autouse=True)
 def _mock_sql():
-    """Patch execute_sql with fake graph data for every test."""
+    """Patch execute_sql AND graph_query with fake graph data for every test.
+
+    multi_hop_traverse calls execute_sql (with UC-rewritten table names).
+    agent tools call graph_query (with public.graph_* table names).
+    The fake executor matches on 'graph_nodes'/'graph_edges' substrings,
+    so it handles both naming conventions.
+    """
     fake = _make_graph_executor(NODES, EDGES)
-    with patch.object(api_server, "execute_sql", side_effect=fake):
+    with patch.object(api_server, "execute_sql", side_effect=fake), \
+         patch.object(api_server, "graph_query", side_effect=fake):
         yield
 
 
@@ -329,8 +341,7 @@ class TestGetNodeDetails:
 
 class TestFindSimilarNodes:
     def test_returns_similar_embedding_edges(self):
-        # The JOIN query is complex; test that it executes against the correct table
-        with patch.object(api_server, "execute_sql", return_value=[
+        with patch.object(api_server, "graph_query", return_value=[
             {"similar_node": "D", "similarity": "0.92", "node_type": "table", "domain": "finance", "comment": "Invoices"}
         ]):
             result = agent_tools.find_similar_nodes.invoke({"node_id": "A"})
@@ -339,9 +350,9 @@ class TestFindSimilarNodes:
 
     def test_respects_min_similarity(self):
         """Passing a high min_similarity should filter out weaker matches."""
-        with patch.object(api_server, "execute_sql", return_value=[]) as mock_sql:
+        with patch.object(api_server, "graph_query", return_value=[]) as mock_gq:
             agent_tools.find_similar_nodes.invoke({"node_id": "A", "min_similarity": 0.99})
-            called_query = mock_sql.call_args[0][0]
+            called_query = mock_gq.call_args[0][0]
             assert "0.99" in called_query
 
 
