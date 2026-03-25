@@ -70,7 +70,15 @@ def _get_vs_index(index_name: str):
             headers = ws.config.authenticate()
             _token = headers.get("Authorization", "").removeprefix("Bearer ")
         _vsc = VectorSearchClient(workspace_url=ws.config.host, personal_access_token=_token)
-    idx = _vsc.get_index(endpoint_name=VS_ENDPOINT, index_name=index_name)
+    import concurrent.futures
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            idx = pool.submit(_vsc.get_index, endpoint_name=VS_ENDPOINT, index_name=index_name).result(timeout=15)
+    except concurrent.futures.TimeoutError:
+        raise RuntimeError(f"get_index timed out for {index_name} on {VS_ENDPOINT}")
+    except Exception as e:
+        logger.warning("Failed to get VS index %s on endpoint %s: %s", index_name, VS_ENDPOINT, e)
+        raise
     _vs_indexes[index_name] = idx
     return idx
 
@@ -131,7 +139,11 @@ def search_metadata(query: str, doc_type_filter: Optional[str] = None, num_resul
         if doc_type_filter:
             kwargs["filters"] = {"doc_type": doc_type_filter}
         kwargs["query_type"] = "HYBRID"
-        results = index.similarity_search(**kwargs)
+        # Run VS call with a timeout to prevent indefinite hangs
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(index.similarity_search, **kwargs)
+            results = future.result(timeout=30)
         matches = []
         cols = results.get("manifest", {}).get("columns", [])
         col_names = [c.get("name", f"col{i}") for i, c in enumerate(cols)] if cols else []
@@ -142,6 +154,9 @@ def search_metadata(query: str, doc_type_filter: Optional[str] = None, num_resul
                 matches.append({"data": row})
         _log_tool_end("search_metadata", t0)
         return json.dumps({"matches": matches, "count": len(matches)})
+    except concurrent.futures.TimeoutError:
+        _log_tool_end("search_metadata", t0, error="Vector search timed out after 30s")
+        return json.dumps({"error": "Vector search timed out after 30s. The index may not be ready."})
     except Exception as e:
         _log_tool_end("search_metadata", t0, error=e)
         return json.dumps({"error": str(e)})

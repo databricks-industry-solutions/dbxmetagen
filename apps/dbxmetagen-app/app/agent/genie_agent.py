@@ -1,7 +1,8 @@
-"""LangGraph ReAct agent for generating Genie space serialized_space JSON.
+"""Two-phase Genie space configuration generator.
 
-Receives pre-assembled context from GenieContextAssembler, then iteratively
-generates the serialized_space JSON using test_sql and sample_values tools.
+Phase 1: Single LLM call generates the full serialized_space JSON.
+Phase 2: Parallel SQL validation strips broken example_sql entries.
+Post-processing merges pre-built joins, snippets, and data sources.
 """
 
 import json
@@ -9,16 +10,15 @@ import logging
 import os
 import queue
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, Optional
 
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.service.sql import Format, Disposition
 from langchain_community.chat_models import ChatDatabricks
-from langchain_core.tools import tool
-from langgraph.prebuilt import create_react_agent
 from agent.tracing import trace
 
-from agent.guardrails import GuardrailConfig, SAFETY_PROMPT_BLOCK
+from agent.guardrails import SAFETY_PROMPT_BLOCK
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +55,10 @@ that are NOT already covered below:
 {reference_text}
 
 === OUTPUT REQUIREMENTS ===
-Produce a JSON object with this simplified schema (post-processing will add IDs and restructure for the API):
+Generate the COMPLETE JSON object in a SINGLE response, wrapped in ```json ``` fences.
+Post-processing will add IDs, validate SQL, and restructure for the API.
+
+Schema:
 {{
   "description": "<1-2 sentence description of what this Genie space helps users explore>",
   "data_sources": {{ "tables": [...], "metric_views": [...] }},
@@ -73,15 +76,12 @@ Produce a JSON object with this simplified schema (post-processing will add IDs 
 }}
 
 RULES:
-1. Use the test_sql tool to validate every SQL expression BEFORE including it.
-2. Use sample_values to get real values for filter suggestions.
-3. Use describe_columns to understand column semantics when metadata is sparse.
-4. Table references in SQL must be fully qualified (catalog.schema.table). Column references in sql_snippets (measures, filters, expressions) MUST use table.column format (e.g. `fact_ed_wait_times.wait_minutes`), never bare column names.
-5. Return the final JSON as your LAST message, wrapped in ```json ``` fences.
-6. Do NOT add id fields -- post-processing handles that automatically.
-7. METRIC VIEW ROUTING: metric_views listed in data_sources are APPLIED Unity Catalog objects -- Genie queries them natively via MEASURE(). sql_snippets contain measures decomposed from UNAPPLIED (validated-only) definitions plus filter suggestions. NEVER duplicate the same measure in both data_sources.metric_views and sql_snippets.measures.
-8. JOINS: Pre-built join_specs are merged automatically after generation. Generate ADDITIONAL join_specs only for relationships not already covered by the pre-built set. If no pre-built joins exist but FOREIGN KEY RELATIONSHIPS or shared column names exist in the metadata context, you MUST generate join_specs. Each join_spec needs left/right identifiers (fully qualified table names) and a sql array with join conditions using table.column format.
-9. DATE FUNCTIONS: Use Databricks/Spark SQL syntax for all date functions.
+1. Table references in SQL must be fully qualified (catalog.schema.table). Column references in sql_snippets (measures, filters, expressions) MUST use table.column format (e.g. `fact_ed_wait_times.wait_minutes`), never bare column names.
+2. Output ONLY the JSON wrapped in ```json ``` fences. No explanation before or after.
+3. Do NOT add id fields -- post-processing handles that automatically.
+4. METRIC VIEW ROUTING: metric_views listed in data_sources are APPLIED Unity Catalog objects -- Genie queries them natively via MEASURE(). sql_snippets contain measures decomposed from UNAPPLIED (validated-only) definitions plus filter suggestions. NEVER duplicate the same measure in both data_sources.metric_views and sql_snippets.measures.
+5. JOINS: Pre-built join_specs are merged automatically after generation. Generate ADDITIONAL join_specs only for relationships not already covered by the pre-built set. If no pre-built joins exist but FOREIGN KEY RELATIONSHIPS or shared column names exist in the metadata context, you MUST generate join_specs. Each join_spec needs left/right identifiers (fully qualified table names) and a sql array with join conditions using table.column format.
+6. DATE FUNCTIONS: Use Databricks/Spark SQL syntax for all date functions.
    - TIMESTAMPADD(MONTH, 1, col) -- unit is a bare keyword, singular, NO quotes
    - TIMESTAMPDIFF(MINUTE, start, end) -- same: bare keyword, no quotes
    - DATE_TRUNC('MONTH', col) -- interval IS single-quoted
@@ -90,242 +90,112 @@ RULES:
    NEVER use plural units (MONTHS, HOURS) or quoted units in TIMESTAMPADD/TIMESTAMPDIFF.
 
 QUALITY REQUIREMENTS (critical):
-10. SYNONYMS: Every measure and expression MUST have a "synonyms" array with 1-4 business-friendly alternative names. Think about how non-technical users would ask for this metric. E.g. "total_revenue" -> ["revenue", "sales", "total sales"]. Pre-built synonyms are provided -- keep them and add more if useful.
-11. DESCRIPTIONS: Every measure MUST have a "description" explaining what it calculates and when to use it.
-12. COMPLEXITY: Generate at least 8 example_sql pairs covering: simple aggregation, multi-table join, time-series trend, top-N ranking, filtered aggregation, ratio/rate, comparison, and at least one window function. Generate at least 5 NEW measures, 5 NEW filters, and 3 NEW expressions beyond the pre-built ones.
-13. DISAMBIGUATION: In the text instructions, explicitly disambiguate columns that appear in multiple tables (e.g. "created_date in orders vs created_date in accounts"). Also explain which table to use for common questions.
-14. FILTERS: Generate time-based filters (last 30 days, YTD, current month) for every date column, plus categorical filters for low-cardinality string columns. Each filter should have a clear display_name.
-15. SAMPLE QUESTIONS vs EXAMPLE SQL (IMPORTANT -- these serve DIFFERENT purposes):
+7. SYNONYMS: Every measure and expression MUST have a "synonyms" array with 1-4 business-friendly alternative names. Think about how non-technical users would ask for this metric. E.g. "total_revenue" -> ["revenue", "sales", "total sales"]. Pre-built synonyms are provided -- keep them and add more if useful.
+8. DESCRIPTIONS: Every measure MUST have a "description" explaining what it calculates and when to use it.
+9. COMPLEXITY: Generate at least 8 example_sql pairs covering: simple aggregation, multi-table join, time-series trend, top-N ranking, filtered aggregation, ratio/rate, comparison, and at least one window function. Generate at least 5 NEW measures, 5 NEW filters, and 3 NEW expressions beyond the pre-built ones.
+10. DISAMBIGUATION: In the text instructions, explicitly disambiguate columns that appear in multiple tables (e.g. "created_date in orders vs created_date in accounts"). Also explain which table to use for common questions.
+11. FILTERS: Generate time-based filters (last 30 days, YTD, current month) for every date column, plus categorical filters for low-cardinality string columns. Each filter should have a clear display_name.
+12. SAMPLE QUESTIONS vs EXAMPLE SQL (IMPORTANT -- these serve DIFFERENT purposes):
     - "sample_questions": Shown in the Genie UI as clickable starter questions for BUSINESS USERS. Must be plain English, non-technical, no SQL jargon. 8-12 questions like "What were total sales last quarter?" or "Who are our top customers?"
     - "example_sql": Few-shot examples that teach Genie HOW to translate natural language to SQL. Each needs a question AND working SQL. Cover diverse SQL patterns (joins, aggregations, window functions, filters). Do NOT duplicate the same question in both lists.
-
-EFFICIENCY (important -- aim for 3-5 tool-call rounds for comprehensive coverage):
-16. BATCH your tool calls: call test_sql, sample_values, and describe_columns in PARALLEL within a single round when possible, rather than one at a time.
-17. Focus validation on the most complex SQL (joins, window functions, CASE expressions). Simple aggregations like COUNT(*) and SUM(col) don't need test_sql validation.
-18. Use your rounds strategically: Round 1-2 for describe_columns + sample_values exploration. Round 2-3 for test_sql validation of complex queries. Round 3-4 for additional sample_values or fixing broken SQL. Final round for the complete JSON output.
-19. After finishing tool calls, your FINAL message MUST contain the complete JSON wrapped in ```json ``` fences. Budget your rounds so you always have at least one round left for the final output.
+13. SQL QUALITY: Write the best SQL you can. Post-processing will automatically validate all SQL and remove any broken entries, so aim for correctness but do not hold back on complexity.
 """
 
 
-def _make_tools(ws: WorkspaceClient, warehouse_id: str):
-    """Build langchain tools bound to this warehouse."""
-
-    @tool
-    def test_sql(sql: str) -> str:
-        """Test a SQL query for syntax/reference errors by running it with LIMIT 0.
-        Returns 'OK' or the error message."""
-        test_q = f"SELECT * FROM ({sql}) t LIMIT 0"
-        try:
-            r = ws.statement_execution.execute_statement(
-                warehouse_id=warehouse_id,
-                statement=test_q,
-                wait_timeout="20s",
-                format=Format.JSON_ARRAY,
-                disposition=Disposition.INLINE,
-            )
-            state = r.status.state.value if r.status and r.status.state else "UNKNOWN"
-            if state in ("SUCCEEDED", "CLOSED"):
-                return "OK"
-            err = (
-                r.status.error.message
-                if r.status and r.status.error
-                else "Unknown error"
-            )
-            return f"ERROR: {err}"
-        except Exception as e:
-            return f"ERROR: {e}"
-
-    @tool
-    def sample_values(table: str, column: str, limit: int = 20) -> str:
-        """Get distinct values for a column. Useful for building filter suggestions."""
-        q = f"SELECT DISTINCT `{column}` AS val FROM {table} WHERE `{column}` IS NOT NULL LIMIT {limit}"
-        try:
-            r = ws.statement_execution.execute_statement(
-                warehouse_id=warehouse_id,
-                statement=q,
-                wait_timeout="20s",
-                format=Format.JSON_ARRAY,
-                disposition=Disposition.INLINE,
-            )
-            state = r.status.state.value if r.status and r.status.state else "UNKNOWN"
-            if state not in ("SUCCEEDED", "CLOSED"):
-                err = (
-                    r.status.error.message if r.status and r.status.error else "Unknown"
-                )
-                return f"ERROR: {err}"
-            if r.result and r.result.data_array:
-                vals = [row[0] for row in r.result.data_array if row[0] is not None]
-                return json.dumps(vals)
-            return "[]"
-        except Exception as e:
-            return f"ERROR: {e}"
-
-    @tool
-    def describe_columns(table: str) -> str:
-        """Get column names, types, and comments for a table. Useful when metadata
-        context is sparse and you need to understand what columns are available."""
-        q = f"DESCRIBE TABLE {table}"
-        try:
-            r = ws.statement_execution.execute_statement(
-                warehouse_id=warehouse_id,
-                statement=q,
-                wait_timeout="20s",
-                format=Format.JSON_ARRAY,
-                disposition=Disposition.INLINE,
-            )
-            state = r.status.state.value if r.status and r.status.state else "UNKNOWN"
-            if state not in ("SUCCEEDED", "CLOSED"):
-                err = r.status.error.message if r.status and r.status.error else "Unknown"
-                return f"ERROR: {err}"
-            if r.result and r.result.data_array:
-                cols = [c.name for c in r.manifest.schema.columns]
-                rows = [dict(zip(cols, row)) for row in r.result.data_array]
-                lines = []
-                for row in rows:
-                    name = row.get("col_name", "")
-                    if not name or name.startswith("#"):
-                        continue
-                    dtype = row.get("data_type", "")
-                    comment = row.get("comment", "")
-                    line = f"  {name} ({dtype})"
-                    if comment:
-                        line += f" -- {comment}"
-                    lines.append(line)
-                return "\n".join(lines) if lines else "No columns found"
-            return "No columns found"
-        except Exception as e:
-            return f"ERROR: {e}"
-
-    return [test_sql, sample_values, describe_columns]
-
-
-def _extract_json_from_messages(messages: list) -> Optional[dict]:
-    """Search all AI messages (newest first) for a valid JSON object.
-
-    First pass: require at least one expected key.
-    Second pass: accept any non-trivial dict (fallback for unexpected schemas).
-    """
-    candidates: list[dict] = []
-    for msg in reversed(messages):
-        content = getattr(msg, "content", None) or ""
-        if not content or not isinstance(content, str):
-            continue
-        parsed = _extract_json(content)
-        if not parsed:
-            continue
-        if "data_sources" in parsed or "instructions" in parsed or "sample_questions" in parsed:
-            return parsed
-        if len(parsed) >= 2:
-            candidates.append(parsed)
-    if candidates:
-        logger.warning(
-            "No message had expected keys; returning best candidate with %d keys: %s",
-            len(candidates[0]), list(candidates[0].keys())[:5],
+def _test_one_sql(ws: WorkspaceClient, warehouse_id: str, sql: str) -> str:
+    """Test a SQL query for syntax/reference errors. Returns 'OK' or error string."""
+    test_q = f"SELECT * FROM ({sql}) t LIMIT 0"
+    try:
+        r = ws.statement_execution.execute_statement(
+            warehouse_id=warehouse_id, statement=test_q,
+            wait_timeout="20s", format=Format.JSON_ARRAY, disposition=Disposition.INLINE,
         )
-        return candidates[0]
-    return None
+        state = r.status.state.value if r.status and r.status.state else "UNKNOWN"
+        if state in ("SUCCEEDED", "CLOSED"):
+            return "OK"
+        err = r.status.error.message if r.status and r.status.error else "Unknown error"
+        return f"ERROR: {err}"
+    except Exception as e:
+        return f"ERROR: {e}"
 
 
-def _log_message_diagnostics(messages: list):
-    """Log information about agent messages to help debug JSON extraction failures."""
-    if not messages:
-        logger.warning("Agent produced 0 messages")
-        return
-    logger.warning("Agent produced %d messages", len(messages))
-    for i, msg in enumerate(reversed(messages)):
-        content = getattr(msg, "content", None) or ""
-        msg_type = type(msg).__name__
-        if not isinstance(content, str):
-            logger.warning("  msg[-%d] %s: content is %s (not str)", i + 1, msg_type, type(content).__name__)
-            continue
-        has_json_fence = "```json" in content or "```\n{" in content
-        has_brace = "{" in content
-        logger.warning(
-            "  msg[-%d] %s: %d chars, has_fence=%s, has_brace=%s, preview=%.200s",
-            i + 1, msg_type, len(content), has_json_fence, has_brace,
-            content[:200].replace("\n", "\\n"),
-        )
-        if i >= 4:
-            break
-
-
-GENIE_WALL_TIMEOUT = 600  # 10 minutes hard deadline
-
-
-def _count_tool_messages(messages: list) -> int:
-    """Count ToolMessage instances to determine the current tool round."""
-    from langchain_core.messages import ToolMessage
-    rounds = 0
-    prev_was_tool = False
-    for m in messages:
-        is_tool = isinstance(m, ToolMessage)
-        if is_tool and not prev_was_tool:
-            rounds += 1
-        prev_was_tool = is_tool
-    return rounds
-
-
-def _collect_stream_messages(
-    agent,
-    input_msg: dict,
-    config: dict,
+def _validate_and_strip_sql(
+    raw: dict, ws: WorkspaceClient, warehouse_id: str,
     progress_queue: queue.Queue | None = None,
-    deadline: float | None = None,
-) -> tuple[list, int, bool]:
-    """Run agent via stream(), collecting accumulated messages.
+) -> dict:
+    """Phase 2: validate example_sql via test_sql in parallel, strip broken ones."""
+    inst = raw.get("instructions", {})
+    examples = inst.get("example_sql") or inst.get("example_question_sqls") or []
+    if not examples:
+        return raw
 
-    Returns (messages, tool_round_count, timed_out).
-    """
-    messages = []
-    last_round = 0
-    timed_out = False
-    for chunk in agent.stream(input_msg, config=config, stream_mode="values"):
-        messages = chunk.get("messages", messages)
-        current_round = _count_tool_messages(messages)
-        if current_round > last_round and progress_queue:
-            progress_queue.put({"stage": "tool_round", "round": current_round})
-            last_round = current_round
-        if deadline and time.time() > deadline:
-            timed_out = True
-            logger.warning("Genie agent hit %ds wall-clock deadline at round %d", GENIE_WALL_TIMEOUT, current_round)
-            break
-    return messages, last_round, timed_out
+    sql_items: list[tuple[int, str]] = []
+    for i, ex in enumerate(examples):
+        sql_val = ex.get("sql", "")
+        if isinstance(sql_val, list):
+            sql_val = sql_val[0] if sql_val else ""
+        if sql_val:
+            sql_items.append((i, sql_val))
+
+    if not sql_items:
+        return raw
+
+    results: dict[int, str] = {}
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        futures = {
+            pool.submit(_test_one_sql, ws, warehouse_id, sql): idx
+            for idx, sql in sql_items
+        }
+        for f in as_completed(futures):
+            idx = futures[f]
+            try:
+                results[idx] = f.result(timeout=25)
+            except Exception:
+                results[idx] = "ERROR: timeout"
+
+    valid = []
+    stripped = 0
+    for i, ex in enumerate(examples):
+        verdict = results.get(i, "OK")
+        if verdict == "OK":
+            valid.append(ex)
+        else:
+            stripped += 1
+            q = ex.get("question", "?")
+            if isinstance(q, list):
+                q = q[0] if q else "?"
+            logger.info("Stripped invalid example_sql: %s -- %s", q[:60], verdict[:100])
+
+    if stripped:
+        logger.info("SQL validation: %d/%d example_sql passed, %d stripped", len(valid), len(examples), stripped)
+    if progress_queue:
+        progress_queue.put({"stage": "validating_sql", "validated": len(valid), "total": len(examples)})
+
+    if "example_sql" in inst:
+        inst["example_sql"] = valid
+    elif "example_question_sqls" in inst:
+        inst["example_question_sqls"] = valid
+    else:
+        inst["example_sql"] = valid
+    raw["instructions"] = inst
+    return raw
 
 
-def _messages_to_langchain(messages: list) -> list:
-    """Convert LangGraph messages to simple dicts safe for a raw LLM invoke.
-
-    Keeps only human/assistant turns (tool messages confuse a non-agent LLM).
-    Truncates to the last N messages to stay within context limits.
-    """
-    from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
-    converted = []
-    for m in messages:
-        if isinstance(m, SystemMessage):
-            converted.append({"role": "system", "content": m.content or ""})
-        elif isinstance(m, HumanMessage):
-            converted.append({"role": "user", "content": m.content or ""})
-        elif isinstance(m, AIMessage) and m.content and isinstance(m.content, str):
-            converted.append({"role": "assistant", "content": m.content})
-    # Keep system + last 6 turns to stay within context limits
-    system_msgs = [m for m in converted if m["role"] == "system"]
-    non_system = [m for m in converted if m["role"] != "system"]
-    return system_msgs + non_system[-6:]
+GENIE_WALL_TIMEOUT = 540  # 9 minutes (LLM call up to 300s + recovery 300s + validation 60s)
 
 
 def _recovery_invoke(
-    messages: list,
+    messages: list[dict],
     model_endpoint: str,
     context: Optional[Dict[str, Any]] = None,
 ) -> Optional[dict]:
-    """One-shot LLM call asking the agent to output just the JSON."""
+    """One-shot LLM call asking for just the JSON when first attempt failed."""
     try:
-        converted = _messages_to_langchain(messages)
         hint = ""
         if context:
             if context.get("join_specs"):
                 js_json = json.dumps(context["join_specs"])
-                if len(js_json) < 3000:  # avoid blowing up the recovery prompt
+                if len(js_json) < 3000:
                     hint += f"\nUse these pre-built join_specs: {js_json}"
                 else:
                     hint += f"\nThere are {len(context['join_specs'])} pre-built join_specs. Include them in instructions.join_specs."
@@ -333,19 +203,19 @@ def _recovery_invoke(
                 sn_json = json.dumps(context["sql_snippets"])
                 if len(sn_json) < 3000:
                     hint += f"\nUse these pre-built sql_snippets: {sn_json}"
-        converted.append({
+        recovery_msgs = list(messages) + [{
             "role": "user",
             "content": (
                 "Your previous response did not contain valid JSON. "
                 "Output ONLY the complete serialized_space JSON object now, "
-                f"wrapped in ```json ``` fences. No explanation, no tool calls.{hint}"
+                f"wrapped in ```json ``` fences. No explanation.{hint}"
             ),
-        })
+        }]
         recovery_llm = ChatDatabricks(
             endpoint=model_endpoint, temperature=0.0, max_tokens=16384,
             max_retries=2, request_timeout=300,
         )
-        result = recovery_llm.invoke(converted)
+        result = recovery_llm.invoke(recovery_msgs)
         content = getattr(result, "content", "") or ""
         logger.info("Recovery response length: %d chars", len(content))
         return _extract_json(content)
@@ -416,7 +286,6 @@ def run_genie_agent(
     Returns the final serialized_space dict or raises on failure.
     """
     start_time = time.time()
-    deadline = start_time + GENIE_WALL_TIMEOUT
 
     def _elapsed() -> float:
         return round(time.time() - start_time, 1)
@@ -431,10 +300,9 @@ def run_genie_agent(
 
     progress_queue.put({"stage": "initializing"})
 
-    tools = _make_tools(ws, warehouse_id)
     llm = ChatDatabricks(
         endpoint=model_endpoint, temperature=0.1, max_tokens=16384,
-        max_retries=1, request_timeout=180,
+        max_retries=1, request_timeout=300,
     )
 
     questions_text = (
@@ -451,9 +319,9 @@ def run_genie_agent(
     system_prompt += SAFETY_PROMPT_BLOCK
 
     prompt_chars = len(system_prompt)
-    prompt_tokens_est = prompt_chars // 4  # rough estimate
+    prompt_tokens_est = prompt_chars // 4
     logger.info(
-        "Genie agent prompt: %d chars (~%dk tokens), %d tables, %d join_specs, %d snippet items",
+        "Genie prompt: %d chars (~%dk tokens), %d tables, %d join_specs, %d snippet items",
         prompt_chars, prompt_tokens_est // 1000,
         len(context.get("data_sources", {}).get("tables", [])),
         len(context.get("join_specs", [])),
@@ -461,77 +329,55 @@ def run_genie_agent(
     )
     if prompt_tokens_est > 14000:
         logger.warning(
-            "Genie prompt is very large (~%dk tokens). Generation may be slow or timeout. "
+            "Genie prompt is very large (~%dk tokens). Generation may be slow. "
             "Consider selecting fewer tables.", prompt_tokens_est // 1000,
         )
 
-    agent = create_react_agent(llm, tools, prompt=system_prompt)
-    progress_queue.put({"stage": "generating"})
-
+    # --- Phase 1: single LLM call ---
+    messages: list[dict] = [{"role": "system", "content": system_prompt}]
     if prior_result and refinement_feedback:
         summary = _summarize_prior_result(prior_result)
-        input_msg = {
-            "messages": [
-                {"role": "user", "content": "Generate the complete serialized_space JSON now."},
-                {"role": "assistant", "content": summary},
-                {"role": "user", "content": (
-                    f"Here is feedback on the config above. Revise and regenerate the complete JSON:\n\n{refinement_feedback}"
-                )},
-            ]
-        }
+        messages += [
+            {"role": "user", "content": "Generate the complete serialized_space JSON now."},
+            {"role": "assistant", "content": summary},
+            {"role": "user", "content": f"Here is feedback on the config above. Revise and regenerate the complete JSON:\n\n{refinement_feedback}"},
+        ]
     else:
-        input_msg = {
-            "messages": [
-                {"role": "user", "content": "Generate the complete serialized_space JSON now."}
-            ]
-        }
-    agent_config = {"recursion_limit": max(GuardrailConfig.MAX_RECURSION_LIMIT, 30)}
+        messages.append({"role": "user", "content": "Generate the complete serialized_space JSON now."})
 
-    messages: list = []
-    timed_out = False
-    round_count = 0
+    progress_queue.put({"stage": "generating"})
+    logger.info("Genie: starting single LLM call")
+    llm_start = time.time()
+    serialized = None
     try:
-        messages, round_count, timed_out = _collect_stream_messages(
-            agent, input_msg, agent_config,
-            progress_queue=progress_queue,
-            deadline=deadline,
-        )
+        result = llm.invoke(messages)
+        content = getattr(result, "content", "") or ""
+        llm_elapsed = round(time.time() - llm_start, 1)
+        logger.info("Genie LLM response: %d chars in %.1fs", len(content), llm_elapsed)
+        serialized = _extract_json(content)
+        if serialized:
+            messages.append({"role": "assistant", "content": content})
     except Exception as e:
-        counted = _count_tool_messages(messages) if messages else 0
-        round_count = max(round_count, counted)
-        err_str = str(e).lower()
-        if "timeout" in err_str or "timed out" in err_str or isinstance(e, TimeoutError):
-            logger.warning("Agent exception timeout after %.1fs, %d rounds: %s", _elapsed(), round_count, e)
-            timed_out = True
-        else:
-            progress_queue.put(_error_event(f"Agent error: {e}", rounds=round_count))
-            raise
+        llm_elapsed = round(time.time() - llm_start, 1)
+        logger.warning("Genie LLM call failed after %.1fs: %s", llm_elapsed, e)
 
-    progress_queue.put({"stage": "parsing"})
-
-    serialized = _extract_json_from_messages(messages) if messages else None
+    # --- Recovery if extraction failed ---
+    if serialized is None:
+        logger.warning("JSON extraction failed after %.1fs -- attempting recovery", _elapsed())
+        progress_queue.put({"stage": "recovering"})
+        serialized = _recovery_invoke(messages, model_endpoint, context=context)
 
     if serialized is None:
-        _log_message_diagnostics(messages)
-        if messages:
-            reason = "timed out" if timed_out else "no valid JSON in output"
-            logger.warning(
-                "JSON extraction failed (%s) after %.1fs, %d rounds -- attempting recovery",
-                reason, _elapsed(), round_count,
-            )
-            progress_queue.put({"stage": "recovering"})
-            serialized = _recovery_invoke(messages, model_endpoint, context=context)
-
-    if serialized is None:
-        detail = (
-            f"Agent did not produce valid JSON after {_elapsed():.0f}s "
-            f"and {round_count} tool round(s)."
-        )
-        if timed_out:
-            detail += " The 10-minute timeout was reached. Try selecting fewer tables."
-        progress_queue.put(_error_event(detail, rounds=round_count))
+        detail = f"Did not produce valid JSON after {_elapsed():.0f}s."
+        progress_queue.put(_error_event(detail))
         raise ValueError(detail)
 
+    # --- Phase 2: parallel SQL validation ---
+    progress_queue.put({"stage": "validating_sql"})
+    serialized = _validate_and_strip_sql(serialized, ws, warehouse_id, progress_queue)
+
+    # --- Post-processing (unchanged) ---
+    progress_queue.put({"stage": "parsing"})
     serialized = _merge_prebuilt_snippets(serialized, context.get("sql_snippets", {}))
     serialized = _merge_prebuilt_join_specs(serialized, context.get("join_specs", []))
     serialized = _merge_prebuilt_data_sources(serialized, context.get("data_sources", {}))
@@ -546,7 +392,7 @@ def run_genie_agent(
         "result": serialized,
         "warnings": warnings,
         "elapsed_seconds": _elapsed(),
-        "rounds_completed": round_count,
+        "rounds_completed": 0,
     })
     return serialized
 

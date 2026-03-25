@@ -63,7 +63,7 @@ def ensure_mlflow_context():
         _mlflow_mod.set_experiment(MLFLOW_EXPERIMENT)
         _mlflow_mod.langchain.autolog(log_traces=True, silent=True)
     except Exception as exc:
-        logger.debug("ensure_mlflow_context: %s", exc)
+        logger.warning("ensure_mlflow_context failed: %s", exc)
 
 
 def get_mlflow():

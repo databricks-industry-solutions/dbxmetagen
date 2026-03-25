@@ -27,6 +27,18 @@ from db import pg_execute, get_engine, pg_configured
 
 logger = logging.getLogger(__name__)
 
+
+class _PollLogFilter(logging.Filter):
+    """Suppress repetitive access log lines for polling endpoints."""
+    _POLL_FRAGMENTS = ("/api/agent/deep/task/", "/api/genie/tasks/")
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        return not any(frag in msg for frag in self._POLL_FRAGMENTS)
+
+
+logging.getLogger("uvicorn.access").addFilter(_PollLogFilter())
+
 # ---------------------------------------------------------------------------
 # TTL caches -- shared across the process lifetime of the Databricks App
 # ---------------------------------------------------------------------------
@@ -5880,8 +5892,8 @@ def genie_generate(req: GenieGenerateRequest):
         "round": 0,
     }
 
-    # Total wall-clock backstop (slightly over agent's 10-min deadline so agent kills first)
-    _MONITOR_WALL_TIMEOUT = 660
+    # Total wall-clock backstop: context assembly ~60s + LLM call ~300s + SQL validation ~60s + recovery ~300s
+    _MONITOR_WALL_TIMEOUT = 600
 
     def _run():
         try:
@@ -5892,12 +5904,25 @@ def genie_generate(req: GenieGenerateRequest):
             progress_q: queue.Queue = queue.Queue()
 
             _genie_tasks[task_id]["stage"] = "gathering_context"
+            ctx_t0 = time.time()
             assembler = GenieContextAssembler(ws, wh, CATALOG, SCHEMA)
             ctx = assembler.assemble(
                 req.table_identifiers,
                 req.questions or None,
                 metric_view_names=req.metric_view_names or None,
             )
+            ctx_elapsed = round(time.time() - ctx_t0, 1)
+            ctx_len = len(ctx.get("context_text", ""))
+            logger.info(
+                "Genie context assembly: %.1fs, %d tables, %d join_specs, %d context_text chars",
+                ctx_elapsed, len(req.table_identifiers), len(ctx.get("join_specs", [])), ctx_len,
+            )
+            if ctx_len < 100:
+                raise ValueError(
+                    "No metadata found for the selected tables. "
+                    "Ensure the knowledge base pipeline has been run (build_knowledge_base) "
+                    "and the correct catalog/schema is configured."
+                )
 
             if req.business_context and req.business_context.strip():
                 biz_block = (
@@ -5926,15 +5951,14 @@ def genie_generate(req: GenieGenerateRequest):
                     remaining = _MONITOR_WALL_TIMEOUT - (time.time() - started_at)
                     if remaining <= 0:
                         elapsed = round(time.time() - started_at)
-                        rnd = _genie_tasks[task_id].get("round", 0)
                         _genie_tasks[task_id].update({
                             "status": "error",
                             "error": (
-                                f"Timed out after {elapsed}s and {rnd} tool round(s). "
+                                f"Generation timed out after {elapsed}s. "
                                 "Try selecting fewer tables or simplifying the request."
                             ),
                             "elapsed_seconds": elapsed,
-                            "rounds_completed": rnd,
+                            "rounds_completed": 0,
                         })
                         return
                     try:
@@ -5980,9 +6004,9 @@ def genie_generate(req: GenieGenerateRequest):
         except Exception as e:
             logger.error("Genie builder error: %s", e, exc_info=True)
             elapsed = round(time.time() - started_at)
-            task = _genie_tasks[task_id]
-            if task.get("status") == "error":
-                return  # _monitor_progress already recorded the error
+            task = _genie_tasks.get(task_id)
+            if not task or task.get("status") == "error":
+                return  # task already cleaned up or monitor already recorded the error
             rnd = max(task.get("round", 0), task.get("rounds_completed", 0))
             task.update({
                 "status": "error",
@@ -6803,20 +6827,28 @@ def agent_deep_submit(req: AgentChatRequest):
     task_id = str(_uuid.uuid4())[:12]
     _deep_tasks[task_id] = {"status": "running", "stage": "starting", "message": "", "steps": [], "elapsed_ms": 0, "created": time.time()}
 
-    progress_q = run_deep_analysis_streaming(req.message, mode=mode, history=req.history)
+    progress_q, cancel_event = run_deep_analysis_streaming(req.message, mode=mode, history=req.history)
+
+    _DEEP_WALL_TIMEOUT = 300  # 5-minute absolute max (new pipeline typically finishes in ~90s)
 
     def _monitor():
+        wall_deadline = time.time() + _DEEP_WALL_TIMEOUT
         try:
             while True:
-                try:
-                    event = progress_q.get(timeout=300)
-                except queue.Empty:
-                    _deep_tasks[task_id] = {
-                        **_deep_tasks[task_id],
+                if time.time() > wall_deadline:
+                    cancel_event.set()
+                    elapsed_s = int(time.time() - _deep_tasks[task_id]["created"])
+                    _deep_tasks[task_id].update({
                         "status": "error",
-                        "error": "Analysis timed out after 5 minutes.",
-                    }
+                        "error": f"Analysis timed out after {elapsed_s}s. Try a simpler question.",
+                        "elapsed_ms": elapsed_s * 1000,
+                    })
                     return
+                remaining = max(wall_deadline - time.time(), 1)
+                try:
+                    event = progress_q.get(timeout=min(remaining, 30))
+                except queue.Empty:
+                    continue
                 if event.get("stage") == "done":
                     created = _deep_tasks[task_id]["created"]
                     prev_steps = _deep_tasks[task_id].get("steps", [])

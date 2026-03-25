@@ -8,9 +8,10 @@ const STAGES = {
   gathering_context: 'Gathering metadata context...',
   initializing: 'Initializing agent...',
   agent_running: 'Agent generating configuration...',
-  generating: 'Generating SQL & instructions...',
-  tool_round: 'Agent validating SQL...',
-  parsing: 'Parsing output...',
+  generating: 'Generating configuration (single LLM call)...',
+  validating_sql: 'Validating SQL expressions...',
+  tool_round: 'Validating SQL...',
+  parsing: 'Finalizing output...',
   recovering: 'Recovering partial result...',
   done: 'Complete',
   error: 'Failed',
@@ -443,9 +444,9 @@ export default function GenieBuilder() {
           <p className="text-sm font-medium text-red-700 dark:text-red-300">
             {taskStatus.error || 'Generation failed'}
           </p>
-          {(taskStatus.elapsed_seconds || taskStatus.rounds_completed) ? (
+          {taskStatus.elapsed_seconds ? (
             <p className="text-xs text-red-600/70 dark:text-red-400/70">
-              Completed {taskStatus.rounds_completed ?? 0} tool round(s) in {formatElapsed(taskStatus.elapsed_seconds ?? elapsed)}.
+              Failed after {formatElapsed(taskStatus.elapsed_seconds ?? elapsed)}.
             </p>
           ) : null}
           {(selectedTables.length + selectedMVs.size) > 5 && (
@@ -461,7 +462,7 @@ export default function GenieBuilder() {
         <div className="space-y-4">
           {taskStatus && taskStatus.status === 'done' && taskStatus.elapsed_seconds != null && (
             <div className="bg-emerald-50 dark:bg-emerald-900/30 border border-emerald-200 dark:border-emerald-700 rounded-lg px-4 py-2 text-xs text-emerald-700 dark:text-emerald-300">
-              Generated in {formatElapsed(taskStatus.elapsed_seconds)} ({taskStatus.rounds_completed ?? 0} tool rounds)
+              Generated in {formatElapsed(taskStatus.elapsed_seconds)}
               {taskStatus.warnings?.length > 0 && (
                 <details className="inline-block ml-2">
                   <summary className="cursor-pointer text-amber-600 dark:text-amber-400">{taskStatus.warnings.length} quality warning(s)</summary>

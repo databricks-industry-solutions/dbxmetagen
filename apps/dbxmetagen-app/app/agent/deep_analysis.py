@@ -1,46 +1,47 @@
-"""Multi-agent deep analysis for GraphRAG and Baseline modes.
+"""Two-phase deep analysis for GraphRAG and Baseline modes.
 
-Adapted from the hospital operations control tower pattern:
-Supervisor -> Planner -> Retrieval -> Analyst -> Respond (with Clarify branch).
-The agent_mode field ("graphrag" or "baseline") selects tools and prompts.
+Phase 1: Deterministic data gathering (direct tool calls, no agent loops)
+Phase 2: Single LLM analysis call with all gathered context
+
+This replaces the previous multi-agent supervisor/planner/retrieval/analyst
+LangGraph architecture which was prone to infinite loops and timeouts.
 """
 
 import json
 import logging
 import os
 import queue
+import re
 import threading
 import time
-from operator import add
-from typing import Annotated, Dict, List, Optional
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
+from contextlib import nullcontext
+from typing import Dict, List, Optional
 
 from databricks_langchain import ChatDatabricks
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
-from langgraph.prebuilt import create_react_agent
-from langgraph.graph import StateGraph, END
-from typing_extensions import TypedDict
+from langchain_core.messages import HumanMessage, SystemMessage
 
 from agent.metadata_tools import (
-    GRAPHRAG_TOOLS, BASELINE_TOOLS, CATALOG, SCHEMA,
-    execute_metadata_sql, execute_baseline_sql,
+    CATALOG, SCHEMA,
+    search_metadata, execute_metadata_sql, execute_baseline_sql,
+    expand_vs_hits, traverse_graph,
 )
 from agent.graph_skill import GRAPH_SCHEMA_CONTEXT
-from agent.guardrails import GuardrailConfig, SAFETY_PROMPT_BLOCK, sanitize_output
+from agent.guardrails import SAFETY_PROMPT_BLOCK, sanitize_output
 from agent.tracing import trace, ensure_mlflow_context, get_mlflow
 
 logger = logging.getLogger(__name__)
 
 MODEL = os.environ.get("LLM_MODEL", "databricks-claude-sonnet-4-6")
-ROUTING_MODEL = os.environ.get("ROUTING_MODEL", "databricks-meta-llama-3-3-70b-instruct")
-MAX_ITERATIONS = int(os.environ.get("MAX_SUPERVISOR_ITERATIONS", str(GuardrailConfig.MAX_DEEP_ITERATIONS)))
+TOOL_TIMEOUT = 30  # hard timeout per tool call (seconds)
 
 _local = threading.local()
 
 
 def _emit(stage: str, message: str, agent: str = ""):
-    trace = getattr(_local, "routing_trace", None)
-    if agent and trace is not None:
-        trace.append({"agent": agent, "action": stage, "message": message})
+    tr = getattr(_local, "routing_trace", None)
+    if agent and tr is not None:
+        tr.append({"agent": agent, "action": stage, "message": message})
     q = getattr(_local, "progress_queue", None)
     if q is not None:
         q.put({"stage": stage, "message": message})
@@ -55,221 +56,214 @@ def _llm():
     if _cached_llm is None:
         with _cache_lock:
             if _cached_llm is None:
-                _cached_llm = ChatDatabricks(endpoint=MODEL, temperature=0, max_retries=3)
+                _cached_llm = ChatDatabricks(
+                    endpoint=MODEL, temperature=0,
+                    max_retries=1, request_timeout=120,
+                )
     return _cached_llm
 
 
-_cached_routing_llm = None
-
-
-def _routing_llm():
-    global _cached_routing_llm
-    if _cached_routing_llm is None:
-        with _cache_lock:
-            if _cached_routing_llm is None:
-                _cached_routing_llm = ChatDatabricks(endpoint=ROUTING_MODEL, temperature=0, max_retries=3)
-    return _cached_routing_llm
-
-
-_cached_retrieval_agents: dict = {}
-_cached_analyst_agents: dict = {}
-
-
-RETRIEVAL_RECURSION_LIMIT = 14  # ~6 tool calls (each costs 2 steps: AI msg + tool result)
-ANALYST_RECURSION_LIMIT = 8    # ~3 follow-up SQL queries
-
-
-def _get_retrieval_agent(mode: str):
-    with _cache_lock:
-        if mode not in _cached_retrieval_agents:
-            tools = GRAPHRAG_TOOLS if mode == "graphrag" else BASELINE_TOOLS
-            _cached_retrieval_agents[mode] = create_react_agent(
-                _llm(), tools, recursion_limit=RETRIEVAL_RECURSION_LIMIT,
-            )
-        return _cached_retrieval_agents[mode]
-
-
-def _get_analyst_agent(mode: str):
-    with _cache_lock:
-        if mode not in _cached_analyst_agents:
-            followup_tools = [execute_metadata_sql] if mode == "graphrag" else [execute_baseline_sql]
-            _cached_analyst_agents[mode] = create_react_agent(
-                _llm(), followup_tools, recursion_limit=ANALYST_RECURSION_LIMIT,
-            )
-        return _cached_analyst_agents[mode]
-
-
 # ---------------------------------------------------------------------------
-# State
+# Analysis prompt (single LLM call replaces the old multi-agent pipeline)
 # ---------------------------------------------------------------------------
 
-class DeepAnalysisState(TypedDict):
-    messages: Annotated[list, add]
-    user_query: str
-    plan: str
-    retrieved_evidence: str
-    analysis_result: str
-    needs_clarification: bool
-    clarification_question: str
-    next_step: str
-    iteration: Annotated[list, add]
-    tool_calls_made: Annotated[list, add]
-    agent_mode: str  # "graphrag" or "baseline"
-    graph_data: dict
+ANALYSIS_PROMPT = f"""You are a senior data catalog analyst.
+{SAFETY_PROMPT_BLOCK}
 
-
-# ---------------------------------------------------------------------------
-# System prompts
-# ---------------------------------------------------------------------------
-
-SUPERVISOR_PROMPT = """You are a supervisor coordinating a deep analysis of a data catalog's metadata.
-""" + SAFETY_PROMPT_BLOCK + """
-Given the user's question and the current analysis state, decide the single next step.
-Respond with EXACTLY one word from: CLARIFY, PLAN, RETRIEVE, ANALYZE, RESPOND.
-
-Decision rules:
-- CLARIFY  -- the question is too vague to act on
-- PLAN     -- no plan exists yet
-- RETRIEVE -- a plan exists but evidence has not been gathered
-- ANALYZE  -- evidence has been gathered and is ready for interpretation
-- RESPOND  -- the analysis is complete OR you need to deliver a clarification
-
-If the analysis result seems incomplete and iterations remain, you may route back to
-RETRIEVE or PLAN for a second pass.
-
-Current state will be provided. Return ONLY one word."""
-
-
-def _planner_prompt(mode: str) -> str:
-    base = """You are a planning specialist for data catalog metadata analysis.
-
-Given the user question, produce a concise numbered plan of data-gathering steps
-that the Retrieval agent should execute."""
-
-    if mode == "graphrag":
-        return base + f"""
+Given a user's question and evidence gathered from a metadata knowledge graph,
+vector search, and SQL queries, produce a thorough structured analysis.
 
 {GRAPH_SCHEMA_CONTEXT}
 
-Available tools the Retrieval agent can call:
-- search_metadata (vector search over metadata documents)
-- execute_metadata_sql (SQL on UC knowledge base tables in {CATALOG}.{SCHEMA})
-- get_table_summary, get_data_quality (convenience lookups)
-- query_graph_nodes, traverse_graph, find_similar_nodes, get_node_details (graph tools)
-- expand_vs_hits (bridge VS results into graph via node_id)
+## Response Format
 
-STRATEGY:
-1. Start with search_metadata for semantic discovery, then extract node_ids.
-2. Use expand_vs_hits to bridge VS hits into graph for structural context.
-3. Use traverse_graph with edge_type filters for targeted exploration.
-4. Use execute_metadata_sql for precise counts/aggregations.
-Keep the plan to 3-4 steps."""
-    else:
-        return base + f"""
-
-The Retrieval agent can ONLY query these three tables in {CATALOG}.{SCHEMA}:
-- table_knowledge_base: table_name, comment, domain, subdomain, has_pii, has_phi, row_count
-- column_knowledge_base: table_name, column_name, comment, data_type, classification, classification_type
-- schema_knowledge_base: catalog_name, schema_name, comment, tables_count
-
-Available tool: execute_baseline_sql (read-only SELECT on the 3 tables above).
-No vector search, no graph traversal, no ontology, no FK predictions.
-Keep the plan to 2-3 steps."""
-
-
-def _retrieval_prompt(mode: str) -> str:
-    prefix = f"""You are a data retrieval specialist for a data catalog.
-
-Execute the data-gathering plan provided. For EACH piece of data you retrieve,
-note which tool provided it so the Analyst can cite sources.
-
-Format your output as:
-### Source: [tool_name]
-[data / result summary]
-
-Use {CATALOG}.{SCHEMA} as the catalog/schema for SQL queries."""
-
-    if mode == "graphrag":
-        return prefix + """
-
-IMPORTANT: When using search_metadata, look at node_id in results.
-Pass those node_ids to expand_vs_hits to bridge into graph.
-Use traverse_graph for multi-hop exploration after identifying starting nodes."""
-    return prefix
-
-
-ANALYST_PROMPT = """You are a senior data catalog analyst. Interpret retrieved evidence
-and produce a structured analysis.
-
-## Key Findings
+### Key Findings
 Numbered findings with inline source citations (e.g. "[Source: search_metadata]").
 
-## Relationships & Patterns
-Describe discovered structural relationships, join patterns, or entity mappings.
+### Relationships & Patterns
+Describe discovered structural relationships, join patterns, FK references, or
+entity mappings found in the evidence. Reference specific table/column names.
 
-## Recommendations
+### Recommendations
 - **Action**: What to do
 - **Evidence**: Supporting data (cite source)
 - **Priority**: High / Medium / Low
 
-Be concise. Lead with the most impactful finding."""
+Be thorough but concise. Lead with the most impactful finding.
+If evidence is sparse, say so honestly rather than fabricating details."""
+
+
+BASELINE_ANALYSIS_PROMPT = f"""You are a senior data catalog analyst.
+{SAFETY_PROMPT_BLOCK}
+
+Given a user's question and evidence gathered from SQL queries on metadata
+knowledge base tables, produce a thorough structured analysis.
+
+Available tables queried:
+- table_knowledge_base: table_name, comment, domain, subdomain, has_pii, has_phi, row_count
+- column_knowledge_base: table_name, column_name, comment, data_type, classification
+- schema_knowledge_base: catalog_name, schema_name, comment, tables_count
+
+## Response Format
+
+### Key Findings
+Numbered findings referencing the evidence provided.
+
+### Relationships & Patterns
+Describe any discovered relationships or patterns between tables/columns.
+
+### Recommendations
+- **Action**: What to do
+- **Evidence**: Supporting data
+- **Priority**: High / Medium / Low
+
+Be thorough but concise. If evidence is sparse, say so honestly."""
 
 
 # ---------------------------------------------------------------------------
-# Sub-agent nodes
+# Deterministic tool calling
 # ---------------------------------------------------------------------------
 
-@trace(name="supervisor", span_type="CHAIN")
-def supervisor_node(state: DeepAnalysisState) -> dict:
-    iters = len(state.get("iteration", []))
-    step_label = f"Step {iters + 1}/{MAX_ITERATIONS}"
-    _emit("routing", f"{step_label}: Deciding next step...", agent="supervisor")
+def _safe_tool_call(tool_fn, args: dict, timeout_s: int, label: str,
+                    step_num: int, total_steps: int) -> Optional[str]:
+    """Run a LangChain tool with a hard timeout and structured logging."""
+    mlflow = get_mlflow()
+    cm = mlflow.start_span(name=f"tool_{label}") if mlflow else nullcontext()
+    with cm as span:
+        if span:
+            span.set_inputs({"tool": label, "args": str(args)[:200], "timeout_s": timeout_s})
+        t0 = time.time()
+        _emit("gathering", f"Step {step_num}/{total_steps}: {label}...")
+        logger.info("[deep_analysis] STEP %d/%d: %s -- START (timeout=%ds)",
+                    step_num, total_steps, label, timeout_s)
+        try:
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                result = pool.submit(tool_fn.invoke, args).result(timeout=timeout_s)
+            elapsed = round(time.time() - t0, 1)
+            result_len = len(result) if result else 0
+            logger.info("[deep_analysis] STEP %d/%d: %s -- DONE in %.1fs (%d chars)",
+                        step_num, total_steps, label, elapsed, result_len)
+            _emit("gathering", f"Step {step_num}/{total_steps}: {label} done ({elapsed}s)")
+            if span:
+                span.set_outputs({"status": "ok", "elapsed_s": elapsed, "result_len": result_len})
+            return result
+        except FuturesTimeout:
+            elapsed = round(time.time() - t0, 1)
+            logger.warning("[deep_analysis] STEP %d/%d: %s -- TIMEOUT after %.1fs",
+                           step_num, total_steps, label, elapsed)
+            _emit("gathering", f"Step {step_num}/{total_steps}: {label} timed out, continuing...")
+            if span:
+                span.set_outputs({"status": "timeout", "elapsed_s": elapsed})
+            return None
+        except Exception as e:
+            elapsed = round(time.time() - t0, 1)
+            logger.warning("[deep_analysis] STEP %d/%d: %s -- ERROR in %.1fs: %s",
+                           step_num, total_steps, label, elapsed, e)
+            _emit("gathering", f"Step {step_num}/{total_steps}: {label} failed, continuing...")
+            if span:
+                span.set_outputs({"status": "error", "error": str(e)[:200], "elapsed_s": elapsed})
+            return None
+
+
+def _parse_json(raw: Optional[str]) -> Optional[dict]:
+    if not raw:
+        return None
     try:
-        parts = [f"User question: {state['user_query']}"]
-        parts.append(f"Plan exists: {'yes' if state.get('plan') else 'no'}")
-        parts.append("Evidence: gathered" if state.get("retrieved_evidence") else "Evidence: not yet gathered")
-        parts.append("Analysis: complete" if state.get("analysis_result") else "Analysis: not complete")
+        return json.loads(raw) if isinstance(raw, str) else raw
+    except (json.JSONDecodeError, TypeError):
+        return None
 
-        resp = _routing_llm().invoke([
-            SystemMessage(content=SUPERVISOR_PROMPT),
-            HumanMessage(content="\n".join(parts)),
-        ])
-        decision = resp.content.strip().upper().split()[0] if resp.content else "RESPOND"
-        valid = {"CLARIFY", "PLAN", "RETRIEVE", "ANALYZE", "RESPOND"}
-        if decision not in valid:
-            decision = "RESPOND"
-    except Exception as e:
-        logger.warning("Supervisor LLM error (retries exhausted): %s", e)
-        decision = "RESPOND"
 
-    if iters >= MAX_ITERATIONS:
-        decision = "RESPOND" if state.get("analysis_result") else (
-            "ANALYZE" if state.get("retrieved_evidence") else "RESPOND"
+def _extract_node_ids(vs_json: Optional[str]) -> list[str]:
+    """Extract node_id values from vector search results."""
+    data = _parse_json(vs_json)
+    if not data:
+        return []
+    ids = []
+    for m in data.get("matches", []):
+        nid = m.get("node_id")
+        if nid and nid not in ids:
+            ids.append(nid)
+    return ids
+
+
+def _extract_table_names(vs_json: Optional[str]) -> list[str]:
+    """Extract table_name values from vector search results."""
+    data = _parse_json(vs_json)
+    if not data:
+        return []
+    names = []
+    for m in data.get("matches", []):
+        tn = m.get("table_name")
+        if tn and tn not in names:
+            names.append(tn)
+    return names
+
+
+def _pick_traversal_nodes(node_ids: list[str], table_names: list[str]) -> list[str]:
+    """Pick the best nodes for graph traversal (prefer table-level nodes)."""
+    table_ids = [nid for nid in node_ids if nid.count(".") == 2]
+    if table_ids:
+        return table_ids[:2]
+    if table_names:
+        return table_names[:2]
+    return node_ids[:2]
+
+
+def _sql_escape(s: str) -> str:
+    return s.replace("'", "''")
+
+
+def _build_relevance_sql(table_names: list[str]) -> str:
+    """Build SQL to fetch FK predictions and column info for discovered tables."""
+    tn_list = ", ".join(f"'{_sql_escape(t)}'" for t in table_names[:10])
+    return (
+        f"SELECT src_table, src_column, dst_table, dst_column, "
+        f"final_confidence, cardinality, ai_reasoning "
+        f"FROM {CATALOG}.{SCHEMA}.fk_predictions "
+        f"WHERE src_table IN ({tn_list}) OR dst_table IN ({tn_list}) "
+        f"ORDER BY final_confidence DESC LIMIT 20"
+    )
+
+
+def _extract_keywords(query: str) -> list[str]:
+    """Extract meaningful keywords from query for SQL LIKE searches."""
+    stop = {"find", "all", "tables", "related", "to", "and", "explain", "how",
+            "they", "connect", "the", "what", "are", "which", "show", "me",
+            "list", "describe", "about", "with", "from", "that", "for", "in"}
+    words = re.findall(r'\w+', query.lower())
+    return [w for w in words if w not in stop and len(w) > 2][:5]
+
+
+def _build_baseline_queries(query: str) -> list[str]:
+    """Build SQL queries for baseline mode against the 3 KB tables."""
+    keywords = _extract_keywords(query)
+    queries = []
+    if keywords:
+        like_clauses = " OR ".join(
+            f"(LOWER(table_name) LIKE '%{_sql_escape(k)}%' OR LOWER(comment) LIKE '%{_sql_escape(k)}%')"
+            for k in keywords
         )
-
-    _DECISION_LABELS = {"PLAN": "Planning", "RETRIEVE": "Retrieving data", "ANALYZE": "Analyzing", "RESPOND": "Composing answer", "CLARIFY": "Clarifying"}
-    _emit("routing", f"{step_label}: {_DECISION_LABELS.get(decision, decision)}", agent="supervisor")
-    return {"next_step": decision, "iteration": [1]}
-
-
-@trace(name="planner", span_type="CHAIN")
-def planner_node(state: DeepAnalysisState) -> dict:
-    mode = state.get("agent_mode", "graphrag")
-    mode_label = "GraphRAG" if mode == "graphrag" else "Baseline"
-    _emit("planning", f"Creating {mode_label} analysis plan...", agent="planner")
-    try:
-        resp = _routing_llm().invoke([
-            SystemMessage(content=_planner_prompt(mode)),
-            HumanMessage(content=f"User question: {state['user_query']}"),
-        ])
-        return {"plan": resp.content, "messages": []}
-    except Exception as e:
-        logger.warning("Planner LLM error (retries exhausted): %s", e)
-        return {"plan": f"1. Gather relevant data for: {state['user_query']}", "messages": []}
+        queries.append(
+            f"SELECT table_name, domain, subdomain, comment, has_pii, has_phi, row_count "
+            f"FROM {CATALOG}.{SCHEMA}.table_knowledge_base "
+            f"WHERE {like_clauses} LIMIT 20"
+        )
+        queries.append(
+            f"SELECT table_name, column_name, comment, data_type, classification "
+            f"FROM {CATALOG}.{SCHEMA}.column_knowledge_base "
+            f"WHERE {like_clauses} LIMIT 30"
+        )
+    else:
+        queries.append(
+            f"SELECT table_name, domain, comment FROM {CATALOG}.{SCHEMA}.table_knowledge_base LIMIT 20"
+        )
+    return queries
 
 
-_GRAPH_TOOLS = {"traverse_graph", "expand_vs_hits", "find_similar_nodes"}
-
+# ---------------------------------------------------------------------------
+# Data gathering pipelines
+# ---------------------------------------------------------------------------
 
 def _merge_graph_data(existing: dict, new_chunk: dict) -> dict:
     """Merge a traverse_graph result into an accumulated graph_data dict."""
@@ -286,199 +280,176 @@ def _merge_graph_data(existing: dict, new_chunk: dict) -> dict:
     return {"start_node": start, "nodes": nodes, "edges": edges}
 
 
-def _run_inner_agent_streamed(agent, input_msgs, timeout_s, stage, agent_name, graph_tools=None):
-    """Run an inner ReAct agent with streaming, heartbeat, and wall-clock timeout.
-
-    Returns (final_text, tools_used, graph_data_updates).
-    """
-    final_text = ""
+def _gather_graphrag(query: str, cancel: threading.Event):
+    """Deterministic GraphRAG data gathering: VS -> expand -> traverse -> SQL."""
+    parts = []
     tools_used = []
     graph_data = {}
-    t0 = time.time()
-    tool_count = 0
-    done = threading.Event()
+    total = 5
 
-    def _heartbeat():
-        while not done.wait(15):
-            elapsed = int(time.time() - t0)
-            _emit(stage, f"Still working... ({elapsed}s, {tool_count} tool calls so far)", agent=agent_name)
+    # Step 1: Vector search
+    vs_result = _safe_tool_call(search_metadata, {"query": query}, TOOL_TIMEOUT,
+                                "search_metadata", 1, total)
+    if vs_result:
+        tools_used.append("search_metadata")
+        parts.append(f"### Source: search_metadata (vector search)\n{vs_result}")
 
-    hb = threading.Thread(target=_heartbeat, daemon=True)
-    hb.start()
-    try:
-        logger.info("[%s] Starting inner agent stream (timeout=%ss)", agent_name, timeout_s)
-        for event in agent.stream({"messages": input_msgs}):
-            elapsed = time.time() - t0
-            if elapsed > timeout_s:
-                logger.warning("[%s] Wall-clock timeout after %.1fs", agent_name, elapsed)
-                _emit(stage, f"Time limit reached after {int(elapsed)}s, using results so far", agent=agent_name)
+    node_ids = _extract_node_ids(vs_result)
+    table_names = _extract_table_names(vs_result)
+
+    if cancel.is_set():
+        return "\n\n".join(parts), graph_data, tools_used
+
+    # Step 2: Graph expansion from VS hits
+    if node_ids:
+        exp_result = _safe_tool_call(
+            expand_vs_hits, {"node_ids": node_ids[:5]}, TOOL_TIMEOUT,
+            "expand_vs_hits", 2, total,
+        )
+        if exp_result:
+            tools_used.append("expand_vs_hits")
+            parts.append(f"### Source: expand_vs_hits (graph expansion)\n{exp_result}")
+    else:
+        logger.info("[deep_analysis] STEP 2/%d: expand_vs_hits -- SKIP (no node_ids)", total)
+        _emit("gathering", f"Step 2/{total}: No nodes to expand, skipping...")
+
+    if cancel.is_set():
+        return "\n\n".join(parts), graph_data, tools_used
+
+    # Step 3: Traverse graph from top nodes
+    trav_nodes = _pick_traversal_nodes(node_ids, table_names)
+    if trav_nodes:
+        for i, nid in enumerate(trav_nodes[:2]):
+            if cancel.is_set():
                 break
-            for _node, node_out in event.items():
-                for msg in node_out.get("messages", []):
-                    if isinstance(msg, AIMessage):
-                        if msg.content:
-                            final_text = msg.content
-                        if hasattr(msg, "tool_calls") and msg.tool_calls:
-                            names = [tc.get("name", "unknown") for tc in msg.tool_calls]
-                            tools_used.extend(names)
-                            tool_count += len(names)
-                            logger.info("[%s] Calling: %s (%.1fs)", agent_name, ", ".join(names), elapsed)
-                            _emit(stage, f"Calling {', '.join(names)}...", agent=agent_name)
-                    elif isinstance(msg, ToolMessage):
-                        tool_name = getattr(msg, "name", "tool")
-                        logger.info("[%s] Got result from %s (%.1fs)", agent_name, tool_name, elapsed)
-                        _emit(stage, f"Got result from {tool_name} ({int(elapsed)}s)", agent=agent_name)
-                        if graph_tools and tool_name in graph_tools:
-                            try:
-                                chunk = json.loads(msg.content) if isinstance(msg.content, str) else msg.content
-                                if isinstance(chunk, dict) and ("nodes" in chunk or "edges" in chunk):
-                                    graph_data = _merge_graph_data(graph_data, chunk)
-                            except (json.JSONDecodeError, TypeError):
-                                pass
-        total = round(time.time() - t0, 1)
-        logger.info("[%s] Finished in %.1fs with %d tool calls", agent_name, total, len(tools_used))
-    finally:
-        done.set()
-    return final_text, tools_used, graph_data
+            step = 3 + i
+            trav_result = _safe_tool_call(
+                traverse_graph,
+                {"start_node": nid, "max_hops": 2},
+                TOOL_TIMEOUT, f"traverse_graph({nid.split('.')[-1]})", step, total,
+            )
+            if trav_result:
+                tools_used.append("traverse_graph")
+                parts.append(f"### Source: traverse_graph (from {nid})\n{trav_result}")
+                chunk = _parse_json(trav_result)
+                if chunk and isinstance(chunk, dict):
+                    graph_data = _merge_graph_data(graph_data, chunk)
+    else:
+        logger.info("[deep_analysis] STEP 3/%d: traverse_graph -- SKIP (no nodes)", total)
 
+    if cancel.is_set():
+        return "\n\n".join(parts), graph_data, tools_used
 
-@trace(name="retrieval", span_type="RETRIEVER")
-def retrieval_node(state: DeepAnalysisState) -> dict:
-    mode = state.get("agent_mode", "graphrag")
-    tool_suite = "graph + vector search + SQL" if mode == "graphrag" else "SQL queries"
-    _emit("retrieving", f"Gathering evidence via {tool_suite}...", agent="retrieval")
-    try:
-        agent = _get_retrieval_agent(mode)
-        prompt = f"Execute this plan:\n\n{state.get('plan', '')}\n\nUser question: {state['user_query']}"
-        input_msgs = [SystemMessage(content=_retrieval_prompt(mode)), HumanMessage(content=prompt)]
-        evidence, tools_used, new_graph = _run_inner_agent_streamed(
-            agent, input_msgs, GuardrailConfig.AGENT_TIMEOUT_SECONDS,
-            "retrieving", "retrieval", graph_tools=_GRAPH_TOOLS,
+    # Step 5: SQL for FK predictions on discovered tables
+    if table_names:
+        sql_q = _build_relevance_sql(table_names)
+        sql_result = _safe_tool_call(
+            execute_metadata_sql, {"query": sql_q}, TOOL_TIMEOUT,
+            "execute_metadata_sql (FK predictions)", 5, total,
         )
-        graph_data = _merge_graph_data(dict(state.get("graph_data") or {}), new_graph) if new_graph else dict(state.get("graph_data") or {})
-        summary = f"Retrieval complete -- {len(tools_used)} tool call(s)"
-        if tools_used:
-            summary += f": {', '.join(dict.fromkeys(tools_used))}"
-        _emit("retrieving", summary, agent="retrieval")
-        return {"retrieved_evidence": evidence, "tool_calls_made": tools_used, "graph_data": graph_data, "messages": []}
-    except Exception as e:
-        logger.warning("Retrieval error: %s", e, exc_info=True)
-        _emit("retrieving", f"Retrieval error: {e}", agent="retrieval")
-        return {"retrieved_evidence": f"Error: {e}", "tool_calls_made": [], "messages": []}
+        if sql_result:
+            tools_used.append("execute_metadata_sql")
+            parts.append(f"### Source: execute_metadata_sql (FK predictions)\n{sql_result}")
+    else:
+        logger.info("[deep_analysis] STEP 5/%d: execute_metadata_sql -- SKIP (no tables)", total)
+
+    return "\n\n".join(parts), graph_data, tools_used
 
 
-@trace(name="analyst", span_type="CHAIN")
-def analyst_node(state: DeepAnalysisState) -> dict:
-    mode = state.get("agent_mode", "graphrag")
-    _emit("analyzing", "Running analysis on gathered evidence...", agent="analyst")
-    try:
-        agent = _get_analyst_agent(mode)
-        context = (
-            f"User question: {state['user_query']}\n\n"
-            f"Plan:\n{state.get('plan', 'N/A')}\n\n"
-            f"Retrieved Evidence:\n{state.get('retrieved_evidence', 'N/A')}"
+def _gather_baseline(query: str, cancel: threading.Event):
+    """Deterministic baseline data gathering: SQL queries on KB tables."""
+    parts = []
+    tools_used = []
+    queries = _build_baseline_queries(query)
+    total = len(queries)
+
+    for i, sql_q in enumerate(queries):
+        if cancel.is_set():
+            break
+        result = _safe_tool_call(
+            execute_baseline_sql, {"query": sql_q}, TOOL_TIMEOUT,
+            f"execute_baseline_sql (query {i + 1})", i + 1, total,
         )
-        input_msgs = [SystemMessage(content=ANALYST_PROMPT), HumanMessage(content=context)]
-        analysis, tools_used, _ = _run_inner_agent_streamed(
-            agent, input_msgs, GuardrailConfig.AGENT_TIMEOUT_SECONDS,
-            "analyzing", "analyst",
-        )
-        summary = f"Analysis complete -- {len(tools_used)} follow-up query(s)"
-        if tools_used:
-            summary += f": {', '.join(dict.fromkeys(tools_used))}"
-        _emit("analyzing", summary, agent="analyst")
-        return {"analysis_result": analysis, "tool_calls_made": tools_used, "messages": []}
-    except Exception as e:
-        logger.warning("Analyst error: %s", e, exc_info=True)
-        _emit("analyzing", f"Analysis error: {e}", agent="analyst")
-        return {"analysis_result": "Analysis could not be completed. Please try again.", "tool_calls_made": [], "messages": []}
+        if result:
+            tools_used.append("execute_baseline_sql")
+            parts.append(f"### Source: execute_baseline_sql\n{result}")
 
-
-@trace(name="respond", span_type="CHAIN")
-def respond_node(state: DeepAnalysisState) -> dict:
-    _emit("responding", "Preparing final response...", agent="respond")
-    if state.get("needs_clarification"):
-        return {"messages": [AIMessage(content=state.get("clarification_question", "Could you clarify your question?"))]}
-    if state.get("analysis_result"):
-        return {"messages": [AIMessage(content=state["analysis_result"])]}
-    try:
-        resp = _llm().invoke([
-            SystemMessage(content="Summarize what you know so far. Be helpful."),
-            HumanMessage(content=f"Question: {state['user_query']}\nEvidence: {state.get('retrieved_evidence', 'none')}"),
-        ])
-        return {"messages": [AIMessage(content=resp.content)]}
-    except Exception:
-        return {"messages": [AIMessage(content="The AI model is temporarily unavailable. Please try again.")]}
-
-
-@trace(name="clarify", span_type="CHAIN")
-def clarify_node(state: DeepAnalysisState) -> dict:
-    _emit("clarifying", "Asking for clarification...", agent="clarify")
-    try:
-        resp = _llm().invoke([
-            SystemMessage(content="The user's question is ambiguous. Ask a brief, specific clarifying question."),
-            HumanMessage(content=f"User question: {state['user_query']}"),
-        ])
-        return {"needs_clarification": True, "clarification_question": resp.content, "next_step": "RESPOND", "messages": []}
-    except Exception:
-        return {"needs_clarification": True, "clarification_question": "Could you provide more details?", "next_step": "RESPOND", "messages": []}
+    return "\n\n".join(parts), tools_used
 
 
 # ---------------------------------------------------------------------------
-# Graph builder
+# Pipeline
 # ---------------------------------------------------------------------------
 
-def _route_supervisor(state: DeepAnalysisState) -> str:
-    return {
-        "CLARIFY": "clarify", "PLAN": "planner", "RETRIEVE": "retrieval",
-        "ANALYZE": "analyst", "RESPOND": "respond",
-    }.get(state.get("next_step", "RESPOND"), "respond")
+def _run_pipeline(query: str, mode: str, cancel: threading.Event) -> Optional[Dict]:
+    """Two-phase pipeline: gather context deterministically, then single LLM call."""
+    t0 = time.time()
+    logger.info("[deep_analysis] PIPELINE START mode=%s query=%s", mode, query[:120])
 
+    # Phase 1: Gather context
+    _emit("gathering", "Gathering evidence from metadata catalog...")
+    if mode == "graphrag":
+        context, graph_data, tools_used = _gather_graphrag(query, cancel)
+    else:
+        context, tools_used = _gather_baseline(query, cancel)
+        graph_data = {}
 
-def build_deep_graph():
-    graph = StateGraph(DeepAnalysisState)
-    graph.add_node("supervisor", supervisor_node)
-    graph.add_node("planner", planner_node)
-    graph.add_node("retrieval", retrieval_node)
-    graph.add_node("analyst", analyst_node)
-    graph.add_node("respond", respond_node)
-    graph.add_node("clarify", clarify_node)
-    graph.set_entry_point("supervisor")
-    graph.add_conditional_edges("supervisor", _route_supervisor)
-    graph.add_edge("planner", "supervisor")
-    graph.add_edge("retrieval", "supervisor")
-    graph.add_edge("analyst", "supervisor")
-    graph.add_edge("clarify", "respond")
-    graph.add_edge("respond", END)
-    return graph.compile()
+    gather_elapsed = round(time.time() - t0, 1)
+    logger.info("[deep_analysis] GATHER DONE in %.1fs -- %d tool(s): %s",
+                gather_elapsed, len(tools_used), ", ".join(dict.fromkeys(tools_used)))
 
+    if cancel.is_set():
+        logger.warning("[deep_analysis] Cancelled after gathering (%.1fs)", gather_elapsed)
+        return None
 
-_deep_graph = None
+    if not context.strip():
+        context = "No evidence could be gathered. The metadata catalog may be empty or inaccessible."
 
+    # Phase 2: Single LLM analysis call
+    _emit("analyzing", "Generating analysis (this may take 15-30s)...")
+    logger.info("[deep_analysis] STEP FINAL: LLM analysis -- START (context=%.1fKB, model=%s)",
+                len(context) / 1024, MODEL)
 
-def _get_graph():
-    global _deep_graph
-    if _deep_graph is None:
-        _deep_graph = build_deep_graph()
-    return _deep_graph
+    mlflow = get_mlflow()
+    cm = mlflow.start_span(name="llm_analysis") if mlflow else nullcontext()
+    with cm as span:
+        if span:
+            span.set_inputs({"query": query[:200], "context_kb": round(len(context) / 1024, 1)})
+        try:
+            prompt = ANALYSIS_PROMPT if mode == "graphrag" else BASELINE_ANALYSIS_PROMPT
+            resp = _llm().invoke([
+                SystemMessage(content=prompt),
+                HumanMessage(content=f"User question: {query}\n\nGathered Evidence:\n{context}"),
+            ])
+            analysis = resp.content or "Analysis produced no output."
+        except Exception as e:
+            logger.error("[deep_analysis] LLM analysis error: %s", e, exc_info=True)
+            analysis = f"Analysis LLM call failed: {e}. Evidence gathered:\n\n{context[:2000]}"
+        llm_elapsed = round(time.time() - t0 - gather_elapsed, 1)
+        logger.info("[deep_analysis] STEP FINAL: LLM analysis -- DONE in %.1fs (%d chars)",
+                    llm_elapsed, len(analysis))
+        if span:
+            span.set_outputs({"elapsed_s": llm_elapsed, "result_len": len(analysis)})
 
+    total_elapsed = round(time.time() - t0, 1)
+    unique_tools = list(dict.fromkeys(tools_used))
+    logger.info("[deep_analysis] PIPELINE COMPLETE in %.1fs -- mode=%s tools=%s",
+                total_elapsed, mode, unique_tools)
 
-def _init_state(query: str, mode: str) -> DeepAnalysisState:
-    return {
-        "messages": [],
-        "user_query": query,
-        "plan": "",
-        "retrieved_evidence": "",
-        "analysis_result": "",
-        "needs_clarification": False,
-        "clarification_question": "",
-        "next_step": "",
-        "iteration": [],
-        "tool_calls_made": [],
-        "agent_mode": mode,
-        "graph_data": {},
+    result = {
+        "answer": sanitize_output(analysis),
+        "tool_calls": unique_tools,
+        "mode": mode,
+        "steps": len(tools_used),
     }
+    if graph_data and (graph_data.get("nodes") or graph_data.get("edges")):
+        result["graph_data"] = graph_data
+    return result
 
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 def _build_query(message: str, history: Optional[List[Dict]] = None) -> str:
     if history:
@@ -486,21 +457,6 @@ def _build_query(message: str, history: Optional[List[Dict]] = None) -> str:
         lines.append(f"user: {message}")
         return "Conversation so far:\n" + "\n".join(lines) + "\n\nRespond to the latest user message."
     return message
-
-
-def _extract_result(result: dict, mode: str) -> Dict:
-    response = ""
-    for msg in result.get("messages", []):
-        if isinstance(msg, AIMessage) and msg.content and len(msg.content) > len(response):
-            response = msg.content
-    if not response:
-        response = result.get("analysis_result", "Analysis complete but no output was generated.")
-    tools = list(set(result.get("tool_calls_made", [])))
-    out: Dict = {"answer": sanitize_output(response), "tool_calls": tools, "mode": mode, "steps": len(result.get("iteration", []))}
-    gd = result.get("graph_data")
-    if gd and (gd.get("nodes") or gd.get("edges")):
-        out["graph_data"] = gd
-    return out
 
 
 # ---------------------------------------------------------------------------
@@ -515,66 +471,82 @@ def run_deep_analysis(
 ) -> Dict:
     """Non-streaming deep analysis. mode is 'graphrag' or 'baseline'."""
     query = _build_query(message, history)
-    state = _init_state(query, mode)
-    result = _get_graph().invoke(state, config={"recursion_limit": GuardrailConfig.MAX_RECURSION_LIMIT})
-    return _extract_result(result, mode)
+    cancel = threading.Event()
+    result = _run_pipeline(query, mode, cancel)
+    return result or {"answer": "Analysis could not be completed.", "tool_calls": [], "mode": mode}
 
 
 def run_deep_analysis_streaming(
     message: str,
     mode: str = "graphrag",
     history: Optional[List[Dict]] = None,
-) -> queue.Queue:
-    """Streaming deep analysis. Returns a Queue yielding progress events.
+) -> tuple[queue.Queue, threading.Event]:
+    """Streaming deep analysis. Returns (progress_queue, cancel_event).
 
-    Events:
-        {"stage": "planning"|"retrieving"|"analyzing"|"responding", "message": "..."}
+    Events on the queue:
+        {"stage": "gathering"|"analyzing", "message": "..."}
         {"stage": "done", "answer": "...", "tool_calls": [...], "mode": "..."}
         {"stage": "error", "message": "..."}
+
+    Set cancel_event to signal the pipeline to stop at the next step.
     """
     q: queue.Queue = queue.Queue()
+    cancel = threading.Event()
 
     def _run():
         _local.progress_queue = q
         _local.routing_trace = []
+        _local.cancel_event = cancel
         ensure_mlflow_context()
         mlflow = get_mlflow()
         try:
-            _emit("starting", "Starting analysis...", agent="system")
-            logger.info("[deep_analysis] Starting mode=%s query=%s", mode, message[:120])
-            t0 = time.time()
-            query = _build_query(message, history)
-            state = _init_state(query, mode)
-            result = _get_graph().invoke(state, config={"recursion_limit": GuardrailConfig.MAX_RECURSION_LIMIT})
-            extracted = _extract_result(result, mode)
-            elapsed = round(time.time() - t0, 1)
-            logger.info("[deep_analysis] Completed in %.1fs, tools=%s", elapsed, extracted.get("tool_calls"))
-            done_event = {
-                "stage": "done",
-                "answer": extracted["answer"],
-                "tool_calls": extracted["tool_calls"],
-                "mode": mode,
-                "routing_trace": list(_local.routing_trace),
-            }
-            if "graph_data" in extracted:
-                done_event["graph_data"] = extracted["graph_data"]
-            q.put(done_event)
-            if mlflow:
+            cm = mlflow.start_span(name="deep_analysis_streaming") if mlflow else nullcontext()
+            with cm as span:
                 try:
-                    mlflow.log_text(
-                        json.dumps({"mode": mode, "query": message[:200], "elapsed_s": elapsed,
-                                    "tools": extracted.get("tool_calls", []),
-                                    "answer_len": len(extracted.get("answer", ""))}, indent=2),
-                        artifact_file="deep_analysis_result.json",
-                    )
-                except Exception:
-                    pass
-        except Exception as e:
-            logger.error("Streaming deep analysis error: %s", e, exc_info=True)
-            q.put({"stage": "error", "message": str(e)})
+                    if span:
+                        span.set_inputs({"query": message[:200], "mode": mode})
+
+                    _emit("starting", "Starting analysis...", agent="system")
+                    logger.info("[deep_analysis] Starting streaming mode=%s query=%s", mode, message[:120])
+                    t0 = time.time()
+                    query_text = _build_query(message, history)
+
+                    result = _run_pipeline(query_text, mode, cancel)
+
+                    elapsed = round(time.time() - t0, 1)
+
+                    if result and not cancel.is_set():
+                        done_event = {
+                            "stage": "done",
+                            "answer": result["answer"],
+                            "tool_calls": result["tool_calls"],
+                            "mode": mode,
+                            "routing_trace": list(_local.routing_trace),
+                        }
+                        if "graph_data" in result:
+                            done_event["graph_data"] = result["graph_data"]
+                        q.put(done_event)
+                        logger.info("[deep_analysis] Streaming DONE in %.1fs, tools=%s",
+                                    elapsed, result.get("tool_calls"))
+                    elif cancel.is_set():
+                        logger.warning("[deep_analysis] Streaming CANCELLED after %.1fs", elapsed)
+
+                    if span:
+                        status = "cancelled" if cancel.is_set() else "done"
+                        span.set_outputs({
+                            "status": status,
+                            "tools": result.get("tool_calls") if result else [],
+                            "elapsed_s": elapsed,
+                        })
+                except Exception as e:
+                    logger.error("[deep_analysis] Streaming error: %s", e, exc_info=True)
+                    q.put({"stage": "error", "message": str(e)})
+                    if span:
+                        span.set_outputs({"status": "error", "error": str(e)[:200]})
         finally:
             _local.progress_queue = None
             _local.routing_trace = []
+            _local.cancel_event = None
 
     threading.Thread(target=_run, daemon=True).start()
-    return q
+    return q, cancel

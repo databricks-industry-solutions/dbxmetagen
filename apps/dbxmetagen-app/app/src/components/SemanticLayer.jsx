@@ -63,6 +63,7 @@ export default function SemanticLayer() {
   const [editJson, setEditJson] = useState('')
   const [suggestLoading, setSuggestLoading] = useState(false)
   const [suggestQLoading, setSuggestQLoading] = useState(false)
+  const [bulkCreating, setBulkCreating] = useState(false)
 
   // KPI Library
   const [kpis, setKpis] = useState([])
@@ -76,7 +77,7 @@ export default function SemanticLayer() {
   const [error, setError] = useState(null)
   const [activeTab, setActiveTab] = useState('setup')
   const [defFilter, setDefFilter] = useState('')
-  const [defStatusFilter, setDefStatusFilter] = useState('all')
+  const [defStatusFilter, setDefStatusFilter] = useState('validated')
 
   // --- Init ---
   useEffect(() => {
@@ -121,7 +122,7 @@ export default function SemanticLayer() {
         setTaskStatus(data)
         if (data.status === 'done' || data.status === 'error') {
           clearInterval(pollRef.current)
-          if (data.status === 'done') { refreshDefinitions(); loadProjects() }
+          if (data.status === 'done') { refreshDefinitions(); loadProjects(); setActiveTab('definitions') }
         }
       } catch { clearInterval(pollRef.current) }
     }, 2000)
@@ -414,6 +415,15 @@ export default function SemanticLayer() {
     setActionLoading(prev => ({ ...prev, [defId]: null }))
   }
 
+  const createAllValidated = async () => {
+    const validated = definitions.filter(d => d.status === 'validated')
+    if (!validated.length) return
+    if (!createTarget.catalog || !createTarget.schema) { setError('Set a target catalog and schema before creating'); return }
+    setBulkCreating(true)
+    for (const d of validated) await createDefinition(d.definition_id)
+    setBulkCreating(false)
+  }
+
   const getSuggestion = async (defId) => {
     const err = createError[defId]
     if (!err) return
@@ -544,10 +554,14 @@ export default function SemanticLayer() {
           const count = k === 'setup' && selectedTables.length ? `${selectedTables.length} tables`
             : k === 'questions' ? [questionLines.length && `${questionLines.length}q`, kpis.length && `${kpis.length} KPIs`].filter(Boolean).join(', ') || ''
             : k === 'definitions' && definitions.length ? `${definitions.length}` : ''
+          const genReady = k === 'generate' && selectedTables.length > 0 && questionLines.length > 0
+          const genNotReady = k === 'generate' && (!selectedTables.length || !questionLines.length)
           return (
             <button key={k} onClick={() => setActiveTab(k)}
               className={`px-3.5 py-1.5 text-sm rounded-lg transition-all duration-200 ${activeTab === k ? 'bg-white dark:bg-dbx-navy-500 shadow-sm font-semibold text-dbx-lava' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'}`}>
               {l}{count && <span className="ml-1 text-[10px] text-slate-400">({count})</span>}
+              {genReady && <span className="ml-1 inline-block w-1.5 h-1.5 rounded-full bg-green-500" />}
+              {genNotReady && <span className="ml-1 inline-block w-1.5 h-1.5 rounded-full bg-amber-400" />}
             </button>
           )
         })}
@@ -961,7 +975,16 @@ export default function SemanticLayer() {
             <span className="text-gray-400">.</span>
             <input value={createTarget.schema} onChange={e => setCreateTarget(prev => ({ ...prev, schema: e.target.value }))}
               placeholder="schema" className="input-base !text-xs w-40" />
+            {definitions.filter(d => d.status === 'validated').length > 0 && (
+              <button onClick={createAllValidated} disabled={bulkCreating || !createTarget.catalog || !createTarget.schema}
+                className="ml-auto px-3 py-1.5 bg-green-600 text-white rounded text-xs hover:bg-green-700 disabled:opacity-50 whitespace-nowrap">
+                {bulkCreating ? 'Creating...' : `Create All Validated (${definitions.filter(d => d.status === 'validated').length})`}
+              </button>
+            )}
           </div>
+          {(!createTarget.catalog || !createTarget.schema) && definitions.some(d => d.status === 'validated') && (
+            <p className="text-xs text-amber-600 dark:text-amber-400 -mt-2 mb-3">Set a target catalog and schema above before creating metric views in Unity Catalog.</p>
+          )}
 
           {/* Filters (4.2) */}
           <div className="flex items-center gap-2 mb-3">

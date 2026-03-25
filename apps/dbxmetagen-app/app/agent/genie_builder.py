@@ -41,7 +41,11 @@ def _safe_sql(ws: WorkspaceClient, warehouse_id: str, query: str) -> list[dict]:
     try:
         return _run_sql(ws, warehouse_id, query)
     except Exception as e:
-        logger.info("Skipping query (table may not exist): %s", e)
+        err = str(e)
+        if "TABLE_OR_VIEW_NOT_FOUND" in err or "SCHEMA_NOT_FOUND" in err:
+            logger.info("Table not found (expected before pipeline runs): %s", query[:80])
+        else:
+            logger.warning("SQL query failed (non-404): %s — %s", query[:80], e)
         return []
 
 
@@ -217,8 +221,10 @@ class GenieContextAssembler:
                 break
         if not ref:
             return ""
+        # Only include the most essential reference sections to keep prompt lean.
+        # date_function_rules are already in the system prompt rules section.
         parts = []
-        for section_key in ["sql_snippet_patterns", "instruction_templates", "example_sql_patterns", "sample_question_patterns", "date_function_rules"]:
+        for section_key in ["sql_snippet_patterns", "date_function_rules"]:
             val = ref.get(section_key)
             if not val:
                 continue
@@ -227,14 +233,19 @@ class GenieContextAssembler:
                 header = f"\n### {section_key}"
                 if desc:
                     header += f"\n{desc}"
+                # Compact JSON (no indent) to save tokens
                 parts.append(header + "\n" + json.dumps(
-                    {k: v for k, v in val.items() if k != "description"}, indent=2
+                    {k: v for k, v in val.items() if k != "description"},
                 ))
             elif isinstance(val, str):
                 parts.append(f"\n### {section_key}\n{val}")
             else:
-                parts.append(f"\n### {section_key}\n{json.dumps(val, indent=2)}")
-        return "\n".join(parts) if parts else ""
+                parts.append(f"\n### {section_key}\n{json.dumps(val)}")
+        result = "\n".join(parts) if parts else ""
+        # Hard cap to prevent bloated prompts
+        if len(result) > 4000:
+            result = result[:4000] + "\n[truncated]"
+        return result
 
     # -- Data gathering methods -----------------------------------------------
 
@@ -426,23 +437,37 @@ class GenieContextAssembler:
         self, columns: list[dict]
     ) -> dict[str, dict[str, list]]:
         """Sample distinct values for STRING columns (useful for filter suggestions)."""
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
         samples: dict[str, dict[str, list]] = {}
         string_cols = [
             c
             for c in columns
             if c.get("data_type", "").upper() in ("STRING", "VARCHAR")
         ]
-        for col in string_cols[:50]:  # cap to avoid too many queries
+        capped = string_cols[:50]
+        if not capped:
+            return samples
+
+        def _fetch(col):
             tbl = col["table_name"]
             cn = col["column_name"]
             fq_tbl = self._qualify(tbl)
             rows = _safe_sql(
-                self.ws,
-                self.wh,
+                self.ws, self.wh,
                 f"SELECT DISTINCT `{cn}` AS val FROM {fq_tbl} WHERE `{cn}` IS NOT NULL LIMIT 15",
             )
-            if rows:
-                samples.setdefault(tbl, {})[cn] = [r["val"] for r in rows]
+            return tbl, cn, [r["val"] for r in rows] if rows else []
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            futures = {pool.submit(_fetch, c): c for c in capped}
+            for f in as_completed(futures):
+                try:
+                    tbl, cn, vals = f.result(timeout=30)
+                    if vals:
+                        samples.setdefault(tbl, {})[cn] = vals
+                except Exception:
+                    pass  # skip failed columns silently
         return samples
 
     # -- Synonym helpers -------------------------------------------------------
