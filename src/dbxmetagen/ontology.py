@@ -438,7 +438,7 @@ class OntologyConfig:
     column_kb_table: str = "column_knowledge_base"
     nodes_table: str = "graph_nodes"
     incremental: bool = True
-    entity_tag_key: str = "ontology.entity_type"
+    entity_tag_key: str = "ontology_entity_type"
     metadata_cols_per_chunk: int = 120
 
     @property
@@ -919,6 +919,13 @@ class EntityDiscoverer:
                 patterns.update(a.lower() for a in e.typical_attributes)
         return frozenset(patterns)
 
+    def _get_bundle_version(self) -> str:
+        """Derive a version string from the bundle config for incremental tracking."""
+        bundle = self.config.ontology_bundle or "default"
+        meta = self.ontology_config.get("metadata", {})
+        ver = meta.get("version", self.ontology_config.get("ontology", {}).get("version", "1.0"))
+        return f"{bundle}:{ver}"
+
     # ------------------------------------------------------------------
     # LLM helpers
     # ------------------------------------------------------------------
@@ -1035,6 +1042,7 @@ class EntityDiscoverer:
 
     def discover_entities_from_tables(self) -> List[Dict[str, Any]]:
         """Discover entities by matching tables to entity definitions."""
+        current_bv = self._get_bundle_version()
         try:
             if self.config.incremental:
                 try:
@@ -1043,16 +1051,19 @@ class EntityDiscoverer:
                         SELECT kb.table_name, kb.table_short_name, kb.comment, kb.domain
                         FROM {self.config.fully_qualified_kb} kb
                         LEFT JOIN (
-                            SELECT src_table, MAX(created_at) AS last_classified
+                            SELECT src_table, MAX(created_at) AS last_classified,
+                                   MAX(bundle_version) AS last_bundle_version
                             FROM (
-                                SELECT EXPLODE(source_tables) AS src_table, created_at
+                                SELECT EXPLODE(source_tables) AS src_table, created_at, bundle_version
                                 FROM {self.config.fully_qualified_entities}
                                 WHERE COALESCE(attributes['granularity'], 'table') = 'table'
                             )
                             GROUP BY src_table
                         ) oe ON kb.table_name = oe.src_table
                         WHERE kb.table_name IS NOT NULL
-                          AND (oe.last_classified IS NULL OR kb.updated_at > oe.last_classified)
+                          AND (oe.last_classified IS NULL
+                               OR kb.updated_at > oe.last_classified
+                               OR COALESCE(oe.last_bundle_version, '') != '{current_bv}')
                     """
                     )
                     table_count = tables_df.count()
@@ -1517,6 +1528,7 @@ class EntityDiscoverer:
 
     def discover_entities_from_columns(self) -> List[Dict[str, Any]]:
         """Discover entities by matching columns to entity definitions."""
+        current_bv = self._get_bundle_version()
         try:
             if self.config.incremental:
                 try:
@@ -1527,15 +1539,18 @@ class EntityDiscoverer:
                         FROM {self.config.fully_qualified_column_kb} ckb
                         INNER JOIN {self.config.fully_qualified_kb} kb ON ckb.table_name = kb.table_name
                         LEFT JOIN (
-                            SELECT src_table, MAX(created_at) AS last_classified
+                            SELECT src_table, MAX(created_at) AS last_classified,
+                                   MAX(bundle_version) AS last_bundle_version
                             FROM (
-                                SELECT EXPLODE(source_tables) AS src_table, created_at
+                                SELECT EXPLODE(source_tables) AS src_table, created_at, bundle_version
                                 FROM {self.config.fully_qualified_entities}
                                 WHERE attributes['granularity'] = 'column'
                             )
                             GROUP BY src_table
                         ) oe ON ckb.table_name = oe.src_table
-                        WHERE oe.last_classified IS NULL OR kb.updated_at > oe.last_classified
+                        WHERE oe.last_classified IS NULL
+                          OR kb.updated_at > oe.last_classified
+                          OR COALESCE(oe.last_bundle_version, '') != '{current_bv}'
                     """
                     )
                     col_count = cols_df.count()
@@ -2149,7 +2164,7 @@ class OntologyBuilder:
             .get("_bundle_metadata", {})
             .get("tag_key")
         )
-        if bundle_tag_key and config.entity_tag_key in ("entity_type", "ontology.entity_type"):
+        if bundle_tag_key and config.entity_tag_key in ("entity_type", "ontology_entity_type", "ontology.entity_type"):
             config.entity_tag_key = bundle_tag_key
             logger.info(f"Using entity_tag_key '{bundle_tag_key}' from bundle metadata")
         affinity = load_domain_entity_affinity(self.ontology_config)
@@ -2714,7 +2729,9 @@ class OntologyBuilder:
                 action = "failed"
                 try:
                     self.spark.sql(
-                        f"ALTER TABLE {row.table_name} SET TAGS ('{tag_key}' = '{row.entity_type}')"
+                        f"ALTER TABLE {row.table_name} SET TAGS ("
+                        f"'{tag_key}' = '{row.entity_type}', "
+                        f"'ontology_bundle_version' = '{bundle_ver}')"
                     )
                     tagged += 1
                     action = "applied"
@@ -2746,7 +2763,8 @@ class OntologyBuilder:
                 try:
                     self.spark.sql(
                         f"ALTER TABLE {row.table_name} ALTER COLUMN {row.col_name} "
-                        f"SET TAGS ('{tag_key}' = '{row.entity_type}')"
+                        f"SET TAGS ('{tag_key}' = '{row.entity_type}', "
+                        f"'ontology_bundle_version' = '{bundle_ver}')"
                     )
                     tagged += 1
                     action = "applied"
@@ -3774,13 +3792,13 @@ class OntologyBuilder:
                 "updated_at": now,
             })
 
-        # From column_properties object_property columns (and legacy 'link' role)
+        # From column_properties with object_property role
         cp_table = self.config.fully_qualified_column_properties
         try:
             link_rows = self.spark.sql(f"""
                 SELECT DISTINCT owning_entity_type, linked_entity_type, column_name, table_name
                 FROM {cp_table}
-                WHERE property_role IN ('object_property', 'link') AND linked_entity_type IS NOT NULL
+                WHERE property_role = 'object_property' AND linked_entity_type IS NOT NULL
             """).collect()
         except Exception:
             link_rows = []
@@ -3835,6 +3853,38 @@ class OntologyBuilder:
                         "updated_at": now,
                     })
 
+        # Auto-generate inverse edges from EdgeCatalog metadata
+        inverse_rels: List[Dict] = []
+        for rel in rels:
+            rel_name = rel["relationship_name"]
+            if rel_name == "subclass_of":
+                continue
+            inv_name = catalog.get_inverse(rel_name)
+            if not inv_name:
+                continue
+            inv_key = (rel["dst_entity_type"], rel["src_entity_type"])
+            if inv_key in seen:
+                continue
+            seen.add(inv_key)
+            fwd_card = rel.get("cardinality", "1:N")
+            inv_card = "N:1" if fwd_card == "1:N" else ("1:N" if fwd_card == "N:1" else fwd_card)
+            inverse_rels.append({
+                "relationship_id": str(uuid.uuid4()),
+                "src_entity_type": rel["dst_entity_type"],
+                "relationship_name": inv_name,
+                "dst_entity_type": rel["src_entity_type"],
+                "cardinality": inv_card,
+                "evidence_column": rel["evidence_column"],
+                "evidence_table": rel["evidence_table"],
+                "source": "auto_inverse",
+                "confidence": rel["confidence"],
+                "created_at": now,
+                "updated_at": now,
+            })
+        if inverse_rels:
+            rels.extend(inverse_rels)
+            logger.info("Auto-generated %d inverse edges", len(inverse_rels))
+
         if validation_warnings:
             for w in validation_warnings[:10]:
                 logger.warning("edge_catalog validation: %s", w)
@@ -3860,6 +3910,79 @@ class OntologyBuilder:
         df.write.mode("overwrite").saveAsTable(rels_table)
         logger.info("discover_named_relationships: wrote %d relationships", len(rels))
         return len(rels)
+
+    def validate_entity_conformance(self) -> Dict[str, Any]:
+        """Check how well discovered column properties cover each entity's declared schema.
+
+        Compares bundle-defined properties against actual columns in ontology_column_properties.
+        Returns a dict of conformance scores per entity-table pair and logs warnings for
+        low coverage. Does not write back to any table -- purely informational.
+        """
+        results: Dict[str, Any] = {}
+        ent_table = self.config.fully_qualified_entities
+        cp_table = self.config.fully_qualified_column_properties
+
+        try:
+            primary_ents = self.spark.sql(f"""
+                SELECT entity_type, EXPLODE(source_tables) AS table_name
+                FROM {ent_table}
+                WHERE entity_role = 'primary'
+            """).collect()
+        except Exception as e:
+            logger.debug("validate_entity_conformance: cannot read entities: %s", e)
+            return results
+
+        try:
+            cp_rows = self.spark.sql(f"""
+                SELECT table_name, column_name, property_role
+                FROM {cp_table}
+            """).collect()
+        except Exception as e:
+            logger.debug("validate_entity_conformance: cannot read column_properties: %s", e)
+            return results
+
+        # Build lookup: table_name -> set of column names
+        table_columns: Dict[str, set] = {}
+        for r in cp_rows:
+            table_columns.setdefault(r.table_name, set()).add(r.column_name.lower())
+
+        for row in primary_ents:
+            et = row.entity_type
+            tbl = row.table_name
+            edef = self.discoverer._entity_def_map.get(et)
+            if not edef or not edef.properties:
+                continue
+
+            expected_attrs = set()
+            for prop in edef.properties:
+                for attr in prop.typical_attributes:
+                    expected_attrs.add(attr.lower())
+
+            actual_cols = table_columns.get(tbl, set())
+            matched = expected_attrs & actual_cols
+            total = len(expected_attrs)
+            score = len(matched) / total if total > 0 else 1.0
+            missing = sorted(expected_attrs - actual_cols)
+
+            results[f"{et}:{tbl}"] = {
+                "conformance_score": round(score, 3),
+                "matched": len(matched),
+                "total_declared": total,
+                "missing_properties": missing[:10],
+            }
+            if score < 0.5 and total > 2:
+                logger.warning(
+                    "Low conformance for %s on %s: %.0f%% (%d/%d), missing: %s",
+                    et, tbl, score * 100, len(matched), total, ", ".join(missing[:5]),
+                )
+
+        if results:
+            logger.info(
+                "Entity conformance: %d entity-table pairs checked, avg score %.0f%%",
+                len(results),
+                sum(r["conformance_score"] for r in results.values()) / len(results) * 100,
+            )
+        return results
 
     def _snapshot_ontology_state(self) -> Dict[str, Any]:
         """Read current ontology tables into Python dicts for diff comparison."""
@@ -4011,6 +4134,8 @@ class OntologyBuilder:
         col_props = _step("classify_column_properties", self.classify_column_properties)
         logger.info(f"Classified {col_props} column properties")
 
+        _step("validate_entity_conformance", self.validate_entity_conformance)
+
         named_rels = _step("discover_named_relationships", self.discover_named_relationships)
         logger.info(f"Discovered {named_rels} named relationships")
 
@@ -4076,7 +4201,7 @@ def build_ontology(
     apply_tags: bool = False,
     ontology_bundle: str = "",
     incremental: bool = True,
-    entity_tag_key: str = "ontology.entity_type",
+    entity_tag_key: str = "ontology_entity_type",
 ) -> Dict[str, Any]:
     """Convenience function to build the ontology.
 

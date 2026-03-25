@@ -217,7 +217,7 @@ class CommentGenerator(MetadataGenerator):
             )
             response_payload = None
             return chat_response, response_payload
-        except (ValidationError, json.JSONDecodeError, AttributeError, ValueError) as e:
+        except (ValidationError, json.JSONDecodeError, AttributeError) as e:
             if retries < max_retries:
                 logger.warning("Attempt %d failed, retrying: %s", retries + 1, e)
                 return self.get_comment_response(
@@ -343,7 +343,7 @@ class PIIdentifier(MetadataGenerator):
             )
             response_payload = None
             return chat_response, response_payload
-        except (ValidationError, json.JSONDecodeError, AttributeError, ValueError) as e:
+        except (ValidationError, json.JSONDecodeError, AttributeError) as e:
             if retries < max_retries:
                 return self.get_pi_response(
                     config,

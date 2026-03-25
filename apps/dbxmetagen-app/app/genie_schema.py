@@ -299,7 +299,7 @@ def build_serialized_space(raw: dict) -> dict:
             examples.append(ExampleSQL(question=q, sql=s))
 
     # join_specs -- split compound AND, simplify FQ names
-    joins_raw = inst_raw.get("join_specs") or []
+    joins_raw = inst_raw.get("join_specs") or raw.get("join_specs") or []
     joins = []
     for j in joins_raw:
         if isinstance(j.get("left"), dict):

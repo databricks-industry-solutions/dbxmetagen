@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import re
+import time
 from typing import Optional
 
 from databricks.sdk import WorkspaceClient
@@ -16,6 +17,21 @@ from databricks.sdk.service.sql import Format, Disposition
 from langchain_core.tools import tool
 
 logger = logging.getLogger(__name__)
+
+
+def _log_tool(name):
+    """Return a context-manager-like pair (start, finish) for tool timing."""
+    t0 = time.time()
+    logger.info("[TOOL] %s -- start", name)
+    return t0
+
+
+def _log_tool_end(name, t0, error=None):
+    elapsed = round(time.time() - t0, 2)
+    if error:
+        logger.warning("[TOOL] %s -- FAILED in %.2fs: %s", name, elapsed, error)
+    else:
+        logger.info("[TOOL] %s -- done in %.2fs", name, elapsed)
 
 CATALOG = os.environ.get("CATALOG_NAME", "")
 SCHEMA = os.environ.get("SCHEMA_NAME", "")
@@ -54,7 +70,15 @@ def _get_vs_index(index_name: str):
             headers = ws.config.authenticate()
             _token = headers.get("Authorization", "").removeprefix("Bearer ")
         _vsc = VectorSearchClient(workspace_url=ws.config.host, personal_access_token=_token)
-    idx = _vsc.get_index(endpoint_name=VS_ENDPOINT, index_name=index_name)
+    import concurrent.futures
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            idx = pool.submit(_vsc.get_index, endpoint_name=VS_ENDPOINT, index_name=index_name).result(timeout=15)
+    except concurrent.futures.TimeoutError:
+        raise RuntimeError(f"get_index timed out for {index_name} on {VS_ENDPOINT}")
+    except Exception as e:
+        logger.warning("Failed to get VS index %s on endpoint %s: %s", index_name, VS_ENDPOINT, e)
+        raise
     _vs_indexes[index_name] = idx
     return idx
 
@@ -102,6 +126,7 @@ def search_metadata(query: str, doc_type_filter: Optional[str] = None, num_resul
         doc_type_filter: Optional filter -- one of 'table', 'column', 'entity', 'metric_view', 'fk_relationship'.
         num_results: Number of results (1-20).
     """
+    t0 = _log_tool("search_metadata")
     num_results = min(max(num_results, 1), 20)
     vs_index = f"{CATALOG}.{SCHEMA}.{VS_INDEX_SUFFIX}"
     try:
@@ -114,7 +139,11 @@ def search_metadata(query: str, doc_type_filter: Optional[str] = None, num_resul
         if doc_type_filter:
             kwargs["filters"] = {"doc_type": doc_type_filter}
         kwargs["query_type"] = "HYBRID"
-        results = index.similarity_search(**kwargs)
+        # Run VS call with a timeout to prevent indefinite hangs
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(index.similarity_search, **kwargs)
+            results = future.result(timeout=30)
         matches = []
         cols = results.get("manifest", {}).get("columns", [])
         col_names = [c.get("name", f"col{i}") for i, c in enumerate(cols)] if cols else []
@@ -123,8 +152,13 @@ def search_metadata(query: str, doc_type_filter: Optional[str] = None, num_resul
                 matches.append(dict(zip(col_names, row)))
             else:
                 matches.append({"data": row})
+        _log_tool_end("search_metadata", t0)
         return json.dumps({"matches": matches, "count": len(matches)})
+    except concurrent.futures.TimeoutError:
+        _log_tool_end("search_metadata", t0, error="Vector search timed out after 30s")
+        return json.dumps({"error": "Vector search timed out after 30s. The index may not be ready."})
     except Exception as e:
+        _log_tool_end("search_metadata", t0, error=e)
         return json.dumps({"error": str(e)})
 
 
@@ -140,25 +174,31 @@ def execute_metadata_sql(query: str) -> str:
     - table_knowledge_base: table_name, comment, domain, subdomain, has_pii, has_phi, row_count
     - column_knowledge_base: table_name, column_name, comment, data_type, classification, classification_type
     - ontology_entities: entity_id, entity_name, entity_type, description, source_tables, confidence
-    - fk_predictions: src_table, src_column, dst_table, dst_column, final_confidence, cardinality, ai_reasoning
+    - fk_predictions: src_table, src_column, dst_table, dst_column, final_confidence, join_rate, pk_uniqueness, ri_score, ai_reasoning
     - metric_view_definitions: definition_id, metric_view_name, source_table, source_questions, json_definition, status
     - profiling_results: table_name, column_name, distinct_count, null_count, min_value, max_value, avg_value
     - metadata_generation_log: table_name, mode, status, comment
     """
+    t0 = _log_tool("execute_metadata_sql")
     from agent.common import check_select_only
     err = check_select_only(query)
     if err:
+        _log_tool_end("execute_metadata_sql", t0, error=err)
         return json.dumps({"error": err})
     err = _check_table_allowlist(query)
     if err:
+        _log_tool_end("execute_metadata_sql", t0, error=err)
         return json.dumps({"error": err})
     query = _auto_qualify(query, ALLOWED_TABLES)
     try:
         result = _execute_query(query)
         if result["success"]:
+            _log_tool_end("execute_metadata_sql", t0)
             return json.dumps({"columns": result["columns"], "rows": result["rows"][:100], "row_count": result["row_count"]})
+        _log_tool_end("execute_metadata_sql", t0, error=result["error"])
         return json.dumps({"error": result["error"]})
     except Exception as e:
+        _log_tool_end("execute_metadata_sql", t0, error=e)
         return json.dumps({"error": str(e)})
 
 
@@ -176,6 +216,7 @@ def get_table_summary(table_name: str) -> str:
     Args:
         table_name: Fully qualified table name (catalog.schema.table) or short name.
     """
+    t0 = _log_tool("get_table_summary")
     short = table_name.split(".")[-1]
     fq = f"{CATALOG}.{SCHEMA}."
     query = f"""
@@ -210,8 +251,10 @@ def get_table_summary(table_name: str) -> str:
                 sections["columns"].append(data)
             elif sec == "fk":
                 sections["foreign_keys"].append(data)
+        _log_tool_end("get_table_summary", t0)
         return json.dumps(sections)
     except Exception as e:
+        _log_tool_end("get_table_summary", t0, error=e)
         return json.dumps({"error": str(e)})
 
 
@@ -226,6 +269,7 @@ def get_data_quality(table_name_or_domain: str) -> str:
     Args:
         table_name_or_domain: A table name pattern or domain name.
     """
+    t0 = _log_tool("get_data_quality")
     fq_prefix = f"{CATALOG}.{SCHEMA}."
     try:
         result = _execute_query(f"""
@@ -239,9 +283,12 @@ def get_data_quality(table_name_or_domain: str) -> str:
             LIMIT 50
         """)
         if result["success"]:
+            _log_tool_end("get_data_quality", t0)
             return json.dumps({"rows": result["rows"], "row_count": result["row_count"]})
+        _log_tool_end("get_data_quality", t0, error=result["error"])
         return json.dumps({"error": result["error"]})
     except Exception as e:
+        _log_tool_end("get_data_quality", t0, error=e)
         return json.dumps({"error": str(e)})
 
 
@@ -265,6 +312,7 @@ def expand_vs_hits(
         edge_types: Optional filter for edge types (e.g. ['references', 'contains']).
         max_per_node: Max neighbors per starting node.
     """
+    t0 = _log_tool("expand_vs_hits")
     from api_server import graph_query
     all_neighbors = []
     for nid in node_ids[:20]:
@@ -285,6 +333,7 @@ def expand_vs_hits(
         for r in rows:
             r["origin_node"] = nid
         all_neighbors.extend(rows)
+    _log_tool_end("expand_vs_hits", t0)
     return json.dumps({"neighbors": all_neighbors, "count": len(all_neighbors)})
 
 
@@ -309,20 +358,61 @@ def execute_baseline_sql(query: str) -> str:
     - column_knowledge_base: table_name, column_name, comment, data_type, classification, classification_type
     - schema_knowledge_base: catalog_name, schema_name, comment, tables_count
     """
+    t0 = _log_tool("execute_baseline_sql")
     from agent.common import check_select_only
     err = check_select_only(query)
     if err:
+        _log_tool_end("execute_baseline_sql", t0, error=err)
         return json.dumps({"error": err})
     err = _check_baseline_allowlist(query)
     if err:
+        _log_tool_end("execute_baseline_sql", t0, error=err)
         return json.dumps({"error": err})
     query = _auto_qualify(query, BASELINE_TABLES)
     try:
         result = _execute_query(query)
         if result["success"]:
+            _log_tool_end("execute_baseline_sql", t0)
             return json.dumps({"columns": result["columns"], "rows": result["rows"][:100], "row_count": result["row_count"]})
+        _log_tool_end("execute_baseline_sql", t0, error=result["error"])
         return json.dumps({"error": result["error"]})
     except Exception as e:
+        _log_tool_end("execute_baseline_sql", t0, error=e)
+        return json.dumps({"error": str(e)})
+
+
+# ---------------------------------------------------------------------------
+# Tool: Arbitrary read-only SQL (for structured retrieval on discovered tables)
+# ---------------------------------------------------------------------------
+
+@tool
+def execute_data_sql(query: str) -> str:
+    """Execute a read-only SQL query against ANY table the user has access to.
+
+    Use this for querying actual data tables discovered during analysis -- not
+    limited to the metadata knowledge base tables. SELECT only; LIMIT enforced.
+
+    Args:
+        query: A SELECT query. A LIMIT 200 clause is appended if missing.
+    """
+    t0 = _log_tool("execute_data_sql")
+    from agent.common import check_select_only
+    err = check_select_only(query)
+    if err:
+        _log_tool_end("execute_data_sql", t0, error=err)
+        return json.dumps({"error": err})
+    q = query.rstrip().rstrip(";")
+    if not re.search(r'\bLIMIT\b', q, re.IGNORECASE):
+        q += " LIMIT 200"
+    try:
+        result = _execute_query(q)
+        if result["success"]:
+            _log_tool_end("execute_data_sql", t0)
+            return json.dumps({"columns": result["columns"], "rows": result["rows"][:200], "row_count": result["row_count"]})
+        _log_tool_end("execute_data_sql", t0, error=result["error"])
+        return json.dumps({"error": result["error"]})
+    except Exception as e:
+        _log_tool_end("execute_data_sql", t0, error=e)
         return json.dumps({"error": str(e)})
 
 
@@ -334,5 +424,5 @@ ALL_METADATA_TOOLS = [
     query_graph_nodes, get_node_details, find_similar_nodes, traverse_graph,
 ]
 
-GRAPHRAG_TOOLS = ALL_METADATA_TOOLS + [expand_vs_hits]
+GRAPHRAG_TOOLS = ALL_METADATA_TOOLS + [expand_vs_hits, execute_data_sql]
 BASELINE_TOOLS = [execute_baseline_sql]

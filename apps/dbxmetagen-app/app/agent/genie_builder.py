@@ -41,7 +41,11 @@ def _safe_sql(ws: WorkspaceClient, warehouse_id: str, query: str) -> list[dict]:
     try:
         return _run_sql(ws, warehouse_id, query)
     except Exception as e:
-        logger.info("Skipping query (table may not exist): %s", e)
+        err = str(e)
+        if "TABLE_OR_VIEW_NOT_FOUND" in err or "SCHEMA_NOT_FOUND" in err:
+            logger.info("Table not found (expected before pipeline runs): %s", query[:80])
+        else:
+            logger.warning("SQL query failed (non-404): %s — %s", query[:80], e)
         return []
 
 
@@ -161,13 +165,25 @@ class GenieContextAssembler:
             table_meta, column_meta, fk_rows, entity_rows, value_samples, entity_rels
         )
         join_specs = self._build_join_specs(fk_rows)
+        # Build dedup set using short names (handles FQ vs short identifier mismatches)
+        existing_pairs: set[tuple] = set()
+        for js in join_specs:
+            l = js["left"]["identifier"].split(".")[-1].lower()
+            r = js["right"]["identifier"].split(".")[-1].lower()
+            existing_pairs.add(tuple(sorted([l, r])))
+        # Merge ontology joins
         ontology_joins = self._get_ontology_join_specs(table_identifiers)
-        existing_pairs = {(j["left"]["identifier"], j["right"]["identifier"]) for j in join_specs}
         for oj in ontology_joins:
-            pair = (oj["left"]["identifier"], oj["right"]["identifier"])
+            l = oj["left"]["identifier"].split(".")[-1].lower()
+            r = oj["right"]["identifier"].split(".")[-1].lower()
+            pair = tuple(sorted([l, r]))
             if pair not in existing_pairs:
                 join_specs.append(oj)
                 existing_pairs.add(pair)
+        # Merge metric view joins (all MVs, not just applied — joins are structural)
+        selected_shorts = {t.split(".")[-1].lower() for t in table_identifiers}
+        mv_join_specs = self._extract_mv_join_specs(metric_views, existing_pairs, selected_shorts)
+        join_specs.extend(mv_join_specs)
         data_sources = self._build_data_sources(
             table_identifiers, table_meta, applied_mvs,
             column_meta=column_meta, entity_rows=entity_rows,
@@ -205,8 +221,10 @@ class GenieContextAssembler:
                 break
         if not ref:
             return ""
+        # Only include the most essential reference sections to keep prompt lean.
+        # date_function_rules are already in the system prompt rules section.
         parts = []
-        for section_key in ["sql_snippet_patterns", "instruction_templates", "example_sql_patterns", "sample_question_patterns", "date_function_rules"]:
+        for section_key in ["sql_snippet_patterns", "date_function_rules"]:
             val = ref.get(section_key)
             if not val:
                 continue
@@ -215,14 +233,19 @@ class GenieContextAssembler:
                 header = f"\n### {section_key}"
                 if desc:
                     header += f"\n{desc}"
+                # Compact JSON (no indent) to save tokens
                 parts.append(header + "\n" + json.dumps(
-                    {k: v for k, v in val.items() if k != "description"}, indent=2
+                    {k: v for k, v in val.items() if k != "description"},
                 ))
             elif isinstance(val, str):
                 parts.append(f"\n### {section_key}\n{val}")
             else:
-                parts.append(f"\n### {section_key}\n{json.dumps(val, indent=2)}")
-        return "\n".join(parts) if parts else ""
+                parts.append(f"\n### {section_key}\n{json.dumps(val)}")
+        result = "\n".join(parts) if parts else ""
+        # Hard cap to prevent bloated prompts
+        if len(result) > 4000:
+            result = result[:4000] + "\n[truncated]"
+        return result
 
     # -- Data gathering methods -----------------------------------------------
 
@@ -378,7 +401,7 @@ class GenieContextAssembler:
     def _get_metric_views(self, tables: List[str]) -> list[dict]:
         table_list = ", ".join(f"'{t}'" for t in tables)
         short_names = ", ".join(f"'{t.split('.')[-1]}'" for t in tables)
-        return _safe_sql(
+        rows = _safe_sql(
             self.ws,
             self.wh,
             f"""
@@ -388,28 +411,63 @@ class GenieContextAssembler:
               AND (source_table IN ({table_list}) OR source_table IN ({short_names}))
         """,
         )
+        verified = []
+        for mv in rows:
+            if mv.get("status") == "applied":
+                fq_name = f"`{self.catalog}`.`{self.schema}`.`{mv['metric_view_name']}`"
+                try:
+                    r = self.ws.statement_execution.execute_statement(
+                        warehouse_id=self.wh,
+                        statement=f"SELECT 1 FROM {fq_name} LIMIT 1",
+                        wait_timeout="15s",
+                        format=Format.JSON_ARRAY,
+                        disposition=Disposition.INLINE,
+                    )
+                    state = r.status.state.value if r.status and r.status.state else "UNKNOWN"
+                    if state not in ("SUCCEEDED", "CLOSED"):
+                        logger.warning("Metric view %s marked applied but not found in UC -- skipping", mv["metric_view_name"])
+                        continue
+                except Exception:
+                    logger.warning("Metric view %s existence check failed -- skipping", mv["metric_view_name"])
+                    continue
+            verified.append(mv)
+        return verified
 
     def _sample_categorical_values(
         self, columns: list[dict]
     ) -> dict[str, dict[str, list]]:
         """Sample distinct values for STRING columns (useful for filter suggestions)."""
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
         samples: dict[str, dict[str, list]] = {}
         string_cols = [
             c
             for c in columns
             if c.get("data_type", "").upper() in ("STRING", "VARCHAR")
         ]
-        for col in string_cols[:50]:  # cap to avoid too many queries
+        capped = string_cols[:50]
+        if not capped:
+            return samples
+
+        def _fetch(col):
             tbl = col["table_name"]
             cn = col["column_name"]
             fq_tbl = self._qualify(tbl)
             rows = _safe_sql(
-                self.ws,
-                self.wh,
+                self.ws, self.wh,
                 f"SELECT DISTINCT `{cn}` AS val FROM {fq_tbl} WHERE `{cn}` IS NOT NULL LIMIT 15",
             )
-            if rows:
-                samples.setdefault(tbl, {})[cn] = [r["val"] for r in rows]
+            return tbl, cn, [r["val"] for r in rows] if rows else []
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            futures = {pool.submit(_fetch, c): c for c in capped}
+            for f in as_completed(futures):
+                try:
+                    tbl, cn, vals = f.result(timeout=30)
+                    if vals:
+                        samples.setdefault(tbl, {})[cn] = vals
+                except Exception:
+                    pass  # skip failed columns silently
         return samples
 
     # -- Synonym helpers -------------------------------------------------------
@@ -590,6 +648,52 @@ class GenieContextAssembler:
                     ],
                 }
             )
+        return specs
+
+    def _extract_mv_join_specs(
+        self, metric_views: list[dict], existing_pairs: set[tuple],
+        selected_short_names: set[str] | None = None,
+    ) -> list[dict]:
+        """Extract join_specs from metric view json_definition.joins[].
+
+        Only emits a join when BOTH tables are in the selected data sources.
+        FK/ontology joins take priority (existing_pairs checked first).
+        """
+        specs = []
+        for mv in metric_views:
+            jd = mv.get("json_definition") or {}
+            if isinstance(jd, str):
+                try:
+                    jd = json.loads(jd)
+                except (json.JSONDecodeError, TypeError):
+                    continue
+            joins = jd.get("joins", [])
+            source_table = mv.get("source_table", "")
+            left_short = source_table.split(".")[-1].lower()
+            for j in joins:
+                target_fq = j.get("source", "") or j.get("table", "")
+                if not target_fq:
+                    continue
+                right_short = target_fq.split(".")[-1].lower()
+                # Only emit if target table is in the selected data sources
+                if selected_short_names and right_short not in selected_short_names:
+                    continue
+                pair = tuple(sorted([left_short, right_short]))
+                if pair in existing_pairs:
+                    continue
+                on_clause = j.get("on", "")
+                alias = j.get("name", right_short)
+                sql = on_clause.replace("source.", f"{left_short}.")
+                if alias.lower() != right_short:
+                    sql = sql.replace(f"{alias}.", f"{right_short}.")
+                if sql:
+                    existing_pairs.add(pair)
+                    specs.append({
+                        "id": uuid.uuid4().hex[:32],
+                        "left": {"identifier": source_table},
+                        "right": {"identifier": target_fq},
+                        "sql": [sql],
+                    })
         return specs
 
     def _build_data_sources(
@@ -861,3 +965,102 @@ class GenieContextAssembler:
             "filters": filters[:20],
             "expressions": expressions,
         }
+
+
+# ---------------------------------------------------------------------------
+# Section-scoped AI assist for the Genie Space Updater
+# ---------------------------------------------------------------------------
+
+_SECTION_PROMPTS = {
+    "joins": (
+        "Generate join_specs for the given tables. Each join_spec needs:\n"
+        '  {{"left": {{"identifier": "catalog.schema.table1"}}, '
+        '"right": {{"identifier": "catalog.schema.table2"}}, '
+        '"sql": ["table1.col = table2.col"]}}\n'
+        "Return a JSON array of join_spec objects."
+    ),
+    "instructions": (
+        "Generate text_instructions as a markdown string for the given tables. "
+        "Include data relationships, business rules, disambiguation of common columns, "
+        "and usage tips. Return as: {{\"text_instructions\": \"...\"}}"
+    ),
+    "questions": (
+        "Generate sample_questions for business users of these tables. "
+        "Return as: {{\"sample_questions\": [\"question1\", \"question2\", ...]}}"
+    ),
+    "measures": (
+        "Generate SQL snippet measures for the given tables. Each measure needs:\n"
+        '  {{"alias": "...", "display_name": "...", "sql": ["..."], "synonyms": ["..."], "description": "..."}}\n'
+        "Return as: {{\"measures\": [...]}}"
+    ),
+    "filters": (
+        "Generate SQL snippet filters for the given tables. Each filter needs:\n"
+        '  {{"display_name": "...", "sql": ["..."]}}\n'
+        "Return as: {{\"filters\": [...]}}"
+    ),
+    "expressions": (
+        "Generate SQL snippet expressions (computed columns) for the given tables. Each needs:\n"
+        '  {{"alias": "...", "display_name": "...", "sql": ["..."], "synonyms": ["..."]}}\n'
+        "Return as: {{\"expressions\": [...]}}"
+    ),
+    "example_sql": (
+        "Generate example_question_sqls for these tables. Each needs:\n"
+        '  {{"question": ["..."], "sql": ["SELECT ..."]}}\n'
+        "Return as: {{\"example_question_sqls\": [...]}}"
+    ),
+    "synonyms": (
+        "Generate synonyms for columns and measures in the given tables. "
+        "Return as: {{\"synonyms\": {{\"column_or_measure_name\": [\"syn1\", \"syn2\"]}}}}"
+    ),
+}
+
+
+def generate_section_assist(
+    ws: WorkspaceClient,
+    warehouse_id: str,
+    catalog: str,
+    schema: str,
+    section: str,
+    table_identifiers: list[str],
+    existing_items: list | dict | None = None,
+    user_prompt: str = "",
+    model_endpoint: str | None = None,
+) -> dict:
+    """Generate a single section of a Genie space definition via a targeted LLM call."""
+    from langchain_community.chat_models import ChatDatabricks
+
+    model = model_endpoint or os.environ.get("LLM_MODEL", "databricks-claude-sonnet-4-6")
+    llm = ChatDatabricks(endpoint=model, temperature=0.1, max_tokens=8192, max_retries=1, request_timeout=120)
+
+    assembler = GenieContextAssembler(ws, warehouse_id, catalog, schema)
+    ctx = assembler.assemble(table_identifiers)
+
+    section_prompt = _SECTION_PROMPTS.get(section, _SECTION_PROMPTS["instructions"])
+    existing_text = ""
+    if existing_items:
+        existing_text = (
+            f"\n\nExisting items (do NOT duplicate, only generate NEW ones):\n"
+            f"{json.dumps(existing_items, indent=2)[:4000]}"
+        )
+    user_extra = f"\n\nUser request: {user_prompt}" if user_prompt else ""
+
+    system = (
+        f"You are a Genie Space configuration expert. Generate ONLY the requested section.\n\n"
+        f"=== METADATA CONTEXT ===\n{ctx['context_text'][:8000]}\n\n"
+        f"=== TASK ===\n{section_prompt}{existing_text}{user_extra}\n\n"
+        f"Output ONLY valid JSON wrapped in ```json ``` fences. No explanation."
+    )
+    messages = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": f"Generate the {section} section now."},
+    ]
+    try:
+        result = llm.invoke(messages)
+        content = getattr(result, "content", "") or ""
+        import re
+        m = re.search(r"```(?:json)?\s*\n?(.*?)```", content, re.DOTALL)
+        raw = m.group(1).strip() if m else content.strip()
+        return json.loads(raw)
+    except Exception as e:
+        logger.warning("Section assist failed for %s: %s", section, e)
+        return {"error": str(e)}

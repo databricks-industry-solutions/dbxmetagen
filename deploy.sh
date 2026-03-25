@@ -147,6 +147,9 @@ trap cleanup EXIT
 echo ""
 echo "=== Validating bundle ==="
 DEPLOY_VARS=(--var "deploying_user=${CURRENT_USER}")
+if [ -n "${node_type:-}" ]; then
+    DEPLOY_VARS+=(--var "node_type=${node_type}")
+fi
 if [ -n "${APP_SP_ID}" ]; then
     DEPLOY_VARS+=(--var "app_service_principal_application_id=${APP_SP_ID}")
 fi

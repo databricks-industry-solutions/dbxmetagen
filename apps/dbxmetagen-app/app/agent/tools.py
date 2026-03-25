@@ -5,6 +5,7 @@ first, then falls back to UC Delta tables.
 """
 
 import logging
+import time
 from typing import Optional
 
 from langchain_core.tools import tool
@@ -12,10 +13,18 @@ from langchain_core.tools import tool
 logger = logging.getLogger(__name__)
 
 
-def _gq(query: str) -> list[dict]:
+def _gq(query: str, tool_name: str = "graph_query") -> list[dict]:
     """Execute a graph query with automatic Lakebase PG -> UC Delta fallback."""
+    t0 = time.time()
+    logger.info("[TOOL] %s -- start", tool_name)
     from api_server import graph_query
-    return graph_query(query)
+    try:
+        rows = graph_query(query)
+    except Exception as e:
+        logger.warning("[TOOL] %s -- error in %.2fs: %s", tool_name, time.time() - t0, e)
+        return []
+    logger.info("[TOOL] %s -- done in %.2fs (%d rows)", tool_name, time.time() - t0, len(rows))
+    return rows
 
 
 # ---------------------------------------------------------------------------
@@ -50,7 +59,7 @@ def query_graph_nodes(
         f"short_description, sensitivity, status, ontology_id, ontology_type "
         f"FROM public.graph_nodes {where} LIMIT {limit}"
     )
-    return _gq(q)
+    return _gq(q, "query_graph_nodes")
 
 
 @tool
@@ -61,7 +70,7 @@ def get_node_details(node_id: str) -> dict:
         node_id: The node id to look up.
     """
     q = f"SELECT * FROM public.graph_nodes WHERE id = '{node_id}'"
-    rows = _gq(q)
+    rows = _gq(q, "get_node_details")
     return rows[0] if rows else {}
 
 
@@ -85,7 +94,7 @@ def find_similar_nodes(node_id: str, min_similarity: float = 0.8, limit: int = 1
           AND e.weight >= {min_similarity}
         ORDER BY e.weight DESC LIMIT {limit}
     """
-    return _gq(q)
+    return _gq(q, "find_similar_nodes")
 
 
 @tool
@@ -109,14 +118,23 @@ def traverse_graph(
         edge_type: Optional edge_type filter (contains, references, instance_of, similar_to, etc.).
         direction: 'outgoing' (follow src->dst), 'incoming' (follow dst->src), or 'both'.
     """
+    t0 = time.time()
+    logger.info("[TOOL] traverse_graph -- start (node=%s, hops=%d)", start_node, max_hops)
     from api_server import multi_hop_traverse
-    return multi_hop_traverse(
-        start_node=start_node,
-        max_hops=min(max_hops, 5),
-        relationship=relationship,
-        edge_type=edge_type,
-        direction=direction,
-    )
+    try:
+        result = multi_hop_traverse(
+            start_node=start_node,
+            max_hops=min(max_hops, 5),
+            relationship=relationship,
+            edge_type=edge_type,
+            direction=direction,
+        )
+    except Exception as e:
+        logger.warning("[TOOL] traverse_graph -- error in %.2fs: %s", time.time() - t0, e)
+        return {"nodes": {}, "edges": [], "error": str(e)}
+    n_nodes = len(result.get("nodes", {})) if isinstance(result, dict) else 0
+    logger.info("[TOOL] traverse_graph -- done in %.2fs (%d nodes)", time.time() - t0, n_nodes)
+    return result
 
 
 ALL_TOOLS = [query_graph_nodes, get_node_details, find_similar_nodes, traverse_graph]

@@ -516,9 +516,13 @@ def append_column_rows(
     n_cols = len(response.columns)
     n_contents = len(response.column_contents)
     if n_cols != n_contents:
+        paired = min(n_cols, n_contents)
+        skipped = response.columns[paired:] if n_cols > n_contents else response.column_contents[paired:]
+        skipped_names = [str(s) for s in skipped]
         logger.warning(
-            "LLM response column count mismatch: %d columns vs %d contents. "
-            "Truncating to shorter list.", n_cols, n_contents
+            "LLM returned %d contents for %d columns. "
+            "Skipped columns (no metadata): %s. Re-run to fill gaps.",
+            n_contents, n_cols, skipped_names,
         )
 
     for i, (column_name, column_content) in enumerate(

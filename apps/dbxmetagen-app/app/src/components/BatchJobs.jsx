@@ -151,7 +151,7 @@ export default function BatchJobs({ onNavigate }) {
   const [health, setHealth] = useState(null)
   const [activeTab, setActiveTab] = useState('core')
   const [similarityThreshold, setSimilarityThreshold] = useState(0.8)
-  const [incremental, setIncremental] = useState(false)
+  const [incremental, setIncremental] = useState(true)
   const [clusterMinK, setClusterMinK] = useState(2)
   const [clusterMaxK, setClusterMaxK] = useState(15)
   const [lakebaseCatalog, setLakebaseCatalog] = useState('')
@@ -164,7 +164,7 @@ export default function BatchJobs({ onNavigate }) {
     use_kb_comments: false,
     include_lineage: false,
     build_kb_after: true,
-    use_serverless: false,
+    use_serverless: true,
   })
   const setSetting = (key, value) => setSettings(prev => {
     const next = { ...prev, [key]: value }

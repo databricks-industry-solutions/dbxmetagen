@@ -208,6 +208,23 @@ dbxmetagen has two phases:
 | **Graph** | `graph_nodes`, `graph_edges`, `node_cluster_assignments`, `clustering_metrics` | Graph analytics with embeddings, similarity edges, and K-means clustering |
 | **Ontology** | `ontology_entities`, `ontology_metrics` (stub) | Business entity discovery and validation |
 
+### Relationship to semantic web standards
+
+dbxmetagen's ontology and graph system is inspired by — but does not implement — formal semantic web standards. Here's an honest comparison:
+
+| Standard | What it does | How dbxmetagen relates |
+|----------|-------------|----------------------|
+| **RDF** (triples: subject, predicate, object) | Standard data model for knowledge graphs | `graph_nodes` + `graph_edges` stores triples in Delta tables — nodes have types and properties, edges have labels, direction, and confidence. Functionally similar but SQL-queryable, not a triple store. No RDF serialization on the read or write path. |
+| **OWL** (Web Ontology Language) | Formal class hierarchies with automated reasoning | Ontology bundles define entity types with keywords, typed properties, and `parent` (subclass_of) relationships. Discovery uses LLM classification + keyword matching, not a formal OWL reasoner. Bundles are YAML, not OWL — simpler to author but without automated inference or transitive closure. |
+| **SHACL** (Shapes Constraint Language) | Validates graph data against declared shapes | `validate_ontology_completeness()` checks that discovered entity types cover the bundle's defined types. `validate_entity_conformance()` checks whether discovered column properties match the bundle's declared property schema. Similar in purpose to SHACL but implemented as Python/SQL checks, not a constraint language. |
+| **SPARQL** (Semantic query language) | Query language for RDF graphs | All graph queries use SQL against Delta tables. The GraphRAG agent and Graph Explorer traverse `graph_nodes`/`graph_edges` via SQL joins. Vector search is used for semantic metadata retrieval (finding relevant docs/tables), not for graph traversal. |
+
+Industry bundles (`healthcare.yaml`, `financial_services.yaml`) use entity names and relationship vocabulary aligned with domain standards — for example, `Patient` maps to FHIR Patient, `Condition` maps to FHIR Condition / OMOP CONDITION_OCCURRENCE. This is naming alignment, not formal ontology import. The bundles don't parse or reference OWL/RDF files.
+
+A JSON-LD export endpoint (`/api/ontology/export`) serializes discovered entities, relationships, and column properties with a Schema.org `@context`. It maps 7 core entity types to Schema.org classes (Person, Organization, Product, Event, Place, Patient, DigitalDocument); everything else maps to `schema:Thing`. This provides basic interoperability for tools that consume JSON-LD but is not a complete RDF graph export.
+
+The design choice is pragmatic: every consumer in the stack (Genie, agents, the dashboard, downstream SQL) speaks SQL natively. Adopting a triple store or SPARQL endpoint would add infrastructure without benefiting the primary use case of metadata management on Databricks.
+
 ## API Reference
 
 Core functions exported by the `dbxmetagen` package:

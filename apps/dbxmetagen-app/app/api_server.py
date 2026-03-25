@@ -27,6 +27,18 @@ from db import pg_execute, get_engine, pg_configured
 
 logger = logging.getLogger(__name__)
 
+
+class _PollLogFilter(logging.Filter):
+    """Suppress repetitive access log lines for polling endpoints."""
+    _POLL_FRAGMENTS = ("/api/agent/deep/task/", "/api/genie/tasks/")
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        return not any(frag in msg for frag in self._POLL_FRAGMENTS)
+
+
+logging.getLogger("uvicorn.access").addFilter(_PollLogFilter())
+
 # ---------------------------------------------------------------------------
 # TTL caches -- shared across the process lifetime of the Databricks App
 # ---------------------------------------------------------------------------
@@ -204,15 +216,26 @@ def _ensure_review_updated_at(table_key: str):
             logger.warning("_ensure_review_updated_at(%s) failed: %s", table_key, e)
 
 
+_pg_fallback_warned = False
+
+
 def graph_query(sql: str) -> list[dict]:
     """Query graph tables: try Lakebase PG first, fall back to UC Delta tables."""
+    global _pg_fallback_warned
     if pg_configured():
         try:
             return pg_execute(sql)
         except HTTPException:
-            logger.warning("PG graph query failed, falling back to UC")
+            if not _pg_fallback_warned:
+                logger.warning("Lakebase PG not connected, using UC Delta for graph queries")
+                _pg_fallback_warned = True
         except Exception as e:
-            logger.warning("PG graph query unexpected error: %s, falling back to UC", e)
+            if not _pg_fallback_warned:
+                logger.warning("Lakebase PG not connected (%s), using UC Delta for graph queries", e)
+                _pg_fallback_warned = True
+    elif not _pg_fallback_warned:
+        logger.info("Lakebase not configured (PGHOST not set), using UC Delta for graph queries")
+        _pg_fallback_warned = True
     uc_sql = sql.replace("public.graph_nodes", fq("graph_nodes")).replace(
         "public.graph_edges", fq("graph_edges")
     )
@@ -458,6 +481,9 @@ class GenieGenerateRequest(BaseModel):
     metric_view_names: list[str] = []
     kpi_names: list[str] = []
     model_endpoint: str = _LLM_MODEL
+    business_context: Optional[str] = None
+    refinement_feedback: Optional[str] = None
+    prior_result: Optional[dict] = None
 
 
 class SuggestQuestionsRequest(BaseModel):
@@ -475,6 +501,14 @@ class GenieCreateRequest(BaseModel):
     serialized_space: dict
     warehouse_id: Optional[str] = None
     space_id: Optional[str] = None  # if provided, update instead of create
+
+
+class GenieUpdateAssistRequest(BaseModel):
+    section: str  # joins, instructions, questions, measures, filters, expressions, example_sql, synonyms
+    table_identifiers: list[str] = []
+    existing_items: Optional[list | dict] = None
+    user_prompt: str = ""
+    model_endpoint: str = _LLM_MODEL
 
 
 # ---------------------------------------------------------------------------
@@ -1199,7 +1233,29 @@ def generate_ddl(body: GenerateDDLBody):
     else:
         raise HTTPException(400, "scope must be table, schema, column, or geo")
 
-    sql = "\n".join(stmts) if stmts else "-- No DDL generated"
+    diagnostic = None
+    if not stmts and ddl_type == "sensitivity":
+        try:
+            diag_rows = execute_sql(
+                f"SELECT COUNT(*) AS total, "
+                f"COUNT(classification) AS with_class, "
+                f"SUM(CASE WHEN classification IS NOT NULL AND LOWER(classification) != 'none' AND classification != '' THEN 1 ELSE 0 END) AS usable "
+                f"FROM {col_kb} LIMIT 1"
+            )
+            if diag_rows:
+                d = diag_rows[0]
+                diagnostic = (
+                    f"column_knowledge_base has {d.get('total', 0)} rows, "
+                    f"{d.get('with_class', 0)} with classification set, "
+                    f"{d.get('usable', 0)} usable (non-null, non-None). "
+                    "If 0 usable, run the PI classification pipeline step first."
+                )
+        except Exception:
+            pass
+
+    sql = "\n".join(stmts) if stmts else (
+        f"-- No DDL generated ({diagnostic})" if diagnostic else "-- No DDL generated"
+    )
 
     vol_path = None
     if stmts:
@@ -2269,7 +2325,7 @@ class OntologyApplyBody(BaseModel):
 def _apply_ontology_tags_from_tables(
     selections: Optional[list] = None,
 ) -> dict:
-    """Read ontology_entities and ontology_column_properties, apply ontology.* UC tags to tables/columns.
+    """Read ontology_entities and ontology_column_properties, apply ontology_* UC tags to tables/columns.
 
     When *selections* is provided, only matching (entity_type, source_table) pairs are applied.
     """
@@ -2298,7 +2354,7 @@ def _apply_ontology_tags_from_tables(
                 allowed_pairs.add((et.strip(), t.strip()))
                 allowed_tables.add(t.strip())
 
-    # Table-level: ontology.entity_type, ontology.domain, ontology.confidence from ontology_entities
+    # Table-level: ontology_entity_type, ontology_domain, ontology_confidence from ontology_entities
     try:
         ent_q = f"""
             SELECT e.entity_type, e.confidence, e.source_tables, e.entity_role,
@@ -2353,10 +2409,11 @@ def _apply_ontology_tags_from_tables(
         if not _SAFE_IDENT_RE.match(tbl.replace(".", "x")):
             continue
         conf_str = str(round(vals.get("conf_max", 0), 2))
-        tags = [f"('ontology.entity_type' = '{_esc_sql(vals['entity_type'])}')"]
-        tags.append(f"('ontology.confidence' = '{conf_str}')")
+        tags = [f"'ontology_entity_type' = '{_esc_sql(vals['entity_type'])}'"]
+        tags.append(f"'ontology_confidence' = '{conf_str}'")
         if vals.get("domain"):
-            tags.append(f"('ontology.domain' = '{_esc_sql(vals['domain'])}')")
+            tags.append(f"'ontology_domain' = '{_esc_sql(vals['domain'])}'")
+
         sql = f"ALTER TABLE {tbl} SET TAGS ({', '.join(tags)})"
         try:
             execute_sql(sql, warehouse_id=wh_id, timeout=30)
@@ -2364,7 +2421,7 @@ def _apply_ontology_tags_from_tables(
         except Exception as ex:
             table_results.append({"table": tbl, "ok": False, "error": str(ex)})
 
-    # Column-level: ontology.property_role, ontology.edge, ontology.linked_entity, ontology.confidence
+    # Column-level: ontology_property_role, ontology_edge, ontology_linked_entity, ontology_confidence
     try:
         cp_q = f"""
             SELECT table_name, column_name, property_role, confidence, linked_entity_type
@@ -2397,12 +2454,13 @@ def _apply_ontology_tags_from_tables(
             continue
         col_safe = col.replace("`", "")
         edge = rel_edge.get((tbl, col), "")
-        tags = [f"('ontology.property_role' = '{_esc_sql(role)}')"]
-        tags.append(f"('ontology.confidence' = '{conf_str}')")
+        tags = [f"'ontology_property_role' = '{_esc_sql(role)}'"]
+        tags.append(f"'ontology_confidence' = '{conf_str}'")
         if edge:
-            tags.append(f"('ontology.edge' = '{_esc_sql(edge)}')")
+            tags.append(f"'ontology_edge' = '{_esc_sql(edge)}'")
         if linked:
-            tags.append(f"('ontology.linked_entity' = '{_esc_sql(linked)}')")
+            tags.append(f"'ontology_linked_entity' = '{_esc_sql(linked)}'")
+
         sql = f"ALTER TABLE {tbl} ALTER COLUMN `{col_safe}` SET TAGS ({', '.join(tags)})"
         try:
             execute_sql(sql, warehouse_id=wh_id, timeout=30)
@@ -2430,9 +2488,9 @@ def _apply_ontology_tags_from_tables(
 
 @app.post("/api/ontology/apply-tags")
 def ontology_apply_tags(body: Optional[OntologyApplyBody] = Body(default=None)):
-    """Apply ontology.* namespaced UC tags from ontology_entities and ontology_column_properties.
-    Reads from ontology tables and applies: ontology.entity_type, ontology.domain, ontology.confidence
-    at table level; ontology.property_role, ontology.edge, ontology.linked_entity, ontology.confidence
+    """Apply ontology_* namespaced UC tags from ontology_entities and ontology_column_properties.
+    Reads from ontology tables and applies: ontology_entity_type, ontology_domain, ontology_confidence
+    at table level; ontology_property_role, ontology_edge, ontology_linked_entity, ontology_confidence
     at column level. Returns a summary of tags applied."""
     sels = None
     if body and body.selections:
@@ -2482,10 +2540,24 @@ def export_ontology_jsonld(
     except Exception:
         pass
 
+    col_props_rows = []
     try:
-        _ = execute_sql(f"SELECT 1 FROM {base}.`ontology_column_properties` LIMIT 1", warehouse_id=wh_id, timeout=15)
+        col_props_rows = execute_sql(
+            f"SELECT * FROM {base}.`ontology_column_properties`",
+            warehouse_id=wh_id, timeout=60,
+        )
     except Exception:
         pass
+
+    _SCHEMA_ORG_TYPE_MAP = {
+        "Person": "schema:Person",
+        "Organization": "schema:Organization",
+        "Product": "schema:Product",
+        "Event": "schema:Event",
+        "Location": "schema:Place",
+        "Patient": "schema:Patient",
+        "Document": "schema:DigitalDocument",
+    }
 
     context = {
         "schema": "https://schema.org/",
@@ -2503,9 +2575,10 @@ def export_ontology_jsonld(
         src_tables = e.get("source_tables") or []
         if isinstance(src_tables, str):
             src_tables = [src_tables] if src_tables else []
+        schema_type = _SCHEMA_ORG_TYPE_MAP.get(et, "schema:Thing")
         node = {
             "@id": f"ontology:Entity/{et}",
-            "@type": "schema:Thing",
+            "@type": schema_type,
             "entity_type": et,
             "schema:name": et,
             "confidence": e.get("confidence"),
@@ -2524,6 +2597,24 @@ def export_ontology_jsonld(
             "ontology:from": {"@id": f"ontology:Entity/{src}"},
             "ontology:to": {"@id": f"ontology:Entity/{dst}"},
             "ontology:relationshipName": name,
+        })
+
+    for cp in col_props_rows:
+        entity = cp.get("owning_entity_type") or ""
+        col = cp.get("column_name") or ""
+        tbl = cp.get("table_name") or ""
+        if not entity or not col:
+            continue
+        prop_id = f"{tbl}.{col}".replace("`", "")
+        graph.append({
+            "@id": f"ontology:Property/{prop_id}",
+            "@type": "ontology:ColumnProperty",
+            "ontology:owningEntity": {"@id": f"ontology:Entity/{entity}"},
+            "ontology:columnName": col,
+            "ontology:tableName": tbl,
+            "property_role": cp.get("property_role"),
+            "confidence": cp.get("confidence"),
+            "ontology:discoveryMethod": cp.get("discovery_method"),
         })
 
     result = {"@context": context, "@graph": graph}
@@ -3714,6 +3805,21 @@ def delete_project(project_id: str):
         f"WHERE project_id = '{project_id}'"
     )
     return {"deleted": True}
+
+
+class ProjectTablesUpdate(BaseModel):
+    selected_tables: list[str]
+
+
+@app.patch("/api/semantic-layer/projects/{project_id}/tables")
+def update_project_tables(project_id: str, req: ProjectTablesUpdate):
+    _ensure_semantic_layer_tables()
+    tables_json = json.dumps(req.selected_tables).replace("'", "''")
+    execute_sql(
+        f"UPDATE {fq('semantic_layer_projects')} SET selected_tables = '{tables_json}' "
+        f"WHERE project_id = '{project_id}'"
+    )
+    return {"project_id": project_id, "selected_tables": req.selected_tables}
 
 
 # --- In-app metric view generation ---
@@ -5818,8 +5924,8 @@ def genie_generate(req: GenieGenerateRequest):
         "round": 0,
     }
 
-    # Total wall-clock backstop (slightly over agent's 10-min deadline so agent kills first)
-    _MONITOR_WALL_TIMEOUT = 660
+    # Total wall-clock backstop: context assembly ~60s + LLM call ~300s + SQL validation ~60s + recovery ~300s
+    _MONITOR_WALL_TIMEOUT = 600
 
     def _run():
         try:
@@ -5830,12 +5936,33 @@ def genie_generate(req: GenieGenerateRequest):
             progress_q: queue.Queue = queue.Queue()
 
             _genie_tasks[task_id]["stage"] = "gathering_context"
+            ctx_t0 = time.time()
             assembler = GenieContextAssembler(ws, wh, CATALOG, SCHEMA)
             ctx = assembler.assemble(
                 req.table_identifiers,
                 req.questions or None,
                 metric_view_names=req.metric_view_names or None,
             )
+            ctx_elapsed = round(time.time() - ctx_t0, 1)
+            ctx_len = len(ctx.get("context_text", ""))
+            logger.info(
+                "Genie context assembly: %.1fs, %d tables, %d join_specs, %d context_text chars",
+                ctx_elapsed, len(req.table_identifiers), len(ctx.get("join_specs", [])), ctx_len,
+            )
+            if ctx_len < 100:
+                raise ValueError(
+                    "No metadata found for the selected tables. "
+                    "Ensure the knowledge base pipeline has been run (build_knowledge_base) "
+                    "and the correct catalog/schema is configured."
+                )
+
+            if req.business_context and req.business_context.strip():
+                biz_block = (
+                    "\n\nBUSINESS CONTEXT (provided by the user -- this defines the semantic frame for all analysis):\n"
+                    + req.business_context.strip()
+                    + "\n"
+                )
+                ctx["context_text"] = biz_block + ctx.get("context_text", "")
 
             if req.kpi_names:
                 _ensure_kpi_table()
@@ -5856,14 +5983,14 @@ def genie_generate(req: GenieGenerateRequest):
                     remaining = _MONITOR_WALL_TIMEOUT - (time.time() - started_at)
                     if remaining <= 0:
                         elapsed = round(time.time() - started_at)
-                        rnd = _genie_tasks[task_id].get("round", 0)
                         _genie_tasks[task_id].update({
                             "status": "error",
                             "error": (
-                                f"Timed out after {elapsed}s and {rnd} tool round(s). "
+                                f"Generation timed out after {elapsed}s. "
                                 "Try selecting fewer tables or simplifying the request."
                             ),
                             "elapsed_seconds": elapsed,
+                            "rounds_completed": 0,
                         })
                         return
                     try:
@@ -5900,12 +6027,20 @@ def genie_generate(req: GenieGenerateRequest):
             monitor = threading.Thread(target=_monitor_progress, daemon=True)
             monitor.start()
 
-            run_genie_agent(ws, wh, ctx, progress_q, model_endpoint=req.model_endpoint)
+            run_genie_agent(
+                ws, wh, ctx, progress_q,
+                model_endpoint=req.model_endpoint,
+                refinement_feedback=req.refinement_feedback,
+                prior_result=req.prior_result,
+            )
         except Exception as e:
             logger.error("Genie builder error: %s", e, exc_info=True)
             elapsed = round(time.time() - started_at)
-            rnd = _genie_tasks[task_id].get("round", 0)
-            _genie_tasks[task_id].update({
+            task = _genie_tasks.get(task_id)
+            if not task or task.get("status") == "error":
+                return  # task already cleaned up or monitor already recorded the error
+            rnd = max(task.get("round", 0), task.get("rounds_completed", 0))
+            task.update({
                 "status": "error",
                 "error": str(e),
                 "elapsed_seconds": elapsed,
@@ -6107,6 +6242,27 @@ def _strip_out_of_scope_sql(ss: dict) -> dict:
         items = snippets.get(category, [])
         snippets[category] = [it for it in items if _refs_ok(it.get("sql", []))]
 
+    # Filter join_specs: check table.column refs in join SQL
+    join_specs = inst.get("join_specs", [])
+    if join_specs:
+        valid_short = {v.split(".")[-1].lower() for v in valid_ids}
+        all_valid = valid_ids | valid_short
+        valid_joins = []
+        for js in join_specs:
+            sql_list = js.get("sql", [])
+            # Join SQL uses table.column format (no FROM/JOIN keywords), extract table refs
+            join_refs = set()
+            for sql in sql_list:
+                join_refs.update(m.lower() for m in re.findall(r'\b(\w+)\.\w+', sql))
+            if join_refs and all(ref in all_valid for ref in join_refs):
+                valid_joins.append(js)
+            elif not join_refs:
+                valid_joins.append(js)  # No table refs to check — keep it
+            else:
+                bad = join_refs - all_valid
+                logger.warning("Stripped out-of-scope join_spec referencing: %s", bad)
+        inst["join_specs"] = valid_joins
+
     return ss
 
 
@@ -6268,6 +6424,38 @@ def genie_create(req: GenieCreateRequest):
 
 
 # ---------------------------------------------------------------------------
+# Genie Space updater AI assist
+# ---------------------------------------------------------------------------
+
+@app.post("/api/genie/update-assist")
+def genie_update_assist(req: GenieUpdateAssistRequest):
+    """AI-assisted generation of a single section of a Genie space definition."""
+    valid_sections = {"joins", "instructions", "questions", "measures", "filters", "expressions", "example_sql", "synonyms"}
+    if req.section not in valid_sections:
+        raise HTTPException(400, detail=f"Invalid section '{req.section}'. Must be one of: {', '.join(sorted(valid_sections))}")
+    if not req.table_identifiers:
+        raise HTTPException(400, detail="table_identifiers required")
+    ws = get_workspace_client()
+    wh = os.environ.get("WAREHOUSE_ID", "")
+    if not wh:
+        raise HTTPException(500, detail="WAREHOUSE_ID not configured")
+    cat = os.environ.get("CATALOG_NAME", "")
+    sch = os.environ.get("SCHEMA_NAME", "")
+    from agent.genie_builder import generate_section_assist
+    result = generate_section_assist(
+        ws=ws, warehouse_id=wh, catalog=cat, schema=sch,
+        section=req.section,
+        table_identifiers=req.table_identifiers,
+        existing_items=req.existing_items,
+        user_prompt=req.user_prompt,
+        model_endpoint=req.model_endpoint,
+    )
+    if "error" in result and len(result) == 1:
+        raise HTTPException(500, detail=result["error"])
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Genie Space tracking endpoints
 # ---------------------------------------------------------------------------
 
@@ -6314,6 +6502,104 @@ def track_genie_space(space_id: str, title: str, tables: list[str], config_json:
         timeout=30,
     )
     return {"ok": True}
+
+
+def _parse_serialized_space(raw) -> dict:
+    """Robustly parse a serialized_space value that may be a dict, JSON string, double-encoded, or wrapped API response."""
+    def _unwrap(d: dict) -> dict:
+        if "serialized_space" in d and ("space_id" in d or "title" in d):
+            return _parse_serialized_space(d["serialized_space"])
+        return d
+
+    if isinstance(raw, dict):
+        return _unwrap(raw)
+    if not isinstance(raw, str):
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    if isinstance(parsed, str):
+        try:
+            parsed = json.loads(parsed)
+        except (json.JSONDecodeError, TypeError):
+            return {}
+    if isinstance(parsed, dict):
+        return _unwrap(parsed)
+    return {}
+
+
+@app.get("/api/genie/spaces/{space_id}/definition")
+def get_genie_space_definition(space_id: str):
+    """Return the full serialized_space for a Genie space.
+
+    Checks the tracked genie_spaces table first (has config_json).
+    Falls back to fetching live from the Databricks Genie API.
+    If tracked config_json is empty/corrupt, fetches live and backfills.
+    """
+    _ensure_genie_tracking_table()
+    tracked_rows = execute_sql(
+        f"SELECT title, config_json, COALESCE(version, 1) as version "
+        f"FROM {fq('genie_spaces')} "
+        f"WHERE space_id = '{space_id}' AND deleted_at IS NULL "
+        f"AND COALESCE(status, 'active') = 'active' "
+        f"ORDER BY version DESC LIMIT 1",
+        timeout=15,
+    )
+    tracked_row = tracked_rows[0] if tracked_rows else None
+    tracked_ss = {}
+    if tracked_row and tracked_row.get("config_json"):
+        tracked_ss = _parse_serialized_space(tracked_row["config_json"])
+        logger.info("get_genie_space_definition: tracked space %s, config_json type=%s, parsed keys=%s",
+                     space_id, type(tracked_row["config_json"]).__name__, list(tracked_ss.keys())[:10])
+
+    cj_type = type(tracked_row["config_json"]).__name__ if tracked_row and tracked_row.get("config_json") else None
+    cj_len = len(str(tracked_row.get("config_json", ""))) if tracked_row else 0
+
+    if tracked_ss and tracked_ss.get("data_sources"):
+        return {
+            "space_id": space_id,
+            "title": tracked_row.get("title", ""),
+            "description": tracked_ss.get("description", ""),
+            "serialized_space": tracked_ss,
+            "tracked": tracked_row is not None,
+            "version": int(tracked_row.get("version", 1)) if tracked_row else 1,
+            "_debug": {"source": "tracked", "config_json_type": cj_type, "config_json_len": cj_len, "parsed_keys": list(tracked_ss.keys())[:10]},
+        }
+
+    # Tracked config_json was missing/empty/corrupt -- fetch live from Genie API
+    try:
+        ws = get_workspace_client()
+        resp = ws.api_client.do("GET", f"/api/2.0/genie/spaces/{space_id}")
+        ss_raw = resp.get("serialized_space", "{}")
+        ss = _parse_serialized_space(ss_raw)
+        logger.info("get_genie_space_definition: API space %s, raw type=%s, parsed keys=%s",
+                     space_id, type(ss_raw).__name__, list(ss.keys())[:10])
+
+        # Backfill tracked row's config_json if it was empty
+        if tracked_row and ss:
+            try:
+                backfill = json.dumps(ss).replace("'", "''")
+                execute_sql(
+                    f"UPDATE {fq('genie_spaces')} SET config_json = '{backfill}', updated_at = current_timestamp() "
+                    f"WHERE space_id = '{space_id}' AND COALESCE(status, 'active') = 'active' AND deleted_at IS NULL",
+                    timeout=30,
+                )
+                logger.info("Backfilled config_json for tracked space %s", space_id)
+            except Exception as bf_err:
+                logger.warning("Failed to backfill config_json for %s: %s", space_id, bf_err)
+
+        return {
+            "space_id": space_id,
+            "title": resp.get("title", resp.get("display_name", tracked_row.get("title", "") if tracked_row else "")),
+            "description": resp.get("description", ""),
+            "serialized_space": ss,
+            "tracked": tracked_row is not None,
+            "version": int(tracked_row.get("version", 1)) if tracked_row else 1,
+            "_debug": {"source": "live_api", "config_json_type": cj_type, "config_json_len": cj_len, "parsed_keys": list(ss.keys())[:10], "backfilled": tracked_row is not None and bool(ss)},
+        }
+    except Exception as e:
+        raise HTTPException(404, detail=f"Could not load Genie space {space_id}: {e}")
 
 
 @app.delete("/api/genie/spaces/{space_id}")
@@ -6426,6 +6712,13 @@ def update_kpi(kpi_id: str, req: KpiRequest):
         timeout=30,
     )
     return {"ok": True, "validation_status": v_status, "validation_error": v_error}
+
+
+@app.delete("/api/kpis")
+def delete_all_kpis():
+    _ensure_kpi_table()
+    execute_sql(f"DELETE FROM {fq('kpi_definitions')}", timeout=30)
+    return {"ok": True}
 
 
 @app.delete("/api/kpis/{kpi_id}")
@@ -6647,6 +6940,29 @@ async def agent_chat(req: AgentChatRequest):
 
 
 # ---------------------------------------------------------------------------
+# Plot generation from agent responses
+# ---------------------------------------------------------------------------
+
+class PlotRequest(BaseModel):
+    content: str
+    history: list = []
+
+
+@app.post("/api/agent/plot")
+def agent_plot(req: PlotRequest):
+    """Generate a chart specification from an agent response."""
+    if not req.content:
+        return {"no_data": True, "reason": "No content provided"}
+    try:
+        from agent.metadata_agent import create_plot_spec
+        spec = create_plot_spec(req.content, req.history)
+        return spec
+    except Exception as e:
+        logger.error("Plot agent error: %s", e, exc_info=True)
+        return {"no_data": True, "reason": str(e)}
+
+
+# ---------------------------------------------------------------------------
 # Task-based deep analysis (background task + polling, avoids HTTP timeout)
 # ---------------------------------------------------------------------------
 
@@ -6671,24 +6987,33 @@ def agent_deep_submit(req: AgentChatRequest):
         raise HTTPException(503, detail=f"Deep analysis agent not available: {e}")
 
     task_id = str(_uuid.uuid4())[:12]
-    _deep_tasks[task_id] = {"status": "running", "stage": "starting", "created": time.time()}
+    _deep_tasks[task_id] = {"status": "running", "stage": "starting", "message": "", "steps": [], "elapsed_ms": 0, "created": time.time()}
 
-    progress_q = run_deep_analysis_streaming(req.message, mode=mode, history=req.history)
+    progress_q, cancel_event = run_deep_analysis_streaming(req.message, mode=mode, history=req.history)
+
+    _DEEP_WALL_TIMEOUT = 300  # 5-minute absolute max (new pipeline typically finishes in ~90s)
 
     def _monitor():
+        wall_deadline = time.time() + _DEEP_WALL_TIMEOUT
         try:
             while True:
-                try:
-                    event = progress_q.get(timeout=600)
-                except queue.Empty:
-                    _deep_tasks[task_id] = {
-                        **_deep_tasks[task_id],
+                if time.time() > wall_deadline:
+                    cancel_event.set()
+                    elapsed_s = int(time.time() - _deep_tasks[task_id]["created"])
+                    _deep_tasks[task_id].update({
                         "status": "error",
-                        "error": "Analysis timed out after 10 minutes.",
-                    }
+                        "error": f"Analysis timed out after {elapsed_s}s. Try a simpler question.",
+                        "elapsed_ms": elapsed_s * 1000,
+                    })
                     return
+                remaining = max(wall_deadline - time.time(), 1)
+                try:
+                    event = progress_q.get(timeout=min(remaining, 30))
+                except queue.Empty:
+                    continue
                 if event.get("stage") == "done":
                     created = _deep_tasks[task_id]["created"]
+                    prev_steps = _deep_tasks[task_id].get("steps", [])
                     _deep_tasks[task_id] = {
                         "status": "done",
                         "stage": "done",
@@ -6696,6 +7021,7 @@ def agent_deep_submit(req: AgentChatRequest):
                         "tool_calls": event.get("tool_calls", []),
                         "mode": event.get("mode", mode),
                         "routing_trace": event.get("routing_trace"),
+                        "steps": prev_steps,
                         "created": created,
                         "elapsed_ms": int((time.time() - created) * 1000),
                     }
@@ -6707,7 +7033,14 @@ def agent_deep_submit(req: AgentChatRequest):
                         "error": event.get("message", "Unknown error"),
                     }
                     return
-                _deep_tasks[task_id]["stage"] = event.get("stage", "running")
+                stage = event.get("stage", "running")
+                msg = event.get("message", "")
+                _deep_tasks[task_id]["stage"] = stage
+                _deep_tasks[task_id]["message"] = msg
+                _deep_tasks[task_id].setdefault("steps", []).append({
+                    "stage": stage, "message": msg, "ts": time.time(),
+                })
+                _deep_tasks[task_id]["elapsed_ms"] = int((time.time() - _deep_tasks[task_id]["created"]) * 1000)
         except Exception as e:
             logger.error("Deep task monitor error: %s", e, exc_info=True)
             _deep_tasks[task_id] = {
@@ -6742,7 +7075,7 @@ def agent_deep_poll(task_id: str):
 @app.get("/api/agent/stats")
 def agent_stats():
     """Summary statistics for the agent landing page."""
-    stats = {}
+    stats = {"lakebase_connected": pg_configured()}
     try:
         rows = execute_sql(f"SELECT COUNT(*) AS cnt FROM {fq('table_knowledge_base')}")
         stats["tables_profiled"] = rows[0]["cnt"] if rows else 0
