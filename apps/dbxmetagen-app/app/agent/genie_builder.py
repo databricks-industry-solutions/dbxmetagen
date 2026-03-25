@@ -965,3 +965,102 @@ class GenieContextAssembler:
             "filters": filters[:20],
             "expressions": expressions,
         }
+
+
+# ---------------------------------------------------------------------------
+# Section-scoped AI assist for the Genie Space Updater
+# ---------------------------------------------------------------------------
+
+_SECTION_PROMPTS = {
+    "joins": (
+        "Generate join_specs for the given tables. Each join_spec needs:\n"
+        '  {{"left": {{"identifier": "catalog.schema.table1"}}, '
+        '"right": {{"identifier": "catalog.schema.table2"}}, '
+        '"sql": ["table1.col = table2.col"]}}\n'
+        "Return a JSON array of join_spec objects."
+    ),
+    "instructions": (
+        "Generate text_instructions as a markdown string for the given tables. "
+        "Include data relationships, business rules, disambiguation of common columns, "
+        "and usage tips. Return as: {{\"text_instructions\": \"...\"}}"
+    ),
+    "questions": (
+        "Generate sample_questions for business users of these tables. "
+        "Return as: {{\"sample_questions\": [\"question1\", \"question2\", ...]}}"
+    ),
+    "measures": (
+        "Generate SQL snippet measures for the given tables. Each measure needs:\n"
+        '  {{"alias": "...", "display_name": "...", "sql": ["..."], "synonyms": ["..."], "description": "..."}}\n'
+        "Return as: {{\"measures\": [...]}}"
+    ),
+    "filters": (
+        "Generate SQL snippet filters for the given tables. Each filter needs:\n"
+        '  {{"display_name": "...", "sql": ["..."]}}\n'
+        "Return as: {{\"filters\": [...]}}"
+    ),
+    "expressions": (
+        "Generate SQL snippet expressions (computed columns) for the given tables. Each needs:\n"
+        '  {{"alias": "...", "display_name": "...", "sql": ["..."], "synonyms": ["..."]}}\n'
+        "Return as: {{\"expressions\": [...]}}"
+    ),
+    "example_sql": (
+        "Generate example_question_sqls for these tables. Each needs:\n"
+        '  {{"question": ["..."], "sql": ["SELECT ..."]}}\n'
+        "Return as: {{\"example_question_sqls\": [...]}}"
+    ),
+    "synonyms": (
+        "Generate synonyms for columns and measures in the given tables. "
+        "Return as: {{\"synonyms\": {{\"column_or_measure_name\": [\"syn1\", \"syn2\"]}}}}"
+    ),
+}
+
+
+def generate_section_assist(
+    ws: WorkspaceClient,
+    warehouse_id: str,
+    catalog: str,
+    schema: str,
+    section: str,
+    table_identifiers: list[str],
+    existing_items: list | dict | None = None,
+    user_prompt: str = "",
+    model_endpoint: str | None = None,
+) -> dict:
+    """Generate a single section of a Genie space definition via a targeted LLM call."""
+    from langchain_community.chat_models import ChatDatabricks
+
+    model = model_endpoint or os.environ.get("LLM_MODEL", "databricks-claude-sonnet-4-6")
+    llm = ChatDatabricks(endpoint=model, temperature=0.1, max_tokens=8192, max_retries=1, request_timeout=120)
+
+    assembler = GenieContextAssembler(ws, warehouse_id, catalog, schema)
+    ctx = assembler.assemble(table_identifiers)
+
+    section_prompt = _SECTION_PROMPTS.get(section, _SECTION_PROMPTS["instructions"])
+    existing_text = ""
+    if existing_items:
+        existing_text = (
+            f"\n\nExisting items (do NOT duplicate, only generate NEW ones):\n"
+            f"{json.dumps(existing_items, indent=2)[:4000]}"
+        )
+    user_extra = f"\n\nUser request: {user_prompt}" if user_prompt else ""
+
+    system = (
+        f"You are a Genie Space configuration expert. Generate ONLY the requested section.\n\n"
+        f"=== METADATA CONTEXT ===\n{ctx['context_text'][:8000]}\n\n"
+        f"=== TASK ===\n{section_prompt}{existing_text}{user_extra}\n\n"
+        f"Output ONLY valid JSON wrapped in ```json ``` fences. No explanation."
+    )
+    messages = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": f"Generate the {section} section now."},
+    ]
+    try:
+        result = llm.invoke(messages)
+        content = getattr(result, "content", "") or ""
+        import re
+        m = re.search(r"```(?:json)?\s*\n?(.*?)```", content, re.DOTALL)
+        raw = m.group(1).strip() if m else content.strip()
+        return json.loads(raw)
+    except Exception as e:
+        logger.warning("Section assist failed for %s: %s", section, e)
+        return {"error": str(e)}

@@ -174,7 +174,7 @@ def execute_metadata_sql(query: str) -> str:
     - table_knowledge_base: table_name, comment, domain, subdomain, has_pii, has_phi, row_count
     - column_knowledge_base: table_name, column_name, comment, data_type, classification, classification_type
     - ontology_entities: entity_id, entity_name, entity_type, description, source_tables, confidence
-    - fk_predictions: src_table, src_column, dst_table, dst_column, final_confidence, cardinality, ai_reasoning
+    - fk_predictions: src_table, src_column, dst_table, dst_column, final_confidence, join_rate, pk_uniqueness, ri_score, ai_reasoning
     - metric_view_definitions: definition_id, metric_view_name, source_table, source_questions, json_definition, status
     - profiling_results: table_name, column_name, distinct_count, null_count, min_value, max_value, avg_value
     - metadata_generation_log: table_name, mode, status, comment
@@ -381,6 +381,41 @@ def execute_baseline_sql(query: str) -> str:
         return json.dumps({"error": str(e)})
 
 
+# ---------------------------------------------------------------------------
+# Tool: Arbitrary read-only SQL (for structured retrieval on discovered tables)
+# ---------------------------------------------------------------------------
+
+@tool
+def execute_data_sql(query: str) -> str:
+    """Execute a read-only SQL query against ANY table the user has access to.
+
+    Use this for querying actual data tables discovered during analysis -- not
+    limited to the metadata knowledge base tables. SELECT only; LIMIT enforced.
+
+    Args:
+        query: A SELECT query. A LIMIT 200 clause is appended if missing.
+    """
+    t0 = _log_tool("execute_data_sql")
+    from agent.common import check_select_only
+    err = check_select_only(query)
+    if err:
+        _log_tool_end("execute_data_sql", t0, error=err)
+        return json.dumps({"error": err})
+    q = query.rstrip().rstrip(";")
+    if not re.search(r'\bLIMIT\b', q, re.IGNORECASE):
+        q += " LIMIT 200"
+    try:
+        result = _execute_query(q)
+        if result["success"]:
+            _log_tool_end("execute_data_sql", t0)
+            return json.dumps({"columns": result["columns"], "rows": result["rows"][:200], "row_count": result["row_count"]})
+        _log_tool_end("execute_data_sql", t0, error=result["error"])
+        return json.dumps({"error": result["error"]})
+    except Exception as e:
+        _log_tool_end("execute_data_sql", t0, error=e)
+        return json.dumps({"error": str(e)})
+
+
 # Re-export existing graph tools
 from agent.tools import query_graph_nodes, get_node_details, find_similar_nodes, traverse_graph  # noqa: E402, F401
 
@@ -389,5 +424,5 @@ ALL_METADATA_TOOLS = [
     query_graph_nodes, get_node_details, find_similar_nodes, traverse_graph,
 ]
 
-GRAPHRAG_TOOLS = ALL_METADATA_TOOLS + [expand_vs_hits]
+GRAPHRAG_TOOLS = ALL_METADATA_TOOLS + [expand_vs_hits, execute_data_sql]
 BASELINE_TOOLS = [execute_baseline_sql]

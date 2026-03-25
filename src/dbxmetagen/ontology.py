@@ -438,7 +438,7 @@ class OntologyConfig:
     column_kb_table: str = "column_knowledge_base"
     nodes_table: str = "graph_nodes"
     incremental: bool = True
-    entity_tag_key: str = "ontology.entity_type"
+    entity_tag_key: str = "ontology_entity_type"
     metadata_cols_per_chunk: int = 120
 
     @property
@@ -918,6 +918,13 @@ class EntityDiscoverer:
                 patterns.update(k.lower() for k in e.keywords)
                 patterns.update(a.lower() for a in e.typical_attributes)
         return frozenset(patterns)
+
+    def _get_bundle_version(self) -> str:
+        """Derive a version string from the bundle config for incremental tracking."""
+        bundle = self.config.ontology_bundle or "default"
+        meta = self.ontology_config.get("metadata", {})
+        ver = meta.get("version", self.ontology_config.get("ontology", {}).get("version", "1.0"))
+        return f"{bundle}:{ver}"
 
     # ------------------------------------------------------------------
     # LLM helpers
@@ -2157,7 +2164,7 @@ class OntologyBuilder:
             .get("_bundle_metadata", {})
             .get("tag_key")
         )
-        if bundle_tag_key and config.entity_tag_key in ("entity_type", "ontology.entity_type"):
+        if bundle_tag_key and config.entity_tag_key in ("entity_type", "ontology_entity_type", "ontology.entity_type"):
             config.entity_tag_key = bundle_tag_key
             logger.info(f"Using entity_tag_key '{bundle_tag_key}' from bundle metadata")
         affinity = load_domain_entity_affinity(self.ontology_config)
@@ -2724,7 +2731,7 @@ class OntologyBuilder:
                     self.spark.sql(
                         f"ALTER TABLE {row.table_name} SET TAGS ("
                         f"'{tag_key}' = '{row.entity_type}', "
-                        f"'ontology.bundle_version' = '{bundle_ver}')"
+                        f"'ontology_bundle_version' = '{bundle_ver}')"
                     )
                     tagged += 1
                     action = "applied"
@@ -2757,7 +2764,7 @@ class OntologyBuilder:
                     self.spark.sql(
                         f"ALTER TABLE {row.table_name} ALTER COLUMN {row.col_name} "
                         f"SET TAGS ('{tag_key}' = '{row.entity_type}', "
-                        f"'ontology.bundle_version' = '{bundle_ver}')"
+                        f"'ontology_bundle_version' = '{bundle_ver}')"
                     )
                     tagged += 1
                     action = "applied"
@@ -4194,7 +4201,7 @@ def build_ontology(
     apply_tags: bool = False,
     ontology_bundle: str = "",
     incremental: bool = True,
-    entity_tag_key: str = "ontology.entity_type",
+    entity_tag_key: str = "ontology_entity_type",
 ) -> Dict[str, Any]:
     """Convenience function to build the ontology.
 

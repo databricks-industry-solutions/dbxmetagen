@@ -108,6 +108,8 @@ function ReviewEditor() {
   const [volumeFilesLoading, setVolumeFilesLoading] = useState(false)
   const [volumeFilesError, setVolumeFilesError] = useState(null)
   const [ddlError, setDdlError] = useState(null)
+  const [globalOntoApplying, setGlobalOntoApplying] = useState(false)
+  const [globalOntoResult, setGlobalOntoResult] = useState(null)
 
   useEffect(() => { fetch('/api/ontology/entity-type-options').then(r => r.json()).then(d => setEntityTypeOptions(Array.isArray(d) ? d : [])).catch(() => {}) }, [])
 
@@ -393,6 +395,49 @@ function ReviewEditor() {
           </div>
         </>
       )}
+
+      {/* Global Ontology Apply Bar */}
+      {show('ontology') && reviewData.length > 0 && (() => {
+        const allSelections = reviewData.flatMap(tbl =>
+          (tbl.ontology_entities || [])
+            .filter(e => Number(e.confidence ?? 0) >= ontoConfThreshold)
+            .map(e => {
+              let sc = e.source_columns
+              if (typeof sc === 'string') { try { sc = JSON.parse(sc) } catch {} }
+              return { entity_type: entityTypeOverrides[e.entity_id] || e.entity_type, source_tables: [tbl.table_name], source_columns: Array.isArray(sc) ? sc : [], entity_role: e.entity_role || 'primary' }
+            })
+        )
+        return allSelections.length > 0 ? (
+          <div className="card p-4 flex flex-wrap items-center gap-3">
+            <span className="text-sm font-semibold text-slate-700 dark:text-slate-200">Ontology Tags</span>
+            <label className="text-xs text-slate-500 flex items-center gap-1">
+              Min Confidence:
+              <input type="number" min="0" max="1" step="0.05" value={ontoConfThreshold}
+                onChange={ev => setOntoConfThreshold(Number(ev.target.value))}
+                className="text-xs border border-slate-300 rounded px-1.5 py-0.5 bg-white dark:bg-dbx-navy/60 dark:text-slate-200 w-16" />
+            </label>
+            <button onClick={async () => {
+              setGlobalOntoApplying(true); setGlobalOntoResult(null)
+              try {
+                const r = await fetch('/api/ontology/apply-tags', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ selections: allSelections }) })
+                const j = await r.json().catch(() => ({}))
+                setGlobalOntoResult(r.ok ? j : { error: j.detail || j })
+              } catch (err) { setGlobalOntoResult({ error: err.message }) }
+              setGlobalOntoApplying(false)
+            }} disabled={globalOntoApplying}
+              className="px-4 py-1.5 bg-purple-600 text-white rounded-lg text-sm font-medium hover:bg-purple-700 disabled:opacity-50 shadow-sm">
+              {globalOntoApplying ? 'Applying...' : `Apply All Ontology Tags (${allSelections.length} entities, conf \u2265 ${ontoConfThreshold})`}
+            </button>
+            {globalOntoResult && (
+              <span className={`text-xs ${globalOntoResult.error ? 'text-red-600' : 'text-green-600'}`}>
+                {globalOntoResult.error
+                  ? String(typeof globalOntoResult.error === 'object' ? JSON.stringify(globalOntoResult.error) : globalOntoResult.error)
+                  : `Done: ${(globalOntoResult.results || []).filter(r => r.ok).length} table tags, ${(globalOntoResult.column_results || []).filter(r => r.ok).length} column tags applied`}
+              </span>
+            )}
+          </div>
+        ) : null
+      })()}
 
       {/* Combined Data View */}
       {reviewData.length > 0 && (

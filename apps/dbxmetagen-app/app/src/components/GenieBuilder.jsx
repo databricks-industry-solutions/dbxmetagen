@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react'
 import { safeFetchObj, ErrorBanner } from '../App'
 import { cachedFetch, TTL } from '../apiCache'
 import { PageHeader, EmptyState, SkeletonTable } from './ui'
+import GenieUpdater from './GenieUpdater'
 
 const STAGES = {
   starting: 'Starting...',
@@ -25,6 +26,8 @@ function formatElapsed(seconds) {
 }
 
 export default function GenieBuilder() {
+  const [editingSpaceId, setEditingSpaceId] = useState(null)
+  const [loadByIdValue, setLoadByIdValue] = useState('')
   const [tables, setTables] = useState([])
   const [selectedTables, setSelectedTables] = useState([])
   const [metricViews, setMetricViews] = useState([])
@@ -235,6 +238,10 @@ export default function GenieBuilder() {
     setSelectedTables(prev =>
       allSelected ? prev.filter(id => !ids.includes(id)) : [...new Set([...prev, ...ids])]
     )
+  }
+
+  if (editingSpaceId) {
+    return <GenieUpdater spaceId={editingSpaceId} onBack={() => { setEditingSpaceId(null); loadTrackedSpaces() }} />
   }
 
   return (
@@ -633,7 +640,9 @@ export default function GenieBuilder() {
                     <td className="px-3 py-2 text-slate-600 dark:text-slate-400">{s.version || 1}</td>
                     <td className="px-3 py-2 text-slate-600 dark:text-slate-400 text-xs">{Array.isArray(s.tables) ? s.tables.length : 0}</td>
                     <td className="px-3 py-2 text-xs text-slate-500">{s.updated_at ? new Date(s.updated_at).toLocaleString() : ''}</td>
-                    <td className="px-3 py-2">
+                    <td className="px-3 py-2 flex gap-2">
+                      <button onClick={() => setEditingSpaceId(s.space_id)}
+                        className="text-xs text-blue-600 hover:text-blue-800 hover:underline">Edit</button>
                       <button onClick={async () => {
                         if (!confirm(`Delete Genie space "${s.title}"?`)) return
                         try {
@@ -650,6 +659,21 @@ export default function GenieBuilder() {
           </div>
         </div>
       )}
+
+      {/* Load by Space ID */}
+      <div className="card p-5">
+        <h3 className="text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">Edit Existing Space by ID</h3>
+        <div className="flex gap-2">
+          <input value={loadByIdValue} onChange={e => setLoadByIdValue(e.target.value)}
+            placeholder="Paste a Genie Space ID..."
+            className="flex-1 border border-slate-200 dark:border-slate-600 rounded-md px-3 py-2 text-sm bg-dbx-oat-light dark:bg-slate-700 text-slate-800 dark:text-slate-200" />
+          <button onClick={() => { if (loadByIdValue.trim()) setEditingSpaceId(loadByIdValue.trim()) }}
+            disabled={!loadByIdValue.trim()}
+            className="px-4 py-2 text-sm font-medium rounded-md bg-dbx-navy text-white hover:bg-slate-700 disabled:opacity-50 transition-colors">
+            Load
+          </button>
+        </div>
+      </div>
     </div>
   )
 }
