@@ -680,6 +680,7 @@ class CommentPrompt(Prompt):
                     7. Return ONLY the JSON dictionary
                     8. Do not include example values in the comment if the values are PII.
                     9. If lineage information (upstream/downstream tables) is provided, use it to understand data provenance and inform your descriptions (e.g. note that a table is derived from specific sources).
+                    10. Do NOT include rapidly-changing statistics such as exact row counts, specific date ranges, or current min/max values (e.g. avoid "this table has 50 rows" or "dates range from 2020-01-02 to 2026-03-04"). These go stale quickly. Instead describe the general nature of the data (e.g. "contains daily records" or "stores timestamped events"). Structural patterns like formats, data types, distinct-count magnitudes, and null rates are fine.
                     """,
                 },
                 {
@@ -909,6 +910,7 @@ class CommentNoDataPrompt(Prompt):
                     7. Return ONLY the JSON dictionary
                     8. Do not include example values in the comment ever.
                     9. If lineage information (upstream/downstream tables) is provided, use it to understand data provenance and inform your descriptions (e.g. note that a table is derived from specific sources).
+                    10. Do NOT include rapidly-changing statistics such as exact row counts, specific date ranges, or current min/max values (e.g. avoid "this table has 50 rows" or "dates range from 2020-01-02 to 2026-03-04"). These go stale quickly. Instead describe the general nature of the data (e.g. "contains daily records" or "stores timestamped events"). Structural patterns like formats, data types, distinct-count magnitudes, and null rates are fine.
                     """,
                 },
                 {

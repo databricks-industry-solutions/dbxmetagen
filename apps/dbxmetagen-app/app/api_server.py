@@ -2981,6 +2981,21 @@ def fk_apply_from_predictions(body: FKApplyPredictionsBody):
     return {"results": results}
 
 
+@app.post("/api/analytics/fk-generate-sql")
+def fk_generate_sql(body: FKApplyPredictionsBody):
+    """Generate FK constraint DDL statements without executing them."""
+    statements = []
+    for p in body.predictions:
+        src_short = p.src_column.split(".")[-1] if "." in p.src_column else p.src_column
+        dst_short = p.dst_column.split(".")[-1] if "." in p.dst_column else p.dst_column
+        constraint = f"fk_{src_short}_{dst_short}"
+        statements.append(
+            f"ALTER TABLE {p.src_table} ADD CONSTRAINT {constraint} "
+            f"FOREIGN KEY ({src_short}) REFERENCES {p.dst_table}({dst_short});"
+        )
+    return {"sql": "\n".join(statements), "count": len(statements)}
+
+
 @app.post("/api/analytics/fk-apply-as-tags")
 def fk_apply_as_tags(body: FKApplyPredictionsBody):
     """Apply FK relationships as column tags (requires APPLY_TAG, not MANAGE).
@@ -6556,7 +6571,7 @@ def get_genie_space_definition(space_id: str):
     cj_type = type(tracked_row["config_json"]).__name__ if tracked_row and tracked_row.get("config_json") else None
     cj_len = len(str(tracked_row.get("config_json", ""))) if tracked_row else 0
 
-    if tracked_ss and tracked_ss.get("data_sources"):
+    if tracked_ss:
         return {
             "space_id": space_id,
             "title": tracked_row.get("title", ""),
@@ -6570,11 +6585,11 @@ def get_genie_space_definition(space_id: str):
     # Tracked config_json was missing/empty/corrupt -- fetch live from Genie API
     try:
         ws = get_workspace_client()
-        resp = ws.api_client.do("GET", f"/api/2.0/genie/spaces/{space_id}")
+        resp = ws.api_client.do("GET", f"/api/2.0/genie/spaces/{space_id}?include_serialized_space=true")
         ss_raw = resp.get("serialized_space", "{}")
         ss = _parse_serialized_space(ss_raw)
-        logger.info("get_genie_space_definition: API space %s, raw type=%s, parsed keys=%s",
-                     space_id, type(ss_raw).__name__, list(ss.keys())[:10])
+        logger.info("get_genie_space_definition: API space %s, raw type=%s, parsed keys=%s, resp_keys=%s",
+                     space_id, type(ss_raw).__name__, list(ss.keys())[:10], list(resp.keys())[:15])
 
         # Backfill tracked row's config_json if it was empty
         if tracked_row and ss:
@@ -6596,7 +6611,7 @@ def get_genie_space_definition(space_id: str):
             "serialized_space": ss,
             "tracked": tracked_row is not None,
             "version": int(tracked_row.get("version", 1)) if tracked_row else 1,
-            "_debug": {"source": "live_api", "config_json_type": cj_type, "config_json_len": cj_len, "parsed_keys": list(ss.keys())[:10], "backfilled": tracked_row is not None and bool(ss)},
+            "_debug": {"source": "live_api", "config_json_type": cj_type, "config_json_len": cj_len, "parsed_keys": list(ss.keys())[:10], "raw_resp_keys": list(resp.keys())[:15], "ss_raw_type": type(ss_raw).__name__, "backfilled": tracked_row is not None and bool(ss)},
         }
     except Exception as e:
         raise HTTPException(404, detail=f"Could not load Genie space {space_id}: {e}")
