@@ -1192,6 +1192,45 @@ OUTPUT (one JSON object only, no array, no explanation):"""
         )
 
     @classmethod
+    def _fix_position_bare_char(cls, expr: str) -> str:
+        """Quote bare non-alnum char in POSITION(X IN ...)."""
+        def _repl(m):
+            ch = m.group(1).strip()
+            if ch.startswith("'") or ch.startswith('"'):
+                return m.group(0)
+            return f"POSITION('{ch}' IN{m.group(2)}"
+        return re.sub(r"POSITION\(\s*([^\w\s'\"]+)\s+(IN\b)", _repl, expr, flags=re.IGNORECASE)
+
+    @classmethod
+    def _fix_double_commas(cls, expr: str) -> str:
+        """Collapse empty arguments: CONCAT(a, , b) -> CONCAT(a, b)."""
+        while ", ," in expr:
+            expr = expr.replace(", ,", ",")
+        while ",," in expr:
+            expr = expr.replace(",,", ",")
+        return expr
+
+    @classmethod
+    def _fix_none_literal(cls, expr: str) -> str:
+        """Replace Python None leaked into SQL with NULL."""
+        return re.sub(r"\bNone\b", "NULL", expr)
+
+    @classmethod
+    def _fix_concat_bare_first_arg(cls, expr: str) -> str:
+        """Quote bare short non-column first arg in CONCAT."""
+        def _repl(m):
+            fn = m.group(1)
+            arg = m.group(2).strip()
+            if arg.startswith("'") or arg.startswith('"'):
+                return m.group(0)
+            if "." in arg or arg.upper() in cls._SQL_RESERVED or re.match(r"^-?\d", arg):
+                return m.group(0)
+            if len(arg) <= 3 and arg.isalpha():
+                return f"{fn}'{arg}',"
+            return m.group(0)
+        return re.sub(r"(CONCAT\(\s*)([^',\s]+)\s*,", _repl, expr, flags=re.IGNORECASE)
+
+    @classmethod
     def _autofix_expr(cls, expr: str) -> str:
         """Fix common AI expression mistakes."""
 
@@ -1207,6 +1246,10 @@ OUTPUT (one JSON object only, no array, no explanation):"""
         )
         expr = cls._fix_date_part(expr)
         expr = cls._fix_datediff(expr)
+        expr = cls._fix_none_literal(expr)
+        expr = cls._fix_double_commas(expr)
+        expr = cls._fix_position_bare_char(expr)
+        expr = cls._fix_concat_bare_first_arg(expr)
         expr = cls._fix_case_quoting(expr)
         expr = cls._fix_unquoted_literals(expr)
         expr = cls._fix_then_else_literals(expr)

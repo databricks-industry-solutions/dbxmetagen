@@ -57,19 +57,24 @@ def _get_ws() -> WorkspaceClient:
     return _ws
 
 
-def _get_vs_index(index_name: str):
-    """Return a cached VectorSearchIndex, creating the client once."""
+def _build_vs_client():
+    """Create a fresh VectorSearchClient with a current token."""
+    from databricks.vector_search.client import VectorSearchClient
+    ws = _get_ws()
+    _token = os.environ.get("DATABRICKS_TOKEN")
+    if not _token:
+        headers = ws.config.authenticate()
+        _token = headers.get("Authorization", "").removeprefix("Bearer ")
+    return VectorSearchClient(workspace_url=ws.config.host, personal_access_token=_token)
+
+
+def _get_vs_index(index_name: str, _retry: bool = True):
+    """Return a cached VectorSearchIndex, recreating the client on auth errors."""
     global _vsc
     if index_name in _vs_indexes:
         return _vs_indexes[index_name]
     if _vsc is None:
-        from databricks.vector_search.client import VectorSearchClient
-        ws = _get_ws()
-        _token = os.environ.get("DATABRICKS_TOKEN")
-        if not _token:
-            headers = ws.config.authenticate()
-            _token = headers.get("Authorization", "").removeprefix("Bearer ")
-        _vsc = VectorSearchClient(workspace_url=ws.config.host, personal_access_token=_token)
+        _vsc = _build_vs_client()
     import concurrent.futures
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
@@ -77,6 +82,12 @@ def _get_vs_index(index_name: str):
     except concurrent.futures.TimeoutError:
         raise RuntimeError(f"get_index timed out for {index_name} on {VS_ENDPOINT}")
     except Exception as e:
+        err_str = str(e).lower()
+        if _retry and ("invalid token" in err_str or "unauthorized" in err_str or "401" in err_str):
+            logger.info("VS auth error, refreshing token and retrying: %s", e)
+            _vsc = _build_vs_client()
+            _vs_indexes.pop(index_name, None)
+            return _get_vs_index(index_name, _retry=False)
         logger.warning("Failed to get VS index %s on endpoint %s: %s", index_name, VS_ENDPOINT, e)
         raise
     _vs_indexes[index_name] = idx
@@ -158,6 +169,27 @@ def search_metadata(query: str, doc_type_filter: Optional[str] = None, num_resul
         _log_tool_end("search_metadata", t0, error="Vector search timed out after 30s")
         return json.dumps({"error": "Vector search timed out after 30s. The index may not be ready."})
     except Exception as e:
+        err_str = str(e).lower()
+        if "invalid token" in err_str or "unauthorized" in err_str or "401" in err_str:
+            logger.info("VS query auth error, refreshing client and retrying: %s", e)
+            global _vsc
+            _vsc = None
+            _vs_indexes.pop(vs_index, None)
+            try:
+                index = _get_vs_index(vs_index)
+                import concurrent.futures as _cf2
+                with _cf2.ThreadPoolExecutor(max_workers=1) as pool2:
+                    results = pool2.submit(index.similarity_search, **kwargs).result(timeout=30)
+                matches = []
+                cols = results.get("manifest", {}).get("columns", [])
+                col_names = [c.get("name", f"col{i}") for i, c in enumerate(cols)] if cols else []
+                for row in results.get("result", {}).get("data_array", []):
+                    matches.append(dict(zip(col_names, row)) if col_names else {"data": row})
+                _log_tool_end("search_metadata", t0)
+                return json.dumps({"matches": matches, "count": len(matches)})
+            except Exception as retry_err:
+                _log_tool_end("search_metadata", t0, error=retry_err)
+                return json.dumps({"error": f"Auth retry failed: {retry_err}"})
         _log_tool_end("search_metadata", t0, error=e)
         return json.dumps({"error": str(e)})
 

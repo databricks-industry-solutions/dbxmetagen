@@ -523,11 +523,11 @@ function ReviewEditor() {
                 <span className="font-semibold text-sm text-slate-700 dark:text-slate-200">{tbl.table_name}</span>
                 {tbl.domain && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300 font-medium">{tbl.domain}{tbl.subdomain ? ` / ${tbl.subdomain}` : ''}</span>}
                 {tbl.primary_entity && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300 font-medium">{tbl.primary_entity.entity_type} ({Number(tbl.primary_entity.confidence ?? 0).toFixed(2)})</span>}
-                {(() => {
+                {show('ontology') && (() => {
                   const rs = tbl.review_status || 'unreviewed'
                   const rsCls = rs === 'approved' ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300' : rs === 'in_review' ? 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/40 dark:text-yellow-300' : 'bg-slate-100 text-slate-500 dark:bg-slate-800/40 dark:text-slate-400'
                   return (
-                    <select value={rs} title="Saves immediately to table_knowledge_base. Tracks whether a human has reviewed this table's metadata." onClick={ev => ev.stopPropagation()} onChange={ev => {
+                    <select value={rs} title="Saves immediately to table_knowledge_base. Tracks whether a human has reviewed this table's ontology metadata." onClick={ev => ev.stopPropagation()} onChange={ev => {
                       ev.stopPropagation()
                       const newStatus = ev.target.value
                       const sel = ev.target

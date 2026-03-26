@@ -4544,6 +4544,38 @@ def _extract_column_refs(expr: str) -> list[tuple[str | None, str]]:
     return refs
 
 
+def _autofix_dimension_columns(defn: dict, table_cols: dict[str, set[str]]) -> dict:
+    """Attempt to fuzzy-match hallucinated column names to actual columns."""
+    from difflib import get_close_matches
+
+    all_cols_lower: dict[str, str] = {}
+    for cols in table_cols.values():
+        for c in cols:
+            all_cols_lower[c.lower()] = c
+
+    for item_type in ("dimensions", "measures"):
+        for item in defn.get(item_type, []):
+            expr = item.get("expr", "")
+            if not expr:
+                continue
+            for m in re.finditer(r"\b(source)\.([a-zA-Z_]\w*)\b", expr, re.IGNORECASE):
+                col = m.group(2)
+                if col.lower() in all_cols_lower:
+                    continue
+                candidates = list(all_cols_lower.keys())
+                dim_name = item.get("name", "")
+                snake = re.sub(r"\s+", "_", dim_name).lower()
+                check_vals = [col.lower(), snake]
+                for cv in check_vals:
+                    matches = get_close_matches(cv, candidates, n=1, cutoff=0.6)
+                    if matches:
+                        actual = all_cols_lower[matches[0]]
+                        expr = expr.replace(f"source.{col}", f"source.{actual}")
+                        item["expr"] = expr
+                        break
+    return defn
+
+
 def _validate_definition_structure(defn: dict) -> list[str]:
     """Structural validation: check source table exists and columns are valid."""
     errors = []
@@ -4575,11 +4607,14 @@ def _validate_definition_structure(defn: dict) -> list[str]:
         return errors
 
     alias_cols: dict[str, set[str]] = {"source": source_cols, tbl: source_cols}
+    known_aliases = {"source", tbl}
     for j in defn.get("joins", []):
         j_source = j.get("source", "")
         j_alias = j.get("name", j_source.split(".")[-1])
         j_parts = j_source.split(".")
+        known_aliases.add(j_alias)
         if len(j_parts) == 3:
+            known_aliases.add(j_parts[2])
             try:
                 j_rows = execute_sql(
                     f"SELECT column_name FROM `{j_parts[0]}`.information_schema.columns "
@@ -4610,7 +4645,7 @@ def _validate_definition_structure(defn: dict) -> list[str]:
                             f"{item_type} {item.get('name', '')}: column {col} not found in alias {alias}"
                         )
                 else:
-                    if col.lower() not in all_cols:
+                    if col.lower() not in all_cols and col.lower() not in known_aliases:
                         errors.append(
                             f"{item_type} {item.get('name', '')}: column {col} not found in {source}"
                         )
@@ -4761,6 +4796,45 @@ def _fix_like_patterns(expr: str) -> str:
     return re.sub(r"(LIKE\s+)([^'\"\s(]+)", _repl, expr, flags=re.IGNORECASE)
 
 
+def _fix_position_bare_char(expr: str) -> str:
+    """Quote bare non-alnum char in POSITION(X IN ...): POSITION(- IN col) -> POSITION('-' IN col)."""
+    def _repl(m):
+        ch = m.group(1).strip()
+        if ch.startswith("'") or ch.startswith('"'):
+            return m.group(0)
+        return f"POSITION('{ch}' IN{m.group(2)}"
+    return re.sub(r"POSITION\(\s*([^\w\s'\"]+)\s+(IN\b)", _repl, expr, flags=re.IGNORECASE)
+
+
+def _fix_double_commas(expr: str) -> str:
+    """Collapse empty arguments: CONCAT(a, , b) -> CONCAT(a, b)."""
+    while ", ," in expr:
+        expr = expr.replace(", ,", ",")
+    while ",," in expr:
+        expr = expr.replace(",,", ",")
+    return expr
+
+
+def _fix_none_literal(expr: str) -> str:
+    """Replace Python None leaked into SQL with NULL."""
+    return re.sub(r"\bNone\b", "NULL", expr)
+
+
+def _fix_concat_bare_first_arg(expr: str) -> str:
+    """Quote bare single-word non-column first arg in CONCAT: CONCAT(Q, ...) -> CONCAT('Q', ...)."""
+    def _repl(m):
+        fn = m.group(1)
+        arg = m.group(2).strip()
+        if arg.startswith("'") or arg.startswith('"'):
+            return m.group(0)
+        if "." in arg or arg.upper() in _SQL_RESERVED or re.match(r"^-?\d", arg):
+            return m.group(0)
+        if len(arg) <= 3 and arg.isalpha():
+            return f"{fn}'{arg}',"
+        return m.group(0)
+    return re.sub(r"(CONCAT\(\s*)([^',\s]+)\s*,", _repl, expr, flags=re.IGNORECASE)
+
+
 def _autofix_expr(expr: str) -> str:
     """Fix common AI expression mistakes before validation."""
 
@@ -4776,22 +4850,20 @@ def _autofix_expr(expr: str) -> str:
         r"DATE_TRUNC\(\s*([A-Za-z]+)(,)", _fix_date_trunc, expr, flags=re.IGNORECASE
     )
 
-    # Fix bare interval function calls: WEEK(col) -> DATE_TRUNC('WEEK', col)
     for iv in _DATE_TRUNC_INTERVALS:
         pat = re.compile(rf"\b{iv}\s*\(([^)]+)\)", re.IGNORECASE)
         match = pat.search(expr)
         if match and expr.strip().upper().startswith(iv.upper()):
             expr = pat.sub(rf"DATE_TRUNC('{iv}', \1)", expr)
 
-    # Fix unquoted string literals in comparisons (= value, != value)
+    expr = _fix_none_literal(expr)
+    expr = _fix_double_commas(expr)
+    expr = _fix_position_bare_char(expr)
+    expr = _fix_concat_bare_first_arg(expr)
     expr = _fix_unquoted_literals(expr)
-    # Fix unquoted THEN/ELSE result values
     expr = _fix_then_else_literals(expr)
-    # Fix unquoted values in IN (...) clauses
     expr = _fix_in_clause_literals(expr)
-    # Fix bare separators in CONCAT-style calls
     expr = _fix_concat_separators(expr)
-    # Fix unquoted LIKE patterns: LIKE HW-% -> LIKE 'HW-%'
     expr = _fix_like_patterns(expr)
     return expr
 
@@ -4921,6 +4993,51 @@ def _normalize_joins(defn: dict) -> dict:
             join["on"] = re.sub(
                 rf"\b{re.escape(source_short)}\.", "source.", on
             )
+    return defn
+
+
+def _fix_join_alias_refs(defn: dict) -> dict:
+    """Rewrite expressions that use invalid join aliases to the closest valid one."""
+    joins = defn.get("joins", [])
+    valid_aliases = {"source"}
+    source_short = (defn.get("source") or "").split(".")[-1]
+    alias_from_table: dict[str, str] = {}
+    if source_short:
+        alias_from_table[source_short.lower()] = "source"
+    for j in joins:
+        alias = j.get("name", "")
+        if alias:
+            valid_aliases.add(alias)
+            j_short = (j.get("source") or "").split(".")[-1]
+            if j_short:
+                alias_from_table[j_short.lower()] = alias
+
+    if not joins:
+        return defn
+
+    _ref_pat = re.compile(r"\b([A-Za-z_]\w*)\.([A-Za-z_]\w*)\b")
+
+    def _fix_expr(expr: str) -> str:
+        def _repl(m):
+            alias, col = m.group(1), m.group(2)
+            if alias in valid_aliases:
+                return m.group(0)
+            mapped = alias_from_table.get(alias.lower())
+            if mapped:
+                return f"{mapped}.{col}"
+            for va in valid_aliases:
+                if alias.lower() in va.lower() or va.lower() in alias.lower():
+                    return f"{va}.{col}"
+            return m.group(0)
+        return _ref_pat.sub(_repl, expr)
+
+    for section in ("dimensions", "measures"):
+        for item in defn.get(section, []):
+            if "expr" in item:
+                item["expr"] = _fix_expr(item["expr"])
+    filt = defn.get("filter")
+    if isinstance(filt, str):
+        defn["filter"] = _fix_expr(filt)
     return defn
 
 
@@ -5073,16 +5190,6 @@ def _run_sl_generation(
                 except Exception as exc:
                     logger.warning("Failed to persist questions: %s", exc)
 
-        if project_id and tables:
-            tables_json = json.dumps(tables).replace("'", "''")
-            try:
-                execute_sql(
-                    f"UPDATE {fq('semantic_layer_projects')} SET selected_tables = '{tables_json}' "
-                    f"WHERE project_id = '{project_id}'"
-                )
-            except Exception:
-                pass
-
         if mode == "replace_all" and project_id:
             try:
                 execute_sql(
@@ -5168,6 +5275,22 @@ def _run_sl_generation(
             if defn.get("filter"):
                 defn["filter"] = _autofix_expr(defn["filter"])
             defn = _normalize_joins(defn)
+            defn = _fix_join_alias_refs(defn)
+
+            # Fuzzy-match hallucinated column names to actual columns
+            src = defn.get("source", "")
+            if src:
+                src_parts = src.split(".")
+                if len(src_parts) == 3:
+                    try:
+                        _cols_rows = execute_sql(
+                            f"SELECT column_name FROM `{src_parts[0]}`.information_schema.columns "
+                            f"WHERE table_catalog = '{src_parts[0]}' AND table_schema = '{src_parts[1]}' AND table_name = '{src_parts[2]}'"
+                        )
+                        _tbl_cols = {"source": {r["column_name"].lower() for r in _cols_rows}}
+                        defn = _autofix_dimension_columns(defn, _tbl_cols)
+                    except Exception:
+                        pass
 
             json_str = json.dumps(defn).replace("'", "''")
 
@@ -5387,6 +5510,7 @@ def _validate_definition(defn: dict, source: str) -> tuple[str, str]:
     if defn.get("filter"):
         defn["filter"] = _autofix_expr(defn["filter"])
     defn = _normalize_joins(defn)
+    defn = _fix_join_alias_refs(defn)
     errors = _validate_definition_structure(defn)
     if not errors:
         defn_joins = defn.get("joins", [])
@@ -5476,13 +5600,19 @@ def _definition_to_yaml(defn: dict) -> str:
             lines.append(f'    comment: "{_yaml_esc(m["comment"])}"')
         if m.get("window"):
             w = m["window"]
-            lines.append("    window:")
-            if w.get("order_by"):
-                lines.append(f'      order_by: "{_yaml_esc(w["order_by"])}"')
-            if w.get("range"):
-                lines.append(f'      range: "{_yaml_esc(w["range"])}"')
-            if w.get("rows"):
-                lines.append(f'      rows: "{_yaml_esc(w["rows"])}"')
+            if isinstance(w, str):
+                try:
+                    w = json.loads(w)
+                except (json.JSONDecodeError, TypeError):
+                    w = None
+            if isinstance(w, dict) and (w.get("order_by") or w.get("range") or w.get("rows")):
+                lines.append("    window:")
+                if w.get("order_by"):
+                    lines.append(f'      order_by: "{_yaml_esc(w["order_by"])}"')
+                if w.get("range"):
+                    lines.append(f'      range: "{_yaml_esc(w["range"])}"')
+                if w.get("rows"):
+                    lines.append(f'      rows: "{_yaml_esc(w["rows"])}"')
     if defn.get("joins"):
         lines.append("joins:")
         for j in defn["joins"]:
