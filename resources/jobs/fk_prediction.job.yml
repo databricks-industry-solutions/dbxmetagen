@@ -23,7 +23,7 @@ resources:
         - name: confidence_threshold
           default: "0.7"
         - name: sample_size
-          default: "5"
+          default: "50"
         - name: model_endpoint
           default: "databricks-gpt-oss-120b"
         - name: apply_ddl

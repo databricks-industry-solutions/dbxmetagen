@@ -305,6 +305,9 @@ export default function GenieUpdater({ spaceId, onBack }) {
             <span>sample Qs: <b>{parseInfo.sampleQuestions ?? '-'}</b></span>
             {parseInfo.config_json_type && <span>cj_type: <b>{parseInfo.config_json_type}</b></span>}
             {parseInfo.config_json_len != null && <span>cj_len: <b>{parseInfo.config_json_len}</b></span>}
+            {parseInfo.parsed_keys && <span>parsed_keys: <b>{parseInfo.parsed_keys.join(', ') || 'none'}</b></span>}
+            {parseInfo.raw_resp_keys && <span>api_keys: <b>{parseInfo.raw_resp_keys.join(', ')}</b></span>}
+            {parseInfo.ss_raw_type && <span>ss_raw: <b>{parseInfo.ss_raw_type}</b></span>}
           </div>
           {Object.entries(parseInfo).filter(([k]) => k.endsWith('Err')).map(([k, v]) => (
             <div key={k} className="text-red-500">Parse error ({k}): {v}</div>

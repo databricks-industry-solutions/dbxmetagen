@@ -29,13 +29,13 @@ class FKPredictionConfig:
     predictions_table: str = "fk_predictions"
     column_similarity_threshold: float = 0.85
     table_similarity_threshold: float = 0.9  # max table similarity (exclude near-duplicate tables)
-    sample_size: int = 5
+    sample_size: int = 50
     confidence_threshold: float = 0.7
     model_endpoint: str = "databricks-gpt-oss-120b"
     apply_ddl: bool = False
     dry_run: bool = False
     ontology_match_bonus_weight: float = 0.15
-    rule_score_min_for_ai: float = 0.65
+    rule_score_min_for_ai: float = 0.40
     incremental: bool = True
     max_candidates_per_table_pair: int = 10
     cardinality_sample_rows: int = 100000
@@ -345,7 +345,7 @@ class FKPredictor:
                 ON ta.entity_type = r1.src_entity_type AND tb.entity_type = r1.dst_entity_type
             LEFT JOIN ent_rels r2
                 ON ta.entity_type = r2.dst_entity_type AND tb.entity_type = r2.src_entity_type"""
-            rel_case = "CASE WHEN r1.src_entity_type IS NOT NULL OR r2.src_entity_type IS NOT NULL THEN 0.25 ELSE 0.0 END"
+            rel_case = "CASE WHEN r1.src_entity_type IS NOT NULL OR r2.src_entity_type IS NOT NULL THEN 1.0 ELSE 0.0 END"
 
         df = self.spark.sql(f"""
             WITH table_entity AS (
@@ -359,7 +359,7 @@ class FKPredictor:
                     WHEN ta.entity_type IS NOT NULL AND tb.entity_type IS NOT NULL THEN
                         GREATEST(
                             {rel_case},
-                            CASE WHEN ta.entity_type = tb.entity_type THEN 0.1 ELSE 0.0 END
+                            CASE WHEN ta.entity_type = tb.entity_type THEN 0.4 ELSE 0.0 END
                         )
                     ELSE 0.0
                 END AS entity_match
@@ -393,9 +393,9 @@ class FKPredictor:
             up_a, up_b = upstream_map.get(tbl_a, set()), upstream_map.get(tbl_b, set())
             dn_a, dn_b = downstream_map.get(tbl_a, set()), downstream_map.get(tbl_b, set())
             if tbl_b in up_a or tbl_b in dn_a or tbl_a in up_b or tbl_a in dn_b:
-                return 0.2
+                return 1.0
             if up_a & up_b:
-                return 0.15
+                return 0.6
             return 0.0
 
         pairs = candidates.select("table_a", "table_b").distinct().collect()
@@ -647,7 +647,7 @@ class FKPredictor:
         id_pattern = F.when(
             (F.lower(F.col("col_a")).rlike("(_id|_key|_code)$"))
             | (F.lower(F.col("col_b")).rlike("(_id|_key|_code)$")),
-            0.2,
+            1.0,
         ).otherwise(0.0)
 
         # table_name + _id pattern: e.g. encounters.patient_id -> patients.id
@@ -659,13 +659,13 @@ class FKPredictor:
         table_name_match = F.when(
             col_a_short.contains(F.regexp_replace(tbl_b_short, "s$", ""))
             | col_b_short.contains(F.regexp_replace(tbl_a_short, "s$", "")),
-            0.25,
+            1.0,
         ).otherwise(0.0)
 
         # fk_ or ref_ prefix stripping
         fk_prefix = F.when(
             col_a_short.rlike("^(fk_|ref_)") | col_b_short.rlike("^(fk_|ref_)"),
-            0.1,
+            1.0,
         ).otherwise(0.0)
 
         # Value overlap (when samples available)
@@ -820,7 +820,7 @@ class FKPredictor:
             .withColumn("join_matched", F.coalesce(F.col("join_matched"), F.lit(0)))
             .withColumn(
                 "ai_confidence",
-                F.round(F.col("ai_confidence") * (0.4 + 0.6 * F.col("join_rate")), 4),
+                F.round(F.col("ai_confidence") * (0.6 + 0.4 * F.col("join_rate")), 4),
             )
         )
         return result

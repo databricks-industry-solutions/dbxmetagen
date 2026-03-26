@@ -46,7 +46,7 @@ resources:
         - name: domain_config_path
           default: ""
         - name: sample_size
-          default: "5"
+          default: "50"
         - name: include_lineage
           default: "false"
         - name: model

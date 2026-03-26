@@ -110,6 +110,10 @@ function ReviewEditor() {
   const [ddlError, setDdlError] = useState(null)
   const [globalOntoApplying, setGlobalOntoApplying] = useState(false)
   const [globalOntoResult, setGlobalOntoResult] = useState(null)
+  const [globalFkTagApplying, setGlobalFkTagApplying] = useState(false)
+  const [globalFkTagResult, setGlobalFkTagResult] = useState(null)
+  const [fkConfThreshold, setFkConfThreshold] = useState(0.5)
+  const [fkGenSql, setFkGenSql] = useState(null)
 
   useEffect(() => { fetch('/api/ontology/entity-type-options').then(r => r.json()).then(d => setEntityTypeOptions(Array.isArray(d) ? d : [])).catch(() => {}) }, [])
 
@@ -436,6 +440,72 @@ function ReviewEditor() {
               </span>
             )}
           </div>
+        ) : null
+      })()}
+
+      {/* Global FK Tag All Bar */}
+      {show('fk') && reviewData.length > 0 && (() => {
+        const allFkPreds = reviewData.flatMap(tbl =>
+          (tbl.fk_predictions || [])
+            .filter(fk => Number(fk.final_confidence ?? 0) >= fkConfThreshold)
+            .map(fk => ({
+              src_table: fk.src_table, src_column: fk.src_column,
+              dst_table: fk.dst_table, dst_column: fk.dst_column,
+            }))
+        )
+        return allFkPreds.length > 0 ? (
+          <>
+            <div className="card p-4 flex flex-wrap items-center gap-3">
+              <span className="text-sm font-semibold text-slate-700 dark:text-slate-200">FK Tags</span>
+              <label className="text-xs text-slate-500 flex items-center gap-1">
+                Min Confidence:
+                <input type="number" min="0" max="1" step="0.05" value={fkConfThreshold}
+                  onChange={ev => setFkConfThreshold(Number(ev.target.value))}
+                  className="text-xs border border-slate-300 rounded px-1.5 py-0.5 bg-white dark:bg-dbx-navy/60 dark:text-slate-200 w-16" />
+              </label>
+              <button onClick={async () => {
+                setGlobalFkTagApplying(true); setGlobalFkTagResult(null)
+                try {
+                  const r = await fetch('/api/analytics/fk-apply-as-tags', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ predictions: allFkPreds }) })
+                  const j = await r.json().catch(() => ({}))
+                  setGlobalFkTagResult(r.ok ? j : { error: j.detail || j })
+                } catch (err) { setGlobalFkTagResult({ error: err.message }) }
+                setGlobalFkTagApplying(false)
+              }} disabled={globalFkTagApplying}
+                className="px-4 py-1.5 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700 disabled:opacity-50 shadow-sm"
+                title="Only requires APPLY_TAG permission">
+                {globalFkTagApplying ? 'Tagging...' : `Tag All (${allFkPreds.length} pairs, conf \u2265 ${fkConfThreshold})`}
+              </button>
+              <button onClick={async () => {
+                try {
+                  const r = await fetch('/api/analytics/fk-generate-sql', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ predictions: allFkPreds }) })
+                  const j = await r.json().catch(() => ({}))
+                  setFkGenSql(j.sql || '')
+                } catch (err) { setFkGenSql(`-- Error: ${err.message}`) }
+              }} className="px-4 py-1.5 bg-slate-600 text-white rounded-lg text-sm font-medium hover:bg-slate-700 shadow-sm"
+                title="Generate ALTER TABLE ADD CONSTRAINT DDL (requires MANAGE to execute)">
+                Generate SQL ({allFkPreds.length})
+              </button>
+              {globalFkTagResult && (
+                <span className={`text-xs ${globalFkTagResult.error ? 'text-red-600' : 'text-green-600'}`}>
+                  {globalFkTagResult.error
+                    ? String(typeof globalFkTagResult.error === 'object' ? JSON.stringify(globalFkTagResult.error) : globalFkTagResult.error)
+                    : `Done: ${(globalFkTagResult.results || []).filter(r => r.ok).length} tagged, ${(globalFkTagResult.results || []).filter(r => !r.ok).length} failed`}
+                </span>
+              )}
+            </div>
+            {fkGenSql != null && (
+              <div className="card p-3 relative border border-slate-300 dark:border-dbx-navy-400/40">
+                <pre className="text-[11px] bg-slate-800 dark:bg-slate-900 text-green-300 dark:text-green-400 rounded p-3 overflow-x-auto whitespace-pre-wrap max-h-60 font-mono">{fkGenSql}</pre>
+                <div className="absolute top-2 right-2 flex gap-1">
+                  <button onClick={() => { navigator.clipboard.writeText(fkGenSql) }}
+                    className="text-[10px] px-2 py-0.5 bg-slate-700 border border-slate-600 rounded hover:bg-slate-600 text-slate-200">Copy</button>
+                  <button onClick={() => setFkGenSql(null)}
+                    className="text-[10px] px-2 py-0.5 bg-slate-700 border border-slate-600 rounded hover:bg-slate-600 text-slate-200">Close</button>
+                </div>
+              </div>
+            )}
+          </>
         ) : null
       })()}
 
@@ -869,31 +939,57 @@ function ReviewEditor() {
                   {/* FK predictions */}
                   {show('fk') && (
                     <div className="space-y-2">
-                      <div className="flex items-center justify-between">
+                      <div className="flex items-center justify-between flex-wrap gap-2">
                         <h4 className="text-xs font-semibold text-slate-500 dark:text-slate-400">Foreign Key Predictions</h4>
                         {Array.isArray(tbl.fk_predictions) && tbl.fk_predictions.length > 0 && (() => {
                           const tblKey = tbl.table_name
                           const selSet = selectedFKs[tblKey] || new Set()
                           const selCount = selSet.size
+                          const selPreds = () => [...selSet].map(idx => tbl.fk_predictions[idx]).filter(Boolean).map(fk => ({
+                            src_table: fk.src_table, src_column: fk.src_column, dst_table: fk.dst_table, dst_column: fk.dst_column,
+                          }))
                           return selCount > 0 ? (
-                            <button onClick={async () => {
-                              setFkApplying(true); setFkApplyResult(null)
-                              const preds = [...selSet].map(idx => tbl.fk_predictions[idx]).filter(Boolean).map(fk => ({
-                                src_table: fk.src_table, src_column: fk.src_column, dst_table: fk.dst_table, dst_column: fk.dst_column,
-                              }))
-                              try {
-                                const r = await fetch('/api/analytics/fk-apply-from-predictions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ predictions: preds }) })
-                                const j = await r.json().catch(() => ({}))
-                                setFkApplyResult(j)
-                                setSelectedFKs(p => ({ ...p, [tblKey]: new Set() }))
-                              } catch (err) { setFkApplyResult({ error: err.message }) }
-                              setFkApplying(false)
-                            }} disabled={fkApplying} className="text-xs px-2 py-0.5 bg-indigo-600 text-white rounded hover:bg-indigo-700 disabled:opacity-50">
-                              {fkApplying ? 'Applying...' : `Apply Selected (${selCount})`}
-                            </button>
+                            <div className="flex items-center gap-1.5">
+                              <button onClick={async () => {
+                                setFkApplying(true); setFkApplyResult(null)
+                                try {
+                                  const r = await fetch('/api/analytics/fk-apply-from-predictions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ predictions: selPreds() }) })
+                                  const j = await r.json().catch(() => ({}))
+                                  setFkApplyResult(j)
+                                  setSelectedFKs(p => ({ ...p, [tblKey]: new Set() }))
+                                } catch (err) { setFkApplyResult({ error: err.message }) }
+                                setFkApplying(false)
+                              }} disabled={fkApplying} className="text-xs px-2 py-0.5 bg-indigo-600 text-white rounded hover:bg-indigo-700 disabled:opacity-50"
+                                title="Requires MANAGE on source tables">
+                                {fkApplying ? 'Applying...' : `Apply FK Constraints (${selCount})`}
+                              </button>
+                              <button onClick={async () => {
+                                try {
+                                  const r = await fetch('/api/analytics/fk-generate-sql', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ predictions: selPreds() }) })
+                                  const j = await r.json().catch(() => ({}))
+                                  setFkGenSql(j.sql || '')
+                                } catch (err) { setFkGenSql(`-- Error: ${err.message}`) }
+                              }} className="text-xs px-2 py-0.5 bg-slate-600 text-white rounded hover:bg-slate-700">
+                                Generate SQL ({selCount})
+                              </button>
+                            </div>
                           ) : null
                         })()}
                       </div>
+                      <p className="text-[10px] text-slate-400 dark:text-slate-500 italic">
+                        Applying FK constraints requires MANAGE on the source table. If dbxmetagen only has APPLY_TAG, use "Tag All" above instead -- it sets <code className="text-[10px]">fk_references</code> column tags which only require APPLY_TAG.
+                      </p>
+                      {fkGenSql != null && (
+                        <div className="relative">
+                          <pre className="text-[10px] bg-slate-800 dark:bg-slate-900 text-green-300 dark:text-green-400 rounded p-2 overflow-x-auto whitespace-pre-wrap max-h-40 font-mono">{fkGenSql}</pre>
+                          <div className="absolute top-1 right-1 flex gap-1">
+                            <button onClick={() => { navigator.clipboard.writeText(fkGenSql) }}
+                              className="text-[9px] px-1.5 py-0.5 bg-slate-700 border border-slate-600 rounded hover:bg-slate-600 text-slate-200">Copy</button>
+                            <button onClick={() => setFkGenSql(null)}
+                              className="text-[9px] px-1.5 py-0.5 bg-slate-700 border border-slate-600 rounded hover:bg-slate-600 text-slate-200">Close</button>
+                          </div>
+                        </div>
+                      )}
                       {fkApplyResult && (
                         <div className={`text-xs ${fkApplyResult.error ? 'text-red-600' : 'text-green-600'}`}>
                           {fkApplyResult.error ? String(fkApplyResult.error) : `Applied: ${(fkApplyResult.results || []).filter(r => r.ok).length} succeeded, ${(fkApplyResult.results || []).filter(r => !r.ok).length} failed.`}
