@@ -64,6 +64,10 @@ export default function SemanticLayer() {
   const [suggestLoading, setSuggestLoading] = useState(false)
   const [suggestQLoading, setSuggestQLoading] = useState(false)
   const [bulkCreating, setBulkCreating] = useState(false)
+  const [bulkDeleting, setBulkDeleting] = useState(null)
+  const [tableSaveStatus, setTableSaveStatus] = useState(null)
+  const [openMenuId, setOpenMenuId] = useState(null)
+  const menuRef = useRef(null)
 
   // KPI Library
   const [kpis, setKpis] = useState([])
@@ -78,6 +82,14 @@ export default function SemanticLayer() {
   const [activeTab, setActiveTab] = useState('setup')
   const [defFilter, setDefFilter] = useState('')
   const [defStatusFilter, setDefStatusFilter] = useState('validated')
+
+  useEffect(() => {
+    const handler = (e) => {
+      if (menuRef.current && !menuRef.current.contains(e.target)) setOpenMenuId(null)
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [])
 
   // --- Init ---
   useEffect(() => {
@@ -129,25 +141,36 @@ export default function SemanticLayer() {
     return () => clearInterval(pollRef.current)
   }, [taskId])
 
-  // Auto-save table selection to the project whenever it changes (debounced 500ms)
+  // Auto-save table selection to the project whenever it changes (debounced 1s)
   const saveTimerRef = useRef(null)
   useEffect(() => {
     if (!selectedProjectId) return
     if (skipNextSaveRef.current) { skipNextSaveRef.current = false; return }
+    setTableSaveStatus('pending')
     clearTimeout(saveTimerRef.current)
     saveTimerRef.current = setTimeout(() => {
-      fetch(`/api/semantic-layer/projects/${selectedProjectId}/tables`, {
+      const tablesSnapshot = [...selectedTables]
+      const pid = selectedProjectId
+      fetch(`/api/semantic-layer/projects/${pid}/tables`, {
         method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ selected_tables: selectedTables }),
-      }).catch(() => {})
-    }, 500)
+        body: JSON.stringify({ selected_tables: tablesSnapshot }),
+      }).then(r => {
+        if (r.ok) {
+          setProjects(prev => prev.map(p =>
+            p.project_id === pid ? { ...p, selected_tables: JSON.stringify(tablesSnapshot) } : p
+          ))
+          setTableSaveStatus('saved')
+          setTimeout(() => setTableSaveStatus(null), 2000)
+        }
+      }).catch(() => setTableSaveStatus(null))
+    }, 1000)
     return () => clearTimeout(saveTimerRef.current)
   }, [selectedTables, selectedProjectId])
 
   const loadProjects = () => {
-    cachedFetch('/api/semantic-layer/projects', {}, TTL.CONFIG).then(({ data }) => {
-      if (data) setProjects(data)
-    })
+    fetch('/api/semantic-layer/projects').then(r => r.json()).then(data => {
+      if (Array.isArray(data)) setProjects(data)
+    }).catch(() => {})
   }
 
   const loadProfiles = () => {
@@ -259,6 +282,25 @@ export default function SemanticLayer() {
   }
   const isTableSelected = (t) => selectedTables.includes(fqTable(t))
   const removeTable = (fq) => setSelectedTables(prev => prev.filter(x => x !== fq))
+
+  const saveProjectTables = async () => {
+    if (!selectedProjectId) return
+    clearTimeout(saveTimerRef.current)
+    setTableSaveStatus('saving')
+    try {
+      const res = await fetch(`/api/semantic-layer/projects/${selectedProjectId}/tables`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ selected_tables: selectedTables }),
+      })
+      if (res.ok) {
+        setProjects(prev => prev.map(p =>
+          p.project_id === selectedProjectId ? { ...p, selected_tables: JSON.stringify(selectedTables) } : p
+        ))
+        setTableSaveStatus('saved')
+        setTimeout(() => setTableSaveStatus(null), 2000)
+      }
+    } catch { setTableSaveStatus(null) }
+  }
 
   const suggestQuestions = async () => {
     if (!selectedTables.length) { setError('Select tables first'); return }
@@ -424,6 +466,41 @@ export default function SemanticLayer() {
     setBulkCreating(false)
   }
 
+  const deleteAllApplied = async () => {
+    const applied = definitions.filter(d => d.status === 'applied')
+    if (!applied.length) return
+    if (!confirm(`Drop and delete all ${applied.length} applied metric views?`)) return
+    setBulkDeleting('applied')
+    setError(null)
+    for (const d of applied) {
+      try {
+        if (createTarget.catalog && createTarget.schema) {
+          await fetch(`/api/semantic-layer/definitions/${d.definition_id}/drop`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ target_catalog: createTarget.catalog, target_schema: createTarget.schema }),
+          })
+        }
+        await fetch(`/api/semantic-layer/definitions/${d.definition_id}`, { method: 'DELETE' })
+      } catch (e) { setError(e.message) }
+    }
+    refreshDefinitions()
+    setBulkDeleting(null)
+  }
+
+  const deleteAllNonApplied = async () => {
+    const targets = definitions.filter(d => d.status !== 'applied')
+    if (!targets.length) return
+    if (!confirm(`Delete all ${targets.length} non-applied definitions (generated, validated, failed)?`)) return
+    setBulkDeleting('non-applied')
+    setError(null)
+    for (const d of targets) {
+      try { await fetch(`/api/semantic-layer/definitions/${d.definition_id}`, { method: 'DELETE' }) }
+      catch (e) { setError(e.message) }
+    }
+    refreshDefinitions()
+    setBulkDeleting(null)
+  }
+
   const getSuggestion = async (defId) => {
     const err = createError[defId]
     if (!err) return
@@ -434,17 +511,22 @@ export default function SemanticLayer() {
         body: JSON.stringify({ error_message: err }),
       })
       const data = await res.json().catch(() => ({}))
-      setEditJson(data.suggested_json || '')
+      setEditJson(_prettyJson(data.suggested_json))
       setEditDefId(defId)
     } catch (e) { setError(e.message) }
     setSuggestLoading(false)
+  }
+
+  const _prettyJson = (raw) => {
+    try { return JSON.stringify(JSON.parse(raw), null, 2) }
+    catch { return raw || '{}' }
   }
 
   const openEdit = (defId) => {
     setEditDefId(defId)
     fetch(`/api/semantic-layer/definitions/${defId}/json`)
       .then(r => r.json())
-      .then(data => setEditJson(data.json_definition || ''))
+      .then(data => setEditJson(_prettyJson(data.json_definition)))
       .catch(() => setEditJson('{}'))
   }
 
@@ -598,19 +680,11 @@ export default function SemanticLayer() {
               className="text-sm text-red-500 hover:underline ml-auto">Delete Project</button>
           )}
         </div>
-        {selectedProjectId && (() => {
-          const proj = projects.find(p => p.project_id === selectedProjectId)
-          if (!proj?.selected_tables) return null
-          try {
-            const tbls = JSON.parse(proj.selected_tables)
-            if (!tbls.length) return null
-            return (
-              <div className="mt-2 text-xs text-gray-500 dark:text-gray-400">
-                <span className="font-medium">Tables:</span> {tbls.join(', ')}
-              </div>
-            )
-          } catch { return null }
-        })()}
+        {selectedProjectId && selectedTables.length > 0 && (
+          <div className="mt-2 text-xs text-gray-500 dark:text-gray-400">
+            <span className="font-medium">Tables:</span> {selectedTables.join(', ')}
+          </div>
+        )}
       </section>
 
       {/* Table Selection */}
@@ -664,6 +738,14 @@ export default function SemanticLayer() {
             <div className="flex items-center gap-2 mb-2">
               <span className="text-xs font-medium text-slate-600 dark:text-slate-300">Selected Tables ({selectedTables.length})</span>
               <button onClick={() => setSelectedTables([])} className="text-xs text-red-500 hover:underline">Clear all</button>
+              {selectedProjectId && (
+                <button onClick={saveProjectTables} disabled={tableSaveStatus === 'saving'}
+                  className="text-xs px-2 py-0.5 rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 ml-auto">
+                  {tableSaveStatus === 'saving' ? 'Saving...' : 'Save Tables'}
+                </button>
+              )}
+              {tableSaveStatus === 'saved' && <span className="text-xs text-green-600 dark:text-green-400">Saved</span>}
+              {tableSaveStatus === 'pending' && <span className="text-xs text-amber-500 dark:text-amber-400">Unsaved</span>}
             </div>
             <div className="flex flex-wrap gap-1.5">
               {selectedTables.map(t => (
@@ -986,6 +1068,23 @@ export default function SemanticLayer() {
             <p className="text-xs text-amber-600 dark:text-amber-400 -mt-2 mb-3">Set a target catalog and schema above before creating metric views in Unity Catalog.</p>
           )}
 
+          {definitions.length > 0 && (
+            <div className="flex items-center gap-2 mb-3 -mt-1">
+              {definitions.filter(d => d.status !== 'applied').length > 0 && (
+                <button onClick={deleteAllNonApplied} disabled={!!bulkDeleting}
+                  className="px-2.5 py-1 text-xs text-red-600 dark:text-red-400 border border-red-300 dark:border-red-700 rounded hover:bg-red-50 dark:hover:bg-red-900/20 disabled:opacity-50 whitespace-nowrap">
+                  {bulkDeleting === 'non-applied' ? 'Deleting...' : `Delete All Non-Applied (${definitions.filter(d => d.status !== 'applied').length})`}
+                </button>
+              )}
+              {definitions.filter(d => d.status === 'applied').length > 0 && (
+                <button onClick={deleteAllApplied} disabled={!!bulkDeleting || !createTarget.catalog || !createTarget.schema}
+                  className="px-2.5 py-1 text-xs text-red-600 dark:text-red-400 border border-red-300 dark:border-red-700 rounded hover:bg-red-50 dark:hover:bg-red-900/20 disabled:opacity-50 whitespace-nowrap">
+                  {bulkDeleting === 'applied' ? 'Dropping & Deleting...' : `Drop & Delete All Applied (${definitions.filter(d => d.status === 'applied').length})`}
+                </button>
+              )}
+            </div>
+          )}
+
           {/* Filters (4.2) */}
           <div className="flex items-center gap-2 mb-3">
             <input value={defFilter} onChange={e => setDefFilter(e.target.value)} placeholder="Filter by name or table..."
@@ -1021,44 +1120,47 @@ export default function SemanticLayer() {
                         <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400" title="Includes ratios, rates, or filtered aggregates">Rich</span>
                       )}
                       {/* Compact action menu */}
-                      <details className="relative">
-                        <summary className="px-1.5 py-0.5 text-xs text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 cursor-pointer select-none rounded hover:bg-slate-100 dark:hover:bg-dbx-navy-500">Actions</summary>
+                      <div className="relative" ref={openMenuId === d.definition_id ? menuRef : undefined}>
+                        <button onClick={() => setOpenMenuId(prev => prev === d.definition_id ? null : d.definition_id)}
+                          className="px-1.5 py-0.5 text-xs text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 cursor-pointer select-none rounded hover:bg-slate-100 dark:hover:bg-dbx-navy-500">Actions</button>
+                        {openMenuId === d.definition_id && (
                         <div className="absolute right-0 mt-1 z-20 bg-white dark:bg-dbx-navy-600 border dark:border-gray-600 rounded-lg shadow-lg py-1 min-w-[140px]">
-                          <button onClick={() => loadDefinitionJson(d.definition_id)} className="w-full text-left px-3 py-1.5 text-xs hover:bg-slate-50 dark:hover:bg-dbx-navy-500">
+                          <button onClick={() => { loadDefinitionJson(d.definition_id); setOpenMenuId(null) }} className="w-full text-left px-3 py-1.5 text-xs hover:bg-slate-50 dark:hover:bg-dbx-navy-500">
                             {expandedDef === d.definition_id ? 'Hide JSON' : 'View JSON'}
                           </button>
-                          <button onClick={() => openEdit(d.definition_id)} className="w-full text-left px-3 py-1.5 text-xs hover:bg-slate-50 dark:hover:bg-dbx-navy-500">Edit JSON</button>
+                          <button onClick={() => { openEdit(d.definition_id); setOpenMenuId(null) }} className="w-full text-left px-3 py-1.5 text-xs hover:bg-slate-50 dark:hover:bg-dbx-navy-500">Edit JSON</button>
                           {d.status === 'failed' && (
-                            <button onClick={() => retryDefinition(d.definition_id)} disabled={!!busy}
+                            <button onClick={() => { retryDefinition(d.definition_id); setOpenMenuId(null) }} disabled={!!busy}
                               className="w-full text-left px-3 py-1.5 text-xs text-dbx-lava hover:bg-red-50 dark:hover:bg-red-900/20 disabled:opacity-50">
                               {busy === 'retry' ? 'Retrying...' : 'Retry'}
                             </button>
                           )}
                           {(d.status === 'validated' || d.status === 'applied') && (
                             <>
-                              <button onClick={() => improveDefinition(d.definition_id)} disabled={!!busy}
+                              <button onClick={() => { improveDefinition(d.definition_id); setOpenMenuId(null) }} disabled={!!busy}
                                 className="w-full text-left px-3 py-1.5 text-xs text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20 disabled:opacity-50">
                                 {busy === 'improve' ? 'Improving...' : 'Improve'}
                               </button>
-                              <button onClick={() => createDefinition(d.definition_id)} disabled={!!busy}
+                              <button onClick={() => { createDefinition(d.definition_id); setOpenMenuId(null) }} disabled={!!busy}
                                 className="w-full text-left px-3 py-1.5 text-xs text-green-600 hover:bg-green-50 dark:hover:bg-green-900/20 disabled:opacity-50">
                                 {busy === 'create' ? 'Creating...' : d.status === 'applied' ? 'Re-apply' : 'Create in UC'}
                               </button>
                             </>
                           )}
                           {d.status === 'applied' && (
-                            <button onClick={() => dropDefinition(d.definition_id)} disabled={!!busy}
+                            <button onClick={() => { dropDefinition(d.definition_id); setOpenMenuId(null) }} disabled={!!busy}
                               className="w-full text-left px-3 py-1.5 text-xs text-amber-600 hover:bg-amber-50 dark:hover:bg-amber-900/20 disabled:opacity-50">
                               {busy === 'drop' ? 'Dropping...' : 'Drop from UC'}
                             </button>
                           )}
                           <hr className="my-1 dark:border-gray-600" />
-                          <button onClick={() => deleteDefinition(d.definition_id, d.status)} disabled={!!busy}
+                          <button onClick={() => { deleteDefinition(d.definition_id, d.status); setOpenMenuId(null) }} disabled={!!busy}
                             className="w-full text-left px-3 py-1.5 text-xs text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 disabled:opacity-50">
                             {busy === 'delete' ? 'Deleting...' : 'Delete'}
                           </button>
                         </div>
-                      </details>
+                        )}
+                      </div>
                     </div>
                   </div>
                   {d.validation_errors && (
