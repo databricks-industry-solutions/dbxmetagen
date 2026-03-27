@@ -51,6 +51,8 @@ resources:
           default: "false"
         - name: model
           default: "databricks-claude-sonnet-4-6"
+        - name: schema_filter_pattern
+          default: ""
 
       tasks:
         - task_key: generate_metadata
@@ -73,6 +75,7 @@ resources:
               sample_size: "{{job.parameters.sample_size}}"
               include_lineage: "{{job.parameters.include_lineage}}"
               model: "{{job.parameters.model}}"
+              schema_filter_pattern: "{{job.parameters.schema_filter_pattern}}"
           libraries:
             - whl: ../../dist/*.whl
 

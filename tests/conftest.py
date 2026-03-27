@@ -175,6 +175,7 @@ def base_config_kwargs():
         "include_deterministic_pi": False,
         "tag_none_fields": True,
         "federation_mode": False,
+        "schema_filter_pattern": "",
     }
 
 

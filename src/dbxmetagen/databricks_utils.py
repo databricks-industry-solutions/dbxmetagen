@@ -135,6 +135,7 @@ def setup_widgets(dbutils):
     dbutils.widgets.text("domain_config_path", "")
     dbutils.widgets.text("include_lineage", "")
     dbutils.widgets.text("model", "")
+    dbutils.widgets.text("schema_filter_pattern", "", "Schema Filter Pattern (regex)")
     dbutils.widgets.dropdown(
         "allow_manual_override", "true", ["true", "false"], "Allow Manual Override"
     )
@@ -160,6 +161,7 @@ def get_widgets(dbutils):
     domain_config_path = dbutils.widgets.get("domain_config_path")
     include_lineage = dbutils.widgets.get("include_lineage")
     model = dbutils.widgets.get("model")
+    schema_filter_pattern = dbutils.widgets.get("schema_filter_pattern")
     allow_manual_override = dbutils.widgets.get("allow_manual_override")
     override_csv_path = dbutils.widgets.get("override_csv_path")
     notebook_variables = {
@@ -180,6 +182,7 @@ def get_widgets(dbutils):
         "domain_config_path": domain_config_path,
         "include_lineage": include_lineage,
         "model": model,
+        "schema_filter_pattern": schema_filter_pattern,
         "allow_manual_override": allow_manual_override,
         "override_csv_path": override_csv_path,
     }

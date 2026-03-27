@@ -426,6 +426,7 @@ class JobRunRequest(BaseModel):
     schema_name: Optional[str] = None
     ontology_bundle: Optional[str] = None
     domain_config: Optional[str] = None
+    schema_filter_pattern: Optional[str] = None
     extra_params: dict = {}
 
 
@@ -702,6 +703,8 @@ def run_job(req: JobRunRequest):
         params["ontology_bundle"] = req.ontology_bundle
     if req.domain_config:
         params["domain_config_path"] = _resolve_domain_config_path(req.domain_config)
+    if req.schema_filter_pattern:
+        params["schema_filter_pattern"] = req.schema_filter_pattern
     params.update(req.extra_params)
     try:
         run = ws.jobs.run_now(job_id=target_job_id, job_parameters=params)

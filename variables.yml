@@ -221,3 +221,6 @@ variables:
   include_constraint_context:
     description: "When true, inject PK/FK constraint roles into comment generation prompts. Requires extended metadata extraction to have run first."
     default: false
+  schema_filter_pattern:
+    description: "Regex pattern to filter which schemas are expanded during wildcard resolution (e.g. catalog.schema.*). Only schemas whose name matches the pattern will be included. Empty string means no filtering (all schemas included). Case-insensitive. Note: previously failed tables retried via include_previously_failed_tables bypass this filter since they are already fully-qualified table names."
+    default: ""

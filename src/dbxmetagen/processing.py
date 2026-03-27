@@ -3223,8 +3223,9 @@ def setup_queue(config: MetadataConfig) -> List[str]:
         name.strip() for name in config_table_string.split(",") if len(name.strip()) > 0
     ]
     # Expand schema wildcards in config table names as well
-    config_table_names = expand_schema_wildcards(config_table_names)
-    file_table_names = load_table_names_from_csv(config.source_file_path)
+    schema_filter = getattr(config, "schema_filter_pattern", None) or None
+    config_table_names = expand_schema_wildcards(config_table_names, schema_filter)
+    file_table_names = load_table_names_from_csv(config.source_file_path, schema_filter)
     
     # If include_previously_failed_tables is enabled, also include failed/abandoned tables
     mode = config.mode or "comment"
@@ -3372,7 +3373,7 @@ def upsert_table_names_to_control_table(
                 raise
 
 
-def load_table_names_from_csv(csv_file_path):
+def load_table_names_from_csv(csv_file_path, schema_filter_pattern: str = None):
     """Check if the CSV file exists and load table names."""
     if not csv_file_path or not os.path.exists(csv_file_path):
         print(
@@ -3393,7 +3394,7 @@ def load_table_names_from_csv(csv_file_path):
         print(f"Successfully loaded {len(table_names)} table names from CSV")
 
         sanitized_names = sanitize_string_list(table_names)
-        expanded_names = expand_schema_wildcards(sanitized_names)
+        expanded_names = expand_schema_wildcards(sanitized_names, schema_filter_pattern)
         return expanded_names
 
     except Exception as e:
@@ -3418,7 +3419,7 @@ _UNREADABLE_FORMATS = frozenset({"VECTOR_INDEX_FORMAT"})
 _UNREADABLE_TABLE_TYPES = frozenset({"METRIC_VIEW", "METRIC VIEW"})
 
 
-def get_tables_in_schema(catalog_name: str, schema_name: str) -> List[str]:
+def get_tables_in_schema(catalog_name: str, schema_name: str, schema_filter_pattern: str = None) -> List[str]:
     """
     Get all table names in a given catalog and schema.
     Excludes metric views and non-readable data source formats (e.g. vector
@@ -3427,10 +3428,20 @@ def get_tables_in_schema(catalog_name: str, schema_name: str) -> List[str]:
     Args:
         catalog_name (str): The catalog name.
         schema_name (str): The schema name.
+        schema_filter_pattern (str, optional): Regex to filter schema names.
+            If provided and the schema_name does not match, returns [].
 
     Returns:
         List[str]: A list of fully qualified table names.
     """
+    if schema_filter_pattern:
+        try:
+            if not re.search(schema_filter_pattern, schema_name, re.IGNORECASE):
+                print(f"Schema '{schema_name}' excluded by filter '{schema_filter_pattern}'")
+                return []
+        except re.error as e:
+            print(f"Warning: Invalid schema_filter_pattern '{schema_filter_pattern}': {e}, including all schemas")
+
     spark = SparkSession.builder.getOrCreate()
 
     try:
@@ -3464,12 +3475,13 @@ def get_tables_in_schema(catalog_name: str, schema_name: str) -> List[str]:
         return []
 
 
-def expand_schema_wildcards(table_names: List[str]) -> List[str]:
+def expand_schema_wildcards(table_names: List[str], schema_filter_pattern: str = None) -> List[str]:
     """
     Expand schema wildcard patterns in a list of table names.
 
     Args:
         table_names (List[str]): List of table names, possibly containing wildcards.
+        schema_filter_pattern (str, optional): Regex to filter which schemas are expanded.
 
     Returns:
         List[str]: Expanded list of table names with wildcards resolved.
@@ -3483,7 +3495,7 @@ def expand_schema_wildcards(table_names: List[str]) -> List[str]:
             if len(parts) == 2:
                 catalog_name, schema_name = parts
                 # Get all tables in the schema
-                schema_tables = get_tables_in_schema(catalog_name, schema_name)
+                schema_tables = get_tables_in_schema(catalog_name, schema_name, schema_filter_pattern)
                 expanded_names.extend(schema_tables)
                 print(f"Expanded {table_name} to {len(schema_tables)} tables")
             else:

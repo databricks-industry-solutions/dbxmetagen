@@ -48,6 +48,8 @@ resources:
           default: "true"
         - name: include_constraint_context
           default: "true"
+        - name: schema_filter_pattern
+          default: ""
 
       tasks:
         # ------------------------------------------------------------------
@@ -131,6 +133,7 @@ resources:
               include_constraint_context: "{{job.parameters.include_constraint_context}}"
               ontology_bundle: "{{job.parameters.ontology_bundle}}"
               domain_config_path: "{{job.parameters.domain_config_path}}"
+              schema_filter_pattern: "{{job.parameters.schema_filter_pattern}}"
           libraries:
             - whl: ../../dist/*.whl
 
@@ -150,6 +153,7 @@ resources:
               run_id: "{{job.parameters.run_id}}"
               ontology_bundle: "{{job.parameters.ontology_bundle}}"
               domain_config_path: "{{job.parameters.domain_config_path}}"
+              schema_filter_pattern: "{{job.parameters.schema_filter_pattern}}"
           libraries:
             - whl: ../../dist/*.whl
 
@@ -169,6 +173,7 @@ resources:
               run_id: "{{job.parameters.run_id}}"
               ontology_bundle: "{{job.parameters.ontology_bundle}}"
               domain_config_path: "{{job.parameters.domain_config_path}}"
+              schema_filter_pattern: "{{job.parameters.schema_filter_pattern}}"
           libraries:
             - whl: ../../dist/*.whl
 
