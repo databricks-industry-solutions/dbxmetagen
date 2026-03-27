@@ -115,6 +115,7 @@ class MetadataConfig:
             "use_kb_comments",
             "include_profiling_context",
             "include_constraint_context",
+            "schema_filter_pattern",
         ],
         "yaml_advanced_file_path": "../variables.advanced.yml",
         "yaml_advanced_variable_names": [

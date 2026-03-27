@@ -31,6 +31,8 @@ resources:
           default: "{{job.run_id}}"
         - name: include_previously_failed_tables
           default: "false"
+        - name: schema_filter_pattern
+          default: ""
 
       tasks:
         - task_key: generate_metadata
@@ -47,6 +49,7 @@ resources:
               permission_users: "{{job.parameters.permission_users}}"
               run_id: "{{job.parameters.run_id}}"
               include_previously_failed_tables: "{{job.parameters.include_previously_failed_tables}}"
+              schema_filter_pattern: "{{job.parameters.schema_filter_pattern}}"
 
           libraries:
             - whl: ../../dist/*.whl

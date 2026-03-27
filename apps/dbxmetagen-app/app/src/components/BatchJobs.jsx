@@ -146,6 +146,7 @@ export default function BatchJobs({ onNavigate }) {
   const [bundles, setBundles] = useState([])
   const [domainConfig, setDomainConfig] = useState('')
   const [domainConfigs, setDomainConfigs] = useState([])
+  const [schemaFilterPattern, setSchemaFilterPattern] = useState('')
   const [runHistory, setRunHistory] = useState([])
   const [historyPage, setHistoryPage] = useState(0)
   const [health, setHealth] = useState(null)
@@ -526,16 +527,22 @@ export default function BatchJobs({ onNavigate }) {
                   <input type="checkbox" checked={applyDdl} onChange={e => setApplyDdl(e.target.checked)} />
                   Apply DDL directly
                 </label>
+                <div>
+                  <label className="text-sm font-medium text-slate-700 dark:text-slate-200 mb-1.5 block">Schema Filter (regex)</label>
+                  <input type="text" value={schemaFilterPattern} onChange={e => setSchemaFilterPattern(e.target.value)}
+                    placeholder='e.g. ^(gold|curated|published)' className="input-base" />
+                  <p className="text-xs text-slate-400 mt-1">Only expand wildcard schemas matching this pattern. Leave empty for all.</p>
+                </div>
               </div>
             </div>
             <div className="flex flex-wrap gap-3 mt-2">
-              <button onClick={() => runJob(getJobSuffix(false), { table_names: tableNames, mode, apply_ddl: applyDdl, ontology_bundle: ontologyBundle, ...(domainConfig ? { domain_config: domainConfig } : {}), extra_params: buildExtraParams() }, 'single')}
+              <button onClick={() => runJob(getJobSuffix(false), { table_names: tableNames, mode, apply_ddl: applyDdl, ontology_bundle: ontologyBundle, ...(domainConfig ? { domain_config: domainConfig } : {}), ...(schemaFilterPattern ? { schema_filter_pattern: schemaFilterPattern } : {}), extra_params: buildExtraParams() }, 'single')}
                 disabled={!!runningAction || !tableNames.trim()} title="Run a single metadata generation pass"
                 className="btn-secondary btn-md">{runningAction === 'single' ? 'Starting...' : `Run Single Mode${settings.build_kb_after ? ' + KB' : ''}${settings.use_serverless ? ' (Serverless)' : ''}`}</button>
-              <button onClick={() => runJob(getJobSuffix(true), { table_names: tableNames, apply_ddl: applyDdl, ontology_bundle: ontologyBundle, ...(domainConfig ? { domain_config: domainConfig } : {}), extra_params: buildExtraParams() }, 'all3')}
+              <button onClick={() => runJob(getJobSuffix(true), { table_names: tableNames, apply_ddl: applyDdl, ontology_bundle: ontologyBundle, ...(domainConfig ? { domain_config: domainConfig } : {}), ...(schemaFilterPattern ? { schema_filter_pattern: schemaFilterPattern } : {}), extra_params: buildExtraParams() }, 'all3')}
                 disabled={!!runningAction || !tableNames.trim()} title="Run all three modes in parallel"
                 className="btn-primary btn-md">{runningAction === 'all3' ? 'Starting...' : `All 3 Modes${settings.build_kb_after ? ' + KB' : ''}${settings.use_serverless ? ' (Serverless)' : ''}`}</button>
-              <button onClick={() => runJob('_kb_enriched_modes_job', { table_names: tableNames, apply_ddl: applyDdl, ontology_bundle: ontologyBundle, ...(domainConfig ? { domain_config: domainConfig } : {}), extra_params: buildExtraParams() }, 'kb_enriched')}
+              <button onClick={() => runJob('_kb_enriched_modes_job', { table_names: tableNames, apply_ddl: applyDdl, ontology_bundle: ontologyBundle, ...(domainConfig ? { domain_config: domainConfig } : {}), ...(schemaFilterPattern ? { schema_filter_pattern: schemaFilterPattern } : {}), extra_params: buildExtraParams() }, 'kb_enriched')}
                 disabled={!!runningAction || !tableNames.trim()} title="Comments -> KB build -> PI + Domain with KB enrichment"
                 className="btn-md bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50 transition-all">{runningAction === 'kb_enriched' ? 'Starting...' : 'KB-Enriched Modes'}</button>
             </div>
