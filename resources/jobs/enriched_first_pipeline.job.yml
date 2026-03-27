@@ -2,6 +2,7 @@ resources:
   jobs:
     enriched_first_pipeline_job:
       name: "${var.app_name}_enriched_first_pipeline"
+      max_concurrent_runs: 5
 
       permissions:
         - service_principal_name: ${resources.apps.dbxmetagen_app.service_principal_client_id}
@@ -48,6 +49,8 @@ resources:
           default: "true"
         - name: include_constraint_context
           default: "true"
+        - name: model
+          default: ${var.model}
 
       tasks:
         # ------------------------------------------------------------------
@@ -105,6 +108,7 @@ resources:
               ontology_bundle: "{{job.parameters.ontology_bundle}}"
               domain_config_path: "{{job.parameters.domain_config_path}}"
               incremental: "{{job.parameters.incremental}}"
+              model: "{{job.parameters.model}}"
           libraries:
             - whl: ../../dist/*.whl
 
@@ -131,6 +135,7 @@ resources:
               include_constraint_context: "{{job.parameters.include_constraint_context}}"
               ontology_bundle: "{{job.parameters.ontology_bundle}}"
               domain_config_path: "{{job.parameters.domain_config_path}}"
+              model: "{{job.parameters.model}}"
           libraries:
             - whl: ../../dist/*.whl
 
@@ -150,6 +155,7 @@ resources:
               run_id: "{{job.parameters.run_id}}"
               ontology_bundle: "{{job.parameters.ontology_bundle}}"
               domain_config_path: "{{job.parameters.domain_config_path}}"
+              model: "{{job.parameters.model}}"
           libraries:
             - whl: ../../dist/*.whl
 
@@ -169,6 +175,7 @@ resources:
               run_id: "{{job.parameters.run_id}}"
               ontology_bundle: "{{job.parameters.ontology_bundle}}"
               domain_config_path: "{{job.parameters.domain_config_path}}"
+              model: "{{job.parameters.model}}"
           libraries:
             - whl: ../../dist/*.whl
 

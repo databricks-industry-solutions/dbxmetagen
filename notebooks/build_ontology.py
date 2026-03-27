@@ -23,6 +23,7 @@ dbutils.widgets.text(
 )
 dbutils.widgets.text("incremental", "true", "Incremental (true/false)")
 dbutils.widgets.text("entity_tag_key", "entity_type", "UC Tag Key for entities")
+dbutils.widgets.text("model", "", "Model Endpoint")
 
 catalog_name = dbutils.widgets.get("catalog_name")
 schema_name = dbutils.widgets.get("schema_name")
@@ -31,6 +32,7 @@ apply_tags = dbutils.widgets.get("apply_ddl").lower() in ("true", "1", "yes")
 ontology_bundle = dbutils.widgets.get("ontology_bundle").strip()
 incremental = dbutils.widgets.get("incremental").lower() == "true"
 entity_tag_key = dbutils.widgets.get("entity_tag_key").strip() or "entity_type"
+model_endpoint = dbutils.widgets.get("model").strip() or None
 
 print(f"Catalog: {catalog_name}")
 print(f"Schema: {schema_name}")
@@ -39,6 +41,7 @@ print(f"Ontology bundle: {ontology_bundle or '(none – using config_path)'}")
 print(f"Apply tags: {apply_tags}")
 print(f"Entity tag key: {entity_tag_key}")
 print(f"Incremental: {incremental}")
+print(f"Model endpoint: {model_endpoint or '(default)'}")
 
 # COMMAND ----------
 
@@ -62,6 +65,7 @@ result = build_ontology(
     ontology_bundle=ontology_bundle,
     incremental=incremental,
     entity_tag_key=entity_tag_key,
+    model_endpoint=model_endpoint,
 )
 
 print(f"Ontology build complete:")

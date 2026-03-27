@@ -80,30 +80,27 @@ ANALYSIS_PROMPT = f"""You are a senior data catalog analyst.
 
 Given a user's question and evidence gathered from a metadata knowledge graph,
 vector search, SQL queries on metadata tables, and structured data retrieval
-(LLM-generated SQL against actual data tables), produce a thorough analysis.
+(LLM-generated SQL against actual data tables), produce a concise, focused analysis.
 
 {GRAPH_SCHEMA_CONTEXT}
 
 ## Response Format
 
 ### Key Findings
-Numbered findings with inline source citations (e.g. "[Source: search_metadata]",
-"[Source: structured_retrieval]").
+Numbered findings with inline source citations (e.g. "[Source: search_metadata]").
 
 ### Data Insights
-If structured retrieval returned actual data rows, summarize the key patterns,
-distributions, or notable values. Include specific numbers and aggregates.
+Summarize key patterns or notable values from retrieved data rows.
 
 ### Relationships & Patterns
-Describe discovered structural relationships, join patterns, FK references, or
-entity mappings found in the evidence. Reference specific table/column names.
+Structural relationships, join patterns, FK references found in evidence.
 
 ### Recommendations
 - **Action**: What to do
 - **Evidence**: Supporting data (cite source)
 - **Priority**: High / Medium / Low
 
-Be thorough but concise. Lead with the most impactful finding.
+Be direct and avoid repetition. Lead with the most impactful finding.
 If evidence is sparse, say so honestly rather than fabricating details."""
 
 
@@ -111,7 +108,7 @@ BASELINE_ANALYSIS_PROMPT = f"""You are a senior data catalog analyst.
 {SAFETY_PROMPT_BLOCK}
 
 Given a user's question and evidence gathered from SQL queries on metadata
-knowledge base tables, produce a thorough structured analysis.
+knowledge base tables, produce a concise, focused analysis.
 
 Available tables queried:
 - table_knowledge_base: table_name, comment, domain, subdomain, has_pii, has_phi, row_count
@@ -124,14 +121,14 @@ Available tables queried:
 Numbered findings referencing the evidence provided.
 
 ### Relationships & Patterns
-Describe any discovered relationships or patterns between tables/columns.
+Structural relationships or patterns between tables/columns.
 
 ### Recommendations
 - **Action**: What to do
 - **Evidence**: Supporting data
 - **Priority**: High / Medium / Low
 
-Be thorough but concise. If evidence is sparse, say so honestly."""
+Be direct and avoid repetition. If evidence is sparse, say so honestly."""
 
 
 # ---------------------------------------------------------------------------
@@ -571,6 +568,35 @@ def _gather_graphrag(query: str, cancel: threading.Event):
 
     node_ids = _extract_node_ids(vs_result)
     table_names = _extract_table_names(vs_result)
+
+    # Fallback: if VS failed or returned no matches, discover tables via SQL keyword search
+    if not node_ids and not table_names:
+        logger.info("[deep_analysis] VS returned no matches -- falling back to SQL keyword discovery")
+        _emit("gathering", f"Step 2/{total}: VS unavailable, using SQL keyword fallback...")
+        keywords = _extract_keywords(query)
+        if keywords:
+            like_clauses = " OR ".join(
+                f"(LOWER(table_name) LIKE '%{_sql_escape(k)}%' OR LOWER(comment) LIKE '%{_sql_escape(k)}%')"
+                for k in keywords
+            )
+            fallback_sql = (
+                f"SELECT table_name, domain, subdomain, comment, has_pii, row_count "
+                f"FROM {CATALOG}.{SCHEMA}.table_knowledge_base "
+                f"WHERE {like_clauses} LIMIT 20"
+            )
+            fb_result = _safe_tool_call(
+                execute_metadata_sql, {"query": fallback_sql}, TOOL_TIMEOUT,
+                "execute_metadata_sql (keyword fallback)", 2, total,
+            )
+            if fb_result:
+                tools_used.append("execute_metadata_sql")
+                parts.append(f"### Source: execute_metadata_sql (keyword fallback for tables)\n{_truncate_part(fb_result, LIMIT_VS)}")
+                fb_data = _parse_json(fb_result)
+                if fb_data and fb_data.get("rows"):
+                    table_names = [r["table_name"] for r in fb_data["rows"] if r.get("table_name")]
+                    node_ids = table_names[:]
+                    logger.info("[deep_analysis] Keyword fallback found %d tables: %s",
+                                len(table_names), table_names[:5])
 
     if cancel.is_set():
         return "\n\n".join(parts), graph_data, tools_used

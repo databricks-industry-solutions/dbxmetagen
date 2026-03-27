@@ -65,6 +65,12 @@
       "wrong": "\"version\": 1.1"
     },
     {
+      "rule": "CONCAT separator arguments must be single-quoted string literals",
+      "correct": "CONCAT(YEAR(col), '-Q', QUARTER(col))",
+      "wrong": "CONCAT(YEAR(col), -Q, QUARTER(col))",
+      "note": "Any non-column, non-function argument in CONCAT must be a quoted string. -Q is parsed as 'subtract column Q' without quotes."
+    },
+    {
       "rule": "Window measures use a nested 'window' object with order_by and range/rows",
       "correct": "{\"name\": \"30-Day Rolling Avg Revenue\", \"expr\": \"AVG(SUM(total_amount))\", \"window\": {\"order_by\": \"order_date\", \"range\": \"INTERVAL 30 DAYS PRECEDING\"}}",
       "wrong": "{\"name\": \"30-Day Rolling Avg Revenue\", \"expr\": \"AVG(SUM(total_amount)) OVER (ORDER BY order_date RANGE INTERVAL 30 DAYS PRECEDING)\"}",

@@ -8,6 +8,7 @@ a structured context string for the ReAct agent.
 import json
 import logging
 import os
+import re
 import uuid
 from typing import Any, Dict, List
 
@@ -117,6 +118,17 @@ def _generate_synonyms(name: str, data_type: str = "", comment: str = "", domain
     return sorted(synonyms)[:5]
 
 
+def _translate_mv_aliases(expr: str, source_short: str, joins: list) -> str:
+    """Replace metric-view 'source.' and join alias prefixes with real table names."""
+    expr = re.sub(r'\bsource\.', f'{source_short}.', expr)
+    for j in joins:
+        alias = j.get("name", "")
+        target = (j.get("source") or j.get("table", "")).split(".")[-1]
+        if alias and target and alias.lower() != source_short.lower():
+            expr = re.sub(rf'\b{re.escape(alias)}\.', f'{target}.', expr)
+    return expr
+
+
 class GenieContextAssembler:
     """Gathers metadata from knowledge bases and builds context for the Genie agent."""
 
@@ -150,6 +162,7 @@ class GenieContextAssembler:
         column_meta = self._get_column_metadata(table_identifiers)
         fk_rows = self._get_fk_predictions(table_identifiers)
         entity_rows = self._get_ontology_entities(table_identifiers)
+        self._cached_entity_rows = entity_rows
         entity_rels = self._get_entity_relationships(table_identifiers)
         metric_views = self._get_metric_views(table_identifiers)
         if metric_view_names:
@@ -328,7 +341,7 @@ class GenieContextAssembler:
         )
         if not tables:
             return rows
-        entity_rows = self._get_ontology_entities(tables)
+        entity_rows = getattr(self, "_cached_entity_rows", None) or self._get_ontology_entities(tables)
         relevant_types = {r.get("entity_type") for r in entity_rows}
         return [r for r in rows if r.get("src_type") in relevant_types or r.get("dst_type") in relevant_types]
 
@@ -348,7 +361,7 @@ class GenieContextAssembler:
         if not yamls:
             return []
 
-        entity_rows = self._get_ontology_entities(tables)
+        entity_rows = getattr(self, "_cached_entity_rows", None) or self._get_ontology_entities(tables)
         type_to_tables: dict[str, set[str]] = {}
         for e in entity_rows:
             src = e.get("source_tables") or []
@@ -411,26 +424,39 @@ class GenieContextAssembler:
               AND (source_table IN ({table_list}) OR source_table IN ({short_names}))
         """,
         )
-        verified = []
-        for mv in rows:
-            if mv.get("status") == "applied":
-                fq_name = f"`{self.catalog}`.`{self.schema}`.`{mv['metric_view_name']}`"
+        applied = [mv for mv in rows if mv.get("status") == "applied"]
+        non_applied = [mv for mv in rows if mv.get("status") != "applied"]
+        if not applied:
+            return non_applied
+
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        def _check(mv):
+            fq_name = f"`{self.catalog}`.`{self.schema}`.`{mv['metric_view_name']}`"
+            try:
+                r = self.ws.statement_execution.execute_statement(
+                    warehouse_id=self.wh,
+                    statement=f"SELECT 1 FROM {fq_name} LIMIT 1",
+                    wait_timeout="15s",
+                    format=Format.JSON_ARRAY,
+                    disposition=Disposition.INLINE,
+                )
+                state = r.status.state.value if r.status and r.status.state else "UNKNOWN"
+                return mv if state in ("SUCCEEDED", "CLOSED") else None
+            except Exception:
+                logger.warning("Metric view %s existence check failed -- skipping", mv["metric_view_name"])
+                return None
+
+        verified = list(non_applied)
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            futures = {pool.submit(_check, mv): mv for mv in applied}
+            for f in as_completed(futures):
                 try:
-                    r = self.ws.statement_execution.execute_statement(
-                        warehouse_id=self.wh,
-                        statement=f"SELECT 1 FROM {fq_name} LIMIT 1",
-                        wait_timeout="15s",
-                        format=Format.JSON_ARRAY,
-                        disposition=Disposition.INLINE,
-                    )
-                    state = r.status.state.value if r.status and r.status.state else "UNKNOWN"
-                    if state not in ("SUCCEEDED", "CLOSED"):
-                        logger.warning("Metric view %s marked applied but not found in UC -- skipping", mv["metric_view_name"])
-                        continue
+                    result = f.result(timeout=20)
+                    if result:
+                        verified.append(result)
                 except Exception:
-                    logger.warning("Metric view %s existence check failed -- skipping", mv["metric_view_name"])
-                    continue
-            verified.append(mv)
+                    pass
         return verified
 
     def _sample_categorical_values(
@@ -445,7 +471,7 @@ class GenieContextAssembler:
             for c in columns
             if c.get("data_type", "").upper() in ("STRING", "VARCHAR")
         ]
-        capped = string_cols[:50]
+        capped = string_cols[:20]
         if not capped:
             return samples
 
@@ -892,21 +918,24 @@ class GenieContextAssembler:
             source = defn.get("source", mv.get("source_table", ""))
             tbl_alias = source.split(".")[-1] if source else ""
             known_cols = cols_by_table.get(tbl_alias, cols_by_table.get(source, set()))
+            mv_joins = defn.get("joins", [])
 
             for m in defn.get("measures", []):
                 expr = m.get("expr", "")
                 if expr.strip().upper() in ("COUNT(*)", "COUNT(1)"):
                     continue
+                expr = _translate_mv_aliases(expr, tbl_alias, mv_joins)
                 if known_cols and tbl_alias:
                     expr = self._qualify_columns_in_expr(expr, tbl_alias, known_cols)
                 alias = m.get("name", "")
                 syns = m.get("synonyms") or _generate_synonyms(alias, comment=m.get("comment", ""))
+                comment = m.get("comment", "")
                 measures.append(
                     {
                         "alias": alias,
                         "display_name": m.get("display_name") or alias,
                         "sql": [expr],
-                        "description": m.get("comment", f"From {tbl_alias}"),
+                        "description": comment or f"From {tbl_alias}",
                         "synonyms": syns or None,
                     }
                 )
@@ -914,6 +943,7 @@ class GenieContextAssembler:
             for d in defn.get("dimensions", []):
                 expr = d.get("expr", "")
                 if expr and expr != d.get("name", ""):
+                    expr = _translate_mv_aliases(expr, tbl_alias, mv_joins)
                     if known_cols and tbl_alias:
                         expr = self._qualify_columns_in_expr(
                             expr, tbl_alias, known_cols
@@ -932,6 +962,7 @@ class GenieContextAssembler:
 
             if defn.get("filter"):
                 filt_expr = defn["filter"]
+                filt_expr = _translate_mv_aliases(filt_expr, tbl_alias, mv_joins)
                 if known_cols and tbl_alias:
                     filt_expr = self._qualify_columns_in_expr(
                         filt_expr, tbl_alias, known_cols

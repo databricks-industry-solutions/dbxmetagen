@@ -24,9 +24,9 @@ class TabErrorBoundary extends Component {
 const TERMINAL_STATES = new Set(['TERMINATED', 'SKIPPED', 'INTERNAL_ERROR'])
 
 const TABS = [
-  { id: 'core', label: 'Generate Core Metadata', color: 'bg-dbx-lava' },
-  { id: 'advanced', label: 'Generate Advanced Metadata', color: 'bg-dbx-amber' },
-  { id: 'assets', label: 'Create Semantic Layer Assets', color: 'bg-dbx-teal' },
+  { id: 'core', label: 'Generate Core Metadata', sub: 'Comments \u00b7 Sensitivity \u00b7 Domain', color: 'bg-dbx-lava' },
+  { id: 'advanced', label: 'Generate Advanced Metadata', sub: 'Ontology \u00b7 Foreign Keys \u00b7 Knowledge Graph', color: 'bg-dbx-amber' },
+  { id: 'assets', label: 'Semantic Layer Assets', sub: 'Metric Views', color: 'bg-dbx-teal' },
 ]
 
 function stateBadge(state, result) {
@@ -156,6 +156,7 @@ export default function BatchJobs({ onNavigate }) {
   const [clusterMaxK, setClusterMaxK] = useState(15)
   const [lakebaseCatalog, setLakebaseCatalog] = useState('')
   const [lakebaseError, setLakebaseError] = useState(null)
+  const [availableModels, setAvailableModels] = useState(['databricks-claude-sonnet-4-6', 'databricks-gpt-oss-120b'])
   const pollRef = useRef(null)
 
   const [settings, setSettings] = useState({
@@ -220,6 +221,7 @@ export default function BatchJobs({ onNavigate }) {
           include_lineage: cfg.include_lineage ?? prev.include_lineage,
         }))
         setApplyDdl(cfg.apply_ddl ?? false)
+        if (Array.isArray(cfg.available_models) && cfg.available_models.length) setAvailableModels(cfg.available_models)
       }
     })
     fetch('/api/ontology/bundles').then(r => r.ok ? r.json() : []).then(setBundles).catch(() => {})
@@ -327,12 +329,12 @@ export default function BatchJobs({ onNavigate }) {
       <div className="card p-5">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div>
-            <label className="section-title mb-1.5 block">Catalog</label>
+            <label className="section-title mb-1.5 block">Output Catalog</label>
             <input value={catalogName} onChange={e => setCatalogName(e.target.value)}
               placeholder="e.g. my_catalog" className="input-base" />
           </div>
           <div>
-            <label className="section-title mb-1.5 block">Schema</label>
+            <label className="section-title mb-1.5 block">Output Schema</label>
             <input value={schemaName} onChange={e => setSchemaName(e.target.value)}
               placeholder="e.g. metadata_results" className="input-base" />
           </div>
@@ -378,9 +380,10 @@ export default function BatchJobs({ onNavigate }) {
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-3">
               <div>
                 <label className="text-xs text-slate-500 dark:text-slate-400 mb-1 block">Model</label>
-                <div className="px-3 py-2 text-xs font-medium text-slate-700 dark:text-slate-300 bg-dbx-oat-light dark:bg-dbx-navy-500/50 border border-slate-200 dark:border-dbx-navy-400/25 rounded-lg">
-                  {settings.model}
-                </div>
+                <select value={settings.model} onChange={e => setSetting('model', e.target.value)}
+                  className="input-base !text-xs">
+                  {availableModels.map(m => <option key={m} value={m}>{m}</option>)}
+                </select>
               </div>
               <div>
                 <label className="text-xs text-slate-500 dark:text-slate-400 mb-1 block">Sample Size</label>
@@ -424,6 +427,7 @@ export default function BatchJobs({ onNavigate }) {
                 : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'
             }`}>
             {tab.label}
+            {tab.sub && <span className="block text-[10px] font-normal opacity-60 mt-0.5">{tab.sub}</span>}
           </button>
         ))}
       </div>

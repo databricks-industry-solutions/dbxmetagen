@@ -60,6 +60,10 @@ def invalidate_query_caches():
         _sl_context_cache.clear()
 
 _LLM_MODEL = os.environ.get("LLM_MODEL", "databricks-claude-sonnet-4-6")
+_AVAILABLE_MODELS = [
+    "databricks-claude-sonnet-4-6",
+    "databricks-gpt-oss-120b",
+]
 
 # Background Genie builder tasks: task_id -> {status, stage, result, error, created}
 _genie_tasks: dict[str, dict] = {}
@@ -397,6 +401,11 @@ def health():
 @app.get("/api/config")
 def get_config():
     """Return current catalog/schema defaults and processing settings for frontend."""
+    host = ""
+    try:
+        host = get_workspace_client().config.host or ""
+    except Exception:
+        host = os.environ.get("DATABRICKS_HOST", "")
     return {
         "catalog_name": CATALOG,
         "schema_name": SCHEMA,
@@ -405,6 +414,8 @@ def get_config():
         "apply_ddl": os.environ.get("APPLY_DDL", "false").lower() == "true",
         "use_kb_comments": os.environ.get("USE_KB_COMMENTS", "false").lower() == "true",
         "include_lineage": os.environ.get("INCLUDE_LINEAGE", "false").lower() == "true",
+        "workspace_host": host.rstrip("/"),
+        "available_models": _AVAILABLE_MODELS,
     }
 
 
@@ -4028,7 +4039,7 @@ def _build_sl_context(
             f"BUSINESS CONTEXT (provided by the user -- this defines the semantic frame for all analysis):\n{business_context.strip()}"
         )
     table_rows = execute_sql(
-        f"SELECT table_name, comment, domain, subdomain FROM {fq('table_knowledge_base')} "
+        f"SELECT table_name, comment, domain, subdomain, has_pii, has_phi FROM {fq('table_knowledge_base')} "
         f"WHERE table_name IN ({in_clause})"
     )
     col_rows = execute_sql(
@@ -4043,7 +4054,7 @@ def _build_sl_context(
     try:
         fk_rows = execute_sql(
             f"SELECT src_table, dst_table, src_column, dst_column, final_confidence "
-            f"FROM {fq('fk_predictions')} WHERE is_fk = 'true' AND final_confidence >= 0.7 "
+            f"FROM {fq('fk_predictions')} WHERE is_fk = 'true' AND final_confidence >= 0.85 "
             f"AND (src_table IN ({in_clause}) OR dst_table IN ({in_clause}))"
         )
     except HTTPException:
@@ -4077,6 +4088,9 @@ def _build_sl_context(
     except (HTTPException, Exception):
         pass
 
+    pii_tables = {t["table_name"] for t in table_rows if t.get("has_pii")}
+    phi_tables = {t["table_name"] for t in table_rows if t.get("has_phi")}
+
     for t in table_rows:
         tname = t["table_name"]
         ent_info = entity_map.get(tname, {})
@@ -4085,12 +4099,30 @@ def _build_sl_context(
         ent_str = f" Entity: {ent_type}" if ent_type else ""
         if ent_desc:
             ent_str += f" -- {ent_desc}"
-        line = f"Table: {tname} (Comment: \"{t.get('comment', '')}\" Domain: {t.get('domain', '')} / {t.get('subdomain', '')}){ent_str}"
+        pii_tag = ""
+        if tname in pii_tables:
+            pii_tag += " [PII]"
+        if tname in phi_tables:
+            pii_tag += " [PHI]"
+        line = f"Table: {tname} (Comment: \"{t.get('comment', '')}\" Domain: {t.get('domain', '')} / {t.get('subdomain', '')}){ent_str}{pii_tag}"
         cols = col_by_table.get(tname, [])
-        col_strs = [
-            f"  - {c['column_name']} {c.get('data_type', '')} : {c.get('comment', '')}"
-            for c in cols
-        ]
+        if len(cols) > 80:
+            fk_cols = {fk["src_column"] for fk in fk_rows if fk["src_table"] == tname}
+            fk_cols |= {fk["dst_column"] for fk in fk_rows if fk["dst_table"] == tname}
+            prioritized = sorted(cols, key=lambda c: (
+                c["column_name"] not in fk_cols,
+                not bool(c.get("comment")),
+                c.get("column_name", ""),
+            ))
+            cols = prioritized[:80]
+        is_pii_table = tname in pii_tables or tname in phi_tables
+        col_strs = []
+        for c in cols:
+            cls = (c.get("classification") or "").lower()
+            col_tag = ""
+            if is_pii_table and any(k in cls for k in ("pii", "phi", "personal", "sensitive", "name", "email", "ssn", "phone", "address", "dob")):
+                col_tag = " [PII]"
+            col_strs.append(f"  - {c['column_name']} {c.get('data_type', '')} : {c.get('comment', '')}{col_tag}")
         parts.append(
             line + "\n  Columns:\n" + "\n".join(col_strs) if col_strs else line
         )
@@ -4279,6 +4311,32 @@ OUTPUT:
      {"name": "Deposit Volume", "expr": "SUM(amount) FILTER (WHERE txn_type = 'deposit')", "comment": "Total deposit inflows"}],
    "joins": [{"name": "accounts", "source": "finance.accounts", "on": "source.account_id = accounts.account_id"}]}
 ]""",
+    "project_management": """\
+INPUT tables:
+  pm.tasks columns: [task_id BIGINT, project_id BIGINT, assignee_id BIGINT, title STRING, status STRING, priority STRING, created_date DATE, due_date DATE, completed_date DATE, estimated_hours DECIMAL(6,1), actual_hours DECIMAL(6,1)]
+  pm.projects columns: [project_id BIGINT, name STRING, department STRING, start_date DATE, target_date DATE, status STRING]
+  FK: tasks.project_id -> projects.project_id (confidence 0.95)
+INPUT questions:
+  1. Which projects have the most overdue tasks?  2. What is the on-time completion rate?  3. How does effort estimation accuracy vary by project?
+OUTPUT:
+[
+  {"name": "task_delivery_metrics", "source": "pm.tasks",
+   "comment": "Task delivery, effort accuracy, and project health metrics",
+   "filter": "status IS NOT NULL",
+   "dimensions": [
+     {"name": "Created Month", "expr": "DATE_TRUNC('MONTH', created_date)", "comment": "Month task was created"},
+     {"name": "Priority", "expr": "priority", "comment": "Task priority level"},
+     {"name": "Project Name", "expr": "name", "comment": "Project name from joined projects table"},
+     {"name": "Department", "expr": "department", "comment": "Department from joined projects table"}],
+   "measures": [
+     {"name": "Task Count", "expr": "COUNT(*)", "comment": "Total tasks"},
+     {"name": "Completed Tasks", "expr": "SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END)", "comment": "Number of completed tasks"},
+     {"name": "On-Time Rate", "expr": "SUM(CASE WHEN completed_date <= due_date THEN 1 ELSE 0 END) * 1.0 / NULLIF(SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END), 0)", "comment": "Fraction of tasks completed by due date"},
+     {"name": "Avg Cycle Time Days", "expr": "AVG(DATEDIFF(completed_date, created_date))", "comment": "Average days from creation to completion"},
+     {"name": "Effort Accuracy", "expr": "AVG(actual_hours / NULLIF(estimated_hours, 0))", "comment": "Ratio of actual to estimated hours (1.0 = perfect)"},
+     {"name": "Overdue Tasks", "expr": "SUM(CASE WHEN due_date < CURRENT_DATE() AND status != 'done' THEN 1 ELSE 0 END)", "comment": "Tasks past due date still open"}],
+   "joins": [{"name": "projects", "source": "pm.projects", "on": "source.project_id = projects.project_id"}]}
+]""",
 }
 
 
@@ -4290,6 +4348,7 @@ def _select_few_shot(context: str) -> str:
         "healthcare": ["patient", "encounter", "provider", "clinical", "diagnosis", "admit", "discharge", "readmission", "icd", "npi"],
         "finance": ["transaction", "account", "ledger", "balance", "deposit", "withdrawal", "fraud", "loan", "interest", "portfolio"],
         "sales": ["order", "customer", "revenue", "product", "invoice", "shipment", "discount", "cart", "purchase"],
+        "project_management": ["project", "task", "milestone", "sprint", "resource", "assignment", "issue", "ticket", "backlog", "epic", "story", "incident"],
     }
     for domain, keywords in domain_keywords.items():
         scores[domain] = sum(1 for kw in keywords if kw in ctx_lower)
@@ -4337,14 +4396,14 @@ ANALYTICAL QUALITY (HIGHEST PRIORITY):
 - Use PROFILING SUMMARIES: low-cardinality (< 50 distinct) -> dimensions; high-cardinality -> measure inputs or filters
 - Skip non-quantitative questions (document search, free-text lookups) silently
 
-JOIN AND RELATIONSHIP RULES (MANDATORY):
-- You MUST include joins for EVERY foreign-key (FK) relationship shown in the metadata. If table A has an FK to table B, at least one metric view MUST join them.
+JOIN AND RELATIONSHIP RULES:
+- Include joins for FK relationships where the join is relevant to the metric being computed and confidence is high.
+- Not all FKs need to be used -- join only where the FK supports meaningful cross-table measures or dimensions.
 - In join "on" clauses, always reference the source table as "source": "on": "source.fk_col = joined_alias.pk_col"
-- COLUMN REFERENCING: Use "source.col" for source table columns, "join_alias.col" for joined table columns. Example: "source.order_date", "account.industry"
+- CRITICAL: Each join's "on" clause must ONLY reference "source" on one side. Do NOT chain joins (e.g., "alias_a.col = alias_b.col"). If you need data from a table that only connects through another join, skip it. Star-schema only.
+- COLUMN REFERENCING: Use "source.col" for source table columns, "join_alias.col" for joined table columns.
 - Include joins when FK relationships OR GRAPH RELATIONSHIPS show a valid path
-- Graph edges with join_expression are directly usable; multi-hop paths indicate transitive join chains
-- Cross-table metrics are REQUIRED when FKs exist: join fact tables to dimension tables and produce breakdowns, ratios, or aggregations that span both
-- A metric view with NO joins when FKs exist for its source table is INCOMPLETE -- always add them
+- Cross-table metrics are encouraged when FKs exist: join fact tables to dimension tables for breakdowns and ratios
 - EXISTING METRIC VIEWS: do NOT duplicate -- build on existing coverage
 
 STRUCTURE:
@@ -4545,32 +4604,48 @@ def _extract_column_refs(expr: str) -> list[tuple[str | None, str]]:
 
 
 def _autofix_dimension_columns(defn: dict, table_cols: dict[str, set[str]]) -> dict:
-    """Attempt to fuzzy-match hallucinated column names to actual columns."""
+    """Attempt to fuzzy-match hallucinated column names to actual columns.
+
+    table_cols maps alias -> set of column names. 'source' is the primary table.
+    Join aliases are also included when available.
+    """
     from difflib import get_close_matches
 
+    # Build per-alias lookup and a combined lookup across all aliases
+    alias_cols: dict[str, dict[str, str]] = {}
     all_cols_lower: dict[str, str] = {}
-    for cols in table_cols.values():
+    for alias, cols in table_cols.items():
+        alias_cols[alias.lower()] = {c.lower(): c for c in cols}
         for c in cols:
             all_cols_lower[c.lower()] = c
+
+    # Collect known alias names (source + join aliases)
+    known_aliases = set(alias_cols.keys())
 
     for item_type in ("dimensions", "measures"):
         for item in defn.get(item_type, []):
             expr = item.get("expr", "")
             if not expr:
                 continue
-            for m in re.finditer(r"\b(source)\.([a-zA-Z_]\w*)\b", expr, re.IGNORECASE):
+            for m in re.finditer(r"\b([a-zA-Z_]\w*)\.([a-zA-Z_]\w*)\b", expr):
+                prefix = m.group(1)
                 col = m.group(2)
-                if col.lower() in all_cols_lower:
+                prefix_lower = prefix.lower()
+                if prefix_lower not in known_aliases:
                     continue
-                candidates = list(all_cols_lower.keys())
+                # Check if column exists for this alias
+                alias_map = alias_cols.get(prefix_lower, all_cols_lower)
+                if col.lower() in alias_map:
+                    continue
+                candidates = list(alias_map.keys())
                 dim_name = item.get("name", "")
                 snake = re.sub(r"\s+", "_", dim_name).lower()
                 check_vals = [col.lower(), snake]
                 for cv in check_vals:
                     matches = get_close_matches(cv, candidates, n=1, cutoff=0.6)
                     if matches:
-                        actual = all_cols_lower[matches[0]]
-                        expr = expr.replace(f"source.{col}", f"source.{actual}")
+                        actual = alias_map[matches[0]]
+                        expr = expr.replace(f"{prefix}.{col}", f"{prefix}.{actual}")
                         item["expr"] = expr
                         break
     return defn
@@ -4649,6 +4724,20 @@ def _validate_definition_structure(defn: dict) -> list[str]:
                         errors.append(
                             f"{item_type} {item.get('name', '')}: column {col} not found in {source}"
                         )
+
+    # Detect chained joins (on clause references another join alias instead of source)
+    join_aliases = {j.get("name", "").lower() for j in defn.get("joins", []) if j.get("name")}
+    ref_pat = re.compile(r"\b([A-Za-z_]\w*)\.\w+")
+    for j in defn.get("joins", []):
+        on = j.get("on", "")
+        own_alias = j.get("name", "").lower()
+        refs_in_on = {m.group(1).lower() for m in ref_pat.finditer(on)}
+        refs_in_on.discard("source")
+        chained = refs_in_on & join_aliases - {own_alias}
+        if chained:
+            errors.append(
+                f"Join '{j.get('name', '?')}' references another join alias {chained} -- only 'source' references are supported"
+            )
 
     return errors
 
@@ -4777,10 +4866,15 @@ def _fix_in_clause_literals(expr: str) -> str:
 
 
 def _fix_concat_separators(expr: str) -> str:
-    """Quote bare non-alphanumeric tokens between commas in function calls."""
+    """Quote bare separator tokens between commas (e.g. -Q, /, : in CONCAT)."""
+    def _repl(m):
+        tok = m.group(1).strip()
+        if re.match(r"^-?\d+(\.\d+)?$", tok):
+            return m.group(0)
+        return f", '{tok}',"
     return re.sub(
-        r",\s*([^\w\s'\"`(][^\w'\"`(]*?)\s*,",
-        lambda m: f", '{m.group(1).strip()}',",
+        r",\s*([^\w\s'\"`(][^'\"`(,)]{0,4})\s*,",
+        _repl,
         expr,
     )
 
@@ -4940,9 +5034,11 @@ def _sl_self_repair(defn: dict, errors: list[str], model: str) -> dict | None:
     col_context = ""
     if source:
         try:
+            source_esc = source.replace(chr(39), chr(39)+chr(39))
+            short_name = source.split(".")[-1].replace(chr(39), chr(39)+chr(39))
             cols = execute_sql(
                 f"SELECT column_name, data_type FROM {fq('column_knowledge_base')} "
-                f"WHERE table_name = '{source.replace(chr(39), chr(39)+chr(39))}'"
+                f"WHERE table_name = '{source_esc}' OR table_name LIKE '%{short_name}'"
             )
             if cols:
                 col_context = "Available columns: " + ", ".join(
@@ -5041,6 +5137,60 @@ def _fix_join_alias_refs(defn: dict) -> dict:
     return defn
 
 
+def _flatten_chained_joins(defn: dict) -> dict:
+    """Drop joins whose 'on' clause references another join alias instead of 'source'.
+
+    Also removes dimensions/measures that depend on the dropped alias.
+    """
+    joins = defn.get("joins", [])
+    if not joins:
+        return defn
+
+    join_aliases = {j.get("name", "").lower() for j in joins if j.get("name")}
+    ref_pat = re.compile(r"\b([A-Za-z_]\w*)\.\w+")
+
+    dropped_aliases: set[str] = set()
+    kept_joins: list[dict] = []
+    for j in joins:
+        on = j.get("on", "")
+        refs_in_on = {m.group(1).lower() for m in ref_pat.finditer(on)}
+        refs_in_on.discard("source")
+        # If 'on' references another join alias (not source, not self), it's chained
+        own_alias = j.get("name", "").lower()
+        chained_refs = refs_in_on & join_aliases - {own_alias}
+        if chained_refs:
+            logger.warning(
+                "Dropping chained join '%s': on clause references other join alias(es) %s",
+                j.get("name", "?"), chained_refs,
+            )
+            dropped_aliases.add(own_alias)
+        else:
+            kept_joins.append(j)
+
+    if not dropped_aliases:
+        return defn
+
+    defn["joins"] = kept_joins
+
+    # Remove dimensions/measures that reference dropped aliases
+    for section in ("dimensions", "measures"):
+        items = defn.get(section, [])
+        cleaned = []
+        for item in items:
+            expr = item.get("expr", "")
+            expr_refs = {m.group(1).lower() for m in ref_pat.finditer(expr)}
+            if expr_refs & dropped_aliases:
+                logger.warning(
+                    "Dropping %s '%s': references dropped join alias",
+                    section[:-1], item.get("name", "?"),
+                )
+            else:
+                cleaned.append(item)
+        defn[section] = cleaned
+
+    return defn
+
+
 def _build_plan_prompt(questions: list[str], context: str) -> str:
     q_block = "\n".join(f"  {i+1}. {q}" for i, q in enumerate(questions))
     return f"""You are a data modeler planning a semantic layer for Databricks Unity Catalog.
@@ -5052,7 +5202,7 @@ For each metric view in "views", include:
 - "source": fully qualified source table (catalog.schema.table)
 - "comment": one sentence purpose
 - "joins": array of {{ "name": "<alias>", "source": "catalog.schema.table", "on": "source.<fk_col> = <alias>.<pk_col>" }}
-  MANDATORY: You MUST include joins for EVERY FK relationship shown in the metadata. If a source table has FKs to other tables, include them as joins. A view with NO joins when FKs exist is INCOMPLETE.
+  Include joins where FK relationships have high confidence and are relevant to the business questions. Prefer simpler views with fewer joins over complex views that may fail. A view with 0-2 well-chosen joins is better than one with 5 forced joins.
 - "dimensions": array of {{ "name": "Display Name", "comment": "what it is" }} (no expr)
 - "measures": array of {{ "name": "Display Name", "comment": "what it measures" }} (no expr)
 - "question_indices": array of 0-based question indices this view answers
@@ -5114,13 +5264,13 @@ def _parse_single_json_safe(response: str) -> dict:
 
 
 def _inject_fk_joins(plan_views: list[dict], tables: list[str], cat: str, sch: str):
-    """Ensure every plan view includes joins for FK relationships involving its source table."""
+    """Add high-confidence FK joins to plan views, capped at 3 per view."""
     fq_tables = [t if "." in t else f"{cat}.{sch}.{t}" for t in tables]
     in_clause = ", ".join(f"'{t}'" for t in fq_tables)
     try:
         fk_rows = execute_sql(
             f"SELECT src_table, dst_table, src_column, dst_column "
-            f"FROM {fq('fk_predictions')} WHERE is_fk = 'true' AND final_confidence >= 0.7 "
+            f"FROM {fq('fk_predictions')} WHERE is_fk = 'true' AND final_confidence >= 0.85 "
             f"AND (src_table IN ({in_clause}) OR dst_table IN ({in_clause}))"
         )
     except Exception:
@@ -5141,7 +5291,10 @@ def _inject_fk_joins(plan_views: list[dict], tables: list[str], cat: str, sch: s
         if not fks:
             continue
         existing_join_sources = {j.get("source", "") for j in pv.get("joins", [])}
+        added = 0
         for fk in fks:
+            if added >= 3:
+                break
             if fk["src_table"] == src:
                 join_table, fk_col, pk_col = fk["dst_table"], fk["src_column"], fk["dst_column"]
             else:
@@ -5149,13 +5302,58 @@ def _inject_fk_joins(plan_views: list[dict], tables: list[str], cat: str, sch: s
             if join_table in existing_join_sources:
                 continue
             alias = join_table.split(".")[-1]
+            fk_col = fk_col.split(".")[-1]
+            pk_col = pk_col.split(".")[-1]
             pv.setdefault("joins", []).append({
                 "name": alias,
                 "source": join_table,
                 "on": f"source.{fk_col} = {alias}.{pk_col}",
             })
             existing_join_sources.add(join_table)
+            added += 1
     return plan_views
+
+
+def _defn_to_yaml(defn: dict) -> str:
+    """Convert a metric view JSON definition to YAML body for CREATE VIEW WITH METRICS."""
+    mv: dict = {"version": "1.1", "source": defn["source"]}
+    if defn.get("comment"):
+        mv["comment"] = defn["comment"]
+    if defn.get("filter"):
+        mv["filter"] = defn["filter"]
+    mv["dimensions"] = [
+        {k: v for k, v in {"name": d["name"], "expr": d["expr"], "comment": d.get("comment")}.items() if v}
+        for d in defn.get("dimensions", [])
+    ]
+    measures_out = []
+    for m in defn.get("measures", []):
+        entry = {k: v for k, v in {"name": m["name"], "expr": m["expr"], "comment": m.get("comment")}.items() if v}
+        if m.get("window"):
+            entry["window"] = m["window"]
+        measures_out.append(entry)
+    mv["measures"] = measures_out
+    if defn.get("joins"):
+        mv["joins"] = defn["joins"]
+    return yaml.dump(mv, default_flow_style=False, sort_keys=False)
+
+
+def _yaml_dry_run(defn: dict, cat: str, sch: str) -> Optional[str]:
+    """Attempt CREATE VIEW WITH METRICS LANGUAGE YAML; return error string or None."""
+    try:
+        yaml_body = _defn_to_yaml(defn)
+        mv_name = defn.get("name", "dry_run_test")
+        dry_name = f"`{cat}`.`{sch}`.`_mv_dryrun_{mv_name}`"
+        execute_sql(
+            f"CREATE OR REPLACE VIEW {dry_name}\nWITH METRICS LANGUAGE YAML AS $$\n{yaml_body}$$",
+            timeout=30,
+        )
+        execute_sql(f"DROP VIEW IF EXISTS {dry_name}", timeout=15)
+        return None
+    except Exception as e:
+        err = str(e)
+        if "DROP VIEW" in err:
+            return None
+        return f"YAML dry-run failed: {err}"
 
 
 def _run_sl_generation(
@@ -5261,6 +5459,7 @@ def _run_sl_generation(
         task.update({"stage": "validating", "generated": len(definitions)})
         now = _dt.utcnow().isoformat()
         stats = {"generated": 0, "validated": 0, "failed": 0, "repaired": 0}
+        per_definition_results: list[dict] = []
 
         for defn in definitions:
             defn_id = str(_uuid.uuid4())
@@ -5276,6 +5475,7 @@ def _run_sl_generation(
                 defn["filter"] = _autofix_expr(defn["filter"])
             defn = _normalize_joins(defn)
             defn = _fix_join_alias_refs(defn)
+            defn = _flatten_chained_joins(defn)
 
             # Fuzzy-match hallucinated column names to actual columns
             src = defn.get("source", "")
@@ -5287,7 +5487,23 @@ def _run_sl_generation(
                             f"SELECT column_name FROM `{src_parts[0]}`.information_schema.columns "
                             f"WHERE table_catalog = '{src_parts[0]}' AND table_schema = '{src_parts[1]}' AND table_name = '{src_parts[2]}'"
                         )
-                        _tbl_cols = {"source": {r["column_name"].lower() for r in _cols_rows}}
+                        _tbl_cols: dict[str, set[str]] = {
+                            "source": {r["column_name"].lower() for r in _cols_rows}
+                        }
+                        # Also fetch columns for join alias tables
+                        for j in defn.get("joins", []):
+                            j_src = j.get("source", "")
+                            j_name = j.get("name", "")
+                            j_parts = j_src.split(".")
+                            if j_name and len(j_parts) == 3:
+                                try:
+                                    j_rows = execute_sql(
+                                        f"SELECT column_name FROM `{j_parts[0]}`.information_schema.columns "
+                                        f"WHERE table_catalog = '{j_parts[0]}' AND table_schema = '{j_parts[1]}' AND table_name = '{j_parts[2]}'"
+                                    )
+                                    _tbl_cols[j_name.lower()] = {r["column_name"].lower() for r in j_rows}
+                                except Exception:
+                                    pass
                         defn = _autofix_dimension_columns(defn, _tbl_cols)
                     except Exception:
                         pass
@@ -5324,52 +5540,41 @@ def _run_sl_generation(
 
             errors = _validate_defn(defn)
 
-            # Phase 3: Self-repair -- one LLM retry for failed definitions
-            if errors:
-                logger.info("Definition '%s' failed validation (%d errors), attempting self-repair", mv_name, len(errors))
-                repaired = _sl_self_repair(defn, errors, model)
-                if repaired:
-                    for itype in ("dimensions", "measures"):
-                        for item in repaired.get(itype, []):
-                            if item.get("expr"):
-                                item["expr"] = _autofix_expr(item["expr"])
-                    if repaired.get("filter"):
-                        repaired["filter"] = _autofix_expr(repaired["filter"])
-                    repair_errors = _validate_defn(repaired)
-                    if not repair_errors or len(repair_errors) < len(errors):
-                        defn = repaired
-                        errors = repair_errors
-                        mv_name = defn.get("name", mv_name)
-                        source = defn.get("source", source)
-                        if not errors:
-                            stats["repaired"] += 1
-                        logger.info("Self-repair %s for '%s' (%d remaining errors)",
-                                    "succeeded" if not errors else "improved", mv_name, len(errors))
+            # YAML dry-run: catches metric-YAML-specific failures that pass SELECT validation
+            if not errors and defn.get("source"):
+                yaml_err = _yaml_dry_run(defn, cat, sch)
+                if yaml_err:
+                    errors.append(yaml_err)
+                    logger.info("YAML dry-run failed for '%s': %s", mv_name, yaml_err[:200])
 
-            # Complexity gate: enrich trivial definitions
+            # Phase 3: Self-repair -- up to 2 LLM retries for failed definitions
+            for repair_round in range(1, 3):
+                if not errors:
+                    break
+                logger.info("Definition '%s' repair round %d (%d errors)", mv_name, repair_round, len(errors))
+                repaired = _sl_self_repair(defn, errors, model)
+                if not repaired:
+                    break
+                for itype in ("dimensions", "measures"):
+                    for item in repaired.get(itype, []):
+                        if item.get("expr"):
+                            item["expr"] = _autofix_expr(item["expr"])
+                if repaired.get("filter"):
+                    repaired["filter"] = _autofix_expr(repaired["filter"])
+                repair_errors = _validate_defn(repaired)
+                if not repair_errors or len(repair_errors) < len(errors):
+                    defn = repaired
+                    errors = repair_errors
+                    mv_name = defn.get("name", mv_name)
+                    source = defn.get("source", source)
+                    if not errors:
+                        stats["repaired"] += 1
+                    logger.info("Self-repair round %d %s for '%s' (%d remaining errors)",
+                                repair_round, "succeeded" if not errors else "improved", mv_name, len(errors))
+                else:
+                    break
+
             cx = _score_definition_complexity(defn)
-            if cx["complexity_level"] == "trivial" and not errors:
-                enrichment_errors = [
-                    "ENRICHMENT: This metric view is analytically trivial (only basic COUNT/SUM). "
-                    "Enrich it with at least one ratio, rate, or filtered aggregate measure. "
-                    "Add computed dimensions (CASE, DATE_TRUNC) where relevant."
-                ]
-                enriched = _sl_self_repair(defn, enrichment_errors, model)
-                if enriched:
-                    for itype in ("dimensions", "measures"):
-                        for item in enriched.get(itype, []):
-                            if item.get("expr"):
-                                item["expr"] = _autofix_expr(item["expr"])
-                    if enriched.get("filter"):
-                        enriched["filter"] = _autofix_expr(enriched["filter"])
-                    enrich_errs = _validate_defn(enriched)
-                    ecx = _score_definition_complexity(enriched)
-                    if not enrich_errs and ecx["complexity_score"] > cx["complexity_score"]:
-                        defn = enriched
-                        cx = ecx
-                        mv_name = defn.get("name", mv_name)
-                        source = defn.get("source", source)
-                        logger.info("Enrichment raised '%s' from trivial to %s", mv_name, cx["complexity_level"])
 
             json_str = json.dumps(defn).replace("'", "''")
             status = "validated" if not errors else "failed"
@@ -5383,6 +5588,13 @@ def _run_sl_generation(
             )
             stats[status] += 1
             stats["generated"] += 1
+            per_definition_results.append({
+                "name": mv_name,
+                "source": source,
+                "status": status,
+                "validation_errors": errors if errors else None,
+                "complexity": cx.get("complexity_level"),
+            })
 
         # Post-generation: LLM coverage check
         coverage = None
@@ -5413,6 +5625,7 @@ Return ONLY a JSON object: {{"covered": [<1-based question indices>], "not_cover
             except Exception as exc:
                 logger.warning("Coverage check failed: %s", exc)
 
+        stats["definitions"] = per_definition_results
         task.update({"status": "done", "stage": "done", "result": stats})
 
     except Exception as e:
@@ -6390,22 +6603,28 @@ def _strip_out_of_scope_sql(ss: dict) -> dict:
     # Filter join_specs: check table.column refs in join SQL
     join_specs = inst.get("join_specs", [])
     if join_specs:
-        valid_short = {v.split(".")[-1].lower() for v in valid_ids}
-        all_valid = valid_ids | valid_short
+        valid_short_lower = {v.split(".")[-1].lower() for v in valid_ids}
+        valid_lower = {v.lower() for v in valid_ids} | valid_short_lower
         valid_joins = []
         for js in join_specs:
             sql_list = js.get("sql", [])
-            # Join SQL uses table.column format (no FROM/JOIN keywords), extract table refs
             join_refs = set()
             for sql in sql_list:
+                # Handle both `table`.`col` (backtick-quoted) and table.col (bare)
+                join_refs.update(m.lower() for m in re.findall(r'`(\w+)`\.`?\w+`?', sql))
                 join_refs.update(m.lower() for m in re.findall(r'\b(\w+)\.\w+', sql))
-            if join_refs and all(ref in all_valid for ref in join_refs):
+            if join_refs and all(ref in valid_lower for ref in join_refs):
                 valid_joins.append(js)
             elif not join_refs:
-                valid_joins.append(js)  # No table refs to check — keep it
+                valid_joins.append(js)
             else:
-                bad = join_refs - all_valid
-                logger.warning("Stripped out-of-scope join_spec referencing: %s", bad)
+                bad = join_refs - valid_lower
+                left_id = js.get("left", {}).get("identifier", "?")
+                right_id = js.get("right", {}).get("identifier", "?")
+                logger.warning(
+                    "Stripped out-of-scope join_spec (%s <-> %s): bad refs %s in SQL %s",
+                    left_id, right_id, bad, sql_list,
+                )
         inst["join_specs"] = valid_joins
 
     return ss
@@ -6431,6 +6650,16 @@ def _validate_data_sources_exist(ss: dict, warehouse_id: str) -> list[str]:
 @app.post("/api/genie/create")
 def genie_create(req: GenieCreateRequest):
     """Create or update a Genie space via the Databricks REST API."""
+    # Capture prebuilt join identifier-pairs before Pydantic strips _prebuilt
+    _raw_joins = (req.serialized_space.get("instructions", {}).get("join_specs")
+                  or req.serialized_space.get("join_specs") or [])
+    prebuilt_pairs: set[tuple[str, str]] = set()
+    for j in _raw_joins:
+        if j.get("_prebuilt"):
+            l_id = j.get("left", {}).get("identifier", "")
+            r_id = j.get("right", {}).get("identifier", "")
+            if l_id and r_id:
+                prebuilt_pairs.add(tuple(sorted([l_id.lower(), r_id.lower()])))
     transformed = _transform_to_genie_schema(req.serialized_space)
     validation_errors = _validate_serialized_space(transformed)
     if validation_errors:
@@ -6449,6 +6678,20 @@ def genie_create(req: GenieCreateRequest):
 
     transformed = _strip_out_of_scope_sql(transformed)
     transformed = _validate_sql_expressions(transformed, wh)
+
+    _inst = transformed.get("instructions", {})
+    _snip = _inst.get("sql_snippets", {}) or {}
+    logger.info(
+        "Genie deploy payload: %d tables, %d MVs, %d joins, %d measures, %d filters, %d expressions, %d examples",
+        len(transformed.get("data_sources", {}).get("tables", [])),
+        len(transformed.get("data_sources", {}).get("metric_views", [])),
+        len(_inst.get("join_specs", [])),
+        len(_snip.get("measures", [])),
+        len(_snip.get("filters", [])),
+        len(_snip.get("expressions", [])),
+        len(_inst.get("example_question_sqls", [])),
+    )
+    logger.debug("Genie serialized_space (first 2000 chars): %s", json.dumps(transformed)[:2000])
 
     def _do_genie_request(space_json):
         body = {
@@ -6473,7 +6716,7 @@ def genie_create(req: GenieCreateRequest):
 
     deploy_warnings: list[str] = []
 
-    _MAX_GENIE_RETRIES = 5
+    _MAX_GENIE_RETRIES = 10
     last_err: Exception | None = None
     for attempt in range(_MAX_GENIE_RETRIES + 1):
         try:
@@ -6519,6 +6762,47 @@ def genie_create(req: GenieCreateRequest):
                 logger.info("Tracked genie space %s in genie_spaces table", space_id)
             except Exception as track_err:
                 logger.warning("Failed to track genie space: %s", track_err)
+            final_joins = transformed.get("instructions", {}).get("join_specs", [])
+            final_tables = len(transformed.get("data_sources", {}).get("tables", []))
+            final_mvs = len(transformed.get("data_sources", {}).get("metric_views", []))
+            logger.info(
+                "Genie deploy SUCCESS: space_id=%s, %d tables, %d MVs, %d joins survived, %d warnings",
+                result.get("space_id"), final_tables, final_mvs, len(final_joins), len(deploy_warnings),
+            )
+            result["join_count"] = len(final_joins)
+            result["table_count"] = final_tables
+            result["mv_count"] = final_mvs
+            # Read-back verification: confirm joins actually persisted
+            persisted_join_count = None
+            try:
+                space_id = result.get("space_id")
+                if space_id and final_joins:
+                    rb = ws.api_client.do(
+                        "GET",
+                        f"/api/2.0/genie/spaces/{space_id}",
+                        query={"include_serialized_space": "true"},
+                    )
+                    rb_ss = rb.get("serialized_space", "")
+                    if isinstance(rb_ss, str) and rb_ss:
+                        rb_parsed = json.loads(rb_ss)
+                    else:
+                        rb_parsed = rb_ss if isinstance(rb_ss, dict) else {}
+                    rb_joins = (rb_parsed.get("instructions", {}).get("join_specs", [])
+                                or rb_parsed.get("data_sources", {}).get("join_specs", []))
+                    persisted_join_count = len(rb_joins)
+                    logger.info(
+                        "Genie read-back: %d joins persisted (sent %d)",
+                        persisted_join_count, len(final_joins),
+                    )
+                    if persisted_join_count == 0 and len(final_joins) > 0:
+                        deploy_warnings.append(
+                            f"Joins did NOT persist: sent {len(final_joins)} but API returned 0. "
+                            "The Genie API may have silently dropped them."
+                        )
+            except Exception as rb_err:
+                logger.warning("Genie read-back failed: %s", rb_err)
+            if persisted_join_count is not None:
+                result["persisted_join_count"] = persisted_join_count
             if deploy_warnings:
                 result["warnings"] = deploy_warnings
             return result
@@ -6539,27 +6823,55 @@ def genie_create(req: GenieCreateRequest):
                 deploy_warnings.append(f"Stripped unknown API field: {bad_field}")
                 continue
             if "parse export proto" in err_str.lower() or "failed to parse" in err_str.lower():
+                logger.warning("Attempt %d proto error (full): %s", attempt + 1, err_str[:500])
                 inst = transformed.get("instructions", {})
+                snippets = inst.get("sql_snippets", {})
+                examples = inst.get("example_question_sqls", [])
                 join_specs = inst.get("join_specs", [])
-                if join_specs and len(join_specs) > 1:
-                    removed = join_specs.pop()
+                # Phase 1: strip ALL non-empty snippet categories in one pass
+                stripped = False
+                for cat in ("expressions", "filters", "measures"):
+                    if snippets.get(cat):
+                        removed_items = snippets.pop(cat)
+                        logger.warning("Attempt %d: stripped %d %s due to proto parse error", attempt + 1, len(removed_items), cat)
+                        deploy_warnings.append(f"Stripped {len(removed_items)} {cat} (proto error)")
+                        stripped = True
+                if stripped:
+                    if not snippets:
+                        inst.pop("sql_snippets", None)
+                    continue
+                # Phase 2: strip example_sql from the end
+                if examples:
+                    removed_ex = examples.pop()
+                    logger.warning("Attempt %d: stripped example_sql entry due to proto parse error", attempt + 1)
+                    deploy_warnings.append("Stripped example_sql entry (proto error)")
+                    if not examples:
+                        inst.pop("example_question_sqls", None)
+                    continue
+                # Phase 3: strip non-prebuilt joins
+                def _is_prebuilt(j):
+                    l = j.get("left", {}).get("identifier", "").lower()
+                    r = j.get("right", {}).get("identifier", "").lower()
+                    return tuple(sorted([l, r])) in prebuilt_pairs
+                non_prebuilt = [j for j in join_specs if not _is_prebuilt(j)]
+                if non_prebuilt:
+                    removed = non_prebuilt[-1]
+                    join_specs.remove(removed)
                     left_id = removed.get("left", {}).get("identifier", "?")
                     right_id = removed.get("right", {}).get("identifier", "?")
                     logger.warning(
-                        "Attempt %d: removing last join_spec (%s <-> %s) due to proto parse error",
+                        "Attempt %d: removing agent join_spec (%s <-> %s) as last resort",
                         attempt + 1, left_id, right_id,
                     )
-                    deploy_warnings.append(f"Removed malformed join: {left_id} <-> {right_id}")
-                elif join_specs:
-                    removed = join_specs[0]
-                    left_id = removed.get("left", {}).get("identifier", "?")
-                    right_id = removed.get("right", {}).get("identifier", "?")
-                    inst["join_specs"] = []
-                    logger.warning("Attempt %d: removed last remaining join_spec (%s <-> %s)", attempt + 1, left_id, right_id)
-                    deploy_warnings.append(f"All joins removed due to proto errors. Last: {left_id} <-> {right_id}")
-                else:
-                    break
-                continue
+                    deploy_warnings.append(f"Removed agent join: {left_id} <-> {right_id}")
+                    continue
+                # Phase 4: strip ALL remaining joins (including prebuilt) as nuclear fallback
+                if join_specs:
+                    logger.warning("Attempt %d: stripping ALL %d remaining joins as nuclear fallback", attempt + 1, len(join_specs))
+                    deploy_warnings.append(f"Stripped all {len(join_specs)} join_specs (proto error)")
+                    join_specs.clear()
+                    continue
+                break
             break
     logger.error("Genie create/update failed: %s", last_err)
     detail = f"Failed to create/update Genie space: {last_err}"
@@ -7040,11 +7352,20 @@ def _get_api_vs_index(index_name: str):
     if _api_vsc is None:
         from databricks.vector_search.client import VectorSearchClient
         ws = get_workspace_client()
-        _token = os.environ.get("DATABRICKS_TOKEN")
-        if not _token:
-            headers = ws.config.authenticate()
-            _token = headers.get("Authorization", "").removeprefix("Bearer ")
-        _api_vsc = VectorSearchClient(workspace_url=ws.config.host, personal_access_token=_token)
+        client_id = os.environ.get("DATABRICKS_CLIENT_ID")
+        client_secret = os.environ.get("DATABRICKS_CLIENT_SECRET")
+        if client_id and client_secret:
+            _api_vsc = VectorSearchClient(
+                workspace_url=ws.config.host,
+                service_principal_client_id=client_id,
+                service_principal_client_secret=client_secret,
+            )
+        else:
+            _token = os.environ.get("DATABRICKS_TOKEN")
+            if not _token:
+                headers = ws.config.authenticate()
+                _token = headers.get("Authorization", "").removeprefix("Bearer ")
+            _api_vsc = VectorSearchClient(workspace_url=ws.config.host, personal_access_token=_token)
     idx = _api_vsc.get_index(endpoint_name=VS_ENDPOINT, index_name=index_name)
     _api_vs_indexes[index_name] = idx
     return idx

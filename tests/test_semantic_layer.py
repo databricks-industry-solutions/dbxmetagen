@@ -128,6 +128,25 @@ class TestFixConcatSeparators:
         result = SemanticLayerGenerator._fix_concat_separators("CONCAT(a, -, b)")
         assert "'-'" in result
 
+    def test_quotes_dash_Q(self):
+        expr = "CONCAT(YEAR(source.CreatedDate), -Q, QUARTER(source.CreatedDate))"
+        result = SemanticLayerGenerator._fix_concat_separators(expr)
+        assert "'-Q'" in result
+
+    def test_quotes_dash_FY(self):
+        result = SemanticLayerGenerator._fix_concat_separators("CONCAT(a, -FY, b)")
+        assert "'-FY'" in result
+
+    def test_preserves_numeric(self):
+        expr = "CONCAT(a, -1, b)"
+        result = SemanticLayerGenerator._fix_concat_separators(expr)
+        assert "'-1'" not in result
+
+    def test_preserves_already_quoted(self):
+        expr = "CONCAT(a, '-Q', b)"
+        result = SemanticLayerGenerator._fix_concat_separators(expr)
+        assert result == expr
+
 
 # ── JSON Parsers ──────────────────────────────────────────────────────
 

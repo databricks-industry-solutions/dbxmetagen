@@ -7,10 +7,20 @@ function RoleBar({ roles }) {
   const total = entries.reduce((s, [, v]) => s + v, 0)
   const colors = ['bg-dbx-lava', 'bg-dbx-sky', 'bg-dbx-teal', 'bg-amber-500', 'bg-violet-500', 'bg-slate-400']
   return (
-    <div className="flex h-1.5 rounded-full overflow-hidden bg-slate-200 dark:bg-dbx-navy-500" title={entries.map(([r, v]) => `${r}: ${v}`).join(', ')}>
-      {entries.slice(0, 6).map(([role, cnt], i) => (
-        <div key={role} className={colors[i % colors.length]} style={{ width: `${(cnt / total) * 100}%` }} />
-      ))}
+    <div>
+      <div className="flex h-1.5 rounded-full overflow-hidden bg-slate-200 dark:bg-dbx-navy-500" title={entries.map(([r, v]) => `${r}: ${v}`).join(', ')}>
+        {entries.slice(0, 6).map(([role, cnt], i) => (
+          <div key={role} className={colors[i % colors.length]} style={{ width: `${(cnt / total) * 100}%` }} />
+        ))}
+      </div>
+      <div className="flex flex-wrap gap-x-2.5 gap-y-0.5 mt-1">
+        {entries.slice(0, 6).map(([role], i) => (
+          <span key={role} className="flex items-center gap-1 text-[10px] text-slate-400 dark:text-slate-500">
+            <span className={`inline-block w-1.5 h-1.5 rounded-full ${colors[i % colors.length]}`} />
+            {role}
+          </span>
+        ))}
+      </div>
     </div>
   )
 }
@@ -21,9 +31,11 @@ function EntityCard({ entity, expanded, onToggle }) {
   const total = (entity.bundle_matches ?? 0) + (entity.heuristic_matches ?? 0)
   const bundlePct = total > 0 ? Math.round((entity.bundle_matches / total) * 100) : 0
 
+  const borderColor = avg >= 0.8 ? 'border-l-emerald-400' : avg >= 0.6 ? 'border-l-amber-400' : 'border-l-red-400'
+
   return (
     <div
-      className="card border border-slate-200 dark:border-dbx-navy-400/30 hover:border-dbx-lava/40 cursor-pointer transition-all"
+      className={`card border border-slate-200 dark:border-dbx-navy-400/30 border-l-4 ${borderColor} hover:border-dbx-lava/40 cursor-pointer transition-all`}
       onClick={onToggle}
     >
       <div className="p-4">
@@ -131,6 +143,7 @@ export default function EntityBrowser() {
   const [error, setError] = useState(null)
   const [expanded, setExpanded] = useState(null)
   const [filter, setFilter] = useState('')
+  const [sortBy, setSortBy] = useState('confidence')
   const cst = useCatalogSchemaTables()
 
   useEffect(() => {
@@ -146,9 +159,13 @@ export default function EntityBrowser() {
       .catch(e => { setError(e.message); setEntities([]); setLoading(false) })
   }, [cst.catalog, cst.schema])
 
-  const filtered = filter
+  const filtered = (filter
     ? entities.filter(e => e.entity_type?.toLowerCase().includes(filter.toLowerCase()))
-    : entities
+    : [...entities]
+  ).sort((a, b) => sortBy === 'confidence'
+    ? (a.avg_confidence ?? 0) - (b.avg_confidence ?? 0)
+    : (a.entity_type || '').localeCompare(b.entity_type || '')
+  )
 
   return (
     <div className="space-y-4">
@@ -181,7 +198,32 @@ export default function EntityBrowser() {
           onChange={e => setFilter(e.target.value)}
           className="text-sm rounded-lg border border-slate-300 dark:border-dbx-navy-400 bg-white dark:bg-dbx-navy-600 px-3 py-1.5 w-48"
         />
+        <button
+          onClick={() => setSortBy(s => s === 'confidence' ? 'alpha' : 'confidence')}
+          className="text-xs px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-dbx-navy-400 bg-white dark:bg-dbx-navy-600 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-dbx-navy-500 transition-colors"
+        >
+          Sort: {sortBy === 'confidence' ? 'Low confidence first' : 'A-Z'}
+        </button>
       </div>
+
+      {!loading && !error && entities.length > 0 && (() => {
+        const totalTables = entities.reduce((s, e) => s + (e.table_count ?? 0), 0)
+        const totalCols = entities.reduce((s, e) => s + (e.column_count ?? 0), 0)
+        const avgConf = totalCols > 0
+          ? entities.reduce((s, e) => s + (e.avg_confidence ?? 0) * (e.column_count ?? 0), 0) / totalCols
+          : 0
+        const totalBundle = entities.reduce((s, e) => s + (e.bundle_matches ?? 0), 0)
+        const totalAll = totalBundle + entities.reduce((s, e) => s + (e.heuristic_matches ?? 0), 0)
+        const bundlePct = totalAll > 0 ? Math.round((totalBundle / totalAll) * 100) : 0
+        return (
+          <div className="flex flex-wrap gap-x-6 gap-y-1 text-xs text-slate-500 dark:text-slate-400">
+            <span><strong className="text-slate-700 dark:text-slate-300">{entities.length}</strong> entity types</span>
+            <span><strong className="text-slate-700 dark:text-slate-300">{totalTables}</strong> tables classified</span>
+            <span><strong className="text-slate-700 dark:text-slate-300">{(avgConf * 100).toFixed(0)}%</strong> avg confidence</span>
+            <span><strong className="text-slate-700 dark:text-slate-300">{bundlePct}%</strong> bundle coverage</span>
+          </div>
+        )
+      })()}
 
       {error && <p className="text-sm text-red-600 dark:text-red-400">{error}</p>}
       {loading && <p className="text-sm text-slate-500">Loading entities...</p>}

@@ -20,7 +20,7 @@ env:
   - name: WAREHOUSE_ID
     valueFrom: sql_warehouse
   - name: GRAPHRAG_MODEL
-    value: "databricks-claude-sonnet-4-5"
+    value: "databricks-claude-sonnet-4-6"
   - name: NODE_TYPE
     value: "i3.2xlarge"
   # Job IDs via valueFrom -- runtime injects resolved IDs from resources block
@@ -61,6 +61,6 @@ env:
   - name: VECTOR_SEARCH_INDEX
     value: "metadata_vs_index"
   - name: LLM_MODEL
-    value: "databricks-claude-sonnet-4-5"
+    value: "databricks-claude-sonnet-4-6"
   - name: MLFLOW_EXPERIMENT
     value: "/Shared/dbxmetagen-app/traces"

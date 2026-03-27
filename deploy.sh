@@ -3,7 +3,7 @@
 # Usage: ./deploy.sh [OPTIONS]
 #   --profile PROFILE    Databricks CLI profile (default: DEFAULT)
 #   --target TARGET      Bundle target: dev or prod (default: dev)
-#   --no-app             Deploy jobs and code only (skip app build/start)
+#   --no-app             Skip app build, SP detection, and app start (jobs + bundle still deploy)
 #   --permissions        Run UC permission grants for app SPN
 #   --help               Show this help
 
@@ -160,19 +160,21 @@ echo ""
 echo "=== Deploying bundle ==="
 databricks bundle deploy -t "$TARGET" --profile "$PROFILE" "${DEPLOY_VARS[@]}"
 
-# --- First deploy: get newly created SP and redeploy with permissions ---
-if [ -z "${APP_SP_ID}" ]; then
-    echo ""
-    echo "=== Checking for newly created app SP ==="
-    APP_JSON=$(databricks apps get "${APP_NAME}" --profile "$PROFILE" --output json 2>&1) || APP_JSON=""
-    if [ -n "${APP_JSON}" ]; then
-        APP_SP_ID=$(echo "${APP_JSON}" | python3 -c "import sys,json; print(json.load(sys.stdin).get('service_principal_id',''))" 2>/dev/null || echo "")
-        if [ -n "${APP_SP_ID}" ] && [ "${APP_SP_ID}" != "None" ]; then
-            echo "New SP detected: ${APP_SP_ID}"
-            echo "Redeploying with SP permissions..."
-            databricks bundle deploy -t "$TARGET" --profile "$PROFILE" \
-                --var "deploying_user=${CURRENT_USER}" \
-                --var "app_service_principal_application_id=${APP_SP_ID}"
+if [ "$SKIP_APP" = false ]; then
+    # --- First deploy: get newly created SP and redeploy with permissions ---
+    if [ -z "${APP_SP_ID}" ]; then
+        echo ""
+        echo "=== Checking for newly created app SP ==="
+        APP_JSON=$(databricks apps get "${APP_NAME}" --profile "$PROFILE" --output json 2>&1) || APP_JSON=""
+        if [ -n "${APP_JSON}" ]; then
+            APP_SP_ID=$(echo "${APP_JSON}" | python3 -c "import sys,json; print(json.load(sys.stdin).get('service_principal_id',''))" 2>/dev/null || echo "")
+            if [ -n "${APP_SP_ID}" ] && [ "${APP_SP_ID}" != "None" ]; then
+                echo "New SP detected: ${APP_SP_ID}"
+                echo "Redeploying with SP permissions..."
+                databricks bundle deploy -t "$TARGET" --profile "$PROFILE" \
+                    --var "deploying_user=${CURRENT_USER}" \
+                    --var "app_service_principal_application_id=${APP_SP_ID}"
+            fi
         fi
     fi
 fi

@@ -2,6 +2,7 @@ resources:
   jobs:
     metadata_with_knowledge_base_job:
       name: "${var.app_name}_metadata_with_kb_job"
+      max_concurrent_runs: 5
 
       permissions:
         - service_principal_name: ${resources.apps.dbxmetagen_app.service_principal_client_id}

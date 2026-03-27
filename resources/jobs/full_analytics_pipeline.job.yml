@@ -34,6 +34,8 @@ resources:
           default: ""
         - name: incremental
           default: ${var.incremental}
+        - name: model
+          default: ${var.model}
 
       tasks:
         # Stage 1: Build knowledge bases (table, column, schema in parallel after table KB)
@@ -140,6 +142,7 @@ resources:
               ontology_bundle: "{{job.parameters.ontology_bundle}}"
               domain_config_path: "{{job.parameters.domain_config_path}}"
               incremental: "{{job.parameters.incremental}}"
+              model: "{{job.parameters.model}}"
           libraries:
             - whl: ../../dist/*.whl
 

@@ -58,9 +58,17 @@ def _get_ws() -> WorkspaceClient:
 
 
 def _build_vs_client():
-    """Create a fresh VectorSearchClient with a current token."""
+    """Create a fresh VectorSearchClient with auto-refreshing credentials."""
     from databricks.vector_search.client import VectorSearchClient
     ws = _get_ws()
+    client_id = os.environ.get("DATABRICKS_CLIENT_ID")
+    client_secret = os.environ.get("DATABRICKS_CLIENT_SECRET")
+    if client_id and client_secret:
+        return VectorSearchClient(
+            workspace_url=ws.config.host,
+            service_principal_client_id=client_id,
+            service_principal_client_secret=client_secret,
+        )
     _token = os.environ.get("DATABRICKS_TOKEN")
     if not _token:
         headers = ws.config.authenticate()

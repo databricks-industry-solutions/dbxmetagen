@@ -12,8 +12,9 @@ import json
 import yaml
 import logging
 from typing import Dict, Any, Optional, List
-from databricks_langchain import ChatDatabricks
+
 from pydantic import BaseModel, Field
+from dbxmetagen.config import DEFAULT_CLASSIFICATION_MODEL
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -351,7 +352,10 @@ Be thorough, accurate, and provide detailed explanations for your classification
 
 def _normalize(s: str) -> str:
     """Strip underscores, hyphens, spaces and lowercase for fuzzy comparison."""
-    return s.lower().strip().replace("_", "").replace("-", "").replace(" ", "")
+    s = s.lower().strip()
+    s = s.replace("&", "and").replace("/", "")
+    s = s.replace("_", "").replace("-", "").replace(" ", "")
+    return s
 
 
 def _trigram_overlap(a: str, b: str) -> float:
@@ -435,7 +439,12 @@ def _build_user_message(table_name: str, table_metadata: Dict[str, Any]) -> str:
     cc.pop("column_metadata", None)
     cc.pop("lineage", None)
 
+    parts = table_name.split(".")
+    schema_name = parts[1] if len(parts) >= 3 else ""
+
     msg = f"Please classify the following table:\n\nTable: {table_name}\n"
+    if schema_name:
+        msg += f"Schema: {schema_name} (strong domain signal)\n"
 
     if table_metadata.get("table_comments"):
         msg += f"\nExisting Table Comment (important domain signal):\n{table_metadata['table_comments']}\n"
@@ -483,23 +492,24 @@ def classify_domain_stage1(
     table_metadata: Dict[str, Any],
     domain_config: Dict[str, Any],
     candidate_domains: List[str],
-    model_endpoint: str = "databricks-claude-sonnet-4-6",
+    model_endpoint: str = DEFAULT_CLASSIFICATION_MODEL,
     temperature: float = 0.1,
     max_tokens: int = 2048,
 ) -> Dict[str, Any]:
     """Call the LLM to pick a domain from the candidate list."""
-    llm = ChatDatabricks(
-        endpoint=model_endpoint, temperature=temperature, max_tokens=max_tokens, max_retries=2
-    )
-    structured_llm = llm.with_structured_output(DomainResult)
+    from dbxmetagen.chat_client import invoke_structured
+
     system_prompt = generate_domain_only_prompt(domain_config, candidate_domains)
     user_message = _build_user_message(table_name, table_metadata)
 
-    response = structured_llm.invoke(
+    response = invoke_structured(
+        model_endpoint,
         [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_message},
-        ]
+        ],
+        DomainResult,
+        temperature=temperature, max_tokens=max_tokens, max_retries=2,
     )
     return response.dict()
 
@@ -516,7 +526,7 @@ def classify_subdomain_stage2(
     domain_key: str,
     domain_confidence: float,
     confidence_threshold: float = 0.5,
-    model_endpoint: str = "databricks-claude-sonnet-4-6",
+    model_endpoint: str = DEFAULT_CLASSIFICATION_MODEL,
     temperature: float = 0.1,
     max_tokens: int = 4096,
     second_choice_domain: Optional[str] = None,
@@ -534,10 +544,8 @@ def classify_subdomain_stage2(
                 include_secondary,
             )
 
-    llm = ChatDatabricks(
-        endpoint=model_endpoint, temperature=temperature, max_tokens=max_tokens, max_retries=2
-    )
-    structured_llm = llm.with_structured_output(SubdomainResult)
+    from dbxmetagen.chat_client import invoke_structured
+
     system_prompt = generate_subdomain_prompt(
         domain_config,
         domain_key,
@@ -545,11 +553,14 @@ def classify_subdomain_stage2(
     )
     user_message = _build_user_message(table_name, table_metadata)
 
-    response = structured_llm.invoke(
+    response = invoke_structured(
+        model_endpoint,
         [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_message},
-        ]
+        ],
+        SubdomainResult,
+        temperature=temperature, max_tokens=max_tokens, max_retries=2,
     )
     return response.dict()
 
@@ -563,24 +574,25 @@ def _classify_single_shot(
     table_name: str,
     table_metadata: Dict[str, Any],
     domain_config: Dict[str, Any],
-    model_endpoint: str = "databricks-claude-sonnet-4-6",
+    model_endpoint: str = DEFAULT_CLASSIFICATION_MODEL,
     temperature: float = 0.1,
     max_tokens: int = 8192,
 ) -> Dict[str, Any]:
     """Original single-call classification (domain + subdomain in one shot)."""
-    llm = ChatDatabricks(
-        endpoint=model_endpoint, temperature=temperature, max_tokens=max_tokens, max_retries=2
-    )
-    structured_llm = llm.with_structured_output(TableClassification)
+    from dbxmetagen.chat_client import invoke_structured
+
     system_prompt = create_system_prompt(domain_config)
     catalog, schema, table = table_name.split(".")
     user_message = _build_user_message(table_name, table_metadata)
 
-    response = structured_llm.invoke(
+    response = invoke_structured(
+        model_endpoint,
         [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_message},
-        ]
+        ],
+        TableClassification,
+        temperature=temperature, max_tokens=max_tokens, max_retries=2,
     )
     result = response.dict()
     result["catalog"] = catalog
@@ -618,6 +630,77 @@ def _classify_single_shot(
 
 
 # ---------------------------------------------------------------------------
+# Keyword prefilter for domain candidates
+# ---------------------------------------------------------------------------
+
+
+def _domain_keyword_prefilter(
+    table_name: str,
+    table_metadata: Dict[str, Any],
+    domain_config: Dict[str, Any],
+    top_n: int = 6,
+) -> List[str]:
+    """Score domains by keyword overlap with table signals, return top-N candidates.
+
+    Modeled after ontology.py:_keyword_prefilter. When total domains <= top_n,
+    returns all domains (ranked by score) so the prefilter is a no-op for small configs.
+    """
+    domains = domain_config.get("domains", {})
+    all_keys = list(domains.keys())
+    if len(all_keys) <= top_n:
+        return all_keys
+
+    _catalog, schema, table = table_name.split(".")
+    schema_lower = schema.lower()
+    table_lower = table.lower()
+    comment_lower = (table_metadata.get("table_comments") or "").lower()
+
+    col_names_lower = ""
+    col_meta = table_metadata.get("column_metadata")
+    if isinstance(col_meta, list):
+        col_names_lower = " ".join(
+            (c.get("name") or "").lower() for c in col_meta
+        )
+    elif isinstance(col_meta, dict):
+        col_names_lower = " ".join(k.lower() for k in col_meta)
+    cc = table_metadata.get("column_contents")
+    if not col_names_lower and isinstance(cc, dict):
+        cm = cc.get("column_metadata")
+        if isinstance(cm, list):
+            col_names_lower = " ".join(
+                (c.get("name") or "").lower() for c in cm
+            )
+
+    scored: List[tuple] = []
+    for dk, info in domains.items():
+        score = 0.0
+        for kw in info.get("keywords", []):
+            kw_l = kw.lower()
+            if kw_l in table_lower or kw_l in schema_lower:
+                score += 2.0
+            elif kw_l in comment_lower or kw_l in col_names_lower:
+                score += 1.0
+        for _sdk, sd_info in info.get("subdomains", {}).items():
+            for kw in sd_info.get("keywords", []):
+                kw_l = kw.lower()
+                if kw_l in table_lower or kw_l in schema_lower:
+                    score += 0.5
+                elif kw_l in comment_lower or kw_l in col_names_lower:
+                    score += 0.25
+        scored.append((dk, score))
+
+    scored.sort(key=lambda x: x[1], reverse=True)
+    selected = [s[0] for s in scored[:top_n]]
+    filtered_out = [s[0] for s in scored[top_n:]]
+    if filtered_out:
+        logger.info(
+            "Domain prefilter for %s: kept %s, filtered out %s",
+            table_name, selected, filtered_out,
+        )
+    return selected
+
+
+# ---------------------------------------------------------------------------
 # Two-stage classification (prefilter -> domain -> subdomain)
 # ---------------------------------------------------------------------------
 
@@ -626,7 +709,7 @@ def _classify_two_stage(
     table_name: str,
     table_metadata: Dict[str, Any],
     domain_config: Dict[str, Any],
-    model_endpoint: str = "databricks-claude-sonnet-4-6",
+    model_endpoint: str = DEFAULT_CLASSIFICATION_MODEL,
     temperature: float = 0.1,
     max_tokens: int = 8192,
     confidence_threshold: float = 0.5,
@@ -634,7 +717,7 @@ def _classify_two_stage(
     """Two-stage pipeline: domain LLM -> subdomain LLM."""
     catalog, schema, table = table_name.split(".")
 
-    candidates = list(domain_config.get("domains", {}).keys())
+    candidates = _domain_keyword_prefilter(table_name, table_metadata, domain_config)
     logger.info("Stage-1 candidates for %s: %s", table_name, candidates)
 
     # Stage 1
@@ -722,7 +805,7 @@ def classify_table_domain(
     table_name: str,
     table_metadata: Dict[str, Any],
     domain_config: Dict[str, Any],
-    model_endpoint: str = "databricks-claude-sonnet-4-6",
+    model_endpoint: str = DEFAULT_CLASSIFICATION_MODEL,
     temperature: float = 0.1,
     max_tokens: int = 8192,
     two_stage: bool = True,
@@ -765,7 +848,7 @@ async def classify_table_domain_async(
     table_name: str,
     table_metadata: Dict[str, Any],
     domain_config: Dict[str, Any],
-    model_endpoint: str = "databricks-claude-sonnet-4-6",
+    model_endpoint: str = DEFAULT_CLASSIFICATION_MODEL,
     temperature: float = 0.1,
     max_tokens: int = 4096,
     two_stage: bool = True,

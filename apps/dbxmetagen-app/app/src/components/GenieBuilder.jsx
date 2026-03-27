@@ -9,7 +9,7 @@ const STAGES = {
   gathering_context: 'Gathering metadata context...',
   initializing: 'Initializing agent...',
   agent_running: 'Agent generating configuration...',
-  generating: 'Generating configuration (single LLM call)...',
+  generating: 'Generating configuration...',
   validating_sql: 'Validating SQL expressions...',
   tool_round: 'Validating SQL...',
   parsing: 'Finalizing output...',
@@ -32,7 +32,6 @@ export default function GenieBuilder() {
   const [selectedTables, setSelectedTables] = useState([])
   const [metricViews, setMetricViews] = useState([])
   const [selectedMVs, setSelectedMVs] = useState(new Set())
-  const [showMVs, setShowMVs] = useState(false)
   const [businessContext, setBusinessContext] = useState('')
   const [questions, setQuestions] = useState('')
   const [suggestingQs, setSuggestingQs] = useState(false)
@@ -46,6 +45,7 @@ export default function GenieBuilder() {
   const [kpis, setKpis] = useState([])
   const [selectedKpis, setSelectedKpis] = useState(new Set())
   const [showKpis, setShowKpis] = useState(false)
+  const [workspaceHost, setWorkspaceHost] = useState('')
   const [error, setError] = useState(null)
   const [createError, setCreateError] = useState(null)
   const [fetchErrors, setFetchErrors] = useState({})
@@ -54,6 +54,9 @@ export default function GenieBuilder() {
   const [refineFeedback, setRefineFeedback] = useState('')
   const [showRefine, setShowRefine] = useState(false)
   const [tablesLoading, setTablesLoading] = useState(true)
+  const [catalogs, setCatalogs] = useState([])
+  const [selectedCatalog, setSelectedCatalog] = useState('')
+  const [tableFilter, setTableFilter] = useState('')
   const pollRef = useRef(null)
   const [elapsed, setElapsed] = useState(0)
   const timerRef = useRef(null)
@@ -69,24 +72,16 @@ export default function GenieBuilder() {
   }, [loading])
 
   useEffect(() => {
-    (async () => {
-      setTablesLoading(true)
-      const { data } = await cachedFetch('/api/coverage/tables', {}, TTL.CONFIG)
-      if (data.length) {
-        setTables(data.map(r => ({
-          id: `${r.table_catalog}.${r.table_schema}.${r.table_name}`,
-          label: r.table_name,
-          schema: r.table_schema,
-          tableType: r.table_type,
-        })))
-      }
-      setTablesLoading(false)
-    })()
-    fetch('/api/semantic/metric-views?status=all')
+    fetch('/api/catalogs').then(r => r.ok ? r.json() : []).then(setCatalogs).catch(() => {})
+    fetch('/api/semantic/metric-views?status=applied')
       .then(r => r.ok ? r.json() : []).then(setMetricViews)
       .catch(e => setFetchErrors(prev => ({ ...prev, metricViews: e.message })))
     fetch('/api/kpis').then(r => r.ok ? r.json() : []).then(setKpis)
       .catch(e => setFetchErrors(prev => ({ ...prev, kpis: e.message })))
+    fetch('/api/config').then(r => r.ok ? r.json() : {}).then(c => {
+      setWorkspaceHost(c.workspace_host || '')
+      if (c.catalog_name) setSelectedCatalog(c.catalog_name)
+    }).catch(() => {})
     loadTrackedSpaces()
     return () => { if (pollRef.current) clearInterval(pollRef.current) }
   }, [])
@@ -94,6 +89,27 @@ export default function GenieBuilder() {
   const loadTrackedSpaces = () => {
     fetch('/api/genie/spaces').then(r => r.ok ? r.json() : []).then(setTrackedSpaces).catch(() => {})
   }
+
+  const catalogChangeRef = useRef(false)
+  useEffect(() => {
+    if (!selectedCatalog) return
+    setTablesLoading(true)
+    if (catalogChangeRef.current) {
+      setSelectedTables([])
+      setTableFilter('')
+    }
+    catalogChangeRef.current = true
+    ;(async () => {
+      const { data } = await cachedFetch(`/api/coverage/tables?catalog=${encodeURIComponent(selectedCatalog)}`, {}, TTL.CONFIG)
+      setTables(data.length ? data.map(r => ({
+        id: `${r.table_catalog}.${r.table_schema}.${r.table_name}`,
+        label: r.table_name,
+        schema: r.table_schema,
+        tableType: r.table_type,
+      })) : [])
+      setTablesLoading(false)
+    })()
+  }, [selectedCatalog])
 
   useEffect(() => {
     if (!metricViews.length) return
@@ -221,7 +237,22 @@ export default function GenieBuilder() {
     setCreating(false)
   }
 
-  const schemas = [...new Set(tables.map(t => t.schema))]
+  const filterLower = tableFilter.toLowerCase()
+  const filteredTables = filterLower
+    ? tables.filter(t => t.label.toLowerCase().includes(filterLower) || t.schema.toLowerCase().includes(filterLower))
+    : tables
+  const filteredMVs = metricViews.filter(mv => {
+    const parts = mv.source_table?.split('.') || []
+    if (parts.length < 3 || parts[0] !== selectedCatalog) return false
+    if (filterLower) return mv.metric_view_name.toLowerCase().includes(filterLower) || parts[1].toLowerCase().includes(filterLower)
+    return true
+  })
+  const mvsBySchema = {}
+  filteredMVs.forEach(mv => {
+    const schema = mv.source_table.split('.')[1]
+    ;(mvsBySchema[schema] ||= []).push(mv)
+  })
+  const schemas = [...new Set([...filteredTables.map(t => t.schema), ...Object.keys(mvsBySchema)])]
   const [openSchemas, setOpenSchemas] = useState(new Set())
 
   const toggleSchema = (schema) => {
@@ -233,11 +264,19 @@ export default function GenieBuilder() {
   }
 
   const toggleAllInSchema = (schema) => {
-    const ids = tables.filter(t => t.schema === schema).map(t => t.id)
-    const allSelected = ids.every(id => selectedTables.includes(id))
+    const ids = filteredTables.filter(t => t.schema === schema).map(t => t.id)
+    const schemaMvNames = (mvsBySchema[schema] || []).map(mv => mv.metric_view_name)
+    const allTablesSelected = ids.every(id => selectedTables.includes(id))
+    const allMvsSelected = schemaMvNames.every(n => selectedMVs.has(n))
+    const allSelected = allTablesSelected && allMvsSelected && (ids.length + schemaMvNames.length > 0)
     setSelectedTables(prev =>
       allSelected ? prev.filter(id => !ids.includes(id)) : [...new Set([...prev, ...ids])]
     )
+    setSelectedMVs(prev => {
+      const next = new Set(prev)
+      schemaMvNames.forEach(n => allSelected ? next.delete(n) : next.add(n))
+      return next
+    })
   }
 
   if (editingSpaceId) {
@@ -253,11 +292,30 @@ export default function GenieBuilder() {
       {/* Table selection */}
       <div className="card p-5">
         <h3 className="text-sm font-medium text-slate-700 dark:text-slate-300 mb-3">Select Tables</h3>
+        <div className="flex gap-3 mb-3">
+          <select
+            value={selectedCatalog}
+            onChange={e => setSelectedCatalog(e.target.value)}
+            className="border border-slate-200 dark:border-slate-600 rounded-md px-3 py-1.5 text-sm bg-dbx-oat-light dark:bg-slate-700 text-slate-800 dark:text-slate-200"
+          >
+            {!catalogs.length && selectedCatalog && <option value={selectedCatalog}>{selectedCatalog}</option>}
+            {catalogs.map(c => <option key={c} value={c}>{c}</option>)}
+          </select>
+          <input
+            type="text"
+            value={tableFilter}
+            onChange={e => setTableFilter(e.target.value)}
+            placeholder="Filter tables..."
+            className="flex-1 border border-slate-200 dark:border-slate-600 rounded-md px-3 py-1.5 text-sm bg-dbx-oat-light dark:bg-slate-700 text-slate-800 dark:text-slate-200 placeholder-slate-400"
+          />
+        </div>
         {schemas.map(schema => {
-          const schemaTables = tables.filter(t => t.schema === schema)
+          const schemaTables = filteredTables.filter(t => t.schema === schema)
+          const schemaMVs = mvsBySchema[schema] || []
           const schemaIds = schemaTables.map(t => t.id)
-          const selectedCount = schemaIds.filter(id => selectedTables.includes(id)).length
-          const allSelected = selectedCount === schemaIds.length
+          const totalItems = schemaIds.length + schemaMVs.length
+          const selectedCount = schemaIds.filter(id => selectedTables.includes(id)).length + schemaMVs.filter(mv => selectedMVs.has(mv.metric_view_name)).length
+          const allSelected = selectedCount === totalItems && totalItems > 0
           const isOpen = openSchemas.has(schema)
 
           return (
@@ -269,11 +327,11 @@ export default function GenieBuilder() {
                 <div className="flex items-center gap-2">
                   <span className={`text-xs transition-transform ${isOpen ? 'rotate-90' : ''}`}>&#9654;</span>
                   <span className="text-xs font-medium text-slate-600 dark:text-slate-300">{schema}</span>
-                  <span className="text-[10px] text-slate-400">({selectedCount}/{schemaIds.length})</span>
+                  <span className="text-[10px] text-slate-400">({selectedCount}/{totalItems})</span>
                 </div>
                 <span
                   onClick={e => { e.stopPropagation(); toggleAllInSchema(schema) }}
-                  title="Toggle selection of all tables in this schema"
+                  title="Toggle selection of all items in this schema"
                   className="text-[10px] px-2 py-0.5 rounded border border-slate-300 dark:border-slate-600 text-slate-500 dark:text-slate-400 hover:bg-dbx-oat-dark dark:hover:bg-slate-600 cursor-pointer"
                 >
                   {allSelected ? 'Deselect all' : 'Select all'}
@@ -298,60 +356,54 @@ export default function GenieBuilder() {
                       )}
                     </button>
                   ))}
+                  {schemaMVs.map(mv => (
+                    <button
+                      key={mv.metric_view_name}
+                      onClick={() => toggleMV(mv.metric_view_name)}
+                      className={`px-3 py-1.5 text-xs rounded-md border transition-colors ${selectedMVs.has(mv.metric_view_name)
+                        ? 'bg-violet-100 dark:bg-violet-900 border-violet-400 text-violet-700 dark:text-violet-300'
+                        : 'bg-dbx-oat-light dark:bg-slate-700 border-slate-200 dark:border-slate-600 text-slate-600 dark:text-slate-300 hover:bg-dbx-oat dark:hover:bg-slate-600'
+                        }`}
+                    >
+                      {mv.metric_view_name}
+                      <span className="ml-1 text-[10px] text-violet-500 dark:text-violet-400">MV</span>
+                    </button>
+                  ))}
                 </div>
               )}
             </div>
           )
         })}
         {!tables.length && tablesLoading && <SkeletonTable rows={3} cols={3} />}
-        {!tables.length && !tablesLoading && <p className="text-sm text-slate-400">No tables found in this schema.</p>}
+        {!tables.length && !tablesLoading && <p className="text-sm text-slate-400">No tables found in this catalog.</p>}
+        {tables.length > 0 && !filteredTables.length && <p className="text-sm text-slate-400">No tables match "{tableFilter}".</p>}
       </div>
 
       {fetchErrors.metricViews && (
-        <p className="text-xs text-amber-600 dark:text-amber-400 px-1">Could not load metric views. <button onClick={() => { setFetchErrors(p => ({ ...p, metricViews: null })); fetch('/api/semantic/metric-views?status=all').then(r => r.ok ? r.json() : []).then(setMetricViews).catch(e => setFetchErrors(p => ({ ...p, metricViews: e.message }))) }} className="underline">Retry</button></p>
+        <p className="text-xs text-amber-600 dark:text-amber-400 px-1">Could not load metric views. <button onClick={() => { setFetchErrors(p => ({ ...p, metricViews: null })); fetch('/api/semantic/metric-views?status=applied').then(r => r.ok ? r.json() : []).then(setMetricViews).catch(e => setFetchErrors(p => ({ ...p, metricViews: e.message }))) }} className="underline">Retry</button></p>
       )}
       {fetchErrors.kpis && (
         <p className="text-xs text-amber-600 dark:text-amber-400 px-1">Could not load KPIs. <button onClick={() => { setFetchErrors(p => ({ ...p, kpis: null })); fetch('/api/kpis').then(r => r.ok ? r.json() : []).then(setKpis).catch(e => setFetchErrors(p => ({ ...p, kpis: e.message }))) }} className="underline">Retry</button></p>
       )}
 
-      {/* Metric Views */}
-      {metricViews.length > 0 && (
-        <div className="card p-5">
-          <button onClick={() => setShowMVs(!showMVs)}
-            className="w-full flex items-center justify-between text-sm font-medium text-slate-700 dark:text-slate-300">
-            <span>Metric Views ({selectedMVs.size}/{metricViews.length} selected)</span>
-            <span className={`text-xs transition-transform ${showMVs ? 'rotate-90' : ''}`}>&#9654;</span>
-          </button>
-          {showMVs && (
-            <div className="flex flex-wrap gap-2 mt-3">
-              {metricViews.map(mv => (
-                <button key={mv.metric_view_name} onClick={() => toggleMV(mv.metric_view_name)}
-                  className={`px-3 py-1.5 text-xs rounded-md border transition-colors ${selectedMVs.has(mv.metric_view_name)
-                    ? 'bg-violet-100 dark:bg-violet-900 border-violet-400 text-violet-700 dark:text-violet-300'
-                    : 'bg-dbx-oat-light dark:bg-slate-700 border-slate-200 dark:border-slate-600 text-slate-600 dark:text-slate-300 hover:bg-dbx-oat dark:hover:bg-slate-600'
-                  }`}>
-                  {mv.metric_view_name}
-                  <span className={`ml-1 text-[10px] ${mv.status === 'applied' ? 'text-green-500' : 'text-amber-500'}`}>
-                    {mv.status === 'applied' ? 'LIVE' : mv.status?.toUpperCase()}
-                  </span>
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
 
-      {/* KPIs */}
-      {kpis.length > 0 && (
+      {/* KPIs -- filtered to those whose target_tables overlap with selectedTables */}
+      {(() => {
+        const selectedShort = new Set(selectedTables.map(t => t.split('.').pop()))
+        const relevantKpis = kpis.filter(k => {
+          const targets = Array.isArray(k.target_tables) ? k.target_tables : []
+          return targets.some(t => selectedTables.includes(t) || selectedShort.has(t.split('.').pop()))
+        })
+        return relevantKpis.length > 0 && (
         <div className="card p-5">
           <button onClick={() => setShowKpis(!showKpis)}
             className="w-full flex items-center justify-between text-sm font-medium text-slate-700 dark:text-slate-300">
-            <span>KPIs ({selectedKpis.size}/{kpis.length} selected)</span>
+            <span>KPIs ({selectedKpis.size}/{relevantKpis.length} selected)</span>
             <span className={`text-xs transition-transform ${showKpis ? 'rotate-90' : ''}`}>&#9654;</span>
           </button>
           {showKpis && (
             <div className="mt-3 space-y-1.5 max-h-48 overflow-y-auto">
-              {kpis.map(k => (
+              {relevantKpis.map(k => (
                 <label key={k.kpi_id} className="flex items-start gap-2 text-sm cursor-pointer">
                   <input type="checkbox" checked={selectedKpis.has(k.kpi_id)}
                     onChange={() => {
@@ -370,7 +422,8 @@ export default function GenieBuilder() {
             </div>
           )}
         </div>
-      )}
+        )
+      })()}
 
       {/* Business Context */}
       <div className="card p-5">
@@ -430,11 +483,16 @@ export default function GenieBuilder() {
             <div className="flex items-center gap-2">
               <div className="w-4 h-4 border-2 border-orange-400 border-t-transparent rounded-full animate-spin" />
               <span className="text-sm font-medium text-red-700 dark:text-orange-300">
-                {STAGES[taskStatus.stage] || taskStatus.stage}
+                {taskStatus.message || STAGES[taskStatus.stage] || taskStatus.stage}
               </span>
               {taskStatus.round > 0 && (
                 <span className="text-xs px-1.5 py-0.5 rounded bg-orange-200 dark:bg-orange-800 text-orange-700 dark:text-orange-200">
                   Round {taskStatus.round}
+                </span>
+              )}
+              {taskStatus.validated != null && taskStatus.total != null && (
+                <span className="text-xs text-slate-500 dark:text-slate-400">
+                  ({taskStatus.validated}/{taskStatus.total} validated)
                 </span>
               )}
             </div>
@@ -486,6 +544,8 @@ export default function GenieBuilder() {
             const ds = parsed.data_sources || {}
             const tblCount = (ds.tables?.length || 0)
             const mvCount = (ds.metric_views?.length || 0)
+            const tblDisplay = tblCount > 0 ? tblCount : (selectedTables.length > 0 ? `${selectedTables.length} (from selection)` : 0)
+            const mvDisplay = mvCount > 0 ? mvCount : (selectedMVs.size > 0 ? `${selectedMVs.size} (from selection)` : 0)
             const instrText = parsed.instructions?.text
             const exampleSqlCount = parsed.instructions?.example_sql?.length || 0
             const joinCount = parsed.instructions?.join_specs?.length || 0
@@ -497,7 +557,7 @@ export default function GenieBuilder() {
               <div className="card p-5 space-y-2">
                 <h3 className="text-sm font-medium text-slate-700 dark:text-slate-300">Config Preview</h3>
                 <div className="grid grid-cols-2 md:grid-cols-5 gap-3 text-xs">
-                  <div><span className="text-slate-500">Tables</span><p className="font-medium">{tblCount}{mvCount > 0 ? ` + ${mvCount} MVs` : ''}</p></div>
+                  <div><span className="text-slate-500">Tables</span><p className="font-medium">{tblDisplay}{mvDisplay > 0 || (typeof mvDisplay === 'string') ? ` + ${mvDisplay} MVs` : ''}</p></div>
                   <div><span className="text-slate-500">Example SQL</span><p className="font-medium">{exampleSqlCount}</p></div>
                   <div><span className="text-slate-500">Joins</span><p className="font-medium">{joinCount}</p></div>
                   <div><span className="text-slate-500">Snippets</span><p className="font-medium">{snippetFilters + snippetMeasures + snippetExprs} ({snippetFilters}F / {snippetMeasures}M / {snippetExprs}E)</p></div>
@@ -616,7 +676,19 @@ export default function GenieBuilder() {
 
           {createdSpace && (
             <div className="bg-emerald-50 dark:bg-emerald-900/30 border border-emerald-200 dark:border-emerald-700 rounded-lg px-4 py-3 text-sm text-emerald-700 dark:text-emerald-300">
-              Genie space created! ID: <span className="font-mono">{createdSpace.space_id}</span>
+              Genie space {createdSpace.updated ? 'updated' : 'created'}! ID: <span className="font-mono">{createdSpace.space_id}</span>
+              {(createdSpace.table_count != null || createdSpace.join_count != null) && (
+                <span className="ml-2 text-xs opacity-80">
+                  ({createdSpace.table_count ?? '?'} tables{createdSpace.mv_count ? `, ${createdSpace.mv_count} MVs` : ''}, {createdSpace.join_count ?? '?'} joins deployed)
+                </span>
+              )}
+              {workspaceHost && createdSpace.space_id && (
+                <> &mdash; <a href={`${workspaceHost}/genie/rooms/${createdSpace.space_id}`} target="_blank" rel="noopener noreferrer"
+                  className="underline font-medium">Open in Databricks</a></>
+              )}
+              {createdSpace.warnings?.length > 0 && (
+                <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">{createdSpace.warnings.length} warning(s): {createdSpace.warnings.join('; ')}</p>
+              )}
             </div>
           )}
         </div>
@@ -635,12 +707,21 @@ export default function GenieBuilder() {
               <tbody>
                 {trackedSpaces.map((s, i) => (
                   <tr key={i} className="border-b border-dbx-oat-dark/20 dark:border-dbx-navy-400/10 hover:bg-dbx-teal-light/20 dark:hover:bg-dbx-navy-500/30 transition-colors">
-                    <td className="px-3 py-2 font-medium text-slate-700 dark:text-slate-200">{s.title}</td>
+                    <td className="px-3 py-2 font-medium text-slate-700 dark:text-slate-200">
+                      {workspaceHost ? (
+                        <a href={`${workspaceHost}/genie/rooms/${s.space_id}`} target="_blank" rel="noopener noreferrer"
+                          className="text-blue-600 dark:text-blue-400 hover:underline">{s.title}</a>
+                      ) : s.title}
+                    </td>
                     <td className="px-3 py-2 font-mono text-xs text-slate-500">{s.space_id}</td>
                     <td className="px-3 py-2 text-slate-600 dark:text-slate-400">{s.version || 1}</td>
                     <td className="px-3 py-2 text-slate-600 dark:text-slate-400 text-xs">{Array.isArray(s.tables) ? s.tables.length : 0}</td>
                     <td className="px-3 py-2 text-xs text-slate-500">{s.updated_at ? new Date(s.updated_at).toLocaleString() : ''}</td>
                     <td className="px-3 py-2 flex gap-2">
+                      {workspaceHost && (
+                        <a href={`${workspaceHost}/genie/rooms/${s.space_id}`} target="_blank" rel="noopener noreferrer"
+                          className="text-xs text-emerald-600 hover:text-emerald-800 hover:underline">Open</a>
+                      )}
                       <button onClick={() => setEditingSpaceId(s.space_id)}
                         className="text-xs text-blue-600 hover:text-blue-800 hover:underline">Edit</button>
                       <button onClick={async () => {

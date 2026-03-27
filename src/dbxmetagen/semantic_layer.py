@@ -1097,10 +1097,15 @@ OUTPUT (one JSON object only, no array, no explanation):"""
 
     @classmethod
     def _fix_concat_separators(cls, expr: str) -> str:
-        """Quote bare non-alphanumeric tokens between commas in function calls."""
+        """Quote bare separator tokens between commas (e.g. -Q, /, : in CONCAT)."""
+        def _repl(m):
+            tok = m.group(1).strip()
+            if re.match(r"^-?\d+(\.\d+)?$", tok):
+                return m.group(0)
+            return f", '{tok}',"
         return re.sub(
-            r",\s*([^\w\s'\"`(][^\w'\"`(]*?)\s*,",
-            lambda m: f", '{m.group(1).strip()}',",
+            r",\s*([^\w\s'\"`(][^'\"`(,)]{0,4})\s*,",
+            _repl,
             expr,
         )
 
