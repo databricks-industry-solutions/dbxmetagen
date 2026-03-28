@@ -4792,16 +4792,28 @@ _SQL_RESERVED = {
 
 
 def _fix_unquoted_literals(expr: str) -> str:
-    """Quote bare words used as string literals in comparisons."""
+    """Quote bare words/phrases used as string literals in comparisons."""
 
     def _replacer(m):
-        op, word, trail = m.group(1), m.group(2), m.group(3)
-        if word.upper() in _SQL_RESERVED or word.upper() in _DATE_TRUNC_INTERVALS:
+        op = m.group(1)
+        value = m.group(2).strip()
+        trail = m.group(3)
+        if not value:
             return m.group(0)
-        return f"{op}'{word}'{trail}"
+        if value.startswith("'") or value.startswith('"'):
+            return m.group(0)
+        if re.match(r"^-?\d+(\.\d+)?$", value):
+            return m.group(0)
+        if "." in value and " " not in value:
+            return m.group(0)
+        if "(" in value:
+            return m.group(0)
+        if value.upper() in _SQL_RESERVED or value.upper() in _DATE_TRUNC_INTERVALS:
+            return m.group(0)
+        return f"{op}'{value}'{trail}"
 
     return re.sub(
-        r"([=!<>]+\s*)([A-Za-z_]\w*)(\s*(?:THEN|ELSE|END|AND|OR|WHEN|,|\))|$)",
+        r"([=!<>]+\s*)(.*?)(\s+(?:THEN|ELSE|END|AND|OR|WHEN)\b|\s*[,)]|$)",
         _replacer,
         expr,
         flags=re.IGNORECASE,
@@ -4818,6 +4830,10 @@ def _fix_then_else_literals(expr: str) -> str:
         if body.startswith("'") or body.startswith('"'):
             return m.group(0)
         if re.match(r"^-?\d+(\.\d+)?$", body):
+            return m.group(0)
+        if "." in body and " " not in body:
+            return m.group(0)
+        if "(" in body:
             return m.group(0)
         tokens = body.split()
         if len(tokens) == 1 and tokens[0].upper() in _SQL_RESERVED:

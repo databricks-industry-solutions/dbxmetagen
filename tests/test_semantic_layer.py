@@ -33,6 +33,31 @@ class TestFixUnquotedLiterals:
         result = SemanticLayerGenerator._fix_unquoted_literals("!=Pending)")
         assert "'Pending'" in result
 
+    def test_quotes_multi_word_value(self):
+        result = SemanticLayerGenerator._fix_unquoted_literals("= Requirement change THEN")
+        assert "= 'Requirement change' THEN" in result
+
+    def test_quotes_single_word_before_and(self):
+        result = SemanticLayerGenerator._fix_unquoted_literals("= Active AND")
+        assert "= 'Active' AND" in result
+
+    def test_leaves_column_ref(self):
+        expr = "= source.CustomField THEN"
+        assert SemanticLayerGenerator._fix_unquoted_literals(expr) == expr
+
+    def test_leaves_numeric(self):
+        expr = "= 0 THEN"
+        assert SemanticLayerGenerator._fix_unquoted_literals(expr) == expr
+
+    def test_leaves_function_call(self):
+        expr = "= NULLIF(x, 0) THEN"
+        assert "'" not in SemanticLayerGenerator._fix_unquoted_literals(expr).replace("NULLIF", "")
+
+    def test_full_case_when_expression(self):
+        expr = "CASE WHEN source.State = Active AND source.Risk IN (1 - High, 2 - Medium) THEN 1 ELSE 0 END"
+        result = SemanticLayerGenerator._fix_unquoted_literals(expr)
+        assert "= 'Active' AND" in result
+
 
 class TestFixCaseQuoting:
 
@@ -79,6 +104,11 @@ class TestFixInClauseLiterals:
         expr = "IN ('Active', 'Pending')"
         assert SemanticLayerGenerator._fix_in_clause_literals(expr) == expr
 
+    def test_quotes_multi_word_tokens(self):
+        result = SemanticLayerGenerator._fix_in_clause_literals("IN (1 - High, 2 - Medium)")
+        assert "'1 - High'" in result
+        assert "'2 - Medium'" in result
+
 
 class TestFixDatePart:
 
@@ -120,6 +150,88 @@ class TestAutofixExpr:
         expr = "CASE WHEN status =Active THEN High Cost ELSE Low Cost END"
         result = SemanticLayerGenerator._autofix_expr(expr)
         assert "'Active'" in result
+
+
+class TestAutofixDoesNotCorruptGoodExprs:
+    """Run the full _autofix_expr chain on correctly-formed expressions and assert
+    they come out UNCHANGED.  This is the 'do no harm' safety net."""
+
+    @pytest.mark.parametrize("expr", [
+        # Simple aggregation
+        "SUM(source.amount)",
+        "COUNT(source.WorkItemId)",
+        "AVG(source.price)",
+        "COUNT(DISTINCT source.customer_id)",
+        # Arithmetic
+        "SUM(source.revenue) * 100.0 / NULLIF(SUM(source.cost), 0)",
+        "SUM(source.amount) - SUM(source.discount)",
+        # CASE WHEN with properly quoted strings
+        "SUM(CASE WHEN source.State = 'Active' AND source.Risk IN ('1 - High', '2 - Medium') THEN 1 ELSE 0 END) * 100.0 / NULLIF(COUNT(CASE WHEN source.State = 'Active' THEN 1 END), 0)",
+        "COUNT(CASE WHEN source.Custom_MilestoneStatus = 'Blocked' THEN 1 END)",
+        "COUNT(CASE WHEN source.State = 'Closed' THEN 1 END) * 100.0 / NULLIF(COUNT(source.WorkItemId), 0)",
+        "COUNT(CASE WHEN source.Custom_RevisedDueDateInfluencedBy = 'Requirement change' THEN 1 END)",
+        # CASE WHEN with numeric comparisons
+        "SUM(CASE WHEN source.amount > 1000 THEN 1 ELSE 0 END)",
+        "CASE WHEN source.score >= 90 THEN 'A' WHEN source.score >= 80 THEN 'B' ELSE 'C' END",
+        # Column refs in comparisons
+        "SUM(CASE WHEN source.start_date = source.end_date THEN 1 ELSE 0 END)",
+        # IS NULL / IS NOT NULL
+        "COUNT(CASE WHEN source.Custom_RevisedDueDate IS NOT NULL THEN 1 END) * 100.0 / NULLIF(COUNT(source.WorkItemId), 0)",
+        # COALESCE / NULLIF
+        "COALESCE(source.name, 'Unknown')",
+        "NULLIF(source.total, 0)",
+        # CONCAT with properly quoted separators
+        "CONCAT(YEAR(source.date), '-Q', QUARTER(source.date))",
+        "CONCAT(source.first_name, ' ', source.last_name)",
+        # DATE_TRUNC with properly quoted interval
+        "DATE_TRUNC('MONTH', source.created_at)",
+        "DATE_TRUNC('QUARTER', source.order_date)",
+        # Window functions
+        "SUM(source.amount) OVER (PARTITION BY source.category ORDER BY source.date)",
+        # LIKE with properly quoted pattern
+        "COUNT(CASE WHEN source.name LIKE '%Corp%' THEN 1 END)",
+        # IN with properly quoted values
+        "SUM(CASE WHEN source.status IN ('Active', 'Pending') THEN source.amount ELSE 0 END)",
+        # BETWEEN
+        "COUNT(CASE WHEN source.score BETWEEN 80 AND 100 THEN 1 END)",
+        # Nested functions
+        "ROUND(SUM(source.revenue) / NULLIF(COUNT(DISTINCT source.customer_id), 0), 2)",
+        # FILTER clause
+        "COUNT(*) FILTER (WHERE source.status = 'Active')",
+        # Plain column refs (dimensions)
+        "source.ProjectName",
+        "proj.ProjectName",
+        "source.Custom_MilestoneStatus",
+    ])
+    def test_good_expr_unchanged(self, expr):
+        assert SemanticLayerGenerator._autofix_expr(expr) == expr
+
+
+class TestAutofixFixesBadExprs:
+    """The full _autofix_expr chain on BROKEN expressions should produce the
+    expected corrections."""
+
+    def test_fixes_multi_word_unquoted_literal(self):
+        bad = "COUNT(CASE WHEN source.Custom_RevisedDueDateInfluencedBy = Requirement change THEN 1 END)"
+        result = SemanticLayerGenerator._autofix_expr(bad)
+        assert "= 'Requirement change' THEN" in result
+
+    def test_fixes_multiple_unquoted_comparisons(self):
+        bad = "SUM(CASE WHEN source.State = Active AND source.Risk IN (1 - High, 2 - Medium) THEN 1 ELSE 0 END)"
+        result = SemanticLayerGenerator._autofix_expr(bad)
+        assert "= 'Active' AND" in result
+        assert "'1 - High'" in result
+        assert "'2 - Medium'" in result
+
+    def test_fixes_unquoted_date_trunc(self):
+        bad = "DATE_TRUNC(MONTH, source.order_date)"
+        result = SemanticLayerGenerator._autofix_expr(bad)
+        assert "DATE_TRUNC('MONTH'" in result
+
+    def test_fixes_single_word_unquoted(self):
+        bad = "COUNT(CASE WHEN source.State = Closed THEN 1 END)"
+        result = SemanticLayerGenerator._autofix_expr(bad)
+        assert "= 'Closed' THEN" in result
 
 
 class TestFixConcatSeparators:

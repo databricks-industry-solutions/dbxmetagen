@@ -187,7 +187,8 @@
     "NEVER use bare column names in joined table references. Always qualify with the join alias (customers.segment, not segment when it comes from a joined table).",
     "NEVER prefix dimension names with the join alias in the display name. Use 'Industry' not 'account.Industry'.",
     "NEVER use DATE_PART -- use EXTRACT(unit FROM col) instead.",
-    "NEVER return a metric view with zero dimensions or zero measures."
+    "NEVER return a metric view with zero dimensions or zero measures.",
+    "ALL string literals in expr fields MUST be single-quoted, including multi-word values. Examples: source.State = 'Active', source.Risk IN ('1 - High', '2 - Medium'), source.Reason = 'Requirement change'."
   ],
 
   "validation_checklist": [
