@@ -19,11 +19,39 @@
 - **Metadata review**: Interactive review, edit, and apply workflow for generated metadata
 - **Web dashboard**: FastAPI + React app with 8 tabs covering the full metadata lifecycle
 
-## Quickstart (5 minutes)
+## Quickstart
 
-**Prerequisites:** A Databricks workspace with Unity Catalog enabled and a Foundation Model endpoint (e.g. `databricks-claude-sonnet-4-6`).
+**Prerequisites:** Databricks CLI (>=0.283.0), Python 3.10+, Poetry 2.x, Node.js (for frontend build), a Databricks workspace with Unity Catalog enabled and a Foundation Model endpoint (e.g. `databricks-claude-sonnet-4-6`).
 
-Install the package on any Databricks cluster and run from a notebook. No CLI, Asset Bundles, or repo clone needed.
+1. Clone the repo and configure:
+   ```bash
+   git clone https://github.com/databricks-industry-solutions/dbxmetagen
+   cd dbxmetagen
+   cp example.env dev.env   # Edit with your workspace URL, catalog, schema, warehouse_id
+   ```
+
+2. Deploy:
+   ```bash
+   ./deploy.sh --profile <your-profile> --target dev
+   ```
+   This builds the wheel, compiles the React frontend, deploys jobs + app via Asset Bundles, and starts the dashboard.
+
+   To deploy jobs only (skip app build, SP detection, and app start):
+   ```bash
+   ./deploy.sh --profile <your-profile> --target dev --no-app
+   ```
+
+3. Access the app at **Workspace > Apps > dbxmetagen-app**
+
+4. Run jobs:
+   ```bash
+   databricks bundle run metadata_generator_job -t dev -p <profile> --params table_names='catalog.schema.*',mode=domain
+   databricks bundle run full_analytics_pipeline_job -t dev -p <profile>
+   ```
+
+## Partial Install (Notebook Only)
+
+If you only need core metadata generation (comments, PI, domain) without the web dashboard, managed jobs, semantic layer, or Genie Builder, install the library directly on any Databricks cluster. No CLI, Asset Bundles, or repo clone needed.
 
 ### 1. Install
 
@@ -80,33 +108,6 @@ See `examples/` for complete runnable notebooks:
 | `examples/01_quickstart_metadata.py` | Comment, PI, or domain generation with widgets |
 | `examples/02_analytics_pipeline.py` | Full KB, graph, embeddings, ontology, similarity, quality pipeline |
 | `examples/03_advanced_analytics.py` | FK prediction and ontology validation |
-
-## Full Deployment (DAB)
-
-For the web dashboard, batch jobs, Lakebase integration, and the full analytics pipeline as managed Databricks jobs:
-
-**Prerequisites:** Databricks CLI (>=0.283.0), Python 3.10+, Poetry 2.x, Node.js (for frontend build).
-
-1. Clone the repo and configure:
-   ```bash
-   git clone https://github.com/databricks-industry-solutions/dbxmetagen
-   cd dbxmetagen
-   cp example.env dev.env   # Edit with your workspace URL, catalog, schema, warehouse_id
-   ```
-
-2. Deploy:
-   ```bash
-   ./deploy.sh --profile <your-profile> --target dev
-   ```
-   This builds the wheel, compiles the React frontend, deploys jobs + app via Asset Bundles, and starts the dashboard.
-
-3. Access the app at **Workspace > Apps > dbxmetagen-app**
-
-4. Run jobs:
-   ```bash
-   databricks bundle run metadata_generator_job -t dev -p <profile> --params table_names='catalog.schema.*',mode=domain
-   databricks bundle run full_analytics_pipeline_job -t dev -p <profile>
-   ```
 
 ## Disclaimer
 
@@ -219,11 +220,7 @@ dbxmetagen's ontology and graph system is inspired by — but does not implement
 | **SHACL** (Shapes Constraint Language) | Validates graph data against declared shapes | `validate_ontology_completeness()` checks that discovered entity types cover the bundle's defined types. `validate_entity_conformance()` checks whether discovered column properties match the bundle's declared property schema. Similar in purpose to SHACL but implemented as Python/SQL checks, not a constraint language. |
 | **SPARQL** (Semantic query language) | Query language for RDF graphs | All graph queries use SQL against Delta tables. The GraphRAG agent and Graph Explorer traverse `graph_nodes`/`graph_edges` via SQL joins. Vector search is used for semantic metadata retrieval (finding relevant docs/tables), not for graph traversal. |
 
-Industry bundles (`healthcare.yaml`, `financial_services.yaml`) use entity names and relationship vocabulary aligned with domain standards — for example, `Patient` maps to FHIR Patient, `Condition` maps to FHIR Condition / OMOP CONDITION_OCCURRENCE. This is naming alignment, not formal ontology import. The bundles don't parse or reference OWL/RDF files.
-
-A JSON-LD export endpoint (`/api/ontology/export`) serializes discovered entities, relationships, and column properties with a Schema.org `@context`. It maps 7 core entity types to Schema.org classes (Person, Organization, Product, Event, Place, Patient, DigitalDocument); everything else maps to `schema:Thing`. This provides basic interoperability for tools that consume JSON-LD but is not a complete RDF graph export.
-
-The design choice is pragmatic: every consumer in the stack (Genie, agents, the dashboard, downstream SQL) speaks SQL natively. Adopting a triple store or SPARQL endpoint would add infrastructure without benefiting the primary use case of metadata management on Databricks.
+Industry bundles (`healthcare.yaml`, `financial_services.yaml`) use entity names aligned with domain standards (e.g., FHIR Patient, OMOP CONDITION_OCCURRENCE) but don't import OWL/RDF files. A JSON-LD export endpoint (`/api/ontology/export`) provides basic Schema.org interoperability. The design is pragmatic: all consumers speak SQL natively, so a triple store would add infrastructure without benefiting the primary use case.
 
 ## API Reference
 
@@ -276,22 +273,7 @@ For full reference, see [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 
 Categorizes tables into business domains using a two-stage LLM pipeline: keyword pre-filter, then domain classification, then subdomain classification. Configured via `configurations/domain_config.yaml`.
 
-**12 default domains** (aligned with DAMA DMBOK, FHIR, OMOP):
-
-| Domain | Description |
-|--------|-------------|
-| `clinical` | Patient care, encounters, diagnoses, procedures, medications |
-| `diagnostics` | Lab results, imaging, pathology, observations |
-| `payer` | Insurance, claims, membership, benefits |
-| `pharmaceutical` | Drug development, clinical trials, manufacturing |
-| `quality_safety` | Quality measures, outcomes, patient safety |
-| `research` | Genomics, real-world evidence, clinical research |
-| `finance` | Accounting, payments, revenue cycle, billing |
-| `operations` | Supply chain, inventory, procurement, logistics |
-| `workforce` | HR, payroll, recruitment, credentialing |
-| `customer` | CRM, sales, marketing, support |
-| `technology` | IT infrastructure, security, monitoring |
-| `governance` | Legal, compliance, contracts, data governance |
+**12 default domains** (aligned with DAMA DMBOK, FHIR, OMOP): clinical, diagnostics, payer, pharmaceutical, quality_safety, research, finance, operations, workforce, customer, technology, governance. Each domain includes subdomains with keywords and descriptions -- see the YAML config for details.
 
 Customize domains and subdomains by editing the YAML file or providing your own via `domain_config_path`.
 
@@ -312,17 +294,17 @@ When `federation_mode=true`, dbxmetagen adapts for federated catalogs in Unity C
 
 ## Dashboard App
 
-The app is in `apps/dbxmetagen-app/` and provides a FastAPI backend with a React frontend. Deployed via DAB.
+The app is in `apps/dbxmetagen-app/` and provides a FastAPI backend with a React frontend. Deployed via DAB. Batch jobs support model selection between `databricks-claude-sonnet-4-6` and `databricks-gpt-oss-120b`.
 
 **Tabs:**
-1. **Coverage** -- Schema-wide metadata coverage summary and completeness metrics
-2. **Batch Jobs** -- Trigger and monitor all metadata generation, analytics, and sync jobs with real-time status
-3. **Metadata Review** -- Browse, edit, approve, and apply generated metadata back to Unity Catalog
-4. **Ontology** -- Entity type summary, discovered entities, validation status
-5. **Graph Explorer** -- Browse graph nodes, filter by type, query the GraphRAG agent
-6. **Foreign Key Generation** -- AI-predicted FK relationships with confidence scores and approval workflow
-7. **Semantic Layer** -- Auto-generated metric views with Genie space creation
-8. **Genie Builder** -- Create and configure Genie spaces from knowledge base tables
+1. **Semantic Layer** (landing page) -- Auto-generated metric views with SQL expression autofix, KPI Library grouped by Question Profile, and Genie space creation
+2. **Coverage** -- Schema-wide metadata coverage summary and completeness metrics
+3. **Batch Jobs** -- Trigger and monitor all metadata generation, analytics, and sync jobs with real-time status and model selection
+4. **Metadata Review** -- Browse, edit, approve, and apply generated metadata back to Unity Catalog
+5. **Ontology** -- Entity type summary, discovered entities, validation status
+6. **Graph Explorer** -- Browse graph nodes, filter by type, query the GraphRAG agent
+7. **Foreign Key Generation** -- AI-predicted FK relationships with confidence scores and approval workflow
+8. **Genie Builder** -- Create and configure Genie spaces with auto-generated instructions and ~10 example SQL queries
 
 **GraphRAG:** Natural-language queries against the knowledge graph using a LangGraph agent that traverses graph_nodes and graph_edges via Lakebase.
 

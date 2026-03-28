@@ -1,8 +1,9 @@
-"""Two-phase Genie space configuration generator.
+"""Sectional Genie space configuration generator.
 
-Phase 1: Single LLM call generates the full serialized_space JSON.
-Phase 2: Parallel SQL validation strips broken example_sql entries.
-Post-processing merges pre-built joins, snippets, and data sources.
+Phase 1 (Core): LLM generates description, text_instructions, sample_questions, join_specs.
+Phase 2 (SQL):  LLM generates example_sql pairs.
+Phase 3 (Snippets): LLM generates sql_snippets (measures, filters, expressions).
+Post-processing merges pre-built joins, snippets, and data sources, then validates SQL.
 """
 
 import json
@@ -22,84 +23,152 @@ from agent.guardrails import SAFETY_PROMPT_BLOCK
 
 logger = logging.getLogger(__name__)
 
-_SYSTEM_PROMPT_TEMPLATE = """You are a Genie Space configuration expert. Your job is to generate a
-comprehensive, production-quality `serialized_space` JSON for the Databricks Genie API
-based on the metadata context below. A great Genie space is one that business users
-can immediately query in natural language and get correct, insightful answers.
-
-=== METADATA CONTEXT ===
+# -- Shared context block reused by all phases --
+_CONTEXT_BLOCK = """=== METADATA CONTEXT ===
 {context_text}
 
-=== PRE-BUILT DATA SOURCES (FINALIZED -- do NOT regenerate) ===
-data_sources: {data_sources}
+=== DATA SOURCES (FINALIZED) ===
+{data_sources}
 
-=== PRE-BUILT JOIN SPECS (will be merged automatically -- do NOT duplicate) ===
-The following join_specs are pre-built from FK predictions, ontology relationships,
-and metric view joins. They will be merged into your output automatically.
-Only generate ADDITIONAL join_specs for relationships NOT already covered below.
-If no pre-built joins exist and FK relationships or shared columns appear in context,
-you MUST generate join_specs.
+=== DATE FUNCTIONS (Databricks/Spark SQL) ===
+- TIMESTAMPADD(MONTH, 1, col) -- bare keyword, singular, NO quotes
+- TIMESTAMPDIFF(MINUTE, start, end) -- bare keyword, no quotes
+- DATE_TRUNC('MONTH', col) -- interval IS single-quoted
+- EXTRACT(HOUR FROM col) -- use EXTRACT, not DATE_PART
+- DATEDIFF(end, start) returns days only. For other units use TIMESTAMPDIFF.
+NEVER use plural units or quoted units in TIMESTAMPADD/TIMESTAMPDIFF.
+
+Table references in SQL must be fully qualified (catalog.schema.table).
+Column references in snippets MUST use table.column format.
+NEVER include PII or PHI in descriptions, instructions, sample questions, or example SQL. Avoid ephemeral stats (row counts, date ranges). Structural patterns (value ranges, enum sets) are fine.
+"""
+
+# -- Phase 1: Core Config --
+_PHASE1_PROMPT = _CONTEXT_BLOCK + """
+=== PRE-BUILT JOIN SPECS (will be merged automatically) ===
 {join_specs}
 
-=== PRE-BUILT SQL SNIPPETS (will be merged automatically -- do NOT duplicate) ===
-The following measures, filters, and expressions are pre-built from validated metric views
-and sampled data. They are ALREADY CORRECT and will be merged into your output automatically.
-Do NOT include these in your sql_snippets -- only generate ADDITIONAL measures/filters/expressions
-that are NOT already covered below:
-{sql_snippets}
-
-=== USER QUESTIONS (optional guidance) ===
+=== USER QUESTIONS ===
 {questions}
 
-=== REFERENCE: BEST PRACTICES ===
-{reference_text}
+=== TASK: Generate the CORE config ===
+Output a JSON object wrapped in ```json ``` fences with these fields ONLY:
 
-=== OUTPUT REQUIREMENTS ===
-Generate the COMPLETE JSON object in a SINGLE response, wrapped in ```json ``` fences.
-Post-processing will add IDs, validate SQL, and restructure for the API.
-
-Schema:
 {{
   "description": "<1-2 sentence description of what this Genie space helps users explore>",
-  "data_sources": {{ "tables": [...], "metric_views": [...] }},
   "instructions": {{
-    "text": "<markdown instructions describing the data, relationships, and business rules>",
-    "example_sql": [ {{ "question": "...", "sql": "..." }}, ... ],
-    "join_specs": [ {{ "left": {{ "identifier": "catalog.schema.table1" }}, "right": {{ "identifier": "catalog.schema.table2" }}, "sql": ["table1.col = table2.col"] }}, ... ],
-    "sql_snippets": {{
-      "filters": [ {{ "display_name": "...", "sql": ["..."] }}, ... ],
-      "expressions": [ {{ "alias": "...", "display_name": "...", "sql": ["..."], "synonyms": ["..."] }}, ... ],
-      "measures": [ {{ "alias": "...", "display_name": "...", "sql": ["..."], "synonyms": ["..."], "description": "..." }}, ... ]
-    }}
+    "text": "<1-2 sentence intro summarizing the data domain and analytical focus, followed by concise markdown sections for column disambiguation, business rules, and date handling>"
   }},
-  "sample_questions": [ "...", ... ]
+  "sample_questions": ["<plain English question for business users>", ...],
+  "join_specs": [<ADDITIONAL joins not already pre-built above>]
 }}
 
 RULES:
-1. Table references in SQL must be fully qualified (catalog.schema.table). Column references in sql_snippets (measures, filters, expressions) MUST use table.column format (e.g. `fact_ed_wait_times.wait_minutes`), never bare column names.
-2. Output ONLY the JSON wrapped in ```json ``` fences. No explanation before or after.
-3. Do NOT add id fields -- post-processing handles that automatically.
-4. METRIC VIEW ROUTING: metric_views listed in data_sources are APPLIED Unity Catalog objects -- Genie queries them natively via MEASURE(). sql_snippets contain measures decomposed from UNAPPLIED (validated-only) definitions plus filter suggestions. NEVER duplicate the same measure in both data_sources.metric_views and sql_snippets.measures.
-5. JOINS: Pre-built join_specs are merged automatically after generation. Generate ADDITIONAL join_specs only for relationships not already covered by the pre-built set. If no pre-built joins exist but FOREIGN KEY RELATIONSHIPS or shared column names exist in the metadata context, you MUST generate join_specs. Each join_spec needs left/right identifiers (fully qualified table names) and a sql array with join conditions using table.column format.
-6. DATE FUNCTIONS: Use Databricks/Spark SQL syntax for all date functions.
-   - TIMESTAMPADD(MONTH, 1, col) -- unit is a bare keyword, singular, NO quotes
-   - TIMESTAMPDIFF(MINUTE, start, end) -- same: bare keyword, no quotes
-   - DATE_TRUNC('MONTH', col) -- interval IS single-quoted
-   - EXTRACT(HOUR FROM col) -- use EXTRACT, not DATE_PART
-   - DATEDIFF(end, start) returns days only (2 args). For other units use TIMESTAMPDIFF.
-   NEVER use plural units (MONTHS, HOURS) or quoted units in TIMESTAMPADD/TIMESTAMPDIFF.
-
-QUALITY REQUIREMENTS (critical):
-7. SYNONYMS: Every measure and expression MUST have a "synonyms" array with 1-4 business-friendly alternative names. Think about how non-technical users would ask for this metric. E.g. "total_revenue" -> ["revenue", "sales", "total sales"]. Pre-built synonyms are provided -- keep them and add more if useful.
-8. DESCRIPTIONS: Every measure MUST have a "description" explaining what it calculates and when to use it.
-9. COMPLEXITY: Generate at least 8 example_sql pairs covering: simple aggregation, multi-table join, time-series trend, top-N ranking, filtered aggregation, ratio/rate, comparison, and at least one window function. Generate at least 5 NEW measures, 5 NEW filters, and 3 NEW expressions beyond the pre-built ones.
-10. DISAMBIGUATION: In the text instructions, explicitly disambiguate columns that appear in multiple tables (e.g. "created_date in orders vs created_date in accounts"). Also explain which table to use for common questions.
-11. FILTERS: Generate time-based filters (last 30 days, YTD, current month) for every date column, plus categorical filters for low-cardinality string columns. Each filter should have a clear display_name.
-12. SAMPLE QUESTIONS vs EXAMPLE SQL (IMPORTANT -- these serve DIFFERENT purposes):
-    - "sample_questions": Shown in the Genie UI as clickable starter questions for BUSINESS USERS. Must be plain English, non-technical, no SQL jargon. 8-12 questions like "What were total sales last quarter?" or "Who are our top customers?"
-    - "example_sql": Few-shot examples that teach Genie HOW to translate natural language to SQL. Each needs a question AND working SQL. Cover diverse SQL patterns (joins, aggregations, window functions, filters). Do NOT duplicate the same question in both lists.
-13. SQL QUALITY: Write the best SQL you can. Post-processing will automatically validate all SQL and remove any broken entries, so aim for correctness but do not hold back on complexity.
+- 5-8 sample_questions: plain English, no SQL jargon, clickable for business users.
+- text instructions: CONCISE, under 2000 characters. Structure as follows:
+  (0) Open with 1-2 plain sentences summarizing what the data covers, the key entities, and the primary analytical use cases. Do NOT use a heading for this intro.
+  (1) ## Column Disambiguation -- columns with the SAME NAME in multiple tables
+  (2) ## Business Rules -- non-obvious business rules or calculation conventions
+  (3) ## Date & Unit Notes -- critical date/unit handling notes
+  Do NOT repeat table descriptions, list all columns, or describe what each table contains -- other sections carry that detail.
+- Only generate join_specs for relationships NOT covered by pre-built joins.
+  If no pre-built joins exist but FK relationships or shared columns are in context, generate join_specs.
+  Format: {{"left": {{"identifier": "catalog.schema.t1"}}, "right": {{"identifier": "catalog.schema.t2"}}, "sql": ["t1.col = t2.col"]}}
+- Output ONLY JSON. No explanation.
 """
+
+# -- Phase 2: Example SQL --
+_PHASE2_PROMPT = _CONTEXT_BLOCK + """
+=== SPACE DESCRIPTION ===
+{description}
+
+=== TASK: Generate example_sql pairs ===
+Output a JSON object wrapped in ```json ``` fences:
+
+{{
+  "example_sql": [
+    {{"question": "<natural language question>", "sql": "<complete SQL query>"}},
+    {{"question": "<question>", "sql": "<SQL using :param_name syntax>",
+      "parameters": [{{"name": "param_name", "type_hint": "STRING", "default_value": {{"values": ["default_val"]}}}}],
+      "usage_guidance": ["when to use this query"]
+    }},
+    ...
+  ]
+}}
+
+Generate 10 diverse example_sql pairs covering these patterns:
+1. Simple aggregation (non-parameterized)
+2. Multi-table join using FK relationships from context (non-parameterized)
+3. Time-series trend GROUP BY date dimension (non-parameterized)
+4. Filtered query with a :parameter for a categorical column like status or strategy (parameterized)
+5. Top-N or ratio query with a :parameter for a threshold or date filter (parameterized)
+6. Window function -- running total, rank, or lag/lead comparison (non-parameterized)
+7. CASE WHEN segmentation or bucketing (non-parameterized)
+8. Subquery or CTE for a derived metric (non-parameterized)
+9. Multi-join across 3+ tables if available (non-parameterized)
+10. Date comparison -- YoY, MoM, or period-over-period (parameterized with :date or :period)
+
+RULES:
+- SQL must use fully qualified table names (catalog.schema.table).
+- Each question must be different. Cover diverse analytical patterns.
+- For parameterized queries (patterns 4, 5, 10):
+  - Use :param_name syntax in SQL for user-adjustable values
+  - Include "parameters" array with name, type_hint (STRING, INT, or DATE), and default_value.values
+  - Include "usage_guidance" with a short note on when to use the query
+- Post-processing validates SQL and removes broken entries -- aim for correctness.
+- Output ONLY JSON. No explanation.
+"""
+
+# -- Phase 3: SQL Snippets --
+_PHASE3_PROMPT = _CONTEXT_BLOCK + """
+=== PRE-BUILT SQL SNIPPETS (will be merged -- do NOT duplicate) ===
+{sql_snippets}
+
+=== TASK: Generate ADDITIONAL sql_snippets ===
+Output a JSON object wrapped in ```json ``` fences:
+
+{{
+  "sql_snippets": {{
+    "measures": [
+      {{"alias": "...", "display_name": "...", "sql": ["..."], "synonyms": ["..."], "description": "..."}},
+      ...
+    ],
+    "filters": [
+      {{"display_name": "...", "sql": ["..."]}},
+      ...
+    ],
+    "expressions": [
+      {{"alias": "...", "display_name": "...", "sql": ["..."], "synonyms": ["..."]}},
+      ...
+    ]
+  }}
+}}
+
+Generate 3 NEW measures, 3 NEW filters, and 2 NEW expressions beyond the pre-built ones.
+- Every measure/expression needs a "synonyms" array with 1-4 business-friendly names.
+- Every measure needs a "description".
+- Filters: include time-based filters (last 30 days, YTD) for date columns.
+- Column refs use table.column format (e.g. `orders.amount`).
+- Do NOT duplicate anything already in pre-built snippets.
+- Output ONLY JSON. No explanation.
+"""
+
+# -- Feedback classification for targeted refinement --
+_PHASE_KEYWORDS = {
+    1: {"join", "instruction", "description", "sample", "question", "describe", "title", "text"},
+    2: {"sql", "query", "example", "example_sql"},
+    3: {"measure", "filter", "expression", "snippet", "metric", "kpi"},
+}
+
+
+def _classify_feedback(feedback: str) -> set[int]:
+    """Determine which phases the feedback targets via keyword matching."""
+    words = set(feedback.lower().split())
+    phases = set()
+    for phase, keywords in _PHASE_KEYWORDS.items():
+        if words & keywords:
+            phases.add(phase)
+    return phases or {1}
 
 
 def _test_one_sql(ws: WorkspaceClient, warehouse_id: str, sql: str) -> str:
@@ -181,94 +250,57 @@ def _validate_and_strip_sql(
     return raw
 
 
-GENIE_WALL_TIMEOUT = 540  # 9 minutes (LLM call up to 300s + recovery 300s + validation 60s)
+GENIE_WALL_TIMEOUT = 540  # 9 minutes
 
 
-def _recovery_invoke(
-    messages: list[dict],
-    model_endpoint: str,
-    context: Optional[Dict[str, Any]] = None,
+def _llm_phase(
+    llm: ChatDatabricks, system_prompt: str, user_msg: str, label: str,
 ) -> Optional[dict]:
-    """One-shot LLM call asking for just the JSON when first attempt failed."""
+    """Run one LLM phase and extract JSON from the response."""
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_msg},
+    ]
+    t0 = time.time()
     try:
-        hint = ""
-        if context:
-            if context.get("join_specs"):
-                js_json = json.dumps(context["join_specs"])
-                if len(js_json) < 3000:
-                    hint += f"\nUse these pre-built join_specs: {js_json}"
-                else:
-                    hint += f"\nThere are {len(context['join_specs'])} pre-built join_specs. Include them in instructions.join_specs."
-            if context.get("sql_snippets"):
-                sn_json = json.dumps(context["sql_snippets"])
-                if len(sn_json) < 3000:
-                    hint += f"\nUse these pre-built sql_snippets: {sn_json}"
-        recovery_msgs = list(messages) + [{
-            "role": "user",
-            "content": (
-                "Your previous response did not contain valid JSON. "
-                "Output ONLY the complete serialized_space JSON object now, "
-                f"wrapped in ```json ``` fences. No explanation.{hint}"
-            ),
-        }]
-        recovery_llm = ChatDatabricks(
-            endpoint=model_endpoint, temperature=0.0, max_tokens=16384,
-            max_retries=2, request_timeout=300,
-        )
-        result = recovery_llm.invoke(recovery_msgs)
+        result = llm.invoke(messages)
         content = getattr(result, "content", "") or ""
-        logger.info("Recovery response length: %d chars", len(content))
+        logger.info("Phase %s: %d chars in %.1fs", label, len(content), time.time() - t0)
         return _extract_json(content)
-    except Exception as exc:
-        logger.warning("Recovery invoke failed: %s", exc)
+    except Exception as e:
+        logger.warning("Phase %s failed after %.1fs: %s", label, time.time() - t0, e)
         return None
 
 
 def _summarize_prior_result(prior: dict) -> str:
-    """Build a compact summary of a prior Genie config for refinement context.
-
-    Keeps the description, truncated instructions text, sample questions, and
-    first few example SQL questions.  Omits full data_sources, join_specs, and
-    sql_snippets (those are force-merged post-generation anyway).
-    """
+    """Build a compact summary of a prior Genie config for refinement context."""
     parts = []
     if prior.get("description"):
         parts.append(f"Description: {prior['description']}")
-
     ds = prior.get("data_sources", {})
-    tables = ds.get("tables", [])
-    mvs = ds.get("metric_views", [])
-    parts.append(f"Data sources: {len(tables)} tables, {len(mvs)} metric views (managed automatically)")
-
+    parts.append(f"Data sources: {len(ds.get('tables', []))} tables, {len(ds.get('metric_views', []))} MVs")
     inst = prior.get("instructions", {})
     text = inst.get("text") or ""
     if isinstance(text, list):
         text = "\n".join(str(t) for t in text)
     if text:
-        preview = text[:500] + ("..." if len(text) > 500 else "")
-        parts.append(f"Instructions text (preview): {preview}")
-
-    joins = inst.get("join_specs") or prior.get("join_specs") or []
-    parts.append(f"Join specs: {len(joins)} (managed automatically)")
-
-    snips = inst.get("sql_snippets") or prior.get("sql_snippets") or {}
-    parts.append(
-        f"SQL snippets: {len(snips.get('measures', []))} measures, "
-        f"{len(snips.get('filters', []))} filters, "
-        f"{len(snips.get('expressions', []))} expressions (managed automatically)"
-    )
-
+        parts.append(f"Instructions (preview): {text[:400]}...")
     examples = inst.get("example_sql") or inst.get("example_question_sqls") or []
     if examples:
-        preview_qs = [ex.get("question", [""])[0] if isinstance(ex.get("question"), list) else ex.get("question", "") for ex in examples[:4]]
-        parts.append(f"Example SQL ({len(examples)} total), first questions: {preview_qs}")
-
+        preview = [ex.get("question", "?") for ex in examples[:4]]
+        parts.append(f"Example SQL ({len(examples)} total): {preview}")
     sqs = prior.get("sample_questions", [])
     if sqs:
-        sq_list = [q if isinstance(q, str) else q.get("question", [""])[0] if isinstance(q.get("question"), list) else q.get("question", "") for q in sqs]
-        parts.append(f"Sample questions ({len(sq_list)}): {sq_list}")
+        parts.append(f"Sample questions ({len(sqs)}): {[q if isinstance(q, str) else q.get('question', '') for q in sqs]}")
+    return "Previously generated config:\n" + "\n".join(f"- {p}" for p in parts)
 
-    return "Previously generated config summary:\n" + "\n".join(f"- {p}" for p in parts)
+
+def _build_context_block(context: Dict[str, Any]) -> dict:
+    """Pre-format the shared context substitutions."""
+    return {
+        "context_text": context["context_text"],
+        "data_sources": json.dumps(context["data_sources"], indent=2),
+    }
 
 
 @trace(name="genie_generate")
@@ -281,9 +313,10 @@ def run_genie_agent(
     refinement_feedback: Optional[str] = None,
     prior_result: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Run the Genie builder agent and emit progress events to the queue.
+    """Run the Genie builder agent using sectional generation.
 
-    Returns the final serialized_space dict or raises on failure.
+    Fresh generation: 3 focused LLM calls (core, example_sql, snippets).
+    Refinement: single LLM call with feedback context.
     """
     start_time = time.time()
 
@@ -292,10 +325,8 @@ def run_genie_agent(
 
     def _error_event(message: str, *, rounds: int = 0) -> dict:
         return {
-            "stage": "error",
-            "message": message,
-            "elapsed_seconds": _elapsed(),
-            "rounds_completed": rounds,
+            "stage": "error", "message": message,
+            "elapsed_seconds": _elapsed(), "rounds_completed": rounds,
         }
 
     progress_queue.put({"stage": "initializing"})
@@ -304,79 +335,133 @@ def run_genie_agent(
         endpoint=model_endpoint, temperature=0.1, max_tokens=16384,
         max_retries=1, request_timeout=300,
     )
+    ctx_subs = _build_context_block(context)
+    questions_text = "\n".join(f"- {q}" for q in context.get("questions", [])) or "None provided"
 
-    questions_text = (
-        "\n".join(f"- {q}" for q in context.get("questions", [])) or "None provided"
-    )
-    system_prompt = _SYSTEM_PROMPT_TEMPLATE.format(
-        context_text=context["context_text"],
-        data_sources=json.dumps(context["data_sources"], indent=2),
-        join_specs=json.dumps(context["join_specs"], indent=2),
-        sql_snippets=json.dumps(context.get("sql_snippets", {}), indent=2),
-        questions=questions_text,
-        reference_text=context.get("reference_text", ""),
-    )
-    system_prompt += SAFETY_PROMPT_BLOCK
-
-    prompt_chars = len(system_prompt)
-    prompt_tokens_est = prompt_chars // 4
     logger.info(
-        "Genie prompt: %d chars (~%dk tokens), %d tables, %d join_specs, %d snippet items",
-        prompt_chars, prompt_tokens_est // 1000,
+        "Genie: %d tables, %d join_specs, %d snippet items",
         len(context.get("data_sources", {}).get("tables", [])),
         len(context.get("join_specs", [])),
         sum(len(context.get("sql_snippets", {}).get(k, [])) for k in ("measures", "filters", "expressions")),
     )
-    if prompt_tokens_est > 14000:
-        logger.warning(
-            "Genie prompt is very large (~%dk tokens). Generation may be slow. "
-            "Consider selecting fewer tables.", prompt_tokens_est // 1000,
-        )
 
-    # --- Phase 1: single LLM call ---
-    messages: list[dict] = [{"role": "system", "content": system_prompt}]
+    # ---- Refinement path: targeted sectional re-generation ----
     if prior_result and refinement_feedback:
-        summary = _summarize_prior_result(prior_result)
-        messages += [
-            {"role": "user", "content": "Generate the complete serialized_space JSON now."},
-            {"role": "assistant", "content": summary},
-            {"role": "user", "content": f"Here is feedback on the config above. Revise and regenerate the complete JSON:\n\n{refinement_feedback}"},
-        ]
+        target_phases = _classify_feedback(refinement_feedback)
+        logger.info("Refinement targets phases %s from feedback: %s", target_phases, refinement_feedback[:120])
+
+        serialized = dict(prior_result)
+        serialized.setdefault("instructions", {})
+        feedback_suffix = f"\n\n=== USER FEEDBACK (revise accordingly) ===\n{refinement_feedback}"
+        phases_completed = 0
+
+        if 1 in target_phases:
+            progress_queue.put({"stage": "generating", "message": "Refining core config..."})
+            p1_prompt = (_PHASE1_PROMPT + SAFETY_PROMPT_BLOCK).format(
+                **ctx_subs,
+                join_specs=json.dumps(context.get("join_specs", []), indent=2),
+                questions=questions_text,
+            ) + feedback_suffix
+            p1 = _llm_phase(llm, p1_prompt, "Revise the core Genie config JSON now.", "refine_core")
+            if p1:
+                if p1.get("description"):
+                    serialized["description"] = p1["description"]
+                if p1.get("instructions", {}).get("text"):
+                    serialized["instructions"]["text"] = p1["instructions"]["text"]
+                if p1.get("sample_questions"):
+                    serialized["sample_questions"] = p1["sample_questions"]
+                extra_joins = p1.get("join_specs", [])
+                if extra_joins:
+                    serialized.setdefault("instructions", {})["join_specs"] = extra_joins
+                phases_completed += 1
+
+        if 2 in target_phases:
+            progress_queue.put({"stage": "generating", "message": "Refining example SQL..."})
+            p2_prompt = (_PHASE2_PROMPT + SAFETY_PROMPT_BLOCK).format(
+                **ctx_subs,
+                description=serialized.get("description", ""),
+            ) + feedback_suffix
+            p2 = _llm_phase(llm, p2_prompt, "Revise the example_sql JSON now.", "refine_sql")
+            if p2:
+                examples = p2.get("example_sql") or p2.get("instructions", {}).get("example_sql", [])
+                serialized["instructions"]["example_sql"] = examples
+                phases_completed += 1
+
+        if 3 in target_phases:
+            progress_queue.put({"stage": "generating", "message": "Refining SQL snippets..."})
+            p3_prompt = (_PHASE3_PROMPT + SAFETY_PROMPT_BLOCK).format(
+                **ctx_subs,
+                sql_snippets=json.dumps(context.get("sql_snippets", {}), indent=2),
+            ) + feedback_suffix
+            p3 = _llm_phase(llm, p3_prompt, "Revise the sql_snippets JSON now.", "refine_snippets")
+            if p3:
+                snippets = p3.get("sql_snippets", p3)
+                if isinstance(snippets, dict) and any(k in snippets for k in ("measures", "filters", "expressions")):
+                    serialized["instructions"]["sql_snippets"] = snippets
+                phases_completed += 1
+
+        if phases_completed == 0:
+            detail = f"Refinement produced no valid JSON for phases {target_phases} after {_elapsed():.0f}s."
+            progress_queue.put(_error_event(detail))
+            raise ValueError(detail)
     else:
-        messages.append({"role": "user", "content": "Generate the complete serialized_space JSON now."})
+        # ---- Fresh generation: 3 sectional phases ----
+        serialized = {}
 
-    progress_queue.put({"stage": "generating"})
-    logger.info("Genie: starting single LLM call")
-    llm_start = time.time()
-    serialized = None
-    try:
-        result = llm.invoke(messages)
-        content = getattr(result, "content", "") or ""
-        llm_elapsed = round(time.time() - llm_start, 1)
-        logger.info("Genie LLM response: %d chars in %.1fs", len(content), llm_elapsed)
-        serialized = _extract_json(content)
-        if serialized:
-            messages.append({"role": "assistant", "content": content})
-    except Exception as e:
-        llm_elapsed = round(time.time() - llm_start, 1)
-        logger.warning("Genie LLM call failed after %.1fs: %s", llm_elapsed, e)
+        # Phase 1: Core Config
+        progress_queue.put({"stage": "generating", "message": "Phase 1/3: Generating core config..."})
+        p1_prompt = (_PHASE1_PROMPT + SAFETY_PROMPT_BLOCK).format(
+            **ctx_subs,
+            join_specs=json.dumps(context.get("join_specs", []), indent=2),
+            questions=questions_text,
+        )
+        p1 = _llm_phase(llm, p1_prompt, "Generate the core Genie config JSON now.", "core")
+        if p1:
+            serialized["description"] = p1.get("description", "")
+            serialized["instructions"] = {"text": p1.get("instructions", {}).get("text", "")}
+            serialized["sample_questions"] = p1.get("sample_questions", [])
+            extra_joins = p1.get("join_specs", [])
+            if extra_joins:
+                serialized["join_specs"] = extra_joins
+        else:
+            logger.warning("Phase 1 (core) failed -- continuing with empty core")
+            serialized["description"] = ""
+            serialized["instructions"] = {"text": ""}
+            serialized["sample_questions"] = []
 
-    # --- Recovery if extraction failed ---
-    if serialized is None:
-        logger.warning("JSON extraction failed after %.1fs -- attempting recovery", _elapsed())
-        progress_queue.put({"stage": "recovering"})
-        serialized = _recovery_invoke(messages, model_endpoint, context=context)
+        # Phase 2: Example SQL
+        progress_queue.put({"stage": "generating", "message": "Phase 2/3: Generating example SQL..."})
+        p2_prompt = (_PHASE2_PROMPT + SAFETY_PROMPT_BLOCK).format(
+            **ctx_subs,
+            description=serialized.get("description", ""),
+        )
+        p2 = _llm_phase(llm, p2_prompt, "Generate the example_sql JSON now.", "example_sql")
+        if p2:
+            examples = p2.get("example_sql") or p2.get("instructions", {}).get("example_sql", [])
+            serialized["instructions"]["example_sql"] = examples
+        else:
+            logger.warning("Phase 2 (example_sql) failed -- continuing without examples")
+            serialized["instructions"]["example_sql"] = []
 
-    if serialized is None:
-        detail = f"Did not produce valid JSON after {_elapsed():.0f}s."
-        progress_queue.put(_error_event(detail))
-        raise ValueError(detail)
+        # Phase 3: SQL Snippets
+        progress_queue.put({"stage": "generating", "message": "Phase 3/3: Generating SQL snippets..."})
+        p3_prompt = (_PHASE3_PROMPT + SAFETY_PROMPT_BLOCK).format(
+            **ctx_subs,
+            sql_snippets=json.dumps(context.get("sql_snippets", {}), indent=2),
+        )
+        p3 = _llm_phase(llm, p3_prompt, "Generate the sql_snippets JSON now.", "snippets")
+        if p3:
+            snippets = p3.get("sql_snippets", p3)
+            if isinstance(snippets, dict) and any(k in snippets for k in ("measures", "filters", "expressions")):
+                serialized["instructions"]["sql_snippets"] = snippets
+        else:
+            logger.warning("Phase 3 (snippets) failed -- continuing without extra snippets")
 
-    # --- Phase 2: parallel SQL validation ---
+    # ---- SQL validation ----
     progress_queue.put({"stage": "validating_sql"})
     serialized = _validate_and_strip_sql(serialized, ws, warehouse_id, progress_queue)
 
-    # --- Post-processing (unchanged) ---
+    # ---- Post-processing ----
     progress_queue.put({"stage": "parsing"})
     serialized = _merge_prebuilt_snippets(serialized, context.get("sql_snippets", {}))
     serialized = _merge_prebuilt_join_specs(serialized, context.get("join_specs", []))
@@ -387,12 +472,15 @@ def run_genie_agent(
     if warnings:
         logger.warning("Genie output quality warnings: %s", "; ".join(warnings))
 
+    if not (prior_result and refinement_feedback):
+        phases_completed = sum(1 for x in [p1, p2, p3] if x)
+
     progress_queue.put({
         "stage": "done",
         "result": serialized,
         "warnings": warnings,
         "elapsed_seconds": _elapsed(),
-        "rounds_completed": 0,
+        "rounds_completed": phases_completed,
     })
     return serialized
 
@@ -441,6 +529,7 @@ def _merge_prebuilt_join_specs(raw: dict, prebuilt_joins: list) -> dict:
 
     prebuilt_pairs = set()
     for j in prebuilt_joins:
+        j["_prebuilt"] = True
         l = j.get("left", {}).get("identifier", "").split(".")[-1].lower()
         r = j.get("right", {}).get("identifier", "").split(".")[-1].lower()
         prebuilt_pairs.add(tuple(sorted([l, r])))
@@ -549,17 +638,17 @@ def _validate_output(raw: dict) -> list[str]:
     inst = raw.get("instructions", {})
     examples = inst.get("example_sql") or inst.get("example_question_sqls") or []
     if len(examples) < 5:
-        warnings.append(f"Only {len(examples)} example_sql pairs (target: 8+)")
+        warnings.append(f"Only {len(examples)} example_sql pairs (target: 10)")
     snip = inst.get("sql_snippets") or raw.get("sql_snippets") or {}
-    if len(snip.get("measures", [])) < 3:
-        warnings.append(f"Only {len(snip.get('measures', []))} measures (target: 5+)")
-    if len(snip.get("filters", [])) < 3:
-        warnings.append(f"Only {len(snip.get('filters', []))} filters (target: 5+)")
-    if len(snip.get("expressions", [])) < 3:
-        warnings.append(f"Only {len(snip.get('expressions', []))} expressions (target: 3+)")
+    if len(snip.get("measures", [])) < 2:
+        warnings.append(f"Only {len(snip.get('measures', []))} measures (target: 3+)")
+    if len(snip.get("filters", [])) < 2:
+        warnings.append(f"Only {len(snip.get('filters', []))} filters (target: 3+)")
+    if len(snip.get("expressions", [])) < 1:
+        warnings.append(f"Only {len(snip.get('expressions', []))} expressions (target: 2+)")
     sqs = raw.get("sample_questions", [])
-    if len(sqs) < 8:
-        warnings.append(f"Only {len(sqs)} sample questions (target: 8+)")
+    if len(sqs) < 4:
+        warnings.append(f"Only {len(sqs)} sample questions (target: 5+)")
     if not inst.get("text") and not inst.get("text_instructions"):
         warnings.append("Missing text instructions")
     # Join connectivity check (metric views are self-contained, only count raw tables)

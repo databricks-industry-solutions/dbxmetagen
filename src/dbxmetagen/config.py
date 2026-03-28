@@ -8,6 +8,8 @@ from dbxmetagen.user_utils import sanitize_user_identifier, get_current_user
 
 _logger = logging.getLogger(__name__)
 
+DEFAULT_CLASSIFICATION_MODEL = "databricks-claude-sonnet-4-6"
+
 
 def _parse_bool(value):
     """Convert string/bool to actual boolean with proper validation.

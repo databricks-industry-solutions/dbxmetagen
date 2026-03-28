@@ -30,10 +30,9 @@ from pyspark.sql.types import (
     TimestampType,
 )
 from pydantic import BaseModel, Field
+from dbxmetagen.config import DEFAULT_CLASSIFICATION_MODEL
 
 logger = logging.getLogger(__name__)
-
-DEFAULT_CLASSIFICATION_MODEL = "databricks-claude-sonnet-4-6"
 
 
 # ==============================================================================
@@ -94,6 +93,26 @@ class BatchTableClassificationResult(BaseModel):
     classifications: List[TableClassificationItem] = Field(
         description="One classification per input table"
     )
+
+
+class _StructuredInvoker:
+    """Thin wrapper that preserves the ``llm.invoke(messages)`` call contract
+    while delegating to :func:`chat_client.invoke_structured` for fallback."""
+
+    def __init__(self, invoke_fn, endpoint, response_model, temperature, max_tokens, max_retries):
+        self._invoke_fn = invoke_fn
+        self._endpoint = endpoint
+        self._response_model = response_model
+        self._temperature = temperature
+        self._max_tokens = max_tokens
+        self._max_retries = max_retries
+
+    def invoke(self, messages):
+        return self._invoke_fn(
+            self._endpoint, messages, self._response_model,
+            temperature=self._temperature, max_tokens=self._max_tokens,
+            max_retries=self._max_retries,
+        )
 
 
 # ==============================================================================
@@ -865,6 +884,7 @@ class EntityDiscoverer:
         config: OntologyConfig,
         ontology_config: Dict[str, Any],
         domain_entity_affinity: Optional[Dict[str, set]] = None,
+        model_endpoint: Optional[str] = None,
     ):
         self.spark = spark
         self.config = config
@@ -878,7 +898,7 @@ class EntityDiscoverer:
             r["name"] if isinstance(r, dict) else r
             for r in ontology_config.get("relationships", {}).get("types", [])
         }
-        self._model_endpoint = self._validation_cfg.get(
+        self._model_endpoint = model_endpoint or self._validation_cfg.get(
             "classification_model",
             DEFAULT_CLASSIFICATION_MODEL,
         )
@@ -931,28 +951,25 @@ class EntityDiscoverer:
     # ------------------------------------------------------------------
 
     def _get_structured_llm(self):
-        from databricks_langchain import ChatDatabricks
-
-        llm = ChatDatabricks(
-            endpoint=self._model_endpoint, temperature=0.0, max_tokens=512, max_retries=2
+        from dbxmetagen.chat_client import invoke_structured
+        return _StructuredInvoker(
+            invoke_structured, self._model_endpoint,
+            EntityClassificationResult, 0.0, 512, 2,
         )
-        return llm.with_structured_output(EntityClassificationResult)
 
     def _get_batch_column_llm(self):
-        from databricks_langchain import ChatDatabricks
-
-        llm = ChatDatabricks(
-            endpoint=self._model_endpoint, temperature=0.0, max_tokens=2048, max_retries=2
+        from dbxmetagen.chat_client import invoke_structured
+        return _StructuredInvoker(
+            invoke_structured, self._model_endpoint,
+            BatchColumnClassificationResult, 0.0, 2048, 2,
         )
-        return llm.with_structured_output(BatchColumnClassificationResult)
 
     def _get_batch_table_llm(self):
-        from databricks_langchain import ChatDatabricks
-
-        llm = ChatDatabricks(
-            endpoint=self._model_endpoint, temperature=0.0, max_tokens=2048, max_retries=2
+        from dbxmetagen.chat_client import invoke_structured
+        return _StructuredInvoker(
+            invoke_structured, self._model_endpoint,
+            BatchTableClassificationResult, 0.0, 2048, 2,
         )
-        return llm.with_structured_output(BatchTableClassificationResult)
 
     @staticmethod
     def _format_entity_desc(e: "EntityDefinition") -> str:
@@ -2155,9 +2172,10 @@ class OntologyBuilder:
         ]
     )
 
-    def __init__(self, spark: SparkSession, config: OntologyConfig):
+    def __init__(self, spark: SparkSession, config: OntologyConfig, model_endpoint: Optional[str] = None):
         self.spark = spark
         self.config = config
+        self._model_endpoint = model_endpoint
         self.ontology_config = OntologyLoader.load_config(config.config_path)
         bundle_tag_key = (
             self.ontology_config
@@ -2169,7 +2187,8 @@ class OntologyBuilder:
             logger.info(f"Using entity_tag_key '{bundle_tag_key}' from bundle metadata")
         affinity = load_domain_entity_affinity(self.ontology_config)
         self.discoverer = EntityDiscoverer(
-            spark, config, self.ontology_config, domain_entity_affinity=affinity
+            spark, config, self.ontology_config, domain_entity_affinity=affinity,
+            model_endpoint=model_endpoint,
         )
 
     def _get_bundle_version(self) -> str:
@@ -2518,9 +2537,10 @@ class OntologyBuilder:
             return 0
 
     def populate_entity_metrics(
-        self, model_endpoint: str = "databricks-gpt-oss-120b"
+        self, model_endpoint: Optional[str] = None,
     ) -> int:
         """Generate entity-level metric suggestions and populate ontology_metrics."""
+        model_endpoint = model_endpoint or "databricks-gpt-oss-120b"
         ents = self.spark.sql(
             f"""
             SELECT entity_id, entity_name, entity_type, description,
@@ -4202,6 +4222,7 @@ def build_ontology(
     ontology_bundle: str = "",
     incremental: bool = True,
     entity_tag_key: str = "ontology_entity_type",
+    model_endpoint: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Convenience function to build the ontology.
 
@@ -4214,6 +4235,7 @@ def build_ontology(
         ontology_bundle: Optional bundle name (stored alongside entities)
         incremental: Only classify tables/columns changed since last run
         entity_tag_key: UC tag key used when apply_tags is True
+        model_endpoint: LLM endpoint for classification (overrides bundle/default)
     """
     config = OntologyConfig(
         catalog_name=catalog_name,
@@ -4223,5 +4245,5 @@ def build_ontology(
         incremental=incremental,
         entity_tag_key=entity_tag_key,
     )
-    builder = OntologyBuilder(spark, config)
+    builder = OntologyBuilder(spark, config, model_endpoint=model_endpoint)
     return builder.run(apply_tags=apply_tags)

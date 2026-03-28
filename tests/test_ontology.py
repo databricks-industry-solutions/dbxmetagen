@@ -1251,3 +1251,270 @@ class TestBuildBundlePropertyIndex:
         assert "total_amount" in index
         assert "TOTAL_AMOUNT" not in index
 
+
+# ======================================================================
+# Extended _enforce_entity_value tests (parity with domain _enforce_value)
+# ======================================================================
+
+ALL_ENTITY_TYPES = [
+    "Person", "Organization", "Product", "Transaction", "Location",
+    "Event", "Reference", "Metric", "Document", "Patient", "Provider",
+    "Encounter", "Condition", "Procedure", "Medication", "Observation",
+    "Claim", "Coverage", "DataTable",
+]
+
+
+class TestEnforceEntityValueExtended:
+    """Adversarial and parametrized tests mirroring domain classifier depth."""
+
+    # -- Exact match for every default entity type --
+    @pytest.mark.parametrize("entity", ALL_ENTITY_TYPES)
+    def test_exact_match_all_types(self, entity):
+        val, exact = _enforce_entity_value(entity, ALL_ENTITY_TYPES)
+        assert val == entity and exact is True
+
+    # -- Case variations --
+    @pytest.mark.parametrize("entity,predicted", [
+        ("Patient", "PATIENT"),
+        ("Patient", "patient"),
+        ("Patient", "pATIENT"),
+        ("Encounter", "encounter"),
+        ("Encounter", "ENCOUNTER"),
+        ("Organization", "organization"),
+        ("Organization", "ORGANIZATION"),
+        ("Transaction", "transaction"),
+        ("Observation", "observation"),
+        ("Medication", "MEDICATION"),
+        ("Coverage", "coverage"),
+    ])
+    def test_case_variations(self, entity, predicted):
+        val, exact = _enforce_entity_value(predicted, ALL_ENTITY_TYPES)
+        assert val == entity and exact is True
+
+    # -- LLM-realistic extended outputs (substring containment) --
+    @pytest.mark.parametrize("predicted,expected", [
+        ("Patient_Record", "Patient"),
+        ("Patient_Demographics", "Patient"),
+        ("Medical_Encounter", "Encounter"),
+        ("Encounter_Visit", "Encounter"),
+        ("Insurance_Claim", "Claim"),
+        ("Claim_Submission", "Claim"),
+        ("Lab_Observation", "Observation"),
+        ("Observation_Result", "Observation"),
+        ("Drug_Medication", "Medication"),
+        ("Medication_Order", "Medication"),
+        ("Healthcare_Provider", "Provider"),
+        ("Provider_Practitioner", "Provider"),
+        ("Business_Transaction", "Transaction"),
+        ("Transaction_Record", "Transaction"),
+        ("Product_Catalog", "Product"),
+        ("Reference_Lookup", "Reference"),
+        ("Metric_KPI", "Metric"),
+        ("Document_Content", "Document"),
+        ("Coverage_Plan", "Coverage"),
+        ("Location_Address", "Location"),
+        ("System_Event", "Event"),
+        ("Surgical_Procedure", "Procedure"),
+        ("Diagnosis_Condition", "Condition"),
+    ])
+    def test_llm_extended_names(self, predicted, expected):
+        val, exact = _enforce_entity_value(predicted, ALL_ENTITY_TYPES)
+        assert val == expected
+        assert exact is False
+
+    # -- Substring ambiguity: both entity names present in predicted string --
+    @pytest.mark.parametrize("predicted", [
+        "Provider_Organization",
+        "Event_Location",
+        "Product_Transaction",
+        "Patient_Encounter",
+        "Condition_Procedure",
+    ])
+    def test_ambiguous_substring_does_not_crash(self, predicted):
+        """Ambiguous inputs must return a valid entity, never crash or fallback."""
+        val, exact = _enforce_entity_value(predicted, ALL_ENTITY_TYPES)
+        assert val in ALL_ENTITY_TYPES
+        assert val != "DataTable"
+        assert exact is False
+
+    # -- Reverse containment (predicted is a prefix/substring of allowed) --
+    @pytest.mark.parametrize("predicted,expected", [
+        ("Med", "Medication"),
+        ("Proc", "Procedure"),
+        ("Obs", "Observation"),
+        ("Cov", "Coverage"),
+        ("Trans", "Transaction"),
+        ("Org", "Organization"),
+        ("Cond", "Condition"),
+        ("Loc", "Location"),
+        ("Ref", "Reference"),
+        ("Prod", "Product"),
+    ])
+    def test_reverse_containment(self, predicted, expected):
+        val, exact = _enforce_entity_value(predicted, ALL_ENTITY_TYPES)
+        assert val == expected
+        assert exact is False
+
+    def test_reverse_containment_enc_is_ambiguous(self):
+        """'enc' is a substring of both 'Reference' and 'Encounter';
+        iteration order determines the winner. Verify it doesn't crash
+        and returns a valid entity (not the fallback)."""
+        val, exact = _enforce_entity_value("Enc", ALL_ENTITY_TYPES)
+        assert val in ("Reference", "Encounter")
+        assert exact is False
+
+    # -- Fallback to DataTable for garbage inputs --
+    @pytest.mark.parametrize("garbage", [
+        "xyzzy_unknown",
+        "12345",
+        "definitely_not_an_entity",
+        "banana_split_sundae",
+        "asdfghjkl",
+        "the quick brown fox",
+    ])
+    def test_garbage_returns_fallback(self, garbage):
+        val, exact = _enforce_entity_value(garbage, ALL_ENTITY_TYPES)
+        assert val == "DataTable"
+        assert exact is False
+
+    def test_empty_string_matches_first_via_substring(self):
+        """Empty string is a substring of every allowed value, so the first
+        entity wins via iteration order. This documents actual behavior."""
+        val, exact = _enforce_entity_value("", ALL_ENTITY_TYPES)
+        assert val in ALL_ENTITY_TYPES
+        assert exact is False
+
+    def test_whitespace_matches_first_via_substring(self):
+        """Whitespace-only strips to empty, same as above."""
+        val, exact = _enforce_entity_value("   ", ALL_ENTITY_TYPES)
+        assert val in ALL_ENTITY_TYPES
+        assert exact is False
+
+    def test_custom_fallback(self):
+        val, exact = _enforce_entity_value("xyzzy", ALL_ENTITY_TYPES, fallback="Other")
+        assert val == "Other"
+        assert exact is False
+
+    def test_empty_allowed_list_returns_fallback(self):
+        val, exact = _enforce_entity_value("Patient", [])
+        assert val == "DataTable"
+        assert exact is False
+
+    def test_return_types_always_str_bool(self):
+        """Contract: always returns (str, bool), never None."""
+        val, exact = _enforce_entity_value("anything", ALL_ENTITY_TYPES)
+        assert isinstance(val, str)
+        assert isinstance(exact, bool)
+
+
+# ======================================================================
+# Negative tests: _enforce_entity_value never returns a wrong type
+# ======================================================================
+
+
+class TestEnforceEntityValueNeverReturnsWrongType:
+    """Garbage strings must always map to the fallback, never a real entity."""
+
+    ALLOWED = [e for e in ALL_ENTITY_TYPES if e != "DataTable"]
+
+    @pytest.mark.parametrize("garbage", [
+        "zebra_crossing_data",
+        "foobar_baz_qux",
+        "aaaabbbbcccc",
+        "___---!!!",
+        "lorem ipsum dolor sit amet",
+        "1234567890",
+        "SELECT * FROM",
+        "null",
+        "undefined",
+        "NaN",
+    ])
+    def test_garbage_never_matches_real_entity(self, garbage):
+        val, exact = _enforce_entity_value(garbage, self.ALLOWED)
+        assert val == "DataTable", f"'{garbage}' should not match any entity, got '{val}'"
+        assert exact is False
+
+
+# ======================================================================
+# Extended _keyword_prefilter tests
+# ======================================================================
+
+
+class TestKeywordPrefilterExtended:
+    """Deeper coverage for entity prefiltering logic."""
+
+    def _make_discoverer(self):
+        ontology_config = OntologyLoader._default_config()
+        return EntityDiscoverer(MagicMock(), MagicMock(), ontology_config)
+
+    def test_patient_encounters_includes_patient(self):
+        d = self._make_discoverer()
+        result = d._keyword_prefilter("patient_encounters", "admission records", "healthcare")
+        assert "Patient" in result
+
+    def test_patient_encounters_includes_encounter(self):
+        d = self._make_discoverer()
+        result = d._keyword_prefilter("patient_encounters", "admission records", "healthcare")
+        assert "Encounter" in result
+
+    def test_lab_results_includes_observation(self):
+        d = self._make_discoverer()
+        result = d._keyword_prefilter("lab_results", "laboratory test results", "healthcare")
+        assert "Observation" in result
+
+    def test_claim_submissions_includes_claim(self):
+        d = self._make_discoverer()
+        result = d._keyword_prefilter("claim_submissions", "insurance claims", "healthcare")
+        assert "Claim" in result
+
+    def test_finance_domain_transactions(self):
+        d = self._make_discoverer()
+        result = d._keyword_prefilter("daily_transactions", "payment records", "finance")
+        assert "Transaction" in result
+
+    def test_unknown_domain_keyword_match(self):
+        d = self._make_discoverer()
+        result = d._keyword_prefilter("customer_orders", "order history", "unknown")
+        entity_names = set(result)
+        assert "Transaction" in entity_names or "Person" in entity_names
+
+    def test_top_n_small_still_finds_strong_signal(self):
+        d = self._make_discoverer()
+        result = d._keyword_prefilter("patient_records", "medical records", "healthcare", top_n=2)
+        assert len(result) == 2
+        assert "Patient" in result
+
+    def test_empty_inputs_do_not_crash(self):
+        d = self._make_discoverer()
+        result = d._keyword_prefilter("", "", "unknown", top_n=3)
+        assert isinstance(result, list)
+        assert len(result) == 3
+
+    def test_medication_table_includes_medication(self):
+        d = self._make_discoverer()
+        result = d._keyword_prefilter("prescription_drugs", "pharmacy medication orders", "healthcare")
+        assert "Medication" in result
+
+    def test_provider_table_includes_provider(self):
+        d = self._make_discoverer()
+        result = d._keyword_prefilter("physician_directory", "provider npi registry", "healthcare")
+        assert "Provider" in result
+
+
+# ======================================================================
+# DEFAULT_CLASSIFICATION_MODEL consolidation verification
+# ======================================================================
+
+
+class TestClassificationModelConsolidation:
+    """Verify the constant is the single source of truth across modules."""
+
+    def test_config_and_ontology_share_same_constant(self):
+        from dbxmetagen.config import DEFAULT_CLASSIFICATION_MODEL as CONFIG_MODEL
+        from dbxmetagen.ontology import DEFAULT_CLASSIFICATION_MODEL as ONTOLOGY_MODEL
+        assert CONFIG_MODEL == ONTOLOGY_MODEL
+
+    def test_constant_is_claude_sonnet(self):
+        from dbxmetagen.config import DEFAULT_CLASSIFICATION_MODEL
+        assert DEFAULT_CLASSIFICATION_MODEL == "databricks-claude-sonnet-4-6"
+

@@ -20,9 +20,9 @@ const NAV_CAT_COLORS = {
 }
 
 const TAB_ACCENT = {
-  jobs: 'border-t-dbx-lava', semantic: 'border-t-dbx-lava',
+  jobs: 'border-t-dbx-lava', semantic: 'border-t-dbx-lava', genie: 'border-t-dbx-lava',
   metadata: 'border-t-dbx-sky', coverage: 'border-t-dbx-sky', entities: 'border-t-dbx-sky',
-  agent: 'border-t-dbx-teal', genie: 'border-t-dbx-teal',
+  agent: 'border-t-dbx-teal',
 }
 
 const NAV_STRUCTURE = [
@@ -30,7 +30,8 @@ const NAV_STRUCTURE = [
     category: 'Design',
     items: [
       { id: 'jobs',     label: 'Generate Semantic Layer', desc: 'Build core metadata, advanced analytics, and metric views' },
-      { id: 'semantic', label: 'Define Metrics', beta: true, desc: 'Define metric views and KPIs' },
+      { id: 'semantic', label: 'Define Metrics', desc: 'Define metric views and KPIs' },
+      { id: 'genie',   label: 'Build Genie Space', desc: 'Build natural-language SQL spaces' },
     ],
   },
   {
@@ -38,15 +39,14 @@ const NAV_STRUCTURE = [
     items: [
       { id: 'metadata', label: 'Review & Apply', desc: 'Review, edit, and apply AI-generated metadata' },
       { id: 'coverage', label: 'Coverage', desc: 'Catalog health and metadata completeness' },
-      { id: 'entities', label: 'Entity Browser', desc: 'Entity-first navigation with conformance view' },
     ],
   },
   {
-    category: 'Explore', beta: true,
+    category: 'Explore',
     items: [
       { id: 'agent',      label: 'Agent',           desc: 'Chat, graph explorer, and semantic search' },
+      { id: 'entities', label: 'Entity Browser', desc: 'Entity-first navigation with conformance view' },
       // { id: 'analyst',    label: 'SQL Analyst Comparison', desc: 'Demonstrate semantic layer value with side-by-side agents' },
-      { id: 'genie',     label: 'Build Genie Space', desc: 'Build natural-language SQL spaces' },
     ],
   },
 ]
@@ -118,7 +118,7 @@ const SLIDES = [
     body: [
       'Design -- Generate metadata and define metrics.',
       'Review & Apply -- Edit and apply descriptions, tags, entity types, and foreign keys. Check coverage and ontology health.',
-      'Explore -- Chat with the metadata agent, run semantic searches, or build Genie Spaces.',
+      'Explore -- Chat with the metadata agent and run semantic searches.',
     ],
   },
   {
@@ -128,7 +128,7 @@ const SLIDES = [
       '2. Review > Review & Apply -- edit and apply results',
       '3. Review > Coverage -- check completeness and health',
       '4. Design > Define Metrics',
-      '5. Explore > Build Genie Space, Agent, or Search',
+      '5. Design > Build Genie Space',
     ],
   },
 ]
@@ -234,8 +234,8 @@ function NavDropdown({ cat, activeTab, onSelect }) {
 }
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState('agent')
-  const [visitedTabs, setVisitedTabs] = useState(new Set(['agent']))
+  const [activeTab, setActiveTab] = useState('jobs')
+  const [visitedTabs, setVisitedTabs] = useState(new Set(['jobs']))
   const [showInfo, setShowInfo] = useState(false)
   const [dark, setDark] = useState(() => {
     if (typeof window !== 'undefined') {

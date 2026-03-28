@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { ErrorBanner } from '../App'
-import { cachedFetch, cachedFetchObj, TTL } from '../apiCache'
+import { cachedFetch, cachedFetchObj, invalidateCache, TTL } from '../apiCache'
 import { PageHeader, EmptyState, Skeleton, Section } from './ui'
 import { useCatalogSchemaTables } from '../hooks/useCatalogSchemaTables'
 
@@ -75,7 +75,7 @@ export default function SemanticLayer() {
   const [kpiDraft, setKpiDraft] = useState({ name: '', description: '', formula: '', domain: '' })
   const [kpiEditId, setKpiEditId] = useState(null)
   const [kpiSuggesting, setKpiSuggesting] = useState(false)
-  const [showOtherKpis, setShowOtherKpis] = useState(false)
+  const [expandedKpiSections, setExpandedKpiSections] = useState(new Set())
 
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
@@ -107,7 +107,7 @@ export default function SemanticLayer() {
   }, [])
 
   // Refresh definitions and pre-populate tables when project changes
-  const skipNextSaveRef = useRef(true)
+  const isRestoringTablesRef = useRef(true)
   useEffect(() => {
     refreshDefinitions()
     if (selectedProjectId) {
@@ -116,8 +116,9 @@ export default function SemanticLayer() {
         try {
           const tbls = JSON.parse(proj.selected_tables)
           if (Array.isArray(tbls) && tbls.length) {
-            skipNextSaveRef.current = true
+            isRestoringTablesRef.current = true
             setSelectedTables(tbls)
+            setTimeout(() => { isRestoringTablesRef.current = false }, 150)
           }
         } catch { /* ignore */ }
       }
@@ -145,7 +146,7 @@ export default function SemanticLayer() {
   const saveTimerRef = useRef(null)
   useEffect(() => {
     if (!selectedProjectId) return
-    if (skipNextSaveRef.current) { skipNextSaveRef.current = false; return }
+    if (isRestoringTablesRef.current) return
     setTableSaveStatus('pending')
     clearTimeout(saveTimerRef.current)
     saveTimerRef.current = setTimeout(() => {
@@ -161,8 +162,14 @@ export default function SemanticLayer() {
           ))
           setTableSaveStatus('saved')
           setTimeout(() => setTableSaveStatus(null), 2000)
+        } else {
+          console.error('Failed to auto-save tables:', r.status, r.statusText)
+          setTableSaveStatus('error')
         }
-      }).catch(() => setTableSaveStatus(null))
+      }).catch(err => {
+        console.error('Failed to auto-save tables:', err)
+        setTableSaveStatus('error')
+      })
     }, 1000)
     return () => clearTimeout(saveTimerRef.current)
   }, [selectedTables, selectedProjectId])
@@ -232,7 +239,7 @@ export default function SemanticLayer() {
     } catch { setQuestionsText(p.questions || '') }
     try {
       const tbls = JSON.parse(p.table_patterns || '[]')
-      if (tbls.length) { skipNextSaveRef.current = true; setSelectedTables(tbls) }
+      if (tbls.length) { isRestoringTablesRef.current = true; setSelectedTables(tbls); setTimeout(() => { isRestoringTablesRef.current = false }, 150) }
     } catch { /* ignore */ }
   }
 
@@ -411,6 +418,7 @@ export default function SemanticLayer() {
       const res = await fetch(`/api/semantic-layer/definitions/${defId}/retry`, { method: 'POST' })
       const data = await res.json()
       if (!res.ok) setError(data.detail || 'Retry failed')
+      invalidateCache('/api/semantic-layer/definitions')
       refreshDefinitions()
     } catch (e) { setError(e.message) }
     setActionLoading(prev => ({ ...prev, [defId]: null }))
@@ -423,6 +431,7 @@ export default function SemanticLayer() {
       const res = await fetch(`/api/semantic-layer/definitions/${defId}/improve`, { method: 'POST' })
       const data = await res.json()
       if (!res.ok) setError(data.detail || 'Improve failed')
+      invalidateCache('/api/semantic-layer/definitions')
       refreshDefinitions()
     } catch (e) { setError(e.message) }
     setActionLoading(prev => ({ ...prev, [defId]: null }))
@@ -452,6 +461,7 @@ export default function SemanticLayer() {
         setError(null)
         setCreateError(prev => ({ ...prev, [defId]: null }))
       }
+      invalidateCache('/api/semantic-layer/definitions')
       refreshDefinitions()
     } catch (e) { setError(e.message); setCreateError(prev => ({ ...prev, [defId]: e.message })) }
     setActionLoading(prev => ({ ...prev, [defId]: null }))
@@ -462,7 +472,27 @@ export default function SemanticLayer() {
     if (!validated.length) return
     if (!createTarget.catalog || !createTarget.schema) { setError('Set a target catalog and schema before creating'); return }
     setBulkCreating(true)
-    for (const d of validated) await createDefinition(d.definition_id)
+    setError(null)
+    for (const d of validated) setActionLoading(prev => ({ ...prev, [d.definition_id]: 'create' }))
+    const results = await Promise.allSettled(validated.map(async (d) => {
+      const res = await fetch(`/api/semantic-layer/definitions/${d.definition_id}/create`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ target_catalog: createTarget.catalog, target_schema: createTarget.schema }),
+      })
+      const text = await res.text()
+      let data; try { data = JSON.parse(text) } catch { data = { detail: text } }
+      if (!res.ok) {
+        const msg = typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail || data)
+        setCreateError(prev => ({ ...prev, [d.definition_id]: msg }))
+        throw new Error(msg)
+      }
+      setCreateError(prev => ({ ...prev, [d.definition_id]: null }))
+    }))
+    const failed = results.filter(r => r.status === 'rejected')
+    if (failed.length) setError(`${failed.length} of ${validated.length} creates failed`)
+    for (const d of validated) setActionLoading(prev => ({ ...prev, [d.definition_id]: null }))
+    invalidateCache('/api/semantic-layer/definitions')
+    refreshDefinitions()
     setBulkCreating(false)
   }
 
@@ -483,6 +513,7 @@ export default function SemanticLayer() {
         await fetch(`/api/semantic-layer/definitions/${d.definition_id}`, { method: 'DELETE' })
       } catch (e) { setError(e.message) }
     }
+    invalidateCache('/api/semantic-layer/definitions')
     refreshDefinitions()
     setBulkDeleting(null)
   }
@@ -497,6 +528,7 @@ export default function SemanticLayer() {
       try { await fetch(`/api/semantic-layer/definitions/${d.definition_id}`, { method: 'DELETE' }) }
       catch (e) { setError(e.message) }
     }
+    invalidateCache('/api/semantic-layer/definitions')
     refreshDefinitions()
     setBulkDeleting(null)
   }
@@ -543,6 +575,7 @@ export default function SemanticLayer() {
         setCreateError(prev => ({ ...prev, [editDefId]: null }))
         setEditDefId(null)
         setEditJson('')
+        invalidateCache('/api/semantic-layer/definitions')
         refreshDefinitions()
       }
     } catch (e) { setError(e.message) }
@@ -560,6 +593,7 @@ export default function SemanticLayer() {
       }
       const res = await fetch(url, { method: 'DELETE' })
       if (!res.ok) { const data = await res.json(); setError(data.detail || 'Delete failed') }
+      invalidateCache('/api/semantic-layer/definitions')
       refreshDefinitions()
     } catch (e) { setError(e.message) }
     setActionLoading(prev => ({ ...prev, [defId]: null }))
@@ -580,6 +614,7 @@ export default function SemanticLayer() {
       })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) setError(data.detail || 'Drop failed')
+      invalidateCache('/api/semantic-layer/definitions')
       refreshDefinitions()
     } catch (e) { setError(e.message) }
     setActionLoading(prev => ({ ...prev, [defId]: null }))
@@ -746,6 +781,7 @@ export default function SemanticLayer() {
               )}
               {tableSaveStatus === 'saved' && <span className="text-xs text-green-600 dark:text-green-400">Saved</span>}
               {tableSaveStatus === 'pending' && <span className="text-xs text-amber-500 dark:text-amber-400">Unsaved</span>}
+              {tableSaveStatus === 'error' && <span className="text-xs text-red-500">Failed to save table selection</span>}
             </div>
             <div className="flex flex-wrap gap-1.5">
               {selectedTables.map(t => (
@@ -869,30 +905,50 @@ export default function SemanticLayer() {
               </div>
             </div>
           )
-          if (!selectedTables.length) return (
+          const toggleSection = (key) => setExpandedKpiSections(prev => {
+            const next = new Set(prev)
+            next.has(key) ? next.delete(key) : next.add(key)
+            return next
+          })
+          if (!profiles.length) return (
             <div>
-              <p className="text-xs text-slate-400 dark:text-slate-500 mb-2">Select tables in Setup to see which KPIs are relevant.</p>
+              <p className="text-xs text-slate-400 dark:text-slate-500 mb-2">Create a Question Profile above to organize KPIs.</p>
               <div className="space-y-1.5">{kpis.map(k => <KpiRow key={k.kpi_id} k={k} />)}</div>
             </div>
           )
-          const relevant = kpis.filter(k => kpiMatchesTables(k, selectedTables))
-          const other = kpis.filter(k => !kpiMatchesTables(k, selectedTables))
+          const assigned = new Set()
+          const sections = profiles.map(p => {
+            let tables = []
+            try { tables = JSON.parse(p.table_patterns || '[]') } catch { /* ignore */ }
+            const matched = kpis.filter(k => tables.length ? kpiMatchesTables(k, tables) : false)
+            matched.forEach(k => assigned.add(k.kpi_id))
+            return { key: p.profile_id, label: p.profile_name, kpis: matched }
+          }).filter(s => s.kpis.length > 0)
+          const unassigned = kpis.filter(k => !assigned.has(k.kpi_id))
           return (
             <div className="space-y-3">
-              {relevant.length > 0 && (
+              {sections.map(s => {
+                const open = expandedKpiSections.has(s.key) || s.key === activeProfileId
+                return (
+                  <div key={s.key}>
+                    <button onClick={() => toggleSection(s.key)} className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide hover:text-slate-600 dark:hover:text-slate-300 flex items-center gap-1">
+                      <span className={`transition-transform ${open ? 'rotate-90' : ''}`}>&#9654;</span>
+                      {s.label} ({s.kpis.length})
+                    </button>
+                    {open && (
+                      <div className="space-y-1.5 mt-1.5">{s.kpis.map(k => <KpiRow key={k.kpi_id} k={k} />)}</div>
+                    )}
+                  </div>
+                )
+              })}
+              {unassigned.length > 0 && (
                 <div>
-                  <h4 className="text-xs font-semibold text-slate-500 dark:text-slate-400 mb-1.5 uppercase tracking-wide">Relevant to selected tables ({relevant.length})</h4>
-                  <div className="space-y-1.5">{relevant.map(k => <KpiRow key={k.kpi_id} k={k} />)}</div>
-                </div>
-              )}
-              {other.length > 0 && (
-                <div>
-                  <button onClick={() => setShowOtherKpis(p => !p)} className="text-xs font-semibold text-slate-400 dark:text-slate-500 uppercase tracking-wide hover:text-slate-600 dark:hover:text-slate-300 flex items-center gap-1">
-                    <span className={`transition-transform ${showOtherKpis ? 'rotate-90' : ''}`}>&#9654;</span>
-                    Other KPIs ({other.length})
+                  <button onClick={() => toggleSection('__unassigned')} className="text-xs font-semibold text-slate-400 dark:text-slate-500 uppercase tracking-wide hover:text-slate-600 dark:hover:text-slate-300 flex items-center gap-1">
+                    <span className={`transition-transform ${expandedKpiSections.has('__unassigned') ? 'rotate-90' : ''}`}>&#9654;</span>
+                    Unassigned ({unassigned.length})
                   </button>
-                  {showOtherKpis && (
-                    <div className="space-y-1.5 mt-1.5">{other.map(k => <KpiRow key={k.kpi_id} k={k} dimmed />)}</div>
+                  {expandedKpiSections.has('__unassigned') && (
+                    <div className="space-y-1.5 mt-1.5">{unassigned.map(k => <KpiRow key={k.kpi_id} k={k} dimmed />)}</div>
                   )}
                 </div>
               )}
@@ -1112,6 +1168,12 @@ export default function SemanticLayer() {
                       <span className="text-gray-400 dark:text-gray-500 text-xs ml-2">{d.source_table}</span>
                     </div>
                     <div className="flex items-center gap-1 flex-shrink-0">
+                      {busy && (
+                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400 animate-pulse">
+                          <svg className="animate-spin h-3 w-3" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
+                          {busy === 'improve' ? 'Improving...' : busy === 'create' ? 'Creating...' : busy === 'retry' ? 'Retrying...' : busy === 'delete' ? 'Deleting...' : busy === 'drop' ? 'Dropping...' : 'Working...'}
+                        </span>
+                      )}
                       {statusBadge(d.status)}
                       {d.complexity_level === 'trivial' && (
                         <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400" title="Only basic COUNT/SUM measures">Trivial</span>

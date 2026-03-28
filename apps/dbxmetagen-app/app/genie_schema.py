@@ -9,6 +9,14 @@ from typing import Optional
 
 from pydantic import BaseModel, Field
 
+try:
+    import sqlparse
+    def _format_sql(sql: str) -> str:
+        return sqlparse.format(sql, reindent=True, keyword_case="upper").strip()
+except ImportError:
+    def _format_sql(sql: str) -> str:
+        return sql
+
 
 def _hex_id() -> str:
     return uuid.uuid4().hex
@@ -19,6 +27,15 @@ def _simplify_join_sql(sql: str) -> str:
     return re.sub(
         r"\b(\w+)\.(\w+)\.(\w+)\.(\w+)\b",
         lambda m: f"{m.group(3)}.{m.group(4)}",
+        sql,
+    )
+
+
+def _backtick_join_sql(sql: str) -> str:
+    """Backtick-quote table.column references in join SQL predicates."""
+    return re.sub(
+        r"\b(\w+)\.(\w+)\b",
+        lambda m: f"`{m.group(1)}`.`{m.group(2)}`",
         sql,
     )
 
@@ -69,6 +86,53 @@ def _fix_date_func_units(sql: str) -> str:
     )
 
 
+def _fix_date_trunc_units(sql: str) -> str:
+    """Quote bare DATE_TRUNC unit args: DATE_TRUNC(MONTH, col) -> DATE_TRUNC('MONTH', col)."""
+
+    def _quote_unit(m):
+        func = m.group(1)
+        unit = m.group(2).upper()
+        rest = m.group(3)
+        if unit in _VALID_UNITS:
+            return f"{func}('{unit}'{rest}"
+        return m.group(0)
+
+    return re.sub(
+        r"(DATE_TRUNC)\(\s*(?!['\"])(\w+)\s*(,)",
+        _quote_unit,
+        sql,
+        flags=re.IGNORECASE,
+    )
+
+
+_CASE_BARE_LITERAL = re.compile(
+    r"(THEN|ELSE)\s+([A-Za-z][^'\"`,\n]*?)(?=\s+(?:WHEN|THEN|ELSE|END)\b)",
+    re.IGNORECASE,
+)
+_CASE_SKIP = {"NULL", "TRUE", "FALSE"}
+
+
+def _fix_case_string_literals(sql: str) -> str:
+    """Quote unquoted string literals in CASE THEN/ELSE clauses."""
+
+    def _quote_literal(m):
+        keyword = m.group(1)
+        value = m.group(2).strip()
+        if not value or value.upper() in _CASE_SKIP:
+            return m.group(0)
+        try:
+            float(value)
+            return m.group(0)
+        except ValueError:
+            pass
+        if value.startswith("'") or value.startswith('"'):
+            return m.group(0)
+        escaped = value.replace("'", "''")
+        return f"{keyword} '{escaped}'"
+
+    return _CASE_BARE_LITERAL.sub(_quote_literal, sql)
+
+
 # ---------------------------------------------------------------------------
 # Pydantic models matching the Genie API proto
 # ---------------------------------------------------------------------------
@@ -93,10 +157,13 @@ class ExampleSQL(BaseModel):
     id: str = Field(default_factory=_hex_id)
     question: list[str]
     sql: list[str]
+    parameters: Optional[list[dict]] = None
+    usage_guidance: Optional[list[str]] = None
 
 
 class JoinSide(BaseModel):
     identifier: str
+    alias: Optional[str] = None
 
 
 class JoinSpec(BaseModel):
@@ -104,6 +171,7 @@ class JoinSpec(BaseModel):
     left: JoinSide
     right: JoinSide
     sql: list[str]
+    instruction: Optional[list[str]] = None
 
 
 class SnippetMeasure(BaseModel):
@@ -112,6 +180,7 @@ class SnippetMeasure(BaseModel):
     sql: list[str]
     display_name: Optional[str] = None
     synonyms: Optional[list[str]] = None
+    instruction: Optional[list[str]] = None
     description: Optional[str] = Field(default=None, exclude=True)
 
 
@@ -119,6 +188,8 @@ class SnippetFilter(BaseModel):
     id: str = Field(default_factory=_hex_id)
     display_name: str
     sql: list[str]
+    instruction: Optional[list[str]] = None
+    synonyms: Optional[list[str]] = None
 
 
 class SnippetExpression(BaseModel):
@@ -127,6 +198,7 @@ class SnippetExpression(BaseModel):
     sql: list[str]
     display_name: Optional[str] = None
     synonyms: Optional[list[str]] = None
+    instruction: Optional[list[str]] = None
     description: Optional[str] = Field(default=None, exclude=True)
 
 
@@ -294,9 +366,13 @@ def build_serialized_space(raw: dict) -> dict:
     examples = []
     for ex in examples_raw:
         q = _ensure_list(ex.get("question"))
-        s = [_fix_date_func_units(x) for x in _ensure_list(ex.get("sql"))]
+        s = [_format_sql(_fix_date_func_units(x)) for x in _ensure_list(ex.get("sql"))]
         if q and s:
-            examples.append(ExampleSQL(question=q, sql=s))
+            examples.append(ExampleSQL(
+                question=q, sql=s,
+                parameters=ex.get("parameters") or None,
+                usage_guidance=_to_str_list(ex.get("usage_guidance")),
+            ))
 
     # join_specs -- split compound AND, simplify FQ names
     joins_raw = inst_raw.get("join_specs") or raw.get("join_specs") or []
@@ -319,18 +395,21 @@ def build_serialized_space(raw: dict) -> dict:
         split: list[str] = []
         for s in sql_list:
             s = _simplify_join_sql(s)
-            split.extend(
-                p.strip()
-                for p in re.split(r"\s+AND\s+", s, flags=re.IGNORECASE)
-                if p.strip()
-            )
+            for p in re.split(r"\s+AND\s+", s, flags=re.IGNORECASE):
+                p = p.strip()
+                if p:
+                    split.append(_backtick_join_sql(p))
 
         if left_id and right_id and split:
+            left_alias = left_id.split(".")[-1]
+            right_alias = right_id.split(".")[-1]
+            split.append("--rt=FROM_RELATIONSHIP_TYPE_ONE_TO_MANY--")
             joins.append(
                 JoinSpec(
-                    left=JoinSide(identifier=left_id),
-                    right=JoinSide(identifier=right_id),
+                    left=JoinSide(identifier=left_id, alias=left_alias),
+                    right=JoinSide(identifier=right_id, alias=right_alias),
                     sql=split,
+                    instruction=[f"to join {left_alias} to {right_alias}"],
                 )
             )
     joins = _dedup_join_specs(joins)
@@ -339,7 +418,7 @@ def build_serialized_space(raw: dict) -> dict:
     snip_raw = inst_raw.get("sql_snippets") or raw.get("sql_snippets") or {}
 
     def _fix_sql_list(sl: list[str]) -> list[str]:
-        return [_fix_date_func_units(s) for s in sl]
+        return [_fix_case_string_literals(_fix_date_trunc_units(_fix_date_func_units(s))) for s in sl]
 
     snip_measures = []
     for m in snip_raw.get("measures", []):
@@ -353,6 +432,7 @@ def build_serialized_space(raw: dict) -> dict:
             alias=alias, sql=sql,
             display_name=m.get("display_name") or alias,
             synonyms=m.get("synonyms"),
+            instruction=_to_str_list(m.get("instruction")),
             description=m.get("description"),
         ))
 
@@ -369,7 +449,11 @@ def build_serialized_space(raw: dict) -> dict:
         )
         if not dn:
             continue
-        snip_filters.append(SnippetFilter(display_name=dn, sql=sql))
+        snip_filters.append(SnippetFilter(
+            display_name=dn, sql=sql,
+            instruction=_to_str_list(m.get("instruction")),
+            synonyms=m.get("synonyms"),
+        ))
 
     snip_exprs = []
     for m in snip_raw.get("expressions", []):
@@ -383,6 +467,7 @@ def build_serialized_space(raw: dict) -> dict:
             alias=alias, sql=sql,
             display_name=m.get("display_name") or alias,
             synonyms=m.get("synonyms"),
+            instruction=_to_str_list(m.get("instruction")),
             description=m.get("description"),
         ))
     snippets = None

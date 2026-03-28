@@ -16,6 +16,7 @@ from dbxmetagen.domain_classifier import (
     _normalize,
     _trigram_overlap,
     _build_user_message,
+    _domain_keyword_prefilter,
     _error_result,
     generate_domain_only_prompt,
     generate_subdomain_prompt,
@@ -230,6 +231,19 @@ class TestBuildUserMessage:
         meta = {"column_metadata": {"col_a": {"type": "STRING", "pii": True}}}
         msg = _build_user_message("t", meta)
         assert "Column Metadata" in msg
+
+    def test_schema_signal_present(self):
+        msg = _build_user_message("cat.claims.fact_claim", {})
+        assert "Schema: claims (strong domain signal)" in msg
+
+    def test_schema_signal_before_columns(self):
+        meta = {"column_contents": {"col_a": "int"}}
+        msg = _build_user_message("cat.sch.tbl", meta)
+        assert msg.index("Schema: sch") < msg.index("Column Information")
+
+    def test_no_schema_line_for_short_table_name(self):
+        msg = _build_user_message("just_a_table", {})
+        assert "Schema:" not in msg
 
 
 # ── _error_result ────────────────────────────────────────────────────────
@@ -501,6 +515,24 @@ class TestTwoStagePipeline:
         result = classify_table_domain("cat.sch.tbl", {}, self.SAMPLE_CONFIG, two_stage=True)
         assert result["subdomain"] == "patient_care"
         assert result["confidence"] <= 0.75
+
+    @patch("dbxmetagen.domain_classifier.classify_subdomain_stage2")
+    @patch("dbxmetagen.domain_classifier.classify_domain_stage1")
+    def test_prefilter_narrows_candidates_for_large_config(self, mock_s1, mock_s2):
+        """With >top_n domains, the prefilter should pass fewer candidates to stage-1."""
+        large_config = {"domains": {
+            f"dom_{i}": {"name": f"Dom{i}", "description": "", "keywords": [f"kw{i}"],
+                         "subdomains": {}} for i in range(12)
+        }}
+        large_config["domains"]["dom_0"]["keywords"] = ["patient", "encounter"]
+        mock_s1.return_value = self._mock_stage1(domain="dom_0")
+        mock_s2.return_value = self._mock_stage2(subdomain=None)
+        meta = {"table_comments": "patient encounter records"}
+        classify_table_domain("cat.sch.tbl", meta, large_config, two_stage=True)
+        call_args = mock_s1.call_args
+        candidates_passed = call_args[0][3] if len(call_args[0]) > 3 else call_args[1].get("candidate_domains")
+        assert len(candidates_passed) <= 6
+        assert "dom_0" in candidates_passed
 
 
 # ── classify_table_domain error handling ─────────────────────────────────

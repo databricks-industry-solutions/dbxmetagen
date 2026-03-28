@@ -9,6 +9,7 @@ resources:
   jobs:
     metadata_parallel_modes_job:
       name: "${var.app_name}_parallel_modes_job"
+      max_concurrent_runs: 5
 
       permissions:
         - service_principal_name: ${resources.apps.dbxmetagen_app.service_principal_client_id}

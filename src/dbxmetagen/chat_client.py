@@ -12,15 +12,108 @@ import requests
 import mlflow
 import time
 from abc import ABC, abstractmethod
-from typing import List, Dict, Any
+import copy
+from typing import List, Dict, Any, Type
 from openai import OpenAI
 from databricks_langchain import ChatDatabricks
 from databricks.sdk import WorkspaceClient
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 logger = logging.getLogger(__name__)
 from openai.types.chat.chat_completion import ChatCompletion, Choice
 from openai.types.chat.chat_completion_message import ChatCompletionMessage
+
+
+# ---------------------------------------------------------------------------
+# Structured output with automatic fallback
+# ---------------------------------------------------------------------------
+
+
+def _extract_and_validate_json(text: str, response_model: Type[BaseModel]) -> BaseModel:
+    """Extract JSON from LLM text and validate with Pydantic."""
+    text = text.strip()
+    text = re.sub(r"^```(?:json)?\s*", "", text)
+    text = re.sub(r"\s*```$", "", text)
+
+    # Try object first, then array
+    for pattern in (r"\{.*\}", r"\[.*\]"):
+        m = re.search(pattern, text, re.DOTALL)
+        if m:
+            text = m.group()
+            break
+
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as e:
+        raise ValueError(
+            f"Could not extract valid JSON for {response_model.__name__}: {e}\n"
+            f"Raw text (first 500 chars): {text[:500]}"
+        ) from e
+
+    try:
+        return response_model.model_validate(data)
+    except ValidationError as e:
+        raise ValueError(
+            f"JSON did not match {response_model.__name__} schema: {e}"
+        ) from e
+
+
+def _append_json_instruction(
+    messages: List[Dict[str, str]], response_model: Type[BaseModel],
+) -> List[Dict[str, str]]:
+    """Append a JSON schema instruction to the last user message (non-mutating)."""
+    if not messages:
+        return messages
+    last_content = messages[-1].get("content", "")
+    if "JSON" in last_content or "json" in last_content:
+        return messages
+    schema = json.dumps(response_model.model_json_schema(), indent=2)
+    msgs = copy.deepcopy(messages)
+    msgs[-1] = {
+        **msgs[-1],
+        "content": last_content
+        + f"\n\nRespond ONLY with a valid JSON object matching this schema:\n{schema}",
+    }
+    return msgs
+
+
+def invoke_structured(
+    endpoint: str,
+    messages: List[Dict[str, str]],
+    response_model: Type[BaseModel],
+    temperature: float = 0.0,
+    max_tokens: int = 2048,
+    max_retries: int = 1,
+) -> BaseModel:
+    """Invoke an LLM with structured output, falling back to JSON parsing + Pydantic.
+
+    Tries ``ChatDatabricks.with_structured_output`` first (tool-calling path).
+    If that raises (e.g. model doesn't support tool calling), falls back to a
+    plain ``invoke`` with a JSON instruction appended, then parses and validates
+    the response with ``response_model.model_validate``.
+    """
+    llm = ChatDatabricks(
+        endpoint=endpoint, temperature=temperature,
+        max_tokens=max_tokens, max_retries=max_retries,
+    )
+    try:
+        return llm.with_structured_output(response_model).invoke(messages)
+    except Exception as exc:
+        logger.warning(
+            "with_structured_output failed for %s (%s), falling back to JSON parsing",
+            endpoint, exc,
+        )
+        msgs = _append_json_instruction(messages, response_model)
+        raw = llm.invoke(msgs)
+        content = raw.content if hasattr(raw, "content") else str(raw)
+        if isinstance(content, list):
+            text = "\n".join(
+                part["text"] if isinstance(part, dict) and "text" in part else str(part)
+                for part in content
+            )
+        else:
+            text = str(content)
+        return _extract_and_validate_json(text, response_model)
 
 
 class ChatClient(ABC):
@@ -205,15 +298,9 @@ class DatabricksClient(ChatClient):
         **kwargs,
     ) -> BaseModel:
         """Create a structured chat completion using ChatDatabricks."""
-        return (
-            ChatDatabricks(
-                endpoint=model,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                max_retries=1,
-            )
-            .with_structured_output(response_model)
-            .invoke(messages)
+        return invoke_structured(
+            model, messages, response_model,
+            temperature=temperature, max_tokens=max_tokens, max_retries=1,
         )
 
 

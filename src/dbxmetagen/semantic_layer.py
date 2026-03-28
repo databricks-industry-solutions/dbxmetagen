@@ -1000,19 +1000,28 @@ OUTPUT (one JSON object only, no array, no explanation):"""
 
     @classmethod
     def _fix_unquoted_literals(cls, expr: str) -> str:
-        """Quote bare words used as string literals in comparisons."""
+        """Quote bare words/phrases used as string literals in comparisons."""
 
         def _replacer(m):
-            op, word, trail = m.group(1), m.group(2), m.group(3)
-            if (
-                word.upper() in cls._SQL_RESERVED
-                or word.upper() in cls._DATE_TRUNC_INTERVALS
-            ):
+            op = m.group(1)
+            value = m.group(2).strip()
+            trail = m.group(3)
+            if not value:
                 return m.group(0)
-            return f"{op}'{word}'{trail}"
+            if value.startswith("'") or value.startswith('"'):
+                return m.group(0)
+            if re.match(r"^-?\d+(\.\d+)?$", value):
+                return m.group(0)
+            if "." in value and " " not in value:
+                return m.group(0)
+            if "(" in value:
+                return m.group(0)
+            if value.upper() in cls._SQL_RESERVED or value.upper() in cls._DATE_TRUNC_INTERVALS:
+                return m.group(0)
+            return f"{op}'{value}'{trail}"
 
         return re.sub(
-            r"([=!<>]+\s*)([A-Za-z_]\w*)(\s*(?:THEN|ELSE|END|AND|OR|WHEN|,|\))|$)",
+            r"([=!<>]+\s*)(.*?)(\s+(?:THEN|ELSE|END|AND|OR|WHEN)\b|\s*[,)]|$)",
             _replacer,
             expr,
             flags=re.IGNORECASE,
@@ -1032,7 +1041,12 @@ OUTPUT (one JSON object only, no array, no explanation):"""
             inner = m.group(1)
             if not _KW.search(inner):
                 return full
+            if "(" in inner or ")" in inner or "." in inner:
+                return full
             parts = _KW.split(inner)
+            text_parts = [p.strip() for p in parts if not _KW.fullmatch(p.strip())]
+            if not any(text_parts):
+                return full
             result = ""
             for i, part in enumerate(parts):
                 text = part.strip()
@@ -1057,6 +1071,10 @@ OUTPUT (one JSON object only, no array, no explanation):"""
             if body.startswith("'") or body.startswith('"'):
                 return m.group(0)
             if re.match(r"^-?\d+(\.\d+)?$", body):
+                return m.group(0)
+            if "." in body and " " not in body:
+                return m.group(0)
+            if "(" in body:
                 return m.group(0)
             tokens = body.split()
             if len(tokens) == 1 and tokens[0].upper() in cls._SQL_RESERVED:
@@ -1097,10 +1115,15 @@ OUTPUT (one JSON object only, no array, no explanation):"""
 
     @classmethod
     def _fix_concat_separators(cls, expr: str) -> str:
-        """Quote bare non-alphanumeric tokens between commas in function calls."""
+        """Quote bare separator tokens between commas (e.g. -Q, /, : in CONCAT)."""
+        def _repl(m):
+            tok = m.group(1).strip()
+            if re.match(r"^-?\d+(\.\d+)?$", tok):
+                return m.group(0)
+            return f", '{tok}',"
         return re.sub(
-            r",\s*([^\w\s'\"`(][^\w'\"`(]*?)\s*,",
-            lambda m: f", '{m.group(1).strip()}',",
+            r",\s*([^\w\s'\"`(][^'\"`(,)]{0,4})\s*,",
+            _repl,
             expr,
         )
 
