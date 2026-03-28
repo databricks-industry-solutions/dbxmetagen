@@ -19,11 +19,39 @@
 - **Metadata review**: Interactive review, edit, and apply workflow for generated metadata
 - **Web dashboard**: FastAPI + React app with 8 tabs covering the full metadata lifecycle
 
-## Quickstart (5 minutes)
+## Quickstart
 
-**Prerequisites:** A Databricks workspace with Unity Catalog enabled and a Foundation Model endpoint (e.g. `databricks-claude-sonnet-4-6`).
+**Prerequisites:** Databricks CLI (>=0.283.0), Python 3.10+, Poetry 2.x, Node.js (for frontend build), a Databricks workspace with Unity Catalog enabled and a Foundation Model endpoint (e.g. `databricks-claude-sonnet-4-6`).
 
-Install the package on any Databricks cluster and run from a notebook. No CLI, Asset Bundles, or repo clone needed.
+1. Clone the repo and configure:
+   ```bash
+   git clone https://github.com/databricks-industry-solutions/dbxmetagen
+   cd dbxmetagen
+   cp example.env dev.env   # Edit with your workspace URL, catalog, schema, warehouse_id
+   ```
+
+2. Deploy:
+   ```bash
+   ./deploy.sh --profile <your-profile> --target dev
+   ```
+   This builds the wheel, compiles the React frontend, deploys jobs + app via Asset Bundles, and starts the dashboard.
+
+   To deploy jobs only (skip app build, SP detection, and app start):
+   ```bash
+   ./deploy.sh --profile <your-profile> --target dev --no-app
+   ```
+
+3. Access the app at **Workspace > Apps > dbxmetagen-app**
+
+4. Run jobs:
+   ```bash
+   databricks bundle run metadata_generator_job -t dev -p <profile> --params table_names='catalog.schema.*',mode=domain
+   databricks bundle run full_analytics_pipeline_job -t dev -p <profile>
+   ```
+
+## Partial Install (Notebook Only)
+
+If you only need core metadata generation (comments, PI, domain) without the web dashboard, managed jobs, semantic layer, or Genie Builder, install the library directly on any Databricks cluster. No CLI, Asset Bundles, or repo clone needed.
 
 ### 1. Install
 
@@ -80,38 +108,6 @@ See `examples/` for complete runnable notebooks:
 | `examples/01_quickstart_metadata.py` | Comment, PI, or domain generation with widgets |
 | `examples/02_analytics_pipeline.py` | Full KB, graph, embeddings, ontology, similarity, quality pipeline |
 | `examples/03_advanced_analytics.py` | FK prediction and ontology validation |
-
-## Full Deployment (DAB)
-
-For the web dashboard, batch jobs, Lakebase integration, and the full analytics pipeline as managed Databricks jobs:
-
-**Prerequisites:** Databricks CLI (>=0.283.0), Python 3.10+, Poetry 2.x, Node.js (for frontend build).
-
-1. Clone the repo and configure:
-   ```bash
-   git clone https://github.com/databricks-industry-solutions/dbxmetagen
-   cd dbxmetagen
-   cp example.env dev.env   # Edit with your workspace URL, catalog, schema, warehouse_id
-   ```
-
-2. Deploy:
-   ```bash
-   ./deploy.sh --profile <your-profile> --target dev
-   ```
-   This builds the wheel, compiles the React frontend, deploys jobs + app via Asset Bundles, and starts the dashboard.
-
-   To deploy jobs only (skip app build, SP detection, and app start):
-   ```bash
-   ./deploy.sh --profile <your-profile> --target dev --no-app
-   ```
-
-3. Access the app at **Workspace > Apps > dbxmetagen-app**
-
-4. Run jobs:
-   ```bash
-   databricks bundle run metadata_generator_job -t dev -p <profile> --params table_names='catalog.schema.*',mode=domain
-   databricks bundle run full_analytics_pipeline_job -t dev -p <profile>
-   ```
 
 ## Disclaimer
 
