@@ -119,13 +119,21 @@ try:
 
     # Read the TSV -- UC Volumes are accessible directly at /Volumes/
     tsv_path_local = tsv_file.replace("dbfs:", "")
-    df = pd.read_csv(tsv_path_local, sep="\t", dtype=str)
+    df = pd.read_csv(tsv_path_local, sep="\t", dtype=str, keep_default_na=False, na_values=[])
 
     print(f"  Loaded {len(df)} rows from TSV")
+    print(f"  [DIAG] Columns: {list(df.columns)}")
+    print(f"  [DIAG] ddl_type values: {df['ddl_type'].tolist() if 'ddl_type' in df.columns else 'NO ddl_type column'}")
 
     # Modify the table comment
     table_rows = df[df["ddl_type"] == "table"]
     if len(table_rows) > 0:
+        # --- CHECKPOINT 1: Show original DDL before modification ---
+        orig_table_ddl = table_rows.iloc[0]["ddl"]
+        print(f"  [DIAG] CHECKPOINT 1 - Original table DDL:\n    {orig_table_ddl}")
+        print(f"  [DIAG] CHECKPOINT 1 - Original column_content: {table_rows.iloc[0].get('column_content', 'N/A')}")
+        print(f"  [DIAG] CHECKPOINT 1 - column_name value: {repr(table_rows.iloc[0].get('column_name', 'N/A'))}")
+
         df.loc[df["ddl_type"] == "table", "column_content"] = (
             "REVIEWED: This is a manually reviewed table comment"
         )
@@ -139,6 +147,20 @@ try:
             "column_content",
         ] = "REVIEWED: This column contains person names"
         print("  [OK] Modified 'name' column comment")
+
+    # --- CHECKPOINT 2: Test replace_comment_in_ddl directly ---
+    if len(table_rows) > 0:
+        from dbxmetagen.ddl_regenerator import replace_comment_in_ddl
+        test_ddl = orig_table_ddl
+        test_result = replace_comment_in_ddl(test_ddl, "REVIEWED: This is a manually reviewed table comment")
+        print(f"  [DIAG] CHECKPOINT 2 - replace_comment_in_ddl input:\n    {test_ddl}")
+        print(f"  [DIAG] CHECKPOINT 2 - replace_comment_in_ddl output:\n    {test_result}")
+        if "REVIEWED:" in test_result:
+            print("  [DIAG] CHECKPOINT 2 - Regex replacement WORKED")
+        elif test_result == test_ddl:
+            print("  [DIAG] CHECKPOINT 2 - Regex replacement FAILED (DDL unchanged)")
+        else:
+            print("  [DIAG] CHECKPOINT 2 - Regex replacement PARTIAL (DDL changed but no REVIEWED:)")
 
     # Save the reviewed TSV to reviewed_outputs directory
     reviewed_dir = f"/Volumes/{test_catalog}/{test_schema}/test_volume/{user_sanitized}/reviewed_outputs"
@@ -169,6 +191,29 @@ try:
 
     process_metadata_file(config_reviewed, reviewed_file_name)
     print("  [OK] Reviewed DDL processed and applied")
+
+    # --- CHECKPOINT 3: Read the generated SQL file and print its contents ---
+    try:
+        reviewed_sql_check_dir = f"{export_dir}"
+        for file_info in dbutils.fs.ls(reviewed_sql_check_dir):
+            if "reviewed" in file_info.name and file_info.name.endswith(".sql"):
+                sql_diag_path = file_info.path.replace("dbfs:", "")
+                sql_diag_content = open(sql_diag_path, "r").read()
+                print(f"  [DIAG] CHECKPOINT 3 - Reviewed SQL file: {file_info.name}")
+                print(f"  [DIAG] CHECKPOINT 3 - SQL content (first 800 chars):\n{sql_diag_content[:800]}")
+                if "REVIEWED: This is a manually reviewed table comment" in sql_diag_content:
+                    print("  [DIAG] CHECKPOINT 3 - Reviewed table text FOUND in SQL file")
+                else:
+                    print("  [DIAG] CHECKPOINT 3 - Reviewed table text NOT FOUND in SQL file")
+                if "REVIEWED: This column contains person names" in sql_diag_content:
+                    print("  [DIAG] CHECKPOINT 3 - Reviewed column text FOUND in SQL file")
+                else:
+                    print("  [DIAG] CHECKPOINT 3 - Reviewed column text NOT FOUND in SQL file")
+                break
+        else:
+            print("  [DIAG] CHECKPOINT 3 - No reviewed SQL file found in directory")
+    except Exception as diag_e:
+        print(f"  [DIAG] CHECKPOINT 3 - Could not read SQL file: {diag_e}")
 
     # Step 5: Verify the changes were applied
     print("\nStep 5: Verify reviewed comments were applied")

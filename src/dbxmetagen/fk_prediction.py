@@ -291,6 +291,8 @@ class FKPredictor:
                     continue
                 ref_table = ".".join(parts[:3])
                 ref_col = parts[3]
+                if src_table == ref_table and fk_col == ref_col:
+                    continue
                 col_a = f"{src_table}.{fk_col}"
                 col_b = f"{ref_table}.{ref_col}"
                 pairs.append((col_a, col_b, src_table, ref_table, "", "", 1.0, 0.0))
@@ -309,7 +311,74 @@ class FKPredictor:
         return self.spark.createDataFrame(pairs, schema)
 
     # ------------------------------------------------------------------
-    # Step 1c: Ontology entity match (optional)
+    # Step 1c-post: Query history join candidates
+    # ------------------------------------------------------------------
+    def get_query_join_candidates(self) -> DataFrame:
+        """Mine system.query.history for commonly-used JOIN patterns."""
+        import re as _re
+        cat, sch = self.config.catalog_name, self.config.schema_name
+        empty_schema = (
+            "col_a STRING, col_b STRING, table_a STRING, table_b STRING, "
+            "dtype_a STRING, dtype_b STRING, col_similarity DOUBLE, table_similarity DOUBLE"
+        )
+        try:
+            rows = self.spark.sql(f"""
+                SELECT statement FROM system.query.history
+                WHERE start_time >= DATEADD(DAY, -30, CURRENT_TIMESTAMP())
+                  AND statement LIKE '%JOIN%'
+                  AND statement LIKE '%{cat}.{sch}%'
+                LIMIT 2000
+            """).collect()
+        except Exception as e:
+            logger.debug("Query history not available: %s", e)
+            return self.spark.createDataFrame([], empty_schema)
+
+        join_re = _re.compile(
+            r"(\w+(?:\.\w+){0,3})\.(\w+)\s*=\s*(\w+(?:\.\w+){0,3})\.(\w+)",
+            _re.IGNORECASE,
+        )
+        prefix = f"{cat}.{sch}."
+        pair_counts: dict = {}
+        for r in rows:
+            for m in join_re.finditer(r.statement or ""):
+                tbl_a_raw, col_a_raw = m.group(1), m.group(2)
+                tbl_b_raw, col_b_raw = m.group(3), m.group(4)
+                # Resolve to FQN if alias-like (short name) -- skip if can't resolve
+                tbl_a = tbl_a_raw if prefix.lower() in tbl_a_raw.lower() else None
+                tbl_b = tbl_b_raw if prefix.lower() in tbl_b_raw.lower() else None
+                if not tbl_a or not tbl_b:
+                    continue
+                col_a_fq = f"{tbl_a}.{col_a_raw}"
+                col_b_fq = f"{tbl_b}.{col_b_raw}"
+                key = (min(col_a_fq, col_b_fq), max(col_a_fq, col_b_fq))
+                pair_counts[key] = pair_counts.get(key, 0) + 1
+
+        if not pair_counts:
+            return self.spark.createDataFrame([], empty_schema)
+
+        # Keep pairs seen >= 2 times
+        from pyspark.sql.types import StructType, StructField, StringType, DoubleType
+        pairs = []
+        for (ca, cb), cnt in pair_counts.items():
+            if cnt < 2:
+                continue
+            tbl_a = ".".join(ca.split(".")[:-1])
+            tbl_b = ".".join(cb.split(".")[:-1])
+            pairs.append((ca, cb, tbl_a, tbl_b, "", "", min(cnt / 10.0, 1.0), 0.0))
+        if not pairs:
+            return self.spark.createDataFrame([], empty_schema)
+        schema = StructType([
+            StructField("col_a", StringType()), StructField("col_b", StringType()),
+            StructField("table_a", StringType()), StructField("table_b", StringType()),
+            StructField("dtype_a", StringType()), StructField("dtype_b", StringType()),
+            StructField("col_similarity", DoubleType()), StructField("table_similarity", DoubleType()),
+        ])
+        df = self.spark.createDataFrame(pairs, schema)
+        logger.info("Query-history FK candidates: %d", df.count())
+        return df
+
+    # ------------------------------------------------------------------
+    # Step 1d: Ontology entity match (optional)
     # ------------------------------------------------------------------
     def add_entity_match(self, candidates: DataFrame) -> DataFrame:
         """Join ontology_entities + ontology_relationships to score entity alignment.
@@ -546,18 +615,27 @@ class FKPredictor:
         for r in candidates.select("col_a", "col_b").distinct().collect():
             a_ratio = col_stats.get(r.col_a, 0.5)
             b_ratio = col_stats.get(r.col_b, 0.5)
-            stats.append((r.col_a, r.col_b, max(a_ratio, b_ratio)))
+            stats.append((r.col_a, r.col_b, max(a_ratio, b_ratio), a_ratio, b_ratio))
 
         if not stats:
-            return candidates.withColumn("pk_uniqueness", F.lit(0.5))
+            return candidates.withColumn("pk_uniqueness", F.lit(0.5)) \
+                .withColumn("_card_ratio_a", F.lit(0.5)) \
+                .withColumn("_card_ratio_b", F.lit(0.5))
 
-        card_df = self.spark.createDataFrame(stats, ["_ca", "_cb", "pk_uniqueness"])
+        card_df = self.spark.createDataFrame(
+            stats, ["_ca", "_cb", "pk_uniqueness", "_card_ratio_a", "_card_ratio_b"]
+        )
         result = candidates.join(
             card_df,
             (candidates.col_a == card_df._ca) & (candidates.col_b == card_df._cb),
             "left",
         ).drop("_ca", "_cb")
-        return result.withColumn("pk_uniqueness", F.coalesce(F.col("pk_uniqueness"), F.lit(0.5)))
+        return (
+            result
+            .withColumn("pk_uniqueness", F.coalesce(F.col("pk_uniqueness"), F.lit(0.5)))
+            .withColumn("_card_ratio_a", F.coalesce(F.col("_card_ratio_a"), F.lit(0.5)))
+            .withColumn("_card_ratio_b", F.coalesce(F.col("_card_ratio_b"), F.lit(0.5)))
+        )
 
     # ------------------------------------------------------------------
     # Step 2c: Referential integrity check
@@ -709,6 +787,7 @@ class FKPredictor:
 
         candidates.createOrReplaceTempView("fk_scored")
         col_kb = self.config.fq(self.config.column_kb_table)
+        tbl_kb = self.config.fq("table_knowledge_base")
         model = self.config.model_endpoint
 
         sql = f"""
@@ -719,6 +798,14 @@ class FKPredictor:
         ),
         kb AS (
             SELECT column_id, comment FROM kb_dedup WHERE _kb_rn = 1
+        ),
+        tkb_dedup AS (
+            SELECT table_name, comment,
+                   ROW_NUMBER() OVER (PARTITION BY table_name ORDER BY table_name) AS _tkb_rn
+            FROM {tbl_kb}
+        ),
+        tkb AS (
+            SELECT table_name, comment FROM tkb_dedup WHERE _tkb_rn = 1
         )
         SELECT s.*,
             kb_a.comment AS comment_a, kb_b.comment AS comment_b,
@@ -726,28 +813,39 @@ class FKPredictor:
                 '{model}',
                 CONCAT(
                     'Assess whether these two columns likely form a foreign key relationship. ',
+                    'Also determine which column is the foreign key (child) that references the other (parent/primary key). ',
+                    'Table A: ', s.table_a,
+                    CASE WHEN tkb_a.comment IS NOT NULL THEN CONCAT(' — ', tkb_a.comment) ELSE '' END, '. ',
+                    'Table B: ', s.table_b,
+                    CASE WHEN tkb_b.comment IS NOT NULL THEN CONCAT(' — ', tkb_b.comment) ELSE '' END, '. ',
                     'Column A: ', s.col_a, ' (type: ', COALESCE(s.dtype_a, 'unknown'), ')',
                     CASE WHEN kb_a.comment IS NOT NULL THEN CONCAT(' — description: ', kb_a.comment) ELSE '' END, '. ',
                     'Column B: ', s.col_b, ' (type: ', COALESCE(s.dtype_b, 'unknown'), ')',
                     CASE WHEN kb_b.comment IS NOT NULL THEN CONCAT(' — description: ', kb_b.comment) ELSE '' END, '. ',
                     'Embedding similarity: ', CAST(s.col_similarity AS STRING), '. ',
-                    'Tables: ', s.table_a, ' and ', s.table_b, '. ',
                     'Table similarity: ', CAST(s.table_similarity AS STRING), '. ',
                     CASE WHEN s.entity_type_a IS NOT NULL THEN CONCAT('Table A entity type: ', s.entity_type_a, '. ') ELSE '' END,
                     CASE WHEN s.entity_type_b IS NOT NULL THEN CONCAT('Table B entity type: ', s.entity_type_b, '. ') ELSE '' END,
+                    CASE WHEN s._card_ratio_a IS NOT NULL THEN CONCAT('Column A uniqueness ratio: ', CAST(s._card_ratio_a AS STRING), '. ') ELSE '' END,
+                    CASE WHEN s._card_ratio_b IS NOT NULL THEN CONCAT('Column B uniqueness ratio: ', CAST(s._card_ratio_b AS STRING), '. ') ELSE '' END,
                     'Rule-based score: ', CAST(s.rule_score AS STRING), '. ',
-                    'Respond ONLY with a JSON object: {{"is_fk": true/false, "confidence": 0.0-1.0, "reasoning": "..."}}'
+                    'Respond ONLY with a JSON object: ',
+                    '{{"is_fk": true/false, "confidence": 0.0-1.0, "fk_column": "a" or "b", "reasoning": "..."}}. ',
+                    'fk_column should be "a" if Column A is the foreign key referencing Column B, or "b" if Column B is the foreign key referencing Column A.'
                 )
             ) AS ai_raw
         FROM fk_scored s
         LEFT JOIN kb kb_a ON s.col_a = kb_a.column_id
         LEFT JOIN kb kb_b ON s.col_b = kb_b.column_id
+        LEFT JOIN tkb tkb_a ON s.table_a = tkb_a.table_name
+        LEFT JOIN tkb tkb_b ON s.table_b = tkb_b.table_name
         WHERE s.rule_score >= {self.config.rule_score_min_for_ai}
         """
         schema = StructType(
             [
                 StructField("is_fk", BooleanType()),
                 StructField("confidence", DoubleType()),
+                StructField("fk_column", StringType()),
                 StructField("reasoning", StringType()),
             ]
         )
@@ -764,6 +862,7 @@ class FKPredictor:
                 F.coalesce(F.col("ai_parsed.reasoning"), F.col("ai_raw")),
             )
             .withColumn("ai_is_fk", F.coalesce(F.col("ai_parsed.is_fk"), F.lit(False)))
+            .withColumn("ai_fk_side", F.lower(F.col("ai_parsed.fk_column")))
             .drop("ai_raw", "ai_parsed", "comment_a", "comment_b")
         )
 
@@ -824,6 +923,56 @@ class FKPredictor:
             )
         )
         return result
+
+    # ------------------------------------------------------------------
+    # Step 4c: Enforce FK/PK direction (src=FK child, dst=PK parent)
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _enforce_direction(df: DataFrame) -> DataFrame:
+        """Swap col_a/col_b so col_a is always the FK (child) side.
+
+        Uses AI judgment (ai_fk_side) as primary signal. Falls back to
+        cardinality ratios: the column with lower uniqueness (more duplicates)
+        is more likely the FK side.
+        """
+        has_ai = "ai_fk_side" in df.columns
+        has_card = "_card_ratio_a" in df.columns and "_card_ratio_b" in df.columns
+
+        if not has_ai and not has_card:
+            return df
+
+        # should_swap = True means col_b is the FK, so we need to swap a<->b
+        if has_ai and has_card:
+            should_swap = F.when(
+                F.col("ai_fk_side") == F.lit("b"), F.lit(True)
+            ).when(
+                F.col("ai_fk_side") == F.lit("a"), F.lit(False)
+            ).otherwise(
+                # Fallback: lower uniqueness = more duplicates = FK side
+                F.col("_card_ratio_b") < F.col("_card_ratio_a")
+            )
+        elif has_ai:
+            should_swap = F.col("ai_fk_side") == F.lit("b")
+        else:
+            should_swap = F.col("_card_ratio_b") < F.col("_card_ratio_a")
+
+        swap_pairs = [
+            ("col_a", "col_b"), ("table_a", "table_b"),
+            ("dtype_a", "dtype_b"),
+        ]
+        optional_pairs = [
+            ("entity_type_a", "entity_type_b"),
+            ("_card_ratio_a", "_card_ratio_b"),
+        ]
+        for ca, cb in swap_pairs + [p for p in optional_pairs if p[0] in df.columns]:
+            orig_a, orig_b = F.col(ca), F.col(cb)
+            df = df.withColumn(
+                ca, F.when(should_swap, orig_b).otherwise(orig_a)
+            ).withColumn(
+                cb, F.when(should_swap, orig_a).otherwise(orig_b)
+            )
+
+        return df
 
     # ------------------------------------------------------------------
     # Step 5: Write predictions
@@ -892,6 +1041,17 @@ class FKPredictor:
 
         staging_view = "_fk_predictions_staging"
         out.createOrReplaceTempView(staging_view)
+        # Remove old rows whose direction was reversed (from pre-direction-enforcement runs)
+        try:
+            self.spark.sql(f"""
+                DELETE FROM {target} WHERE EXISTS (
+                    SELECT 1 FROM {staging_view} s
+                    WHERE s.src_column = {target}.dst_column
+                      AND s.dst_column = {target}.src_column
+                )
+            """)
+        except Exception:
+            pass
         self.spark.sql(f"""
             MERGE INTO {target} AS t
             USING {staging_view} AS s
@@ -1016,6 +1176,13 @@ class FKPredictor:
         except Exception as e:
             if "FIELDS_ALREADY_EXISTS" not in str(e) and "already exists" not in str(e).lower():
                 raise
+        # Clean up any existing self-referential rows from prior runs
+        try:
+            self.spark.sql(
+                f"DELETE FROM {preds} WHERE src_table = dst_table AND src_column = dst_column"
+            )
+        except Exception:
+            pass
         ddl = self.config.fq("fk_ddl_statements")
         self.spark.sql(f"""
             CREATE TABLE IF NOT EXISTS {ddl} (
@@ -1035,11 +1202,18 @@ class FKPredictor:
         name_cands = self.get_name_based_candidates()
         ontology_cands = self.get_ontology_relationship_candidates()
         declared_cands = self.get_declared_fk_candidates()
+        query_cands = self.get_query_join_candidates()
 
         candidates = embedding_cands \
             .unionByName(name_cands, allowMissingColumns=True) \
             .unionByName(ontology_cands, allowMissingColumns=True) \
-            .unionByName(declared_cands, allowMissingColumns=True)
+            .unionByName(declared_cands, allowMissingColumns=True) \
+            .unionByName(query_cands, allowMissingColumns=True)
+
+        # Remove self-referential candidates (same table + same column)
+        candidates = candidates.filter(
+            (F.col("table_a") != F.col("table_b")) | (F.col("col_a") != F.col("col_b"))
+        )
 
         # Dedup: keep highest col_similarity per (col_a, col_b) pair
         dedup_w = Window.partitionBy("col_a", "col_b").orderBy(F.col("col_similarity").desc())
@@ -1068,7 +1242,9 @@ class FKPredictor:
             candidates = self.cardinality_analysis(candidates)
         except Exception as e:
             logger.warning("Cardinality analysis failed, continuing: %s", e)
-            candidates = candidates.withColumn("pk_uniqueness", F.lit(0.5))
+            candidates = candidates.withColumn("pk_uniqueness", F.lit(0.5)) \
+                .withColumn("_card_ratio_a", F.lit(0.5)) \
+                .withColumn("_card_ratio_b", F.lit(0.5))
 
         min_rule = self.config.rule_score_min_for_ai
         ai_eligible = candidates.filter(F.col("rule_score") >= min_rule).count()
@@ -1114,6 +1290,9 @@ class FKPredictor:
         except Exception as e:
             logger.warning("RI check failed, continuing: %s", e)
             judged = judged.withColumn("ri_score", F.lit(0.5))
+
+        # Enforce direction: col_a = FK (child), col_b = PK (parent)
+        judged = self._enforce_direction(judged)
 
         # Write outputs
         n_preds = self.write_predictions(judged)

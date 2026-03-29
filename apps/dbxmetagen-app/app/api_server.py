@@ -355,7 +355,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="dbxmetagen API", version="0.6.3", lifespan=lifespan)
+app = FastAPI(title="dbxmetagen API", version="0.7.1", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -1477,7 +1477,7 @@ def review_combined(body: ReviewCombinedRequest):
 
     fk_by_table = {}
     for f in fk_rows:
-        for tn in [f.get("src_table"), f.get("dst_table")]:
+        for tn in set([f.get("src_table"), f.get("dst_table")]):
             if tn in tbl_names:
                 fk_by_table.setdefault(tn, []).append(f)
 

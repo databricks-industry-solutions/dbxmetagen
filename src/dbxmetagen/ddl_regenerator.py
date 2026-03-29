@@ -89,7 +89,7 @@ def get_comment_from_ddl(ddl: str) -> str:
     """
     Extract comment from DDL.
     """
-    match = re.search(r'(COMMENT ON TABLE [^"\']+ IS\s+)(["\'])(.*?)(["\'])', ddl)
+    match = re.search(r'(COMMENT ON TABLE [^"\']+ IS\s+)(["\'])(.*?)\2', ddl)
     if match:
         return match.group(3)
     return ""
@@ -120,14 +120,17 @@ def replace_comment_in_ddl(ddl: str, new_comment: str) -> str:
     Replace the comment string in a DDL statement with a new comment.
     Only used for comment mode.
     """
+    # Sanitize new_comment the same way DDL generators do (processing.py)
+    new_comment = new_comment.replace('""', "'").replace('"', "'")
+
     # Determine if this is a table or column comment by checking for COLUMN keyword
-    is_column_comment = "COLUMN" in ddl.upper()
+    is_column_comment = "COMMENT ON COLUMN" in ddl.upper() or "ALTER COLUMN" in ddl.upper()
 
     if not is_column_comment:
         # Table-level comment: COMMENT ON TABLE ... IS
         ddl = re.sub(
-            r'(COMMENT ON TABLE [^"\']+ IS\s+)(["\'])(.*?)(["\'])',
-            lambda m: f"{m.group(1)}{m.group(2)}{new_comment}{m.group(4)}",
+            r'(COMMENT ON TABLE [^"\']+ IS\s+)(["\'])(.*?)\2',
+            lambda m: f"{m.group(1)}{m.group(2)}{new_comment}{m.group(2)}",
             ddl,
         )
     else:
@@ -138,8 +141,8 @@ def replace_comment_in_ddl(ddl: str, new_comment: str) -> str:
         if dbr_number is None:
             # Default to newer syntax when version not available
             ddl = re.sub(
-                r'(COMMENT ON COLUMN [^"\']+ IS\s+)(["\'])(.*?)(["\'])',
-                lambda m: f"{m.group(1)}{m.group(2)}{new_comment}{m.group(4)}",
+                r'(COMMENT ON COLUMN [^"\']+ IS\s+)(["\'])(.*?)\2',
+                lambda m: f"{m.group(1)}{m.group(2)}{new_comment}{m.group(2)}",
                 ddl,
             )
         else:
@@ -151,15 +154,15 @@ def replace_comment_in_ddl(ddl: str, new_comment: str) -> str:
                 if dbr_version >= 16:
                     # DBR 16+: COMMENT ON COLUMN ... IS
                     ddl = re.sub(
-                        r'(COMMENT ON COLUMN [^"\']+ IS\s+)(["\'])(.*?)(["\'])',
-                        lambda m: f"{m.group(1)}{m.group(2)}{new_comment}{m.group(4)}",
+                        r'(COMMENT ON COLUMN [^"\']+ IS\s+)(["\'])(.*?)\2',
+                        lambda m: f"{m.group(1)}{m.group(2)}{new_comment}{m.group(2)}",
                         ddl,
                     )
                 elif dbr_version >= 14 and dbr_version < 16:
                     # DBR 14-15: ALTER TABLE ... ALTER COLUMN ... COMMENT
                     ddl = re.sub(
-                        r'(ALTER TABLE [^ ]+ ALTER COLUMN [^ ]+ COMMENT\s+)(["\'])(.*?)(["\'])',
-                        lambda m: f"{m.group(1)}{m.group(2)}{new_comment}{m.group(4)}",
+                        r'(ALTER TABLE [^ ]+ ALTER COLUMN [^ ]+ COMMENT\s+)(["\'])(.*?)\2',
+                        lambda m: f"{m.group(1)}{m.group(2)}{new_comment}{m.group(2)}",
                         ddl,
                     )
                 else:
@@ -169,8 +172,8 @@ def replace_comment_in_ddl(ddl: str, new_comment: str) -> str:
             except ValueError as e:
                 # Serverless (client.X.X) or parse error: use modern syntax
                 ddl = re.sub(
-                    r'(COMMENT ON COLUMN [^"\']+ IS\s+)(["\'])(.*?)(["\'])',
-                    lambda m: f"{m.group(1)}{m.group(2)}{new_comment}{m.group(4)}",
+                    r'(COMMENT ON COLUMN [^"\']+ IS\s+)(["\'])(.*?)\2',
+                    lambda m: f"{m.group(1)}{m.group(2)}{new_comment}{m.group(2)}",
                     ddl,
                 )
 

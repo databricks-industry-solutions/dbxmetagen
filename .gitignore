@@ -164,7 +164,11 @@ docs/*
 docs/operations/*/
 #!docs/operations/README.md
 
-.cursor/
+.cursor/*
+!.cursor/rules/
+!.cursor/skills/
+.cursor/skills/*
+!.cursor/skills/dbxmetagen-development/
 .github/skills/
 .ai-dev-kit
 
