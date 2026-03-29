@@ -1,0 +1,43 @@
+---
+description: DDL generation and review handling patterns for dbxmetagen
+globs: "**/ddl_regenerator.py,**/processing.py"
+---
+
+# DDL Handling Rules
+
+## Quote Wrapping
+
+DDL string literals use double-quote wrapping: `COMMENT ON TABLE ... IS "comment text"`.
+Inside the comment, double quotes are sanitized to single quotes before wrapping.
+
+## Regex for Comment Extraction/Replacement
+
+Always use a `\2` backreference to match the same quote character that opened the string:
+
+```python
+# CORRECT -- backreference ensures matching quotes
+r'(COMMENT ON TABLE [^"\']+ IS\s+)(["\'])(.*?)\2'
+
+# WRONG -- separate group matches mismatched quotes, breaks on apostrophes
+r'(COMMENT ON TABLE [^"\']+ IS\s+)(["\'])(.*?)(["\'])'
+```
+
+When replacing, the captured comment text is in group 3 (not group 4).
+
+## `is_column_comment` Detection
+
+Check for the full DDL keyword, not just the word "COLUMN":
+
+```python
+# CORRECT
+is_col = "COMMENT ON COLUMN" in ddl.upper() or "ALTER COLUMN" in ddl.upper()
+
+# WRONG -- "Column" commonly appears in AI-generated comment text
+is_col = "COLUMN" in ddl.upper()
+```
+
+## Comment Sanitization Consistency
+
+Both the generation path (`processing.py`) and the review path (`ddl_regenerator.py`)
+must apply the same sanitization: `new_comment.replace('""', "'").replace('"', "'")`.
+If you change one path, update the other.
