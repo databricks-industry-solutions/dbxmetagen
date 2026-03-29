@@ -15,6 +15,133 @@ from dbxmetagen.config import MetadataConfig
 
 logger = logging.getLogger(__name__)
 
+_csv_cache: dict = {}
+
+
+def _validate_csv_field_counts(resolved_path: str) -> None:
+    """Raise ValueError if any data row has a different field count than the header."""
+    with open(resolved_path, newline="") as _fh:
+        reader = csv.reader(_fh, skipinitialspace=True)
+        header_row = next(reader)
+        expected_n = len(header_row)
+        for line_no, row in enumerate(reader, start=2):
+            if len(row) != expected_n:
+                raise ValueError(
+                    f"Override CSV '{resolved_path}' line {line_no} has {len(row)} fields "
+                    f"but the header has {expected_n}. This usually means a value "
+                    "contains a comma without being wrapped in double quotes. "
+                    'Wrap the value like: "Sales data, including returns"\n'
+                    f"Row content: {','.join(row)}"
+                )
+
+
+def _load_csv_cached(resolved_path: str) -> pd.DataFrame:
+    """Load and cache a CSV file, invalidating on mtime change."""
+    import os
+    mtime = os.path.getmtime(resolved_path)
+    key = (resolved_path, mtime)
+    if key not in _csv_cache:
+        _validate_csv_field_counts(resolved_path)
+        _csv_cache.clear()
+        _csv_cache[key] = pd.read_csv(
+            resolved_path, dtype=str, keep_default_na=False, skipinitialspace=True,
+        ).replace("", None)
+    return _csv_cache[key]
+
+
+def _table_matches(row, full_table_name: str) -> bool:
+    """Check if a CSV row's catalog/schema/table fields match the given FQN."""
+    parts = full_table_name.split(".")
+    if len(parts) != 3:
+        return True
+    cat, sch, tbl = parts
+    csv_cat = row.get("catalog")
+    csv_sch = row.get("schema")
+    csv_tbl = row.get("table")
+    if not _is_blank(csv_cat) and str(csv_cat).lower() != cat.lower():
+        return False
+    if not _is_blank(csv_sch) and str(csv_sch).lower() != sch.lower():
+        return False
+    if not _is_blank(csv_tbl) and str(csv_tbl).lower() != tbl.lower():
+        return False
+    return True
+
+
+def get_override_column_set(
+    csv_path: str, config: MetadataConfig, table_name: str,
+) -> set:
+    """Return the set of column names that have overrides for the given table.
+
+    Used to exclude these columns from LLM calls (pre-LLM filtering).
+    Returns empty set on any error or if domain mode (table-level only).
+    """
+    if config.mode == "domain":
+        return set()
+    resolved = _resolve_csv_path(csv_path)
+    if not resolved:
+        return set()
+    try:
+        csv_df = _load_csv_cached(resolved)
+    except Exception:
+        return set()
+
+    cols = set()
+    for _, row in csv_df.iterrows():
+        col_name = row.get("column")
+        if _is_blank(col_name):
+            continue
+        if not _table_matches(row, table_name):
+            continue
+        if config.mode == "comment" and not _is_blank(row.get("comment")):
+            cols.add(col_name)
+        elif config.mode == "pi" and (
+            not _is_blank(row.get("classification")) or not _is_blank(row.get("type"))
+        ):
+            cols.add(col_name)
+    return cols
+
+
+def load_override_data_for_table(
+    csv_path: str, config: MetadataConfig, table_name: str,
+) -> dict:
+    """Return override data for columns of the given table.
+
+    Returns {column_name: {comment: ..., classification: ..., type: ...}}
+    Only includes column-level rows with non-blank override values.
+    """
+    if config.mode == "domain":
+        return {}
+    resolved = _resolve_csv_path(csv_path)
+    if not resolved:
+        return {}
+    try:
+        csv_df = _load_csv_cached(resolved)
+    except Exception:
+        return {}
+
+    result: dict = {}
+    for _, row in csv_df.iterrows():
+        col_name = row.get("column")
+        if _is_blank(col_name):
+            continue
+        if not _table_matches(row, table_name):
+            continue
+        values = {}
+        if config.mode == "comment":
+            comment = row.get("comment")
+            if _is_blank(comment):
+                continue
+            values["comment"] = str(comment)
+        elif config.mode == "pi":
+            cls_val = row.get("classification")
+            type_val = row.get("type")
+            if _is_blank(cls_val) and _is_blank(type_val):
+                continue
+            values["classification"] = str(cls_val) if not _is_blank(cls_val) else "None"
+            values["type"] = str(type_val) if not _is_blank(type_val) else "None"
+        result[col_name] = values
+    return result
+
 
 def _resolve_csv_path(csv_path: str | None) -> str | None:
     """Resolve override CSV path, trying fallback locations for DAB job CWD mismatch."""
@@ -68,21 +195,7 @@ def override_metadata_from_csv(
         )
         return df
 
-    # Pre-validate field counts with csv.reader (pandas silently shifts data
-    # when a row has more fields than the header -- no error, no warning).
-    with open(resolved, newline="") as _fh:
-        reader = csv.reader(_fh, skipinitialspace=True)
-        header_row = next(reader)
-        expected_n = len(header_row)
-        for line_no, row in enumerate(reader, start=2):
-            if len(row) != expected_n:
-                raise ValueError(
-                    f"Override CSV '{resolved}' line {line_no} has {len(row)} fields "
-                    f"but the header has {expected_n}. This usually means a value "
-                    "contains a comma without being wrapped in double quotes. "
-                    'Wrap the value like: "Sales data, including returns"\n'
-                    f"Row content: {','.join(row)}"
-                )
+    _validate_csv_field_counts(resolved)
 
     csv_df = pd.read_csv(resolved, dtype=str, keep_default_na=False, skipinitialspace=True)
 
