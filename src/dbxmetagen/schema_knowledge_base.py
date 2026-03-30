@@ -203,7 +203,6 @@ class SchemaKnowledgeBaseBuilder:
     def build_staged_updates(self, generate_comments: bool = True) -> DataFrame:
         """Build staged updates for merge."""
         source_df = self.read_source_data()
-        source_df.cache()
         
         aggregated_df = self.aggregate_schema_metadata(source_df)
         
@@ -211,8 +210,6 @@ class SchemaKnowledgeBaseBuilder:
             result = self.generate_schema_comments(aggregated_df, source_df)
         else:
             result = aggregated_df.withColumn("comment", F.lit(None).cast("string"))
-        
-        source_df.unpersist()
         
         return result.select(
             "schema_id", "catalog", "schema_name", "comment",

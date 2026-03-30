@@ -127,11 +127,16 @@ else
     APP_SP_ID=""
 fi
 
+# --- Sync requirements.txt from lock file ---
+echo ""
+echo "=== Syncing requirements.txt ==="
+bash scripts/export_requirements.sh
+
 # --- Build Python package ---
 echo ""
 echo "=== Building Python package ==="
 rm -rf dist/
-poetry build
+uv build
 echo "Python package built: $(ls dist/*.whl)"
 
 # --- Copy configurations into app source for deployment ---

@@ -21,10 +21,6 @@ _STUB_MODS = [
     "langchain_community", "langchain_community.chat_models",
     "langchain_community.chat_models.databricks",
     "langgraph", "langgraph.prebuilt",
-    "databricks_langchain",
-    "databricks", "databricks.sdk", "databricks.sdk.service",
-    "databricks.sdk.service.sql",
-    "mlflow",
 ]
 for mod_name in _STUB_MODS:
     if mod_name not in sys.modules:

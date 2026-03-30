@@ -20,3 +20,11 @@ repos:
         files: ^apps/dbxmetagen-app/app/src/(?!dist/)
         pass_filenames: false
         stages: [pre-commit]
+
+      - id: sync-requirements
+        name: Sync requirements.txt from uv.lock
+        language: system
+        entry: bash scripts/export_requirements.sh
+        files: ^(pyproject\.toml|uv\.lock)$
+        pass_filenames: false
+        stages: [pre-commit]

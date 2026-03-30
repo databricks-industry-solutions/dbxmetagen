@@ -317,6 +317,7 @@ export default function AgentChat() {
   const [messages, setMessages] = useState([])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
+  const [sessionId] = useState(() => crypto.randomUUID())
   const [stage, setStage] = useState(null)
   const [deepSteps, setDeepSteps] = useState([])
   const [deepMessage, setDeepMessage] = useState('')
@@ -357,7 +358,7 @@ export default function AgentChat() {
       const submitRes = await fetch('/api/agent/deep/submit', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: text, history, mode: useMode }),
+        body: JSON.stringify({ message: text, history, mode: useMode, session_id: sessionId }),
       })
       if (!submitRes.ok) {
         const data = await submitRes.json().catch(() => ({}))
@@ -409,7 +410,7 @@ export default function AgentChat() {
       const res = await fetch('/api/agent/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: text, history, mode: useMode }),
+        body: JSON.stringify({ message: text, history, mode: useMode, session_id: sessionId }),
       })
       setStage('responding')
       const data = await res.json()

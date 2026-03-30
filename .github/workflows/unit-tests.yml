@@ -5,7 +5,7 @@ on:
     branches: [main, master, preview]
   push:
     branches: [main, master, preview]
-  workflow_dispatch: # Allows manual triggering
+  workflow_dispatch:
 
 jobs:
   test:
@@ -13,46 +13,33 @@ jobs:
 
     strategy:
       matrix:
-        python-version: ["3.11"] # Can add more versions like ["3.10", "3.11", "3.12"]
+        python-version: ["3.11"]
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
 
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Install Poetry
-        run: |
-          python3 -m pip install --user pipx
-          python3 -m pipx ensurepath
-          echo "$HOME/.local/bin" >> $GITHUB_PATH
-          pipx install poetry==2.0.1
-
-      - name: Configure Poetry
-        run: |
-          poetry config virtualenvs.create true
-          poetry config virtualenvs.in-project true
-
       - name: Load cached venv
-        id: cached-poetry-dependencies
+        id: cached-uv-dependencies
         uses: actions/cache@v4
         with:
           path: .venv
-          key: venv-${{ runner.os }}-${{ matrix.python-version }}-${{ hashFiles('**/poetry.lock') }}
+          key: venv-${{ runner.os }}-${{ matrix.python-version }}-${{ hashFiles('**/uv.lock') }}
 
       - name: Install dependencies
-        if: steps.cached-poetry-dependencies.outputs.cache-hit != 'true'
-        run: poetry install --no-interaction --no-root
-
-      - name: Install project
-        run: poetry install --no-interaction
+        run: uv sync
 
       - name: Run unit tests
         run: |
-          poetry run pytest -v --tb=short
+          uv run pytest -v --tb=short
 
       - name: Test Summary
         if: always()
@@ -60,7 +47,7 @@ jobs:
           echo "## Test Results" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           if [ $? -eq 0 ]; then
-            echo "✅ All tests passed!" >> $GITHUB_STEP_SUMMARY
+            echo "All tests passed!" >> $GITHUB_STEP_SUMMARY
           else
-            echo "❌ Some tests failed" >> $GITHUB_STEP_SUMMARY
+            echo "Some tests failed" >> $GITHUB_STEP_SUMMARY
           fi

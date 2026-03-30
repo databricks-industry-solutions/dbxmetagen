@@ -158,7 +158,7 @@ def create_comment_mode_examples():
                 "metadata": {"row_count": 100},
                 "mode": "comment"
             },
-            "ground_truth": {
+            "expectations": {
                 "table": "Expected table description...",
                 "columns": ["col1", "col2"],
                 "column_contents": [
@@ -171,45 +171,36 @@ def create_comment_mode_examples():
     ]
 ```
 
-## Custom Metrics
+## Custom Scorers
 
-### Creating New Metrics
+### Creating New Scorers (MLflow 3.x)
 
-#### Programmatic Metric
+#### Programmatic Scorer
 
 ```python
-from mlflow.metrics import MetricValue
+from mlflow.genai.scorers import scorer
 
-def my_custom_metric(predictions, targets, metrics):
-    scores = []
-    for pred, gt in zip(predictions, targets):
-        # Your scoring logic
-        score = calculate_score(pred, gt)
-        scores.append(score)
-    
-    return MetricValue(
-        scores=scores,
-        aggregate_results={"mean": sum(scores)/len(scores)}
-    )
+@scorer
+def my_custom_scorer(outputs: dict, expectations: dict) -> float:
+    # Your scoring logic (called per-row)
+    return calculate_score(outputs, expectations)
 ```
 
-#### LLM-as-Judge Metric
+#### LLM Judge Scorer
 
 ```python
-from mlflow.metrics import make_genai_metric
+from mlflow.genai.judges import make_judge
+from typing import Literal
 
-my_judge_metric = make_genai_metric(
-    name="my_metric",
-    definition="What this metric evaluates",
-    grading_prompt="Your evaluation instructions...",
-    model="endpoints:/databricks-claude-3-7-sonnet",
-    parameters={"temperature": 0.0},
-    aggregations=["mean", "variance"],
-    greater_is_better=True
+my_judge = make_judge(
+    name="my_judge",
+    instructions="Your evaluation instructions using {{ inputs }}, {{ outputs }}, {{ expectations }}",
+    feedback_value_type=Literal["1", "2", "3", "4", "5"],
+    model="databricks:/databricks-claude-sonnet-4-6",
 )
 ```
 
-Add to `custom_metrics.py` and include in `get_metrics_for_mode()`.
+Add to `custom_metrics.py` and include in `get_scorers_for_mode()`.
 
 ## Integration with dbxmetagen
 
@@ -330,7 +321,8 @@ print(df.head())
 
 ## Resources
 
-- [MLflow Evaluation Guide](https://mlflow.org/docs/latest/llms/llm-evaluate/)
-- [GenAI Metrics](https://mlflow.org/docs/latest/python_api/mlflow.metrics.html#mlflow.metrics.make_genai_metric)
+- [MLflow 3 Evaluation Guide](https://mlflow.org/docs/latest/genai/eval-monitor/)
+- [Custom Scorers](https://mlflow.org/docs/latest/genai/eval-monitor/scorers/custom/)
+- [Custom LLM Judges](https://mlflow.org/docs/latest/genai/eval-monitor/scorers/llm-judge/custom-judges/)
 - [Databricks Model Serving](https://docs.databricks.com/machine-learning/model-serving/index.html)
 

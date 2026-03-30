@@ -7,7 +7,7 @@ from another project.
 
 1. Copy the recipe YAML(s) you need into your project's `resources/` folder
 2. Download the wheel from [GitHub Releases](../../releases) and upload to a Volume,
-   or build locally with `poetry build` and upload `dist/*.whl`
+   or build locally with `uv build` and upload `dist/*.whl`
 3. Define the required variables in your `databricks.yml`:
 
 ```yaml

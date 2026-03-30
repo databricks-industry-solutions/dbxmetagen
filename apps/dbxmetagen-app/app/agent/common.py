@@ -7,6 +7,11 @@ construction, message conversion, and profiling SQL fragments.
 import logging
 import os
 import re
+import threading
+import time
+from contextlib import contextmanager
+from dataclasses import dataclass
+from datetime import timedelta
 from typing import Annotated, Dict, List, Optional, TypedDict
 
 from databricks_langchain import ChatDatabricks
@@ -224,3 +229,92 @@ def latest_profiling_join(stats_alias: str = "cs") -> str:
         FROM {fq('profiling_snapshots')}
     ) WHERE rn = 1
 ) latest ON {stats_alias}.snapshot_id = latest.snapshot_id AND {stats_alias}.table_name = latest.table_name"""
+
+
+# ---------------------------------------------------------------------------
+# VS result cache (session-keyed)
+# ---------------------------------------------------------------------------
+
+_vs_cache: Dict[str, Dict] = {}
+_vs_cache_lock = threading.Lock()
+VS_CACHE_TTL = timedelta(minutes=10)
+_cache_stats = {"hits": 0, "misses": 0}
+
+
+VS_CACHE_MAX_ENTRIES = 1000
+
+
+def vs_cache_get(session_id: str, intent_type: str = "new_question") -> Optional[str]:
+    """Return cached VS result for a session on refinement/continuation, else None."""
+    if intent_type not in ("refinement", "continuation"):
+        return None
+    with _vs_cache_lock:
+        entry = _vs_cache.get(session_id)
+        if entry and (time.time() - entry["timestamp"]) < VS_CACHE_TTL.total_seconds():
+            _cache_stats["hits"] += 1
+            logger.info("[vs_cache] HIT for session=%s", session_id[:12])
+            return entry["result"]
+        if entry:
+            del _vs_cache[session_id]
+        _cache_stats["misses"] += 1
+        return None
+
+
+def vs_cache_put(session_id: str, query: str, result: str):
+    """Store a VS result in the session cache."""
+    with _vs_cache_lock:
+        _vs_cache[session_id] = {"query": query, "result": result, "timestamp": time.time()}
+        cutoff = time.time() - VS_CACHE_TTL.total_seconds()
+        stale = [k for k, v in _vs_cache.items() if v["timestamp"] < cutoff]
+        for k in stale:
+            del _vs_cache[k]
+        # LRU eviction if over max entries
+        if len(_vs_cache) > VS_CACHE_MAX_ENTRIES:
+            oldest = sorted(_vs_cache, key=lambda k: _vs_cache[k]["timestamp"])
+            for k in oldest[:len(_vs_cache) - VS_CACHE_MAX_ENTRIES]:
+                del _vs_cache[k]
+
+
+def vs_cache_stats() -> Dict[str, int]:
+    return dict(_cache_stats)
+
+
+# ---------------------------------------------------------------------------
+# Structured tool result type
+# ---------------------------------------------------------------------------
+
+@dataclass
+class ToolResult:
+    success: bool
+    data: Optional[str]
+    error_type: Optional[str] = None
+    error_hint: Optional[str] = None
+    elapsed_s: float = 0.0
+    label: str = ""
+
+
+@dataclass
+class ConversationTurn:
+    """Typed conversation state per turn. Scaffolding for future LangGraph checkpoint support."""
+    turn_id: str
+    query: str
+    intent_type: str = "new_question"
+    context_summary: Optional[str] = None
+    domain: Optional[str] = None
+    timestamp: str = ""
+
+
+# ---------------------------------------------------------------------------
+# Performance instrumentation
+# ---------------------------------------------------------------------------
+
+@contextmanager
+def measure_phase(name: str, metrics: dict):
+    """Context manager that records wall-clock time for a named phase."""
+    t0 = time.time()
+    try:
+        yield
+    finally:
+        elapsed = round(time.time() - t0, 3)
+        metrics[name] = elapsed
+        logger.info("[perf] %s: %.3fs", name, elapsed)

@@ -1,51 +1,58 @@
-[tool.poetry]
+[project]
 name = "dbxmetagen"
 version = "0.7.1"
 description = "Generates comments and identifies and classifies other metadata for Delta tables in Databricks."
 readme = "README.md"
-authors = ["Eli Swanson <eli.swanson@databricks.com>"]
-maintainers = ["Eli Swanson <eli.swanson@databricks.com>"]
-license = "DB License"
-requires-poetry = ">=2.0.*"
-packages = [{ include = "dbxmetagen", from = "src" }]
+authors = [
+    {name = "Eli Swanson", email = "eli.swanson@databricks.com"}
+]
+license = {text = "DB License"}
+requires-python = ">=3.10.12,<3.13.0"
+dependencies = [
+    "mlflow==3.6.0",
+    "openai==1.56.1",
+    "cloudpickle==3.1.0",
+    "pydantic==2.10.3",
+    "ydata-profiling>=4.12.1,<5",
+    "databricks-langchain==0.4.0",
+    "databricks-sdk==0.68.0",
+    "openpyxl==3.1.5",
+    "spacy==3.8.7",
+    "presidio-analyzer==2.2.358",
+    "deprecated==1.2.13",
+    "pyyaml==6.0.1",
+    "requests==2.32.5",
+    "nest-asyncio>=1.6.0,<2",
+    "grpcio>=1.76.0,<2",
+]
 
-[tool.poetry.dependencies]
-python = ">=3.10.12, <3.13.0"
-mlflow = "==2.22.2"
-openai = "==1.56.1"
-cloudpickle = "==3.1.0"
-pydantic = "==2.9.2"
-ydata-profiling = "^4.12.1"
-databricks-langchain = "==0.2.0"
-databricks-sdk = "==0.68.0"
-openpyxl = "==3.1.5"
-spacy = "==3.8.7"
-en-core-web-lg = { url = "https://github.com/explosion/spacy-models/releases/download/en_core_web_lg-3.8.0/en_core_web_lg-3.8.0-py3-none-any.whl", optional = true }
-presidio_analyzer = "==2.2.358"
-deprecated = "==1.2.13"
-pyyaml = "==6.0.1"
-requests = "==2.32.5"
-nest-asyncio = "^1.6.0"
-grpcio = "^1.76.0"
+# To install the spaCy model for PI mode:
+#   uv sync --extra pi
+[project.optional-dependencies]
+pi = [
+    "en-core-web-lg @ https://github.com/explosion/spacy-models/releases/download/en_core_web_lg-3.8.0/en_core_web_lg-3.8.0-py3-none-any.whl",
+]
 
-# To install the spaCy model for PI mode during local dev:
-#   poetry install --extras pi   (or --all-extras)
-[tool.poetry.extras]
-pi = ["en-core-web-lg"]
-
-[tool.poetry.scripts]
+[project.scripts]
 main = "dbxmetagen.main:main"
 
-[tool.poetry.requires-plugins]
-poetry-plugin-export = ">=1.9.0"
+[dependency-groups]
+dev = [
+    "pre-commit>=4.0.1,<5",
+    "pytest>=8.3.4",
+]
 
-[tool.poetry.group.dev.dependencies]
-pre-commit = "^4.0.1"
-pytest = ">=8.3.4"
-pyspark = "^3.5.0"
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/dbxmetagen"]
 
 [tool.pytest.ini_options]
-# Exclude integration tests and legacy app tests from default test runs
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
@@ -55,7 +62,3 @@ markers = [
     "integration: marks tests as integration tests (deselect with '-m \"not integration\"')",
     "app: marks tests as legacy app tests (run separately due to mocking)",
 ]
-
-[build-system]
-requires = ["poetry-core"]
-build-backend = "poetry.core.masonry.api"

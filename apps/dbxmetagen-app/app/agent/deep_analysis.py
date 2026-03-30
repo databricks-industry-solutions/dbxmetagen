@@ -26,15 +26,16 @@ from agent.metadata_tools import (
     search_metadata, execute_metadata_sql, execute_baseline_sql,
     expand_vs_hits, traverse_graph, execute_data_sql,
 )
+from agent.common import ToolResult, measure_phase, vs_cache_get, vs_cache_put
 from agent.graph_skill import GRAPH_SCHEMA_CONTEXT
-from agent.guardrails import SAFETY_PROMPT_BLOCK, sanitize_output
+from agent.guardrails import SAFETY_PROMPT_BLOCK, EvidenceBudget, sanitize_output
+from agent.intent import classify_and_contextualize
 from agent.tracing import trace, ensure_mlflow_context, get_mlflow
 
 logger = logging.getLogger(__name__)
 
 MODEL = os.environ.get("LLM_MODEL", "databricks-claude-sonnet-4-6")
 TOOL_TIMEOUT = 30  # hard timeout per tool call (seconds)
-MAX_CONTEXT_CHARS = 120_000  # ~30-40k tokens; keeps final prompt under 200k limit
 
 _local = threading.local()
 
@@ -136,15 +137,16 @@ Be direct and avoid repetition. If evidence is sparse, say so honestly."""
 # ---------------------------------------------------------------------------
 
 def _safe_tool_call(tool_fn, args: dict, timeout_s: int, label: str,
-                    step_num: int, total_steps: int) -> Optional[str]:
-    """Run a LangChain tool with a hard timeout and structured logging."""
+                    step_num: int, total_steps: int) -> ToolResult:
+    """Run a LangChain tool with a hard timeout. Returns a ToolResult."""
     mlflow = get_mlflow()
     cm = mlflow.start_span(name=f"tool_{label}") if mlflow else nullcontext()
     with cm as span:
         if span:
             span.set_inputs({"tool": label, "args": str(args)[:200], "timeout_s": timeout_s})
         t0 = time.time()
-        _emit("gathering", f"Step {step_num}/{total_steps}: {label}...")
+        if step_num:
+            _emit("gathering", f"Step {step_num}/{total_steps}: {label}...")
         logger.info("[deep_analysis] STEP %d/%d: %s -- START (timeout=%ds)",
                     step_num, total_steps, label, timeout_s)
         try:
@@ -154,26 +156,33 @@ def _safe_tool_call(tool_fn, args: dict, timeout_s: int, label: str,
             result_len = len(result) if result else 0
             logger.info("[deep_analysis] STEP %d/%d: %s -- DONE in %.1fs (%d chars)",
                         step_num, total_steps, label, elapsed, result_len)
-            _emit("gathering", f"Step {step_num}/{total_steps}: {label} done ({elapsed}s)")
+            if step_num:
+                _emit("gathering", f"Step {step_num}/{total_steps}: {label} done ({elapsed}s)")
             if span:
                 span.set_outputs({"status": "ok", "elapsed_s": elapsed, "result_len": result_len})
-            return result
+            return ToolResult(success=True, data=result, elapsed_s=elapsed, label=label)
         except FuturesTimeout:
             elapsed = round(time.time() - t0, 1)
             logger.warning("[deep_analysis] STEP %d/%d: %s -- TIMEOUT after %.1fs",
                            step_num, total_steps, label, elapsed)
-            _emit("gathering", f"Step {step_num}/{total_steps}: {label} timed out, continuing...")
+            if step_num:
+                _emit("gathering", f"Step {step_num}/{total_steps}: {label} timed out, continuing...")
             if span:
                 span.set_outputs({"status": "timeout", "elapsed_s": elapsed})
-            return None
+            return ToolResult(success=False, data=None, error_type="timeout",
+                              error_hint=f"Timed out after {timeout_s}s", elapsed_s=elapsed, label=label)
         except Exception as e:
             elapsed = round(time.time() - t0, 1)
+            err_str = str(e)[:200]
             logger.warning("[deep_analysis] STEP %d/%d: %s -- ERROR in %.1fs: %s",
                            step_num, total_steps, label, elapsed, e)
-            _emit("gathering", f"Step {step_num}/{total_steps}: {label} failed, continuing...")
+            if step_num:
+                _emit("gathering", f"Step {step_num}/{total_steps}: {label} failed, continuing...")
             if span:
-                span.set_outputs({"status": "error", "error": str(e)[:200], "elapsed_s": elapsed})
-            return None
+                span.set_outputs({"status": "error", "error": err_str, "elapsed_s": elapsed})
+            error_type = "sql_error" if "sql" in err_str.lower() else "unknown"
+            return ToolResult(success=False, data=None, error_type=error_type,
+                              error_hint=err_str, elapsed_s=elapsed, label=label)
 
 
 def _parse_json(raw: Optional[str]) -> Optional[dict]:
@@ -334,11 +343,11 @@ def _fetch_table_schemas(table_names: list[str]) -> str:
         f"WHERE table_name IN ({tn_list}) "
         f"ORDER BY table_name, column_name LIMIT 200"
     )
-    result = _safe_tool_call(execute_metadata_sql, {"query": sql}, TOOL_TIMEOUT,
-                             "fetch_schemas", 0, 0)
-    if not result:
+    tr = _safe_tool_call(execute_metadata_sql, {"query": sql}, TOOL_TIMEOUT,
+                         "fetch_schemas", 0, 0)
+    if not tr.success or not tr.data:
         return ""
-    data = _parse_json(result)
+    data = _parse_json(tr.data)
     if not data or not data.get("rows"):
         return ""
     lines = []
@@ -356,17 +365,20 @@ def _fetch_table_schemas(table_names: list[str]) -> str:
 
 
 def _structured_retrieval(question: str, table_names: list[str],
-                          cancel: threading.Event, step_num: int, total_steps: int) -> Optional[str]:
-    """Structured retrieval subagent: schema lookup -> SQL writer -> execute.
+                          cancel: threading.Event, step_num: int, total_steps: int) -> ToolResult:
+    """Structured retrieval subagent: schema lookup -> SQL writer -> execute (with 1 retry).
 
-    Returns a formatted string with the generated SQL and its results, or None.
+    Returns a ToolResult with the generated SQL and results.
     """
+    label = "structured_retrieval"
     if not table_names or cancel.is_set():
-        return None
+        return ToolResult(success=False, data=None, error_type="skipped",
+                          error_hint="No tables to query", label=label)
 
     mlflow = get_mlflow()
     cm = mlflow.start_span(name="structured_retrieval") if mlflow else nullcontext()
     with cm as span:
+        t0 = time.time()
         if span:
             span.set_inputs({"question": question[:200], "tables": table_names[:8]})
 
@@ -376,7 +388,8 @@ def _structured_retrieval(question: str, table_names: list[str],
         if not schema_ctx or cancel.is_set():
             if span:
                 span.set_outputs({"status": "no_schemas"})
-            return None
+            return ToolResult(success=False, data=None, error_type="no_schemas",
+                              error_hint="Could not fetch table schemas", label=label)
 
         _emit("gathering", f"Step {step_num}/{total_steps}: SQL writer generating query...")
 
@@ -384,23 +397,41 @@ def _structured_retrieval(question: str, table_names: list[str],
         if not sql or cancel.is_set():
             if span:
                 span.set_outputs({"status": "no_sql"})
-            return None
+            return ToolResult(success=False, data=None, error_type="no_sql",
+                              error_hint="SQL writer produced no query", label=label)
 
         logger.info("[deep_analysis] structured_retrieval: executing generated SQL: %s", sql[:200])
         _emit("gathering", f"Step {step_num}/{total_steps}: Executing data query...")
 
-        result = _safe_tool_call(execute_data_sql, {"query": sql}, TOOL_TIMEOUT,
-                                 "execute_data_sql (structured retrieval)",
-                                 step_num, total_steps)
-        if not result:
+        tr = _safe_tool_call(execute_data_sql, {"query": sql}, TOOL_TIMEOUT,
+                             "execute_data_sql", step_num, total_steps)
+
+        # One retry on failure: feed the error back to the SQL writer
+        if not tr.success or (tr.data and "error" in tr.data.lower()):
+            logger.info("[deep_analysis] structured_retrieval: first SQL attempt failed, retrying...")
+            error_msg = tr.error_hint or (tr.data[:300] if tr.data else "Unknown error")
+            _emit("gathering", f"Step {step_num}/{total_steps}: SQL retry after error...")
+            retry_sql = _sql_writer(
+                f"{question}\n\nPrevious SQL failed: {sql}\nError: {error_msg}\nPlease fix the query.",
+                schema_ctx, cancel,
+            )
+            if retry_sql and retry_sql != sql and not cancel.is_set():
+                tr = _safe_tool_call(execute_data_sql, {"query": retry_sql}, TOOL_TIMEOUT,
+                                     "execute_data_sql (retry)", step_num, total_steps)
+                if tr.success:
+                    sql = retry_sql
+
+        elapsed = round(time.time() - t0, 1)
+        if not tr.success or not tr.data:
             if span:
                 span.set_outputs({"status": "exec_failed", "sql": sql[:300]})
-            return None
+            return ToolResult(success=False, data=None, error_type=tr.error_type or "exec_failed",
+                              error_hint=f"SQL execution failed: {tr.error_hint}", elapsed_s=elapsed, label=label)
 
+        output = f"**Generated SQL:**\n```sql\n{sql}\n```\n\n**Results:**\n{tr.data}"
         if span:
-            span.set_outputs({"status": "ok", "sql": sql[:300], "result_len": len(result)})
-
-        return f"**Generated SQL:**\n```sql\n{sql}\n```\n\n**Results:**\n{result}"
+            span.set_outputs({"status": "ok", "sql": sql[:300], "result_len": len(output)})
+        return ToolResult(success=True, data=output, elapsed_s=elapsed, label=label)
 
 
 # ---------------------------------------------------------------------------
@@ -434,7 +465,8 @@ Respond with ONLY a JSON object (no markdown fencing):
 {{
   "edge_types": ["type1", "type2"],
   "traverse_edge_type": "single_most_important_type",
-  "direction": "outgoing"
+  "direction": "outgoing",
+  "requires_structured_retrieval": true
 }}
 
 CRITICAL RULES:
@@ -442,6 +474,8 @@ CRITICAL RULES:
   This controls 2-hop graph traversal; unfiltered traversal is too expensive.
 - edge_types: 1-3 types for 1-hop expansion from vector search hits.
 - direction: "outgoing" (default, safest), "incoming", or "both" (use sparingly).
+- requires_structured_retrieval: true if the question needs data from actual tables
+  (not just metadata). False for pure metadata/governance questions.
 
 Decision guide:
 - Joins / FKs / "how do tables relate": edge_types=["references","contains"], traverse="references", direction="both"
@@ -456,13 +490,14 @@ PLANNER_TIMEOUT = 10  # seconds; fast fail so pipeline isn't blocked
 
 
 def _plan_retrieval(query: str, cancel: threading.Event) -> dict:
-    """Fast LLM call to decide edge_type filters for the retrieval pipeline.
+    """Fast LLM call to decide edge_type filters for graph traversal.
 
     Always returns a valid plan dict. On any failure, returns a safe default
     that filters to references+contains (the most common useful pattern).
     """
     default = {"edge_types": ["references", "contains"],
-               "traverse_edge_type": "references", "direction": "outgoing"}
+               "traverse_edge_type": "references", "direction": "outgoing",
+               "requires_structured_retrieval": True}
     if cancel.is_set():
         return default
 
@@ -499,7 +534,11 @@ def _plan_retrieval(query: str, cancel: threading.Event) -> dict:
             if plan.get("direction") not in ("outgoing", "incoming", "both"):
                 plan["direction"] = "outgoing"
 
-            logger.info("[deep_analysis] query_planner: %s", plan)
+            # Validate requires_structured_retrieval
+            plan.setdefault("requires_structured_retrieval", True)
+
+            logger.info("[deep_analysis] query_planner: edges=%s traverse=%s",
+                        plan["edge_types"], plan["traverse_edge_type"])
             if span:
                 span.set_outputs(plan)
             return plan
@@ -534,22 +573,32 @@ def _merge_graph_data(existing: dict, new_chunk: dict) -> dict:
     return {"start_node": start, "nodes": nodes, "edges": edges}
 
 
-def _gather_graphrag(query: str, cancel: threading.Event):
-    """Deterministic GraphRAG data gathering: plan -> VS -> expand -> traverse -> SQL -> structured retrieval."""
+def _gather_graphrag(query: str, cancel: threading.Event,
+                     session_id: Optional[str] = None, intent_type: str = "new_question"):
+    """Deterministic GraphRAG data gathering with parallel execution.
+
+    Pipeline: plan -> VS -> [expand + traverse] parallel -> [FK SQL + structured retrieval] parallel
+    """
     parts = []
     tools_used = []
     graph_data = {}
+    failed_sources: list[ToolResult] = []
+    timing: dict = {}
     total = 7
+    B = EvidenceBudget
 
-    LIMIT_VS = 15_000
-    LIMIT_EXPAND = 15_000
-    LIMIT_TRAVERSE = 20_000
-    LIMIT_FK = 15_000
-    LIMIT_SR = 15_000
+    def _collect(tr: ToolResult, source_label: str, limit: int):
+        """Append a successful tool result to parts, or track as failed."""
+        if tr.success and tr.data:
+            tools_used.append(tr.label.split("(")[0].strip())
+            parts.append(f"### Source: {source_label}\n{_truncate_part(tr.data, limit)}")
+        elif not tr.success:
+            failed_sources.append(tr)
 
-    # Step 1: LLM query planner -- decides edge_type filters to control fan-out
-    _emit("gathering", f"Step 1/{total}: Planning retrieval strategy...")
-    plan = _plan_retrieval(query, cancel)
+    # Step 1: LLM query planner
+    with measure_phase("plan_retrieval", timing):
+        _emit("gathering", f"Step 1/{total}: Planning retrieval strategy...")
+        plan = _plan_retrieval(query, cancel)
     planned_edge_types = plan["edge_types"]
     planned_traverse_et = plan["traverse_edge_type"]
     planned_direction = plan["direction"]
@@ -557,19 +606,26 @@ def _gather_graphrag(query: str, cancel: threading.Event):
                 planned_edge_types, planned_traverse_et, planned_direction)
 
     if cancel.is_set():
-        return "\n\n".join(parts), graph_data, tools_used
+        return "\n\n".join(parts), graph_data, tools_used, failed_sources, timing
 
-    # Step 2: Vector search
-    vs_result = _safe_tool_call(search_metadata, {"query": query}, TOOL_TIMEOUT,
-                                "search_metadata", 2, total)
-    if vs_result:
-        tools_used.append("search_metadata")
-        parts.append(f"### Source: search_metadata (vector search)\n{_truncate_part(vs_result, LIMIT_VS)}")
+    # Step 2: Vector search (use cache only on refinement/continuation)
+    with measure_phase("vector_search", timing):
+        vs_tr = None
+        if session_id:
+            cached = vs_cache_get(session_id, intent_type=intent_type)
+            if cached:
+                vs_tr = ToolResult(success=True, data=cached, label="search_metadata (cached)")
+        if vs_tr is None:
+            vs_tr = _safe_tool_call(search_metadata, {"query": query}, TOOL_TIMEOUT,
+                                    "search_metadata", 2, total)
+            if vs_tr.success and vs_tr.data and session_id:
+                vs_cache_put(session_id, query, vs_tr.data)
+        _collect(vs_tr, "search_metadata (vector search)", B.VS_RESULTS)
 
-    node_ids = _extract_node_ids(vs_result)
-    table_names = _extract_table_names(vs_result)
+    node_ids = _extract_node_ids(vs_tr.data if vs_tr.success else None)
+    table_names = _extract_table_names(vs_tr.data if vs_tr.success else None)
 
-    # Fallback: if VS failed or returned no matches, discover tables via SQL keyword search
+    # Fallback: SQL keyword discovery if VS failed
     if not node_ids and not table_names:
         logger.info("[deep_analysis] VS returned no matches -- falling back to SQL keyword discovery")
         _emit("gathering", f"Step 2/{total}: VS unavailable, using SQL keyword fallback...")
@@ -584,137 +640,151 @@ def _gather_graphrag(query: str, cancel: threading.Event):
                 f"FROM {CATALOG}.{SCHEMA}.table_knowledge_base "
                 f"WHERE {like_clauses} LIMIT 20"
             )
-            fb_result = _safe_tool_call(
+            fb_tr = _safe_tool_call(
                 execute_metadata_sql, {"query": fallback_sql}, TOOL_TIMEOUT,
                 "execute_metadata_sql (keyword fallback)", 2, total,
             )
-            if fb_result:
-                tools_used.append("execute_metadata_sql")
-                parts.append(f"### Source: execute_metadata_sql (keyword fallback for tables)\n{_truncate_part(fb_result, LIMIT_VS)}")
-                fb_data = _parse_json(fb_result)
+            if fb_tr.success and fb_tr.data:
+                _collect(fb_tr, "execute_metadata_sql (keyword fallback)", B.VS_RESULTS)
+                fb_data = _parse_json(fb_tr.data)
                 if fb_data and fb_data.get("rows"):
                     table_names = [r["table_name"] for r in fb_data["rows"] if r.get("table_name")]
                     node_ids = table_names[:]
-                    logger.info("[deep_analysis] Keyword fallback found %d tables: %s",
-                                len(table_names), table_names[:5])
 
     if cancel.is_set():
-        return "\n\n".join(parts), graph_data, tools_used
+        return "\n\n".join(parts), graph_data, tools_used, failed_sources, timing
 
-    # Step 3: Graph expansion from VS hits (filtered by planned edge_types)
-    if node_ids:
-        exp_result = _safe_tool_call(
-            expand_vs_hits,
-            {"node_ids": node_ids[:3], "edge_types": planned_edge_types},
-            TOOL_TIMEOUT, "expand_vs_hits", 3, total,
-        )
-        if exp_result:
-            tools_used.append("expand_vs_hits")
-            parts.append(f"### Source: expand_vs_hits (graph expansion)\n{_truncate_part(exp_result, LIMIT_EXPAND)}")
-    else:
-        logger.info("[deep_analysis] STEP 3/%d: expand_vs_hits -- SKIP (no node_ids)", total)
-        _emit("gathering", f"Step 3/{total}: No nodes to expand, skipping...")
+    # Group A (parallel): expand_vs_hits + traverse_graph
+    with measure_phase("graph_expand_traverse", timing):
+        if node_ids:
+            trav_nodes = _pick_traversal_nodes(node_ids, table_names)
+            with ThreadPoolExecutor(max_workers=3) as pool:
+                # Submit expand
+                expand_future = pool.submit(
+                    _safe_tool_call, expand_vs_hits,
+                    {"node_ids": node_ids[:3], "edge_types": planned_edge_types},
+                    TOOL_TIMEOUT, "expand_vs_hits", 3, total,
+                )
+                # Submit traversals
+                trav_futures = []
+                for i, nid in enumerate(trav_nodes[:2]):
+                    trav_futures.append(pool.submit(
+                        _safe_tool_call, traverse_graph,
+                        {"start_node": nid, "max_hops": 2,
+                         "edge_type": planned_traverse_et, "direction": planned_direction},
+                        TOOL_TIMEOUT, f"traverse_graph({nid.split('.')[-1]})", 4 + i, total,
+                    ))
 
-    if cancel.is_set():
-        return "\n\n".join(parts), graph_data, tools_used
+                # Collect expand result
+                exp_tr = expand_future.result()
+                _collect(exp_tr, "expand_vs_hits (graph expansion)", B.GRAPH_EXPANSION)
 
-    # Steps 4-5: Traverse graph from top nodes (2-hop, filtered by planned edge_type)
-    trav_nodes = _pick_traversal_nodes(node_ids, table_names)
-    if trav_nodes:
-        for i, nid in enumerate(trav_nodes[:2]):
-            if cancel.is_set():
-                break
-            step = 4 + i
-            trav_result = _safe_tool_call(
-                traverse_graph,
-                {"start_node": nid, "max_hops": 2,
-                 "edge_type": planned_traverse_et, "direction": planned_direction},
-                TOOL_TIMEOUT, f"traverse_graph({nid.split('.')[-1]})", step, total,
-            )
-            if trav_result:
-                trav_str = trav_result if isinstance(trav_result, str) else json.dumps(trav_result)
-                tools_used.append("traverse_graph")
-                parts.append(f"### Source: traverse_graph (from {nid})\n{_truncate_part(trav_str, LIMIT_TRAVERSE)}")
-                chunk = _parse_json(trav_str)
-                if chunk and isinstance(chunk, dict):
-                    graph_data = _merge_graph_data(graph_data, chunk)
-    else:
-        logger.info("[deep_analysis] STEP 4/%d: traverse_graph -- SKIP (no nodes)", total)
-
-    if cancel.is_set():
-        return "\n\n".join(parts), graph_data, tools_used
-
-    # Step 6: SQL for FK predictions on discovered tables
-    if table_names:
-        sql_q = _build_relevance_sql(table_names)
-        sql_result = _safe_tool_call(
-            execute_metadata_sql, {"query": sql_q}, TOOL_TIMEOUT,
-            "execute_metadata_sql (FK predictions)", 6, total,
-        )
-        if sql_result:
-            tools_used.append("execute_metadata_sql")
-            parts.append(f"### Source: execute_metadata_sql (FK predictions)\n{_truncate_part(sql_result, LIMIT_FK)}")
-    else:
-        logger.info("[deep_analysis] STEP 6/%d: execute_metadata_sql -- SKIP (no tables)", total)
+                # Collect traversal results
+                for ft in trav_futures:
+                    trav_tr = ft.result()
+                    if trav_tr.success and trav_tr.data:
+                        trav_str = trav_tr.data if isinstance(trav_tr.data, str) else json.dumps(trav_tr.data)
+                        tools_used.append("traverse_graph")
+                        parts.append(f"### Source: traverse_graph\n{_truncate_part(trav_str, B.GRAPH_TRAVERSAL)}")
+                        chunk = _parse_json(trav_str)
+                        if chunk and isinstance(chunk, dict):
+                            graph_data = _merge_graph_data(graph_data, chunk)
+                    elif not trav_tr.success:
+                        failed_sources.append(trav_tr)
+        else:
+            logger.info("[deep_analysis] Group A: SKIP (no node_ids)")
+            _emit("gathering", f"Step 3/{total}: No nodes to expand, skipping...")
 
     if cancel.is_set():
-        return "\n\n".join(parts), graph_data, tools_used
+        return "\n\n".join(parts), graph_data, tools_used, failed_sources, timing
 
-    # Step 7: Structured retrieval (SQL writer -> execute on actual data)
-    if table_names:
-        _emit("gathering", f"Step 7/{total}: Structured retrieval (SQL writer + data query)...")
-        sr_result = _structured_retrieval(query, table_names, cancel, 7, total)
-        if sr_result:
-            tools_used.append("sql_writer")
-            tools_used.append("execute_data_sql")
-            parts.append(f"### Source: structured_retrieval (LLM-generated SQL on data)\n{_truncate_part(sr_result, LIMIT_SR)}")
-    else:
-        logger.info("[deep_analysis] STEP 7/%d: structured_retrieval -- SKIP (no tables)", total)
+    # Group B (parallel): FK SQL + structured retrieval
+    with measure_phase("fk_and_structured", timing):
+        if table_names:
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                # FK predictions
+                fk_future = pool.submit(
+                    _safe_tool_call, execute_metadata_sql,
+                    {"query": _build_relevance_sql(table_names)}, TOOL_TIMEOUT,
+                    "execute_metadata_sql (FK predictions)", 6, total,
+                )
+                # Structured retrieval (only if plan says so)
+                sr_future = None
+                if plan.get("requires_structured_retrieval", True):
+                    _emit("gathering", f"Step 7/{total}: Structured retrieval (SQL writer + data query)...")
+                    sr_future = pool.submit(
+                        _structured_retrieval, query, table_names, cancel, 7, total,
+                    )
 
-    return "\n\n".join(parts), graph_data, tools_used
+                fk_tr = fk_future.result()
+                _collect(fk_tr, "execute_metadata_sql (FK predictions)", B.FK_PREDICTIONS)
+
+                if sr_future:
+                    sr_tr = sr_future.result()
+                    if sr_tr.success and sr_tr.data:
+                        tools_used.extend(["sql_writer", "execute_data_sql"])
+                        parts.append(f"### Source: structured_retrieval (LLM-generated SQL on data)\n"
+                                     f"{_truncate_part(sr_tr.data, B.STRUCTURED_RETRIEVAL)}")
+                    elif not sr_tr.success:
+                        failed_sources.append(sr_tr)
+        else:
+            logger.info("[deep_analysis] Group B: SKIP (no tables)")
+
+    return "\n\n".join(parts), graph_data, tools_used, failed_sources, timing
 
 
 def _gather_baseline(query: str, cancel: threading.Event):
     """Deterministic baseline data gathering: SQL queries on KB tables."""
     parts = []
     tools_used = []
+    failed_sources: list[ToolResult] = []
+    timing: dict = {}
     queries = _build_baseline_queries(query)
     total = len(queries)
 
-    for i, sql_q in enumerate(queries):
-        if cancel.is_set():
-            break
-        result = _safe_tool_call(
-            execute_baseline_sql, {"query": sql_q}, TOOL_TIMEOUT,
-            f"execute_baseline_sql (query {i + 1})", i + 1, total,
-        )
-        if result:
-            tools_used.append("execute_baseline_sql")
-            parts.append(f"### Source: execute_baseline_sql\n{result}")
+    with measure_phase("baseline_queries", timing):
+        for i, sql_q in enumerate(queries):
+            if cancel.is_set():
+                break
+            tr = _safe_tool_call(
+                execute_baseline_sql, {"query": sql_q}, TOOL_TIMEOUT,
+                f"execute_baseline_sql (query {i + 1})", i + 1, total,
+            )
+            if tr.success and tr.data:
+                tools_used.append("execute_baseline_sql")
+                parts.append(f"### Source: execute_baseline_sql\n{tr.data}")
+            elif not tr.success:
+                failed_sources.append(tr)
 
-    return "\n\n".join(parts), tools_used
+    return "\n\n".join(parts), tools_used, failed_sources, timing
 
 
 # ---------------------------------------------------------------------------
 # Pipeline
 # ---------------------------------------------------------------------------
 
-def _run_pipeline(query: str, mode: str, cancel: threading.Event) -> Optional[Dict]:
+def _run_pipeline(query: str, mode: str, cancel: threading.Event,
+                   session_id: Optional[str] = None,
+                   intent_type: str = "new_question") -> Optional[Dict]:
     """Two-phase pipeline: gather context deterministically, then single LLM call."""
     t0 = time.time()
     logger.info("[deep_analysis] PIPELINE START mode=%s query=%s", mode, query[:120])
+    B = EvidenceBudget
 
     # Phase 1: Gather context
     _emit("gathering", "Gathering evidence from metadata catalog...")
     if mode == "graphrag":
-        context, graph_data, tools_used = _gather_graphrag(query, cancel)
+        context, graph_data, tools_used, failed_sources, timing = _gather_graphrag(
+            query, cancel, session_id, intent_type=intent_type)
     else:
-        context, tools_used = _gather_baseline(query, cancel)
+        context, tools_used, failed_sources, timing = _gather_baseline(query, cancel)
         graph_data = {}
 
     gather_elapsed = round(time.time() - t0, 1)
-    logger.info("[deep_analysis] GATHER DONE in %.1fs -- %d tool(s): %s",
-                gather_elapsed, len(tools_used), ", ".join(dict.fromkeys(tools_used)))
+    timing["gather_total"] = gather_elapsed
+    logger.info("[deep_analysis] GATHER DONE in %.1fs -- %d tool(s): %s | failures=%d",
+                gather_elapsed, len(tools_used), ", ".join(dict.fromkeys(tools_used)),
+                len(failed_sources))
 
     if cancel.is_set():
         logger.warning("[deep_analysis] Cancelled after gathering (%.1fs)", gather_elapsed)
@@ -723,11 +793,19 @@ def _run_pipeline(query: str, mode: str, cancel: threading.Event) -> Optional[Di
     if not context.strip():
         context = "No evidence could be gathered. The metadata catalog may be empty or inaccessible."
 
-    # Budget check: if total context still exceeds the cap, hard-truncate
-    if len(context) > MAX_CONTEXT_CHARS:
+    # Append failed sources section so the LLM knows what's missing
+    if failed_sources:
+        failure_lines = []
+        for fs in failed_sources:
+            hint = f" -- {fs.error_hint}" if fs.error_hint else ""
+            failure_lines.append(f"- {fs.label}: {fs.error_type or 'failed'}{hint}")
+        context += "\n\n### Failed Evidence Sources\n" + "\n".join(failure_lines)
+
+    # Budget check: if total context exceeds the cap, hard-truncate
+    if len(context) > B.TOTAL:
         logger.warning("[deep_analysis] Context too large (%d chars), truncating to %d",
-                       len(context), MAX_CONTEXT_CHARS)
-        context = context[:MAX_CONTEXT_CHARS] + f"\n...[context truncated from {len(context):,} to {MAX_CONTEXT_CHARS:,} chars]"
+                       len(context), B.TOTAL)
+        context = context[:B.TOTAL] + f"\n...[context truncated from {len(context):,} to {B.TOTAL:,} chars]"
 
     # Phase 2: Single LLM analysis call
     _emit("analyzing", "Generating analysis (this may take 15-30s)...")
@@ -750,37 +828,28 @@ def _run_pipeline(query: str, mode: str, cancel: threading.Event) -> Optional[Di
             logger.error("[deep_analysis] LLM analysis error: %s", e, exc_info=True)
             analysis = f"Analysis LLM call failed: {e}. Evidence gathered:\n\n{context[:2000]}"
         llm_elapsed = round(time.time() - t0 - gather_elapsed, 1)
+        timing["llm_analysis"] = llm_elapsed
         logger.info("[deep_analysis] STEP FINAL: LLM analysis -- DONE in %.1fs (%d chars)",
                     llm_elapsed, len(analysis))
         if span:
             span.set_outputs({"elapsed_s": llm_elapsed, "result_len": len(analysis)})
 
     total_elapsed = round(time.time() - t0, 1)
+    timing["total"] = total_elapsed
     unique_tools = list(dict.fromkeys(tools_used))
-    logger.info("[deep_analysis] PIPELINE COMPLETE in %.1fs -- mode=%s tools=%s",
-                total_elapsed, mode, unique_tools)
+    logger.info("[deep_analysis] PIPELINE COMPLETE in %.1fs -- mode=%s tools=%s timing=%s",
+                total_elapsed, mode, unique_tools, timing)
 
     result = {
         "answer": sanitize_output(analysis),
         "tool_calls": unique_tools,
         "mode": mode,
         "steps": len(tools_used),
+        "timing": timing,
     }
     if graph_data and (graph_data.get("nodes") or graph_data.get("edges")):
         result["graph_data"] = graph_data
     return result
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _build_query(message: str, history: Optional[List[Dict]] = None) -> str:
-    if history:
-        lines = [f"{m.get('role', 'user')}: {m['content']}" for m in history[-6:]]
-        lines.append(f"user: {message}")
-        return "Conversation so far:\n" + "\n".join(lines) + "\n\nRespond to the latest user message."
-    return message
 
 
 # ---------------------------------------------------------------------------
@@ -792,11 +861,25 @@ def run_deep_analysis(
     message: str,
     mode: str = "graphrag",
     history: Optional[List[Dict]] = None,
+    session_id: Optional[str] = None,
 ) -> Dict:
     """Non-streaming deep analysis. mode is 'graphrag' or 'baseline'."""
-    query = _build_query(message, history)
+    intent_result = classify_and_contextualize(message, history)
+    logger.info("[deep_analysis] intent=%s domain=%s clear=%s",
+                intent_result.intent_type, intent_result.domain, intent_result.question_clear)
+
+    if intent_result.intent_type in ("irrelevant", "meta"):
+        return {
+            "answer": intent_result.meta_answer or "I can help you analyze your data catalog metadata.",
+            "tool_calls": [], "mode": mode, "intent": intent_result.intent_type,
+        }
+
+    query = intent_result.context_summary
     cancel = threading.Event()
-    result = _run_pipeline(query, mode, cancel)
+    result = _run_pipeline(query, mode, cancel, session_id=session_id,
+                           intent_type=intent_result.intent_type)
+    if result:
+        result["intent"] = intent_result.intent_type
     return result or {"answer": "Analysis could not be completed.", "tool_calls": [], "mode": mode}
 
 
@@ -804,6 +887,7 @@ def run_deep_analysis_streaming(
     message: str,
     mode: str = "graphrag",
     history: Optional[List[Dict]] = None,
+    session_id: Optional[str] = None,
 ) -> tuple[queue.Queue, threading.Event]:
     """Streaming deep analysis. Returns (progress_queue, cancel_event).
 
@@ -833,9 +917,22 @@ def run_deep_analysis_streaming(
                     _emit("starting", "Starting analysis...", agent="system")
                     logger.info("[deep_analysis] Starting streaming mode=%s query=%s", mode, message[:120])
                     t0 = time.time()
-                    query_text = _build_query(message, history)
 
-                    result = _run_pipeline(query_text, mode, cancel)
+                    intent_result = classify_and_contextualize(message, history)
+                    logger.info("[deep_analysis:streaming] intent=%s", intent_result.intent_type)
+
+                    if intent_result.intent_type in ("irrelevant", "meta"):
+                        q.put({
+                            "stage": "done",
+                            "answer": intent_result.meta_answer or "I can help you analyze your data catalog.",
+                            "tool_calls": [], "mode": mode,
+                        })
+                        return
+
+                    query_text = intent_result.context_summary
+
+                    result = _run_pipeline(query_text, mode, cancel, session_id=session_id,
+                                           intent_type=intent_result.intent_type)
 
                     elapsed = round(time.time() - t0, 1)
 
@@ -849,6 +946,8 @@ def run_deep_analysis_streaming(
                         }
                         if "graph_data" in result:
                             done_event["graph_data"] = result["graph_data"]
+                        if "timing" in result:
+                            done_event["timing"] = result["timing"]
                         q.put(done_event)
                         logger.info("[deep_analysis] Streaming DONE in %.1fs, tools=%s",
                                     elapsed, result.get("tool_calls"))

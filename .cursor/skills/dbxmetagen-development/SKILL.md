@@ -36,11 +36,11 @@ generate metric views, and create Genie spaces.
 
 ```bash
 # Install
-poetry install
-poetry install --extras pi    # Include spaCy model for PI detection
+uv sync
+uv sync --extra pi           # Include spaCy model for PI detection
 
 # Build wheel
-poetry build
+uv build
 
 # Run ALL tests (handles import conflicts automatically)
 ./run_tests.sh
@@ -49,10 +49,10 @@ poetry build
 ./run_tests.sh -q
 
 # Single file
-poetry run pytest tests/test_domain_classifier.py -v
+uv run pytest tests/test_domain_classifier.py -v
 
 # Single test
-poetry run pytest tests/test_ddl_regenerator.py::TestReplaceCommentInDDL::test_comment_containing_single_quote -v
+uv run pytest tests/test_ddl_regenerator.py::TestReplaceCommentInDDL::test_comment_containing_single_quote -v
 ```
 
 ### Critical Testing Rules

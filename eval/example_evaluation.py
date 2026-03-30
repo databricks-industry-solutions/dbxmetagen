@@ -61,18 +61,19 @@ runner = EvaluationRunner(experiment_name=experiment_name)
 # COMMAND ----------
 
 # Load evaluation dataset
-eval_df = create_eval_dataset()
+eval_data = create_eval_dataset()
 
-print(f"Total examples: {len(eval_df)}")
-print(f"\nModes: {eval_df['inputs'].apply(lambda x: x['mode']).unique()}")
+print(f"Total examples: {len(eval_data)}")
+modes = set(ex["inputs"]["mode"] for ex in eval_data)
+print(f"\nModes: {modes}")
 print(f"\nExample IDs:")
-for idx, row in eval_df.iterrows():
-    print(f"  - {row['request_id']}: {row['inputs']['table_name']} ({row['inputs']['mode']} mode)")
+for ex in eval_data:
+    print(f"  - {ex['request_id']}: {ex['inputs']['table_name']} ({ex['inputs']['mode']} mode)")
 
 # COMMAND ----------
 
 # Display first example
-first_example = eval_df.iloc[0]
+first_example = eval_data[0]
 
 print("="*70)
 print(f"Example: {first_example['request_id']}")
@@ -83,11 +84,9 @@ print(f"  Table: {first_example['inputs']['table_name']}")
 print(f"  Columns: {first_example['inputs']['columns']}")
 print(f"  Mode: {first_example['inputs']['mode']}")
 
-print("\n[OK] Ground Truth:")
-if 'table' in first_example['ground_truth']:
-    print(f"  Table comment: {first_example['ground_truth']['table'][:100]}...")
-    
-display(eval_df[['request_id', 'inputs', 'ground_truth']].head(3))
+print("\n[OK] Expectations:")
+if 'table' in first_example['expectations']:
+    print(f"  Table comment: {first_example['expectations']['table'][:100]}...")
 
 # COMMAND ----------
 
@@ -166,6 +165,7 @@ display(comparison_df)
 # COMMAND ----------
 
 # Get experiment URL
+import mlflow
 experiment_id = mlflow.get_experiment_by_name(experiment_name).experiment_id
 workspace_url = dbutils.notebook.entry_point.getDbutils().notebook().getContext().browserHostName().get()
 

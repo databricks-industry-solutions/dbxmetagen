@@ -8,7 +8,6 @@ from abc import ABC
 from datetime import datetime
 from typing import List, Dict, Any, Optional, Tuple
 import logging
-import mlflow
 import nest_asyncio
 import pandas as pd
 from pydantic import BaseModel, Field, Extra, ValidationError, ConfigDict
@@ -52,11 +51,6 @@ from openai.types.chat.chat_completion import (
 )
 import pandas as pd
 
-try:
-    from mlflow.types.llm import TokenUsageStats, ChatResponse
-except ImportError:
-    TokenUsageStats = None
-    ChatResponse = None
 from grpc._channel import _InactiveRpcError, _MultiThreadedRendezvous
 from dbxmetagen.config import MetadataConfig
 from dbxmetagen.sampling import determine_sampling_ratio

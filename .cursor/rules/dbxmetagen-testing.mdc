@@ -7,7 +7,7 @@ globs: tests/**/*.py
 
 ## Running Tests
 
-- Always use `poetry run pytest` or `./run_tests.sh` -- never bare `pytest`.
+- Always use `uv run pytest` or `./run_tests.sh` -- never bare `pytest`.
 - `run_tests.sh` handles running DDL regenerator and binary/variant tests in
   separate processes to avoid import conflicts.
 - Use `run_tests.sh -q` for a quick core-only run.
@@ -33,4 +33,4 @@ globs: tests/**/*.py
 
 - Tests in `tests/test_ddl_regenerator.py` must run in a separate pytest process
   due to mlflow import conflicts. `run_tests.sh` handles this automatically.
-- If running manually: `poetry run pytest tests/test_ddl_regenerator.py -v`
+- If running manually: `uv run pytest tests/test_ddl_regenerator.py -v`

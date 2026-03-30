@@ -14,6 +14,9 @@ for _mod_name in [
     "pyspark", "pyspark.sql", "pyspark.sql.functions", "pyspark.sql.types",
     "pyspark.sql.window", "pyspark.sql.column", "pyspark.sql.utils",
     "databricks_langchain",
+    "databricks", "databricks.sdk", "databricks.sdk.service",
+    "databricks.sdk.service.sql", "databricks.sdk.service.vectorsearch",
+    "databricks.sdk.service.catalog",
 ]:
     if _mod_name not in sys.modules:
         sys.modules[_mod_name] = MagicMock()
@@ -23,8 +26,7 @@ for _mod_name in [
 # (same pattern as pyspark above). Internal dbxmetagen.* submodules are NOT
 # stubbed here to avoid clobbering real implementations.
 for _mod_name in [
-    "mlflow", "mlflow.types", "mlflow.types.llm", "mlflow.tracing",
-    "mlflow.tracing.fluent",
+    "mlflow", "mlflow.tracing", "mlflow.tracing.fluent",
     "nest_asyncio",
     "openai", "openai.types", "openai.types.chat",
     "openai.types.chat.chat_completion",

@@ -21,7 +21,7 @@
 
 ## Quickstart
 
-**Prerequisites:** Databricks CLI (>=0.283.0), Python 3.10+, Poetry 2.x, Node.js (for frontend build), a Databricks workspace with Unity Catalog enabled and a Foundation Model endpoint (e.g. `databricks-claude-sonnet-4-6`).
+**Prerequisites:** Databricks CLI (>=0.283.0), Python 3.10+, [uv](https://docs.astral.sh/uv/) (for dependency management), Node.js (for frontend build), a Databricks workspace with Unity Catalog enabled and a Foundation Model endpoint (e.g. `databricks-claude-sonnet-4-6`).
 
 1. Clone the repo and configure:
    ```bash
@@ -327,12 +327,12 @@ The app is in `apps/dbxmetagen-app/` and provides a FastAPI backend with a React
 ## Testing
 
 ```bash
-poetry install              # core deps (comment/domain modes)
-poetry install --extras pi  # also install the spaCy model for PI dev
-pytest -v
+uv sync                     # core deps (comment/domain modes)
+uv sync --extra pi          # also install the spaCy model for PI dev
+uv run pytest -v
 
 # Build and test wheel locally
-poetry build
+uv build
 pip install dist/*.whl
 python -c "from dbxmetagen.config import MetadataConfig; print('OK')"
 ```

@@ -35,7 +35,7 @@ fi
 
 # --- Build wheel ---
 echo "=== Building wheel ==="
-poetry build -f wheel -q
+uv build -q
 WHL=$(ls -t dist/*.whl | head -1)
 echo "Built: ${WHL}"
 

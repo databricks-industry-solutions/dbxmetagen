@@ -4,6 +4,7 @@ Combines vector search over metadata_documents, SQL queries on knowledge-base
 tables, and Lakebase graph traversal to answer questions about the data catalog.
 """
 
+import asyncio
 import json as _json
 import os
 import logging
@@ -11,6 +12,7 @@ from typing import Annotated, Dict, Any, List, Optional, TypedDict
 
 from agent.guardrails import GuardrailConfig, SAFETY_PROMPT_BLOCK, sanitize_output
 from agent.common import extract_token_usage
+from agent.intent import classify_and_contextualize, format_clarification, keyword_domain
 from agent.tracing import trace
 
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
@@ -40,21 +42,8 @@ class AgentState(TypedDict):
 
 
 # ---------------------------------------------------------------------------
-# Intent classification + tool selection
+# Tool selection
 # ---------------------------------------------------------------------------
-
-def classify_intent(message: str) -> str:
-    m = message.lower()
-    if any(kw in m for kw in ["pii", "phi", "sensitive", "classify", "governance", "security", "compliance"]):
-        return "governance"
-    if any(kw in m for kw in ["foreign key", "fk", "join", "relationship", "connected", "related to", "references"]):
-        return "relationship"
-    if any(kw in m for kw in ["how many", "count", "list", "show me", "select", "average", "total", "sum"]):
-        return "query"
-    if any(kw in m for kw in ["find", "search", "similar", "about", "describe", "what is", "what are", "explain"]):
-        return "discovery"
-    return "general"
-
 
 def select_tools(intent: str) -> List[BaseTool]:
     if intent == "query":
@@ -168,6 +157,7 @@ async def run_metadata_agent(
     question: str,
     history: Optional[List[Dict[str, str]]] = None,
     mode: str = "quick",
+    session_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Run the metadata intelligence agent and return the response.
 
@@ -179,7 +169,29 @@ async def run_metadata_agent(
     if mode in ("graphrag", "baseline", "deep"):
         from agent.deep_analysis import run_deep_analysis
         effective_mode = "graphrag" if mode == "deep" else mode
-        return run_deep_analysis(question, mode=effective_mode, history=history)
+        return run_deep_analysis(question, mode=effective_mode, history=history, session_id=session_id)
+
+    # Phase 1: Unified intent classification (run in thread to avoid blocking event loop)
+    intent_result = await asyncio.to_thread(classify_and_contextualize, question, history)
+    logger.info("[metadata_agent] intent=%s domain=%s clear=%s complexity=%s",
+                intent_result.intent_type, intent_result.domain,
+                intent_result.question_clear, intent_result.complexity)
+
+    if intent_result.intent_type == "irrelevant":
+        return {
+            "answer": intent_result.meta_answer or "I'm a metadata analysis assistant. Please ask about your data catalog.",
+            "tool_calls": [], "intent": "irrelevant", "steps": 0, "mode": mode, "token_usage": {},
+        }
+    if intent_result.intent_type == "meta":
+        return {
+            "answer": intent_result.meta_answer or "I can help you explore metadata across your catalog.",
+            "tool_calls": [], "intent": "meta", "steps": 0, "mode": mode, "token_usage": {},
+        }
+    if not intent_result.question_clear:
+        return {
+            "answer": format_clarification(intent_result),
+            "tool_calls": [], "intent": "clarification", "steps": 0, "mode": mode, "token_usage": {},
+        }
 
     graph = _get_graph()
 
@@ -194,9 +206,10 @@ async def run_metadata_agent(
                 messages.append(AIMessage(content=content))
         messages = messages[-8:]
 
-    intent = classify_intent(question)
+    intent = intent_result.domain or keyword_domain(question)
     selected_tools = select_tools(intent)
-    messages.append(HumanMessage(content=question))
+    effective_query = intent_result.context_summary
+    messages.append(HumanMessage(content=effective_query))
 
     result = await graph.ainvoke(
         {"messages": messages, "intent": intent, "tools": selected_tools},

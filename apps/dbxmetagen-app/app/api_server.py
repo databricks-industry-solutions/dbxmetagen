@@ -7391,6 +7391,7 @@ class AgentChatRequest(BaseModel):
     message: str
     history: list = []
     mode: str = "quick"
+    session_id: str = ""
 
 
 VALID_AGENT_MODES = {"quick", "deep", "graphrag", "baseline"}
@@ -7409,7 +7410,7 @@ async def agent_chat(req: AgentChatRequest):
         raise HTTPException(503, detail=f"Agent not available: {e}")
     mode = req.mode if req.mode in VALID_AGENT_MODES else "quick"
     try:
-        result = await run_metadata_agent(req.message, history=req.history, mode=mode)
+        result = await run_metadata_agent(req.message, history=req.history, mode=mode, session_id=req.session_id or None)
         if isinstance(result, dict):
             result["elapsed_ms"] = int((time.time() - t0) * 1000)
         return result
@@ -7471,7 +7472,7 @@ def agent_deep_submit(req: AgentChatRequest):
     task_id = str(_uuid.uuid4())[:12]
     _deep_tasks[task_id] = {"status": "running", "stage": "starting", "message": "", "steps": [], "elapsed_ms": 0, "created": time.time()}
 
-    progress_q, cancel_event = run_deep_analysis_streaming(req.message, mode=mode, history=req.history)
+    progress_q, cancel_event = run_deep_analysis_streaming(req.message, mode=mode, history=req.history, session_id=req.session_id or None)
 
     _DEEP_WALL_TIMEOUT = 300  # 5-minute absolute max (new pipeline typically finishes in ~90s)
 
