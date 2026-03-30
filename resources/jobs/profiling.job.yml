@@ -21,6 +21,7 @@ resources:
 
       tasks:
         - task_key: run_profiling
+          max_retries: 1
           job_cluster_key: profiling_cluster
 
           notebook_task:
@@ -34,6 +35,7 @@ resources:
             - whl: ../../dist/*.whl
 
         - task_key: compute_quality_scores
+          max_retries: 1
           depends_on:
             - task_key: run_profiling
           job_cluster_key: profiling_cluster
@@ -48,6 +50,7 @@ resources:
             - whl: ../../dist/*.whl
 
         - task_key: update_graph_quality
+          max_retries: 1
           depends_on:
             - task_key: compute_quality_scores
           job_cluster_key: profiling_cluster
@@ -68,4 +71,12 @@ resources:
             node_type_id: ${var.node_type}
             data_security_mode: SINGLE_USER
             num_workers: 1
+            # --- Uncomment for AWS ---
+            # aws_attributes:
+            #   first_on_demand: 1
+            #   availability: SPOT_WITH_FALLBACK
+            # --- Uncomment for Azure ---
+            # azure_attributes:
+            #   first_on_demand: 1
+            #   availability: SPOT_WITH_FALLBACK_AZURE
 

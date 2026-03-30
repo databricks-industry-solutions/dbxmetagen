@@ -40,6 +40,7 @@ resources:
       tasks:
         # Stage 1: Build knowledge bases (table, column, schema in parallel after table KB)
         - task_key: build_knowledge_base
+          max_retries: 1
           job_cluster_key: analytics_cluster
           notebook_task:
             notebook_path: ../../notebooks/build_knowledge_base.py
@@ -50,6 +51,7 @@ resources:
             - whl: ../../dist/*.whl
 
         - task_key: build_column_kb
+          max_retries: 1
           job_cluster_key: analytics_cluster
           notebook_task:
             notebook_path: ../../notebooks/build_column_kb.py
@@ -60,6 +62,7 @@ resources:
             - whl: ../../dist/*.whl
 
         - task_key: build_schema_kb
+          max_retries: 1
           depends_on:
             - task_key: build_knowledge_base
           job_cluster_key: analytics_cluster
@@ -73,6 +76,7 @@ resources:
             - whl: ../../dist/*.whl
 
         - task_key: extract_extended_metadata
+          max_retries: 1
           depends_on:
             - task_key: build_knowledge_base
           job_cluster_key: analytics_cluster
@@ -87,6 +91,7 @@ resources:
 
         # Stage 2: Build knowledge graph (depends on all KB tasks)
         - task_key: build_knowledge_graph
+          max_retries: 1
           depends_on:
             - task_key: build_column_kb
             - task_key: build_schema_kb
@@ -104,6 +109,7 @@ resources:
 
         # Stage 3: Parallel branches - embeddings, profiling, ontology
         - task_key: generate_embeddings
+          max_retries: 1
           depends_on:
             - task_key: build_knowledge_graph
             - task_key: build_ontology
@@ -117,6 +123,7 @@ resources:
             - whl: ../../dist/*.whl
 
         - task_key: run_profiling
+          max_retries: 1
           depends_on:
             - task_key: build_knowledge_base
           job_cluster_key: analytics_cluster
@@ -130,6 +137,7 @@ resources:
             - whl: ../../dist/*.whl
 
         - task_key: build_ontology
+          max_retries: 1
           depends_on:
             - task_key: build_knowledge_base
             - task_key: build_column_kb
@@ -148,6 +156,7 @@ resources:
 
         # Stage 4: Secondary tasks
         - task_key: build_similarity_edges
+          max_retries: 1
           depends_on:
             - task_key: generate_embeddings
           job_cluster_key: analytics_cluster
@@ -162,6 +171,7 @@ resources:
             - whl: ../../dist/*.whl
 
         - task_key: cluster_analysis
+          max_retries: 1
           depends_on:
             - task_key: generate_embeddings
           job_cluster_key: analytics_cluster
@@ -177,6 +187,7 @@ resources:
             - whl: ../../dist/*.whl
 
         - task_key: compute_data_quality
+          max_retries: 1
           depends_on:
             - task_key: run_profiling
           job_cluster_key: analytics_cluster
@@ -189,6 +200,7 @@ resources:
             - whl: ../../dist/*.whl
 
         - task_key: validate_ontology
+          max_retries: 1
           depends_on:
             - task_key: build_ontology
           job_cluster_key: analytics_cluster
@@ -202,6 +214,7 @@ resources:
 
         # Stage 5: FK prediction (depends on similarity edges only)
         - task_key: predict_foreign_keys
+          max_retries: 1
           depends_on:
             - task_key: build_similarity_edges
           job_cluster_key: analytics_cluster
@@ -221,6 +234,7 @@ resources:
 
         # Stage 6: Final analysis (depends on all previous tasks)
         - task_key: final_analysis
+          max_retries: 1
           depends_on:
             - task_key: predict_foreign_keys
             - task_key: cluster_analysis
@@ -237,6 +251,7 @@ resources:
 
         # Stage 7: Build vector search index (after all metadata is ready)
         - task_key: build_vector_index
+          max_retries: 1
           depends_on:
             - task_key: final_analysis
           job_cluster_key: analytics_cluster
@@ -258,3 +273,11 @@ resources:
             autoscale:
               min_workers: 2
               max_workers: 4
+            # --- Uncomment for AWS ---
+            # aws_attributes:
+            #   first_on_demand: 1
+            #   availability: SPOT_WITH_FALLBACK
+            # --- Uncomment for Azure ---
+            # azure_attributes:
+            #   first_on_demand: 1
+            #   availability: SPOT_WITH_FALLBACK_AZURE

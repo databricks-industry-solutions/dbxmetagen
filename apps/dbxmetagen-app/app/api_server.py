@@ -1427,7 +1427,8 @@ def review_combined(body: ReviewCombinedRequest):
             SELECT src_column, src_table, dst_column, dst_table, final_confidence,
                    ai_reasoning, ai_confidence, col_similarity, rule_score
             FROM {fk_tbl}
-            WHERE src_table IN ({in_clause}) OR dst_table IN ({in_clause})
+            WHERE (src_table IN ({in_clause}) OR dst_table IN ({in_clause}))
+              AND src_table != dst_table
         """)
     except Exception as e:
         logger.warning("Enriched FK query failed (%s), falling back to simple query", e)
@@ -1435,7 +1436,8 @@ def review_combined(body: ReviewCombinedRequest):
             fk_rows = execute_sql(f"""
                 SELECT src_column, src_table, dst_column, dst_table, final_confidence
                 FROM {fk_tbl}
-                WHERE src_table IN ({in_clause}) OR dst_table IN ({in_clause})
+                WHERE (src_table IN ({in_clause}) OR dst_table IN ({in_clause}))
+                  AND src_table != dst_table
             """)
         except Exception as e:
             logger.debug("FK fallback query also failed: %s", e)
@@ -3069,7 +3071,7 @@ def get_ontology_metrics():
 @app.get("/api/analytics/fk-predictions")
 def get_fk_predictions(limit: int = 200):
     """Return predicted foreign key relationships."""
-    q = f"SELECT * FROM {fq('fk_predictions')} ORDER BY final_confidence DESC LIMIT {limit}"
+    q = f"SELECT * FROM {fq('fk_predictions')} WHERE src_table != dst_table ORDER BY final_confidence DESC LIMIT {limit}"
     return execute_sql(q)
 
 

@@ -979,12 +979,20 @@ class FKPredictor:
             ("entity_type_a", "entity_type_b"),
             ("_card_ratio_a", "_card_ratio_b"),
         ]
+        # Write to temp columns first, then rename. F.col() is a lazy
+        # reference by name, so chaining .withColumn("col_a", ...).withColumn(
+        # "col_b", F.col("col_a")) would read the ALREADY-MODIFIED col_a,
+        # corrupting both sides to the same value.
         for ca, cb in swap_pairs + [p for p in optional_pairs if p[0] in df.columns]:
             orig_a, orig_b = F.col(ca), F.col(cb)
-            df = df.withColumn(
-                ca, F.when(should_swap, orig_b).otherwise(orig_a)
-            ).withColumn(
-                cb, F.when(should_swap, orig_a).otherwise(orig_b)
+            ta, tb = f"_swap_{ca}", f"_swap_{cb}"
+            df = (
+                df
+                .withColumn(ta, F.when(should_swap, orig_b).otherwise(orig_a))
+                .withColumn(tb, F.when(should_swap, orig_a).otherwise(orig_b))
+                .drop(ca, cb)
+                .withColumnRenamed(ta, ca)
+                .withColumnRenamed(tb, cb)
             )
 
         return df
@@ -1205,14 +1213,18 @@ class FKPredictor:
                 if "FIELDS_ALREADY_EXISTS" not in str(e) and "already exists" not in str(e).lower():
                     raise
 
-        # Idempotent cleanup: remove self-referential and same-column rows.
-        # Uses DELETE ... WHERE which is a no-op when zero rows match.
-        cleanup_sql = f"DELETE FROM {preds} WHERE src_table = dst_table OR src_column = dst_column"
+        # Idempotent cleanup: remove bad rows every run.
+        # 1) self-referential / same-column rows (from direction-swap bugs)
+        # 2) stale pre-fix rows where AI said "not FK" but confidence wasn't gated
+        cleanup_sqls = [
+            f"DELETE FROM {preds} WHERE src_table = dst_table OR src_column = dst_column",
+            f"DELETE FROM {preds} WHERE is_fk IS NULL AND ai_confidence >= 1.0",
+        ]
         try:
-            result = self.spark.sql(cleanup_sql)
-            logger.info("FK cleanup: removed self-referential rows from %s", preds)
+            for sql in cleanup_sqls:
+                self.spark.sql(sql)
+            logger.info("FK cleanup: removed bad rows from %s", preds)
         except AnalysisException as e:
-            # Table might not have data yet on very first run -- that's fine
             if "TABLE_OR_VIEW_NOT_FOUND" in str(e) or "DELTA_TABLE_NOT_FOUND" in str(e):
                 logger.debug("FK cleanup skipped (table empty or new): %s", e)
             else:

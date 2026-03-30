@@ -22,6 +22,7 @@ resources:
 
       tasks:
         - task_key: sync_reviewed_ddl
+          max_retries: 1
           job_cluster_key: sync_cluster
 
           notebook_task:
@@ -43,3 +44,11 @@ resources:
             autoscale:
               min_workers: 1
               max_workers: 2
+            # --- Uncomment for AWS ---
+            # aws_attributes:
+            #   first_on_demand: 1
+            #   availability: SPOT_WITH_FALLBACK
+            # --- Uncomment for Azure ---
+            # azure_attributes:
+            #   first_on_demand: 1
+            #   availability: SPOT_WITH_FALLBACK_AZURE

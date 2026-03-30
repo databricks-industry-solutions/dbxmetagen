@@ -25,6 +25,7 @@ resources:
 
       tasks:
         - task_key: generate_semantic_layer
+          max_retries: 1
           job_cluster_key: semantic_layer_cluster
           notebook_task:
             notebook_path: ../../notebooks/generate_semantic_layer.py
@@ -36,6 +37,7 @@ resources:
             - whl: ../../dist/*.whl
 
         - task_key: apply_metric_views
+          max_retries: 1
           depends_on:
             - task_key: generate_semantic_layer
           job_cluster_key: semantic_layer_cluster
@@ -56,3 +58,11 @@ resources:
             node_type_id: ${var.node_type}
             data_security_mode: SINGLE_USER
             num_workers: 1
+            # --- Uncomment for AWS ---
+            # aws_attributes:
+            #   first_on_demand: 1
+            #   availability: SPOT_WITH_FALLBACK
+            # --- Uncomment for Azure ---
+            # azure_attributes:
+            #   first_on_demand: 1
+            #   availability: SPOT_WITH_FALLBACK_AZURE

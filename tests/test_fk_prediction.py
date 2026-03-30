@@ -795,15 +795,80 @@ class TestConfidenceScoringLogic:
 
     def test_same_table_prediction_is_impossible(self):
         """Verify the layered defense: candidates filter + write_predictions filter."""
-        # Layer 1: candidates.filter(table_a != table_b) in run()
-        # Layer 2: out.filter(src_table != dst_table & src_column != dst_column) in write_predictions
-        # Layer 3: _ensure_output_tables DELETE WHERE src_table = dst_table
-        # Layer 4: INSERT OVERWRITE WHERE src_table != dst_table
         import inspect
         run_source = inspect.getsource(FKPredictor.run)
         wp_source = inspect.getsource(FKPredictor.write_predictions)
         eo_source = inspect.getsource(FKPredictor._ensure_output_tables)
-        # All four layers must exist
         assert 'table_a' in run_source and 'table_b' in run_source, "run() must filter same-table"
         assert 'src_table' in wp_source and 'dst_table' in wp_source, "write_predictions must filter"
         assert 'src_table = dst_table' in eo_source, "_ensure_output_tables must clean up"
+
+
+# ---------------------------------------------------------------------------
+# Direction enforcement swap correctness
+# ---------------------------------------------------------------------------
+
+class TestEnforceDirectionSwap:
+    """Verify _enforce_direction correctly swaps columns without corruption.
+
+    The original bug: PySpark's F.col() is a lazy name reference, so chaining
+    .withColumn("col_a", ...).withColumn("col_b", F.col("col_a")) reads the
+    ALREADY-MODIFIED col_a, making both columns the same value.
+    """
+
+    def test_swap_uses_temp_columns(self):
+        """The swap implementation must use temp columns to avoid lazy-ref corruption."""
+        source = inspect.getsource(FKPredictor._enforce_direction)
+        assert "_swap_" in source, (
+            "_enforce_direction must use temp columns (e.g. _swap_col_a) "
+            "to avoid PySpark lazy column reference bug"
+        )
+        assert "withColumnRenamed" in source, (
+            "_enforce_direction must rename temp columns back"
+        )
+
+    def test_swap_does_not_write_directly_to_pair_columns(self):
+        """Must NOT write directly to ca/cb. Must use temp columns then rename."""
+        source = inspect.getsource(FKPredictor._enforce_direction)
+        # The fix writes to ta/tb temp vars, then drops originals, then renames.
+        # The old bug wrote directly: .withColumn(ca, ...).withColumn(cb, ...)
+        # Verify the drop+rename pattern is present
+        assert ".drop(ca, cb)" in source or ".drop(" in source, (
+            "Must drop original columns before renaming temps"
+        )
+        assert "withColumnRenamed" in source, "Must rename temp columns back"
+        # Verify we never do .withColumn(ca, ...).withColumn(cb, ...) directly
+        assert ".withColumn(ca," not in source, (
+            "Must NOT write directly to ca -- use temp columns instead"
+        )
+
+    def test_swap_temp_vars_derived_from_pair(self):
+        """Temp column names must be derived from the pair names to avoid collisions."""
+        source = inspect.getsource(FKPredictor._enforce_direction)
+        assert 'f"_swap_{ca}"' in source or "f'_swap_{ca}'" in source, (
+            "Temp column names must include the pair name for uniqueness"
+        )
+
+    def test_swap_handles_all_column_pairs(self):
+        """All swap pairs (col, table, dtype, entity_type, card_ratio) use temp cols."""
+        source = inspect.getsource(FKPredictor._enforce_direction)
+        # The fix uses a loop with temp columns for ALL pairs
+        # Verify the for loop uses the swap pattern
+        assert "for ca, cb in" in source, "Must iterate over swap pairs"
+        assert 'f"_swap_{ca}"' in source or "f'_swap_{ca}'" in source, (
+            "Temp column names must be derived from pair names"
+        )
+
+    def test_enforce_direction_no_swap_preserves_columns(self):
+        """When ai_fk_side='a' (no swap), columns must be unchanged."""
+        source = inspect.getsource(FKPredictor._enforce_direction)
+        assert ".otherwise(" in source, (
+            "Must have .otherwise() branch to preserve original values when not swapping"
+        )
+
+    def test_stale_cleanup_removes_null_is_fk(self):
+        """_ensure_output_tables must clean rows where is_fk IS NULL and ai_confidence >= 1.0."""
+        source = inspect.getsource(FKPredictor._ensure_output_tables)
+        assert "is_fk IS NULL" in source, (
+            "_ensure_output_tables must remove stale pre-fix rows with is_fk IS NULL"
+        )

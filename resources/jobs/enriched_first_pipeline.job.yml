@@ -57,6 +57,7 @@ resources:
         # Stage 0: Bootstrap KB tables from information_schema (fast, no LLM)
         # ------------------------------------------------------------------
         - task_key: bootstrap_knowledge_bases
+          max_retries: 1
           job_cluster_key: analytics_cluster
           notebook_task:
             notebook_path: ../../notebooks/bootstrap_knowledge_bases.py
@@ -71,6 +72,7 @@ resources:
         # Stage 1: Profiling, extended metadata, ontology (parallel, after bootstrap)
         # ------------------------------------------------------------------
         - task_key: run_profiling
+          max_retries: 1
           depends_on:
             - task_key: bootstrap_knowledge_bases
           job_cluster_key: analytics_cluster
@@ -84,6 +86,7 @@ resources:
             - whl: ../../dist/*.whl
 
         - task_key: extract_extended_metadata
+          max_retries: 1
           depends_on:
             - task_key: bootstrap_knowledge_bases
           job_cluster_key: analytics_cluster
@@ -97,6 +100,7 @@ resources:
             - whl: ../../dist/*.whl
 
         - task_key: build_ontology
+          max_retries: 1
           depends_on:
             - task_key: bootstrap_knowledge_bases
           job_cluster_key: analytics_cluster
@@ -116,6 +120,7 @@ resources:
         # Stage 2: Generate comments/PI/domain (enriched by profiling + constraints)
         # ------------------------------------------------------------------
         - task_key: generate_comments
+          max_retries: 1
           depends_on:
             - task_key: run_profiling
             - task_key: extract_extended_metadata
@@ -140,6 +145,7 @@ resources:
             - whl: ../../dist/*.whl
 
         - task_key: generate_pi
+          max_retries: 1
           depends_on:
             - task_key: generate_comments
           job_cluster_key: analytics_cluster
@@ -160,6 +166,7 @@ resources:
             - whl: ../../dist/*.whl
 
         - task_key: generate_domain
+          max_retries: 1
           depends_on:
             - task_key: generate_comments
           job_cluster_key: analytics_cluster
@@ -183,6 +190,7 @@ resources:
         # Stage 3: Build KBs (update with enriched LLM output)
         # ------------------------------------------------------------------
         - task_key: build_knowledge_base
+          max_retries: 1
           depends_on:
             - task_key: generate_comments
             - task_key: generate_pi
@@ -197,6 +205,7 @@ resources:
             - whl: ../../dist/*.whl
 
         - task_key: build_column_kb
+          max_retries: 1
           depends_on:
             - task_key: generate_comments
             - task_key: generate_pi
@@ -210,6 +219,7 @@ resources:
             - whl: ../../dist/*.whl
 
         - task_key: build_schema_kb
+          max_retries: 1
           depends_on:
             - task_key: build_knowledge_base
           job_cluster_key: analytics_cluster
@@ -226,6 +236,7 @@ resources:
         # Stage 4: Knowledge graph + embeddings
         # ------------------------------------------------------------------
         - task_key: build_knowledge_graph
+          max_retries: 1
           depends_on:
             - task_key: build_column_kb
             - task_key: build_schema_kb
@@ -242,6 +253,7 @@ resources:
                 package: graphframes
 
         - task_key: generate_embeddings
+          max_retries: 1
           depends_on:
             - task_key: build_knowledge_graph
             - task_key: build_ontology
@@ -258,6 +270,7 @@ resources:
         # Stage 5: Similarity, clustering, data quality, ontology validation
         # ------------------------------------------------------------------
         - task_key: build_similarity_edges
+          max_retries: 1
           depends_on:
             - task_key: generate_embeddings
           job_cluster_key: analytics_cluster
@@ -272,6 +285,7 @@ resources:
             - whl: ../../dist/*.whl
 
         - task_key: cluster_analysis
+          max_retries: 1
           depends_on:
             - task_key: generate_embeddings
           job_cluster_key: analytics_cluster
@@ -287,6 +301,7 @@ resources:
             - whl: ../../dist/*.whl
 
         - task_key: compute_data_quality
+          max_retries: 1
           depends_on:
             - task_key: run_profiling
           job_cluster_key: analytics_cluster
@@ -299,6 +314,7 @@ resources:
             - whl: ../../dist/*.whl
 
         - task_key: validate_ontology
+          max_retries: 1
           depends_on:
             - task_key: build_ontology
           job_cluster_key: analytics_cluster
@@ -314,6 +330,7 @@ resources:
         # Stage 6: FK prediction + final analysis
         # ------------------------------------------------------------------
         - task_key: predict_foreign_keys
+          max_retries: 1
           depends_on:
             - task_key: build_similarity_edges
           job_cluster_key: analytics_cluster
@@ -332,6 +349,7 @@ resources:
             - whl: ../../dist/*.whl
 
         - task_key: final_analysis
+          max_retries: 1
           depends_on:
             - task_key: predict_foreign_keys
             - task_key: cluster_analysis
@@ -350,6 +368,7 @@ resources:
         # Stage 7: Vector index
         # ------------------------------------------------------------------
         - task_key: build_vector_index
+          max_retries: 1
           depends_on:
             - task_key: final_analysis
           job_cluster_key: analytics_cluster
@@ -371,4 +390,12 @@ resources:
             autoscale:
               min_workers: 1
               max_workers: 4
+            # --- Uncomment for AWS ---
+            # aws_attributes:
+            #   first_on_demand: 1
+            #   availability: SPOT_WITH_FALLBACK
+            # --- Uncomment for Azure ---
+            # azure_attributes:
+            #   first_on_demand: 1
+            #   availability: SPOT_WITH_FALLBACK_AZURE
 

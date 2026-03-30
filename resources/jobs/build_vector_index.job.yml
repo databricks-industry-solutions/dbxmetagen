@@ -21,6 +21,7 @@ resources:
 
       tasks:
         - task_key: build_vector_index
+          max_retries: 1
           job_cluster_key: vector_index_cluster
           notebook_task:
             notebook_path: ../../notebooks/build_vector_index.py
@@ -38,3 +39,11 @@ resources:
             node_type_id: ${var.node_type}
             data_security_mode: SINGLE_USER
             num_workers: 1
+            # --- Uncomment for AWS ---
+            # aws_attributes:
+            #   first_on_demand: 1
+            #   availability: SPOT_WITH_FALLBACK
+            # --- Uncomment for Azure ---
+            # azure_attributes:
+            #   first_on_demand: 1
+            #   availability: SPOT_WITH_FALLBACK_AZURE
