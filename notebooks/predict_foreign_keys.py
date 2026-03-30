@@ -19,7 +19,6 @@ dbutils.widgets.text("column_similarity_threshold", "0.85", "Column Similarity T
 dbutils.widgets.text("table_similarity_threshold", "0.9", "Table Similarity Threshold (max; exclude above)")
 dbutils.widgets.text("confidence_threshold", "0.7", "Confidence Threshold")
 dbutils.widgets.text("sample_size", "5", "Sample Size")
-dbutils.widgets.text("model_endpoint", "databricks-gpt-oss-120b", "Model Endpoint")
 dbutils.widgets.text("apply_ddl", "false", "Apply DDL")
 dbutils.widgets.text("dry_run", "false", "Dry Run (count only, no AI calls)")
 dbutils.widgets.text("incremental", "true", "Incremental (true/false)")
@@ -30,7 +29,6 @@ column_similarity_threshold = float(dbutils.widgets.get("column_similarity_thres
 table_similarity_threshold = float(dbutils.widgets.get("table_similarity_threshold"))
 confidence_threshold = float(dbutils.widgets.get("confidence_threshold"))
 sample_size = int(dbutils.widgets.get("sample_size"))
-model_endpoint = dbutils.widgets.get("model_endpoint")
 apply_ddl = dbutils.widgets.get("apply_ddl").lower() == "true"
 dry_run = dbutils.widgets.get("dry_run").lower() == "true"
 incremental = dbutils.widgets.get("incremental").lower() == "true"
@@ -61,7 +59,6 @@ result = predict_foreign_keys(
     table_similarity_threshold=table_similarity_threshold,
     confidence_threshold=confidence_threshold,
     sample_size=sample_size,
-    model_endpoint=model_endpoint,
     apply_ddl=apply_ddl,
     dry_run=dry_run,
     incremental=incremental,

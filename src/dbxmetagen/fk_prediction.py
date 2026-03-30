@@ -16,6 +16,8 @@ from pyspark.sql.utils import AnalysisException
 
 logger = logging.getLogger(__name__)
 
+_FK_MODEL = "databricks-gpt-oss-120b"
+
 
 @dataclass
 class FKPredictionConfig:
@@ -31,7 +33,6 @@ class FKPredictionConfig:
     table_similarity_threshold: float = 0.9  # max table similarity (exclude near-duplicate tables)
     sample_size: int = 50
     confidence_threshold: float = 0.7
-    model_endpoint: str = "databricks-gpt-oss-120b"
     apply_ddl: bool = False
     dry_run: bool = False
     ontology_match_bonus_weight: float = 0.15
@@ -291,7 +292,7 @@ class FKPredictor:
                     continue
                 ref_table = ".".join(parts[:3])
                 ref_col = parts[3]
-                if src_table == ref_table and fk_col == ref_col:
+                if src_table == ref_table:
                     continue
                 col_a = f"{src_table}.{fk_col}"
                 col_b = f"{ref_table}.{ref_col}"
@@ -347,6 +348,8 @@ class FKPredictor:
                 tbl_a = tbl_a_raw if prefix.lower() in tbl_a_raw.lower() else None
                 tbl_b = tbl_b_raw if prefix.lower() in tbl_b_raw.lower() else None
                 if not tbl_a or not tbl_b:
+                    continue
+                if tbl_a.lower() == tbl_b.lower():
                     continue
                 col_a_fq = f"{tbl_a}.{col_a_raw}"
                 col_b_fq = f"{tbl_b}.{col_b_raw}"
@@ -788,7 +791,7 @@ class FKPredictor:
         candidates.createOrReplaceTempView("fk_scored")
         col_kb = self.config.fq(self.config.column_kb_table)
         tbl_kb = self.config.fq("table_knowledge_base")
-        model = self.config.model_endpoint
+        model = _FK_MODEL
 
         sql = f"""
         WITH kb_dedup AS (
@@ -1179,7 +1182,7 @@ class FKPredictor:
         # Clean up any existing self-referential rows from prior runs
         try:
             self.spark.sql(
-                f"DELETE FROM {preds} WHERE src_table = dst_table AND src_column = dst_column"
+                f"DELETE FROM {preds} WHERE src_table = dst_table"
             )
         except Exception:
             pass
@@ -1210,10 +1213,8 @@ class FKPredictor:
             .unionByName(declared_cands, allowMissingColumns=True) \
             .unionByName(query_cands, allowMissingColumns=True)
 
-        # Remove self-referential candidates (same table + same column)
-        candidates = candidates.filter(
-            (F.col("table_a") != F.col("table_b")) | (F.col("col_a") != F.col("col_b"))
-        )
+        # Remove same-table candidates (FKs must be cross-table)
+        candidates = candidates.filter(F.col("table_a") != F.col("table_b"))
 
         # Dedup: keep highest col_similarity per (col_a, col_b) pair
         dedup_w = Window.partitionBy("col_a", "col_b").orderBy(F.col("col_similarity").desc())
@@ -1320,7 +1321,6 @@ def predict_foreign_keys(
     table_similarity_threshold: float = 0.9,
     confidence_threshold: float = 0.7,
     sample_size: int = 5,
-    model_endpoint: str = "databricks-gpt-oss-120b",
     apply_ddl: bool = False,
     dry_run: bool = False,
     incremental: bool = True,
@@ -1333,7 +1333,6 @@ def predict_foreign_keys(
         table_similarity_threshold=table_similarity_threshold,
         confidence_threshold=confidence_threshold,
         sample_size=sample_size,
-        model_endpoint=model_endpoint,
         apply_ddl=apply_ddl,
         dry_run=dry_run,
         incremental=incremental,

@@ -164,7 +164,6 @@ greenlet==3.3.2 ; platform_machine == 'AMD64' or platform_machine == 'WIN32' or 
 grpcio==1.78.0
     # via
     #   databricks-connect
-    #   dbxmetagen
     #   grpcio-status
 grpcio-status==1.78.0
     # via databricks-connect
