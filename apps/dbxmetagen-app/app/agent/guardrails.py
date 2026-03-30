@@ -16,6 +16,21 @@ class GuardrailConfig:
     MAX_ANALYST_RESULT_ROWS = 500
     ANALYST_TIMEOUT_SECONDS = 60
 
+
+class EvidenceBudget:
+    """Per-section character limits for deep analysis evidence gathering.
+
+    TOTAL is a hard cap on the combined context sent to the LLM. Individual
+    limits are per-source and intentionally sum to less than TOTAL to leave
+    room for failure annotations, section headers, and other overhead.
+    """
+    VS_RESULTS = 15_000
+    GRAPH_EXPANSION = 15_000
+    GRAPH_TRAVERSAL = 20_000
+    FK_PREDICTIONS = 15_000
+    STRUCTURED_RETRIEVAL = 20_000
+    TOTAL = 120_000
+
 # ---------------------------------------------------------------------------
 # Safety prompt block -- append to every agent system prompt
 # ---------------------------------------------------------------------------

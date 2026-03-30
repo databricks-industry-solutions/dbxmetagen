@@ -5,7 +5,6 @@ This module creates ground truth datasets for evaluating metadata generation
 across different modes (comment, pi, domain).
 """
 
-import pandas as pd
 from typing import Dict, List, Any
 
 
@@ -65,7 +64,7 @@ def create_comment_mode_examples() -> List[Dict[str, Any]]:
                 },
                 "mode": "comment",
             },
-            "ground_truth": {
+            "expectations": {
                 "table": "Customer profiles table containing personal identification information and contact details for registered customers. Includes unique customer identifiers, full names, email addresses, phone numbers, and account creation timestamps. Primary key is customer_id.",
                 "columns": [
                     "customer_id",
@@ -136,7 +135,7 @@ def create_comment_mode_examples() -> List[Dict[str, Any]]:
                 },
                 "mode": "comment",
             },
-            "ground_truth": {
+            "expectations": {
                 "table": "Sales transactions table recording all customer purchases. Contains transaction identifiers, customer references, product references, monetary amounts, and transaction dates. Foreign keys to customer_profiles and products tables. No null values as all fields are required for valid transactions.",
                 "columns": [
                     "transaction_id",
@@ -201,7 +200,7 @@ def create_comment_mode_examples() -> List[Dict[str, Any]]:
                 },
                 "mode": "comment",
             },
-            "ground_truth": {
+            "expectations": {
                 "table": "Employee records table containing sensitive HR information including personal identification numbers, compensation data, and employment details. Contains highly sensitive PII (SSN) and confidential salary information. Primary key is employee_id with minimal null values across most fields.",
                 "columns": ["employee_id", "ssn", "salary", "department", "hire_date"],
                 "column_contents": [
@@ -255,7 +254,7 @@ def create_pi_mode_examples() -> List[Dict[str, Any]]:
                 ],
                 "mode": "pi",
             },
-            "ground_truth": {
+            "expectations": {
                 "table": {"classification": "PII", "type": "CUSTOMER_DATA"},
                 "columns": [
                     "customer_id",
@@ -298,7 +297,7 @@ def create_pi_mode_examples() -> List[Dict[str, Any]]:
                 ],
                 "mode": "pi",
             },
-            "ground_truth": {
+            "expectations": {
                 "table": {"classification": "PII", "type": "EMPLOYEE_DATA"},
                 "columns": ["employee_id", "ssn", "salary", "department", "hire_date"],
                 "classification": ["None", "PII", "SENSITIVE", "None", "None"],
@@ -341,7 +340,7 @@ def create_pi_mode_examples() -> List[Dict[str, Any]]:
                 ],
                 "mode": "pi",
             },
-            "ground_truth": {
+            "expectations": {
                 "table": {"classification": "None", "type": "TRANSACTIONAL"},
                 "columns": [
                     "transaction_id",
@@ -363,16 +362,16 @@ def create_pi_mode_examples() -> List[Dict[str, Any]]:
     ]
 
 
-def create_eval_dataset(modes: List[str] = None) -> pd.DataFrame:
+def create_eval_dataset(modes: List[str] = None) -> List[Dict[str, Any]]:
     """
     Create evaluation dataset for dbxmetagen prompt testing.
 
     Args:
         modes: List of modes to include. If None, includes all modes.
-               Options: ['comment', 'pi', 'domain']
+               Options: ['comment', 'pi']
 
     Returns:
-        DataFrame compatible with mlflow.evaluate()
+        List of dicts compatible with mlflow.genai.evaluate()
     """
     if modes is None:
         modes = ["comment", "pi"]
@@ -385,14 +384,14 @@ def create_eval_dataset(modes: List[str] = None) -> pd.DataFrame:
     if "pi" in modes:
         all_examples.extend(create_pi_mode_examples())
 
-    return pd.DataFrame(all_examples)
+    return all_examples
 
 
 if __name__ == "__main__":
-    # Test dataset creation
-    df = create_eval_dataset()
-    print(f"Created evaluation dataset with {len(df)} examples")
-    print(f"\nModes: {df['inputs'].apply(lambda x: x['mode']).unique()}")
+    examples = create_eval_dataset()
+    print(f"Created evaluation dataset with {len(examples)} examples")
+    modes = set(ex["inputs"]["mode"] for ex in examples)
+    print(f"\nModes: {modes}")
     print(f"\nExample request IDs:")
-    for rid in df["request_id"].head():
-        print(f"  - {rid}")
+    for ex in examples[:5]:
+        print(f"  - {ex['request_id']}")

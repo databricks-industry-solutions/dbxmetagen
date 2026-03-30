@@ -24,7 +24,7 @@ _MOCK_MODULES = [
     "fastapi", "fastapi.responses", "fastapi.staticfiles", "fastapi.middleware", "fastapi.middleware.cors",
     "starlette", "starlette.middleware", "starlette.middleware.base", "starlette.requests", "starlette.responses",
     "sqlalchemy", "sqlalchemy.orm",
-    "uvicorn", "cachetools", "databricks.sdk", "databricks", "databricks.sdk.service", "databricks.sdk.service.sql",
+    "uvicorn", "cachetools",
     "langchain_core", "langchain_core.tools", "langchain_core.messages",
     "langchain_databricks", "langchain_community", "langchain_community.chat_models",
     "langgraph", "langgraph.graph", "langgraph.graph.message",

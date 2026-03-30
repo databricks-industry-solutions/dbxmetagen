@@ -7,6 +7,12 @@
 
 set -e
 
+# Bridge pip proxy config to uv (see deploy.sh for explanation)
+if [ -z "$UV_INDEX_URL" ]; then
+    _pip_idx=$(pip3 config get global.index-url 2>/dev/null || true)
+    [ -n "$_pip_idx" ] && export UV_INDEX_URL="$_pip_idx"
+fi
+
 if [ -x "/opt/homebrew/bin/databricks" ]; then
   DATABRICKS_CLI="/opt/homebrew/bin/databricks"
 elif [ -x "/usr/local/bin/databricks" ]; then
@@ -98,7 +104,7 @@ include:
 artifacts:
   default:
     type: whl
-    build: poetry build
+    build: uv build
     path: .
 
 targets:
@@ -139,7 +145,7 @@ if [ "$RUN_ONLY" = false ]; then
   echo ""
 
   echo "Building wheel..."
-  poetry build -q
+  uv build -q
 
   echo "Deploying bundle..."
   "$DATABRICKS_CLI" bundle deploy -t "$TARGET"

@@ -1,4 +1,4 @@
-"""Unit tests for fk_prediction module.
+"""Unit and integration tests for fk_prediction module.
 
 Tests focus on:
 1. Declared FK self-reference guard (P1)
@@ -6,17 +6,25 @@ Tests focus on:
 3. UI double-append dedup fix (P3)
 4. Direction enforcement logic (I3c)
 5. Query history candidate extraction (I1)
+6. Hardcoded model constant (_FK_MODEL)
+7. Full run() pipeline orchestration and dry-run accounting
 """
 
 import sys
 import os
 import re
-from unittest.mock import MagicMock
+import inspect
+from unittest.mock import MagicMock, patch, call
 from types import SimpleNamespace
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from dbxmetagen.fk_prediction import FKPredictionConfig, FKPredictor
+from dbxmetagen.fk_prediction import (
+    FKPredictionConfig,
+    FKPredictor,
+    _FK_MODEL,
+    predict_foreign_keys,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -75,14 +83,15 @@ class TestDeclaredFKGuard:
         assert pairs[0][1] == "cat.sch.customers.id"
 
     def test_mixed_self_and_cross_fks(self):
-        """Only the self-referential entry is removed; others stay."""
+        """Same-table entries (both same-col and different-col) are removed; only cross-table stays."""
         spark = MagicMock()
         spark.sql.return_value.collect.return_value = [
             _mock_row(
                 table_name="cat.sch.employees",
                 foreign_keys={
-                    "manager_id": "cat.sch.employees.manager_id",  # self-ref
-                    "dept_id": "cat.sch.departments.id",            # cross-table
+                    "manager_id": "cat.sch.employees.manager_id",    # same table, same col
+                    "supervisor_id": "cat.sch.employees.employee_id",  # same table, diff col
+                    "dept_id": "cat.sch.departments.id",               # cross-table
                 },
             )
         ]
@@ -94,8 +103,8 @@ class TestDeclaredFKGuard:
         assert len(pairs) == 1
         assert "departments" in pairs[0][1]
 
-    def test_same_table_different_column_allowed(self):
-        """Self-join FK (same table, different columns) is allowed."""
+    def test_same_table_different_column_filtered(self):
+        """Same-table FK (different columns) is filtered out."""
         spark = MagicMock()
         spark.sql.return_value.collect.return_value = [
             _mock_row(
@@ -106,9 +115,9 @@ class TestDeclaredFKGuard:
         pred = _make_predictor(spark)
         pred.get_declared_fk_candidates()
         args = spark.createDataFrame.call_args
-        assert args is not None
-        pairs = args[0][0]
-        assert len(pairs) == 1
+        if args is not None:
+            pairs = args[0][0]
+            assert len(pairs) == 0, f"Expected 0 pairs, got {len(pairs)}: {pairs}"
 
 
 # ---------------------------------------------------------------------------
@@ -218,6 +227,36 @@ class TestQueryHistoryRegex:
 
 
 # ---------------------------------------------------------------------------
+# Query history same-table filtering
+# ---------------------------------------------------------------------------
+
+class TestQueryHistorySameTableFilter:
+    """get_query_join_candidates must exclude self-joins."""
+
+    def test_same_table_join_excluded(self):
+        """A self-join in query history should not produce candidates."""
+        spark = MagicMock()
+        spark.sql.return_value.collect.return_value = [
+            _mock_row(statement=(
+                "SELECT * FROM cat.sch.orders a JOIN cat.sch.orders b "
+                "ON cat.sch.orders.parent_id = cat.sch.orders.id"
+            )),
+            _mock_row(statement=(
+                "SELECT * FROM cat.sch.orders a JOIN cat.sch.orders b "
+                "ON cat.sch.orders.parent_id = cat.sch.orders.id"
+            )),
+        ]
+        pred = _make_predictor(spark)
+        pred.get_query_join_candidates()
+        args = spark.createDataFrame.call_args
+        if args is not None:
+            pairs = args[0][0]
+            for p in pairs:
+                tbl_a, tbl_b = p[2], p[3]
+                assert tbl_a != tbl_b, f"Same-table pair leaked through: {p}"
+
+
+# ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
 
@@ -226,6 +265,235 @@ class TestFKPredictionConfig:
         cfg = FKPredictionConfig(catalog_name="c", schema_name="s")
         assert cfg.fq("tbl") == "c.s.tbl"
 
-    def test_default_model(self):
+    def test_model_not_configurable(self):
         cfg = FKPredictionConfig(catalog_name="c", schema_name="s")
-        assert cfg.model_endpoint == "databricks-gpt-oss-120b"
+        assert not hasattr(cfg, "model_endpoint")
+
+
+# ---------------------------------------------------------------------------
+# Hardcoded model constant
+# ---------------------------------------------------------------------------
+
+class TestHardcodedModel:
+    """_FK_MODEL must be gpt-oss-120b, not configurable via any parameter."""
+
+    def test_constant_value(self):
+        assert _FK_MODEL == "databricks-gpt-oss-120b"
+
+    def test_convenience_function_has_no_model_param(self):
+        sig = inspect.signature(predict_foreign_keys)
+        assert "model_endpoint" not in sig.parameters
+
+    def test_ai_judge_sql_uses_hardcoded_model(self):
+        """The SQL passed to spark.sql in ai_judge must contain _FK_MODEL."""
+        spark = MagicMock()
+        cfg = FKPredictionConfig(catalog_name="c", schema_name="s")
+        pred = FKPredictor(spark, cfg)
+        mock_candidates = MagicMock()
+
+        pred.ai_judge(mock_candidates)
+
+        sql_calls = [str(c) for c in spark.sql.call_args_list]
+        ai_calls = [s for s in sql_calls if "AI_QUERY" in s]
+        assert ai_calls, "ai_judge must execute SQL containing AI_QUERY"
+        assert any(_FK_MODEL in s for s in ai_calls), (
+            f"AI_QUERY SQL must reference '{_FK_MODEL}'"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Full pipeline orchestration (run method)
+# ---------------------------------------------------------------------------
+
+class _Expr:
+    """Stand-in for PySpark Column when no JVM is available (databricks-connect)."""
+    def __ge__(self, o): return _Expr()
+    def __le__(self, o): return _Expr()
+    def __gt__(self, o): return _Expr()
+    def __lt__(self, o): return _Expr()
+    def __eq__(self, o): return _Expr()
+    def __ne__(self, o): return _Expr()
+    def __and__(self, o): return _Expr()
+    def __or__(self, o): return _Expr()
+    def __hash__(self): return id(self)
+    def desc(self): return _Expr()
+    def over(self, w): return _Expr()
+
+
+def _chainable_mock():
+    """Mock DataFrame that supports chained PySpark-style calls."""
+    m = MagicMock()
+    for attr in (
+        "unionByName", "filter", "withColumn", "fillna", "drop",
+        "select", "distinct", "orderBy", "alias",
+    ):
+        getattr(m, attr).return_value = m
+    m.count.return_value = 0
+    m.collect.return_value = []
+    m.columns = []
+    return m
+
+
+def _mock_pyspark_F():
+    """Create a mock pyspark.sql.functions module with comparable Column stand-ins."""
+    m = MagicMock()
+    m.col.return_value = _Expr()
+    m.lit.return_value = _Expr()
+    m.row_number.return_value = _Expr()
+    m.coalesce.return_value = _Expr()
+    m.greatest.return_value = _Expr()
+    m.least.return_value = _Expr()
+    m.round.return_value = _Expr()
+    m.current_timestamp.return_value = _Expr()
+    return m
+
+
+_CANDIDATE_SOURCES = [
+    "get_candidates",
+    "get_name_based_candidates",
+    "get_ontology_relationship_candidates",
+    "get_declared_fk_candidates",
+    "get_query_join_candidates",
+]
+
+
+class TestRunOrchestration:
+    """run() must call all candidate sources and apply same-table filtering."""
+
+    def test_run_calls_all_five_candidate_sources(self):
+        spark = MagicMock()
+        cfg = FKPredictionConfig(catalog_name="c", schema_name="s")
+        pred = FKPredictor(spark, cfg)
+        df = _chainable_mock()
+        patches = (
+            [patch.object(pred, name, return_value=df) for name in _CANDIDATE_SOURCES]
+            + [patch.object(pred, "_ensure_output_tables")]
+            + [patch("dbxmetagen.fk_prediction.F", _mock_pyspark_F())]
+            + [patch("dbxmetagen.fk_prediction.Window", MagicMock())]
+        )
+        for p in patches:
+            p.start()
+        try:
+            result = pred.run()
+        finally:
+            for p in patches:
+                p.stop()
+
+        assert result["candidates"] == 0
+        df.unionByName.assert_called()
+        assert df.unionByName.call_count == 4  # 4 unions for 5 sources
+
+    def test_run_filters_candidates_after_union(self):
+        """run() must call .filter() on the unioned candidates (same-table guard)."""
+        spark = MagicMock()
+        cfg = FKPredictionConfig(catalog_name="c", schema_name="s")
+        pred = FKPredictor(spark, cfg)
+        df = _chainable_mock()
+        patches = (
+            [patch.object(pred, name, return_value=df) for name in _CANDIDATE_SOURCES]
+            + [patch.object(pred, "_ensure_output_tables")]
+            + [patch("dbxmetagen.fk_prediction.F", _mock_pyspark_F())]
+            + [patch("dbxmetagen.fk_prediction.Window", MagicMock())]
+        )
+        for p in patches:
+            p.start()
+        try:
+            pred.run()
+        finally:
+            for p in patches:
+                p.stop()
+
+        df.filter.assert_called()
+
+    def test_run_zero_candidates_returns_early(self):
+        spark = MagicMock()
+        cfg = FKPredictionConfig(catalog_name="c", schema_name="s")
+        pred = FKPredictor(spark, cfg)
+        df = _chainable_mock()
+        patches = (
+            [patch.object(pred, name, return_value=df) for name in _CANDIDATE_SOURCES]
+            + [patch.object(pred, "_ensure_output_tables")]
+            + [patch("dbxmetagen.fk_prediction.F", _mock_pyspark_F())]
+            + [patch("dbxmetagen.fk_prediction.Window", MagicMock())]
+        )
+        for p in patches:
+            p.start()
+        ai_patch = patch.object(pred, "ai_judge")
+        mock_ai = ai_patch.start()
+        try:
+            result = pred.run()
+        finally:
+            ai_patch.stop()
+            for p in patches:
+                p.stop()
+
+        mock_ai.assert_not_called()
+        assert result == {
+            "candidates": 0, "ai_query_rows": 0,
+            "predictions": 0, "edges": 0, "ddl_applied": 0,
+        }
+
+
+class TestDryRunAccounting:
+    """dry_run=True must count candidates and AI-eligible rows without calling ai_judge."""
+
+    def _make_dry_run_predictor(self):
+        spark = MagicMock()
+        cfg = FKPredictionConfig(catalog_name="c", schema_name="s", dry_run=True)
+        return FKPredictor(spark, cfg)
+
+    def _dry_run_patches(self, pred, df):
+        return (
+            [patch.object(pred, name, return_value=df) for name in _CANDIDATE_SOURCES]
+            + [
+                patch.object(pred, "_ensure_output_tables"),
+                patch.object(pred, "_sample_from_source", return_value=df),
+                patch.object(pred, "add_entity_match", return_value=df),
+                patch.object(pred, "add_lineage_signal", return_value=df),
+                patch.object(pred, "rule_score", return_value=df),
+                patch.object(pred, "cardinality_analysis", return_value=df),
+                patch("dbxmetagen.fk_prediction.F", _mock_pyspark_F()),
+                patch("dbxmetagen.fk_prediction.Window", MagicMock()),
+            ]
+        )
+
+    def test_dry_run_skips_ai_judge(self):
+        pred = self._make_dry_run_predictor()
+        df = _chainable_mock()
+        df.count.side_effect = [5, 3, 5]
+
+        patches = self._dry_run_patches(pred, df)
+        for p in patches:
+            p.start()
+        ai_patch = patch.object(pred, "ai_judge")
+        mock_ai = ai_patch.start()
+        try:
+            result = pred.run()
+        finally:
+            ai_patch.stop()
+            for p in patches:
+                p.stop()
+
+        mock_ai.assert_not_called()
+        assert result["dry_run"] is True
+        assert result["predictions"] == 0
+        assert result["edges"] == 0
+        assert result["ddl_applied"] == 0
+
+    def test_dry_run_reports_candidate_count(self):
+        pred = self._make_dry_run_predictor()
+        df = _chainable_mock()
+        df.count.side_effect = [10, 7, 10]
+
+        patches = self._dry_run_patches(pred, df)
+        for p in patches:
+            p.start()
+        try:
+            result = pred.run()
+        finally:
+            for p in patches:
+                p.stop()
+
+        assert result["dry_run"] is True
+        assert result["candidates"] == 10
+        assert result["ai_query_rows"] == 7

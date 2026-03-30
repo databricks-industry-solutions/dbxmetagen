@@ -16,24 +16,20 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-
-      - name: Install Poetry
-        run: |
-          python3 -m pip install --user pipx
-          python3 -m pipx ensurepath
-          echo "$HOME/.local/bin" >> $GITHUB_PATH
-          pipx install poetry==2.0.1
 
       - name: Install pre-commit
         run: pip install pre-commit
 
       - name: Run pre-commit checks
         run: pre-commit run --all-files
-        continue-on-error: true # Don't fail the build, just report
+        continue-on-error: true
 
   test-unit:
     name: Unit Tests (Python ${{ matrix.python-version }})
@@ -48,58 +44,40 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Install Poetry
-        run: |
-          python3 -m pip install --user pipx
-          python3 -m pipx ensurepath
-          echo "$HOME/.local/bin" >> $GITHUB_PATH
-          pipx install poetry==2.0.1
-
-      - name: Configure Poetry
-        run: |
-          poetry config virtualenvs.create true
-          poetry config virtualenvs.in-project true
-
       - name: Load cached venv
-        id: cached-poetry-dependencies
+        id: cached-uv-dependencies
         uses: actions/cache@v4
         with:
           path: .venv
-          key: venv-${{ runner.os }}-py${{ matrix.python-version }}-${{ hashFiles('**/poetry.lock') }}
+          key: venv-${{ runner.os }}-py${{ matrix.python-version }}-${{ hashFiles('**/uv.lock') }}
           restore-keys: |
             venv-${{ runner.os }}-py${{ matrix.python-version }}-
 
       - name: Install dependencies
-        if: steps.cached-poetry-dependencies.outputs.cache-hit != 'true'
-        run: poetry install --no-interaction --no-root
-
-      - name: Install project
-        run: poetry install --no-interaction
+        run: uv sync
 
       - name: Run unit tests
         run: |
-          poetry run pytest -v --tb=short --durations=10
+          uv run pytest -v --tb=short --durations=10
 
       - name: Generate test summary
         if: always()
         run: |
-          echo "## 🧪 Test Results - Python ${{ matrix.python-version }}" >> $GITHUB_STEP_SUMMARY
+          echo "## Test Results - Python ${{ matrix.python-version }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           if [ ${{ job.status }} == 'success' ]; then
-            echo "✅ All 190 unit tests passed!" >> $GITHUB_STEP_SUMMARY
+            echo "All unit tests passed!" >> $GITHUB_STEP_SUMMARY
           else
-            echo "❌ Some tests failed" >> $GITHUB_STEP_SUMMARY
+            echo "Some tests failed" >> $GITHUB_STEP_SUMMARY
           fi
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Test Coverage:**" >> $GITHUB_STEP_SUMMARY
-          echo "- Streamlit App Logic: 91 tests" >> $GITHUB_STEP_SUMMARY
-          echo "- Core Functionality: 99 tests" >> $GITHUB_STEP_SUMMARY
-          echo "- Integration Tests: Excluded (run separately)" >> $GITHUB_STEP_SUMMARY
 
   test-coverage:
     name: Test Coverage
@@ -109,31 +87,22 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Install Poetry
-        run: |
-          python3 -m pip install --user pipx
-          python3 -m pipx ensurepath
-          echo "$HOME/.local/bin" >> $GITHUB_PATH
-          pipx install poetry==2.0.1
-
-      - name: Configure Poetry
-        run: |
-          poetry config virtualenvs.create true
-          poetry config virtualenvs.in-project true
-
       - name: Install dependencies
         run: |
-          poetry install --no-interaction
-          poetry add --group dev pytest-cov
+          uv sync
+          uv pip install pytest-cov
 
       - name: Run tests with coverage
         run: |
-          poetry run pytest --cov=src --cov=app --cov-report=term --cov-report=html
+          uv run pytest --cov=src --cov=app --cov-report=term --cov-report=html
         continue-on-error: true
 
       - name: Upload coverage report
@@ -152,20 +121,16 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Install Poetry
-        run: |
-          python3 -m pip install --user pipx
-          python3 -m pipx ensurepath
-          echo "$HOME/.local/bin" >> $GITHUB_PATH
-          pipx install poetry==2.0.1
-
       - name: Build wheel
-        run: poetry build
+        run: uv build
 
       - name: Test wheel installation
         run: |
@@ -187,10 +152,11 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
       - name: Validate pyproject.toml
-        run: |
-          pip install poetry
-          poetry check
+        run: uv build --sdist --no-cache 2>/dev/null && echo "pyproject.toml is valid"
 
       - name: Validate YAML files
         run: |
@@ -206,7 +172,7 @@ jobs:
     steps:
       - name: Check results
         run: |
-          echo "## 📊 CI Pipeline Summary" >> $GITHUB_STEP_SUMMARY
+          echo "## CI Pipeline Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Job | Status |" >> $GITHUB_STEP_SUMMARY
           echo "|-----|--------|" >> $GITHUB_STEP_SUMMARY

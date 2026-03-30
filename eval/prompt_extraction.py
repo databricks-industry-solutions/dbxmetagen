@@ -92,24 +92,17 @@ def create_model_function(
     )
 
     @mlflow.trace
-    def model_fn(inputs: Dict[str, Any]) -> Dict[str, Any]:
+    def model_fn(**inputs) -> Dict[str, Any]:
         """
         Generate metadata using dbxmetagen prompts.
 
-        Args:
-            inputs: Dict with:
-                - table_name: str
-                - columns: List[str]
-                - column_types: Dict[str, str]
-                - sample_data: List[Dict]
-                - metadata: Dict (optional)
-                - mode: str
+        Called by mlflow.genai.evaluate() with the 'inputs' dict unpacked
+        as keyword arguments.
 
         Returns:
             Dict with 'response' key containing generated metadata
         """
         try:
-            # Create minimal config (no YAML loading)
             config = MetadataConfig(
                 skip_yaml_loading=True,
                 catalog_name="eval",

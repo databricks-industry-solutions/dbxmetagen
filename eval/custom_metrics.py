@@ -1,304 +1,188 @@
 """
-Custom metrics for dbxmetagen evaluation.
+Custom scorers for dbxmetagen evaluation.
 
-Defines both programmatic metrics and LLM-as-judge metrics for evaluating
-metadata generation quality.
+Defines both programmatic scorers and LLM judge scorers for evaluating
+metadata generation quality. Uses MLflow 3.x scorer and make_judge APIs.
 
 Currently generalized, not intented to be run by end users.
 """
 
-import mlflow
-from mlflow.metrics import make_genai_metric, MetricValue
-from typing import Dict, Any, List
+from mlflow.genai.scorers import scorer
+from mlflow.genai.judges import make_judge
+from typing import List, Literal
 
 
 # ============================================================================
-# Programmatic Metrics (Deterministic)
+# Programmatic Scorers (Deterministic, per-row)
 # ============================================================================
 
 
-def pii_detection_accuracy(
-    predictions: List[Dict], targets: List[Dict], metrics: Dict
-) -> MetricValue:
-    """
-    Calculate PII classification accuracy for PI mode.
+@scorer
+def pii_detection_accuracy(outputs: dict, expectations: dict) -> float:
+    """Calculate PII classification accuracy for PI mode."""
+    if not isinstance(outputs, dict) or not isinstance(expectations, dict):
+        return 0.0
 
-    Compares predicted vs ground truth PII classifications at column level.
-    """
-    total_correct = 0
-    total_columns = 0
+    pred_response = outputs.get("response", {})
+    if "classification" not in expectations:
+        return 0.0
 
-    for pred, gt in zip(predictions, targets):
-        if not isinstance(pred, dict) or not isinstance(gt, dict):
-            continue
+    gt_classifications = expectations.get("classification", [])
+    pred_classifications = pred_response.get("classification", [])
 
-        # Extract response
-        pred_response = pred.get("response", {}) if isinstance(pred, dict) else {}
-
-        # Check if this is PI mode evaluation
-        if "classification" not in gt:
-            continue
-
-        gt_classifications = gt.get("classification", [])
-        pred_classifications = pred_response.get("classification", [])
-
-        # Compare each column
-        for gt_class, pred_class in zip(gt_classifications, pred_classifications):
-            total_columns += 1
-            if gt_class == pred_class:
-                total_correct += 1
-
-    accuracy = total_correct / total_columns if total_columns > 0 else 0.0
-
-    return MetricValue(scores=[accuracy], aggregate_results={"mean": accuracy})
-
-
-def comment_completeness(
-    predictions: List[Dict], targets: List[Dict], metrics: Dict
-) -> MetricValue:
-    """
-    Check if all expected columns have comments in comment mode.
-
-    Measures what percentage of columns received comments.
-    """
-    completeness_scores = []
-
-    for pred, gt in zip(predictions, targets):
-        if not isinstance(pred, dict) or not isinstance(gt, dict):
-            continue
-
-        pred_response = pred.get("response", {}) if isinstance(pred, dict) else {}
-
-        # Check if this is comment mode evaluation
-        if "columns" not in gt:
-            continue
-
-        expected_cols = set(gt.get("columns", []))
-        predicted_cols = set(pred_response.get("columns", []))
-
-        if not expected_cols:
-            continue
-
-        completeness = len(expected_cols & predicted_cols) / len(expected_cols)
-        completeness_scores.append(completeness)
-
-    avg_completeness = (
-        sum(completeness_scores) / len(completeness_scores)
-        if completeness_scores
-        else 0.0
+    total_correct = sum(
+        1 for gt, pred in zip(gt_classifications, pred_classifications)
+        if gt == pred
     )
-
-    return MetricValue(
-        scores=completeness_scores,
-        aggregate_results={
-            "mean": avg_completeness,
-            "min": min(completeness_scores) if completeness_scores else 0.0,
-            "max": max(completeness_scores) if completeness_scores else 0.0,
-        },
-    )
+    total = min(len(gt_classifications), len(pred_classifications))
+    return total_correct / total if total > 0 else 0.0
 
 
-def comment_length_appropriateness(
-    predictions: List[Dict], targets: List[Dict], metrics: Dict
-) -> MetricValue:
-    """
-    Check if comment lengths are appropriate (not too short or too long).
+@scorer
+def comment_completeness(outputs: dict, expectations: dict) -> float:
+    """Check if all expected columns received comments."""
+    if not isinstance(outputs, dict) or not isinstance(expectations, dict):
+        return 0.0
 
-    Penalizes comments that are < 50 chars (too brief) or > 500 chars (too verbose).
-    """
-    length_scores = []
+    pred_response = outputs.get("response", {})
+    expected_cols = set(expectations.get("columns", []))
+    predicted_cols = set(pred_response.get("columns", []))
 
-    for pred, gt in zip(predictions, targets):
-        if not isinstance(pred, dict):
-            continue
+    if not expected_cols:
+        return 0.0
+    return len(expected_cols & predicted_cols) / len(expected_cols)
 
-        pred_response = pred.get("response", {}) if isinstance(pred, dict) else {}
 
-        # Check table comment length
-        table_comment = pred_response.get("table", "")
-        if table_comment:
-            length = len(table_comment)
-            # Score: 1.0 if between 100-300 chars, penalize if outside
-            if 100 <= length <= 300:
-                score = 1.0
-            elif 50 <= length < 100 or 300 < length <= 400:
-                score = 0.7  # Slightly short or long
-            elif length < 50:
-                score = 0.3  # Too short
-            else:
-                score = 0.5  # Too long
-            length_scores.append(score)
+@scorer
+def comment_length_appropriateness(outputs: dict) -> float:
+    """Check if comment lengths are appropriate (not too short or too long)."""
+    if not isinstance(outputs, dict):
+        return 0.0
 
-        # Check column comment lengths
-        column_comments = pred_response.get("column_contents", [])
-        for comment in column_comments:
-            length = len(comment)
-            # Column comments can be shorter: 50-200 ideal
-            if 50 <= length <= 200:
-                score = 1.0
-            elif 30 <= length < 50 or 200 < length <= 300:
-                score = 0.7
-            elif length < 30:
-                score = 0.3
-            else:
-                score = 0.5
-            length_scores.append(score)
+    pred_response = outputs.get("response", {})
+    scores = []
 
-    avg_score = sum(length_scores) / len(length_scores) if length_scores else 0.0
+    table_comment = pred_response.get("table", "")
+    if table_comment:
+        length = len(table_comment)
+        if 100 <= length <= 300:
+            scores.append(1.0)
+        elif 50 <= length < 100 or 300 < length <= 400:
+            scores.append(0.7)
+        elif length < 50:
+            scores.append(0.3)
+        else:
+            scores.append(0.5)
 
-    return MetricValue(scores=length_scores, aggregate_results={"mean": avg_score})
+    for comment in pred_response.get("column_contents", []):
+        length = len(comment)
+        if 50 <= length <= 200:
+            scores.append(1.0)
+        elif 30 <= length < 50 or 200 < length <= 300:
+            scores.append(0.7)
+        elif length < 30:
+            scores.append(0.3)
+        else:
+            scores.append(0.5)
+
+    return sum(scores) / len(scores) if scores else 0.0
 
 
 # ============================================================================
-# LLM-as-Judge Metrics
+# LLM Judge Scorers (via make_judge)
 # ============================================================================
 
-comment_quality_metric = make_genai_metric(
+comment_quality_judge = make_judge(
     name="comment_quality",
-    definition=(
-        "Evaluate the quality of generated table and column comments for database metadata. "
-        "Consider technical accuracy, completeness, conciseness, clarity, and usefulness."
-    ),
-    grading_prompt=(
+    instructions=(
         "You are evaluating metadata comments generated for a database table.\n\n"
-        "**Table Name:** {inputs[table_name]}\n"
-        "**Columns:** {inputs[columns]}\n\n"
-        "**Generated Comment:**\n"
-        "{predictions[response]}\n\n"
-        "**Expected/Ground Truth:**\n"
-        "{targets}\n\n"
+        "**Table Info (inputs):**\n{{ inputs }}\n\n"
+        "**Generated Comment (outputs):**\n{{ outputs }}\n\n"
+        "**Expected/Ground Truth (expectations):**\n{{ expectations }}\n\n"
         "Evaluate the generated comment on a scale of 1-5:\n\n"
-        "5 = Excellent\n"
-        "- Accurate description of table/column purpose\n"
-        "- Identifies all key information (relationships, constraints, data types)\n"
-        "- Concise yet complete\n"
-        "- Properly identifies PII when present\n"
-        "- Uses professional, clear language\n\n"
-        "4 = Good\n"
-        "- Mostly accurate with minor omissions\n"
-        "- Covers most key information\n"
-        "- Reasonably concise\n"
-        "- Generally identifies PII\n\n"
-        "3 = Fair\n"
-        "- Somewhat accurate but missing important details\n"
-        "- Either too brief or too verbose\n"
-        "- May miss some PII\n"
-        "- Could be clearer\n\n"
-        "2 = Poor\n"
-        "- Significant inaccuracies\n"
-        "- Missing critical information\n"
-        "- Misidentifies PII\n"
-        "- Unclear or confusing\n\n"
-        "1 = Very Poor\n"
-        "- Completely inaccurate or unhelpful\n"
-        "- No useful information\n"
-        "- Fundamentally misunderstands data\n\n"
-        "Provide your score and a brief (1-2 sentence) justification."
+        "5 = Excellent: Accurate description of table/column purpose, identifies all "
+        "key relationships/constraints, concise yet complete, properly identifies PII, "
+        "professional language\n"
+        "4 = Good: Mostly accurate with minor omissions\n"
+        "3 = Fair: Somewhat accurate but missing important details\n"
+        "2 = Poor: Significant inaccuracies or missing critical information\n"
+        "1 = Very Poor: Completely inaccurate or unhelpful\n\n"
+        "Return your score as one of: 1, 2, 3, 4, 5"
     ),
-    model="endpoints:/databricks-claude-sonnet-4-6",
-    parameters={"temperature": 0.0, "max_tokens": 500},
-    aggregations=["mean", "variance", "p90"],
-    greater_is_better=True,
+    feedback_value_type=Literal["1", "2", "3", "4", "5"],
+    model="databricks:/databricks-claude-sonnet-4-6",
 )
 
-
-pii_accuracy_metric = make_genai_metric(
+pii_accuracy_judge = make_judge(
     name="pii_classification_accuracy",
-    definition=(
-        "Evaluate the accuracy of PII classification for database columns. "
-        "Checks if sensitive data is correctly identified."
-    ),
-    grading_prompt=(
+    instructions=(
         "You are evaluating PII (Personally Identifiable Information) classifications.\n\n"
-        "**Table:** {inputs[table_name]}\n"
-        "**Columns:** {inputs[columns]}\n\n"
-        "**Generated Classifications:**\n"
-        "{predictions[response]}\n\n"
-        "**Expected Classifications:**\n"
-        "{targets}\n\n"
-        "Evaluate the PII classification accuracy on a scale of 1-5:\n\n"
-        "5 = Perfect - All columns correctly classified\n"
-        "4 = Good - 80%+ columns correct, minor errors only\n"
-        "3 = Fair - 60-80% correct, some significant misses\n"
-        "2 = Poor - <60% correct, missed important PII\n"
-        "1 = Very Poor - Fundamentally wrong, missed critical PII like SSN/email\n\n"
-        "Focus especially on whether sensitive data (SSN, email, phone, names, addresses) "
-        "is correctly identified.\n\n"
-        "Provide your score and justification."
+        "**Table Info (inputs):**\n{{ inputs }}\n\n"
+        "**Generated Classifications (outputs):**\n{{ outputs }}\n\n"
+        "**Expected Classifications (expectations):**\n{{ expectations }}\n\n"
+        "Evaluate PII classification accuracy on a scale of 1-5:\n\n"
+        "5 = Perfect: All columns correctly classified\n"
+        "4 = Good: 80%+ correct, minor errors only\n"
+        "3 = Fair: 60-80% correct, some significant misses\n"
+        "2 = Poor: <60% correct, missed important PII\n"
+        "1 = Very Poor: Fundamentally wrong, missed critical PII like SSN/email\n\n"
+        "Focus especially on whether sensitive data (SSN, email, phone, names, "
+        "addresses) is correctly identified.\n"
+        "Return your score as one of: 1, 2, 3, 4, 5"
     ),
-    model="endpoints:/databricks-claude-sonnet-4-6",
-    parameters={"temperature": 0.0, "max_tokens": 300},
-    aggregations=["mean", "variance"],
-    greater_is_better=True,
+    feedback_value_type=Literal["1", "2", "3", "4", "5"],
+    model="databricks:/databricks-claude-sonnet-4-6",
 )
 
-
-technical_accuracy_metric = make_genai_metric(
+technical_accuracy_judge = make_judge(
     name="technical_accuracy",
-    definition=(
-        "Evaluate whether the generated metadata correctly describes technical aspects "
-        "like data types, relationships, constraints, and patterns."
-    ),
-    grading_prompt=(
+    instructions=(
         "Evaluate the technical accuracy of the metadata description.\n\n"
-        "**Sample Data:**\n"
-        "{inputs[sample_data]}\n\n"
-        "**Generated Description:**\n"
-        "{predictions[response]}\n\n"
-        "**Expected Description:**\n"
-        "{targets}\n\n"
+        "**Inputs (including sample data):**\n{{ inputs }}\n\n"
+        "**Generated Description (outputs):**\n{{ outputs }}\n\n"
+        "**Expected Description (expectations):**\n{{ expectations }}\n\n"
         "Rate technical accuracy (1-5):\n\n"
         "5 = All technical details correct (types, relationships, constraints)\n"
         "4 = Mostly correct, minor technical errors\n"
         "3 = Some technical errors or omissions\n"
         "2 = Significant technical inaccuracies\n"
         "1 = Fundamentally wrong technical understanding\n\n"
-        "Check: data types, foreign keys, primary keys, null handling, formats, patterns.\n\n"
-        "Provide score and reasoning."
+        "Check: data types, foreign keys, primary keys, null handling, formats, "
+        "patterns.\n"
+        "Return your score as one of: 1, 2, 3, 4, 5"
     ),
-    model="endpoints:/databricks-claude-sonnet-4-6",
-    parameters={"temperature": 0.0, "max_tokens": 300},
-    aggregations=["mean"],
-    greater_is_better=True,
+    feedback_value_type=Literal["1", "2", "3", "4", "5"],
+    model="databricks:/databricks-claude-sonnet-4-6",
 )
 
 
 # ============================================================================
-# Metric Collections by Mode
+# Scorer Collections by Mode
 # ============================================================================
 
 
-def get_metrics_for_mode(mode: str) -> List:
-    """
-    Get appropriate metrics for a specific mode.
-
-    Args:
-        mode: 'comment' or 'pi'
-
-    Returns:
-        List of metric functions
-    """
+def get_scorers_for_mode(mode: str) -> List:
+    """Get appropriate scorers for a specific mode."""
     if mode == "comment":
         return [
-            comment_quality_metric,
-            technical_accuracy_metric,
+            comment_quality_judge,
+            technical_accuracy_judge,
             comment_completeness,
             comment_length_appropriateness,
         ]
     elif mode == "pi":
-        return [pii_accuracy_metric, pii_detection_accuracy]
-    else:
-        return []
+        return [pii_accuracy_judge, pii_detection_accuracy]
+    return []
 
 
 if __name__ == "__main__":
-    print("Available metrics:")
+    print("Available scorers:")
     print("\nComment Mode:")
-    for metric in get_metrics_for_mode("comment"):
-        metric_name = metric.name if hasattr(metric, "name") else metric.__name__
-        print(f"  - {metric_name}")
+    for s in get_scorers_for_mode("comment"):
+        name = s.name if hasattr(s, "name") else s.__name__
+        print(f"  - {name}")
 
     print("\nPI Mode:")
-    for metric in get_metrics_for_mode("pi"):
-        metric_name = metric.name if hasattr(metric, "name") else metric.__name__
-        print(f"  - {metric_name}")
+    for s in get_scorers_for_mode("pi"):
+        name = s.name if hasattr(s, "name") else s.__name__
+        print(f"  - {name}")

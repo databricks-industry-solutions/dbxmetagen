@@ -141,7 +141,7 @@ echo -e "${YELLOW}1/3 Core Unit Tests${NC}"
 echo -e "${YELLOW}═══════════════════════════════════════════════${NC}"
 echo ""
 
-CORE_CMD="poetry run pytest tests/ --ignore=tests/test_ddl_regenerator.py --ignore=tests/test_binary_variant_types.py $PYTEST_ARGS"
+CORE_CMD="uv run pytest tests/ --ignore=tests/test_ddl_regenerator.py --ignore=tests/test_binary_variant_types.py $PYTEST_ARGS"
 
 run_test_suite "Core Unit Tests" "$CORE_CMD" "$YELLOW" CORE_TESTS_PASSED
 if [ $? -ne 0 ]; then
@@ -168,7 +168,7 @@ echo -e "${YELLOW}2/3 DDL Regenerator Tests (Separate Process)${NC}"
 echo -e "${YELLOW}═══════════════════════════════════════════════${NC}"
 echo ""
 
-DDL_CMD="poetry run pytest tests/test_ddl_regenerator.py $PYTEST_ARGS"
+DDL_CMD="uv run pytest tests/test_ddl_regenerator.py $PYTEST_ARGS"
 
 run_test_suite "DDL Regenerator Tests" "$DDL_CMD" "$YELLOW" DDL_TESTS_PASSED
 if [ $? -ne 0 ]; then
@@ -185,7 +185,7 @@ echo -e "${YELLOW}3/3 Binary/Variant Tests (Separate Process)${NC}"
 echo -e "${YELLOW}═══════════════════════════════════════════════${NC}"
 echo ""
 
-BINARY_CMD="poetry run pytest tests/test_binary_variant_types.py $PYTEST_ARGS"
+BINARY_CMD="uv run pytest tests/test_binary_variant_types.py $PYTEST_ARGS"
 
 run_test_suite "Binary/Variant Tests" "$BINARY_CMD" "$YELLOW" BINARY_TESTS_PASSED
 if [ $? -ne 0 ]; then

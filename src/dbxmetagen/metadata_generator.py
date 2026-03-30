@@ -1,7 +1,6 @@
 from abc import ABC, abstractmethod
 import json
 import logging
-import mlflow
 from pydantic import ValidationError
 from typing import Literal, Tuple, Dict, List, Any, Union, Optional
 from openai.types.chat.chat_completion import ChatCompletion
@@ -190,7 +189,6 @@ class CommentGenerator(MetadataGenerator):
         """
         Predict the chat response using the appropriate chat client.
         """
-        # mlflow.set_tag("benchmarking_id", self.config.benchmarking_id)
         self.chat_response = self.chat_client.create_structured_completion(
             messages=prompt_content,
             response_model=CommentResponse,

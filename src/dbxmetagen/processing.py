@@ -8,7 +8,6 @@ from abc import ABC
 from datetime import datetime
 from typing import List, Dict, Any, Optional, Tuple
 import logging
-import mlflow
 import nest_asyncio
 import pandas as pd
 from pydantic import BaseModel, Field, Extra, ValidationError, ConfigDict
@@ -52,11 +51,6 @@ from openai.types.chat.chat_completion import (
 )
 import pandas as pd
 
-try:
-    from mlflow.types.llm import TokenUsageStats, ChatResponse
-except ImportError:
-    TokenUsageStats = None
-    ChatResponse = None
 from grpc._channel import _InactiveRpcError, _MultiThreadedRendezvous
 from dbxmetagen.config import MetadataConfig
 from dbxmetagen.sampling import determine_sampling_ratio
@@ -77,6 +71,8 @@ from dbxmetagen.overrides import (
     override_metadata_from_csv,
     apply_overrides_with_joins,
     build_condition,
+    get_override_column_set,
+    load_override_data_for_table,
     get_join_conditions,
 )
 from dbxmetagen.user_utils import sanitize_user_identifier, get_current_user
@@ -561,6 +557,40 @@ def append_column_rows(
                 f"Invalid column contents type: {type(column_content)} for column {column_name}"
             )
         rows.append(row)
+    return rows
+
+
+def append_override_row(
+    rows: List[Row],
+    full_table_name: str,
+    tokenized_full_table_name: str,
+    col_name: str,
+    values: dict,
+    config: MetadataConfig,
+) -> List[Row]:
+    """Create a synthetic Row for an overridden column (pre-LLM injection)."""
+    if config.mode == "comment":
+        row = Row(
+            table=full_table_name,
+            tokenized_table=tokenized_full_table_name,
+            ddl_type="column",
+            column_name=col_name,
+            column_content=values.get("comment", ""),
+        )
+    elif config.mode == "pi":
+        row = Row(
+            table=full_table_name,
+            tokenized_table=tokenized_full_table_name,
+            ddl_type="column",
+            column_name=col_name,
+            classification=values.get("classification", "None"),
+            type=values.get("type", "None"),
+            confidence=1.0,
+            presidio_results=None,
+        )
+    else:
+        return rows
+    rows.append(row)
     return rows
 
 
@@ -2168,6 +2198,26 @@ def get_generated_metadata_data_aware(
     except Exception as e:
         print(f"Skipping {full_table_name}: unable to read table ({e})")
         return []
+    # Pre-LLM override exclusion: skip columns that already have overrides
+    if config.allow_manual_override and config.mode in ("comment", "pi"):
+        csv_path = getattr(config, "override_csv_path", "metadata_overrides.csv")
+        override_cols = get_override_column_set(csv_path, config, full_table_name)
+        if override_cols:
+            override_cols_lower = {c.lower() for c in override_cols}
+            remaining = [c for c in df.columns if c.lower() not in override_cols_lower]
+            if remaining:
+                logger.info(
+                    "Excluded %d overridden columns from LLM: %s",
+                    len(override_cols), sorted(override_cols),
+                )
+                df = df.select(remaining)
+            else:
+                logger.info(
+                    "All %d columns have overrides, skipping LLM entirely",
+                    len(override_cols),
+                )
+                return []
+
     responses = []
     nrows = df.count()
     chunked_dfs = chunk_df(df, config.columns_per_call)
@@ -2248,6 +2298,31 @@ def review_and_generate_metadata(
         column_rows = append_column_rows(
             config, column_rows, full_table_name, response, tokenized_full_table_name
         )
+
+    # Inject synthetic rows for pre-LLM excluded override columns
+    if config.allow_manual_override and config.mode in ("comment", "pi"):
+        csv_path = getattr(config, "override_csv_path", "metadata_overrides.csv")
+        override_data = load_override_data_for_table(csv_path, config, full_table_name)
+        if override_data:
+            tokenized_full_table_name = replace_catalog_name(config, full_table_name)
+            # Validate against actual source table columns
+            try:
+                spark = SparkSession.builder.getOrCreate()
+                source_cols_lower = {f.name.lower() for f in spark.table(full_table_name).schema.fields}
+            except Exception:
+                source_cols_lower = None
+            for col_name, values in override_data.items():
+                if source_cols_lower is not None and col_name.lower() not in source_cols_lower:
+                    logger.warning(
+                        "Override column '%s' not in source table %s -- skipping synthetic row",
+                        col_name, full_table_name,
+                    )
+                    continue
+                column_rows = append_override_row(
+                    column_rows, full_table_name, tokenized_full_table_name,
+                    col_name, values, config,
+                )
+
     return rows_to_df(column_rows, config), rows_to_df(table_rows, config)
 
 

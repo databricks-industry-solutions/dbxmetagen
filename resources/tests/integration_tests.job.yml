@@ -366,7 +366,7 @@ resources:
         # Fast tests -- config/parsing only, no LLM
         - job_cluster_key: fast_test_cluster
           new_cluster:
-            spark_version: 15.4.x-cpu-ml-scala2.12
+            spark_version: 17.3.x-cpu-ml-scala2.13
             node_type_id: ${var.node_type}
             num_workers: 0
             data_security_mode: SINGLE_USER
@@ -379,7 +379,7 @@ resources:
         # Core metadata tests -- batch A (test_02, test_03, test_09)
         - job_cluster_key: core_cluster_a
           new_cluster:
-            spark_version: 15.4.x-cpu-ml-scala2.12
+            spark_version: 17.3.x-cpu-ml-scala2.13
             node_type_id: ${var.node_type}
             num_workers: 0
             data_security_mode: SINGLE_USER
@@ -392,7 +392,7 @@ resources:
         # Core metadata tests -- batch B (test_04, test_05, test_08)
         - job_cluster_key: core_cluster_b
           new_cluster:
-            spark_version: 15.4.x-cpu-ml-scala2.12
+            spark_version: 17.3.x-cpu-ml-scala2.13
             node_type_id: ${var.node_type}
             num_workers: 0
             data_security_mode: SINGLE_USER
@@ -405,7 +405,7 @@ resources:
         # Core metadata tests -- batch C (test_06, test_07) + concurrent setup/validate
         - job_cluster_key: integration_test_cluster
           new_cluster:
-            spark_version: 15.4.x-cpu-ml-scala2.12
+            spark_version: 17.3.x-cpu-ml-scala2.13
             node_type_id: ${var.node_type}
             num_workers: 0
             data_security_mode: SINGLE_USER
@@ -418,7 +418,7 @@ resources:
         # Concurrent task testing -- must be separate clusters for true parallelism
         - job_cluster_key: concurrent_cluster_1
           new_cluster:
-            spark_version: 15.4.x-cpu-ml-scala2.12
+            spark_version: 17.3.x-cpu-ml-scala2.13
             node_type_id: ${var.node_type}
             num_workers: 0
             data_security_mode: SINGLE_USER
@@ -430,7 +430,7 @@ resources:
 
         - job_cluster_key: concurrent_cluster_2
           new_cluster:
-            spark_version: 15.4.x-cpu-ml-scala2.12
+            spark_version: 17.3.x-cpu-ml-scala2.13
             node_type_id: ${var.node_type}
             num_workers: 0
             data_security_mode: SINGLE_USER
@@ -443,14 +443,14 @@ resources:
         # E2E / ETL tests -- different runtime configurations
         - job_cluster_key: e2e_serverless_cluster
           new_cluster:
-            spark_version: 15.4.x-photon-scala2.12
+            spark_version: 17.3.x-photon-scala2.13
             node_type_id: ${var.node_type}
             num_workers: 1
             data_security_mode: SINGLE_USER
 
         - job_cluster_key: e2e_ml_cluster
           new_cluster:
-            spark_version: 15.4.x-cpu-ml-scala2.12
+            spark_version: 17.3.x-cpu-ml-scala2.13
             node_type_id: ${var.node_type}
             num_workers: 0
             data_security_mode: SINGLE_USER
@@ -462,7 +462,7 @@ resources:
 
         - job_cluster_key: e2e_standard_cluster
           new_cluster:
-            spark_version: 16.4.x-scala2.12
+            spark_version: 17.3.x-scala2.13
             node_type_id: ${var.node_type}
             num_workers: 0
             data_security_mode: USER_ISOLATION

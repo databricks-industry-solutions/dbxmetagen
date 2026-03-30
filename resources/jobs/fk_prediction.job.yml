@@ -24,8 +24,6 @@ resources:
           default: "0.7"
         - name: sample_size
           default: "50"
-        - name: model_endpoint
-          default: "databricks-gpt-oss-120b"
         - name: apply_ddl
           default: "false"
         - name: dry_run
@@ -43,7 +41,6 @@ resources:
               table_similarity_threshold: "{{job.parameters.table_similarity_threshold}}"
               confidence_threshold: "{{job.parameters.confidence_threshold}}"
               sample_size: "{{job.parameters.sample_size}}"
-              model_endpoint: "{{job.parameters.model_endpoint}}"
               apply_ddl: "{{job.parameters.apply_ddl}}"
               dry_run: "{{job.parameters.dry_run}}"
           libraries:

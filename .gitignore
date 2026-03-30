@@ -3,8 +3,7 @@ __pycache__/
 *.py[cod]
 *$py.class
 
-# Poetry specific files
-poetry.lock
+# Lock files are tracked (uv.lock is committed for reproducibility)
 
 # Distribution / packaging
 .Python

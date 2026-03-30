@@ -19,9 +19,12 @@ from unittest.mock import MagicMock, patch, call
 from dbxmetagen.config import MetadataConfig
 from dbxmetagen.overrides import (
     _is_blank,
+    _csv_cache,
     build_condition,
     apply_overrides_with_loop,
     override_metadata_from_csv,
+    get_override_column_set,
+    load_override_data_for_table,
 )
 
 
@@ -1051,3 +1054,584 @@ class TestCSVParsingRobustness:
                 mock_logger.warning.assert_not_called()
         finally:
             os.unlink(f.name)
+
+
+# ===========================================================================
+# TestGetOverrideColumnSet
+# ===========================================================================
+
+class TestGetOverrideColumnSet:
+    HEADER = "catalog,schema,table,column,comment,classification,type\n"
+
+    def _write_csv(self, *data_lines):
+        f = tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False)
+        f.write(self.HEADER)
+        for line in data_lines:
+            f.write(line + "\n")
+        f.close()
+        return f.name
+
+    def setup_method(self):
+        _csv_cache.clear()
+
+    def test_comment_mode_returns_columns_with_comments(self):
+        tmp = self._write_csv(
+            "cat,sch,orders,cust_id,Customer ID,,",
+            "cat,sch,orders,order_date,Order date,,",
+            "cat,sch,orders,amount,,,",  # blank comment -> excluded
+        )
+        try:
+            config = _make_config(mode="comment")
+            result = get_override_column_set(tmp, config, "cat.sch.orders")
+            assert result == {"cust_id", "order_date"}
+        finally:
+            os.unlink(tmp)
+
+    def test_pi_mode_returns_columns_with_classification_or_type(self):
+        tmp = self._write_csv(
+            "cat,sch,orders,ssn,,pi,pii",
+            "cat,sch,orders,name,,pi,",  # type blank, classification present
+            "cat,sch,orders,age,,,",  # both blank -> excluded
+        )
+        try:
+            config = _make_config(mode="pi")
+            result = get_override_column_set(tmp, config, "cat.sch.orders")
+            assert result == {"ssn", "name"}
+        finally:
+            os.unlink(tmp)
+
+    def test_domain_mode_returns_empty_set(self):
+        tmp = self._write_csv("cat,sch,orders,cust_id,Customer ID,,")
+        try:
+            config = _make_config(mode="domain")
+            result = get_override_column_set(tmp, config, "cat.sch.orders")
+            assert result == set()
+        finally:
+            os.unlink(tmp)
+
+    def test_filters_by_table_name(self):
+        tmp = self._write_csv(
+            "cat,sch,orders,cust_id,Customer ID,,",
+            "cat,sch,products,name,Product name,,",
+        )
+        try:
+            config = _make_config(mode="comment")
+            result = get_override_column_set(tmp, config, "cat.sch.orders")
+            assert result == {"cust_id"}
+        finally:
+            os.unlink(tmp)
+
+    def test_wildcard_no_table_matches_all(self):
+        """CSV rows with no table specified should match any table."""
+        tmp = self._write_csv(",,,ssn,,pi,pii")
+        try:
+            config = _make_config(mode="pi")
+            result = get_override_column_set(tmp, config, "cat.sch.orders")
+            assert result == {"ssn"}
+        finally:
+            os.unlink(tmp)
+
+    def test_csv_not_found_returns_empty(self):
+        config = _make_config(mode="comment")
+        result = get_override_column_set("/nonexistent/path.csv", config, "cat.sch.t")
+        assert result == set()
+
+    def test_none_path_returns_empty(self):
+        config = _make_config(mode="comment")
+        result = get_override_column_set(None, config, "cat.sch.t")
+        assert result == set()
+
+    def test_table_level_rows_ignored(self):
+        """Rows with no column name should not be included."""
+        tmp = self._write_csv("cat,sch,orders,,Table-level comment,,")
+        try:
+            config = _make_config(mode="comment")
+            result = get_override_column_set(tmp, config, "cat.sch.orders")
+            assert result == set()
+        finally:
+            os.unlink(tmp)
+
+
+# ===========================================================================
+# TestLoadOverrideDataForTable
+# ===========================================================================
+
+class TestLoadOverrideDataForTable:
+    HEADER = "catalog,schema,table,column,comment,classification,type\n"
+
+    def _write_csv(self, *data_lines):
+        f = tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False)
+        f.write(self.HEADER)
+        for line in data_lines:
+            f.write(line + "\n")
+        f.close()
+        return f.name
+
+    def setup_method(self):
+        _csv_cache.clear()
+
+    def test_comment_mode_returns_column_data(self):
+        tmp = self._write_csv("cat,sch,orders,cust_id,Customer ID,,")
+        try:
+            config = _make_config(mode="comment")
+            result = load_override_data_for_table(tmp, config, "cat.sch.orders")
+            assert result == {"cust_id": {"comment": "Customer ID"}}
+        finally:
+            os.unlink(tmp)
+
+    def test_pi_mode_returns_classification_and_type(self):
+        tmp = self._write_csv("cat,sch,orders,ssn,,pi,pii")
+        try:
+            config = _make_config(mode="pi")
+            result = load_override_data_for_table(tmp, config, "cat.sch.orders")
+            assert result == {"ssn": {"classification": "pi", "type": "pii"}}
+        finally:
+            os.unlink(tmp)
+
+    def test_pi_mode_missing_type_defaults_to_none(self):
+        tmp = self._write_csv("cat,sch,orders,ssn,,pi,")
+        try:
+            config = _make_config(mode="pi")
+            result = load_override_data_for_table(tmp, config, "cat.sch.orders")
+            assert result == {"ssn": {"classification": "pi", "type": "None"}}
+        finally:
+            os.unlink(tmp)
+
+    def test_domain_mode_returns_empty(self):
+        tmp = self._write_csv("cat,sch,orders,cust_id,Customer ID,,")
+        try:
+            config = _make_config(mode="domain")
+            result = load_override_data_for_table(tmp, config, "cat.sch.orders")
+            assert result == {}
+        finally:
+            os.unlink(tmp)
+
+    def test_filters_by_table(self):
+        tmp = self._write_csv(
+            "cat,sch,orders,cust_id,Customer ID,,",
+            "cat,sch,products,name,Product name,,",
+        )
+        try:
+            config = _make_config(mode="comment")
+            result = load_override_data_for_table(tmp, config, "cat.sch.orders")
+            assert "cust_id" in result
+            assert "name" not in result
+        finally:
+            os.unlink(tmp)
+
+    def test_csv_not_found_returns_empty(self):
+        config = _make_config(mode="comment")
+        result = load_override_data_for_table("/nonexistent.csv", config, "cat.sch.t")
+        assert result == {}
+
+    def test_blank_override_values_skipped(self):
+        tmp = self._write_csv("cat,sch,orders,amount,,,")
+        try:
+            config = _make_config(mode="comment")
+            result = load_override_data_for_table(tmp, config, "cat.sch.orders")
+            assert result == {}
+        finally:
+            os.unlink(tmp)
+
+
+# ===========================================================================
+# TestPreLLMExclusionWiring
+# ===========================================================================
+
+class TestPreLLMExclusionWiring:
+    """Verify the pre-LLM column exclusion and synthetic row injection
+    in get_generated_metadata_data_aware and review_and_generate_metadata."""
+
+    @classmethod
+    def setup_class(cls):
+        cls._saved = install_processing_stubs()
+        import dbxmetagen.processing as pm
+        cls._processing_mod = pm
+
+    @classmethod
+    def teardown_class(cls):
+        uninstall_processing_stubs(cls._saved)
+
+    def test_override_columns_excluded_from_llm_chunks(self):
+        """Overridden columns should be dropped from the DataFrame before chunking."""
+        pm = self._processing_mod
+        mock_df = MagicMock()
+        mock_df.columns = ["col_a", "col_b", "col_c"]
+        mock_df.count.return_value = 10
+        mock_df.select.return_value = mock_df
+
+        config = _make_config(
+            mode="comment",
+            allow_manual_override=True,
+            override_csv_path="overrides.csv",
+            sample_size=0,
+        )
+
+        with (
+            patch.object(pm, "read_table_with_type_conversion", return_value=mock_df),
+            patch.object(pm, "_is_metric_view", return_value=False),
+            patch.object(pm, "get_override_column_set", return_value={"col_b"}),
+            patch.object(pm, "chunk_df", return_value=[]) as mock_chunk,
+        ):
+            from pyspark.sql import SparkSession
+            mock_spark = MagicMock()
+            SparkSession.builder.getOrCreate.return_value = mock_spark
+
+            result = pm.get_generated_metadata_data_aware(mock_spark, config, "cat.sch.t")
+            mock_df.select.assert_called_once_with(["col_a", "col_c"])
+            assert result == []
+
+    def test_all_columns_overridden_returns_empty(self):
+        """When all columns have overrides, return empty list (0 LLM calls)."""
+        pm = self._processing_mod
+        mock_df = MagicMock()
+        mock_df.columns = ["col_a", "col_b"]
+        mock_df.count.return_value = 10
+
+        config = _make_config(
+            mode="comment",
+            allow_manual_override=True,
+            override_csv_path="overrides.csv",
+            sample_size=0,
+        )
+
+        with (
+            patch.object(pm, "read_table_with_type_conversion", return_value=mock_df),
+            patch.object(pm, "_is_metric_view", return_value=False),
+            patch.object(pm, "get_override_column_set", return_value={"col_a", "col_b"}),
+            patch.object(pm, "chunk_df") as mock_chunk,
+        ):
+            from pyspark.sql import SparkSession
+            mock_spark = MagicMock()
+            SparkSession.builder.getOrCreate.return_value = mock_spark
+
+            result = pm.get_generated_metadata_data_aware(mock_spark, config, "cat.sch.t")
+            assert result == []
+            mock_chunk.assert_not_called()
+
+    def test_no_overrides_passes_all_columns(self):
+        """When no overrides exist, the full DataFrame goes to chunk_df."""
+        pm = self._processing_mod
+        mock_df = MagicMock()
+        mock_df.columns = ["col_a", "col_b"]
+        mock_df.count.return_value = 10
+
+        config = _make_config(
+            mode="comment",
+            allow_manual_override=True,
+            override_csv_path="overrides.csv",
+            sample_size=0,
+        )
+
+        with (
+            patch.object(pm, "read_table_with_type_conversion", return_value=mock_df),
+            patch.object(pm, "_is_metric_view", return_value=False),
+            patch.object(pm, "get_override_column_set", return_value=set()),
+            patch.object(pm, "chunk_df", return_value=[]) as mock_chunk,
+        ):
+            from pyspark.sql import SparkSession
+            mock_spark = MagicMock()
+            SparkSession.builder.getOrCreate.return_value = mock_spark
+
+            pm.get_generated_metadata_data_aware(mock_spark, config, "cat.sch.t")
+            mock_df.select.assert_not_called()
+            mock_chunk.assert_called_once()
+
+    @staticmethod
+    def _make_field(field_name):
+        """Create a mock schema field with a proper .name attribute."""
+        f = MagicMock()
+        f.name = field_name
+        return f
+
+    def test_synthetic_rows_injected_in_review(self):
+        """review_and_generate_metadata should inject synthetic rows for overridden columns."""
+        pm = self._processing_mod
+        mock_column_df = MagicMock()
+        mock_table_df = MagicMock()
+
+        config = _make_config(
+            mode="comment",
+            allow_manual_override=True,
+            override_csv_path="overrides.csv",
+        )
+
+        override_data = {"cust_id": {"comment": "Customer ID"}}
+
+        with (
+            patch.object(pm, "get_generated_metadata", return_value=[]),
+            patch.object(pm, "replace_catalog_name", return_value="tok.sch.t"),
+            patch.object(pm, "load_override_data_for_table", return_value=override_data),
+            patch.object(pm, "append_override_row", wraps=pm.append_override_row) as mock_append,
+            patch.object(pm, "rows_to_df", side_effect=[mock_column_df, mock_table_df]),
+        ):
+            from pyspark.sql import SparkSession
+            mock_spark = MagicMock()
+            mock_schema = MagicMock()
+            mock_schema.fields = [self._make_field("cust_id")]
+            mock_spark.table.return_value.schema = mock_schema
+            SparkSession.builder.getOrCreate.return_value = mock_spark
+
+            pm.review_and_generate_metadata(config, "cat.sch.t")
+            mock_append.assert_called_once()
+            call_args = mock_append.call_args
+            assert call_args.args[3] == "cust_id"  # col_name
+            assert call_args.args[4] == {"comment": "Customer ID"}  # values
+
+    def test_mixed_override_and_llm_columns(self):
+        """10 cols, 3 overridden -> LLM sees 7, output has synthetic rows for 3."""
+        pm = self._processing_mod
+
+        config = _make_config(
+            mode="comment",
+            allow_manual_override=True,
+            override_csv_path="overrides.csv",
+        )
+
+        # Simulate 7 LLM-generated rows via a fake append_column_rows
+        def fake_append_column_rows(cfg, rows, ftn, resp, tok):
+            from pyspark.sql import Row
+            for i in range(7):
+                rows.append(Row(table=ftn, tokenized_table=tok, ddl_type="column",
+                                column_name=f"col_{i}", column_content=f"content_{i}"))
+            return rows
+
+        override_data = {
+            "col_7": {"comment": "Override 7"},
+            "col_8": {"comment": "Override 8"},
+            "col_9": {"comment": "Override 9"},
+        }
+
+        mock_column_df = MagicMock()
+        mock_table_df = MagicMock()
+
+        with (
+            patch.object(pm, "get_generated_metadata", return_value=[MagicMock()]),
+            patch.object(pm, "replace_catalog_name", return_value="tok.sch.t"),
+            patch.object(pm, "append_table_row", side_effect=lambda r, *a: r),
+            patch.object(pm, "append_column_rows", side_effect=fake_append_column_rows),
+            patch.object(pm, "load_override_data_for_table", return_value=override_data),
+            patch.object(pm, "rows_to_df", side_effect=[mock_column_df, mock_table_df]),
+        ):
+            from pyspark.sql import SparkSession
+            mock_spark = MagicMock()
+            mock_schema = MagicMock()
+            mock_schema.fields = [self._make_field(f"col_{i}") for i in range(10)]
+            mock_spark.table.return_value.schema = mock_schema
+            SparkSession.builder.getOrCreate.return_value = mock_spark
+
+            pm.review_and_generate_metadata(config, "cat.sch.t")
+            column_rows = pm.rows_to_df.call_args_list[0].args[0]
+            assert len(column_rows) == 10  # 7 from LLM + 3 synthetic
+
+    def test_override_disabled_no_exclusion(self):
+        """When allow_manual_override is False, no exclusion or injection happens."""
+        pm = self._processing_mod
+        mock_df = MagicMock()
+        mock_df.columns = ["col_a", "col_b"]
+        mock_df.count.return_value = 10
+
+        config = _make_config(
+            mode="comment",
+            allow_manual_override=False,
+            override_csv_path="overrides.csv",
+            sample_size=0,
+        )
+
+        with (
+            patch.object(pm, "read_table_with_type_conversion", return_value=mock_df),
+            patch.object(pm, "_is_metric_view", return_value=False),
+            patch.object(pm, "get_override_column_set") as mock_get_cols,
+            patch.object(pm, "chunk_df", return_value=[]),
+        ):
+            from pyspark.sql import SparkSession
+            mock_spark = MagicMock()
+            SparkSession.builder.getOrCreate.return_value = mock_spark
+
+            pm.get_generated_metadata_data_aware(mock_spark, config, "cat.sch.t")
+            mock_get_cols.assert_not_called()
+
+    def test_pi_mode_exclusion_and_synthetic_rows(self):
+        """PI mode: overridden columns excluded from LLM, synthetic rows injected."""
+        pm = self._processing_mod
+
+        config = _make_config(
+            mode="pi",
+            allow_manual_override=True,
+            override_csv_path="overrides.csv",
+        )
+
+        def fake_append_column_rows(cfg, rows, ftn, resp, tok):
+            from pyspark.sql import Row
+            for i in range(3):
+                rows.append(Row(table=ftn, tokenized_table=tok, ddl_type="column",
+                                column_name=f"col_{i}", classification="None",
+                                type="None", confidence=0.9, presidio_results=None))
+            return rows
+
+        override_data = {
+            "ssn": {"classification": "pi", "type": "pii"},
+            "dob": {"classification": "pi", "type": "None"},
+        }
+
+        mock_column_df = MagicMock()
+        mock_table_df = MagicMock()
+
+        with (
+            patch.object(pm, "get_generated_metadata", return_value=[MagicMock()]),
+            patch.object(pm, "replace_catalog_name", return_value="tok.sch.t"),
+            patch.object(pm, "append_column_rows", side_effect=fake_append_column_rows),
+            patch.object(pm, "load_override_data_for_table", return_value=override_data),
+            patch.object(pm, "append_override_row", wraps=pm.append_override_row) as mock_append,
+            patch.object(pm, "rows_to_df", side_effect=[mock_column_df, mock_table_df]),
+        ):
+            from pyspark.sql import SparkSession
+            mock_spark = MagicMock()
+            mock_schema = MagicMock()
+            mock_schema.fields = [
+                self._make_field("col_0"), self._make_field("col_1"),
+                self._make_field("col_2"), self._make_field("ssn"),
+                self._make_field("dob"),
+            ]
+            mock_spark.table.return_value.schema = mock_schema
+            SparkSession.builder.getOrCreate.return_value = mock_spark
+
+            pm.review_and_generate_metadata(config, "cat.sch.t")
+            column_rows = pm.rows_to_df.call_args_list[0].args[0]
+            assert len(column_rows) == 5  # 3 LLM + 2 synthetic
+
+            # Verify append_override_row was called with correct PI data
+            assert mock_append.call_count == 2
+            call_cols = {c.args[3] for c in mock_append.call_args_list}
+            assert call_cols == {"ssn", "dob"}
+            ssn_call = next(c for c in mock_append.call_args_list if c.args[3] == "ssn")
+            assert ssn_call.args[4] == {"classification": "pi", "type": "pii"}
+
+    def test_case_insensitive_column_exclusion(self):
+        """CSV has 'customer_id' but source table has 'Customer_ID' -- still excluded."""
+        pm = self._processing_mod
+        mock_df = MagicMock()
+        mock_df.columns = ["Customer_ID", "Amount", "Order_Date"]
+        mock_df.count.return_value = 10
+        mock_df.select.return_value = mock_df
+
+        config = _make_config(
+            mode="comment",
+            allow_manual_override=True,
+            override_csv_path="overrides.csv",
+            sample_size=0,
+        )
+
+        with (
+            patch.object(pm, "read_table_with_type_conversion", return_value=mock_df),
+            patch.object(pm, "_is_metric_view", return_value=False),
+            patch.object(pm, "get_override_column_set", return_value={"customer_id"}),
+            patch.object(pm, "chunk_df", return_value=[]),
+        ):
+            from pyspark.sql import SparkSession
+            mock_spark = MagicMock()
+            SparkSession.builder.getOrCreate.return_value = mock_spark
+
+            pm.get_generated_metadata_data_aware(mock_spark, config, "cat.sch.t")
+            mock_df.select.assert_called_once_with(["Amount", "Order_Date"])
+
+    def test_case_insensitive_source_validation(self):
+        """Override col 'customer_id' should match source schema 'Customer_ID'."""
+        pm = self._processing_mod
+        mock_column_df = MagicMock()
+        mock_table_df = MagicMock()
+
+        config = _make_config(
+            mode="comment",
+            allow_manual_override=True,
+            override_csv_path="overrides.csv",
+        )
+
+        override_data = {"customer_id": {"comment": "The customer identifier"}}
+
+        with (
+            patch.object(pm, "get_generated_metadata", return_value=[]),
+            patch.object(pm, "replace_catalog_name", return_value="tok.sch.t"),
+            patch.object(pm, "load_override_data_for_table", return_value=override_data),
+            patch.object(pm, "append_override_row", wraps=pm.append_override_row) as mock_append,
+            patch.object(pm, "rows_to_df", side_effect=[mock_column_df, mock_table_df]),
+        ):
+            from pyspark.sql import SparkSession
+            mock_spark = MagicMock()
+            mock_schema = MagicMock()
+            mock_schema.fields = [self._make_field("Customer_ID")]
+            mock_spark.table.return_value.schema = mock_schema
+            SparkSession.builder.getOrCreate.return_value = mock_spark
+
+            pm.review_and_generate_metadata(config, "cat.sch.t")
+            mock_append.assert_called_once()
+
+
+# ===========================================================================
+# TestAppendOverrideRow
+# ===========================================================================
+
+class _FakeRow:
+    """Lightweight Row substitute that stores kwargs as real attributes."""
+    def __init__(self, **kwargs):
+        for k, v in kwargs.items():
+            setattr(self, k, v)
+
+
+class TestAppendOverrideRow:
+    """Direct validation of append_override_row Row field names and values."""
+
+    @classmethod
+    def setup_class(cls):
+        cls._saved = install_processing_stubs()
+        import dbxmetagen.processing as pm
+        cls._processing_mod = pm
+
+    @classmethod
+    def teardown_class(cls):
+        uninstall_processing_stubs(cls._saved)
+
+    def _run(self, mode, col_name, values):
+        """Call append_override_row with a real Row substitute."""
+        pm = self._processing_mod
+        config = _make_config(mode=mode)
+        rows = []
+        with patch.object(pm, "Row", _FakeRow):
+            result = pm.append_override_row(
+                rows, "cat.sch.t", "tok.sch.t", col_name, values, config,
+            )
+        return result
+
+    def test_comment_mode_row_schema(self):
+        result = self._run("comment", "my_col", {"comment": "My description"})
+        assert len(result) == 1
+        row = result[0]
+        assert row.table == "cat.sch.t"
+        assert row.tokenized_table == "tok.sch.t"
+        assert row.ddl_type == "column"
+        assert row.column_name == "my_col"
+        assert row.column_content == "My description"
+
+    def test_pi_mode_row_schema(self):
+        result = self._run("pi", "ssn", {"classification": "pi", "type": "pii"})
+        assert len(result) == 1
+        row = result[0]
+        assert row.table == "cat.sch.t"
+        assert row.tokenized_table == "tok.sch.t"
+        assert row.ddl_type == "column"
+        assert row.column_name == "ssn"
+        assert row.classification == "pi"
+        assert row.type == "pii"
+        assert row.confidence == 1.0
+        assert row.presidio_results is None
+
+    def test_pi_mode_defaults_missing_fields(self):
+        result = self._run("pi", "col_x", {})
+        assert len(result) == 1
+        row = result[0]
+        assert row.classification == "None"
+        assert row.type == "None"
+
+    def test_domain_mode_is_noop(self):
+        result = self._run("domain", "col_x", {"comment": "ignored"})
+        assert len(result) == 0

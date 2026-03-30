@@ -9,6 +9,13 @@
 
 set -e
 
+# Bridge pip proxy config to uv (internal devs have pip configured for the
+# Databricks PyPI proxy; uv doesn't read pip config, so we forward it).
+if [ -z "$UV_INDEX_URL" ]; then
+    _pip_idx=$(pip3 config get global.index-url 2>/dev/null || true)
+    [ -n "$_pip_idx" ] && export UV_INDEX_URL="$_pip_idx"
+fi
+
 TARGET="dev"
 PROFILE="DEFAULT"
 RUN_PERMISSIONS=false
@@ -127,11 +134,16 @@ else
     APP_SP_ID=""
 fi
 
+# --- Sync requirements.txt from lock file ---
+echo ""
+echo "=== Syncing requirements.txt ==="
+bash scripts/export_requirements.sh
+
 # --- Build Python package ---
 echo ""
 echo "=== Building Python package ==="
 rm -rf dist/
-poetry build
+uv build
 echo "Python package built: $(ls dist/*.whl)"
 
 # --- Copy configurations into app source for deployment ---
