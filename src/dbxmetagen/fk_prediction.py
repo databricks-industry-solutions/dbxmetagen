@@ -834,6 +834,7 @@ class FKPredictor:
                     'Rule-based score: ', CAST(s.rule_score AS STRING), '. ',
                     'Respond ONLY with a JSON object: ',
                     '{{"is_fk": true/false, "confidence": 0.0-1.0, "fk_column": "a" or "b", "reasoning": "..."}}. ',
+                    'confidence = probability this IS a foreign key (0.0 = definitely not, 1.0 = definitely yes). ',
                     'fk_column should be "a" if Column A is the foreign key referencing Column B, or "b" if Column B is the foreign key referencing Column A.'
                 )
             ) AS ai_raw
@@ -853,18 +854,26 @@ class FKPredictor:
             ]
         )
         df = self.spark.sql(sql)
-        parsed = df.withColumn("ai_parsed", F.from_json(F.col("ai_raw"), schema))
+        # Strip markdown code fences that cheaper models may wrap JSON in
+        cleaned = df.withColumn(
+            "ai_raw",
+            F.regexp_replace(F.col("ai_raw"), r"^```(?:json)?\s*|\s*```$", ""),
+        )
+        parsed = cleaned.withColumn("ai_parsed", F.from_json(F.col("ai_raw"), schema))
+        is_fk = F.coalesce(F.col("ai_parsed.is_fk"), F.lit(False))
+        raw_conf = F.greatest(F.lit(0.0), F.least(F.lit(1.0),
+            F.coalesce(F.col("ai_parsed.confidence"), F.lit(0.0))))
         return (
-            parsed.withColumn(
+            parsed
+            .withColumn("ai_is_fk", is_fk)
+            .withColumn(
                 "ai_confidence",
-                F.greatest(F.lit(0.0), F.least(F.lit(1.0),
-                    F.coalesce(F.col("ai_parsed.confidence"), F.lit(0.0)))),
+                F.when(F.col("ai_is_fk"), raw_conf).otherwise(F.lit(0.0)),
             )
             .withColumn(
                 "ai_reasoning",
                 F.coalesce(F.col("ai_parsed.reasoning"), F.col("ai_raw")),
             )
-            .withColumn("ai_is_fk", F.coalesce(F.col("ai_parsed.is_fk"), F.lit(False)))
             .withColumn("ai_fk_side", F.lower(F.col("ai_parsed.fk_column")))
             .drop("ai_raw", "ai_parsed", "comment_a", "comment_b")
         )
@@ -918,7 +927,10 @@ class FKPredictor:
         ).drop("_col_a", "_col_b")
 
         result = (
-            result.withColumn("join_rate", F.coalesce(F.col("join_rate"), F.lit(0.0)))
+            result
+            .withColumn("join_rate",
+                F.least(F.lit(1.0), F.greatest(F.lit(0.0),
+                    F.coalesce(F.col("join_rate"), F.lit(0.0)))))
             .withColumn("join_matched", F.coalesce(F.col("join_matched"), F.lit(0)))
             .withColumn(
                 "ai_confidence",
@@ -993,7 +1005,7 @@ class FKPredictor:
                     LEAST(1.0, GREATEST(0.0, ai_confidence)) as ai_confidence,
                     ai_reasoning, join_rate, join_matched, pk_uniqueness, ri_score,
                     LEAST(1.0, GREATEST(0.0, final_confidence)) as final_confidence,
-                    created_at, updated_at
+                    created_at, updated_at, is_fk
                 FROM (
                     SELECT *, ROW_NUMBER() OVER (
                         PARTITION BY src_column, dst_column
@@ -1001,12 +1013,15 @@ class FKPredictor:
                     ) as _rn
                     FROM {target}
                 ) WHERE _rn = 1
+                  AND src_table != dst_table
+                  AND src_column != dst_column
             """)
         except AnalysisException:
             pass
 
         pk_uniq = F.coalesce(F.col("pk_uniqueness"), F.lit(0.5))
         ri = F.coalesce(F.col("ri_score"), F.lit(0.5))
+        capped_join = F.least(F.lit(1.0), F.greatest(F.lit(0.0), F.col("join_rate")))
 
         out = df.select(
             F.col("col_a").alias("src_column"),
@@ -1018,7 +1033,7 @@ class FKPredictor:
             "rule_score",
             F.greatest(F.lit(0.0), F.least(F.lit(1.0), F.col("ai_confidence"))).alias("ai_confidence"),
             "ai_reasoning",
-            "join_rate",
+            F.least(F.lit(1.0), F.greatest(F.lit(0.0), F.col("join_rate"))).alias("join_rate"),
             F.col("join_matched").cast("int").alias("join_matched"),
             pk_uniq.alias("pk_uniqueness"),
             ri.alias("ri_score"),
@@ -1026,13 +1041,20 @@ class FKPredictor:
                 F.col("col_similarity") * 0.15
                 + F.col("rule_score") * 0.15
                 + F.col("ai_confidence") * 0.25
-                + F.col("join_rate") * 0.15
+                + capped_join * 0.15
                 + pk_uniq * 0.15
                 + ri * 0.15
             )).alias("final_confidence"),
             F.current_timestamp().alias("created_at"),
             F.current_timestamp().alias("updated_at"),
+            F.col("ai_is_fk").alias("is_fk"),
         ).filter(F.col("ai_confidence") >= self.config.confidence_threshold)
+
+        # Safety net: never write same-table or same-column predictions
+        out = out.filter(
+            (F.col("src_table") != F.col("dst_table"))
+            & (F.col("src_column") != F.col("dst_column"))
+        )
 
         w = Window.partitionBy("src_column", "dst_column").orderBy(F.col("final_confidence").desc())
         out = out.withColumn("_rn", F.row_number().over(w)).filter(F.col("_rn") == 1).drop("_rn")
@@ -1042,6 +1064,7 @@ class FKPredictor:
             logger.info("No predictions to write")
             return 0
 
+        logger.info("Writing %d FK predictions to %s", count, target)
         staging_view = "_fk_predictions_staging"
         out.createOrReplaceTempView(staging_view)
         # Remove old rows whose direction was reversed (from pre-direction-enforcement runs)
@@ -1066,7 +1089,7 @@ class FKPredictor:
                 ai_reasoning = s.ai_reasoning, join_rate = s.join_rate,
                 join_matched = s.join_matched, pk_uniqueness = s.pk_uniqueness,
                 ri_score = s.ri_score, final_confidence = s.final_confidence,
-                updated_at = s.updated_at
+                updated_at = s.updated_at, is_fk = s.is_fk
             WHEN NOT MATCHED THEN INSERT *
         """)
         logger.info("Merged %d FK predictions", count)
@@ -1171,21 +1194,31 @@ class FKPredictor:
                 join_rate DOUBLE, join_matched INT,
                 pk_uniqueness DOUBLE, ri_score DOUBLE,
                 final_confidence DOUBLE, created_at TIMESTAMP,
-                updated_at TIMESTAMP
+                updated_at TIMESTAMP, is_fk BOOLEAN
             ) COMMENT 'Predicted foreign key relationships'
         """)
+        for col_def in ["updated_at TIMESTAMP", "is_fk BOOLEAN"]:
+            try:
+                self.spark.sql(f"ALTER TABLE {preds} ADD COLUMNS ({col_def})")
+                logger.info("Added column %s to %s", col_def, preds)
+            except Exception as e:
+                if "FIELDS_ALREADY_EXISTS" not in str(e) and "already exists" not in str(e).lower():
+                    raise
+
+        # Idempotent cleanup: remove self-referential and same-column rows.
+        # Uses DELETE ... WHERE which is a no-op when zero rows match.
+        cleanup_sql = f"DELETE FROM {preds} WHERE src_table = dst_table OR src_column = dst_column"
         try:
-            self.spark.sql(f"ALTER TABLE {preds} ADD COLUMNS (updated_at TIMESTAMP)")
-        except Exception as e:
-            if "FIELDS_ALREADY_EXISTS" not in str(e) and "already exists" not in str(e).lower():
+            result = self.spark.sql(cleanup_sql)
+            logger.info("FK cleanup: removed self-referential rows from %s", preds)
+        except AnalysisException as e:
+            # Table might not have data yet on very first run -- that's fine
+            if "TABLE_OR_VIEW_NOT_FOUND" in str(e) or "DELTA_TABLE_NOT_FOUND" in str(e):
+                logger.debug("FK cleanup skipped (table empty or new): %s", e)
+            else:
+                logger.error("FK cleanup failed: %s", e)
                 raise
-        # Clean up any existing self-referential rows from prior runs
-        try:
-            self.spark.sql(
-                f"DELETE FROM {preds} WHERE src_table = dst_table"
-            )
-        except Exception:
-            pass
+
         ddl = self.config.fq("fk_ddl_statements")
         self.spark.sql(f"""
             CREATE TABLE IF NOT EXISTS {ddl} (
@@ -1281,6 +1314,9 @@ class FKPredictor:
 
         # AI judgment
         judged = self.ai_judge(candidates)
+        ai_positive = judged.filter(F.col("ai_is_fk") == True).count()
+        ai_negative = judged.filter(F.col("ai_is_fk") == False).count()
+        logger.info("AI judgment: %d positive (is_fk=true), %d negative (is_fk=false)", ai_positive, ai_negative)
 
         # Join validation -- test actual joinability
         judged = self.join_validate(judged)
