@@ -49,6 +49,7 @@ resources:
 
       tasks:
         - task_key: generate_metadata
+          max_retries: 1
           job_cluster_key: metadata_cluster
 
           notebook_task:
@@ -82,3 +83,11 @@ resources:
             autoscale:
               min_workers: 2
               max_workers: 4
+            # --- Uncomment for AWS ---
+            # aws_attributes:
+            #   first_on_demand: 1
+            #   availability: SPOT_WITH_FALLBACK
+            # --- Uncomment for Azure ---
+            # azure_attributes:
+            #   first_on_demand: 1
+            #   availability: SPOT_WITH_FALLBACK_AZURE

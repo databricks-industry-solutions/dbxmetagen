@@ -41,6 +41,7 @@ resources:
         # ----------------------------------------------------------------
 
         - task_key: test_01_widget_parsing
+          max_retries: 1
           job_cluster_key: fast_test_cluster
           notebook_task:
             notebook_path: ../../notebooks/integration_tests/test_01_widget_parsing.py
@@ -51,6 +52,7 @@ resources:
             - whl: ../../dist/*.whl
 
         - task_key: test_17_federation_mode
+          max_retries: 1
           job_cluster_key: fast_test_cluster
           notebook_task:
             notebook_path: ../../notebooks/integration_tests/test_17_federation_mode.py
@@ -61,6 +63,7 @@ resources:
             - whl: ../../dist/*.whl
 
         - task_key: test_18_comment_overrides
+          max_retries: 1
           job_cluster_key: fast_test_cluster
           notebook_task:
             notebook_path: ../../notebooks/integration_tests/test_18_comment_overrides.py
@@ -79,6 +82,7 @@ resources:
         # --- core_cluster_a: test_02, test_03, test_09 ---
 
         - task_key: test_02_apply_ddl_false
+          max_retries: 1
           depends_on:
             - task_key: test_01_widget_parsing
           job_cluster_key: core_cluster_a
@@ -91,6 +95,7 @@ resources:
             - whl: ../../dist/*.whl
 
         - task_key: test_03_apply_ddl_true
+          max_retries: 1
           depends_on:
             - task_key: test_02_apply_ddl_false
           job_cluster_key: core_cluster_a
@@ -103,6 +108,7 @@ resources:
             - whl: ../../dist/*.whl
 
         - task_key: test_09_pi_classification_none
+          max_retries: 1
           depends_on:
             - task_key: test_03_apply_ddl_true
           job_cluster_key: core_cluster_a
@@ -117,6 +123,7 @@ resources:
         # --- core_cluster_b: test_04, test_05, test_08 ---
 
         - task_key: test_04_modes
+          max_retries: 1
           depends_on:
             - task_key: test_01_widget_parsing
           job_cluster_key: core_cluster_b
@@ -129,6 +136,7 @@ resources:
             - whl: ../../dist/*.whl
 
         - task_key: test_05_temp_table_cleanup
+          max_retries: 1
           depends_on:
             - task_key: test_04_modes
           job_cluster_key: core_cluster_b
@@ -141,6 +149,7 @@ resources:
             - whl: ../../dist/*.whl
 
         - task_key: test_08_reviewed_ddl
+          max_retries: 1
           depends_on:
             - task_key: test_05_temp_table_cleanup
           job_cluster_key: core_cluster_b
@@ -155,6 +164,7 @@ resources:
         # --- integration_test_cluster: test_06, test_07 ---
 
         - task_key: test_06_control_table
+          max_retries: 1
           depends_on:
             - task_key: test_01_widget_parsing
           job_cluster_key: integration_test_cluster
@@ -167,6 +177,7 @@ resources:
             - whl: ../../dist/*.whl
 
         - task_key: test_07_permissions
+          max_retries: 1
           depends_on:
             - task_key: test_06_control_table
           job_cluster_key: integration_test_cluster
@@ -183,6 +194,7 @@ resources:
         # ----------------------------------------------------------------
 
         - task_key: test_10_concurrent_setup
+          max_retries: 1
           depends_on:
             - task_key: test_01_widget_parsing
           job_cluster_key: integration_test_cluster
@@ -195,6 +207,7 @@ resources:
             - whl: ../../dist/*.whl
 
         - task_key: concurrent_task_1
+          max_retries: 1
           depends_on:
             - task_key: test_10_concurrent_setup
           job_cluster_key: concurrent_cluster_1
@@ -212,6 +225,7 @@ resources:
             - whl: ../../dist/*.whl
 
         - task_key: concurrent_task_2
+          max_retries: 1
           depends_on:
             - task_key: test_10_concurrent_setup
           job_cluster_key: concurrent_cluster_2
@@ -229,6 +243,7 @@ resources:
             - whl: ../../dist/*.whl
 
         - task_key: test_10_concurrent_validate
+          max_retries: 1
           depends_on:
             - task_key: concurrent_task_1
             - task_key: concurrent_task_2
@@ -250,6 +265,7 @@ resources:
         # ----------------------------------------------------------------
 
         - task_key: test_11_knowledge_base
+          max_retries: 1
           depends_on:
             - task_key: test_01_widget_parsing
           job_cluster_key: e2e_ml_cluster
@@ -262,6 +278,7 @@ resources:
             - whl: ../../dist/*.whl
 
         - task_key: test_12_knowledge_graph
+          max_retries: 1
           depends_on:
             - task_key: test_11_knowledge_base
           job_cluster_key: e2e_ml_cluster
@@ -275,6 +292,7 @@ resources:
             - whl: ../../dist/*.whl
 
         - task_key: test_16_analytics_pipeline
+          max_retries: 1
           depends_on:
             - task_key: test_12_knowledge_graph
           job_cluster_key: e2e_ml_cluster
@@ -288,6 +306,7 @@ resources:
             - whl: ../../dist/*.whl
 
         - task_key: test_13_profiling
+          max_retries: 1
           depends_on:
             - task_key: test_16_analytics_pipeline
           job_cluster_key: e2e_ml_cluster
@@ -300,6 +319,7 @@ resources:
             - whl: ../../dist/*.whl
 
         - task_key: test_14_ontology
+          max_retries: 1
           depends_on:
             - task_key: test_13_profiling
           job_cluster_key: e2e_ml_cluster
@@ -312,6 +332,7 @@ resources:
             - whl: ../../dist/*.whl
 
         - task_key: test_15_graph_validation
+          max_retries: 1
           depends_on:
             - task_key: test_14_ontology
           job_cluster_key: e2e_ml_cluster
@@ -329,6 +350,7 @@ resources:
         # ----------------------------------------------------------------
 
         - task_key: test_e2e_serverless
+          max_retries: 1
           job_cluster_key: e2e_serverless_cluster
           notebook_task:
             notebook_path: ../../notebooks/integration_tests/test_e2e_serverless.py
@@ -339,6 +361,7 @@ resources:
             - whl: ../../dist/*.whl
 
         - task_key: test_e2e_ml_cluster
+          max_retries: 1
           job_cluster_key: e2e_ml_cluster
           notebook_task:
             notebook_path: ../../notebooks/integration_tests/test_e2e_ml_cluster.py
@@ -349,6 +372,7 @@ resources:
             - whl: ../../dist/*.whl
 
         - task_key: test_e2e_standard_cluster
+          max_retries: 1
           job_cluster_key: e2e_standard_cluster
           notebook_task:
             notebook_path: ../../notebooks/integration_tests/test_e2e_standard_cluster.py
@@ -375,6 +399,14 @@ resources:
               spark.master: local[*]
             custom_tags:
               ResourceClass: SingleNode
+            # --- Uncomment for AWS ---
+            # aws_attributes:
+            #   first_on_demand: 1
+            #   availability: SPOT_WITH_FALLBACK
+            # --- Uncomment for Azure ---
+            # azure_attributes:
+            #   first_on_demand: 1
+            #   availability: SPOT_WITH_FALLBACK_AZURE
 
         # Core metadata tests -- batch A (test_02, test_03, test_09)
         - job_cluster_key: core_cluster_a
@@ -388,6 +420,14 @@ resources:
               spark.master: local[*]
             custom_tags:
               ResourceClass: SingleNode
+            # --- Uncomment for AWS ---
+            # aws_attributes:
+            #   first_on_demand: 1
+            #   availability: SPOT_WITH_FALLBACK
+            # --- Uncomment for Azure ---
+            # azure_attributes:
+            #   first_on_demand: 1
+            #   availability: SPOT_WITH_FALLBACK_AZURE
 
         # Core metadata tests -- batch B (test_04, test_05, test_08)
         - job_cluster_key: core_cluster_b
@@ -401,6 +441,14 @@ resources:
               spark.master: local[*]
             custom_tags:
               ResourceClass: SingleNode
+            # --- Uncomment for AWS ---
+            # aws_attributes:
+            #   first_on_demand: 1
+            #   availability: SPOT_WITH_FALLBACK
+            # --- Uncomment for Azure ---
+            # azure_attributes:
+            #   first_on_demand: 1
+            #   availability: SPOT_WITH_FALLBACK_AZURE
 
         # Core metadata tests -- batch C (test_06, test_07) + concurrent setup/validate
         - job_cluster_key: integration_test_cluster
@@ -414,6 +462,14 @@ resources:
               spark.master: local[*]
             custom_tags:
               ResourceClass: SingleNode
+            # --- Uncomment for AWS ---
+            # aws_attributes:
+            #   first_on_demand: 1
+            #   availability: SPOT_WITH_FALLBACK
+            # --- Uncomment for Azure ---
+            # azure_attributes:
+            #   first_on_demand: 1
+            #   availability: SPOT_WITH_FALLBACK_AZURE
 
         # Concurrent task testing -- must be separate clusters for true parallelism
         - job_cluster_key: concurrent_cluster_1
@@ -427,6 +483,14 @@ resources:
               spark.master: local[*]
             custom_tags:
               ResourceClass: SingleNode
+            # --- Uncomment for AWS ---
+            # aws_attributes:
+            #   first_on_demand: 1
+            #   availability: SPOT_WITH_FALLBACK
+            # --- Uncomment for Azure ---
+            # azure_attributes:
+            #   first_on_demand: 1
+            #   availability: SPOT_WITH_FALLBACK_AZURE
 
         - job_cluster_key: concurrent_cluster_2
           new_cluster:
@@ -439,6 +503,14 @@ resources:
               spark.master: local[*]
             custom_tags:
               ResourceClass: SingleNode
+            # --- Uncomment for AWS ---
+            # aws_attributes:
+            #   first_on_demand: 1
+            #   availability: SPOT_WITH_FALLBACK
+            # --- Uncomment for Azure ---
+            # azure_attributes:
+            #   first_on_demand: 1
+            #   availability: SPOT_WITH_FALLBACK_AZURE
 
         # E2E / ETL tests -- different runtime configurations
         - job_cluster_key: e2e_serverless_cluster
@@ -447,6 +519,14 @@ resources:
             node_type_id: ${var.node_type}
             num_workers: 1
             data_security_mode: SINGLE_USER
+            # --- Uncomment for AWS ---
+            # aws_attributes:
+            #   first_on_demand: 1
+            #   availability: SPOT_WITH_FALLBACK
+            # --- Uncomment for Azure ---
+            # azure_attributes:
+            #   first_on_demand: 1
+            #   availability: SPOT_WITH_FALLBACK_AZURE
 
         - job_cluster_key: e2e_ml_cluster
           new_cluster:
@@ -459,6 +539,14 @@ resources:
               spark.master: local[*]
             custom_tags:
               ResourceClass: SingleNode
+            # --- Uncomment for AWS ---
+            # aws_attributes:
+            #   first_on_demand: 1
+            #   availability: SPOT_WITH_FALLBACK
+            # --- Uncomment for Azure ---
+            # azure_attributes:
+            #   first_on_demand: 1
+            #   availability: SPOT_WITH_FALLBACK_AZURE
 
         - job_cluster_key: e2e_standard_cluster
           new_cluster:
@@ -471,3 +559,11 @@ resources:
               spark.master: local[*]
             custom_tags:
               ResourceClass: SingleNode
+            # --- Uncomment for AWS ---
+            # aws_attributes:
+            #   first_on_demand: 1
+            #   availability: SPOT_WITH_FALLBACK
+            # --- Uncomment for Azure ---
+            # azure_attributes:
+            #   first_on_demand: 1
+            #   availability: SPOT_WITH_FALLBACK_AZURE

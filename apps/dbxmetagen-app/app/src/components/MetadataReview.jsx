@@ -1002,58 +1002,99 @@ function ReviewEditor() {
                         <p className="text-xs text-slate-400 italic">FK prediction data not available for this table.</p>
                       ) : tbl.fk_predictions.length === 0 ? (
                         <p className="text-xs text-slate-400 italic">No foreign key predictions for this table.</p>
-                      ) : (
-                        <div className="overflow-x-auto">
-                          <table className="min-w-full text-xs">
-                            <thead><tr className="bg-dbx-oat/50 dark:bg-dbx-navy-500/50">
-                              <th className="w-8 px-1 py-1"></th>
-                              <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400">Src Column</th>
-                              <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400">Dst Table.Column</th>
-                              <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400" title="Combined final confidence">Final</th>
-                              <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400" title="AI model confidence">AI</th>
-                              <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400" title="Column embedding similarity">Sim</th>
-                              <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400">Reasoning</th>
-                            </tr></thead>
-                            <tbody>
-                              {tbl.fk_predictions.map((fk, i) => {
-                                const fconf = Number(fk.final_confidence ?? 0)
-                                const confCls = fconf < 0.3 ? 'bg-red-100 text-red-700' : fconf < 0.6 ? 'bg-yellow-100 text-yellow-700' : 'bg-green-100 text-green-700'
-                                const tblKey = tbl.table_name
-                                const selSet = selectedFKs[tblKey] || new Set()
-                                const fkKey = `${tblKey}-${i}`
-                                const isExpReasoning = expandedFKs[fkKey]
-                                return (
-                                  <React.Fragment key={i}>
-                                    <tr className={`border-b border-slate-100 dark:border-dbx-navy-400/20 hover:bg-indigo-50/30 dark:hover:bg-dbx-navy-500/30 ${selSet.has(i) ? 'bg-indigo-50/50 dark:bg-indigo-900/20' : ''}`}>
-                                      <td className="px-1 py-1">
-                                        <input type="checkbox" checked={selSet.has(i)} onChange={() => {
-                                          setSelectedFKs(prev => {
-                                            const ns = new Set(prev[tblKey] || [])
-                                            if (ns.has(i)) ns.delete(i); else ns.add(i)
-                                            return { ...prev, [tblKey]: ns }
-                                          })
-                                        }} className="rounded border-slate-300" />
-                                      </td>
-                                      <td className="px-2 py-1 text-slate-600 dark:text-slate-300 font-mono">{(fk.src_column || '').split('.').pop()}</td>
-                                      <td className="px-2 py-1 text-slate-600 dark:text-slate-300 font-mono">{fk.dst_table}.{(fk.dst_column || '').split('.').pop()}</td>
-                                      <td className="px-2 py-1"><span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${confCls}`}>{fconf.toFixed(2)}</span></td>
-                                      <td className="px-2 py-1 text-slate-500 dark:text-slate-400">{Number(fk.ai_confidence ?? 0).toFixed(2)}</td>
-                                      <td className="px-2 py-1 text-slate-500 dark:text-slate-400">{Number(fk.col_similarity ?? 0).toFixed(2)}</td>
-                                      <td className="px-2 py-1 text-slate-500 dark:text-slate-400 max-w-xs truncate cursor-pointer" title="Click to expand"
-                                        onClick={() => setExpandedFKs(p => ({ ...p, [fkKey]: !p[fkKey] }))}>
-                                        {fk.ai_reasoning || '--'}
-                                      </td>
-                                    </tr>
-                                    {isExpReasoning && fk.ai_reasoning && (
-                                      <tr><td colSpan={7} className="px-3 py-2 bg-slate-50 dark:bg-dbx-navy-500/30 text-xs text-slate-600 dark:text-slate-300 italic">{fk.ai_reasoning}</td></tr>
-                                    )}
-                                  </React.Fragment>
-                                )
-                              })}
-                            </tbody>
-                          </table>
-                        </div>
-                      )}
+                      ) : (() => {
+                        const shortTbl = (name) => (name || '').split('.').pop()
+                        const tblKey = tbl.table_name
+                        const selSet = selectedFKs[tblKey] || new Set()
+                        const outgoing = tbl.fk_predictions.map((fk, i) => ({ fk, origIdx: i })).filter(({ fk }) => fk.src_table === tbl.table_name)
+                        const incoming = tbl.fk_predictions.map((fk, i) => ({ fk, origIdx: i })).filter(({ fk }) => fk.dst_table === tbl.table_name && fk.src_table !== tbl.table_name)
+
+                        const renderRow = ({ fk, origIdx }, localCol, remoteCol) => {
+                          const fconf = Number(fk.final_confidence ?? 0)
+                          const confCls = fconf < 0.3 ? 'bg-red-100 text-red-700' : fconf < 0.6 ? 'bg-yellow-100 text-yellow-700' : 'bg-green-100 text-green-700'
+                          const fkKey = `${tblKey}-${origIdx}`
+                          const isExpReasoning = expandedFKs[fkKey]
+                          return (
+                            <React.Fragment key={origIdx}>
+                              <tr className={`border-b border-slate-100 dark:border-dbx-navy-400/20 hover:bg-indigo-50/30 dark:hover:bg-dbx-navy-500/30 ${selSet.has(origIdx) ? 'bg-indigo-50/50 dark:bg-indigo-900/20' : ''}`}>
+                                <td className="px-1 py-1">
+                                  <input type="checkbox" checked={selSet.has(origIdx)} onChange={() => {
+                                    setSelectedFKs(prev => {
+                                      const ns = new Set(prev[tblKey] || [])
+                                      if (ns.has(origIdx)) ns.delete(origIdx); else ns.add(origIdx)
+                                      return { ...prev, [tblKey]: ns }
+                                    })
+                                  }} className="rounded border-slate-300" />
+                                </td>
+                                <td className="px-2 py-1 text-slate-600 dark:text-slate-300 font-mono">{localCol}</td>
+                                <td className="px-2 py-1 text-slate-600 dark:text-slate-300 font-mono">{remoteCol}</td>
+                                <td className="px-2 py-1"><span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${confCls}`}>{fconf.toFixed(2)}</span></td>
+                                <td className="px-2 py-1 text-slate-500 dark:text-slate-400">{Number(fk.ai_confidence ?? 0).toFixed(2)}</td>
+                                <td className="px-2 py-1 text-slate-500 dark:text-slate-400">{Number(fk.col_similarity ?? 0).toFixed(2)}</td>
+                                <td className="px-2 py-1 text-slate-500 dark:text-slate-400 max-w-xs truncate cursor-pointer" title="Click to expand"
+                                  onClick={() => setExpandedFKs(p => ({ ...p, [fkKey]: !p[fkKey] }))}>
+                                  {fk.ai_reasoning || '--'}
+                                </td>
+                              </tr>
+                              {isExpReasoning && fk.ai_reasoning && (
+                                <tr><td colSpan={7} className="px-3 py-2 bg-slate-50 dark:bg-dbx-navy-500/30 text-xs text-slate-600 dark:text-slate-300 italic">{fk.ai_reasoning}</td></tr>
+                              )}
+                            </React.Fragment>
+                          )
+                        }
+
+                        return (
+                          <div className="space-y-3">
+                            {outgoing.length > 0 && (
+                              <div className="overflow-x-auto">
+                                <p className="text-[10px] font-semibold text-indigo-500 dark:text-indigo-400 uppercase tracking-wider mb-1">&#8594; Outgoing (this table references)</p>
+                                <table className="min-w-full text-xs">
+                                  <thead><tr className="bg-dbx-oat/50 dark:bg-dbx-navy-500/50">
+                                    <th className="w-8 px-1 py-1"></th>
+                                    <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400">Column</th>
+                                    <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400">References</th>
+                                    <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400" title="Combined final confidence">Final</th>
+                                    <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400" title="AI model confidence">AI</th>
+                                    <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400" title="Column embedding similarity">Sim</th>
+                                    <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400">Reasoning</th>
+                                  </tr></thead>
+                                  <tbody>
+                                    {outgoing.map(item => renderRow(item,
+                                      (item.fk.src_column || '').split('.').pop(),
+                                      `${shortTbl(item.fk.dst_table)}.${(item.fk.dst_column || '').split('.').pop()}`
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                            )}
+                            {incoming.length > 0 && (
+                              <div className="overflow-x-auto">
+                                <p className="text-[10px] font-semibold text-teal-500 dark:text-teal-400 uppercase tracking-wider mb-1">&#8592; Incoming (referenced by)</p>
+                                <table className="min-w-full text-xs">
+                                  <thead><tr className="bg-dbx-oat/50 dark:bg-dbx-navy-500/50">
+                                    <th className="w-8 px-1 py-1"></th>
+                                    <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400">From</th>
+                                    <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400">Column</th>
+                                    <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400" title="Combined final confidence">Final</th>
+                                    <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400" title="AI model confidence">AI</th>
+                                    <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400" title="Column embedding similarity">Sim</th>
+                                    <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400">Reasoning</th>
+                                  </tr></thead>
+                                  <tbody>
+                                    {incoming.map(item => renderRow(item,
+                                      `${shortTbl(item.fk.src_table)}.${(item.fk.src_column || '').split('.').pop()}`,
+                                      (item.fk.dst_column || '').split('.').pop()
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                            )}
+                            {outgoing.length === 0 && incoming.length === 0 && (
+                              <p className="text-xs text-slate-400 italic">No foreign key predictions for this table.</p>
+                            )}
+                          </div>
+                        )
+                      })()}
                     </div>
                   )}
                 </div>

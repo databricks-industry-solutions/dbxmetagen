@@ -28,6 +28,7 @@ resources:
       tasks:
         # Step 1: Setup - create test tables
         - task_key: setup_test_tables
+          max_retries: 1
           job_cluster_key: test_cluster
           notebook_task:
             notebook_path: ../../notebooks/integration_tests/test_10_concurrent_setup.py
@@ -39,6 +40,7 @@ resources:
 
         # Step 2a: Concurrent task 1 - processes tables 1, 2, 3 (overlaps with task 2 on table 2)
         - task_key: concurrent_task_1
+          max_retries: 1
           depends_on:
             - task_key: setup_test_tables
           job_cluster_key: test_cluster
@@ -57,6 +59,7 @@ resources:
 
         # Step 2b: Concurrent task 2 - processes tables 2, 3, 4 (overlaps with task 1 on table 2)
         - task_key: concurrent_task_2
+          max_retries: 1
           depends_on:
             - task_key: setup_test_tables
           job_cluster_key: test_cluster
@@ -75,6 +78,7 @@ resources:
 
         # Step 3: Validate - check control table and logs
         - task_key: validate_results
+          max_retries: 1
           depends_on:
             - task_key: concurrent_task_1
             - task_key: concurrent_task_2
@@ -100,3 +104,11 @@ resources:
               spark.master: local[*]
             custom_tags:
               ResourceClass: SingleNode
+            # --- Uncomment for AWS ---
+            # aws_attributes:
+            #   first_on_demand: 1
+            #   availability: SPOT_WITH_FALLBACK
+            # --- Uncomment for Azure ---
+            # azure_attributes:
+            #   first_on_demand: 1
+            #   availability: SPOT_WITH_FALLBACK_AZURE

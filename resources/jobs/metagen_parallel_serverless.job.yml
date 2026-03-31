@@ -52,6 +52,7 @@ resources:
 
       tasks:
         - task_key: generate_comments
+          max_retries: 1
           environment_key: default
           notebook_task:
             notebook_path: ../../notebooks/generate_metadata.py
@@ -74,6 +75,7 @@ resources:
               model: "{{job.parameters.model}}"
 
         - task_key: generate_pi
+          max_retries: 1
           depends_on:
             - task_key: generate_comments
           environment_key: default
@@ -100,6 +102,7 @@ resources:
               model: "{{job.parameters.model}}"
 
         - task_key: generate_domain
+          max_retries: 1
           depends_on:
             - task_key: generate_comments
           environment_key: default
@@ -126,6 +129,7 @@ resources:
               model: "{{job.parameters.model}}"
 
         - task_key: build_knowledge_base
+          max_retries: 1
           depends_on:
             - task_key: generate_pi
             - task_key: generate_domain
@@ -137,6 +141,7 @@ resources:
               schema_name: "{{job.parameters.schema_name}}"
 
         - task_key: build_column_kb
+          max_retries: 1
           depends_on:
             - task_key: generate_pi
             - task_key: generate_domain

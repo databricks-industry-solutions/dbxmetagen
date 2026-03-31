@@ -20,6 +20,7 @@ resources:
 
       tasks:
         - task_key: build_knowledge_base
+          max_retries: 1
           job_cluster_key: kb_cluster
 
           notebook_task:
@@ -32,6 +33,7 @@ resources:
             - whl: ../../dist/*.whl
 
         - task_key: build_knowledge_graph
+          max_retries: 1
           depends_on:
             - task_key: build_knowledge_base
           # ML cluster required - GraphFrames needs JVM dependencies not available on serverless
@@ -55,4 +57,12 @@ resources:
             node_type_id: ${var.node_type}
             data_security_mode: SINGLE_USER
             num_workers: 1
+            # --- Uncomment for AWS ---
+            # aws_attributes:
+            #   first_on_demand: 1
+            #   availability: SPOT_WITH_FALLBACK
+            # --- Uncomment for Azure ---
+            # azure_attributes:
+            #   first_on_demand: 1
+            #   availability: SPOT_WITH_FALLBACK_AZURE
 
