@@ -36,7 +36,7 @@ Tests are organized into parallel waves to minimize wall-clock time:
 | Wave | Tests | Cluster(s) | Description |
 |------|-------|------------|-------------|
 | A | 01, 17, 18 | `fast_test_cluster` | Fast config/parsing tests (no LLM) |
-| B | 02, 03, 04, 05, 06, 07, 08, 09 | `core_cluster_a`, `core_cluster_b`, `integration_test_cluster` | Core metadata generation (3 clusters in parallel) |
+| B | 02, 03, 04, 05, 06, 07, 08, 09, 20 | `core_cluster_a`, `core_cluster_b`, `integration_test_cluster` | Core metadata generation (3 clusters in parallel) |
 | C | 10 setup/validate + concurrent tasks | `integration_test_cluster` + `concurrent_cluster_1/2` | Concurrent table claiming |
 | D | 11, 12, 13, 14, 15, 16 | `e2e_ml_cluster` | ETL pipeline tests (ML runtime) |
 | E | e2e_serverless, e2e_ml, e2e_standard | own clusters | E2E cluster compatibility |
@@ -118,6 +118,7 @@ You can run individual test notebooks in Databricks:
 - `test_07_permissions.py`: Catalog, schema, volume permissions and `grant_permissions` config
 - `test_08_reviewed_ddl.py`: Full review workflow: generate -> export TSV -> edit -> reimport -> verify
 - `test_09_pi_classification_none.py`: Non-PI data correctly gets `classification=None`
+- `test_20_summarizer_bleedthrough.py`: Clinical-trials-like table doesn't get bleedthrough from summarizer few-shot examples
 
 #### Wave C: Concurrent Table Claiming
 - `test_10_concurrent_setup.py`: Creates test tables for concurrent processing

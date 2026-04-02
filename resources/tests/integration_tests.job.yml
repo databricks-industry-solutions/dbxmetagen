@@ -10,7 +10,7 @@
 # DAG structure -- tests are grouped into parallel waves:
 #
 #   Wave A (fast, no LLM):  test_01, test_17, test_18
-#   Wave B (core metadata):  test_02..test_09 across 3 clusters in parallel
+#   Wave B (core metadata):  test_02..test_09, test_20 across 3 clusters in parallel
 #   Wave C (concurrent):     test_10 setup -> parallel tasks -> validate
 #   Wave D (ETL pipeline):   test_11..test_16 on ML cluster
 #   Wave E (E2E compat):     e2e_serverless, e2e_ml, e2e_standard (no deps)
@@ -114,6 +114,19 @@ resources:
           job_cluster_key: core_cluster_a
           notebook_task:
             notebook_path: ../../notebooks/integration_tests/test_09_pi_classification_none.py
+            base_parameters:
+              test_catalog: "{{job.parameters.test_catalog}}"
+              test_schema: "{{job.parameters.test_schema}}"
+          libraries:
+            - whl: ../../dist/*.whl
+
+        - task_key: test_20_summarizer_bleedthrough
+          max_retries: 1
+          depends_on:
+            - task_key: test_09_pi_classification_none
+          job_cluster_key: core_cluster_a
+          notebook_task:
+            notebook_path: ../../notebooks/integration_tests/test_20_summarizer_bleedthrough.py
             base_parameters:
               test_catalog: "{{job.parameters.test_catalog}}"
               test_schema: "{{job.parameters.test_schema}}"
@@ -408,7 +421,7 @@ resources:
             #   first_on_demand: 1
             #   availability: SPOT_WITH_FALLBACK_AZURE
 
-        # Core metadata tests -- batch A (test_02, test_03, test_09)
+        # Core metadata tests -- batch A (test_02, test_03, test_09, test_20)
         - job_cluster_key: core_cluster_a
           new_cluster:
             spark_version: 17.3.x-cpu-ml-scala2.13
