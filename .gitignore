@@ -147,6 +147,7 @@ __pycache__/
 # Deployment -- generated from templates by deploy.sh
 databricks.yml
 apps/dbxmetagen-app/app/app.yaml
+apps/dbxmetagen-app/app/requirements.txt
 databricks_final.yml
 databricks_final.yml.tmp
 

@@ -103,7 +103,7 @@ generate_embeddings(spark, "my_catalog", "metadata_results")
 build_ontology(spark, "my_catalog", "metadata_results")
 ```
 
-See `examples/` for complete runnable notebooks:
+The `examples/` notebooks show how to use dbxmetagen as a **standalone pip-installable library** -- useful for embedding into your own projects or quick ad-hoc runs. They install directly from GitHub and do not require cloning the repo or running `deploy.sh`. See the [examples README](examples/README.md) for details.
 
 | Notebook | What it does |
 |----------|-------------|
@@ -342,6 +342,27 @@ python -c "from dbxmetagen.config import MetadataConfig; print('OK')"
 Wheels are built automatically by CI on tagged releases (see `.github/workflows/release.yml`).
 
 Requires DBR 17.3+ (ML runtime recommended). Serverless runtimes are supported for most operations.
+
+## Troubleshooting
+
+### `uv sync` fails with `invalid peer certificate: UnknownIssuer`
+
+If you see an error like:
+
+```
+error: Request failed after 3 retries
+  Caused by: invalid peer certificate: UnknownIssuer
+```
+
+This happens because `uv` uses `rustls` by default, which relies on a bundled certificate store rather than the system's native trust store. Corporate proxies and firewalls that inject their own CA certificates are not recognized.
+
+**Fix:** tell `uv` to use the system's native TLS stack:
+
+```bash
+export UV_NATIVE_TLS=1
+```
+
+Add this to your shell profile (`~/.zshrc`, `~/.bashrc`, etc.) to make it permanent.
 
 ## Analysis of Packages Used
 

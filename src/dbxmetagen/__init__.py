@@ -26,6 +26,8 @@ _LAZY_IMPORTS = {
     "generate_semantic_layer": "dbxmetagen.semantic_layer",
     "build_vector_index": "dbxmetagen.vector_index",
     "classify_columns_geo": "dbxmetagen.geo_classifier",
+    "build_genie_space": "dbxmetagen.genie",
+    "assemble_genie_context": "dbxmetagen.genie",
 }
 
 
@@ -62,4 +64,6 @@ __all__ = [
     "generate_semantic_layer",
     "build_vector_index",
     "classify_columns_geo",
+    "build_genie_space",
+    "assemble_genie_context",
 ]

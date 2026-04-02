@@ -39,7 +39,7 @@ const INTENT_LABELS = {
 
 const MODE_CONFIG = {
   quick: { label: 'Quick Query', color: 'bg-blue-600', ring: 'ring-blue-600', lightBg: 'bg-blue-50 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300', desc: 'Fast ReAct with VS + graph', valueColor: 'text-blue-600' },
-  graphrag: { label: 'GraphRAG Analysis', color: 'bg-violet-600', ring: 'ring-violet-600', lightBg: 'bg-violet-50 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300', desc: 'Multi-agent with full semantic layer', valueColor: 'text-violet-600' },
+  graphrag: { label: 'dbxmetagen Agent', color: 'bg-violet-600', ring: 'ring-violet-600', lightBg: 'bg-violet-50 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300', desc: 'Deep analysis with knowledge graph, vector search, and SQL', valueColor: 'text-violet-600' },
   baseline: { label: 'Baseline Analysis', color: 'bg-slate-600', ring: 'ring-slate-600', lightBg: 'bg-slate-50 text-slate-700 dark:bg-slate-800/40 dark:text-slate-300', desc: 'Multi-agent with KB tables only', valueColor: 'text-slate-600' },
   governance: { label: 'Governance', color: 'bg-orange-600', ring: 'ring-orange-600', lightBg: 'bg-orange-50 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300', desc: 'Sensitivity, compliance & protection audit', valueColor: 'text-orange-600', embedded: true },
   impact: { label: 'Impact Analysis', color: 'bg-rose-600', ring: 'ring-rose-600', lightBg: 'bg-rose-50 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300', desc: 'What-if analysis for schema changes', valueColor: 'text-rose-600', embedded: true },
@@ -47,7 +47,7 @@ const MODE_CONFIG = {
 
 // Only these modes are shown in the UI; the rest are hidden but retained in MODE_CONFIG.
 // Hidden modes: baseline, governance, impact
-const VISIBLE_MODES = new Set(['quick', 'graphrag'])
+const VISIBLE_MODES = new Set(['graphrag'])
 
 const STAGE_LABELS = {
   starting: 'Starting...',
@@ -70,8 +70,12 @@ const MODE_QUESTIONS = {
   graphrag: [
     { label: 'How do orders connect to accounts?', query: 'How do the order, product, and account tables relate to each other? Show the join keys and relationship paths.' },
     { label: 'Sensitive data + connections', query: 'Which tables contain sensitive customer information (PII/PHI) and how are those tables connected to each other?' },
-    { label: 'Find "revenue" tables', query: 'Find all tables related to "revenue" and explain how they connect to the order pipeline.' },
+    { label: 'Which columns are flagged as PII?', query: 'List all columns classified as PII or PHI across the catalog, grouped by table and classification type.' },
+    { label: 'What business entities exist?', query: 'What business entities have been identified in the ontology? Which tables are associated with each entity?' },
+    { label: 'Tables with data quality issues', query: 'Which tables have the highest null rates or lowest distinct counts? Highlight any data quality concerns from profiling results.' },
     { label: 'Domain map + cross-domain links', query: 'What business domain does each table belong to and which domains share the most cross-domain relationships?' },
+    { label: 'Find "revenue" tables', query: 'Find all tables related to "revenue" and explain how they connect to the order pipeline.' },
+    { label: 'Summarize the catalog', query: 'Give me a high-level summary of the data catalog: how many tables, which domains, and what are the key relationship clusters?' },
   ],
   baseline: [
     { label: 'How do orders connect to accounts?', query: 'How do the order, product, and account tables relate to each other? Show the join keys and relationship paths.' },
@@ -266,20 +270,16 @@ function RetrievalTechniques() {
       {open && (
         <div className="mt-2 card p-4 text-xs text-slate-600 dark:text-slate-300 space-y-3 animate-slide-up">
           <div>
-            <p className="font-semibold text-blue-600 dark:text-blue-400 mb-0.5">Quick Query</p>
-            <p>Intent classification selects tool subset. Vector search (VS) finds semantically similar metadata documents. Graph tools do 1-hop expansion from VS hits via Lakebase PG (falls back to UC Delta).</p>
+            <p className="font-semibold text-violet-600 dark:text-violet-400 mb-0.5">dbxmetagen Agent</p>
+            <p>Two-phase analysis: Phase 1 gathers evidence deterministically via vector search, knowledge graph traversal, SQL on metadata tables, and structured data retrieval -- all in parallel with timeouts. Phase 2 passes the collected evidence to a single LLM synthesis call that produces findings with source citations.</p>
           </div>
           <div>
-            <p className="font-semibold text-violet-600 dark:text-violet-400 mb-0.5">GraphRAG Analysis</p>
-            <p>Multi-agent pipeline: Supervisor routes to Planner, Retrieval, Analyst, and Response subagents. Planner generates a numbered data-gathering plan using knowledge of the graph schema (node types, edge types, join expressions). Retrieval executes VS semantic search, graph traversal (multi-hop BFS with edge_type filtering), and SQL queries. node_id bridges VS hits to graph nodes for hybrid search. Analyst synthesizes evidence into findings with source citations.</p>
+            <p className="font-semibold text-slate-700 dark:text-slate-300 mb-0.5">Data Sources</p>
+            <p>Vector search finds semantically similar metadata. Graph traversal does multi-hop BFS with edge-type filtering via Lakebase PG (falls back to UC Delta). SQL queries cover knowledge bases, ontology entities, FK predictions, profiling results, and metric views.</p>
           </div>
           <div>
-            <p className="font-semibold text-slate-700 dark:text-slate-300 mb-0.5">Baseline Analysis</p>
-            <p>Same multi-agent pipeline as GraphRAG but restricted to three tables: table_knowledge_base, column_knowledge_base, schema_knowledge_base. No vector search, no graph traversal, no ontology, no FK predictions. Demonstrates the value added by the semantic layer.</p>
-          </div>
-          <div>
-            <p className="font-semibold text-slate-700 dark:text-slate-300 mb-0.5">Fallback Strategy</p>
-            <p>All graph queries try Lakebase PG first (sub-100ms), then fall back to UC Delta tables. VS queries use the Databricks Vector Search endpoint.</p>
+            <p className="font-semibold text-slate-700 dark:text-slate-300 mb-0.5">Grounding</p>
+            <p>All findings must cite evidence sources. If gathered evidence is insufficient, the agent says so rather than guessing.</p>
           </div>
         </div>
       )}
@@ -327,7 +327,7 @@ export default function AgentChat() {
   const [stats, setStats] = useState(null)
   const [domainStats, setDomainStats] = useState(null)
   const [suggestions, setSuggestions] = useState([])
-  const [mode, setMode] = useState('quick')
+  const [mode, setMode] = useState('graphrag')
   const [chartData, setChartData] = useState({})
   const [plotLoading, setPlotLoading] = useState({})
   const chatEndRef = useRef(null)

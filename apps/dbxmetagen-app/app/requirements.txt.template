@@ -13,3 +13,4 @@ psycopg2-binary>=2.9.0
 openpyxl>=3.1.0
 databricks-vectorsearch>=0.40
 sqlparse>=0.5.0
+./__WHL_NAME__

@@ -1,0 +1,162 @@
+Person:
+  description: People, customers, contacts, users, or employees
+  source_ontology: schema.org
+  uri: https://schema.org/Person
+  edges:
+  - owns
+  - part_of
+Organization:
+  description: Companies, departments, facilities, or business units
+  source_ontology: schema.org
+  uri: https://schema.org/Organization
+  edges:
+  - contains
+  - contains_location
+  - part_of
+Product:
+  description: Goods, services, SKUs, or catalog items
+  source_ontology: schema.org
+  uri: https://schema.org/Product
+  edges:
+  - references
+Transaction:
+  description: Orders, purchases, payments, invoices, or financial events
+  source_ontology: schema.org
+  uri: https://schema.org/Invoice
+  edges:
+  - references
+Location:
+  description: Addresses, sites, regions, facilities, or geographies
+  source_ontology: schema.org
+  uri: https://schema.org/Place
+  edges:
+  - part_of
+Event:
+  description: Activities, logs, sessions, audits, or system events
+  source_ontology: schema.org
+  uri: https://schema.org/Event
+  edges:
+  - references
+Reference:
+  description: Lookup tables, codes, categories, dimensions, or configuration
+  source_ontology: schema.org
+  uri: https://schema.org/Thing
+  edges: []
+Metric:
+  description: KPIs, aggregates, facts, summaries, or analytic measures
+  source_ontology: schema.org
+  uri: https://schema.org/QuantitativeValue
+  edges:
+  - derives_from
+Document:
+  description: Unstructured content, notes, files, or text records
+  source_ontology: schema.org
+  uri: https://schema.org/DigitalDocument
+  edges:
+  - references
+Patient:
+  description: Individuals receiving healthcare services (FHIR Patient)
+  parent: Person
+  source_ontology: FHIR_R4
+  uri: http://hl7.org/fhir/StructureDefinition/Patient
+  edges:
+  - treated_by
+  - has_encounter
+  - has_condition
+  - has_coverage
+Provider:
+  description: Practitioners, clinicians, or care team members (FHIR Practitioner)
+  parent: Person
+  source_ontology: FHIR_R4
+  uri: http://hl7.org/fhir/StructureDefinition/Practitioner
+  edges:
+  - treats
+  - ordered_for
+  - part_of
+Encounter:
+  description: Visits, admissions, or episodes of care (FHIR Encounter)
+  parent: Event
+  source_ontology: FHIR_R4
+  uri: http://hl7.org/fhir/StructureDefinition/Encounter
+  edges:
+  - references
+  - has_order
+  - contains
+  - located_at
+Condition:
+  description: Diagnoses, problems, or diseases (FHIR Condition / OMOP CONDITION_OCCURRENCE)
+  source_ontology: FHIR_R4
+  uri: http://hl7.org/fhir/StructureDefinition/Condition
+  edges:
+  - references
+  - diagnosed_in
+Procedure:
+  description: Medical procedures, surgeries, or interventions (FHIR Procedure)
+  source_ontology: FHIR_R4
+  uri: http://hl7.org/fhir/StructureDefinition/Procedure
+  edges:
+  - ordered_for
+  - performed_by
+  - references
+Medication:
+  description: Drugs, prescriptions, or medication orders (FHIR MedicationRequest)
+  parent: Product
+  source_ontology: FHIR_R4
+  uri: http://hl7.org/fhir/StructureDefinition/Medication
+  edges:
+  - ordered_for
+  - prescribed_to
+Observation:
+  description: Lab results, vitals, or clinical measurements (FHIR Observation / OMOP MEASUREMENT)
+  parent: Event
+  source_ontology: FHIR_R4
+  uri: http://hl7.org/fhir/StructureDefinition/Observation
+  edges:
+  - references
+  - recorded_in
+Claim:
+  description: Insurance claims or billing submissions (FHIR Claim)
+  parent: Transaction
+  source_ontology: FHIR_R4
+  uri: http://hl7.org/fhir/StructureDefinition/Claim
+  edges:
+  - references
+  - for_encounter
+  - covered_by
+Coverage:
+  description: Insurance plans, benefits, or member coverage (FHIR Coverage)
+  source_ontology: FHIR_R4
+  uri: http://hl7.org/fhir/StructureDefinition/Coverage
+  edges:
+  - references
+  - provided_by
+DiagnosticReport:
+  description: Lab reports, pathology reports, or imaging study results (FHIR DiagnosticReport)
+  parent: Document
+  source_ontology: FHIR_R4
+  uri: http://hl7.org/fhir/StructureDefinition/DiagnosticReport
+  edges:
+  - references
+  - for_encounter
+  - contains
+Immunization:
+  description: Vaccination events and immunization records (FHIR Immunization)
+  parent: Event
+  source_ontology: FHIR_R4
+  uri: http://hl7.org/fhir/StructureDefinition/Immunization
+  edges:
+  - references
+AllergyIntolerance:
+  description: Allergy and intolerance records (FHIR AllergyIntolerance)
+  source_ontology: FHIR_R4
+  uri: http://hl7.org/fhir/StructureDefinition/AllergyIntolerance
+  edges:
+  - references
+CarePlan:
+  description: Care plans, treatment protocols, and goals (FHIR CarePlan)
+  parent: Document
+  source_ontology: FHIR_R4
+  uri: http://hl7.org/fhir/StructureDefinition/CarePlan
+  edges:
+  - references
+  - contains

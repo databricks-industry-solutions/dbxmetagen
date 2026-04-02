@@ -101,8 +101,12 @@ Structural relationships, join patterns, FK references found in evidence.
 - **Evidence**: Supporting data (cite source)
 - **Priority**: High / Medium / Low
 
-Be direct and avoid repetition. Lead with the most impactful finding.
-If evidence is sparse, say so honestly rather than fabricating details."""
+GROUNDING RULE: Every finding and recommendation MUST cite a specific evidence source
+(e.g. "[Source: search_metadata]", "[Source: SQL query]"). Do not include findings that
+lack evidence. If the user's question cannot be answered from the gathered evidence,
+state this clearly.
+
+Be direct and avoid repetition. Lead with the most impactful finding."""
 
 
 BASELINE_ANALYSIS_PROMPT = f"""You are a senior data catalog analyst.
@@ -129,7 +133,10 @@ Structural relationships or patterns between tables/columns.
 - **Evidence**: Supporting data
 - **Priority**: High / Medium / Low
 
-Be direct and avoid repetition. If evidence is sparse, say so honestly."""
+GROUNDING RULE: Every finding MUST reference the evidence provided. Do not include
+findings that lack evidence. If the question cannot be answered, state this clearly.
+
+Be direct and avoid repetition."""
 
 
 # ---------------------------------------------------------------------------

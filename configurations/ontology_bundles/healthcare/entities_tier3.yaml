@@ -1,0 +1,757 @@
+Person:
+  description: People, customers, contacts, users, or employees
+  source_ontology: schema.org
+  uri: https://schema.org/Person
+  keywords:
+  - customer
+  - employee
+  - user
+  - contact
+  - person
+  synonyms:
+  - individual
+  - member
+  - staff
+  - personnel
+  typical_attributes:
+  - id
+  - name
+  - email
+  - phone
+  - address
+  - created_date
+  business_questions:
+  - How many active users do we have?
+  - What is the breakdown of employees by department?
+  relationships:
+    owns:
+      target: Transaction
+      cardinality: one-to-many
+    part_of:
+      target: Organization
+      cardinality: many-to-one
+Organization:
+  description: Companies, departments, facilities, or business units
+  source_ontology: schema.org
+  uri: https://schema.org/Organization
+  keywords:
+  - company
+  - organization
+  - department
+  - facility
+  - tenant
+  synonyms:
+  - enterprise
+  - agency
+  - institution
+  - firm
+  typical_attributes:
+  - id
+  - name
+  - type
+  - address
+  - parent_id
+  business_questions:
+  - How many facilities do we operate?
+  - What is the revenue by business unit?
+  relationships:
+    contains:
+      target: Person
+      cardinality: one-to-many
+    contains_location:
+      target: Location
+      cardinality: one-to-many
+    part_of:
+      target: Organization
+      cardinality: many-to-one
+Product:
+  description: Goods, services, SKUs, or catalog items
+  source_ontology: schema.org
+  uri: https://schema.org/Product
+  keywords:
+  - product
+  - item
+  - sku
+  - catalog
+  - offering
+  typical_attributes:
+  - id
+  - name
+  - description
+  - price
+  - category
+  - status
+  relationships:
+    references:
+      target: Reference
+      cardinality: many-to-one
+Transaction:
+  description: Orders, purchases, payments, invoices, or financial events
+  source_ontology: schema.org
+  uri: https://schema.org/Invoice
+  keywords:
+  - transaction
+  - order
+  - payment
+  - invoice
+  - purchase
+  typical_attributes:
+  - id
+  - customer_id
+  - amount
+  - date
+  - status
+  - currency
+  relationships:
+    references:
+      target: Person
+      cardinality: many-to-one
+Location:
+  description: Addresses, sites, regions, facilities, or geographies
+  source_ontology: schema.org
+  uri: https://schema.org/Place
+  keywords:
+  - location
+  - address
+  - site
+  - region
+  - facility
+  typical_attributes:
+  - id
+  - name
+  - address
+  - city
+  - state
+  - country
+  - zip_code
+  relationships:
+    part_of:
+      target: Organization
+      cardinality: many-to-one
+Event:
+  description: Activities, logs, sessions, audits, or system events
+  source_ontology: schema.org
+  uri: https://schema.org/Event
+  keywords:
+  - event
+  - activity
+  - log
+  - audit
+  - session
+  typical_attributes:
+  - id
+  - type
+  - timestamp
+  - user_id
+  - details
+  relationships:
+    references:
+      target: Person
+      cardinality: many-to-one
+Reference:
+  description: Lookup tables, codes, categories, dimensions, or configuration
+  source_ontology: schema.org
+  uri: https://schema.org/Thing
+  keywords:
+  - reference
+  - lookup
+  - code
+  - category
+  - dim_
+  typical_attributes:
+  - id
+  - code
+  - name
+  - description
+  - active
+  relationships: {}
+Metric:
+  description: KPIs, aggregates, facts, summaries, or analytic measures
+  source_ontology: schema.org
+  uri: https://schema.org/QuantitativeValue
+  keywords:
+  - metric
+  - kpi
+  - aggregate
+  - fact_
+  - summary
+  typical_attributes:
+  - id
+  - name
+  - value
+  - period
+  - dimension
+  relationships:
+    derives_from:
+      target: Event
+      cardinality: many-to-one
+Document:
+  description: Unstructured content, notes, files, or text records
+  source_ontology: schema.org
+  uri: https://schema.org/DigitalDocument
+  keywords:
+  - document
+  - note
+  - file
+  - content
+  - text
+  typical_attributes:
+  - id
+  - title
+  - body
+  - author
+  - created_date
+  - type
+  relationships:
+    references:
+      target: Person
+      cardinality: many-to-one
+Patient:
+  description: Individuals receiving healthcare services (FHIR Patient)
+  parent: Person
+  source_ontology: FHIR_R4
+  uri: http://hl7.org/fhir/StructureDefinition/Patient
+  keywords:
+  - patient
+  - mrn
+  - subject
+  - participant
+  - beneficiary
+  synonyms:
+  - member
+  - enrollee
+  - client
+  - individual
+  typical_attributes:
+  - id
+  - mrn
+  - name
+  - dob
+  - gender
+  - address
+  business_questions:
+  - How many patients were admitted last month?
+  - What is the average length of stay by department?
+  - Which patients have been readmitted within 30 days?
+  relationships:
+    treated_by:
+      target: Provider
+      cardinality: many-to-many
+    has_encounter:
+      target: Encounter
+      cardinality: one-to-many
+      join_path: patient.patient_id = encounter.patient_id
+    has_condition:
+      target: Condition
+      cardinality: one-to-many
+      join_path: patient.patient_id = condition.patient_id
+    has_coverage:
+      target: Coverage
+      cardinality: one-to-many
+      join_path: patient.patient_id = coverage.member_id
+  properties:
+    identifier:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+      - patient_id
+      - pat_id
+    mrn:
+      kind: data_property
+      role: business_key
+      typical_attributes:
+      - mrn
+      - medical_record_number
+      - patient_mrn
+    name:
+      kind: data_property
+      role: pii
+      typical_attributes:
+      - name
+      - full_name
+      - first_name
+      - last_name
+      - patient_name
+    dob:
+      kind: data_property
+      role: pii
+      typical_attributes:
+      - dob
+      - date_of_birth
+      - birth_date
+      - birthdate
+    gender:
+      kind: data_property
+      role: dimension
+      typical_attributes:
+      - gender
+      - sex
+      - gender_code
+    treated_by:
+      kind: object_property
+      role: object_property
+      edge: treated_by
+      target_entity: Provider
+      typical_attributes:
+      - provider_id
+      - attending_id
+      - physician_id
+      - pcp_id
+Provider:
+  description: Practitioners, clinicians, or care team members (FHIR Practitioner)
+  parent: Person
+  source_ontology: FHIR_R4
+  uri: http://hl7.org/fhir/StructureDefinition/Practitioner
+  keywords:
+  - provider
+  - physician
+  - practitioner
+  - clinician
+  - npi
+  synonyms:
+  - doctor
+  - nurse
+  - specialist
+  - attending
+  - caregiver
+  typical_attributes:
+  - id
+  - npi
+  - name
+  - specialty
+  - organization
+  business_questions:
+  - Which providers have the highest patient volume?
+  - What is the distribution of providers by specialty?
+  relationships:
+    treats:
+      target: Patient
+      cardinality: many-to-many
+    ordered_for:
+      target: Encounter
+      cardinality: one-to-many
+    part_of:
+      target: Organization
+      cardinality: many-to-one
+Encounter:
+  description: Visits, admissions, or episodes of care (FHIR Encounter)
+  parent: Event
+  source_ontology: FHIR_R4
+  uri: http://hl7.org/fhir/StructureDefinition/Encounter
+  keywords:
+  - encounter
+  - visit
+  - admission
+  - episode
+  - appointment
+  synonyms:
+  - stay
+  - hospitalization
+  - consult
+  - session
+  typical_attributes:
+  - id
+  - patient_id
+  - date
+  - type
+  - provider_id
+  - location_id
+  - status
+  business_questions:
+  - What is the average ED wait time by hospital?
+  - How many admissions occurred this quarter?
+  - What is the readmission rate by discharge disposition?
+  relationships:
+    references:
+      target: Patient
+      cardinality: many-to-one
+      join_path: encounter.patient_id = patient.patient_id
+    has_order:
+      target: Procedure
+      cardinality: one-to-many
+      join_path: encounter.encounter_id = procedure.encounter_id
+    contains:
+      target: Observation
+      cardinality: one-to-many
+      join_path: encounter.encounter_id = observation.encounter_id
+    located_at:
+      target: Location
+      cardinality: many-to-one
+      join_path: encounter.location_id = location.location_id
+  properties:
+    identifier:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+      - encounter_id
+      - visit_id
+      - admission_id
+    patient:
+      kind: object_property
+      role: object_property
+      edge: has_encounter
+      target_entity: Patient
+      typical_attributes:
+      - patient_id
+      - pat_id
+      - subject_id
+    provider:
+      kind: object_property
+      role: object_property
+      edge: performed_by
+      target_entity: Provider
+      typical_attributes:
+      - provider_id
+      - attending_id
+      - physician_id
+    location:
+      kind: object_property
+      role: object_property
+      edge: located_at
+      target_entity: Location
+      typical_attributes:
+      - location_id
+      - facility_id
+      - department_id
+    encounter_date:
+      kind: data_property
+      role: temporal
+      typical_attributes:
+      - date
+      - encounter_date
+      - admission_date
+      - visit_date
+      - start_date
+    encounter_type:
+      kind: data_property
+      role: dimension
+      typical_attributes:
+      - type
+      - encounter_type
+      - visit_type
+      - class
+    status:
+      kind: data_property
+      role: dimension
+      typical_attributes:
+      - status
+      - encounter_status
+      - discharge_disposition
+Condition:
+  description: Diagnoses, problems, or diseases (FHIR Condition / OMOP CONDITION_OCCURRENCE)
+  source_ontology: FHIR_R4
+  uri: http://hl7.org/fhir/StructureDefinition/Condition
+  keywords:
+  - diagnosis
+  - condition
+  - icd
+  - disease
+  - problem
+  typical_attributes:
+  - id
+  - code
+  - description
+  - patient_id
+  - encounter_id
+  - date
+  - status
+  relationships:
+    references:
+      target: Patient
+      cardinality: many-to-one
+    diagnosed_in:
+      target: Encounter
+      cardinality: many-to-one
+Procedure:
+  description: Medical procedures, surgeries, or interventions (FHIR Procedure)
+  source_ontology: FHIR_R4
+  uri: http://hl7.org/fhir/StructureDefinition/Procedure
+  keywords:
+  - procedure
+  - surgery
+  - cpt
+  - intervention
+  - operation
+  typical_attributes:
+  - id
+  - code
+  - description
+  - date
+  - provider_id
+  - encounter_id
+  - status
+  relationships:
+    ordered_for:
+      target: Encounter
+      cardinality: many-to-one
+    performed_by:
+      target: Provider
+      cardinality: many-to-one
+    references:
+      target: Patient
+      cardinality: many-to-one
+Medication:
+  description: Drugs, prescriptions, or medication orders (FHIR MedicationRequest)
+  parent: Product
+  source_ontology: FHIR_R4
+  uri: http://hl7.org/fhir/StructureDefinition/Medication
+  keywords:
+  - medication
+  - drug
+  - prescription
+  - pharmacy
+  - ndc
+  - rxnorm
+  typical_attributes:
+  - id
+  - name
+  - ndc
+  - dose
+  - frequency
+  - route
+  relationships:
+    ordered_for:
+      target: Encounter
+      cardinality: many-to-one
+    prescribed_to:
+      target: Patient
+      cardinality: many-to-one
+Observation:
+  description: Lab results, vitals, or clinical measurements (FHIR Observation / OMOP MEASUREMENT)
+  parent: Event
+  source_ontology: FHIR_R4
+  uri: http://hl7.org/fhir/StructureDefinition/Observation
+  keywords:
+  - lab
+  - result
+  - observation
+  - vital
+  - specimen
+  - measurement
+  typical_attributes:
+  - id
+  - test_code
+  - value
+  - unit
+  - reference_range
+  - date
+  relationships:
+    references:
+      target: Patient
+      cardinality: many-to-one
+    recorded_in:
+      target: Encounter
+      cardinality: many-to-one
+Claim:
+  description: Insurance claims or billing submissions (FHIR Claim)
+  parent: Transaction
+  source_ontology: FHIR_R4
+  uri: http://hl7.org/fhir/StructureDefinition/Claim
+  keywords:
+  - claim
+  - billing
+  - adjudication
+  - remittance
+  - eob
+  typical_attributes:
+  - id
+  - patient_id
+  - amount
+  - service_date
+  - status
+  - payer_id
+  relationships:
+    references:
+      target: Patient
+      cardinality: many-to-one
+    for_encounter:
+      target: Encounter
+      cardinality: many-to-one
+    covered_by:
+      target: Coverage
+      cardinality: many-to-one
+  properties:
+    identifier:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+      - claim_id
+      - claim_number
+    patient:
+      kind: object_property
+      role: object_property
+      edge: references
+      target_entity: Patient
+      typical_attributes:
+      - patient_id
+      - member_id
+      - subscriber_id
+    amount:
+      kind: data_property
+      role: measure
+      typical_attributes:
+      - amount
+      - total_charge
+      - billed_amount
+      - paid_amount
+      - allowed_amount
+    service_date:
+      kind: data_property
+      role: temporal
+      typical_attributes:
+      - service_date
+      - claim_date
+      - date_of_service
+      - from_date
+    status:
+      kind: data_property
+      role: dimension
+      typical_attributes:
+      - status
+      - claim_status
+      - adjudication_status
+    encounter:
+      kind: object_property
+      role: object_property
+      edge: for_encounter
+      target_entity: Encounter
+      typical_attributes:
+      - encounter_id
+      - visit_id
+    payer:
+      kind: object_property
+      role: object_property
+      edge: covered_by
+      target_entity: Coverage
+      typical_attributes:
+      - payer_id
+      - plan_id
+      - coverage_id
+      - insurance_id
+Coverage:
+  description: Insurance plans, benefits, or member coverage (FHIR Coverage)
+  source_ontology: FHIR_R4
+  uri: http://hl7.org/fhir/StructureDefinition/Coverage
+  keywords:
+  - coverage
+  - insurance
+  - benefit
+  - plan
+  - enrollment
+  typical_attributes:
+  - id
+  - member_id
+  - payer
+  - plan_name
+  - start_date
+  - end_date
+  relationships:
+    references:
+      target: Person
+      cardinality: many-to-one
+    provided_by:
+      target: Organization
+      cardinality: many-to-one
+DiagnosticReport:
+  description: Lab reports, pathology reports, or imaging study results (FHIR DiagnosticReport)
+  parent: Document
+  source_ontology: FHIR_R4
+  uri: http://hl7.org/fhir/StructureDefinition/DiagnosticReport
+  keywords:
+  - diagnostic_report
+  - lab_report
+  - pathology_report
+  - report
+  - study_result
+  typical_attributes:
+  - id
+  - patient_id
+  - encounter_id
+  - status
+  - issued_date
+  - category
+  - code
+  relationships:
+    references:
+      target: Patient
+      cardinality: many-to-one
+    for_encounter:
+      target: Encounter
+      cardinality: many-to-one
+    contains:
+      target: Observation
+      cardinality: one-to-many
+Immunization:
+  description: Vaccination events and immunization records (FHIR Immunization)
+  parent: Event
+  source_ontology: FHIR_R4
+  uri: http://hl7.org/fhir/StructureDefinition/Immunization
+  keywords:
+  - immunization
+  - vaccination
+  - vaccine
+  - immunization_record
+  - shot
+  typical_attributes:
+  - id
+  - patient_id
+  - vaccine_code
+  - date
+  - dose_number
+  - status
+  - site
+  relationships:
+    references:
+      target: Patient
+      cardinality: many-to-one
+AllergyIntolerance:
+  description: Allergy and intolerance records (FHIR AllergyIntolerance)
+  source_ontology: FHIR_R4
+  uri: http://hl7.org/fhir/StructureDefinition/AllergyIntolerance
+  keywords:
+  - allergy
+  - intolerance
+  - allergen
+  - adverse_reaction
+  - sensitivity
+  typical_attributes:
+  - id
+  - patient_id
+  - code
+  - type
+  - category
+  - criticality
+  - onset_date
+  relationships:
+    references:
+      target: Patient
+      cardinality: many-to-one
+CarePlan:
+  description: Care plans, treatment protocols, and goals (FHIR CarePlan)
+  parent: Document
+  source_ontology: FHIR_R4
+  uri: http://hl7.org/fhir/StructureDefinition/CarePlan
+  keywords:
+  - care_plan
+  - treatment_plan
+  - protocol
+  - goal
+  - care_team
+  typical_attributes:
+  - id
+  - patient_id
+  - status
+  - intent
+  - period_start
+  - period_end
+  - category
+  relationships:
+    references:
+      target: Patient
+      cardinality: many-to-one
+    contains:
+      target: Procedure
+      cardinality: one-to-many

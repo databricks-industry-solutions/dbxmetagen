@@ -1,0 +1,44 @@
+- name: Person
+  description: People, customers, contacts, users, or employees
+- name: Organization
+  description: Companies, departments, facilities, or business units
+- name: Product
+  description: Goods, services, SKUs, or catalog items
+- name: Transaction
+  description: Orders, purchases, payments, invoices, or financial events
+- name: Location
+  description: Addresses, sites, regions, facilities, or geographies
+- name: Event
+  description: Activities, logs, sessions, audits, or system events
+- name: Reference
+  description: Lookup tables, codes, categories, dimensions, or configuration
+- name: Metric
+  description: KPIs, aggregates, facts, summaries, or analytic measures
+- name: Document
+  description: Unstructured content, notes, files, or text records
+- name: Patient
+  description: Individuals receiving healthcare services (FHIR Patient)
+- name: Provider
+  description: Practitioners, clinicians, or care team members (FHIR Practitioner)
+- name: Encounter
+  description: Visits, admissions, or episodes of care (FHIR Encounter)
+- name: Condition
+  description: Diagnoses, problems, or diseases (FHIR Condition / OMOP CONDITION_OCCURRENCE)
+- name: Procedure
+  description: Medical procedures, surgeries, or interventions (FHIR Procedure)
+- name: Medication
+  description: Drugs, prescriptions, or medication orders (FHIR MedicationRequest)
+- name: Observation
+  description: Lab results, vitals, or clinical measurements (FHIR Observation / OMOP MEASUREMENT)
+- name: Claim
+  description: Insurance claims or billing submissions (FHIR Claim)
+- name: Coverage
+  description: Insurance plans, benefits, or member coverage (FHIR Coverage)
+- name: DiagnosticReport
+  description: Lab reports, pathology reports, or imaging study results (FHIR DiagnosticReport)
+- name: Immunization
+  description: Vaccination events and immunization records (FHIR Immunization)
+- name: AllergyIntolerance
+  description: Allergy and intolerance records (FHIR AllergyIntolerance)
+- name: CarePlan
+  description: Care plans, treatment protocols, and goals (FHIR CarePlan)

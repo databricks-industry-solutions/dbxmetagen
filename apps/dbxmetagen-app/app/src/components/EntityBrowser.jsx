@@ -51,6 +51,11 @@ function EntityCard({ entity, expanded, onToggle }) {
           <span className="px-1.5 py-0.5 rounded bg-slate-100 dark:bg-dbx-navy-500 text-slate-600 dark:text-slate-300" title="Bundle match vs heuristic">
             {bundlePct}% bundle
           </span>
+          {entity.source_ontology && (
+            <span className="px-1.5 py-0.5 rounded bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300 font-medium" title="Source ontology standard">
+              {entity.source_ontology}
+            </span>
+          )}
         </div>
         <div className="mt-2">
           <RoleBar roles={entity.roles} />
@@ -91,6 +96,21 @@ function EntityExpanded({ entity }) {
         <p className="text-sm text-slate-500">Loading details...</p>
       ) : (
         <>
+          {(detail?.entity_uri || detail?.source_ontology) && (
+            <div className="flex items-center gap-3 mb-3 text-xs">
+              {detail.source_ontology && (
+                <span className="px-2 py-0.5 rounded-full bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300 font-medium">
+                  {detail.source_ontology}
+                </span>
+              )}
+              {detail.entity_uri && (
+                <a href={detail.entity_uri} target="_blank" rel="noopener noreferrer"
+                   className="text-dbx-sky hover:underline flex items-center gap-1" title={detail.entity_uri}>
+                  Ontology URI &#8599;
+                </a>
+              )}
+            </div>
+          )}
           <h4 className="text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2">Source tables</h4>
           <div className="flex flex-wrap gap-2 mb-4">
             {tables.map(t => (

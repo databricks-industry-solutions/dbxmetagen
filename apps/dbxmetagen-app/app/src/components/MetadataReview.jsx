@@ -134,6 +134,7 @@ function ReviewEditor() {
       setReviewData(tables)
       setOriginal(JSON.parse(JSON.stringify(tables)))
       const exp = {}; tables.forEach(t => { exp[t.table_name] = true }); setExpanded(exp)
+      if (j.truncated) setError(`Showing 200 of ${j.total_count} tables. Use the filter to narrow results.`)
     } catch (e) { setError(e.message) }
     setLoading(false)
   }
@@ -522,7 +523,10 @@ function ReviewEditor() {
                 <span className="text-xs text-slate-400">{expanded[tbl.table_name] ? '\u25BC' : '\u25B6'}</span>
                 <span className="font-semibold text-sm text-slate-700 dark:text-slate-200">{tbl.table_name}</span>
                 {tbl.domain && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300 font-medium">{tbl.domain}{tbl.subdomain ? ` / ${tbl.subdomain}` : ''}</span>}
-                {tbl.primary_entity && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300 font-medium">{tbl.primary_entity.entity_type} ({Number(tbl.primary_entity.confidence ?? 0).toFixed(2)})</span>}
+                {tbl.primary_entity && (<span className="inline-flex items-center gap-1">
+                  <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300 font-medium">{tbl.primary_entity.entity_type} ({Number(tbl.primary_entity.confidence ?? 0).toFixed(2)})</span>
+                  {tbl.primary_entity.source_ontology && <span className="text-[9px] px-1 py-0 rounded bg-indigo-100 dark:bg-indigo-900/40 text-indigo-600 dark:text-indigo-300">{tbl.primary_entity.source_ontology}</span>}
+                </span>)}
                 {show('ontology') && (() => {
                   const rs = tbl.review_status || 'unreviewed'
                   const rsCls = rs === 'approved' ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300' : rs === 'in_review' ? 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/40 dark:text-yellow-300' : 'bg-slate-100 text-slate-500 dark:bg-slate-800/40 dark:text-slate-400'
@@ -623,7 +627,10 @@ function ReviewEditor() {
                                     const c = Number(e.confidence ?? 0)
                                     const role = e.entity_role || 'primary'
                                     const cls = role === 'primary' ? 'bg-purple-100 text-purple-700' : c <= 0 ? 'bg-red-100 text-red-700' : c < 0.5 ? 'bg-yellow-100 text-yellow-700' : 'bg-green-100 text-green-700'
-                                    return <span key={ei} className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${cls}`}>{e.entity_type} ({c.toFixed(2)})</span>
+                                    return (<span key={ei} className="inline-flex items-center gap-1">
+                                      <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${cls}`}>{e.entity_type} ({c.toFixed(2)})</span>
+                                      {e.source_ontology && <span className="text-[9px] px-1 py-0 rounded bg-indigo-100 dark:bg-indigo-900/40 text-indigo-600 dark:text-indigo-300">{e.source_ontology}</span>}
+                                    </span>)
                                   })}</div>
                                 ) : <span className="text-[10px] text-slate-300">--</span>
                               })()}</td>}

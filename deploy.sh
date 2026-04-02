@@ -146,12 +146,20 @@ rm -rf dist/
 uv build
 echo "Python package built: $(ls dist/*.whl)"
 
-# --- Copy configurations into app source for deployment ---
+# --- Copy configurations and wheel into app source for deployment ---
 echo ""
-echo "=== Copying configurations into app source ==="
+echo "=== Copying configurations and wheel into app source ==="
 cp -r configurations apps/dbxmetagen-app/app/configurations
+WHL_NAME=$(basename dist/dbxmetagen-*.whl)
+cp "dist/${WHL_NAME}" "apps/dbxmetagen-app/app/${WHL_NAME}"
+sed "s|__WHL_NAME__|${WHL_NAME}|" \
+    apps/dbxmetagen-app/app/requirements.txt.template \
+    > apps/dbxmetagen-app/app/requirements.txt
+echo "Wheel: ${WHL_NAME}"
 cleanup() {
     rm -rf apps/dbxmetagen-app/app/configurations
+    rm -f apps/dbxmetagen-app/app/dbxmetagen-*.whl
+    rm -f apps/dbxmetagen-app/app/requirements.txt
 }
 trap cleanup EXIT
 

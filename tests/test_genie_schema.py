@@ -3,9 +3,9 @@
 import sys
 import pytest
 
-sys.path.insert(0, "apps/dbxmetagen-app/app")
+sys.path.insert(0, "src")
 
-from genie_schema import (
+from dbxmetagen.genie.schema import (
     _simplify_join_sql,
     _backtick_join_sql,
     _fix_date_func_units,

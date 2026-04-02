@@ -21,15 +21,18 @@ _STUB_MODS = [
     "langchain_community", "langchain_community.chat_models",
     "langchain_community.chat_models.databricks",
     "langgraph", "langgraph.prebuilt",
+    "databricks", "databricks.sdk", "databricks.sdk.service",
+    "databricks.sdk.service.sql",
+    "mlflow",
 ]
 for mod_name in _STUB_MODS:
     if mod_name not in sys.modules:
         sys.modules[mod_name] = MagicMock()
 
 # Now safe to import
-sys.path.insert(0, "apps/dbxmetagen-app/app")
-from agent.genie_agent import _merge_prebuilt_join_specs, _validate_output  # noqa: E402
-from agent.genie_builder import GenieContextAssembler  # noqa: E402
+sys.path.insert(0, "src")
+from dbxmetagen.genie.agent import _merge_prebuilt_join_specs, _validate_output  # noqa: E402
+from dbxmetagen.genie.context import GenieContextAssembler  # noqa: E402
 
 
 # ---------------------------------------------------------------------------

@@ -96,6 +96,118 @@ function SmallInput({ value, onChange, placeholder, className = '' }) {
     className={`text-xs border border-slate-200 dark:border-slate-600 rounded px-2 py-1.5 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200 ${className}`} />
 }
 
+function TableDescButtons({ identifier, currentDesc, onDescription }) {
+  const [enriching, setEnriching] = useState(false)
+  const [pulling, setPulling] = useState(false)
+
+  const enrich = async () => {
+    if (!identifier) return
+    setEnriching(true)
+    try {
+      const res = await fetch('/api/genie/enrich-description', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ table_identifier: identifier, existing_description: currentDesc || null }),
+      })
+      if (!res.ok) { const b = await res.json().catch(() => ({})); alert(b.detail || 'Enrich failed'); return }
+      const data = await res.json()
+      if (data.description) onDescription(data.description)
+    } catch (e) { alert(e.message) }
+    finally { setEnriching(false) }
+  }
+
+  const pullUC = async () => {
+    if (!identifier) return
+    setPulling(true)
+    try {
+      const res = await fetch(`/api/genie/uc-comment?table_identifier=${encodeURIComponent(identifier)}`)
+      if (!res.ok) { const b = await res.json().catch(() => ({})); alert(b.detail || 'UC fetch failed'); return }
+      const data = await res.json()
+      onDescription(data.comment || '')
+    } catch (e) { alert(e.message) }
+    finally { setPulling(false) }
+  }
+
+  const btnClass = "text-xs px-2 py-1 rounded border transition-colors disabled:opacity-50 flex items-center gap-1 whitespace-nowrap"
+  const spinner = <span className="w-3 h-3 border-2 border-current border-t-transparent rounded-full animate-spin" />
+
+  return (
+    <div className="flex gap-1.5 mt-1">
+      <button onClick={enrich} disabled={enriching || !identifier}
+        className={`${btnClass} border-purple-300 dark:border-purple-700 text-purple-600 dark:text-purple-400 hover:bg-purple-50 dark:hover:bg-purple-900/30`}>
+        {enriching ? spinner : null}{enriching ? 'Enriching...' : 'Enrich from KB'}
+      </button>
+      <button onClick={pullUC} disabled={pulling || !identifier}
+        className={`${btnClass} border-amber-300 dark:border-amber-700 text-amber-600 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-900/30`}>
+        {pulling ? spinner : null}{pulling ? 'Fetching...' : 'Pull from UC'}
+      </button>
+    </div>
+  )
+}
+
+function TableColumns({ identifier, columns, onColumns }) {
+  const [open, setOpen] = useState(false)
+  const [loading, setLoading] = useState(false)
+
+  const loadFromKB = async () => {
+    if (!identifier) return
+    setLoading(true)
+    try {
+      const res = await fetch(`/api/genie/table-columns?table_identifier=${encodeURIComponent(identifier)}`)
+      if (!res.ok) { const b = await res.json().catch(() => ({})); alert(b.detail || 'Failed to load columns'); return }
+      const data = await res.json()
+      onColumns((data.columns || []).map(c => ({ name: c.column_name, type: c.data_type || '', desc: c.comment || '' })))
+      setOpen(true)
+    } catch (e) { alert(e.message) }
+    finally { setLoading(false) }
+  }
+
+  const updateCol = (idx, field, val) => {
+    const next = [...columns]
+    next[idx] = { ...next[idx], [field]: val }
+    onColumns(next)
+  }
+
+  const spinner = <span className="w-3 h-3 border-2 border-current border-t-transparent rounded-full animate-spin" />
+  const btnClass = "text-xs px-2 py-1 rounded border transition-colors disabled:opacity-50 flex items-center gap-1 whitespace-nowrap"
+
+  return (
+    <div className="mt-1">
+      <div className="flex items-center gap-2">
+        {columns.length > 0 && (
+          <button onClick={() => setOpen(!open)}
+            className="text-xs text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 flex items-center gap-1">
+            <span className={`transition-transform ${open ? 'rotate-90' : ''}`}>&#9654;</span>
+            Columns ({columns.length})
+          </button>
+        )}
+        <button onClick={loadFromKB} disabled={loading || !identifier}
+          className={`${btnClass} border-teal-300 dark:border-teal-700 text-teal-600 dark:text-teal-400 hover:bg-teal-50 dark:hover:bg-teal-900/30`}>
+          {loading ? spinner : null}{loading ? 'Loading...' : columns.length ? 'Refresh Columns' : 'Load Columns from KB'}
+        </button>
+      </div>
+      {open && columns.length > 0 && (
+        <div className="mt-2 border border-slate-200 dark:border-slate-700 rounded-lg overflow-hidden">
+          <div className="grid grid-cols-[minmax(120px,1fr)_80px_2fr] gap-px bg-slate-200 dark:bg-slate-700 text-xs font-medium text-slate-600 dark:text-slate-400">
+            <div className="bg-slate-50 dark:bg-slate-800 px-2 py-1">Column</div>
+            <div className="bg-slate-50 dark:bg-slate-800 px-2 py-1">Type</div>
+            <div className="bg-slate-50 dark:bg-slate-800 px-2 py-1">Description</div>
+          </div>
+          <div className="max-h-60 overflow-y-auto">
+            {columns.map((c, idx) => (
+              <div key={c.name} className="grid grid-cols-[minmax(120px,1fr)_80px_2fr] gap-px bg-slate-200 dark:bg-slate-700 text-xs">
+                <div className="bg-white dark:bg-slate-800 px-2 py-1 font-mono text-slate-700 dark:text-slate-300 truncate">{c.name}</div>
+                <div className="bg-white dark:bg-slate-800 px-2 py-1 text-slate-500 truncate">{c.type}</div>
+                <input value={c.desc} onChange={e => updateCol(idx, 'desc', e.target.value)}
+                  className="bg-white dark:bg-slate-800 px-2 py-1 text-slate-700 dark:text-slate-300 border-0 outline-none focus:bg-blue-50 dark:focus:bg-blue-900/20" />
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 export default function GenieUpdater({ spaceId, onBack }) {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
@@ -143,7 +255,7 @@ export default function GenieUpdater({ spaceId, onBack }) {
 
         try {
           const ds = ss.data_sources || {}
-          const t = (ds.tables || []).map(t => ({ identifier: t.identifier || '', description: t.description, _key: uuid() }))
+          const t = (ds.tables || []).map(t => ({ identifier: t.identifier || '', description: t.description, columns: [], _key: uuid() }))
           setTables(t)
           info.tables = t.length
           const mv = (ds.metric_views || []).map(m => ({ identifier: m.identifier || '', description: m.description, _key: uuid() }))
@@ -234,7 +346,17 @@ export default function GenieUpdater({ spaceId, onBack }) {
 
   const assemble = () => ({
     data_sources: {
-      tables: tables.map(t => ({ identifier: t.identifier, description: t.description })).filter(t => t.identifier),
+      tables: tables.map(t => {
+        const entry = { identifier: t.identifier, description: t.description }
+        const cols = (t.columns || []).filter(c => c.desc)
+        if (cols.length) {
+          const colLines = cols.map(c => `${c.name} (${c.type}): ${c.desc}`)
+          const descArr = Array.isArray(entry.description) ? [...entry.description] : entry.description ? [entry.description] : []
+          descArr.push('Column descriptions: ' + colLines.join('; '))
+          entry.description = descArr
+        }
+        return entry
+      }).filter(t => t.identifier),
       metric_views: metricViews.map(m => ({ identifier: m.identifier, description: m.description })).filter(m => m.identifier),
     },
     instructions: {
@@ -346,11 +468,17 @@ export default function GenieUpdater({ spaceId, onBack }) {
       <SectionHeader title="Tables" count={tables.length}>
         <EditableList items={tables} setItems={setTables}
           emptyLabel="No tables" addLabel="Add Table"
-          newItem={() => ({ identifier: '', description: null })}
+          newItem={() => ({ identifier: '', description: null, columns: [] })}
           renderItem={(t, i, update) => (
-            <div className="flex gap-2">
-              <SmallInput value={t.identifier} onChange={v => update({ ...t, identifier: v })} placeholder="catalog.schema.table" className="flex-1" />
-              <SmallInput value={descToStr(t.description)} onChange={v => update({ ...t, description: strToDesc(v) })} placeholder="Description (optional)" className="flex-1" />
+            <div className="space-y-1.5">
+              <SmallInput value={t.identifier} onChange={v => update({ ...t, identifier: v })} placeholder="catalog.schema.table" className="w-full" />
+              <textarea value={descToStr(t.description)} onChange={e => update({ ...t, description: strToDesc(e.target.value) })}
+                placeholder="Table description (optional)" rows={3}
+                className="w-full text-xs border border-slate-200 dark:border-slate-600 rounded px-2 py-1.5 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200" />
+              <TableDescButtons identifier={t.identifier} currentDesc={descToStr(t.description)}
+                onDescription={desc => update({ ...t, description: strToDesc(desc) })} />
+              <TableColumns identifier={t.identifier} columns={t.columns || []}
+                onColumns={cols => update({ ...t, columns: cols })} />
             </div>
           )}
         />

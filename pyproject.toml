@@ -31,6 +31,10 @@ dependencies = [
 pi = [
     "en-core-web-lg @ https://github.com/explosion/spacy-models/releases/download/en_core_web_lg-3.8.0/en_core_web_lg-3.8.0-py3-none-any.whl",
 ]
+ontology = [
+    "rdflib>=6.3.0",
+    "pyoxigraph>=0.3.0",
+]
 
 [project.scripts]
 main = "dbxmetagen.main:main"

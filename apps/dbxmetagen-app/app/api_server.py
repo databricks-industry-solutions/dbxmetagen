@@ -416,6 +416,7 @@ def get_config():
         "include_lineage": os.environ.get("INCLUDE_LINEAGE", "false").lower() == "true",
         "workspace_host": host.rstrip("/"),
         "available_models": _AVAILABLE_MODELS,
+        "lakebase_configured": pg_configured(),
     }
 
 
@@ -520,6 +521,11 @@ class GenieUpdateAssistRequest(BaseModel):
     existing_items: Optional[list | dict] = None
     user_prompt: str = ""
     model_endpoint: str = _LLM_MODEL
+
+
+class GenieEnrichDescriptionRequest(BaseModel):
+    table_identifier: str
+    existing_description: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -1368,6 +1374,11 @@ def review_combined(body: ReviewCombinedRequest):
         except Exception as e:
             logger.debug("review_combined ADD COLUMN review_status: %s", e)
     rs_expr = "COALESCE(review_status, 'unreviewed') AS review_status" if _has_review_status else "'unreviewed' AS review_status"
+    try:
+        count_rows = execute_sql(f"SELECT COUNT(*) AS cnt FROM {tbl_kb} WHERE {where}", timeout=10)
+        total_count = count_rows[0]["cnt"] if count_rows else 0
+    except Exception:
+        total_count = None
     tbl_rows = execute_sql(f"""
         SELECT table_name, catalog, `schema`, table_short_name, comment,
                domain, subdomain, has_pii, has_phi,
@@ -1375,7 +1386,7 @@ def review_combined(body: ReviewCombinedRequest):
         FROM {tbl_kb} WHERE {where} LIMIT 200
     """)
     if not tbl_rows:
-        return {"tables": []}
+        return {"tables": [], "total_count": total_count or 0, "truncated": False}
 
     tbl_names = [r["table_name"] for r in tbl_rows]
     safe_names = [_safe_sql_str(n) for n in tbl_names]
@@ -1394,7 +1405,7 @@ def review_combined(body: ReviewCombinedRequest):
             SELECT entity_id, entity_type, entity_name, confidence,
                    source_columns, validation_notes, validated,
                    COALESCE(entity_role, 'primary') AS entity_role,
-                   discovery_confidence,
+                   discovery_confidence, entity_uri, source_ontology,
                    EXPLODE(source_tables) as table_name
             FROM {ent_tbl}
             WHERE {_onto_where}
@@ -1403,7 +1414,12 @@ def review_combined(body: ReviewCombinedRequest):
         logger.warning("Enriched ontology query failed (%s), falling back to simple query", e)
         try:
             onto_rows = execute_sql(f"""
-                SELECT entity_type, entity_name, confidence, EXPLODE(source_tables) as table_name
+                SELECT entity_type, entity_name, confidence,
+                       NULL AS entity_id, NULL AS source_columns,
+                       NULL AS validation_notes, false AS validated,
+                       'primary' AS entity_role, NULL AS discovery_confidence,
+                       NULL AS entity_uri, NULL AS source_ontology,
+                       EXPLODE(source_tables) as table_name
                 FROM {ent_tbl}
                 WHERE {_onto_where}
             """)
@@ -1463,6 +1479,8 @@ def review_combined(body: ReviewCombinedRequest):
             "source_columns": raw_cols if isinstance(raw_cols, list) else None,
             "validation_notes": o.get("validation_notes"),
             "validated": o.get("validated"),
+            "entity_uri": o.get("entity_uri"),
+            "source_ontology": o.get("source_ontology"),
         })
     for tbl_name, ents in onto_by_table.items():
         seen = {}
@@ -1512,7 +1530,8 @@ def review_combined(body: ReviewCombinedRequest):
             "column_properties": col_props_by_table.get(tn, []),
             "fk_predictions": fk_by_table.get(tn, []),
         })
-    return {"tables": result}
+    truncated = total_count is not None and total_count > 200
+    return {"tables": result, "total_count": total_count or len(result), "truncated": truncated}
 
 
 class ExportVolumeRequest(BaseModel):
@@ -1847,6 +1866,23 @@ def get_ontology_relationships():
         return []
 
 
+@app.get("/api/ontology/graph-edges")
+def get_ontology_graph_edges(edge_type: str = ""):
+    """Return edges from the knowledge graph (graph_edges table), optionally filtered by type."""
+    ge_tbl = fq("graph_edges")
+    where = f"edge_type = '{_esc_sql(edge_type)}'" if edge_type and _SAFE_IDENT_RE.match(edge_type) else "1=1"
+    try:
+        return execute_sql(f"""
+            SELECT src, dst, relationship, edge_type, weight, ontology_rel
+            FROM {ge_tbl}
+            WHERE {where}
+            ORDER BY weight DESC
+            LIMIT 500
+        """)
+    except Exception:
+        return []
+
+
 @app.get("/api/ontology/summary")
 def get_ontology_summary():
     q = f"""
@@ -1857,6 +1893,57 @@ def get_ontology_summary():
         GROUP BY entity_type ORDER BY count DESC
     """
     return execute_sql(q)
+
+
+@app.get("/api/ontology/turtle")
+def get_ontology_turtle():
+    """Return the last generated Turtle file for the current schema."""
+    vol_path = f"/Volumes/{CATALOG}/{SCHEMA}/generated_metadata/ontology_output.ttl"
+    ttl_candidates = [
+        vol_path,
+        os.path.join(os.path.dirname(__file__), "ontology_output.ttl"),
+        os.path.join(os.path.dirname(__file__), "..", "ontology_output.ttl"),
+        f"/tmp/dbxmetagen_ontology_{SCHEMA}.ttl",
+    ]
+    for path in ttl_candidates:
+        if os.path.isfile(path):
+            with open(path, "r") as f:
+                content = f.read()
+            return Response(content=content, media_type="text/turtle",
+                            headers={"Content-Disposition": f"attachment; filename=ontology_{SCHEMA}.ttl"})
+    try:
+        rows = execute_sql(f"SELECT * FROM read_files('{vol_path}') LIMIT 1")
+        if rows:
+            content = rows[0].get("value", "")
+            return Response(content=content, media_type="text/turtle",
+                            headers={"Content-Disposition": f"attachment; filename=ontology_{SCHEMA}.ttl"})
+    except Exception:
+        pass
+    return JSONResponse({"error": "No Turtle file found. Run ontology build with Turtle export enabled."}, status_code=404)
+
+
+@app.get("/api/ontology/bundle-info")
+def get_ontology_bundle_info(bundle: str = ""):
+    """Return format version, tier index status, and entity count for a bundle."""
+    if not bundle:
+        return JSONResponse({"error": "bundle parameter required"}, status_code=400)
+    bd = _find_bundle_dir()
+    if not bd:
+        return {"bundle": bundle, "format_version": "unknown", "has_tier_indexes": False, "tier1_entity_count": 0}
+    bundle_path = os.path.join(bd, f"{bundle}.yaml" if not bundle.endswith(".yaml") else bundle)
+    info = {"bundle": bundle, "format_version": "1.0", "has_tier_indexes": False, "tier1_entity_count": 0}
+    if os.path.isfile(bundle_path):
+        try:
+            with open(bundle_path, "r") as f:
+                raw = yaml.safe_load(f)
+            info["format_version"] = raw.get("metadata", {}).get("format_version", "1.0")
+            info["tier1_entity_count"] = len(raw.get("ontology", {}).get("entities", {}).get("definitions", {}))
+        except Exception:
+            pass
+    tier_dir = os.path.join(bd, bundle.replace(".yaml", ""))
+    if os.path.isdir(tier_dir) and os.path.isfile(os.path.join(tier_dir, "entities_tier1.yaml")):
+        info["has_tier_indexes"] = True
+    return info
 
 
 _DOMAIN_CONFIG_DIR = "configurations"
@@ -2060,18 +2147,24 @@ def get_ontology_entities_summary(
     try:
         ent_rows = execute_sql(
             f"""
-            SELECT entity_type, EXPLODE(source_tables) AS table_name
+            SELECT entity_type, source_ontology, entity_uri, EXPLODE(source_tables) AS table_name
             FROM {ent_tbl}
             WHERE {where_ent}
             """,
             timeout=30,
         )
         tables_by_entity = {}
+        source_onto_by_entity: dict[str, set] = {}
+        uri_by_entity: dict[str, set] = {}
         for r in ent_rows:
             et = r.get("entity_type")
             tn = r.get("table_name")
             if et and tn:
                 tables_by_entity.setdefault(et, set()).add(tn)
+            if et and r.get("source_ontology"):
+                source_onto_by_entity.setdefault(et, set()).add(r["source_ontology"])
+            if et and r.get("entity_uri"):
+                uri_by_entity.setdefault(et, set()).add(r["entity_uri"])
     except Exception as e:
         logger.debug("entities-summary entities failed: %s", e)
         return {"entities": []}
@@ -2154,6 +2247,8 @@ def get_ontology_entities_summary(
             "heuristic_matches": heur_m,
             "roles": roles_by_entity.get(et, {}),
             "tables": tables,
+            "source_ontology": ", ".join(sorted(source_onto_by_entity.get(et, set()))) or None,
+            "entity_uri": next(iter(uri_by_entity.get(et, set())), None),
         })
     return {"entities": entities}
 
@@ -2236,11 +2331,12 @@ def get_entity_detail(entity_type: str):
     cp_tbl = fq("ontology_column_properties")
     tables = []
     properties = []
+    entity_uri = None
+    source_ontology = None
     try:
-        # Tables from ontology_entities where entity_type matches
         rows = execute_sql(
             f"""
-            SELECT entity_type, EXPLODE(source_tables) AS table_name
+            SELECT entity_type, entity_uri, source_ontology, EXPLODE(source_tables) AS table_name
             FROM {ent_tbl}
             WHERE entity_type = '{entity_type.replace("'", "''")}'
               AND source_tables IS NOT NULL AND SIZE(source_tables) > 0
@@ -2248,6 +2344,11 @@ def get_entity_detail(entity_type: str):
             timeout=30,
         )
         tables = sorted(set(r["table_name"] for r in rows if r.get("table_name")))
+        for r in rows:
+            if r.get("entity_uri") and not entity_uri:
+                entity_uri = r["entity_uri"]
+            if r.get("source_ontology") and not source_ontology:
+                source_ontology = r["source_ontology"]
     except Exception as e:
         logger.debug("entity-detail tables failed: %s", e)
     try:
@@ -2275,10 +2376,11 @@ def get_entity_detail(entity_type: str):
                 if entity_type in defs:
                     desc = defs[entity_type].get("description")
                     if desc:
-                        return {"tables": tables, "properties": properties, "description": desc}
+                        return {"tables": tables, "properties": properties, "description": desc,
+                                "entity_uri": entity_uri, "source_ontology": source_ontology}
     except Exception:
         pass
-    return {"tables": tables, "properties": properties}
+    return {"tables": tables, "properties": properties, "entity_uri": entity_uri, "source_ontology": source_ontology}
 
 
 def _resolve_domain_config_path(key: str) -> str:
@@ -6220,7 +6322,7 @@ def genie_generate_questions(req: SuggestQuestionsRequest):
     wh = os.environ.get("WAREHOUSE_ID", "")
     if not wh:
         raise HTTPException(500, detail="WAREHOUSE_ID not configured")
-    from agent.genie_builder import GenieContextAssembler
+    from dbxmetagen.genie.context import GenieContextAssembler
     from langchain_community.chat_models import ChatDatabricks
 
     ws = get_workspace_client()
@@ -6305,8 +6407,8 @@ def genie_generate(req: GenieGenerateRequest):
 
     def _run():
         try:
-            from agent.genie_builder import GenieContextAssembler
-            from agent.genie_agent import run_genie_agent
+            from dbxmetagen.genie.context import GenieContextAssembler
+            from dbxmetagen.genie.agent import run_genie_agent
 
             ws = get_workspace_client()
             progress_q: queue.Queue = queue.Queue()
@@ -6451,7 +6553,7 @@ def genie_task_status(task_id: str):
     return resp
 
 
-from genie_schema import build_serialized_space
+from dbxmetagen.genie.schema import build_serialized_space
 
 
 def _transform_to_genie_schema(raw: dict) -> dict:
@@ -6596,7 +6698,7 @@ def _strip_out_of_scope_sql(ss: dict) -> dict:
     if not valid_ids:
         return ss
 
-    from genie_schema import _extract_table_refs_from_sql
+    from dbxmetagen.genie.schema import _extract_table_refs_from_sql
 
     def _refs_ok(sql_list: list[str]) -> bool:
         for sql in sql_list:
@@ -6916,7 +7018,7 @@ def genie_update_assist(req: GenieUpdateAssistRequest):
         raise HTTPException(500, detail="WAREHOUSE_ID not configured")
     cat = os.environ.get("CATALOG_NAME", "")
     sch = os.environ.get("SCHEMA_NAME", "")
-    from agent.genie_builder import generate_section_assist
+    from dbxmetagen.genie.context import generate_section_assist
     result = generate_section_assist(
         ws=ws, warehouse_id=wh, catalog=cat, schema=sch,
         section=req.section,
@@ -6928,6 +7030,93 @@ def genie_update_assist(req: GenieUpdateAssistRequest):
     if "error" in result and len(result) == 1:
         raise HTTPException(500, detail=result["error"])
     return result
+
+
+@app.post("/api/genie/enrich-description")
+def genie_enrich_description(req: GenieEnrichDescriptionRequest):
+    """LLM-powered enrichment of a Genie table description using KB metadata."""
+    if not req.table_identifier:
+        raise HTTPException(400, detail="table_identifier required")
+    wh = os.environ.get("WAREHOUSE_ID", "")
+    if not wh:
+        raise HTTPException(500, detail="WAREHOUSE_ID not configured")
+
+    tbl_safe = _safe_sql_str(req.table_identifier)
+    table_rows = execute_sql(
+        f"SELECT comment, domain, subdomain FROM {fq('table_knowledge_base')} WHERE table_name = {tbl_safe} LIMIT 1"
+    )
+    col_rows = execute_sql(
+        f"SELECT column_name, data_type, comment FROM {fq('column_knowledge_base')} WHERE table_name = {tbl_safe} ORDER BY column_name"
+    )
+
+    if not table_rows and not col_rows:
+        raise HTTPException(404, detail=f"No KB data found for {req.table_identifier}")
+
+    kb_context_parts = []
+    if table_rows:
+        t = table_rows[0]
+        kb_context_parts.append(f"Table comment: {t.get('comment', 'N/A')}")
+        if t.get("domain"):
+            kb_context_parts.append(f"Domain: {t['domain']}")
+        if t.get("subdomain"):
+            kb_context_parts.append(f"Subdomain: {t['subdomain']}")
+    if col_rows:
+        col_lines = [f"  - {c['column_name']} ({c.get('data_type', '?')}): {c.get('comment', '')}" for c in col_rows]
+        kb_context_parts.append("Columns:\n" + "\n".join(col_lines))
+
+    kb_context = "\n".join(kb_context_parts)
+    existing = req.existing_description or "(none)"
+
+    from langchain_community.chat_models import ChatDatabricks
+    model = os.environ.get("LLM_MODEL", "databricks-claude-sonnet-4-6")
+    llm = ChatDatabricks(endpoint=model, temperature=0.1, max_tokens=2048, max_retries=1, request_timeout=60)
+    messages = [
+        {"role": "system", "content": (
+            "You write concise, Genie-optimized table descriptions for Databricks Genie Spaces. "
+            "A good description helps Genie understand what the table contains, its business purpose, "
+            "and key columns so it can generate accurate SQL. Keep it under 3 sentences."
+        )},
+        {"role": "user", "content": (
+            f"Enrich this table description using the knowledge base metadata below.\n\n"
+            f"Table: {req.table_identifier}\n"
+            f"Current description: {existing}\n\n"
+            f"=== Knowledge Base Metadata ===\n{kb_context}\n\n"
+            f"Write an improved description that incorporates the KB context. "
+            f"Output ONLY the description text, no quotes or explanation."
+        )},
+    ]
+    result = llm.invoke(messages)
+    content = (getattr(result, "content", "") or "").strip().strip('"').strip("'")
+    return {"description": content}
+
+
+@app.get("/api/genie/uc-comment")
+def genie_uc_comment(table_identifier: str):
+    """Fetch the live Unity Catalog comment for a table."""
+    parts = table_identifier.split(".")
+    if len(parts) != 3:
+        raise HTTPException(400, detail="table_identifier must be catalog.schema.table")
+    cat, sch, tbl = parts
+    for p in (cat, sch, tbl):
+        _validate_filter(p, "identifier_part")
+    rows = execute_sql(
+        f"SELECT comment FROM {cat}.information_schema.tables "
+        f"WHERE table_schema = {_safe_sql_str(sch)} AND table_name = {_safe_sql_str(tbl)} LIMIT 1"
+    )
+    comment = rows[0].get("comment") if rows else None
+    return {"comment": comment}
+
+
+@app.get("/api/genie/table-columns")
+def genie_table_columns(table_identifier: str):
+    """Fetch column names, types, and KB comments for a table."""
+    tbl_safe = _safe_sql_str(table_identifier)
+    rows = execute_sql(
+        f"SELECT column_name, data_type, comment "
+        f"FROM {fq('column_knowledge_base')} "
+        f"WHERE table_name = {tbl_safe} ORDER BY column_name"
+    )
+    return {"columns": rows or []}
 
 
 # ---------------------------------------------------------------------------
@@ -7300,7 +7489,7 @@ def suggest_kpis(req: KpiSuggestRequest):
     wh = os.environ.get("WAREHOUSE_ID", "")
     if not wh:
         raise HTTPException(500, detail="WAREHOUSE_ID not configured")
-    from agent.genie_builder import GenieContextAssembler
+    from dbxmetagen.genie.context import GenieContextAssembler
     from langchain_community.chat_models import ChatDatabricks
 
     ws = get_workspace_client()

@@ -28,6 +28,8 @@ resources:
           default: "false"
         - name: dry_run
           default: "false"
+        - name: incremental
+          default: "true"
 
       tasks:
         - task_key: predict_foreign_keys
@@ -44,6 +46,7 @@ resources:
               sample_size: "{{job.parameters.sample_size}}"
               apply_ddl: "{{job.parameters.apply_ddl}}"
               dry_run: "{{job.parameters.dry_run}}"
+              incremental: "{{job.parameters.incremental}}"
           libraries:
             - whl: ../../dist/*.whl
 

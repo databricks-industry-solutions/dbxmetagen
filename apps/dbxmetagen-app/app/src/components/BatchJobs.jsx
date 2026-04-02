@@ -144,6 +144,7 @@ export default function BatchJobs({ onNavigate }) {
   const [ontologyBundle, setOntologyBundle] = useState('general')
   const [entityTagKey, setEntityTagKey] = useState('entity_type')
   const [bundles, setBundles] = useState([])
+  const [bundleInfo, setBundleInfo] = useState(null)
   const [domainConfig, setDomainConfig] = useState('')
   const [domainConfigs, setDomainConfigs] = useState([])
   const [runHistory, setRunHistory] = useState([])
@@ -156,6 +157,7 @@ export default function BatchJobs({ onNavigate }) {
   const [clusterMaxK, setClusterMaxK] = useState(15)
   const [lakebaseCatalog, setLakebaseCatalog] = useState('')
   const [lakebaseError, setLakebaseError] = useState(null)
+  const [lakebaseConfigured, setLakebaseConfigured] = useState(false)
   const [availableModels, setAvailableModels] = useState(['databricks-claude-sonnet-4-6', 'databricks-gpt-oss-120b'])
   const pollRef = useRef(null)
 
@@ -222,6 +224,7 @@ export default function BatchJobs({ onNavigate }) {
         }))
         setApplyDdl(cfg.apply_ddl ?? false)
         if (Array.isArray(cfg.available_models) && cfg.available_models.length) setAvailableModels(cfg.available_models)
+        setLakebaseConfigured(!!cfg.lakebase_configured)
       }
     })
     fetch('/api/ontology/bundles').then(r => r.ok ? r.json() : []).then(setBundles).catch(() => {})
@@ -231,6 +234,12 @@ export default function BatchJobs({ onNavigate }) {
       setRunHistory(runs.map(r => ({ ...r, _polling: false })))
     }).catch(() => {})
   }, [])
+
+  useEffect(() => {
+    if (!ontologyBundle) return
+    fetch(`/api/ontology/bundle-info?bundle=${encodeURIComponent(ontologyBundle)}`)
+      .then(r => r.ok ? r.json() : null).then(setBundleInfo).catch(() => setBundleInfo(null))
+  }, [ontologyBundle])
 
   useEffect(() => { setPickerSelected([]) }, [pickerCatalog, pickerSchema])
 
@@ -345,11 +354,23 @@ export default function BatchJobs({ onNavigate }) {
             <svg className="w-3 h-3 transition-transform group-open:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
             </svg>
-            Advanced Options
+            Shared Options
           </summary>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-3 animate-slide-up">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-3 animate-slide-up">
             <div>
-              <label className="section-title mb-1.5 block">Ontology Bundle</label>
+              <label className="section-title mb-1.5 flex items-center gap-2">
+                Ontology Bundle
+                {bundleInfo?.has_tier_indexes && (
+                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300 font-medium" title="Three-pass prediction enabled via tier indexes">
+                    3-pass ready
+                  </span>
+                )}
+                {bundleInfo?.format_version === '2.0' && (
+                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300 font-medium" title="OWL v2 format bundle">
+                    v2
+                  </span>
+                )}
+              </label>
               <select value={ontologyBundle} onChange={e => setOntologyBundle(e.target.value)} className="select-base">
                 {bundles.length > 0 ? bundles.map(b => (
                   <option key={b.key} value={b.key}>{b.name} ({b.entity_count} entities)</option>
@@ -366,52 +387,6 @@ export default function BatchJobs({ onNavigate }) {
                   <option key={d.key} value={d.key}>{d.name} ({d.domain_count} domains)</option>
                 ))}
               </select>
-            </div>
-            <div>
-              <label className="section-title mb-1.5 block">Ontology UC Tag Key</label>
-              <input value={entityTagKey} onChange={e => setEntityTagKey(e.target.value)}
-                placeholder="entity_type" title="Unity Catalog tag key used for entity type classifications"
-                className="input-base" />
-            </div>
-          </div>
-
-          <div className="mt-4 pt-3 border-t border-dbx-oat-dark/30 dark:border-dbx-navy-400/20">
-            <span className="section-title">Processing Settings</span>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-3">
-              <div>
-                <label className="text-xs text-slate-500 dark:text-slate-400 mb-1 block">Model</label>
-                <select value={settings.model} onChange={e => setSetting('model', e.target.value)}
-                  className="input-base !text-xs">
-                  {availableModels.map(m => <option key={m} value={m}>{m}</option>)}
-                </select>
-              </div>
-              <div>
-                <label className="text-xs text-slate-500 dark:text-slate-400 mb-1 block">Sample Size</label>
-                <input type="number" min="0" max="100" value={settings.sample_size}
-                  onChange={e => setSetting('sample_size', parseInt(e.target.value) || 0)} className="input-base !text-xs" />
-              </div>
-              <div className="flex flex-col gap-2 pt-1">
-                <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer">
-                  <input type="checkbox" checked={settings.include_lineage} onChange={e => setSetting('include_lineage', e.target.checked)} />
-                  Include lineage
-                </label>
-                <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer">
-                  <input type="checkbox" checked={settings.use_kb_comments} onChange={e => setSetting('use_kb_comments', e.target.checked)} />
-                  Use KB comments
-                </label>
-              </div>
-              <div className="flex flex-col gap-2 pt-1">
-                <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer" title="Build table + column knowledge base after metadata generation so the Review tab is populated">
-                  <input type="checkbox" checked={settings.build_kb_after}
-                    disabled={settings.use_serverless}
-                    onChange={e => setSetting('build_kb_after', e.target.checked)} />
-                  Build KB after
-                </label>
-                <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer" title="Run on serverless Databricks compute (faster startup, no cluster to configure)">
-                  <input type="checkbox" checked={settings.use_serverless} onChange={e => setSetting('use_serverless', e.target.checked)} />
-                  Use serverless
-                </label>
-              </div>
             </div>
           </div>
         </details>
@@ -532,6 +507,52 @@ export default function BatchJobs({ onNavigate }) {
                 </label>
               </div>
             </div>
+
+            <details className="group mt-3">
+              <summary className="text-xs font-medium text-slate-500 dark:text-slate-400 cursor-pointer select-none flex items-center gap-1.5 py-2 border-t border-dbx-oat-dark/30 dark:border-dbx-navy-400/20 pt-3">
+                <svg className="w-3 h-3 transition-transform group-open:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                </svg>
+                Processing Settings
+              </summary>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-3 animate-slide-up">
+                <div>
+                  <label className="text-xs text-slate-500 dark:text-slate-400 mb-1 block">Model</label>
+                  <select value={settings.model} onChange={e => setSetting('model', e.target.value)}
+                    className="input-base !text-xs">
+                    {availableModels.map(m => <option key={m} value={m}>{m}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-xs text-slate-500 dark:text-slate-400 mb-1 block">Sample Size</label>
+                  <input type="number" min="0" max="100" value={settings.sample_size}
+                    onChange={e => setSetting('sample_size', parseInt(e.target.value) || 0)} className="input-base !text-xs" />
+                </div>
+                <div className="flex flex-col gap-2 pt-1">
+                  <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer">
+                    <input type="checkbox" checked={settings.include_lineage} onChange={e => setSetting('include_lineage', e.target.checked)} />
+                    Include lineage
+                  </label>
+                  <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer">
+                    <input type="checkbox" checked={settings.use_kb_comments} onChange={e => setSetting('use_kb_comments', e.target.checked)} />
+                    Use KB comments
+                  </label>
+                </div>
+                <div className="flex flex-col gap-2 pt-1">
+                  <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer" title="Build table + column knowledge base after metadata generation so the Review tab is populated">
+                    <input type="checkbox" checked={settings.build_kb_after}
+                      disabled={settings.use_serverless}
+                      onChange={e => setSetting('build_kb_after', e.target.checked)} />
+                    Build KB after
+                  </label>
+                  <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer" title="Run on serverless Databricks compute (faster startup, no cluster to configure)">
+                    <input type="checkbox" checked={settings.use_serverless} onChange={e => setSetting('use_serverless', e.target.checked)} />
+                    Use serverless
+                  </label>
+                </div>
+              </div>
+            </details>
+
             <div className="flex flex-wrap gap-3 mt-2">
               <button onClick={() => runJob(getJobSuffix(false), { table_names: tableNames, mode, apply_ddl: applyDdl, ontology_bundle: ontologyBundle, ...(domainConfig ? { domain_config: domainConfig } : {}), extra_params: buildExtraParams() }, 'single')}
                 disabled={!!runningAction || !tableNames.trim()} title="Run a single metadata generation pass"
@@ -567,7 +588,7 @@ export default function BatchJobs({ onNavigate }) {
               </div>
             </details>
 
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
               <div>
                 <label className="text-xs text-slate-500 dark:text-slate-400 mb-1 block">Similarity Threshold</label>
                 <input type="number" step="0.05" min="0" max="1" value={similarityThreshold}
@@ -585,6 +606,12 @@ export default function BatchJobs({ onNavigate }) {
                 <label className="text-xs text-slate-500 dark:text-slate-400 mb-1 block">Cluster Max K</label>
                 <input type="number" min="2" max="100" value={clusterMaxK}
                   onChange={e => setClusterMaxK(parseInt(e.target.value) || 15)}
+                  className="input-base !text-xs" />
+              </div>
+              <div>
+                <label className="text-xs text-slate-500 dark:text-slate-400 mb-1 block">Ontology UC Tag Key</label>
+                <input value={entityTagKey} onChange={e => setEntityTagKey(e.target.value)}
+                  placeholder="entity_type" title="Unity Catalog tag key used for entity type classifications"
                   className="input-base !text-xs" />
               </div>
               <div className="flex items-end pb-1">
@@ -614,6 +641,11 @@ export default function BatchJobs({ onNavigate }) {
             <div className="mt-2 card p-4 border border-dbx-oat-dark/30 dark:border-dbx-navy-400/20 bg-dbx-oat-light/50 dark:bg-dbx-navy/30 space-y-3">
               <div className="flex items-center gap-2">
                 <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200">Sync Knowledge Graph to Lakebase</h3>
+                <span className="badge bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300 text-[10px]">Beta</span>
+                {lakebaseConfigured
+                  ? <span className="badge bg-emerald-50 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300 text-[10px]">Lakebase Connected</span>
+                  : <span className="badge bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400 text-[10px]">UC Delta Fallback</span>
+                }
                 <span className="relative group/tip">
                   <svg className="w-4 h-4 text-slate-400 cursor-help" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />

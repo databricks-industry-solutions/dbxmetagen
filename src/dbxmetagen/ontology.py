@@ -505,6 +505,9 @@ class PropertyDefinition:
     target_entity: Optional[Any] = None  # str or list of str
     datatype: Optional[str] = None
     composite_columns: Optional[List[str]] = None
+    uri: Optional[str] = None
+    cardinality: Optional[str] = None
+    inverse: Optional[str] = None
 
 
 @dataclass
@@ -517,6 +520,8 @@ class EdgeCatalogEntry:
     range: Optional[Any] = None
     symmetric: bool = False
     category: str = "business"
+    uri: Optional[str] = None
+    owl_type: Optional[str] = None
 
     def _matches(self, constraint: Any, entity_type: str) -> bool:
         if constraint is None or constraint == "Any":
@@ -585,6 +590,11 @@ class EntityDefinition:
     business_questions: List[str] = field(default_factory=list)
     parent: Optional[str] = None
     properties: List[PropertyDefinition] = field(default_factory=list)
+    uri: Optional[str] = None
+    source_ontology: Optional[str] = None
+    subclass_of: Optional[str] = None
+    owl_equivalent_class: Optional[str] = None
+    owl_properties: List[Dict[str, Any]] = field(default_factory=list)
 
 
 BUNDLE_DIR = "configurations/ontology_bundles"
@@ -705,6 +715,10 @@ class OntologyLoader:
                         OntologyLoader._validate_config(loaded_config)
                         if "metadata" in config:
                             loaded_config["_bundle_metadata"] = config["metadata"]
+                        fmt_ver = config.get("metadata", {}).get("format_version", "1.0")
+                        loaded_config["_format_version"] = str(fmt_ver)
+                        if str(fmt_ver).startswith("2"):
+                            logger.info("Detected v2 bundle format at %s", path)
                         entity_count = len(
                             loaded_config.get("entities", {}).get("definitions", {})
                         )
@@ -824,8 +838,28 @@ class OntologyLoader:
                             target_entity=prop_info.get("target_entity"),
                             datatype=prop_info.get("datatype"),
                             composite_columns=prop_info.get("composite_columns"),
+                            uri=prop_info.get("uri"),
+                            cardinality=prop_info.get("cardinality"),
+                            inverse=prop_info.get("inverse"),
                         )
                     )
+
+            # v2 owl_properties (list of dicts) -- merge into props
+            for owl_prop in details.get("owl_properties", []):
+                if not isinstance(owl_prop, dict):
+                    continue
+                props.append(
+                    PropertyDefinition(
+                        name=owl_prop.get("name", ""),
+                        kind=owl_prop.get("type", "data_property"),
+                        role=owl_prop.get("type", "attribute"),
+                        uri=owl_prop.get("uri"),
+                        datatype=owl_prop.get("datatype"),
+                        target_entity=owl_prop.get("range"),
+                        cardinality=owl_prop.get("cardinality"),
+                        inverse=owl_prop.get("inverse"),
+                    )
+                )
 
             entities.append(
                 EntityDefinition(
@@ -836,8 +870,13 @@ class OntologyLoader:
                     relationships=rels,
                     synonyms=details.get("synonyms", []),
                     business_questions=details.get("business_questions", []),
-                    parent=details.get("parent"),
+                    parent=details.get("parent") or details.get("subclass_of"),
                     properties=props,
+                    uri=details.get("uri"),
+                    source_ontology=details.get("source_ontology"),
+                    subclass_of=details.get("subclass_of"),
+                    owl_equivalent_class=details.get("owl_equivalent_class"),
+                    owl_properties=details.get("owl_properties", []),
                 )
             )
 
@@ -864,6 +903,8 @@ class OntologyLoader:
                 range=info.get("range"),
                 symmetric=info.get("symmetric", False),
                 category=info.get("category", "business"),
+                uri=info.get("uri"),
+                owl_type=info.get("owl_type"),
             )
         return catalog
 
@@ -920,6 +961,10 @@ class EntityDiscoverer:
             "column_ai_classifications": 0,
             "column_fallback": 0,
         }
+
+        # Three-pass prediction support (lazy init on first use)
+        self._index_loader = None
+        self._three_pass_available = None
 
     def _build_bundle_geo_patterns(self) -> frozenset:
         """Collect keywords + typical_attributes from Geographic entities in the bundle."""
@@ -1205,6 +1250,8 @@ class EntityDiscoverer:
                         "auto_discovered": True,
                         "validated": False,
                         "validation_notes": None,
+                        "entity_uri": getattr(entity_def, "uri", None),
+                        "source_ontology": getattr(entity_def, "source_ontology", None),
                     }
                 )
         return matches
@@ -1378,11 +1425,25 @@ class EntityDiscoverer:
                             "auto_discovered": True,
                             "validated": False,
                             "validation_notes": f"Secondary entity from batch classification of {table_name}",
+                            "entity_uri": getattr(sec_edef, "uri", None) if sec_edef else None,
+                            "source_ontology": getattr(sec_edef, "source_ontology", None) if sec_edef else None,
                         })
 
             for i, row in enumerate(table_rows):
                 if not all_results[i]:
                     all_results[i] = self._ai_classify_table(row)
+
+            three_pass_threshold = self._validation_cfg.get("three_pass_upgrade_threshold", 0.6)
+            loader = self._get_index_loader()
+            if loader:
+                for i, row in enumerate(table_rows):
+                    top = all_results[i][0] if all_results[i] else None
+                    if top and top.get("confidence", 1.0) < three_pass_threshold:
+                        upgraded = self._three_pass_classify_table(row)
+                        if upgraded and upgraded[0].get("confidence", 0) > top.get("confidence", 0):
+                            logger.info("Three-pass upgrade %s: %.2f -> %.2f",
+                                        row.get("table_name", ""), top["confidence"], upgraded[0]["confidence"])
+                            all_results[i] = upgraded
 
             return all_results
 
@@ -1393,9 +1454,107 @@ class EntityDiscoverer:
             )
             return [self._ai_classify_table(row) for row in table_rows]
 
+    def _get_index_loader(self):
+        """Lazy-init the OntologyIndexLoader for three-pass prediction."""
+        if self._three_pass_available is None:
+            try:
+                from dbxmetagen.ontology_index import OntologyIndexLoader
+                bundle = self.config.ontology_bundle or "healthcare"
+                self._index_loader = OntologyIndexLoader(bundle_name=bundle)
+                self._three_pass_available = self._index_loader.has_tier_indexes
+                if self._three_pass_available:
+                    logger.info(
+                        "Three-pass prediction enabled (%d tier-1 entities)",
+                        self._index_loader.entity_count(),
+                    )
+            except Exception as e:
+                logger.debug("Three-pass prediction not available: %s", e)
+                self._three_pass_available = False
+        return self._index_loader if self._three_pass_available else None
+
+    def _three_pass_classify_table(self, table_row) -> Optional[List[Dict[str, Any]]]:
+        """Attempt three-pass classification using tiered indexes.
+        Returns None if tier indexes are unavailable (caller falls back to single-pass).
+        """
+        loader = self._get_index_loader()
+        if not loader:
+            return None
+
+        from dbxmetagen.ontology_predictor import predict_entity
+
+        table_name = table_row.table_name
+        short_name = table_row.table_short_name or table_name.split(".")[-1]
+        comment = table_row.comment or ""
+        col_summary = self._get_column_summary([table_name])
+        columns = col_summary.get(table_name, "")
+
+        def llm_fn(system_prompt: str, user_prompt: str) -> str:
+            llm = self._get_llm()
+            response = llm.invoke([
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ])
+            return response.content if hasattr(response, "content") else str(response)
+
+        result = predict_entity(
+            table_name=short_name,
+            columns=columns,
+            sample=f"Description: {comment[:500]}",
+            loader=loader,
+            llm_fn=llm_fn,
+        )
+
+        enforced, exact = _enforce_entity_value(result.predicted_entity, self._entity_names)
+        if not exact:
+            logger.info("Three-pass entity '%s' snapped to '%s'", result.predicted_entity, enforced)
+            result = result.__class__(
+                predicted_entity=enforced,
+                confidence_score=max(0.0, result.confidence_score - self.CONFIDENCE_PENALTY_SNAP) if not exact else result.confidence_score,
+                equivalent_class_uri=result.equivalent_class_uri,
+                source_ontology=result.source_ontology,
+                rationale=result.rationale,
+                passes_run=result.passes_run,
+                needs_human_review=result.needs_human_review,
+                matched_properties=result.matched_properties,
+            )
+
+        edef = next((e for e in self.entity_definitions if e.name == enforced), None)
+        entity_dict = {
+            "entity_id": str(uuid.uuid4()),
+            "entity_name": enforced,
+            "entity_type": enforced,
+            "description": edef.description if edef else result.rationale,
+            "source_tables": [table_name],
+            "source_columns": [],
+            "attributes": {
+                "discovery_method": f"three_pass_{result.passes_run}",
+                "reasoning": result.rationale,
+                **({"owl_properties": str(result.matched_properties)} if result.matched_properties else {}),
+            },
+            "confidence": round(result.confidence_score, 3),
+            "auto_discovered": True,
+            "validated": False,
+            "validation_notes": result.rationale,
+            "entity_uri": result.equivalent_class_uri or (edef.uri if edef else None),
+            "source_ontology": result.source_ontology or (edef.source_ontology if edef else None),
+        }
+        if result.needs_human_review:
+            entity_dict["attributes"]["needs_human_review"] = "true"
+
+        logger.info(
+            "Three-pass classified %s -> %s (%.2f, %d passes)",
+            short_name, result.predicted_entity, result.confidence_score, result.passes_run,
+        )
+        return [entity_dict]
+
     def _ai_classify_table(self, table_row) -> List[Dict[str, Any]]:
         """Classify a table using structured LLM output. May return 1-2 entities
-        (primary + optional secondary for relationship tables)."""
+        (primary + optional secondary for relationship tables).
+        
+        Attempts three-pass classification first if tier indexes are available."""
+        three_pass = self._three_pass_classify_table(table_row)
+        if three_pass is not None:
+            return three_pass
         table_name = table_row.table_name
         short_name = table_row.table_short_name or table_name.split(".")[-1]
         comment = table_row.comment or "No description available"
@@ -1460,23 +1619,24 @@ class EntityDiscoverer:
             edef = next(
                 (e for e in self.entity_definitions if e.name == enforced), None
             )
-            results.append(
-                {
-                    "entity_id": str(uuid.uuid4()),
-                    "entity_name": enforced,
-                    "entity_type": enforced,
-                    "description": (
-                        edef.description if edef else f"Auto-classified as {enforced}"
-                    ),
-                    "source_tables": [table_name],
-                    "source_columns": [],
-                    "attributes": attrs,
-                    "confidence": round(confidence, 3),
-                    "auto_discovered": True,
-                    "validated": False,
-                    "validation_notes": response.reasoning,
-                }
-            )
+            entity_dict = {
+                "entity_id": str(uuid.uuid4()),
+                "entity_name": enforced,
+                "entity_type": enforced,
+                "description": (
+                    edef.description if edef else f"Auto-classified as {enforced}"
+                ),
+                "source_tables": [table_name],
+                "source_columns": [],
+                "attributes": attrs,
+                "confidence": round(confidence, 3),
+                "auto_discovered": True,
+                "validated": False,
+                "validation_notes": response.reasoning,
+                "entity_uri": edef.uri if edef else None,
+                "source_ontology": edef.source_ontology if edef else None,
+            }
+            results.append(entity_dict)
             self._stats["ai_classifications"] += 1
 
             # --- secondary entity (multi-entity support) ---
@@ -1514,6 +1674,8 @@ class EntityDiscoverer:
                             "auto_discovered": True,
                             "validated": False,
                             "validation_notes": f"Secondary entity from relationship table {short_name}",
+                            "entity_uri": getattr(sec_edef, "uri", None) if sec_edef else None,
+                            "source_ontology": getattr(sec_edef, "source_ontology", None) if sec_edef else None,
                         }
                     )
 
@@ -1535,6 +1697,8 @@ class EntityDiscoverer:
                     "auto_discovered": True,
                     "validated": False,
                     "validation_notes": str(e),
+                    "entity_uri": None,
+                    "source_ontology": None,
                 }
             )
         return results
@@ -2126,6 +2290,10 @@ class EntityDiscoverer:
                         "validation_notes"
                     ):
                         existing["validation_notes"] = ent["validation_notes"]
+                    if ent.get("entity_uri") and not existing.get("entity_uri"):
+                        existing["entity_uri"] = ent["entity_uri"]
+                    if ent.get("source_ontology") and not existing.get("source_ontology"):
+                        existing["source_ontology"] = ent["source_ontology"]
         return list(groups.values())
 
 
@@ -2169,6 +2337,8 @@ class OntologyBuilder:
             StructField("created_at", TimestampType(), True),
             StructField("updated_at", TimestampType(), True),
             StructField("column_bindings", _BINDING_SCHEMA, True),
+            StructField("entity_uri", StringType(), True),
+            StructField("source_ontology", StringType(), True),
         ]
     )
 
@@ -2244,6 +2414,8 @@ class OntologyBuilder:
             "discovery_confidence": "DOUBLE",
             "bundle_version": "STRING",
             "discovery_timestamp": "TIMESTAMP",
+            "entity_uri": "STRING",
+            "source_ontology": "STRING",
         }
         for col_name, col_type in new_columns.items():
             if col_name not in existing:
@@ -2434,6 +2606,8 @@ class OntologyBuilder:
                     now,
                     now,
                     bindings,
+                    entity.get("entity_uri"),
+                    entity.get("source_ontology"),
                 )
             )
 
@@ -2453,6 +2627,8 @@ class OntologyBuilder:
             target.attributes = source.attributes,
             target.column_bindings = source.column_bindings,
             target.bundle_version = source.bundle_version,
+            target.entity_uri = source.entity_uri,
+            target.source_ontology = source.source_ontology,
             target.updated_at = source.updated_at
         WHEN NOT MATCHED THEN INSERT *
         """
@@ -3873,6 +4049,49 @@ class OntologyBuilder:
                         "updated_at": now,
                     })
 
+        # LLM-predicted edges via three-pass predict_edge
+        loader = self._get_index_loader()
+        if loader:
+            try:
+                from dbxmetagen.ontology_predictor import predict_edge
+                entity_types = list(table_to_primary.values())
+                unique_pairs = set()
+                for s in entity_types:
+                    for d in entity_types:
+                        if s != d:
+                            unique_pairs.add((s, d))
+                llm_fn = self._make_llm_fn()
+                for src_t, dst_t in unique_pairs:
+                    key = (src_t, dst_t)
+                    if key in seen:
+                        continue
+                    try:
+                        result = predict_edge(
+                            src_entity=src_t, dst_entity=dst_t,
+                            table_context="", loader=loader, llm_fn=llm_fn,
+                        )
+                        if result and result.predicted_edge and result.confidence_score >= 0.5:
+                            seen.add(key)
+                            rels.append({
+                                "relationship_id": str(uuid.uuid4()),
+                                "src_entity_type": src_t,
+                                "relationship_name": result.predicted_edge,
+                                "dst_entity_type": dst_t,
+                                "cardinality": "1:N",
+                                "evidence_column": None,
+                                "evidence_table": None,
+                                "source": "llm_predicted",
+                                "confidence": round(result.confidence_score, 3),
+                                "created_at": now,
+                                "updated_at": now,
+                            })
+                    except Exception:
+                        pass
+                logger.info("LLM predict_edge added %d edges",
+                            sum(1 for r in rels if r["source"] == "llm_predicted"))
+            except ImportError:
+                pass
+
         # Auto-generate inverse edges from EdgeCatalog metadata
         inverse_rels: List[Dict] = []
         for rel in rels:
@@ -3927,8 +4146,24 @@ class OntologyBuilder:
             StructField("updated_at", TimestampType()),
         ])
         df = self.spark.createDataFrame(rels, schema=_rels_schema)
-        df.write.mode("overwrite").saveAsTable(rels_table)
-        logger.info("discover_named_relationships: wrote %d relationships", len(rels))
+        df.createOrReplaceTempView("_new_rels")
+        self.spark.sql(f"""
+            MERGE INTO {rels_table} AS tgt
+            USING _new_rels AS src
+            ON tgt.src_entity_type = src.src_entity_type
+               AND tgt.dst_entity_type = src.dst_entity_type
+               AND tgt.relationship_name = src.relationship_name
+            WHEN MATCHED THEN UPDATE SET
+                tgt.confidence = src.confidence,
+                tgt.evidence_column = src.evidence_column,
+                tgt.evidence_table = src.evidence_table,
+                tgt.source = src.source,
+                tgt.cardinality = src.cardinality,
+                tgt.updated_at = src.updated_at
+            WHEN NOT MATCHED THEN INSERT *
+        """)
+        self.spark.catalog.dropTempView("_new_rels")
+        logger.info("discover_named_relationships: merged %d relationships", len(rels))
         return len(rels)
 
     def validate_entity_conformance(self) -> Dict[str, Any]:
@@ -4106,6 +4341,86 @@ class OntologyBuilder:
         """)
         logger.info("Stored discovery diff report %s", report_id)
 
+    def _serialize_turtle(self) -> Optional[str]:
+        """Serialize ontology entities and relationships to OWL Turtle.
+        
+        Returns the output path, or None if rdflib is unavailable.
+        """
+        try:
+            from dbxmetagen.ontology_turtle import write_turtle
+        except ImportError:
+            logger.debug("ontology_turtle not available (rdflib not installed)")
+            return None
+
+        ents = self.spark.sql(
+            f"SELECT entity_type, entity_uri, source_ontology, "
+            f"EXPLODE(source_tables) AS table_name "
+            f"FROM {self.config.fully_qualified_entities} "
+            f"WHERE confidence >= 0.5 AND source_tables IS NOT NULL "
+            f"AND SIZE(source_tables) > 0 "
+            f"AND COALESCE(attributes['granularity'], 'table') = 'table'"
+        ).collect()
+        if not ents:
+            return None
+
+        table_preds = {}
+        for e in ents:
+            tbl = e["table_name"].split(".")[-1]
+            if tbl not in table_preds:
+                table_preds[tbl] = {
+                    "predicted_entity": e["entity_type"],
+                    "equivalent_class_uri": e["entity_uri"],
+                    "source_ontology": e["source_ontology"],
+                }
+
+        edge_preds = []
+        try:
+            rels = self.spark.sql(
+                f"SELECT src_entity_type, relationship_name, dst_entity_type "
+                f"FROM {self.config.fully_qualified_relationships} "
+                f"WHERE relationship_name IS NOT NULL"
+            ).collect()
+            for r in rels:
+                edge_preds.append({
+                    "from_table": r["src_entity_type"],
+                    "to_table": r["dst_entity_type"],
+                    "predicted_edge": r["relationship_name"],
+                })
+        except Exception:
+            pass
+
+        ttl_path = write_turtle(
+            catalog=self.config.catalog_name,
+            schema=self.config.schema_name,
+            table_predictions=table_preds,
+            edge_predictions=edge_preds,
+        )
+
+        if ttl_path:
+            try:
+                vol_path = (
+                    f"/Volumes/{self.config.catalog_name}/{self.config.schema_name}"
+                    f"/generated_metadata/ontology_output.ttl"
+                )
+                self.spark.sql(f"CREATE VOLUME IF NOT EXISTS "
+                               f"{self.config.catalog_name}.{self.config.schema_name}.generated_metadata")
+                import shutil
+                dbutils_copy = False
+                try:
+                    from pyspark.dbutils import DBUtils
+                    dbutils = DBUtils(self.spark)
+                    dbutils.fs.cp(f"file:{ttl_path}", vol_path)
+                    dbutils_copy = True
+                except Exception:
+                    pass
+                if not dbutils_copy:
+                    shutil.copy2(ttl_path, vol_path)
+                logger.info("Turtle written to %s", vol_path)
+            except Exception as e:
+                logger.warning("Could not copy Turtle to Volume: %s", e)
+
+        return ttl_path
+
     def run(self, apply_tags=False):
         """Execute the ontology building pipeline.
 
@@ -4187,6 +4502,13 @@ class OntologyBuilder:
         except Exception:
             entity_types = 0
 
+        # Optional: serialize to Turtle if rdflib is available
+        turtle_path = None
+        try:
+            turtle_path = _step("serialize_turtle", self._serialize_turtle)
+        except Exception as e:
+            logger.debug("Turtle serialization skipped: %s", e)
+
         total_elapsed = _time.time() - pipeline_start
         logger.info(f"[timing] ontology_build_total: {total_elapsed:.1f}s")
 
@@ -4210,6 +4532,7 @@ class OntologyBuilder:
             "column_properties": col_props,
             "named_relationships": named_rels,
             "discovery_diff": diff,
+            "turtle_path": turtle_path,
         }
 
 

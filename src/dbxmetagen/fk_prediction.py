@@ -1214,16 +1214,16 @@ class FKPredictor:
                     raise
 
         # Idempotent cleanup: remove bad rows every run.
-        # 1) self-referential / same-column rows (from direction-swap bugs)
-        # 2) stale pre-fix rows where AI said "not FK" but confidence wasn't gated
-        cleanup_sqls = [
-            f"DELETE FROM {preds} WHERE src_table = dst_table OR src_column = dst_column",
-            f"DELETE FROM {preds} WHERE is_fk IS NULL AND ai_confidence >= 1.0",
+        cleanup_rules = [
+            ("self-referential", "src_table = dst_table OR src_column = dst_column"),
+            ("stale legacy (is_fk NULL)", "is_fk IS NULL AND ai_confidence >= 1.0"),
         ]
         try:
-            for sql in cleanup_sqls:
-                self.spark.sql(sql)
-            logger.info("FK cleanup: removed bad rows from %s", preds)
+            for label, where in cleanup_rules:
+                n = self.spark.sql(f"SELECT COUNT(*) AS n FROM {preds} WHERE {where}").collect()[0].n
+                if n > 0:
+                    self.spark.sql(f"DELETE FROM {preds} WHERE {where}")
+                    logger.warning("FK cleanup: removed %d %s rows from %s", n, label, preds)
         except AnalysisException as e:
             if "TABLE_OR_VIEW_NOT_FOUND" in str(e) or "DELTA_TABLE_NOT_FOUND" in str(e):
                 logger.debug("FK cleanup skipped (table empty or new): %s", e)

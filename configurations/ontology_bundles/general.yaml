@@ -102,6 +102,8 @@ ontology:
     definitions:
       Person:
         description: "People, customers, contacts, users, or employees"
+        uri: "https://schema.org/Person"
+        source_ontology: "schema.org"
         keywords: ["customer", "employee", "user", "contact", "person", "member", "staff"]
         typical_attributes: [id, name, email, phone, address, created_date]
         relationships:
@@ -136,6 +138,8 @@ ontology:
             typical_attributes: ["created_at", "created_date", "create_date"]
       Organization:
         description: "Companies, departments, facilities, or business units"
+        uri: "https://schema.org/Organization"
+        source_ontology: "schema.org"
         keywords: ["company", "organization", "department", "facility", "tenant", "branch", "division"]
         typical_attributes: [id, name, type, address, parent_id]
         relationships:
@@ -163,6 +167,8 @@ ontology:
             typical_attributes: ["parent_id", "parent_org_id"]
       Product:
         description: "Goods, services, SKUs, or catalog items"
+        uri: "https://schema.org/Product"
+        source_ontology: "schema.org"
         keywords: ["product", "item", "sku", "catalog", "offering", "service", "subscription"]
         typical_attributes: [id, name, description, price, category, status]
         relationships:
@@ -190,6 +196,8 @@ ontology:
             typical_attributes: ["status", "product_status", "active"]
       Transaction:
         description: "Orders, purchases, payments, invoices, or financial events"
+        uri: "https://schema.org/Invoice"
+        source_ontology: "schema.org"
         keywords: ["transaction", "order", "payment", "invoice", "purchase", "sale", "receipt"]
         typical_attributes: [id, customer_id, amount, date, status, currency]
         relationships:
@@ -240,6 +248,8 @@ ontology:
             typical_attributes: ["account_id", "billing_account_id"]
       Location:
         description: "Addresses, sites, regions, facilities, or geographies"
+        uri: "https://schema.org/Place"
+        source_ontology: "schema.org"
         keywords: ["location", "address", "site", "region", "facility", "warehouse", "store"]
         typical_attributes: [id, name, address, city, state, country, zip_code]
         relationships:
@@ -271,6 +281,8 @@ ontology:
             typical_attributes: ["zip", "zip_code", "postal_code"]
       Event:
         description: "Activities, logs, sessions, audits, or system events"
+        uri: "https://schema.org/Event"
+        source_ontology: "schema.org"
         keywords: ["event", "activity", "log", "audit", "session", "incident", "alert"]
         typical_attributes: [id, type, timestamp, user_id, details]
         relationships:
@@ -296,6 +308,8 @@ ontology:
             typical_attributes: ["user_id", "actor_id", "performed_by"]
       Reference:
         description: "Lookup tables, codes, categories, dimensions, or configuration"
+        uri: "https://schema.org/Thing"
+        source_ontology: "schema.org"
         keywords: ["reference", "lookup", "code", "category", "dim_", "type", "status"]
         typical_attributes: [id, code, name, description, active]
         relationships: {}
@@ -314,6 +328,8 @@ ontology:
             typical_attributes: ["active", "is_active", "status", "enabled"]
       Metric:
         description: "KPIs, aggregates, facts, summaries, or analytic measures"
+        uri: "https://schema.org/QuantitativeValue"
+        source_ontology: "schema.org"
         keywords: ["metric", "kpi", "aggregate", "fact_", "summary", "measure", "score"]
         typical_attributes: [id, name, value, period, dimension]
         relationships:
@@ -343,6 +359,8 @@ ontology:
             typical_attributes: ["source_id", "event_id"]
       Document:
         description: "Unstructured content, notes, files, or text records"
+        uri: "https://schema.org/DigitalDocument"
+        source_ontology: "schema.org"
         keywords: ["document", "note", "file", "content", "text", "attachment", "report"]
         typical_attributes: [id, title, body, author, created_date, type]
         relationships:

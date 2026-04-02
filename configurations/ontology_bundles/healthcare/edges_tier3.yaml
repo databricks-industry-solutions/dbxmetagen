@@ -1,0 +1,263 @@
+instance_of:
+  name: instance_of
+  inverse: type_of
+  symmetric: false
+  category: structural
+  domain: null
+  range: null
+  domain_constraints: []
+  range_constraints: []
+subclass_of:
+  name: subclass_of
+  inverse: superclass_of
+  symmetric: false
+  category: structural
+  domain: null
+  range: null
+  domain_constraints: []
+  range_constraints: []
+has_part:
+  name: has_part
+  inverse: part_of
+  symmetric: false
+  category: structural
+  domain: null
+  range: null
+  domain_constraints: []
+  range_constraints: []
+contains:
+  name: contains
+  inverse: contained_in
+  symmetric: false
+  category: structural
+  domain: null
+  range: null
+  domain_constraints: []
+  range_constraints: []
+member_of:
+  name: member_of
+  inverse: has_member
+  symmetric: false
+  category: structural
+  domain: null
+  range: null
+  domain_constraints: []
+  range_constraints: []
+treated_by:
+  name: treated_by
+  inverse: treats
+  symmetric: false
+  category: business
+  domain: Patient
+  range: Provider
+  domain_constraints:
+  - Patient
+  range_constraints:
+  - Provider
+treats:
+  name: treats
+  inverse: treated_by
+  symmetric: false
+  category: business
+  domain: Provider
+  range: Patient
+  domain_constraints:
+  - Provider
+  range_constraints:
+  - Patient
+has_encounter:
+  name: has_encounter
+  inverse: encounter_for
+  symmetric: false
+  category: business
+  domain: Patient
+  range: Encounter
+  domain_constraints:
+  - Patient
+  range_constraints:
+  - Encounter
+has_condition:
+  name: has_condition
+  inverse: condition_of
+  symmetric: false
+  category: business
+  domain: Patient
+  range: Condition
+  domain_constraints:
+  - Patient
+  range_constraints:
+  - Condition
+has_coverage:
+  name: has_coverage
+  inverse: covers
+  symmetric: false
+  category: business
+  domain: Patient
+  range: Coverage
+  domain_constraints:
+  - Patient
+  range_constraints:
+  - Coverage
+ordered_for:
+  name: ordered_for
+  inverse: has_order
+  symmetric: false
+  category: business
+  domain:
+  - Procedure
+  - Medication
+  range: Encounter
+  domain_constraints:
+  - Procedure
+  - Medication
+  range_constraints:
+  - Encounter
+performed_by:
+  name: performed_by
+  inverse: performs
+  symmetric: false
+  category: business
+  domain: Procedure
+  range: Provider
+  domain_constraints:
+  - Procedure
+  range_constraints:
+  - Provider
+prescribed_to:
+  name: prescribed_to
+  inverse: has_prescription
+  symmetric: false
+  category: business
+  domain: Medication
+  range: Patient
+  domain_constraints:
+  - Medication
+  range_constraints:
+  - Patient
+diagnosed_in:
+  name: diagnosed_in
+  inverse: has_diagnosis
+  symmetric: false
+  category: business
+  domain: Condition
+  range: Encounter
+  domain_constraints:
+  - Condition
+  range_constraints:
+  - Encounter
+for_encounter:
+  name: for_encounter
+  inverse: encounter_claim
+  symmetric: false
+  category: business
+  domain: Claim
+  range: Encounter
+  domain_constraints:
+  - Claim
+  range_constraints:
+  - Encounter
+covered_by:
+  name: covered_by
+  inverse: covers_claim
+  symmetric: false
+  category: business
+  domain: Claim
+  range: Coverage
+  domain_constraints:
+  - Claim
+  range_constraints:
+  - Coverage
+located_at:
+  name: located_at
+  inverse: location_of
+  symmetric: false
+  category: business
+  domain: Any
+  range: Location
+  domain_constraints:
+  - Any
+  range_constraints:
+  - Location
+references:
+  name: references
+  inverse: referenced_by
+  symmetric: false
+  category: business
+  domain: Any
+  range: Any
+  domain_constraints:
+  - Any
+  range_constraints:
+  - Any
+placed_by:
+  name: placed_by
+  inverse: placed
+  symmetric: false
+  category: business
+  domain: Transaction
+  range: Person
+  domain_constraints:
+  - Transaction
+  range_constraints:
+  - Person
+created_by:
+  name: created_by
+  inverse: created
+  symmetric: false
+  category: business
+  domain: Any
+  range: Person
+  domain_constraints:
+  - Any
+  range_constraints:
+  - Person
+owned_by:
+  name: owned_by
+  inverse: owns
+  symmetric: false
+  category: business
+  domain: Any
+  range:
+  - Person
+  - Organization
+  domain_constraints:
+  - Any
+  range_constraints:
+  - Person
+  - Organization
+derives_from:
+  name: derives_from
+  inverse: source_of
+  symmetric: false
+  category: lineage
+  domain: null
+  range: null
+  domain_constraints: []
+  range_constraints: []
+recorded_in:
+  name: recorded_in
+  inverse: records
+  symmetric: false
+  category: lineage
+  domain: null
+  range: null
+  domain_constraints: []
+  range_constraints: []
+same_as:
+  name: same_as
+  inverse: null
+  symmetric: true
+  category: semantic
+  domain: null
+  range: null
+  domain_constraints: []
+  range_constraints: []
+similar_to:
+  name: similar_to
+  inverse: null
+  symmetric: true
+  category: semantic
+  domain: null
+  range: null
+  domain_constraints: []
+  range_constraints: []

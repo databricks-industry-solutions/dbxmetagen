@@ -872,3 +872,13 @@ class TestEnforceDirectionSwap:
         assert "is_fk IS NULL" in source, (
             "_ensure_output_tables must remove stale pre-fix rows with is_fk IS NULL"
         )
+
+    def test_cleanup_counts_before_deleting(self):
+        """_ensure_output_tables must COUNT rows before each DELETE for logging."""
+        source = inspect.getsource(FKPredictor._ensure_output_tables)
+        assert "SELECT COUNT(*)" in source, (
+            "_ensure_output_tables must count rows before deleting for visibility"
+        )
+        assert "cleanup_rules" in source, (
+            "_ensure_output_tables must iterate over labelled cleanup rules"
+        )

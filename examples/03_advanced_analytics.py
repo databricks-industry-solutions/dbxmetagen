@@ -2,6 +2,11 @@
 # MAGIC %md
 # MAGIC # dbxmetagen Advanced Analytics
 # MAGIC
+# MAGIC > **Library usage:** This notebook demonstrates using dbxmetagen as a **pip-installable library**.
+# MAGIC > It is intended for embedding dbxmetagen into your own projects or for ad-hoc use.
+# MAGIC > For the full deployment with the interactive dashboard, pre-configured jobs, and app,
+# MAGIC > see the main repo [README](https://github.com/databricks-industry-solutions/dbxmetagen) and `deploy.sh`.
+# MAGIC
 # MAGIC Optional post-pipeline analytics: foreign key prediction, cluster analysis,
 # MAGIC and ontology validation. Run after 02_analytics_pipeline.
 

@@ -219,6 +219,7 @@ class GenieContextAssembler:
     def _load_genie_reference(self) -> str:
         """Load genie_reference.json and format into prompt text."""
         candidates = [
+            os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", "configurations", "agent_references", "genie_reference.json"),
             os.path.join(os.path.dirname(__file__), "..", "..", "configurations", "agent_references", "genie_reference.json"),
             os.path.join("configurations", "agent_references", "genie_reference.json"),
         ]
@@ -303,7 +304,8 @@ class GenieContextAssembler:
     def _get_ontology_entities(self, tables: List[str] | None = None) -> list[dict]:
         base = (
             f"SELECT entity_type, entity_name, description, source_tables, "
-            f"source_columns, confidence, COALESCE(entity_role, 'primary') AS entity_role "
+            f"source_columns, confidence, COALESCE(entity_role, 'primary') AS entity_role, "
+            f"entity_uri, source_ontology "
             f"FROM {self._fq('ontology_entities')} "
             f"WHERE confidence >= 0.4"
         )
@@ -534,14 +536,14 @@ class GenieContextAssembler:
         for c in column_meta:
             col_by_table.setdefault(c["table_name"], []).append(c)
 
-        entity_map: dict[str, dict] = {}
+        entity_map: dict[str, list[dict]] = {}
         for e in entity_rows:
             src_tables = e.get("source_tables") or []
             if isinstance(src_tables, str):
                 src_tables = [src_tables]
             for t in src_tables:
-                entity_map[t] = e
-                entity_map[t.split(".")[-1]] = e
+                entity_map.setdefault(t, []).append(e)
+                entity_map.setdefault(t.split(".")[-1], []).append(e)
 
         # Build per-entity-type relationship summary
         rel_summary: dict[str, list[str]] = {}
@@ -565,7 +567,8 @@ class GenieContextAssembler:
 
         for t in table_meta:
             tname = t["table_name"]
-            ent_info = entity_map.get(tname) or entity_map.get(tname.split(".")[-1])
+            ent_list = entity_map.get(tname) or entity_map.get(tname.split(".")[-1]) or []
+            ent_info = ent_list[0] if ent_list else None
             ent_type = ent_info["entity_type"] if ent_info else ""
 
             cols = col_by_table.get(tname, [])
@@ -588,11 +591,18 @@ class GenieContextAssembler:
             if t.get("domain"):
                 header += f"\n  Domain: {t['domain']}/{t.get('subdomain', '')}"
             header += f"\n  Grain: one row per {grain} (PK: {pk_col})"
-            if ent_type:
-                desc = ent_info.get("description", "")
+            for ei in ent_list:
+                et = ei.get("entity_type", "")
+                if not et:
+                    continue
+                desc = ei.get("description", "")
                 if desc:
-                    header += f"\n  Entity: {ent_type} -- {desc}"
-                rels_str = ", ".join(rel_summary.get(ent_type, []))
+                    header += f"\n  Entity: {et} -- {desc}"
+                else:
+                    header += f"\n  Entity: {et}"
+                if ei.get("source_ontology"):
+                    header += f"\n  Standard: {ei['source_ontology']}"
+                rels_str = ", ".join(rel_summary.get(et, []))
                 if rels_str:
                     header += f"\n  Relationships: {rels_str}"
 
@@ -737,12 +747,12 @@ class GenieContextAssembler:
             cols_by_table.setdefault(c["table_name"], []).append(c)
             cols_by_table.setdefault(c["table_name"].split(".")[-1], []).append(c)
 
-        entity_map: dict[str, dict] = {}
+        entity_map_ds: dict[str, list[dict]] = {}
         for e in (entity_rows or []):
             for t in (e.get("source_tables") or []):
                 if isinstance(t, str):
-                    entity_map[t] = e
-                    entity_map[t.split(".")[-1]] = e
+                    entity_map_ds.setdefault(t, []).append(e)
+                    entity_map_ds.setdefault(t.split(".")[-1], []).append(e)
 
         tables = []
         for tid in table_ids:
@@ -755,10 +765,13 @@ class GenieContextAssembler:
             if domain:
                 sub = meta.get("subdomain", "")
                 desc_parts.append(f"Domain: {domain}" + (f"/{sub}" if sub else ""))
-            ent = entity_map.get(tid) or entity_map.get(tid.split(".")[-1])
-            if ent:
+            ent_list_ds = entity_map_ds.get(tid) or entity_map_ds.get(tid.split(".")[-1]) or []
+            for ent in ent_list_ds:
                 role = ent.get("entity_role", "primary")
-                desc_parts.append(f"Entity: {ent.get('entity_type', '')} ({role})")
+                ent_desc = f"Entity: {ent.get('entity_type', '')} ({role})"
+                if ent.get("source_ontology"):
+                    ent_desc += f" [{ent['source_ontology']}]"
+                desc_parts.append(ent_desc)
             cols = cols_by_table.get(tid, cols_by_table.get(tid.split(".")[-1], []))
             if cols:
                 id_cols = [c["column_name"] for c in cols if c["column_name"].endswith("_id") or c["column_name"] == "id"]

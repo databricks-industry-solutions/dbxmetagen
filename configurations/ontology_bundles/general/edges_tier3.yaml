@@ -1,0 +1,231 @@
+instance_of:
+  name: instance_of
+  inverse: type_of
+  symmetric: false
+  category: structural
+  domain: null
+  range: null
+  domain_constraints: []
+  range_constraints: []
+subclass_of:
+  name: subclass_of
+  inverse: superclass_of
+  symmetric: false
+  category: structural
+  domain: null
+  range: null
+  domain_constraints: []
+  range_constraints: []
+has_part:
+  name: has_part
+  inverse: part_of
+  symmetric: false
+  category: structural
+  domain: null
+  range: null
+  domain_constraints: []
+  range_constraints: []
+contains:
+  name: contains
+  inverse: contained_in
+  symmetric: false
+  category: structural
+  domain: null
+  range: null
+  domain_constraints: []
+  range_constraints: []
+member_of:
+  name: member_of
+  inverse: has_member
+  symmetric: false
+  category: structural
+  domain: null
+  range: null
+  domain_constraints: []
+  range_constraints: []
+placed_by:
+  name: placed_by
+  inverse: placed
+  symmetric: false
+  category: business
+  domain: Transaction
+  range: Person
+  domain_constraints:
+  - Transaction
+  range_constraints:
+  - Person
+created_by:
+  name: created_by
+  inverse: created
+  symmetric: false
+  category: business
+  domain: Any
+  range: Person
+  domain_constraints:
+  - Any
+  range_constraints:
+  - Person
+owned_by:
+  name: owned_by
+  inverse: owns
+  symmetric: false
+  category: business
+  domain: Any
+  range: &id001
+  - Person
+  - Organization
+  domain_constraints:
+  - Any
+  range_constraints: *id001
+employs:
+  name: employs
+  inverse: employed_by
+  symmetric: false
+  category: business
+  domain: Organization
+  range: Person
+  domain_constraints:
+  - Organization
+  range_constraints:
+  - Person
+references:
+  name: references
+  inverse: referenced_by
+  symmetric: false
+  category: business
+  domain: Any
+  range: Reference
+  domain_constraints:
+  - Any
+  range_constraints:
+  - Reference
+located_at:
+  name: located_at
+  inverse: location_of
+  symmetric: false
+  category: business
+  domain: Any
+  range: Location
+  domain_constraints:
+  - Any
+  range_constraints:
+  - Location
+for_product:
+  name: for_product
+  inverse: sold_via
+  symmetric: false
+  category: business
+  domain: Transaction
+  range: Product
+  domain_constraints:
+  - Transaction
+  range_constraints:
+  - Product
+billed_to:
+  name: billed_to
+  inverse: billing_target_of
+  symmetric: false
+  category: business
+  domain: Transaction
+  range: &id002
+  - Person
+  - Organization
+  domain_constraints:
+  - Transaction
+  range_constraints: *id002
+assigned_to:
+  name: assigned_to
+  inverse: assigned_from
+  symmetric: false
+  category: business
+  domain: &id003
+  - Event
+  - Document
+  range: Person
+  domain_constraints: *id003
+  range_constraints:
+  - Person
+applies_to:
+  name: applies_to
+  inverse: subject_of
+  symmetric: false
+  category: business
+  domain: &id004
+  - Document
+  - Reference
+  range: Any
+  domain_constraints: *id004
+  range_constraints:
+  - Any
+derives_from:
+  name: derives_from
+  inverse: source_of
+  symmetric: false
+  category: lineage
+  domain: null
+  range: null
+  domain_constraints: []
+  range_constraints: []
+recorded_in:
+  name: recorded_in
+  inverse: records
+  symmetric: false
+  category: lineage
+  domain: null
+  range: null
+  domain_constraints: []
+  range_constraints: []
+supersedes:
+  name: supersedes
+  inverse: superseded_by
+  symmetric: false
+  category: lineage
+  domain: null
+  range: null
+  domain_constraints: []
+  range_constraints: []
+same_as:
+  name: same_as
+  inverse: null
+  symmetric: true
+  category: semantic
+  domain: null
+  range: null
+  domain_constraints: []
+  range_constraints: []
+equivalent_class:
+  name: equivalent_class
+  inverse: null
+  symmetric: true
+  category: semantic
+  domain: null
+  range: null
+  domain_constraints: []
+  range_constraints: []
+close_match:
+  name: close_match
+  inverse: null
+  symmetric: true
+  category: semantic
+  domain: null
+  range: null
+  domain_constraints: []
+  range_constraints: []
+similar_to:
+  name: similar_to
+  inverse: null
+  symmetric: true
+  category: semantic
+  domain: null
+  range: null
+  domain_constraints: []
+  range_constraints: []
+related_to:
+  name: related_to
+  inverse: null
+  symmetric: true
+  category: semantic
+  domain: null
+  range: null
+  domain_constraints: []
+  range_constraints: []
