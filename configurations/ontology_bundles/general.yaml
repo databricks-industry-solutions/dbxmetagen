@@ -4,6 +4,7 @@
 metadata:
   name: "General Cross-Industry"
   version: "3.0"
+  format_version: "2.0"
   industry: "general"
   description: "Industry-agnostic ontology with universal entity types and cross-functional domains"
   standards_alignment: "Schema.org"

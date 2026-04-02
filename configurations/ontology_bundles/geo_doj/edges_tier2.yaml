@@ -1,0 +1,35 @@
+instance_of:
+  name: instance_of
+  inverse: type_of
+  symmetric: false
+  category: structural
+  domain: null
+  range: null
+subclass_of:
+  name: subclass_of
+  inverse: superclass_of
+  symmetric: false
+  category: structural
+  domain: null
+  range: null
+has_part:
+  name: has_part
+  inverse: part_of
+  symmetric: false
+  category: structural
+  domain: null
+  range: null
+contains:
+  name: contains
+  inverse: contained_in
+  symmetric: false
+  category: structural
+  domain: null
+  range: null
+member_of:
+  name: member_of
+  inverse: has_member
+  symmetric: false
+  category: structural
+  domain: null
+  range: null

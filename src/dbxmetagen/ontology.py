@@ -13,7 +13,7 @@ import yaml
 import os
 import re
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace as dc_replace
 from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime
 import uuid
@@ -1398,6 +1398,8 @@ class EntityDiscoverer:
                     "auto_discovered": True,
                     "validated": False,
                     "validation_notes": item.reasoning,
+                    "entity_uri": edef.uri if edef else None,
+                    "source_ontology": edef.source_ontology if edef else None,
                 })
                 self._stats["ai_classifications"] += 1
 
@@ -1434,16 +1436,27 @@ class EntityDiscoverer:
                     all_results[i] = self._ai_classify_table(row)
 
             three_pass_threshold = self._validation_cfg.get("three_pass_upgrade_threshold", 0.6)
+            max_upgrades = int(self._validation_cfg.get("max_three_pass_upgrades", 10))
             loader = self._get_index_loader()
             if loader:
-                for i, row in enumerate(table_rows):
-                    top = all_results[i][0] if all_results[i] else None
-                    if top and top.get("confidence", 1.0) < three_pass_threshold:
-                        upgraded = self._three_pass_classify_table(row)
-                        if upgraded and upgraded[0].get("confidence", 0) > top.get("confidence", 0):
-                            logger.info("Three-pass upgrade %s: %.2f -> %.2f",
-                                        row.get("table_name", ""), top["confidence"], upgraded[0]["confidence"])
-                            all_results[i] = upgraded
+                candidates = [
+                    (i, all_results[i][0].get("confidence", 1.0))
+                    for i in range(len(table_rows))
+                    if all_results[i] and all_results[i][0].get("confidence", 1.0) < three_pass_threshold
+                ]
+                candidates.sort(key=lambda x: x[1])
+                if len(candidates) > max_upgrades:
+                    logger.info("Three-pass upgrade: capping %d candidates to %d", len(candidates), max_upgrades)
+                    candidates = candidates[:max_upgrades]
+                for i, conf in candidates:
+                    top = all_results[i][0]
+                    row = table_rows[i]
+                    upgraded = self._three_pass_classify_table(row)
+                    if upgraded and upgraded[0].get("confidence", 0) > conf:
+                        logger.info("Three-pass upgrade %s: %.2f -> %.2f",
+                                    row["table_name"] if "table_name" in row else "", conf, upgraded[0]["confidence"])
+                        secondaries = all_results[i][1:]
+                        all_results[i] = upgraded + secondaries
 
             return all_results
 
@@ -1466,6 +1479,13 @@ class EntityDiscoverer:
                     logger.info(
                         "Three-pass prediction enabled (%d tier-1 entities)",
                         self._index_loader.entity_count(),
+                    )
+                else:
+                    logger.warning(
+                        "Formal ontology grounding OFF for bundle '%s': no tier index files found. "
+                        "Entity classification will use single-pass LLM without FHIR/OMOP/Schema.org alignment. "
+                        "Run scripts/build_ontology_indexes.py to generate tier indexes.",
+                        bundle,
                     )
             except Exception as e:
                 logger.debug("Three-pass prediction not available: %s", e)
@@ -1507,15 +1527,10 @@ class EntityDiscoverer:
         enforced, exact = _enforce_entity_value(result.predicted_entity, self._entity_names)
         if not exact:
             logger.info("Three-pass entity '%s' snapped to '%s'", result.predicted_entity, enforced)
-            result = result.__class__(
+            result = dc_replace(
+                result,
                 predicted_entity=enforced,
-                confidence_score=max(0.0, result.confidence_score - self.CONFIDENCE_PENALTY_SNAP) if not exact else result.confidence_score,
-                equivalent_class_uri=result.equivalent_class_uri,
-                source_ontology=result.source_ontology,
-                rationale=result.rationale,
-                passes_run=result.passes_run,
-                needs_human_review=result.needs_human_review,
-                matched_properties=result.matched_properties,
+                confidence_score=max(0.0, result.confidence_score - self.CONFIDENCE_PENALTY_SNAP),
             )
 
         edef = next((e for e in self.entity_definitions if e.name == enforced), None)
@@ -4049,29 +4064,32 @@ class OntologyBuilder:
                         "updated_at": now,
                     })
 
-        # LLM-predicted edges via three-pass predict_edge
+        # LLM-predicted edges -- only for entity-type pairs that have FK evidence
+        max_llm_edge_calls = int(self._validation_cfg.get("max_llm_edge_calls", 20))
+        enable_llm_edges = self._validation_cfg.get("enable_llm_edge_prediction", True)
         loader = self._get_index_loader()
-        if loader:
+        if loader and enable_llm_edges:
             try:
                 from dbxmetagen.ontology_predictor import predict_edge
-                entity_types = list(table_to_primary.values())
-                unique_pairs = set()
-                for s in entity_types:
-                    for d in entity_types:
-                        if s != d:
-                            unique_pairs.add((s, d))
+                fk_entity_types = {et for et in table_to_primary.values()}
+                candidate_pairs = set()
+                for fk in fk_rows:
+                    s = table_to_primary.get(fk.src_table)
+                    d = table_to_primary.get(fk.dst_table)
+                    if s and d and s != d and (s, d) not in seen:
+                        candidate_pairs.add((s, d))
+                if len(candidate_pairs) > max_llm_edge_calls:
+                    logger.info("LLM edge prediction: capping %d pairs to %d", len(candidate_pairs), max_llm_edge_calls)
+                    candidate_pairs = set(list(candidate_pairs)[:max_llm_edge_calls])
                 llm_fn = self._make_llm_fn()
-                for src_t, dst_t in unique_pairs:
-                    key = (src_t, dst_t)
-                    if key in seen:
-                        continue
+                for src_t, dst_t in candidate_pairs:
                     try:
                         result = predict_edge(
                             src_entity=src_t, dst_entity=dst_t,
-                            table_context="", loader=loader, llm_fn=llm_fn,
+                            loader=loader, llm_fn=llm_fn,
                         )
                         if result and result.predicted_edge and result.confidence_score >= 0.5:
-                            seen.add(key)
+                            seen.add((src_t, dst_t))
                             rels.append({
                                 "relationship_id": str(uuid.uuid4()),
                                 "src_entity_type": src_t,

@@ -251,14 +251,15 @@ def predict_entity(
 # ---------------------------------------------------------------------------
 
 def predict_edge(
-    from_table: str,
-    from_column: str,
-    to_table: str,
-    to_column: str,
+    *,
     src_entity: str,
     dst_entity: str,
     loader: OntologyIndexLoader,
     llm_fn: Callable[[str, str], str],
+    from_table: str = "",
+    from_column: str = "",
+    to_table: str = "",
+    to_column: str = "",
 ) -> EdgePredictionResult:
     """Two/three-pass edge classification using tiered ontology indexes.
     

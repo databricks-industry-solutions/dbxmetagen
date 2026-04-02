@@ -5,6 +5,7 @@
 metadata:
   name: "Geographic Classification (DOJ)"
   version: "2.0"
+  format_version: "2.0"
   industry: "cross-industry"
   description: "Ontology for DOJ geographic filtering — classifies tables and columns by geographic relevance with fine-grained sub-types"
   standards_alignment: "DOJ Geographic Filtering, ISO 3166"

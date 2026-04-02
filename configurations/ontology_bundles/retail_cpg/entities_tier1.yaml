@@ -1,0 +1,40 @@
+- name: Person
+  description: People, customers, contacts, users, or employees
+- name: Organization
+  description: Companies, departments, facilities, or business units
+- name: Transaction
+  description: Orders, purchases, payments, invoices, or financial events
+- name: Location
+  description: Addresses, sites, regions, facilities, or geographies
+- name: Event
+  description: Activities, logs, sessions, audits, or system events
+- name: Reference
+  description: Lookup tables, codes, categories, dimensions, or configuration
+- name: Metric
+  description: KPIs, aggregates, facts, summaries, or analytic measures
+- name: Document
+  description: Unstructured content, notes, files, or text records
+- name: Customer
+  description: Retail customers, loyalty members, or shoppers
+- name: LoyaltyProgram
+  description: Loyalty programs, rewards programs, or membership tiers
+- name: Product
+  description: Retail products, SKUs, items, or merchandise
+- name: Order
+  description: Customer orders, carts, baskets, or purchase transactions
+- name: Store
+  description: Physical retail stores, outlets, warehouses, or distribution centers
+- name: Campaign
+  description: Marketing campaigns, ad campaigns, or promotional campaigns
+- name: Promotion
+  description: Promotions, discounts, coupons, campaigns, or markdown events
+- name: Supplier
+  description: Vendors, manufacturers, distributors, or trading partners
+- name: Inventory
+  description: Stock levels, warehouse inventory, or on-hand quantities
+- name: Return
+  description: Product returns, refunds, exchanges, or RMA records
+- name: Shipment
+  description: Shipping, delivery, fulfillment, or logistics records
+- name: Category
+  description: Product categories, departments, or merchandise hierarchies

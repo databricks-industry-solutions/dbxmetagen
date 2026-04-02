@@ -339,14 +339,13 @@ export default function BatchJobs({ onNavigate }) {
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div>
             <label className="section-title mb-1.5 block">Output Catalog</label>
-            <input value={catalogName} onChange={e => setCatalogName(e.target.value)}
-              placeholder="e.g. my_catalog" className="input-base" />
+            <span className="input-base block bg-gray-50 text-gray-700 cursor-default">{catalogName || '(not configured)'}</span>
           </div>
           <div>
             <label className="section-title mb-1.5 block">Output Schema</label>
-            <input value={schemaName} onChange={e => setSchemaName(e.target.value)}
-              placeholder="e.g. metadata_results" className="input-base" />
+            <span className="input-base block bg-gray-50 text-gray-700 cursor-default">{schemaName || '(not configured)'}</span>
           </div>
+          <p className="text-xs text-gray-400 col-span-2">Configured via variables.yml in the Databricks Asset Bundle.</p>
         </div>
 
         <details className="mt-4 group">
@@ -360,20 +359,22 @@ export default function BatchJobs({ onNavigate }) {
             <div>
               <label className="section-title mb-1.5 flex items-center gap-2">
                 Ontology Bundle
-                {bundleInfo?.has_tier_indexes && (
-                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300 font-medium" title="Three-pass prediction enabled via tier indexes">
-                    3-pass ready
+                {(bundleInfo?.has_tier_indexes || bundles.find(b => b.key === ontologyBundle)?.has_tier_indexes) && (
+                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300 font-medium" title="Three-pass prediction enabled via formal ontology tier indexes (FHIR R4, OMOP CDM, Schema.org)">
+                    Formally Grounded
                   </span>
                 )}
-                {bundleInfo?.format_version === '2.0' && (
-                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300 font-medium" title="OWL v2 format bundle">
-                    v2
+                {(bundleInfo?.format_version === '2.0' || bundles.find(b => b.key === ontologyBundle)?.format_version === '2.0') && (
+                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300 font-medium" title="OWL v2 format with entity URIs and source ontology alignment">
+                    OWL v2
                   </span>
                 )}
               </label>
               <select value={ontologyBundle} onChange={e => setOntologyBundle(e.target.value)} className="select-base">
                 {bundles.length > 0 ? bundles.map(b => (
-                  <option key={b.key} value={b.key}>{b.name} ({b.entity_count} entities)</option>
+                  <option key={b.key} value={b.key}>
+                    {b.has_tier_indexes ? '\u2713 ' : ''}{b.name} ({b.entity_count} entities){b.standards_alignment ? ` -- ${b.standards_alignment}` : ''}{!b.has_tier_indexes ? ' (no formal grounding)' : ''}
+                  </option>
                 )) : (
                   <option value="" disabled>No bundles found</option>
                 )}

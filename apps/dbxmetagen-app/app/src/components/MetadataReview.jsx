@@ -128,8 +128,12 @@ function ReviewEditor() {
       const res = await fetch('/api/metadata/review-combined', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
       })
+      if (!res.ok) {
+        let detail = `Server error (${res.status})`
+        try { const ej = await res.json(); detail = ej.detail || detail } catch {}
+        throw new Error(detail)
+      }
       const j = await res.json()
-      if (!res.ok) throw new Error(j.detail || res.status)
       const tables = j.tables || []
       setReviewData(tables)
       setOriginal(JSON.parse(JSON.stringify(tables)))

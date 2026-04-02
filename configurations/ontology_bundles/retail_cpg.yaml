@@ -3,6 +3,7 @@
 metadata:
   name: "Retail & CPG"
   version: "3.0"
+  format_version: "2.0"
   industry: "retail_cpg"
   description: "Retail, e-commerce, and CPG ontology with customer, product, and supply chain entity types"
   standards_alignment: "GS1, Schema.org"

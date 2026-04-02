@@ -4,6 +4,7 @@
 metadata:
   name: "Financial Services"
   version: "3.0"
+  format_version: "2.0"
   industry: "financial_services"
   description: "Banking, insurance, and capital markets ontology with financial instrument and risk entity types"
   standards_alignment: "BIAN, FIBO, ISO 20022"

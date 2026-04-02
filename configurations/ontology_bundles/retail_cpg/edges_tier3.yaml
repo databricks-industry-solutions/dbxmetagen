@@ -1,0 +1,155 @@
+instance_of:
+  name: instance_of
+  inverse: type_of
+  symmetric: false
+  category: structural
+  domain: null
+  range: null
+  domain_constraints: []
+  range_constraints: []
+subclass_of:
+  name: subclass_of
+  inverse: superclass_of
+  symmetric: false
+  category: structural
+  domain: null
+  range: null
+  domain_constraints: []
+  range_constraints: []
+has_part:
+  name: has_part
+  inverse: part_of
+  symmetric: false
+  category: structural
+  domain: null
+  range: null
+  domain_constraints: []
+  range_constraints: []
+contains:
+  name: contains
+  inverse: contained_in
+  symmetric: false
+  category: structural
+  domain: null
+  range: null
+  domain_constraints: []
+  range_constraints: []
+member_of:
+  name: member_of
+  inverse: has_member
+  symmetric: false
+  category: structural
+  domain: null
+  range: null
+  domain_constraints: []
+  range_constraints: []
+purchased_by:
+  name: purchased_by
+  inverse: purchased
+  symmetric: false
+  category: business
+  domain: Transaction
+  range: Customer
+  domain_constraints: []
+  range_constraints: []
+sold_at:
+  name: sold_at
+  inverse: sells
+  symmetric: false
+  category: business
+  domain: Transaction
+  range: Store
+  domain_constraints: []
+  range_constraints: []
+in_category:
+  name: in_category
+  inverse: categorizes
+  symmetric: false
+  category: business
+  domain: Product
+  range: Reference
+  domain_constraints: []
+  range_constraints: []
+supplied_by:
+  name: supplied_by
+  inverse: supplies
+  symmetric: false
+  category: business
+  domain: Product
+  range: Supplier
+  domain_constraints: []
+  range_constraints: []
+placed_by:
+  name: placed_by
+  inverse: placed
+  symmetric: false
+  category: business
+  domain: Transaction
+  range: Person
+  domain_constraints: []
+  range_constraints: []
+created_by:
+  name: created_by
+  inverse: created
+  symmetric: false
+  category: business
+  domain: Any
+  range: Person
+  domain_constraints: []
+  range_constraints: []
+owned_by:
+  name: owned_by
+  inverse: owns
+  symmetric: false
+  category: business
+  domain: Any
+  range:
+  - Person
+  - Organization
+  domain_constraints: []
+  range_constraints: []
+references:
+  name: references
+  inverse: referenced_by
+  symmetric: false
+  category: business
+  domain: Any
+  range: Any
+  domain_constraints: []
+  range_constraints: []
+located_at:
+  name: located_at
+  inverse: location_of
+  symmetric: false
+  category: business
+  domain: Any
+  range: Location
+  domain_constraints: []
+  range_constraints: []
+derives_from:
+  name: derives_from
+  inverse: source_of
+  symmetric: false
+  category: lineage
+  domain: null
+  range: null
+  domain_constraints: []
+  range_constraints: []
+same_as:
+  name: same_as
+  inverse: inverse_same_as
+  symmetric: true
+  category: semantic
+  domain: null
+  range: null
+  domain_constraints: []
+  range_constraints: []
+similar_to:
+  name: similar_to
+  inverse: inverse_similar_to
+  symmetric: true
+  category: semantic
+  domain: null
+  range: null
+  domain_constraints: []
+  range_constraints: []

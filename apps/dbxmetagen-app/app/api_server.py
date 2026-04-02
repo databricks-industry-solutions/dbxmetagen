@@ -1361,6 +1361,16 @@ def review_combined(body: ReviewCombinedRequest):
         raise HTTPException(400, "Provide at least one table or schema")
     where = " OR ".join(where_parts)
 
+    try:
+        return _review_combined_impl(tbl_kb, col_kb, ent_tbl, fk_tbl, where)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("review_combined failed: %s", e)
+        raise HTTPException(500, detail=str(e))
+
+
+def _review_combined_impl(tbl_kb, col_kb, ent_tbl, fk_tbl, where):
     _has_review_status = False
     try:
         cols = execute_sql(f"DESCRIBE TABLE {tbl_kb}", timeout=15)
@@ -1376,7 +1386,7 @@ def review_combined(body: ReviewCombinedRequest):
     rs_expr = "COALESCE(review_status, 'unreviewed') AS review_status" if _has_review_status else "'unreviewed' AS review_status"
     try:
         count_rows = execute_sql(f"SELECT COUNT(*) AS cnt FROM {tbl_kb} WHERE {where}", timeout=10)
-        total_count = count_rows[0]["cnt"] if count_rows else 0
+        total_count = int(count_rows[0]["cnt"]) if count_rows else 0
     except Exception:
         total_count = None
     tbl_rows = execute_sql(f"""
@@ -1852,13 +1862,14 @@ def get_ontology_entities(limit: int = 200):
 
 
 @app.get("/api/ontology/relationships")
-def get_ontology_relationships():
+def get_ontology_relationships(limit: int = 500):
     q = f"""
         SELECT relationship_id, src_entity_type, relationship_name,
                dst_entity_type, cardinality, evidence_column,
                evidence_table, source, confidence
         FROM {fq('ontology_relationships')}
         ORDER BY confidence DESC
+        LIMIT {min(limit, 2000)}
     """
     try:
         return execute_sql(q)
@@ -1867,17 +1878,20 @@ def get_ontology_relationships():
 
 
 @app.get("/api/ontology/graph-edges")
-def get_ontology_graph_edges(edge_type: str = ""):
+def get_ontology_graph_edges(edge_type: str = "", limit: int = 500):
     """Return edges from the knowledge graph (graph_edges table), optionally filtered by type."""
     ge_tbl = fq("graph_edges")
-    where = f"edge_type = '{_esc_sql(edge_type)}'" if edge_type and _SAFE_IDENT_RE.match(edge_type) else "1=1"
+    clauses = ["relationship NOT IN ('similar_embedding', 'shares_column_name')"]
+    if edge_type and _SAFE_IDENT_RE.match(edge_type):
+        clauses.append(f"edge_type = '{_esc_sql(edge_type)}'")
+    where = " AND ".join(clauses)
     try:
         return execute_sql(f"""
             SELECT src, dst, relationship, edge_type, weight, ontology_rel
             FROM {ge_tbl}
             WHERE {where}
             ORDER BY weight DESC
-            LIMIT 500
+            LIMIT {min(limit, 2000)}
         """)
     except Exception:
         return []
@@ -1995,9 +2009,12 @@ def _list_bundles_local() -> list[dict]:
             with open(os.path.join(bd, fname), "r") as f:
                 raw = yaml.safe_load(f)
             meta = raw.get("metadata", {})
+            bundle_key = fname.replace(".yaml", "")
+            tier_dir = os.path.join(bd, bundle_key)
+            has_tiers = os.path.isdir(tier_dir) and os.path.isfile(os.path.join(tier_dir, "entities_tier1.yaml"))
             bundles.append({
-                "key": fname.replace(".yaml", ""),
-                "name": meta.get("name", fname.replace(".yaml", "")),
+                "key": bundle_key,
+                "name": meta.get("name", bundle_key),
                 "industry": meta.get("industry", "general"),
                 "description": meta.get("description", ""),
                 "standards_alignment": meta.get("standards_alignment", ""),
@@ -2005,6 +2022,8 @@ def _list_bundles_local() -> list[dict]:
                 "domain_count": len(raw.get("domains", {})),
                 "bundle_type": meta.get("bundle_type", "ontology"),
                 "tag_key": meta.get("tag_key", ""),
+                "format_version": meta.get("format_version", "1.0"),
+                "has_tier_indexes": has_tiers,
             })
         except Exception as e:
             logger.debug("Could not read bundle %s: %s", fname, e)
@@ -3129,18 +3148,6 @@ def fk_apply_as_tags(body: FKApplyPredictionsBody):
         except Exception as e:
             results.append({"sql": sql, "ok": False, "error": str(e)})
     return {"results": results}
-
-
-@app.get("/api/ontology/graph-edges")
-def get_ontology_graph_edges(limit: int = 500):
-    """Return entity-level relationship edges for the ontology graph visualization."""
-    q = f"""
-        SELECT src, dst, relationship, weight
-        FROM {fq('graph_edges')}
-        WHERE relationship NOT IN ('similar_embedding', 'shares_column_name')
-        ORDER BY weight DESC LIMIT {limit}
-    """
-    return execute_sql(q)
 
 
 @app.get("/api/ontology/metrics")

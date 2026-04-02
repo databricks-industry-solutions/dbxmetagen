@@ -1,0 +1,508 @@
+Person:
+  description: People, customers, contacts, users, or employees
+  source_ontology: schema.org
+  uri: https://schema.org/Person
+  keywords:
+  - customer
+  - employee
+  - user
+  - contact
+  - person
+  - applicant
+  - borrower
+  synonyms: []
+  typical_attributes:
+  - id
+  - name
+  - email
+  - phone
+  - address
+  - created_date
+  business_questions: []
+  relationships:
+    has_account:
+      target: Account
+      cardinality: one-to-many
+    part_of:
+      target: Organization
+      cardinality: many-to-one
+  properties: {}
+Organization:
+  description: Companies, departments, facilities, or business units
+  source_ontology: schema.org
+  uri: https://schema.org/Organization
+  keywords:
+  - company
+  - organization
+  - department
+  - facility
+  - tenant
+  - branch
+  - subsidiary
+  synonyms: []
+  typical_attributes:
+  - id
+  - name
+  - type
+  - address
+  - parent_id
+  business_questions: []
+  relationships:
+    contains:
+      target: Person
+      cardinality: one-to-many
+    part_of:
+      target: Organization
+      cardinality: many-to-one
+  properties: {}
+Product:
+  description: Goods, services, SKUs, or catalog items
+  source_ontology: schema.org
+  uri: https://schema.org/Product
+  keywords:
+  - product
+  - item
+  - sku
+  - catalog
+  - offering
+  synonyms: []
+  typical_attributes:
+  - id
+  - name
+  - description
+  - price
+  - category
+  - status
+  business_questions: []
+  relationships: {}
+  properties: {}
+Transaction:
+  description: Orders, purchases, payments, invoices, or financial events
+  source_ontology: schema.org
+  uri: https://schema.org/Invoice
+  keywords:
+  - transaction
+  - order
+  - payment
+  - invoice
+  - purchase
+  - transfer
+  - wire
+  synonyms: []
+  typical_attributes:
+  - id
+  - customer_id
+  - amount
+  - date
+  - status
+  - currency
+  business_questions: []
+  relationships:
+    on_account:
+      target: Account
+      cardinality: many-to-one
+    by_person:
+      target: Person
+      cardinality: many-to-one
+  properties: {}
+Location:
+  description: Addresses, sites, regions, facilities, or geographies
+  source_ontology: schema.org
+  uri: https://schema.org/Place
+  keywords:
+  - location
+  - address
+  - site
+  - region
+  - facility
+  - branch
+  synonyms: []
+  typical_attributes:
+  - id
+  - name
+  - address
+  - city
+  - state
+  - country
+  - zip_code
+  business_questions: []
+  relationships: {}
+  properties: {}
+Event:
+  description: Activities, logs, sessions, audits, or system events
+  source_ontology: schema.org
+  uri: https://schema.org/Event
+  keywords:
+  - event
+  - activity
+  - log
+  - audit
+  - session
+  synonyms: []
+  typical_attributes:
+  - id
+  - type
+  - timestamp
+  - user_id
+  - details
+  business_questions: []
+  relationships:
+    references:
+      target: Person
+      cardinality: many-to-one
+  properties: {}
+Reference:
+  description: Lookup tables, codes, categories, dimensions, or configuration
+  source_ontology: schema.org
+  uri: https://schema.org/Thing
+  keywords:
+  - reference
+  - lookup
+  - code
+  - category
+  - dim_
+  synonyms: []
+  typical_attributes:
+  - id
+  - code
+  - name
+  - description
+  - active
+  business_questions: []
+  relationships: {}
+  properties: {}
+Metric:
+  description: KPIs, aggregates, facts, summaries, or analytic measures
+  source_ontology: schema.org
+  uri: https://schema.org/QuantitativeValue
+  keywords:
+  - metric
+  - kpi
+  - aggregate
+  - fact_
+  - summary
+  synonyms: []
+  typical_attributes:
+  - id
+  - name
+  - value
+  - period
+  - dimension
+  business_questions: []
+  relationships: {}
+  properties: {}
+Document:
+  description: Unstructured content, notes, files, or text records
+  source_ontology: schema.org
+  uri: https://schema.org/DigitalDocument
+  keywords:
+  - document
+  - note
+  - file
+  - content
+  - text
+  - contract
+  - agreement
+  synonyms: []
+  typical_attributes:
+  - id
+  - title
+  - body
+  - author
+  - created_date
+  - type
+  business_questions: []
+  relationships:
+    references:
+      target: Person
+      cardinality: many-to-one
+  properties: {}
+Account:
+  description: Bank accounts, investment accounts, loan accounts, or general ledger
+    accounts
+  source_ontology: FIBO
+  uri: https://spec.edmcouncil.org/fibo/ontology/FND/AccountingExt/Account
+  keywords:
+  - account
+  - deposit
+  - savings
+  - checking
+  - loan_account
+  - gl_account
+  synonyms: []
+  typical_attributes:
+  - id
+  - account_number
+  - type
+  - balance
+  - currency
+  - status
+  - open_date
+  business_questions: []
+  relationships:
+    owned_by:
+      target: Person
+      cardinality: many-to-one
+    has_transaction:
+      target: Transaction
+      cardinality: one-to-many
+  properties: {}
+Portfolio:
+  description: Investment portfolios, fund holdings, or asset allocations
+  source_ontology: FIBO
+  uri: https://spec.edmcouncil.org/fibo/ontology/SEC/Securities/Portfolios/Portfolio
+  keywords:
+  - portfolio
+  - fund
+  - holding
+  - allocation
+  - basket
+  synonyms: []
+  typical_attributes:
+  - id
+  - name
+  - manager
+  - strategy
+  - aum
+  - benchmark
+  business_questions: []
+  relationships:
+    contains:
+      target: Instrument
+      cardinality: many-to-many
+    managed_by:
+      target: Person
+      cardinality: many-to-one
+  properties: {}
+Trade:
+  description: Securities trades, FX transactions, or market orders
+  source_ontology: FIBO
+  uri: https://spec.edmcouncil.org/fibo/ontology/FBC/FunctionalEntities/Trade
+  keywords:
+  - trade
+  - execution
+  - fill
+  - market_order
+  - limit_order
+  - swap
+  synonyms: []
+  typical_attributes:
+  - id
+  - instrument_id
+  - side
+  - quantity
+  - price
+  - timestamp
+  - status
+  business_questions: []
+  relationships:
+    of_instrument:
+      target: Instrument
+      cardinality: many-to-one
+    with_counterparty:
+      target: Counterparty
+      cardinality: many-to-one
+    on_account:
+      target: Account
+      cardinality: many-to-one
+  properties: {}
+Instrument:
+  description: Financial instruments -- equities, bonds, derivatives, currencies
+  source_ontology: FIBO
+  uri: https://spec.edmcouncil.org/fibo/ontology/FBC/FinancialInstruments/FinancialInstrument
+  keywords:
+  - instrument
+  - security
+  - equity
+  - bond
+  - derivative
+  - option
+  - future
+  - isin
+  - cusip
+  synonyms: []
+  typical_attributes:
+  - id
+  - symbol
+  - isin
+  - cusip
+  - type
+  - currency
+  - issuer
+  - maturity_date
+  business_questions: []
+  relationships:
+    hedges:
+      target: Risk
+      cardinality: many-to-many
+  properties: {}
+Counterparty:
+  description: Trading counterparties, custodians, or correspondent banks
+  source_ontology: FIBO
+  uri: https://spec.edmcouncil.org/fibo/ontology/FBC/FunctionalEntities/Counterparty
+  keywords:
+  - counterparty
+  - custodian
+  - broker
+  - dealer
+  - correspondent
+  - clearing
+  synonyms: []
+  typical_attributes:
+  - id
+  - name
+  - type
+  - lei
+  - credit_rating
+  - jurisdiction
+  business_questions: []
+  relationships:
+    has_trade:
+      target: Trade
+      cardinality: one-to-many
+  properties: {}
+Risk:
+  description: Risk exposures, limits, VaR, stress tests, or credit scores
+  source_ontology: BIAN
+  uri: https://bian.org/servicedomain/RiskManagement
+  keywords:
+  - risk
+  - exposure
+  - var
+  - stress_test
+  - credit_score
+  - limit
+  - collateral
+  synonyms: []
+  typical_attributes:
+  - id
+  - type
+  - value
+  - threshold
+  - entity_id
+  - date
+  business_questions: []
+  relationships:
+    for_account:
+      target: Account
+      cardinality: many-to-one
+    for_instrument:
+      target: Instrument
+      cardinality: many-to-one
+  properties: {}
+Compliance:
+  description: Regulatory filings, KYC records, AML alerts, or sanctions screening
+  source_ontology: BIAN
+  uri: https://bian.org/servicedomain/RegulatoryCompliance
+  keywords:
+  - compliance
+  - kyc
+  - aml
+  - sanctions
+  - filing
+  - regulatory
+  - sar
+  synonyms: []
+  typical_attributes:
+  - id
+  - type
+  - status
+  - entity_id
+  - date
+  - resolution
+  business_questions: []
+  relationships:
+    for_person:
+      target: Person
+      cardinality: many-to-one
+    for_organization:
+      target: Organization
+      cardinality: many-to-one
+  properties: {}
+Claim:
+  description: Insurance claims, loss events, or reimbursement requests
+  source_ontology: BIAN
+  uri: https://bian.org/servicedomain/ClaimsHandling/Claim
+  keywords:
+  - claim
+  - loss
+  - incident
+  - reimbursement
+  - adjudication
+  synonyms: []
+  typical_attributes:
+  - id
+  - policy_id
+  - amount
+  - date
+  - status
+  - type
+  business_questions: []
+  relationships:
+    on_policy:
+      target: Policy
+      cardinality: many-to-one
+    filed_by:
+      target: Person
+      cardinality: many-to-one
+  properties: {}
+Policy:
+  description: Insurance policies, coverage terms, or underwriting records
+  source_ontology: BIAN
+  uri: https://bian.org/servicedomain/InsurancePolicy
+  keywords:
+  - policy
+  - coverage
+  - underwriting
+  - premium
+  - insured
+  - endorsement
+  synonyms: []
+  typical_attributes:
+  - id
+  - policy_number
+  - type
+  - premium
+  - effective_date
+  - expiry_date
+  business_questions: []
+  relationships:
+    held_by:
+      target: Person
+      cardinality: many-to-one
+    issued_by:
+      target: Organization
+      cardinality: many-to-one
+  properties: {}
+Loan:
+  description: Loans, mortgages, credit facilities, or lending agreements
+  source_ontology: FIBO
+  uri: https://spec.edmcouncil.org/fibo/ontology/LOAN/LoanTypes/Loan
+  keywords:
+  - loan
+  - mortgage
+  - credit_facility
+  - lending
+  - origination
+  - amortization
+  synonyms: []
+  typical_attributes:
+  - id
+  - borrower_id
+  - principal
+  - rate
+  - term
+  - status
+  - origination_date
+  business_questions: []
+  relationships:
+    borrowed_by:
+      target: Person
+      cardinality: many-to-one
+    secures:
+      target: Account
+      cardinality: many-to-one
+    has_risk:
+      target: Risk
+      cardinality: one-to-many
+  properties: {}

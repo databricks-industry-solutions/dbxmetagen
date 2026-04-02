@@ -1,0 +1,15 @@
+- name: instance_of
+  domain: null
+  range: null
+- name: subclass_of
+  domain: null
+  range: null
+- name: has_part
+  domain: null
+  range: null
+- name: contains
+  domain: null
+  range: null
+- name: member_of
+  domain: null
+  range: null

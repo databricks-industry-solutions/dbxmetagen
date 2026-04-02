@@ -1,0 +1,121 @@
+instance_of:
+  name: instance_of
+  inverse: type_of
+  symmetric: false
+  category: structural
+  domain: null
+  range: null
+subclass_of:
+  name: subclass_of
+  inverse: superclass_of
+  symmetric: false
+  category: structural
+  domain: null
+  range: null
+has_part:
+  name: has_part
+  inverse: part_of
+  symmetric: false
+  category: structural
+  domain: null
+  range: null
+contains:
+  name: contains
+  inverse: contained_in
+  symmetric: false
+  category: structural
+  domain: null
+  range: null
+member_of:
+  name: member_of
+  inverse: has_member
+  symmetric: false
+  category: structural
+  domain: null
+  range: null
+purchased_by:
+  name: purchased_by
+  inverse: purchased
+  symmetric: false
+  category: business
+  domain: Transaction
+  range: Customer
+sold_at:
+  name: sold_at
+  inverse: sells
+  symmetric: false
+  category: business
+  domain: Transaction
+  range: Store
+in_category:
+  name: in_category
+  inverse: categorizes
+  symmetric: false
+  category: business
+  domain: Product
+  range: Reference
+supplied_by:
+  name: supplied_by
+  inverse: supplies
+  symmetric: false
+  category: business
+  domain: Product
+  range: Supplier
+placed_by:
+  name: placed_by
+  inverse: placed
+  symmetric: false
+  category: business
+  domain: Transaction
+  range: Person
+created_by:
+  name: created_by
+  inverse: created
+  symmetric: false
+  category: business
+  domain: Any
+  range: Person
+owned_by:
+  name: owned_by
+  inverse: owns
+  symmetric: false
+  category: business
+  domain: Any
+  range:
+  - Person
+  - Organization
+references:
+  name: references
+  inverse: referenced_by
+  symmetric: false
+  category: business
+  domain: Any
+  range: Any
+located_at:
+  name: located_at
+  inverse: location_of
+  symmetric: false
+  category: business
+  domain: Any
+  range: Location
+derives_from:
+  name: derives_from
+  inverse: source_of
+  symmetric: false
+  category: lineage
+  domain: null
+  range: null
+same_as:
+  name: same_as
+  inverse: inverse_same_as
+  symmetric: true
+  category: semantic
+  domain: null
+  range: null
+similar_to:
+  name: similar_to
+  inverse: inverse_similar_to
+  symmetric: true
+  category: semantic
+  domain: null
+  range: null
