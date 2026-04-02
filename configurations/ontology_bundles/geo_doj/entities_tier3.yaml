@@ -131,8 +131,8 @@ GeoCoordinate:
   relationships: {}
   properties: {}
 AdminRegion:
-  description: "Administrative or political geographic regions \u2014 countries, states,\
-    \ provinces, counties, districts, municipalities, or named areas"
+  description: Administrative or political geographic regions — countries, states,
+    provinces, counties, districts, municipalities, or named areas
   source_ontology: schema.org
   uri: https://schema.org/AdministrativeArea
   keywords:

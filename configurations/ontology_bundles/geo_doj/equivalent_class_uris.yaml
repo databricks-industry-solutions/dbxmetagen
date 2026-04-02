@@ -1,2 +1,7 @@
+Geographic: urn:dbxmetagen:geo_doj:Geographic
+Address: urn:dbxmetagen:geo_doj:Address
 GeoCoordinate: https://schema.org/GeoCoordinates
 AdminRegion: https://schema.org/AdministrativeArea
+PostalCode: urn:dbxmetagen:geo_doj:PostalCode
+Timezone: urn:dbxmetagen:geo_doj:Timezone
+NonGeographic: urn:dbxmetagen:geo_doj:NonGeographic

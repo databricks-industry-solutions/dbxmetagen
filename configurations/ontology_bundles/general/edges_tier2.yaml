@@ -1,169 +1,48 @@
-instance_of:
-  name: instance_of
-  inverse: type_of
-  symmetric: false
-  category: structural
-  domain: null
-  range: null
-subclass_of:
-  name: subclass_of
-  inverse: superclass_of
-  symmetric: false
-  category: structural
-  domain: null
-  range: null
-has_part:
-  name: has_part
-  inverse: part_of
-  symmetric: false
-  category: structural
-  domain: null
-  range: null
+owns:
+  name: owns
+  domain: Person
+  range: Transaction
+  uri: ''
+  inverse: ''
+part_of:
+  name: part_of
+  domain: Person
+  range: Organization
+  uri: ''
+  inverse: ''
 contains:
   name: contains
-  inverse: contained_in
-  symmetric: false
-  category: structural
-  domain: null
-  range: null
-member_of:
-  name: member_of
-  inverse: has_member
-  symmetric: false
-  category: structural
-  domain: null
-  range: null
-placed_by:
-  name: placed_by
-  inverse: placed
-  symmetric: false
-  category: business
-  domain: Transaction
-  range: Person
-created_by:
-  name: created_by
-  inverse: created
-  symmetric: false
-  category: business
-  domain: Any
-  range: Person
-owned_by:
-  name: owned_by
-  inverse: owns
-  symmetric: false
-  category: business
-  domain: Any
-  range:
-  - Person
-  - Organization
-employs:
-  name: employs
-  inverse: employed_by
-  symmetric: false
-  category: business
   domain: Organization
   range: Person
+  uri: ''
+  inverse: contained_in
+contains_location:
+  name: contains_location
+  domain: Organization
+  range: Location
+  uri: ''
+  inverse: ''
 references:
   name: references
-  inverse: referenced_by
-  symmetric: false
-  category: business
-  domain: Any
+  domain: Product
   range: Reference
-located_at:
-  name: located_at
-  inverse: location_of
-  symmetric: false
-  category: business
-  domain: Any
-  range: Location
+  uri: ''
+  inverse: referenced_by
+placed_by:
+  name: placed_by
+  domain: Transaction
+  range: Person
+  uri: ''
+  inverse: placed
 for_product:
   name: for_product
-  inverse: sold_via
-  symmetric: false
-  category: business
   domain: Transaction
   range: Product
-billed_to:
-  name: billed_to
-  inverse: billing_target_of
-  symmetric: false
-  category: business
-  domain: Transaction
-  range:
-  - Person
-  - Organization
-assigned_to:
-  name: assigned_to
-  inverse: assigned_from
-  symmetric: false
-  category: business
-  domain:
-  - Event
-  - Document
-  range: Person
-applies_to:
-  name: applies_to
-  inverse: subject_of
-  symmetric: false
-  category: business
-  domain:
-  - Document
-  - Reference
-  range: Any
+  uri: ''
+  inverse: sold_via
 derives_from:
   name: derives_from
+  domain: Metric
+  range: Event
+  uri: ''
   inverse: source_of
-  symmetric: false
-  category: lineage
-  domain: null
-  range: null
-recorded_in:
-  name: recorded_in
-  inverse: records
-  symmetric: false
-  category: lineage
-  domain: null
-  range: null
-supersedes:
-  name: supersedes
-  inverse: superseded_by
-  symmetric: false
-  category: lineage
-  domain: null
-  range: null
-same_as:
-  name: same_as
-  inverse: null
-  symmetric: true
-  category: semantic
-  domain: null
-  range: null
-equivalent_class:
-  name: equivalent_class
-  inverse: null
-  symmetric: true
-  category: semantic
-  domain: null
-  range: null
-close_match:
-  name: close_match
-  inverse: null
-  symmetric: true
-  category: semantic
-  domain: null
-  range: null
-similar_to:
-  name: similar_to
-  inverse: null
-  symmetric: true
-  category: semantic
-  domain: null
-  range: null
-related_to:
-  name: related_to
-  inverse: null
-  symmetric: true
-  category: semantic
-  domain: null
-  range: null

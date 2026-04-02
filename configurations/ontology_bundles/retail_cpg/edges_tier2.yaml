@@ -1,121 +1,120 @@
-instance_of:
-  name: instance_of
-  inverse: type_of
-  symmetric: false
-  category: structural
-  domain: null
-  range: null
-subclass_of:
-  name: subclass_of
-  inverse: superclass_of
-  symmetric: false
-  category: structural
-  domain: null
-  range: null
-has_part:
-  name: has_part
-  inverse: part_of
-  symmetric: false
-  category: structural
-  domain: null
-  range: null
+part_of:
+  name: part_of
+  domain: Person
+  range: Organization
+  uri: ''
+  inverse: ''
 contains:
   name: contains
-  inverse: contained_in
-  symmetric: false
-  category: structural
-  domain: null
-  range: null
-member_of:
-  name: member_of
-  inverse: has_member
-  symmetric: false
-  category: structural
-  domain: null
-  range: null
-purchased_by:
-  name: purchased_by
-  inverse: purchased
-  symmetric: false
-  category: business
-  domain: Transaction
-  range: Customer
-sold_at:
-  name: sold_at
-  inverse: sells
-  symmetric: false
-  category: business
-  domain: Transaction
+  domain: Organization
   range: Store
-in_category:
-  name: in_category
-  inverse: categorizes
-  symmetric: false
-  category: business
-  domain: Product
-  range: Reference
-supplied_by:
-  name: supplied_by
-  inverse: supplies
-  symmetric: false
-  category: business
-  domain: Product
-  range: Supplier
+  uri: ''
+  inverse: contained_in
 placed_by:
   name: placed_by
-  inverse: placed
-  symmetric: false
-  category: business
   domain: Transaction
-  range: Person
-created_by:
-  name: created_by
-  inverse: created
-  symmetric: false
-  category: business
-  domain: Any
-  range: Person
-owned_by:
-  name: owned_by
-  inverse: owns
-  symmetric: false
-  category: business
-  domain: Any
-  range:
-  - Person
-  - Organization
+  range: Customer
+  uri: ''
+  inverse: placed
 references:
   name: references
+  domain: Event
+  range: Customer
+  uri: ''
   inverse: referenced_by
-  symmetric: false
-  category: business
-  domain: Any
-  range: Any
-located_at:
-  name: located_at
-  inverse: location_of
-  symmetric: false
-  category: business
-  domain: Any
-  range: Location
-derives_from:
-  name: derives_from
-  inverse: source_of
-  symmetric: false
-  category: lineage
-  domain: null
-  range: null
-same_as:
-  name: same_as
-  inverse: inverse_same_as
-  symmetric: true
-  category: semantic
-  domain: null
-  range: null
-similar_to:
-  name: similar_to
-  inverse: inverse_similar_to
-  symmetric: true
-  category: semantic
-  domain: null
-  range: null
+places:
+  name: places
+  domain: Customer
+  range: Order
+  uri: ''
+  inverse: ''
+has_return:
+  name: has_return
+  domain: Customer
+  range: Return
+  uri: ''
+  inverse: ''
+enrolled_in:
+  name: enrolled_in
+  domain: LoyaltyProgram
+  range: Customer
+  uri: ''
+  inverse: ''
+belongs_to:
+  name: belongs_to
+  domain: Product
+  range: Category
+  uri: ''
+  inverse: ''
+supplied_by:
+  name: supplied_by
+  domain: Product
+  range: Supplier
+  uri: ''
+  inverse: supplies
+shipped_via:
+  name: shipped_via
+  domain: Order
+  range: Shipment
+  uri: ''
+  inverse: ''
+purchased_at:
+  name: purchased_at
+  domain: Order
+  range: Store
+  uri: ''
+  inverse: ''
+has_inventory:
+  name: has_inventory
+  domain: Store
+  range: Inventory
+  uri: ''
+  inverse: ''
+targets:
+  name: targets
+  domain: Campaign
+  range: Customer
+  uri: ''
+  inverse: ''
+promotes:
+  name: promotes
+  domain: Campaign
+  range: Product
+  uri: ''
+  inverse: ''
+applies_to:
+  name: applies_to
+  domain: Promotion
+  range: Product
+  uri: ''
+  inverse: ''
+supplies:
+  name: supplies
+  domain: Supplier
+  range: Product
+  uri: ''
+  inverse: ''
+for_product:
+  name: for_product
+  domain: Inventory
+  range: Product
+  uri: ''
+  inverse: ''
+at_store:
+  name: at_store
+  domain: Inventory
+  range: Store
+  uri: ''
+  inverse: ''
+for_order:
+  name: for_order
+  domain: Return
+  range: Order
+  uri: ''
+  inverse: ''
+by_customer:
+  name: by_customer
+  domain: Return
+  range: Customer
+  uri: ''
+  inverse: ''

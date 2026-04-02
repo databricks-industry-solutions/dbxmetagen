@@ -1,77 +1,24 @@
-- name: instance_of
-  domain: null
-  range: null
-- name: subclass_of
-  domain: null
-  range: null
-- name: has_part
-  domain: null
-  range: null
 - name: contains
-  domain: null
-  range: null
-- name: member_of
-  domain: null
-  range: null
-- name: placed_by
-  domain: Transaction
-  range: Person
-- name: created_by
-  domain: Any
-  range: Person
-- name: owned_by
-  domain: Any
-  range:
-  - Person
-  - Organization
-- name: employs
   domain: Organization
   range: Person
-- name: references
-  domain: Any
-  range: Reference
-- name: located_at
-  domain: Any
+- name: contains_location
+  domain: Organization
   range: Location
+- name: derives_from
+  domain: Metric
+  range: Event
 - name: for_product
   domain: Transaction
   range: Product
-- name: billed_to
+- name: owns
+  domain: Person
+  range: Transaction
+- name: part_of
+  domain: Person
+  range: Organization
+- name: placed_by
   domain: Transaction
-  range:
-  - Person
-  - Organization
-- name: assigned_to
-  domain:
-  - Event
-  - Document
   range: Person
-- name: applies_to
-  domain:
-  - Document
-  - Reference
-  range: Any
-- name: derives_from
-  domain: null
-  range: null
-- name: recorded_in
-  domain: null
-  range: null
-- name: supersedes
-  domain: null
-  range: null
-- name: same_as
-  domain: null
-  range: null
-- name: equivalent_class
-  domain: null
-  range: null
-- name: close_match
-  domain: null
-  range: null
-- name: similar_to
-  domain: null
-  range: null
-- name: related_to
-  domain: null
-  range: null
+- name: references
+  domain: Product
+  range: Reference

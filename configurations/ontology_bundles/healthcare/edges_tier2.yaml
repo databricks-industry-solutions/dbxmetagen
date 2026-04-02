@@ -1,179 +1,126 @@
-instance_of:
-  name: instance_of
-  inverse: type_of
-  symmetric: false
-  category: structural
-  domain: null
-  range: null
-subclass_of:
-  name: subclass_of
-  inverse: superclass_of
-  symmetric: false
-  category: structural
-  domain: null
-  range: null
-has_part:
-  name: has_part
-  inverse: part_of
-  symmetric: false
-  category: structural
-  domain: null
-  range: null
+owns:
+  name: owns
+  domain: Person
+  range: Transaction
+  uri: ''
+  inverse: ''
+part_of:
+  name: part_of
+  domain: Person
+  range: Organization
+  uri: ''
+  inverse: ''
 contains:
   name: contains
+  domain: Organization
+  range: Person
+  uri: ''
   inverse: contained_in
-  symmetric: false
-  category: structural
-  domain: null
-  range: null
-member_of:
-  name: member_of
-  inverse: has_member
-  symmetric: false
-  category: structural
-  domain: null
-  range: null
-treated_by:
-  name: treated_by
-  inverse: treats
-  symmetric: false
-  category: business
-  domain: Patient
-  range: Provider
-treats:
-  name: treats
-  inverse: treated_by
-  symmetric: false
-  category: business
-  domain: Provider
-  range: Patient
-has_encounter:
-  name: has_encounter
-  inverse: encounter_for
-  symmetric: false
-  category: business
-  domain: Patient
-  range: Encounter
-has_condition:
-  name: has_condition
-  inverse: condition_of
-  symmetric: false
-  category: business
-  domain: Patient
-  range: Condition
-has_coverage:
-  name: has_coverage
-  inverse: covers
-  symmetric: false
-  category: business
-  domain: Patient
-  range: Coverage
-ordered_for:
-  name: ordered_for
-  inverse: has_order
-  symmetric: false
-  category: business
-  domain:
-  - Procedure
-  - Medication
-  range: Encounter
-performed_by:
-  name: performed_by
-  inverse: performs
-  symmetric: false
-  category: business
-  domain: Procedure
-  range: Provider
-prescribed_to:
-  name: prescribed_to
-  inverse: has_prescription
-  symmetric: false
-  category: business
-  domain: Medication
-  range: Patient
-diagnosed_in:
-  name: diagnosed_in
-  inverse: has_diagnosis
-  symmetric: false
-  category: business
-  domain: Condition
-  range: Encounter
-for_encounter:
-  name: for_encounter
-  inverse: encounter_claim
-  symmetric: false
-  category: business
-  domain: Claim
-  range: Encounter
-covered_by:
-  name: covered_by
-  inverse: covers_claim
-  symmetric: false
-  category: business
-  domain: Claim
-  range: Coverage
-located_at:
-  name: located_at
-  inverse: location_of
-  symmetric: false
-  category: business
-  domain: Any
+contains_location:
+  name: contains_location
+  domain: Organization
   range: Location
+  uri: ''
+  inverse: ''
 references:
   name: references
+  domain: Product
+  range: Reference
+  uri: ''
   inverse: referenced_by
-  symmetric: false
-  category: business
-  domain: Any
-  range: Any
-placed_by:
-  name: placed_by
-  inverse: placed
-  symmetric: false
-  category: business
-  domain: Transaction
-  range: Person
-created_by:
-  name: created_by
-  inverse: created
-  symmetric: false
-  category: business
-  domain: Any
-  range: Person
-owned_by:
-  name: owned_by
-  inverse: owns
-  symmetric: false
-  category: business
-  domain: Any
-  range:
-  - Person
-  - Organization
 derives_from:
   name: derives_from
+  domain: Metric
+  range: Event
+  uri: ''
   inverse: source_of
-  symmetric: false
-  category: lineage
-  domain: null
-  range: null
+treated_by:
+  name: treated_by
+  domain: Patient
+  range: Provider
+  uri: ''
+  inverse: treats
+has_encounter:
+  name: has_encounter
+  domain: Patient
+  range: Encounter
+  uri: ''
+  inverse: encounter_for
+has_condition:
+  name: has_condition
+  domain: Patient
+  range: Condition
+  uri: ''
+  inverse: condition_of
+has_coverage:
+  name: has_coverage
+  domain: Patient
+  range: Coverage
+  uri: ''
+  inverse: covers
+treats:
+  name: treats
+  domain: Provider
+  range: Patient
+  uri: ''
+  inverse: treated_by
+ordered_for:
+  name: ordered_for
+  domain: Provider
+  range: Encounter
+  uri: ''
+  inverse: has_order
+has_order:
+  name: has_order
+  domain: Encounter
+  range: Procedure
+  uri: ''
+  inverse: ''
+located_at:
+  name: located_at
+  domain: Encounter
+  range: Location
+  uri: ''
+  inverse: location_of
+diagnosed_in:
+  name: diagnosed_in
+  domain: Condition
+  range: Encounter
+  uri: ''
+  inverse: has_diagnosis
+performed_by:
+  name: performed_by
+  domain: Procedure
+  range: Provider
+  uri: ''
+  inverse: performs
+prescribed_to:
+  name: prescribed_to
+  domain: Medication
+  range: Patient
+  uri: ''
+  inverse: has_prescription
 recorded_in:
   name: recorded_in
+  domain: Observation
+  range: Encounter
+  uri: ''
   inverse: records
-  symmetric: false
-  category: lineage
-  domain: null
-  range: null
-same_as:
-  name: same_as
-  inverse: null
-  symmetric: true
-  category: semantic
-  domain: null
-  range: null
-similar_to:
-  name: similar_to
-  inverse: null
-  symmetric: true
-  category: semantic
-  domain: null
-  range: null
+for_encounter:
+  name: for_encounter
+  domain: Claim
+  range: Encounter
+  uri: ''
+  inverse: encounter_claim
+covered_by:
+  name: covered_by
+  domain: Claim
+  range: Coverage
+  uri: ''
+  inverse: covers_claim
+provided_by:
+  name: provided_by
+  domain: Coverage
+  range: Organization
+  uri: ''
+  inverse: ''

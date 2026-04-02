@@ -1,17 +1,17 @@
+- name: Address
+  description: Street addresses, mailing addresses, or physical site addresses
+- name: AdminRegion
+  description: Administrative or political geographic regions — countries, states,
+    provinces, counties, districts, municipalities, or n
+- name: GeoCoordinate
+  description: Latitude/longitude pairs, GPS coordinates, or geospatial point data
 - name: Geographic
   description: Any column or table representing a physical location, address component,
     or geographic area
-- name: Address
-  description: Street addresses, mailing addresses, or physical site addresses
-- name: GeoCoordinate
-  description: Latitude/longitude pairs, GPS coordinates, or geospatial point data
-- name: AdminRegion
-  description: "Administrative or political geographic regions \u2014 countries, states,\
-    \ provinces, counties, districts, municipalities, or named areas"
+- name: NonGeographic
+  description: Columns with location-like names that do NOT represent physical geography
+    (file paths, URLs, memory addresses)
 - name: PostalCode
   description: Postal codes, ZIP codes, or mail routing codes
 - name: Timezone
   description: Timezone identifiers, UTC offsets, or time zone region names
-- name: NonGeographic
-  description: Columns with location-like names that do NOT represent physical geography
-    (file paths, URLs, memory addresses)

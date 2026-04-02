@@ -30,6 +30,7 @@ Person:
     part_of:
       target: Organization
       cardinality: many-to-one
+  properties: {}
 Organization:
   description: Companies, departments, facilities, or business units
   source_ontology: schema.org
@@ -64,6 +65,7 @@ Organization:
     part_of:
       target: Organization
       cardinality: many-to-one
+  properties: {}
 Product:
   description: Goods, services, SKUs, or catalog items
   source_ontology: schema.org
@@ -74,6 +76,7 @@ Product:
   - sku
   - catalog
   - offering
+  synonyms: []
   typical_attributes:
   - id
   - name
@@ -81,10 +84,12 @@ Product:
   - price
   - category
   - status
+  business_questions: []
   relationships:
     references:
       target: Reference
       cardinality: many-to-one
+  properties: {}
 Transaction:
   description: Orders, purchases, payments, invoices, or financial events
   source_ontology: schema.org
@@ -95,6 +100,7 @@ Transaction:
   - payment
   - invoice
   - purchase
+  synonyms: []
   typical_attributes:
   - id
   - customer_id
@@ -102,10 +108,12 @@ Transaction:
   - date
   - status
   - currency
+  business_questions: []
   relationships:
     references:
       target: Person
       cardinality: many-to-one
+  properties: {}
 Location:
   description: Addresses, sites, regions, facilities, or geographies
   source_ontology: schema.org
@@ -116,6 +124,7 @@ Location:
   - site
   - region
   - facility
+  synonyms: []
   typical_attributes:
   - id
   - name
@@ -124,10 +133,12 @@ Location:
   - state
   - country
   - zip_code
+  business_questions: []
   relationships:
     part_of:
       target: Organization
       cardinality: many-to-one
+  properties: {}
 Event:
   description: Activities, logs, sessions, audits, or system events
   source_ontology: schema.org
@@ -138,16 +149,19 @@ Event:
   - log
   - audit
   - session
+  synonyms: []
   typical_attributes:
   - id
   - type
   - timestamp
   - user_id
   - details
+  business_questions: []
   relationships:
     references:
       target: Person
       cardinality: many-to-one
+  properties: {}
 Reference:
   description: Lookup tables, codes, categories, dimensions, or configuration
   source_ontology: schema.org
@@ -158,13 +172,16 @@ Reference:
   - code
   - category
   - dim_
+  synonyms: []
   typical_attributes:
   - id
   - code
   - name
   - description
   - active
+  business_questions: []
   relationships: {}
+  properties: {}
 Metric:
   description: KPIs, aggregates, facts, summaries, or analytic measures
   source_ontology: schema.org
@@ -175,16 +192,19 @@ Metric:
   - aggregate
   - fact_
   - summary
+  synonyms: []
   typical_attributes:
   - id
   - name
   - value
   - period
   - dimension
+  business_questions: []
   relationships:
     derives_from:
       target: Event
       cardinality: many-to-one
+  properties: {}
 Document:
   description: Unstructured content, notes, files, or text records
   source_ontology: schema.org
@@ -195,6 +215,7 @@ Document:
   - file
   - content
   - text
+  synonyms: []
   typical_attributes:
   - id
   - title
@@ -202,13 +223,14 @@ Document:
   - author
   - created_date
   - type
+  business_questions: []
   relationships:
     references:
       target: Person
       cardinality: many-to-one
+  properties: {}
 Patient:
   description: Individuals receiving healthcare services (FHIR Patient)
-  parent: Person
   source_ontology: FHIR_R4
   uri: http://hl7.org/fhir/StructureDefinition/Patient
   keywords:
@@ -240,15 +262,12 @@ Patient:
     has_encounter:
       target: Encounter
       cardinality: one-to-many
-      join_path: patient.patient_id = encounter.patient_id
     has_condition:
       target: Condition
       cardinality: one-to-many
-      join_path: patient.patient_id = condition.patient_id
     has_coverage:
       target: Coverage
       cardinality: one-to-many
-      join_path: patient.patient_id = coverage.member_id
   properties:
     identifier:
       kind: data_property
@@ -300,7 +319,6 @@ Patient:
       - pcp_id
 Provider:
   description: Practitioners, clinicians, or care team members (FHIR Practitioner)
-  parent: Person
   source_ontology: FHIR_R4
   uri: http://hl7.org/fhir/StructureDefinition/Practitioner
   keywords:
@@ -334,9 +352,9 @@ Provider:
     part_of:
       target: Organization
       cardinality: many-to-one
+  properties: {}
 Encounter:
   description: Visits, admissions, or episodes of care (FHIR Encounter)
-  parent: Event
   source_ontology: FHIR_R4
   uri: http://hl7.org/fhir/StructureDefinition/Encounter
   keywords:
@@ -366,19 +384,15 @@ Encounter:
     references:
       target: Patient
       cardinality: many-to-one
-      join_path: encounter.patient_id = patient.patient_id
     has_order:
       target: Procedure
       cardinality: one-to-many
-      join_path: encounter.encounter_id = procedure.encounter_id
     contains:
       target: Observation
       cardinality: one-to-many
-      join_path: encounter.encounter_id = observation.encounter_id
     located_at:
       target: Location
       cardinality: many-to-one
-      join_path: encounter.location_id = location.location_id
   properties:
     identifier:
       kind: data_property
@@ -449,6 +463,7 @@ Condition:
   - icd
   - disease
   - problem
+  synonyms: []
   typical_attributes:
   - id
   - code
@@ -457,6 +472,7 @@ Condition:
   - encounter_id
   - date
   - status
+  business_questions: []
   relationships:
     references:
       target: Patient
@@ -464,6 +480,7 @@ Condition:
     diagnosed_in:
       target: Encounter
       cardinality: many-to-one
+  properties: {}
 Procedure:
   description: Medical procedures, surgeries, or interventions (FHIR Procedure)
   source_ontology: FHIR_R4
@@ -474,6 +491,7 @@ Procedure:
   - cpt
   - intervention
   - operation
+  synonyms: []
   typical_attributes:
   - id
   - code
@@ -482,6 +500,7 @@ Procedure:
   - provider_id
   - encounter_id
   - status
+  business_questions: []
   relationships:
     ordered_for:
       target: Encounter
@@ -492,9 +511,9 @@ Procedure:
     references:
       target: Patient
       cardinality: many-to-one
+  properties: {}
 Medication:
   description: Drugs, prescriptions, or medication orders (FHIR MedicationRequest)
-  parent: Product
   source_ontology: FHIR_R4
   uri: http://hl7.org/fhir/StructureDefinition/Medication
   keywords:
@@ -504,6 +523,7 @@ Medication:
   - pharmacy
   - ndc
   - rxnorm
+  synonyms: []
   typical_attributes:
   - id
   - name
@@ -511,6 +531,7 @@ Medication:
   - dose
   - frequency
   - route
+  business_questions: []
   relationships:
     ordered_for:
       target: Encounter
@@ -518,9 +539,10 @@ Medication:
     prescribed_to:
       target: Patient
       cardinality: many-to-one
+  properties: {}
 Observation:
-  description: Lab results, vitals, or clinical measurements (FHIR Observation / OMOP MEASUREMENT)
-  parent: Event
+  description: Lab results, vitals, or clinical measurements (FHIR Observation / OMOP
+    MEASUREMENT)
   source_ontology: FHIR_R4
   uri: http://hl7.org/fhir/StructureDefinition/Observation
   keywords:
@@ -530,6 +552,7 @@ Observation:
   - vital
   - specimen
   - measurement
+  synonyms: []
   typical_attributes:
   - id
   - test_code
@@ -537,6 +560,7 @@ Observation:
   - unit
   - reference_range
   - date
+  business_questions: []
   relationships:
     references:
       target: Patient
@@ -544,9 +568,9 @@ Observation:
     recorded_in:
       target: Encounter
       cardinality: many-to-one
+  properties: {}
 Claim:
   description: Insurance claims or billing submissions (FHIR Claim)
-  parent: Transaction
   source_ontology: FHIR_R4
   uri: http://hl7.org/fhir/StructureDefinition/Claim
   keywords:
@@ -555,6 +579,7 @@ Claim:
   - adjudication
   - remittance
   - eob
+  synonyms: []
   typical_attributes:
   - id
   - patient_id
@@ -562,6 +587,7 @@ Claim:
   - service_date
   - status
   - payer_id
+  business_questions: []
   relationships:
     references:
       target: Patient
@@ -641,6 +667,7 @@ Coverage:
   - benefit
   - plan
   - enrollment
+  synonyms: []
   typical_attributes:
   - id
   - member_id
@@ -648,6 +675,7 @@ Coverage:
   - plan_name
   - start_date
   - end_date
+  business_questions: []
   relationships:
     references:
       target: Person
@@ -655,9 +683,9 @@ Coverage:
     provided_by:
       target: Organization
       cardinality: many-to-one
+  properties: {}
 DiagnosticReport:
   description: Lab reports, pathology reports, or imaging study results (FHIR DiagnosticReport)
-  parent: Document
   source_ontology: FHIR_R4
   uri: http://hl7.org/fhir/StructureDefinition/DiagnosticReport
   keywords:
@@ -666,6 +694,7 @@ DiagnosticReport:
   - pathology_report
   - report
   - study_result
+  synonyms: []
   typical_attributes:
   - id
   - patient_id
@@ -674,6 +703,7 @@ DiagnosticReport:
   - issued_date
   - category
   - code
+  business_questions: []
   relationships:
     references:
       target: Patient
@@ -684,9 +714,9 @@ DiagnosticReport:
     contains:
       target: Observation
       cardinality: one-to-many
+  properties: {}
 Immunization:
   description: Vaccination events and immunization records (FHIR Immunization)
-  parent: Event
   source_ontology: FHIR_R4
   uri: http://hl7.org/fhir/StructureDefinition/Immunization
   keywords:
@@ -695,6 +725,7 @@ Immunization:
   - vaccine
   - immunization_record
   - shot
+  synonyms: []
   typical_attributes:
   - id
   - patient_id
@@ -703,10 +734,12 @@ Immunization:
   - dose_number
   - status
   - site
+  business_questions: []
   relationships:
     references:
       target: Patient
       cardinality: many-to-one
+  properties: {}
 AllergyIntolerance:
   description: Allergy and intolerance records (FHIR AllergyIntolerance)
   source_ontology: FHIR_R4
@@ -717,6 +750,7 @@ AllergyIntolerance:
   - allergen
   - adverse_reaction
   - sensitivity
+  synonyms: []
   typical_attributes:
   - id
   - patient_id
@@ -725,13 +759,14 @@ AllergyIntolerance:
   - category
   - criticality
   - onset_date
+  business_questions: []
   relationships:
     references:
       target: Patient
       cardinality: many-to-one
+  properties: {}
 CarePlan:
   description: Care plans, treatment protocols, and goals (FHIR CarePlan)
-  parent: Document
   source_ontology: FHIR_R4
   uri: http://hl7.org/fhir/StructureDefinition/CarePlan
   keywords:
@@ -740,6 +775,7 @@ CarePlan:
   - protocol
   - goal
   - care_team
+  synonyms: []
   typical_attributes:
   - id
   - patient_id
@@ -748,6 +784,7 @@ CarePlan:
   - period_start
   - period_end
   - category
+  business_questions: []
   relationships:
     references:
       target: Patient
@@ -755,3 +792,4 @@ CarePlan:
     contains:
       target: Procedure
       cardinality: one-to-many
+  properties: {}

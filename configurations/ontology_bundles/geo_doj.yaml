@@ -66,6 +66,8 @@ ontology:
     definitions:
       Geographic:
         description: "Any column or table representing a physical location, address component, or geographic area"
+        uri: "urn:dbxmetagen:geo_doj:Geographic"
+        source_ontology: "custom"
         keywords:
           - "address"
           - "addr"
@@ -102,6 +104,8 @@ ontology:
 
       Address:
         description: "Street addresses, mailing addresses, or physical site addresses"
+        uri: "urn:dbxmetagen:geo_doj:Address"
+        source_ontology: "custom"
         parent: Geographic
         keywords:
           - "address"
@@ -135,6 +139,8 @@ ontology:
 
       GeoCoordinate:
         description: "Latitude/longitude pairs, GPS coordinates, or geospatial point data"
+        uri: "https://schema.org/GeoCoordinates"
+        source_ontology: "schema.org"
         parent: Geographic
         keywords:
           - "latitude"
@@ -170,6 +176,8 @@ ontology:
 
       AdminRegion:
         description: "Administrative or political geographic regions — countries, states, provinces, counties, districts, municipalities, or named areas"
+        uri: "https://schema.org/AdministrativeArea"
+        source_ontology: "schema.org"
         parent: Geographic
         keywords:
           - "country"
@@ -226,6 +234,8 @@ ontology:
 
       PostalCode:
         description: "Postal codes, ZIP codes, or mail routing codes"
+        uri: "urn:dbxmetagen:geo_doj:PostalCode"
+        source_ontology: "custom"
         parent: Geographic
         keywords:
           - "zip"
@@ -253,6 +263,8 @@ ontology:
 
       Timezone:
         description: "Timezone identifiers, UTC offsets, or time zone region names"
+        uri: "urn:dbxmetagen:geo_doj:Timezone"
+        source_ontology: "custom"
         parent: Geographic
         keywords:
           - "timezone"
@@ -271,6 +283,8 @@ ontology:
 
       NonGeographic:
         description: "Columns with location-like names that do NOT represent physical geography (file paths, URLs, memory addresses)"
+        uri: "urn:dbxmetagen:geo_doj:NonGeographic"
+        source_ontology: "custom"
         keywords:
           - "memory_location"
           - "file_location"

@@ -1,26 +1,20 @@
-- name: instance_of
-  domain: null
-  range: null
-- name: subclass_of
-  domain: null
-  range: null
-- name: has_part
-  domain: null
-  range: null
 - name: contains
-  domain: null
-  range: null
-- name: member_of
-  domain: null
-  range: null
-- name: treated_by
-  domain: Patient
-  range: Provider
-- name: treats
-  domain: Provider
-  range: Patient
-- name: has_encounter
-  domain: Patient
+  domain: Organization
+  range: Person
+- name: contains_location
+  domain: Organization
+  range: Location
+- name: covered_by
+  domain: Claim
+  range: Coverage
+- name: derives_from
+  domain: Metric
+  range: Event
+- name: diagnosed_in
+  domain: Condition
+  range: Encounter
+- name: for_encounter
+  domain: Claim
   range: Encounter
 - name: has_condition
   domain: Patient
@@ -28,52 +22,42 @@
 - name: has_coverage
   domain: Patient
   range: Coverage
-- name: ordered_for
-  domain:
-  - Procedure
-  - Medication
+- name: has_encounter
+  domain: Patient
   range: Encounter
+- name: has_order
+  domain: Encounter
+  range: Procedure
+- name: located_at
+  domain: Encounter
+  range: Location
+- name: ordered_for
+  domain: Provider
+  range: Encounter
+- name: owns
+  domain: Person
+  range: Transaction
+- name: part_of
+  domain: Person
+  range: Organization
 - name: performed_by
   domain: Procedure
   range: Provider
 - name: prescribed_to
   domain: Medication
   range: Patient
-- name: diagnosed_in
-  domain: Condition
-  range: Encounter
-- name: for_encounter
-  domain: Claim
-  range: Encounter
-- name: covered_by
-  domain: Claim
-  range: Coverage
-- name: located_at
-  domain: Any
-  range: Location
-- name: references
-  domain: Any
-  range: Any
-- name: placed_by
-  domain: Transaction
-  range: Person
-- name: created_by
-  domain: Any
-  range: Person
-- name: owned_by
-  domain: Any
-  range:
-  - Person
-  - Organization
-- name: derives_from
-  domain: null
-  range: null
+- name: provided_by
+  domain: Coverage
+  range: Organization
 - name: recorded_in
-  domain: null
-  range: null
-- name: same_as
-  domain: null
-  range: null
-- name: similar_to
-  domain: null
-  range: null
+  domain: Observation
+  range: Encounter
+- name: references
+  domain: Product
+  range: Reference
+- name: treated_by
+  domain: Patient
+  range: Provider
+- name: treats
+  domain: Provider
+  range: Patient

@@ -56,7 +56,6 @@ Document:
   - references
 Patient:
   description: Individuals receiving healthcare services (FHIR Patient)
-  parent: Person
   source_ontology: FHIR_R4
   uri: http://hl7.org/fhir/StructureDefinition/Patient
   edges:
@@ -66,7 +65,6 @@ Patient:
   - has_coverage
 Provider:
   description: Practitioners, clinicians, or care team members (FHIR Practitioner)
-  parent: Person
   source_ontology: FHIR_R4
   uri: http://hl7.org/fhir/StructureDefinition/Practitioner
   edges:
@@ -75,7 +73,6 @@ Provider:
   - part_of
 Encounter:
   description: Visits, admissions, or episodes of care (FHIR Encounter)
-  parent: Event
   source_ontology: FHIR_R4
   uri: http://hl7.org/fhir/StructureDefinition/Encounter
   edges:
@@ -100,15 +97,14 @@ Procedure:
   - references
 Medication:
   description: Drugs, prescriptions, or medication orders (FHIR MedicationRequest)
-  parent: Product
   source_ontology: FHIR_R4
   uri: http://hl7.org/fhir/StructureDefinition/Medication
   edges:
   - ordered_for
   - prescribed_to
 Observation:
-  description: Lab results, vitals, or clinical measurements (FHIR Observation / OMOP MEASUREMENT)
-  parent: Event
+  description: Lab results, vitals, or clinical measurements (FHIR Observation / OMOP
+    MEASUREMENT)
   source_ontology: FHIR_R4
   uri: http://hl7.org/fhir/StructureDefinition/Observation
   edges:
@@ -116,7 +112,6 @@ Observation:
   - recorded_in
 Claim:
   description: Insurance claims or billing submissions (FHIR Claim)
-  parent: Transaction
   source_ontology: FHIR_R4
   uri: http://hl7.org/fhir/StructureDefinition/Claim
   edges:
@@ -132,7 +127,6 @@ Coverage:
   - provided_by
 DiagnosticReport:
   description: Lab reports, pathology reports, or imaging study results (FHIR DiagnosticReport)
-  parent: Document
   source_ontology: FHIR_R4
   uri: http://hl7.org/fhir/StructureDefinition/DiagnosticReport
   edges:
@@ -141,7 +135,6 @@ DiagnosticReport:
   - contains
 Immunization:
   description: Vaccination events and immunization records (FHIR Immunization)
-  parent: Event
   source_ontology: FHIR_R4
   uri: http://hl7.org/fhir/StructureDefinition/Immunization
   edges:
@@ -154,7 +147,6 @@ AllergyIntolerance:
   - references
 CarePlan:
   description: Care plans, treatment protocols, and goals (FHIR CarePlan)
-  parent: Document
   source_ontology: FHIR_R4
   uri: http://hl7.org/fhir/StructureDefinition/CarePlan
   edges:

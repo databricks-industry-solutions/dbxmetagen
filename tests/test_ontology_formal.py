@@ -20,10 +20,14 @@ class TestOntologyIndexLoader(unittest.TestCase):
         self.tmpdir = tempfile.mkdtemp()
         # Write tier files
         self.t1 = [{"name": "Patient", "description": "A patient"}, {"name": "Encounter", "description": "A visit"}]
-        self.t2 = {"Patient": {"description": "A patient", "source": "FHIR R4", "uri": "http://hl7.org/fhir/Patient", "parent": None, "edges": ["has_encounter -> Encounter"]},
-                    "Encounter": {"description": "A visit", "source": "FHIR R4", "uri": "http://hl7.org/fhir/Encounter", "parent": None, "edges": []}}
-        self.t3 = {"Patient": {"description": "A patient", "source": "FHIR R4", "uri": "http://hl7.org/fhir/Patient", "parent": None, "outgoing_edges": [{"name": "has_encounter", "range": "Encounter"}]},
-                    "Encounter": {"description": "A visit", "source": "FHIR R4", "uri": "http://hl7.org/fhir/Encounter", "parent": None, "outgoing_edges": []}}
+        self.t2 = {"Patient": {"description": "A patient", "source_ontology": "FHIR R4", "uri": "http://hl7.org/fhir/Patient", "edges": ["has_encounter"]},
+                    "Encounter": {"description": "A visit", "source_ontology": "FHIR R4", "uri": "http://hl7.org/fhir/Encounter", "edges": []}}
+        self.t3 = {"Patient": {"description": "A patient", "source_ontology": "FHIR R4", "uri": "http://hl7.org/fhir/Patient",
+                                "keywords": ["patient"], "synonyms": ["person"], "typical_attributes": ["id", "name"],
+                                "business_questions": ["How many patients?"], "relationships": {"has_encounter": {"target": "Encounter", "cardinality": "one-to-many"}}, "properties": {}},
+                    "Encounter": {"description": "A visit", "source_ontology": "FHIR R4", "uri": "http://hl7.org/fhir/Encounter",
+                                  "keywords": ["visit"], "synonyms": ["appointment"], "typical_attributes": ["id", "date"],
+                                  "business_questions": ["How many encounters?"], "relationships": {}, "properties": {}}}
         self.uris = {"Patient": "http://hl7.org/fhir/Patient", "Encounter": "http://hl7.org/fhir/Encounter"}
 
         for fname, data in [("entities_tier1.yaml", self.t1), ("entities_tier2.yaml", self.t2),
@@ -95,9 +99,12 @@ class TestOntologyPredictor(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
         t1 = [{"name": "Patient", "description": "A patient"}, {"name": "Claim", "description": "Insurance claim"}]
-        t2 = {"Patient": {"description": "A patient", "source": "FHIR R4", "uri": "http://hl7.org/fhir/Patient", "parent": None, "edges": []},
-               "Claim": {"description": "Insurance claim", "source": "FHIR R4", "uri": "http://hl7.org/fhir/Claim", "parent": None, "edges": []}}
-        t3 = t2
+        t2 = {"Patient": {"description": "A patient", "source_ontology": "FHIR R4", "uri": "http://hl7.org/fhir/Patient", "edges": []},
+               "Claim": {"description": "Insurance claim", "source_ontology": "FHIR R4", "uri": "http://hl7.org/fhir/Claim", "edges": []}}
+        t3 = {"Patient": {"description": "A patient", "source_ontology": "FHIR R4", "uri": "http://hl7.org/fhir/Patient",
+                           "keywords": [], "synonyms": [], "typical_attributes": [], "business_questions": [], "relationships": {}, "properties": {}},
+               "Claim": {"description": "Insurance claim", "source_ontology": "FHIR R4", "uri": "http://hl7.org/fhir/Claim",
+                          "keywords": [], "synonyms": [], "typical_attributes": [], "business_questions": [], "relationships": {}, "properties": {}}}
         uris = {"Patient": "http://hl7.org/fhir/Patient", "Claim": "http://hl7.org/fhir/Claim"}
         for fname, data in [("entities_tier1.yaml", t1), ("entities_tier2.yaml", t2),
                             ("entities_tier3.yaml", t3), ("equivalent_class_uris.yaml", uris)]:
@@ -418,6 +425,192 @@ class TestOntologyLoaderV2(unittest.TestCase):
         self.assertIn("has_encounter", catalog)
         self.assertEqual(catalog["has_encounter"].uri, "http://hl7.org/fhir/Patient.encounter")
         self.assertEqual(catalog["has_encounter"].owl_type, "ObjectProperty")
+
+
+class TestBuildTiersSchema(unittest.TestCase):
+    """Validate that build_tiers() produces the correct schema for the predictor."""
+
+    def _make_entities(self):
+        return {
+            "Patient": {
+                "description": "A patient record",
+                "source": "FHIR R4",
+                "uri": "http://hl7.org/fhir/Patient",
+                "parent": "Person",
+                "outgoing_edges": [
+                    {"name": "has_encounter", "uri": "http://hl7.org/fhir/Patient.encounter", "range": "Encounter", "inverse": "subject"},
+                ],
+                "keywords": ["patient", "member"],
+                "synonyms": ["person"],
+                "typical_attributes": ["id", "name", "dob"],
+                "business_questions": ["How many patients?"],
+                "relationships": {"has_encounter": {"target": "Encounter", "cardinality": "one-to-many"}},
+                "properties": {"status": "active|inactive"},
+            },
+            "Encounter": {
+                "description": "A visit",
+                "source": "FHIR R4",
+                "uri": "http://hl7.org/fhir/Encounter",
+                "parent": None,
+                "outgoing_edges": [],
+                "keywords": ["visit"],
+                "synonyms": [],
+                "typical_attributes": ["id", "date"],
+                "business_questions": [],
+                "relationships": {},
+                "properties": {},
+            },
+        }
+
+    def test_tier1_is_list_of_name_description(self):
+        from scripts.build_ontology_indexes import build_tiers
+        outdir = Path(tempfile.mkdtemp())
+        build_tiers(self._make_entities(), outdir)
+        t1 = yaml.safe_load((outdir / "entities_tier1.yaml").read_text())
+        self.assertIsInstance(t1, list)
+        for entry in t1:
+            self.assertIn("name", entry)
+            self.assertIn("description", entry)
+            self.assertNotIn("source", entry)
+
+    def test_tier2_has_source_ontology_not_source(self):
+        from scripts.build_ontology_indexes import build_tiers
+        outdir = Path(tempfile.mkdtemp())
+        build_tiers(self._make_entities(), outdir)
+        t2 = yaml.safe_load((outdir / "entities_tier2.yaml").read_text())
+        for name, profile in t2.items():
+            self.assertIn("source_ontology", profile, f"{name} missing source_ontology")
+            self.assertNotIn("source", profile, f"{name} has deprecated 'source' key")
+            self.assertNotIn("parent", profile, f"{name} has deprecated 'parent' key")
+            self.assertIsInstance(profile["edges"], list)
+            for e in profile["edges"]:
+                self.assertIsInstance(e, str, f"Edge should be a short name string, got {type(e)}")
+                self.assertNotIn("->", e, "Edge should be short name, not 'name -> range' format")
+
+    def test_tier3_has_rich_fields_not_outgoing_edges(self):
+        from scripts.build_ontology_indexes import build_tiers
+        outdir = Path(tempfile.mkdtemp())
+        build_tiers(self._make_entities(), outdir)
+        t3 = yaml.safe_load((outdir / "entities_tier3.yaml").read_text())
+        for name, profile in t3.items():
+            self.assertIn("source_ontology", profile)
+            self.assertNotIn("source", profile)
+            self.assertNotIn("outgoing_edges", profile)
+            self.assertNotIn("parent", profile)
+            for field in ("keywords", "synonyms", "typical_attributes", "business_questions"):
+                self.assertIn(field, profile, f"{name} missing {field}")
+                self.assertIsInstance(profile[field], list)
+            self.assertIn("relationships", profile)
+            self.assertIsInstance(profile["relationships"], dict)
+            self.assertIn("properties", profile)
+
+    def test_tier3_patient_has_relationships(self):
+        from scripts.build_ontology_indexes import build_tiers
+        outdir = Path(tempfile.mkdtemp())
+        build_tiers(self._make_entities(), outdir)
+        t3 = yaml.safe_load((outdir / "entities_tier3.yaml").read_text())
+        rels = t3["Patient"]["relationships"]
+        self.assertIn("has_encounter", rels)
+        self.assertEqual(rels["has_encounter"]["target"], "Encounter")
+
+    def test_equivalent_class_uris(self):
+        from scripts.build_ontology_indexes import build_tiers
+        outdir = Path(tempfile.mkdtemp())
+        build_tiers(self._make_entities(), outdir)
+        uris = yaml.safe_load((outdir / "equivalent_class_uris.yaml").read_text())
+        self.assertEqual(uris["Patient"], "http://hl7.org/fhir/Patient")
+        self.assertEqual(uris["Encounter"], "http://hl7.org/fhir/Encounter")
+
+
+class TestEntitiesFromBundle(unittest.TestCase):
+    """Validate that _entities_from_bundle preserves rich fields."""
+
+    def test_preserves_keywords_and_relationships(self):
+        from scripts.build_ontology_indexes import _entities_from_bundle
+        bundle = {
+            "ontology": {
+                "entities": {
+                    "definitions": {
+                        "Account": {
+                            "description": "A financial account",
+                            "uri": "https://schema.org/BankAccount",
+                            "source_ontology": "schema.org",
+                            "keywords": ["account", "savings"],
+                            "synonyms": ["deposit account"],
+                            "typical_attributes": ["id", "balance"],
+                            "business_questions": ["Average balance?"],
+                            "properties": {"status": "open|closed"},
+                            "relationships": {
+                                "owned_by": {"target": "Person", "cardinality": "many-to-one"},
+                            },
+                        }
+                    }
+                },
+                "edge_catalog": {},
+            }
+        }
+        tmpfile = Path(tempfile.mkdtemp()) / "test_bundle.yaml"
+        tmpfile.write_text(yaml.dump(bundle), encoding="utf-8")
+        entities = _entities_from_bundle(tmpfile)
+        acct = entities["Account"]
+        self.assertEqual(acct["keywords"], ["account", "savings"])
+        self.assertEqual(acct["synonyms"], ["deposit account"])
+        self.assertEqual(acct["typical_attributes"], ["id", "balance"])
+        self.assertEqual(acct["business_questions"], ["Average balance?"])
+        self.assertEqual(acct["properties"], {"status": "open|closed"})
+        self.assertIn("owned_by", acct["relationships"])
+        self.assertEqual(acct["relationships"]["owned_by"]["target"], "Person")
+
+
+class TestMergeBundleFields(unittest.TestCase):
+    """Validate hybrid merge mode."""
+
+    def test_merge_enriches_auto_extracted(self):
+        from scripts.build_ontology_indexes import _merge_bundle_fields
+        auto = {
+            "Patient": {
+                "description": "A patient from OWL",
+                "source": "FHIR R4",
+                "uri": "http://hl7.org/fhir/Patient",
+                "outgoing_edges": [],
+                "keywords": [],
+                "synonyms": [],
+                "typical_attributes": [],
+                "business_questions": [],
+                "relationships": {},
+                "properties": {},
+            }
+        }
+        bundle = {
+            "ontology": {
+                "entities": {
+                    "definitions": {
+                        "Patient": {
+                            "description": "A patient",
+                            "uri": "http://hl7.org/fhir/Patient",
+                            "source_ontology": "FHIR R4",
+                            "keywords": ["patient", "member"],
+                            "synonyms": ["person"],
+                            "typical_attributes": ["id", "name"],
+                            "business_questions": ["How many?"],
+                            "properties": {"status": "active"},
+                            "relationships": {
+                                "treated_by": {"target": "Practitioner", "cardinality": "many-to-many"},
+                            },
+                        }
+                    }
+                },
+                "edge_catalog": {},
+            }
+        }
+        tmpfile = Path(tempfile.mkdtemp()) / "merge.yaml"
+        tmpfile.write_text(yaml.dump(bundle), encoding="utf-8")
+        merged = _merge_bundle_fields(auto, tmpfile)
+        p = merged["Patient"]
+        self.assertEqual(p["keywords"], ["patient", "member"])
+        self.assertEqual(p["synonyms"], ["person"])
+        self.assertIn("treated_by", p["relationships"])
+        self.assertEqual(p["uri"], "http://hl7.org/fhir/Patient")
 
 
 if __name__ == "__main__":

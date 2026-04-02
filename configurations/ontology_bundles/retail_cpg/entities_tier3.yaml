@@ -214,7 +214,57 @@ Customer:
     has_return:
       target: Return
       cardinality: one-to-many
-  properties: {}
+  properties:
+    identifier:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+      - customer_id
+      - cust_id
+    name:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - name
+      - customer_name
+      - full_name
+    email:
+      kind: data_property
+      role: pii
+      typical_attributes:
+      - email
+      - email_address
+    loyalty_tier:
+      kind: data_property
+      role: dimension
+      typical_attributes:
+      - loyalty_tier
+      - tier
+      - segment
+      - membership_level
+    lifetime_value:
+      kind: data_property
+      role: measure
+      typical_attributes:
+      - lifetime_value
+      - ltv
+      - clv
+      - total_spend
+    segment:
+      kind: data_property
+      role: dimension
+      typical_attributes:
+      - segment
+      - customer_segment
+      - rfm_segment
+    first_purchase_date:
+      kind: data_property
+      role: temporal
+      typical_attributes:
+      - first_purchase_date
+      - first_order_date
+      - acquisition_date
 LoyaltyProgram:
   description: Loyalty programs, rewards programs, or membership tiers
   source_ontology: schema.org
@@ -239,7 +289,42 @@ LoyaltyProgram:
     enrolled_in:
       target: Customer
       cardinality: many-to-many
-  properties: {}
+  properties:
+    identifier:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+      - program_id
+      - loyalty_program_id
+    name:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - name
+      - program_name
+      - loyalty_name
+    type:
+      kind: data_property
+      role: dimension
+      typical_attributes:
+      - type
+      - program_type
+      - reward_type
+    points_earn_rate:
+      kind: data_property
+      role: measure
+      typical_attributes:
+      - points_earn_rate
+      - earn_rate
+      - points_per_dollar
+    redemption_rate:
+      kind: data_property
+      role: measure
+      typical_attributes:
+      - redemption_rate
+      - point_value
+      - cents_per_point
 Product:
   description: Retail products, SKUs, items, or merchandise
   source_ontology: schema.org
@@ -306,7 +391,68 @@ Order:
     purchased_at:
       target: Store
       cardinality: many-to-one
-  properties: {}
+  properties:
+    identifier:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+      - order_id
+      - order_number
+    customer:
+      kind: object_property
+      role: object_property
+      edge: purchased_by
+      target_entity: Customer
+      typical_attributes:
+      - customer_id
+      - cust_id
+      - buyer_id
+    total:
+      kind: data_property
+      role: measure
+      typical_attributes:
+      - total
+      - order_total
+      - amount
+      - grand_total
+    status:
+      kind: data_property
+      role: dimension
+      typical_attributes:
+      - status
+      - order_status
+      - state
+    channel:
+      kind: data_property
+      role: dimension
+      typical_attributes:
+      - channel
+      - sales_channel
+      - order_channel
+    placed_date:
+      kind: data_property
+      role: temporal
+      typical_attributes:
+      - placed_date
+      - order_date
+      - created_at
+    shipped_date:
+      kind: data_property
+      role: temporal
+      typical_attributes:
+      - shipped_date
+      - ship_date
+      - delivery_date
+    store:
+      kind: object_property
+      role: object_property
+      edge: sold_at
+      target_entity: Store
+      typical_attributes:
+      - store_id
+      - location_id
+      - fulfillment_center_id
 Store:
   description: Physical retail stores, outlets, warehouses, or distribution centers
   source_ontology: schema.org
@@ -336,7 +482,52 @@ Store:
     part_of:
       target: Organization
       cardinality: many-to-one
-  properties: {}
+  properties:
+    identifier:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+      - store_id
+      - location_id
+      - warehouse_id
+    name:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - name
+      - store_name
+      - location_name
+    type:
+      kind: data_property
+      role: dimension
+      typical_attributes:
+      - type
+      - store_type
+      - format
+    address:
+      kind: data_property
+      role: dimension
+      typical_attributes:
+      - address
+      - street
+      - city
+      - state
+      - zip_code
+    region:
+      kind: data_property
+      role: dimension
+      typical_attributes:
+      - region
+      - district
+      - territory
+    open_date:
+      kind: data_property
+      role: temporal
+      typical_attributes:
+      - open_date
+      - launch_date
+      - opened_at
 Campaign:
   description: Marketing campaigns, ad campaigns, or promotional campaigns
   source_ontology: schema.org
@@ -364,7 +555,56 @@ Campaign:
     promotes:
       target: Product
       cardinality: many-to-many
-  properties: {}
+  properties:
+    identifier:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+      - campaign_id
+      - marketing_campaign_id
+    name:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - name
+      - campaign_name
+      - campaign_title
+    type:
+      kind: data_property
+      role: dimension
+      typical_attributes:
+      - type
+      - campaign_type
+      - channel
+    budget:
+      kind: data_property
+      role: measure
+      typical_attributes:
+      - budget
+      - campaign_budget
+      - spend
+    start_date:
+      kind: data_property
+      role: temporal
+      typical_attributes:
+      - start_date
+      - launch_date
+      - begin_date
+    end_date:
+      kind: data_property
+      role: temporal
+      typical_attributes:
+      - end_date
+      - expiry_date
+      - expiration_date
+    status:
+      kind: data_property
+      role: dimension
+      typical_attributes:
+      - status
+      - campaign_status
+      - state
 Promotion:
   description: Promotions, discounts, coupons, campaigns, or markdown events
   source_ontology: schema.org
@@ -391,7 +631,57 @@ Promotion:
     applies_to:
       target: Product
       cardinality: many-to-many
-  properties: {}
+  properties:
+    identifier:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+      - promotion_id
+      - campaign_id
+      - promo_id
+    name:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - name
+      - promotion_name
+      - campaign_name
+    type:
+      kind: data_property
+      role: dimension
+      typical_attributes:
+      - type
+      - promotion_type
+      - discount_type
+    discount_value:
+      kind: data_property
+      role: measure
+      typical_attributes:
+      - discount_value
+      - discount_amount
+      - discount_pct
+    start_date:
+      kind: data_property
+      role: temporal
+      typical_attributes:
+      - start_date
+      - effective_date
+      - begin_date
+    end_date:
+      kind: data_property
+      role: temporal
+      typical_attributes:
+      - end_date
+      - expiry_date
+      - expiration_date
+    channel:
+      kind: data_property
+      role: dimension
+      typical_attributes:
+      - channel
+      - promotion_channel
+      - campaign_channel
 Supplier:
   description: Vendors, manufacturers, distributors, or trading partners
   source_ontology: schema.org
@@ -415,7 +705,50 @@ Supplier:
     supplies:
       target: Product
       cardinality: many-to-many
-  properties: {}
+  properties:
+    identifier:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+      - supplier_id
+      - vendor_id
+    name:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - name
+      - supplier_name
+      - vendor_name
+    type:
+      kind: data_property
+      role: dimension
+      typical_attributes:
+      - type
+      - supplier_type
+      - vendor_type
+    lead_time:
+      kind: data_property
+      role: measure
+      typical_attributes:
+      - lead_time
+      - lead_time_days
+      - delivery_days
+    country:
+      kind: data_property
+      role: dimension
+      typical_attributes:
+      - country
+      - origin_country
+      - supplier_country
+    supplies:
+      kind: object_property
+      role: object_property
+      edge: supplied_by
+      target_entity: Product
+      typical_attributes:
+      - product_id
+      - sku
 Inventory:
   description: Stock levels, warehouse inventory, or on-hand quantities
   source_ontology: GS1

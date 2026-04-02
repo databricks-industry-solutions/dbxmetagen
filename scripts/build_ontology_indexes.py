@@ -1,14 +1,26 @@
 #!/usr/bin/env python3
 """Build tiered ontology index YAMLs from published ontology sources.
 
-Downloads FHIR R4, OMOP CDM, and Schema.org ontologies, parses them with
-rdflib, filters to classes of interest, and writes tiered YAML files for
-three-pass entity/edge prediction.
+Supports three workflows:
 
-Usage:
-    python scripts/build_ontology_indexes.py
-    python scripts/build_ontology_indexes.py --dry-run
-    python scripts/build_ontology_indexes.py --bundle-name healthcare --cache-dir .cache/ontologies
+1. Auto-extract from published OWL/Turtle (FHIR R4, OMOP CDM, Schema.org):
+     python scripts/build_ontology_indexes.py --bundle-name healthcare
+
+2. Generate from a curated bundle YAML (reads uri/source_ontology from definitions):
+     python scripts/build_ontology_indexes.py --from-bundle financial_services
+
+3. Load a custom OWL/Turtle file with optional classes-of-interest filter:
+     python scripts/build_ontology_indexes.py --custom-source my_ontology.ttl \\
+         --custom-label "My Ontology" --bundle-name my_bundle
+
+Curated alignment approach:
+  Bundles like financial_services, retail_cpg, and geo_doj use hand-mapped URIs
+  to published standards (FIBO, BIAN, GS1, ISO 3166) rather than auto-extracting
+  from OWL downloads. This is appropriate when:
+    - The source ontology is very large (FIBO: ~30k classes)
+    - No easily-parseable OWL/Turtle is publicly available (BIAN)
+    - Only a small subset of the vocabulary is relevant
+  The --from-bundle mode generates tier indexes from these curated definitions.
 """
 
 import argparse
@@ -152,12 +164,25 @@ def _extract_classes(
                     "inverse": inverses[0] if inverses else None,
                 })
 
+        relationships = {}
+        for edge in outgoing_edges:
+            relationships[edge["name"]] = {
+                "target": edge.get("range") or "Thing",
+                "cardinality": "unknown",
+            }
+
         entities[name] = {
             "description": comment or f"{name} entity",
             "source": source_label,
             "uri": str(cls),
             "parent": parents[0] if parents else None,
             "outgoing_edges": outgoing_edges,
+            "keywords": [],
+            "synonyms": [],
+            "typical_attributes": [],
+            "business_questions": [],
+            "relationships": relationships,
+            "properties": {},
         }
 
     return entities
@@ -172,28 +197,30 @@ def build_tiers(
     # --- Tier 1: compact list ---
     tier1 = [{"name": k, "description": v["description"][:120]} for k, v in sorted(all_entities.items())]
 
-    # --- Tier 2: dict with source, uri, parent, capped edges ---
+    # --- Tier 2 (Confirmation skill input): source_ontology, uri, edge names ---
     tier2 = {}
     for name, data in all_entities.items():
         edges = data.get("outgoing_edges", [])[:8]
-        edge_strs = [f"{e['name']} -> {e.get('range', '?')}" for e in edges]
         tier2[name] = {
             "description": data["description"],
-            "source": data["source"],
+            "source_ontology": data["source"],
             "uri": data["uri"],
-            "parent": data.get("parent"),
-            "edges": edge_strs,
+            "edges": [e["name"] for e in edges],
         }
 
-    # --- Tier 3: full profiles ---
+    # --- Tier 3 (Deep Classification skill input): full domain profile ---
     tier3 = {}
     for name, data in all_entities.items():
         tier3[name] = {
             "description": data["description"],
-            "source": data["source"],
+            "source_ontology": data["source"],
             "uri": data["uri"],
-            "parent": data.get("parent"),
-            "outgoing_edges": data.get("outgoing_edges", []),
+            "keywords": data.get("keywords", []),
+            "synonyms": data.get("synonyms", []),
+            "typical_attributes": data.get("typical_attributes", []),
+            "business_questions": data.get("business_questions", []),
+            "relationships": data.get("relationships", {}),
+            "properties": data.get("properties", {}),
         }
 
     # --- Edge tiers ---
@@ -261,43 +288,190 @@ def build_tiers(
     return counts
 
 
+def _entities_from_bundle(bundle_path: Path) -> Dict[str, Dict[str, Any]]:
+    """Extract entities from a curated bundle YAML, preserving all rich fields for tier-3."""
+    raw = yaml.safe_load(bundle_path.read_text(encoding="utf-8"))
+    definitions = raw.get("ontology", {}).get("entities", {}).get("definitions", {})
+    edge_catalog = raw.get("ontology", {}).get("edge_catalog", {})
+
+    all_entities: Dict[str, Dict[str, Any]] = {}
+    for name, defn in definitions.items():
+        uri = defn.get("uri", "")
+        source = defn.get("source_ontology", "custom")
+        rels = defn.get("relationships", {})
+
+        outgoing_edges = []
+        relationships: Dict[str, Dict[str, str]] = {}
+        for edge_name, edge_info in rels.items():
+            target = edge_info.get("target", "")
+            if isinstance(target, list):
+                target = target[0]
+            cardinality = edge_info.get("cardinality", "unknown")
+            cat_entry = edge_catalog.get(edge_name, {})
+            inv = cat_entry.get("inverse", "")
+            outgoing_edges.append({
+                "name": edge_name,
+                "uri": "",
+                "range": target,
+                "inverse": inv,
+            })
+            relationships[edge_name] = {"target": target, "cardinality": cardinality}
+
+        all_entities[name] = {
+            "description": defn.get("description", f"{name} entity"),
+            "source": source,
+            "uri": uri,
+            "parent": defn.get("parent"),
+            "outgoing_edges": outgoing_edges,
+            "keywords": defn.get("keywords", []),
+            "synonyms": defn.get("synonyms", []),
+            "typical_attributes": defn.get("typical_attributes", []),
+            "business_questions": defn.get("business_questions", []),
+            "relationships": relationships,
+            "properties": defn.get("properties", {}),
+        }
+
+    return all_entities
+
+
+def _entities_from_custom_source(
+    source_path: str,
+    label: str,
+    classes_filter: Optional[Path],
+    cache_dir: Optional[Path],
+) -> Dict[str, Dict[str, Any]]:
+    """Extract entities from a custom OWL/Turtle file or URL."""
+    fmt = "turtle" if source_path.endswith((".ttl", ".turtle")) else "xml"
+    if source_path.startswith(("http://", "https://")):
+        g = _download_or_cache(source_path, fmt, cache_dir)
+    else:
+        import rdflib
+        g = rdflib.Graph()
+        g.parse(source_path, format=fmt)
+
+    if classes_filter and classes_filter.is_file():
+        coi = set(yaml.safe_load(classes_filter.read_text(encoding="utf-8")))
+    else:
+        from rdflib import OWL, RDF
+        coi = {_local_name(c) for c in g.subjects(RDF.type, OWL.Class) if _local_name(c)}
+        logger.info("No filter provided, using all %d classes from source", len(coi))
+
+    prefix = source_path.rsplit("/", 1)[0] + "/" if "/" in source_path else ""
+    return _extract_classes(g, coi, label, prefix)
+
+
+def _merge_bundle_fields(
+    auto_entities: Dict[str, Dict[str, Any]],
+    bundle_path: Path,
+) -> Dict[str, Dict[str, Any]]:
+    """Merge domain-specific fields from a curated bundle YAML into auto-extracted entities.
+
+    Auto-extracted entities keep their OWL URIs and edges. The bundle supplies
+    keywords, synonyms, typical_attributes, business_questions, properties, and
+    richer relationship metadata where available.
+    """
+    bundle_entities = _entities_from_bundle(bundle_path)
+    merged_count = 0
+    for name, auto_data in auto_entities.items():
+        bundle_data = bundle_entities.get(name)
+        if not bundle_data:
+            continue
+        merged_count += 1
+        for field in ("keywords", "synonyms", "typical_attributes", "business_questions", "properties"):
+            val = bundle_data.get(field)
+            if val:
+                auto_data[field] = val
+        bundle_rels = bundle_data.get("relationships", {})
+        if bundle_rels:
+            existing = auto_data.get("relationships", {})
+            existing.update(bundle_rels)
+            auto_data["relationships"] = existing
+    logger.info("Merged domain fields for %d/%d entities from bundle", merged_count, len(auto_entities))
+    return auto_entities
+
+
 def main():
-    parser = argparse.ArgumentParser(description="Build tiered ontology indexes from published sources")
+    parser = argparse.ArgumentParser(
+        description="Build tiered ontology indexes from published or curated sources",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument("--bundle-name", default="healthcare", help="Output bundle subdirectory name")
     parser.add_argument("--cache-dir", default=None, help="Directory to cache downloaded ontology files")
     parser.add_argument("--dry-run", action="store_true", help="Print counts without writing files")
-    parser.add_argument("--sources", nargs="*", choices=list(SOURCES.keys()), default=list(SOURCES.keys()),
-                        help="Which ontology sources to include")
+    parser.add_argument("--merge-bundle", metavar="BUNDLE_NAME", default=None,
+                        help="Merge domain fields (keywords, synonyms, etc.) from a curated bundle YAML into auto-extracted entities")
+
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("--sources", nargs="*", choices=list(SOURCES.keys()), default=None,
+                       help="Which published ontology sources to include (default: all)")
+    group.add_argument("--from-bundle", metavar="BUNDLE_NAME",
+                       help="Generate tier indexes from a curated bundle YAML (reads uri/source_ontology from definitions)")
+    group.add_argument("--custom-source", metavar="PATH_OR_URL",
+                       help="Load a custom OWL/Turtle file or URL")
+
+    parser.add_argument("--custom-label", default="Custom",
+                        help="Label for custom source (used in tier files)")
+    parser.add_argument("--classes-filter", default=None,
+                        help="YAML file with list of class names to include (for --custom-source)")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
-    try:
-        import rdflib  # noqa: F401
-    except ImportError:
-        logger.error("rdflib is required. Install with: pip install 'dbxmetagen[ontology]'")
-        sys.exit(1)
-
+    repo_root = Path(__file__).resolve().parent.parent
     cache_dir = Path(args.cache_dir) if args.cache_dir else None
-    interest_map = {
-        "fhir_r4": FHIR_CLASSES_OF_INTEREST,
-        "omop_cdm": OMOP_CLASSES_OF_INTEREST,
-        "schema_org": SCHEMA_ORG_CLASSES_OF_INTEREST,
-    }
 
-    all_entities: Dict[str, Dict[str, Any]] = {}
-    for source_key in args.sources:
-        src = SOURCES[source_key]
-        logger.info("Processing %s...", src["label"])
-        g = _download_or_cache(src["url"], src["format"], cache_dir)
-        entities = _extract_classes(g, interest_map[source_key], src["label"], src["prefix"])
-        logger.info("  Extracted %d entities from %s", len(entities), src["label"])
-        all_entities.update(entities)
+    if args.from_bundle:
+        bundle_yaml = repo_root / "configurations" / "ontology_bundles" / f"{args.from_bundle}.yaml"
+        if not bundle_yaml.is_file():
+            logger.error("Bundle YAML not found: %s", bundle_yaml)
+            sys.exit(1)
+        logger.info("Generating tier indexes from curated bundle: %s", args.from_bundle)
+        all_entities = _entities_from_bundle(bundle_yaml)
+        output_dir = repo_root / "configurations" / "ontology_bundles" / args.from_bundle
+
+    elif args.custom_source:
+        try:
+            import rdflib  # noqa: F401
+        except ImportError:
+            logger.error("rdflib is required. Install with: pip install 'dbxmetagen[ontology]'")
+            sys.exit(1)
+        classes_filter = Path(args.classes_filter) if args.classes_filter else None
+        all_entities = _entities_from_custom_source(
+            args.custom_source, args.custom_label, classes_filter, cache_dir,
+        )
+        output_dir = repo_root / "configurations" / "ontology_bundles" / args.bundle_name
+
+    else:
+        try:
+            import rdflib  # noqa: F401
+        except ImportError:
+            logger.error("rdflib is required. Install with: pip install 'dbxmetagen[ontology]'")
+            sys.exit(1)
+        interest_map = {
+            "fhir_r4": FHIR_CLASSES_OF_INTEREST,
+            "omop_cdm": OMOP_CLASSES_OF_INTEREST,
+            "schema_org": SCHEMA_ORG_CLASSES_OF_INTEREST,
+        }
+        sources = args.sources or list(SOURCES.keys())
+        all_entities: Dict[str, Dict[str, Any]] = {}
+        for source_key in sources:
+            src = SOURCES[source_key]
+            logger.info("Processing %s...", src["label"])
+            g = _download_or_cache(src["url"], src["format"], cache_dir)
+            entities = _extract_classes(g, interest_map[source_key], src["label"], src["prefix"])
+            logger.info("  Extracted %d entities from %s", len(entities), src["label"])
+            all_entities.update(entities)
+        output_dir = repo_root / "configurations" / "ontology_bundles" / args.bundle_name
+
+    if args.merge_bundle:
+        merge_yaml = repo_root / "configurations" / "ontology_bundles" / f"{args.merge_bundle}.yaml"
+        if not merge_yaml.is_file():
+            logger.error("Merge bundle YAML not found: %s", merge_yaml)
+            sys.exit(1)
+        all_entities = _merge_bundle_fields(all_entities, merge_yaml)
 
     logger.info("Total entities: %d", len(all_entities))
 
-    repo_root = Path(__file__).resolve().parent.parent
-    output_dir = repo_root / "configurations" / "ontology_bundles" / args.bundle_name
     counts = build_tiers(all_entities, output_dir, dry_run=args.dry_run)
 
     action = "Would write" if args.dry_run else "Wrote"

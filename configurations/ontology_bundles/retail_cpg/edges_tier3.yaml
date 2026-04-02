@@ -1,155 +1,200 @@
-instance_of:
-  name: instance_of
-  inverse: type_of
-  symmetric: false
-  category: structural
-  domain: null
-  range: null
-  domain_constraints: []
-  range_constraints: []
-subclass_of:
-  name: subclass_of
-  inverse: superclass_of
-  symmetric: false
-  category: structural
-  domain: null
-  range: null
-  domain_constraints: []
-  range_constraints: []
-has_part:
-  name: has_part
-  inverse: part_of
-  symmetric: false
-  category: structural
-  domain: null
-  range: null
-  domain_constraints: []
-  range_constraints: []
+part_of:
+  name: part_of
+  domain: Person
+  range: Organization
+  uri: ''
+  inverse: ''
+  domain_constraints:
+  - Person
+  range_constraints:
+  - Organization
 contains:
   name: contains
-  inverse: contained_in
-  symmetric: false
-  category: structural
-  domain: null
-  range: null
-  domain_constraints: []
-  range_constraints: []
-member_of:
-  name: member_of
-  inverse: has_member
-  symmetric: false
-  category: structural
-  domain: null
-  range: null
-  domain_constraints: []
-  range_constraints: []
-purchased_by:
-  name: purchased_by
-  inverse: purchased
-  symmetric: false
-  category: business
-  domain: Transaction
-  range: Customer
-  domain_constraints: []
-  range_constraints: []
-sold_at:
-  name: sold_at
-  inverse: sells
-  symmetric: false
-  category: business
-  domain: Transaction
+  domain: Organization
   range: Store
-  domain_constraints: []
-  range_constraints: []
-in_category:
-  name: in_category
-  inverse: categorizes
-  symmetric: false
-  category: business
-  domain: Product
-  range: Reference
-  domain_constraints: []
-  range_constraints: []
-supplied_by:
-  name: supplied_by
-  inverse: supplies
-  symmetric: false
-  category: business
-  domain: Product
-  range: Supplier
-  domain_constraints: []
-  range_constraints: []
+  uri: ''
+  inverse: contained_in
+  domain_constraints:
+  - Organization
+  range_constraints:
+  - Store
 placed_by:
   name: placed_by
-  inverse: placed
-  symmetric: false
-  category: business
   domain: Transaction
-  range: Person
-  domain_constraints: []
-  range_constraints: []
-created_by:
-  name: created_by
-  inverse: created
-  symmetric: false
-  category: business
-  domain: Any
-  range: Person
-  domain_constraints: []
-  range_constraints: []
-owned_by:
-  name: owned_by
-  inverse: owns
-  symmetric: false
-  category: business
-  domain: Any
-  range:
-  - Person
-  - Organization
-  domain_constraints: []
-  range_constraints: []
+  range: Customer
+  uri: ''
+  inverse: placed
+  domain_constraints:
+  - Transaction
+  range_constraints:
+  - Customer
 references:
   name: references
+  domain: Event
+  range: Customer
+  uri: ''
   inverse: referenced_by
-  symmetric: false
-  category: business
-  domain: Any
-  range: Any
-  domain_constraints: []
-  range_constraints: []
-located_at:
-  name: located_at
-  inverse: location_of
-  symmetric: false
-  category: business
-  domain: Any
-  range: Location
-  domain_constraints: []
-  range_constraints: []
-derives_from:
-  name: derives_from
-  inverse: source_of
-  symmetric: false
-  category: lineage
-  domain: null
-  range: null
-  domain_constraints: []
-  range_constraints: []
-same_as:
-  name: same_as
-  inverse: inverse_same_as
-  symmetric: true
-  category: semantic
-  domain: null
-  range: null
-  domain_constraints: []
-  range_constraints: []
-similar_to:
-  name: similar_to
-  inverse: inverse_similar_to
-  symmetric: true
-  category: semantic
-  domain: null
-  range: null
-  domain_constraints: []
-  range_constraints: []
+  domain_constraints:
+  - Event
+  range_constraints:
+  - Customer
+places:
+  name: places
+  domain: Customer
+  range: Order
+  uri: ''
+  inverse: ''
+  domain_constraints:
+  - Customer
+  range_constraints:
+  - Order
+has_return:
+  name: has_return
+  domain: Customer
+  range: Return
+  uri: ''
+  inverse: ''
+  domain_constraints:
+  - Customer
+  range_constraints:
+  - Return
+enrolled_in:
+  name: enrolled_in
+  domain: LoyaltyProgram
+  range: Customer
+  uri: ''
+  inverse: ''
+  domain_constraints:
+  - LoyaltyProgram
+  range_constraints:
+  - Customer
+belongs_to:
+  name: belongs_to
+  domain: Product
+  range: Category
+  uri: ''
+  inverse: ''
+  domain_constraints:
+  - Product
+  range_constraints:
+  - Category
+supplied_by:
+  name: supplied_by
+  domain: Product
+  range: Supplier
+  uri: ''
+  inverse: supplies
+  domain_constraints:
+  - Product
+  range_constraints:
+  - Supplier
+shipped_via:
+  name: shipped_via
+  domain: Order
+  range: Shipment
+  uri: ''
+  inverse: ''
+  domain_constraints:
+  - Order
+  range_constraints:
+  - Shipment
+purchased_at:
+  name: purchased_at
+  domain: Order
+  range: Store
+  uri: ''
+  inverse: ''
+  domain_constraints:
+  - Order
+  range_constraints:
+  - Store
+has_inventory:
+  name: has_inventory
+  domain: Store
+  range: Inventory
+  uri: ''
+  inverse: ''
+  domain_constraints:
+  - Store
+  range_constraints:
+  - Inventory
+targets:
+  name: targets
+  domain: Campaign
+  range: Customer
+  uri: ''
+  inverse: ''
+  domain_constraints:
+  - Campaign
+  range_constraints:
+  - Customer
+promotes:
+  name: promotes
+  domain: Campaign
+  range: Product
+  uri: ''
+  inverse: ''
+  domain_constraints:
+  - Campaign
+  range_constraints:
+  - Product
+applies_to:
+  name: applies_to
+  domain: Promotion
+  range: Product
+  uri: ''
+  inverse: ''
+  domain_constraints:
+  - Promotion
+  range_constraints:
+  - Product
+supplies:
+  name: supplies
+  domain: Supplier
+  range: Product
+  uri: ''
+  inverse: ''
+  domain_constraints:
+  - Supplier
+  range_constraints:
+  - Product
+for_product:
+  name: for_product
+  domain: Inventory
+  range: Product
+  uri: ''
+  inverse: ''
+  domain_constraints:
+  - Inventory
+  range_constraints:
+  - Product
+at_store:
+  name: at_store
+  domain: Inventory
+  range: Store
+  uri: ''
+  inverse: ''
+  domain_constraints:
+  - Inventory
+  range_constraints:
+  - Store
+for_order:
+  name: for_order
+  domain: Return
+  range: Order
+  uri: ''
+  inverse: ''
+  domain_constraints:
+  - Return
+  range_constraints:
+  - Order
+by_customer:
+  name: by_customer
+  domain: Return
+  range: Customer
+  uri: ''
+  inverse: ''
+  domain_constraints:
+  - Return
+  range_constraints:
+  - Customer

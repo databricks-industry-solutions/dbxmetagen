@@ -246,7 +246,63 @@ Account:
     has_transaction:
       target: Transaction
       cardinality: one-to-many
-  properties: {}
+  properties:
+    identifier:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+      - account_id
+    account_number:
+      kind: data_property
+      role: business_key
+      typical_attributes:
+      - account_number
+      - acct_number
+      - account_no
+    balance:
+      kind: data_property
+      role: measure
+      typical_attributes:
+      - balance
+      - current_balance
+      - available_balance
+    type:
+      kind: data_property
+      role: dimension
+      typical_attributes:
+      - type
+      - account_type
+      - product_type
+    status:
+      kind: data_property
+      role: dimension
+      typical_attributes:
+      - status
+      - account_status
+      - state
+    currency:
+      kind: data_property
+      role: dimension
+      typical_attributes:
+      - currency
+      - currency_code
+    open_date:
+      kind: data_property
+      role: temporal
+      typical_attributes:
+      - open_date
+      - opened_date
+      - created_date
+    owned_by:
+      kind: object_property
+      role: object_property
+      edge: owned_by
+      target_entity: Person
+      typical_attributes:
+      - owner_id
+      - customer_id
+      - person_id
 Portfolio:
   description: Investment portfolios, fund holdings, or asset allocations
   source_ontology: FIBO
@@ -273,7 +329,48 @@ Portfolio:
     managed_by:
       target: Person
       cardinality: many-to-one
-  properties: {}
+  properties:
+    identifier:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+      - portfolio_id
+    name:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - name
+      - portfolio_name
+    aum:
+      kind: data_property
+      role: measure
+      typical_attributes:
+      - aum
+      - assets_under_management
+      - total_value
+    strategy:
+      kind: data_property
+      role: dimension
+      typical_attributes:
+      - strategy
+      - investment_strategy
+      - style
+    benchmark:
+      kind: data_property
+      role: dimension
+      typical_attributes:
+      - benchmark
+      - benchmark_index
+    managed_by:
+      kind: object_property
+      role: object_property
+      edge: held_by
+      target_entity: Person
+      typical_attributes:
+      - manager
+      - manager_id
+      - advisor_id
 Trade:
   description: Securities trades, FX transactions, or market orders
   source_ontology: FIBO
@@ -335,7 +432,62 @@ Instrument:
     hedges:
       target: Risk
       cardinality: many-to-many
-  properties: {}
+  properties:
+    identifier:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+      - instrument_id
+      - security_id
+    symbol:
+      kind: data_property
+      role: business_key
+      typical_attributes:
+      - symbol
+      - ticker
+      - ticker_symbol
+    isin:
+      kind: data_property
+      role: business_key
+      typical_attributes:
+      - isin
+      - isin_code
+    cusip:
+      kind: data_property
+      role: business_key
+      typical_attributes:
+      - cusip
+      - cusip_id
+    type:
+      kind: data_property
+      role: dimension
+      typical_attributes:
+      - type
+      - instrument_type
+      - asset_class
+    currency:
+      kind: data_property
+      role: dimension
+      typical_attributes:
+      - currency
+      - currency_code
+    maturity_date:
+      kind: data_property
+      role: temporal
+      typical_attributes:
+      - maturity_date
+      - maturity
+      - expiry_date
+    issued_by:
+      kind: object_property
+      role: object_property
+      edge: issued_by
+      target_entity: Organization
+      typical_attributes:
+      - issuer
+      - issuer_id
+      - issuing_org_id
 Counterparty:
   description: Trading counterparties, custodians, or correspondent banks
   source_ontology: FIBO
@@ -389,7 +541,59 @@ Risk:
     for_instrument:
       target: Instrument
       cardinality: many-to-one
-  properties: {}
+  properties:
+    identifier:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+      - risk_id
+      - assessment_id
+    value:
+      kind: data_property
+      role: measure
+      typical_attributes:
+      - value
+      - var
+      - exposure
+      - credit_score
+    threshold:
+      kind: data_property
+      role: measure
+      typical_attributes:
+      - threshold
+      - limit
+      - max_exposure
+    type:
+      kind: data_property
+      role: dimension
+      typical_attributes:
+      - type
+      - risk_type
+      - exposure_type
+    date:
+      kind: data_property
+      role: temporal
+      typical_attributes:
+      - date
+      - as_of_date
+      - assessment_date
+    for_account:
+      kind: object_property
+      role: object_property
+      edge: references
+      target_entity: Account
+      typical_attributes:
+      - entity_id
+      - account_id
+    for_instrument:
+      kind: object_property
+      role: object_property
+      edge: references
+      target_entity: Instrument
+      typical_attributes:
+      - instrument_id
+      - security_id
 Compliance:
   description: Regulatory filings, KYC records, AML alerts, or sanctions screening
   source_ontology: BIAN
@@ -473,7 +677,68 @@ Policy:
     issued_by:
       target: Organization
       cardinality: many-to-one
-  properties: {}
+  properties:
+    identifier:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+      - policy_id
+    policy_number:
+      kind: data_property
+      role: business_key
+      typical_attributes:
+      - policy_number
+      - policy_no
+      - policy_ref
+    premium:
+      kind: data_property
+      role: measure
+      typical_attributes:
+      - premium
+      - annual_premium
+      - premium_amount
+    type:
+      kind: data_property
+      role: dimension
+      typical_attributes:
+      - type
+      - policy_type
+      - coverage_type
+    effective_date:
+      kind: data_property
+      role: temporal
+      typical_attributes:
+      - effective_date
+      - start_date
+      - inception_date
+    expiry_date:
+      kind: data_property
+      role: temporal
+      typical_attributes:
+      - expiry_date
+      - end_date
+      - expiration_date
+    held_by:
+      kind: object_property
+      role: object_property
+      edge: covers
+      target_entity:
+      - Person
+      - Organization
+      typical_attributes:
+      - insured_id
+      - policyholder_id
+      - holder_id
+    issued_by:
+      kind: object_property
+      role: object_property
+      edge: issued_by
+      target_entity: Organization
+      typical_attributes:
+      - issuer_id
+      - carrier_id
+      - underwriter_id
 Loan:
   description: Loans, mortgages, credit facilities, or lending agreements
   source_ontology: FIBO
@@ -505,4 +770,63 @@ Loan:
     has_risk:
       target: Risk
       cardinality: one-to-many
-  properties: {}
+  properties:
+    identifier:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+      - loan_id
+    principal:
+      kind: data_property
+      role: measure
+      typical_attributes:
+      - principal
+      - loan_amount
+      - original_principal
+    rate:
+      kind: data_property
+      role: measure
+      typical_attributes:
+      - rate
+      - interest_rate
+      - apr
+    term:
+      kind: data_property
+      role: measure
+      typical_attributes:
+      - term
+      - term_months
+      - loan_term
+    status:
+      kind: data_property
+      role: dimension
+      typical_attributes:
+      - status
+      - loan_status
+      - state
+    origination_date:
+      kind: data_property
+      role: temporal
+      typical_attributes:
+      - origination_date
+      - originated_date
+      - funding_date
+    borrowed_by:
+      kind: object_property
+      role: object_property
+      edge: owned_by
+      target_entity: Person
+      typical_attributes:
+      - borrower_id
+      - customer_id
+      - applicant_id
+    issued_by:
+      kind: object_property
+      role: object_property
+      edge: issued_by
+      target_entity: Organization
+      typical_attributes:
+      - lender_id
+      - issuer_id
+      - originating_org_id
