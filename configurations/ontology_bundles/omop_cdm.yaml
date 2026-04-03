@@ -1,0 +1,1571 @@
+metadata:
+  name: OMOP CDM
+  version: '1.0'
+  format_version: '2.0'
+  industry: healthcare
+  description: OMOP Common Data Model formal ontology
+  standards_alignment: OMOP CDM
+  bundle_type: formal_ontology
+  source_url: https://raw.githubusercontent.com/vemonet/omop-cdm-owl/main/omop_cdm_v6.ttl
+ontology:
+  version: '1.0'
+  name: OMOP CDM Ontology
+  description: Auto-extracted from OMOP CDM
+  entities:
+    definitions:
+      CareSite:
+        description: The CARE_SITE table contains a list of uniquely identified institutional
+          (physical or organizational) units where healthcare delivery is practiced
+          (offices, wards, hospitals, clinics, etc.).
+        uri: https://w3id.org/omop/ontology/CareSite
+        source_ontology: OMOP CDM
+        keywords:
+        - care
+        - site
+        - table
+        - contains
+        - list
+        - uniquely
+        - identified
+        typical_attributes:
+        - place_of_service_source_value
+        relationships:
+          has_place_of_service:
+            target: Concept
+            cardinality: unknown
+          has_location:
+            target: Location
+            cardinality: unknown
+      CdmSource:
+        description: The CDM_SOURCE table contains detail about the source database
+          and the process used to transform the data into the OMOP Common Data Model.
+        uri: https://w3id.org/omop/ontology/CdmSource
+        source_ontology: OMOP CDM
+        keywords:
+        - cdm
+        - source
+        - table
+        - contains
+        - detail
+        - about
+        typical_attributes:
+        - abbreviation
+        - cdm_etl_reference
+        - cdm_holder
+        - cdm_release_date
+        - cdm_version
+        - source_description
+        - source_documentation_reference
+        - source_release_date
+        - vocabulary_version
+      Cohort:
+        description: The COHORT table contains records of subjects that satisfy a
+          given set of criteria for a duration of time. The definition of the cohort
+          is contained within the COHORT_DEFINITION table. It is listed as part of
+          the RESULTS schema because it is a table that users of the database as well
+          as tools such a
+        uri: https://w3id.org/omop/ontology/Cohort
+        source_ontology: OMOP CDM
+        keywords:
+        - cohort
+        - table
+        - contains
+        - records
+        - subjects
+        - satisfy
+        relationships:
+          has_definition:
+            target: CohortDefinition
+            cardinality: unknown
+          has_subject:
+            target: Thing
+            cardinality: unknown
+      CohortDefinition:
+        description: The COHORT_DEFINITION table contains records defining a Cohort
+          derived from the data through the associated description and syntax and
+          upon instantiation (execution of the algorithm) placed into the COHORT table.
+          Cohorts are a set of subjects that satisfy a given combination of inclusion
+          criteria fo
+        uri: https://w3id.org/omop/ontology/CohortDefinition
+        source_ontology: OMOP CDM
+        keywords:
+        - cohort
+        - definition
+        - table
+        - contains
+        - records
+        - defining
+        typical_attributes:
+        - cohort_initiation_date
+        - description
+        - syntax
+        relationships:
+          has_definition_type:
+            target: Concept
+            cardinality: unknown
+          has_subject:
+            target: Thing
+            cardinality: unknown
+      Concept:
+        description: The Standardized Vocabularies contains records, or Concepts,
+          that uniquely identify each fundamental unit of meaning used to express
+          clinical information in all domain tables of the CDM. Concepts are derived
+          from vocabularies, which represent clinical information across a domain
+          (e.g. conditions, dr
+        uri: https://w3id.org/omop/ontology/Concept
+        source_ontology: OMOP CDM
+        keywords:
+        - concept
+        - standardized
+        - vocabularies
+        - contains
+        - records
+        - concepts
+        - uniquely
+        typical_attributes:
+        - standard
+        - code
+        relationships:
+          has_vocabulary:
+            target: Vocabulary
+            cardinality: unknown
+          has_class:
+            target: Thing
+            cardinality: unknown
+          has_domain:
+            target: Domain
+            cardinality: unknown
+      ConceptAncestor:
+        description: The CONCEPT_ANCESTOR table is designed to simplify observational
+          analysis by providing the complete hierarchical relationships between Concepts.
+          Only direct parent-child relationships between Concepts are stored in the
+          CONCEPT_RELATIONSHIP table. To determine higher level ancestry connections,
+          all i
+        uri: https://w3id.org/omop/ontology/ConceptAncestor
+        source_ontology: OMOP CDM
+        keywords:
+        - concept
+        - ancestor
+        - table
+        - designed
+        - simplify
+        - observational
+        - analysis
+        typical_attributes:
+        - max_levels_of_separation
+        - min_levels_of_separation
+        relationships:
+          has_ancestor:
+            target: Concept
+            cardinality: unknown
+          has_descendant:
+            target: Concept
+            cardinality: unknown
+      ConceptClass:
+        description: The CONCEPT_CLASS table is a reference table, which includes
+          a list of the classifications used to differentiate Concepts within a given
+          Vocabulary. This reference table is populated with a single record for each
+          Concept Class.
+        uri: https://w3id.org/omop/ontology/ConceptClass
+        source_ontology: OMOP CDM
+        keywords:
+        - concept
+        - class
+        - table
+        - reference
+        - includes
+        relationships:
+          has_concept:
+            target: Concept
+            cardinality: unknown
+      ConceptRelationship:
+        description: The CONCEPT_RELATIONSHIP table contains records that define direct
+          relationships between any two Concepts and the nature or type of the relationship.
+          Each type of a relationship is defined in the RELATIONSHIP table.
+        uri: https://w3id.org/omop/ontology/ConceptRelationship
+        source_ontology: OMOP CDM
+        keywords:
+        - concept
+        - relationship
+        - table
+        - contains
+        - records
+        - define
+        typical_attributes:
+        - concept_id_1
+        - concept_id_2
+        relationships:
+          has_relationship:
+            target: Thing
+            cardinality: unknown
+      ConceptSynonym:
+        description: The CONCEPT_SYNONYM table is used to store alternate names and
+          descriptions for Concepts.
+        uri: https://w3id.org/omop/ontology/ConceptSynonym
+        source_ontology: OMOP CDM
+        keywords:
+        - concept
+        - synonym
+        - table
+        - used
+        - store
+        - alternate
+        - names
+        relationships:
+          has_language:
+            target: Concept
+            cardinality: unknown
+          has_concept:
+            target: Concept
+            cardinality: unknown
+      ConditionEra:
+        description: 'A Condition Era is defined as a span of time when the Person
+          is assumed to have a given condition. Similar to Drug Eras, Condition Eras
+          are chronological periods of Condition Occurrence. Combining individual
+          Condition Occurrences into a single Condition Era serves two purposes:
+
+
+          - It allows aggregat'
+        uri: https://w3id.org/omop/ontology/ConditionEra
+        source_ontology: OMOP CDM
+        keywords:
+        - condition
+        - era
+        - defined
+        - span
+        - time
+        - when
+        - person
+        typical_attributes:
+        - occurrence_count
+      ConditionOccurrence:
+        description: This table contains records of Events of a Person suggesting
+          the presence of a disease or medical condition stated as a diagnosis, a
+          sign, or a symptom, which is either observed by a Provider or reported by
+          the patient.
+        uri: https://w3id.org/omop/ontology/ConditionOccurrence
+        source_ontology: OMOP CDM
+        keywords:
+        - condition
+        - occurrence
+        - table
+        - contains
+        - records
+        - events
+        - person
+        - suggesting
+        typical_attributes:
+        - status_source_value
+        relationships:
+          has_status:
+            target: Concept
+            cardinality: unknown
+          has_provider:
+            target: Provider
+            cardinality: unknown
+          has_source:
+            target: Thing
+            cardinality: unknown
+          has_type:
+            target: Concept
+            cardinality: unknown
+          has_concept:
+            target: Concept
+            cardinality: unknown
+      Cost:
+        description: 'The COST table captures records containing the cost of any medical
+          event recorded in one of the OMOP clinical event tables such as DRUG_EXPOSURE,
+          PROCEDURE_OCCURRENCE, VISIT_OCCURRENCE, VISIT_DETAIL, DEVICE_OCCURRENCE,
+          OBSERVATION or MEASUREMENT.
+
+
+          Each record in the cost table account for the amount'
+        uri: https://w3id.org/omop/ontology/Cost
+        source_ontology: OMOP CDM
+        keywords:
+        - cost
+        - table
+        - captures
+        - records
+        - containing
+        typical_attributes:
+        - billed_date
+        - cost
+        - drg_source_value
+        - incurred_date
+        - paid_date
+        - revenue_code_source_value
+        relationships:
+          has_currency:
+            target: Concept
+            cardinality: unknown
+          has_drg:
+            target: Concept
+            cardinality: unknown
+          has_revenue_code:
+            target: Concept
+            cardinality: unknown
+          has_event_field:
+            target: Concept
+            cardinality: unknown
+          has_payer_plan_period:
+            target: PayerPlanPeriod
+            cardinality: unknown
+          has_event:
+            target: Thing
+            cardinality: unknown
+          has_source:
+            target: Thing
+            cardinality: unknown
+          has_type:
+            target: Concept
+            cardinality: unknown
+          has_concept:
+            target: Concept
+            cardinality: unknown
+      Death:
+        description: Death entity
+        uri: https://w3id.org/omop/ontology/Death
+        source_ontology: OMOP CDM
+        keywords:
+        - death
+        - entity
+        typical_attributes:
+        - cause_source_value
+        relationships:
+          has_cause:
+            target: Concept
+            cardinality: unknown
+          has_cause_source:
+            target: Concept
+            cardinality: unknown
+          has_type:
+            target: Concept
+            cardinality: unknown
+      DeviceExposure:
+        description: The Device domain captures information about a person's exposure
+          to a foreign physical object or instrument which is used for diagnostic
+          or therapeutic purposes through a mechanism beyond chemical action. Devices
+          include implantable objects (e.g. pacemakers, stents, artificial joints),
+          medical equip
+        uri: https://w3id.org/omop/ontology/DeviceExposure
+        source_ontology: OMOP CDM
+        keywords:
+        - device
+        - exposure
+        - domain
+        - captures
+        - information
+        - about
+        - person
+        relationships:
+          has_unique_device:
+            target: Thing
+            cardinality: unknown
+      Domain:
+        description: The DOMAIN table includes a list of OMOP-defined Domains the
+          Concepts of the Standardized Vocabularies can belong to. A Domain defines
+          the set of allowable Concepts for the standardized fields in the CDM tables.
+          For example, the "Condition" Domain contains Concepts that describe a condition
+          of a pat
+        uri: https://w3id.org/omop/ontology/Domain
+        source_ontology: OMOP CDM
+        keywords:
+        - domain
+        - table
+        - includes
+        - list
+        - omop
+        - defined
+        - domains
+        relationships:
+          has_concept:
+            target: Concept
+            cardinality: unknown
+      DoseEra:
+        description: A Dose Era is defined as a span of time when the Person is assumed
+          to be exposed to a constant dose of a specific active ingredient.
+        uri: https://w3id.org/omop/ontology/DoseEra
+        source_ontology: OMOP CDM
+        keywords:
+        - dose
+        - era
+        - defined
+        - span
+        - time
+        - when
+        - person
+        typical_attributes:
+        - value
+        relationships:
+          has_unit:
+            target: Concept
+            cardinality: unknown
+      DrugEra:
+        description: 'A Drug Era is defined as a span of time when the Person is assumed
+          to be exposed to a particular active ingredient. A Drug Era is not the same
+          as a Drug Exposure: Exposures are individual records corresponding to the
+          source when Drug was delivered to the Person, while successive periods of
+          Drug Expo'
+        uri: https://w3id.org/omop/ontology/DrugEra
+        source_ontology: OMOP CDM
+        keywords:
+        - drug
+        - era
+        - defined
+        - span
+        - time
+        - when
+        - person
+        typical_attributes:
+        - exposure_count
+        - gap_days
+      DrugExposure:
+        description: This table captures records about the exposure to a Drug ingested
+          or otherwise introduced into the body. A Drug is a biochemical substance
+          formulated in such a way that when administered to a Person it will exert
+          a certain biochemical effect on the metabolism. Drugs include prescription
+          and over-the
+        uri: https://w3id.org/omop/ontology/DrugExposure
+        source_ontology: OMOP CDM
+        keywords:
+        - drug
+        - exposure
+        - table
+        - captures
+        - records
+        - about
+        typical_attributes:
+        - days_supply
+        - dose_unit_source_value
+        - lot_number
+        - refills
+        - route_source_value
+        - sig
+        - verbatim_end_date
+        relationships:
+          has_route:
+            target: Concept
+            cardinality: unknown
+      DrugStrength:
+        description: The DRUG_STRENGTH table contains structured content about the
+          amount or concentration and associated units of a specific ingredient contained
+          within a particular drug product. This table is supplemental information
+          to support standardized analysis of drug utilization.
+        uri: https://w3id.org/omop/ontology/DrugStrength
+        source_ontology: OMOP CDM
+        keywords:
+        - drug
+        - strength
+        - table
+        - contains
+        - structured
+        - content
+        - about
+        typical_attributes:
+        - amount_value
+        - box_size
+        - denominator_value
+        - numerator_value
+        relationships:
+          has_amount_unit:
+            target: Concept
+            cardinality: unknown
+          has_denominator_unit:
+            target: Concept
+            cardinality: unknown
+          has_numerator_unit:
+            target: Concept
+            cardinality: unknown
+          has_ingredient:
+            target: Concept
+            cardinality: unknown
+          has_concept:
+            target: Concept
+            cardinality: unknown
+      FactRelationship:
+        description: 'The FACT_RELATIONSHIP table contains records about the relationships
+          between facts stored as records in any table of the CDM. Relationships can
+          be defined between facts from the same domain, or different domains. Examples
+          of Fact Relationships include: [Person relationships](https://athena.ohdsi.org'
+        uri: https://w3id.org/omop/ontology/FactRelationship
+        source_ontology: OMOP CDM
+        keywords:
+        - fact
+        - relationship
+        - table
+        - contains
+        - records
+        - about
+        typical_attributes:
+        - domain_concept_id_1
+        - domain_concept_id_2
+        - fact_id_1
+        - fact_id_2
+        relationships:
+          has_relationship:
+            target: Thing
+            cardinality: unknown
+      Location:
+        description: The LOCATION table represents a generic way to capture physical
+          location or address information of Persons and Care Sites. **New to CDM
+          v6.0** The LOCATION table now includes latitude and longitude.
+        uri: https://w3id.org/omop/ontology/Location
+        source_ontology: OMOP CDM
+        keywords:
+        - location
+        - table
+        - represents
+        - generic
+        - way
+        - capture
+        - physical
+        typical_attributes:
+        - address_1
+        - address_2
+        - city
+        - county
+        - latitude
+        - longitude
+        - state
+        - zip
+      LocationHistory:
+        description: The LOCATION HISTORY table stores relationships between Persons
+          or Care Sites and geographic locations over time. **This table is new to
+          CDM v6.0**
+        uri: https://w3id.org/omop/ontology/LocationHistory
+        source_ontology: OMOP CDM
+        keywords:
+        - location
+        - history
+        - table
+        - stores
+        - relationships
+        - between
+        - persons
+        relationships:
+          has_entity:
+            target: Thing
+            cardinality: unknown
+          has_relationship_type:
+            target: Concept
+            cardinality: unknown
+          has_domain:
+            target: Domain
+            cardinality: unknown
+          has_location:
+            target: Location
+            cardinality: unknown
+      Measurement:
+        description: The MEASUREMENT table contains records of Measurements, i.e.
+          structured values (numerical or categorical) obtained through systematic
+          and standardized examination or testing of a Person or Person's sample.
+          The MEASUREMENT table contains both orders and results of such Measurements
+          as laboratory test
+        uri: https://w3id.org/omop/ontology/Measurement
+        source_ontology: OMOP CDM
+        keywords:
+        - measurement
+        - table
+        - contains
+        - records
+        - measurements
+        - structured
+        - values
+        typical_attributes:
+        - range_high
+        - range_low
+        - time
+        - value_source_value
+        relationships:
+          has_operator:
+            target: Concept
+            cardinality: unknown
+          has_value_as_concept:
+            target: Concept
+            cardinality: unknown
+          has_unit:
+            target: Concept
+            cardinality: unknown
+          has_provider:
+            target: Provider
+            cardinality: unknown
+          has_source:
+            target: Thing
+            cardinality: unknown
+          has_type:
+            target: Concept
+            cardinality: unknown
+          has_concept:
+            target: Concept
+            cardinality: unknown
+      Metadata:
+        description: The METADATA table contains metadata information about a dataset
+          that has been transformed to the OMOP Common Data Model.
+        uri: https://w3id.org/omop/ontology/Metadata
+        source_ontology: OMOP CDM
+        keywords:
+        - metadata
+        - table
+        - contains
+        - information
+        - about
+        - dataset
+        relationships:
+          has_value_as_concept:
+            target: Concept
+            cardinality: unknown
+          has_type:
+            target: Concept
+            cardinality: unknown
+          has_concept:
+            target: Concept
+            cardinality: unknown
+      Note:
+        description: The NOTE table captures unstructured information that was recorded
+          by a provider about a patient in free text (in ASCII, or preferably in UTF8
+          format) notes on a given date. The type of note_text is CLOB or varchar(MAX)
+          depending on RDBMS.
+        uri: https://w3id.org/omop/ontology/Note
+        source_ontology: OMOP CDM
+        keywords:
+        - note
+        - table
+        - captures
+        - unstructured
+        - information
+        typical_attributes:
+        - title
+        - text
+        relationships:
+          has_encoding:
+            target: Concept
+            cardinality: unknown
+          has_note_nlp:
+            target: NoteNlp
+            cardinality: unknown
+          has_event_field:
+            target: Concept
+            cardinality: unknown
+          has_class:
+            target: Thing
+            cardinality: unknown
+          has_event:
+            target: Thing
+            cardinality: unknown
+          has_language:
+            target: Concept
+            cardinality: unknown
+          has_provider:
+            target: Provider
+            cardinality: unknown
+          has_type:
+            target: Concept
+            cardinality: unknown
+      NoteNlp:
+        description: The NOTE_NLP table encodes all output of NLP on clinical notes.
+          Each row represents a single extracted term from a note.
+        uri: https://w3id.org/omop/ontology/NoteNlp
+        source_ontology: OMOP CDM
+        keywords:
+        - note
+        - nlp
+        - table
+        - encodes
+        - all
+        - output
+        typical_attributes:
+        - offset
+        - snippet
+        - system
+        - term_exists
+        - term_modifiers
+        - term_temporal
+        - lexical_variant
+        relationships:
+          has_section:
+            target: Concept
+            cardinality: unknown
+          has_source:
+            target: Thing
+            cardinality: unknown
+          has_concept:
+            target: Concept
+            cardinality: unknown
+      Observation:
+        description: 'The OBSERVATION table captures clinical facts about a Person
+          obtained in the context of examination, questioning or a procedure. Any
+          data that cannot be represented by any other domains, such as social and
+          lifestyle facts, medical history, family history, etc. are recorded here.
+          **New to CDM v6.0** '
+        uri: https://w3id.org/omop/ontology/Observation
+        source_ontology: OMOP CDM
+        keywords:
+        - observation
+        - table
+        - captures
+        - clinical
+        - facts
+        - about
+        - person
+        typical_attributes:
+        - qualifier_source_value
+        - value_as_datetime
+        relationships:
+          has_obs_event_field:
+            target: Concept
+            cardinality: unknown
+          has_qualifier:
+            target: Concept
+            cardinality: unknown
+          has_value_as_concept:
+            target: Concept
+            cardinality: unknown
+          has_event:
+            target: Thing
+            cardinality: unknown
+          has_unit:
+            target: Concept
+            cardinality: unknown
+          has_provider:
+            target: Provider
+            cardinality: unknown
+          has_source:
+            target: Thing
+            cardinality: unknown
+          has_type:
+            target: Concept
+            cardinality: unknown
+          has_concept:
+            target: Concept
+            cardinality: unknown
+      ObservationPeriod:
+        description: 'This table contains records which define spans of time during
+          which two conditions are expected to hold: (i) Clinical Events that happened
+          to the Person are recorded in the Event tables, and (ii) absense of records
+          indicate such Events did not occur during this span of time.'
+        uri: https://w3id.org/omop/ontology/ObservationPeriod
+        source_ontology: OMOP CDM
+        keywords:
+        - observation
+        - period
+        - table
+        - contains
+        - records
+        - define
+        - spans
+        - time
+        relationships:
+          has_period_type:
+            target: Concept
+            cardinality: unknown
+      PayerPlanPeriod:
+        description: The PAYER_PLAN_PERIOD table captures details of the period of
+          time that a Person is continuously enrolled under a specific health Plan
+          benefit structure from a given Payer. Each Person receiving healthcare is
+          typically covered by a health benefit plan, which pays for (fully or partially),
+          or directl
+        uri: https://w3id.org/omop/ontology/PayerPlanPeriod
+        source_ontology: OMOP CDM
+        keywords:
+        - payer
+        - plan
+        - period
+        - table
+        - captures
+        - details
+        typical_attributes:
+        - family_source_value
+        - payer_source_value
+        - plan_source_value
+        - sponsor_source_value
+        - stop_reason_source_value
+        - contract_source_value
+        relationships:
+          has_contract_person:
+            target: Person
+            cardinality: unknown
+          has_sponsor_source:
+            target: Concept
+            cardinality: unknown
+          has_stop_reason_concept:
+            target: Concept
+            cardinality: unknown
+          has_stop_reason_source:
+            target: Concept
+            cardinality: unknown
+          has_contract:
+            target: Concept
+            cardinality: unknown
+          has_contract_source:
+            target: Concept
+            cardinality: unknown
+          has_payer:
+            target: Concept
+            cardinality: unknown
+          has_payer_source:
+            target: Concept
+            cardinality: unknown
+          has_plan:
+            target: Concept
+            cardinality: unknown
+          has_plan_source:
+            target: Concept
+            cardinality: unknown
+          has_sponsor:
+            target: Concept
+            cardinality: unknown
+      Person:
+        description: This table serves as the central identity management for all
+          Persons in the database. It contains records that uniquely identify each
+          person or patient, and some demographic information.
+        uri: https://w3id.org/omop/ontology/Person
+        source_ontology: OMOP CDM
+        keywords:
+        - person
+        - table
+        - serves
+        - central
+        - identity
+        - management
+        typical_attributes:
+        - birth_datetime
+        - day_of_birth
+        - death_datetime
+        - ethnicity_source_value
+        - month_of_birth
+        - race_source_value
+        relationships:
+          has_death:
+            target: Death
+            cardinality: unknown
+          has_condition_era:
+            target: ConditionEra
+            cardinality: unknown
+          has_cost:
+            target: Cost
+            cardinality: unknown
+          has_dose_era:
+            target: DoseEra
+            cardinality: unknown
+          has_drug_era:
+            target: DrugEra
+            cardinality: unknown
+          has_ethnicity:
+            target: Concept
+            cardinality: unknown
+          has_ethnicity_source:
+            target: Concept
+            cardinality: unknown
+          has_observation_period:
+            target: ObservationPeriod
+            cardinality: unknown
+          has_race:
+            target: Concept
+            cardinality: unknown
+          has_race_source:
+            target: Concept
+            cardinality: unknown
+          has_specimen:
+            target: Specimen
+            cardinality: unknown
+          has_visit_occurrence:
+            target: VisitOccurrence
+            cardinality: unknown
+          has_condition_occurrence:
+            target: ConditionOccurrence
+            cardinality: unknown
+          has_device_exposure:
+            target: DeviceExposure
+            cardinality: unknown
+          has_drug_exposure:
+            target: DrugExposure
+            cardinality: unknown
+          has_measurement:
+            target: Measurement
+            cardinality: unknown
+          has_note:
+            target: Note
+            cardinality: unknown
+          has_observation:
+            target: Observation
+            cardinality: unknown
+          has_payer_plan_period:
+            target: PayerPlanPeriod
+            cardinality: unknown
+          has_procedure_occurrence:
+            target: ProcedureOccurrence
+            cardinality: unknown
+          has_survey_conduct:
+            target: SurveyConduct
+            cardinality: unknown
+          has_location:
+            target: Location
+            cardinality: unknown
+          has_visit_detail:
+            target: VisitDetail
+            cardinality: unknown
+          has_provider:
+            target: Provider
+            cardinality: unknown
+      ProcedureOccurrence:
+        description: This table contains records of activities or processes ordered
+          by, or carried out by, a healthcare provider on the patient with a diagnostic
+          or therapeutic purpose.
+        uri: https://w3id.org/omop/ontology/ProcedureOccurrence
+        source_ontology: OMOP CDM
+        keywords:
+        - procedure
+        - occurrence
+        - table
+        - contains
+        - records
+        - activities
+        - processes
+        - ordered
+        - carried
+        typical_attributes:
+        - modifier_source_value
+        relationships:
+          has_modifier:
+            target: Concept
+            cardinality: unknown
+          has_provider:
+            target: Provider
+            cardinality: unknown
+          has_source:
+            target: Thing
+            cardinality: unknown
+          has_type:
+            target: Concept
+            cardinality: unknown
+          has_concept:
+            target: Concept
+            cardinality: unknown
+      Provider:
+        description: The PROVIDER table contains a list of uniquely identified healthcare
+          providers. These are individuals providing hands-on healthcare to patients,
+          such as physicians, nurses, midwives, physical therapists etc.
+        uri: https://w3id.org/omop/ontology/Provider
+        source_ontology: OMOP CDM
+        keywords:
+        - provider
+        - table
+        - contains
+        - list
+        - uniquely
+        - identified
+        - healthcare
+        typical_attributes:
+        - dea
+        - npi
+        - specialty_source_value
+        relationships:
+          has_specialty:
+            target: Concept
+            cardinality: unknown
+          has_specialty_source:
+            target: Concept
+            cardinality: unknown
+      Relationship:
+        description: The RELATIONSHIP table provides a reference list of all types
+          of relationships that can be used to associate any two concepts in the CONCEPT_RELATIONSHP
+          table.
+        uri: https://w3id.org/omop/ontology/Relationship
+        source_ontology: OMOP CDM
+        keywords:
+        - relationship
+        - table
+        - provides
+        - reference
+        - list
+        - all
+        - types
+        typical_attributes:
+        - defines_ancestry
+        - is_hierarchical
+        relationships:
+          has_reverse_relationship:
+            target: Thing
+            cardinality: unknown
+          has_concept:
+            target: Concept
+            cardinality: unknown
+      SourceToConceptMap:
+        description: The source to concept map table is a legacy data structure within
+          the OMOP Common Data Model, recommended for use in ETL processes to maintain
+          local source codes which are not available as Concepts in the Standardized
+          Vocabularies, and to establish mappings for each source code into a Standard
+          Conce
+        uri: https://w3id.org/omop/ontology/SourceToConceptMap
+        source_ontology: OMOP CDM
+        keywords:
+        - source
+        - to
+        - concept
+        - map
+        - table
+        - legacy
+        - data
+        - structure
+        typical_attributes:
+        - source_code_description
+        - source_code
+        relationships:
+          has_source_vocabulary:
+            target: Vocabulary
+            cardinality: unknown
+          has_target:
+            target: Concept
+            cardinality: unknown
+          has_target_vocabulary:
+            target: Vocabulary
+            cardinality: unknown
+          has_source:
+            target: Thing
+            cardinality: unknown
+      Specimen:
+        description: The specimen domain contains the records identifying biological
+          samples from a person.
+        uri: https://w3id.org/omop/ontology/Specimen
+        source_ontology: OMOP CDM
+        keywords:
+        - specimen
+        - domain
+        - contains
+        - records
+        - identifying
+        - biological
+        typical_attributes:
+        - anatomic_site_source_value
+        - disease_status_source_value
+        relationships:
+          has_anatomic_site:
+            target: Concept
+            cardinality: unknown
+          has_disease_status:
+            target: Concept
+            cardinality: unknown
+          has_unit:
+            target: Concept
+            cardinality: unknown
+          has_source:
+            target: Thing
+            cardinality: unknown
+          has_type:
+            target: Concept
+            cardinality: unknown
+          has_concept:
+            target: Concept
+            cardinality: unknown
+      SurveyConduct:
+        description: The SURVEY_CONDUCT table is used to store an instance of a completed
+          survey or questionnaire.
+        uri: https://w3id.org/omop/ontology/SurveyConduct
+        source_ontology: OMOP CDM
+        keywords:
+        - survey
+        - conduct
+        - table
+        - used
+        - store
+        - instance
+        - completed
+        typical_attributes:
+        - assisted_source_value
+        - collection_method_source_value
+        - respondent_type_source_value
+        - survey_end_date
+        - survey_source_identifier
+        - survey_source_value
+        - survey_start_date
+        - survey_start_datetime
+        - survey_version_number
+        - timing_source_value
+        - validated_survey_source_value
+        - survey_end_datetime
+        relationships:
+          has_response_visit_occurrence:
+            target: VisitOccurrence
+            cardinality: unknown
+          has_assisted:
+            target: Concept
+            cardinality: unknown
+          has_collection_method:
+            target: Concept
+            cardinality: unknown
+          has_respondent_type:
+            target: Concept
+            cardinality: unknown
+          has_survey:
+            target: Concept
+            cardinality: unknown
+          has_survey_source:
+            target: Concept
+            cardinality: unknown
+          has_timing:
+            target: Concept
+            cardinality: unknown
+          has_validated_survey:
+            target: Concept
+            cardinality: unknown
+          has_provider:
+            target: Provider
+            cardinality: unknown
+      VisitDetail:
+        description: 'The VISIT_DETAIL table is an optional table used to represents
+          details of each record in the parent VISIT_OCCURRENCE table. A good example
+          of this would be the movement between units in a hospital during an inpatient
+          stay or claim lines associated with a one insurance claim. For every record
+          in the '
+        uri: https://w3id.org/omop/ontology/VisitDetail
+        source_ontology: OMOP CDM
+        keywords:
+        - visit
+        - detail
+        - table
+        - optional
+        - used
+        - represents
+        relationships:
+          has_parent:
+            target: VisitDetail
+            cardinality: unknown
+          has_preceding_visit_detail:
+            target: VisitDetail
+            cardinality: unknown
+          has_admitted_from:
+            target: Concept
+            cardinality: unknown
+      VisitOccurrence:
+        description: 'This table contains Events where Persons engage with the healthcare
+          system for a duration of time. They are often also called "Encounters".
+          Visits are defined by a configuration of circumstances under which they
+          occur, such as (i) whether the patient comes to a healthcare institution,
+          the other way '
+        uri: https://w3id.org/omop/ontology/VisitOccurrence
+        source_ontology: OMOP CDM
+        keywords:
+        - visit
+        - occurrence
+        - table
+        - contains
+        - events
+        - where
+        - persons
+        - engage
+        relationships:
+          has_preceding_visit_occurrence:
+            target: VisitOccurrence
+            cardinality: unknown
+          has_admitted_from:
+            target: Concept
+            cardinality: unknown
+          has_survey_conduct:
+            target: SurveyConduct
+            cardinality: unknown
+          has_visit_detail:
+            target: VisitDetail
+            cardinality: unknown
+      Vocabulary:
+        description: The VOCABULARY table includes a list of the Vocabularies collected
+          from various sources or created de novo by the OMOP community. This reference
+          table is populated with a single record for each Vocabulary source and includes
+          a descriptive name and other associated attributes for the Vocabulary.
+        uri: https://w3id.org/omop/ontology/Vocabulary
+        source_ontology: OMOP CDM
+        keywords:
+        - vocabulary
+        - table
+        - includes
+        - list
+        - vocabularies
+        - collected
+        typical_attributes:
+        - version
+        - reference
+        relationships:
+          has_concept:
+            target: Concept
+            cardinality: unknown
+  edge_catalog:
+    has_place_of_service:
+      source: CareSite
+      target: Concept
+      uri: https://w3id.org/omop/ontology/has_place_of_service
+    has_location:
+      source: CareSite
+      target: Location
+      uri: https://w3id.org/omop/ontology/has_location
+    has_definition:
+      source: Cohort
+      target: CohortDefinition
+      uri: https://w3id.org/omop/ontology/has_definition
+    has_subject:
+      source: Cohort
+      target: null
+      uri: https://w3id.org/omop/ontology/has_subject
+    has_definition_type:
+      source: CohortDefinition
+      target: Concept
+      uri: https://w3id.org/omop/ontology/has_definition_type
+    has_vocabulary:
+      source: Concept
+      target: Vocabulary
+      uri: https://w3id.org/omop/ontology/has_vocabulary
+    has_class:
+      source: Concept
+      target: null
+      uri: https://w3id.org/omop/ontology/has_class
+    has_domain:
+      source: Concept
+      target: Domain
+      uri: https://w3id.org/omop/ontology/has_domain
+    has_ancestor:
+      source: ConceptAncestor
+      target: Concept
+      uri: https://w3id.org/omop/ontology/has_ancestor
+    has_descendant:
+      source: ConceptAncestor
+      target: Concept
+      uri: https://w3id.org/omop/ontology/has_descendant
+    has_concept:
+      source: ConceptClass
+      target: Concept
+      uri: https://w3id.org/omop/ontology/has_concept
+    has_relationship:
+      source: ConceptRelationship
+      target: null
+      uri: https://w3id.org/omop/ontology/has_relationship
+    has_language:
+      source: ConceptSynonym
+      target: Concept
+      uri: https://w3id.org/omop/ontology/has_language
+    has_status:
+      source: ConditionOccurrence
+      target: Concept
+      uri: https://w3id.org/omop/ontology/has_status
+    has_provider:
+      source: ConditionOccurrence
+      target: Provider
+      uri: https://w3id.org/omop/ontology/has_provider
+    has_source:
+      source: ConditionOccurrence
+      target: null
+      uri: https://w3id.org/omop/ontology/has_source
+    has_type:
+      source: ConditionOccurrence
+      target: Concept
+      uri: https://w3id.org/omop/ontology/has_type
+    has_currency:
+      source: Cost
+      target: Concept
+      uri: https://w3id.org/omop/ontology/has_currency
+    has_drg:
+      source: Cost
+      target: Concept
+      uri: https://w3id.org/omop/ontology/has_drg
+    has_revenue_code:
+      source: Cost
+      target: Concept
+      uri: https://w3id.org/omop/ontology/has_revenue_code
+    has_event_field:
+      source: Cost
+      target: Concept
+      uri: https://w3id.org/omop/ontology/has_event_field
+    has_payer_plan_period:
+      source: Cost
+      target: PayerPlanPeriod
+      uri: https://w3id.org/omop/ontology/has_payer_plan_period
+    has_event:
+      source: Cost
+      target: null
+      uri: https://w3id.org/omop/ontology/has_event
+    has_cause:
+      source: Death
+      target: Concept
+      uri: https://w3id.org/omop/ontology/has_cause
+    has_cause_source:
+      source: Death
+      target: Concept
+      uri: https://w3id.org/omop/ontology/has_cause_source
+    has_unique_device:
+      source: DeviceExposure
+      target: null
+      uri: https://w3id.org/omop/ontology/has_unique_device
+    has_unit:
+      source: DoseEra
+      target: Concept
+      uri: https://w3id.org/omop/ontology/has_unit
+    has_route:
+      source: DrugExposure
+      target: Concept
+      uri: https://w3id.org/omop/ontology/has_route
+    has_amount_unit:
+      source: DrugStrength
+      target: Concept
+      uri: https://w3id.org/omop/ontology/has_amount_unit
+    has_denominator_unit:
+      source: DrugStrength
+      target: Concept
+      uri: https://w3id.org/omop/ontology/has_denominator_unit
+    has_numerator_unit:
+      source: DrugStrength
+      target: Concept
+      uri: https://w3id.org/omop/ontology/has_numerator_unit
+    has_ingredient:
+      source: DrugStrength
+      target: Concept
+      uri: https://w3id.org/omop/ontology/has_ingredient
+    has_entity:
+      source: LocationHistory
+      target: null
+      uri: https://w3id.org/omop/ontology/has_entity
+    has_relationship_type:
+      source: LocationHistory
+      target: Concept
+      uri: https://w3id.org/omop/ontology/has_relationship_type
+    has_operator:
+      source: Measurement
+      target: Concept
+      uri: https://w3id.org/omop/ontology/has_operator
+    has_value_as_concept:
+      source: Measurement
+      target: Concept
+      uri: https://w3id.org/omop/ontology/has_value_as_concept
+    has_encoding:
+      source: Note
+      target: Concept
+      uri: https://w3id.org/omop/ontology/has_encoding
+    has_note_nlp:
+      source: Note
+      target: NoteNlp
+      uri: https://w3id.org/omop/ontology/has_note_nlp
+    has_section:
+      source: NoteNlp
+      target: Concept
+      uri: https://w3id.org/omop/ontology/has_section
+    has_obs_event_field:
+      source: Observation
+      target: Concept
+      uri: https://w3id.org/omop/ontology/has_obs_event_field
+    has_qualifier:
+      source: Observation
+      target: Concept
+      uri: https://w3id.org/omop/ontology/has_qualifier
+    has_period_type:
+      source: ObservationPeriod
+      target: Concept
+      uri: https://w3id.org/omop/ontology/has_period_type
+    has_contract_person:
+      source: PayerPlanPeriod
+      target: Person
+      uri: https://w3id.org/omop/ontology/has_contract_person
+    has_sponsor_source:
+      source: PayerPlanPeriod
+      target: Concept
+      uri: https://w3id.org/omop/ontology/has_sponsor_source
+    has_stop_reason_concept:
+      source: PayerPlanPeriod
+      target: Concept
+      uri: https://w3id.org/omop/ontology/has_stop_reason_concept
+    has_stop_reason_source:
+      source: PayerPlanPeriod
+      target: Concept
+      uri: https://w3id.org/omop/ontology/has_stop_reason_source
+    has_contract:
+      source: PayerPlanPeriod
+      target: Concept
+      uri: https://w3id.org/omop/ontology/has_contract
+    has_contract_source:
+      source: PayerPlanPeriod
+      target: Concept
+      uri: https://w3id.org/omop/ontology/has_contract_source
+    has_payer:
+      source: PayerPlanPeriod
+      target: Concept
+      uri: https://w3id.org/omop/ontology/has_payer
+    has_payer_source:
+      source: PayerPlanPeriod
+      target: Concept
+      uri: https://w3id.org/omop/ontology/has_payer_source
+    has_plan:
+      source: PayerPlanPeriod
+      target: Concept
+      uri: https://w3id.org/omop/ontology/has_plan
+    has_plan_source:
+      source: PayerPlanPeriod
+      target: Concept
+      uri: https://w3id.org/omop/ontology/has_plan_source
+    has_sponsor:
+      source: PayerPlanPeriod
+      target: Concept
+      uri: https://w3id.org/omop/ontology/has_sponsor
+    has_death:
+      source: Person
+      target: Death
+      uri: https://w3id.org/omop/ontology/has_death
+    has_condition_era:
+      source: Person
+      target: ConditionEra
+      uri: https://w3id.org/omop/ontology/has_condition_era
+    has_cost:
+      source: Person
+      target: Cost
+      uri: https://w3id.org/omop/ontology/has_cost
+    has_dose_era:
+      source: Person
+      target: DoseEra
+      uri: https://w3id.org/omop/ontology/has_dose_era
+    has_drug_era:
+      source: Person
+      target: DrugEra
+      uri: https://w3id.org/omop/ontology/has_drug_era
+    has_ethnicity:
+      source: Person
+      target: Concept
+      uri: https://w3id.org/omop/ontology/has_ethnicity
+    has_ethnicity_source:
+      source: Person
+      target: Concept
+      uri: https://w3id.org/omop/ontology/has_ethnicity_source
+    has_observation_period:
+      source: Person
+      target: ObservationPeriod
+      uri: https://w3id.org/omop/ontology/has_observation_period
+    has_race:
+      source: Person
+      target: Concept
+      uri: https://w3id.org/omop/ontology/has_race
+    has_race_source:
+      source: Person
+      target: Concept
+      uri: https://w3id.org/omop/ontology/has_race_source
+    has_specimen:
+      source: Person
+      target: Specimen
+      uri: https://w3id.org/omop/ontology/has_specimen
+    has_visit_occurrence:
+      source: Person
+      target: VisitOccurrence
+      uri: https://w3id.org/omop/ontology/has_visit_occurrence
+    has_condition_occurrence:
+      source: Person
+      target: ConditionOccurrence
+      uri: https://w3id.org/omop/ontology/has_condition_occurrence
+    has_device_exposure:
+      source: Person
+      target: DeviceExposure
+      uri: https://w3id.org/omop/ontology/has_device_exposure
+    has_drug_exposure:
+      source: Person
+      target: DrugExposure
+      uri: https://w3id.org/omop/ontology/has_drug_exposure
+    has_measurement:
+      source: Person
+      target: Measurement
+      uri: https://w3id.org/omop/ontology/has_measurement
+    has_note:
+      source: Person
+      target: Note
+      uri: https://w3id.org/omop/ontology/has_note
+    has_observation:
+      source: Person
+      target: Observation
+      uri: https://w3id.org/omop/ontology/has_observation
+    has_procedure_occurrence:
+      source: Person
+      target: ProcedureOccurrence
+      uri: https://w3id.org/omop/ontology/has_procedure_occurrence
+    has_survey_conduct:
+      source: Person
+      target: SurveyConduct
+      uri: https://w3id.org/omop/ontology/has_survey_conduct
+    has_visit_detail:
+      source: Person
+      target: VisitDetail
+      uri: https://w3id.org/omop/ontology/has_visit_detail
+    has_modifier:
+      source: ProcedureOccurrence
+      target: Concept
+      uri: https://w3id.org/omop/ontology/has_modifier
+    has_specialty:
+      source: Provider
+      target: Concept
+      uri: https://w3id.org/omop/ontology/has_specialty
+    has_specialty_source:
+      source: Provider
+      target: Concept
+      uri: https://w3id.org/omop/ontology/has_specialty_source
+    has_reverse_relationship:
+      source: Relationship
+      target: null
+      uri: https://w3id.org/omop/ontology/has_reverse_relationship
+    has_source_vocabulary:
+      source: SourceToConceptMap
+      target: Vocabulary
+      uri: https://w3id.org/omop/ontology/has_source_vocabulary
+    has_target:
+      source: SourceToConceptMap
+      target: Concept
+      uri: https://w3id.org/omop/ontology/has_target
+    has_target_vocabulary:
+      source: SourceToConceptMap
+      target: Vocabulary
+      uri: https://w3id.org/omop/ontology/has_target_vocabulary
+    has_anatomic_site:
+      source: Specimen
+      target: Concept
+      uri: https://w3id.org/omop/ontology/has_anatomic_site
+    has_disease_status:
+      source: Specimen
+      target: Concept
+      uri: https://w3id.org/omop/ontology/has_disease_status
+    has_response_visit_occurrence:
+      source: SurveyConduct
+      target: VisitOccurrence
+      uri: https://w3id.org/omop/ontology/has_response_visit_occurrence
+    has_assisted:
+      source: SurveyConduct
+      target: Concept
+      uri: https://w3id.org/omop/ontology/has_assisted
+    has_collection_method:
+      source: SurveyConduct
+      target: Concept
+      uri: https://w3id.org/omop/ontology/has_collection_method
+    has_respondent_type:
+      source: SurveyConduct
+      target: Concept
+      uri: https://w3id.org/omop/ontology/has_respondent_type
+    has_survey:
+      source: SurveyConduct
+      target: Concept
+      uri: https://w3id.org/omop/ontology/has_survey
+    has_survey_source:
+      source: SurveyConduct
+      target: Concept
+      uri: https://w3id.org/omop/ontology/has_survey_source
+    has_timing:
+      source: SurveyConduct
+      target: Concept
+      uri: https://w3id.org/omop/ontology/has_timing
+    has_validated_survey:
+      source: SurveyConduct
+      target: Concept
+      uri: https://w3id.org/omop/ontology/has_validated_survey
+    has_parent:
+      source: VisitDetail
+      target: VisitDetail
+      uri: https://w3id.org/omop/ontology/has_parent
+    has_preceding_visit_detail:
+      source: VisitDetail
+      target: VisitDetail
+      uri: https://w3id.org/omop/ontology/has_preceding_visit_detail
+    has_admitted_from:
+      source: VisitDetail
+      target: Concept
+      uri: https://w3id.org/omop/ontology/has_admitted_from
+    has_preceding_visit_occurrence:
+      source: VisitOccurrence
+      target: VisitOccurrence
+      uri: https://w3id.org/omop/ontology/has_preceding_visit_occurrence

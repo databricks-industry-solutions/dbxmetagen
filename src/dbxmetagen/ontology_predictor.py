@@ -1,13 +1,24 @@
-"""Three-pass entity and edge prediction for large ontologies.
+"""Progressive entity and edge prediction using tiered ontology indexes.
 
-Pass 1: Broad screen against tier-1 summaries (name + short description).
-Pass 2: Confirm against tier-2 scoped profiles (source, URI, parent, top edges).
-Pass 3: Deep classification against tier-3 full profiles (only ~20% of tables).
+Entity prediction uses three passes of increasing detail, where each tier
+acts as an index into the next:
 
-Gate logic:
-- Pass 1 high confidence + 1 candidate -> skip straight to Pass 2 with that candidate
-- Pass 2 confidence_score >= 0.75 -> skip Pass 3 (majority path)
-- Pass 3 only fires on low-confidence tables
+  Pass 1 -- Broad screen against the full tier-1 index (name + description
+            for every entity in the ontology). Returns 1-5 candidates.
+  Pass 2 -- Confirm against tier-2 profiles scoped to those candidates
+            (source, URI, parent, top edges). If confidence >= 0.75 the
+            result is final.
+  Pass 3 -- Deep classification against tier-3 full profiles (keywords,
+            relationships, attributes). Only fires when Pass 2 confidence
+            is below 0.75.
+
+Edge prediction uses two passes (tier-1 broad, tier-2 confirm) with a
+Python-side domain/range pre-filter before the first LLM call.
+
+Architecture note: a future "Pass 0" pre-filter (keyword, embedding, or
+domain-affinity based) can be inserted before Pass 1 by filtering the
+tier-1 list before it enters the prompt. The current function signatures
+and tier-loading API do not need to change to support this.
 """
 
 import json
@@ -63,8 +74,7 @@ ENTITY INDEX:
 TABLE:
 Name: {table_name}
 Columns: {columns}
-Sample (5 rows):
-{sample}
+Description: {sample}
 
 Return JSON: {{"top_candidates": ["Name1","Name2"], "confidence": "high|medium|low", "reasoning": "one sentence"}}
 Return 1-2 candidates if confidence is high, up to 5 if low."""
@@ -76,7 +86,7 @@ PASS2_USER = """Confirm entity classification. Candidate profiles:
 TABLE:
 Name: {table_name}
 Columns: {columns}
-Sample: {sample}
+Description: {sample}
 
 Prior candidates: {candidates}
 
@@ -90,7 +100,7 @@ PASS3_USER = """Final classification. Full profiles:
 TABLE:
 Name: {table_name}
 Columns: {columns}
-Sample: {sample}
+Description: {sample}
 
 Remaining: {candidates}
 
@@ -144,6 +154,39 @@ def _tier1_to_yaml(entries: List[Dict]) -> str:
     return yaml.dump(entries, default_flow_style=False, sort_keys=False)
 
 
+def _safe_parse_response(
+    llm_fn: Callable, system: str, user: str, context: str,
+) -> Optional[Dict[str, Any]]:
+    """Call LLM and parse JSON response. Returns None on any failure."""
+    try:
+        raw = llm_fn(system, user)
+        return _parse_json(raw)
+    except (json.JSONDecodeError, ValueError, TypeError) as e:
+        logger.warning("Pass failed for %s: %s", context, e)
+        return None
+    except Exception as e:
+        logger.warning("LLM call failed for %s: %s", context, e)
+        return None
+
+
+def _safe_float(val: Any, default: float = 0.0) -> float:
+    """Coerce to float without crashing on non-numeric LLM output."""
+    try:
+        return float(val)
+    except (ValueError, TypeError):
+        return default
+
+
+def _validate_pass1(resp: Dict) -> bool:
+    """Check that a Pass 1 response has the expected shape."""
+    return isinstance(resp.get("top_candidates"), list)
+
+
+def _validate_pass2(resp: Dict) -> bool:
+    """Check that a Pass 2/3 response has the expected shape."""
+    return "predicted_entity" in resp
+
+
 # ---------------------------------------------------------------------------
 # Entity prediction
 # ---------------------------------------------------------------------------
@@ -155,17 +198,21 @@ def predict_entity(
     loader: OntologyIndexLoader,
     llm_fn: Callable[[str, str], str],
 ) -> PredictionResult:
-    """Three-pass entity classification against tiered ontology indexes.
-    
+    """Progressive entity classification using tiered ontology indexes.
+
+    Pass 1 screens ALL tier-1 entities (no pre-filtering) so that no
+    valid entity is excluded. Pass 2 confirms with scoped tier-2 profiles.
+    Pass 3 fires only when Pass 2 confidence < 0.75.
+
     Args:
-        table_name: Fully qualified or short table name.
-        columns: Comma-separated column names and types.
-        sample: Text representation of sample rows.
-        loader: OntologyIndexLoader with tier files.
-        llm_fn: Callable(system_prompt, user_prompt) -> str response.
-    
+        table_name: Short table name.
+        columns: Column summary string from _get_column_summary.
+        sample: Table description text (e.g. "Description: ...").
+        loader: OntologyIndexLoader with tier files for the active bundle.
+        llm_fn: Callable(system_prompt, user_prompt) -> raw LLM text.
+
     Returns:
-        PredictionResult with classification, URI, and confidence.
+        PredictionResult with entity name, URI, confidence, and pass count.
     """
     # --- Pass 1: Broad screen ---
     tier1 = loader.get_entities_tier1()
@@ -180,10 +227,16 @@ def predict_entity(
         tier1_yaml=_tier1_to_yaml(tier1),
         table_name=table_name, columns=columns, sample=sample,
     )
-    resp1 = _parse_json(llm_fn(SYSTEM_PROMPT, prompt1))
-    candidates = resp1.get("top_candidates", [])
-    p1_confidence = resp1.get("confidence", "low")
+    resp1 = _safe_parse_response(llm_fn, SYSTEM_PROMPT, prompt1, f"Pass1:{table_name}")
+    if not resp1 or not _validate_pass1(resp1):
+        return PredictionResult(
+            table_name=table_name, predicted_entity="Unknown",
+            source_ontology="", equivalent_class_uri=None,
+            confidence_score=0.0, rationale="Pass 1 failed (bad LLM response)",
+            passes_run=1, needs_human_review=True,
+        )
 
+    candidates = resp1.get("top_candidates", [])
     if not candidates:
         return PredictionResult(
             table_name=table_name, predicted_entity="Unknown",
@@ -192,7 +245,8 @@ def predict_entity(
             passes_run=1, needs_human_review=True,
         )
 
-    logger.info("Pass 1 for %s: %d candidates, confidence=%s", table_name, len(candidates), p1_confidence)
+    logger.info("Pass 1 for %s: %d candidates, confidence=%s",
+                table_name, len(candidates), resp1.get("confidence", "low"))
 
     # --- Pass 2: Confirm ---
     tier2 = loader.get_entities_tier2_scoped(candidates)
@@ -201,9 +255,18 @@ def predict_entity(
         tier2_yaml=tier2_yaml, table_name=table_name,
         columns=columns, sample=sample, candidates=", ".join(candidates),
     )
-    resp2 = _parse_json(llm_fn(SYSTEM_PROMPT, prompt2))
+    resp2 = _safe_parse_response(llm_fn, SYSTEM_PROMPT, prompt2, f"Pass2:{table_name}")
+    if not resp2 or not _validate_pass2(resp2):
+        uri = loader.get_uri(candidates[0])
+        return PredictionResult(
+            table_name=table_name, predicted_entity=candidates[0],
+            source_ontology="", equivalent_class_uri=uri,
+            confidence_score=0.3,
+            rationale="Pass 2 failed, using Pass 1 best candidate",
+            passes_run=1, needs_human_review=True,
+        )
 
-    score2 = float(resp2.get("confidence_score", 0.0))
+    score2 = _safe_float(resp2.get("confidence_score"), 0.0)
     needs_deep = resp2.get("needs_deep_pass", score2 < 0.75)
 
     if not needs_deep:
@@ -228,9 +291,21 @@ def predict_entity(
         tier3_yaml=tier3_yaml, table_name=table_name,
         columns=columns, sample=sample, candidates=", ".join(candidates),
     )
-    resp3 = _parse_json(llm_fn(SYSTEM_PROMPT, prompt3))
+    resp3 = _safe_parse_response(llm_fn, SYSTEM_PROMPT, prompt3, f"Pass3:{table_name}")
+    if not resp3 or not _validate_pass2(resp3):
+        # Pass 3 failed -- return the Pass 2 result instead of crashing
+        uri = resp2.get("equivalent_class_uri") or loader.get_uri(resp2.get("predicted_entity", ""))
+        return PredictionResult(
+            table_name=table_name,
+            predicted_entity=resp2.get("predicted_entity", candidates[0]),
+            source_ontology=resp2.get("source_ontology", ""),
+            equivalent_class_uri=uri,
+            confidence_score=score2,
+            rationale=resp2.get("rationale", "Pass 3 failed, returning Pass 2 result"),
+            passes_run=2, needs_human_review=True,
+        )
 
-    score3 = float(resp3.get("confidence_score", 0.0))
+    score3 = _safe_float(resp3.get("confidence_score"), 0.0)
     entity = resp3.get("predicted_entity", candidates[0])
     uri = resp3.get("equivalent_class_uri") or loader.get_uri(entity)
     return PredictionResult(
@@ -261,18 +336,21 @@ def predict_edge(
     to_table: str = "",
     to_column: str = "",
 ) -> EdgePredictionResult:
-    """Two/three-pass edge classification using tiered ontology indexes.
-    
-    Pre-filters edge candidates by domain/range in Python before any LLM call.
+    """Two-pass edge classification using tiered ontology indexes.
+
+    Pass 1 screens tier-1 edges pre-filtered by domain/range match in Python.
+    Pass 2 confirms against scoped tier-2 edge profiles.
     """
+    _default = EdgePredictionResult(
+        from_table=from_table, to_table=to_table,
+        predicted_edge="references", edge_uri=None, inverse=None,
+        source_ontology="", confidence_score=0.0,
+        rationale="No edge tier indexes available",
+    )
+
     all_edges_t1 = loader.get_edges_tier1()
     if not all_edges_t1:
-        return EdgePredictionResult(
-            from_table=from_table, to_table=to_table,
-            predicted_edge="references", edge_uri=None, inverse=None,
-            source_ontology="", confidence_score=0.0,
-            rationale="No edge tier indexes available",
-        )
+        return _default
 
     # Pre-filter: only edges whose domain/range match our entity types
     scoped = [
@@ -282,15 +360,23 @@ def predict_edge(
     if not scoped:
         scoped = all_edges_t1[:30]  # fallback to top 30
 
+    ctx = f"Edge:{from_table}->{to_table}"
     prompt1 = EDGE_PASS1_USER.format(
         tier1_yaml=_tier1_to_yaml(scoped),
         from_table=from_table, from_column=from_column,
         to_table=to_table, to_column=to_column,
         src_entity=src_entity, dst_entity=dst_entity,
     )
-    resp1 = _parse_json(llm_fn(SYSTEM_PROMPT, prompt1))
-    candidates = resp1.get("top_candidates", [])
+    resp1 = _safe_parse_response(llm_fn, SYSTEM_PROMPT, prompt1, f"Pass1:{ctx}")
+    if not resp1 or not _validate_pass1(resp1):
+        return EdgePredictionResult(
+            from_table=from_table, to_table=to_table,
+            predicted_edge="references", edge_uri=None, inverse=None,
+            source_ontology="", confidence_score=0.0,
+            rationale="Edge Pass 1 failed (bad LLM response)", passes_run=1,
+        )
 
+    candidates = resp1.get("top_candidates", [])
     if not candidates:
         return EdgePredictionResult(
             from_table=from_table, to_table=to_table,
@@ -308,7 +394,16 @@ def predict_edge(
         src_entity=src_entity, dst_entity=dst_entity,
         candidates=", ".join(candidates),
     )
-    resp2 = _parse_json(llm_fn(SYSTEM_PROMPT, prompt2))
+    resp2 = _safe_parse_response(llm_fn, SYSTEM_PROMPT, prompt2, f"Pass2:{ctx}")
+    if not resp2 or "predicted_edge" not in resp2:
+        # Pass 2 failed -- return Pass 1's best candidate with low confidence
+        return EdgePredictionResult(
+            from_table=from_table, to_table=to_table,
+            predicted_edge=candidates[0], edge_uri=None, inverse=None,
+            source_ontology="", confidence_score=0.3,
+            rationale="Edge Pass 2 failed, using Pass 1 best candidate",
+            passes_run=1,
+        )
 
     return EdgePredictionResult(
         from_table=from_table, to_table=to_table,
@@ -316,7 +411,7 @@ def predict_edge(
         edge_uri=resp2.get("edge_uri"),
         inverse=resp2.get("inverse"),
         source_ontology=resp2.get("source_ontology", ""),
-        confidence_score=float(resp2.get("confidence_score", 0.0)),
+        confidence_score=_safe_float(resp2.get("confidence_score"), 0.0),
         rationale=resp2.get("rationale", ""),
         passes_run=2,
     )

@@ -1,0 +1,752 @@
+has_definition:
+  name: has_definition
+  domain: Cohort
+  range: CohortDefinition
+  ranges:
+  - CohortDefinition
+  uri: https://w3id.org/omop/ontology/has_definition
+  inverse: null
+has_subject:
+  name: has_subject
+  domain: Cohort
+  range: null
+  ranges: []
+  uri: https://w3id.org/omop/ontology/has_subject
+  inverse: null
+has_language:
+  name: has_language
+  domain: ConceptSynonym
+  range: Concept
+  ranges:
+  - Concept
+  uri: https://w3id.org/omop/ontology/has_language
+  inverse: null
+has_concept:
+  name: has_concept
+  domain: ConceptSynonym
+  range: Concept
+  ranges:
+  - Concept
+  uri: https://w3id.org/omop/ontology/has_concept
+  inverse: null
+has_period_type:
+  name: has_period_type
+  domain: ObservationPeriod
+  range: Concept
+  ranges:
+  - Concept
+  uri: https://w3id.org/omop/ontology/has_period_type
+  inverse: null
+has_ancestor:
+  name: has_ancestor
+  domain: ConceptAncestor
+  range: Concept
+  ranges:
+  - Concept
+  uri: https://w3id.org/omop/ontology/has_ancestor
+  inverse: null
+has_descendant:
+  name: has_descendant
+  domain: ConceptAncestor
+  range: Concept
+  ranges:
+  - Concept
+  uri: https://w3id.org/omop/ontology/has_descendant
+  inverse: null
+has_unit:
+  name: has_unit
+  domain: DoseEra
+  range: Concept
+  ranges:
+  - Concept
+  uri: https://w3id.org/omop/ontology/has_unit
+  inverse: null
+has_entity:
+  name: has_entity
+  domain: LocationHistory
+  range: null
+  ranges: []
+  uri: https://w3id.org/omop/ontology/has_entity
+  inverse: null
+has_relationship_type:
+  name: has_relationship_type
+  domain: LocationHistory
+  range: Concept
+  ranges:
+  - Concept
+  uri: https://w3id.org/omop/ontology/has_relationship_type
+  inverse: null
+has_domain:
+  name: has_domain
+  domain: LocationHistory
+  range: Domain
+  ranges:
+  - Domain
+  uri: https://w3id.org/omop/ontology/has_domain
+  inverse: null
+has_location:
+  name: has_location
+  domain: LocationHistory
+  range: Location
+  ranges:
+  - Location
+  uri: https://w3id.org/omop/ontology/has_location
+  inverse: null
+has_unique_device:
+  name: has_unique_device
+  domain: DeviceExposure
+  range: null
+  ranges: []
+  uri: https://w3id.org/omop/ontology/has_unique_device
+  inverse: null
+has_relationship:
+  name: has_relationship
+  domain: FactRelationship
+  range: null
+  ranges: []
+  uri: https://w3id.org/omop/ontology/has_relationship
+  inverse: null
+has_value_as_concept:
+  name: has_value_as_concept
+  domain: Metadata
+  range: Concept
+  ranges:
+  - Concept
+  uri: https://w3id.org/omop/ontology/has_value_as_concept
+  inverse: null
+has_type:
+  name: has_type
+  domain: Metadata
+  range: Concept
+  ranges:
+  - Concept
+  uri: https://w3id.org/omop/ontology/has_type
+  inverse: null
+has_cause:
+  name: has_cause
+  domain: Death
+  range: Concept
+  ranges:
+  - Concept
+  uri: https://w3id.org/omop/ontology/has_cause
+  inverse: null
+has_cause_source:
+  name: has_cause_source
+  domain: Death
+  range: Concept
+  ranges:
+  - Concept
+  uri: https://w3id.org/omop/ontology/has_cause_source
+  inverse: null
+has_reverse_relationship:
+  name: has_reverse_relationship
+  domain: Relationship
+  range: null
+  ranges: []
+  uri: https://w3id.org/omop/ontology/has_reverse_relationship
+  inverse: null
+has_place_of_service:
+  name: has_place_of_service
+  domain: CareSite
+  range: Concept
+  ranges:
+  - Concept
+  uri: https://w3id.org/omop/ontology/has_place_of_service
+  inverse: null
+has_definition_type:
+  name: has_definition_type
+  domain: CohortDefinition
+  range: Concept
+  ranges:
+  - Concept
+  uri: https://w3id.org/omop/ontology/has_definition_type
+  inverse: null
+has_source_vocabulary:
+  name: has_source_vocabulary
+  domain: SourceToConceptMap
+  range: Vocabulary
+  ranges:
+  - Vocabulary
+  uri: https://w3id.org/omop/ontology/has_source_vocabulary
+  inverse: null
+has_target:
+  name: has_target
+  domain: SourceToConceptMap
+  range: Concept
+  ranges:
+  - Concept
+  uri: https://w3id.org/omop/ontology/has_target
+  inverse: null
+has_target_vocabulary:
+  name: has_target_vocabulary
+  domain: SourceToConceptMap
+  range: Vocabulary
+  ranges:
+  - Vocabulary
+  uri: https://w3id.org/omop/ontology/has_target_vocabulary
+  inverse: null
+has_source:
+  name: has_source
+  domain: SourceToConceptMap
+  range: null
+  ranges: []
+  uri: https://w3id.org/omop/ontology/has_source
+  inverse: null
+has_status:
+  name: has_status
+  domain: ConditionOccurrence
+  range: Concept
+  ranges:
+  - Concept
+  uri: https://w3id.org/omop/ontology/has_status
+  inverse: null
+has_provider:
+  name: has_provider
+  domain: ConditionOccurrence
+  range: Provider
+  ranges:
+  - Provider
+  uri: https://w3id.org/omop/ontology/has_provider
+  inverse: null
+has_modifier:
+  name: has_modifier
+  domain: ProcedureOccurrence
+  range: Concept
+  ranges:
+  - Concept
+  uri: https://w3id.org/omop/ontology/has_modifier
+  inverse: null
+has_parent:
+  name: has_parent
+  domain: VisitDetail
+  range: VisitDetail
+  ranges:
+  - VisitDetail
+  uri: https://w3id.org/omop/ontology/has_parent
+  inverse: null
+has_preceding_visit_detail:
+  name: has_preceding_visit_detail
+  domain: VisitDetail
+  range: VisitDetail
+  ranges:
+  - VisitDetail
+  uri: https://w3id.org/omop/ontology/has_preceding_visit_detail
+  inverse: null
+has_admitted_from:
+  name: has_admitted_from
+  domain: VisitDetail
+  range: Concept
+  ranges:
+  - Concept
+  uri: https://w3id.org/omop/ontology/has_admitted_from
+  inverse: null
+has_amount_unit:
+  name: has_amount_unit
+  domain: DrugStrength
+  range: Concept
+  ranges:
+  - Concept
+  uri: https://w3id.org/omop/ontology/has_amount_unit
+  inverse: null
+has_denominator_unit:
+  name: has_denominator_unit
+  domain: DrugStrength
+  range: Concept
+  ranges:
+  - Concept
+  uri: https://w3id.org/omop/ontology/has_denominator_unit
+  inverse: null
+has_numerator_unit:
+  name: has_numerator_unit
+  domain: DrugStrength
+  range: Concept
+  ranges:
+  - Concept
+  uri: https://w3id.org/omop/ontology/has_numerator_unit
+  inverse: null
+has_ingredient:
+  name: has_ingredient
+  domain: DrugStrength
+  range: Concept
+  ranges:
+  - Concept
+  uri: https://w3id.org/omop/ontology/has_ingredient
+  inverse: null
+has_section:
+  name: has_section
+  domain: NoteNlp
+  range: Concept
+  ranges:
+  - Concept
+  uri: https://w3id.org/omop/ontology/has_section
+  inverse: null
+has_preceding_visit_occurrence:
+  name: has_preceding_visit_occurrence
+  domain: VisitOccurrence
+  range: VisitOccurrence
+  ranges:
+  - VisitOccurrence
+  uri: https://w3id.org/omop/ontology/has_preceding_visit_occurrence
+  inverse: null
+has_survey_conduct:
+  name: has_survey_conduct
+  domain: VisitOccurrence
+  range: SurveyConduct
+  ranges:
+  - SurveyConduct
+  uri: https://w3id.org/omop/ontology/has_survey_conduct
+  inverse: null
+has_visit_detail:
+  name: has_visit_detail
+  domain: VisitOccurrence
+  range: VisitDetail
+  ranges:
+  - VisitDetail
+  uri: https://w3id.org/omop/ontology/has_visit_detail
+  inverse: null
+has_route:
+  name: has_route
+  domain: DrugExposure
+  range: Concept
+  ranges:
+  - Concept
+  uri: https://w3id.org/omop/ontology/has_route
+  inverse: null
+has_anatomic_site:
+  name: has_anatomic_site
+  domain: Specimen
+  range: Concept
+  ranges:
+  - Concept
+  uri: https://w3id.org/omop/ontology/has_anatomic_site
+  inverse: null
+has_disease_status:
+  name: has_disease_status
+  domain: Specimen
+  range: Concept
+  ranges:
+  - Concept
+  uri: https://w3id.org/omop/ontology/has_disease_status
+  inverse: null
+has_encoding:
+  name: has_encoding
+  domain: Note
+  range: Concept
+  ranges:
+  - Concept
+  uri: https://w3id.org/omop/ontology/has_encoding
+  inverse: null
+has_note_nlp:
+  name: has_note_nlp
+  domain: Note
+  range: NoteNlp
+  ranges:
+  - NoteNlp
+  uri: https://w3id.org/omop/ontology/has_note_nlp
+  inverse: null
+has_event_field:
+  name: has_event_field
+  domain: Note
+  range: Concept
+  ranges:
+  - Concept
+  uri: https://w3id.org/omop/ontology/has_event_field
+  inverse: null
+has_class:
+  name: has_class
+  domain: Note
+  range: null
+  ranges: []
+  uri: https://w3id.org/omop/ontology/has_class
+  inverse: null
+has_event:
+  name: has_event
+  domain: Note
+  range: null
+  ranges: []
+  uri: https://w3id.org/omop/ontology/has_event
+  inverse: null
+has_operator:
+  name: has_operator
+  domain: Measurement
+  range: Concept
+  ranges:
+  - Concept
+  uri: https://w3id.org/omop/ontology/has_operator
+  inverse: null
+has_specialty:
+  name: has_specialty
+  domain: Provider
+  range: Concept
+  ranges:
+  - Concept
+  uri: https://w3id.org/omop/ontology/has_specialty
+  inverse: null
+has_specialty_source:
+  name: has_specialty_source
+  domain: Provider
+  range: Concept
+  ranges:
+  - Concept
+  uri: https://w3id.org/omop/ontology/has_specialty_source
+  inverse: null
+has_currency:
+  name: has_currency
+  domain: Cost
+  range: Concept
+  ranges:
+  - Concept
+  uri: https://w3id.org/omop/ontology/has_currency
+  inverse: null
+has_drg:
+  name: has_drg
+  domain: Cost
+  range: Concept
+  ranges:
+  - Concept
+  uri: https://w3id.org/omop/ontology/has_drg
+  inverse: null
+has_revenue_code:
+  name: has_revenue_code
+  domain: Cost
+  range: Concept
+  ranges:
+  - Concept
+  uri: https://w3id.org/omop/ontology/has_revenue_code
+  inverse: null
+has_payer_plan_period:
+  name: has_payer_plan_period
+  domain: Cost
+  range: PayerPlanPeriod
+  ranges:
+  - PayerPlanPeriod
+  uri: https://w3id.org/omop/ontology/has_payer_plan_period
+  inverse: null
+has_obs_event_field:
+  name: has_obs_event_field
+  domain: Observation
+  range: Concept
+  ranges:
+  - Concept
+  uri: https://w3id.org/omop/ontology/has_obs_event_field
+  inverse: null
+has_qualifier:
+  name: has_qualifier
+  domain: Observation
+  range: Concept
+  ranges:
+  - Concept
+  uri: https://w3id.org/omop/ontology/has_qualifier
+  inverse: null
+has_contract_person:
+  name: has_contract_person
+  domain: PayerPlanPeriod
+  range: Person
+  ranges:
+  - Person
+  uri: https://w3id.org/omop/ontology/has_contract_person
+  inverse: null
+has_sponsor_source:
+  name: has_sponsor_source
+  domain: PayerPlanPeriod
+  range: Concept
+  ranges:
+  - Concept
+  uri: https://w3id.org/omop/ontology/has_sponsor_source
+  inverse: null
+has_stop_reason_concept:
+  name: has_stop_reason_concept
+  domain: PayerPlanPeriod
+  range: Concept
+  ranges:
+  - Concept
+  uri: https://w3id.org/omop/ontology/has_stop_reason_concept
+  inverse: null
+has_stop_reason_source:
+  name: has_stop_reason_source
+  domain: PayerPlanPeriod
+  range: Concept
+  ranges:
+  - Concept
+  uri: https://w3id.org/omop/ontology/has_stop_reason_source
+  inverse: null
+has_contract:
+  name: has_contract
+  domain: PayerPlanPeriod
+  range: Concept
+  ranges:
+  - Concept
+  uri: https://w3id.org/omop/ontology/has_contract
+  inverse: null
+has_contract_source:
+  name: has_contract_source
+  domain: PayerPlanPeriod
+  range: Concept
+  ranges:
+  - Concept
+  uri: https://w3id.org/omop/ontology/has_contract_source
+  inverse: null
+has_payer:
+  name: has_payer
+  domain: PayerPlanPeriod
+  range: Concept
+  ranges:
+  - Concept
+  uri: https://w3id.org/omop/ontology/has_payer
+  inverse: null
+has_payer_source:
+  name: has_payer_source
+  domain: PayerPlanPeriod
+  range: Concept
+  ranges:
+  - Concept
+  uri: https://w3id.org/omop/ontology/has_payer_source
+  inverse: null
+has_plan:
+  name: has_plan
+  domain: PayerPlanPeriod
+  range: Concept
+  ranges:
+  - Concept
+  uri: https://w3id.org/omop/ontology/has_plan
+  inverse: null
+has_plan_source:
+  name: has_plan_source
+  domain: PayerPlanPeriod
+  range: Concept
+  ranges:
+  - Concept
+  uri: https://w3id.org/omop/ontology/has_plan_source
+  inverse: null
+has_sponsor:
+  name: has_sponsor
+  domain: PayerPlanPeriod
+  range: Concept
+  ranges:
+  - Concept
+  uri: https://w3id.org/omop/ontology/has_sponsor
+  inverse: null
+has_response_visit_occurrence:
+  name: has_response_visit_occurrence
+  domain: SurveyConduct
+  range: VisitOccurrence
+  ranges:
+  - VisitOccurrence
+  uri: https://w3id.org/omop/ontology/has_response_visit_occurrence
+  inverse: null
+has_assisted:
+  name: has_assisted
+  domain: SurveyConduct
+  range: Concept
+  ranges:
+  - Concept
+  uri: https://w3id.org/omop/ontology/has_assisted
+  inverse: null
+has_collection_method:
+  name: has_collection_method
+  domain: SurveyConduct
+  range: Concept
+  ranges:
+  - Concept
+  uri: https://w3id.org/omop/ontology/has_collection_method
+  inverse: null
+has_respondent_type:
+  name: has_respondent_type
+  domain: SurveyConduct
+  range: Concept
+  ranges:
+  - Concept
+  uri: https://w3id.org/omop/ontology/has_respondent_type
+  inverse: null
+has_survey:
+  name: has_survey
+  domain: SurveyConduct
+  range: Concept
+  ranges:
+  - Concept
+  uri: https://w3id.org/omop/ontology/has_survey
+  inverse: null
+has_survey_source:
+  name: has_survey_source
+  domain: SurveyConduct
+  range: Concept
+  ranges:
+  - Concept
+  uri: https://w3id.org/omop/ontology/has_survey_source
+  inverse: null
+has_timing:
+  name: has_timing
+  domain: SurveyConduct
+  range: Concept
+  ranges:
+  - Concept
+  uri: https://w3id.org/omop/ontology/has_timing
+  inverse: null
+has_validated_survey:
+  name: has_validated_survey
+  domain: SurveyConduct
+  range: Concept
+  ranges:
+  - Concept
+  uri: https://w3id.org/omop/ontology/has_validated_survey
+  inverse: null
+has_death:
+  name: has_death
+  domain: Person
+  range: Death
+  ranges:
+  - Death
+  uri: https://w3id.org/omop/ontology/has_death
+  inverse: null
+has_condition_era:
+  name: has_condition_era
+  domain: Person
+  range: ConditionEra
+  ranges:
+  - ConditionEra
+  uri: https://w3id.org/omop/ontology/has_condition_era
+  inverse: null
+has_cost:
+  name: has_cost
+  domain: Person
+  range: Cost
+  ranges:
+  - Cost
+  uri: https://w3id.org/omop/ontology/has_cost
+  inverse: null
+has_dose_era:
+  name: has_dose_era
+  domain: Person
+  range: DoseEra
+  ranges:
+  - DoseEra
+  uri: https://w3id.org/omop/ontology/has_dose_era
+  inverse: null
+has_drug_era:
+  name: has_drug_era
+  domain: Person
+  range: DrugEra
+  ranges:
+  - DrugEra
+  uri: https://w3id.org/omop/ontology/has_drug_era
+  inverse: null
+has_ethnicity:
+  name: has_ethnicity
+  domain: Person
+  range: Concept
+  ranges:
+  - Concept
+  uri: https://w3id.org/omop/ontology/has_ethnicity
+  inverse: null
+has_ethnicity_source:
+  name: has_ethnicity_source
+  domain: Person
+  range: Concept
+  ranges:
+  - Concept
+  uri: https://w3id.org/omop/ontology/has_ethnicity_source
+  inverse: null
+has_observation_period:
+  name: has_observation_period
+  domain: Person
+  range: ObservationPeriod
+  ranges:
+  - ObservationPeriod
+  uri: https://w3id.org/omop/ontology/has_observation_period
+  inverse: null
+has_race:
+  name: has_race
+  domain: Person
+  range: Concept
+  ranges:
+  - Concept
+  uri: https://w3id.org/omop/ontology/has_race
+  inverse: null
+has_race_source:
+  name: has_race_source
+  domain: Person
+  range: Concept
+  ranges:
+  - Concept
+  uri: https://w3id.org/omop/ontology/has_race_source
+  inverse: null
+has_specimen:
+  name: has_specimen
+  domain: Person
+  range: Specimen
+  ranges:
+  - Specimen
+  uri: https://w3id.org/omop/ontology/has_specimen
+  inverse: null
+has_visit_occurrence:
+  name: has_visit_occurrence
+  domain: Person
+  range: VisitOccurrence
+  ranges:
+  - VisitOccurrence
+  uri: https://w3id.org/omop/ontology/has_visit_occurrence
+  inverse: null
+has_condition_occurrence:
+  name: has_condition_occurrence
+  domain: Person
+  range: ConditionOccurrence
+  ranges:
+  - ConditionOccurrence
+  uri: https://w3id.org/omop/ontology/has_condition_occurrence
+  inverse: null
+has_device_exposure:
+  name: has_device_exposure
+  domain: Person
+  range: DeviceExposure
+  ranges:
+  - DeviceExposure
+  uri: https://w3id.org/omop/ontology/has_device_exposure
+  inverse: null
+has_drug_exposure:
+  name: has_drug_exposure
+  domain: Person
+  range: DrugExposure
+  ranges:
+  - DrugExposure
+  uri: https://w3id.org/omop/ontology/has_drug_exposure
+  inverse: null
+has_measurement:
+  name: has_measurement
+  domain: Person
+  range: Measurement
+  ranges:
+  - Measurement
+  uri: https://w3id.org/omop/ontology/has_measurement
+  inverse: null
+has_note:
+  name: has_note
+  domain: Person
+  range: Note
+  ranges:
+  - Note
+  uri: https://w3id.org/omop/ontology/has_note
+  inverse: null
+has_observation:
+  name: has_observation
+  domain: Person
+  range: Observation
+  ranges:
+  - Observation
+  uri: https://w3id.org/omop/ontology/has_observation
+  inverse: null
+has_procedure_occurrence:
+  name: has_procedure_occurrence
+  domain: Person
+  range: ProcedureOccurrence
+  ranges:
+  - ProcedureOccurrence
+  uri: https://w3id.org/omop/ontology/has_procedure_occurrence
+  inverse: null
+has_vocabulary:
+  name: has_vocabulary
+  domain: Concept
+  range: Vocabulary
+  ranges:
+  - Vocabulary
+  uri: https://w3id.org/omop/ontology/has_vocabulary
+  inverse: null

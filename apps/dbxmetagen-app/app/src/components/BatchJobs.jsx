@@ -141,10 +141,9 @@ export default function BatchJobs({ onNavigate }) {
   const [schemaName, setSchemaName] = useState('')
   const [runningAction, setRunningAction] = useState(null)
   const [error, setError] = useState(null)
-  const [ontologyBundle, setOntologyBundle] = useState('general')
+  const [ontologyBundle, setOntologyBundle] = useState('')
   const [entityTagKey, setEntityTagKey] = useState('entity_type')
   const [bundles, setBundles] = useState([])
-  const [bundleInfo, setBundleInfo] = useState(null)
   const [domainConfig, setDomainConfig] = useState('')
   const [domainConfigs, setDomainConfigs] = useState([])
   const [runHistory, setRunHistory] = useState([])
@@ -158,6 +157,7 @@ export default function BatchJobs({ onNavigate }) {
   const [lakebaseCatalog, setLakebaseCatalog] = useState('')
   const [lakebaseError, setLakebaseError] = useState(null)
   const [lakebaseConfigured, setLakebaseConfigured] = useState(false)
+  const [importStatus, setImportStatus] = useState(null)
   const [availableModels, setAvailableModels] = useState(['databricks-claude-sonnet-4-6', 'databricks-gpt-oss-120b'])
   const pollRef = useRef(null)
 
@@ -191,15 +191,10 @@ export default function BatchJobs({ onNavigate }) {
   const pickerTables = picker.tables
   const [pickerSelected, setPickerSelected] = useState([])
 
-  const buildExtraParams = () => {
-    const p = {
-      model: settings.model,
-      sample_size: String(settings.sample_size),
-      include_lineage: String(settings.include_lineage),
-    }
-    if (settings.use_kb_comments) p.use_kb_comments = 'true'
-    return p
-  }
+  const buildExtraParams = () => ({
+    model: settings.model,
+    sample_size: String(settings.sample_size),
+  })
 
   useEffect(() => {
     setError(null)
@@ -235,12 +230,6 @@ export default function BatchJobs({ onNavigate }) {
     }).catch(() => {})
   }, [])
 
-  useEffect(() => {
-    if (!ontologyBundle) return
-    fetch(`/api/ontology/bundle-info?bundle=${encodeURIComponent(ontologyBundle)}`)
-      .then(r => r.ok ? r.json() : null).then(setBundleInfo).catch(() => setBundleInfo(null))
-  }, [ontologyBundle])
-
   useEffect(() => { setPickerSelected([]) }, [pickerCatalog, pickerSchema])
 
   const addSelectedTables = () => {
@@ -257,8 +246,11 @@ export default function BatchJobs({ onNavigate }) {
     setPickerSelected(prev => prev.includes(t) ? prev.filter(x => x !== t) : [...prev, t])
   }
 
+  const runHistoryRef = useRef(runHistory)
+  useEffect(() => { runHistoryRef.current = runHistory }, [runHistory])
+
   const pollActiveRuns = useCallback(async () => {
-    const active = runHistory.filter(r => !TERMINAL_STATES.has(r.state))
+    const active = runHistoryRef.current.filter(r => !TERMINAL_STATES.has(r.state))
     if (active.length === 0) return
     const updates = await Promise.all(active.map(async (r) => {
       try {
@@ -271,15 +263,17 @@ export default function BatchJobs({ onNavigate }) {
       const upd = updates.find(u => u && u.run_id === r.run_id)
       return upd ? { ...r, ...upd } : r
     }))
-  }, [runHistory])
+  }, [])
 
   useEffect(() => {
     const hasActive = runHistory.some(r => !TERMINAL_STATES.has(r.state))
-    if (hasActive) {
+    if (hasActive && !pollRef.current) {
       pollRef.current = setInterval(pollActiveRuns, 5000)
-      return () => clearInterval(pollRef.current)
+    } else if (!hasActive && pollRef.current) {
+      clearInterval(pollRef.current)
+      pollRef.current = null
     }
-    if (pollRef.current) clearInterval(pollRef.current)
+    return () => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null } }
   }, [runHistory, pollActiveRuns])
 
   const findJob = (suffix) => jobs.find(j => j.name?.endsWith(suffix))
@@ -348,46 +342,115 @@ export default function BatchJobs({ onNavigate }) {
           <p className="text-xs text-gray-400 col-span-2">Configured via variables.yml in the Databricks Asset Bundle.</p>
         </div>
 
-        <details className="mt-4 group">
+        <details className="mt-4 group" open>
           <summary className="section-title cursor-pointer select-none flex items-center gap-1.5 py-2 border-t border-dbx-oat-dark/30 dark:border-dbx-navy-400/20 mt-3 pt-3">
             <svg className="w-3 h-3 transition-transform group-open:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
             </svg>
-            Shared Options
+            Ontology &amp; Domain Settings
           </summary>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-3 animate-slide-up">
             <div>
               <label className="section-title mb-1.5 flex items-center gap-2">
                 Ontology Bundle
-                {(bundleInfo?.has_tier_indexes || bundles.find(b => b.key === ontologyBundle)?.has_tier_indexes) && (
-                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300 font-medium" title="Three-pass prediction enabled via formal ontology tier indexes (FHIR R4, OMOP CDM, Schema.org)">
-                    Formally Grounded
-                  </span>
-                )}
-                {(bundleInfo?.format_version === '2.0' || bundles.find(b => b.key === ontologyBundle)?.format_version === '2.0') && (
-                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300 font-medium" title="OWL v2 format with entity URIs and source ontology alignment">
-                    OWL v2
-                  </span>
-                )}
+                {(() => {
+                  const sel = bundles.find(b => b.key === ontologyBundle)
+                  const isFormal = sel?.bundle_type === 'formal_ontology'
+                  const hasTiers = sel?.has_tier_indexes
+                  const isV2 = sel?.format_version === '2.0'
+                  return (<>
+                    {isFormal && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300 font-medium" title="Entities auto-extracted from published OWL/Turtle ontology">
+                        Formal OWL
+                      </span>
+                    )}
+                    {hasTiers && !isFormal && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300 font-medium" title="Three-pass prediction enabled via formal ontology tier indexes">
+                        Formally Grounded
+                      </span>
+                    )}
+                    {isV2 && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300 font-medium" title="OWL v2 format with entity URIs and source ontology alignment">
+                        OWL v2
+                      </span>
+                    )}
+                  </>)
+                })()}
               </label>
               <select value={ontologyBundle} onChange={e => setOntologyBundle(e.target.value)} className="select-base">
-                {bundles.length > 0 ? bundles.map(b => (
-                  <option key={b.key} value={b.key}>
-                    {b.has_tier_indexes ? '\u2713 ' : ''}{b.name} ({b.entity_count} entities){b.standards_alignment ? ` -- ${b.standards_alignment}` : ''}{!b.has_tier_indexes ? ' (no formal grounding)' : ''}
-                  </option>
-                )) : (
-                  <option value="" disabled>No bundles found</option>
-                )}
+                <option value="">(None -- domain config only)</option>
+                {bundles.length > 0 && (() => {
+                  const formal = bundles.filter(b => b.bundle_type === 'formal_ontology')
+                  const curated = bundles.filter(b => b.bundle_type !== 'formal_ontology')
+                  const counts = (b) => {
+                    const parts = [`${b.entity_count} entities`]
+                    if (b.edge_count) parts.push(`${b.edge_count} edges`)
+                    return parts.join(', ')
+                  }
+                  const suffix = (b) => (b.standards_alignment && b.standards_alignment !== b.name) ? ` -- ${b.standards_alignment}` : ''
+                  return (<>
+                    {formal.length > 0 && <optgroup label="Formal Ontologies (auto-extracted from OWL/Turtle)">
+                      {formal.map(b => (
+                        <option key={b.key} value={b.key}>
+                          {b.name} ({counts(b)}){suffix(b)}
+                        </option>
+                      ))}
+                    </optgroup>}
+                    {curated.length > 0 && <optgroup label="Curated Bundles">
+                      {curated.map(b => (
+                        <option key={b.key} value={b.key}>
+                          {b.has_tier_indexes ? '\u2713 ' : ''}{b.name} ({counts(b)}){suffix(b)}
+                        </option>
+                      ))}
+                    </optgroup>}
+                  </>)
+                })()}
               </select>
+              {(() => {
+                const sel = bundles.find(b => b.key === ontologyBundle)
+                if (!sel?.description) return null
+                return (
+                  <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+                    {sel.description}
+                    {sel.source_url && <> &mdash; <a href={sel.source_url} target="_blank" rel="noopener noreferrer" className="underline hover:text-blue-500">source</a></>}
+                  </p>
+                )
+              })()}
+              <label className="inline-flex items-center gap-2 mt-2 text-xs text-slate-600 dark:text-slate-400 cursor-pointer hover:text-blue-600">
+                <input type="file" accept=".ttl,.owl,.rdf" className="hidden" onChange={async (e) => {
+                  const f = e.target.files?.[0]
+                  if (!f) return
+                  const name = f.name.replace(/\.(ttl|owl|rdf)$/, '').replace(/[^a-zA-Z0-9_-]/g, '_')
+                  const fd = new FormData()
+                  fd.append('file', f)
+                  fd.append('bundle_name', name)
+                  try {
+                    const resp = await fetch('/api/ontology/import', { method: 'POST', body: fd })
+                    const data = await resp.json()
+                    if (resp.ok) {
+                      fetch('/api/ontology/bundles').then(r => r.ok ? r.json() : []).then(setBundles)
+                      setOntologyBundle(name)
+                      setImportStatus(`Imported "${name}": ${data.entity_count} entities, ${data.edge_count} edges`)
+                      setTimeout(() => setImportStatus(null), 6000)
+                    } else {
+                      setError(`Ontology import failed: ${data.error || 'Unknown error'}`)
+                    }
+                  } catch (err) { setError(`Ontology import error: ${err.message}`) }
+                  e.target.value = ''
+                }} />
+                Import Custom Ontology (.ttl / .owl)
+              </label>
+              {importStatus && <p className="text-xs text-green-600 dark:text-green-400 mt-1">{importStatus}</p>}
             </div>
             <div>
               <label className="section-title mb-1.5 block">Domain Config</label>
               <select value={domainConfig} onChange={e => setDomainConfig(e.target.value)} className="select-base">
-                <option value="">(Use bundle domains)</option>
+                <option value="">{ontologyBundle ? '(Use bundle domains)' : '(No domain config)'}</option>
                 {domainConfigs.map(d => (
                   <option key={d.key} value={d.key}>{d.name} ({d.domain_count} domains)</option>
                 ))}
               </select>
+              {ontologyBundle && <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">Overrides the domain definitions from the selected bundle.</p>}
             </div>
           </div>
         </details>
@@ -530,11 +593,11 @@ export default function BatchJobs({ onNavigate }) {
                     onChange={e => setSetting('sample_size', parseInt(e.target.value) || 0)} className="input-base !text-xs" />
                 </div>
                 <div className="flex flex-col gap-2 pt-1">
-                  <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer">
+                  <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer" title="Include column-level lineage information from Unity Catalog in the metadata generation prompt">
                     <input type="checkbox" checked={settings.include_lineage} onChange={e => setSetting('include_lineage', e.target.checked)} />
                     Include lineage
                   </label>
-                  <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer">
+                  <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer" title="Use existing knowledge base comments as additional context when generating metadata">
                     <input type="checkbox" checked={settings.use_kb_comments} onChange={e => setSetting('use_kb_comments', e.target.checked)} />
                     Use KB comments
                   </label>
@@ -554,20 +617,24 @@ export default function BatchJobs({ onNavigate }) {
               </div>
             </details>
 
+            <p className="text-xs text-slate-500 dark:text-slate-400 mt-2 font-medium">
+              Bundle: {ontologyBundle ? bundles.find(b => b.key === ontologyBundle)?.name || ontologyBundle : <em>None</em>}
+              {' | '}Domain: {domainConfig ? domainConfigs.find(d => d.key === domainConfig)?.name || domainConfig : (ontologyBundle ? 'bundle domains' : <em>none</em>)}
+            </p>
             <div className="flex flex-wrap gap-3 mt-2">
-              <button onClick={() => runJob(getJobSuffix(false), { table_names: tableNames, mode, apply_ddl: applyDdl, ontology_bundle: ontologyBundle, ...(domainConfig ? { domain_config: domainConfig } : {}), extra_params: buildExtraParams() }, 'single')}
+              <button onClick={() => runJob(getJobSuffix(false), { table_names: tableNames, mode, apply_ddl: applyDdl, ontology_bundle: ontologyBundle, use_kb_comments: settings.use_kb_comments, include_lineage: settings.include_lineage, ...(domainConfig ? { domain_config: domainConfig } : {}), extra_params: buildExtraParams() }, 'single')}
                 disabled={!!runningAction || !tableNames.trim()} title="Run a single metadata generation pass"
                 className="btn-secondary btn-md">{runningAction === 'single' ? 'Starting...' : `Run Single Mode${settings.build_kb_after ? ' + KB' : ''}${settings.use_serverless ? ' (Serverless)' : ''}`}</button>
-              <button onClick={() => runJob(getJobSuffix(true), { table_names: tableNames, apply_ddl: applyDdl, ontology_bundle: ontologyBundle, ...(domainConfig ? { domain_config: domainConfig } : {}), extra_params: buildExtraParams() }, 'all3')}
+              <button onClick={() => runJob(getJobSuffix(true), { table_names: tableNames, apply_ddl: applyDdl, ontology_bundle: ontologyBundle, use_kb_comments: settings.use_kb_comments, include_lineage: settings.include_lineage, ...(domainConfig ? { domain_config: domainConfig } : {}), extra_params: buildExtraParams() }, 'all3')}
                 disabled={!!runningAction || !tableNames.trim()} title="Run all three modes in parallel"
                 className="btn-primary btn-md">{runningAction === 'all3' ? 'Starting...' : `All 3 Modes${settings.build_kb_after ? ' + KB' : ''}${settings.use_serverless ? ' (Serverless)' : ''}`}</button>
-              <button onClick={() => runJob('_kb_enriched_modes_job', { table_names: tableNames, apply_ddl: applyDdl, ontology_bundle: ontologyBundle, ...(domainConfig ? { domain_config: domainConfig } : {}), extra_params: buildExtraParams() }, 'kb_enriched')}
-                disabled={!!runningAction || !tableNames.trim()} title="Comments -> KB build -> PI + Domain with KB enrichment"
+              <button onClick={() => runJob('_kb_enriched_modes_job', { table_names: tableNames, apply_ddl: applyDdl, ontology_bundle: ontologyBundle, use_kb_comments: settings.use_kb_comments, include_lineage: settings.include_lineage, ...(domainConfig ? { domain_config: domainConfig } : {}), extra_params: buildExtraParams() }, 'kb_enriched')}
+                disabled={!!runningAction || !tableNames.trim()} title="Generates comments, builds KB, then runs PI + Domain with KB-generated descriptions. Always includes KB build; uses classic compute."
                 className="btn-md bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50 transition-all">{runningAction === 'kb_enriched' ? 'Starting...' : 'KB-Enriched Modes'}</button>
             </div>
             <p className="text-xs text-slate-400">
               {settings.build_kb_after && <><strong className="text-slate-500">+ KB</strong>: Builds table + column knowledge base after generation so the Review tab is populated. </>}
-              <strong className="text-slate-500">KB-Enriched Modes</strong>: Generates comments, builds the knowledge base, then runs PI + domain classification enriched with KB-generated descriptions.
+              <strong className="text-slate-500">KB-Enriched Modes</strong>: Generates comments, builds the knowledge base, then runs PI + domain classification enriched with KB-generated descriptions. Always includes KB build; runs on classic compute.
             </p>
           </div>
         </section>
@@ -623,11 +690,23 @@ export default function BatchJobs({ onNavigate }) {
               </div>
             </div>
 
+            <div>
+              <label className="text-xs text-slate-500 dark:text-slate-400 mb-1 block">Table Filter <span className="text-slate-400 dark:text-slate-500">(comma-separated, empty = all tables in schema)</span></label>
+              <textarea value={tableNames} onChange={e => setTableNames(e.target.value)}
+                placeholder="catalog.schema.table1, catalog.schema.table2"
+                className="textarea-base h-16 !text-xs" />
+            </div>
+
             <button onClick={() => runJob('_full_analytics_pipeline', {
               catalog_name: catalogName, schema_name: schemaName,
               ontology_bundle: ontologyBundle,
+              use_kb_comments: settings.use_kb_comments,
+              include_lineage: settings.include_lineage,
+              ...(tableNames.trim() ? { table_names: tableNames } : {}),
               ...(domainConfig ? { domain_config: domainConfig } : {}),
               extra_params: {
+                model: settings.model,
+                sample_size: String(settings.sample_size),
                 similarity_threshold: String(similarityThreshold),
                 incremental: String(incremental),
                 cluster_min_k: String(clusterMinK),
@@ -635,7 +714,7 @@ export default function BatchJobs({ onNavigate }) {
                 ...(entityTagKey !== 'entity_type' ? { entity_tag_key: entityTagKey } : {}),
               },
             }, 'pipeline')} disabled={!!runningAction || !catalogName.trim() || !schemaName.trim()} className="btn-primary btn-md">
-              {runningAction === 'pipeline' ? 'Starting...' : 'Run Full Pipeline'}
+              {runningAction === 'pipeline' ? 'Starting...' : (tableNames.trim() ? `Run Pipeline (${tableNames.split(',').filter(t => t.trim()).length} tables)` : 'Run Full Pipeline')}
             </button>
 
             {/* Lakebase sync card */}

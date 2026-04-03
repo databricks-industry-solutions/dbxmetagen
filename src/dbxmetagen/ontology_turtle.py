@@ -2,14 +2,16 @@
 
 Produces valid OWL output with:
 - owl:equivalentClass linking UC tables to published ontology URIs
-- rdfs:subClassOf for entity hierarchy
+- rdfs:subClassOf for entity hierarchy (including source chains)
 - owl:ObjectProperty / owl:DatatypeProperty for columns
 - owl:inverseOf for bidirectional edges
+- owl:Restriction cardinality constraints from source ontologies
+- dcterms:conformsTo / prov:wasDerivedFrom provenance triples
 """
 
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +25,62 @@ def _require_rdflib():
         return False
 
 
+def _load_source_axioms(
+    source_turtle_path: str,
+    entity_uris: Set[str],
+) -> Optional["rdflib.Graph"]:
+    """Load relevant axioms from a source OWL/TTL for the given entity URIs.
+
+    Extracts subClassOf chains, restrictions, and property definitions
+    for only the classes referenced by our predictions.
+    """
+    if not _require_rdflib():
+        return None
+    import rdflib
+    from rdflib import OWL, RDF, RDFS
+
+    src = rdflib.Graph()
+    fmt = "turtle" if source_turtle_path.endswith((".ttl", ".turtle")) else "xml"
+    src.parse(source_turtle_path, format=fmt)
+
+    subset = rdflib.Graph()
+    uri_refs = {rdflib.URIRef(u) for u in entity_uris if u}
+
+    for uri in uri_refs:
+        # subClassOf chain (up to 5 hops)
+        frontier = {uri}
+        visited: Set = set()
+        for _ in range(5):
+            next_f: Set = set()
+            for node in frontier:
+                if node in visited:
+                    continue
+                visited.add(node)
+                for parent in src.objects(node, RDFS.subClassOf):
+                    if isinstance(parent, rdflib.URIRef):
+                        subset.add((node, RDFS.subClassOf, parent))
+                        next_f.add(parent)
+                    elif isinstance(parent, rdflib.BNode):
+                        # owl:Restriction blank nodes
+                        for p, o in src.predicate_objects(parent):
+                            subset.add((parent, p, o))
+                        subset.add((node, RDFS.subClassOf, parent))
+            frontier = next_f
+
+        # Labels and comments from source
+        for pred in (RDFS.label, RDFS.comment):
+            for val in src.objects(uri, pred):
+                subset.add((uri, pred, val))
+
+        # Properties where this class is the domain
+        for prop in src.subjects(RDFS.domain, uri):
+            for p, o in src.predicate_objects(prop):
+                subset.add((prop, p, o))
+
+    logger.info("Extracted %d source axiom triples for %d entities", len(subset), len(uri_refs))
+    return subset
+
+
 def build_turtle(
     catalog: str,
     schema: str,
@@ -30,9 +88,12 @@ def build_turtle(
     edge_predictions: List[Dict[str, Any]],
     column_metadata: Optional[Dict[str, List[Dict[str, str]]]] = None,
     uri_lookup: Optional[Dict[str, str]] = None,
+    source_turtle_paths: Optional[List[str]] = None,
+    source_ontology_uris: Optional[List[str]] = None,
+    bundle_provenance: Optional[Dict[str, Any]] = None,
 ) -> Optional[str]:
     """Build an OWL Turtle string from ontology prediction results.
-    
+
     Args:
         catalog: Unity Catalog catalog name.
         schema: Schema name.
@@ -40,20 +101,25 @@ def build_turtle(
         edge_predictions: [{from_table, to_table, predicted_edge, edge_uri, inverse, ...}]
         column_metadata: {table_name: [{name, data_type, ...}]}
         uri_lookup: {entity_name: URI} fallback for missing URIs.
-    
+        source_turtle_paths: paths to source OWL/TTL files for axiom enrichment.
+        source_ontology_uris: URIs of source ontologies for dcterms:conformsTo.
+        bundle_provenance: provenance dict from bundle metadata.
+
     Returns:
         Turtle string, or None if rdflib is not available.
     """
     if not _require_rdflib():
         return None
 
-    from rdflib import Graph, Literal, URIRef, Namespace, RDF, RDFS, OWL  # noqa: E402
+    from rdflib import Graph, Literal, URIRef, Namespace, RDF, RDFS, OWL, XSD  # noqa: E402
 
     HBO = Namespace("https://ontology.databricks.com/dbxmetagen#")
     UC = Namespace("https://databricks.com/unitycatalog/")
     FHIR = Namespace("http://hl7.org/fhir/")
     OMOP = Namespace("https://w3id.org/omop-cdm/")
     SCHEMA = Namespace("https://schema.org/")
+    DCTERMS = Namespace("http://purl.org/dc/terms/")
+    PROV = Namespace("http://www.w3.org/ns/prov#")
 
     g = Graph()
     g.bind("hbo", HBO)
@@ -62,9 +128,14 @@ def build_turtle(
     g.bind("omop", OMOP)
     g.bind("schema", SCHEMA)
     g.bind("owl", OWL)
+    g.bind("dcterms", DCTERMS)
+    g.bind("prov", PROV)
 
     column_metadata = column_metadata or {}
     uri_lookup = uri_lookup or {}
+
+    # Collect all equivalent URIs for source axiom loading
+    entity_uris: Set[str] = set()
 
     for table_name, pred in table_predictions.items():
         table_uri = UC[f"{catalog}/{schema}/{table_name}"]
@@ -79,6 +150,7 @@ def build_turtle(
 
         if equiv_uri:
             g.add((table_uri, OWL.equivalentClass, URIRef(equiv_uri)))
+            entity_uris.add(equiv_uri)
 
         hbo_class = HBO[entity_name]
         g.add((hbo_class, RDF.type, OWL.Class))
@@ -110,6 +182,33 @@ def build_turtle(
             inv_uri = HBO[inverse]
             g.add((edge_uri, OWL.inverseOf, inv_uri))
 
+    # Enrich with source axioms (subClassOf chains, restrictions)
+    for src_path in (source_turtle_paths or []):
+        try:
+            axiom_graph = _load_source_axioms(src_path, entity_uris)
+            if axiom_graph:
+                g += axiom_graph
+        except Exception as e:
+            logger.warning("Could not load source axioms from %s: %s", src_path, e)
+
+    # Provenance: dcterms:conformsTo for source ontologies
+    ontology_node = HBO[f"{catalog}_{schema}_ontology"]
+    g.add((ontology_node, RDF.type, OWL.Ontology))
+    g.add((ontology_node, RDFS.label, Literal(f"dbxmetagen ontology for {catalog}.{schema}")))
+
+    for onto_uri in (source_ontology_uris or []):
+        g.add((ontology_node, DCTERMS.conformsTo, URIRef(onto_uri)))
+
+    # prov:wasDerivedFrom
+    if bundle_provenance:
+        for src_prov in bundle_provenance.get("sources", []):
+            src_url = src_prov.get("source_url")
+            if src_url:
+                g.add((ontology_node, PROV.wasDerivedFrom, URIRef(src_url)))
+        ext_date = bundle_provenance.get("extraction_date")
+        if ext_date:
+            g.add((ontology_node, DCTERMS.created, Literal(ext_date, datatype=XSD.dateTime)))
+
     return g.serialize(format="turtle")
 
 
@@ -121,14 +220,22 @@ def write_turtle(
     output_dir: str = "output/turtle",
     column_metadata: Optional[Dict[str, List[Dict[str, str]]]] = None,
     uri_lookup: Optional[Dict[str, str]] = None,
+    source_turtle_paths: Optional[List[str]] = None,
+    source_ontology_uris: Optional[List[str]] = None,
+    bundle_provenance: Optional[Dict[str, Any]] = None,
 ) -> Optional[str]:
     """Build Turtle and write to file.
-    
+
     Returns:
         Path to the written file, or None if rdflib unavailable.
     """
-    ttl = build_turtle(catalog, schema, table_predictions, edge_predictions,
-                       column_metadata, uri_lookup)
+    ttl = build_turtle(
+        catalog, schema, table_predictions, edge_predictions,
+        column_metadata, uri_lookup,
+        source_turtle_paths=source_turtle_paths,
+        source_ontology_uris=source_ontology_uris,
+        bundle_provenance=bundle_provenance,
+    )
     if ttl is None:
         return None
 

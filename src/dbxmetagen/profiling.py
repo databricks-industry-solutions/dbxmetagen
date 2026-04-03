@@ -22,6 +22,8 @@ from pyspark.sql.types import (
     DoubleType, IntegerType, TimestampType, MapType, BooleanType
 )
 
+from dbxmetagen.table_filter import table_filter_sql
+
 logger = logging.getLogger(__name__)
 
 
@@ -34,6 +36,7 @@ class ProfilingConfig:
     snapshots_table: str = "profiling_snapshots"
     column_stats_table: str = "column_profiling_stats"
     incremental: bool = True
+    table_names: list[str] | None = None
     
     @property
     def fully_qualified_source(self) -> str:
@@ -207,6 +210,8 @@ class ProfilingBuilder:
     def get_tables_to_profile(self) -> List[str]:
         """Get list of tables from knowledge base to profile.
         When incremental, only returns tables changed since last profiled."""
+        tf = table_filter_sql(self.config.table_names or [], column="kb.table_name")
+        tf_tbl = table_filter_sql(self.config.table_names or [], column="table_name")
         if self.config.incremental:
             try:
                 df = self.spark.sql(f"""
@@ -219,9 +224,10 @@ class ProfilingBuilder:
                     ) p ON kb.table_name = p.table_name
                     WHERE kb.table_name IS NOT NULL
                       AND (p.last_profiled IS NULL OR kb.updated_at > p.last_profiled)
+                      {tf}
                 """)
                 tables = [row.table_name for row in df.collect()]
-                total = self.spark.sql(f"SELECT COUNT(DISTINCT table_name) AS n FROM {self.config.fully_qualified_source} WHERE table_name IS NOT NULL").collect()[0].n
+                total = self.spark.sql(f"SELECT COUNT(DISTINCT table_name) AS n FROM {self.config.fully_qualified_source} WHERE table_name IS NOT NULL {tf_tbl}").collect()[0].n
                 logger.info(f"Incremental mode: {len(tables)} tables need re-profiling out of {total}")
                 return tables
             except Exception as e:
@@ -229,7 +235,7 @@ class ProfilingBuilder:
         df = self.spark.sql(f"""
             SELECT DISTINCT table_name 
             FROM {self.config.fully_qualified_source}
-            WHERE table_name IS NOT NULL
+            WHERE table_name IS NOT NULL {tf_tbl}
         """)
         return [row.table_name for row in df.collect()]
     
@@ -689,6 +695,7 @@ def run_profiling(
     schema_name: str,
     max_tables: int = None,
     incremental: bool = True,
+    table_names: list[str] | None = None,
 ) -> Dict[str, Any]:
     """
     Convenience function to run profiling.
@@ -707,6 +714,7 @@ def run_profiling(
         catalog_name=catalog_name,
         schema_name=schema_name,
         incremental=incremental,
+        table_names=table_names,
     )
     builder = ProfilingBuilder(spark, config)
     return builder.run(max_tables)

@@ -362,20 +362,21 @@ def expand_vs_hits(
         max_per_node: Max neighbors per starting node.
     """
     t0 = _log_tool("expand_vs_hits")
-    from api_server import graph_query
+    from api_server import graph_query, _safe_sql_str
     all_neighbors = []
     for nid in node_ids[:20]:
+        safe_nid = _safe_sql_str(nid)
         et_filter = ""
         if edge_types:
-            et_list = ", ".join(f"'{t}'" for t in edge_types)
+            et_list = ", ".join(_safe_sql_str(t) for t in edge_types)
             et_filter = f" AND e.edge_type IN ({et_list})"
         q = f"""
             SELECT e.src, e.dst, e.relationship, e.edge_type, e.weight,
                    e.join_expression, e.join_confidence, e.source_system,
                    n.node_type, n.domain, n.display_name, n.short_description
             FROM public.graph_edges e
-            JOIN public.graph_nodes n ON n.id = CASE WHEN e.src = '{nid}' THEN e.dst ELSE e.src END
-            WHERE (e.src = '{nid}' OR e.dst = '{nid}'){et_filter}
+            JOIN public.graph_nodes n ON n.id = CASE WHEN e.src = {safe_nid} THEN e.dst ELSE e.src END
+            WHERE (e.src = {safe_nid} OR e.dst = {safe_nid}){et_filter}
             LIMIT {max_per_node}
         """
         rows = graph_query(q)
@@ -525,5 +526,4 @@ ALL_METADATA_TOOLS = [
     traverse_graph,
 ]
 
-GRAPHRAG_TOOLS = ALL_METADATA_TOOLS + [expand_vs_hits, execute_data_sql]
 BASELINE_TOOLS = [execute_baseline_sql]

@@ -36,6 +36,8 @@ resources:
           default: ${var.incremental}
         - name: model
           default: ${var.model}
+        - name: table_names
+          default: ""
 
       tasks:
         # Stage 1: Build knowledge bases (table, column, schema in parallel after table KB)
@@ -47,6 +49,7 @@ resources:
             base_parameters:
               catalog_name: "{{job.parameters.catalog_name}}"
               schema_name: "{{job.parameters.schema_name}}"
+              table_names: "{{job.parameters.table_names}}"
           libraries:
             - whl: ../../dist/*.whl
 
@@ -58,6 +61,7 @@ resources:
             base_parameters:
               catalog_name: "{{job.parameters.catalog_name}}"
               schema_name: "{{job.parameters.schema_name}}"
+              table_names: "{{job.parameters.table_names}}"
           libraries:
             - whl: ../../dist/*.whl
 
@@ -72,6 +76,7 @@ resources:
               catalog_name: "{{job.parameters.catalog_name}}"
               schema_name: "{{job.parameters.schema_name}}"
               generate_comments: "{{job.parameters.generate_comments}}"
+              table_names: "{{job.parameters.table_names}}"
           libraries:
             - whl: ../../dist/*.whl
 
@@ -86,6 +91,7 @@ resources:
               catalog_name: "{{job.parameters.catalog_name}}"
               schema_name: "{{job.parameters.schema_name}}"
               incremental: "{{job.parameters.incremental}}"
+              table_names: "{{job.parameters.table_names}}"
           libraries:
             - whl: ../../dist/*.whl
 
@@ -102,6 +108,7 @@ resources:
             base_parameters:
               catalog_name: "{{job.parameters.catalog_name}}"
               schema_name: "{{job.parameters.schema_name}}"
+              table_names: "{{job.parameters.table_names}}"
           libraries:
             - whl: ../../dist/*.whl
             - pypi:
@@ -133,6 +140,7 @@ resources:
               catalog_name: "{{job.parameters.catalog_name}}"
               schema_name: "{{job.parameters.schema_name}}"
               incremental: "{{job.parameters.incremental}}"
+              table_names: "{{job.parameters.table_names}}"
           libraries:
             - whl: ../../dist/*.whl
 
@@ -151,6 +159,7 @@ resources:
               domain_config_path: "{{job.parameters.domain_config_path}}"
               incremental: "{{job.parameters.incremental}}"
               model: "{{job.parameters.model}}"
+              table_names: "{{job.parameters.table_names}}"
           libraries:
             - whl: ../../dist/*.whl
 

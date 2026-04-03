@@ -148,6 +148,7 @@ __pycache__/
 databricks.yml
 apps/dbxmetagen-app/app/app.yaml
 apps/dbxmetagen-app/app/requirements.txt
+resources/apps/dbxmetagen_app.yml
 databricks_final.yml
 databricks_final.yml.tmp
 
@@ -181,3 +182,9 @@ tools/
 # Local roadmap / tech-debt tracker
 ROADMAP.md
 CLAUDE.md
+
+# Ontology source files (large OWL/TTL downloads, cached locally)
+configurations/ontology_bundles/*/source_*.ttl
+configurations/ontology_bundles/*/source_*.owl
+configurations/ontology_bundles/*/source.ttl
+configurations/ontology_bundles/*/source.owl

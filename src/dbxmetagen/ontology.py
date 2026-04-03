@@ -8,6 +8,7 @@ Includes flexible keyword matching, AI-powered structured classification,
 value enforcement, domain-aware scoring, and deduplication.
 """
 
+import difflib
 import logging
 import yaml
 import os
@@ -31,6 +32,7 @@ from pyspark.sql.types import (
 )
 from pydantic import BaseModel, Field
 from dbxmetagen.config import DEFAULT_CLASSIFICATION_MODEL
+from dbxmetagen.table_filter import table_filter_sql
 
 logger = logging.getLogger(__name__)
 
@@ -253,14 +255,18 @@ def _enforce_entity_value(
 
     Returns (value, was_exact_match). Confidence should be penalized
     by the caller when was_exact_match is False.
+
+    Uses difflib.get_close_matches for fuzzy matching instead of
+    substring containment, which avoids ambiguity (e.g. "Plan" matching
+    both "CarePlan" and "InsurancePlan").
     """
     low = predicted.lower().strip()
     allowed_map = {a.lower(): a for a in allowed}
     if low in allowed_map:
         return allowed_map[low], True
-    for a_low, a_orig in allowed_map.items():
-        if a_low in low or low in a_low:
-            return a_orig, False
+    close = difflib.get_close_matches(low, allowed_map.keys(), n=1, cutoff=0.6)
+    if close:
+        return allowed_map[close[0]], False
     return fallback, False
 
 
@@ -459,6 +465,7 @@ class OntologyConfig:
     incremental: bool = True
     entity_tag_key: str = "ontology_entity_type"
     metadata_cols_per_chunk: int = 120
+    table_names: Optional[List[str]] = None
 
     @property
     def fully_qualified_entities(self) -> str:
@@ -1105,6 +1112,9 @@ class EntityDiscoverer:
     def discover_entities_from_tables(self) -> List[Dict[str, Any]]:
         """Discover entities by matching tables to entity definitions."""
         current_bv = self._get_bundle_version()
+        names = self.config.table_names or []
+        tf_kb = table_filter_sql(names, column="kb.table_name")
+        tf = table_filter_sql(names, column="table_name")
         try:
             if self.config.incremental:
                 try:
@@ -1126,10 +1136,13 @@ class EntityDiscoverer:
                           AND (oe.last_classified IS NULL
                                OR kb.updated_at > oe.last_classified
                                OR COALESCE(oe.last_bundle_version, '') != '{current_bv}')
+                          {tf_kb}
                     """
                     )
                     table_count = tables_df.count()
-                    total = self.spark.sql(f"SELECT COUNT(*) AS n FROM {self.config.fully_qualified_kb}").collect()[0].n
+                    total = self.spark.sql(
+                        f"SELECT COUNT(*) AS n FROM {self.config.fully_qualified_kb} WHERE 1=1 {tf}"
+                    ).collect()[0].n
                     logger.info(f"Incremental mode: {table_count} tables need classification out of {total}")
                 except Exception as e:
                     logger.warning(f"Incremental filtering failed ({e}), falling back to full scan")
@@ -1137,6 +1150,7 @@ class EntityDiscoverer:
                         f"""
                         SELECT table_name, table_short_name, comment, domain
                         FROM {self.config.fully_qualified_kb}
+                        WHERE 1=1 {tf}
                     """
                     )
                     table_count = tables_df.count()
@@ -1145,6 +1159,7 @@ class EntityDiscoverer:
                     f"""
                     SELECT table_name, table_short_name, comment, domain
                     FROM {self.config.fully_qualified_kb}
+                    WHERE 1=1 {tf}
                 """
                 )
                 table_count = tables_df.count()
@@ -1509,7 +1524,11 @@ class EntityDiscoverer:
         columns = col_summary.get(table_name, "")
 
         def llm_fn(system_prompt: str, user_prompt: str) -> str:
-            llm = self._get_llm()
+            from databricks_langchain import ChatDatabricks
+            llm = ChatDatabricks(
+                endpoint=self._model_endpoint, temperature=0.0,
+                max_tokens=2048, max_retries=2,
+            )
             response = llm.invoke([
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
@@ -1524,7 +1543,10 @@ class EntityDiscoverer:
             llm_fn=llm_fn,
         )
 
-        enforced, exact = _enforce_entity_value(result.predicted_entity, self._entity_names)
+        # Accept any entity name the LLM was shown (tier-1) plus bundle definitions
+        tier1_names = [e["name"] for e in loader.get_entities_tier1()]
+        allowed = list(set(self._entity_names) | set(tier1_names))
+        enforced, exact = _enforce_entity_value(result.predicted_entity, allowed)
         if not exact:
             logger.info("Three-pass entity '%s' snapped to '%s'", result.predicted_entity, enforced)
             result = dc_replace(
@@ -1567,9 +1589,13 @@ class EntityDiscoverer:
         (primary + optional secondary for relationship tables).
         
         Attempts three-pass classification first if tier indexes are available."""
-        three_pass = self._three_pass_classify_table(table_row)
-        if three_pass is not None:
-            return three_pass
+        try:
+            three_pass = self._three_pass_classify_table(table_row)
+            if three_pass is not None:
+                return three_pass
+        except Exception as e:
+            logger.warning("Three-pass classification failed for %s, falling back to single-pass: %s",
+                           table_row.table_name, e)
         table_name = table_row.table_name
         short_name = table_row.table_short_name or table_name.split(".")[-1]
         comment = table_row.comment or "No description available"
@@ -1725,6 +1751,9 @@ class EntityDiscoverer:
     def discover_entities_from_columns(self) -> List[Dict[str, Any]]:
         """Discover entities by matching columns to entity definitions."""
         current_bv = self._get_bundle_version()
+        names = self.config.table_names or []
+        tf_ckb = table_filter_sql(names, column="ckb.table_name")
+        tf = table_filter_sql(names, column="table_name")
         try:
             if self.config.incremental:
                 try:
@@ -1744,13 +1773,16 @@ class EntityDiscoverer:
                             )
                             GROUP BY src_table
                         ) oe ON ckb.table_name = oe.src_table
-                        WHERE oe.last_classified IS NULL
+                        WHERE (oe.last_classified IS NULL
                           OR kb.updated_at > oe.last_classified
-                          OR COALESCE(oe.last_bundle_version, '') != '{current_bv}'
+                          OR COALESCE(oe.last_bundle_version, '') != '{current_bv}')
+                          {tf_ckb}
                     """
                     )
                     col_count = cols_df.count()
-                    total = self.spark.sql(f"SELECT COUNT(*) AS n FROM {self.config.fully_qualified_column_kb}").collect()[0].n
+                    total = self.spark.sql(
+                        f"SELECT COUNT(*) AS n FROM {self.config.fully_qualified_column_kb} WHERE 1=1 {tf}"
+                    ).collect()[0].n
                     logger.info(f"Incremental mode: {col_count} columns need classification out of {total}")
                 except Exception as e:
                     logger.warning(f"Incremental column filtering failed ({e}), falling back to full scan")
@@ -1759,6 +1791,7 @@ class EntityDiscoverer:
                         SELECT column_name, table_name, table_short_name, comment,
                                data_type, classification, classification_type
                         FROM {self.config.fully_qualified_column_kb}
+                        WHERE 1=1 {tf}
                     """
                     )
                     col_count = cols_df.count()
@@ -1768,6 +1801,7 @@ class EntityDiscoverer:
                     SELECT column_name, table_name, table_short_name, comment,
                            data_type, classification, classification_type
                     FROM {self.config.fully_qualified_column_kb}
+                    WHERE 1=1 {tf}
                 """
                 )
                 col_count = cols_df.count()
@@ -4065,13 +4099,27 @@ class OntologyBuilder:
                     })
 
         # LLM-predicted edges -- only for entity-type pairs that have FK evidence
-        max_llm_edge_calls = int(self._validation_cfg.get("max_llm_edge_calls", 20))
-        enable_llm_edges = self._validation_cfg.get("enable_llm_edge_prediction", True)
-        loader = self._get_index_loader()
+        disc = self.discoverer
+        disc_validation_cfg = getattr(disc, "_validation_cfg", {})
+        max_llm_edge_calls = int(disc_validation_cfg.get("max_llm_edge_calls", 20))
+        enable_llm_edges = disc_validation_cfg.get("enable_llm_edge_prediction", True)
+        loader = disc._get_index_loader() if hasattr(disc, "_get_index_loader") else None
         if loader and enable_llm_edges:
             try:
                 from dbxmetagen.ontology_predictor import predict_edge
-                fk_entity_types = {et for et in table_to_primary.values()}
+
+                def _llm_fn(system_prompt: str, user_prompt: str) -> str:
+                    from databricks_langchain import ChatDatabricks
+                    llm = ChatDatabricks(
+                        endpoint=disc._model_endpoint, temperature=0.0,
+                        max_tokens=2048, max_retries=2,
+                    )
+                    response = llm.invoke([
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ])
+                    return response.content if hasattr(response, "content") else str(response)
+
                 candidate_pairs = set()
                 for fk in fk_rows:
                     s = table_to_primary.get(fk.src_table)
@@ -4081,7 +4129,7 @@ class OntologyBuilder:
                 if len(candidate_pairs) > max_llm_edge_calls:
                     logger.info("LLM edge prediction: capping %d pairs to %d", len(candidate_pairs), max_llm_edge_calls)
                     candidate_pairs = set(list(candidate_pairs)[:max_llm_edge_calls])
-                llm_fn = self._make_llm_fn()
+                llm_fn = _llm_fn
                 for src_t, dst_t in candidate_pairs:
                     try:
                         result = predict_edge(
@@ -4564,6 +4612,7 @@ def build_ontology(
     incremental: bool = True,
     entity_tag_key: str = "ontology_entity_type",
     model_endpoint: Optional[str] = None,
+    table_names: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """Convenience function to build the ontology.
 
@@ -4585,6 +4634,7 @@ def build_ontology(
         ontology_bundle=ontology_bundle,
         incremental=incremental,
         entity_tag_key=entity_tag_key,
+        table_names=table_names,
     )
     builder = OntologyBuilder(spark, config, model_endpoint=model_endpoint)
     return builder.run(apply_tags=apply_tags)

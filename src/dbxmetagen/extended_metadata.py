@@ -11,6 +11,8 @@ from typing import Dict, Any, List
 from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql import functions as F
 
+from dbxmetagen.table_filter import table_filter_sql
+
 logger = logging.getLogger(__name__)
 
 
@@ -22,7 +24,8 @@ class ExtendedMetadataConfig:
     source_table: str = "table_knowledge_base"
     target_table: str = "extended_table_metadata"
     incremental: bool = True
-    
+    table_names: list[str] | None = None
+
     @property
     def fully_qualified_source(self) -> str:
         return f"{self.catalog_name}.{self.schema_name}.{self.source_table}"
@@ -74,6 +77,9 @@ class ExtendedMetadataBuilder:
     def get_tables_to_process(self) -> List[str]:
         """Get list of tables from knowledge base to extract metadata for.
         When incremental, only returns tables changed since last extraction."""
+        tn = self.config.table_names or []
+        f_kb = table_filter_sql(tn, "kb.table_name")
+        f_tbl = table_filter_sql(tn, "table_name")
         if self.config.incremental:
             try:
                 df = self.spark.sql(f"""
@@ -82,9 +88,10 @@ class ExtendedMetadataBuilder:
                     LEFT JOIN {self.config.fully_qualified_target} ext ON kb.table_name = ext.table_name
                     WHERE kb.table_name IS NOT NULL
                       AND (ext.updated_at IS NULL OR kb.updated_at > ext.updated_at)
+                      {f_kb}
                 """)
                 tables = [row.table_name for row in df.collect()]
-                total = self.spark.sql(f"SELECT COUNT(DISTINCT table_name) AS n FROM {self.config.fully_qualified_source} WHERE table_name IS NOT NULL").collect()[0].n
+                total = self.spark.sql(f"SELECT COUNT(DISTINCT table_name) AS n FROM {self.config.fully_qualified_source} WHERE table_name IS NOT NULL {f_tbl}").collect()[0].n
                 logger.info(f"Incremental mode: {len(tables)} tables need extended metadata out of {total}")
                 return tables
             except Exception as e:
@@ -93,6 +100,7 @@ class ExtendedMetadataBuilder:
             SELECT DISTINCT table_name 
             FROM {self.config.fully_qualified_source}
             WHERE table_name IS NOT NULL
+              {f_tbl}
         """)
         return [row.table_name for row in df.collect()]
     
@@ -453,6 +461,7 @@ def extract_extended_metadata(
     catalog_name: str,
     schema_name: str,
     incremental: bool = True,
+    table_names: list[str] | None = None,
 ) -> Dict[str, Any]:
     """
     Convenience function to extract extended metadata.
@@ -470,6 +479,7 @@ def extract_extended_metadata(
         catalog_name=catalog_name,
         schema_name=schema_name,
         incremental=incremental,
+        table_names=table_names,
     )
     builder = ExtendedMetadataBuilder(spark, config)
     return builder.run()

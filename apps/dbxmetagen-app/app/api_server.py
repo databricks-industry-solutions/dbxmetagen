@@ -251,11 +251,20 @@ def multi_hop_traverse(
     max_hops: int = 3,
     relationship: str | None = None,
     edge_type: str | None = None,
+    edge_types: list[str] | None = None,
     direction: str = "outgoing",
 ) -> dict:
-    """Iterative BFS-style graph traversal with support for edge_type filtering."""
+    """Iterative BFS-style graph traversal with support for edge_type filtering.
+
+    Accepts either a single ``edge_type`` or a list of ``edge_types`` (OR filter).
+    If both are provided, ``edge_types`` takes precedence.
+    """
     _validate_filter(relationship, "relationship")
-    _validate_filter(edge_type, "edge_type")
+    if edge_types:
+        for et in edge_types:
+            _validate_filter(et, "edge_type")
+    else:
+        _validate_filter(edge_type, "edge_type")
 
     visited_nodes: dict[str, dict] = {}
     edges_found: list[dict] = []
@@ -264,7 +273,10 @@ def multi_hop_traverse(
     filters = []
     if relationship:
         filters.append(f"e.relationship = {_safe_sql_str(relationship)}")
-    if edge_type:
+    if edge_types:
+        et_list = ", ".join(_safe_sql_str(et) for et in edge_types)
+        filters.append(f"e.edge_type IN ({et_list})")
+    elif edge_type:
         filters.append(f"e.edge_type = {_safe_sql_str(edge_type)}")
     filter_clause = (" AND " + " AND ".join(filters)) if filters else ""
 
@@ -433,6 +445,7 @@ class JobRunRequest(BaseModel):
     mode: Optional[str] = None
     apply_ddl: bool = False
     use_kb_comments: bool = False
+    include_lineage: bool = False
     # Analytics pipeline params
     catalog_name: Optional[str] = None
     schema_name: Optional[str] = None
@@ -711,6 +724,8 @@ def run_job(req: JobRunRequest):
         params["apply_ddl"] = "true"
     if req.use_kb_comments:
         params["use_kb_comments"] = "true"
+    if req.include_lineage:
+        params["include_lineage"] = "true"
     if req.catalog_name:
         params["catalog_name"] = req.catalog_name
     if req.schema_name:
@@ -1938,26 +1953,185 @@ def get_ontology_turtle():
 
 @app.get("/api/ontology/bundle-info")
 def get_ontology_bundle_info(bundle: str = ""):
-    """Return format version, tier index status, and entity count for a bundle."""
+    """Return bundle metadata from the cached bundle list (no re-parsing)."""
     if not bundle:
         return JSONResponse({"error": "bundle parameter required"}, status_code=400)
+    all_bundles = _list_bundles_local()
+    match = next((b for b in all_bundles if b["key"] == bundle), None)
+    if match:
+        return match
+    return {"bundle": bundle, "format_version": "unknown", "has_tier_indexes": False, "entity_count": 0}
+
+
+# ---------------------------------------------------------------------------
+# Ontology graph store (lazy singleton for SPARQL endpoint)
+# ---------------------------------------------------------------------------
+_ontology_graph_store = None
+_ontology_graph_lock = threading.Lock()
+
+
+def _get_ontology_graph_store():
+    """Lazy-load OntologyGraphStore from Turtle files."""
+    global _ontology_graph_store
+    if _ontology_graph_store is not None:
+        return _ontology_graph_store
+    with _ontology_graph_lock:
+        if _ontology_graph_store is not None:
+            return _ontology_graph_store
+        try:
+            from dbxmetagen.ontology_graph_store import OntologyGraphStore, is_available
+            if not is_available():
+                logger.warning("pyoxigraph not installed -- SPARQL endpoint disabled")
+                return None
+        except ImportError:
+            logger.warning("ontology_graph_store not importable -- SPARQL endpoint disabled")
+            return None
+
+        store = OntologyGraphStore()
+        vol_path = f"/Volumes/{CATALOG}/{SCHEMA}/generated_metadata/ontology_output.ttl"
+        ttl_candidates = [
+            vol_path,
+            os.path.join(os.path.dirname(__file__), "ontology_output.ttl"),
+            os.path.join(os.path.dirname(__file__), "..", "ontology_output.ttl"),
+            f"/tmp/dbxmetagen_ontology_{SCHEMA}.ttl",
+        ]
+        loaded = False
+        for path in ttl_candidates:
+            if os.path.isfile(path):
+                store.load_turtle(path)
+                loaded = True
+                break
+        if not loaded:
+            logger.info("No Turtle file found for SPARQL store -- store empty until build runs")
+        _ontology_graph_store = store
+        return store
+
+
+class SparqlRequest(BaseModel):
+    query: str
+
+
+@app.post("/api/ontology/sparql")
+def ontology_sparql(req: SparqlRequest):
+    """Run a read-only SPARQL SELECT query against the ontology graph."""
+    store = _get_ontology_graph_store()
+    if store is None:
+        return JSONResponse({"error": "SPARQL store not available (pyoxigraph not installed)"}, status_code=503)
+    q = req.query.strip()
+    if not q.upper().startswith(("SELECT", "ASK", "PREFIX")):
+        return JSONResponse({"error": "Only SELECT and ASK queries are supported"}, status_code=400)
+    try:
+        results = store.sparql(q)
+        return {"results": results, "count": len(results), "triple_count": store.triple_count}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+
+
+@app.get("/api/ontology/source/{bundle_name}")
+def get_ontology_source(bundle_name: str):
+    """Serve the source OWL/TTL file for a given bundle."""
     bd = _find_bundle_dir()
     if not bd:
-        return {"bundle": bundle, "format_version": "unknown", "has_tier_indexes": False, "tier1_entity_count": 0}
-    bundle_path = os.path.join(bd, f"{bundle}.yaml" if not bundle.endswith(".yaml") else bundle)
-    info = {"bundle": bundle, "format_version": "1.0", "has_tier_indexes": False, "tier1_entity_count": 0}
-    if os.path.isfile(bundle_path):
+        return JSONResponse({"error": "Bundle dir not found"}, status_code=404)
+    bundle_dir = os.path.join(bd, bundle_name)
+    if os.path.isdir(bundle_dir):
+        for fname in sorted(os.listdir(bundle_dir)):
+            if fname.startswith("source") and fname.endswith((".ttl", ".owl")):
+                fpath = os.path.join(bundle_dir, fname)
+                with open(fpath, "r", encoding="utf-8") as f:
+                    content = f.read()
+                media = "text/turtle" if fname.endswith(".ttl") else "application/rdf+xml"
+                return Response(content=content, media_type=media,
+                                headers={"Content-Disposition": f"attachment; filename={fname}"})
+    return JSONResponse({"error": f"No source file found for bundle '{bundle_name}'"}, status_code=404)
+
+
+@app.get("/api/ontology/source-classes/{bundle_name}")
+def get_ontology_source_classes(bundle_name: str, limit: int = 500):
+    """Return the class hierarchy from a bundle's tier3 YAML for the class browser."""
+    bd = _find_bundle_dir()
+    if not bd:
+        return JSONResponse({"error": "Bundle dir not found"}, status_code=404)
+    tier3_path = os.path.join(bd, bundle_name, "entities_tier3.yaml")
+    if not os.path.isfile(tier3_path):
+        return JSONResponse({"error": f"No tier3 index for bundle '{bundle_name}'"}, status_code=404)
+    with open(tier3_path, "r", encoding="utf-8") as f:
+        tier3 = yaml.safe_load(f) or {}
+    classes = []
+    for name, data in list(tier3.items())[:limit]:
+        classes.append({
+            "name": name,
+            "description": data.get("description", ""),
+            "uri": data.get("uri", ""),
+            "parents": data.get("parents", []),
+            "source_ontology": data.get("source_ontology", ""),
+            "keywords": data.get("keywords", [])[:5],
+            "relationships": list(data.get("relationships", {}).keys())[:10],
+            "typical_attributes": data.get("typical_attributes", [])[:10],
+        })
+    return {"bundle": bundle_name, "classes": classes, "total": len(tier3)}
+
+
+@app.post("/api/ontology/import")
+async def import_ontology(
+    file: UploadFile = File(...),
+    bundle_name: str = Form("imported"),
+):
+    """Import a custom OWL/TTL file and generate a bundle YAML + tier indexes."""
+    import tempfile
+    bd = _find_bundle_dir()
+    if not bd:
+        return JSONResponse({"error": "Bundle directory not found"}, status_code=500)
+
+    content = await file.read()
+    suffix = ".ttl" if file.filename and file.filename.endswith(".ttl") else ".owl"
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+        tmp.write(content)
+        tmp_path = tmp.name
+
+    try:
+        from dbxmetagen.ontology_import import owl_to_bundle_yaml
+        output_yaml = os.path.join(bd, f"{bundle_name}.yaml")
+        bundle = owl_to_bundle_yaml(tmp_path, output_path=output_yaml, bundle_name=bundle_name)
+
+        # Store source file alongside bundle
+        bundle_subdir = os.path.join(bd, bundle_name)
+        os.makedirs(bundle_subdir, exist_ok=True)
+        source_dest = os.path.join(bundle_subdir, f"source{suffix}")
+        with open(source_dest, "wb") as f:
+            f.write(content)
+
+        # Generate tier indexes
         try:
-            with open(bundle_path, "r") as f:
-                raw = yaml.safe_load(f)
-            info["format_version"] = raw.get("metadata", {}).get("format_version", "1.0")
-            info["tier1_entity_count"] = len(raw.get("ontology", {}).get("entities", {}).get("definitions", {}))
-        except Exception:
-            pass
-    tier_dir = os.path.join(bd, bundle.replace(".yaml", ""))
-    if os.path.isdir(tier_dir) and os.path.isfile(os.path.join(tier_dir, "entities_tier1.yaml")):
-        info["has_tier_indexes"] = True
-    return info
+            import sys
+            sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "scripts"))
+            from build_ontology_indexes import _entities_from_bundle, build_tiers
+            from pathlib import Path
+            entities = _entities_from_bundle(Path(output_yaml))
+            counts = build_tiers(entities, Path(bundle_subdir))
+        except Exception as tier_err:
+            logger.warning("Tier generation failed (bundle still created): %s", tier_err)
+            counts = {}
+
+        # Invalidate bundle list cache
+        _yaml_cache.clear()
+
+        entity_count = len(bundle.get("ontology", {}).get("entities", {}).get("definitions", {}))
+        edge_count = len(bundle.get("ontology", {}).get("edge_catalog", {}))
+        return {
+            "bundle_name": bundle_name,
+            "entity_count": entity_count,
+            "edge_count": edge_count,
+            "tier_counts": counts,
+            "source_stored": True,
+        }
+    except ImportError:
+        return JSONResponse({"error": "rdflib required for import"}, status_code=500)
+    except Exception as e:
+        logger.exception("Import failed")
+        return JSONResponse({"error": str(e)}, status_code=500)
+    finally:
+        os.unlink(tmp_path)
 
 
 _DOMAIN_CONFIG_DIR = "configurations"
@@ -1994,9 +2168,55 @@ def _find_bundle_dir() -> Optional[str]:
     return None
 
 
+def _read_bundle_metadata_fast(filepath: str) -> dict | None:
+    """Read only the metadata block from a bundle YAML without parsing the full file.
+
+    Uses line-based parsing: reads lines from `metadata:` until the next
+    top-level key (un-indented line), handling nested values, comments, and
+    blank lines correctly.
+    """
+    try:
+        lines = []
+        in_meta = False
+        with open(filepath, "r") as f:
+            for line in f:
+                stripped = line.rstrip("\n")
+                if not in_meta:
+                    if stripped.startswith("metadata:"):
+                        in_meta = True
+                        lines.append(stripped)
+                    continue
+                if stripped == "" or stripped.lstrip().startswith("#"):
+                    lines.append(stripped)
+                    continue
+                if stripped[0] not in (" ", "\t"):
+                    break
+                lines.append(stripped)
+        if not lines:
+            return None
+        return yaml.safe_load("\n".join(lines)).get("metadata", {})
+    except Exception:
+        return None
+
+
+def _count_yaml_list(path: str) -> int:
+    """Load a YAML file and return its length if it's a list, else 0."""
+    try:
+        with open(path, "r") as f:
+            data = yaml.safe_load(f)
+        return len(data) if isinstance(data, list) else 0
+    except Exception:
+        return 0
+
+
 @cached(_yaml_cache, key=lambda: "bundles", lock=_yaml_lock)
 def _list_bundles_local() -> list[dict]:
-    """Read ontology bundle YAMLs directly (no dbxmetagen import needed). Cached 300s."""
+    """Read ontology bundle YAMLs directly (no dbxmetagen import needed). Cached 300s.
+
+    Uses fast metadata-only parsing to avoid loading multi-MB bundle files.
+    Falls back to full parse for small files or if fast parse fails.
+    Counts entities/edges across all tier files (tier1 + tier2).
+    """
     bd = _find_bundle_dir()
     if not bd:
         logger.warning("_list_bundles_local: no bundle dir found, returning empty list")
@@ -2006,25 +2226,66 @@ def _list_bundles_local() -> list[dict]:
         if not fname.endswith(".yaml"):
             continue
         try:
-            with open(os.path.join(bd, fname), "r") as f:
-                raw = yaml.safe_load(f)
-            meta = raw.get("metadata", {})
+            filepath = os.path.join(bd, fname)
             bundle_key = fname.replace(".yaml", "")
             tier_dir = os.path.join(bd, bundle_key)
             has_tiers = os.path.isdir(tier_dir) and os.path.isfile(os.path.join(tier_dir, "entities_tier1.yaml"))
-            bundles.append({
+
+            file_size = os.path.getsize(filepath)
+            meta = None
+            entity_count = 0
+            edge_count = 0
+            domain_count = 0
+
+            if file_size > 100_000:
+                meta = _read_bundle_metadata_fast(filepath)
+
+            if meta is None:
+                with open(filepath, "r") as f:
+                    raw = yaml.safe_load(f)
+                meta = raw.get("metadata", {})
+                entity_count = len(raw.get("ontology", {}).get("entities", {}).get("definitions", {}))
+                domain_count = len(raw.get("domains", {}))
+
+            if meta is not None and entity_count == 0:
+                entity_count = meta.get("entity_count", 0)
+                edge_count = meta.get("edge_count", 0)
+                domain_count = meta.get("domain_count", domain_count)
+
+            if has_tiers:
+                tier_entity_total = 0
+                tier_edge_total = 0
+                for tier_name in ("entities_tier1.yaml", "entities_tier2.yaml"):
+                    p = os.path.join(tier_dir, tier_name)
+                    if os.path.isfile(p):
+                        tier_entity_total += _count_yaml_list(p)
+                for tier_name in ("edges_tier1.yaml", "edges_tier2.yaml"):
+                    p = os.path.join(tier_dir, tier_name)
+                    if os.path.isfile(p):
+                        tier_edge_total += _count_yaml_list(p)
+                if tier_entity_total > entity_count:
+                    entity_count = tier_entity_total
+                if tier_edge_total > edge_count:
+                    edge_count = tier_edge_total
+
+            bundle_info = {
                 "key": bundle_key,
                 "name": meta.get("name", bundle_key),
                 "industry": meta.get("industry", "general"),
                 "description": meta.get("description", ""),
                 "standards_alignment": meta.get("standards_alignment", ""),
-                "entity_count": len(raw.get("ontology", {}).get("entities", {}).get("definitions", {})),
-                "domain_count": len(raw.get("domains", {})),
+                "entity_count": entity_count,
+                "edge_count": edge_count,
+                "domain_count": domain_count,
                 "bundle_type": meta.get("bundle_type", "ontology"),
                 "tag_key": meta.get("tag_key", ""),
                 "format_version": meta.get("format_version", "1.0"),
                 "has_tier_indexes": has_tiers,
-            })
+            }
+            source_url = meta.get("source_url")
+            if source_url:
+                bundle_info["source_url"] = source_url
+            bundles.append(bundle_info)
         except Exception as e:
             logger.debug("Could not read bundle %s: %s", fname, e)
     return bundles
@@ -3513,13 +3774,16 @@ def get_coverage_review_summary(catalog: Optional[str] = None):
 
 @app.post("/api/graph/query")
 async def graph_rag_query(req: GraphQueryRequest):
-    """Answer a natural-language question by traversing the knowledge graph."""
+    """Answer a natural-language question by traversing the knowledge graph.
+
+    Delegates to the deterministic GraphRAG pipeline in deep_analysis.
+    """
     try:
-        from agent.graph import run_graph_agent
+        from agent.deep_analysis import run_deep_analysis
     except ImportError as e:
         raise HTTPException(503, detail=f"Agent not available: {e}")
     try:
-        result = await run_graph_agent(req.question, max_hops=req.max_hops)
+        result = run_deep_analysis(req.question, mode="graphrag")
         return result
     except Exception as exc:
         msg = str(exc)

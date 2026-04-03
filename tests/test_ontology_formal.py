@@ -613,5 +613,602 @@ class TestMergeBundleFields(unittest.TestCase):
         self.assertEqual(p["uri"], "http://hl7.org/fhir/Patient")
 
 
+# ---------------------------------------------------------------------------
+# _derive_keywords tests
+# ---------------------------------------------------------------------------
+
+class TestDeriveKeywords(unittest.TestCase):
+
+    def test_camel_case_split(self):
+        from scripts.build_ontology_indexes import _derive_keywords
+        kw = _derive_keywords("AllergyIntolerance")
+        self.assertIn("allergy", kw)
+        self.assertIn("intolerance", kw)
+
+    def test_snake_case_split(self):
+        from scripts.build_ontology_indexes import _derive_keywords
+        kw = _derive_keywords("VISIT_OCCURRENCE")
+        self.assertIn("visit", kw)
+        self.assertIn("occurrence", kw)
+
+    def test_description_extraction(self):
+        from scripts.build_ontology_indexes import _derive_keywords
+        kw = _derive_keywords("Patient", "Demographics and administrative information about individuals")
+        self.assertIn("patient", kw)
+        self.assertIn("demographics", kw)
+        self.assertIn("administrative", kw)
+
+    def test_stopwords_excluded(self):
+        from scripts.build_ontology_indexes import _derive_keywords
+        kw = _derive_keywords("Thing", "A thing that is very important")
+        self.assertNotIn("a", kw)
+        self.assertNotIn("is", kw)
+        self.assertNotIn("that", kw)
+
+    def test_deduplication(self):
+        from scripts.build_ontology_indexes import _derive_keywords
+        kw = _derive_keywords("Drug", "A drug substance")
+        self.assertEqual(len(kw), len(set(kw)))
+
+
+# ---------------------------------------------------------------------------
+# _emit_bundle_yaml tests
+# ---------------------------------------------------------------------------
+
+class TestEmitBundleYaml(unittest.TestCase):
+
+    def test_generates_valid_bundle_structure(self):
+        from scripts.build_ontology_indexes import _emit_bundle_yaml
+        entities = {
+            "Patient": {
+                "description": "A patient",
+                "source": "FHIR R4",
+                "uri": "http://hl7.org/fhir/Patient",
+                "keywords": ["patient"],
+                "synonyms": [],
+                "typical_attributes": ["id"],
+                "business_questions": [],
+                "relationships": {"has_encounter": {"target": "Encounter", "cardinality": "one-to-many"}},
+                "properties": {},
+                "outgoing_edges": [{"name": "has_encounter", "uri": "", "range": "Encounter", "inverse": None}],
+            },
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            out = Path(tmpdir) / "test_formal.yaml"
+            _emit_bundle_yaml(entities, out, "Test Bundle", "Test desc", "healthcare", "FHIR R4",
+                              source_urls=["https://hl7.org/fhir/R4/fhir.ttl"])
+            self.assertTrue(out.exists())
+            raw = yaml.safe_load(out.read_text())
+            self.assertEqual(raw["metadata"]["name"], "Test Bundle")
+            self.assertEqual(raw["metadata"]["format_version"], "2.0")
+            self.assertEqual(raw["metadata"]["bundle_type"], "formal_ontology")
+            self.assertIn("source_url", raw["metadata"])
+            defs = raw["ontology"]["entities"]["definitions"]
+            self.assertIn("Patient", defs)
+            self.assertEqual(defs["Patient"]["uri"], "http://hl7.org/fhir/Patient")
+            self.assertEqual(defs["Patient"]["keywords"], ["patient"])
+            self.assertIn("has_encounter", defs["Patient"]["relationships"])
+            self.assertIn("has_encounter", raw["ontology"]["edge_catalog"])
+
+    def test_derives_keywords_when_empty(self):
+        from scripts.build_ontology_indexes import _emit_bundle_yaml
+        entities = {
+            "AllergyIntolerance": {
+                "description": "Allergy records",
+                "source": "FHIR R4",
+                "uri": "http://hl7.org/fhir/AllergyIntolerance",
+                "keywords": [],
+                "synonyms": [],
+                "typical_attributes": [],
+                "business_questions": [],
+                "relationships": {},
+                "properties": {},
+                "outgoing_edges": [],
+            },
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            out = Path(tmpdir) / "test.yaml"
+            _emit_bundle_yaml(entities, out, "T", "D", "healthcare", "FHIR R4")
+            raw = yaml.safe_load(out.read_text())
+            kw = raw["ontology"]["entities"]["definitions"]["AllergyIntolerance"]["keywords"]
+            self.assertTrue(len(kw) > 0)
+            self.assertIn("allergy", kw)
+
+
+# ---------------------------------------------------------------------------
+# Formal bundle end-to-end loading test
+# ---------------------------------------------------------------------------
+
+class TestFormalBundleE2E(unittest.TestCase):
+
+    def test_generated_bundle_loads_via_ontology_loader(self):
+        """Verify a generated formal bundle YAML is loadable by OntologyLoader."""
+        fhir_yaml = Path(__file__).resolve().parent.parent / "configurations" / "ontology_bundles" / "fhir_r4.yaml"
+        if not fhir_yaml.exists():
+            self.skipTest("fhir_r4.yaml not generated yet")
+
+        from dbxmetagen.ontology import OntologyLoader
+        config = OntologyLoader.load_config(str(fhir_yaml))
+        entities = OntologyLoader.get_entity_definitions(config)
+        self.assertTrue(len(entities) >= 20, f"Expected >=20 entities, got {len(entities)}")
+        patient = next((e for e in entities if e.name == "Patient"), None)
+        self.assertIsNotNone(patient, "Patient entity not found")
+        self.assertTrue(len(patient.keywords) > 0, "Patient should have keywords")
+        self.assertIn("http://hl7.org/fhir/Patient", patient.uri or "")
+
+
+class TestSchemaDomainEdgeExtraction(unittest.TestCase):
+    """Validate that schema:domainIncludes/rangeIncludes edges are extracted."""
+
+    def test_schema_org_has_edges(self):
+        schema_tier1 = Path(__file__).resolve().parent.parent / "configurations" / "ontology_bundles" / "schema_org" / "edges_tier1.yaml"
+        if not schema_tier1.exists():
+            self.skipTest("schema_org tier files not generated yet")
+        data = yaml.safe_load(schema_tier1.read_text())
+        self.assertIsInstance(data, list)
+        self.assertTrue(len(data) > 50, f"Expected >50 Schema.org edges, got {len(data)}")
+
+    def test_schema_org_has_health_insurance_plan(self):
+        schema_t1 = Path(__file__).resolve().parent.parent / "configurations" / "ontology_bundles" / "schema_org" / "entities_tier1.yaml"
+        if not schema_t1.exists():
+            self.skipTest("schema_org tier files not generated yet")
+        data = yaml.safe_load(schema_t1.read_text())
+        names = [e["name"] for e in data]
+        self.assertIn("HealthInsurancePlan", names)
+        self.assertGreaterEqual(len(data), 21)
+
+
+class TestUnionDomainEdgeExtraction(unittest.TestCase):
+    """Validate that owl:unionOf domain edges are extracted for OMOP."""
+
+    def test_omop_has_more_edges_than_simple_domain(self):
+        omop_edges = Path(__file__).resolve().parent.parent / "configurations" / "ontology_bundles" / "omop_cdm" / "edges_tier1.yaml"
+        if not omop_edges.exists():
+            self.skipTest("omop_cdm tier files not generated yet")
+        data = yaml.safe_load(omop_edges.read_text())
+        self.assertIsInstance(data, list)
+        self.assertTrue(len(data) > 50, f"Expected >50 OMOP edges (union domains), got {len(data)}")
+
+
+class TestPrefixFiltering(unittest.TestCase):
+    """Validate that URI prefix filtering works correctly."""
+
+    def test_extract_classes_filters_by_prefix(self):
+        try:
+            import rdflib
+        except ImportError:
+            self.skipTest("rdflib not installed")
+
+        from scripts.build_ontology_indexes import _extract_classes
+
+        g = rdflib.Graph()
+        g.add((rdflib.URIRef("https://schema.org/Person"), rdflib.RDF.type, rdflib.RDFS.Class))
+        g.add((rdflib.URIRef("https://schema.org/Person"), rdflib.RDFS.comment, rdflib.Literal("A person")))
+        g.add((rdflib.URIRef("https://other.org/Person"), rdflib.RDF.type, rdflib.RDFS.Class))
+        g.add((rdflib.URIRef("https://other.org/Person"), rdflib.RDFS.comment, rdflib.Literal("Other person")))
+
+        entities = _extract_classes(g, {"Person"}, "Test", "https://schema.org/")
+        self.assertEqual(len(entities), 1)
+        self.assertEqual(entities["Person"]["uri"], "https://schema.org/Person")
+
+
+class TestDiscoverNamedRelationshipsDelegation(unittest.TestCase):
+    """Verify discover_named_relationships delegates to self.discoverer, not self."""
+
+    def test_llm_edge_section_uses_discoverer_attributes(self):
+        """The LLM-predicted edges section must read _validation_cfg and
+        _get_index_loader from self.discoverer, not self."""
+        import inspect  # noqa: E401
+        from dbxmetagen.ontology import OntologyBuilder
+
+        src = inspect.getsource(OntologyBuilder.discover_named_relationships)
+        self.assertNotIn("self._validation_cfg", src,
+                         "Should use discoverer._validation_cfg, not self._validation_cfg")
+        self.assertNotIn("self._get_index_loader", src,
+                         "Should use discoverer._get_index_loader, not self._get_index_loader")
+        self.assertNotIn("self._make_llm_fn", src,
+                         "_make_llm_fn never existed; should be inlined or delegated")
+
+    def test_ontology_builder_has_no_validation_cfg(self):
+        """OntologyBuilder should NOT have _validation_cfg as a class attribute."""
+        from dbxmetagen.ontology import OntologyBuilder
+        cls_attrs = [a for a in vars(OntologyBuilder) if not a.startswith("__")]
+        self.assertNotIn("_validation_cfg", cls_attrs,
+                         "OntologyBuilder should not define _validation_cfg")
+
+
+# ---------------------------------------------------------------------------
+# _enforce_entity_value fuzzy matching tests
+# ---------------------------------------------------------------------------
+
+class TestEnforceEntityValue(unittest.TestCase):
+
+    def test_exact_match_case_insensitive(self):
+        from dbxmetagen.ontology import _enforce_entity_value
+        val, exact = _enforce_entity_value("Patient", ["Patient", "Encounter"])
+        self.assertEqual(val, "Patient")
+        self.assertTrue(exact)
+
+    def test_exact_match_lowercase(self):
+        from dbxmetagen.ontology import _enforce_entity_value
+        val, exact = _enforce_entity_value("patient", ["Patient", "Encounter"])
+        self.assertEqual(val, "Patient")
+        self.assertTrue(exact)
+
+    def test_fuzzy_match_typo(self):
+        from dbxmetagen.ontology import _enforce_entity_value
+        val, exact = _enforce_entity_value("CareePlan", ["CarePlan", "InsurancePlan", "Claim"])
+        self.assertEqual(val, "CarePlan")
+        self.assertFalse(exact)
+
+    def test_fuzzy_match_close_name(self):
+        from dbxmetagen.ontology import _enforce_entity_value
+        val, exact = _enforce_entity_value("Patients", ["Patient", "Encounter", "Claim"])
+        self.assertEqual(val, "Patient")
+        self.assertFalse(exact)
+
+    def test_ambiguous_substring_no_longer_matches_first(self):
+        """Old substring logic would match "Plan" to "CarePlan" or "InsurancePlan"
+        non-deterministically. Fuzzy matching should pick the closest."""
+        from dbxmetagen.ontology import _enforce_entity_value
+        val, exact = _enforce_entity_value("Plan", ["CarePlan", "InsurancePlan", "Medication"])
+        self.assertFalse(exact)
+        self.assertIn(val, ["CarePlan", "InsurancePlan", "DataTable"])
+
+    def test_fallback_to_datatable(self):
+        from dbxmetagen.ontology import _enforce_entity_value
+        val, exact = _enforce_entity_value("CompletelyUnrelated", ["Patient", "Encounter"])
+        self.assertEqual(val, "DataTable")
+        self.assertFalse(exact)
+
+    def test_custom_fallback(self):
+        from dbxmetagen.ontology import _enforce_entity_value
+        val, exact = _enforce_entity_value("xyz", ["A", "B"], fallback="Unknown")
+        self.assertEqual(val, "Unknown")
+        self.assertFalse(exact)
+
+
+# ---------------------------------------------------------------------------
+# Tier schema validation tests
+# ---------------------------------------------------------------------------
+
+class TestTierSchemaValidation(unittest.TestCase):
+
+    def test_validate_valid_entities_tier1(self):
+        from dbxmetagen.ontology_index import _validate_list_of_dicts, _ENTITIES_T1_REQUIRED
+        data = [{"name": "Patient", "description": "A patient"}]
+        valid, issues = _validate_list_of_dicts(data, _ENTITIES_T1_REQUIRED, "entities_tier1.yaml")
+        self.assertEqual(len(valid), 1)
+        self.assertEqual(len(issues), 0)
+
+    def test_validate_entities_tier1_filters_bad_entries(self):
+        from dbxmetagen.ontology_index import _validate_list_of_dicts, _ENTITIES_T1_REQUIRED
+        data = [
+            {"name": "Good", "description": "ok"},
+            {"name": "Bad"},  # missing description
+            "not a dict",
+        ]
+        valid, issues = _validate_list_of_dicts(data, _ENTITIES_T1_REQUIRED, "entities_tier1.yaml")
+        self.assertEqual(len(valid), 1)
+        self.assertEqual(valid[0]["name"], "Good")
+        self.assertEqual(len(issues), 2)
+
+    def test_validate_entities_tier1_wrong_type(self):
+        from dbxmetagen.ontology_index import _validate_list_of_dicts, _ENTITIES_T1_REQUIRED
+        valid, issues = _validate_list_of_dicts("not a list", _ENTITIES_T1_REQUIRED, "entities_tier1.yaml")
+        self.assertEqual(valid, [])
+        self.assertEqual(len(issues), 1)
+
+    def test_validate_dict_of_dicts_valid(self):
+        from dbxmetagen.ontology_index import _validate_dict_of_dicts, _ENTITIES_T2_REQUIRED
+        data = {"Patient": {"description": "d", "source_ontology": "FHIR", "uri": "http://x"}}
+        valid, issues = _validate_dict_of_dicts(data, _ENTITIES_T2_REQUIRED, "entities_tier2.yaml")
+        self.assertEqual(len(valid), 1)
+        self.assertEqual(len(issues), 0)
+
+    def test_validate_dict_of_dicts_warns_missing_keys(self):
+        from dbxmetagen.ontology_index import _validate_dict_of_dicts, _ENTITIES_T2_REQUIRED
+        data = {"Patient": {"description": "d"}}  # missing source_ontology, uri
+        valid, issues = _validate_dict_of_dicts(data, _ENTITIES_T2_REQUIRED, "entities_tier2.yaml")
+        self.assertEqual(len(valid), 1)  # still included, just warned
+        self.assertEqual(len(issues), 1)
+
+    def test_validate_uri_map_valid(self):
+        from dbxmetagen.ontology_index import _validate_uri_map
+        data = {"Patient": "http://hl7.org/fhir/Patient"}
+        valid, issues = _validate_uri_map(data, "uris.yaml")
+        self.assertEqual(len(valid), 1)
+        self.assertEqual(len(issues), 0)
+
+    def test_validate_uri_map_filters_non_string(self):
+        from dbxmetagen.ontology_index import _validate_uri_map
+        data = {"Patient": "http://ok", "Bad": 42}
+        valid, issues = _validate_uri_map(data, "uris.yaml")
+        self.assertEqual(len(valid), 1)
+        self.assertNotIn("Bad", valid)
+        self.assertEqual(len(issues), 1)
+
+    def test_validate_bundle_on_real_bundle(self):
+        from dbxmetagen.ontology_index import validate_bundle
+        fhir_dir = Path(__file__).resolve().parent.parent / "configurations" / "ontology_bundles" / "fhir_r4"
+        if not fhir_dir.exists():
+            self.skipTest("fhir_r4 tier files not generated yet")
+        issues = validate_bundle("fhir_r4")
+        self.assertIsInstance(issues, list)
+
+    def test_validate_bundle_on_broken_files(self):
+        from dbxmetagen.ontology_index import validate_bundle
+        tmpdir = tempfile.mkdtemp()
+        with open(os.path.join(tmpdir, "entities_tier1.yaml"), "w") as f:
+            f.write("not_a_list: true\n")
+        with open(os.path.join(tmpdir, "equivalent_class_uris.yaml"), "w") as f:
+            yaml.dump({"Patient": 42}, f)
+        issues = validate_bundle("unused", base_dir=tmpdir)
+        self.assertTrue(len(issues) >= 2)
+
+    def test_loader_filters_invalid_tier1_entries(self):
+        """OntologyIndexLoader._load should filter out malformed tier-1 entries."""
+        from dbxmetagen.ontology_index import OntologyIndexLoader
+        tmpdir = tempfile.mkdtemp()
+        data = [
+            {"name": "Good", "description": "ok"},
+            {"name": "Bad"},
+        ]
+        with open(os.path.join(tmpdir, "entities_tier1.yaml"), "w") as f:
+            yaml.dump(data, f)
+        loader = OntologyIndexLoader(base_dir=tmpdir)
+        result = loader.get_entities_tier1()
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["name"], "Good")
+
+
+# ---------------------------------------------------------------------------
+# Prompt template correctness tests
+# ---------------------------------------------------------------------------
+
+class TestPromptTemplates(unittest.TestCase):
+
+    def test_pass1_uses_description_not_sample(self):
+        from dbxmetagen.ontology_predictor import PASS1_USER
+        self.assertIn("Description:", PASS1_USER)
+        self.assertNotIn("Sample (5 rows)", PASS1_USER)
+
+    def test_pass2_uses_description_not_sample(self):
+        from dbxmetagen.ontology_predictor import PASS2_USER
+        self.assertIn("Description:", PASS2_USER)
+        self.assertNotIn("Sample:", PASS2_USER.split("Description:")[0])
+
+    def test_pass3_uses_description_not_sample(self):
+        from dbxmetagen.ontology_predictor import PASS3_USER
+        self.assertIn("Description:", PASS3_USER)
+        self.assertNotIn("Sample:", PASS3_USER.split("Description:")[0])
+
+    def test_all_templates_have_required_placeholders(self):
+        from dbxmetagen.ontology_predictor import PASS1_USER, PASS2_USER, PASS3_USER
+        for tmpl in [PASS1_USER, PASS2_USER, PASS3_USER]:
+            self.assertIn("{table_name}", tmpl)
+            self.assertIn("{columns}", tmpl)
+            self.assertIn("{sample}", tmpl)
+
+
+# ---------------------------------------------------------------------------
+# Three-pass enforcement with tier names
+# ---------------------------------------------------------------------------
+
+class TestThreePassTierNameEnforcement(unittest.TestCase):
+    """Verify _three_pass_classify_table enforces against tier-1 names."""
+
+    def test_source_uses_tier1_union(self):
+        """The enforcement in _three_pass_classify_table should use the union
+        of self._entity_names and tier-1 entity names."""
+        import inspect
+        from dbxmetagen.ontology import EntityDiscoverer
+        src = inspect.getsource(EntityDiscoverer._three_pass_classify_table)
+        self.assertIn("tier1_names", src,
+                      "Should build tier1_names from loader.get_entities_tier1()")
+        self.assertIn("set(self._entity_names)", src,
+                      "Should union with self._entity_names")
+
+    def test_enforce_accepts_tier_only_name(self):
+        """If an entity exists in tier-1 but not in bundle definitions,
+        enforcement should accept it."""
+        from dbxmetagen.ontology import _enforce_entity_value
+        bundle_names = ["Patient", "Encounter"]
+        tier_names = ["AllergyIntolerance", "ClinicalImpression"]
+        allowed = list(set(bundle_names) | set(tier_names))
+        val, exact = _enforce_entity_value("AllergyIntolerance", allowed)
+        self.assertEqual(val, "AllergyIntolerance")
+        self.assertTrue(exact)
+
+
+# ---------------------------------------------------------------------------
+# Error boundary and response validation tests
+# ---------------------------------------------------------------------------
+
+class TestSafeHelpers(unittest.TestCase):
+
+    def test_safe_float_numeric(self):
+        from dbxmetagen.ontology_predictor import _safe_float
+        self.assertEqual(_safe_float(0.9), 0.9)
+        self.assertEqual(_safe_float("0.75"), 0.75)
+
+    def test_safe_float_non_numeric(self):
+        from dbxmetagen.ontology_predictor import _safe_float
+        self.assertEqual(_safe_float("high"), 0.0)
+        self.assertEqual(_safe_float(None), 0.0)
+        self.assertEqual(_safe_float("high", default=0.5), 0.5)
+
+    def test_validate_pass1_valid(self):
+        from dbxmetagen.ontology_predictor import _validate_pass1
+        self.assertTrue(_validate_pass1({"top_candidates": ["Patient"]}))
+
+    def test_validate_pass1_invalid(self):
+        from dbxmetagen.ontology_predictor import _validate_pass1
+        self.assertFalse(_validate_pass1({"top_candidates": "Patient"}))
+        self.assertFalse(_validate_pass1({}))
+
+    def test_validate_pass2_valid(self):
+        from dbxmetagen.ontology_predictor import _validate_pass2
+        self.assertTrue(_validate_pass2({"predicted_entity": "Patient", "confidence_score": 0.9}))
+
+    def test_validate_pass2_missing_entity(self):
+        from dbxmetagen.ontology_predictor import _validate_pass2
+        self.assertFalse(_validate_pass2({"confidence_score": 0.9}))
+
+    def test_safe_parse_response_valid_json(self):
+        from dbxmetagen.ontology_predictor import _safe_parse_response
+        llm = lambda s, u: '{"key": "val"}'
+        result = _safe_parse_response(llm, "sys", "usr", "test")
+        self.assertEqual(result, {"key": "val"})
+
+    def test_safe_parse_response_bad_json(self):
+        from dbxmetagen.ontology_predictor import _safe_parse_response
+        llm = lambda s, u: "not json at all"
+        result = _safe_parse_response(llm, "sys", "usr", "test")
+        self.assertIsNone(result)
+
+    def test_safe_parse_response_llm_exception(self):
+        from dbxmetagen.ontology_predictor import _safe_parse_response
+        def bad_llm(s, u):
+            raise ConnectionError("network down")
+        result = _safe_parse_response(bad_llm, "sys", "usr", "test")
+        self.assertIsNone(result)
+
+
+class TestPredictEntityErrorBoundaries(unittest.TestCase):
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        t1 = [{"name": "Patient", "description": "A patient"}, {"name": "Claim", "description": "Insurance claim"}]
+        t2 = {"Patient": {"description": "A patient", "source_ontology": "FHIR R4", "uri": "http://hl7.org/fhir/Patient", "edges": []},
+               "Claim": {"description": "Insurance claim", "source_ontology": "FHIR R4", "uri": "http://hl7.org/fhir/Claim", "edges": []}}
+        t3 = {"Patient": {"description": "A patient", "source_ontology": "FHIR R4", "uri": "http://hl7.org/fhir/Patient",
+                           "keywords": [], "synonyms": [], "typical_attributes": [], "business_questions": [], "relationships": {}, "properties": {}},
+               "Claim": {"description": "Insurance claim", "source_ontology": "FHIR R4", "uri": "http://hl7.org/fhir/Claim",
+                          "keywords": [], "synonyms": [], "typical_attributes": [], "business_questions": [], "relationships": {}, "properties": {}}}
+        uris = {"Patient": "http://hl7.org/fhir/Patient", "Claim": "http://hl7.org/fhir/Claim"}
+        for fname, data in [("entities_tier1.yaml", t1), ("entities_tier2.yaml", t2),
+                            ("entities_tier3.yaml", t3), ("equivalent_class_uris.yaml", uris)]:
+            with open(os.path.join(self.tmpdir, fname), "w") as f:
+                yaml.dump(data, f)
+
+    def _loader(self):
+        from dbxmetagen.ontology_index import OntologyIndexLoader
+        return OntologyIndexLoader(base_dir=self.tmpdir)
+
+    def test_pass1_malformed_json_returns_unknown(self):
+        from dbxmetagen.ontology_predictor import predict_entity
+        result = predict_entity("t", "c", "d", self._loader(), lambda s, u: "not json")
+        self.assertEqual(result.predicted_entity, "Unknown")
+        self.assertTrue(result.needs_human_review)
+        self.assertEqual(result.passes_run, 1)
+
+    def test_pass1_llm_exception_returns_unknown(self):
+        from dbxmetagen.ontology_predictor import predict_entity
+        def exploding_llm(s, u):
+            raise RuntimeError("boom")
+        result = predict_entity("t", "c", "d", self._loader(), exploding_llm)
+        self.assertEqual(result.predicted_entity, "Unknown")
+        self.assertTrue(result.needs_human_review)
+
+    def test_pass2_malformed_returns_pass1_candidate(self):
+        from dbxmetagen.ontology_predictor import predict_entity
+        call_count = [0]
+        def llm_fn(s, u):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return json.dumps({"top_candidates": ["Patient"], "confidence": "high", "reasoning": "ok"})
+            return "MALFORMED"
+        result = predict_entity("t", "c", "d", self._loader(), llm_fn)
+        self.assertEqual(result.predicted_entity, "Patient")
+        self.assertTrue(result.needs_human_review)
+        self.assertEqual(result.passes_run, 1)
+
+    def test_pass3_malformed_returns_pass2_result(self):
+        from dbxmetagen.ontology_predictor import predict_entity
+        call_count = [0]
+        def llm_fn(s, u):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return json.dumps({"top_candidates": ["Patient", "Claim"], "confidence": "low", "reasoning": "unclear"})
+            if call_count[0] == 2:
+                return json.dumps({"predicted_entity": "Patient", "source_ontology": "FHIR R4",
+                                   "confidence_score": 0.5, "rationale": "maybe", "needs_deep_pass": True})
+            return "TOTALLY BROKEN"
+        result = predict_entity("t", "c", "d", self._loader(), llm_fn)
+        self.assertEqual(result.predicted_entity, "Patient")
+        self.assertEqual(result.passes_run, 2)
+        self.assertTrue(result.needs_human_review)
+
+    def test_non_numeric_confidence_does_not_crash(self):
+        from dbxmetagen.ontology_predictor import predict_entity
+        call_count = [0]
+        def llm_fn(s, u):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return json.dumps({"top_candidates": ["Patient"], "confidence": "high", "reasoning": "ok"})
+            return json.dumps({"predicted_entity": "Patient", "source_ontology": "FHIR R4",
+                               "confidence_score": "very high", "rationale": "obvious", "needs_deep_pass": False})
+        result = predict_entity("t", "c", "d", self._loader(), llm_fn)
+        self.assertEqual(result.predicted_entity, "Patient")
+        self.assertEqual(result.confidence_score, 0.0)
+
+
+class TestPredictEdgeErrorBoundaries(unittest.TestCase):
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        edges_t1 = [{"name": "Patient.encounter", "domain": "Patient", "range": "Encounter"}]
+        edges_t2 = {"Patient.encounter": {"domain": "Patient", "range": "Encounter", "description": "link"}}
+        for fname, data in [("entities_tier1.yaml", [{"name": "Patient", "description": "p"}]),
+                            ("edges_tier1.yaml", edges_t1), ("edges_tier2.yaml", edges_t2)]:
+            with open(os.path.join(self.tmpdir, fname), "w") as f:
+                yaml.dump(data, f)
+
+    def _loader(self):
+        from dbxmetagen.ontology_index import OntologyIndexLoader
+        return OntologyIndexLoader(base_dir=self.tmpdir)
+
+    def test_edge_pass1_failure_returns_default(self):
+        from dbxmetagen.ontology_predictor import predict_edge
+        result = predict_edge(
+            src_entity="Patient", dst_entity="Encounter",
+            loader=self._loader(), llm_fn=lambda s, u: "bad json",
+            from_table="t1", to_table="t2",
+        )
+        self.assertEqual(result.predicted_edge, "references")
+        self.assertEqual(result.confidence_score, 0.0)
+
+    def test_edge_pass2_failure_returns_pass1_candidate(self):
+        from dbxmetagen.ontology_predictor import predict_edge
+        call_count = [0]
+        def llm_fn(s, u):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return json.dumps({"top_candidates": ["Patient.encounter"], "confidence": "high", "reasoning": "ok"})
+            return "BROKEN"
+        result = predict_edge(
+            src_entity="Patient", dst_entity="Encounter",
+            loader=self._loader(), llm_fn=llm_fn,
+            from_table="t1", to_table="t2",
+        )
+        self.assertEqual(result.predicted_edge, "Patient.encounter")
+        self.assertEqual(result.confidence_score, 0.3)
+        self.assertEqual(result.passes_run, 1)
+
+
+class TestAiClassifyTableFallback(unittest.TestCase):
+    """Verify _ai_classify_table falls back to single-pass when three-pass raises."""
+
+    def test_three_pass_exception_falls_through(self):
+        import inspect
+        from dbxmetagen.ontology import EntityDiscoverer
+        src = inspect.getsource(EntityDiscoverer._ai_classify_table)
+        self.assertIn("except Exception", src,
+                      "_ai_classify_table should catch three-pass exceptions")
+        self.assertIn("falling back to single-pass", src,
+                      "Should log a fallback message")
+
+
 if __name__ == "__main__":
     unittest.main()

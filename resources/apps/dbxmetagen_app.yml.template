@@ -82,3 +82,4 @@ resources:
         - "files.files"
         - "serving.serving-endpoints"
         - "sql.statement-execution"
+__APP_PERMISSIONS__

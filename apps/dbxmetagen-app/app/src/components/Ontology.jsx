@@ -325,6 +325,105 @@ function SourceStandardsBreakdown({ entities }) {
   )
 }
 
+function SourceClassBrowser() {
+  const [bundles, setBundles] = useState([])
+  const [selectedBundle, setSelectedBundle] = useState('')
+  const [classes, setClasses] = useState([])
+  const [total, setTotal] = useState(0)
+  const [loading, setLoading] = useState(false)
+  const [filter, setFilter] = useState('')
+  const [expandedCls, setExpandedCls] = useState(new Set())
+
+  useEffect(() => {
+    fetch('/api/ontology/bundles').then(r => r.ok ? r.json() : []).then(setBundles).catch(() => {})
+  }, [])
+
+  useEffect(() => {
+    if (!selectedBundle) { setClasses([]); setTotal(0); return }
+    setLoading(true)
+    fetch(`/api/ontology/source-classes/${selectedBundle}?limit=1000`)
+      .then(r => r.ok ? r.json() : { classes: [], total: 0 })
+      .then(data => { setClasses(data.classes || []); setTotal(data.total || 0) })
+      .catch(() => { setClasses([]); setTotal(0) })
+      .finally(() => setLoading(false))
+  }, [selectedBundle])
+
+  const filtered = useMemo(() => {
+    if (!filter) return classes
+    const f = filter.toLowerCase()
+    return classes.filter(c => c.name.toLowerCase().includes(f) || c.description.toLowerCase().includes(f))
+  }, [classes, filter])
+
+  const toggleCls = (name) => {
+    setExpandedCls(prev => { const n = new Set(prev); n.has(name) ? n.delete(name) : n.add(name); return n })
+  }
+
+  return (
+    <div>
+      <div className="flex items-center gap-3 mb-4">
+        <select value={selectedBundle} onChange={e => setSelectedBundle(e.target.value)}
+          className="select-base max-w-xs">
+          <option value="">Select a bundle...</option>
+          {bundles.filter(b => b.has_tier_indexes).map(b => (
+            <option key={b.key} value={b.key}>{b.name} ({b.entity_count} classes)</option>
+          ))}
+        </select>
+        {classes.length > 0 && (
+          <input type="text" placeholder="Filter classes..." value={filter} onChange={e => setFilter(e.target.value)}
+            className="input-base max-w-xs" />
+        )}
+        {total > 0 && <span className="text-xs text-slate-400">{filtered.length} / {total} classes</span>}
+      </div>
+      {loading && <p className="text-sm text-slate-400">Loading...</p>}
+      {!loading && filtered.length > 0 && (
+        <div className="overflow-y-auto max-h-[600px] space-y-1">
+          {filtered.map(c => (
+            <div key={c.name} className="border border-slate-200 dark:border-dbx-navy-400/25 rounded-lg">
+              <button onClick={() => toggleCls(c.name)}
+                className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-slate-50 dark:hover:bg-dbx-navy-600/50 transition-colors">
+                <span className="text-xs text-slate-400 font-mono">{expandedCls.has(c.name) ? '-' : '+'}</span>
+                <span className="text-sm font-medium text-slate-700 dark:text-slate-200">{c.name}</span>
+                {c.parents?.length > 0 && (
+                  <span className="text-[10px] text-slate-400 ml-1">extends {c.parents.join(', ')}</span>
+                )}
+                {c.source_ontology && (
+                  <span className="ml-auto text-[10px] px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300">{c.source_ontology}</span>
+                )}
+              </button>
+              {expandedCls.has(c.name) && (
+                <div className="px-4 pb-3 text-xs space-y-1.5 border-t border-slate-100 dark:border-dbx-navy-500/30 pt-2">
+                  <p className="text-slate-600 dark:text-slate-300">{c.description}</p>
+                  {c.uri && <p className="text-slate-400 font-mono break-all">{c.uri}</p>}
+                  {c.relationships?.length > 0 && (
+                    <div className="flex flex-wrap gap-1">
+                      <span className="text-slate-500 font-semibold mr-1">Edges:</span>
+                      {c.relationships.map(r => (
+                        <span key={r} className="bg-orange-50 text-orange-700 dark:bg-orange-900/30 dark:text-orange-300 px-1.5 py-0.5 rounded">{r}</span>
+                      ))}
+                    </div>
+                  )}
+                  {c.typical_attributes?.length > 0 && (
+                    <div className="flex flex-wrap gap-1">
+                      <span className="text-slate-500 font-semibold mr-1">Attributes:</span>
+                      {c.typical_attributes.map(a => (
+                        <span key={a} className="bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300 px-1.5 py-0.5 rounded">{a}</span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+      {!loading && selectedBundle && filtered.length === 0 && (
+        <p className="text-sm text-slate-400">No classes found. This bundle may not have tier indexes.</p>
+      )}
+    </div>
+  )
+}
+
+
 export default function Ontology() {
   const [entities, setEntities] = useState([])
   const [summary, setSummary] = useState([])
@@ -398,6 +497,7 @@ export default function Ontology() {
   const tabs = [
     { key: 'graph', label: 'Relationship Graph' },
     { key: 'table', label: 'Entity Table' },
+    { key: 'browser', label: 'Source Classes' },
   ]
 
   return (
@@ -458,6 +558,15 @@ export default function Ontology() {
               Nodes = entity types (sized by table count). Click a node to see tables linked via instance_of.
             </p>
             <EntityGraph entities={entities} relationships={relationships} allRelationships={relationships} />
+          </div>
+        )}
+
+        {tab === 'browser' && (
+          <div>
+            <p className="text-xs text-slate-500 mb-3">
+              Browse the source ontology classes from a bundle's tier indexes. Select a bundle to explore its class hierarchy.
+            </p>
+            <SourceClassBrowser />
           </div>
         )}
 

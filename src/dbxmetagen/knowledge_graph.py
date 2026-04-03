@@ -25,6 +25,8 @@ from pyspark.sql import functions as F
 from pyspark.sql.types import ArrayType, FloatType
 from pyspark.sql.window import Window
 
+from dbxmetagen.table_filter import table_filter_sql
+
 logger = logging.getLogger(__name__)
 
 
@@ -37,7 +39,8 @@ class KnowledgeGraphConfig:
     nodes_table: str = "graph_nodes"
     edges_table: str = "graph_edges"
     max_edges_group_size: int = 500
-    
+    table_names: list[str] | None = None
+
     @property
     def fully_qualified_source(self) -> str:
         return f"{self.catalog_name}.{self.schema_name}.{self.source_table}"
@@ -271,7 +274,7 @@ class KnowledgeGraphBuilder:
         
         Each table becomes a node with id = table_name.
         """
-        # Note: `schema` is a reserved word, escaped with backticks
+        tf = table_filter_sql(self.config.table_names or [], column="table_name")
         df = self.spark.sql(f"""
             SELECT 
                 table_name,
@@ -286,6 +289,7 @@ class KnowledgeGraphBuilder:
                 created_at,
                 updated_at
             FROM {self.config.fully_qualified_source}
+            WHERE 1=1 {tf}
         """)
         
         df = (
@@ -688,7 +692,8 @@ class KnowledgeGraphBuilder:
 def build_knowledge_graph(
     spark: SparkSession,
     catalog_name: str,
-    schema_name: str
+    schema_name: str,
+    table_names: list[str] | None = None,
 ) -> Dict[str, Any]:
     """
     Convenience function to build the knowledge graph.
@@ -703,7 +708,8 @@ def build_knowledge_graph(
     """
     config = KnowledgeGraphConfig(
         catalog_name=catalog_name,
-        schema_name=schema_name
+        schema_name=schema_name,
+        table_names=table_names,
     )
     builder = KnowledgeGraphBuilder(spark, config)
     return builder.run()
@@ -759,6 +765,7 @@ class ExtendedKnowledgeGraphBuilder(KnowledgeGraphBuilder):
     def build_column_nodes_df(self) -> DataFrame:
         """Build nodes DataFrame from column knowledge base."""
         try:
+            tf = table_filter_sql(self.ext_config.table_names or [], column="table_name")
             df = self.spark.sql(f"""
                 SELECT 
                     column_id,
@@ -774,6 +781,7 @@ class ExtendedKnowledgeGraphBuilder(KnowledgeGraphBuilder):
                     created_at,
                     updated_at
                 FROM {self.ext_config.fully_qualified_column_kb}
+                WHERE 1=1 {tf}
             """)
             
             return (
@@ -1009,11 +1017,13 @@ class ExtendedKnowledgeGraphBuilder(KnowledgeGraphBuilder):
         *specific* classification type (e.g. email_address, ssn) rather than
         the coarse PII/PHI bucket."""
         try:
+            tf = table_filter_sql(self.ext_config.table_names or [], column="table_name")
             classified = self.spark.sql(f"""
                 SELECT column_id, LOWER(TRIM(classification)) AS cls
                 FROM {self.ext_config.fully_qualified_column_kb}
                 WHERE classification IS NOT NULL
                   AND LOWER(TRIM(classification)) NOT IN ('none', 'null', '', 'public')
+                  {tf}
             """)
             if classified.count() == 0:
                 logger.info("No classified columns found for same_classification edges")
@@ -1132,7 +1142,8 @@ def build_extended_knowledge_graph(
     catalog_name: str,
     schema_name: str,
     include_columns: bool = True,
-    include_schemas: bool = True
+    include_schemas: bool = True,
+    table_names: list[str] | None = None,
 ) -> Dict[str, Any]:
     """
     Build extended knowledge graph with column and schema nodes.
@@ -1149,7 +1160,8 @@ def build_extended_knowledge_graph(
     """
     config = ExtendedKnowledgeGraphConfig(
         catalog_name=catalog_name,
-        schema_name=schema_name
+        schema_name=schema_name,
+        table_names=table_names,
     )
     builder = ExtendedKnowledgeGraphBuilder(spark, config)
     return builder.run(include_columns, include_schemas)
