@@ -468,7 +468,7 @@ def run_genie_agent(
     serialized = _merge_prebuilt_data_sources(serialized, context.get("data_sources", {}))
     serialized = _dedup_sample_vs_example(serialized)
     serialized = _backfill_synonyms(serialized)
-    warnings = _validate_output(serialized)
+    warnings = _validate_output(serialized, context)
     if warnings:
         logger.warning("Genie output quality warnings: %s", "; ".join(warnings))
 
@@ -564,9 +564,9 @@ def _merge_prebuilt_data_sources(raw: dict, prebuilt_ds: dict) -> dict:
     agent_ds = raw.get("data_sources", {})
 
     for section in ("tables", "metric_views"):
-        prebuilt_items = prebuilt_ds.get(section, [])
-        if not prebuilt_items:
+        if section not in prebuilt_ds:
             continue
+        prebuilt_items = prebuilt_ds[section]
         prebuilt_by_id = {item["identifier"].lower(): item for item in prebuilt_items}
         agent_by_id = {}
         for item in agent_ds.get(section, []):
@@ -629,9 +629,15 @@ def _backfill_synonyms(raw: dict) -> dict:
     return raw
 
 
-def _validate_output(raw: dict) -> list[str]:
+def _validate_output(raw: dict, context: dict | None = None) -> list[str]:
     """Return a list of warnings about missing or thin sections."""
     warnings = []
+    if context:
+        warnings.extend(context.get("assembler_warnings", []))
+        requested = context.get("requested_mv_count")
+        actual = len(raw.get("data_sources", {}).get("metric_views", []))
+        if requested is not None and actual < requested:
+            warnings.append(f"{actual} of {requested} selected metric views included as data sources")
     ds = raw.get("data_sources", {})
     if not ds.get("tables"):
         warnings.append("No tables in data_sources")

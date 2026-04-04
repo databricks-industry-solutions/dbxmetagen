@@ -57,7 +57,8 @@ export default function SemanticLayer() {
 
   // Per-definition action state
   const [actionLoading, setActionLoading] = useState({})
-  const [createTarget, setCreateTarget] = useState({ catalog: '', schema: '' })
+  const [globalTargetOverride, setGlobalTargetOverride] = useState('')
+  const [perMvTargets, setPerMvTargets] = useState({})
   const [createError, setCreateError] = useState({})
   const [editDefId, setEditDefId] = useState(null)
   const [editJson, setEditJson] = useState('')
@@ -91,13 +92,23 @@ export default function SemanticLayer() {
     return () => document.removeEventListener('mousedown', handler)
   }, [])
 
+  const getDefaultTarget = (d) => {
+    if (d.deployed_catalog && d.deployed_schema) return `${d.deployed_catalog}.${d.deployed_schema}`
+    const parts = d.source_table?.split('.') || []
+    return parts.length >= 3 ? `${parts[0]}.${parts[1]}` : ''
+  }
+  const getEffectiveTarget = (d) => {
+    if (globalTargetOverride) return globalTargetOverride
+    return perMvTargets[d.definition_id] || getDefaultTarget(d)
+  }
+  const schemaOptions = [...new Set(definitions.map(d => getDefaultTarget(d)).filter(Boolean))]
+
   // --- Init ---
   useEffect(() => {
     cachedFetchObj('/api/config', {}, TTL.CONFIG).then(({ data: cfg }) => {
       if (cfg) {
         setSelectedCatalog(cfg.catalog_name || '')
         setSelectedSchema(cfg.schema_name || '')
-        setCreateTarget({ catalog: cfg.catalog_name || '', schema: cfg.schema_name || '' })
       }
     })
     loadProjects()
@@ -438,8 +449,11 @@ export default function SemanticLayer() {
   }
 
   const createDefinition = async (defId) => {
-    if (!createTarget.catalog || !createTarget.schema) {
-      setError('Set a target catalog and schema before creating')
+    const d = definitions.find(x => x.definition_id === defId)
+    const target = getEffectiveTarget(d || {})
+    const [tCat, tSch] = target.includes('.') ? target.split('.') : ['', '']
+    if (!tCat || !tSch) {
+      setError('No target schema resolved for this metric view')
       return
     }
     setActionLoading(prev => ({ ...prev, [defId]: 'create' }))
@@ -448,7 +462,7 @@ export default function SemanticLayer() {
     try {
       const res = await fetch(`/api/semantic-layer/definitions/${defId}/create`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ target_catalog: createTarget.catalog, target_schema: createTarget.schema }),
+        body: JSON.stringify({ target_catalog: tCat, target_schema: tSch }),
       })
       const text = await res.text()
       let data
@@ -470,14 +484,15 @@ export default function SemanticLayer() {
   const createAllValidated = async () => {
     const validated = definitions.filter(d => d.status === 'validated')
     if (!validated.length) return
-    if (!createTarget.catalog || !createTarget.schema) { setError('Set a target catalog and schema before creating'); return }
+    const anyMissing = validated.some(d => !getEffectiveTarget(d))
+    if (anyMissing) { setError('Some metric views have no target schema resolved'); return }
     setBulkCreating(true)
     setError(null)
     for (const d of validated) setActionLoading(prev => ({ ...prev, [d.definition_id]: 'create' }))
     const results = await Promise.allSettled(validated.map(async (d) => {
       const res = await fetch(`/api/semantic-layer/definitions/${d.definition_id}/create`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ target_catalog: createTarget.catalog, target_schema: createTarget.schema }),
+        body: JSON.stringify({ target_catalog: getEffectiveTarget(d).split('.')[0], target_schema: getEffectiveTarget(d).split('.')[1] }),
       })
       const text = await res.text()
       let data; try { data = JSON.parse(text) } catch { data = { detail: text } }
@@ -504,10 +519,12 @@ export default function SemanticLayer() {
     setError(null)
     for (const d of applied) {
       try {
-        if (createTarget.catalog && createTarget.schema) {
+        const dt = getEffectiveTarget(d)
+        const [dCat, dSch] = dt.includes('.') ? dt.split('.') : ['', '']
+        if (dCat && dSch) {
           await fetch(`/api/semantic-layer/definitions/${d.definition_id}/drop`, {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ target_catalog: createTarget.catalog, target_schema: createTarget.schema }),
+            body: JSON.stringify({ target_catalog: dCat, target_schema: dSch }),
           })
         }
         await fetch(`/api/semantic-layer/definitions/${d.definition_id}`, { method: 'DELETE' })
@@ -588,8 +605,13 @@ export default function SemanticLayer() {
     setError(null)
     try {
       let url = `/api/semantic-layer/definitions/${defId}`
-      if (status === 'applied' && createTarget.catalog && createTarget.schema) {
-        url += `?drop_view=true&catalog=${encodeURIComponent(createTarget.catalog)}&schema=${encodeURIComponent(createTarget.schema)}`
+      if (status === 'applied') {
+        const dd = definitions.find(x => x.definition_id === defId)
+        const dt = getEffectiveTarget(dd || {})
+        const [dCat, dSch] = dt.includes('.') ? dt.split('.') : ['', '']
+        if (dCat && dSch) {
+          url += `?drop_view=true&catalog=${encodeURIComponent(dCat)}&schema=${encodeURIComponent(dSch)}`
+        }
       }
       const res = await fetch(url, { method: 'DELETE' })
       if (!res.ok) { const data = await res.json(); setError(data.detail || 'Delete failed') }
@@ -601,8 +623,11 @@ export default function SemanticLayer() {
 
   const dropDefinition = async (defId) => {
     if (!confirm('Drop this view from Unity Catalog?')) return
-    if (!createTarget.catalog || !createTarget.schema) {
-      setError('Set a target catalog and schema before dropping')
+    const dd = definitions.find(x => x.definition_id === defId)
+    const dropTarget = getEffectiveTarget(dd || {})
+    const [dropCat, dropSch] = dropTarget.includes('.') ? dropTarget.split('.') : ['', '']
+    if (!dropCat || !dropSch) {
+      setError('No target schema resolved for dropping')
       return
     }
     setActionLoading(prev => ({ ...prev, [defId]: 'drop' }))
@@ -610,7 +635,7 @@ export default function SemanticLayer() {
     try {
       const res = await fetch(`/api/semantic-layer/definitions/${defId}/drop`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ target_catalog: createTarget.catalog, target_schema: createTarget.schema }),
+        body: JSON.stringify({ target_catalog: dropCat, target_schema: dropSch }),
       })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) setError(data.detail || 'Drop failed')
@@ -643,7 +668,7 @@ export default function SemanticLayer() {
       <div className="flex items-center justify-between">
         <PageHeader title="Metric Views" subtitle="Define semantic layer definitions" />
         <button onClick={async () => {
-          const res = await fetch(`/api/semantic-layer/export-sql?catalog=${encodeURIComponent(createTarget.catalog)}&schema=${encodeURIComponent(createTarget.schema)}`)
+          const res = await fetch(`/api/semantic-layer/export-sql${globalTargetOverride ? `?catalog=${encodeURIComponent(globalTargetOverride.split('.')[0])}&schema=${encodeURIComponent(globalTargetOverride.split('.')[1])}` : ''}`)
           if (!res.ok) { setError((await res.json()).detail || 'Export failed'); return }
           const blob = await res.blob()
           const url = URL.createObjectURL(blob)
@@ -659,8 +684,8 @@ export default function SemanticLayer() {
       {(selectedCatalog || selectedSchema) && (
         <div className="text-xs text-slate-500 dark:text-slate-400 px-1">
           Scope: <span className="font-medium text-slate-700 dark:text-slate-200">{selectedCatalog || '?'}.{selectedSchema || '?'}</span>
-          {createTarget.catalog && createTarget.catalog !== selectedCatalog && (
-            <span className="ml-3">Target: <span className="font-medium text-slate-700 dark:text-slate-200">{createTarget.catalog}.{createTarget.schema}</span></span>
+          {globalTargetOverride && (
+            <span className="ml-3">Override: <span className="font-medium text-slate-700 dark:text-slate-200">{globalTargetOverride}</span></span>
           )}
         </div>
       )}
@@ -1105,24 +1130,21 @@ export default function SemanticLayer() {
             <button onClick={refreshDefinitions} className="text-sm text-blue-600 dark:text-blue-400 hover:underline">Refresh</button>
           </div>
 
-          {/* Create Target */}
+          {/* Deploy target override */}
           <div className="flex items-center gap-3 mb-4 p-3 bg-dbx-oat dark:bg-gray-900 rounded-md border dark:border-gray-700">
-            <span className="text-xs font-medium text-gray-600 dark:text-gray-400 whitespace-nowrap">Create target:</span>
-            <input value={createTarget.catalog} onChange={e => setCreateTarget(prev => ({ ...prev, catalog: e.target.value }))}
-              placeholder="catalog" className="input-base !text-xs w-40" />
-            <span className="text-gray-400">.</span>
-            <input value={createTarget.schema} onChange={e => setCreateTarget(prev => ({ ...prev, schema: e.target.value }))}
-              placeholder="schema" className="input-base !text-xs w-40" />
+            <span className="text-xs font-medium text-gray-600 dark:text-gray-400 whitespace-nowrap" title="Override deploys all metric views to this schema instead of each view's source table schema">Deploy target override:</span>
+            <select value={globalTargetOverride} onChange={e => setGlobalTargetOverride(e.target.value)}
+              className="input-base !text-xs w-64">
+              <option value="">(None - use each view's source schema)</option>
+              {schemaOptions.map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
             {definitions.filter(d => d.status === 'validated').length > 0 && (
-              <button onClick={createAllValidated} disabled={bulkCreating || !createTarget.catalog || !createTarget.schema}
+              <button onClick={createAllValidated} disabled={bulkCreating}
                 className="ml-auto px-3 py-1.5 bg-green-600 text-white rounded text-xs hover:bg-green-700 disabled:opacity-50 whitespace-nowrap">
                 {bulkCreating ? 'Creating...' : `Create All Validated (${definitions.filter(d => d.status === 'validated').length})`}
               </button>
             )}
           </div>
-          {(!createTarget.catalog || !createTarget.schema) && definitions.some(d => d.status === 'validated') && (
-            <p className="text-xs text-amber-600 dark:text-amber-400 -mt-2 mb-3">Set a target catalog and schema above before creating metric views in Unity Catalog.</p>
-          )}
 
           {definitions.length > 0 && (
             <div className="flex items-center gap-2 mb-3 -mt-1">
@@ -1133,7 +1155,7 @@ export default function SemanticLayer() {
                 </button>
               )}
               {definitions.filter(d => d.status === 'applied').length > 0 && (
-                <button onClick={deleteAllApplied} disabled={!!bulkDeleting || !createTarget.catalog || !createTarget.schema}
+                <button onClick={deleteAllApplied} disabled={!!bulkDeleting}
                   className="px-2.5 py-1 text-xs text-red-600 dark:text-red-400 border border-red-300 dark:border-red-700 rounded hover:bg-red-50 dark:hover:bg-red-900/20 disabled:opacity-50 whitespace-nowrap">
                   {bulkDeleting === 'applied' ? 'Dropping & Deleting...' : `Drop & Delete All Applied (${definitions.filter(d => d.status === 'applied').length})`}
                 </button>
@@ -1166,6 +1188,25 @@ export default function SemanticLayer() {
                       <span className="font-medium text-sm dark:text-gray-100">{d.metric_view_name}</span>
                       {d.version && d.version > 1 && <span className="text-purple-500 dark:text-purple-400 text-xs ml-1">v{d.version}</span>}
                       <span className="text-gray-400 dark:text-gray-500 text-xs ml-2">{d.source_table}</span>
+                      <span className="text-gray-400 dark:text-gray-500 text-[10px] ml-2">
+                        <select value={perMvTargets[d.definition_id] || ''} onChange={e => setPerMvTargets(prev => ({...prev, [d.definition_id]: e.target.value}))}
+                          disabled={!!globalTargetOverride}
+                          className="bg-transparent border border-slate-200 dark:border-gray-600 rounded px-1 py-0 text-[10px] cursor-pointer disabled:opacity-50"
+                          title={globalTargetOverride ? `Overridden to ${globalTargetOverride}` : 'Deploy target for this metric view'}>
+                          <option value="">{getDefaultTarget(d) || '(no default)'}</option>
+                          {schemaOptions.filter(s => s !== getDefaultTarget(d)).map(s => <option key={s} value={s}>{s}</option>)}
+                        </select>
+                      </span>
+                      {(d.applied_at || d.created_at) && (
+                        <span className="text-gray-400 dark:text-gray-500 text-[10px] ml-2" title={d.applied_at ? `Applied: ${d.applied_at}` : `Created: ${d.created_at}`}>
+                          {d.applied_at ? `Applied ${new Date(d.applied_at).toLocaleDateString()}` : `Created ${new Date(d.created_at).toLocaleDateString()}`}
+                        </span>
+                      )}
+                      {d.deployed_catalog && d.deployed_schema && (
+                        <span className="text-[10px] ml-2 px-1 py-0.5 rounded bg-emerald-50 dark:bg-emerald-900/20 text-emerald-600 dark:text-emerald-400">
+                          Deployed: {d.deployed_catalog}.{d.deployed_schema}
+                        </span>
+                      )}
                     </div>
                     <div className="flex items-center gap-1 flex-shrink-0">
                       {busy && (
