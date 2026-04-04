@@ -60,6 +60,7 @@ export default function GenieBuilder() {
   const pollRef = useRef(null)
   const [elapsed, setElapsed] = useState(0)
   const timerRef = useRef(null)
+  const prevTablesRef = useRef(selectedTables)
 
   useEffect(() => {
     if (loading) {
@@ -113,11 +114,20 @@ export default function GenieBuilder() {
 
   useEffect(() => {
     if (!metricViews.length) return
-    const sel = new Set()
-    metricViews.forEach(mv => {
-      if (selectedTables.includes(mv.source_table)) sel.add(mv.metric_view_name)
+    const prev = new Set(prevTablesRef.current)
+    const curr = new Set(selectedTables)
+    const added = selectedTables.filter(t => !prev.has(t))
+    const removed = prevTablesRef.current.filter(t => !curr.has(t))
+    prevTablesRef.current = selectedTables
+    if (!added.length && !removed.length) return
+    setSelectedMVs(prevSel => {
+      const next = new Set(prevSel)
+      metricViews.forEach(mv => {
+        if (added.some(t => t === mv.source_table)) next.add(mv.metric_view_name)
+        if (removed.some(t => t === mv.source_table)) next.delete(mv.metric_view_name)
+      })
+      return next
     })
-    setSelectedMVs(sel)
   }, [selectedTables, metricViews])
 
   const toggleTable = (id) => {
@@ -360,12 +370,15 @@ export default function GenieBuilder() {
                     <button
                       key={mv.metric_view_name}
                       onClick={() => toggleMV(mv.metric_view_name)}
+                      title={mv.status === 'applied' ? `Applied metric view on ${mv.source_table}` : `Not yet applied to UC. Will contribute SQL snippets only, not a Genie data source. Apply it in the Semantic Layer tab first.`}
+                      style={mv.status !== 'applied' ? { borderStyle: 'dashed' } : undefined}
                       className={`px-3 py-1.5 text-xs rounded-md border transition-colors ${selectedMVs.has(mv.metric_view_name)
                         ? 'bg-violet-100 dark:bg-violet-900 border-violet-400 text-violet-700 dark:text-violet-300'
                         : 'bg-dbx-oat-light dark:bg-slate-700 border-slate-200 dark:border-slate-600 text-slate-600 dark:text-slate-300 hover:bg-dbx-oat dark:hover:bg-slate-600'
                         }`}
                     >
                       {mv.metric_view_name}
+                      {mv.status !== 'applied' && <span className="text-[9px] text-amber-500 ml-1">(snippet only)</span>}
                       <span className="ml-1 text-[10px] text-violet-500 dark:text-violet-400">MV</span>
                     </button>
                   ))}
@@ -528,6 +541,11 @@ export default function GenieBuilder() {
           {taskStatus && taskStatus.status === 'done' && taskStatus.elapsed_seconds != null && (
             <div className="bg-emerald-50 dark:bg-emerald-900/30 border border-emerald-200 dark:border-emerald-700 rounded-lg px-4 py-2 text-xs text-emerald-700 dark:text-emerald-300">
               Generated in {formatElapsed(taskStatus.elapsed_seconds)}
+              {(taskStatus.warnings?.filter(w => w.includes('metric view')) ?? []).length > 0 && (
+                <div className="mt-1 text-xs text-amber-600 dark:text-amber-400 font-medium">
+                  {(taskStatus.warnings?.filter(w => w.includes('metric view')) ?? []).map((w, i) => <p key={i}>{w}</p>)}
+                </div>
+              )}
               {taskStatus.warnings?.length > 0 && (
                 <details className="inline-block ml-2">
                   <summary className="cursor-pointer text-amber-600 dark:text-amber-400">{taskStatus.warnings.length} quality warning(s)</summary>
@@ -565,6 +583,14 @@ export default function GenieBuilder() {
                 </div>
                 {parsed.description && <p className="text-xs text-slate-500 mt-1 line-clamp-2">{parsed.description}</p>}
                 {instrText && <p className="text-xs text-slate-400 mt-1">Instructions: {instrText.length.toLocaleString()} chars</p>}
+                <details className="mt-3 pt-3 border-t border-slate-200 dark:border-slate-600 text-xs text-slate-600 dark:text-slate-400">
+                  <summary className="cursor-pointer font-medium text-slate-700 dark:text-slate-300 select-none">How joins and metric views work</summary>
+                  <ul className="mt-2 ml-4 list-disc space-y-1.5">
+                    <li><span className="font-medium text-slate-700 dark:text-slate-300">Joins</span> counts explicit <code className="text-[11px] bg-slate-100 dark:bg-slate-800 px-1 rounded">join_specs</code> between selected tables (and selected join targets). A low or zero count is normal when the space is metric-view heavy or when underlying fact tables are not in your <em>table</em> selection.</li>
+                    <li><span className="font-medium text-slate-700 dark:text-slate-300">Snippets</span> (filters / measures / expressions) are built from metric views that are <em>not yet applied</em> to Unity Catalog; applied MVs appear as metric view data sources instead.</li>
+                    <li>Join logic defined <em>inside</em> an MV definition is not the same as a high Joins count here; Genie still uses instructions and example SQL to query MVs.</li>
+                  </ul>
+                </details>
               </div>
             )
           })()}
@@ -679,7 +705,7 @@ export default function GenieBuilder() {
               Genie space {createdSpace.updated ? 'updated' : 'created'}! ID: <span className="font-mono">{createdSpace.space_id}</span>
               {(createdSpace.table_count != null || createdSpace.join_count != null) && (
                 <span className="ml-2 text-xs opacity-80">
-                  ({createdSpace.table_count ?? '?'} tables{createdSpace.mv_count ? `, ${createdSpace.mv_count} MVs` : ''}, {createdSpace.join_count ?? '?'} joins deployed)
+                  ({createdSpace.table_count ?? '?'} tables{createdSpace.mv_count ? `, ${createdSpace.mv_count} MVs` : ''}, {createdSpace.join_count ?? '?'} explicit join_specs deployed)
                 </span>
               )}
               {workspaceHost && createdSpace.space_id && (

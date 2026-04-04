@@ -164,15 +164,20 @@ class GenieContextAssembler:
         entity_rows = self._get_ontology_entities(table_identifiers)
         self._cached_entity_rows = entity_rows
         entity_rels = self._get_entity_relationships(table_identifiers)
-        metric_views = self._get_metric_views(table_identifiers)
-        if metric_view_names:
+        metric_views, mv_warnings = self._get_metric_views(table_identifiers)
+        if metric_view_names is not None:
             names_set = set(metric_view_names)
             metric_views = [mv for mv in metric_views if mv.get("metric_view_name") in names_set]
         value_samples = self._sample_categorical_values(column_meta)
 
-        # Split metric views: applied -> data_sources, validated -> sql_snippets
         applied_mvs = [mv for mv in metric_views if mv.get("status") == "applied"]
         unapplied_mvs = [mv for mv in metric_views if mv.get("status") != "applied"]
+        if metric_view_names is not None and unapplied_mvs:
+            unapplied_names = [mv["metric_view_name"] for mv in unapplied_mvs if mv.get("metric_view_name") in names_set]
+            if unapplied_names:
+                mv_warnings.append(
+                    f"{len(unapplied_names)} metric view(s) not yet applied to UC (will contribute SQL snippets only, not Genie data sources): {', '.join(unapplied_names)}"
+                )
 
         context_text = self._format_context(
             table_meta, column_meta, fk_rows, entity_rows, value_samples, entity_rels
@@ -214,6 +219,8 @@ class GenieContextAssembler:
             "sql_snippets": sql_snippets,
             "questions": questions or [],
             "reference_text": reference_text,
+            "assembler_warnings": mv_warnings,
+            "requested_mv_count": len(metric_view_names) if metric_view_names is not None else None,
         }
 
     def _load_genie_reference(self) -> str:
@@ -411,28 +418,54 @@ class GenieContextAssembler:
                                 })
         return specs
 
-    def _get_metric_views(self, tables: List[str]) -> list[dict]:
-        table_list = ", ".join(f"'{t}'" for t in tables)
-        short_names = ", ".join(f"'{t.split('.')[-1]}'" for t in tables)
+    @staticmethod
+    def _resolve_mv_location(mv, fallback_catalog, fallback_schema):
+        """Resolve catalog/schema for an MV: deployed cols > source_table > fallback."""
+        cat = mv.get("deployed_catalog")
+        sch = mv.get("deployed_schema")
+        if not cat or not sch:
+            src = mv.get("source_table", "")
+            parts = src.replace("`", "").split(".")
+            if len(parts) == 3:
+                cat = cat or parts[0]
+                sch = sch or parts[1]
+            elif len(parts) == 2:
+                sch = sch or parts[0]
+        return cat or fallback_catalog, sch or fallback_schema
+
+    def _get_metric_views(self, tables: List[str]) -> tuple[list[dict], list[str]]:
+        match_values = set()
+        for t in tables:
+            match_values.add(t)
+            parts = t.split(".")
+            if len(parts) == 3:
+                match_values.add(f"{parts[1]}.{parts[2]}")
+                match_values.add(parts[2])
+            elif len(parts) == 2:
+                match_values.add(parts[1])
+        match_list = ", ".join(f"'{v}'" for v in match_values)
         rows = _safe_sql(
             self.ws,
             self.wh,
             f"""
-            SELECT metric_view_name, source_table, json_definition, status
+            SELECT metric_view_name, source_table, json_definition, status,
+                   deployed_catalog, deployed_schema
             FROM {self._fq('metric_view_definitions')}
             WHERE status IN ('applied', 'validated')
-              AND (source_table IN ({table_list}) OR source_table IN ({short_names}))
+              AND source_table IN ({match_list})
         """,
         )
+        warnings: list[str] = []
         applied = [mv for mv in rows if mv.get("status") == "applied"]
         non_applied = [mv for mv in rows if mv.get("status") != "applied"]
         if not applied:
-            return non_applied
+            return non_applied, warnings
 
         from concurrent.futures import ThreadPoolExecutor, as_completed
 
         def _check(mv):
-            fq_name = f"`{self.catalog}`.`{self.schema}`.`{mv['metric_view_name']}`"
+            cat, sch = self._resolve_mv_location(mv, self.catalog, self.schema)
+            fq_name = f"`{cat}`.`{sch}`.`{mv['metric_view_name']}`"
             try:
                 r = self.ws.statement_execution.execute_statement(
                     warehouse_id=self.wh,
@@ -442,22 +475,27 @@ class GenieContextAssembler:
                     disposition=Disposition.INLINE,
                 )
                 state = r.status.state.value if r.status and r.status.state else "UNKNOWN"
-                return mv if state in ("SUCCEEDED", "CLOSED") else None
-            except Exception:
-                logger.warning("Metric view %s existence check failed -- skipping", mv["metric_view_name"])
-                return None
+                if state in ("SUCCEEDED", "CLOSED"):
+                    return mv, None
+                return None, f"Metric view '{mv['metric_view_name']}' not queryable at {fq_name} (state: {state})"
+            except Exception as e:
+                logger.warning("Metric view %s existence check failed: %s", mv["metric_view_name"], e)
+                return None, f"Metric view '{mv['metric_view_name']}' existence check failed at {fq_name}"
 
         verified = list(non_applied)
         with ThreadPoolExecutor(max_workers=8) as pool:
             futures = {pool.submit(_check, mv): mv for mv in applied}
             for f in as_completed(futures):
                 try:
-                    result = f.result(timeout=20)
+                    result, warn = f.result(timeout=20)
                     if result:
                         verified.append(result)
-                except Exception:
-                    pass
-        return verified
+                    elif warn:
+                        warnings.append(warn)
+                except Exception as e:
+                    mv = futures[f]
+                    warnings.append(f"Metric view '{mv['metric_view_name']}' check timed out")
+        return verified, warnings
 
     def _sample_categorical_values(
         self, columns: list[dict]
@@ -793,16 +831,15 @@ class GenieContextAssembler:
                 pass
             if not desc_lines:
                 desc_lines = [f"Metric view on {mv.get('source_table', '')}"]
+            mv_cat, mv_sch = self._resolve_mv_location(mv, self.catalog, self.schema)
             mvs.append(
                 {
-                    "identifier": f"{self.catalog}.{self.schema}.{mv['metric_view_name']}",
+                    "identifier": f"{mv_cat}.{mv_sch}.{mv['metric_view_name']}",
                     "description": desc_lines,
                 }
             )
 
-        result: dict[str, Any] = {"tables": tables}
-        if mvs:
-            result["metric_views"] = mvs
+        result: dict[str, Any] = {"tables": tables, "metric_views": mvs}
         return result
 
     def _qualify(self, name: str) -> str:

@@ -21,7 +21,8 @@ include:
 artifacts:
   default:
     type: whl
-    build: "echo 'Using pre-built wheel from dist/'"
+    build: "rm -rf dist/ && uv build"
+    dynamic_version: true
     path: .
 
 targets:
