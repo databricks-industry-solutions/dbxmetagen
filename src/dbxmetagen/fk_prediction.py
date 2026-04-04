@@ -1,22 +1,32 @@
 """
 Foreign Key Prediction module.
 
-Uses column embedding similarity, table similarity filtering, sample value
-comparison, rule-based scoring, and AI judgment to predict FK relationships
-between columns across tables.
+Join-key discovery uses: (1) blocking by catalog.schema, (2) column embedding
+similarity with same-block duplicate-table suppression and stricter cross-block
+floors, (3) declared FKs, query-history joins, naming and ontology heuristics,
+(4) rule-based scoring, (5) budgeted AI_QUERY as a tie-breaker, with optional
+skip-AI for high-trust declared/query pairs.
 """
 
 import logging
+import warnings
 from dataclasses import dataclass
-from typing import Dict, Any
-from pyspark.sql import SparkSession, DataFrame
+from typing import Any, Dict
+
+from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
-from pyspark.sql.window import Window
 from pyspark.sql.utils import AnalysisException
+from pyspark.sql.window import Window
 
 logger = logging.getLogger(__name__)
 
 _FK_MODEL = "databricks-gpt-oss-120b"
+
+SR_DECLARED = 0
+SR_QUERY = 1
+SR_NAME = 2
+SR_ONTOLOGY = 3
+SR_EMBEDDING = 4
 
 
 @dataclass
@@ -30,7 +40,13 @@ class FKPredictionConfig:
     ontology_relationships_table: str = "ontology_relationships"
     predictions_table: str = "fk_predictions"
     column_similarity_threshold: float = 0.85
-    table_similarity_threshold: float = 0.9  # max table similarity (exclude near-duplicate tables)
+    table_similarity_threshold: float = 0.9
+    duplicate_table_similarity_threshold: float = 0.97
+    cross_block_column_similarity_min: float = 0.92
+    cross_block_strict: bool = True
+    ontology_cross_block: bool = False
+    skip_ai_for_declared_fk: bool = False
+    skip_ai_query_min_observations: int = 0
     sample_size: int = 50
     confidence_threshold: float = 0.7
     apply_ddl: bool = False
@@ -53,6 +69,13 @@ class FKPredictor:
         self.spark = spark
         self.config = config
         self._table_samples: dict = {}
+        if self.config.table_similarity_threshold != 0.9:
+            warnings.warn(
+                "FKPredictionConfig.table_similarity_threshold is deprecated and ignored; "
+                "use duplicate_table_similarity_threshold and cross_block_column_similarity_min.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
 
     def _cap_candidates(self, df: DataFrame) -> DataFrame:
         """Limit candidates to top-K per table pair by name match quality."""
@@ -62,17 +85,79 @@ class FKPredictor:
         )
         return df.withColumn("_rn", F.row_number().over(w)).filter(F.col("_rn") <= k).drop("_rn")
 
+    def _apply_tiered_ai_cap(self, candidates: DataFrame) -> DataFrame:
+        """Cap only embedding-sourced rows; deterministic sources are never dropped."""
+        max_ai = self.config.max_ai_candidates
+        min_rule = self.config.rule_score_min_for_ai
+        tier_a = candidates.filter(F.col("source_rank") != F.lit(SR_EMBEDDING))
+        tier_b = candidates.filter(F.col("source_rank") == F.lit(SR_EMBEDDING))
+        tier_b_hi = tier_b.filter(F.col("rule_score") >= min_rule)
+        tier_b_lo = tier_b.filter(F.col("rule_score") < min_rule)
+        if tier_b_hi.count() <= max_ai:
+            return tier_a.unionByName(tier_b)
+        w = Window.orderBy(F.col("rule_score").desc())
+        tier_b_hi = (
+            tier_b_hi.withColumn("_rn", F.row_number().over(w))
+            .filter(F.col("_rn") <= max_ai)
+            .drop("_rn")
+        )
+        return tier_a.unionByName(tier_b_hi).unionByName(tier_b_lo)
+
+    def _with_skip_ai_flags(self, df: DataFrame) -> DataFrame:
+        qmin = self.config.skip_ai_query_min_observations
+        return df.withColumn(
+            "skip_ai",
+            (
+                (F.col("source_rank") == F.lit(SR_DECLARED))
+                & F.lit(self.config.skip_ai_for_declared_fk)
+            )
+            | (
+                (F.col("source_rank") == F.lit(SR_QUERY))
+                & (F.col("query_hit_count") >= F.lit(qmin))
+                & (F.col("query_hit_count") > F.lit(0))
+            ),
+        )
+
+    def _heuristic_ai_fill(self, df: DataFrame) -> DataFrame:
+        return (
+            df.withColumn("ai_is_fk", F.lit(True))
+            .withColumn(
+                "ai_confidence",
+                F.when(F.col("source_rank") == F.lit(SR_DECLARED), F.lit(0.95)).otherwise(F.lit(0.88)),
+            )
+            .withColumn(
+                "ai_reasoning",
+                F.when(F.col("source_rank") == F.lit(SR_DECLARED), F.lit("declared_foreign_key"))
+                .when(F.col("source_rank") == F.lit(SR_QUERY), F.lit("query_history_skip_ai"))
+                .otherwise(F.lit("heuristic_skip_ai")),
+            )
+            .withColumn(
+                "ai_fk_side",
+                F.when(F.col("source_rank") == F.lit(SR_DECLARED), F.lit("a")).otherwise(
+                    F.lit(None).cast("string")
+                ),
+            )
+        )
+
     # ------------------------------------------------------------------
     # Step 1: Candidate selection
     # ------------------------------------------------------------------
     def get_candidates(self) -> DataFrame:
-        """Column pairs with high column similarity but low table similarity.
-        When incremental, only considers pairs where at least one table changed."""
+        """Embedding column pairs with block-aware duplicate suppression and cross-block floors.
+
+        Incremental mode applies only here; declared/query/name/ontology paths run fully each job.
+        """
         nodes = self.config.fq(self.config.nodes_table)
         edges = self.config.fq(self.config.edges_table)
         preds = self.config.fq(self.config.predictions_table)
         col_thresh = self.config.column_similarity_threshold
-        tbl_thresh = self.config.table_similarity_threshold
+        dup_t = self.config.duplicate_table_similarity_threshold
+        xb_min = self.config.cross_block_column_similarity_min
+
+        cross_block_sql = ""
+        if self.config.cross_block_strict:
+            cross_block_sql = f"""
+          AND (j.block_a = j.block_b OR j.col_similarity >= {xb_min})"""
 
         changed_tables_cte = ""
         changed_tables_filter = ""
@@ -88,11 +173,14 @@ class FKPredictor:
             WHERE updated_at > TIMESTAMP '{last_run}'
         )"""
                 changed_tables_filter = """
-          AND (wp.table_a IN (SELECT parent_id FROM changed_tables)
-               OR wp.table_b IN (SELECT parent_id FROM changed_tables))"""
-                logger.info(f"Incremental mode: filtering candidates to tables changed since {last_run}")
+          AND (j.table_a IN (SELECT parent_id FROM changed_tables)
+               OR j.table_b IN (SELECT parent_id FROM changed_tables))"""
+                logger.info(
+                    "Incremental mode: embedding candidates limited to tables changed since %s",
+                    last_run,
+                )
             except Exception as e:
-                logger.warning(f"Incremental filtering failed ({e}), using full candidate set")
+                logger.warning("Incremental filtering failed (%s), using full candidate set", e)
 
         sql = f"""
         WITH col_sim_raw AS (
@@ -106,32 +194,50 @@ class FKPredictor:
               AND n1.parent_id != n2.parent_id
             GROUP BY LEAST(e.src, e.dst), GREATEST(e.src, e.dst)
         ),
-        col_sim AS (
-            SELECT col_a, col_b, col_similarity FROM col_sim_raw
-        ),
         with_parents AS (
-            SELECT cs.*,
+            SELECT cs.col_a, cs.col_b, cs.col_similarity,
                    n1.parent_id AS table_a, n2.parent_id AS table_b,
                    n1.data_type AS dtype_a, n2.data_type AS dtype_b
-            FROM col_sim cs
+            FROM col_sim_raw cs
             JOIN {nodes} n1 ON cs.col_a = n1.id
             JOIN {nodes} n2 ON cs.col_b = n2.id
+        ),
+        with_blocks AS (
+            SELECT wp.*,
+              CONCAT_WS('.', ELEMENT_AT(SPLIT(wp.table_a, '\\\\.'), 1),
+                ELEMENT_AT(SPLIT(wp.table_a, '\\\\.'), 2)) AS block_a,
+              CONCAT_WS('.', ELEMENT_AT(SPLIT(wp.table_b, '\\\\.'), 1),
+                ELEMENT_AT(SPLIT(wp.table_b, '\\\\.'), 2)) AS block_b
+            FROM with_parents wp
         ),
         tbl_sim AS (
             SELECT src, dst, weight AS table_similarity
             FROM {edges}
             WHERE relationship = 'similar_embedding'
+        ),
+        joined AS (
+            SELECT wb.*,
+              COALESCE(ts.table_similarity, 0.0) AS table_similarity
+            FROM with_blocks wb
+            LEFT JOIN tbl_sim ts
+              ON (wb.table_a = ts.src AND wb.table_b = ts.dst)
+              OR (wb.table_a = ts.dst AND wb.table_b = ts.src)
         ){changed_tables_cte}
-        SELECT wp.*,
-               COALESCE(ts.table_similarity, 0) AS table_similarity
-        FROM with_parents wp
-        LEFT JOIN tbl_sim ts
-            ON (wp.table_a = ts.src AND wp.table_b = ts.dst)
-            OR (wp.table_a = ts.dst AND wp.table_b = ts.src)
-        WHERE COALESCE(ts.table_similarity, 0) < {tbl_thresh}{changed_tables_filter}
+        SELECT j.col_a, j.col_b, j.col_similarity,
+               j.table_a, j.table_b, j.dtype_a, j.dtype_b, j.table_similarity
+        FROM joined j
+        WHERE NOT (
+            j.block_a = j.block_b
+            AND j.table_similarity >= {dup_t}
+        ){cross_block_sql}{changed_tables_filter}
         """
         df = self.spark.sql(sql)
-        logger.info("FK candidates found: %d", df.count())
+        df = (
+            df.withColumn("source_rank", F.lit(SR_EMBEDDING))
+            .withColumn("query_hit_count", F.lit(0))
+        )
+        n = df.count()
+        logger.info("FK embedding candidates found: %d", n)
         return df
 
     # ------------------------------------------------------------------
@@ -178,6 +284,9 @@ class FKPredictor:
         try:
             df = self.spark.sql(sql)
             df = self._cap_candidates(df)
+            df = df.withColumn("source_rank", F.lit(SR_NAME)).withColumn(
+                "query_hit_count", F.lit(0)
+            )
             logger.info("Name-based FK candidates: %d", df.count())
             return df
         except Exception as e:
@@ -185,17 +294,18 @@ class FKPredictor:
             return self.spark.createDataFrame(
                 [], "col_a STRING, col_b STRING, col_similarity DOUBLE, "
                 "table_a STRING, table_b STRING, dtype_a STRING, dtype_b STRING, "
-                "table_similarity DOUBLE"
+                "table_similarity DOUBLE, source_rank INT, query_hit_count INT"
             )
 
     # ------------------------------------------------------------------
     # Step 1b: Ontology-driven FK candidates
     # ------------------------------------------------------------------
     def get_ontology_relationship_candidates(self) -> DataFrame:
-        """Generate FK candidates from ontology_relationships entity pairs."""
+        """Generate FK candidates from ontology_relationships (same-block by default)."""
         ont_rels = self.config.fq(self.config.ontology_relationships_table)
         ont_ent = self.config.fq(self.config.ontology_entities_table)
         nodes = self.config.fq(self.config.nodes_table)
+        k = self.config.max_candidates_per_table_pair
         try:
             self.spark.sql(f"SELECT 1 FROM {ont_rels} LIMIT 1").collect()
         except Exception:
@@ -203,8 +313,16 @@ class FKPredictor:
             return self.spark.createDataFrame(
                 [], "col_a STRING, col_b STRING, col_similarity DOUBLE, "
                 "table_a STRING, table_b STRING, dtype_a STRING, dtype_b STRING, "
-                "table_similarity DOUBLE"
+                "table_similarity DOUBLE, source_rank INT, query_hit_count INT"
             )
+
+        block_filter = ""
+        if not self.config.ontology_cross_block:
+            block_filter = """
+              AND CONCAT_WS('.', ELEMENT_AT(SPLIT(st.table_name, '\\.'), 1),
+                    ELEMENT_AT(SPLIT(st.table_name, '\\.'), 2))
+                  = CONCAT_WS('.', ELEMENT_AT(SPLIT(dt.table_name, '\\.'), 1),
+                    ELEMENT_AT(SPLIT(dt.table_name, '\\.'), 2))"""
 
         sql = f"""
         WITH rels AS (
@@ -221,10 +339,11 @@ class FKPredictor:
             JOIN src_tables st ON r.src_entity_type = st.entity_type
             JOIN src_tables dt ON r.dst_entity_type = dt.entity_type
             WHERE st.table_name != dt.table_name
+            {block_filter}
         ),
         cols AS (
             SELECT id, parent_id, data_type,
-                   LOWER(ELEMENT_AT(SPLIT(id, '\\\\.'), -1)) AS col_short
+                   LOWER(ELEMENT_AT(SPLIT(id, '\\.'), -1)) AS col_short
             FROM {nodes} WHERE node_type = 'column'
         ),
         id_like_cols AS (
@@ -234,7 +353,15 @@ class FKPredictor:
             SELECT ca.id AS col_a, cb.id AS col_b,
                    tp.table_a, tp.table_b,
                    ca.data_type AS dtype_a, cb.data_type AS dtype_b,
-                   0.0 AS col_similarity, 0.0 AS table_similarity
+                   0.0 AS col_similarity, 0.0 AS table_similarity,
+                   CASE
+                     WHEN ca.col_short = cb.col_short THEN 3.0
+                     WHEN REPLACE(REPLACE(ca.col_short, '_id', ''), '_key', '')
+                       = REGEXP_REPLACE(LOWER(ELEMENT_AT(SPLIT(tp.table_b, '\\.'), -1)), 's$', '') THEN 2.0
+                     WHEN REPLACE(REPLACE(cb.col_short, '_id', ''), '_key', '')
+                       = REGEXP_REPLACE(LOWER(ELEMENT_AT(SPLIT(tp.table_a, '\\.'), -1)), 's$', '') THEN 2.0
+                     ELSE 1.0
+                   END AS name_match_score
             FROM table_pairs tp
             JOIN id_like_cols ca ON ca.parent_id = tp.table_a
             JOIN id_like_cols cb ON cb.parent_id = tp.table_b
@@ -242,18 +369,28 @@ class FKPredictor:
               AND (
                   ca.col_short = cb.col_short
                   OR REPLACE(REPLACE(ca.col_short, '_id', ''), '_key', '')
-                     = REGEXP_REPLACE(LOWER(ELEMENT_AT(SPLIT(tp.table_b, '\\\\.'), -1)), 's$', '')
+                     = REGEXP_REPLACE(LOWER(ELEMENT_AT(SPLIT(tp.table_b, '\\.'), -1)), 's$', '')
                   OR REPLACE(REPLACE(cb.col_short, '_id', ''), '_key', '')
-                     = REGEXP_REPLACE(LOWER(ELEMENT_AT(SPLIT(tp.table_a, '\\\\.'), -1)), 's$', '')
+                     = REGEXP_REPLACE(LOWER(ELEMENT_AT(SPLIT(tp.table_a, '\\.'), -1)), 's$', '')
               )
+        ),
+        capped AS (
+            SELECT * FROM (
+                SELECT *, ROW_NUMBER() OVER (
+                    PARTITION BY table_a, table_b ORDER BY name_match_score DESC
+                ) AS _tp_rn
+                FROM candidate_pairs
+            ) z WHERE z._tp_rn <= {k}
         )
         SELECT LEAST(col_a, col_b) AS col_a, GREATEST(col_a, col_b) AS col_b,
                col_similarity, table_a, table_b, dtype_a, dtype_b, table_similarity
-        FROM candidate_pairs
+        FROM capped
         """
         try:
             df = self.spark.sql(sql)
-            df = self._cap_candidates(df)
+            df = df.withColumn("source_rank", F.lit(SR_ONTOLOGY)).withColumn(
+                "query_hit_count", F.lit(0)
+            )
             logger.info("Ontology-driven FK candidates: %d", df.count())
             return df
         except Exception as e:
@@ -261,8 +398,9 @@ class FKPredictor:
             return self.spark.createDataFrame(
                 [], "col_a STRING, col_b STRING, col_similarity DOUBLE, "
                 "table_a STRING, table_b STRING, dtype_a STRING, dtype_b STRING, "
-                "table_similarity DOUBLE"
+                "table_similarity DOUBLE, source_rank INT, query_hit_count INT"
             )
+
 
     # ------------------------------------------------------------------
     # Step 1c-pre: Declared FK candidates from extended_table_metadata
@@ -279,7 +417,8 @@ class FKPredictor:
         except Exception:
             return self.spark.createDataFrame(
                 [], "col_a STRING, col_b STRING, table_a STRING, table_b STRING, "
-                "dtype_a STRING, dtype_b STRING, col_similarity DOUBLE, table_similarity DOUBLE"
+                "dtype_a STRING, dtype_b STRING, col_similarity DOUBLE, table_similarity DOUBLE, "
+                "source_rank INT, query_hit_count INT"
             )
         pairs = []
         for r in rows:
@@ -300,7 +439,8 @@ class FKPredictor:
         if not pairs:
             return self.spark.createDataFrame(
                 [], "col_a STRING, col_b STRING, table_a STRING, table_b STRING, "
-                "dtype_a STRING, dtype_b STRING, col_similarity DOUBLE, table_similarity DOUBLE"
+                "dtype_a STRING, dtype_b STRING, col_similarity DOUBLE, table_similarity DOUBLE, "
+                "source_rank INT, query_hit_count INT"
             )
         from pyspark.sql.types import StructType, StructField, StringType, DoubleType
         schema = StructType([
@@ -309,7 +449,10 @@ class FKPredictor:
             StructField("dtype_a", StringType()), StructField("dtype_b", StringType()),
             StructField("col_similarity", DoubleType()), StructField("table_similarity", DoubleType()),
         ])
-        return self.spark.createDataFrame(pairs, schema)
+        df = self.spark.createDataFrame(pairs, schema)
+        return df.withColumn("source_rank", F.lit(SR_DECLARED)).withColumn(
+            "query_hit_count", F.lit(0)
+        )
 
     # ------------------------------------------------------------------
     # Step 1c-post: Query history join candidates
@@ -320,7 +463,8 @@ class FKPredictor:
         cat, sch = self.config.catalog_name, self.config.schema_name
         empty_schema = (
             "col_a STRING, col_b STRING, table_a STRING, table_b STRING, "
-            "dtype_a STRING, dtype_b STRING, col_similarity DOUBLE, table_similarity DOUBLE"
+            "dtype_a STRING, dtype_b STRING, col_similarity DOUBLE, table_similarity DOUBLE, "
+            "query_hit_count LONG, source_rank INT"
         )
         try:
             rows = self.spark.sql(f"""
@@ -360,14 +504,14 @@ class FKPredictor:
             return self.spark.createDataFrame([], empty_schema)
 
         # Keep pairs seen >= 2 times
-        from pyspark.sql.types import StructType, StructField, StringType, DoubleType
+        from pyspark.sql.types import StructType, StructField, StringType, DoubleType, LongType
         pairs = []
         for (ca, cb), cnt in pair_counts.items():
             if cnt < 2:
                 continue
             tbl_a = ".".join(ca.split(".")[:-1])
             tbl_b = ".".join(cb.split(".")[:-1])
-            pairs.append((ca, cb, tbl_a, tbl_b, "", "", min(cnt / 10.0, 1.0), 0.0))
+            pairs.append((ca, cb, tbl_a, tbl_b, "", "", min(cnt / 10.0, 1.0), 0.0, int(cnt)))
         if not pairs:
             return self.spark.createDataFrame([], empty_schema)
         schema = StructType([
@@ -375,8 +519,10 @@ class FKPredictor:
             StructField("table_a", StringType()), StructField("table_b", StringType()),
             StructField("dtype_a", StringType()), StructField("dtype_b", StringType()),
             StructField("col_similarity", DoubleType()), StructField("table_similarity", DoubleType()),
+            StructField("query_hit_count", LongType()),
         ])
         df = self.spark.createDataFrame(pairs, schema)
+        df = df.withColumn("source_rank", F.lit(SR_QUERY))
         logger.info("Query-history FK candidates: %d", df.count())
         return df
 
@@ -662,8 +808,11 @@ class FKPredictor:
 
     def referential_integrity(self, candidates: DataFrame) -> DataFrame:
         """Batch RI check using pre-sampled temp views for each (table, column)."""
+        ri_filter = F.col("rule_score") >= self.config.rule_score_min_for_ai
+        if "skip_ai" in candidates.columns:
+            ri_filter = ri_filter | F.col("skip_ai")
         rows = (
-            candidates.filter(F.col("rule_score") >= self.config.rule_score_min_for_ai)
+            candidates.filter(ri_filter)
             .select("col_a", "col_b", "table_a", "table_b")
             .distinct()
             .collect()
@@ -1245,34 +1394,40 @@ class FKPredictor:
         logger.info("Starting FK prediction pipeline")
         self._ensure_output_tables()
 
-        # Gather candidates from all sources and deduplicate
         embedding_cands = self.get_candidates()
         name_cands = self.get_name_based_candidates()
         ontology_cands = self.get_ontology_relationship_candidates()
         declared_cands = self.get_declared_fk_candidates()
         query_cands = self.get_query_join_candidates()
 
-        candidates = embedding_cands \
-            .unionByName(name_cands, allowMissingColumns=True) \
-            .unionByName(ontology_cands, allowMissingColumns=True) \
-            .unionByName(declared_cands, allowMissingColumns=True) \
+        candidates = (
+            embedding_cands.unionByName(name_cands, allowMissingColumns=True)
+            .unionByName(ontology_cands, allowMissingColumns=True)
+            .unionByName(declared_cands, allowMissingColumns=True)
             .unionByName(query_cands, allowMissingColumns=True)
+        )
 
-        # Remove same-table candidates (FKs must be cross-table)
         candidates = candidates.filter(F.col("table_a") != F.col("table_b"))
 
-        # Dedup: keep highest col_similarity per (col_a, col_b) pair
-        dedup_w = Window.partitionBy("col_a", "col_b").orderBy(F.col("col_similarity").desc())
-        candidates = candidates.withColumn("_rn", F.row_number().over(dedup_w)) \
-            .filter(F.col("_rn") == 1).drop("_rn")
-        # Fill nulls from non-embedding sources
-        candidates = candidates.fillna(0.0, subset=["col_similarity", "table_similarity"])
+        dedup_w = Window.partitionBy("col_a", "col_b").orderBy(
+            F.col("source_rank").asc(),
+            F.col("col_similarity").desc(),
+            F.col("query_hit_count").desc(),
+        )
+        candidates = (
+            candidates.withColumn("_rn", F.row_number().over(dedup_w))
+            .filter(F.col("_rn") == 1)
+            .drop("_rn")
+        )
+        candidates = candidates.fillna(
+            0.0, subset=["col_similarity", "table_similarity", "query_hit_count"]
+        )
 
-        if candidates.count() == 0:
+        total_cand = candidates.count()
+        if total_cand == 0:
             logger.info("No FK candidates found")
             return {"candidates": 0, "ai_query_rows": 0, "predictions": 0, "edges": 0, "ddl_applied": 0}
 
-        # Try to sample actual values; fall back to null samples
         try:
             candidates = self._sample_from_source(candidates)
         except Exception as e:
@@ -1283,67 +1438,58 @@ class FKPredictor:
         candidates = self.add_lineage_signal(candidates)
         candidates = self.rule_score(candidates)
 
-        # Cardinality analysis
         try:
             candidates = self.cardinality_analysis(candidates)
         except Exception as e:
             logger.warning("Cardinality analysis failed, continuing: %s", e)
-            candidates = candidates.withColumn("pk_uniqueness", F.lit(0.5)) \
-                .withColumn("_card_ratio_a", F.lit(0.5)) \
+            candidates = (
+                candidates.withColumn("pk_uniqueness", F.lit(0.5))
+                .withColumn("_card_ratio_a", F.lit(0.5))
                 .withColumn("_card_ratio_b", F.lit(0.5))
-
-        min_rule = self.config.rule_score_min_for_ai
-        ai_eligible = candidates.filter(F.col("rule_score") >= min_rule).count()
-
-        # Cap AI candidates to control cost
-        max_ai = self.config.max_ai_candidates
-        if ai_eligible > max_ai:
-            logger.info("Capping AI candidates from %d to %d (top by rule_score)", ai_eligible, max_ai)
-            w = Window.orderBy(F.col("rule_score").desc())
-            candidates = candidates.withColumn("_ai_rn", F.row_number().over(w))
-            below_gate = candidates.filter(F.col("rule_score") < min_rule)
-            above_gate = candidates.filter(
-                (F.col("rule_score") >= min_rule) & (F.col("_ai_rn") <= max_ai)
             )
-            candidates = above_gate.unionByName(below_gate).drop("_ai_rn")
-            ai_eligible = max_ai
 
+        candidates = self._with_skip_ai_flags(candidates)
+        min_rule = self.config.rule_score_min_for_ai
+        candidates = self._apply_tiered_ai_cap(candidates)
+
+        need_llm = candidates.filter((~F.col("skip_ai")) & (F.col("rule_score") >= min_rule))
+        skip_llm = candidates.filter(F.col("skip_ai"))
+
+        ai_eligible = need_llm.count()
         if self.config.dry_run:
-            total = candidates.count()
             logger.info(
-                "DRY RUN: %d candidates, %d would be sent to AI_QUERY",
-                total,
+                "DRY RUN: %d candidates, %d would be sent to AI_QUERY, %d heuristic",
+                total_cand,
                 ai_eligible,
+                skip_llm.count(),
             )
             return {
                 "dry_run": True,
-                "candidates": total,
+                "candidates": total_cand,
                 "ai_query_rows": ai_eligible,
                 "predictions": 0,
                 "edges": 0,
                 "ddl_applied": 0,
             }
 
-        # AI judgment
-        judged = self.ai_judge(candidates)
+        judged_ai = self.ai_judge(need_llm)
+        judged_skip = self._heuristic_ai_fill(skip_llm)
+        judged = judged_ai.unionByName(judged_skip, allowMissingColumns=True)
+
         ai_positive = judged.filter(F.col("ai_is_fk") == True).count()
         ai_negative = judged.filter(F.col("ai_is_fk") == False).count()
-        logger.info("AI judgment: %d positive (is_fk=true), %d negative (is_fk=false)", ai_positive, ai_negative)
+        logger.info("AI judgment: %d positive, %d negative", ai_positive, ai_negative)
 
-        # Join validation -- test actual joinability
         judged = self.join_validate(judged)
 
-        # Referential integrity check on top candidates
         try:
             judged = self.referential_integrity(judged)
         except Exception as e:
             logger.warning("RI check failed, continuing: %s", e)
             judged = judged.withColumn("ri_score", F.lit(0.5))
 
-        # Enforce direction: col_a = FK (child), col_b = PK (parent)
         judged = self._enforce_direction(judged)
 
-        # Write outputs
         n_preds = self.write_predictions(judged)
         n_edges = self.write_graph_edges(judged)
         ddl_df = self.generate_ddl(judged)
@@ -1353,12 +1499,13 @@ class FKPredictor:
 
         return {
             "dry_run": False,
-            "candidates": candidates.count(),
+            "candidates": total_cand,
             "ai_query_rows": ai_eligible,
             "predictions": n_preds,
             "edges": n_edges,
             "ddl_applied": n_ddl,
         }
+
 
 
 def predict_foreign_keys(
@@ -1367,6 +1514,12 @@ def predict_foreign_keys(
     schema_name: str,
     column_similarity_threshold: float = 0.85,
     table_similarity_threshold: float = 0.9,
+    duplicate_table_similarity_threshold: float = 0.97,
+    cross_block_column_similarity_min: float = 0.92,
+    cross_block_strict: bool = True,
+    ontology_cross_block: bool = False,
+    skip_ai_for_declared_fk: bool = False,
+    skip_ai_query_min_observations: int = 0,
     confidence_threshold: float = 0.7,
     sample_size: int = 5,
     apply_ddl: bool = False,
@@ -1379,6 +1532,12 @@ def predict_foreign_keys(
         schema_name=schema_name,
         column_similarity_threshold=column_similarity_threshold,
         table_similarity_threshold=table_similarity_threshold,
+        duplicate_table_similarity_threshold=duplicate_table_similarity_threshold,
+        cross_block_column_similarity_min=cross_block_column_similarity_min,
+        cross_block_strict=cross_block_strict,
+        ontology_cross_block=ontology_cross_block,
+        skip_ai_for_declared_fk=skip_ai_for_declared_fk,
+        skip_ai_query_min_observations=skip_ai_query_min_observations,
         confidence_threshold=confidence_threshold,
         sample_size=sample_size,
         apply_ddl=apply_ddl,
@@ -1387,3 +1546,4 @@ def predict_foreign_keys(
     )
     predictor = FKPredictor(spark, config)
     return predictor.run()
+

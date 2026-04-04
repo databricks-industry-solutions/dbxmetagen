@@ -35,6 +35,18 @@ from typing import Any, Dict, List, Optional, Set
 
 import yaml
 
+from dbxmetagen.ontology_bundle_indexes import (
+    build_tiers,
+    entities_from_bundle,
+    load_edge_catalog,
+    resolve_edge_catalog,
+)
+
+# Backwards-compatible names for this script and tests
+_entities_from_bundle = entities_from_bundle
+_load_edge_catalog = load_edge_catalog
+_resolve_edge_catalog = resolve_edge_catalog
+
 logger = logging.getLogger(__name__)
 
 # Published ontology sources
@@ -546,145 +558,6 @@ def _extract_single_class(g, cls, classes_of_interest, source_label, entities, O
     }
 
 
-def build_tiers(
-    all_entities: Dict[str, Dict[str, Any]],
-    output_dir: Path,
-    dry_run: bool = False,
-) -> Dict[str, int]:
-    """Generate tier 1/2/3 YAML files for entities and edges."""
-    # --- Tier 1: compact list ---
-    tier1 = [{"name": k, "description": v["description"][:200]} for k, v in sorted(all_entities.items())]
-
-    # --- Tier 2 (Confirmation skill input): source_ontology, uri, parents, edge names ---
-    tier2 = {}
-    for name, data in all_entities.items():
-        edges = data.get("outgoing_edges", [])[:8]
-        tier2[name] = {
-            "description": data["description"],
-            "source_ontology": data["source"],
-            "uri": data["uri"],
-            "parents": data.get("parents", []),
-            "edges": [e["name"] for e in edges],
-        }
-
-    # --- Tier 3 (Deep Classification skill input): full domain profile ---
-    tier3 = {}
-    for name, data in all_entities.items():
-        tier3[name] = {
-            "description": data["description"],
-            "source_ontology": data["source"],
-            "uri": data["uri"],
-            "parents": data.get("parents", []),
-            "keywords": data.get("keywords", []),
-            "synonyms": data.get("synonyms", []),
-            "typical_attributes": data.get("typical_attributes", []),
-            "business_questions": data.get("business_questions", []),
-            "relationships": data.get("relationships", {}),
-            "properties": data.get("properties", {}),
-        }
-
-    # --- Edge tiers ---
-    all_edges: Dict[str, Dict[str, Any]] = {}
-    for ent_name, data in all_entities.items():
-        for edge in data.get("outgoing_edges", []):
-            ename = edge.get("name")
-            if ename and ename not in all_edges:
-                all_edges[ename] = {
-                    "name": ename,
-                    "domain": ent_name,
-                    "range": edge.get("range"),
-                    "ranges": edge.get("ranges", []),
-                    "uri": edge.get("uri"),
-                    "inverse": edge.get("inverse"),
-                }
-
-    edges_t1 = [{"name": e["name"], "domain": e["domain"], "range": e.get("range")}
-                for e in sorted(all_edges.values(), key=lambda x: x["name"])]
-    edges_t2 = {k: v for k, v in all_edges.items()}
-    # --- URI lookup ---
-    uris = {name: data["uri"] for name, data in all_entities.items() if data.get("uri")}
-
-    counts = {
-        "entities_tier1": len(tier1),
-        "entities_tier2": len(tier2),
-        "entities_tier3": len(tier3),
-        "edges_tier1": len(edges_t1),
-        "uris": len(uris),
-    }
-
-    if dry_run:
-        for label, count in counts.items():
-            print(f"  {label}: {count} entries")
-        return counts
-
-    output_dir.mkdir(parents=True, exist_ok=True)
-    files = {
-        "entities_tier1.yaml": tier1,
-        "entities_tier2.yaml": tier2,
-        "entities_tier3.yaml": tier3,
-        "edges_tier1.yaml": edges_t1,
-        "edges_tier2.yaml": edges_t2,
-        "equivalent_class_uris.yaml": uris,
-    }
-    for fname, data in files.items():
-        path = output_dir / fname
-        with open(path, "w", encoding="utf-8") as f:
-            yaml.dump(data, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
-        logger.info("Wrote %s (%d bytes)", path, path.stat().st_size)
-
-    return counts
-
-
-def _entities_from_bundle(bundle_path: Path) -> Dict[str, Dict[str, Any]]:
-    """Extract entities from a curated bundle YAML, preserving all rich fields for tier-3."""
-    raw = yaml.safe_load(bundle_path.read_text(encoding="utf-8"))
-    definitions = raw.get("ontology", {}).get("entities", {}).get("definitions", {})
-    edge_catalog = raw.get("ontology", {}).get("edge_catalog", {})
-
-    all_entities: Dict[str, Dict[str, Any]] = {}
-    for name, defn in definitions.items():
-        uri = defn.get("uri", "")
-        source = defn.get("source_ontology", "custom")
-        rels = defn.get("relationships", {})
-
-        outgoing_edges = []
-        relationships: Dict[str, Dict[str, str]] = {}
-        for edge_name, edge_info in rels.items():
-            target = edge_info.get("target", "")
-            if isinstance(target, list):
-                target = target[0]
-            cardinality = edge_info.get("cardinality", "unknown")
-            cat_entry = edge_catalog.get(edge_name, {})
-            inv = cat_entry.get("inverse", "")
-            outgoing_edges.append({
-                "name": edge_name,
-                "uri": "",
-                "range": target,
-                "inverse": inv,
-            })
-            relationships[edge_name] = {"target": target, "cardinality": cardinality}
-
-        parents = defn.get("parents", [])
-        if not parents and defn.get("parent"):
-            parents = [defn["parent"]]
-
-        all_entities[name] = {
-            "description": defn.get("description", f"{name} entity"),
-            "source": source,
-            "uri": uri,
-            "parents": parents,
-            "outgoing_edges": outgoing_edges,
-            "keywords": defn.get("keywords", []),
-            "synonyms": defn.get("synonyms", []),
-            "typical_attributes": defn.get("typical_attributes", []),
-            "business_questions": defn.get("business_questions", []),
-            "relationships": relationships,
-            "properties": defn.get("properties", {}),
-        }
-
-    return all_entities
-
-
 def _entities_from_custom_source(
     source_path: str,
     label: str,
@@ -885,7 +758,13 @@ def main():
 
     logger.info("Total entities: %d", len(all_entities))
 
-    counts = build_tiers(all_entities, output_dir, dry_run=args.dry_run)
+    edge_catalog = _resolve_edge_catalog(repo_root, args)
+    if edge_catalog:
+        logger.info("Loaded edge_catalog with %d edge definitions", len(edge_catalog))
+
+    counts = build_tiers(
+        all_entities, output_dir, dry_run=args.dry_run, edge_catalog=edge_catalog or None,
+    )
 
     action = "Would write" if args.dry_run else "Wrote"
     print(f"\n{action} tier indexes to {output_dir}/")

@@ -26,9 +26,15 @@ function DataTable({ data, maxRows = 100 }) {
 }
 
 const Tip = ({ text }) => (
-  <span className="relative group cursor-help ml-1.5 inline-flex">
-    <span className="text-slate-400 dark:text-slate-500 text-xs font-bold border border-slate-300 dark:border-dbx-navy-400 rounded-full w-4 h-4 inline-flex items-center justify-center hover:text-dbx-teal hover:border-dbx-teal transition-colors">?</span>
-    <span className="absolute z-50 hidden group-hover:block bottom-full left-1/2 -translate-x-1/2 mb-1.5 w-60 text-xs bg-dbx-navy dark:bg-dbx-navy-600 text-white rounded-xl px-3 py-2 shadow-elevated pointer-events-none animate-fade-in">{text}</span>
+  <span className="relative group ml-1.5 inline-flex align-middle">
+    <button
+      type="button"
+      className="text-slate-400 dark:text-slate-500 text-xs font-bold border border-slate-300 dark:border-dbx-navy-400 rounded-full w-4 h-4 inline-flex items-center justify-center shrink-0 hover:text-dbx-teal hover:border-dbx-teal transition-colors cursor-help focus:outline-none focus:ring-2 focus:ring-dbx-teal/60 focus:ring-offset-1 dark:focus:ring-offset-dbx-navy-600"
+      aria-label={text}
+    >
+      ?
+    </button>
+    <span className="absolute z-50 hidden group-hover:block group-focus-within:block bottom-full left-1/2 -translate-x-1/2 mb-1.5 w-60 text-xs bg-dbx-navy dark:bg-dbx-navy-600 text-white rounded-xl px-3 py-2 shadow-elevated pointer-events-none animate-fade-in">{text}</span>
   </span>
 )
 
@@ -1358,8 +1364,14 @@ function EntityTagsPanel() {
   const shortName = id => (id || '').split('.').pop()
 
   useEffect(() => {
-    safeFetch('/api/ontology/entities').then(r => { setEntities(r.data || []); if (r.error) setError(r.error) })
-    safeFetch('/api/ontology/relationships').then(r => { setRelationships(r.data || []) })
+    safeFetch('/api/ontology/entities').then(r => {
+      setEntities(Array.isArray(r.data) ? r.data : [])
+      if (r.error) setError(r.error)
+    })
+    safeFetch('/api/ontology/relationships').then(r => {
+      setRelationships(Array.isArray(r.data) ? r.data : [])
+      if (r.error) setError(prev => prev || r.error)
+    })
   }, [])
 
   const groupedEntities = useMemo(() => {
@@ -1504,8 +1516,9 @@ export default function MetadataReview() {
   const load = async (key) => {
     setLoading(true)
     const r = await safeFetch(buildUrl(key))
-    setData(r.data || [])
-    setOriginal(r.data ? r.data.map(row => ({ ...row })) : [])
+    const rows = Array.isArray(r.data) ? r.data : []
+    setData(rows)
+    setOriginal(rows.map(row => ({ ...row })))
     setError(r.error)
     setLoading(false)
   }

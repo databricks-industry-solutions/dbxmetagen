@@ -144,6 +144,7 @@ export default function BatchJobs({ onNavigate }) {
   const [ontologyBundle, setOntologyBundle] = useState('')
   const [entityTagKey, setEntityTagKey] = useState('entity_type')
   const [bundles, setBundles] = useState([])
+  const [bundlesLoadError, setBundlesLoadError] = useState(null)
   const [domainConfig, setDomainConfig] = useState('')
   const [domainConfigs, setDomainConfigs] = useState([])
   const [runHistory, setRunHistory] = useState([])
@@ -196,6 +197,23 @@ export default function BatchJobs({ onNavigate }) {
     sample_size: String(settings.sample_size),
   })
 
+  const loadBundles = useCallback(() => {
+    setBundlesLoadError(null)
+    fetch('/api/ontology/bundles')
+      .then(r => {
+        if (!r.ok) throw new Error(`${r.status} ${r.statusText}`)
+        return r.json()
+      })
+      .then(data => {
+        setBundles(Array.isArray(data) ? data : [])
+        setBundlesLoadError(null)
+      })
+      .catch(e => {
+        setBundles([])
+        setBundlesLoadError(e.message || 'Failed to load bundles')
+      })
+  }, [])
+
   useEffect(() => {
     setError(null)
     fetch('/api/jobs').then(r => {
@@ -222,13 +240,13 @@ export default function BatchJobs({ onNavigate }) {
         setLakebaseConfigured(!!cfg.lakebase_configured)
       }
     })
-    fetch('/api/ontology/bundles').then(r => r.ok ? r.json() : []).then(setBundles).catch(() => {})
+    loadBundles()
     fetch('/api/domain-configs').then(r => r.ok ? r.json() : []).then(setDomainConfigs).catch(() => {})
     fetch('/api/jobs/health').then(r => r.ok ? r.json() : null).then(setHealth).catch(() => {})
     fetch('/api/jobs/runs').then(r => r.ok ? r.json() : []).then(runs => {
       setRunHistory(runs.map(r => ({ ...r, _polling: false })))
     }).catch(() => {})
-  }, [])
+  }, [loadBundles])
 
   useEffect(() => { setPickerSelected([]) }, [pickerCatalog, pickerSchema])
 
@@ -406,6 +424,12 @@ export default function BatchJobs({ onNavigate }) {
                   </>)
                 })()}
               </select>
+              {bundlesLoadError && (
+                <p className="text-xs text-amber-700 dark:text-amber-300 mt-1.5">
+                  Could not load ontology bundles: {bundlesLoadError}.{' '}
+                  <button type="button" onClick={loadBundles} className="underline font-medium">Retry</button>
+                </p>
+              )}
               {(() => {
                 const sel = bundles.find(b => b.key === ontologyBundle)
                 if (!sel?.description) return null
@@ -414,6 +438,17 @@ export default function BatchJobs({ onNavigate }) {
                     {sel.description}
                     {sel.source_url && <> &mdash; <a href={sel.source_url} target="_blank" rel="noopener noreferrer" className="underline hover:text-blue-500">source</a></>}
                   </p>
+                )
+              })()}
+              {(() => {
+                const sel = bundles.find(b => b.key === ontologyBundle)
+                if (!sel?.tier_indexes_stale) return null
+                return (
+                  <div className="mt-2 rounded-lg border border-amber-200 dark:border-amber-700/50 bg-amber-50 dark:bg-amber-900/20 px-3 py-2 text-xs text-amber-900 dark:text-amber-200">
+                    <span className="font-medium">Tier indexes may be out of date.</span>{' '}
+                    The bundle YAML was edited after the generated tier files (e.g. <code className="text-[11px]">edges_tier3.yaml</code>) were built.
+                    Re-run <code className="text-[11px]">scripts/build_ontology_indexes.py</code> for this bundle so ontology predictions match your edits.
+                  </div>
                 )
               })()}
               <label className="inline-flex items-center gap-2 mt-2 text-xs text-slate-600 dark:text-slate-400 cursor-pointer hover:text-blue-600">
@@ -428,7 +463,7 @@ export default function BatchJobs({ onNavigate }) {
                     const resp = await fetch('/api/ontology/import', { method: 'POST', body: fd })
                     const data = await resp.json()
                     if (resp.ok) {
-                      fetch('/api/ontology/bundles').then(r => r.ok ? r.json() : []).then(setBundles)
+                      loadBundles()
                       setOntologyBundle(name)
                       setImportStatus(`Imported "${name}": ${data.entity_count} entities, ${data.edge_count} edges`)
                       setTimeout(() => setImportStatus(null), 6000)

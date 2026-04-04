@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import ForceGraph2D from 'react-force-graph-2d'
 import { ErrorBanner } from '../App'
-import { cachedFetch, TTL } from '../apiCache'
+import { cachedFetch, cachedFetchObj, TTL } from '../apiCache'
 import { PageHeader, EmptyState, SkeletonCards } from './ui'
 
 const PALETTE = [
@@ -9,6 +9,54 @@ const PALETTE = [
   '#3b82f6', '#ec4899', '#8b5cf6', '#14b8a6', '#f97316',
 ]
 const shortName = id => (id || '').split('.').pop()
+
+function BundleQualityStrip({ qualitySummary }) {
+  if (!qualitySummary) return null
+  const bi = qualitySummary.bundle_info
+  const fe = qualitySummary.from_entities || {}
+  return (
+    <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+      <div className="border border-slate-200 dark:border-dbx-navy-400/30 rounded-xl p-4 bg-white dark:bg-dbx-navy-650">
+        <p className="text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400">Active bundle</p>
+        <p className="font-semibold text-slate-800 dark:text-slate-100 mt-0.5">{qualitySummary.active_bundle || '—'}</p>
+        {bi?.format_version && <p className="text-xs text-slate-500 mt-1">format_version {bi.format_version}</p>}
+        {bi?.tier_index_hash && (
+          <p className="text-[10px] font-mono text-slate-400 mt-1 break-all" title="Tier index fingerprint">tier_index_hash {bi.tier_index_hash}</p>
+        )}
+      </div>
+      <div className="border border-slate-200 dark:border-dbx-navy-400/30 rounded-xl p-4 bg-white dark:bg-dbx-navy-650 md:col-span-2">
+        <p className="text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400">Coverage & confidence (ontology_entities)</p>
+        {fe.entity_rows != null ? (
+          <div className="flex flex-wrap gap-4 mt-2 text-sm">
+            <span><span className="text-slate-500">rows</span> <span className="font-mono font-semibold">{fe.entity_rows}</span></span>
+            <span><span className="text-slate-500">avg conf</span> <span className="font-mono font-semibold">{fe.avg_confidence ?? '—'}</span></span>
+            <span><span className="text-slate-500">&lt;0.5</span> <span className="font-mono text-amber-600">{fe.below_05 ?? 0}</span></span>
+            <span><span className="text-slate-500">&lt;0.6</span> <span className="font-mono text-amber-700">{fe.below_06 ?? 0}</span></span>
+          </div>
+        ) : (
+          <p className="text-xs text-slate-400 mt-1">{qualitySummary.from_entities_error || 'No aggregate yet (table empty or unavailable).'}</p>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function FormalSemanticsNote() {
+  const [open, setOpen] = useState(false)
+  return (
+    <div className="border border-slate-200 dark:border-dbx-navy-400/25 rounded-lg">
+      <button type="button" onClick={() => setOpen(!open)} className="w-full text-left px-3 py-2 text-sm text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-dbx-navy-600/50 rounded-lg">
+        What is formalized here? {open ? '−' : '+'}
+      </button>
+      {open && (
+        <div className="px-3 pb-3 text-xs text-slate-600 dark:text-slate-400 space-y-2 border-t border-slate-100 dark:border-dbx-navy-500/30 pt-2">
+          <p>dbxmetagen ships an application profile (YAML + tier indexes) over published vocabularies, plus candidate table→class alignments with confidence and provenance. It does not perform OWL DL reasoning or replace Protégé.</p>
+          <p className="text-slate-400">See repository docs: <code className="text-[11px]">docs/formal_semantics.md</code></p>
+        </div>
+      )}
+    </div>
+  )
+}
 
 export function HealthCards({ metrics }) {
   const m = useMemo(() => {
@@ -429,6 +477,8 @@ export default function Ontology() {
   const [summary, setSummary] = useState([])
   const [relationships, setRelationships] = useState([])
   const [metrics, setMetrics] = useState([])
+  const [qualitySummary, setQualitySummary] = useState(null)
+  const [reviewQueue, setReviewQueue] = useState([])
   const [error, setError] = useState(null)
   const [selected, setSelected] = useState(new Set())
   const [applyResult, setApplyResult] = useState(null)
@@ -441,6 +491,12 @@ export default function Ontology() {
     cachedFetch('/api/ontology/summary', {}, TTL.DASHBOARD).then(r => { setSummary(r.data || []); if (r.error) setError(r.error) })
     cachedFetch('/api/ontology/relationships', {}, TTL.DASHBOARD).then(r => { setRelationships(r.data || []) })
     cachedFetch('/api/ontology/metrics', {}, TTL.DASHBOARD).then(r => { setMetrics(r.data || []) })
+    cachedFetchObj('/api/ontology/quality-summary', {}, TTL.DASHBOARD).then(r => {
+      if (!r.error) setQualitySummary(r.data)
+    })
+    cachedFetchObj('/api/ontology/review-queue?limit=25', {}, TTL.DASHBOARD).then(r => {
+      if (!r.error && r.data) setReviewQueue(Array.isArray(r.data) ? r.data : [])
+    })
   }, [])
 
   const groupedEntities = useMemo(() => {
@@ -475,6 +531,18 @@ export default function Ontology() {
     return []
   }
 
+  const markReviewed = async (entityId) => {
+    if (!entityId) return
+    try {
+      const r = await fetch('/api/ontology/entity-review', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ entity_id: entityId, validated: true }),
+      })
+      if (r.ok) setReviewQueue(q => q.filter(row => row.entity_id !== entityId))
+    } catch { /* ignore */ }
+  }
+
   const applyToTable = async () => {
     if (selected.size === 0) return
     setApplying(true)
@@ -504,6 +572,55 @@ export default function Ontology() {
     <div className="space-y-6">
       <PageHeader title="Ontology" subtitle="Entity types and relationships" />
       <ErrorBanner error={error} />
+
+      <section className="card p-6">
+        <h2 className="heading-section mb-4">Bundle &amp; quality</h2>
+        <BundleQualityStrip qualitySummary={qualitySummary} />
+        <div className="mt-3">
+          <FormalSemanticsNote />
+        </div>
+      </section>
+
+      {reviewQueue.length > 0 && (
+        <section className="card p-6 border-amber-200 dark:border-amber-900/40">
+          <h2 className="heading-section mb-4">Low-confidence review ({reviewQueue.length})</h2>
+          <p className="text-xs text-slate-500 mb-3">Rows with confidence ≤ 0.6. Mark validated after manual check.</p>
+          <div className="overflow-x-auto max-h-64">
+            <table className="min-w-full text-sm">
+              <thead>
+                <tr>
+                  {['Entity', 'Type', 'Conf', 'Method / URI', ''].map(h => (
+                    <th key={h} className="text-left px-3 py-2 bg-dbx-oat dark:bg-dbx-navy-500 text-xs uppercase tracking-wider">{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {reviewQueue.map((row, i) => {
+                  let attrs = {}
+                  try {
+                    attrs = typeof row.attributes === 'string' ? JSON.parse(row.attributes) : (row.attributes || {})
+                  } catch { attrs = {} }
+                  const meth = attrs.discovery_method || '—'
+                  const uri = row.entity_uri || '—'
+                  return (
+                    <tr key={row.entity_id || i} className="border-b border-slate-100 dark:border-dbx-navy-500/50">
+                      <td className="px-3 py-2 font-mono text-xs max-w-[200px] truncate">{shortName((row.source_tables && row.source_tables[0]) || '')}</td>
+                      <td className="px-3 py-2">{row.entity_type}</td>
+                      <td className="px-3 py-2 tabular-nums">{Number(row.confidence).toFixed(2)}</td>
+                      <td className="px-3 py-2 text-xs text-slate-500 max-w-xs truncate" title={`${meth} ${uri}`}>{meth} · {String(uri).slice(0, 40)}{String(uri).length > 40 ? '…' : ''}</td>
+                      <td className="px-3 py-2">
+                        {row.entity_id && (
+                          <button type="button" onClick={() => markReviewed(row.entity_id)} className="text-xs px-2 py-1 rounded bg-emerald-600 text-white hover:bg-emerald-700">Validate</button>
+                        )}
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
 
       {/* Health cards */}
       <section className="card p-6">

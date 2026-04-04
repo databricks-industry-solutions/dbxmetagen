@@ -90,6 +90,7 @@ _VALIDATORS = {
     "entities_tier3.yaml": lambda d: _validate_dict_of_dicts(d, _ENTITIES_T3_REQUIRED, "entities_tier3.yaml"),
     "edges_tier1.yaml": lambda d: _validate_list_of_dicts(d, _EDGES_T1_REQUIRED, "edges_tier1.yaml"),
     "edges_tier2.yaml": lambda d: _validate_dict_of_dicts(d, _EDGES_T2_REQUIRED, "edges_tier2.yaml"),
+    "edges_tier3.yaml": lambda d: _validate_dict_of_dicts(d, _EDGES_T2_REQUIRED, "edges_tier3.yaml"),
     "equivalent_class_uris.yaml": lambda d: _validate_uri_map(d, "equivalent_class_uris.yaml"),
 }
 

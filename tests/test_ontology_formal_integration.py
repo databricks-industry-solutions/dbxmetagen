@@ -226,7 +226,7 @@ class TestBuildTiersFromScript(unittest.TestCase):
     def test_build_tiers_dry_run(self):
         import sys
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
-        from build_ontology_indexes import build_tiers
+        from dbxmetagen.ontology_bundle_indexes import build_tiers
 
         entities = {
             "Patient": {"description": "A patient", "source": "FHIR R4",
@@ -245,7 +245,7 @@ class TestBuildTiersFromScript(unittest.TestCase):
     def test_build_tiers_writes_files(self):
         import sys
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
-        from build_ontology_indexes import build_tiers
+        from dbxmetagen.ontology_bundle_indexes import build_tiers
 
         entities = {
             "Patient": {"description": "A patient", "source": "FHIR R4",

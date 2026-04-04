@@ -25,7 +25,7 @@ function formatElapsed(seconds) {
   return m > 0 ? `${m}m ${s}s` : `${s}s`
 }
 
-export default function GenieBuilder() {
+export default function GenieBuilder({ onNavigate }) {
   const [editingSpaceId, setEditingSpaceId] = useState(null)
   const [loadByIdValue, setLoadByIdValue] = useState('')
   const [tables, setTables] = useState([])
@@ -354,7 +354,7 @@ export default function GenieBuilder() {
                       key={t.id}
                       onClick={() => toggleTable(t.id)}
                       className={`px-3 py-1.5 text-xs rounded-md border transition-colors ${selectedTables.includes(t.id)
-                        ? 'bg-orange-100 dark:bg-orange-900 border-orange-400 text-red-700 dark:text-orange-300'
+                        ? 'bg-orange-100 dark:bg-orange-900/50 border-orange-400 text-orange-900 dark:text-orange-200'
                         : 'bg-dbx-oat-light dark:bg-slate-700 border-slate-200 dark:border-slate-600 text-slate-600 dark:text-slate-300 hover:bg-dbx-oat dark:hover:bg-slate-600'
                         }`}
                     >
@@ -388,7 +388,13 @@ export default function GenieBuilder() {
           )
         })}
         {!tables.length && tablesLoading && <SkeletonTable rows={3} cols={3} />}
-        {!tables.length && !tablesLoading && <p className="text-sm text-slate-400">No tables found in this catalog.</p>}
+        {!tables.length && !tablesLoading && (
+          <EmptyState
+            title="No tables in this catalog"
+            description="Confirm the catalog has managed tables or views, or open Coverage to see registered assets."
+            action={onNavigate ? { label: 'Open Coverage', onClick: () => onNavigate('coverage') } : undefined}
+          />
+        )}
         {tables.length > 0 && !filteredTables.length && <p className="text-sm text-slate-400">No tables match "{tableFilter}".</p>}
       </div>
 
@@ -491,15 +497,15 @@ export default function GenieBuilder() {
 
       {/* Progress */}
       {taskStatus && taskStatus.status === 'running' && (
-        <div className="bg-orange-50 dark:bg-orange-900/30 border border-orange-200 dark:border-red-700 rounded-lg px-4 py-3">
+        <div className="bg-blue-50 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-800/60 rounded-lg px-4 py-3">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
-              <div className="w-4 h-4 border-2 border-orange-400 border-t-transparent rounded-full animate-spin" />
-              <span className="text-sm font-medium text-red-700 dark:text-orange-300">
+              <div className="w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+              <span className="text-sm font-medium text-slate-800 dark:text-blue-200">
                 {taskStatus.message || STAGES[taskStatus.stage] || taskStatus.stage}
               </span>
               {taskStatus.round > 0 && (
-                <span className="text-xs px-1.5 py-0.5 rounded bg-orange-200 dark:bg-orange-800 text-orange-700 dark:text-orange-200">
+                <span className="text-xs px-1.5 py-0.5 rounded bg-blue-100 dark:bg-blue-900/60 text-blue-800 dark:text-blue-200">
                   Round {taskStatus.round}
                 </span>
               )}

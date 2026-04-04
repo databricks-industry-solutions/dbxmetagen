@@ -2,6 +2,7 @@ Person:
   description: People, customers, contacts, users, or employees
   source_ontology: schema.org
   uri: https://schema.org/Person
+  parents: []
   keywords:
   - customer
   - employee
@@ -78,6 +79,7 @@ Organization:
   description: Companies, departments, facilities, or business units
   source_ontology: schema.org
   uri: https://schema.org/Organization
+  parents: []
   keywords:
   - company
   - organization
@@ -139,6 +141,7 @@ Product:
   description: Goods, services, SKUs, or catalog items
   source_ontology: schema.org
   uri: https://schema.org/Product
+  parents: []
   keywords:
   - product
   - item
@@ -204,6 +207,7 @@ Transaction:
   description: Orders, purchases, payments, invoices, or financial events
   source_ontology: schema.org
   uri: https://schema.org/Invoice
+  parents: []
   keywords:
   - transaction
   - order
@@ -312,6 +316,7 @@ Location:
   description: Addresses, sites, regions, facilities, or geographies
   source_ontology: schema.org
   uri: https://schema.org/Place
+  parents: []
   keywords:
   - location
   - address
@@ -381,6 +386,7 @@ Event:
   description: Activities, logs, sessions, audits, or system events
   source_ontology: schema.org
   uri: https://schema.org/Event
+  parents: []
   keywords:
   - event
   - activity
@@ -438,6 +444,7 @@ Reference:
   description: Lookup tables, codes, categories, dimensions, or configuration
   source_ontology: schema.org
   uri: https://schema.org/Thing
+  parents: []
   keywords:
   - reference
   - lookup
@@ -483,6 +490,7 @@ Metric:
   description: KPIs, aggregates, facts, summaries, or analytic measures
   source_ontology: schema.org
   uri: https://schema.org/QuantitativeValue
+  parents: []
   keywords:
   - metric
   - kpi
@@ -547,6 +555,7 @@ Document:
   description: Unstructured content, notes, files, or text records
   source_ontology: schema.org
   uri: https://schema.org/DigitalDocument
+  parents: []
   keywords:
   - document
   - note

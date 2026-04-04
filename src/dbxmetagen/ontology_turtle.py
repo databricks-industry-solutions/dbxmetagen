@@ -209,6 +209,25 @@ def build_turtle(
         if ext_date:
             g.add((ontology_node, DCTERMS.created, Literal(ext_date, datatype=XSD.dateTime)))
 
+        gen_id = bundle_provenance.get("generation_id") or bundle_provenance.get("job_run_id")
+        if gen_id:
+            safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in str(gen_id))[:96]
+            act = URIRef(HBO[f"activity_{safe}"])
+            g.add((act, RDF.type, PROV.Activity))
+            g.add((ontology_node, PROV.wasGeneratedBy, act))
+            bv = bundle_provenance.get("bundle_version") or bundle_provenance.get("bundle_id")
+            if bv:
+                g.add((act, DCTERMS.identifier, Literal(str(bv))))
+            th = bundle_provenance.get("tier_index_hash")
+            if th:
+                g.add((act, RDFS.comment, Literal(f"tier_index_hash={th}")))
+            mid = bundle_provenance.get("model_endpoint") or bundle_provenance.get("model_id")
+            if mid:
+                tool = HBO[f"model_{hash(str(mid)) % 10_000_000}"]
+                g.add((tool, RDF.type, PROV.Entity))
+                g.add((tool, RDFS.label, Literal(str(mid))))
+                g.add((act, PROV.used, tool))
+
     return g.serialize(format="turtle")
 
 

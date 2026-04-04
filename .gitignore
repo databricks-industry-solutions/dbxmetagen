@@ -130,6 +130,7 @@ databricks/
 .env.*.local
 .databricks
 *.local
+*.local.md
 
 #specific folders
 **/.agents/
@@ -162,6 +163,7 @@ databricks_final.yml.tmp
 !example.env
 
 docs/*
+!docs/ROADMAP_PARALLEL_WORKERS_HANDOFF.md
 docs/operations/*/
 #!docs/operations/README.md
 

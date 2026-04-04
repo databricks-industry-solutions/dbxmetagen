@@ -63,7 +63,7 @@ export default function GraphExplorer({ initialNode, initialEdgeType }) {
     const t = setTimeout(async () => {
       setPickerLoading(true)
       const { data } = await safeFetch(`/api/graph/nodes?search=${encodeURIComponent(search)}&node_type=table&limit=20`)
-      setNodePicker(data || [])
+      setNodePicker(Array.isArray(data) ? data : [])
       setPickerLoading(false)
     }, 300)
     return () => clearTimeout(t)

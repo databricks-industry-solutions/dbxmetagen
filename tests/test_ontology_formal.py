@@ -463,7 +463,7 @@ class TestBuildTiersSchema(unittest.TestCase):
         }
 
     def test_tier1_is_list_of_name_description(self):
-        from scripts.build_ontology_indexes import build_tiers
+        from dbxmetagen.ontology_bundle_indexes import build_tiers
         outdir = Path(tempfile.mkdtemp())
         build_tiers(self._make_entities(), outdir)
         t1 = yaml.safe_load((outdir / "entities_tier1.yaml").read_text())
@@ -474,7 +474,7 @@ class TestBuildTiersSchema(unittest.TestCase):
             self.assertNotIn("source", entry)
 
     def test_tier2_has_source_ontology_not_source(self):
-        from scripts.build_ontology_indexes import build_tiers
+        from dbxmetagen.ontology_bundle_indexes import build_tiers
         outdir = Path(tempfile.mkdtemp())
         build_tiers(self._make_entities(), outdir)
         t2 = yaml.safe_load((outdir / "entities_tier2.yaml").read_text())
@@ -488,7 +488,7 @@ class TestBuildTiersSchema(unittest.TestCase):
                 self.assertNotIn("->", e, "Edge should be short name, not 'name -> range' format")
 
     def test_tier3_has_rich_fields_not_outgoing_edges(self):
-        from scripts.build_ontology_indexes import build_tiers
+        from dbxmetagen.ontology_bundle_indexes import build_tiers
         outdir = Path(tempfile.mkdtemp())
         build_tiers(self._make_entities(), outdir)
         t3 = yaml.safe_load((outdir / "entities_tier3.yaml").read_text())
@@ -505,7 +505,7 @@ class TestBuildTiersSchema(unittest.TestCase):
             self.assertIn("properties", profile)
 
     def test_tier3_patient_has_relationships(self):
-        from scripts.build_ontology_indexes import build_tiers
+        from dbxmetagen.ontology_bundle_indexes import build_tiers
         outdir = Path(tempfile.mkdtemp())
         build_tiers(self._make_entities(), outdir)
         t3 = yaml.safe_load((outdir / "entities_tier3.yaml").read_text())
@@ -514,7 +514,7 @@ class TestBuildTiersSchema(unittest.TestCase):
         self.assertEqual(rels["has_encounter"]["target"], "Encounter")
 
     def test_equivalent_class_uris(self):
-        from scripts.build_ontology_indexes import build_tiers
+        from dbxmetagen.ontology_bundle_indexes import build_tiers
         outdir = Path(tempfile.mkdtemp())
         build_tiers(self._make_entities(), outdir)
         uris = yaml.safe_load((outdir / "equivalent_class_uris.yaml").read_text())
@@ -866,6 +866,48 @@ class TestEnforceEntityValue(unittest.TestCase):
         val, exact = _enforce_entity_value("xyz", ["A", "B"], fallback="Unknown")
         self.assertEqual(val, "Unknown")
         self.assertFalse(exact)
+
+
+# ---------------------------------------------------------------------------
+# Tier index staleness
+# ---------------------------------------------------------------------------
+
+
+class TestTierIndexesStale(unittest.TestCase):
+    def test_missing_bundle_not_stale(self):
+        from dbxmetagen.ontology_provenance import tier_indexes_stale
+
+        self.assertFalse(tier_indexes_stale(Path("/nonexistent/bundle.yaml")))
+
+    def test_missing_tier_subdir_is_stale(self):
+        import tempfile
+
+        from dbxmetagen.ontology_provenance import tier_indexes_stale
+
+        with tempfile.TemporaryDirectory() as td:
+            bundle = Path(td) / "healthcare.yaml"
+            bundle.write_text("metadata: {version: '1'}\n", encoding="utf-8")
+            self.assertTrue(tier_indexes_stale(bundle))
+
+    def test_bundle_newer_than_tier_files_is_stale(self):
+        import os
+        import tempfile
+        import time
+
+        from dbxmetagen.ontology_provenance import tier_indexes_stale
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            bundle = root / "demo.yaml"
+            bundle.write_text("metadata: {version: '1'}\n", encoding="utf-8")
+            sub = root / "demo"
+            sub.mkdir()
+            tier = sub / "entities_tier1.yaml"
+            tier.write_text("[]\n", encoding="utf-8")
+            old = time.time() - 100
+            os.utime(tier, (old, old))
+            bundle.touch()
+            self.assertTrue(tier_indexes_stale(bundle))
 
 
 # ---------------------------------------------------------------------------

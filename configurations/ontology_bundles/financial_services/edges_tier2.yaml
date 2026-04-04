@@ -2,143 +2,167 @@ has_account:
   name: has_account
   domain: Person
   range: Account
+  ranges: []
   uri: ''
   inverse: account_of
 part_of:
   name: part_of
   domain: Person
   range: Organization
+  ranges: []
   uri: ''
   inverse: ''
 contains:
   name: contains
   domain: Organization
   range: Person
+  ranges: []
   uri: ''
   inverse: contained_in
 on_account:
   name: on_account
   domain: Transaction
   range: Account
+  ranges: []
   uri: ''
   inverse: ''
 by_person:
   name: by_person
   domain: Transaction
   range: Person
+  ranges: []
   uri: ''
   inverse: ''
 references:
   name: references
   domain: Event
   range: Person
+  ranges: []
   uri: ''
   inverse: referenced_by
 owned_by:
   name: owned_by
   domain: Account
   range: Person
+  ranges: []
   uri: ''
   inverse: owns
 has_transaction:
   name: has_transaction
   domain: Account
   range: Transaction
+  ranges: []
   uri: ''
   inverse: ''
 managed_by:
   name: managed_by
   domain: Portfolio
   range: Person
+  ranges: []
   uri: ''
   inverse: ''
 of_instrument:
   name: of_instrument
   domain: Trade
   range: Instrument
+  ranges: []
   uri: ''
   inverse: ''
 with_counterparty:
   name: with_counterparty
   domain: Trade
   range: Counterparty
+  ranges: []
   uri: ''
   inverse: ''
 hedges:
   name: hedges
   domain: Instrument
   range: Risk
+  ranges: []
   uri: ''
   inverse: ''
 has_trade:
   name: has_trade
   domain: Counterparty
   range: Trade
+  ranges: []
   uri: ''
   inverse: ''
 for_account:
   name: for_account
   domain: Risk
   range: Account
+  ranges: []
   uri: ''
   inverse: ''
 for_instrument:
   name: for_instrument
   domain: Risk
   range: Instrument
+  ranges: []
   uri: ''
   inverse: ''
 for_person:
   name: for_person
   domain: Compliance
   range: Person
+  ranges: []
   uri: ''
   inverse: ''
 for_organization:
   name: for_organization
   domain: Compliance
   range: Organization
+  ranges: []
   uri: ''
   inverse: ''
 on_policy:
   name: on_policy
   domain: Claim
   range: Policy
+  ranges: []
   uri: ''
   inverse: ''
 filed_by:
   name: filed_by
   domain: Claim
   range: Person
+  ranges: []
   uri: ''
   inverse: ''
 held_by:
   name: held_by
   domain: Policy
   range: Person
+  ranges: []
   uri: ''
   inverse: ''
 issued_by:
   name: issued_by
   domain: Policy
   range: Organization
+  ranges: []
   uri: ''
   inverse: issues
 borrowed_by:
   name: borrowed_by
   domain: Loan
   range: Person
+  ranges: []
   uri: ''
   inverse: ''
 secures:
   name: secures
   domain: Loan
   range: Account
+  ranges: []
   uri: ''
   inverse: ''
 has_risk:
   name: has_risk
   domain: Loan
   range: Risk
+  ranges: []
   uri: ''
   inverse: ''

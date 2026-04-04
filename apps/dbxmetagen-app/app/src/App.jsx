@@ -29,7 +29,7 @@ const NAV_STRUCTURE = [
   {
     category: 'Design',
     items: [
-      { id: 'jobs',     label: 'Generate Semantic Layer', desc: 'Build core metadata, advanced analytics, and metric views' },
+      { id: 'jobs',     label: 'Generate Semantic Layer', desc: 'Core metadata, advanced analytics (ontology, FKs, graph), metric views' },
       { id: 'semantic', label: 'Define Metrics', desc: 'Define metric views and KPIs' },
       { id: 'genie',   label: 'Build Genie Space', desc: 'Build natural-language SQL spaces' },
     ],
@@ -58,11 +58,11 @@ export async function safeFetch(url, options) {
       const body = await res.text().catch(() => '')
       let msg = `Error ${res.status}`
       try { const j = JSON.parse(body); if (j.detail) msg = j.detail } catch {}
-      return { data: [], error: msg }
+      return { data: null, error: msg }
     }
     const data = await res.json()
-    return { data: Array.isArray(data) ? data : [], error: null }
-  } catch (e) { return { data: [], error: e.message } }
+    return { data, error: null }
+  } catch (e) { return { data: null, error: e.message } }
 }
 
 export async function safeFetchObj(url, options) {
@@ -116,15 +116,15 @@ const SLIDES = [
   {
     title: 'Workflow',
     body: [
-      'Design -- Generate metadata and define metrics.',
+      'Design -- Generate Semantic Layer (core jobs, advanced analytics, metric assets) and Define Metrics.',
       'Review & Apply -- Edit and apply descriptions, tags, entity types, and foreign keys. Check coverage and ontology health.',
-      'Explore -- Chat with the metadata agent and run semantic searches.',
+      'Explore -- Chat with the metadata agent, graph explorer, and semantic search.',
     ],
   },
   {
     title: 'Getting Started',
     body: [
-      '1. Design > Generate Metadata -- run on your target tables',
+      '1. Design > Generate Semantic Layer -- run core and advanced jobs on your target tables',
       '2. Review > Review & Apply -- edit and apply results',
       '3. Review > Coverage -- check completeness and health',
       '4. Design > Define Metrics',

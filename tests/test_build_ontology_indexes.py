@@ -22,8 +22,11 @@ except ImportError:
 pytestmark = pytest.mark.skipif(not HAS_RDFLIB, reason="rdflib not installed")
 
 import sys
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 from build_ontology_indexes import (
+    FHIR_CONFORMANCE_SKIP,
+    OMOP_ABSTRACT_SKIP,
     _derive_keywords,
     _discover_fhir_resources,
     _discover_omop_classes,
@@ -34,10 +37,8 @@ from build_ontology_indexes import (
     _extract_union_domain_edges,
     _get_comment,
     _resolve_cardinality,
-    build_tiers,
-    FHIR_CONFORMANCE_SKIP,
-    OMOP_ABSTRACT_SKIP,
 )
+from dbxmetagen.ontology_bundle_indexes import build_tiers
 from dbxmetagen.ontology_index import OntologyIndexLoader, validate_bundle
 
 

@@ -144,6 +144,28 @@ jobs:
           path: dist/*.whl
           retention-days: 30
 
+  validate-ontology-bundles:
+    name: Validate Ontology Bundles
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Tier + bundle checks
+        run: uv run python scripts/ci_validate_ontology_bundles.py
+
   validate-config:
     name: Validate Configuration Files
     runs-on: ubuntu-latest
@@ -166,7 +188,7 @@ jobs:
   summary:
     name: CI Summary
     runs-on: ubuntu-latest
-    needs: [lint, test-unit, test-coverage, build-wheel, validate-config]
+    needs: [lint, test-unit, test-coverage, build-wheel, validate-config, validate-ontology-bundles]
     if: always()
 
     steps:
@@ -181,3 +203,4 @@ jobs:
           echo "| Coverage | ${{ needs.test-coverage.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Build Wheel | ${{ needs.build-wheel.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Config Validation | ${{ needs.validate-config.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Ontology Bundles | ${{ needs.validate-ontology-bundles.result }} |" >> $GITHUB_STEP_SUMMARY

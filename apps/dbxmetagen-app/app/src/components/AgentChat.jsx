@@ -479,6 +479,9 @@ export default function AgentChat() {
 
   return (
     <div className="min-h-[calc(100vh-12rem)]">
+      <p className="text-xs text-slate-500 dark:text-slate-400 mb-3 max-w-3xl leading-relaxed">
+        Graph Explorer and Search expect prior pipeline outputs (metadata jobs, graph, vector index). Chat is most useful after core metadata exists for your tables.
+      </p>
       {/* Sub-tab bar: Chat | Graph Explorer | Search */}
       <div className="flex items-center gap-1 mb-3 border-b border-slate-200 dark:border-dbx-navy-400/40">
         {SUB_TABS.map(t => (

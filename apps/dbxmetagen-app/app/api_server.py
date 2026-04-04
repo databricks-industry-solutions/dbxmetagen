@@ -1963,6 +1963,97 @@ def get_ontology_bundle_info(bundle: str = ""):
     return {"bundle": bundle, "format_version": "unknown", "has_tier_indexes": False, "entity_count": 0}
 
 
+class OntologyEntityReviewBody(BaseModel):
+    entity_id: str
+    entity_type: Optional[str] = None
+    entity_uri: Optional[str] = None
+    validated: Optional[bool] = None
+
+
+_ENTITY_UUID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
+
+
+@app.get("/api/ontology/quality-summary")
+def get_ontology_quality_summary():
+    """Active bundle (env), tier hash from disk, and aggregate confidence from ontology_entities."""
+    active = os.environ.get("ONTOLOGY_BUNDLE") or os.environ.get("ontology_bundle") or "healthcare"
+    bundles = _list_bundles_local()
+    info = next((b for b in bundles if b["key"] == active), None)
+    out: dict = {
+        "active_bundle": active,
+        "bundle_info": info,
+        "from_entities": None,
+    }
+    ent_tbl = fq("ontology_entities")
+    try:
+        rows = execute_sql(
+            f"""
+            SELECT
+              COUNT(1) AS entity_rows,
+              ROUND(AVG(confidence), 4) AS avg_confidence,
+              SUM(CASE WHEN COALESCE(confidence, 0) < 0.5 THEN 1 ELSE 0 END) AS below_05,
+              SUM(CASE WHEN COALESCE(confidence, 0) < 0.6 THEN 1 ELSE 0 END) AS below_06
+            FROM {ent_tbl}
+            """,
+            timeout=25,
+        )
+        out["from_entities"] = rows[0] if rows else {}
+    except Exception as e:
+        out["from_entities_error"] = str(e)
+    return out
+
+
+@app.get("/api/ontology/review-queue")
+def get_ontology_review_queue(limit: int = 50, max_confidence: float = 0.6):
+    """Low-confidence entity rows for human review."""
+    ent_tbl = fq("ontology_entities")
+    lim = min(max(1, limit), 500)
+    mc = float(max_confidence)
+    try:
+        return execute_sql(
+            f"""
+            SELECT *
+            FROM {ent_tbl}
+            WHERE COALESCE(confidence, 0) <= {mc}
+            ORDER BY confidence ASC NULLS FIRST
+            LIMIT {lim}
+            """,
+            timeout=30,
+        )
+    except Exception as e:
+        logger.warning("review-queue: %s", e)
+        return []
+
+
+@app.post("/api/ontology/entity-review")
+def post_ontology_entity_review(body: OntologyEntityReviewBody):
+    """Update entity_type / entity_uri / validated for a row in ontology_entities."""
+    if not _ENTITY_UUID_RE.match((body.entity_id or "").strip()):
+        raise HTTPException(400, "entity_id must be a UUID")
+    sets = []
+    if body.entity_type is not None:
+        et = body.entity_type.strip()
+        sets.append(f"entity_type = {_safe_sql_str(et)}")
+        sets.append(f"entity_name = {_safe_sql_str(et)}")
+    if body.entity_uri is not None:
+        sets.append(f"entity_uri = {_safe_sql_str(body.entity_uri)}")
+    if body.validated is not None:
+        sets.append(f"validated = {str(bool(body.validated)).lower()}")
+    if not sets:
+        raise HTTPException(400, "Provide at least one of entity_type, entity_uri, validated")
+    ent_tbl = fq("ontology_entities")
+    eid = _esc_sql(body.entity_id.strip())
+    sql = f"UPDATE {ent_tbl} SET {', '.join(sets)} WHERE entity_id = '{eid}'"
+    try:
+        execute_sql(sql, timeout=45)
+        return {"ok": True, "entity_id": body.entity_id.strip()}
+    except Exception as e:
+        raise HTTPException(500, str(e)) from e
+
+
 # ---------------------------------------------------------------------------
 # Ontology graph store (lazy singleton for SPARQL endpoint)
 # ---------------------------------------------------------------------------
@@ -2103,12 +2194,17 @@ async def import_ontology(
 
         # Generate tier indexes
         try:
-            import sys
-            sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "scripts"))
-            from build_ontology_indexes import _entities_from_bundle, build_tiers
             from pathlib import Path
-            entities = _entities_from_bundle(Path(output_yaml))
-            counts = build_tiers(entities, Path(bundle_subdir))
+
+            from dbxmetagen.ontology_bundle_indexes import (
+                build_tiers,
+                entities_from_bundle,
+                load_edge_catalog,
+            )
+
+            entities = entities_from_bundle(Path(output_yaml))
+            edge_cat = load_edge_catalog(Path(output_yaml))
+            counts = build_tiers(entities, Path(bundle_subdir), edge_catalog=edge_cat or None)
         except Exception as tier_err:
             logger.warning("Tier generation failed (bundle still created): %s", tier_err)
             counts = {}
@@ -2259,7 +2355,7 @@ def _list_bundles_local() -> list[dict]:
                     p = os.path.join(tier_dir, tier_name)
                     if os.path.isfile(p):
                         tier_entity_total += _count_yaml_list(p)
-                for tier_name in ("edges_tier1.yaml", "edges_tier2.yaml"):
+                for tier_name in ("edges_tier1.yaml", "edges_tier2.yaml", "edges_tier3.yaml"):
                     p = os.path.join(tier_dir, tier_name)
                     if os.path.isfile(p):
                         tier_edge_total += _count_yaml_list(p)
@@ -2285,6 +2381,28 @@ def _list_bundles_local() -> list[dict]:
             source_url = meta.get("source_url")
             if source_url:
                 bundle_info["source_url"] = source_url
+            if has_tiers:
+                try:
+                    from pathlib import Path as _Path
+
+                    from dbxmetagen.ontology_provenance import (
+                        compute_tier_index_hash,
+                        tier_indexes_stale,
+                    )
+
+                    bundle_info["tier_index_hash"] = compute_tier_index_hash(_Path(tier_dir))
+                    bundle_info["tier_indexes_stale"] = tier_indexes_stale(_Path(filepath), _Path(tier_dir))
+                except Exception:
+                    bundle_info["tier_indexes_stale"] = True
+            else:
+                try:
+                    from pathlib import Path as _Path
+
+                    from dbxmetagen.ontology_provenance import tier_indexes_stale
+
+                    bundle_info["tier_indexes_stale"] = tier_indexes_stale(_Path(filepath))
+                except Exception:
+                    bundle_info["tier_indexes_stale"] = True
             bundles.append(bundle_info)
         except Exception as e:
             logger.debug("Could not read bundle %s: %s", fname, e)

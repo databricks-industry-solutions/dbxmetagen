@@ -14,6 +14,7 @@ import yaml
 import os
 import re
 import json
+from pathlib import Path
 from dataclasses import dataclass, field, replace as dc_replace
 from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime
@@ -246,6 +247,18 @@ DOMAIN_ENTITY_AFFINITY: Dict[str, set] = {
 # ==============================================================================
 
 
+def _leading_overlap(pred: str, entity: str) -> int:
+    """Count matching leading characters (case-sensitive on lowercased inputs)."""
+    e = entity.lower()
+    n = 0
+    for i in range(min(len(pred), len(e))):
+        if pred[i] == e[i]:
+            n += 1
+        else:
+            break
+    return n
+
+
 def _enforce_entity_value(
     predicted: str,
     allowed: List[str],
@@ -256,15 +269,43 @@ def _enforce_entity_value(
     Returns (value, was_exact_match). Confidence should be penalized
     by the caller when was_exact_match is False.
 
-    Uses difflib.get_close_matches for fuzzy matching instead of
-    substring containment, which avoids ambiguity (e.g. "Plan" matching
-    both "CarePlan" and "InsurancePlan").
+    Strategy: (1) case-insensitive exact match; (2) empty/whitespace → first
+    allowed entry (stable list order); (3) forward containment — ``entity``
+    appears in ``predicted`` (longest entity wins ties); (4) best **leading
+    character overlap** between predicted and entity (disambiguates ``Prod``
+    vs ``Proc``); (5) predicted substring of entity name with length ≥2; (6)
+    difflib fuzzy.
     """
     low = predicted.lower().strip()
     allowed_map = {a.lower(): a for a in allowed}
     if low in allowed_map:
         return allowed_map[low], True
-    close = difflib.get_close_matches(low, allowed_map.keys(), n=1, cutoff=0.6)
+    if not allowed:
+        return fallback, False
+    if not low:
+        return allowed[0], False
+
+    # Forward: predicted string contains full entity name (LLM compound labels)
+    forward = [a for a in allowed if a.lower() in low]
+    if forward:
+        forward.sort(key=lambda x: len(x), reverse=True)
+        return forward[0], False
+
+    # Leading overlap: Prod→Product, Proc→Procedure (not the other way around)
+    scored = [( _leading_overlap(low, a), a) for a in allowed]
+    best_n = max(s[0] for s in scored)
+    if best_n >= max(2, min(len(low), 3)):
+        winners = [a for n, a in scored if n == best_n]
+        winners.sort(key=lambda x: (len(x), x.lower()))
+        return winners[0], False
+
+    # Infix: predicted appears inside entity name (Enc -> Reference|Encounter)
+    infix = [a for a in allowed if len(low) >= 2 and low in a.lower()]
+    if infix:
+        infix.sort(key=lambda x: (len(x), x.lower()))
+        return infix[0], False
+
+    close = difflib.get_close_matches(low, list(allowed_map.keys()), n=1, cutoff=0.6)
     if close:
         return allowed_map[close[0]], False
     return fallback, False
@@ -466,6 +507,10 @@ class OntologyConfig:
     entity_tag_key: str = "ontology_entity_type"
     metadata_cols_per_chunk: int = 120
     table_names: Optional[List[str]] = None
+    # Pass 0 shortlist for three-pass entity prediction (see ontology_predictor)
+    pass0_mode: str = "off"
+    pass0_max_candidates: int = 48
+    pass0_min_candidates: int = 12
 
     @property
     def fully_qualified_entities(self) -> str:
@@ -1535,12 +1580,29 @@ class EntityDiscoverer:
             ])
             return response.content if hasattr(response, "content") else str(response)
 
+        from dbxmetagen.ontology_provenance import compute_tier_index_hash, read_bundle_metadata_version
+
+        bundle = self.config.ontology_bundle or "healthcare"
+        bundle_yaml = Path(resolve_bundle_path(bundle))
+        tier_dir = bundle_yaml.parent / bundle_yaml.stem
+        tier_hash = compute_tier_index_hash(tier_dir) if tier_dir.is_dir() else ""
+        bundle_ver = read_bundle_metadata_version(bundle_yaml) or ""
+
+        domain_hint = getattr(table_row, "primary_domain", None) or getattr(
+            table_row, "domain", None
+        )
+
         result = predict_entity(
             table_name=short_name,
             columns=columns,
             sample=f"Description: {comment[:500]}",
             loader=loader,
             llm_fn=llm_fn,
+            pass0_mode=getattr(self.config, "pass0_mode", "off"),
+            pass0_max_candidates=getattr(self.config, "pass0_max_candidates", 48),
+            pass0_min_candidates=getattr(self.config, "pass0_min_candidates", 12),
+            domain_hint=str(domain_hint) if domain_hint else None,
+            domain_entity_affinity=getattr(self, "_domain_entity_affinity", None),
         )
 
         # Accept any entity name the LLM was shown (tier-1) plus bundle definitions
@@ -1566,6 +1628,9 @@ class EntityDiscoverer:
             "attributes": {
                 "discovery_method": f"three_pass_{result.passes_run}",
                 "reasoning": result.rationale,
+                "ontology_bundle": bundle,
+                "ontology_bundle_version": bundle_ver,
+                "tier_index_hash": tier_hash,
                 **({"owl_properties": str(result.matched_properties)} if result.matched_properties else {}),
             },
             "confidence": round(result.confidence_score, 3),

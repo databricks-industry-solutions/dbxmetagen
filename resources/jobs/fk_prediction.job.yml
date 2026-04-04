@@ -20,6 +20,18 @@ resources:
           default: "0.85"
         - name: table_similarity_threshold
           default: "0.9"
+        - name: duplicate_table_similarity_threshold
+          default: "0.97"
+        - name: cross_block_column_similarity_min
+          default: "0.92"
+        - name: cross_block_strict
+          default: "true"
+        - name: ontology_cross_block
+          default: "false"
+        - name: skip_ai_for_declared_fk
+          default: "false"
+        - name: skip_ai_query_min_observations
+          default: "0"
         - name: confidence_threshold
           default: "0.7"
         - name: sample_size
@@ -42,6 +54,12 @@ resources:
               schema_name: "{{job.parameters.schema_name}}"
               column_similarity_threshold: "{{job.parameters.column_similarity_threshold}}"
               table_similarity_threshold: "{{job.parameters.table_similarity_threshold}}"
+              duplicate_table_similarity_threshold: "{{job.parameters.duplicate_table_similarity_threshold}}"
+              cross_block_column_similarity_min: "{{job.parameters.cross_block_column_similarity_min}}"
+              cross_block_strict: "{{job.parameters.cross_block_strict}}"
+              ontology_cross_block: "{{job.parameters.ontology_cross_block}}"
+              skip_ai_for_declared_fk: "{{job.parameters.skip_ai_for_declared_fk}}"
+              skip_ai_query_min_observations: "{{job.parameters.skip_ai_query_min_observations}}"
               confidence_threshold: "{{job.parameters.confidence_threshold}}"
               sample_size: "{{job.parameters.sample_size}}"
               apply_ddl: "{{job.parameters.apply_ddl}}"

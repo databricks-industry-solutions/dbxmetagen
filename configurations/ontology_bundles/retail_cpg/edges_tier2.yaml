@@ -2,119 +2,139 @@ part_of:
   name: part_of
   domain: Person
   range: Organization
+  ranges: []
   uri: ''
   inverse: ''
 contains:
   name: contains
   domain: Organization
   range: Store
+  ranges: []
   uri: ''
   inverse: contained_in
 placed_by:
   name: placed_by
   domain: Transaction
   range: Customer
+  ranges: []
   uri: ''
   inverse: placed
 references:
   name: references
   domain: Event
   range: Customer
+  ranges: []
   uri: ''
   inverse: referenced_by
 places:
   name: places
   domain: Customer
   range: Order
+  ranges: []
   uri: ''
   inverse: ''
 has_return:
   name: has_return
   domain: Customer
   range: Return
+  ranges: []
   uri: ''
   inverse: ''
 enrolled_in:
   name: enrolled_in
   domain: LoyaltyProgram
   range: Customer
+  ranges: []
   uri: ''
   inverse: ''
 belongs_to:
   name: belongs_to
   domain: Product
   range: Category
+  ranges: []
   uri: ''
   inverse: ''
 supplied_by:
   name: supplied_by
   domain: Product
   range: Supplier
+  ranges: []
   uri: ''
   inverse: supplies
 shipped_via:
   name: shipped_via
   domain: Order
   range: Shipment
+  ranges: []
   uri: ''
   inverse: ''
 purchased_at:
   name: purchased_at
   domain: Order
   range: Store
+  ranges: []
   uri: ''
   inverse: ''
 has_inventory:
   name: has_inventory
   domain: Store
   range: Inventory
+  ranges: []
   uri: ''
   inverse: ''
 targets:
   name: targets
   domain: Campaign
   range: Customer
+  ranges: []
   uri: ''
   inverse: ''
 promotes:
   name: promotes
   domain: Campaign
   range: Product
+  ranges: []
   uri: ''
   inverse: ''
 applies_to:
   name: applies_to
   domain: Promotion
   range: Product
+  ranges: []
   uri: ''
   inverse: ''
 supplies:
   name: supplies
   domain: Supplier
   range: Product
+  ranges: []
   uri: ''
   inverse: ''
 for_product:
   name: for_product
   domain: Inventory
   range: Product
+  ranges: []
   uri: ''
   inverse: ''
 at_store:
   name: at_store
   domain: Inventory
   range: Store
+  ranges: []
   uri: ''
   inverse: ''
 for_order:
   name: for_order
   domain: Return
   range: Order
+  ranges: []
   uri: ''
   inverse: ''
 by_customer:
   name: by_customer
   domain: Return
   range: Customer
+  ranges: []
   uri: ''
   inverse: ''

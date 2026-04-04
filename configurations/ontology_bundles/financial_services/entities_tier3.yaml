@@ -2,6 +2,7 @@ Person:
   description: People, customers, contacts, users, or employees
   source_ontology: schema.org
   uri: https://schema.org/Person
+  parents: []
   keywords:
   - customer
   - employee
@@ -31,6 +32,7 @@ Organization:
   description: Companies, departments, facilities, or business units
   source_ontology: schema.org
   uri: https://schema.org/Organization
+  parents: []
   keywords:
   - company
   - organization
@@ -59,6 +61,7 @@ Product:
   description: Goods, services, SKUs, or catalog items
   source_ontology: schema.org
   uri: https://schema.org/Product
+  parents: []
   keywords:
   - product
   - item
@@ -80,6 +83,7 @@ Transaction:
   description: Orders, purchases, payments, invoices, or financial events
   source_ontology: schema.org
   uri: https://schema.org/Invoice
+  parents: []
   keywords:
   - transaction
   - order
@@ -109,6 +113,7 @@ Location:
   description: Addresses, sites, regions, facilities, or geographies
   source_ontology: schema.org
   uri: https://schema.org/Place
+  parents: []
   keywords:
   - location
   - address
@@ -132,6 +137,7 @@ Event:
   description: Activities, logs, sessions, audits, or system events
   source_ontology: schema.org
   uri: https://schema.org/Event
+  parents: []
   keywords:
   - event
   - activity
@@ -155,6 +161,7 @@ Reference:
   description: Lookup tables, codes, categories, dimensions, or configuration
   source_ontology: schema.org
   uri: https://schema.org/Thing
+  parents: []
   keywords:
   - reference
   - lookup
@@ -175,6 +182,7 @@ Metric:
   description: KPIs, aggregates, facts, summaries, or analytic measures
   source_ontology: schema.org
   uri: https://schema.org/QuantitativeValue
+  parents: []
   keywords:
   - metric
   - kpi
@@ -195,6 +203,7 @@ Document:
   description: Unstructured content, notes, files, or text records
   source_ontology: schema.org
   uri: https://schema.org/DigitalDocument
+  parents: []
   keywords:
   - document
   - note
@@ -222,6 +231,7 @@ Account:
     accounts
   source_ontology: FIBO
   uri: https://spec.edmcouncil.org/fibo/ontology/FND/AccountingExt/Account
+  parents: []
   keywords:
   - account
   - deposit
@@ -307,6 +317,7 @@ Portfolio:
   description: Investment portfolios, fund holdings, or asset allocations
   source_ontology: FIBO
   uri: https://spec.edmcouncil.org/fibo/ontology/SEC/Securities/Portfolios/Portfolio
+  parents: []
   keywords:
   - portfolio
   - fund
@@ -375,6 +386,7 @@ Trade:
   description: Securities trades, FX transactions, or market orders
   source_ontology: FIBO
   uri: https://spec.edmcouncil.org/fibo/ontology/FBC/FunctionalEntities/Trade
+  parents: []
   keywords:
   - trade
   - execution
@@ -407,6 +419,7 @@ Instrument:
   description: Financial instruments -- equities, bonds, derivatives, currencies
   source_ontology: FIBO
   uri: https://spec.edmcouncil.org/fibo/ontology/FBC/FinancialInstruments/FinancialInstrument
+  parents: []
   keywords:
   - instrument
   - security
@@ -492,6 +505,7 @@ Counterparty:
   description: Trading counterparties, custodians, or correspondent banks
   source_ontology: FIBO
   uri: https://spec.edmcouncil.org/fibo/ontology/FBC/FunctionalEntities/Counterparty
+  parents: []
   keywords:
   - counterparty
   - custodian
@@ -517,6 +531,7 @@ Risk:
   description: Risk exposures, limits, VaR, stress tests, or credit scores
   source_ontology: BIAN
   uri: https://bian.org/servicedomain/RiskManagement
+  parents: []
   keywords:
   - risk
   - exposure
@@ -598,6 +613,7 @@ Compliance:
   description: Regulatory filings, KYC records, AML alerts, or sanctions screening
   source_ontology: BIAN
   uri: https://bian.org/servicedomain/RegulatoryCompliance
+  parents: []
   keywords:
   - compliance
   - kyc
@@ -627,6 +643,7 @@ Claim:
   description: Insurance claims, loss events, or reimbursement requests
   source_ontology: BIAN
   uri: https://bian.org/servicedomain/ClaimsHandling/Claim
+  parents: []
   keywords:
   - claim
   - loss
@@ -654,6 +671,7 @@ Policy:
   description: Insurance policies, coverage terms, or underwriting records
   source_ontology: BIAN
   uri: https://bian.org/servicedomain/InsurancePolicy
+  parents: []
   keywords:
   - policy
   - coverage
@@ -743,6 +761,7 @@ Loan:
   description: Loans, mortgages, credit facilities, or lending agreements
   source_ontology: FIBO
   uri: https://spec.edmcouncil.org/fibo/ontology/LOAN/LoanTypes/Loan
+  parents: []
   keywords:
   - loan
   - mortgage

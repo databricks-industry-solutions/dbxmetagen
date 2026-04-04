@@ -203,7 +203,7 @@ export function FKPredictionsTable({ onRefresh }) {
 
   const load = useCallback(() => {
     safeFetch('/api/analytics/fk-predictions').then(r => {
-      setPredictions(r.data || [])
+      setPredictions(Array.isArray(r.data) ? r.data : [])
       if (r.error) setError(r.error)
     })
   }, [])

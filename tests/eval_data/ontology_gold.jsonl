@@ -1,0 +1,3 @@
+{"dataset_version": "1", "bundle": "healthcare", "table_name": "patient_demographics", "columns": "patient_id, birth_date, gender", "sample": "Patient demographic attributes", "gold_entity": "Patient", "eval": "pass0"}
+{"dataset_version": "1", "bundle": "healthcare", "table_name": "encounter_visits", "columns": "encounter_id, patient_id, admit_time", "sample": "Hospital encounter records", "gold_entity": "Encounter", "eval": "pass0"}
+{"dataset_version": "1", "bundle": "healthcare", "table_name": "medication_orders", "columns": "order_id, drug_name, dose", "sample": "Prescribed medications FHIR MedicationRequest", "gold_entity": "Medication", "eval": "pass0"}
