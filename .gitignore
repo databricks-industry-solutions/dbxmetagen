@@ -162,10 +162,10 @@ databricks_final.yml.tmp
 *.env
 !example.env
 
-docs/*
-!docs/ROADMAP_PARALLEL_WORKERS_HANDOFF.md
-docs/operations/*/
-#!docs/operations/README.md
+# docs/: ignore by default; whitelist only public paths (README + Ontology tab). Avoid !docs/ — it re-includes the whole tree.
+docs/**
+!docs/formal_semantics.md
+!docs/CONFIGURATION.md
 
 .cursor/*
 !.cursor/rules/
