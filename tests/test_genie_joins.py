@@ -9,7 +9,7 @@ import uuid
 import sys
 import types
 import pytest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 # ---------------------------------------------------------------------------
 # Stub heavy dependencies so we can import the functions under test.
@@ -246,3 +246,104 @@ class TestExtractMVJoinSpecs:
         mv = {"source_table": "cat.sch.orders", "json_definition": None}
         specs = self._asm()._extract_mv_join_specs([mv], set(), {"orders"})
         assert len(specs) == 0
+
+
+# ---------------------------------------------------------------------------
+# assemble() — applied vs unapplied MV contract
+# ---------------------------------------------------------------------------
+class TestAssembleMetricViewSplit:
+    """Applied MVs -> data_sources; unapplied -> sql_snippets only (not duplicate measures)."""
+
+    def _make_assembler(self):
+        from unittest.mock import MagicMock, patch
+        return GenieContextAssembler(MagicMock(), "wh", "c", "s")
+
+    def test_applied_in_data_sources_unapplied_in_snippets(self):
+        asm = self._make_assembler()
+        mvs = [
+            {
+                "metric_view_name": "mv_applied",
+                "status": "applied",
+                "source_table": "c.s.orders",
+                "json_definition": json.dumps({
+                    "measures": [{"name": "measure_from_applied", "expr": "SUM(amount)"}],
+                }),
+            },
+            {
+                "metric_view_name": "mv_draft",
+                "status": "draft",
+                "source_table": "c.s.orders",
+                "json_definition": json.dumps({
+                    "measures": [{"name": "measure_from_draft", "expr": "SUM(qty)"}],
+                }),
+            },
+        ]
+        col_meta = [
+            {"table_name": "c.s.orders", "column_name": "amount", "data_type": "DECIMAL"},
+            {"table_name": "c.s.orders", "column_name": "qty", "data_type": "INT"},
+        ]
+        with patch.object(asm, "_get_table_metadata", return_value=[{"table_name": "c.s.orders", "comment": ""}]), \
+             patch.object(asm, "_get_column_metadata", return_value=col_meta), \
+             patch.object(asm, "_get_fk_predictions", return_value=[]), \
+             patch.object(asm, "_get_ontology_entities", return_value=[]), \
+             patch.object(asm, "_get_entity_relationships", return_value=[]), \
+             patch.object(asm, "_get_metric_views", return_value=(mvs, [])), \
+             patch.object(asm, "_sample_categorical_values", return_value={}), \
+             patch.object(asm, "_format_context", return_value=""), \
+             patch.object(asm, "_get_ontology_join_specs", return_value=[]), \
+             patch.object(asm, "_load_genie_reference", return_value=""):
+            out = asm.assemble(["c.s.orders"], metric_view_names=["mv_applied", "mv_draft"])
+        ds = out["data_sources"]
+        assert len(ds["metric_views"]) == 1
+        assert ds["metric_views"][0]["identifier"] == "c.s.mv_applied"
+        aliases = [m.get("alias") for m in out["sql_snippets"].get("measures", [])]
+        assert "measure_from_draft" in aliases
+        assert "measure_from_applied" not in aliases
+
+    def test_all_applied_no_mv_yaml_measures_in_snippets(self):
+        asm = self._make_assembler()
+        mvs = [
+            {
+                "metric_view_name": "mv_only",
+                "status": "applied",
+                "source_table": "c.s.orders",
+                "json_definition": json.dumps({
+                    "measures": [{"name": "only_in_applied", "expr": "SUM(amount)"}],
+                }),
+            },
+        ]
+        col_meta = [{"table_name": "c.s.orders", "column_name": "amount", "data_type": "DECIMAL"}]
+        with patch.object(asm, "_get_table_metadata", return_value=[{"table_name": "c.s.orders", "comment": ""}]), \
+             patch.object(asm, "_get_column_metadata", return_value=col_meta), \
+             patch.object(asm, "_get_fk_predictions", return_value=[]), \
+             patch.object(asm, "_get_ontology_entities", return_value=[]), \
+             patch.object(asm, "_get_entity_relationships", return_value=[]), \
+             patch.object(asm, "_get_metric_views", return_value=(mvs, [])), \
+             patch.object(asm, "_sample_categorical_values", return_value={}), \
+             patch.object(asm, "_format_context", return_value=""), \
+             patch.object(asm, "_get_ontology_join_specs", return_value=[]), \
+             patch.object(asm, "_load_genie_reference", return_value=""):
+            out = asm.assemble(["c.s.orders"], metric_view_names=["mv_only"])
+        aliases = [m.get("alias") for m in out["sql_snippets"].get("measures", [])]
+        assert "only_in_applied" not in aliases
+
+
+# ---------------------------------------------------------------------------
+# _build_sql_snippets — non-trivial yaml
+# ---------------------------------------------------------------------------
+class TestBuildSqlSnippets:
+    """Direct coverage of snippet decomposition from MV yaml."""
+
+    def test_measure_and_filter_from_unapplied_style_mv(self):
+        asm = object.__new__(GenieContextAssembler)
+        mv = {
+            "source_table": "c.s.orders",
+            "json_definition": json.dumps({
+                "measures": [{"name": "total_amt", "expr": "SUM(amount)"}],
+                "filter": "order_date >= '2024-01-01'",
+            }),
+        }
+        col_meta = [{"table_name": "c.s.orders", "column_name": "amount", "data_type": "DECIMAL"}]
+        sn = asm._build_sql_snippets([mv], {}, col_meta)
+        assert any(m.get("alias") == "total_amt" for m in sn.get("measures", []))
+        assert len(sn.get("filters", [])) >= 1

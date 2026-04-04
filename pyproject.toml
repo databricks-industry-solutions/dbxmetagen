@@ -1,6 +1,6 @@
 [project]
 name = "dbxmetagen"
-version = "0.7.1"
+version = "0.8.0"
 description = "Generates comments and identifies and classifies other metadata for Delta tables in Databricks."
 readme = "README.md"
 authors = [

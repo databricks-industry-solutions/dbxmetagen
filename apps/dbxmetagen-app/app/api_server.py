@@ -367,7 +367,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="dbxmetagen API", version="0.7.1", lifespan=lifespan)
+app = FastAPI(title="dbxmetagen API", version="0.8.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -3937,6 +3937,7 @@ def _ensure_semantic_layer_tables():
         "version INT, parent_definition_id STRING",
         "project_id STRING",
         "complexity_score INT, complexity_level STRING",
+        "deployed_catalog STRING, deployed_schema STRING",
     ]:
         try:
             execute_sql(f"ALTER TABLE {fq('metric_view_definitions')} ADD COLUMNS ({col_ddl})")
@@ -4003,7 +4004,7 @@ def list_semantic_definitions(project_id: Optional[str] = None):
         f"SELECT definition_id, metric_view_name, source_table, status, "
         f"validation_errors, genie_space_id, created_at, applied_at, "
         f"COALESCE(version, 1) as version, parent_definition_id, project_id, "
-        f"complexity_score, complexity_level "
+        f"complexity_score, complexity_level, deployed_catalog, deployed_schema "
         f"FROM ("
         f"  SELECT *, ROW_NUMBER() OVER ("
         f"    PARTITION BY metric_view_name, source_table "
@@ -5967,6 +5968,11 @@ def _run_sl_generation(
 
             cx = _score_definition_complexity(defn)
 
+            if source and source.count('.') < 2:
+                match = [t for t in tables if t.endswith('.' + source) or t.split('.')[-1] == source.split('.')[-1]]
+                if match:
+                    source = match[0]
+
             json_str = json.dumps(defn).replace("'", "''")
             status = "validated" if not errors else "failed"
             error_str = "; ".join(errors).replace("'", "''") if errors else ""
@@ -5975,7 +5981,7 @@ def _run_sl_generation(
                 f"INSERT INTO {fq('metric_view_definitions')} VALUES "
                 f"('{defn_id}', '{mv_name}', '{source}', '{json_str}', '', "
                 f"'{status}', '{error_str}', NULL, '{now}', NULL, 1, NULL, {proj_val}, "
-                f"{cx['complexity_score']}, '{cx['complexity_level']}')"
+                f"{cx['complexity_score']}, '{cx['complexity_level']}', NULL, NULL)"
             )
             stats[status] += 1
             stats["generated"] += 1
@@ -6162,7 +6168,7 @@ def _update_definition_row(definition_id: str, defn: dict, status: str, errors: 
         f"INSERT INTO {fq('metric_view_definitions')} VALUES ("
         f"'{new_id}', '{mv_name}', '{source_table}', '{json_str}', '{source_qs}', "
         f"'{status}', '{error_esc}', NULL, '{now}', NULL, {new_version}, '{definition_id}', {proj_val}, "
-        f"{cx['complexity_score']}, '{cx['complexity_level']}')"
+        f"{cx['complexity_score']}, '{cx['complexity_level']}', NULL, NULL)"
     )
     return new_id
 
@@ -6420,7 +6426,8 @@ def create_metric_view(definition_id: str, req: CreateDefinitionRequest):
         pass
     execute_sql(
         f"UPDATE {fq('metric_view_definitions')} "
-        f"SET status = 'applied', applied_at = current_timestamp() "
+        f"SET status = 'applied', applied_at = current_timestamp(), "
+        f"deployed_catalog = '{req.target_catalog}', deployed_schema = '{req.target_schema}' "
         f"WHERE definition_id = '{definition_id}'"
     )
     return {"definition_id": definition_id, "status": "applied", "metric_view": fq_mv}
@@ -6601,7 +6608,7 @@ def genie_generate_questions(req: SuggestQuestionsRequest):
     ctx = assembler.assemble(
         req.table_identifiers,
         questions=None,
-        metric_view_names=req.metric_view_names or None,
+        metric_view_names=req.metric_view_names,
     )
 
     biz_ctx_block = ""
@@ -6690,7 +6697,7 @@ def genie_generate(req: GenieGenerateRequest):
             ctx = assembler.assemble(
                 req.table_identifiers,
                 req.questions or None,
-                metric_view_names=req.metric_view_names or None,
+                metric_view_names=req.metric_view_names,
             )
             ctx_elapsed = round(time.time() - ctx_t0, 1)
             ctx_len = len(ctx.get("context_text", ""))
