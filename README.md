@@ -308,6 +308,8 @@ The app is in `apps/dbxmetagen-app/` and provides a FastAPI backend with a React
 7. **Foreign Key Generation** -- AI-predicted FK relationships with confidence scores and approval workflow
 8. **Genie Builder** -- Create and configure Genie spaces with auto-generated instructions and ~10 example SQL queries
 
+**Permissions model:** The app uses two separate identities. The **app service principal** (SPN) controls what the app UI can *read* -- it needs SELECT on your catalog to browse tables, coverage, metadata, and graph data. The **deployer's identity** (the user who ran `deploy.sh`) controls what jobs can *write* -- jobs run as the deployer and need CREATE TABLE, ALTER TABLE, and SET TAGS on the target catalog. This means a user can see metadata in the app even if they don't have permission to generate or apply it, and conversely, the app SPN doesn't need write access to your tables. Run `deploy.sh --permissions` to grant the app SPN the required read access.
+
 **GraphRAG:** Natural-language queries against the knowledge graph using a LangGraph agent that traverses graph_nodes and graph_edges via Lakebase.
 
 ## Jobs

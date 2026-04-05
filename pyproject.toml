@@ -3,11 +3,9 @@ name = "dbxmetagen"
 version = "0.8.1"
 description = "Generates comments and identifies and classifies other metadata for Delta tables in Databricks."
 readme = "README.md"
-authors = [
-    {name = "Eli Swanson", email = "eli.swanson@databricks.com"}
-]
-license = {text = "DB License"}
-requires-python = ">=3.10.12,<3.13.0"
+authors = [{ name = "Eli Swanson", email = "eli.swanson@databricks.com" }]
+license = { text = "DB License" }
+requires-python = ">=3.10.12,<3.14.0"
 dependencies = [
     "mlflow==3.6.0",
     "openai==1.56.1",
@@ -31,19 +29,13 @@ dependencies = [
 pi = [
     "en-core-web-lg @ https://github.com/explosion/spacy-models/releases/download/en_core_web_lg-3.8.0/en_core_web_lg-3.8.0-py3-none-any.whl",
 ]
-ontology = [
-    "rdflib>=6.3.0",
-    "pyoxigraph>=0.3.0",
-]
+ontology = ["rdflib>=6.3.0", "pyoxigraph>=0.3.0"]
 
 [project.scripts]
 main = "dbxmetagen.main:main"
 
 [dependency-groups]
-dev = [
-    "pre-commit>=4.0.1,<5",
-    "pytest>=8.3.4",
-]
+dev = ["pre-commit>=4.0.1,<5", "pytest>=8.3.4"]
 
 [build-system]
 requires = ["hatchling"]
