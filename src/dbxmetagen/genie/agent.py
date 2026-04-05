@@ -272,9 +272,6 @@ def _validate_and_strip_sql(
     return raw
 
 
-GENIE_WALL_TIMEOUT = 540  # 9 minutes
-
-
 def _llm_phase(
     llm: ChatDatabricks, system_prompt: str, user_msg: str, label: str,
 ) -> Optional[dict]:

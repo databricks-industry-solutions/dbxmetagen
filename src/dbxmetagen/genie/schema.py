@@ -264,38 +264,6 @@ def _name_from_sql(sql_list: list[str]) -> str:
     return raw
 
 
-def _split_text_into_instructions(text: str) -> list[TextInstruction]:
-    """Split a markdown string into separate TextInstruction blocks by ## headers."""
-    if not text or not isinstance(text, str):
-        return []
-    sections: list[tuple[str, str]] = []
-    current_header = ""
-    current_lines: list[str] = []
-    for line in text.split("\n"):
-        if line.startswith("## "):
-            if current_lines:
-                body = "\n".join(current_lines).strip()
-                if body:
-                    sections.append((current_header, body))
-            current_header = line.lstrip("# ").strip()
-            current_lines = []
-        else:
-            current_lines.append(line)
-    if current_lines:
-        body = "\n".join(current_lines).strip()
-        if body:
-            sections.append((current_header, body))
-    if not sections:
-        return [TextInstruction(content=[text])]
-    if len(sections) == 1 and not sections[0][0]:
-        return [TextInstruction(content=[sections[0][1]])]
-    result = []
-    for header, body in sections:
-        content = f"## {header}\n{body}" if header else body
-        result.append(TextInstruction(content=[content]))
-    return result
-
-
 def _extract_table_refs_from_sql(sql: str) -> set[str]:
     """Extract fully-qualified or short table references from a SQL string."""
     refs: set[str] = set()

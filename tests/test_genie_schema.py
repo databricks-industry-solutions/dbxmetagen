@@ -14,7 +14,6 @@ from dbxmetagen.genie.schema import (
     _to_str_list,
     _ensure_list,
     _name_from_sql,
-    _split_text_into_instructions,
     _dedup_join_specs,
     build_serialized_space,
     JoinSide,
@@ -167,32 +166,6 @@ class TestNameFromSql:
 
     def test_strips_quotes(self):
         assert _name_from_sql(["`col`"]) == "col"
-
-
-class TestSplitTextInstructions:
-    def test_single_block(self):
-        result = _split_text_into_instructions("Just plain text")
-        assert len(result) == 1
-        assert result[0].content == ["Just plain text"]
-
-    def test_multiple_sections(self):
-        text = "## Section A\nContent A\n## Section B\nContent B"
-        result = _split_text_into_instructions(text)
-        assert len(result) == 2
-        assert "Section A" in result[0].content[0]
-        assert "Content A" in result[0].content[0]
-        assert "Section B" in result[1].content[0]
-
-    def test_empty_input(self):
-        assert _split_text_into_instructions("") == []
-        assert _split_text_into_instructions(None) == []
-
-    def test_preamble_before_first_header(self):
-        text = "Preamble\n## Section\nBody"
-        result = _split_text_into_instructions(text)
-        assert len(result) == 2
-        assert result[0].content == ["Preamble"]
-        assert "Section" in result[1].content[0]
 
 
 class TestDedupJoinSpecs:

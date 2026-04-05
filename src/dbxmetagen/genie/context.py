@@ -2,7 +2,7 @@
 
 Gathers all pre-computed metadata from knowledge bases, FK predictions,
 ontology entities, and metric view definitions, then packages it into
-a structured context string for the ReAct agent.
+a structured context string for the multi-phase LLM generation pipeline.
 """
 
 import json
