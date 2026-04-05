@@ -216,7 +216,7 @@ export default function GraphExplorer({ initialNode, initialEdgeType }) {
           </div>
         </div>
       ) : (
-        !loading && <EmptyState icon="diagram-3" title="No graph loaded" subtitle="Search for a table above and click Traverse to explore the knowledge graph." />
+        !loading && <EmptyState title="No graph loaded" description="Search for a table above and click Traverse to explore the knowledge graph." />
       )}
 
       <div className="card overflow-hidden mt-4">

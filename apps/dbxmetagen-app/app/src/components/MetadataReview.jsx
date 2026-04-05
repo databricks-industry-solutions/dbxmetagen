@@ -82,6 +82,7 @@ function ReviewEditor() {
   const [original, setOriginal] = useState([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
+  const [info, setInfo] = useState(null)
   const [expanded, setExpanded] = useState({})
   const [saving, setSaving] = useState(false)
   const [ddlSql, setDdlSql] = useState('')
@@ -144,7 +145,7 @@ function ReviewEditor() {
       setReviewData(tables)
       setOriginal(JSON.parse(JSON.stringify(tables)))
       const exp = {}; tables.forEach(t => { exp[t.table_name] = true }); setExpanded(exp)
-      if (j.truncated) setError(`Showing 200 of ${j.total_count} tables. Use the filter to narrow results.`)
+      if (j.truncated) setInfo(`Showing 200 of ${j.total_count} tables. Use the filter to narrow results.`)
     } catch (e) { setError(e.message) }
     setLoading(false)
   }
@@ -328,6 +329,15 @@ function ReviewEditor() {
   return (
     <div className="space-y-4">
       <ErrorBanner error={error} />
+      {info && (
+        <div className="card border-l-4 border-l-amber-400 px-4 py-3 text-sm animate-slide-up flex justify-between items-start">
+          <div>
+            <span className="font-medium text-amber-600 dark:text-amber-400">Note:</span>{' '}
+            <span className="text-slate-600 dark:text-slate-300">{info}</span>
+          </div>
+          <button onClick={() => setInfo(null)} className="text-slate-400 hover:text-slate-600 ml-2">&times;</button>
+        </div>
+      )}
 
       {/* Scope Picker */}
       <div className="card p-5 space-y-3">

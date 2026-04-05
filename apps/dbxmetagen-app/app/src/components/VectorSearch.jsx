@@ -111,7 +111,7 @@ export default function VectorSearch() {
             <p className="font-medium text-amber-800 mb-1">Vector Search endpoint not yet created</p>
             <p className="text-amber-700">
               The endpoint <code className="bg-amber-100 px-1 rounded">{status.endpoint_name}</code> does not exist yet.
-              Run the <strong>Build Vector Index</strong> job from the Batch Jobs tab, or redeploy with <code className="bg-amber-100 px-1 rounded">./deploy.sh</code> which will create it automatically.
+              Run the <strong>Build Vector Index</strong> job from the Generate Metadata tab, or redeploy the application to create it automatically.
             </p>
           </div>
         ) : endpointError ? (
@@ -199,7 +199,7 @@ export default function VectorSearch() {
       {results && (
         <div className="card p-5 overflow-hidden">
           <h2 className="text-base font-semibold text-slate-800 dark:text-slate-100 mb-3">
-            Results <span className="text-sm font-normal text-slate-500 dark:text-slate-400">({results.count} matches, {results.query_type})</span>
+            Results <span className="text-sm font-normal text-slate-500 dark:text-slate-400">({results.count} matches, {results.query_type === 'ANN' ? 'Vector' : results.query_type === 'HYBRID' ? 'Hybrid' : results.query_type})</span>
           </h2>
           {results.matches && results.matches.length > 0 ? (
             <div className="space-y-3">

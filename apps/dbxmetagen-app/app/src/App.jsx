@@ -29,7 +29,7 @@ const NAV_STRUCTURE = [
   {
     category: 'Design',
     items: [
-      { id: 'jobs',     label: 'Generate Semantic Layer', desc: 'Core metadata, advanced analytics (ontology, FKs, graph), metric views' },
+      { id: 'jobs',     label: 'Generate Metadata', desc: 'Descriptions, sensitivity, domains, ontology, FK predictions, and metrics' },
       { id: 'semantic', label: 'Define Metrics', desc: 'Define metric views and KPIs' },
       { id: 'genie',   label: 'Build Genie Space', desc: 'Build natural-language SQL spaces' },
     ],
@@ -116,7 +116,7 @@ const SLIDES = [
   {
     title: 'Workflow',
     body: [
-      'Design -- Generate Semantic Layer (core jobs, advanced analytics, metric assets) and Define Metrics.',
+      'Design -- Generate Metadata (core jobs, advanced analytics, metric assets) and Define Metrics.',
       'Review & Apply -- Edit and apply descriptions, tags, entity types, and foreign keys. Check coverage and ontology health.',
       'Explore -- Chat with the metadata agent, graph explorer, and semantic search.',
     ],
@@ -124,11 +124,8 @@ const SLIDES = [
   {
     title: 'Getting Started',
     body: [
-      '1. Design > Generate Semantic Layer -- run core and advanced jobs on your target tables',
-      '2. Review > Review & Apply -- edit and apply results',
-      '3. Review > Coverage -- check completeness and health',
-      '4. Design > Define Metrics',
-      '5. Design > Build Genie Space',
+      'Tip: start with a small set of tables to see results quickly, then expand.',
+      '1. Design > Generate Metadata -- run core and advanced jobs on your target tables\n2. Review > Review & Apply -- inspect, edit, and apply the generated metadata\n3. Review > Coverage -- check completeness and health across your catalog\n4. Design > Define Metrics -- create reusable KPI definitions\n5. Design > Build Genie Space -- enable natural-language SQL for end users',
     ],
   },
 ]
@@ -272,7 +269,7 @@ export default function App() {
             </div>
             <div>
               <h1 className="text-xl font-bold text-white tracking-tight">dbxmetagen</h1>
-              <p className="text-dbx-oat/60 text-xs mt-0.5">Metadata generation, knowledge graph, and semantic layer</p>
+              <p className="text-dbx-oat/60 text-xs mt-0.5">Automated metadata, knowledge graph, and semantic layer for Unity Catalog</p>
             </div>
           </div>
           <div className="flex items-center gap-1.5">

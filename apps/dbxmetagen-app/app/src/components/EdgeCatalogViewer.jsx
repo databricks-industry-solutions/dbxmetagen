@@ -20,6 +20,7 @@ export default function EdgeCatalogViewer({ catalog, schema, bundleKey = 'genera
   const [edges, setEdges] = useState([])
   const [categoryFilter, setCategoryFilter] = useState('')
   const [loading, setLoading] = useState(true)
+  const [fetchError, setFetchError] = useState(null)
   const [selectedEdge, setSelectedEdge] = useState(null)
 
   useEffect(() => {
@@ -27,10 +28,11 @@ export default function EdgeCatalogViewer({ catalog, schema, bundleKey = 'genera
     if (bundleKey) params.set('bundle', bundleKey)
     if (catalog) params.set('catalog', catalog)
     if (schema) params.set('schema', schema)
+    setFetchError(null)
     fetch(`/api/ontology/edge-catalog?${params}`)
-      .then(r => r.json())
+      .then(r => { if (!r.ok) throw new Error(`Failed to load (${r.status})`); return r.json() })
       .then(data => { setEdges(data.edges || []); setLoading(false) })
-      .catch(() => setLoading(false))
+      .catch(e => { setFetchError(e.message); setLoading(false) })
   }, [bundleKey, catalog, schema])
 
   const filtered = categoryFilter ? edges.filter(e => e.category === categoryFilter) : edges
@@ -57,8 +59,9 @@ export default function EdgeCatalogViewer({ catalog, schema, bundleKey = 'genera
           ))}
         </select>
       </div>
+      {fetchError && <p className="text-sm text-red-600 dark:text-red-400 mb-3">{fetchError}</p>}
       {loading ? (
-        <p className="text-sm text-slate-500">Loading...</p>
+        <p className="text-sm text-slate-500">Loading edge catalog...</p>
       ) : (
         <>
           <div className="overflow-x-auto border border-slate-200 dark:border-dbx-navy-400/30 rounded-xl">
@@ -74,6 +77,9 @@ export default function EdgeCatalogViewer({ catalog, schema, bundleKey = 'genera
                 </tr>
               </thead>
               <tbody>
+                {filtered.length === 0 && (
+                  <tr><td colSpan={6} className="px-3 py-6 text-center text-sm text-slate-400">No edges match the current filter</td></tr>
+                )}
                 {filtered.map(e => (
                   <tr
                     key={e.name}

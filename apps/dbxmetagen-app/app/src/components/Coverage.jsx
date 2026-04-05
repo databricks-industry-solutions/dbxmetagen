@@ -140,7 +140,7 @@ const OVERVIEW_CARDS = [
   { key: 'with_ontology', label: 'Ontology Coverage', color: 'border-l-orange-500', bg: 'from-orange-50 to-orange-100/30 dark:from-orange-900/20 dark:to-orange-900/10', tab: 'ontology' },
   { key: 'fk_count', label: 'FK Predictions', color: 'border-l-rose-500', bg: 'from-rose-50 to-rose-100/30 dark:from-rose-900/20 dark:to-rose-900/10', tab: 'graph' },
   { key: 'metric_views', label: 'Metric Views', color: 'border-l-amber-500', bg: 'from-amber-50 to-amber-100/30 dark:from-amber-900/20 dark:to-amber-900/10', tab: 'data' },
-  { key: 'vs_documents', label: 'VS Documents', color: 'border-l-violet-500', bg: 'from-violet-50 to-violet-100/30 dark:from-violet-900/20 dark:to-violet-900/10', tab: 'data' },
+  { key: 'vs_documents', label: 'Search Index', color: 'border-l-violet-500', bg: 'from-violet-50 to-violet-100/30 dark:from-violet-900/20 dark:to-violet-900/10', tab: 'data' },
 ]
 
 const DETAIL_TABS = [
@@ -154,7 +154,8 @@ function CoverageCard({ label, value, total, color, bg, onClick, sub, disabled }
   const Tag = disabled ? 'div' : 'button'
   return (
     <Tag onClick={disabled ? undefined : onClick}
-      className={`text-left rounded-xl p-4 border-l-4 ${color} border border-slate-200/60 dark:border-dbx-navy-400/25 bg-gradient-to-br ${bg} shadow-card transition-all duration-200 ${disabled ? 'cursor-default' : 'hover:shadow-card-hover hover:scale-[1.02]'}`}>
+      title={disabled ? 'Run the advanced pipeline to enable this view' : undefined}
+      className={`text-left rounded-xl p-4 border-l-4 ${color} border border-slate-200/60 dark:border-dbx-navy-400/25 bg-gradient-to-br ${bg} shadow-card transition-all duration-200 ${disabled ? 'cursor-default opacity-60' : 'hover:shadow-card-hover hover:scale-[1.02]'}`}>
       <p className="text-xs font-medium uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1">{label}</p>
       <div className="flex items-baseline gap-2">
         <span className="text-2xl font-bold text-dbx-navy dark:text-white">{value ?? '--'}</span>
@@ -218,7 +219,7 @@ export default function Coverage() {
             const showTotal = ['profiled', 'with_comments'].includes(c.key) ? total
               : c.key === 'with_ontology' ? total : null
             const sub = c.key === 'with_ontology'
-              ? `${h.entity_type_count || 0} types${h.avg_confidence != null ? `, avg conf: ${(h.avg_confidence * 100).toFixed(0)}%` : ''}`
+              ? `${h.entity_type_count || 0} types${h.avg_confidence != null ? `, avg. confidence: ${(h.avg_confidence * 100).toFixed(0)}%` : ''}`
               : c.key === 'fk_count'
               ? `confidence >= 50%${h.with_fk ? `, ${h.with_fk} tables involved` : ''}`
               : c.key === 'vs_documents' && h.vs_by_type && Object.keys(h.vs_by_type).length > 0

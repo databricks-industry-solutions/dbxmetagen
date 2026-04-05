@@ -240,12 +240,12 @@ export default function EntityBrowser() {
             <span><strong className="text-slate-700 dark:text-slate-300">{entities.length}</strong> entity types</span>
             <span><strong className="text-slate-700 dark:text-slate-300">{totalTables}</strong> tables classified</span>
             <span><strong className="text-slate-700 dark:text-slate-300">{(avgConf * 100).toFixed(0)}%</strong> avg confidence</span>
-            <span><strong className="text-slate-700 dark:text-slate-300">{bundlePct}%</strong> bundle coverage</span>
+            <span title="Percentage of entities matched by the ontology bundle vs. heuristic detection"><strong className="text-slate-700 dark:text-slate-300">{bundlePct}%</strong> bundle coverage</span>
           </div>
         )
       })()}
 
-      {error && <p className="text-sm text-red-600 dark:text-red-400">{error}</p>}
+      {error && <p className="text-sm text-red-600 dark:text-red-400">Could not load entities. Check permissions or try refreshing the page.</p>}
       {loading && <p className="text-sm text-slate-500">Loading entities...</p>}
       {!loading && !error && filtered.length === 0 && (
         <p className="text-sm text-slate-500">No entities found.</p>

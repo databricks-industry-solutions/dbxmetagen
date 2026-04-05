@@ -33,19 +33,20 @@ function AIAssistButton({ section, tableIds, existingItems, onResult }) {
   const [loading, setLoading] = useState(false)
   const [prompt, setPrompt] = useState('')
   const [open, setOpen] = useState(false)
+  const [errorMsg, setErrorMsg] = useState(null)
 
   const run = async () => {
-    setLoading(true)
+    setLoading(true); setErrorMsg(null)
     try {
       const res = await fetch('/api/genie/update-assist', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ section, table_identifiers: tableIds, existing_items: existingItems, user_prompt: prompt }),
       })
-      if (!res.ok) { const b = await res.json().catch(() => ({})); alert(b.detail || 'AI assist failed'); return }
+      if (!res.ok) { const b = await res.json().catch(() => ({})); setErrorMsg(b.detail || 'AI assist failed'); return }
       const data = await res.json()
       onResult(data)
       setOpen(false); setPrompt('')
-    } catch (e) { alert(e.message) }
+    } catch (e) { setErrorMsg(e.message) }
     finally { setLoading(false) }
   }
 
@@ -66,6 +67,7 @@ function AIAssistButton({ section, tableIds, existingItems, onResult }) {
             </button>
             <button onClick={() => setOpen(false)} className="text-xs px-2 py-1 text-slate-500 hover:text-slate-700">Cancel</button>
           </div>
+          {errorMsg && <p className="text-xs text-red-600 dark:text-red-400">{errorMsg}</p>}
         </div>
       )}
     </div>
@@ -99,31 +101,32 @@ function SmallInput({ value, onChange, placeholder, className = '' }) {
 function TableDescButtons({ identifier, currentDesc, onDescription }) {
   const [enriching, setEnriching] = useState(false)
   const [pulling, setPulling] = useState(false)
+  const [errorMsg, setErrorMsg] = useState(null)
 
   const enrich = async () => {
     if (!identifier) return
-    setEnriching(true)
+    setEnriching(true); setErrorMsg(null)
     try {
       const res = await fetch('/api/genie/enrich-description', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ table_identifier: identifier, existing_description: currentDesc || null }),
       })
-      if (!res.ok) { const b = await res.json().catch(() => ({})); alert(b.detail || 'Enrich failed'); return }
+      if (!res.ok) { const b = await res.json().catch(() => ({})); setErrorMsg(b.detail || 'Enrich failed'); return }
       const data = await res.json()
       if (data.description) onDescription(data.description)
-    } catch (e) { alert(e.message) }
+    } catch (e) { setErrorMsg(e.message) }
     finally { setEnriching(false) }
   }
 
   const pullUC = async () => {
     if (!identifier) return
-    setPulling(true)
+    setPulling(true); setErrorMsg(null)
     try {
       const res = await fetch(`/api/genie/uc-comment?table_identifier=${encodeURIComponent(identifier)}`)
-      if (!res.ok) { const b = await res.json().catch(() => ({})); alert(b.detail || 'UC fetch failed'); return }
+      if (!res.ok) { const b = await res.json().catch(() => ({})); setErrorMsg(b.detail || 'Could not fetch comment from Unity Catalog'); return }
       const data = await res.json()
       onDescription(data.comment || '')
-    } catch (e) { alert(e.message) }
+    } catch (e) { setErrorMsg(e.message) }
     finally { setPulling(false) }
   }
 
@@ -131,15 +134,18 @@ function TableDescButtons({ identifier, currentDesc, onDescription }) {
   const spinner = <span className="w-3 h-3 border-2 border-current border-t-transparent rounded-full animate-spin" />
 
   return (
-    <div className="flex gap-1.5 mt-1">
-      <button onClick={enrich} disabled={enriching || !identifier}
-        className={`${btnClass} border-purple-300 dark:border-purple-700 text-purple-600 dark:text-purple-400 hover:bg-purple-50 dark:hover:bg-purple-900/30`}>
-        {enriching ? spinner : null}{enriching ? 'Enriching...' : 'Enrich from KB'}
-      </button>
-      <button onClick={pullUC} disabled={pulling || !identifier}
-        className={`${btnClass} border-amber-300 dark:border-amber-700 text-amber-600 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-900/30`}>
-        {pulling ? spinner : null}{pulling ? 'Fetching...' : 'Pull from UC'}
-      </button>
+    <div className="space-y-1 mt-1">
+      <div className="flex gap-1.5">
+        <button onClick={enrich} disabled={enriching || !identifier}
+          className={`${btnClass} border-purple-300 dark:border-purple-700 text-purple-600 dark:text-purple-400 hover:bg-purple-50 dark:hover:bg-purple-900/30`}>
+          {enriching ? spinner : null}{enriching ? 'Enriching...' : 'Enrich from KB'}
+        </button>
+        <button onClick={pullUC} disabled={pulling || !identifier}
+          className={`${btnClass} border-amber-300 dark:border-amber-700 text-amber-600 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-900/30`}>
+          {pulling ? spinner : null}{pulling ? 'Fetching...' : 'Pull from UC'}
+        </button>
+      </div>
+      {errorMsg && <p className="text-xs text-red-600 dark:text-red-400">{errorMsg}</p>}
     </div>
   )
 }
@@ -147,17 +153,18 @@ function TableDescButtons({ identifier, currentDesc, onDescription }) {
 function TableColumns({ identifier, columns, onColumns }) {
   const [open, setOpen] = useState(false)
   const [loading, setLoading] = useState(false)
+  const [errorMsg, setErrorMsg] = useState(null)
 
   const loadFromKB = async () => {
     if (!identifier) return
-    setLoading(true)
+    setLoading(true); setErrorMsg(null)
     try {
       const res = await fetch(`/api/genie/table-columns?table_identifier=${encodeURIComponent(identifier)}`)
-      if (!res.ok) { const b = await res.json().catch(() => ({})); alert(b.detail || 'Failed to load columns'); return }
+      if (!res.ok) { const b = await res.json().catch(() => ({})); setErrorMsg(b.detail || 'Failed to load columns'); return }
       const data = await res.json()
       onColumns((data.columns || []).map(c => ({ name: c.column_name, type: c.data_type || '', desc: c.comment || '' })))
       setOpen(true)
-    } catch (e) { alert(e.message) }
+    } catch (e) { setErrorMsg(e.message) }
     finally { setLoading(false) }
   }
 
@@ -184,6 +191,7 @@ function TableColumns({ identifier, columns, onColumns }) {
           className={`${btnClass} border-teal-300 dark:border-teal-700 text-teal-600 dark:text-teal-400 hover:bg-teal-50 dark:hover:bg-teal-900/30`}>
           {loading ? spinner : null}{loading ? 'Loading...' : columns.length ? 'Refresh Columns' : 'Load Columns from KB'}
         </button>
+        {errorMsg && <span className="text-xs text-red-600 dark:text-red-400">{errorMsg}</span>}
       </div>
       {open && columns.length > 0 && (
         <div className="mt-2 border border-slate-200 dark:border-slate-700 rounded-lg overflow-hidden">

@@ -77,16 +77,16 @@ export function HealthCards({ metrics }) {
     { label: 'Total Entities', value: m.total_entities, sub: `${m.total_entity_types || 0} types` },
     { label: 'Avg Confidence', value: m.avg_confidence ? Number(m.avg_confidence).toFixed(2) : '--' },
     { label: 'Table Coverage', value: m.table_coverage_pct ? `${m.table_coverage_pct}%` : '--' },
-    { label: 'Binding Rate', value: m.binding_completeness_pct ? `${m.binding_completeness_pct}%` : '--' },
-    { label: 'Ontology Edges', value: m.ontology_edges_total || '0' },
-    { label: 'Low Confidence', value: m.low_confidence_count || '0', warn: Number(m.low_confidence_count) > 0 },
+    { label: 'Binding Rate', value: m.binding_completeness_pct ? `${m.binding_completeness_pct}%` : '--', title: 'Percentage of discovered entities that are bound to an ontology type' },
+    { label: 'Ontology Edges', value: m.ontology_edges_total || '0', title: 'Total relationships between entity types in the ontology graph' },
+    { label: 'Low Confidence', value: m.low_confidence_count || '0', warn: Number(m.low_confidence_count) > 0, title: 'Number of entity classifications below the confidence threshold' },
   ]
 
   return (
     <div>
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
         {cards.map((c, i) => (
-          <div key={i} className="border border-slate-200 dark:border-dbx-navy-400/25 rounded-xl p-4 bg-gradient-to-br from-white to-slate-50 dark:from-dbx-navy-650 dark:to-dbx-navy-700">
+          <div key={i} className="border border-slate-200 dark:border-dbx-navy-400/25 rounded-xl p-4 bg-gradient-to-br from-white to-slate-50 dark:from-dbx-navy-650 dark:to-dbx-navy-700" title={c.title || ''}>
             <p className="text-xs text-slate-500 dark:text-slate-400 uppercase tracking-wider">{c.label}</p>
             <p className={`text-2xl font-bold mt-1 ${c.warn ? 'text-dbx-amber' : 'text-dbx-lava'}`}>{c.value ?? '--'}</p>
             {c.sub && <p className="text-xs text-slate-400 mt-0.5">{c.sub}</p>}
@@ -225,7 +225,7 @@ export function EntityGraph({ entities, relationships, allRelationships }) {
       {selectedType && (
         <div className="mt-3 p-3 bg-indigo-50 border border-indigo-200 rounded-lg">
           <p className="text-sm font-semibold text-indigo-800">
-            Tables linked to "{selectedType}" via instance_of:
+            Tables classified as "{selectedType}":
           </p>
           {instanceOfLinks.length > 0 ? (
             <div className="flex flex-wrap gap-1.5 mt-2">
@@ -234,7 +234,7 @@ export function EntityGraph({ entities, relationships, allRelationships }) {
               ))}
             </div>
           ) : (
-            <p className="text-xs text-indigo-500 mt-1">No instance_of edges found. Run the ontology pipeline to generate them.</p>
+            <p className="text-xs text-indigo-500 mt-1">No entity classifications found. Run the ontology pipeline to generate them.</p>
           )}
           <button onClick={() => setSelectedType(null)} className="mt-2 text-xs text-indigo-500 hover:underline">Clear selection</button>
         </div>
@@ -320,7 +320,7 @@ export function OntologyOverview() {
       </section>
       <section className="card p-6">
         <h2 className="heading-section mb-4">Entity Relationship Graph</h2>
-        <p className="text-xs text-slate-500 mb-3">Nodes = entity types (sized by table count). Click a node to see tables linked via instance_of.</p>
+        <p className="text-xs text-slate-500 mb-3">Nodes represent entity types, sized by table count. Click a node to see which tables are classified as that type.</p>
         <EntityGraph entities={entities} relationships={relationships} allRelationships={relationships} />
       </section>
     </div>
@@ -338,16 +338,18 @@ function SourceStandardsBreakdown({ entities }) {
   }, [entities])
 
   const [downloading, setDownloading] = useState(false)
+  const [downloadError, setDownloadError] = useState(null)
   const downloadTurtle = async () => {
     setDownloading(true)
+    setDownloadError(null)
     try {
       const r = await fetch('/api/ontology/turtle')
-      if (!r.ok) { alert((await r.json().catch(() => ({}))).error || 'No Turtle file available'); return }
+      if (!r.ok) { setDownloadError((await r.json().catch(() => ({}))).error || 'No Turtle file available'); return }
       const blob = await r.blob()
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a'); a.href = url; a.download = 'ontology.ttl'; a.click()
       URL.revokeObjectURL(url)
-    } catch (e) { alert('Download failed: ' + e.message) }
+    } catch (e) { setDownloadError('Download failed: ' + e.message) }
     finally { setDownloading(false) }
   }
 
@@ -369,6 +371,7 @@ function SourceStandardsBreakdown({ entities }) {
         className="text-xs px-3 py-1.5 rounded-lg border border-slate-300 dark:border-dbx-navy-400 bg-white dark:bg-dbx-navy-600 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-dbx-navy-500 disabled:opacity-50">
         {downloading ? 'Downloading...' : 'Export Turtle (.ttl)'}
       </button>
+      {downloadError && <span className="text-xs text-red-600 dark:text-red-400">{downloadError}</span>}
     </div>
   )
 }
@@ -672,7 +675,7 @@ export default function Ontology() {
         {tab === 'graph' && (
           <div>
             <p className="text-xs text-slate-500 mb-3">
-              Nodes = entity types (sized by table count). Click a node to see tables linked via instance_of.
+              Nodes represent entity types, sized by table count. Click a node to see which tables are classified as that type.
             </p>
             <EntityGraph entities={entities} relationships={relationships} allRelationships={relationships} />
           </div>

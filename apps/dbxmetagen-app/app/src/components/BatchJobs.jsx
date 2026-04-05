@@ -11,8 +11,9 @@ class TabErrorBoundary extends Component {
     if (this.state.error) {
       return (
         <div className="card p-6 border-l-4 border-l-red-400">
-          <h3 className="text-sm font-semibold text-red-700 dark:text-red-400 mb-1">Something went wrong</h3>
-          <p className="text-xs text-red-600 dark:text-red-300 break-words">{String(this.state.error)}</p>
+          <h3 className="text-sm font-semibold text-red-700 dark:text-red-400 mb-1">This section encountered an error</h3>
+          <p className="text-xs text-red-600 dark:text-red-300 break-words mb-1">{String(this.state.error)}</p>
+          <p className="text-xs text-slate-500 dark:text-slate-400">Try again, or refresh the page if the problem persists.</p>
           <button onClick={() => this.setState({ error: null })} className="btn-ghost btn-sm mt-3 text-red-600">Retry</button>
         </div>
       )
@@ -24,10 +25,15 @@ class TabErrorBoundary extends Component {
 const TERMINAL_STATES = new Set(['TERMINATED', 'SKIPPED', 'INTERNAL_ERROR'])
 
 const TABS = [
-  { id: 'core', label: 'Generate Core Metadata', sub: 'Comments \u00b7 Sensitivity \u00b7 Domain', color: 'bg-dbx-lava' },
+  { id: 'core', label: 'Generate Core Metadata', sub: 'Descriptions \u00b7 Sensitivity \u00b7 Domain', color: 'bg-dbx-lava' },
   { id: 'advanced', label: 'Generate Advanced Metadata', sub: 'Ontology \u00b7 Foreign Keys \u00b7 Knowledge Graph', color: 'bg-dbx-amber' },
   { id: 'assets', label: 'Semantic Layer Assets', sub: 'Metric Views', color: 'bg-dbx-teal' },
 ]
+
+const STATUS_LABELS = {
+  'RUNNING': 'Running', 'PENDING': 'Queued', 'SKIPPED': 'Skipped', 'INTERNAL_ERROR': 'Internal Error',
+  'SUCCESS': 'Succeeded', 'FAILED': 'Failed', 'TIMEDOUT': 'Timed Out', 'CANCELLED': 'Cancelled',
+}
 
 function stateBadge(state, result) {
   if (!state) return null
@@ -39,7 +45,7 @@ function stateBadge(state, result) {
   if (state === 'TERMINATED' && result === 'CANCELLED') color = 'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400'
   if (state === 'SKIPPED') color = 'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400'
   if (state === 'INTERNAL_ERROR') color = 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300'
-  const label = result ? `${state} / ${result}` : state
+  const label = result ? (STATUS_LABELS[result] || result) : (STATUS_LABELS[state] || state)
   return <span className={`badge ${color}`}>{label}</span>
 }
 
@@ -81,10 +87,10 @@ function RunEntry({ run }) {
     <div className={`py-3 px-4 border-l-4 ${runAccentColor(run)} border-b border-dbx-oat-dark/30 dark:border-dbx-navy-400/20 last:border-b-0`}>
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-2.5 min-w-0">
-          <span className="text-sm font-medium truncate text-slate-800 dark:text-slate-200">{run.job_name || 'Unknown Job'}</span>
+          <span className="text-sm font-medium truncate text-slate-800 dark:text-slate-200">{run.job_name || 'Unnamed Job'}</span>
           {stateBadge(run.state, run.result)}
           {!TERMINAL_STATES.has(run.state) && (
-            <span className="inline-block w-2 h-2 bg-blue-500 rounded-full animate-pulse" title="Polling..." />
+            <span className="inline-block w-2 h-2 bg-blue-500 rounded-full animate-pulse" title="Checking status..." />
           )}
         </div>
         <div className="flex items-center gap-3 shrink-0">
@@ -338,7 +344,7 @@ export default function BatchJobs({ onNavigate }) {
 
   return (
     <div className="space-y-5">
-      <PageHeader title="Generate Semantic Layer" subtitle="Build the full semantic metadata layer from your data catalog" badge={catalogName && schemaName ? `${catalogName}.${schemaName}` : undefined} />
+      <PageHeader title="Generate Metadata" subtitle="Generate descriptions, sensitivity labels, domains, and advanced analytics from your Unity Catalog tables" badge={catalogName && schemaName ? `${catalogName}.${schemaName}` : undefined} />
       <ErrorBanner error={error} />
       <HealthWarnings health={health} />
 
@@ -353,7 +359,7 @@ export default function BatchJobs({ onNavigate }) {
             <label className="section-title mb-1.5 block">Output Schema</label>
             <span className="input-base block bg-gray-50 text-gray-700 cursor-default">{schemaName || '(not configured)'}</span>
           </div>
-          <p className="text-xs text-gray-400 col-span-2">Configured via variables.yml in the Databricks Asset Bundle.</p>
+          <p className="text-xs text-gray-400 col-span-2">Set by your workspace administrator in the app deployment settings.</p>
         </div>
 
         <details className="mt-4 group" open>
@@ -361,12 +367,12 @@ export default function BatchJobs({ onNavigate }) {
             <svg className="w-3 h-3 transition-transform group-open:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
             </svg>
-            Ontology &amp; Domain Settings
+            Ontology &amp; Business Domain
           </summary>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-3 animate-slide-up">
             <div>
               <label className="section-title mb-1.5 flex items-center gap-2">
-                Ontology Bundle
+                Industry Ontology
                 {(() => {
                   const sel = bundles.find(b => b.key === ontologyBundle)
                   const isFormal = sel?.bundle_type === 'formal_ontology'
@@ -392,7 +398,7 @@ export default function BatchJobs({ onNavigate }) {
                 })()}
               </label>
               <select value={ontologyBundle} onChange={e => setOntologyBundle(e.target.value)} className="select-base">
-                <option value="">(None -- domain config only)</option>
+                <option value="">(None — use domain list only)</option>
                 {bundles.length > 0 && (() => {
                   const formal = bundles.filter(b => b.bundle_type === 'formal_ontology')
                   const curated = bundles.filter(b => b.bundle_type !== 'formal_ontology')
@@ -403,14 +409,14 @@ export default function BatchJobs({ onNavigate }) {
                   }
                   const suffix = (b) => (b.standards_alignment && b.standards_alignment !== b.name) ? ` -- ${b.standards_alignment}` : ''
                   return (<>
-                    {formal.length > 0 && <optgroup label="Formal Ontologies (auto-extracted from OWL/Turtle)">
+                    {formal.length > 0 && <optgroup label="Formal Ontologies (from OWL or Turtle files)">
                       {formal.map(b => (
                         <option key={b.key} value={b.key}>
                           {b.name} ({counts(b)}){suffix(b)}
                         </option>
                       ))}
                     </optgroup>}
-                    {curated.length > 0 && <optgroup label="Curated Bundles">
+                    {curated.length > 0 && <optgroup label="Curated Industry Bundles">
                       {curated.map(b => (
                         <option key={b.key} value={b.key}>
                           {b.has_tier_indexes ? '\u2713 ' : ''}{b.name} ({counts(b)}){suffix(b)}
@@ -432,7 +438,7 @@ export default function BatchJobs({ onNavigate }) {
                 return (
                   <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
                     {sel.description}
-                    {sel.source_url && <> &mdash; <a href={sel.source_url} target="_blank" rel="noopener noreferrer" className="underline hover:text-blue-500">source</a></>}
+                    {sel.source_url && <> &mdash; <a href={sel.source_url} target="_blank" rel="noopener noreferrer" className="underline hover:text-blue-500">view source</a></>}
                   </p>
                 )
               })()}
@@ -441,9 +447,9 @@ export default function BatchJobs({ onNavigate }) {
                 if (!sel?.tier_indexes_stale) return null
                 return (
                   <div className="mt-2 rounded-lg border border-amber-200 dark:border-amber-700/50 bg-amber-50 dark:bg-amber-900/20 px-3 py-2 text-xs text-amber-900 dark:text-amber-200">
-                    <span className="font-medium">Tier indexes may be out of date.</span>{' '}
-                    The bundle YAML was edited after the generated tier files (e.g. <code className="text-[11px]">edges_tier3.yaml</code>) were built.
-                    Re-run <code className="text-[11px]">scripts/build_ontology_indexes.py</code> for this bundle so ontology predictions match your edits.
+                    <span className="font-medium">Search indexes may be stale.</span>{' '}
+                    The ontology bundle was edited after its tier indexes were last built.
+                    <details className="mt-1 inline"><summary className="cursor-pointer underline">For administrators</summary> Rebuild indexes by running <code className="text-[11px]">scripts/build_ontology_indexes.py</code> for this bundle.</details>
                   </div>
                 )
               })()}
@@ -469,19 +475,19 @@ export default function BatchJobs({ onNavigate }) {
                   } catch (err) { setError(`Ontology import error: ${err.message}`) }
                   e.target.value = ''
                 }} />
-                Import Custom Ontology (.ttl / .owl)
+                Import ontology file (.ttl, .owl, or .rdf)
               </label>
               {importStatus && <p className="text-xs text-green-600 dark:text-green-400 mt-1">{importStatus}</p>}
             </div>
             <div>
-              <label className="section-title mb-1.5 block">Domain Config</label>
+              <label className="section-title mb-1.5 block">Business Domain List</label>
               <select value={domainConfig} onChange={e => setDomainConfig(e.target.value)} className="select-base">
-                <option value="">{ontologyBundle ? '(Use bundle domains)' : '(No domain config)'}</option>
+                <option value="">{ontologyBundle ? '(Use domains from selected ontology)' : '(No domain list selected)'}</option>
                 {domainConfigs.map(d => (
                   <option key={d.key} value={d.key}>{d.name} ({d.domain_count} domains)</option>
                 ))}
               </select>
-              {ontologyBundle && <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">Overrides the domain definitions from the selected bundle.</p>}
+              {ontologyBundle && <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">Replaces the default domain list from the selected ontology.</p>}
             </div>
           </div>
         </details>
@@ -515,41 +521,42 @@ export default function BatchJobs({ onNavigate }) {
                 What is core metadata?
               </summary>
               <div className="mt-2 text-sm text-slate-500 dark:text-slate-400 bg-dbx-oat-light dark:bg-dbx-navy-500/30 rounded-lg p-4 animate-slide-up">
-                Core metadata generation uses LLMs to analyze your tables and produce three types of metadata: <strong className="text-slate-700 dark:text-slate-200">column comments</strong> (human-readable descriptions), <strong className="text-slate-700 dark:text-slate-200">PI classification</strong> (PII/PHI/PCI sensitivity labels), and <strong className="text-slate-700 dark:text-slate-200">domain classification</strong> (business domain assignments). These are written to <code className="bg-dbx-oat dark:bg-dbx-navy-500 px-1.5 py-0.5 rounded text-xs font-mono">metadata_generation_log</code> and can be reviewed before applying as DDL.
+                Core metadata generation uses LLMs to analyze your tables and produce three types of metadata: <strong className="text-slate-700 dark:text-slate-200">table and column descriptions</strong> (human-readable comments), <strong className="text-slate-700 dark:text-slate-200">sensitive data classification</strong> (PII/PHI/PCI labels), and <strong className="text-slate-700 dark:text-slate-200">business domain classification</strong>. Results are written to a review log and can be inspected in the Review tab before being applied to your tables.
               </div>
             </details>
 
             <p className="text-sm text-slate-500 dark:text-slate-400">
-              <strong className="text-slate-700 dark:text-slate-200">Single Mode</strong> runs one pass (comment, PI, or domain).
-              <strong className="text-slate-700 dark:text-slate-200"> All 3 Modes</strong> runs all three in a single optimized pass (reads each table once, generates comments, then PI + domain with comment context).
+              <strong className="text-slate-700 dark:text-slate-200">Run Selected Mode</strong> runs one generation type at a time.{' '}
+              <strong className="text-slate-700 dark:text-slate-200">All Three</strong> runs descriptions, sensitivity, and domain in a single optimized pass — reads each table once, then uses the generated descriptions as context for classification.
             </p>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
-                <label className="text-sm font-medium text-slate-700 dark:text-slate-200 mb-1.5 block">Table Names</label>
+                <label className="text-sm font-medium text-slate-700 dark:text-slate-200 mb-1.5 block">Tables to Process</label>
                 <textarea value={tableNames} onChange={e => setTableNames(e.target.value)}
                   placeholder="catalog.schema.table1, catalog.schema.*"
                   className="textarea-base h-20" />
+                <p className="text-[10px] text-slate-400 dark:text-slate-500 mt-1">Comma-separated. Use <code className="bg-dbx-oat dark:bg-dbx-navy-500 px-1 rounded">*</code> for all tables in a schema.</p>
                 <button onClick={() => setPickerOpen(o => !o)}
                   className="btn-ghost btn-sm mt-1.5 !px-0 text-dbx-teal">
                   <svg className={`w-3 h-3 transition-transform ${pickerOpen ? 'rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
                   </svg>
-                  Browse Tables
+                  Browse Unity Catalog
                 </button>
                 {pickerOpen && (
                   <div className="mt-2 card p-3 space-y-2 animate-slide-up">
                     <div className="grid grid-cols-3 gap-2">
                       <select value={pickerCatalog} onChange={e => setPickerCatalog(e.target.value)} className="select-base !text-xs !py-1.5">
-                        <option value="">Catalog...</option>
+                        <option value="">Select catalog</option>
                         {pickerCatalogs.map(c => <option key={c} value={c}>{c}</option>)}
                       </select>
                       <select value={pickerSchema} onChange={e => setPickerSchema(e.target.value)} className="select-base !text-xs !py-1.5" disabled={!pickerCatalog}>
-                        <option value="">Schema...</option>
+                        <option value="">Select schema</option>
                         {pickerSchemas.map(s => <option key={s} value={s}>{s}</option>)}
                       </select>
                       <input value={pickerFilter} onChange={e => setPickerFilter(e.target.value)}
-                        placeholder="Filter..." className="input-base !text-xs !py-1.5" aria-label="Filter tables" />
+                        placeholder="Search tables..." className="input-base !text-xs !py-1.5" aria-label="Search tables" />
                     </div>
                     {pickerTables.length > 0 && (
                       <>
@@ -582,24 +589,25 @@ export default function BatchJobs({ onNavigate }) {
                       </>
                     )}
                     {pickerCatalog && pickerSchema && pickerTables.length === 0 && (
-                      <p className="text-xs text-slate-400 italic py-2">No tables found</p>
+                      <p className="text-xs text-slate-400 italic py-2">No tables found in this schema</p>
                     )}
                   </div>
                 )}
               </div>
               <div className="space-y-3">
                 <div>
-                  <label className="text-sm font-medium text-slate-700 dark:text-slate-200 mb-1.5 block">Mode</label>
+                  <label className="text-sm font-medium text-slate-700 dark:text-slate-200 mb-1.5 block">Generation Mode</label>
                   <select value={mode} onChange={e => setMode(e.target.value)} className="select-base">
-                    <option value="comment">Comment</option>
-                    <option value="pi">PI Classification</option>
-                    <option value="domain">Domain Classification</option>
-                    <option value="all">All (Comment + PI + Domain)</option>
+                    <option value="comment">Table & Column Descriptions</option>
+                    <option value="pi">Sensitive Data (PII / PHI / PCI)</option>
+                    <option value="domain">Business Domain</option>
+                    <option value="all">All Three (recommended)</option>
                   </select>
                 </div>
-                <label className="flex items-center gap-2.5 text-sm text-slate-600 dark:text-slate-300 cursor-pointer">
+                <label className="flex items-center gap-2.5 text-sm text-slate-600 dark:text-slate-300 cursor-pointer"
+                  title="Applies SQL comments directly to your tables. Disable this to review results first in the Review tab.">
                   <input type="checkbox" checked={applyDdl} onChange={e => setApplyDdl(e.target.checked)} />
-                  Apply DDL directly
+                  Apply to tables immediately
                 </label>
               </div>
             </div>
@@ -609,7 +617,7 @@ export default function BatchJobs({ onNavigate }) {
                 <svg className="w-3 h-3 transition-transform group-open:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
                 </svg>
-                Processing Settings
+                Model &amp; Processing Options
               </summary>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-3 animate-slide-up">
                 <div>
@@ -620,7 +628,7 @@ export default function BatchJobs({ onNavigate }) {
                   </select>
                 </div>
                 <div>
-                  <label className="text-xs text-slate-500 dark:text-slate-400 mb-1 block">Sample Size</label>
+                  <label className="text-xs text-slate-500 dark:text-slate-400 mb-1 block" title="Number of rows sampled per table. Higher values improve quality but increase cost. 0 uses the default.">Rows Sampled per Table</label>
                   <input type="number" min="0" max="100" value={settings.sample_size}
                     onChange={e => setSetting('sample_size', parseInt(e.target.value) || 0)} className="input-base !text-xs" />
                 </div>
@@ -631,7 +639,7 @@ export default function BatchJobs({ onNavigate }) {
                   </label>
                   <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer" title="Use existing knowledge base comments as additional context when generating metadata">
                     <input type="checkbox" checked={settings.use_kb_comments} onChange={e => setSetting('use_kb_comments', e.target.checked)} />
-                    Use KB comments
+                    Use knowledge base descriptions
                   </label>
                 </div>
                 <div className="flex flex-col gap-2 pt-1">
@@ -639,7 +647,7 @@ export default function BatchJobs({ onNavigate }) {
                     <input type="checkbox" checked={settings.build_kb_after}
                       disabled={settings.use_serverless}
                       onChange={e => setSetting('build_kb_after', e.target.checked)} />
-                    Build KB after
+                    Build knowledge base after
                   </label>
                   <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer" title="Run on serverless Databricks compute (faster startup, no cluster to configure)">
                     <input type="checkbox" checked={settings.use_serverless} onChange={e => setSetting('use_serverless', e.target.checked)} />
@@ -650,23 +658,23 @@ export default function BatchJobs({ onNavigate }) {
             </details>
 
             <p className="text-xs text-slate-500 dark:text-slate-400 mt-2 font-medium">
-              Bundle: {ontologyBundle ? bundles.find(b => b.key === ontologyBundle)?.name || ontologyBundle : <em>None</em>}
-              {' | '}Domain: {domainConfig ? domainConfigs.find(d => d.key === domainConfig)?.name || domainConfig : (ontologyBundle ? 'bundle domains' : <em>none</em>)}
+              Ontology: {ontologyBundle ? bundles.find(b => b.key === ontologyBundle)?.name || ontologyBundle : <em>None</em>}
+              {' | '}Domains: {domainConfig ? domainConfigs.find(d => d.key === domainConfig)?.name || domainConfig : (ontologyBundle ? 'from selected ontology' : <em>none</em>)}
             </p>
             <div className="flex flex-wrap gap-3 mt-2">
               <button onClick={() => runJob(getJobSuffix(), { table_names: tableNames, mode, apply_ddl: applyDdl, ontology_bundle: ontologyBundle, use_kb_comments: settings.use_kb_comments, include_lineage: settings.include_lineage, ...(domainConfig ? { domain_config: domainConfig } : {}), extra_params: buildExtraParams() }, 'single')}
-                disabled={!!runningAction || !tableNames.trim()} title="Run a single metadata generation pass"
-                className="btn-secondary btn-md">{runningAction === 'single' ? 'Starting...' : `Run Single Mode${settings.build_kb_after ? ' + KB' : ''}${settings.use_serverless ? ' (Serverless)' : ''}`}</button>
+                disabled={!!runningAction || !tableNames.trim()} title="Run only the mode selected above (one generation pass)"
+                className="btn-secondary btn-md">{runningAction === 'single' ? 'Starting...' : `Run Selected Mode${settings.build_kb_after ? ' + KB' : ''}${settings.use_serverless ? ' (Serverless)' : ''}`}</button>
               <button onClick={() => runJob(getJobSuffix(), { table_names: tableNames, mode: 'all', apply_ddl: applyDdl, ontology_bundle: ontologyBundle, use_kb_comments: settings.use_kb_comments, include_lineage: settings.include_lineage, ...(domainConfig ? { domain_config: domainConfig } : {}), extra_params: buildExtraParams() }, 'all3')}
-                disabled={!!runningAction || !tableNames.trim()} title="Run all three modes in a single optimized pass"
-                className="btn-primary btn-md">{runningAction === 'all3' ? 'Starting...' : `All 3 Modes${settings.build_kb_after ? ' + KB' : ''}${settings.use_serverless ? ' (Serverless)' : ''}`}</button>
+                disabled={!!runningAction || !tableNames.trim()} title="Runs descriptions, then sensitivity and domain using those descriptions — one table scan, best quality"
+                className="btn-primary btn-md">{runningAction === 'all3' ? 'Starting...' : `All Three${settings.build_kb_after ? ' + KB' : ''}${settings.use_serverless ? ' (Serverless)' : ''}`}</button>
               <button onClick={() => runJob('_kb_enriched_modes_job', { table_names: tableNames, apply_ddl: applyDdl, ontology_bundle: ontologyBundle, use_kb_comments: settings.use_kb_comments, include_lineage: settings.include_lineage, ...(domainConfig ? { domain_config: domainConfig } : {}), extra_params: buildExtraParams() }, 'kb_enriched')}
-                disabled={!!runningAction || !tableNames.trim()} title="Generates comments, builds KB, then runs PI + Domain with KB-generated descriptions. Always includes KB build; uses classic compute."
-                className="btn-md bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50 transition-all">{runningAction === 'kb_enriched' ? 'Starting...' : 'KB-Enriched Modes'}</button>
+                disabled={!!runningAction || !tableNames.trim()} title="Generates descriptions first, builds the knowledge base, then runs sensitivity and domain classification enriched with those descriptions. Uses classic compute."
+                className="btn-md bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50 transition-all">{runningAction === 'kb_enriched' ? 'Starting...' : 'Two-Pass (KB-Enriched)'}</button>
             </div>
             <p className="text-xs text-slate-400">
-              {settings.build_kb_after && <><strong className="text-slate-500">+ KB</strong>: Builds table + column knowledge base after generation so the Review tab is populated. </>}
-              <strong className="text-slate-500">KB-Enriched Modes</strong>: Generates comments, builds the knowledge base, then runs PI + domain classification enriched with KB-generated descriptions. Always includes KB build; runs on classic compute.
+              {settings.build_kb_after && <><strong className="text-slate-500">+ KB</strong>: Builds the knowledge base after generation so the Review tab is populated. </>}
+              <strong className="text-slate-500">Two-Pass (KB-Enriched)</strong>: Generates descriptions first, builds the knowledge base, then runs sensitivity and domain classification enriched with those descriptions. Uses classic compute.
             </p>
           </div>
         </section>
@@ -684,34 +692,34 @@ export default function BatchJobs({ onNavigate }) {
                 What is advanced metadata?
               </summary>
               <div className="mt-2 text-sm text-slate-500 dark:text-slate-400 bg-dbx-oat-light dark:bg-dbx-navy-500/30 rounded-lg p-4 animate-slide-up">
-                The advanced metadata pipeline builds on core metadata to produce the full semantic layer foundation: <strong className="text-slate-700 dark:text-slate-200">knowledge bases</strong> (table, column, schema), <strong className="text-slate-700 dark:text-slate-200">knowledge graph</strong> with GraphFrames, <strong className="text-slate-700 dark:text-slate-200">embeddings</strong> and similarity edges, <strong className="text-slate-700 dark:text-slate-200">ontology</strong> (entity discovery, classification, validation), <strong className="text-slate-700 dark:text-slate-200">profiling</strong> (column stats, data quality scores), <strong className="text-slate-700 dark:text-slate-200">FK prediction</strong> (foreign key relationships), <strong className="text-slate-700 dark:text-slate-200">clustering</strong>, and a <strong className="text-slate-700 dark:text-slate-200">vector search index</strong>. This runs as a single Databricks job with 15 orchestrated tasks.
+                The advanced pipeline builds on your core metadata to produce the full semantic layer: <strong className="text-slate-700 dark:text-slate-200">knowledge bases</strong>, a <strong className="text-slate-700 dark:text-slate-200">knowledge graph</strong>, <strong className="text-slate-700 dark:text-slate-200">embeddings</strong> and similarity edges, <strong className="text-slate-700 dark:text-slate-200">ontology</strong> entity discovery, <strong className="text-slate-700 dark:text-slate-200">profiling</strong> and data quality scores, <strong className="text-slate-700 dark:text-slate-200">foreign key prediction</strong>, <strong className="text-slate-700 dark:text-slate-200">table clustering</strong>, and a <strong className="text-slate-700 dark:text-slate-200">vector search index</strong>. This runs as a single Databricks job with 15 orchestrated tasks. <em className="text-slate-400">Requires core metadata to be generated first.</em>
               </div>
             </details>
 
             <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
               <div>
-                <label className="text-xs text-slate-500 dark:text-slate-400 mb-1 block">Similarity Threshold</label>
+                <label className="text-xs text-slate-500 dark:text-slate-400 mb-1 block" title="Minimum embedding similarity score (0–1) for creating edges between columns. Higher values mean fewer, stronger connections.">Similarity Threshold</label>
                 <input type="number" step="0.05" min="0" max="1" value={similarityThreshold}
                   onChange={e => setSimilarityThreshold(parseFloat(e.target.value) || 0.8)}
-                  title="Controls edge creation threshold for embedding similarity"
+                  title="Minimum embedding similarity for edge creation (0–1)"
                   className="input-base !text-xs" />
               </div>
               <div>
-                <label className="text-xs text-slate-500 dark:text-slate-400 mb-1 block">Cluster Min K</label>
+                <label className="text-xs text-slate-500 dark:text-slate-400 mb-1 block" title="Minimum number of table groups for clustering analysis">Cluster Min Groups</label>
                 <input type="number" min="1" max="50" value={clusterMinK}
                   onChange={e => setClusterMinK(parseInt(e.target.value) || 2)}
                   className="input-base !text-xs" />
               </div>
               <div>
-                <label className="text-xs text-slate-500 dark:text-slate-400 mb-1 block">Cluster Max K</label>
+                <label className="text-xs text-slate-500 dark:text-slate-400 mb-1 block" title="Maximum number of table groups for clustering analysis">Cluster Max Groups</label>
                 <input type="number" min="2" max="100" value={clusterMaxK}
                   onChange={e => setClusterMaxK(parseInt(e.target.value) || 15)}
                   className="input-base !text-xs" />
               </div>
               <div>
-                <label className="text-xs text-slate-500 dark:text-slate-400 mb-1 block">Ontology UC Tag Key</label>
+                <label className="text-xs text-slate-500 dark:text-slate-400 mb-1 block" title="Unity Catalog tag key where entity type classifications are stored">Entity Type Tag Key</label>
                 <input value={entityTagKey} onChange={e => setEntityTagKey(e.target.value)}
-                  placeholder="entity_type" title="Unity Catalog tag key used for entity type classifications"
+                  placeholder="entity_type" title="Unity Catalog tag key for entity type classifications"
                   className="input-base !text-xs" />
               </div>
               <div className="flex items-end pb-1">
@@ -723,7 +731,7 @@ export default function BatchJobs({ onNavigate }) {
             </div>
 
             <div>
-              <label className="text-xs text-slate-500 dark:text-slate-400 mb-1 block">Table Filter <span className="text-slate-400 dark:text-slate-500">(comma-separated, empty = all tables in schema)</span></label>
+              <label className="text-xs text-slate-500 dark:text-slate-400 mb-1 block">Table Filter <span className="text-slate-400 dark:text-slate-500">(comma-separated; leave blank to include all tables)</span></label>
               <textarea value={tableNames} onChange={e => setTableNames(e.target.value)}
                 placeholder="catalog.schema.table1, catalog.schema.table2"
                 className="textarea-base h-16 !text-xs" />
@@ -755,8 +763,8 @@ export default function BatchJobs({ onNavigate }) {
                 <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200">Sync Knowledge Graph to Lakebase</h3>
                 <span className="badge bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300 text-[10px]">Beta</span>
                 {lakebaseConfigured
-                  ? <span className="badge bg-emerald-50 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300 text-[10px]">Lakebase Connected</span>
-                  : <span className="badge bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400 text-[10px]">UC Delta Fallback</span>
+                  ? <span className="badge bg-emerald-50 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300 text-[10px]">Lakebase Configured</span>
+                  : <span className="badge bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400 text-[10px]" title="Lakebase is not configured. The graph will use Delta tables instead.">Using Delta Tables</span>
                 }
                 <span className="relative group/tip">
                   <svg className="w-4 h-4 text-slate-400 cursor-help" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -769,7 +777,7 @@ export default function BatchJobs({ onNavigate }) {
               </div>
               <div className="flex items-end gap-3">
                 <div className="flex-1">
-                  <label className="text-xs text-slate-500 dark:text-slate-400 mb-1 block">Lakebase Catalog (optional)</label>
+                  <label className="text-xs text-slate-500 dark:text-slate-400 mb-1 block">Target Lakebase Catalog (optional)</label>
                   <input value={lakebaseCatalog} onChange={e => setLakebaseCatalog(e.target.value)}
                     placeholder="e.g. lakebase_catalog" className="input-base !text-xs" />
                 </div>
@@ -819,7 +827,7 @@ export default function BatchJobs({ onNavigate }) {
       <section className="card p-5">
         <h2 className="text-base font-semibold text-slate-800 dark:text-slate-100 mb-4">Run History</h2>
         {completedRuns.length === 0 ? (
-          <EmptyState title="No completed runs yet" description="Run a pipeline above to see results here" />
+          <EmptyState title="No completed runs yet" description="Run a metadata job above to see completed runs here." />
         ) : (() => {
           const PAGE_SIZE = 10
           const MAX_RUNS = 50
@@ -854,7 +862,9 @@ export default function BatchJobs({ onNavigate }) {
           Available Jobs ({jobs.length})
         </summary>
         <div className="px-5 pb-4 divide-y divide-dbx-oat-dark/30 dark:divide-dbx-navy-400/20">
-          {jobs.map(j => (
+          {jobs.length === 0 ? (
+            <p className="text-xs text-slate-400 dark:text-slate-500 py-4">No jobs found. Deploy the Databricks Asset Bundle to your workspace first.</p>
+          ) : jobs.map(j => (
             <div key={j.job_id} className="py-2.5 flex justify-between items-center text-sm">
               <span className="text-slate-700 dark:text-slate-300">{j.name}</span>
               <span className="text-slate-400 font-mono text-xs">#{j.job_id}</span>
