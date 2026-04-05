@@ -256,6 +256,7 @@ if [ -n "${APP_SP_ID}" ]; then
         "GRANT MODIFY ON SCHEMA \`${catalog_name}\`.\`${schema_name}\` TO \`${SPN_APP_ID}\`"
     )
 
+    GRANT_FAIL=0
     for STMT in "${GRANT_STATEMENTS[@]}"; do
         echo "  ${STMT}"
         RESULT=$(databricks api post /api/2.0/sql/statements --profile "$PROFILE" \
@@ -266,8 +267,15 @@ if [ -n "${APP_SP_ID}" ]; then
         else
             echo "    FAILED (${STATUS})"
             echo "    ${RESULT}"
+            GRANT_FAIL=1
         fi
     done
+    if [ "${GRANT_FAIL}" -eq 1 ]; then
+        echo ""
+        echo "ERROR: One or more GRANT statements failed. The app service principal may not have sufficient permissions."
+        echo "       Fix the failing grants and re-deploy, or grant manually via Databricks UI."
+        exit 1
+    fi
 fi
 
 # --- Ensure Vector Search endpoint ---
