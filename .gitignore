@@ -162,10 +162,14 @@ databricks_final.yml.tmp
 *.env
 !example.env
 
+# Internal roadmaps (not shipped)
+ROADMAP.md
+
 # docs/: ignore by default; whitelist only public paths (README + Ontology tab). Avoid !docs/ — it re-includes the whole tree.
 docs/**
 !docs/formal_semantics.md
 !docs/CONFIGURATION.md
+!docs/consumer-guide.md
 
 .cursor/*
 !.cursor/rules/

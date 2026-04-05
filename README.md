@@ -331,7 +331,8 @@ The app is in `apps/dbxmetagen-app/` and provides a FastAPI backend with a React
 ```bash
 uv sync                     # core deps (comment/domain modes)
 uv sync --extra pi          # also install the spaCy model for PI dev
-uv run pytest -v
+./run_tests.sh              # runs 3 test suites in isolated processes
+./run_tests.sh -q           # quick mode (core tests only)
 
 # Build and test wheel locally
 uv build
@@ -339,7 +340,7 @@ pip install dist/*.whl
 python -c "from dbxmetagen.config import MetadataConfig; print('OK')"
 ```
 
-Wheels are built automatically by CI on tagged releases (see `.github/workflows/release.yml`).
+DDL regenerator and binary/variant tests must run in separate processes due to import conflicts -- `run_tests.sh` handles this automatically. See `CLAUDE.md` for details.
 
 Requires DBR 17.3+ (ML runtime recommended). Serverless runtimes are supported for most operations.
 
