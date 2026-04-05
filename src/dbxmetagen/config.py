@@ -220,7 +220,7 @@ class MetadataConfig:
             getattr(self, "build_knowledge_graph", False)
         )
         self.batch_ddl_apply = _parse_bool(
-            getattr(self, "batch_ddl_apply", False)
+            getattr(self, "batch_ddl_apply", True)
         )
         self.batch_ddl_max_columns = int(
             getattr(self, "batch_ddl_max_columns", 200)
@@ -311,14 +311,15 @@ class MetadataConfig:
     def get_temp_metadata_log_table_name(self) -> str:
         """
         Generate unique temp metadata generation log table name for this job run.
-        Ensures concurrent jobs don't interfere with each other's temp tables.
+        Includes the current mode so that different modes (comment/pi/domain) in
+        'all' mode each get their own temp table, avoiding schema conflicts.
 
         Returns:
-            str: Full table name in format: catalog.schema.temp_metadata_generation_log_user_timestamp
+            str: Full table name in format: catalog.schema.temp_metadata_generation_log_mode_user_timestamp
         """
 
         current_user = sanitize_user_identifier(get_current_user())
-        table_name = f"{self.catalog_name}.{self.schema_name}.temp_metadata_generation_log_{current_user}_{self.log_timestamp}"
+        table_name = f"{self.catalog_name}.{self.schema_name}.temp_metadata_generation_log_{self.mode}_{current_user}_{self.log_timestamp}"
         return table_name
 
     def load_yaml(self, file_path=None, variable_names=None):

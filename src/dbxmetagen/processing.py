@@ -1334,7 +1334,7 @@ def _export_table_to_tsv(df, config):
         print(f"Writing to TSV file: {output_file}")
 
         try:
-            df.write.mode("append").saveAsTable(table_name)
+            df.write.mode("append").option("mergeSchema", "true").saveAsTable(table_name)
         except Exception as e:
             print(f"Error writing Spark DataFrame to table '{table_name}': {str(e)}")
             return False
@@ -2506,8 +2506,8 @@ def review_and_generate_metadata(
                     source_cols_lower is not None
                     and col_name.lower() not in source_cols_lower
                 ):
-                    logger.warning(
-                        "Override column '%s' not in source table %s -- skipping synthetic row",
+                    logger.debug(
+                        "Override column '%s' not in source table %s -- skipping",
                         col_name,
                         full_table_name,
                     )
@@ -2692,6 +2692,7 @@ def _apply_individual_ddl(df: DataFrame, config: MetadataConfig, spark) -> dict:
     missing_tags = []
     failed_statements = []
     success_count = 0
+    tag_policy_warned = False
 
     for row in ddl_statements:
         ddl_statement = row["ddl"]
@@ -2706,11 +2707,6 @@ def _apply_individual_ddl(df: DataFrame, config: MetadataConfig, spark) -> dict:
                 )
             except Exception as e:
                 concise_error = extract_concise_error(e)
-                logger.error("Error applying DDL: %s", concise_error)
-                print(f"Failed to apply DDL statement: {concise_error}")
-                logger.debug(
-                    "DDL statement first 100 chars: %s...", ddl_statement[:100]
-                )
 
                 if "Tag policy violation" in concise_error:
                     match = re.search(
@@ -2719,15 +2715,27 @@ def _apply_individual_ddl(df: DataFrame, config: MetadataConfig, spark) -> dict:
                     if match:
                         tag_key, tag_value = match.groups()
                         missing_tags.append(f"{tag_key}={tag_value}")
+                    if not tag_policy_warned:
+                        tag_policy_warned = True
+                        logger.warning(
+                            "Tag policy violations detected — your workspace restricts "
+                            "certain tag values. Metadata was generated successfully but "
+                            "tags could not be applied. See the DDL summary below for details."
+                        )
+                else:
+                    logger.error("Error applying DDL: %s", concise_error)
+                    print(f"Failed to apply DDL statement: {concise_error}")
 
                 failed_statements.append(
                     {"statement": ddl_statement, "error": concise_error}
                 )
 
     if missing_tags:
+        unique_tags = sorted(set(missing_tags))
         logger.warning(
-            "Failed to set the following tags due to tag policy restrictions: %s",
-            ", ".join(missing_tags),
+            "Tag policy blocked %d DDL statement(s). Restricted tag values: %s",
+            len(missing_tags),
+            ", ".join(unique_tags),
         )
 
     return {
@@ -3931,10 +3939,10 @@ def upsert_table_names_to_control_table(
 
 def load_table_names_from_csv(csv_file_path):
     """Check if the CSV file exists and load table names."""
-    if not csv_file_path or not os.path.exists(csv_file_path):
-        print(
-            f"CSV file not found or empty path: {csv_file_path}, returning empty list"
-        )
+    if not csv_file_path:
+        return []
+    if not os.path.exists(csv_file_path):
+        logger.info("Table name CSV not found at %s, skipping", csv_file_path)
         return []
 
     try:
@@ -3947,7 +3955,8 @@ def load_table_names_from_csv(csv_file_path):
             return []
 
         table_names = df_pandas["table_name"].dropna().tolist()
-        print(f"Successfully loaded {len(table_names)} table names from CSV")
+        if table_names:
+            print(f"Loaded {len(table_names)} table names from CSV")
 
         sanitized_names = sanitize_string_list(table_names)
         expanded_names = expand_schema_wildcards(sanitized_names)

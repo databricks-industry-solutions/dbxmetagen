@@ -60,8 +60,11 @@ def setup_mode_dependencies(config):
             ensure_spacy_model(config.spacy_model_names)
 
     elif config.mode == "domain":
-        if not os.path.exists(config.domain_config_path):
-            _logger.warning("Domain config not found at %s, using fallback", config.domain_config_path)
+        _dcp = getattr(config, "domain_config_path", "") or ""
+        if _dcp and not os.path.exists(_dcp):
+            _logger.warning("Domain config not found at %s, using fallback", _dcp)
+        elif not _dcp and not getattr(config, "ontology_bundle", None):
+            _logger.info("No standalone domain config or ontology bundle specified; domain will use built-in fallback list")
 
     elif config.mode == "comment":
         pass
@@ -69,8 +72,11 @@ def setup_mode_dependencies(config):
     elif config.mode == "all":
         if getattr(config, "include_deterministic_pi", True):
             ensure_spacy_model(config.spacy_model_names)
-        if not os.path.exists(getattr(config, "domain_config_path", "")):
-            _logger.warning("Domain config not found at %s, using fallback", config.domain_config_path)
+        _dcp = getattr(config, "domain_config_path", "") or ""
+        if _dcp and not os.path.exists(_dcp):
+            _logger.warning("Domain config not found at %s, using fallback", _dcp)
+        elif not _dcp and not getattr(config, "ontology_bundle", None):
+            _logger.info("No standalone domain config or ontology bundle specified; domain will use built-in fallback list")
 
     else:
         raise ValueError(
