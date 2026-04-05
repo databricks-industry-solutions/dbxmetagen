@@ -2494,6 +2494,36 @@ def get_ontology_bundles():
     return _list_bundles_local()
 
 
+@app.post("/api/ontology/bundles/{bundle_key}/rebuild-indexes")
+def rebuild_bundle_indexes(bundle_key: str):
+    """Regenerate tier index files for an existing ontology bundle."""
+    bd = _find_bundle_dir()
+    if not bd:
+        return JSONResponse({"error": "Bundle directory not found"}, status_code=500)
+    bundle_yaml = os.path.join(bd, f"{bundle_key}.yaml")
+    if not os.path.isfile(bundle_yaml):
+        return JSONResponse({"error": f"Bundle '{bundle_key}' not found"}, status_code=404)
+    tier_dir = os.path.join(bd, bundle_key)
+    os.makedirs(tier_dir, exist_ok=True)
+    try:
+        from pathlib import Path
+
+        from dbxmetagen.ontology_bundle_indexes import (
+            build_tiers,
+            entities_from_bundle,
+            load_edge_catalog,
+        )
+
+        entities = entities_from_bundle(Path(bundle_yaml))
+        edge_cat = load_edge_catalog(Path(bundle_yaml))
+        counts = build_tiers(entities, Path(tier_dir), edge_catalog=edge_cat or None)
+    except Exception as e:
+        logger.exception("Failed to rebuild indexes for bundle %s", bundle_key)
+        return JSONResponse({"error": str(e)}, status_code=500)
+    _yaml_cache.clear()
+    return {"bundle_key": bundle_key, "counts": counts, "tier_indexes_stale": False}
+
+
 @app.get("/api/ontology/edge-catalog")
 def get_edge_catalog(
     catalog: Optional[str] = Query(None, description="Catalog name (default: env CATALOG_NAME)"),
@@ -4726,25 +4756,32 @@ def _build_sl_context(
                 line += f" WHERE {m['filter_condition']}"
             parts.append(line)
 
-    # Fallback to information_schema when KB is empty
+    # Fallback to information_schema when KB is empty -- supports multi-schema
     if not table_rows:
-        short_names = [t.split(".")[-1] for t in fq_tables]
-        short_clause = ", ".join(f"'{t}'" for t in short_names)
-        info_cols = execute_sql(
-            f"SELECT table_name, column_name, data_type "
-            f"FROM `{cat}`.information_schema.columns "
-            f"WHERE table_schema = '{sch}' AND table_name IN ({short_clause})"
-        )
-        col_by_tbl: dict[str, list] = {}
-        for c in info_cols:
-            col_by_tbl.setdefault(c["table_name"], []).append(c)
-        for tname, cols in col_by_tbl.items():
-            col_strs = [
-                f"  - {c['column_name']} {c.get('data_type', '')}" for c in cols
-            ]
-            parts.append(
-                f"Table: {cat}.{sch}.{tname}\n  Columns:\n" + "\n".join(col_strs)
+        tables_by_location: dict[tuple[str, str], list[str]] = {}
+        for t in fq_tables:
+            t_parts = t.split(".")
+            if len(t_parts) == 3:
+                tables_by_location.setdefault((t_parts[0], t_parts[1]), []).append(t_parts[2])
+            else:
+                tables_by_location.setdefault((cat, sch), []).append(t_parts[-1])
+        for (t_cat, t_sch), t_names in tables_by_location.items():
+            short_clause = ", ".join(f"'{t}'" for t in t_names)
+            info_cols = execute_sql(
+                f"SELECT table_name, column_name, data_type "
+                f"FROM `{t_cat}`.information_schema.columns "
+                f"WHERE table_schema = '{t_sch}' AND table_name IN ({short_clause})"
             )
+            col_by_tbl: dict[str, list] = {}
+            for c in info_cols:
+                col_by_tbl.setdefault(c["table_name"], []).append(c)
+            for tname, cols in col_by_tbl.items():
+                col_strs = [
+                    f"  - {c['column_name']} {c.get('data_type', '')}" for c in cols
+                ]
+                parts.append(
+                    f"Table: {t_cat}.{t_sch}.{tname}\n  Columns:\n" + "\n".join(col_strs)
+                )
 
     # --- Phase 1 enrichment: VS, Graph, Extended SQL (parallel) ---
     enrichment_parts: list[str] = []
@@ -6289,6 +6326,14 @@ def _fetch_definition(definition_id: str) -> dict:
     return rows[0]
 
 
+def _cat_sch_from_source(source: str) -> tuple[str, str]:
+    """Extract catalog/schema from an FQ source table, falling back to app defaults."""
+    parts = source.split(".") if source else []
+    if len(parts) >= 3:
+        return parts[0], parts[1]
+    return CATALOG, SCHEMA
+
+
 def _parse_single_json(text: str) -> dict:
     """Extract a single JSON object from an AI response."""
     text = re.sub(r"^```(?:json)?\s*", "", text.strip())
@@ -6495,7 +6540,8 @@ def retry_definition(definition_id: str):
         except Exception:
             pass
 
-    context = _build_sl_context([source], CATALOG, SCHEMA)
+    src_cat, src_sch = _cat_sch_from_source(source)
+    context = _build_sl_context([source], src_cat, src_sch)
     ref_rules = _load_agent_reference("metric_view_reference.json", ["yaml_syntax_rules", "anti_patterns"])
     prompt = f"""You are fixing a metric view definition that has SQL errors.
 
@@ -6657,15 +6703,17 @@ def export_metric_views_sql(catalog: Optional[str] = None, schema: Optional[str]
     )
     if not rows:
         raise HTTPException(404, detail="No applied metric view definitions found")
-    target_cat = catalog or CATALOG
-    target_sch = schema or SCHEMA
+    default_cat = catalog or CATALOG
+    default_sch = schema or SCHEMA
     statements = []
     for row in rows:
         defn = json.loads(row["json_definition"]) if isinstance(row["json_definition"], str) else row["json_definition"]
         mv_name = defn.get("name") or row.get("metric_view_name", "")
         if not mv_name:
             continue
-        fq_mv = f"`{target_cat}`.`{target_sch}`.`{mv_name}`"
+        mv_cat = row.get("deployed_catalog") or default_cat
+        mv_sch = row.get("deployed_schema") or default_sch
+        fq_mv = f"`{mv_cat}`.`{mv_sch}`.`{mv_name}`"
         yaml_body = _definition_to_yaml(defn)
         statements.append(f"CREATE OR REPLACE VIEW {fq_mv}\nWITH METRICS LANGUAGE YAML AS $$\n{yaml_body}$$")
     if not statements:
@@ -6685,7 +6733,8 @@ def improve_definition(definition_id: str):
     row = _fetch_definition(definition_id)
     defn = json.loads(row["json_definition"]) if isinstance(row["json_definition"], str) else row["json_definition"]
     source = defn.get("source", row.get("source_table", ""))
-    context = _build_sl_context([source], CATALOG, SCHEMA) if source else ""
+    src_cat, src_sch = _cat_sch_from_source(source) if source else (CATALOG, SCHEMA)
+    context = _build_sl_context([source], src_cat, src_sch) if source else ""
     ref_rules = _load_agent_reference("metric_view_reference.json", ["measure_patterns", "yaml_syntax_rules"])
 
     prompt = f"""You are improving a metric view definition. Make it more comprehensive and useful.
