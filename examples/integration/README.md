@@ -56,6 +56,26 @@ Notebook `01_generate_metadata` loads this file via `yaml_file_path`, and Metada
 
 Feed domain-specific questions into metric view generation. If empty, notebook 04 auto-generates questions from the table knowledge base. See [`business_questions.yaml`](business_questions.yaml) for the format.
 
+## Pinning `dbxmetagen` and runtime prerequisites
+
+**Pin the library in production.** Do not use `...@main` in scheduled jobs; pin to a **git tag** aligned with the version you tested (e.g. match [`pyproject.toml`](../../pyproject.toml) `version` or a GitHub release tag such as `v0.8.1`):
+
+```yaml
+metagen_install_source: "git+https://github.com/databricks-industry-solutions/dbxmetagen.git@v0.8.1"
+```
+
+**Unity Catalog prerequisites** before step 1:
+
+- Catalog and schema exist; the job identity can read source tables and write dbxmetagen output tables in that schema.
+- **UC volume** exists for `{catalog}.{schema}.{volume_name}` — step 5 exports Genie JSON under `/Volumes/.../genie_exports/`. Create the volume if missing.
+- **SQL warehouse** ID is valid for Genie space creation (step 5) and for any notebook path that requires warehouse SQL (step 4 notes `AI_QUERY` / warehouse context on classic compute).
+
+**Databricks Asset Bundles:** `notebook_task.base_parameters` are resolved at **`bundle deploy`**. After changing catalog, schema, warehouse, or install pin, **redeploy** or override parameters in the job UI so runs pick up new values.
+
+**Single Genie space title:** When the resolved table count is ≤ `max_tables_per_space`, step 5 creates **one** space titled `{catalog}.{schema} Analytics`. Downstream apps should persist `space_id` (e.g. Delta table + `GENIE_SPACE_ID` on model serving).
+
+**Upgrading:** Bump the git tag when you adopt a new dbxmetagen release; diff `examples/integration/` against any vendored copy in your repo and re-test the full pipeline.
+
 ## Job Definition (DAB)
 
 Wire the notebooks into your `databricks.yml` as a job with task dependencies:
@@ -129,7 +149,7 @@ variables:
   metagen_ontology_bundle:
     default: general
   metagen_install_source:
-    default: "git+https://github.com/databricks-industry-solutions/dbxmetagen.git@main"
+    default: "git+https://github.com/databricks-industry-solutions/dbxmetagen.git@v0.8.1"
   genie_max_tables:
     default: "25"
 ```
@@ -179,7 +199,7 @@ mode=pi        # PII, PHI, PCI, and medical information detection
 mode=domain    # Business domain and subdomain classification
 ```
 
-Each run appends to the same `metadata_generation_log` table. The knowledge base builders (step 2) merge all modes automatically. You can wire this as three parallel tasks in your DAB job definition, or use dbxmetagen's built-in `parallel_mode_generation_job` which handles this.
+Each run appends to the same `metadata_generation_log` table. The knowledge base builders (step 2) merge all modes automatically. You can wire this as three parallel tasks in your DAB job definition, or use dbxmetagen's built-in `metadata_parallel_modes_job` which handles this.
 
 ## Consuming the Outputs
 

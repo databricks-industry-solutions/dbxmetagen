@@ -11,15 +11,7 @@
 
 # COMMAND ----------
 
-import subprocess, sys, os
-
-dbutils.widgets.text("install_source", os.getenv("METAGEN_INSTALL_SOURCE", "git+https://github.com/databricks-industry-solutions/dbxmetagen.git@main"))
-src = dbutils.widgets.get("install_source")
-subprocess.check_call([sys.executable, "-m", "pip", "install", "-qqq", src])
-
-# COMMAND ----------
-
-dbutils.library.restartPython()
+# MAGIC %pip install -qqq git+https://github.com/databricks-industry-solutions/dbxmetagen.git@main
 
 # COMMAND ----------
 
@@ -33,8 +25,6 @@ dbutils.widgets.text("table_names", os.getenv("METAGEN_TABLE_NAMES", ""), "Table
 dbutils.widgets.text("model_endpoint", os.getenv("METAGEN_MODEL_ENDPOINT", "databricks-claude-sonnet-4-6"), "Model Endpoint")
 dbutils.widgets.text("mode", os.getenv("METAGEN_MODE", "comment"), "Mode (comment/pi/domain)")
 dbutils.widgets.text("max_total_tables", os.getenv("METAGEN_MAX_TABLES", "100"), "Max Total Tables")
-dbutils.widgets.text("install_source", os.getenv("METAGEN_INSTALL_SOURCE", "git+https://github.com/databricks-industry-solutions/dbxmetagen.git@main"))
-
 catalog_name = dbutils.widgets.get("catalog_name")
 schema_name = dbutils.widgets.get("schema_name")
 volume_name = dbutils.widgets.get("volume_name")
@@ -84,7 +74,7 @@ print(f"Table count check passed: {table_count} tables (limit: {max_total_tables
 yaml_path = None
 try:
     nb_path = dbutils.notebook.entry_point.getDbutils().notebook().getContext().notebookPath().get()
-    bundle_root = "/Workspace" + str(nb_path).rsplit("/", 2)[0]
+    bundle_root = "/Workspace" + str(nb_path).rsplit("/", 3)[0]
     candidate = f"{bundle_root}/configurations/metagen_overrides.yml"
     if os.path.exists(candidate):
         yaml_path = candidate

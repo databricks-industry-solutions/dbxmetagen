@@ -12,15 +12,7 @@
 
 # COMMAND ----------
 
-import subprocess, sys, os
-
-dbutils.widgets.text("install_source", os.getenv("METAGEN_INSTALL_SOURCE", "git+https://github.com/databricks-industry-solutions/dbxmetagen.git@main"))
-src = dbutils.widgets.get("install_source")
-subprocess.check_call([sys.executable, "-m", "pip", "install", "-qqq", src])
-
-# COMMAND ----------
-
-dbutils.library.restartPython()
+# MAGIC %pip install -qqq git+https://github.com/databricks-industry-solutions/dbxmetagen.git@main
 
 # COMMAND ----------
 
@@ -31,8 +23,6 @@ dbutils.widgets.text("catalog_name", os.getenv("CATALOG_NAME", ""), "Catalog Nam
 dbutils.widgets.text("schema_name", os.getenv("SCHEMA_NAME", "default"), "Output Schema")
 dbutils.widgets.text("ontology_bundle", os.getenv("METAGEN_ONTOLOGY_BUNDLE", "general"), "Ontology Bundle")
 dbutils.widgets.text("model_endpoint", os.getenv("METAGEN_MODEL_ENDPOINT", "databricks-claude-sonnet-4-6"), "Model Endpoint")
-dbutils.widgets.text("install_source", os.getenv("METAGEN_INSTALL_SOURCE", "git+https://github.com/databricks-industry-solutions/dbxmetagen.git@main"))
-
 catalog_name = dbutils.widgets.get("catalog_name")
 schema_name = dbutils.widgets.get("schema_name")
 ontology_bundle = dbutils.widgets.get("ontology_bundle")
@@ -60,7 +50,7 @@ from dbxmetagen.ontology import resolve_bundle_path
 config_path = resolve_bundle_path(ontology_bundle)
 if not os.path.exists(config_path):
     nb_path = dbutils.notebook.entry_point.getDbutils().notebook().getContext().notebookPath().get()
-    bundle_root = "/Workspace" + str(nb_path).rsplit("/", 2)[0]
+    bundle_root = "/Workspace" + str(nb_path).rsplit("/", 3)[0]
     config_path = f"{bundle_root}/configurations/ontology_bundles/{ontology_bundle}.yaml"
     print(f"Using workspace-resolved config: {config_path}")
 

@@ -12,15 +12,7 @@
 
 # COMMAND ----------
 
-import subprocess, sys, os
-
-dbutils.widgets.text("install_source", os.getenv("METAGEN_INSTALL_SOURCE", "git+https://github.com/databricks-industry-solutions/dbxmetagen.git@main"))
-src = dbutils.widgets.get("install_source")
-subprocess.check_call([sys.executable, "-m", "pip", "install", "-qqq", src])
-
-# COMMAND ----------
-
-dbutils.library.restartPython()
+# MAGIC %pip install -qqq git+https://github.com/databricks-industry-solutions/dbxmetagen.git@main
 
 # COMMAND ----------
 
@@ -29,8 +21,6 @@ from pyspark.sql import SparkSession
 
 dbutils.widgets.text("catalog_name", os.getenv("CATALOG_NAME", ""), "Catalog Name (required)")
 dbutils.widgets.text("schema_name", os.getenv("SCHEMA_NAME", "default"), "Output Schema")
-dbutils.widgets.text("install_source", os.getenv("METAGEN_INSTALL_SOURCE", "git+https://github.com/databricks-industry-solutions/dbxmetagen.git@main"))
-
 catalog_name = dbutils.widgets.get("catalog_name")
 schema_name = dbutils.widgets.get("schema_name")
 

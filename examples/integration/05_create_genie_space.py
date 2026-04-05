@@ -19,15 +19,7 @@
 
 # COMMAND ----------
 
-import subprocess, sys, os
-
-dbutils.widgets.text("install_source", os.getenv("METAGEN_INSTALL_SOURCE", "git+https://github.com/databricks-industry-solutions/dbxmetagen.git@main"))
-src = dbutils.widgets.get("install_source")
-subprocess.check_call([sys.executable, "-m", "pip", "install", "-qqq", src])
-
-# COMMAND ----------
-
-dbutils.library.restartPython()
+# MAGIC %pip install -qqq git+https://github.com/databricks-industry-solutions/dbxmetagen.git@main
 
 # COMMAND ----------
 
@@ -43,8 +35,6 @@ dbutils.widgets.text("model_endpoint", os.getenv("METAGEN_MODEL_ENDPOINT", "data
 dbutils.widgets.text("warehouse_id", os.getenv("SQL_WAREHOUSE_ID", ""), "SQL Warehouse ID (required)")
 dbutils.widgets.text("max_tables_per_space", os.getenv("GENIE_MAX_TABLES", "25"), "Max Tables per Space")
 dbutils.widgets.text("max_total_tables", os.getenv("METAGEN_MAX_TABLES", "100"), "Max Total Tables")
-dbutils.widgets.text("install_source", os.getenv("METAGEN_INSTALL_SOURCE", "git+https://github.com/databricks-industry-solutions/dbxmetagen.git@main"))
-
 catalog_name = dbutils.widgets.get("catalog_name")
 schema_name = dbutils.widgets.get("schema_name")
 volume_name = dbutils.widgets.get("volume_name")
