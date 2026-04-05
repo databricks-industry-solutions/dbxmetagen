@@ -948,11 +948,11 @@ class TestTierSchemaValidation(unittest.TestCase):
         self.assertEqual(len(valid), 1)
         self.assertEqual(len(issues), 0)
 
-    def test_validate_dict_of_dicts_warns_missing_keys(self):
+    def test_validate_dict_of_dicts_skips_missing_keys(self):
         from dbxmetagen.ontology_index import _validate_dict_of_dicts, _ENTITIES_T2_REQUIRED
         data = {"Patient": {"description": "d"}}  # missing source_ontology, uri
         valid, issues = _validate_dict_of_dicts(data, _ENTITIES_T2_REQUIRED, "entities_tier2.yaml")
-        self.assertEqual(len(valid), 1)  # still included, just warned
+        self.assertEqual(len(valid), 0)  # excluded due to missing required keys
         self.assertEqual(len(issues), 1)
 
     def test_validate_uri_map_valid(self):

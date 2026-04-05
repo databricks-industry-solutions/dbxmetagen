@@ -290,8 +290,8 @@ def _emit_bundle_yaml(
             ename = edge.get("name")
             if ename and ename not in edge_catalog:
                 edge_catalog[ename] = {
-                    "source": ent_name,
-                    "target": edge.get("range", ""),
+                    "domain": ent_name,
+                    "range": edge.get("range", ""),
                     "uri": edge.get("uri", ""),
                 }
                 if edge.get("inverse"):

@@ -65,6 +65,7 @@ def _validate_dict_of_dicts(
         missing = required_keys - set(entry.keys())
         if missing:
             issues.append(f"{filename}[{name}]: missing keys {missing}")
+            continue
         valid[name] = entry
     return valid, issues
 

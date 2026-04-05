@@ -195,8 +195,8 @@ def owl_to_bundle_yaml(
 def migrate_v1_to_v2(bundle: Dict[str, Any]) -> Dict[str, Any]:
     """Upgrade a v1 bundle dict to v2 format in-place.
     
-    Adds format_version, and synthesizes uri/source_ontology/owl_properties
-    fields for each entity using the bundle name as source.
+    Adds format_version, sets default uri/source_ontology on entities,
+    and initializes empty owl_properties lists where missing.
     
     Args:
         bundle: A v1 bundle dict (will be modified in-place).

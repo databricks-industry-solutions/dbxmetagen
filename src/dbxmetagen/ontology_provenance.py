@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 from pathlib import Path
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 _TIER_FILES = (
     "entities_tier1.yaml",
@@ -58,5 +61,6 @@ def read_bundle_metadata_version(bundle_yaml: Path) -> Optional[str]:
         raw = yaml.safe_load(bundle_yaml.read_text(encoding="utf-8"))
         meta = raw.get("metadata") or {}
         return str(meta.get("version") or meta.get("name") or "") or None
-    except Exception:
+    except Exception as e:
+        logger.debug("Could not read bundle metadata version from %s: %s", bundle_yaml, e)
         return None

@@ -1,11 +1,9 @@
 """Serialize ontology predictions to OWL/Turtle format via rdflib.
 
-Produces valid OWL output with:
+Produces OWL output with:
 - owl:equivalentClass linking UC tables to published ontology URIs
-- rdfs:subClassOf for entity hierarchy (including source chains)
-- owl:ObjectProperty / owl:DatatypeProperty for columns
-- owl:inverseOf for bidirectional edges
-- owl:Restriction cardinality constraints from source ontologies
+- rdfs:subClassOf for entity hierarchy
+- owl:ObjectProperty for predicted edges
 - dcterms:conformsTo / prov:wasDerivedFrom provenance triples
 """
 

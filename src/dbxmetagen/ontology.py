@@ -248,7 +248,7 @@ DOMAIN_ENTITY_AFFINITY: Dict[str, set] = {
 
 
 def _leading_overlap(pred: str, entity: str) -> int:
-    """Count matching leading characters (case-sensitive on lowercased inputs)."""
+    """Count matching leading characters. Lowercases entity before comparing."""
     e = entity.lower()
     n = 0
     for i in range(min(len(pred), len(e))):
@@ -896,10 +896,15 @@ class OntologyLoader:
                         )
                     )
 
-            # v2 owl_properties (list of dicts) -- merge into props
+            # v2 owl_properties (list of dicts) -- merge into props, skip duplicates
+            prop_names = {p.name for p in props}
             for owl_prop in details.get("owl_properties", []):
                 if not isinstance(owl_prop, dict):
                     continue
+                owl_name = owl_prop.get("name", "")
+                if owl_name in prop_names:
+                    continue
+                prop_names.add(owl_name)
                 props.append(
                     PropertyDefinition(
                         name=owl_prop.get("name", ""),
@@ -2733,7 +2738,7 @@ class OntologyBuilder:
         MERGE INTO {self.config.fully_qualified_entities} AS target
         USING {view_name} AS source
         ON target.entity_name = source.entity_name
-           AND array_join(target.source_tables, ',') = array_join(source.source_tables, ',')
+           AND array_join(array_sort(target.source_tables), ',') = array_join(array_sort(source.source_tables), ',')
            AND COALESCE(target.attributes['granularity'], 'table') = COALESCE(source.attributes['granularity'], 'table')
         WHEN MATCHED AND target.auto_discovered = TRUE AND target.validated = FALSE THEN UPDATE SET
             target.confidence = source.confidence,
@@ -4193,7 +4198,7 @@ class OntologyBuilder:
                         candidate_pairs.add((s, d))
                 if len(candidate_pairs) > max_llm_edge_calls:
                     logger.info("LLM edge prediction: capping %d pairs to %d", len(candidate_pairs), max_llm_edge_calls)
-                    candidate_pairs = set(list(candidate_pairs)[:max_llm_edge_calls])
+                    candidate_pairs = set(sorted(candidate_pairs)[:max_llm_edge_calls])
                 llm_fn = _llm_fn
                 for src_t, dst_t in candidate_pairs:
                     try:
@@ -4216,8 +4221,8 @@ class OntologyBuilder:
                                 "created_at": now,
                                 "updated_at": now,
                             })
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.warning("predict_edge failed for (%s, %s): %s", src_t, dst_t, e)
                 logger.info("LLM predict_edge added %d edges",
                             sum(1 for r in rels if r["source"] == "llm_predicted"))
             except ImportError:
@@ -4517,8 +4522,8 @@ class OntologyBuilder:
                     "to_table": r["dst_entity_type"],
                     "predicted_edge": r["relationship_name"],
                 })
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Could not read relationships for Turtle export: %s", e)
 
         ttl_path = write_turtle(
             catalog=self.config.catalog_name,
