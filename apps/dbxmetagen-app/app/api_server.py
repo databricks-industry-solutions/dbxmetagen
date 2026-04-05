@@ -367,7 +367,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="dbxmetagen API", version="0.8.1", lifespan=lifespan)
+app = FastAPI(title="dbxmetagen API", version="0.8.2", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
