@@ -176,14 +176,10 @@ export default function BatchJobs({ onNavigate }) {
     return next
   })
 
-  const getJobSuffix = (isParallel) => {
-    if (settings.use_serverless) {
-      return isParallel ? '_parallel_serverless_job' : '_metadata_serverless_job'
-    }
-    if (settings.build_kb_after) {
-      return isParallel ? '_parallel_kb_build_job' : '_metadata_kb_build_job'
-    }
-    return isParallel ? '_parallel_modes_job' : '_metadata_job'
+  const getJobSuffix = () => {
+    if (settings.use_serverless) return '_metadata_serverless_job'
+    if (settings.build_kb_after) return '_metadata_kb_build_job'
+    return '_metadata_job'
   }
 
   const [pickerOpen, setPickerOpen] = useState(false)
@@ -525,7 +521,7 @@ export default function BatchJobs({ onNavigate }) {
 
             <p className="text-sm text-slate-500 dark:text-slate-400">
               <strong className="text-slate-700 dark:text-slate-200">Single Mode</strong> runs one pass (comment, PI, or domain).
-              <strong className="text-slate-700 dark:text-slate-200"> All 3 Modes</strong> runs comments first, then PI + domain in parallel.
+              <strong className="text-slate-700 dark:text-slate-200"> All 3 Modes</strong> runs all three in a single optimized pass (reads each table once, generates comments, then PI + domain with comment context).
             </p>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -598,6 +594,7 @@ export default function BatchJobs({ onNavigate }) {
                     <option value="comment">Comment</option>
                     <option value="pi">PI Classification</option>
                     <option value="domain">Domain Classification</option>
+                    <option value="all">All (Comment + PI + Domain)</option>
                   </select>
                 </div>
                 <label className="flex items-center gap-2.5 text-sm text-slate-600 dark:text-slate-300 cursor-pointer">
@@ -657,11 +654,11 @@ export default function BatchJobs({ onNavigate }) {
               {' | '}Domain: {domainConfig ? domainConfigs.find(d => d.key === domainConfig)?.name || domainConfig : (ontologyBundle ? 'bundle domains' : <em>none</em>)}
             </p>
             <div className="flex flex-wrap gap-3 mt-2">
-              <button onClick={() => runJob(getJobSuffix(false), { table_names: tableNames, mode, apply_ddl: applyDdl, ontology_bundle: ontologyBundle, use_kb_comments: settings.use_kb_comments, include_lineage: settings.include_lineage, ...(domainConfig ? { domain_config: domainConfig } : {}), extra_params: buildExtraParams() }, 'single')}
+              <button onClick={() => runJob(getJobSuffix(), { table_names: tableNames, mode, apply_ddl: applyDdl, ontology_bundle: ontologyBundle, use_kb_comments: settings.use_kb_comments, include_lineage: settings.include_lineage, ...(domainConfig ? { domain_config: domainConfig } : {}), extra_params: buildExtraParams() }, 'single')}
                 disabled={!!runningAction || !tableNames.trim()} title="Run a single metadata generation pass"
                 className="btn-secondary btn-md">{runningAction === 'single' ? 'Starting...' : `Run Single Mode${settings.build_kb_after ? ' + KB' : ''}${settings.use_serverless ? ' (Serverless)' : ''}`}</button>
-              <button onClick={() => runJob(getJobSuffix(true), { table_names: tableNames, apply_ddl: applyDdl, ontology_bundle: ontologyBundle, use_kb_comments: settings.use_kb_comments, include_lineage: settings.include_lineage, ...(domainConfig ? { domain_config: domainConfig } : {}), extra_params: buildExtraParams() }, 'all3')}
-                disabled={!!runningAction || !tableNames.trim()} title="Run all three modes in parallel"
+              <button onClick={() => runJob(getJobSuffix(), { table_names: tableNames, mode: 'all', apply_ddl: applyDdl, ontology_bundle: ontologyBundle, use_kb_comments: settings.use_kb_comments, include_lineage: settings.include_lineage, ...(domainConfig ? { domain_config: domainConfig } : {}), extra_params: buildExtraParams() }, 'all3')}
+                disabled={!!runningAction || !tableNames.trim()} title="Run all three modes in a single optimized pass"
                 className="btn-primary btn-md">{runningAction === 'all3' ? 'Starting...' : `All 3 Modes${settings.build_kb_after ? ' + KB' : ''}${settings.use_serverless ? ' (Serverless)' : ''}`}</button>
               <button onClick={() => runJob('_kb_enriched_modes_job', { table_names: tableNames, apply_ddl: applyDdl, ontology_bundle: ontologyBundle, use_kb_comments: settings.use_kb_comments, include_lineage: settings.include_lineage, ...(domainConfig ? { domain_config: domainConfig } : {}), extra_params: buildExtraParams() }, 'kb_enriched')}
                 disabled={!!runningAction || !tableNames.trim()} title="Generates comments, builds KB, then runs PI + Domain with KB-generated descriptions. Always includes KB build; uses classic compute."

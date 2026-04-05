@@ -1320,22 +1320,75 @@ _GOVERNED_TAG_HINT = (
 
 
 @app.post("/api/metadata/apply-ddl")
-def apply_ddl(body: GenerateDDLBody):
+def apply_ddl(body: GenerateDDLBody, batch: bool = True):
     out = generate_ddl(body)
     stmts = out.get("statements") or []
     errors = []
     applied = 0
-    for s in stmts:
-        try:
-            execute_sql(s, timeout=60)
-            applied += 1
-        except Exception as e:
-            err_str = str(e)
-            detail: dict = {"statement": s[:200], "error": err_str}
-            if "PERMISSION_DENIED" in err_str and "tag" in err_str.lower():
-                detail["governed_tag"] = True
-                detail["hint"] = _GOVERNED_TAG_HINT
-            errors.append(detail)
+
+    if batch and len(stmts) > 1:
+        groups: dict[str, list[str]] = {}
+        table_level = []
+        for s in stmts:
+            upper = s.strip().upper()
+            if upper.startswith("ALTER TABLE") and "ALTER COLUMN" in upper:
+                parts = s.strip().split(None, 3)
+                tbl = parts[2] if len(parts) > 2 else None
+                if tbl:
+                    groups.setdefault(tbl, []).append(s)
+                else:
+                    table_level.append(s)
+            else:
+                table_level.append(s)
+
+        for s in table_level:
+            try:
+                execute_sql(s, timeout=60)
+                applied += 1
+            except Exception as e:
+                err_str = str(e)
+                detail: dict = {"statement": s[:200], "error": err_str}
+                if "PERMISSION_DENIED" in err_str and "tag" in err_str.lower():
+                    detail["governed_tag"] = True
+                    detail["hint"] = _GOVERNED_TAG_HINT
+                errors.append(detail)
+
+        for tbl, tbl_stmts in groups.items():
+            try:
+                alter_clauses = []
+                for s in tbl_stmts:
+                    idx = s.upper().find("ALTER COLUMN")
+                    if idx > 0:
+                        alter_clauses.append(s[idx:].rstrip(";").strip())
+                if alter_clauses:
+                    batch_sql = f"ALTER TABLE {tbl} {' '.join(alter_clauses)};"
+                    execute_sql(batch_sql, timeout=120)
+                    applied += len(tbl_stmts)
+            except Exception:
+                for s in tbl_stmts:
+                    try:
+                        execute_sql(s, timeout=60)
+                        applied += 1
+                    except Exception as e2:
+                        err_str = str(e2)
+                        detail = {"statement": s[:200], "error": err_str}
+                        if "PERMISSION_DENIED" in err_str and "tag" in err_str.lower():
+                            detail["governed_tag"] = True
+                            detail["hint"] = _GOVERNED_TAG_HINT
+                        errors.append(detail)
+    else:
+        for s in stmts:
+            try:
+                execute_sql(s, timeout=60)
+                applied += 1
+            except Exception as e:
+                err_str = str(e)
+                detail: dict = {"statement": s[:200], "error": err_str}
+                if "PERMISSION_DENIED" in err_str and "tag" in err_str.lower():
+                    detail["governed_tag"] = True
+                    detail["hint"] = _GOVERNED_TAG_HINT
+                errors.append(detail)
+
     if errors:
         return {
             "message": "Some DDL statements failed",

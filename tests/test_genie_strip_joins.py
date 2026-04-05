@@ -29,17 +29,21 @@ class _AutoMockModule(types.ModuleType):
 
 
 def _install_mock_modules():
+    _already_loaded = set(sys.modules) & set(_MOCK_MODULES)
     for mod_name in _MOCK_MODULES:
         if mod_name not in sys.modules:
             mod = _AutoMockModule(mod_name)
             if any(m.startswith(mod_name + ".") for m in _MOCK_MODULES):
                 mod.__path__ = []
             sys.modules[mod_name] = mod
-    if "fastapi" in sys.modules and not hasattr(sys.modules["fastapi"], "HTTPException"):
+    if "fastapi" not in _already_loaded:
+        def _http_exc_init(self, status_code=None, detail=None, **kw):
+            self.status_code = status_code
+            self.detail = detail
         sys.modules["fastapi"].HTTPException = type(
-            "HTTPException", (Exception,), {"__init__": lambda self, *a, **kw: None}
+            "HTTPException", (Exception,), {"__init__": _http_exc_init}
         )
-    if "cachetools" in sys.modules:
+    if "cachetools" not in _already_loaded:
         sys.modules["cachetools"].cached = lambda *a, **kw: (lambda fn: fn)
 
 

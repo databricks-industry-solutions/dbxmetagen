@@ -375,7 +375,7 @@ Add this to your shell profile (`~/.zshrc`, `~/.bashrc`, etc.) to make it perman
 | cloudpickle | 3.1.0 | BSD 3-Clause | https://github.com/cloudpipe/cloudpickle |
 | pydantic | 2.10.3 | MIT | https://github.com/pydantic/pydantic |
 | ydata-profiling | 4.17.0 | MIT | https://github.com/ydataai/ydata-profiling |
-| databricks-langchain | 0.4.0 | Apache 2.0 | https://github.com/databricks/databricks-ai-bridge |
+| databricks-langchain | 0.4.0 | Databricks License | https://github.com/databricks/databricks-ai-bridge |
 | databricks-sdk | 0.68.0 | Apache 2.0 | https://github.com/databricks/databricks-sdk-py |
 | openpyxl | 3.1.5 | MIT | https://foss.heptapod.net/openpyxl/openpyxl |
 | spacy | 3.8.7 | MIT | https://spacy.io |
@@ -383,7 +383,7 @@ Add this to your shell profile (`~/.zshrc`, `~/.bashrc`, etc.) to make it perman
 | deprecated | 1.2.13 | MIT | https://github.com/tantale/deprecated |
 | pyyaml | 6.0.1 | MIT | https://pypi.org/project/PyYAML/ |
 | requests | 2.32.5 | Apache 2.0 | https://github.com/psf/requests |
-| nest-asyncio | 1.6.0 | BSD | https://github.com/erdewit/nest_asyncio |
+| nest-asyncio | 1.6.0 | BSD 2-Clause | https://github.com/erdewit/nest_asyncio |
 
 ### Python (key transitive dependencies used by the app/agent)
 
@@ -415,7 +415,7 @@ Add this to your shell profile (`~/.zshrc`, `~/.bashrc`, etc.) to make it perman
 | tailwindcss | ^3.4.0 | MIT | https://github.com/tailwindlabs/tailwindcss |
 | vite | ^6.0.0 | MIT | https://github.com/vitejs/vite |
 
-All packages use permissive licenses (Apache 2.0, MIT, BSD, PSF) except Databricks proprietary components (databricks-connect, databricks-vectorsearch).
+All packages use permissive licenses (Apache 2.0, MIT, BSD, PSF) except Databricks proprietary components (databricks-langchain, databricks-connect, databricks-vectorsearch).
 
 ## License
 

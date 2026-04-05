@@ -117,6 +117,7 @@ class MetadataConfig:
             "use_kb_comments",
             "include_profiling_context",
             "include_constraint_context",
+            "batch_ddl_apply",
         ],
         "yaml_advanced_file_path": "../variables.advanced.yml",
         "yaml_advanced_variable_names": [
@@ -132,6 +133,8 @@ class MetadataConfig:
             "custom_endpoint_secret_key",
             "build_knowledge_graph",
             "presidio_score_threshold",
+            "batch_ddl_max_columns",
+            "max_concurrent_llm_calls",
         ],
     }
     MODEL_PARAMS = {}
@@ -215,6 +218,15 @@ class MetadataConfig:
         )
         self.build_knowledge_graph = _parse_bool(
             getattr(self, "build_knowledge_graph", False)
+        )
+        self.batch_ddl_apply = _parse_bool(
+            getattr(self, "batch_ddl_apply", True)
+        )
+        self.batch_ddl_max_columns = int(
+            getattr(self, "batch_ddl_max_columns", 200)
+        )
+        self.max_concurrent_llm_calls = int(
+            getattr(self, "max_concurrent_llm_calls", 4)
         )
 
         # Handle review_apply_ddl if present

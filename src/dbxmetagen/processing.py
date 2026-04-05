@@ -6,6 +6,8 @@ import shutil
 import re
 from abc import ABC
 from datetime import datetime
+from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Dict, Any, Optional, Tuple
 import logging
 import nest_asyncio
@@ -1080,13 +1082,17 @@ def claim_table(table_name: str, config: MetadataConfig, max_retries: int = 3) -
 
     mode = config.mode or "comment"
 
+    # mode="all" must also block/check individual mode claims and vice versa
+    if mode == "all":
+        mode_filter = "(_mode IN ('comment', 'pi', 'domain', 'all') OR _mode IS NULL)"
+    else:
+        mode_filter = f"(_mode = '{mode}' OR _mode = 'all' OR _mode IS NULL)"
+
     if cleanup_mode:
-        where_clause = (
-            f"WHERE table_name = '{table_name}' AND (_mode = '{mode}' OR _mode IS NULL)"
-        )
+        where_clause = f"WHERE table_name = '{table_name}' AND {mode_filter}"
     else:
         where_clause = f"""WHERE table_name = '{table_name}'
-      AND (_mode = '{mode}' OR _mode IS NULL)
+      AND {mode_filter}
       AND (
         _claimed_by IS NULL
         OR _claimed_by = '{task_id}'
@@ -1106,7 +1112,7 @@ def claim_table(table_name: str, config: MetadataConfig, max_retries: int = 3) -
     verify_query = f"""
     SELECT _claimed_by FROM {control_table}
     WHERE table_name = '{table_name}'
-      AND (_mode = '{mode}' OR _mode IS NULL)
+      AND {mode_filter}
     """
 
     for attempt in range(max_retries):
@@ -1596,7 +1602,7 @@ def filter_and_write_ddl(
 
     try:
         write_ddl_to_volume_spark_native(
-            df, file_root, base_path, config.ddl_output_format
+            df, file_root, base_path, config.ddl_output_format, config
         )
         df = df.withColumn("status", lit("Success"))
     except ValueError as ve:
@@ -1622,11 +1628,66 @@ def filter_and_write_ddl(
             )
 
 
+def _write_batch_ddl_file(df: DataFrame, file_name: str, base_path: str, output_format: str, config=None):
+    """Write batch DDL statements alongside the individual DDL file.
+    Groups column-level DDL by table into batch ALTER TABLE statements."""
+    if config is None or not getattr(config, "batch_ddl_apply", True):
+        return
+    mode = getattr(config, "mode", None)
+    if mode not in ("comment", "pi"):
+        return
+
+    needed = {"tokenized_table", "column_name", "ddl_type"}
+    if mode == "comment":
+        needed.add("column_content")
+    elif mode == "pi":
+        needed |= {"classification", "type"}
+
+    available = [c for c in needed if c in df.columns]
+    if len(available) < len(needed):
+        return
+
+    rows = df.select(*available).collect()
+    table_groups = defaultdict(list)
+    for row in rows:
+        rd = row.asDict()
+        if rd.get("ddl_type") == "table":
+            continue
+        table_groups[rd.get("tokenized_table", "")].append(rd)
+
+    batch_stmts = []
+    max_cols = getattr(config, "batch_ddl_max_columns", 200)
+    for tbl, col_rows in table_groups.items():
+        for i in range(0, len(col_rows), max_cols):
+            chunk = col_rows[i:i + max_cols]
+            if mode == "comment":
+                batch_stmts.append(
+                    _build_batch_comment_ddl(tbl, [(r["column_name"], r.get("column_content", "")) for r in chunk])
+                )
+            elif mode == "pi":
+                batch_stmts.append(
+                    _build_batch_pi_ddl(tbl, [(r["column_name"], r.get("classification", ""), r.get("type", "")) for r in chunk], config)
+                )
+
+    if not batch_stmts:
+        return
+
+    batch_file = os.path.join(base_path, f"{file_name}_batch.sql")
+    try:
+        with open(batch_file, "w") as f:
+            for stmt in batch_stmts:
+                f.write(f"{stmt}\n")
+        print(f"Wrote batch DDL to {batch_file} ({len(batch_stmts)} statements)")
+    except Exception as e:
+        logger.warning("Failed to write batch DDL file: %s", e)
+
+
 def write_ddl_to_volume_spark_native(
-    df: DataFrame, file_name: str, base_path: str, output_format: str
+    df: DataFrame, file_name: str, base_path: str, output_format: str, config=None
 ):
     """
     Write DDL statements to volume using collect() - simpler approach for compatibility.
+    Also writes a batch DDL variant when batch_ddl_apply is enabled.
     """
     try:
         create_folder_if_not_exists(base_path)
@@ -1638,14 +1699,12 @@ def write_ddl_to_volume_spark_native(
     if output_format in ["sql", "tsv"]:
         ddl_statements = df.select("ddl").collect()
 
-        # Write using simple Python file I/O
         full_path = os.path.join(base_path, f"{file_name}.{output_format}")
         with open(full_path, "w") as file:
             for statement in ddl_statements:
                 file.write(f"{statement[0]}\n")
 
     elif output_format == "excel":
-        # For Excel, convert to list first then to pandas
         ddl_statements = df.select("ddl").collect()
         ddl_list = [row.ddl for row in ddl_statements]
 
@@ -1655,6 +1714,8 @@ def write_ddl_to_volume_spark_native(
         raise ValueError(
             "Invalid output format. Please choose either 'sql', 'tsv' or 'excel'."
         )
+
+    _write_batch_ddl_file(df, file_name, base_path, output_format, config)
 
 
 def write_ddl_to_volume(file_name, base_path, ddl_statements, output_format):
@@ -2276,9 +2337,58 @@ def get_generated_metadata_data_aware(
     responses = []
     nrows = df.count()
     chunked_dfs = chunk_df(df, config.columns_per_call)
-    for i, chunk in enumerate(chunked_dfs):
+
+    # Pre-fetch column metadata once for all chunks when add_metadata is enabled
+    metadata_cache = None
+    if getattr(config, "add_metadata", False) and not getattr(config, "federation_mode", False):
+        try:
+            all_columns = df.columns
+            parts = full_table_name.split(".")
+            if len(parts) == 3:
+                cat, sch, tbl = parts
+                col_list = ", ".join(f"'{c}'" for c in all_columns)
+                meta_query = f"""
+                    SELECT column_name, data_type, is_nullable, column_default, comment,
+                           ordinal_position, character_maximum_length, numeric_precision, numeric_scale
+                    FROM `{cat}`.information_schema.columns
+                    WHERE table_catalog = '{cat}' AND table_schema = '{sch}'
+                      AND table_name = '{tbl}' AND column_name IN ({col_list})
+                """
+                spark = SparkSession.builder.getOrCreate()
+                meta_rows = spark.sql(meta_query).collect()
+                field_map = {
+                    "data_type": "data_type", "is_nullable": "nullable",
+                    "column_default": "default", "comment": "comment",
+                    "ordinal_position": "ordinal_position",
+                    "character_maximum_length": "max_length",
+                    "numeric_precision": "numeric_precision",
+                    "numeric_scale": "numeric_scale",
+                }
+                metadata_cache = {}
+                for row in meta_rows:
+                    rd = row.asDict()
+                    col_name = rd.pop("column_name", None)
+                    if col_name:
+                        metadata_cache[col_name] = {
+                            field_map[k]: str(v) for k, v in rd.items()
+                            if k in field_map and v is not None
+                        }
+                logger.info("Pre-fetched column metadata for %d columns via information_schema", len(metadata_cache))
+        except Exception as e:
+            logger.warning("Failed to pre-fetch metadata cache, prompts will query individually: %s", e)
+            metadata_cache = None
+
+    max_workers = min(
+        len(chunked_dfs),
+        int(getattr(config, "max_concurrent_llm_calls", 4)),
+    )
+
+    def _process_chunk(chunk):
         sampled_chunk = sample_df(chunk, nrows, config.sample_size)
-        prompt = PromptFactory.create_prompt(config, sampled_chunk, full_table_name)
+        prompt = PromptFactory.create_prompt(
+            config, sampled_chunk, full_table_name,
+            column_metadata_cache=metadata_cache,
+        )
         if getattr(config, "use_kb_comments", False):
             prompt.enrich_from_knowledge_base()
         if getattr(config, "use_ontology_context", False):
@@ -2292,10 +2402,25 @@ def get_generated_metadata_data_aware(
         response, _ = chat_response.get_responses(
             prompt_messages, prompt.prompt_content
         )
-        # Store presidio results with the response for PI mode
         if hasattr(prompt, "deterministic_results"):
             response.presidio_results = prompt.deterministic_results
-        responses.append(response)
+        return response
+
+    if max_workers > 1 and len(chunked_dfs) > 1:
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(_process_chunk, chunk): i
+                for i, chunk in enumerate(chunked_dfs)
+            }
+            results = [None] * len(chunked_dfs)
+            for future in as_completed(futures):
+                idx = futures[future]
+                results[idx] = future.result()
+            responses = results
+    else:
+        for chunk in chunked_dfs:
+            responses.append(_process_chunk(chunk))
+
     return responses
 
 
@@ -2310,6 +2435,14 @@ def check_token_length_against_num_words(prompt: str, config: MetadataConfig):
         )
     else:
         return num_words
+
+
+def _shallow_config_copy(config: MetadataConfig, mode: str) -> MetadataConfig:
+    """Create a shallow copy of config with mode overridden for sub-mode dispatch."""
+    import copy
+    cfg = copy.copy(config)
+    cfg.mode = mode
+    return cfg
 
 
 def review_and_generate_metadata(
@@ -2327,7 +2460,11 @@ def review_and_generate_metadata(
 
     Returns:
         Tuple[DataFrame, DataFrame]: DataFrames containing the generated metadata.
+        For mode='all', returns a dict of {sub_mode: (column_df, table_df)}.
     """
+    if config.mode == "all":
+        return _review_and_generate_all_modes(config, full_table_name)
+
     table_rows = []
     column_rows = []
 
@@ -2360,7 +2497,6 @@ def review_and_generate_metadata(
         override_data = load_override_data_for_table(csv_path, config, full_table_name)
         if override_data:
             tokenized_full_table_name = replace_catalog_name(config, full_table_name)
-            # Validate against actual source table columns
             try:
                 spark = SparkSession.builder.getOrCreate()
                 source_cols_lower = {
@@ -2389,6 +2525,57 @@ def review_and_generate_metadata(
                 )
 
     return rows_to_df(column_rows, config), rows_to_df(table_rows, config)
+
+
+def _review_and_generate_all_modes(
+    config: MetadataConfig, full_table_name: str
+) -> Dict[str, Tuple[DataFrame, DataFrame]]:
+    """Generate comment, PI, and domain metadata in a single pass per table."""
+    results = {}
+    tokenized = replace_catalog_name(config, full_table_name)
+
+    # Phase 1: Comments
+    comment_config = _shallow_config_copy(config, "comment")
+    try:
+        comment_responses = get_generated_metadata(comment_config, full_table_name)
+        c_table_rows, c_col_rows = [], []
+        for resp in comment_responses:
+            c_table_rows = append_table_row(c_table_rows, full_table_name, resp, tokenized)
+            c_col_rows = append_column_rows(comment_config, c_col_rows, full_table_name, resp, tokenized)
+        results["comment"] = (
+            rows_to_df(c_col_rows, comment_config),
+            rows_to_df(c_table_rows, comment_config),
+        )
+    except Exception as e:
+        logger.error("mode=all: comment phase failed for %s: %s", full_table_name, e)
+        results["comment"] = (None, None)
+
+    # Phase 2: PI
+    pi_config = _shallow_config_copy(config, "pi")
+    try:
+        pi_responses = get_generated_metadata(pi_config, full_table_name)
+        p_col_rows = []
+        for resp in pi_responses:
+            p_col_rows = append_column_rows(pi_config, p_col_rows, full_table_name, resp, tokenized)
+        results["pi"] = (rows_to_df(p_col_rows, pi_config), rows_to_df([], pi_config))
+    except Exception as e:
+        logger.error("mode=all: pi phase failed for %s: %s", full_table_name, e)
+        results["pi"] = (None, None)
+
+    # Phase 3: Domain
+    domain_config = _shallow_config_copy(config, "domain")
+    try:
+        domain_result = get_domain_classification(domain_config, full_table_name)
+        d_table_rows = append_domain_table_row([], full_table_name, domain_result, tokenized)
+        results["domain"] = (
+            rows_to_df([], domain_config),
+            rows_to_df(d_table_rows, domain_config),
+        )
+    except Exception as e:
+        logger.error("mode=all: domain phase failed for %s: %s", full_table_name, e)
+        results["domain"] = (None, None)
+
+    return results
 
 
 def replace_catalog_name(config, full_table_name):
@@ -2456,6 +2643,8 @@ def log_missing_governance_tags(error_msg: str, ddl_statement: str) -> None:
 def apply_comment_ddl(df: DataFrame, config: MetadataConfig) -> dict:
     """
     Applies the comment DDL statements stored in the DataFrame to the table.
+    When batch_ddl_apply is enabled, groups column-level DDL into per-table
+    batch ALTER TABLE statements for significantly faster execution.
 
     Args:
         df (DataFrame): The DataFrame containing the DDL statements.
@@ -2464,14 +2653,25 @@ def apply_comment_ddl(df: DataFrame, config: MetadataConfig) -> dict:
         dict: Summary of DDL application including any missing tags
     """
     spark = SparkSession.builder.getOrCreate()
+
+    if (
+        getattr(config, "batch_ddl_apply", True)
+        and not getattr(config, "federation_mode", False)
+        and config.mode in ("comment", "pi")
+    ):
+        return _apply_batched_ddl(df, config, spark)
+
+    return _apply_individual_ddl(df, config, spark)
+
+
+def _apply_individual_ddl(df: DataFrame, config: MetadataConfig, spark) -> dict:
+    """Apply DDL statements one at a time (original behavior)."""
     ddl_statements = df.select("ddl").collect()
     missing_tags = []
     failed_statements = []
     success_count = 0
 
     for row in ddl_statements:
-        # Security: DDL statements may contain sensitive data in comments/tags
-        # Log only metadata, not full DDL content
         ddl_statement = row["ddl"]
         logger.debug("Applying DDL statement (%d characters)", len(ddl_statement))
 
@@ -2483,16 +2683,13 @@ def apply_comment_ddl(df: DataFrame, config: MetadataConfig) -> dict:
                     f"Applied DDL statement successfully ({len(ddl_statement)} chars)"
                 )
             except Exception as e:
-                # Extract concise error message
                 concise_error = extract_concise_error(e)
                 logger.error("Error applying DDL: %s", concise_error)
                 print(f"Failed to apply DDL statement: {concise_error}")
-                # Security: Only log DDL structure, not full content (may contain sensitive data in comments)
                 logger.debug(
                     "DDL statement first 100 chars: %s...", ddl_statement[:100]
                 )
 
-                # Track failed tags for summary
                 if "Tag policy violation" in concise_error:
                     match = re.search(
                         r"'(\w+)' cannot be set to '(\S+)'", concise_error
@@ -2504,6 +2701,124 @@ def apply_comment_ddl(df: DataFrame, config: MetadataConfig) -> dict:
                 failed_statements.append(
                     {"statement": ddl_statement, "error": concise_error}
                 )
+
+    if missing_tags:
+        logger.warning(
+            "Failed to set the following tags due to tag policy restrictions: %s",
+            ", ".join(missing_tags),
+        )
+
+    return {
+        "success_count": success_count,
+        "failed_count": len(failed_statements),
+        "missing_tags": missing_tags,
+        "failed_statements": failed_statements,
+    }
+
+
+def _build_batch_comment_ddl(table_name: str, columns: list) -> str:
+    """Build a batch ALTER TABLE statement for column comments.
+    columns: list of (column_name, comment_text) tuples.
+    """
+    clauses = []
+    for col_name, comment in columns:
+        safe_comment = (comment or "").replace('""', "'").replace('"', "'")
+        clauses.append(f'ALTER COLUMN `{col_name}` COMMENT "{safe_comment}"')
+    return f"ALTER TABLE {table_name} {' '.join(clauses)};"
+
+
+def _build_batch_pi_ddl(table_name: str, columns: list, config: MetadataConfig) -> str:
+    """Build a batch ALTER TABLE statement for column PI tags.
+    columns: list of (column_name, classification, pi_type) tuples.
+    """
+    pi_class_tag = getattr(config, "pi_classification_tag_name", "data_classification")
+    pi_subclass_tag = getattr(config, "pi_subclassification_tag_name", "data_subclassification")
+    clauses = []
+    for col_name, classification, pi_type in columns:
+        clauses.append(
+            f"ALTER COLUMN `{col_name}` SET TAGS ('{pi_class_tag}' = '{classification}', '{pi_subclass_tag}' = '{pi_type}')"
+        )
+    return f"ALTER TABLE {table_name} {' '.join(clauses)};"
+
+
+def _apply_batched_ddl(df: DataFrame, config: MetadataConfig, spark) -> dict:
+    """Group column-level DDL by table and apply as batch ALTER TABLE statements.
+    Falls back to individual apply per-table on failure."""
+    missing_tags = []
+    failed_statements = []
+    success_count = 0
+    max_cols = getattr(config, "batch_ddl_max_columns", 200)
+
+    if config.mode == "comment":
+        cols_to_collect = ["tokenized_table", "column_name", "column_content", "ddl_type", "ddl"]
+    elif config.mode == "pi":
+        cols_to_collect = ["tokenized_table", "column_name", "classification", "type", "ddl_type", "ddl"]
+    else:
+        return _apply_individual_ddl(df, config, spark)
+
+    available = [c for c in cols_to_collect if c in df.columns]
+    rows = df.select(*available).collect()
+
+    table_level = []
+    column_groups = defaultdict(list)
+
+    for row in rows:
+        row_dict = row.asDict()
+        ddl_type = row_dict.get("ddl_type", "column")
+        if ddl_type == "table":
+            table_level.append(row_dict.get("ddl", ""))
+        else:
+            tbl = row_dict.get("tokenized_table", "")
+            column_groups[tbl].append(row_dict)
+
+    if config.dry_run:
+        return {"success_count": 0, "failed_count": 0, "missing_tags": [], "failed_statements": []}
+
+    for ddl in table_level:
+        if ddl:
+            try:
+                spark.sql(ddl)
+                success_count += 1
+            except Exception as e:
+                concise_error = extract_concise_error(e)
+                failed_statements.append({"statement": ddl, "error": concise_error})
+
+    for table_name, col_rows in column_groups.items():
+        chunks = [col_rows[i:i + max_cols] for i in range(0, len(col_rows), max_cols)]
+        for chunk in chunks:
+            try:
+                if config.mode == "comment":
+                    col_data = [(r["column_name"], r.get("column_content", "")) for r in chunk]
+                    batch_stmt = _build_batch_comment_ddl(table_name, col_data)
+                elif config.mode == "pi":
+                    col_data = [(r["column_name"], r.get("classification", ""), r.get("type", "")) for r in chunk]
+                    batch_stmt = _build_batch_pi_ddl(table_name, col_data, config)
+                else:
+                    continue
+
+                spark.sql(batch_stmt)
+                success_count += len(chunk)
+                print(f"Applied batch DDL for {table_name} ({len(chunk)} columns)")
+            except Exception as e:
+                concise_error = extract_concise_error(e)
+                logger.warning(
+                    "Batch DDL failed for %s (%s), falling back to individual apply",
+                    table_name, concise_error,
+                )
+                for r in chunk:
+                    individual_ddl = r.get("ddl", "")
+                    if not individual_ddl:
+                        continue
+                    try:
+                        spark.sql(individual_ddl)
+                        success_count += 1
+                    except Exception as e2:
+                        err = extract_concise_error(e2)
+                        if "Tag policy violation" in err:
+                            match = re.search(r"'(\w+)' cannot be set to '(\S+)'", err)
+                            if match:
+                                missing_tags.append(f"{match.group(1)}={match.group(2)}")
+                        failed_statements.append({"statement": individual_ddl, "error": err})
 
     if missing_tags:
         logger.warning(
@@ -2542,17 +2857,14 @@ def process_and_add_ddl(config: MetadataConfig, table_name: str) -> DataFrame:
     """
     Processes the metadata, splits the DataFrame based on 'table' values,
     applies DDL functions, and returns a unioned DataFrame.
-
-    Args:
-        catalog (str): The catalog name data is being read from and written to.
-        dest_schema (str): The destination schema name.
-        table_names (str): A list of table names.
-        model (str): The model name.
-
-    Returns:
-        DataFrame: The unioned DataFrame with DDL statements added.
+    For mode='all', returns a dict of {sub_mode: dfs_dict}.
     """
-    column_df, table_df = review_and_generate_metadata(config, table_name)
+    result = review_and_generate_metadata(config, table_name)
+
+    if config.mode == "all" and isinstance(result, dict):
+        return _process_all_modes_ddl(config, table_name, result)
+
+    column_df, table_df = result
     column_df = split_and_hardcode_df(column_df, config)
     table_df = split_and_hardcode_df(table_df, config)
 
@@ -2574,8 +2886,6 @@ def process_and_add_ddl(config: MetadataConfig, table_name: str) -> DataFrame:
             column_df = override_metadata_from_csv(
                 column_df, csv_path, config, df_label="column_df"
             )
-        # For comment mode, table_df override is applied INSIDE add_ddl_to_dfs
-        # after summarize_table_content so the override isn't destroyed.
         if table_df is not None and config.mode != "comment":
             table_df = override_metadata_from_csv(
                 table_df, csv_path, config, df_label="table_df"
@@ -2585,6 +2895,35 @@ def process_and_add_ddl(config: MetadataConfig, table_name: str) -> DataFrame:
 
     dfs = add_ddl_to_dfs(config, table_df, column_df, table_name)
     return dfs
+
+
+def _process_all_modes_ddl(
+    config: MetadataConfig, table_name: str, mode_results: Dict
+) -> Dict:
+    """Process DDL for each sub-mode when running mode='all'.
+    Returns a dict with '_all_mode_dfs' key containing per-mode dfs dicts."""
+    all_dfs = {}
+    for sub_mode, (col_df, tbl_df) in mode_results.items():
+        sub_config = _shallow_config_copy(config, sub_mode)
+        col_df = split_and_hardcode_df(col_df, sub_config)
+        tbl_df = split_and_hardcode_df(tbl_df, sub_config)
+        if col_df is None and tbl_df is None:
+            continue
+
+        if sub_config.allow_manual_override and sub_mode in ("comment", "pi"):
+            csv_path = getattr(sub_config, "override_csv_path", "metadata_overrides.csv")
+            if col_df is not None:
+                col_df = override_metadata_from_csv(col_df, csv_path, sub_config, df_label=f"{sub_mode}_col_df")
+            if tbl_df is not None and sub_mode != "comment":
+                tbl_df = override_metadata_from_csv(tbl_df, csv_path, sub_config, df_label=f"{sub_mode}_tbl_df")
+
+        sub_dfs = add_ddl_to_dfs(sub_config, tbl_df, col_df, table_name)
+        all_dfs[sub_mode] = sub_dfs
+
+    if not all_dfs:
+        return {"_skip_reason": "No metadata generated for any mode"}
+
+    return {"_all_mode_dfs": all_dfs}
 
 
 def hardcode_classification(df, config):
@@ -3267,6 +3606,18 @@ def generate_and_persist_metadata(config: Any) -> None:
                         table,
                         skip_reason,
                     )
+                elif isinstance(df, dict) and "_all_mode_dfs" in df:
+                    # mode="all": persist each sub-mode's results separately
+                    for sub_mode, sub_dfs in df["_all_mode_dfs"].items():
+                        sub_config = _shallow_config_copy(config, sub_mode)
+                        logger.info(
+                            "[generate_and_persist_metadata] Persisting %s DDL for %s...",
+                            sub_mode, table,
+                        )
+                        create_and_persist_ddl(sub_dfs, sub_config, table)
+                    status = "Table processed (all modes)"
+                    if not config.apply_ddl:
+                        status = "Table processed (all modes, DDL not applied - review mode)"
                 else:
                     logger.info(
                         f"[generate_and_persist_metadata] Generating and persisting ddl for {table}..."
@@ -3277,7 +3628,7 @@ def generate_and_persist_metadata(config: Any) -> None:
                     else:
                         status = "Table processed (DDL not applied - review mode)"
 
-                if df and config.apply_ddl and "ddl_results" in df:
+                if df and config.apply_ddl and isinstance(df, dict) and "ddl_results" in df:
                     ddl_results = df["ddl_results"]
                     if ddl_results.get("failed_count", 0) > 0:
                         missing_tags = ddl_results.get("missing_tags", [])

@@ -66,9 +66,15 @@ def setup_mode_dependencies(config):
     elif config.mode == "comment":
         pass
 
+    elif config.mode == "all":
+        if getattr(config, "include_deterministic_pi", True):
+            ensure_spacy_model(config.spacy_model_names)
+        if not os.path.exists(getattr(config, "domain_config_path", "")):
+            _logger.warning("Domain config not found at %s, using fallback", config.domain_config_path)
+
     else:
         raise ValueError(
-            f"Invalid mode: {config.mode}. Must be 'comment', 'pi', or 'domain'."
+            f"Invalid mode: {config.mode}. Must be 'comment', 'pi', 'domain', or 'all'."
         )
 
 

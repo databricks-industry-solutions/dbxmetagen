@@ -52,3 +52,9 @@ variables:
       This is the key name you used when storing the secret in the scope.
       Common names: 'api_key', 'token', 'openai_key', etc.
     default: api_key
+  batch_ddl_max_columns:
+    description: "Maximum columns per batch ALTER TABLE statement. Tables with more columns are split into multiple batch statements. Increase if you have wide tables and no issues."
+    default: 200
+  max_concurrent_llm_calls:
+    description: "Maximum number of concurrent LLM calls per table when processing column chunks. Set to 1 to disable concurrency."
+    default: 4
