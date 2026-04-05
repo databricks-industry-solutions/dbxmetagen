@@ -367,7 +367,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="dbxmetagen API", version="0.8.0", lifespan=lifespan)
+app = FastAPI(title="dbxmetagen API", version="0.8.1", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -456,7 +456,6 @@ class JobRunRequest(BaseModel):
 
 class GraphQueryRequest(BaseModel):
     question: str
-    max_hops: int = 3
 
 
 class GraphTraverseRequest(BaseModel):
@@ -2177,7 +2176,9 @@ def get_ontology_source(bundle_name: str):
     bd = _find_bundle_dir()
     if not bd:
         return JSONResponse({"error": "Bundle dir not found"}, status_code=404)
-    bundle_dir = os.path.join(bd, bundle_name)
+    bundle_dir = _safe_bundle_path(bd, bundle_name)
+    if not bundle_dir:
+        return JSONResponse({"error": "Invalid bundle name"}, status_code=400)
     if os.path.isdir(bundle_dir):
         for fname in sorted(os.listdir(bundle_dir)):
             if fname.startswith("source") and fname.endswith((".ttl", ".owl")):
@@ -2196,7 +2197,10 @@ def get_ontology_source_classes(bundle_name: str, limit: int = 500):
     bd = _find_bundle_dir()
     if not bd:
         return JSONResponse({"error": "Bundle dir not found"}, status_code=404)
-    tier3_path = os.path.join(bd, bundle_name, "entities_tier3.yaml")
+    safe = _safe_bundle_path(bd, bundle_name)
+    if not safe:
+        return JSONResponse({"error": "Invalid bundle name"}, status_code=400)
+    tier3_path = os.path.join(safe, "entities_tier3.yaml")
     if not os.path.isfile(tier3_path):
         return JSONResponse({"error": f"No tier3 index for bundle '{bundle_name}'"}, status_code=404)
     with open(tier3_path, "r", encoding="utf-8") as f:
@@ -2226,6 +2230,10 @@ async def import_ontology(
     bd = _find_bundle_dir()
     if not bd:
         return JSONResponse({"error": "Bundle directory not found"}, status_code=500)
+    safe_yaml = _safe_bundle_path(bd, f"{bundle_name}.yaml")
+    safe_subdir = _safe_bundle_path(bd, bundle_name)
+    if not safe_yaml or not safe_subdir:
+        return JSONResponse({"error": "Invalid bundle name"}, status_code=400)
 
     content = await file.read()
     suffix = ".ttl" if file.filename and file.filename.endswith(".ttl") else ".owl"
@@ -2235,11 +2243,10 @@ async def import_ontology(
 
     try:
         from dbxmetagen.ontology_import import owl_to_bundle_yaml
-        output_yaml = os.path.join(bd, f"{bundle_name}.yaml")
+        output_yaml = safe_yaml
         bundle = owl_to_bundle_yaml(tmp_path, output_path=output_yaml, bundle_name=bundle_name)
 
-        # Store source file alongside bundle
-        bundle_subdir = os.path.join(bd, bundle_name)
+        bundle_subdir = safe_subdir
         os.makedirs(bundle_subdir, exist_ok=True)
         source_dest = os.path.join(bundle_subdir, f"source{suffix}")
         with open(source_dest, "wb") as f:
@@ -2315,6 +2322,14 @@ def _find_bundle_dir() -> Optional[str]:
             return bd
     logger.warning("No bundle dir found. cwd=%s __file__=%s", os.getcwd(), __file__)
     return None
+
+
+def _safe_bundle_path(bundle_dir: str, bundle_name: str) -> Optional[str]:
+    """Return the resolved path inside bundle_dir, or None if it escapes the root."""
+    joined = os.path.normpath(os.path.join(bundle_dir, bundle_name))
+    if not joined.startswith(os.path.normpath(bundle_dir) + os.sep) and joined != os.path.normpath(bundle_dir):
+        return None
+    return joined
 
 
 def _read_bundle_metadata_fast(filepath: str) -> dict | None:
@@ -3688,6 +3703,8 @@ def viz_fk_map():
 def get_coverage_summary(catalog: Optional[str] = None):
     """Coverage summary: profiled vs unprofiled tables. Cached 60s."""
     cat = catalog or CATALOG
+    if not re.fullmatch(r"[a-zA-Z0-9_\-]+", cat):
+        raise HTTPException(status_code=400, detail="Invalid catalog name")
     cache_key = f"summary:{cat}"
     with _coverage_lock:
         if cache_key in _coverage_cache:
@@ -5984,6 +6001,7 @@ def _run_sl_generation(
             plan_views = _inject_fk_joins(plan_views, tables, cat, sch)
 
         # Phase 2: Generate each view individually, or fall back to single-shot
+        response = ""
         definitions = []
         if plan_views:
             task["stage"] = "generating"
