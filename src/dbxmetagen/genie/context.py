@@ -422,30 +422,31 @@ class GenieContextAssembler:
 
     @staticmethod
     def _resolve_mv_location(mv, fallback_catalog, fallback_schema):
-        """Resolve catalog/schema for an MV: deployed cols > source_table > fallback."""
+        """Resolve catalog/schema for an MV: deployed cols > assembler fallback.
+
+        The fallback catalog/schema (from the assembler) is the metagen config
+        schema, which is where ``apply_metric_views`` deploys by default.
+        source_table points to the DATA table, not the metric view object, so
+        it must not be used as a location fallback.
+        """
         cat = mv.get("deployed_catalog")
         sch = mv.get("deployed_schema")
-        if not cat or not sch:
-            src = mv.get("source_table", "")
-            parts = src.replace("`", "").split(".")
-            if len(parts) == 3:
-                cat = cat or parts[0]
-                sch = sch or parts[1]
-            elif len(parts) == 2:
-                sch = sch or parts[0]
         return cat or fallback_catalog, sch or fallback_schema
 
     def _get_metric_views(self, tables: List[str]) -> tuple[list[dict], list[str]]:
-        match_values = set()
+        # Build FQ and short match sets separately to prefer exact FQ matches
+        fq_values = set()
+        short_values = set()
         for t in tables:
-            match_values.add(t)
+            fq_values.add(t)
             parts = t.split(".")
             if len(parts) == 3:
-                match_values.add(f"{parts[1]}.{parts[2]}")
-                match_values.add(parts[2])
+                fq_values.add(f"{parts[1]}.{parts[2]}")
+                short_values.add(parts[2])
             elif len(parts) == 2:
-                match_values.add(parts[1])
-        match_list = ", ".join(f"'{v}'" for v in match_values)
+                short_values.add(parts[1])
+        all_values = fq_values | short_values
+        match_list = ", ".join(f"'{v}'" for v in all_values)
         rows = _safe_sql(
             self.ws,
             self.wh,
@@ -457,6 +458,29 @@ class GenieContextAssembler:
               AND source_table IN ({match_list})
         """,
         )
+        # Deduplicate: when a short name (e.g. "orders") maps to tables in
+        # multiple schemas, MVs matched only via that short name are ambiguous.
+        # Count how many distinct FQ tables share each short name; warn on ambiguous.
+        short_name_counts: dict[str, int] = {}
+        for t in tables:
+            bare = t.split(".")[-1]
+            short_name_counts[bare] = short_name_counts.get(bare, 0) + 1
+        ambiguous_shorts = {s for s, c in short_name_counts.items() if c > 1}
+        if ambiguous_shorts:
+            deduped = []
+            for mv in rows:
+                src = mv.get("source_table", "")
+                if src in fq_values:
+                    deduped.append(mv)
+                elif src not in ambiguous_shorts:
+                    deduped.append(mv)
+                else:
+                    logger.warning(
+                        "Skipping MV '%s' with ambiguous short source_table '%s' "
+                        "(matches tables in multiple schemas)",
+                        mv.get("metric_view_name"), src,
+                    )
+            rows = deduped
         warnings: list[str] = []
         applied = [mv for mv in rows if mv.get("status") == "applied"]
         non_applied = [mv for mv in rows if mv.get("status") != "applied"]

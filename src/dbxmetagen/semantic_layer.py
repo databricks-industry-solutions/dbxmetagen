@@ -249,7 +249,9 @@ class SemanticLayerGenerator:
                 validation_errors STRING,
                 genie_space_id STRING,
                 created_at TIMESTAMP,
-                applied_at TIMESTAMP
+                applied_at TIMESTAMP,
+                deployed_catalog STRING,
+                deployed_schema STRING
             ) COMMENT 'Generated metric view definitions'
         """
         )
@@ -581,7 +583,7 @@ class SemanticLayerGenerator:
                     INSERT INTO {fq(self.config.definitions_table)} VALUES (
                         '{defn_id}', '{mv_name}', '{source}', '{json_str}',
                         '{q_id_str}', '{status}', '{error_str}', NULL,
-                        '{now}', NULL
+                        '{now}', NULL, NULL, NULL
                     )
                 """
                 )
@@ -1347,7 +1349,11 @@ OUTPUT (one JSON object only, no array, no explanation):"""
         for row in rows:
             defn = json.loads(row["json_definition"])
             mv_name = row["metric_view_name"]
-            fq_mv = f"{self.config.catalog_name}.{self.config.schema_name}.{mv_name}"
+            source = defn.get("source", row.get("source_table", ""))
+            src_parts = source.split(".") if source else []
+            deploy_cat = src_parts[0] if len(src_parts) >= 3 else self.config.catalog_name
+            deploy_sch = src_parts[1] if len(src_parts) >= 3 else self.config.schema_name
+            fq_mv = f"{deploy_cat}.{deploy_sch}.{mv_name}"
             with _trace_span("apply_metric_view") as apply_span:
                 if apply_span is not None:
                     apply_span.set_inputs({"metric_view_name": mv_name, "fq_mv": fq_mv})
@@ -1355,10 +1361,13 @@ OUTPUT (one JSON object only, no array, no explanation):"""
                     yaml_body = self._definition_to_yaml(defn)
                     sql = f"CREATE OR REPLACE VIEW {fq_mv}\nWITH METRICS LANGUAGE YAML AS $$\n{yaml_body}$$"
                     self.spark.sql(sql)
+                    cat_esc = deploy_cat.replace("'", "''")
+                    sch_esc = deploy_sch.replace("'", "''")
                     self.spark.sql(
                         f"""
                         UPDATE {fq(self.config.definitions_table)}
-                        SET status = 'applied', applied_at = current_timestamp()
+                        SET status = 'applied', applied_at = current_timestamp(),
+                            deployed_catalog = '{cat_esc}', deployed_schema = '{sch_esc}'
                         WHERE definition_id = '{row['definition_id']}'
                     """
                     )
@@ -1535,7 +1544,8 @@ OUTPUT (one JSON object only, no array, no explanation):"""
         fq = self.config.fq
 
         applied = self.spark.sql(
-            f"SELECT metric_view_name, source_table, json_definition FROM {fq(self.config.definitions_table)} WHERE status = 'applied'"
+            f"SELECT metric_view_name, source_table, json_definition, deployed_catalog, deployed_schema "
+            f"FROM {fq(self.config.definitions_table)} WHERE status = 'applied'"
         ).collect()
         if not applied:
             logger.warning("No applied metric views -- skipping Genie space creation")
@@ -1582,7 +1592,9 @@ OUTPUT (one JSON object only, no array, no explanation):"""
             mv_name = r.get("metric_view_name")
             if not mv_name:
                 continue
-            identifier = f"{self.config.catalog_name}.{self.config.schema_name}.{mv_name}"
+            mv_cat = r.get("deployed_catalog") or self.config.catalog_name
+            mv_sch = r.get("deployed_schema") or self.config.schema_name
+            identifier = f"{mv_cat}.{mv_sch}.{mv_name}"
             desc_lines = []
             try:
                 defn = json.loads(r["json_definition"]) if isinstance(r.get("json_definition"), str) else {}
