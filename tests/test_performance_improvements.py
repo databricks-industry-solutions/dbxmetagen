@@ -996,6 +996,27 @@ class TestShallowConfigCopy:
         assert c.batch_ddl_apply is True
         assert c.max_concurrent_llm_calls == 8
 
+    def test_temp_table_name_reflects_submode(self, proc_module):
+        from unittest.mock import patch as _patch
+        cfg = _cfg(mode="all")
+        c = proc_module._shallow_config_copy(cfg, "comment")
+        with _patch("dbxmetagen.config.get_current_user", return_value="test@ci.com"):
+            assert "_comment_" in c.get_temp_metadata_log_table_name()
+            assert "_all_" in cfg.get_temp_metadata_log_table_name()
+
+    def test_three_submodes_get_distinct_temp_names(self, proc_module):
+        from unittest.mock import patch as _patch
+        cfg = _cfg(mode="all")
+        with _patch("dbxmetagen.config.get_current_user", return_value="test@ci.com"):
+            names = {proc_module._shallow_config_copy(cfg, m).get_temp_metadata_log_table_name()
+                     for m in ("comment", "pi", "domain")}
+        assert len(names) == 3
+
+    def test_columns_per_call_propagates(self, proc_module):
+        cfg = _cfg(mode="all", columns_per_call=15)
+        c = proc_module._shallow_config_copy(cfg, "pi")
+        assert c.columns_per_call == 15
+
 
 # ===================================================================
 # 12. TestModeAllSetup -- existing, kept

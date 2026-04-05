@@ -164,6 +164,24 @@ class TestValidateOutputJoins:
 # ---------------------------------------------------------------------------
 # _extract_mv_join_specs
 # ---------------------------------------------------------------------------
+class TestMergePrebuiltMutation:
+    """_merge_prebuilt_join_specs mutates prebuilt dicts with _prebuilt=True."""
+
+    def test_prebuilt_flag_set_on_input_dicts(self):
+        prebuilt = [_join("cat.sch.orders", "cat.sch.customers")]
+        raw = _raw_with_joins([])
+        _merge_prebuilt_join_specs(raw, prebuilt)
+        assert prebuilt[0].get("_prebuilt") is True
+
+    def test_raw_keys_preserved_after_merge(self):
+        prebuilt = [_join("cat.sch.orders", "cat.sch.customers")]
+        raw = _raw_with_joins([_join("cat.sch.a", "cat.sch.b")])
+        result = _merge_prebuilt_join_specs(raw, prebuilt)
+        assert "data_sources" in result
+        assert "instructions" in result
+        assert "sample_questions" in result
+
+
 class TestExtractMVJoinSpecs:
     def _asm(self):
         """Create a minimal assembler (we only test the extraction method)."""
