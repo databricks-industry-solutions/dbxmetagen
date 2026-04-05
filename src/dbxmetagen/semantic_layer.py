@@ -1339,10 +1339,13 @@ OUTPUT (one JSON object only, no array, no explanation):"""
     def apply_metric_views(self) -> Dict[str, Any]:
         """Read validated definitions and create metric views in UC."""
         fq = self.config.fq
-        rows = self.spark.sql(
-            f"SELECT definition_id, metric_view_name, source_table, json_definition "
-            f"FROM {fq(self.config.definitions_table)} WHERE status = 'validated'"
-        ).collect()
+        rows = [
+            r.asDict()
+            for r in self.spark.sql(
+                f"SELECT definition_id, metric_view_name, source_table, json_definition "
+                f"FROM {fq(self.config.definitions_table)} WHERE status = 'validated'"
+            ).collect()
+        ]
 
         applied = 0
         failed = 0
@@ -1543,17 +1546,23 @@ OUTPUT (one JSON object only, no array, no explanation):"""
         """Create a Genie space from applied metric views with rich instructions. Returns space_id or None."""
         fq = self.config.fq
 
-        applied = self.spark.sql(
-            f"SELECT metric_view_name, source_table, json_definition, deployed_catalog, deployed_schema "
-            f"FROM {fq(self.config.definitions_table)} WHERE status = 'applied'"
-        ).collect()
+        applied = [
+            r.asDict()
+            for r in self.spark.sql(
+                f"SELECT metric_view_name, source_table, json_definition, deployed_catalog, deployed_schema "
+                f"FROM {fq(self.config.definitions_table)} WHERE status = 'applied'"
+            ).collect()
+        ]
         if not applied:
             logger.warning("No applied metric views -- skipping Genie space creation")
             return None
 
-        questions = self.spark.sql(
-            f"SELECT question_text FROM {fq(self.config.questions_table)} WHERE status = 'processed'"
-        ).collect()
+        questions = [
+            r.asDict()
+            for r in self.spark.sql(
+                f"SELECT question_text FROM {fq(self.config.questions_table)} WHERE status = 'processed'"
+            ).collect()
+        ]
         sample_qs = [r["question_text"] for r in questions if r.get("question_text")][:10]
 
         # Gather metadata for instructions
