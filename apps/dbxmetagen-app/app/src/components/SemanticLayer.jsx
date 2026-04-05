@@ -58,6 +58,7 @@ export default function SemanticLayer() {
   // Per-definition action state
   const [actionLoading, setActionLoading] = useState({})
   const [globalTargetOverride, setGlobalTargetOverride] = useState('')
+  const userEditedTargetRef = useRef(false)
   const [perMvTargets, setPerMvTargets] = useState({})
   const [createError, setCreateError] = useState({})
   const [editDefId, setEditDefId] = useState(null)
@@ -101,7 +102,25 @@ export default function SemanticLayer() {
     if (globalTargetOverride) return globalTargetOverride
     return perMvTargets[d.definition_id] || getDefaultTarget(d)
   }
-  const schemaOptions = [...new Set(definitions.map(d => getDefaultTarget(d)).filter(Boolean))]
+  const schemaOptions = [...new Set([
+    ...definitions.map(d => getDefaultTarget(d)),
+    ...(globalTargetOverride ? [globalTargetOverride] : []),
+  ].filter(Boolean))]
+
+  // Auto-set "Create target" to most common catalog.schema from selected tables
+  useEffect(() => {
+    if (userEditedTargetRef.current || !selectedTables.length) return
+    const counts = {}
+    for (const t of selectedTables) {
+      const parts = t.split('.')
+      if (parts.length >= 3) {
+        const key = `${parts[0]}.${parts[1]}`
+        counts[key] = (counts[key] || 0) + 1
+      }
+    }
+    const best = Object.entries(counts).sort((a, b) => b[1] - a[1])[0]
+    if (best) setGlobalTargetOverride(best[0])
+  }, [selectedTables])
 
   // --- Init ---
   useEffect(() => {
@@ -121,8 +140,10 @@ export default function SemanticLayer() {
   const isRestoringTablesRef = useRef(true)
   useEffect(() => {
     refreshDefinitions()
+    userEditedTargetRef.current = false
     if (selectedProjectId) {
       const proj = projects.find(p => p.project_id === selectedProjectId)
+      let restored = false
       if (proj?.selected_tables) {
         try {
           const tbls = JSON.parse(proj.selected_tables)
@@ -130,8 +151,14 @@ export default function SemanticLayer() {
             isRestoringTablesRef.current = true
             setSelectedTables(tbls)
             setTimeout(() => { isRestoringTablesRef.current = false }, 150)
+            restored = true
           }
         } catch { /* ignore */ }
+      }
+      if (!restored) {
+        isRestoringTablesRef.current = true
+        setSelectedTables([])
+        setTimeout(() => { isRestoringTablesRef.current = false }, 150)
       }
     }
   }, [selectedProjectId])
@@ -148,7 +175,7 @@ export default function SemanticLayer() {
           clearInterval(pollRef.current)
           if (data.status === 'done') { refreshDefinitions(); loadProjects(); setActiveTab('definitions') }
         }
-      } catch { clearInterval(pollRef.current) }
+      } catch { clearInterval(pollRef.current); setTaskStatus(prev => prev?.status === 'done' || prev?.status === 'error' ? prev : { status: 'error', error: 'Lost connection to server. Try generating again.' }) }
     }, 2000)
     return () => clearInterval(pollRef.current)
   }, [taskId])
@@ -248,10 +275,6 @@ export default function SemanticLayer() {
       const qs = JSON.parse(p.questions || '[]')
       setQuestionsText(qs.join('\n'))
     } catch { setQuestionsText(p.questions || '') }
-    try {
-      const tbls = JSON.parse(p.table_patterns || '[]')
-      if (tbls.length) { isRestoringTablesRef.current = true; setSelectedTables(tbls); setTimeout(() => { isRestoringTablesRef.current = false }, 150) }
-    } catch { /* ignore */ }
   }
 
   const saveProfile = async () => {
@@ -259,10 +282,9 @@ export default function SemanticLayer() {
     if (!profileName.trim() || !lines.length) return
     setLoading(true); setError(null)
     try {
-      const fqTables = selectedTables.map(t => t.includes('.') ? t : `${selectedCatalog}.${selectedSchema}.${t}`)
       const res = await fetch('/api/semantic-layer/profiles', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ profile_name: profileName, questions: lines, table_patterns: fqTables, business_context: businessContext || undefined }),
+        body: JSON.stringify({ profile_name: profileName, questions: lines, business_context: businessContext || undefined }),
       })
       const data = await res.json()
       if (!res.ok) { setError(data.detail || 'Failed to save profile'); setLoading(false); return }
@@ -835,7 +857,7 @@ export default function SemanticLayer() {
               <option value="">-- new profile --</option>
               {profiles.map(p => (
                 <option key={p.profile_id} value={p.profile_id}>
-                  {p.profile_name} ({JSON.parse(p.questions || '[]').length}q)
+                  {p.profile_name} ({(() => { try { return JSON.parse(p.questions || '[]').length } catch { return '?' } })()}q)
                 </option>
               ))}
             </select>
@@ -1133,7 +1155,7 @@ export default function SemanticLayer() {
           {/* Deploy target override */}
           <div className="flex items-center gap-3 mb-4 p-3 bg-dbx-oat dark:bg-gray-900 rounded-md border dark:border-gray-700">
             <span className="text-xs font-medium text-gray-600 dark:text-gray-400 whitespace-nowrap" title="Override deploys all metric views to this schema instead of each view's source table schema">Deploy target override:</span>
-            <select value={globalTargetOverride} onChange={e => setGlobalTargetOverride(e.target.value)}
+            <select value={globalTargetOverride} onChange={e => { userEditedTargetRef.current = true; setGlobalTargetOverride(e.target.value) }}
               className="input-base !text-xs w-64">
               <option value="">(None - use each view's source schema)</option>
               {schemaOptions.map(s => <option key={s} value={s}>{s}</option>)}

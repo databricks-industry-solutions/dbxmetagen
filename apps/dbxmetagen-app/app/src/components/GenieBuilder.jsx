@@ -73,7 +73,8 @@ export default function GenieBuilder({ onNavigate }) {
   }, [loading])
 
   useEffect(() => {
-    fetch('/api/catalogs').then(r => r.ok ? r.json() : []).then(setCatalogs).catch(() => {})
+    fetch('/api/catalogs').then(r => r.ok ? r.json() : []).then(setCatalogs)
+      .catch(e => setFetchErrors(prev => ({ ...prev, catalogs: e.message })))
     fetch('/api/semantic/metric-views?status=applied')
       .then(r => r.ok ? r.json() : []).then(setMetricViews)
       .catch(e => setFetchErrors(prev => ({ ...prev, metricViews: e.message })))
@@ -82,13 +83,14 @@ export default function GenieBuilder({ onNavigate }) {
     fetch('/api/config').then(r => r.ok ? r.json() : {}).then(c => {
       setWorkspaceHost(c.workspace_host || '')
       if (c.catalog_name) setSelectedCatalog(c.catalog_name)
-    }).catch(() => {})
+    }).catch(e => setFetchErrors(prev => ({ ...prev, config: e.message })))
     loadTrackedSpaces()
     return () => { if (pollRef.current) clearInterval(pollRef.current) }
   }, [])
 
   const loadTrackedSpaces = () => {
-    fetch('/api/genie/spaces').then(r => r.ok ? r.json() : []).then(setTrackedSpaces).catch(() => {})
+    fetch('/api/genie/spaces').then(r => r.ok ? r.json() : []).then(setTrackedSpaces)
+      .catch(e => setFetchErrors(prev => ({ ...prev, spaces: e.message })))
   }
 
   const catalogChangeRef = useRef(false)
@@ -163,6 +165,7 @@ export default function GenieBuilder({ onNavigate }) {
 
   const startGeneration = async ({ feedback, priorResult } = {}) => {
     if (!selectedTables.length) return setError('Select at least one table')
+    if (pollRef.current) clearInterval(pollRef.current)
     setError(null); setCreatedSpace(null); setCreateError(null); setLoading(true)
     if (!feedback) { setResult(null) }
     const qs = questions.split('\n').map(q => q.trim()).filter(Boolean)
@@ -563,7 +566,9 @@ export default function GenieBuilder({ onNavigate }) {
             </div>
           )}
           {(() => {
-            let parsed = null; try { parsed = JSON.parse(editedJson) } catch {}
+            let parsed = null, parseErr = false
+            try { parsed = JSON.parse(editedJson) } catch { parseErr = true }
+            if (parseErr) return <p className="text-xs text-amber-600 dark:text-amber-400 card p-3">Config preview unavailable — the JSON has a syntax error. Fix it in the editor below.</p>
             if (!parsed) return null
             const ds = parsed.data_sources || {}
             const tblCount = (ds.tables?.length || 0)
@@ -630,7 +635,9 @@ export default function GenieBuilder({ onNavigate }) {
                 <button
                   onClick={() => {
                     if (!refineFeedback.trim()) return setError('Enter feedback first')
-                    let prior; try { prior = JSON.parse(editedJson) } catch { prior = result }
+                    let prior, usingOriginal = false
+                    try { prior = JSON.parse(editedJson) } catch { prior = result; usingOriginal = true }
+                    if (usingOriginal && editedJson?.trim()) setError('Note: JSON edits had syntax errors, so refinement used the last generated config instead.')
                     startGeneration({ feedback: refineFeedback.trim(), priorResult: prior })
                     setShowRefine(false)
                   }}

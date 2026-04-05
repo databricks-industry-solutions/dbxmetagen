@@ -402,7 +402,7 @@ function SourceClassBrowser() {
   const filtered = useMemo(() => {
     if (!filter) return classes
     const f = filter.toLowerCase()
-    return classes.filter(c => c.name.toLowerCase().includes(f) || c.description.toLowerCase().includes(f))
+    return classes.filter(c => c.name.toLowerCase().includes(f) || (c.description || '').toLowerCase().includes(f))
   }, [classes, filter])
 
   const toggleCls = (name) => {

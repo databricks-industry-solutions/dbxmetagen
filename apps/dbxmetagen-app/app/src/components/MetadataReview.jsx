@@ -665,7 +665,9 @@ function ReviewEditor() {
                                       const nr = ev.target.value
                                       setColPropOverrides(p => ({ ...p, [cpKey]: { ...(p[cpKey] || {}), property_role: nr } }))
                                       fetch('/api/ontology/update-column-property', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-                                        body: JSON.stringify({ property_id: cpKey, property_role: nr, linked_entity_type: curLinked || null }) }).catch(() => {})
+                                        body: JSON.stringify({ property_id: cpKey, property_role: nr, linked_entity_type: curLinked || null }) })
+                                        .then(r => { if (!r.ok) setError('Failed to save property role') })
+                                        .catch(() => setError('Failed to save property role — check connection'))
                                     }} className="text-[10px] border border-slate-300 dark:border-dbx-navy-400/40 rounded px-1 py-0.5 bg-white dark:bg-dbx-navy/60 dark:text-slate-200">
                                       <option value="">Select role...</option>
                                       {PROPERTY_ROLE_GROUPS.map(group => (

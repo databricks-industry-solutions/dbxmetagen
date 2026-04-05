@@ -171,6 +171,7 @@ export default function BatchJobs({ onNavigate }) {
   const [settings, setSettings] = useState({
     model: 'databricks-claude-sonnet-4-6',
     sample_size: 5,
+    columns_per_call: 20,
     use_kb_comments: false,
     include_lineage: false,
     build_kb_after: true,
@@ -197,6 +198,7 @@ export default function BatchJobs({ onNavigate }) {
   const buildExtraParams = () => ({
     model: settings.model,
     sample_size: String(settings.sample_size),
+    columns_per_call: String(settings.columns_per_call),
   })
 
   const loadBundles = useCallback(() => {
@@ -243,11 +245,12 @@ export default function BatchJobs({ onNavigate }) {
       }
     })
     loadBundles()
-    fetch('/api/domain-configs').then(r => r.ok ? r.json() : []).then(setDomainConfigs).catch(() => {})
+    fetch('/api/domain-configs').then(r => r.ok ? r.json() : []).then(setDomainConfigs)
+      .catch(() => setError(prev => prev ? `${prev} | Domain configs could not be loaded` : 'Domain configs could not be loaded'))
     fetch('/api/jobs/health').then(r => r.ok ? r.json() : null).then(setHealth).catch(() => {})
     fetch('/api/jobs/runs').then(r => r.ok ? r.json() : []).then(runs => {
       setRunHistory(runs.map(r => ({ ...r, _polling: false })))
-    }).catch(() => {})
+    }).catch(() => setError(prev => prev ? `${prev} | Run history could not be loaded` : 'Run history could not be loaded'))
   }, [loadBundles])
 
   useEffect(() => { setPickerSelected([]) }, [pickerCatalog, pickerSchema])
@@ -298,9 +301,14 @@ export default function BatchJobs({ onNavigate }) {
 
   const findJob = (suffix) => jobs.find(j => j.name?.endsWith(suffix))
 
+  const hasDomainSource = !!(ontologyBundle || domainConfig)
+  const needsDomain = mode === 'domain' || mode === 'all'
+
+  const [runError, setRunError] = useState(null)
+
   const runJob = async (jobNameSuffix, params = {}, actionKey = 'default') => {
     setRunningAction(actionKey)
-    setError(null)
+    setRunError(null)
     try {
       const match = findJob(jobNameSuffix)
       const body = match
@@ -311,8 +319,8 @@ export default function BatchJobs({ onNavigate }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       })
-      const data = await res.json()
-      if (!res.ok) { setError(data.detail || 'Failed to start job'); setRunningAction(null); return }
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) { setRunError(data.detail || `Failed to start job (${res.status})`); setRunningAction(null); return }
       const newRun = {
         ...data,
         job_name: match?.name || jobNameSuffix,
@@ -320,7 +328,7 @@ export default function BatchJobs({ onNavigate }) {
         run_page_url: null, state_message: null,
       }
       setRunHistory(prev => [newRun, ...prev])
-    } catch (e) { setError(e.message) }
+    } catch (e) { setRunError(e.message) }
     setRunningAction(null)
   }
 
@@ -346,6 +354,7 @@ export default function BatchJobs({ onNavigate }) {
     <div className="space-y-5">
       <PageHeader title="Generate Metadata" subtitle="Generate descriptions, sensitivity labels, domains, and advanced analytics from your Unity Catalog tables" badge={catalogName && schemaName ? `${catalogName}.${schemaName}` : undefined} />
       <ErrorBanner error={error} />
+      <ErrorBanner error={runError} />
       <HealthWarnings health={health} />
 
       {/* Shared config */}
@@ -359,7 +368,7 @@ export default function BatchJobs({ onNavigate }) {
             <label className="section-title mb-1.5 block">Output Schema</label>
             <span className="input-base block bg-gray-50 text-gray-700 cursor-default">{schemaName || '(not configured)'}</span>
           </div>
-          <p className="text-xs text-gray-400 col-span-2">Set by your workspace administrator in the app deployment settings.</p>
+          <p className="text-xs text-gray-400 col-span-2">Set before deployment in the project settings.</p>
         </div>
 
         <details className="mt-4 group" open>
@@ -446,11 +455,29 @@ export default function BatchJobs({ onNavigate }) {
                 const sel = bundles.find(b => b.key === ontologyBundle)
                 if (!sel?.tier_indexes_stale) return null
                 return (
-                  <div className="mt-2 rounded-lg border border-amber-200 dark:border-amber-700/50 bg-amber-50 dark:bg-amber-900/20 px-3 py-2 text-xs text-amber-900 dark:text-amber-200">
-                    <span className="font-medium">Search indexes may be stale.</span>{' '}
-                    The ontology bundle was edited after its tier indexes were last built.
-                    <details className="mt-1 inline"><summary className="cursor-pointer underline">For administrators</summary> Rebuild indexes by running <code className="text-[11px]">scripts/build_ontology_indexes.py</code> for this bundle.</details>
-                  </div>
+                  <details className="mt-2 rounded-lg border border-amber-200/60 dark:border-amber-700/30 bg-amber-50/50 dark:bg-amber-900/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-300">
+                    <summary className="cursor-pointer font-medium">Index rebuild available</summary>
+                    <p className="mt-1 text-amber-700 dark:text-amber-300/80">
+                      The bundle definition file has changed since the keyword search indexes were last generated.
+                      This does not affect correctness -- ontology matching still works. Rebuilding indexes can improve
+                      keyword search quality for entity classification.
+                    </p>
+                    <button
+                      className="mt-1.5 px-2.5 py-1 text-xs font-medium rounded bg-amber-200 dark:bg-amber-800 text-amber-900 dark:text-amber-100 hover:bg-amber-300 dark:hover:bg-amber-700 disabled:opacity-50"
+                      disabled={!!runningAction}
+                      onClick={async () => {
+                        try {
+                          const resp = await fetch(`/api/ontology/bundles/${ontologyBundle}/rebuild-indexes`, { method: 'POST' })
+                          const data = await resp.json()
+                          if (resp.ok) {
+                            loadBundles()
+                          } else {
+                            setError(`Index rebuild failed: ${data.error || 'Unknown error'}`)
+                          }
+                        } catch (err) { setError(`Index rebuild error: ${err.message}`) }
+                      }}
+                    >Rebuild indexes</button>
+                  </details>
                 )
               })()}
               <label className="inline-flex items-center gap-2 mt-2 text-xs text-slate-600 dark:text-slate-400 cursor-pointer hover:text-blue-600">
@@ -598,11 +625,12 @@ export default function BatchJobs({ onNavigate }) {
                 <div>
                   <label className="text-sm font-medium text-slate-700 dark:text-slate-200 mb-1.5 block">Generation Mode</label>
                   <select value={mode} onChange={e => setMode(e.target.value)} className="select-base">
-                    <option value="comment">Table & Column Descriptions</option>
+                    <option value="comment">Table &amp; Column Descriptions</option>
                     <option value="pi">Sensitive Data (PII / PHI / PCI)</option>
-                    <option value="domain">Business Domain</option>
+                    <option value="domain" disabled={!hasDomainSource}>Business Domain{!hasDomainSource ? ' (select ontology or domain list first)' : ''}</option>
                     <option value="all">All Three (recommended)</option>
                   </select>
+                  {needsDomain && !hasDomainSource && <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">Domain classification requires an ontology bundle or domain list. Select one above, or switch to Descriptions or Sensitivity mode.</p>}
                 </div>
                 <label className="flex items-center gap-2.5 text-sm text-slate-600 dark:text-slate-300 cursor-pointer"
                   title="Applies SQL comments directly to your tables. Disable this to review results first in the Review tab.">
@@ -631,6 +659,11 @@ export default function BatchJobs({ onNavigate }) {
                   <label className="text-xs text-slate-500 dark:text-slate-400 mb-1 block" title="Number of rows sampled per table. Higher values improve quality but increase cost. 0 uses the default.">Rows Sampled per Table</label>
                   <input type="number" min="0" max="100" value={settings.sample_size}
                     onChange={e => setSetting('sample_size', parseInt(e.target.value) || 0)} className="input-base !text-xs" />
+                </div>
+                <div>
+                  <label className="text-xs text-slate-500 dark:text-slate-400 mb-1 block" title="Number of columns sent to the LLM per prompt chunk. Tables with more columns than this value are split into multiple LLM calls. Lower values reduce prompt size; higher values reduce the number of calls.">Columns per LLM Call</label>
+                  <input type="number" min="1" max="100" value={settings.columns_per_call}
+                    onChange={e => setSetting('columns_per_call', Math.max(1, parseInt(e.target.value) || 20))} className="input-base !text-xs" />
                 </div>
                 <div className="flex flex-col gap-2 pt-1">
                   <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer" title="Include column-level lineage information from Unity Catalog in the metadata generation prompt">
@@ -663,13 +696,13 @@ export default function BatchJobs({ onNavigate }) {
             </p>
             <div className="flex flex-wrap gap-3 mt-2">
               <button onClick={() => runJob(getJobSuffix(), { table_names: tableNames, mode, apply_ddl: applyDdl, ontology_bundle: ontologyBundle, use_kb_comments: settings.use_kb_comments, include_lineage: settings.include_lineage, ...(domainConfig ? { domain_config: domainConfig } : {}), extra_params: buildExtraParams() }, 'single')}
-                disabled={!!runningAction || !tableNames.trim()} title="Run only the mode selected above (one generation pass)"
+                disabled={!!runningAction || !tableNames.trim() || mode === 'all' || (needsDomain && !hasDomainSource)} title={mode === 'all' ? 'Use the "All Three" button when mode is set to All Three' : (needsDomain && !hasDomainSource) ? 'Select an ontology bundle or domain list to run domain classification' : 'Run only the mode selected above (one generation pass)'}
                 className="btn-secondary btn-md">{runningAction === 'single' ? 'Starting...' : `Run Selected Mode${settings.build_kb_after ? ' + KB' : ''}${settings.use_serverless ? ' (Serverless)' : ''}`}</button>
               <button onClick={() => runJob(getJobSuffix(), { table_names: tableNames, mode: 'all', apply_ddl: applyDdl, ontology_bundle: ontologyBundle, use_kb_comments: settings.use_kb_comments, include_lineage: settings.include_lineage, ...(domainConfig ? { domain_config: domainConfig } : {}), extra_params: buildExtraParams() }, 'all3')}
-                disabled={!!runningAction || !tableNames.trim()} title="Runs descriptions, then sensitivity and domain using those descriptions — one table scan, best quality"
+                disabled={!!runningAction || !tableNames.trim() || !hasDomainSource || mode !== 'all'} title={mode !== 'all' ? 'Switch Generation Mode to "All Three" to use this button' : !hasDomainSource ? 'Select an ontology bundle or domain list to run All Three (includes domain classification)' : 'Runs descriptions, then sensitivity and domain using those descriptions — one table scan, best quality'}
                 className="btn-primary btn-md">{runningAction === 'all3' ? 'Starting...' : `All Three${settings.build_kb_after ? ' + KB' : ''}${settings.use_serverless ? ' (Serverless)' : ''}`}</button>
               <button onClick={() => runJob('_kb_enriched_modes_job', { table_names: tableNames, apply_ddl: applyDdl, ontology_bundle: ontologyBundle, use_kb_comments: settings.use_kb_comments, include_lineage: settings.include_lineage, ...(domainConfig ? { domain_config: domainConfig } : {}), extra_params: buildExtraParams() }, 'kb_enriched')}
-                disabled={!!runningAction || !tableNames.trim()} title="Generates descriptions first, builds the knowledge base, then runs sensitivity and domain classification enriched with those descriptions. Uses classic compute."
+                disabled={!!runningAction || !tableNames.trim() || !hasDomainSource || mode !== 'all'} title={mode !== 'all' ? 'Switch Generation Mode to "All Three" to use this button' : !hasDomainSource ? 'Select an ontology bundle or domain list to run Two-Pass (includes domain classification)' : 'Generates descriptions first, builds the knowledge base, then runs sensitivity and domain classification enriched with those descriptions. Uses classic compute.'}
                 className="btn-md bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50 transition-all">{runningAction === 'kb_enriched' ? 'Starting...' : 'Two-Pass (KB-Enriched)'}</button>
             </div>
             <p className="text-xs text-slate-400">
@@ -737,6 +770,7 @@ export default function BatchJobs({ onNavigate }) {
                 className="textarea-base h-16 !text-xs" />
             </div>
 
+            {!ontologyBundle && <p className="text-xs text-amber-600 dark:text-amber-400">An ontology bundle must be selected in the Generate Metadata section to run the full analytics pipeline.</p>}
             <button onClick={() => runJob('_full_analytics_pipeline', {
               catalog_name: catalogName, schema_name: schemaName,
               ontology_bundle: ontologyBundle,
@@ -753,7 +787,7 @@ export default function BatchJobs({ onNavigate }) {
                 cluster_max_k: String(clusterMaxK),
                 ...(entityTagKey !== 'entity_type' ? { entity_tag_key: entityTagKey } : {}),
               },
-            }, 'pipeline')} disabled={!!runningAction || !catalogName.trim() || !schemaName.trim()} className="btn-primary btn-md">
+            }, 'pipeline')} disabled={!!runningAction || !catalogName.trim() || !schemaName.trim() || !ontologyBundle} title={!ontologyBundle ? 'Select an ontology bundle in the Generate Metadata tab to run the full analytics pipeline' : ''} className="btn-primary btn-md">
               {runningAction === 'pipeline' ? 'Starting...' : (tableNames.trim() ? `Run Pipeline (${tableNames.split(',').filter(t => t.trim()).length} tables)` : 'Run Full Pipeline')}
             </button>
 
@@ -863,7 +897,7 @@ export default function BatchJobs({ onNavigate }) {
         </summary>
         <div className="px-5 pb-4 divide-y divide-dbx-oat-dark/30 dark:divide-dbx-navy-400/20">
           {jobs.length === 0 ? (
-            <p className="text-xs text-slate-400 dark:text-slate-500 py-4">No jobs found. Deploy the Databricks Asset Bundle to your workspace first.</p>
+            <p className="text-xs text-slate-400 dark:text-slate-500 py-4">{error?.includes('Failed to load jobs') ? 'Could not load jobs — check your connection and try refreshing.' : 'No jobs found. Deploy the Databricks Asset Bundle to your workspace first.'}</p>
           ) : jobs.map(j => (
             <div key={j.job_id} className="py-2.5 flex justify-between items-center text-sm">
               <span className="text-slate-700 dark:text-slate-300">{j.name}</span>

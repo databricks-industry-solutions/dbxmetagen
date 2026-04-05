@@ -396,7 +396,7 @@ export default function AgentChat() {
         if (task.steps) setDeepSteps(task.steps)
         if (task.elapsed_ms != null) setDeepElapsedMs(task.elapsed_ms)
       }
-      setMessages(prev => [...prev, { role: 'error', content: 'Analysis timed out after 5 minutes', _query: text, _mode: useMode }])
+      setMessages(prev => [...prev, { role: 'error', content: 'Analysis timed out after 10 minutes. Try a more specific question or a faster mode.', _query: text, _mode: useMode }])
     } catch (e) {
       setMessages(prev => [...prev, { role: 'error', content: e.message, _query: text, _mode: useMode }])
     }

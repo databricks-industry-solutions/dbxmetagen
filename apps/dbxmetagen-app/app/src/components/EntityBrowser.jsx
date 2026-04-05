@@ -248,7 +248,7 @@ export default function EntityBrowser() {
       {error && <p className="text-sm text-red-600 dark:text-red-400">Could not load entities. Check permissions or try refreshing the page.</p>}
       {loading && <p className="text-sm text-slate-500">Loading entities...</p>}
       {!loading && !error && filtered.length === 0 && (
-        <p className="text-sm text-slate-500">No entities found.</p>
+        <p className="text-sm text-slate-500">{filter ? 'No entities match the current filter.' : 'No entities found. Run the ontology pipeline first (Generate Metadata with an ontology bundle).'}</p>
       )}
       {!loading && !error && filtered.length > 0 && (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">

@@ -417,31 +417,20 @@ export default function GenieUpdater({ spaceId, onBack }) {
       />
       <ErrorBanner error={error} />
 
-      {/* Parse diagnostic */}
+      {/* Space summary */}
       {parseInfo && (
-        <div className="card p-3 text-xs space-y-1">
+        <div className="card p-3 text-xs">
           <div className="flex flex-wrap gap-3 text-slate-600 dark:text-slate-400">
-            {parseInfo.source && <span>source: <b>{parseInfo.source}</b></span>}
-            <span>ss type: <b>{parseInfo.ssType}</b></span>
-            <span>keys: <b>{parseInfo.keys?.join(', ') || 'none'}</b></span>
-            <span>tables: <b>{parseInfo.tables ?? '-'}</b></span>
-            <span>MVs: <b>{parseInfo.metricViews ?? '-'}</b></span>
-            <span>instructions: <b>{parseInfo.textInstructions ?? '-'}</b> chars</span>
-            <span>example SQL: <b>{parseInfo.exampleSqls ?? '-'}</b></span>
-            <span>joins: <b>{parseInfo.joinSpecs ?? '-'}</b></span>
-            <span>measures: <b>{parseInfo.measures ?? '-'}</b></span>
-            <span>filters: <b>{parseInfo.filters ?? '-'}</b></span>
-            <span>expressions: <b>{parseInfo.expressions ?? '-'}</b></span>
-            <span>sample Qs: <b>{parseInfo.sampleQuestions ?? '-'}</b></span>
-            {parseInfo.config_json_type && <span>cj_type: <b>{parseInfo.config_json_type}</b></span>}
-            {parseInfo.config_json_len != null && <span>cj_len: <b>{parseInfo.config_json_len}</b></span>}
-            {parseInfo.parsed_keys && <span>parsed_keys: <b>{parseInfo.parsed_keys.join(', ') || 'none'}</b></span>}
-            {parseInfo.raw_resp_keys && <span>api_keys: <b>{parseInfo.raw_resp_keys.join(', ')}</b></span>}
-            {parseInfo.ss_raw_type && <span>ss_raw: <b>{parseInfo.ss_raw_type}</b></span>}
+            <span>Tables: <b>{parseInfo.tables ?? '-'}</b></span>
+            <span>Metric views: <b>{parseInfo.metricViews ?? '-'}</b></span>
+            <span>Example SQL: <b>{parseInfo.exampleSqls ?? '-'}</b></span>
+            <span>Joins: <b>{parseInfo.joinSpecs ?? '-'}</b></span>
+            <span>Snippets: <b>{(parseInfo.measures ?? 0) + (parseInfo.filters ?? 0) + (parseInfo.expressions ?? 0)}</b></span>
+            <span>Sample Qs: <b>{parseInfo.sampleQuestions ?? '-'}</b></span>
           </div>
-          {Object.entries(parseInfo).filter(([k]) => k.endsWith('Err')).map(([k, v]) => (
-            <div key={k} className="text-red-500">Parse error ({k}): {v}</div>
-          ))}
+          {Object.entries(parseInfo).filter(([k]) => k.endsWith('Err')).length > 0 && (
+            <p className="text-amber-600 dark:text-amber-400 mt-1">Some sections could not be parsed from the Genie API response. You can still edit and deploy.</p>
+          )}
         </div>
       )}
 

@@ -230,9 +230,12 @@ function NavDropdown({ cat, activeTab, onSelect }) {
   )
 }
 
+const VALID_TABS = new Set(Object.keys(COMPONENTS))
+const readHash = () => { const h = window.location.hash.replace('#', ''); return VALID_TABS.has(h) ? h : 'jobs' }
+
 export default function App() {
-  const [activeTab, setActiveTab] = useState('jobs')
-  const [visitedTabs, setVisitedTabs] = useState(new Set(['jobs']))
+  const [activeTab, setActiveTab] = useState(readHash)
+  const [visitedTabs, setVisitedTabs] = useState(new Set([readHash()]))
   const [showInfo, setShowInfo] = useState(false)
   const [dark, setDark] = useState(() => {
     if (typeof window !== 'undefined') {
@@ -250,6 +253,13 @@ export default function App() {
       next.add(activeTab)
       return next
     })
+    if (window.location.hash !== `#${activeTab}`) window.history.pushState(null, '', `#${activeTab}`)
+  }, [activeTab])
+
+  useEffect(() => {
+    const onHash = () => { const t = readHash(); if (t !== activeTab) setActiveTab(t) }
+    window.addEventListener('hashchange', onHash)
+    return () => window.removeEventListener('hashchange', onHash)
   }, [activeTab])
 
   useEffect(() => {
