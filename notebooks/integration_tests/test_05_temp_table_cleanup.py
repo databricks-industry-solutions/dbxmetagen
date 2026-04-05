@@ -59,14 +59,14 @@ try:
         "test_cleanup_success", with_comment=False
     )
 
-    # Create config using production YAML with test overrides
     config = MetadataConfig(
-        yaml_file_path="../../variables.yml",  # Production YAML (2 levels up)
+        yaml_file_path="../../variables.yml",
         catalog_name=test_catalog,
         schema_name=test_schema,
         table_names=test_table,
         volume_name="test_volume",
-        grant_permissions_after_creation="false",  # Override for tests
+        grant_permissions_after_creation="false",
+        cleanup_control_table=True,
     )
 
     # Get the exact temp table name that main() will create and should clean up
@@ -130,13 +130,12 @@ try:
     control_tables = test_utils.find_control_tables(sanitized_user)
     print(f"  Control tables found: {len(control_tables)}")
 
-    if len(control_tables) > 0:
-        print(f"  Control tables: {control_tables}")
-        # Control tables might exist if cleanup_control_table=false was used
-        # This is expected behavior
-        test_utils.assert_true(True, "Control tables found (expected if cleanup=false)")
-    else:
-        test_utils.assert_true(True, "No control tables left behind")
+    # cleanup_control_table=True was set explicitly above, so control
+    # tables should have been removed. If they exist, it's a cleanup failure.
+    test_utils.assert_true(
+        len(control_tables) == 0,
+        f"Control tables should be cleaned up (found {len(control_tables)}: {control_tables})",
+    )
 
     test_passed = True
     print_test_result("Temp Table Cleanup", True)

@@ -1,10 +1,13 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # Integration Test 16: Full Analytics Pipeline
+# MAGIC # Integration Test 16: Embeddings and Similarity Edges
 # MAGIC
-# MAGIC Validates the full analytics pipeline: embeddings -> similarity -> clustering.
+# MAGIC Validates embedding generation and similarity edge building on graph_nodes.
 # MAGIC Requires test_12_knowledge_graph to have run first with skip_cleanup=true
 # MAGIC (needs graph_nodes with data). This test cleans up the schema when done.
+# MAGIC
+# MAGIC Note: Clustering (cluster_analysis.py) is NOT tested here -- it requires
+# MAGIC MLflow autolog management and is validated separately via the full pipeline job.
 
 # COMMAND ----------
 
@@ -75,12 +78,35 @@ from dbxmetagen.similarity_edges import SimilarityEdgesConfig, SimilarityEdgeBui
 sim_config = SimilarityEdgesConfig(
     catalog_name=catalog_name,
     schema_name=graph_test_schema,
-    similarity_threshold=0.5,
-    max_edges_per_node=5,
+    similarity_threshold=0.3,
+    max_edges_per_node=10,
 )
 builder = SimilarityEdgeBuilder(spark, sim_config)
+
+# Check if there are enough non-entity nodes with embeddings for meaningful similarity
+eligible_count = spark.sql(f"""
+    SELECT COUNT(*) as cnt FROM {catalog_name}.{graph_test_schema}.graph_nodes
+    WHERE embedding IS NOT NULL AND SIZE(embedding) > 0 AND node_type != 'entity'
+""").first().cnt
+print(f"  Non-entity nodes with embeddings: {eligible_count}")
+
 sim_result = builder.run()
 print(f"Similarity edges result: {sim_result}")
+
+assert sim_result is not None, "SimilarityEdgeBuilder.run() should return a result"
+if isinstance(sim_result, dict):
+    edges_built = sim_result.get("edges_added", sim_result.get("edges_created", -1))
+    print(f"  Edges built: {edges_built}")
+
+sim_edge_count = spark.sql(
+    f"SELECT COUNT(*) as cnt FROM {catalog_name}.{graph_test_schema}.graph_edges WHERE edge_type = 'similar_embedding'"
+).first().cnt
+print(f"  Similarity edges in graph_edges: {sim_edge_count}")
+
+if eligible_count >= 2:
+    assert sim_edge_count > 0, "Similarity builder should produce at least one similarity edge"
+else:
+    print(f"  [SKIP] Only {eligible_count} eligible nodes -- not enough for similarity assertion")
 
 # COMMAND ----------
 # MAGIC %md

@@ -101,6 +101,12 @@ try:
             print("  [OK] PI tags applied by mode=all")
         else:
             print("  Note: No column-level PI tags found (may depend on LLM detection)")
+
+        # Test table has name/email -- at least one should get a PI tag
+        test_utils.assert_true(
+            pi_tags_found,
+            "mode=all PI pass should apply at least one tag on test data with name/email columns",
+        )
     except Exception as e:
         print(f"  Note: Could not verify PI tags: {e}")
 
@@ -115,20 +121,23 @@ try:
             if domain_tags:
                 for tag in domain_tags:
                     print(f"  [OK] Domain tag '{tag}' = '{tag_dict[tag]}'")
-            else:
-                print("  Note: No explicit 'domain' tags found, but other tags may be present")
-        else:
-            print("  Note: No table-level tags found")
+
+        test_utils.assert_true(
+            len(table_tags) > 0,
+            "mode=all domain pass should apply at least one table-level tag",
+        )
     except Exception as e:
         print(f"  Note: Could not verify domain tags: {e}")
 
     # ---- Verify metadata log has entries for all three modes ----
     print("\nVerifying metadata log entries...")
+    # Use simple table name (consistent with test_utils.verify_metadata_generation_log)
+    simple_table = test_table.split(".")[-1] if "." in test_table else test_table
     log_df = spark.sql(f"""
-        SELECT DISTINCT _mode FROM {test_catalog}.{test_schema}.metadata_generation_log
-        WHERE table_name = '{test_table}'
+        SELECT DISTINCT metadata_type FROM {test_catalog}.{test_schema}.metadata_generation_log
+        WHERE table_name LIKE '%{simple_table}'
     """)
-    logged_modes = {row._mode for row in log_df.collect()}
+    logged_modes = {row.metadata_type for row in log_df.collect()}
     print(f"  Logged modes: {logged_modes}")
     test_utils.assert_true(
         "comment" in logged_modes,
@@ -143,7 +152,7 @@ try:
         "Log contains domain mode entry",
     )
 
-    # ---- Verify SQL files exist for each sub-mode ----
+    # ---- Verify SQL files exist and have correct DDL types for each sub-mode ----
     print("\nVerifying SQL files...")
     user_sanitized = sanitize_user_identifier(config_all.current_user)
     for sub_mode in ["comment", "pi", "domain"]:
@@ -154,6 +163,10 @@ try:
         test_utils.assert_true(
             sql_result["file_found"],
             f"SQL file exists for {sub_mode} sub-mode",
+        )
+        test_utils.assert_true(
+            sql_result["ddl_type_correct"],
+            f"SQL file for {sub_mode} contains correct DDL type",
         )
 
     test_passed = True

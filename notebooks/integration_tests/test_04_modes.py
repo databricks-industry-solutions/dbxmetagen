@@ -168,6 +168,12 @@ try:
         else:
             print("  Note: No column-level tags found (may depend on LLM detection)")
 
+        # The test table has "name" and "email" -- at least one must get a tag
+        test_utils.assert_true(
+            len(table_tags) > 0 or columns_with_tags > 0,
+            "PI mode should apply at least one tag on test data with name/email columns",
+        )
+
     except Exception as e:
         print(f"  Note: Could not verify tags (may require Unity Catalog): {e}")
 
@@ -213,18 +219,15 @@ try:
             if domain_tags:
                 for tag in domain_tags:
                     print(f"  [OK] Domain tag '{tag}' = '{tag_dict[tag]}'")
-                test_utils.assert_true(True, "Domain classification tags were applied")
-            else:
-                print(
-                    "  Note: No explicit 'domain' tags found, but other tags may be present"
-                )
-        else:
-            print(
-                "  Note: No table-level tags found (may depend on LLM classification)"
-            )
+
+        # Domain mode must produce at least one table-level tag
+        test_utils.assert_true(
+            len(table_tags) > 0,
+            "Domain mode should apply at least one table-level tag",
+        )
 
     except Exception as e:
-        print(f"  Note: Could not verify domain tags: {e}")
+        print(f"  Note: Could not verify domain tags (may require Unity Catalog): {e}")
 
     # Verify SQL files exist and contain correct DDL types for each mode
     print("\nVerifying SQL files for each mode")
