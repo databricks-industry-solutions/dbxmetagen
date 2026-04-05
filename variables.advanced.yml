@@ -57,4 +57,4 @@ variables:
     default: 200
   max_concurrent_llm_calls:
     description: "Maximum number of concurrent LLM calls per table when processing column chunks. Set to 1 to disable concurrency."
-    default: 4
+    default: 1

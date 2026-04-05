@@ -1474,7 +1474,7 @@ def _export_table_to_excel(df: Any, config: Any) -> str:
         volume_path = (
             f"/Volumes/{config.catalog_name}/{config.schema_name}/{config.volume_name}"
         )
-        export_folder = f"{volume_path}/{current_user}/{date}/exportable_run_logs/"
+        export_folder = f"{volume_path}/{config.current_user}/{date}/exportable_run_logs/"
         create_folder_if_not_exists(export_folder)
         output_filename = f"review_metadata_{config.mode}_{config.log_timestamp}.xlsx"
         output_file = f"{export_folder}{output_filename}"
@@ -2395,10 +2395,7 @@ def get_generated_metadata_data_aware(
             prompt.enrich_from_ontology()
         prompt_messages = prompt.create_prompt_template()
         check_token_length_against_num_words(prompt_messages, config)
-        if config.registered_model_name != "default":
-            chat_response = call_registered_model(config)
-        else:
-            chat_response = MetadataGeneratorFactory.create_generator(config)
+        chat_response = MetadataGeneratorFactory.create_generator(config)
         response, _ = chat_response.get_responses(
             prompt_messages, prompt.prompt_content
         )
@@ -2527,6 +2524,29 @@ def review_and_generate_metadata(
     return rows_to_df(column_rows, config), rows_to_df(table_rows, config)
 
 
+def _inject_override_rows(sub_config, col_rows, full_table_name, tokenized):
+    """Inject synthetic rows for override columns that were excluded from LLM."""
+    if not getattr(sub_config, "allow_manual_override", False):
+        return col_rows
+    if sub_config.mode not in ("comment", "pi"):
+        return col_rows
+    csv_path = getattr(sub_config, "override_csv_path", "metadata_overrides.csv")
+    override_data = load_override_data_for_table(csv_path, sub_config, full_table_name)
+    if not override_data:
+        return col_rows
+    try:
+        spark = SparkSession.builder.getOrCreate()
+        source_cols_lower = {f.name.lower() for f in spark.table(full_table_name).schema.fields}
+    except Exception:
+        source_cols_lower = None
+    for col_name, values in override_data.items():
+        if source_cols_lower is not None and col_name.lower() not in source_cols_lower:
+            logger.warning("Override column '%s' not in source table %s -- skipping", col_name, full_table_name)
+            continue
+        col_rows = append_override_row(col_rows, full_table_name, tokenized, col_name, values, sub_config)
+    return col_rows
+
+
 def _review_and_generate_all_modes(
     config: MetadataConfig, full_table_name: str
 ) -> Dict[str, Tuple[DataFrame, DataFrame]]:
@@ -2542,6 +2562,7 @@ def _review_and_generate_all_modes(
         for resp in comment_responses:
             c_table_rows = append_table_row(c_table_rows, full_table_name, resp, tokenized)
             c_col_rows = append_column_rows(comment_config, c_col_rows, full_table_name, resp, tokenized)
+        c_col_rows = _inject_override_rows(comment_config, c_col_rows, full_table_name, tokenized)
         results["comment"] = (
             rows_to_df(c_col_rows, comment_config),
             rows_to_df(c_table_rows, comment_config),
@@ -2557,6 +2578,7 @@ def _review_and_generate_all_modes(
         p_col_rows = []
         for resp in pi_responses:
             p_col_rows = append_column_rows(pi_config, p_col_rows, full_table_name, resp, tokenized)
+        p_col_rows = _inject_override_rows(pi_config, p_col_rows, full_table_name, tokenized)
         results["pi"] = (rows_to_df(p_col_rows, pi_config), rows_to_df([], pi_config))
     except Exception as e:
         logger.error("mode=all: pi phase failed for %s: %s", full_table_name, e)

@@ -68,8 +68,8 @@ def _make_df(rows, columns):
 # ===================================================================
 
 class TestNewConfigVariables:
-    def test_batch_ddl_apply_defaults_true(self):
-        assert _cfg().batch_ddl_apply is True
+    def test_batch_ddl_apply_defaults_false(self):
+        assert _cfg().batch_ddl_apply is False
 
     def test_batch_ddl_apply_string_false(self):
         assert _cfg(batch_ddl_apply="false").batch_ddl_apply is False
@@ -81,7 +81,7 @@ class TestNewConfigVariables:
         assert _cfg(batch_ddl_max_columns="50").batch_ddl_max_columns == 50
 
     def test_max_concurrent_llm_calls_default(self):
-        assert _cfg().max_concurrent_llm_calls == 4
+        assert _cfg().max_concurrent_llm_calls == 1
 
     def test_max_concurrent_llm_calls_override(self):
         assert _cfg(max_concurrent_llm_calls="1").max_concurrent_llm_calls == 1
@@ -484,6 +484,23 @@ class TestConcurrentLLMChunkOrder:
         self._run_data_aware(proc_module, cfg, num_chunks=3, mock_tpe_cls=mock_tpe_cls)
         mock_tpe_cls.assert_not_called()
 
+    def test_pi_mode_uses_executor(self, proc_module):
+        """PI mode should also use ThreadPoolExecutor when multi-chunk."""
+        mock_executor = MagicMock()
+        mock_future = MagicMock()
+        mock_future.result.return_value = MagicMock()
+        mock_executor.__enter__ = MagicMock(return_value=mock_executor)
+        mock_executor.__exit__ = MagicMock(return_value=False)
+        mock_executor.submit.return_value = mock_future
+        mock_tpe_cls = MagicMock(return_value=mock_executor)
+
+        cfg = _cfg(mode="pi", max_concurrent_llm_calls=4, columns_per_call=2,
+                    sample_size=5)
+        self._run_data_aware(proc_module, cfg, num_chunks=3, mock_tpe_cls=mock_tpe_cls)
+
+        mock_tpe_cls.assert_called_once()
+        assert mock_tpe_cls.call_args[1]["max_workers"] == 3
+
 
 # ===================================================================
 # 7. TestReviewAndGenerateAllModes
@@ -572,6 +589,43 @@ class TestReviewAndGenerateAllModes:
 
         for mode_key in ("comment", "pi", "domain"):
             assert result[mode_key] == (None, None)
+
+    @patch("dbxmetagen.processing.rows_to_df")
+    @patch("dbxmetagen.processing.append_domain_table_row")
+    @patch("dbxmetagen.processing.get_domain_classification")
+    @patch("dbxmetagen.processing.append_column_rows")
+    @patch("dbxmetagen.processing.append_table_row")
+    @patch("dbxmetagen.processing.get_generated_metadata")
+    @patch("dbxmetagen.processing.replace_catalog_name")
+    def test_sub_mode_configs_are_correct(self, mock_replace, mock_gen, mock_append_tbl,
+                                          mock_append_col, mock_domain, mock_append_domain,
+                                          mock_rows_to_df, proc_module):
+        """Verify that _review_and_generate_all_modes passes correct sub-mode configs."""
+        mock_replace.return_value = "tok.sch.tbl"
+        mock_rows_to_df.return_value = MagicMock()
+
+        captured_modes = []
+
+        def capture_gen(cfg, tbl):
+            captured_modes.append(cfg.mode)
+            return [MagicMock()]
+
+        mock_gen.side_effect = capture_gen
+        mock_append_tbl.return_value = [{"row": 1}]
+        mock_append_col.return_value = [{"row": 1}]
+
+        def capture_domain(cfg, tbl):
+            captured_modes.append(cfg.mode)
+            return MagicMock()
+
+        mock_domain.side_effect = capture_domain
+        mock_append_domain.return_value = [{"domain_row": 1}]
+
+        cfg = _cfg(mode="all", batch_ddl_apply=True, max_concurrent_llm_calls=3)
+        proc_module._review_and_generate_all_modes(cfg, "cat.sch.tbl")
+
+        assert captured_modes == ["comment", "pi", "domain"]
+        assert cfg.mode == "all"  # original unchanged
 
 
 # ===================================================================
@@ -844,6 +898,84 @@ class TestFetchColumnMetadataBatch:
         assert "nullable" not in result["col_a"]
         assert "default" not in result["col_a"]
         assert result["col_a"]["data_type"] == "STRING"
+
+
+# ===================================================================
+# 10b. TestMetadataPrefetchInDataAware
+# ===================================================================
+
+class TestMetadataPrefetchInDataAware:
+    """Verify the information_schema prefetch in get_generated_metadata_data_aware
+    builds metadata_cache and passes it to PromptFactory.create_prompt."""
+
+    def _run_with_prefetch(self, proc_module, cfg, add_metadata, federation_mode=False):
+        """Helper that runs get_generated_metadata_data_aware and returns the
+        column_metadata_cache kwarg passed to PromptFactory.create_prompt."""
+        cfg.add_metadata = add_metadata
+        cfg.federation_mode = federation_mode
+
+        with patch.object(proc_module, "_is_metric_view", return_value=False), \
+             patch.object(proc_module, "read_table_with_type_conversion") as mock_read, \
+             patch.object(proc_module, "chunk_df") as mock_chunk, \
+             patch.object(proc_module, "sample_df", return_value=MagicMock()), \
+             patch.object(proc_module, "PromptFactory") as mock_pf, \
+             patch.object(proc_module, "MetadataGeneratorFactory") as mock_mgf, \
+             patch.object(proc_module, "check_token_length_against_num_words"), \
+             patch.object(proc_module, "SparkSession") as mock_ss:
+
+            mock_df = MagicMock()
+            mock_df.count.return_value = 5
+            mock_df.columns = ["col_a", "col_b"]
+            mock_read.return_value = mock_df
+            mock_chunk.return_value = [MagicMock()]
+
+            mock_prompt = MagicMock()
+            del mock_prompt.deterministic_results
+            mock_pf.create_prompt.return_value = mock_prompt
+
+            mock_gen = MagicMock()
+            mock_gen.get_responses.return_value = (MagicMock(), None)
+            mock_mgf.create_generator.return_value = mock_gen
+
+            mock_spark = MagicMock()
+            row_a = MagicMock()
+            row_a.asDict.return_value = {
+                "column_name": "col_a", "data_type": "STRING",
+                "is_nullable": "YES", "column_default": None,
+                "comment": None, "ordinal_position": 1,
+                "character_maximum_length": None,
+                "numeric_precision": None, "numeric_scale": None,
+            }
+            mock_spark.sql.return_value.collect.return_value = [row_a]
+            mock_ss.builder.getOrCreate.return_value = mock_spark
+
+            proc_module.get_generated_metadata_data_aware(mock_spark, cfg, "cat.sch.tbl")
+
+            create_call = mock_pf.create_prompt.call_args
+            return create_call
+
+    def test_cache_passed_when_add_metadata_true(self, proc_module):
+        cfg = _cfg(mode="comment", add_metadata=True, max_concurrent_llm_calls=1,
+                   columns_per_call=20, sample_size=5)
+        create_call = self._run_with_prefetch(proc_module, cfg, add_metadata=True)
+        cache_kwarg = create_call[1].get("column_metadata_cache")
+        assert cache_kwarg is not None
+        assert "col_a" in cache_kwarg
+
+    def test_cache_none_when_add_metadata_false(self, proc_module):
+        cfg = _cfg(mode="pi", add_metadata=False, max_concurrent_llm_calls=1,
+                   columns_per_call=20, sample_size=5)
+        create_call = self._run_with_prefetch(proc_module, cfg, add_metadata=False)
+        cache_kwarg = create_call[1].get("column_metadata_cache")
+        assert cache_kwarg is None
+
+    def test_cache_none_in_federation_mode(self, proc_module):
+        cfg = _cfg(mode="comment", add_metadata=True, federation_mode=True,
+                   max_concurrent_llm_calls=1, columns_per_call=20, sample_size=5)
+        create_call = self._run_with_prefetch(proc_module, cfg,
+                                              add_metadata=True, federation_mode=True)
+        cache_kwarg = create_call[1].get("column_metadata_cache")
+        assert cache_kwarg is None
 
 
 # ===================================================================

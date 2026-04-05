@@ -223,4 +223,4 @@ variables:
     default: false
   batch_ddl_apply:
     description: "When true, column-level DDL statements are combined into per-table batch ALTER TABLE statements for faster application. Falls back to individual statements on failure. Disable if you encounter issues with batch DDL on federated catalogs."
-    default: true
+    default: false

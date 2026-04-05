@@ -220,13 +220,13 @@ class MetadataConfig:
             getattr(self, "build_knowledge_graph", False)
         )
         self.batch_ddl_apply = _parse_bool(
-            getattr(self, "batch_ddl_apply", True)
+            getattr(self, "batch_ddl_apply", False)
         )
         self.batch_ddl_max_columns = int(
             getattr(self, "batch_ddl_max_columns", 200)
         )
         self.max_concurrent_llm_calls = int(
-            getattr(self, "max_concurrent_llm_calls", 4)
+            getattr(self, "max_concurrent_llm_calls", 1)
         )
 
         # Handle review_apply_ddl if present
