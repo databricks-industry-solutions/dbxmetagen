@@ -367,6 +367,27 @@ export UV_NATIVE_TLS=1
 
 Add this to your shell profile (`~/.zshrc`, `~/.bashrc`, etc.) to make it permanent.
 
+### `deploy.sh` hangs or fails at "Building frontend"
+
+The deploy script runs `npm install` and `npm run build` to compile the React frontend. Common issues:
+
+- **npm not installed:** Install Node.js (which includes npm) from https://nodejs.org/ or via `brew install node`.
+- **npm registry unreachable:** Corporate firewalls or VPNs may block `registry.npmjs.org`. Check your network/proxy settings.
+- **npm crashes ("Exit handler never called"):** This is a [known npm 11.x bug](https://github.com/npm/cli/issues). Fix by clearing the cache and retrying:
+  ```bash
+  cd apps/dbxmetagen-app/app/src
+  rm -rf node_modules package-lock.json
+  npm cache clean --force
+  npm install && npm run build
+  ```
+  If that doesn't help, downgrade npm: `npm install -g npm@10`
+
+**Workaround:** The pre-built frontend (`apps/dbxmetagen-app/app/src/dist/`) is committed to the repo, so you can skip the build entirely if you haven't changed any frontend code:
+
+```bash
+./deploy.sh --profile <your-profile> --target dev --no-frontend
+```
+
 ## Analysis of Packages Used
 
 ### Python (direct dependencies from pyproject.toml)

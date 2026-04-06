@@ -4,6 +4,7 @@
 #   --profile PROFILE    Databricks CLI profile (default: DEFAULT)
 #   --target TARGET      Bundle target: dev or prod (default: dev)
 #   --no-app             Skip app build, SP detection, and app start (jobs + bundle still deploy)
+#   --no-frontend        Skip frontend npm install/build (use pre-built dist/ from repo)
 #   --no-vs              Skip Vector Search endpoint provisioning
 #   --help               Show this help
 
@@ -19,6 +20,7 @@ fi
 TARGET="dev"
 PROFILE="DEFAULT"
 SKIP_APP=false
+SKIP_FRONTEND=false
 SKIP_VS=false
 
 while [[ $# -gt 0 ]]; do
@@ -26,10 +28,11 @@ while [[ $# -gt 0 ]]; do
         --profile)     PROFILE="$2"; shift 2 ;;
         --target)      TARGET="$2"; shift 2 ;;
         --no-app)      SKIP_APP=true; shift ;;
+        --no-frontend) SKIP_FRONTEND=true; shift ;;
         --no-vs)       SKIP_VS=true; shift ;;
         --permissions) echo "Note: --permissions is no longer needed; UC grants now run automatically."; shift ;;
         --help|-h)
-            sed -n '2,6p' "$0"; exit 0 ;;
+            sed -n '2,9p' "$0"; exit 0 ;;
         *)
             echo "Unknown option: $1 (use --help)"; exit 1 ;;
     esac
@@ -39,6 +42,16 @@ done
 if ! command -v databricks &> /dev/null; then
     echo "Error: Databricks CLI not found. Install: https://docs.databricks.com/dev-tools/cli/install.html"
     exit 1
+fi
+
+if [ "$SKIP_FRONTEND" = false ] && [ "$SKIP_APP" = false ]; then
+    if ! command -v npm &> /dev/null; then
+        echo "Error: npm not found. npm is required to build the frontend app."
+        echo "  Install Node.js (which includes npm): https://nodejs.org/"
+        echo "  Or via brew: brew install node"
+        echo "  Or skip the frontend build:  ./deploy.sh --no-frontend"
+        exit 1
+    fi
 fi
 
 if [ ! -f "databricks.yml.template" ]; then
@@ -130,12 +143,27 @@ print('App permissions: {} entries'.format(n_entries))
 if [ "$SKIP_APP" = false ]; then
     # --- Build frontend ---
     echo ""
-    echo "=== Building frontend ==="
-    if [ -f "apps/dbxmetagen-app/app/src/package.json" ]; then
-        (cd apps/dbxmetagen-app/app/src && npm install --silent && npm run build)
-        echo "Frontend built successfully"
+    if [ "$SKIP_FRONTEND" = true ]; then
+        echo "=== Skipping frontend build (--no-frontend) -- using pre-built dist/ ==="
+        if [ ! -f "apps/dbxmetagen-app/app/src/dist/index.html" ]; then
+            echo "ERROR: Pre-built frontend not found at apps/dbxmetagen-app/app/src/dist/"
+            echo "  Run 'cd apps/dbxmetagen-app/app/src && npm install && npm run build' first, or deploy without --no-frontend."
+            exit 1
+        fi
     else
-        echo "No frontend package.json found, skipping build"
+        echo "=== Building frontend ==="
+        if [ -f "apps/dbxmetagen-app/app/src/package.json" ]; then
+            (cd apps/dbxmetagen-app/app/src && npm install --silent && npm run build) || {
+                echo "ERROR: Frontend build failed."
+                echo "  Try running manually:  cd apps/dbxmetagen-app/app/src && npm install && npm run build"
+                echo "  If npm registry is unreachable, check your network/proxy settings."
+                echo "  Or skip the frontend build:  ./deploy.sh --no-frontend"
+                exit 1
+            }
+            echo "Frontend built successfully"
+        else
+            echo "No frontend package.json found, skipping build"
+        fi
     fi
 
     # --- Check for existing app SP ---
