@@ -290,10 +290,10 @@ class MetadataConfig:
     def get_temp_metadata_log_table_name(self) -> str:
         """
         Generate unique temp metadata generation log table name for this job run.
-        Ensures that different modes (comment/pi/domain) in the same job avoid schema conflicts.
+        Ensures concurrent jobs don't interfere with each other's temp tables.
 
         Returns:
-            str: Full table name in format: catalog.schema.temp_metadata_generation_log_mode_user_timestamp
+            str: Full table name in format: catalog.schema.temp_metadata_generation_log_user_timestamp
         """
 
         current_user = sanitize_user_identifier(get_current_user())

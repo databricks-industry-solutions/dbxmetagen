@@ -305,7 +305,7 @@ export default function BatchJobs({ onNavigate }) {
   const findJob = (suffix) => jobs.find(j => j.name?.endsWith(suffix))
 
   const hasDomainSource = !!(ontologyBundle || domainConfig)
-  const needsDomain = mode === 'domain' || mode === 'all'
+  const needsDomain = mode === 'domain'
 
   const [runError, setRunError] = useState(null)
 
@@ -637,7 +637,6 @@ export default function BatchJobs({ onNavigate }) {
                     <option value="comment">Table &amp; Column Descriptions</option>
                     <option value="pi">Sensitive Data (PII / PHI / PCI)</option>
                     <option value="domain" disabled={!hasDomainSource}>Business Domain{!hasDomainSource ? ' (select ontology or domain list first)' : ''}</option>
-                    <option value="all">All Three (recommended)</option>
                   </select>
                   {needsDomain && !hasDomainSource && <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">Domain classification requires an ontology bundle or domain list. Select one above, or switch to Descriptions or Sensitivity mode.</p>}
                 </div>
@@ -705,18 +704,12 @@ export default function BatchJobs({ onNavigate }) {
             </p>
             <div className="flex flex-wrap gap-3 mt-2">
               <button onClick={() => runJob(getJobSuffix(), { table_names: tableNames, mode, apply_ddl: applyDdl, ontology_bundle: ontologyBundle, use_kb_comments: settings.use_kb_comments, include_lineage: settings.include_lineage, ...(domainConfig ? { domain_config: domainConfig } : {}), extra_params: buildExtraParams() }, 'single')}
-                disabled={!!runningAction || !tableNames.trim() || mode === 'all' || (needsDomain && !hasDomainSource)} title={mode === 'all' ? 'Use the "All Three" button when mode is set to All Three' : (needsDomain && !hasDomainSource) ? 'Select an ontology bundle or domain list to run domain classification' : 'Run only the mode selected above (one generation pass)'}
+                disabled={!!runningAction || !tableNames.trim() || (needsDomain && !hasDomainSource)}
+                title={(needsDomain && !hasDomainSource) ? 'Select an ontology bundle or domain list to run domain classification' : 'Run only the mode selected above (one generation pass)'}
                 className="btn-secondary btn-md">{runningAction === 'single' ? 'Starting...' : `Run Selected Mode${settings.build_kb_after ? ' + KB' : ''}${settings.use_serverless ? ' (Serverless)' : ''}`}</button>
-              <button onClick={() => runJob(getJobSuffix(), { table_names: tableNames, mode: 'all', apply_ddl: applyDdl, ontology_bundle: ontologyBundle, use_kb_comments: settings.use_kb_comments, include_lineage: settings.include_lineage, ...(domainConfig ? { domain_config: domainConfig } : {}), extra_params: buildExtraParams() }, 'all3')}
-                disabled={!!runningAction || !tableNames.trim() || !hasDomainSource || mode !== 'all'} title={mode !== 'all' ? 'Switch Generation Mode to "All Three" to use this button' : !hasDomainSource ? 'Select an ontology bundle or domain list to run All Three (includes domain classification)' : 'Runs descriptions, then sensitivity and domain using those descriptions — one table scan, best quality'}
-                className="btn-primary btn-md">{runningAction === 'all3' ? 'Starting...' : `All Three${settings.build_kb_after ? ' + KB' : ''}${settings.use_serverless ? ' (Serverless)' : ''}`}</button>
-              <button onClick={() => runJob('_kb_enriched_modes_job', { table_names: tableNames, apply_ddl: applyDdl, ontology_bundle: ontologyBundle, use_kb_comments: settings.use_kb_comments, include_lineage: settings.include_lineage, ...(domainConfig ? { domain_config: domainConfig } : {}), extra_params: buildExtraParams() }, 'kb_enriched')}
-                disabled={!!runningAction || !tableNames.trim() || !hasDomainSource || mode !== 'all'} title={mode !== 'all' ? 'Switch Generation Mode to "All Three" to use this button' : !hasDomainSource ? 'Select an ontology bundle or domain list to run Two-Pass (includes domain classification)' : 'Generates descriptions first, builds the knowledge base, then runs sensitivity and domain classification enriched with those descriptions. Uses classic compute.'}
-                className="btn-md bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50 transition-all">{runningAction === 'kb_enriched' ? 'Starting...' : 'Two-Pass (KB-Enriched)'}</button>
             </div>
             <p className="text-xs text-slate-400">
               {settings.build_kb_after && <><strong className="text-slate-500">+ KB</strong>: Builds the knowledge base after generation so the Review tab is populated. </>}
-              <strong className="text-slate-500">Two-Pass (KB-Enriched)</strong>: Generates descriptions first, builds the knowledge base, then runs sensitivity and domain classification enriched with those descriptions. Uses classic compute.
             </p>
           </div>
         </section>

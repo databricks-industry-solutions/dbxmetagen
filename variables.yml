@@ -42,7 +42,7 @@ variables:
     description: LLM endpoint used by model calls. Note that this is not the same as any registered model in UC that wraps the prompt engineering work, but is the serving endpoint called after prompt engineering. This can be changed to other served models as well as provisioned throughput models or external models for compliance purposes if needed. Recommend databricks-claude-sonnet-4-6 for best comments, with databricks-meta-llama-3-3-70b-instruct as a backup. Sonnet will generally give more complex responses. Review security, tenancy, and cost considerations before making a decision.
     default: databricks-claude-sonnet-4-6
   mode:
-    description: "Mode for generating metadata. Options are 'comment', 'pi', 'domain', or 'all'. Comment mode generates descriptions. PI mode identifies sensitive information. Domain mode classifies business domains. All mode runs comment, PI, and domain in a single pass per table for maximum efficiency."
+    description: Mode for generating metadata. Options are 'comment', 'pi', or 'domain'. Comment mode generates descriptions for tables and columns. PI mode identifies and classifies sensitive information. Domain mode classifies tables into business domains using an agent.
     default: comment
   job_table_names:
     description: default table names - get applied if there are no host overrides.
