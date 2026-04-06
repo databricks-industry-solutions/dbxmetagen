@@ -276,6 +276,17 @@ if [ -n "${APP_SP_ID}" ]; then
 
     echo "SPN application_id: ${SPN_APP_ID}"
 
+    # Ensure the output schema exists before granting permissions on it
+    echo "  Creating schema if not exists: ${catalog_name}.${schema_name}"
+    CREATE_RESULT=$(databricks api post /api/2.0/sql/statements --profile "$PROFILE" \
+        --json "{\"warehouse_id\": \"${warehouse_id}\", \"statement\": \"CREATE SCHEMA IF NOT EXISTS \`${catalog_name}\`.\`${schema_name}\`\", \"wait_timeout\": \"30s\"}" 2>&1)
+    CREATE_STATUS=$(echo "${CREATE_RESULT}" | python3 -c "import sys,json; d=json.load(sys.stdin); s=d.get('status',{}); print(s.get('state','UNKNOWN'))" 2>/dev/null || echo "PARSE_ERROR")
+    if [ "${CREATE_STATUS}" = "SUCCEEDED" ]; then
+        echo "    OK"
+    else
+        echo "    WARNING: Could not create schema (${CREATE_STATUS}). Grants may fail if schema does not exist."
+    fi
+
     GRANT_STATEMENTS=(
         "GRANT USE CATALOG ON CATALOG \`${catalog_name}\` TO \`${SPN_APP_ID}\`"
         "GRANT USE SCHEMA ON SCHEMA \`${catalog_name}\`.\`${schema_name}\` TO \`${SPN_APP_ID}\`"
@@ -300,9 +311,8 @@ if [ -n "${APP_SP_ID}" ]; then
     done
     if [ "${GRANT_FAIL}" -eq 1 ]; then
         echo ""
-        echo "ERROR: One or more GRANT statements failed. The app service principal may not have sufficient permissions."
-        echo "       Fix the failing grants and re-deploy, or grant manually via Databricks UI."
-        exit 1
+        echo "WARNING: One or more GRANT statements failed. The app will still start, but some features"
+        echo "         may not work until permissions are fixed. Re-run deploy or grant manually via Databricks UI."
     fi
 fi
 
