@@ -184,10 +184,14 @@ export default function BatchJobs({ onNavigate }) {
     return next
   })
 
-  const getJobSuffix = () => {
-    if (settings.use_serverless) return '_metadata_serverless_job'
-    if (settings.build_kb_after) return '_metadata_kb_build_job'
-    return '_metadata_job'
+  const getJobSuffix = (isParallel) => {
+    if (settings.use_serverless) {
+      return isParallel ? '_parallel_serverless_job' : '_metadata_serverless_job'
+    }
+    if (settings.build_kb_after) {
+      return isParallel ? '_parallel_kb_build_job' : '_metadata_kb_build_job'
+    }
+    return isParallel ? '_parallel_modes_job' : '_metadata_job'
   }
 
   const [pickerOpen, setPickerOpen] = useState(false)
@@ -703,13 +707,22 @@ export default function BatchJobs({ onNavigate }) {
               {' | '}Domains: {domainConfig ? domainConfigs.find(d => d.key === domainConfig)?.name || domainConfig : (ontologyBundle ? 'from selected ontology' : <em>none</em>)}
             </p>
             <div className="flex flex-wrap gap-3 mt-2">
-              <button onClick={() => runJob(getJobSuffix(), { table_names: tableNames, mode, apply_ddl: applyDdl, ontology_bundle: ontologyBundle, use_kb_comments: settings.use_kb_comments, include_lineage: settings.include_lineage, ...(domainConfig ? { domain_config: domainConfig } : {}), extra_params: buildExtraParams() }, 'single')}
+              <button onClick={() => runJob(getJobSuffix(false), { table_names: tableNames, mode, apply_ddl: applyDdl, ontology_bundle: ontologyBundle, use_kb_comments: settings.use_kb_comments, include_lineage: settings.include_lineage, ...(domainConfig ? { domain_config: domainConfig } : {}), extra_params: buildExtraParams() }, 'single')}
                 disabled={!!runningAction || !tableNames.trim() || (needsDomain && !hasDomainSource)}
                 title={(needsDomain && !hasDomainSource) ? 'Select an ontology bundle or domain list to run domain classification' : 'Run only the mode selected above (one generation pass)'}
                 className="btn-secondary btn-md">{runningAction === 'single' ? 'Starting...' : `Run Selected Mode${settings.build_kb_after ? ' + KB' : ''}${settings.use_serverless ? ' (Serverless)' : ''}`}</button>
+              <button onClick={() => runJob(getJobSuffix(true), { table_names: tableNames, apply_ddl: applyDdl, ontology_bundle: ontologyBundle, use_kb_comments: settings.use_kb_comments, include_lineage: settings.include_lineage, ...(domainConfig ? { domain_config: domainConfig } : {}), extra_params: buildExtraParams() }, 'all3')}
+                disabled={!!runningAction || !tableNames.trim()}
+                title="Run all three modes: comments first, then PI + domain in parallel"
+                className="btn-primary btn-md">{runningAction === 'all3' ? 'Starting...' : `All 3 Modes${settings.build_kb_after ? ' + KB' : ''}${settings.use_serverless ? ' (Serverless)' : ''}`}</button>
+              <button onClick={() => runJob('_kb_enriched_modes_job', { table_names: tableNames, apply_ddl: applyDdl, ontology_bundle: ontologyBundle, include_lineage: settings.include_lineage, ...(domainConfig ? { domain_config: domainConfig } : {}), extra_params: buildExtraParams() }, 'kb_enriched')}
+                disabled={!!runningAction || !tableNames.trim()}
+                title="Comments -> KB build -> PI + Domain with KB enrichment"
+                className="btn-md bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50 transition-all">{runningAction === 'kb_enriched' ? 'Starting...' : 'KB-Enriched Modes'}</button>
             </div>
             <p className="text-xs text-slate-400">
-              {settings.build_kb_after && <><strong className="text-slate-500">+ KB</strong>: Builds the knowledge base after generation so the Review tab is populated. </>}
+              {settings.build_kb_after && <><strong className="text-slate-500">+ KB</strong>: Builds table + column knowledge base after generation so the Review tab is populated. </>}
+              <strong className="text-slate-500">KB-Enriched Modes</strong>: Generates comments, builds the knowledge base, then runs PI + domain classification enriched with KB-generated descriptions.
             </p>
           </div>
         </section>
