@@ -39,7 +39,6 @@ def get_analyzer_engine(add_pci: bool = True, add_phi: bool = True) -> AnalyzerE
             "presidio_analyzer is required for deterministic PI detection. "
             "Install it with: pip install presidio_analyzer"
         ) from exc
-    logging.getLogger("presidio-analyzer").setLevel(logging.ERROR)
     analyzer = AnalyzerEngine()
 
     if add_pci:

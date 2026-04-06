@@ -32,8 +32,7 @@ class Prompt(ABC):
         ABC: Abstract base class for prompts.
     """
 
-    def __init__(self, config: Any, df: DataFrame, full_table_name: str,
-                 column_metadata_cache: Dict[str, Dict[str, Any]] = None):
+    def __init__(self, config: Any, df: DataFrame, full_table_name: str):
         """
         Initialize the Prompt class.
 
@@ -41,13 +40,11 @@ class Prompt(ABC):
             config (Any): Configuration object.
             df (DataFrame): Spark DataFrame.
             full_table_name (str): Full table name in the format 'catalog.schema.table'.
-            column_metadata_cache: Optional pre-fetched metadata dict keyed by column name.
         """
         self.spark = SparkSession.builder.getOrCreate()
         self.config = config
         self.df = df
         self.full_table_name = full_table_name
-        self._column_metadata_cache = column_metadata_cache
         self.prompt_content = self.convert_to_comment_input()
         if self.config.add_metadata:
             self.add_metadata_to_comment_input()
@@ -291,13 +288,12 @@ class Prompt(ABC):
             "pi": self._filter_pi_mode,
             "comment": self._filter_comment_mode,
             "domain": self._filter_domain_mode,
-            "all": self._filter_comment_mode,
         }
 
         handler = mode_handlers.get(self.config.mode)
         if not handler:
             raise ValueError(
-                "Invalid mode provided. Please use 'pi', 'comment', 'domain', or 'all'"
+                "Invalid mode provided. Please use either 'pi' or 'comment'"
             )
 
         return handler(extended_metadata_df)
@@ -362,117 +358,59 @@ class Prompt(ABC):
         """
         Add metadata to the comment input.
         """
-        column_metadata_dict = self.extract_column_metadata(
-            preloaded_cache=self._column_metadata_cache
-        )
+        column_metadata_dict = self.extract_column_metadata()
         table_metadata = self.get_table_metadata()
         self.add_table_metadata_to_column_contents(table_metadata)
         self.prompt_content["column_contents"]["column_metadata"] = column_metadata_dict
 
-    def extract_column_metadata(self, preloaded_cache: Dict[str, Dict[str, Any]] = None) -> Dict[str, Dict[str, Any]]:
+    def extract_column_metadata(self) -> Dict[str, Dict[str, Any]]:
         """
-        Extract metadata for each column using a single information_schema.columns
-        query instead of per-column DESCRIBE EXTENDED calls.
-
-        Args:
-            preloaded_cache: Optional pre-fetched metadata dict keyed by column name.
-                When provided (e.g. from a cross-chunk cache), skips the SQL query.
+        Extract metadata for each column.
 
         Returns:
             Dict[str, Dict[str, Any]]: Dictionary containing metadata for each column.
         """
-        columns = self.prompt_content["column_contents"]["columns"]
-
-        if preloaded_cache is not None:
-            raw_metadata = {c: preloaded_cache[c] for c in columns if c in preloaded_cache}
-        else:
-            raw_metadata = self._fetch_column_metadata_batch(columns)
-
-        tags_to_exclude = set(self._tags_to_exclude())
-        mode = self.config.mode
         column_metadata_dict = {}
-        for column_name in columns:
-            meta = dict(raw_metadata.get(column_name, {}))
-            filtered = {}
-            for k, v in meta.items():
-                if v is None or str(v) == "NULL":
-                    continue
-                if k in tags_to_exclude:
-                    continue
-                if mode == "comment":
-                    if k in ("description", "comment"):
-                        continue
-                    if not self.config.include_datatype_from_metadata and k == "data_type":
-                        continue
-                    if not self.config.include_possible_data_fields_in_metadata and k in ("min", "max"):
-                        continue
-                filtered[k] = v
-            filtered = self.add_column_metadata_to_column_contents(column_name, filtered)
-            column_metadata_dict[column_name] = filtered
+        for column_name in self.prompt_content["column_contents"]["columns"]:
+
+            extended_metadata_df = self.spark.sql(
+                f"DESCRIBE EXTENDED {self.full_table_name} `{column_name}`"
+            )
+
+            # try:
+            #     sample_rows = extended_metadata_df.limit(3).collect()
+            #     for i, row in enumerate(sample_rows):
+            #         print(f"  Row {i}: {dict(row.asDict())}")
+            # except Exception as e:
+            #     print(f"[DEBUG] Error sampling DESCRIBE EXTENDED rows: {e}")
+
+            filtered_metadata_df = self.filter_extended_metadata_fields(
+                extended_metadata_df
+            )
+
+            # # Check if the filtered DataFrame is empty or has problematic data
+            # try:
+            #     filtered_sample = filtered_metadata_df.limit(3).collect()
+            #     for i, row in enumerate(filtered_sample):
+            #         print(f"  Row {i}: {dict(row.asDict())}")
+            # except Exception as e:
+            #     print(f"[DEBUG] Error sampling filtered rows: {e}")
+
+            try:
+                column_metadata = filtered_metadata_df.toPandas().to_dict(orient="list")
+            except Exception as e:
+                print(f"ERROR in pandas conversion for {column_name}: {e}")
+                raise
+
+            combined_metadata = dict(
+                zip(column_metadata["info_name"], column_metadata["info_value"])
+            )
+            combined_metadata = self.add_column_metadata_to_column_contents(
+                column_name, combined_metadata
+            )
+            column_metadata_dict[column_name] = combined_metadata
 
         return column_metadata_dict
-
-    def _fetch_column_metadata_batch(self, columns: list) -> Dict[str, Dict[str, Any]]:
-        """Fetch metadata for all columns in one information_schema.columns query."""
-        parts = self.full_table_name.split(".")
-        if len(parts) != 3:
-            return {}
-        catalog, schema, table = parts
-
-        col_list = ", ".join(f"'{c}'" for c in columns)
-        query = f"""
-            SELECT column_name, data_type, is_nullable, column_default, comment,
-                   ordinal_position, character_maximum_length, numeric_precision, numeric_scale
-            FROM `{catalog}`.information_schema.columns
-            WHERE table_catalog = '{catalog}'
-              AND table_schema = '{schema}'
-              AND table_name = '{table}'
-              AND column_name IN ({col_list})
-        """
-        try:
-            rows = self.spark.sql(query).collect()
-        except Exception as e:
-            logger.warning("information_schema.columns query failed, falling back to DESCRIBE EXTENDED: %s", e)
-            return self._fetch_column_metadata_legacy(columns)
-
-        result = {}
-        field_map = {
-            "data_type": "data_type",
-            "is_nullable": "nullable",
-            "column_default": "default",
-            "comment": "comment",
-            "ordinal_position": "ordinal_position",
-            "character_maximum_length": "max_length",
-            "numeric_precision": "numeric_precision",
-            "numeric_scale": "numeric_scale",
-        }
-        for row in rows:
-            rd = row.asDict()
-            col = rd.pop("column_name", None)
-            if not col:
-                continue
-            mapped = {}
-            for src_key, dst_key in field_map.items():
-                val = rd.get(src_key)
-                if val is not None:
-                    mapped[dst_key] = str(val)
-            result[col] = mapped
-        return result
-
-    def _fetch_column_metadata_legacy(self, columns: list) -> Dict[str, Dict[str, Any]]:
-        """Fallback: per-column DESCRIBE EXTENDED for environments where
-        information_schema.columns is unavailable (e.g. federated catalogs)."""
-        result = {}
-        for column_name in columns:
-            try:
-                edf = self.spark.sql(f"DESCRIBE EXTENDED {self.full_table_name} `{column_name}`")
-                filtered = self.filter_extended_metadata_fields(edf)
-                meta = filtered.toPandas().to_dict(orient="list")
-                result[column_name] = dict(zip(meta["info_name"], meta["info_value"]))
-            except Exception as e:
-                logger.warning("DESCRIBE EXTENDED failed for %s.%s: %s", self.full_table_name, column_name, e)
-                result[column_name] = {}
-        return result
 
     def get_column_constraints(
         self, column_name: str, combined_metadata: Dict[str, str]
@@ -1043,7 +981,7 @@ class PromptFactory:
     """
 
     @staticmethod
-    def create_prompt(config, df, full_table_name, column_metadata_cache=None) -> Prompt:
+    def create_prompt(config, df, full_table_name) -> Prompt:
         """
         Create a prompt based on the configuration.
 
@@ -1051,17 +989,16 @@ class PromptFactory:
             config (Any): Configuration object.
             df (DataFrame): Spark DataFrame.
             full_table_name (str): Full table name in the format 'catalog.schema.table'.
-            column_metadata_cache: Optional pre-fetched column metadata dict.
 
         Returns:
             Prompt: A prompt object.
         """
         if config.mode == "comment" and config.allow_data_in_comments:
-            return CommentPrompt(config, df, full_table_name, column_metadata_cache=column_metadata_cache)
+            return CommentPrompt(config, df, full_table_name)
         if config.mode == "comment":
-            return CommentNoDataPrompt(config, df, full_table_name, column_metadata_cache=column_metadata_cache)
+            return CommentNoDataPrompt(config, df, full_table_name)
         if config.mode == "pi":
-            return PIPrompt(config, df, full_table_name, column_metadata_cache=column_metadata_cache)
+            return PIPrompt(config, df, full_table_name)
         if config.mode == "domain":
-            return DomainPrompt(config, df, full_table_name, column_metadata_cache=column_metadata_cache)
-        raise ValueError("Invalid mode. Use 'pi', 'comment', 'domain', or 'all'.")
+            return DomainPrompt(config, df, full_table_name)
+        raise ValueError("Invalid mode. Use 'pi', 'comment', or 'domain'.")

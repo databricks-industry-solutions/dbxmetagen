@@ -117,7 +117,6 @@ class MetadataConfig:
             "use_kb_comments",
             "include_profiling_context",
             "include_constraint_context",
-            "batch_ddl_apply",
             "max_ai_candidates",
             "rule_score_min_for_ai",
             "max_candidates_per_table_pair",
@@ -136,8 +135,6 @@ class MetadataConfig:
             "custom_endpoint_secret_key",
             "build_knowledge_graph",
             "presidio_score_threshold",
-            "batch_ddl_max_columns",
-            "max_concurrent_llm_calls",
         ],
     }
     MODEL_PARAMS = {}
@@ -201,35 +198,20 @@ class MetadataConfig:
         self.enable_benchmarking = _parse_bool(
             getattr(self, "enable_benchmarking", False)
         )
-        self.use_kb_comments = _parse_bool(
-            getattr(self, "use_kb_comments", False)
-        )
+        self.use_kb_comments = _parse_bool(getattr(self, "use_kb_comments", False))
         self.allow_manual_override = _parse_bool(
             getattr(self, "allow_manual_override", True)
         )
         self.use_ontology_context = _parse_bool(
             getattr(self, "use_ontology_context", False)
         )
-        self.include_lineage = _parse_bool(
-            getattr(self, "include_lineage", True)
-        )
+        self.include_lineage = _parse_bool(getattr(self, "include_lineage", True))
         self.include_deterministic_pi = _parse_bool(
             getattr(self, "include_deterministic_pi", True)
         )
-        self.incremental = _parse_bool(
-            getattr(self, "incremental", True)
-        )
+        self.incremental = _parse_bool(getattr(self, "incremental", True))
         self.build_knowledge_graph = _parse_bool(
             getattr(self, "build_knowledge_graph", False)
-        )
-        self.batch_ddl_apply = _parse_bool(
-            getattr(self, "batch_ddl_apply", True)
-        )
-        self.batch_ddl_max_columns = int(
-            getattr(self, "batch_ddl_max_columns", 200)
-        )
-        self.max_concurrent_llm_calls = int(
-            getattr(self, "max_concurrent_llm_calls", 4)
         )
 
         # Handle review_apply_ddl if present
@@ -268,14 +250,10 @@ class MetadataConfig:
         self.cleanup_failed_tables = _parse_bool(
             getattr(self, "cleanup_failed_tables", False)
         )
-        self.claim_timeout_minutes = int(
-            getattr(self, "claim_timeout_minutes", 60)
-        )
+        self.claim_timeout_minutes = int(getattr(self, "claim_timeout_minutes", 60))
 
         # Federation mode: force apply_ddl=false when reading from federated catalogs
-        self.federation_mode = _parse_bool(
-            getattr(self, "federation_mode", False)
-        )
+        self.federation_mode = _parse_bool(getattr(self, "federation_mode", False))
         if self.federation_mode:
             self.apply_ddl = False
             self.add_metadata = _parse_bool(getattr(self, "add_metadata", True))
@@ -290,9 +268,7 @@ class MetadataConfig:
         self.two_stage_classification = _parse_bool(
             getattr(self, "two_stage_classification", True)
         )
-        self.domain_prefilter_top_n = int(
-            getattr(self, "domain_prefilter_top_n", 5)
-        )
+        self.domain_prefilter_top_n = int(getattr(self, "domain_prefilter_top_n", 5))
         self.domain_confidence_threshold = float(
             getattr(self, "domain_confidence_threshold", 0.5)
         )
@@ -314,15 +290,14 @@ class MetadataConfig:
     def get_temp_metadata_log_table_name(self) -> str:
         """
         Generate unique temp metadata generation log table name for this job run.
-        Includes the current mode so that different modes (comment/pi/domain) in
-        'all' mode each get their own temp table, avoiding schema conflicts.
+        Ensures that different modes (comment/pi/domain) in the same job avoid schema conflicts.
 
         Returns:
             str: Full table name in format: catalog.schema.temp_metadata_generation_log_mode_user_timestamp
         """
 
         current_user = sanitize_user_identifier(get_current_user())
-        table_name = f"{self.catalog_name}.{self.schema_name}.temp_metadata_generation_log_{self.mode}_{current_user}_{self.log_timestamp}"
+        table_name = f"{self.catalog_name}.{self.schema_name}.temp_metadata_generation_log_{current_user}_{self.log_timestamp}"
         return table_name
 
     def load_yaml(self, file_path=None, variable_names=None):
