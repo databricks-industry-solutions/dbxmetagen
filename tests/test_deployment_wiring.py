@@ -12,7 +12,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 TEMPLATE = ROOT / "apps" / "dbxmetagen-app" / "app" / "app.yaml.template"
-APP_RESOURCES = ROOT / "resources" / "apps" / "dbxmetagen_app.yml"
+APP_RESOURCES = ROOT / "resources" / "apps" / "dbxmetagen_app.yml.template"
 API_SERVER = ROOT / "apps" / "dbxmetagen-app" / "app" / "api_server.py"
 
 
@@ -23,8 +23,16 @@ def test_template_uses_placeholders():
     assert "eswanson_demo" not in text, "Template contains hardcoded catalog name"
 
 
+def _load_yaml_template(path):
+    """Load a YAML template, stripping bare __PLACEHOLDER__ lines."""
+    import re
+    text = path.read_text()
+    text = re.sub(r'^__[A-Z_]+__\s*$', '', text, flags=re.MULTILINE)
+    return yaml.safe_load(text)
+
+
 def test_all_job_resources_wired_in_template():
-    res = yaml.safe_load(APP_RESOURCES.read_text())
+    res = _load_yaml_template(APP_RESOURCES)
     tmpl = yaml.safe_load(TEMPLATE.read_text())
 
     job_names = {

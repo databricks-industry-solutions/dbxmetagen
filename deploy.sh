@@ -4,7 +4,8 @@
 #   --profile PROFILE    Databricks CLI profile (default: DEFAULT)
 #   --target TARGET      Bundle target: dev or prod (default: dev)
 #   --no-app             Skip app build, SP detection, and app start (jobs + bundle still deploy)
-#   --permissions        Run UC permission grants for app SPN
+#   --no-frontend        Skip frontend npm install/build (use pre-built dist/ from repo)
+#   --no-vs              Skip Vector Search endpoint provisioning
 #   --help               Show this help
 
 set -e
@@ -18,17 +19,20 @@ fi
 
 TARGET="dev"
 PROFILE="DEFAULT"
-RUN_PERMISSIONS=false
 SKIP_APP=false
+SKIP_FRONTEND=false
+SKIP_VS=false
 
 while [[ $# -gt 0 ]]; do
     case $1 in
         --profile)     PROFILE="$2"; shift 2 ;;
         --target)      TARGET="$2"; shift 2 ;;
         --no-app)      SKIP_APP=true; shift ;;
-        --permissions) RUN_PERMISSIONS=true; shift ;;
+        --no-frontend) SKIP_FRONTEND=true; shift ;;
+        --no-vs)       SKIP_VS=true; shift ;;
+        --permissions) echo "Note: --permissions is no longer needed; UC grants now run automatically."; shift ;;
         --help|-h)
-            sed -n '2,7p' "$0"; exit 0 ;;
+            sed -n '2,9p' "$0"; exit 0 ;;
         *)
             echo "Unknown option: $1 (use --help)"; exit 1 ;;
     esac
@@ -38,6 +42,16 @@ done
 if ! command -v databricks &> /dev/null; then
     echo "Error: Databricks CLI not found. Install: https://docs.databricks.com/dev-tools/cli/install.html"
     exit 1
+fi
+
+if [ "$SKIP_FRONTEND" = false ] && [ "$SKIP_APP" = false ]; then
+    if ! command -v npm &> /dev/null; then
+        echo "Error: npm not found. npm is required to build the frontend app."
+        echo "  Install Node.js (which includes npm): https://nodejs.org/"
+        echo "  Or via brew: brew install node"
+        echo "  Or skip the frontend build:  ./deploy.sh --no-frontend"
+        exit 1
+    fi
 fi
 
 if [ ! -f "databricks.yml.template" ]; then
@@ -97,15 +111,59 @@ sed -e "s|__CATALOG_NAME__|${catalog_name}|g" \
     -e "s|__SCHEMA_NAME__|${schema_name}|g" \
     apps/dbxmetagen-app/app/app.yaml.template > apps/dbxmetagen-app/app/app.yaml
 
+echo "=== Generating app resource YAML with permissions ==="
+python3 -c "
+import os, sys
+groups = os.environ.get('permission_groups', 'none')
+users = os.environ.get('permission_users', 'none')
+deployer = os.environ.get('CURRENT_USER', '')
+lines = []
+if groups and groups.strip('\"') not in ('none', ''):
+    for g in groups.strip('\"').split(','):
+        g = g.strip()
+        if g:
+            lines.append('        - group_name: \"{}\"'.format(g))
+            lines.append('          level: CAN_USE')
+if users and users.strip('\"') not in ('none', ''):
+    for u in users.strip('\"').split(','):
+        u = u.strip()
+        if u and u != deployer:
+            lines.append('        - user_name: \"{}\"'.format(u))
+            lines.append('          level: CAN_USE')
+block = ''
+if lines:
+    block = '      permissions:\n' + '\n'.join(lines)
+template = open('resources/apps/dbxmetagen_app.yml.template').read()
+result = template.replace('__APP_PERMISSIONS__', block)
+open('resources/apps/dbxmetagen_app.yml', 'w').write(result)
+n_entries = len(lines) // 2
+print('App permissions: {} entries'.format(n_entries))
+" || { echo "ERROR: Failed to generate app resource YAML"; exit 1; }
+
 if [ "$SKIP_APP" = false ]; then
     # --- Build frontend ---
     echo ""
-    echo "=== Building frontend ==="
-    if [ -f "apps/dbxmetagen-app/app/src/package.json" ]; then
-        (cd apps/dbxmetagen-app/app/src && npm install --silent && npm run build)
-        echo "Frontend built successfully"
+    if [ "$SKIP_FRONTEND" = true ]; then
+        echo "=== Skipping frontend build (--no-frontend) -- using pre-built dist/ ==="
+        if [ ! -f "apps/dbxmetagen-app/app/src/dist/index.html" ]; then
+            echo "ERROR: Pre-built frontend not found at apps/dbxmetagen-app/app/src/dist/"
+            echo "  Run 'cd apps/dbxmetagen-app/app/src && npm install && npm run build' first, or deploy without --no-frontend."
+            exit 1
+        fi
     else
-        echo "No frontend package.json found, skipping build"
+        echo "=== Building frontend ==="
+        if [ -f "apps/dbxmetagen-app/app/src/package.json" ]; then
+            (cd apps/dbxmetagen-app/app/src && npm install --silent && npm run build) || {
+                echo "ERROR: Frontend build failed."
+                echo "  Try running manually:  cd apps/dbxmetagen-app/app/src && npm install && npm run build"
+                echo "  If npm registry is unreachable, check your network/proxy settings."
+                echo "  Or skip the frontend build:  ./deploy.sh --no-frontend"
+                exit 1
+            }
+            echo "Frontend built successfully"
+        else
+            echo "No frontend package.json found, skipping build"
+        fi
     fi
 
     # --- Check for existing app SP ---
@@ -146,12 +204,21 @@ rm -rf dist/
 uv build
 echo "Python package built: $(ls dist/*.whl)"
 
-# --- Copy configurations into app source for deployment ---
+# --- Copy configurations and wheel into app source for deployment ---
 echo ""
-echo "=== Copying configurations into app source ==="
+echo "=== Copying configurations and wheel into app source ==="
 cp -r configurations apps/dbxmetagen-app/app/configurations
+WHL_NAME=$(basename dist/dbxmetagen-*.whl)
+cp "dist/${WHL_NAME}" "apps/dbxmetagen-app/app/${WHL_NAME}"
+sed "s|__WHL_NAME__|${WHL_NAME}|" \
+    apps/dbxmetagen-app/app/requirements.txt.template \
+    > apps/dbxmetagen-app/app/requirements.txt
+echo "Wheel: ${WHL_NAME}"
 cleanup() {
     rm -rf apps/dbxmetagen-app/app/configurations
+    rm -f apps/dbxmetagen-app/app/dbxmetagen-*.whl
+    rm -f apps/dbxmetagen-app/app/requirements.txt
+    rm -f resources/apps/dbxmetagen_app.yml
 }
 trap cleanup EXIT
 
@@ -191,8 +258,8 @@ if [ "$SKIP_APP" = false ]; then
     fi
 fi
 
-# --- Grant UC permissions to app SPN ---
-if [ "$RUN_PERMISSIONS" = true ] && [ -n "${APP_SP_ID}" ]; then
+# --- Grant UC permissions to app SPN (idempotent, runs every deploy) ---
+if [ -n "${APP_SP_ID}" ]; then
     echo ""
     echo "=== Granting UC permissions to app SPN ==="
 
@@ -217,6 +284,7 @@ if [ "$RUN_PERMISSIONS" = true ] && [ -n "${APP_SP_ID}" ]; then
         "GRANT MODIFY ON SCHEMA \`${catalog_name}\`.\`${schema_name}\` TO \`${SPN_APP_ID}\`"
     )
 
+    GRANT_FAIL=0
     for STMT in "${GRANT_STATEMENTS[@]}"; do
         echo "  ${STMT}"
         RESULT=$(databricks api post /api/2.0/sql/statements --profile "$PROFILE" \
@@ -227,23 +295,35 @@ if [ "$RUN_PERMISSIONS" = true ] && [ -n "${APP_SP_ID}" ]; then
         else
             echo "    FAILED (${STATUS})"
             echo "    ${RESULT}"
+            GRANT_FAIL=1
         fi
     done
+    if [ "${GRANT_FAIL}" -eq 1 ]; then
+        echo ""
+        echo "ERROR: One or more GRANT statements failed. The app service principal may not have sufficient permissions."
+        echo "       Fix the failing grants and re-deploy, or grant manually via Databricks UI."
+        exit 1
+    fi
 fi
 
 # --- Ensure Vector Search endpoint ---
-VS_ENDPOINT="${vs_endpoint_name:-dbxmetagen-vs}"
-echo ""
-echo "=== Ensuring Vector Search endpoint: ${VS_ENDPOINT} ==="
-VS_CHECK=$(databricks api get "/api/2.0/vector-search/endpoints/${VS_ENDPOINT}" --profile "$PROFILE" 2>&1) || VS_CHECK=""
-VS_STATE=$(echo "${VS_CHECK}" | python3 -c "import sys,json; print(json.load(sys.stdin).get('endpoint_status',{}).get('state',''))" 2>/dev/null || echo "")
-if [ -n "${VS_STATE}" ] && [ "${VS_STATE}" != "" ]; then
-    echo "VS endpoint exists (state=${VS_STATE})"
+if [ "$SKIP_VS" = false ]; then
+    VS_ENDPOINT="${vs_endpoint_name:-dbxmetagen-vs}"
+    echo ""
+    echo "=== Ensuring Vector Search endpoint: ${VS_ENDPOINT} ==="
+    VS_CHECK=$(databricks api get "/api/2.0/vector-search/endpoints/${VS_ENDPOINT}" --profile "$PROFILE" 2>&1) || VS_CHECK=""
+    VS_STATE=$(echo "${VS_CHECK}" | python3 -c "import sys,json; print(json.load(sys.stdin).get('endpoint_status',{}).get('state',''))" 2>/dev/null || echo "")
+    if [ -n "${VS_STATE}" ] && [ "${VS_STATE}" != "" ]; then
+        echo "VS endpoint exists (state=${VS_STATE})"
+    else
+        echo "Creating VS endpoint '${VS_ENDPOINT}'..."
+        databricks api post /api/2.0/vector-search/endpoints --profile "$PROFILE" \
+            --json "{\"name\": \"${VS_ENDPOINT}\", \"endpoint_type\": \"STANDARD\"}" 2>&1 || echo "  (may already exist)"
+        echo "VS endpoint creation requested"
+    fi
 else
-    echo "Creating VS endpoint '${VS_ENDPOINT}'..."
-    databricks api post /api/2.0/vector-search/endpoints --profile "$PROFILE" \
-        --json "{\"name\": \"${VS_ENDPOINT}\", \"endpoint_type\": \"STANDARD\"}" 2>&1 || echo "  (may already exist)"
-    echo "VS endpoint creation requested"
+    echo ""
+    echo "=== Skipping Vector Search endpoint (--no-vs) ==="
 fi
 
 if [ "$SKIP_APP" = false ]; then

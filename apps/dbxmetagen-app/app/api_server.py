@@ -251,11 +251,20 @@ def multi_hop_traverse(
     max_hops: int = 3,
     relationship: str | None = None,
     edge_type: str | None = None,
+    edge_types: list[str] | None = None,
     direction: str = "outgoing",
 ) -> dict:
-    """Iterative BFS-style graph traversal with support for edge_type filtering."""
+    """Iterative BFS-style graph traversal with support for edge_type filtering.
+
+    Accepts either a single ``edge_type`` or a list of ``edge_types`` (OR filter).
+    If both are provided, ``edge_types`` takes precedence.
+    """
     _validate_filter(relationship, "relationship")
-    _validate_filter(edge_type, "edge_type")
+    if edge_types:
+        for et in edge_types:
+            _validate_filter(et, "edge_type")
+    else:
+        _validate_filter(edge_type, "edge_type")
 
     visited_nodes: dict[str, dict] = {}
     edges_found: list[dict] = []
@@ -264,7 +273,10 @@ def multi_hop_traverse(
     filters = []
     if relationship:
         filters.append(f"e.relationship = {_safe_sql_str(relationship)}")
-    if edge_type:
+    if edge_types:
+        et_list = ", ".join(_safe_sql_str(et) for et in edge_types)
+        filters.append(f"e.edge_type IN ({et_list})")
+    elif edge_type:
         filters.append(f"e.edge_type = {_safe_sql_str(edge_type)}")
     filter_clause = (" AND " + " AND ".join(filters)) if filters else ""
 
@@ -355,7 +367,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="dbxmetagen API", version="0.8.0", lifespan=lifespan)
+app = FastAPI(title="dbxmetagen API", version="0.8.2", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -416,6 +428,7 @@ def get_config():
         "include_lineage": os.environ.get("INCLUDE_LINEAGE", "false").lower() == "true",
         "workspace_host": host.rstrip("/"),
         "available_models": _AVAILABLE_MODELS,
+        "lakebase_configured": pg_configured(),
     }
 
 
@@ -432,6 +445,7 @@ class JobRunRequest(BaseModel):
     mode: Optional[str] = None
     apply_ddl: bool = False
     use_kb_comments: bool = False
+    include_lineage: bool = False
     # Analytics pipeline params
     catalog_name: Optional[str] = None
     schema_name: Optional[str] = None
@@ -442,7 +456,6 @@ class JobRunRequest(BaseModel):
 
 class GraphQueryRequest(BaseModel):
     question: str
-    max_hops: int = 3
 
 
 class GraphTraverseRequest(BaseModel):
@@ -520,6 +533,11 @@ class GenieUpdateAssistRequest(BaseModel):
     existing_items: Optional[list | dict] = None
     user_prompt: str = ""
     model_endpoint: str = _LLM_MODEL
+
+
+class GenieEnrichDescriptionRequest(BaseModel):
+    table_identifier: str
+    existing_description: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -705,6 +723,8 @@ def run_job(req: JobRunRequest):
         params["apply_ddl"] = "true"
     if req.use_kb_comments:
         params["use_kb_comments"] = "true"
+    if req.include_lineage:
+        params["include_lineage"] = "true"
     if req.catalog_name:
         params["catalog_name"] = req.catalog_name
     if req.schema_name:
@@ -1299,22 +1319,75 @@ _GOVERNED_TAG_HINT = (
 
 
 @app.post("/api/metadata/apply-ddl")
-def apply_ddl(body: GenerateDDLBody):
+def apply_ddl(body: GenerateDDLBody, batch: bool = True):
     out = generate_ddl(body)
     stmts = out.get("statements") or []
     errors = []
     applied = 0
-    for s in stmts:
-        try:
-            execute_sql(s, timeout=60)
-            applied += 1
-        except Exception as e:
-            err_str = str(e)
-            detail: dict = {"statement": s[:200], "error": err_str}
-            if "PERMISSION_DENIED" in err_str and "tag" in err_str.lower():
-                detail["governed_tag"] = True
-                detail["hint"] = _GOVERNED_TAG_HINT
-            errors.append(detail)
+
+    if batch and len(stmts) > 1:
+        groups: dict[str, list[str]] = {}
+        table_level = []
+        for s in stmts:
+            upper = s.strip().upper()
+            if upper.startswith("ALTER TABLE") and "ALTER COLUMN" in upper:
+                parts = s.strip().split(None, 3)
+                tbl = parts[2] if len(parts) > 2 else None
+                if tbl:
+                    groups.setdefault(tbl, []).append(s)
+                else:
+                    table_level.append(s)
+            else:
+                table_level.append(s)
+
+        for s in table_level:
+            try:
+                execute_sql(s, timeout=60)
+                applied += 1
+            except Exception as e:
+                err_str = str(e)
+                detail: dict = {"statement": s[:200], "error": err_str}
+                if "PERMISSION_DENIED" in err_str and "tag" in err_str.lower():
+                    detail["governed_tag"] = True
+                    detail["hint"] = _GOVERNED_TAG_HINT
+                errors.append(detail)
+
+        for tbl, tbl_stmts in groups.items():
+            try:
+                alter_clauses = []
+                for s in tbl_stmts:
+                    idx = s.upper().find("ALTER COLUMN")
+                    if idx > 0:
+                        alter_clauses.append(s[idx:].rstrip(";").strip())
+                if alter_clauses:
+                    batch_sql = f"ALTER TABLE {tbl} {' '.join(alter_clauses)};"
+                    execute_sql(batch_sql, timeout=120)
+                    applied += len(tbl_stmts)
+            except Exception:
+                for s in tbl_stmts:
+                    try:
+                        execute_sql(s, timeout=60)
+                        applied += 1
+                    except Exception as e2:
+                        err_str = str(e2)
+                        detail = {"statement": s[:200], "error": err_str}
+                        if "PERMISSION_DENIED" in err_str and "tag" in err_str.lower():
+                            detail["governed_tag"] = True
+                            detail["hint"] = _GOVERNED_TAG_HINT
+                        errors.append(detail)
+    else:
+        for s in stmts:
+            try:
+                execute_sql(s, timeout=60)
+                applied += 1
+            except Exception as e:
+                err_str = str(e)
+                detail: dict = {"statement": s[:200], "error": err_str}
+                if "PERMISSION_DENIED" in err_str and "tag" in err_str.lower():
+                    detail["governed_tag"] = True
+                    detail["hint"] = _GOVERNED_TAG_HINT
+                errors.append(detail)
+
     if errors:
         return {
             "message": "Some DDL statements failed",
@@ -1355,6 +1428,16 @@ def review_combined(body: ReviewCombinedRequest):
         raise HTTPException(400, "Provide at least one table or schema")
     where = " OR ".join(where_parts)
 
+    try:
+        return _review_combined_impl(tbl_kb, col_kb, ent_tbl, fk_tbl, where)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("review_combined failed: %s", e)
+        raise HTTPException(500, detail=str(e))
+
+
+def _review_combined_impl(tbl_kb, col_kb, ent_tbl, fk_tbl, where):
     _has_review_status = False
     try:
         cols = execute_sql(f"DESCRIBE TABLE {tbl_kb}", timeout=15)
@@ -1368,6 +1451,11 @@ def review_combined(body: ReviewCombinedRequest):
         except Exception as e:
             logger.debug("review_combined ADD COLUMN review_status: %s", e)
     rs_expr = "COALESCE(review_status, 'unreviewed') AS review_status" if _has_review_status else "'unreviewed' AS review_status"
+    try:
+        count_rows = execute_sql(f"SELECT COUNT(*) AS cnt FROM {tbl_kb} WHERE {where}", timeout=10)
+        total_count = int(count_rows[0]["cnt"]) if count_rows else 0
+    except Exception:
+        total_count = None
     tbl_rows = execute_sql(f"""
         SELECT table_name, catalog, `schema`, table_short_name, comment,
                domain, subdomain, has_pii, has_phi,
@@ -1375,7 +1463,7 @@ def review_combined(body: ReviewCombinedRequest):
         FROM {tbl_kb} WHERE {where} LIMIT 200
     """)
     if not tbl_rows:
-        return {"tables": []}
+        return {"tables": [], "total_count": total_count or 0, "truncated": False}
 
     tbl_names = [r["table_name"] for r in tbl_rows]
     safe_names = [_safe_sql_str(n) for n in tbl_names]
@@ -1394,7 +1482,7 @@ def review_combined(body: ReviewCombinedRequest):
             SELECT entity_id, entity_type, entity_name, confidence,
                    source_columns, validation_notes, validated,
                    COALESCE(entity_role, 'primary') AS entity_role,
-                   discovery_confidence,
+                   discovery_confidence, entity_uri, source_ontology,
                    EXPLODE(source_tables) as table_name
             FROM {ent_tbl}
             WHERE {_onto_where}
@@ -1403,7 +1491,12 @@ def review_combined(body: ReviewCombinedRequest):
         logger.warning("Enriched ontology query failed (%s), falling back to simple query", e)
         try:
             onto_rows = execute_sql(f"""
-                SELECT entity_type, entity_name, confidence, EXPLODE(source_tables) as table_name
+                SELECT entity_type, entity_name, confidence,
+                       NULL AS entity_id, NULL AS source_columns,
+                       NULL AS validation_notes, false AS validated,
+                       'primary' AS entity_role, NULL AS discovery_confidence,
+                       NULL AS entity_uri, NULL AS source_ontology,
+                       EXPLODE(source_tables) as table_name
                 FROM {ent_tbl}
                 WHERE {_onto_where}
             """)
@@ -1463,6 +1556,8 @@ def review_combined(body: ReviewCombinedRequest):
             "source_columns": raw_cols if isinstance(raw_cols, list) else None,
             "validation_notes": o.get("validation_notes"),
             "validated": o.get("validated"),
+            "entity_uri": o.get("entity_uri"),
+            "source_ontology": o.get("source_ontology"),
         })
     for tbl_name, ents in onto_by_table.items():
         seen = {}
@@ -1512,7 +1607,8 @@ def review_combined(body: ReviewCombinedRequest):
             "column_properties": col_props_by_table.get(tn, []),
             "fk_predictions": fk_by_table.get(tn, []),
         })
-    return {"tables": result}
+    truncated = total_count is not None and total_count > 200
+    return {"tables": result, "total_count": total_count or len(result), "truncated": truncated}
 
 
 class ExportVolumeRequest(BaseModel):
@@ -1833,16 +1929,37 @@ def get_ontology_entities(limit: int = 200):
 
 
 @app.get("/api/ontology/relationships")
-def get_ontology_relationships():
+def get_ontology_relationships(limit: int = 500):
     q = f"""
         SELECT relationship_id, src_entity_type, relationship_name,
                dst_entity_type, cardinality, evidence_column,
                evidence_table, source, confidence
         FROM {fq('ontology_relationships')}
         ORDER BY confidence DESC
+        LIMIT {min(limit, 2000)}
     """
     try:
         return execute_sql(q)
+    except Exception:
+        return []
+
+
+@app.get("/api/ontology/graph-edges")
+def get_ontology_graph_edges(edge_type: str = "", limit: int = 500):
+    """Return edges from the knowledge graph (graph_edges table), optionally filtered by type."""
+    ge_tbl = fq("graph_edges")
+    clauses = ["relationship NOT IN ('similar_embedding', 'shares_column_name')"]
+    if edge_type and _SAFE_IDENT_RE.match(edge_type):
+        clauses.append(f"edge_type = '{_esc_sql(edge_type)}'")
+    where = " AND ".join(clauses)
+    try:
+        return execute_sql(f"""
+            SELECT src, dst, relationship, edge_type, weight, ontology_rel
+            FROM {ge_tbl}
+            WHERE {where}
+            ORDER BY weight DESC
+            LIMIT {min(limit, 2000)}
+        """)
     except Exception:
         return []
 
@@ -1857,6 +1974,320 @@ def get_ontology_summary():
         GROUP BY entity_type ORDER BY count DESC
     """
     return execute_sql(q)
+
+
+@app.get("/api/ontology/turtle")
+def get_ontology_turtle():
+    """Return the last generated Turtle file for the current schema."""
+    vol_path = f"/Volumes/{CATALOG}/{SCHEMA}/generated_metadata/ontology_output.ttl"
+    ttl_candidates = [
+        vol_path,
+        os.path.join(os.path.dirname(__file__), "ontology_output.ttl"),
+        os.path.join(os.path.dirname(__file__), "..", "ontology_output.ttl"),
+        f"/tmp/dbxmetagen_ontology_{SCHEMA}.ttl",
+    ]
+    for path in ttl_candidates:
+        if os.path.isfile(path):
+            with open(path, "r") as f:
+                content = f.read()
+            return Response(content=content, media_type="text/turtle",
+                            headers={"Content-Disposition": f"attachment; filename=ontology_{SCHEMA}.ttl"})
+    try:
+        rows = execute_sql(f"SELECT * FROM read_files('{vol_path}') LIMIT 1")
+        if rows:
+            content = rows[0].get("value", "")
+            return Response(content=content, media_type="text/turtle",
+                            headers={"Content-Disposition": f"attachment; filename=ontology_{SCHEMA}.ttl"})
+    except Exception:
+        pass
+    return JSONResponse({"error": "No Turtle file found. Run ontology build with Turtle export enabled."}, status_code=404)
+
+
+@app.get("/api/ontology/bundle-info")
+def get_ontology_bundle_info(bundle: str = ""):
+    """Return bundle metadata from the cached bundle list (no re-parsing)."""
+    if not bundle:
+        return JSONResponse({"error": "bundle parameter required"}, status_code=400)
+    all_bundles = _list_bundles_local()
+    match = next((b for b in all_bundles if b["key"] == bundle), None)
+    if match:
+        return match
+    return {"bundle": bundle, "format_version": "unknown", "has_tier_indexes": False, "entity_count": 0}
+
+
+class OntologyEntityReviewBody(BaseModel):
+    entity_id: str
+    entity_type: Optional[str] = None
+    entity_uri: Optional[str] = None
+    validated: Optional[bool] = None
+
+
+_ENTITY_UUID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
+
+
+@app.get("/api/ontology/quality-summary")
+def get_ontology_quality_summary():
+    """Active bundle (env), tier hash from disk, and aggregate confidence from ontology_entities."""
+    active = os.environ.get("ONTOLOGY_BUNDLE") or os.environ.get("ontology_bundle") or "healthcare"
+    bundles = _list_bundles_local()
+    info = next((b for b in bundles if b["key"] == active), None)
+    out: dict = {
+        "active_bundle": active,
+        "bundle_info": info,
+        "from_entities": None,
+    }
+    ent_tbl = fq("ontology_entities")
+    try:
+        rows = execute_sql(
+            f"""
+            SELECT
+              COUNT(1) AS entity_rows,
+              ROUND(AVG(confidence), 4) AS avg_confidence,
+              SUM(CASE WHEN COALESCE(confidence, 0) < 0.5 THEN 1 ELSE 0 END) AS below_05,
+              SUM(CASE WHEN COALESCE(confidence, 0) < 0.6 THEN 1 ELSE 0 END) AS below_06
+            FROM {ent_tbl}
+            """,
+            timeout=25,
+        )
+        out["from_entities"] = rows[0] if rows else {}
+    except Exception as e:
+        out["from_entities_error"] = str(e)
+    return out
+
+
+@app.get("/api/ontology/review-queue")
+def get_ontology_review_queue(limit: int = 50, max_confidence: float = 0.6):
+    """Low-confidence entity rows for human review."""
+    ent_tbl = fq("ontology_entities")
+    lim = min(max(1, limit), 500)
+    mc = float(max_confidence)
+    try:
+        return execute_sql(
+            f"""
+            SELECT *
+            FROM {ent_tbl}
+            WHERE COALESCE(confidence, 0) <= {mc}
+            ORDER BY confidence ASC NULLS FIRST
+            LIMIT {lim}
+            """,
+            timeout=30,
+        )
+    except Exception as e:
+        logger.warning("review-queue: %s", e)
+        return []
+
+
+@app.post("/api/ontology/entity-review")
+def post_ontology_entity_review(body: OntologyEntityReviewBody):
+    """Update entity_type / entity_uri / validated for a row in ontology_entities."""
+    if not _ENTITY_UUID_RE.match((body.entity_id or "").strip()):
+        raise HTTPException(400, "entity_id must be a UUID")
+    sets = []
+    if body.entity_type is not None:
+        et = body.entity_type.strip()
+        sets.append(f"entity_type = {_safe_sql_str(et)}")
+        sets.append(f"entity_name = {_safe_sql_str(et)}")
+    if body.entity_uri is not None:
+        sets.append(f"entity_uri = {_safe_sql_str(body.entity_uri)}")
+    if body.validated is not None:
+        sets.append(f"validated = {str(bool(body.validated)).lower()}")
+    if not sets:
+        raise HTTPException(400, "Provide at least one of entity_type, entity_uri, validated")
+    ent_tbl = fq("ontology_entities")
+    eid = _esc_sql(body.entity_id.strip())
+    sql = f"UPDATE {ent_tbl} SET {', '.join(sets)} WHERE entity_id = '{eid}'"
+    try:
+        execute_sql(sql, timeout=45)
+        return {"ok": True, "entity_id": body.entity_id.strip()}
+    except Exception as e:
+        raise HTTPException(500, str(e)) from e
+
+
+# ---------------------------------------------------------------------------
+# Ontology graph store (lazy singleton for SPARQL endpoint)
+# ---------------------------------------------------------------------------
+_ontology_graph_store = None
+_ontology_graph_lock = threading.Lock()
+
+
+def _get_ontology_graph_store():
+    """Lazy-load OntologyGraphStore from Turtle files."""
+    global _ontology_graph_store
+    if _ontology_graph_store is not None:
+        return _ontology_graph_store
+    with _ontology_graph_lock:
+        if _ontology_graph_store is not None:
+            return _ontology_graph_store
+        try:
+            from dbxmetagen.ontology_graph_store import OntologyGraphStore, is_available
+            if not is_available():
+                logger.warning("pyoxigraph not installed -- SPARQL endpoint disabled")
+                return None
+        except ImportError:
+            logger.warning("ontology_graph_store not importable -- SPARQL endpoint disabled")
+            return None
+
+        store = OntologyGraphStore()
+        vol_path = f"/Volumes/{CATALOG}/{SCHEMA}/generated_metadata/ontology_output.ttl"
+        ttl_candidates = [
+            vol_path,
+            os.path.join(os.path.dirname(__file__), "ontology_output.ttl"),
+            os.path.join(os.path.dirname(__file__), "..", "ontology_output.ttl"),
+            f"/tmp/dbxmetagen_ontology_{SCHEMA}.ttl",
+        ]
+        loaded = False
+        for path in ttl_candidates:
+            if os.path.isfile(path):
+                store.load_turtle(path)
+                loaded = True
+                break
+        if not loaded:
+            logger.info("No Turtle file found for SPARQL store -- store empty until build runs")
+        _ontology_graph_store = store
+        return store
+
+
+class SparqlRequest(BaseModel):
+    query: str
+
+
+@app.post("/api/ontology/sparql")
+def ontology_sparql(req: SparqlRequest):
+    """Run a read-only SPARQL SELECT query against the ontology graph."""
+    store = _get_ontology_graph_store()
+    if store is None:
+        return JSONResponse({"error": "SPARQL store not available (pyoxigraph not installed)"}, status_code=503)
+    q = req.query.strip()
+    if not q.upper().startswith(("SELECT", "ASK", "PREFIX")):
+        return JSONResponse({"error": "Only SELECT and ASK queries are supported"}, status_code=400)
+    try:
+        results = store.sparql(q)
+        return {"results": results, "count": len(results), "triple_count": store.triple_count}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+
+
+@app.get("/api/ontology/source/{bundle_name}")
+def get_ontology_source(bundle_name: str):
+    """Serve the source OWL/TTL file for a given bundle."""
+    bd = _find_bundle_dir()
+    if not bd:
+        return JSONResponse({"error": "Bundle dir not found"}, status_code=404)
+    bundle_dir = _safe_bundle_path(bd, bundle_name)
+    if not bundle_dir:
+        return JSONResponse({"error": "Invalid bundle name"}, status_code=400)
+    if os.path.isdir(bundle_dir):
+        for fname in sorted(os.listdir(bundle_dir)):
+            if fname.startswith("source") and fname.endswith((".ttl", ".owl")):
+                fpath = os.path.join(bundle_dir, fname)
+                with open(fpath, "r", encoding="utf-8") as f:
+                    content = f.read()
+                media = "text/turtle" if fname.endswith(".ttl") else "application/rdf+xml"
+                return Response(content=content, media_type=media,
+                                headers={"Content-Disposition": f"attachment; filename={fname}"})
+    return JSONResponse({"error": f"No source file found for bundle '{bundle_name}'"}, status_code=404)
+
+
+@app.get("/api/ontology/source-classes/{bundle_name}")
+def get_ontology_source_classes(bundle_name: str, limit: int = 500):
+    """Return the class hierarchy from a bundle's tier3 YAML for the class browser."""
+    bd = _find_bundle_dir()
+    if not bd:
+        return JSONResponse({"error": "Bundle dir not found"}, status_code=404)
+    safe = _safe_bundle_path(bd, bundle_name)
+    if not safe:
+        return JSONResponse({"error": "Invalid bundle name"}, status_code=400)
+    tier3_path = os.path.join(safe, "entities_tier3.yaml")
+    if not os.path.isfile(tier3_path):
+        return JSONResponse({"error": f"No tier3 index for bundle '{bundle_name}'"}, status_code=404)
+    with open(tier3_path, "r", encoding="utf-8") as f:
+        tier3 = yaml.safe_load(f) or {}
+    classes = []
+    for name, data in list(tier3.items())[:limit]:
+        classes.append({
+            "name": name,
+            "description": data.get("description", ""),
+            "uri": data.get("uri", ""),
+            "parents": data.get("parents", []),
+            "source_ontology": data.get("source_ontology", ""),
+            "keywords": data.get("keywords", [])[:5],
+            "relationships": list(data.get("relationships", {}).keys())[:10],
+            "typical_attributes": data.get("typical_attributes", [])[:10],
+        })
+    return {"bundle": bundle_name, "classes": classes, "total": len(tier3)}
+
+
+@app.post("/api/ontology/import")
+async def import_ontology(
+    file: UploadFile = File(...),
+    bundle_name: str = Form("imported"),
+):
+    """Import a custom OWL/TTL file and generate a bundle YAML + tier indexes."""
+    import tempfile
+    bd = _find_bundle_dir()
+    if not bd:
+        return JSONResponse({"error": "Bundle directory not found"}, status_code=500)
+    safe_yaml = _safe_bundle_path(bd, f"{bundle_name}.yaml")
+    safe_subdir = _safe_bundle_path(bd, bundle_name)
+    if not safe_yaml or not safe_subdir:
+        return JSONResponse({"error": "Invalid bundle name"}, status_code=400)
+
+    content = await file.read()
+    suffix = ".ttl" if file.filename and file.filename.endswith(".ttl") else ".owl"
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+        tmp.write(content)
+        tmp_path = tmp.name
+
+    try:
+        from dbxmetagen.ontology_import import owl_to_bundle_yaml
+        output_yaml = safe_yaml
+        bundle = owl_to_bundle_yaml(tmp_path, output_path=output_yaml, bundle_name=bundle_name)
+
+        bundle_subdir = safe_subdir
+        os.makedirs(bundle_subdir, exist_ok=True)
+        source_dest = os.path.join(bundle_subdir, f"source{suffix}")
+        with open(source_dest, "wb") as f:
+            f.write(content)
+
+        # Generate tier indexes
+        try:
+            from pathlib import Path
+
+            from dbxmetagen.ontology_bundle_indexes import (
+                build_tiers,
+                entities_from_bundle,
+                load_edge_catalog,
+            )
+
+            entities = entities_from_bundle(Path(output_yaml))
+            edge_cat = load_edge_catalog(Path(output_yaml))
+            counts = build_tiers(entities, Path(bundle_subdir), edge_catalog=edge_cat or None)
+        except Exception as tier_err:
+            logger.warning("Tier generation failed (bundle still created): %s", tier_err)
+            counts = {}
+
+        # Invalidate bundle list cache
+        _yaml_cache.clear()
+
+        entity_count = len(bundle.get("ontology", {}).get("entities", {}).get("definitions", {}))
+        edge_count = len(bundle.get("ontology", {}).get("edge_catalog", {}))
+        return {
+            "bundle_name": bundle_name,
+            "entity_count": entity_count,
+            "edge_count": edge_count,
+            "tier_counts": counts,
+            "source_stored": True,
+        }
+    except ImportError:
+        return JSONResponse({"error": "rdflib required for import"}, status_code=500)
+    except Exception as e:
+        logger.exception("Import failed")
+        return JSONResponse({"error": str(e)}, status_code=500)
+    finally:
+        os.unlink(tmp_path)
 
 
 _DOMAIN_CONFIG_DIR = "configurations"
@@ -1893,9 +2324,63 @@ def _find_bundle_dir() -> Optional[str]:
     return None
 
 
+def _safe_bundle_path(bundle_dir: str, bundle_name: str) -> Optional[str]:
+    """Return the resolved path inside bundle_dir, or None if it escapes the root."""
+    joined = os.path.normpath(os.path.join(bundle_dir, bundle_name))
+    if not joined.startswith(os.path.normpath(bundle_dir) + os.sep) and joined != os.path.normpath(bundle_dir):
+        return None
+    return joined
+
+
+def _read_bundle_metadata_fast(filepath: str) -> dict | None:
+    """Read only the metadata block from a bundle YAML without parsing the full file.
+
+    Uses line-based parsing: reads lines from `metadata:` until the next
+    top-level key (un-indented line), handling nested values, comments, and
+    blank lines correctly.
+    """
+    try:
+        lines = []
+        in_meta = False
+        with open(filepath, "r") as f:
+            for line in f:
+                stripped = line.rstrip("\n")
+                if not in_meta:
+                    if stripped.startswith("metadata:"):
+                        in_meta = True
+                        lines.append(stripped)
+                    continue
+                if stripped == "" or stripped.lstrip().startswith("#"):
+                    lines.append(stripped)
+                    continue
+                if stripped[0] not in (" ", "\t"):
+                    break
+                lines.append(stripped)
+        if not lines:
+            return None
+        return yaml.safe_load("\n".join(lines)).get("metadata", {})
+    except Exception:
+        return None
+
+
+def _count_yaml_list(path: str) -> int:
+    """Load a YAML file and return its length if it's a list, else 0."""
+    try:
+        with open(path, "r") as f:
+            data = yaml.safe_load(f)
+        return len(data) if isinstance(data, list) else 0
+    except Exception:
+        return 0
+
+
 @cached(_yaml_cache, key=lambda: "bundles", lock=_yaml_lock)
 def _list_bundles_local() -> list[dict]:
-    """Read ontology bundle YAMLs directly (no dbxmetagen import needed). Cached 300s."""
+    """Read ontology bundle YAMLs directly (no dbxmetagen import needed). Cached 300s.
+
+    Uses fast metadata-only parsing to avoid loading multi-MB bundle files.
+    Falls back to full parse for small files or if fast parse fails.
+    Counts entities/edges across all tier files (tier1 + tier2).
+    """
     bd = _find_bundle_dir()
     if not bd:
         logger.warning("_list_bundles_local: no bundle dir found, returning empty list")
@@ -1905,20 +2390,88 @@ def _list_bundles_local() -> list[dict]:
         if not fname.endswith(".yaml"):
             continue
         try:
-            with open(os.path.join(bd, fname), "r") as f:
-                raw = yaml.safe_load(f)
-            meta = raw.get("metadata", {})
-            bundles.append({
-                "key": fname.replace(".yaml", ""),
-                "name": meta.get("name", fname.replace(".yaml", "")),
+            filepath = os.path.join(bd, fname)
+            bundle_key = fname.replace(".yaml", "")
+            tier_dir = os.path.join(bd, bundle_key)
+            has_tiers = os.path.isdir(tier_dir) and os.path.isfile(os.path.join(tier_dir, "entities_tier1.yaml"))
+
+            file_size = os.path.getsize(filepath)
+            meta = None
+            entity_count = 0
+            edge_count = 0
+            domain_count = 0
+
+            if file_size > 100_000:
+                meta = _read_bundle_metadata_fast(filepath)
+
+            if meta is None:
+                with open(filepath, "r") as f:
+                    raw = yaml.safe_load(f)
+                meta = raw.get("metadata", {})
+                entity_count = len(raw.get("ontology", {}).get("entities", {}).get("definitions", {}))
+                domain_count = len(raw.get("domains", {}))
+
+            if meta is not None and entity_count == 0:
+                entity_count = meta.get("entity_count", 0)
+                edge_count = meta.get("edge_count", 0)
+                domain_count = meta.get("domain_count", domain_count)
+
+            if has_tiers:
+                tier_entity_total = 0
+                tier_edge_total = 0
+                for tier_name in ("entities_tier1.yaml", "entities_tier2.yaml"):
+                    p = os.path.join(tier_dir, tier_name)
+                    if os.path.isfile(p):
+                        tier_entity_total += _count_yaml_list(p)
+                for tier_name in ("edges_tier1.yaml", "edges_tier2.yaml", "edges_tier3.yaml"):
+                    p = os.path.join(tier_dir, tier_name)
+                    if os.path.isfile(p):
+                        tier_edge_total += _count_yaml_list(p)
+                if tier_entity_total > entity_count:
+                    entity_count = tier_entity_total
+                if tier_edge_total > edge_count:
+                    edge_count = tier_edge_total
+
+            bundle_info = {
+                "key": bundle_key,
+                "name": meta.get("name", bundle_key),
                 "industry": meta.get("industry", "general"),
                 "description": meta.get("description", ""),
                 "standards_alignment": meta.get("standards_alignment", ""),
-                "entity_count": len(raw.get("ontology", {}).get("entities", {}).get("definitions", {})),
-                "domain_count": len(raw.get("domains", {})),
+                "entity_count": entity_count,
+                "edge_count": edge_count,
+                "domain_count": domain_count,
                 "bundle_type": meta.get("bundle_type", "ontology"),
                 "tag_key": meta.get("tag_key", ""),
-            })
+                "format_version": meta.get("format_version", "1.0"),
+                "has_tier_indexes": has_tiers,
+            }
+            source_url = meta.get("source_url")
+            if source_url:
+                bundle_info["source_url"] = source_url
+            if has_tiers:
+                try:
+                    from pathlib import Path as _Path
+
+                    from dbxmetagen.ontology_provenance import (
+                        compute_tier_index_hash,
+                        tier_indexes_stale,
+                    )
+
+                    bundle_info["tier_index_hash"] = compute_tier_index_hash(_Path(tier_dir))
+                    bundle_info["tier_indexes_stale"] = tier_indexes_stale(_Path(filepath), _Path(tier_dir))
+                except Exception:
+                    bundle_info["tier_indexes_stale"] = True
+            else:
+                try:
+                    from pathlib import Path as _Path
+
+                    from dbxmetagen.ontology_provenance import tier_indexes_stale
+
+                    bundle_info["tier_indexes_stale"] = tier_indexes_stale(_Path(filepath))
+                except Exception:
+                    bundle_info["tier_indexes_stale"] = True
+            bundles.append(bundle_info)
         except Exception as e:
             logger.debug("Could not read bundle %s: %s", fname, e)
     return bundles
@@ -1939,6 +2492,36 @@ def _resolve_bundle_path_local(bundle_name: str) -> str:
 def get_ontology_bundles():
     """List available ontology bundles with metadata."""
     return _list_bundles_local()
+
+
+@app.post("/api/ontology/bundles/{bundle_key}/rebuild-indexes")
+def rebuild_bundle_indexes(bundle_key: str):
+    """Regenerate tier index files for an existing ontology bundle."""
+    bd = _find_bundle_dir()
+    if not bd:
+        return JSONResponse({"error": "Bundle directory not found"}, status_code=500)
+    bundle_yaml = os.path.join(bd, f"{bundle_key}.yaml")
+    if not os.path.isfile(bundle_yaml):
+        return JSONResponse({"error": f"Bundle '{bundle_key}' not found"}, status_code=404)
+    tier_dir = os.path.join(bd, bundle_key)
+    os.makedirs(tier_dir, exist_ok=True)
+    try:
+        from pathlib import Path
+
+        from dbxmetagen.ontology_bundle_indexes import (
+            build_tiers,
+            entities_from_bundle,
+            load_edge_catalog,
+        )
+
+        entities = entities_from_bundle(Path(bundle_yaml))
+        edge_cat = load_edge_catalog(Path(bundle_yaml))
+        counts = build_tiers(entities, Path(tier_dir), edge_catalog=edge_cat or None)
+    except Exception as e:
+        logger.exception("Failed to rebuild indexes for bundle %s", bundle_key)
+        return JSONResponse({"error": str(e)}, status_code=500)
+    _yaml_cache.clear()
+    return {"bundle_key": bundle_key, "counts": counts, "tier_indexes_stale": False}
 
 
 @app.get("/api/ontology/edge-catalog")
@@ -2060,18 +2643,24 @@ def get_ontology_entities_summary(
     try:
         ent_rows = execute_sql(
             f"""
-            SELECT entity_type, EXPLODE(source_tables) AS table_name
+            SELECT entity_type, source_ontology, entity_uri, EXPLODE(source_tables) AS table_name
             FROM {ent_tbl}
             WHERE {where_ent}
             """,
             timeout=30,
         )
         tables_by_entity = {}
+        source_onto_by_entity: dict[str, set] = {}
+        uri_by_entity: dict[str, set] = {}
         for r in ent_rows:
             et = r.get("entity_type")
             tn = r.get("table_name")
             if et and tn:
                 tables_by_entity.setdefault(et, set()).add(tn)
+            if et and r.get("source_ontology"):
+                source_onto_by_entity.setdefault(et, set()).add(r["source_ontology"])
+            if et and r.get("entity_uri"):
+                uri_by_entity.setdefault(et, set()).add(r["entity_uri"])
     except Exception as e:
         logger.debug("entities-summary entities failed: %s", e)
         return {"entities": []}
@@ -2154,6 +2743,8 @@ def get_ontology_entities_summary(
             "heuristic_matches": heur_m,
             "roles": roles_by_entity.get(et, {}),
             "tables": tables,
+            "source_ontology": ", ".join(sorted(source_onto_by_entity.get(et, set()))) or None,
+            "entity_uri": next(iter(uri_by_entity.get(et, set())), None),
         })
     return {"entities": entities}
 
@@ -2236,11 +2827,12 @@ def get_entity_detail(entity_type: str):
     cp_tbl = fq("ontology_column_properties")
     tables = []
     properties = []
+    entity_uri = None
+    source_ontology = None
     try:
-        # Tables from ontology_entities where entity_type matches
         rows = execute_sql(
             f"""
-            SELECT entity_type, EXPLODE(source_tables) AS table_name
+            SELECT entity_type, entity_uri, source_ontology, EXPLODE(source_tables) AS table_name
             FROM {ent_tbl}
             WHERE entity_type = '{entity_type.replace("'", "''")}'
               AND source_tables IS NOT NULL AND SIZE(source_tables) > 0
@@ -2248,6 +2840,11 @@ def get_entity_detail(entity_type: str):
             timeout=30,
         )
         tables = sorted(set(r["table_name"] for r in rows if r.get("table_name")))
+        for r in rows:
+            if r.get("entity_uri") and not entity_uri:
+                entity_uri = r["entity_uri"]
+            if r.get("source_ontology") and not source_ontology:
+                source_ontology = r["source_ontology"]
     except Exception as e:
         logger.debug("entity-detail tables failed: %s", e)
     try:
@@ -2275,10 +2872,11 @@ def get_entity_detail(entity_type: str):
                 if entity_type in defs:
                     desc = defs[entity_type].get("description")
                     if desc:
-                        return {"tables": tables, "properties": properties, "description": desc}
+                        return {"tables": tables, "properties": properties, "description": desc,
+                                "entity_uri": entity_uri, "source_ontology": source_ontology}
     except Exception:
         pass
-    return {"tables": tables, "properties": properties}
+    return {"tables": tables, "properties": properties, "entity_uri": entity_uri, "source_ontology": source_ontology}
 
 
 def _resolve_domain_config_path(key: str) -> str:
@@ -3029,18 +3627,6 @@ def fk_apply_as_tags(body: FKApplyPredictionsBody):
     return {"results": results}
 
 
-@app.get("/api/ontology/graph-edges")
-def get_ontology_graph_edges(limit: int = 500):
-    """Return entity-level relationship edges for the ontology graph visualization."""
-    q = f"""
-        SELECT src, dst, relationship, weight
-        FROM {fq('graph_edges')}
-        WHERE relationship NOT IN ('similar_embedding', 'shares_column_name')
-        ORDER BY weight DESC LIMIT {limit}
-    """
-    return execute_sql(q)
-
-
 @app.get("/api/ontology/metrics")
 def get_ontology_metrics():
     """Return computed ontology health metrics from ontology_metrics table."""
@@ -3147,6 +3733,8 @@ def viz_fk_map():
 def get_coverage_summary(catalog: Optional[str] = None):
     """Coverage summary: profiled vs unprofiled tables. Cached 60s."""
     cat = catalog or CATALOG
+    if not re.fullmatch(r"[a-zA-Z0-9_\-]+", cat):
+        raise HTTPException(status_code=400, detail="Invalid catalog name")
     cache_key = f"summary:{cat}"
     with _coverage_lock:
         if cache_key in _coverage_cache:
@@ -3404,13 +3992,16 @@ def get_coverage_review_summary(catalog: Optional[str] = None):
 
 @app.post("/api/graph/query")
 async def graph_rag_query(req: GraphQueryRequest):
-    """Answer a natural-language question by traversing the knowledge graph."""
+    """Answer a natural-language question by traversing the knowledge graph.
+
+    Delegates to the deterministic GraphRAG pipeline in deep_analysis.
+    """
     try:
-        from agent.graph import run_graph_agent
+        from agent.deep_analysis import run_deep_analysis
     except ImportError as e:
         raise HTTPException(503, detail=f"Agent not available: {e}")
     try:
-        result = await run_graph_agent(req.question, max_hops=req.max_hops)
+        result = run_deep_analysis(req.question, mode="graphrag")
         return result
     except Exception as exc:
         msg = str(exc)
@@ -3785,7 +4376,7 @@ def list_metric_views(status: Optional[str] = None):
         status_filter = "status = 'created'"
     q = (
         f"SELECT definition_id, metric_view_name, source_table, status, "
-        f"genie_space_id, created_at "
+        f"genie_space_id, created_at, deployed_catalog, deployed_schema "
         f"FROM ("
         f"  SELECT *, ROW_NUMBER() OVER ("
         f"    PARTITION BY metric_view_name, source_table "
@@ -4165,25 +4756,32 @@ def _build_sl_context(
                 line += f" WHERE {m['filter_condition']}"
             parts.append(line)
 
-    # Fallback to information_schema when KB is empty
+    # Fallback to information_schema when KB is empty -- supports multi-schema
     if not table_rows:
-        short_names = [t.split(".")[-1] for t in fq_tables]
-        short_clause = ", ".join(f"'{t}'" for t in short_names)
-        info_cols = execute_sql(
-            f"SELECT table_name, column_name, data_type "
-            f"FROM `{cat}`.information_schema.columns "
-            f"WHERE table_schema = '{sch}' AND table_name IN ({short_clause})"
-        )
-        col_by_tbl: dict[str, list] = {}
-        for c in info_cols:
-            col_by_tbl.setdefault(c["table_name"], []).append(c)
-        for tname, cols in col_by_tbl.items():
-            col_strs = [
-                f"  - {c['column_name']} {c.get('data_type', '')}" for c in cols
-            ]
-            parts.append(
-                f"Table: {cat}.{sch}.{tname}\n  Columns:\n" + "\n".join(col_strs)
+        tables_by_location: dict[tuple[str, str], list[str]] = {}
+        for t in fq_tables:
+            t_parts = t.split(".")
+            if len(t_parts) == 3:
+                tables_by_location.setdefault((t_parts[0], t_parts[1]), []).append(t_parts[2])
+            else:
+                tables_by_location.setdefault((cat, sch), []).append(t_parts[-1])
+        for (t_cat, t_sch), t_names in tables_by_location.items():
+            short_clause = ", ".join(f"'{t}'" for t in t_names)
+            info_cols = execute_sql(
+                f"SELECT table_name, column_name, data_type "
+                f"FROM `{t_cat}`.information_schema.columns "
+                f"WHERE table_schema = '{t_sch}' AND table_name IN ({short_clause})"
             )
+            col_by_tbl: dict[str, list] = {}
+            for c in info_cols:
+                col_by_tbl.setdefault(c["table_name"], []).append(c)
+            for tname, cols in col_by_tbl.items():
+                col_strs = [
+                    f"  - {c['column_name']} {c.get('data_type', '')}" for c in cols
+                ]
+                parts.append(
+                    f"Table: {t_cat}.{t_sch}.{tname}\n  Columns:\n" + "\n".join(col_strs)
+                )
 
     # --- Phase 1 enrichment: VS, Graph, Extended SQL (parallel) ---
     enrichment_parts: list[str] = []
@@ -5440,6 +6038,7 @@ def _run_sl_generation(
             plan_views = _inject_fk_joins(plan_views, tables, cat, sch)
 
         # Phase 2: Generate each view individually, or fall back to single-shot
+        response = ""
         definitions = []
         if plan_views:
             task["stage"] = "generating"
@@ -5727,6 +6326,14 @@ def _fetch_definition(definition_id: str) -> dict:
     return rows[0]
 
 
+def _cat_sch_from_source(source: str) -> tuple[str, str]:
+    """Extract catalog/schema from an FQ source table, falling back to app defaults."""
+    parts = source.split(".") if source else []
+    if len(parts) >= 3:
+        return parts[0], parts[1]
+    return CATALOG, SCHEMA
+
+
 def _parse_single_json(text: str) -> dict:
     """Extract a single JSON object from an AI response."""
     text = re.sub(r"^```(?:json)?\s*", "", text.strip())
@@ -5933,7 +6540,8 @@ def retry_definition(definition_id: str):
         except Exception:
             pass
 
-    context = _build_sl_context([source], CATALOG, SCHEMA)
+    src_cat, src_sch = _cat_sch_from_source(source)
+    context = _build_sl_context([source], src_cat, src_sch)
     ref_rules = _load_agent_reference("metric_view_reference.json", ["yaml_syntax_rules", "anti_patterns"])
     prompt = f"""You are fixing a metric view definition that has SQL errors.
 
@@ -6095,15 +6703,17 @@ def export_metric_views_sql(catalog: Optional[str] = None, schema: Optional[str]
     )
     if not rows:
         raise HTTPException(404, detail="No applied metric view definitions found")
-    target_cat = catalog or CATALOG
-    target_sch = schema or SCHEMA
+    default_cat = catalog or CATALOG
+    default_sch = schema or SCHEMA
     statements = []
     for row in rows:
         defn = json.loads(row["json_definition"]) if isinstance(row["json_definition"], str) else row["json_definition"]
         mv_name = defn.get("name") or row.get("metric_view_name", "")
         if not mv_name:
             continue
-        fq_mv = f"`{target_cat}`.`{target_sch}`.`{mv_name}`"
+        mv_cat = row.get("deployed_catalog") or default_cat
+        mv_sch = row.get("deployed_schema") or default_sch
+        fq_mv = f"`{mv_cat}`.`{mv_sch}`.`{mv_name}`"
         yaml_body = _definition_to_yaml(defn)
         statements.append(f"CREATE OR REPLACE VIEW {fq_mv}\nWITH METRICS LANGUAGE YAML AS $$\n{yaml_body}$$")
     if not statements:
@@ -6123,7 +6733,8 @@ def improve_definition(definition_id: str):
     row = _fetch_definition(definition_id)
     defn = json.loads(row["json_definition"]) if isinstance(row["json_definition"], str) else row["json_definition"]
     source = defn.get("source", row.get("source_table", ""))
-    context = _build_sl_context([source], CATALOG, SCHEMA) if source else ""
+    src_cat, src_sch = _cat_sch_from_source(source) if source else (CATALOG, SCHEMA)
+    context = _build_sl_context([source], src_cat, src_sch) if source else ""
     ref_rules = _load_agent_reference("metric_view_reference.json", ["measure_patterns", "yaml_syntax_rules"])
 
     prompt = f"""You are improving a metric view definition. Make it more comprehensive and useful.
@@ -6227,7 +6838,7 @@ def genie_generate_questions(req: SuggestQuestionsRequest):
     wh = os.environ.get("WAREHOUSE_ID", "")
     if not wh:
         raise HTTPException(500, detail="WAREHOUSE_ID not configured")
-    from agent.genie_builder import GenieContextAssembler
+    from dbxmetagen.genie.context import GenieContextAssembler
     from langchain_community.chat_models import ChatDatabricks
 
     ws = get_workspace_client()
@@ -6312,8 +6923,8 @@ def genie_generate(req: GenieGenerateRequest):
 
     def _run():
         try:
-            from agent.genie_builder import GenieContextAssembler
-            from agent.genie_agent import run_genie_agent
+            from dbxmetagen.genie.context import GenieContextAssembler
+            from dbxmetagen.genie.agent import run_genie_agent
 
             ws = get_workspace_client()
             progress_q: queue.Queue = queue.Queue()
@@ -6458,7 +7069,7 @@ def genie_task_status(task_id: str):
     return resp
 
 
-from genie_schema import build_serialized_space
+from dbxmetagen.genie.schema import build_serialized_space
 
 
 def _transform_to_genie_schema(raw: dict) -> dict:
@@ -6603,7 +7214,7 @@ def _strip_out_of_scope_sql(ss: dict) -> dict:
     if not valid_ids:
         return ss
 
-    from genie_schema import _extract_table_refs_from_sql
+    from dbxmetagen.genie.schema import _extract_table_refs_from_sql
 
     def _refs_ok(sql_list: list[str]) -> bool:
         for sql in sql_list:
@@ -6630,6 +7241,7 @@ def _strip_out_of_scope_sql(ss: dict) -> dict:
     if join_specs:
         valid_short_lower = {v.split(".")[-1].lower() for v in valid_ids}
         valid_lower = {v.lower() for v in valid_ids} | valid_short_lower
+        logger.warning("[join-diag] valid_short_lower: %s", sorted(valid_short_lower)[:20])
         valid_joins = []
         for js in join_specs:
             sql_list = js.get("sql", [])
@@ -6647,8 +7259,8 @@ def _strip_out_of_scope_sql(ss: dict) -> dict:
                 left_id = js.get("left", {}).get("identifier", "?")
                 right_id = js.get("right", {}).get("identifier", "?")
                 logger.warning(
-                    "Stripped out-of-scope join_spec (%s <-> %s): bad refs %s in SQL %s",
-                    left_id, right_id, bad, sql_list,
+                    "[join-diag] STRIPPED join (%s <-> %s): extracted refs %s, bad refs %s, SQL %s",
+                    left_id, right_id, join_refs, bad, sql_list,
                 )
         inst["join_specs"] = valid_joins
 
@@ -6686,6 +7298,14 @@ def genie_create(req: GenieCreateRequest):
             if l_id and r_id:
                 prebuilt_pairs.add(tuple(sorted([l_id.lower(), r_id.lower()])))
     transformed = _transform_to_genie_schema(req.serialized_space)
+
+    _pre_strip_joins = transformed.get("instructions", {}).get("join_specs", [])
+    logger.warning(
+        "[join-diag] after build_serialized_space: %d joins. SQL samples: %s",
+        len(_pre_strip_joins),
+        [js.get("sql", [])[:1] for js in _pre_strip_joins[:3]],
+    )
+
     validation_errors = _validate_serialized_space(transformed)
     if validation_errors:
         raise HTTPException(
@@ -6702,6 +7322,13 @@ def genie_create(req: GenieCreateRequest):
         raise HTTPException(400, detail="Data source validation failed: " + "; ".join(exist_errors))
 
     transformed = _strip_out_of_scope_sql(transformed)
+
+    _post_strip_joins = transformed.get("instructions", {}).get("join_specs", [])
+    logger.warning(
+        "[join-diag] after _strip_out_of_scope_sql: %d joins (was %d)",
+        len(_post_strip_joins), len(_pre_strip_joins),
+    )
+
     transformed = _validate_sql_expressions(transformed, wh)
 
     _inst = transformed.get("instructions", {})
@@ -6923,7 +7550,7 @@ def genie_update_assist(req: GenieUpdateAssistRequest):
         raise HTTPException(500, detail="WAREHOUSE_ID not configured")
     cat = os.environ.get("CATALOG_NAME", "")
     sch = os.environ.get("SCHEMA_NAME", "")
-    from agent.genie_builder import generate_section_assist
+    from dbxmetagen.genie.context import generate_section_assist
     result = generate_section_assist(
         ws=ws, warehouse_id=wh, catalog=cat, schema=sch,
         section=req.section,
@@ -6935,6 +7562,93 @@ def genie_update_assist(req: GenieUpdateAssistRequest):
     if "error" in result and len(result) == 1:
         raise HTTPException(500, detail=result["error"])
     return result
+
+
+@app.post("/api/genie/enrich-description")
+def genie_enrich_description(req: GenieEnrichDescriptionRequest):
+    """LLM-powered enrichment of a Genie table description using KB metadata."""
+    if not req.table_identifier:
+        raise HTTPException(400, detail="table_identifier required")
+    wh = os.environ.get("WAREHOUSE_ID", "")
+    if not wh:
+        raise HTTPException(500, detail="WAREHOUSE_ID not configured")
+
+    tbl_safe = _safe_sql_str(req.table_identifier)
+    table_rows = execute_sql(
+        f"SELECT comment, domain, subdomain FROM {fq('table_knowledge_base')} WHERE table_name = {tbl_safe} LIMIT 1"
+    )
+    col_rows = execute_sql(
+        f"SELECT column_name, data_type, comment FROM {fq('column_knowledge_base')} WHERE table_name = {tbl_safe} ORDER BY column_name"
+    )
+
+    if not table_rows and not col_rows:
+        raise HTTPException(404, detail=f"No KB data found for {req.table_identifier}")
+
+    kb_context_parts = []
+    if table_rows:
+        t = table_rows[0]
+        kb_context_parts.append(f"Table comment: {t.get('comment', 'N/A')}")
+        if t.get("domain"):
+            kb_context_parts.append(f"Domain: {t['domain']}")
+        if t.get("subdomain"):
+            kb_context_parts.append(f"Subdomain: {t['subdomain']}")
+    if col_rows:
+        col_lines = [f"  - {c['column_name']} ({c.get('data_type', '?')}): {c.get('comment', '')}" for c in col_rows]
+        kb_context_parts.append("Columns:\n" + "\n".join(col_lines))
+
+    kb_context = "\n".join(kb_context_parts)
+    existing = req.existing_description or "(none)"
+
+    from langchain_community.chat_models import ChatDatabricks
+    model = os.environ.get("LLM_MODEL", "databricks-claude-sonnet-4-6")
+    llm = ChatDatabricks(endpoint=model, temperature=0.1, max_tokens=2048, max_retries=1, request_timeout=60)
+    messages = [
+        {"role": "system", "content": (
+            "You write concise, Genie-optimized table descriptions for Databricks Genie Spaces. "
+            "A good description helps Genie understand what the table contains, its business purpose, "
+            "and key columns so it can generate accurate SQL. Keep it under 3 sentences."
+        )},
+        {"role": "user", "content": (
+            f"Enrich this table description using the knowledge base metadata below.\n\n"
+            f"Table: {req.table_identifier}\n"
+            f"Current description: {existing}\n\n"
+            f"=== Knowledge Base Metadata ===\n{kb_context}\n\n"
+            f"Write an improved description that incorporates the KB context. "
+            f"Output ONLY the description text, no quotes or explanation."
+        )},
+    ]
+    result = llm.invoke(messages)
+    content = (getattr(result, "content", "") or "").strip().strip('"').strip("'")
+    return {"description": content}
+
+
+@app.get("/api/genie/uc-comment")
+def genie_uc_comment(table_identifier: str):
+    """Fetch the live Unity Catalog comment for a table."""
+    parts = table_identifier.split(".")
+    if len(parts) != 3:
+        raise HTTPException(400, detail="table_identifier must be catalog.schema.table")
+    cat, sch, tbl = parts
+    for p in (cat, sch, tbl):
+        _validate_filter(p, "identifier_part")
+    rows = execute_sql(
+        f"SELECT comment FROM {cat}.information_schema.tables "
+        f"WHERE table_schema = {_safe_sql_str(sch)} AND table_name = {_safe_sql_str(tbl)} LIMIT 1"
+    )
+    comment = rows[0].get("comment") if rows else None
+    return {"comment": comment}
+
+
+@app.get("/api/genie/table-columns")
+def genie_table_columns(table_identifier: str):
+    """Fetch column names, types, and KB comments for a table."""
+    tbl_safe = _safe_sql_str(table_identifier)
+    rows = execute_sql(
+        f"SELECT column_name, data_type, comment "
+        f"FROM {fq('column_knowledge_base')} "
+        f"WHERE table_name = {tbl_safe} ORDER BY column_name"
+    )
+    return {"columns": rows or []}
 
 
 # ---------------------------------------------------------------------------
@@ -7307,7 +8021,7 @@ def suggest_kpis(req: KpiSuggestRequest):
     wh = os.environ.get("WAREHOUSE_ID", "")
     if not wh:
         raise HTTPException(500, detail="WAREHOUSE_ID not configured")
-    from agent.genie_builder import GenieContextAssembler
+    from dbxmetagen.genie.context import GenieContextAssembler
     from langchain_community.chat_models import ChatDatabricks
 
     ws = get_workspace_client()

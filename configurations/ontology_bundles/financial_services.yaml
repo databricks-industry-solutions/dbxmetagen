@@ -4,6 +4,7 @@
 metadata:
   name: "Financial Services"
   version: "3.0"
+  format_version: "2.0"
   industry: "financial_services"
   description: "Banking, insurance, and capital markets ontology with financial instrument and risk entity types"
   standards_alignment: "BIAN, FIBO, ISO 20022"
@@ -91,6 +92,8 @@ ontology:
       # General entities
       Person:
         description: "People, customers, contacts, users, or employees"
+        uri: "https://schema.org/Person"
+        source_ontology: "schema.org"
         keywords: ["customer", "employee", "user", "contact", "person", "applicant", "borrower"]
         typical_attributes: [id, name, email, phone, address, created_date]
         relationships:
@@ -98,6 +101,8 @@ ontology:
           part_of: { target: Organization, cardinality: "many-to-one" }
       Organization:
         description: "Companies, departments, facilities, or business units"
+        uri: "https://schema.org/Organization"
+        source_ontology: "schema.org"
         keywords: ["company", "organization", "department", "facility", "tenant", "branch", "subsidiary"]
         typical_attributes: [id, name, type, address, parent_id]
         relationships:
@@ -105,11 +110,15 @@ ontology:
           part_of: { target: Organization, cardinality: "many-to-one" }
       Product:
         description: "Goods, services, SKUs, or catalog items"
+        uri: "https://schema.org/Product"
+        source_ontology: "schema.org"
         keywords: ["product", "item", "sku", "catalog", "offering"]
         typical_attributes: [id, name, description, price, category, status]
         relationships: {}
       Transaction:
         description: "Orders, purchases, payments, invoices, or financial events"
+        uri: "https://schema.org/Invoice"
+        source_ontology: "schema.org"
         keywords: ["transaction", "order", "payment", "invoice", "purchase", "transfer", "wire"]
         typical_attributes: [id, customer_id, amount, date, status, currency]
         relationships:
@@ -117,27 +126,37 @@ ontology:
           by_person: { target: Person, cardinality: "many-to-one" }
       Location:
         description: "Addresses, sites, regions, facilities, or geographies"
+        uri: "https://schema.org/Place"
+        source_ontology: "schema.org"
         keywords: ["location", "address", "site", "region", "facility", "branch"]
         typical_attributes: [id, name, address, city, state, country, zip_code]
         relationships: {}
       Event:
         description: "Activities, logs, sessions, audits, or system events"
+        uri: "https://schema.org/Event"
+        source_ontology: "schema.org"
         keywords: ["event", "activity", "log", "audit", "session"]
         typical_attributes: [id, type, timestamp, user_id, details]
         relationships:
           references: { target: Person, cardinality: "many-to-one" }
       Reference:
         description: "Lookup tables, codes, categories, dimensions, or configuration"
+        uri: "https://schema.org/Thing"
+        source_ontology: "schema.org"
         keywords: ["reference", "lookup", "code", "category", "dim_"]
         typical_attributes: [id, code, name, description, active]
         relationships: {}
       Metric:
         description: "KPIs, aggregates, facts, summaries, or analytic measures"
+        uri: "https://schema.org/QuantitativeValue"
+        source_ontology: "schema.org"
         keywords: ["metric", "kpi", "aggregate", "fact_", "summary"]
         typical_attributes: [id, name, value, period, dimension]
         relationships: {}
       Document:
         description: "Unstructured content, notes, files, or text records"
+        uri: "https://schema.org/DigitalDocument"
+        source_ontology: "schema.org"
         keywords: ["document", "note", "file", "content", "text", "contract", "agreement"]
         typical_attributes: [id, title, body, author, created_date, type]
         relationships:
@@ -146,6 +165,8 @@ ontology:
       # Financial Services entities
       Account:
         description: "Bank accounts, investment accounts, loan accounts, or general ledger accounts"
+        uri: "https://spec.edmcouncil.org/fibo/ontology/FND/AccountingExt/Account"
+        source_ontology: "FIBO"
         keywords: ["account", "deposit", "savings", "checking", "loan_account", "gl_account"]
         typical_attributes: [id, account_number, type, balance, currency, status, open_date]
         relationships:
@@ -188,6 +209,8 @@ ontology:
             typical_attributes: ["owner_id", "customer_id", "person_id"]
       Portfolio:
         description: "Investment portfolios, fund holdings, or asset allocations"
+        uri: "https://spec.edmcouncil.org/fibo/ontology/SEC/Securities/Portfolios/Portfolio"
+        source_ontology: "FIBO"
         keywords: ["portfolio", "fund", "holding", "allocation", "basket"]
         typical_attributes: [id, name, manager, strategy, aum, benchmark]
         relationships:
@@ -222,6 +245,8 @@ ontology:
             typical_attributes: ["manager", "manager_id", "advisor_id"]
       Trade:
         description: "Securities trades, FX transactions, or market orders"
+        uri: "https://spec.edmcouncil.org/fibo/ontology/FBC/FunctionalEntities/Trade"
+        source_ontology: "FIBO"
         keywords: ["trade", "execution", "fill", "market_order", "limit_order", "swap"]
         typical_attributes: [id, instrument_id, side, quantity, price, timestamp, status]
         relationships:
@@ -230,6 +255,8 @@ ontology:
           on_account: { target: Account, cardinality: "many-to-one" }
       Instrument:
         description: "Financial instruments -- equities, bonds, derivatives, currencies"
+        uri: "https://spec.edmcouncil.org/fibo/ontology/FBC/FinancialInstruments/FinancialInstrument"
+        source_ontology: "FIBO"
         keywords: ["instrument", "security", "equity", "bond", "derivative", "option", "future", "isin", "cusip"]
         typical_attributes: [id, symbol, isin, cusip, type, currency, issuer, maturity_date]
         relationships:
@@ -271,12 +298,16 @@ ontology:
             typical_attributes: ["issuer", "issuer_id", "issuing_org_id"]
       Counterparty:
         description: "Trading counterparties, custodians, or correspondent banks"
+        uri: "https://spec.edmcouncil.org/fibo/ontology/FBC/FunctionalEntities/Counterparty"
+        source_ontology: "FIBO"
         keywords: ["counterparty", "custodian", "broker", "dealer", "correspondent", "clearing"]
         typical_attributes: [id, name, type, lei, credit_rating, jurisdiction]
         relationships:
           has_trade: { target: Trade, cardinality: "one-to-many" }
       Risk:
         description: "Risk exposures, limits, VaR, stress tests, or credit scores"
+        uri: "https://bian.org/servicedomain/RiskManagement"
+        source_ontology: "BIAN"
         keywords: ["risk", "exposure", "var", "stress_test", "credit_score", "limit", "collateral"]
         typical_attributes: [id, type, value, threshold, entity_id, date]
         relationships:
@@ -317,6 +348,8 @@ ontology:
             typical_attributes: ["instrument_id", "security_id"]
       Compliance:
         description: "Regulatory filings, KYC records, AML alerts, or sanctions screening"
+        uri: "https://bian.org/servicedomain/RegulatoryCompliance"
+        source_ontology: "BIAN"
         keywords: ["compliance", "kyc", "aml", "sanctions", "filing", "regulatory", "sar"]
         typical_attributes: [id, type, status, entity_id, date, resolution]
         relationships:
@@ -324,6 +357,8 @@ ontology:
           for_organization: { target: Organization, cardinality: "many-to-one" }
       Claim:
         description: "Insurance claims, loss events, or reimbursement requests"
+        uri: "https://bian.org/servicedomain/ClaimsHandling/Claim"
+        source_ontology: "BIAN"
         keywords: ["claim", "loss", "incident", "reimbursement", "adjudication"]
         typical_attributes: [id, policy_id, amount, date, status, type]
         relationships:
@@ -331,6 +366,8 @@ ontology:
           filed_by: { target: Person, cardinality: "many-to-one" }
       Policy:
         description: "Insurance policies, coverage terms, or underwriting records"
+        uri: "https://bian.org/servicedomain/InsurancePolicy"
+        source_ontology: "BIAN"
         keywords: ["policy", "coverage", "underwriting", "premium", "insured", "endorsement"]
         typical_attributes: [id, policy_number, type, premium, effective_date, expiry_date]
         relationships:
@@ -375,6 +412,8 @@ ontology:
             typical_attributes: ["issuer_id", "carrier_id", "underwriter_id"]
       Loan:
         description: "Loans, mortgages, credit facilities, or lending agreements"
+        uri: "https://spec.edmcouncil.org/fibo/ontology/LOAN/LoanTypes/Loan"
+        source_ontology: "FIBO"
         keywords: ["loan", "mortgage", "credit_facility", "lending", "origination", "amortization"]
         typical_attributes: [id, borrower_id, principal, rate, term, status, origination_date]
         relationships:

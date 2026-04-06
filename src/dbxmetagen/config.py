@@ -117,6 +117,9 @@ class MetadataConfig:
             "use_kb_comments",
             "include_profiling_context",
             "include_constraint_context",
+            "max_ai_candidates",
+            "rule_score_min_for_ai",
+            "max_candidates_per_table_pair",
         ],
         "yaml_advanced_file_path": "../variables.advanced.yml",
         "yaml_advanced_variable_names": [
@@ -195,24 +198,18 @@ class MetadataConfig:
         self.enable_benchmarking = _parse_bool(
             getattr(self, "enable_benchmarking", False)
         )
-        self.use_kb_comments = _parse_bool(
-            getattr(self, "use_kb_comments", False)
-        )
+        self.use_kb_comments = _parse_bool(getattr(self, "use_kb_comments", False))
         self.allow_manual_override = _parse_bool(
             getattr(self, "allow_manual_override", True)
         )
         self.use_ontology_context = _parse_bool(
             getattr(self, "use_ontology_context", False)
         )
-        self.include_lineage = _parse_bool(
-            getattr(self, "include_lineage", True)
-        )
+        self.include_lineage = _parse_bool(getattr(self, "include_lineage", True))
         self.include_deterministic_pi = _parse_bool(
             getattr(self, "include_deterministic_pi", True)
         )
-        self.incremental = _parse_bool(
-            getattr(self, "incremental", True)
-        )
+        self.incremental = _parse_bool(getattr(self, "incremental", True))
         self.build_knowledge_graph = _parse_bool(
             getattr(self, "build_knowledge_graph", False)
         )
@@ -253,14 +250,10 @@ class MetadataConfig:
         self.cleanup_failed_tables = _parse_bool(
             getattr(self, "cleanup_failed_tables", False)
         )
-        self.claim_timeout_minutes = int(
-            getattr(self, "claim_timeout_minutes", 60)
-        )
+        self.claim_timeout_minutes = int(getattr(self, "claim_timeout_minutes", 60))
 
         # Federation mode: force apply_ddl=false when reading from federated catalogs
-        self.federation_mode = _parse_bool(
-            getattr(self, "federation_mode", False)
-        )
+        self.federation_mode = _parse_bool(getattr(self, "federation_mode", False))
         if self.federation_mode:
             self.apply_ddl = False
             self.add_metadata = _parse_bool(getattr(self, "add_metadata", True))
@@ -275,9 +268,7 @@ class MetadataConfig:
         self.two_stage_classification = _parse_bool(
             getattr(self, "two_stage_classification", True)
         )
-        self.domain_prefilter_top_n = int(
-            getattr(self, "domain_prefilter_top_n", 5)
-        )
+        self.domain_prefilter_top_n = int(getattr(self, "domain_prefilter_top_n", 5))
         self.domain_confidence_threshold = float(
             getattr(self, "domain_confidence_threshold", 0.5)
         )

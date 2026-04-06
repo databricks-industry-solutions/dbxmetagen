@@ -103,6 +103,7 @@ def traverse_graph(
     max_hops: int = 3,
     relationship: Optional[str] = None,
     edge_type: Optional[str] = None,
+    edge_types: Optional[list[str]] = None,
     direction: str = "outgoing",
 ) -> dict:
     """Multi-hop graph traversal from a starting node.
@@ -115,7 +116,8 @@ def traverse_graph(
         start_node: Node id to start traversal from.
         max_hops: Maximum number of hops (1-5).
         relationship: Optional edge relationship filter (e.g. 'contains', 'similar_embedding').
-        edge_type: Optional edge_type filter (contains, references, instance_of, similar_to, etc.).
+        edge_type: Optional single edge_type filter.
+        edge_types: Optional list of edge_type filters (OR). Takes precedence over edge_type.
         direction: 'outgoing' (follow src->dst), 'incoming' (follow dst->src), or 'both'.
     """
     t0 = time.time()
@@ -127,6 +129,7 @@ def traverse_graph(
             max_hops=min(max_hops, 5),
             relationship=relationship,
             edge_type=edge_type,
+            edge_types=edge_types,
             direction=direction,
         )
     except Exception as e:

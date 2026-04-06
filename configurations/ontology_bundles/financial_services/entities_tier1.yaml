@@ -1,0 +1,39 @@
+- name: Account
+  description: Bank accounts, investment accounts, loan accounts, or general ledger
+    accounts
+- name: Claim
+  description: Insurance claims, loss events, or reimbursement requests
+- name: Compliance
+  description: Regulatory filings, KYC records, AML alerts, or sanctions screening
+- name: Counterparty
+  description: Trading counterparties, custodians, or correspondent banks
+- name: Document
+  description: Unstructured content, notes, files, or text records
+- name: Event
+  description: Activities, logs, sessions, audits, or system events
+- name: Instrument
+  description: Financial instruments -- equities, bonds, derivatives, currencies
+- name: Loan
+  description: Loans, mortgages, credit facilities, or lending agreements
+- name: Location
+  description: Addresses, sites, regions, facilities, or geographies
+- name: Metric
+  description: KPIs, aggregates, facts, summaries, or analytic measures
+- name: Organization
+  description: Companies, departments, facilities, or business units
+- name: Person
+  description: People, customers, contacts, users, or employees
+- name: Policy
+  description: Insurance policies, coverage terms, or underwriting records
+- name: Portfolio
+  description: Investment portfolios, fund holdings, or asset allocations
+- name: Product
+  description: Goods, services, SKUs, or catalog items
+- name: Reference
+  description: Lookup tables, codes, categories, dimensions, or configuration
+- name: Risk
+  description: Risk exposures, limits, VaR, stress tests, or credit scores
+- name: Trade
+  description: Securities trades, FX transactions, or market orders
+- name: Transaction
+  description: Orders, purchases, payments, invoices, or financial events

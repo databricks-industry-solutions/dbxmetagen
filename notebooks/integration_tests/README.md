@@ -119,6 +119,7 @@ You can run individual test notebooks in Databricks:
 - `test_08_reviewed_ddl.py`: Full review workflow: generate -> export TSV -> edit -> reimport -> verify
 - `test_09_pi_classification_none.py`: Non-PI data correctly gets `classification=None`
 - `test_20_summarizer_bleedthrough.py`: Clinical-trials-like table doesn't get bleedthrough from summarizer few-shot examples
+- `test_21_mode_all.py`: Verify `mode="all"` produces comment, PI, and domain metadata from a single invocation
 
 #### Wave C: Concurrent Table Claiming
 - `test_10_concurrent_setup.py`: Creates test tables for concurrent processing

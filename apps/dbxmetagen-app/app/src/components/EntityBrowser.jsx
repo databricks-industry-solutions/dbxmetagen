@@ -51,6 +51,11 @@ function EntityCard({ entity, expanded, onToggle }) {
           <span className="px-1.5 py-0.5 rounded bg-slate-100 dark:bg-dbx-navy-500 text-slate-600 dark:text-slate-300" title="Bundle match vs heuristic">
             {bundlePct}% bundle
           </span>
+          {entity.source_ontology && (
+            <span className="px-1.5 py-0.5 rounded bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300 font-medium" title="Source ontology standard">
+              {entity.source_ontology}
+            </span>
+          )}
         </div>
         <div className="mt-2">
           <RoleBar roles={entity.roles} />
@@ -91,6 +96,21 @@ function EntityExpanded({ entity }) {
         <p className="text-sm text-slate-500">Loading details...</p>
       ) : (
         <>
+          {(detail?.entity_uri || detail?.source_ontology) && (
+            <div className="flex items-center gap-3 mb-3 text-xs">
+              {detail.source_ontology && (
+                <span className="px-2 py-0.5 rounded-full bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300 font-medium">
+                  {detail.source_ontology}
+                </span>
+              )}
+              {detail.entity_uri && (
+                <a href={detail.entity_uri} target="_blank" rel="noopener noreferrer"
+                   className="text-dbx-sky hover:underline flex items-center gap-1" title={detail.entity_uri}>
+                  Ontology URI &#8599;
+                </a>
+              )}
+            </div>
+          )}
           <h4 className="text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2">Source tables</h4>
           <div className="flex flex-wrap gap-2 mb-4">
             {tables.map(t => (
@@ -220,15 +240,15 @@ export default function EntityBrowser() {
             <span><strong className="text-slate-700 dark:text-slate-300">{entities.length}</strong> entity types</span>
             <span><strong className="text-slate-700 dark:text-slate-300">{totalTables}</strong> tables classified</span>
             <span><strong className="text-slate-700 dark:text-slate-300">{(avgConf * 100).toFixed(0)}%</strong> avg confidence</span>
-            <span><strong className="text-slate-700 dark:text-slate-300">{bundlePct}%</strong> bundle coverage</span>
+            <span title="Percentage of entities matched by the ontology bundle vs. heuristic detection"><strong className="text-slate-700 dark:text-slate-300">{bundlePct}%</strong> bundle coverage</span>
           </div>
         )
       })()}
 
-      {error && <p className="text-sm text-red-600 dark:text-red-400">{error}</p>}
+      {error && <p className="text-sm text-red-600 dark:text-red-400">Could not load entities. Check permissions or try refreshing the page.</p>}
       {loading && <p className="text-sm text-slate-500">Loading entities...</p>}
       {!loading && !error && filtered.length === 0 && (
-        <p className="text-sm text-slate-500">No entities found.</p>
+        <p className="text-sm text-slate-500">{filter ? 'No entities match the current filter.' : 'No entities found. Run the ontology pipeline first (Generate Metadata with an ontology bundle).'}</p>
       )}
       {!loading && !error && filtered.length > 0 && (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">

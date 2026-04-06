@@ -298,6 +298,38 @@ class TestDryRunLogic:
         assert result["errors"][0]["table"] == "error_table"
 
 
+class TestTempTableNamePattern:
+    """Verify that get_temp_metadata_log_table_name() produces valid table names."""
+
+    def _cfg(self, mode="comment"):
+        from unittest.mock import patch
+        from dbxmetagen.config import MetadataConfig
+        with patch("dbxmetagen.config.get_current_user", return_value="ci@test.com"):
+            return MetadataConfig(
+                skip_yaml_loading=True,
+                catalog_name="test_cat",
+                schema_name="test_sch",
+                table_names="test_cat.test_sch.t",
+                mode=mode,
+                model="test-model",
+                volume_name="v",
+                apply_ddl=False,
+                current_user="ci@test.com",
+            )
+
+    def _get_name(self, cfg):
+        from unittest.mock import patch
+        with patch("dbxmetagen.config.get_current_user", return_value="ci@test.com"):
+            return cfg.get_temp_metadata_log_table_name()
+
+    def test_pattern_matches_regex(self):
+        cfg = self._cfg(mode="pi")
+        name = self._get_name(cfg)
+        simple = name.split(".")[-1]
+        pattern = r"^temp_metadata_generation_log_\w+_\d{8}_\d{6}$"
+        assert re.match(pattern, simple), f"'{simple}' doesn't match expected pattern"
+
+
 class TestCleanupSafety:
     """Test safety features of cleanup operations."""
 

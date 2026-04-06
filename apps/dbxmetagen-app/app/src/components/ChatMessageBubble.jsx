@@ -11,6 +11,16 @@ import simpleMarkdown from '../utils/simpleMarkdown'
  *   size       - 'sm' (default) or 'xs' for compact follow-up chats
  *   toolDescriptions - optional map of tool name -> description string
  */
+const TOOL_LABELS = {
+  execute_metadata_sql: 'Query metadata',
+  expand_vs_hits: 'Expand search results',
+  search_metadata: 'Search metadata',
+  traverse_graph: 'Traverse graph',
+  get_table_details: 'Get table details',
+  get_entity_details: 'Get entity details',
+  list_tables: 'List tables',
+}
+
 export default function ChatMessageBubble({ msg, modeBadge, onRetry, size = 'sm', toolDescriptions }) {
   const textSize = size === 'xs' ? 'text-xs' : 'text-sm'
 
@@ -55,8 +65,8 @@ export default function ChatMessageBubble({ msg, modeBadge, onRetry, size = 'sm'
         {msg.tool_calls?.length > 0 && (
           <div className="mt-1 pt-1 border-t border-slate-200/30 flex flex-wrap gap-1">
             {msg.tool_calls.map((t, j) => (
-              <span key={j} className="text-xs opacity-60" title={toolDescriptions?.[t] || ''}>
-                {t}
+              <span key={j} className="text-xs opacity-60" title={toolDescriptions?.[t] || t}>
+                {TOOL_LABELS[t] || t}
               </span>
             ))}
           </div>

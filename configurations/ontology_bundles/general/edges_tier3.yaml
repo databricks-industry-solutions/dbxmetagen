@@ -1,0 +1,288 @@
+owns:
+  name: owns
+  domain: Person
+  range: Transaction
+  ranges: []
+  uri: ''
+  inverse: ''
+  domain_profile:
+    description: People, customers, contacts, users, or employees
+    uri: https://schema.org/Person
+    source_ontology: schema.org
+    keywords:
+    - customer
+    - employee
+    - user
+    - contact
+    - person
+    - member
+    - staff
+    relationships_preview:
+      owns: Transaction
+      part_of: Organization
+  range_profile:
+    description: Orders, purchases, payments, invoices, or financial events
+    uri: https://schema.org/Invoice
+    source_ontology: schema.org
+    keywords:
+    - transaction
+    - order
+    - payment
+    - invoice
+    - purchase
+    - sale
+    - receipt
+    relationships_preview:
+      placed_by: Person
+      for_product: Product
+part_of:
+  name: part_of
+  domain: Person
+  range: Organization
+  ranges: []
+  uri: ''
+  inverse: ''
+  domain_profile:
+    description: People, customers, contacts, users, or employees
+    uri: https://schema.org/Person
+    source_ontology: schema.org
+    keywords:
+    - customer
+    - employee
+    - user
+    - contact
+    - person
+    - member
+    - staff
+    relationships_preview:
+      owns: Transaction
+      part_of: Organization
+  range_profile:
+    description: Companies, departments, facilities, or business units
+    uri: https://schema.org/Organization
+    source_ontology: schema.org
+    keywords:
+    - company
+    - organization
+    - department
+    - facility
+    - tenant
+    - branch
+    - division
+    relationships_preview:
+      contains: Person
+      contains_location: Location
+      part_of: Organization
+contains:
+  name: contains
+  domain: Organization
+  range: Person
+  ranges: []
+  uri: ''
+  inverse: contained_in
+  category: structural
+  symmetric: false
+  domain_profile:
+    description: Companies, departments, facilities, or business units
+    uri: https://schema.org/Organization
+    source_ontology: schema.org
+    keywords:
+    - company
+    - organization
+    - department
+    - facility
+    - tenant
+    - branch
+    - division
+    relationships_preview:
+      contains: Person
+      contains_location: Location
+      part_of: Organization
+  range_profile:
+    description: People, customers, contacts, users, or employees
+    uri: https://schema.org/Person
+    source_ontology: schema.org
+    keywords:
+    - customer
+    - employee
+    - user
+    - contact
+    - person
+    - member
+    - staff
+    relationships_preview:
+      owns: Transaction
+      part_of: Organization
+contains_location:
+  name: contains_location
+  domain: Organization
+  range: Location
+  ranges: []
+  uri: ''
+  inverse: ''
+  domain_profile:
+    description: Companies, departments, facilities, or business units
+    uri: https://schema.org/Organization
+    source_ontology: schema.org
+    keywords:
+    - company
+    - organization
+    - department
+    - facility
+    - tenant
+    - branch
+    - division
+    relationships_preview:
+      contains: Person
+      contains_location: Location
+      part_of: Organization
+  range_profile:
+    description: Addresses, sites, regions, facilities, or geographies
+    uri: https://schema.org/Place
+    source_ontology: schema.org
+    keywords:
+    - location
+    - address
+    - site
+    - region
+    - facility
+    - warehouse
+    - store
+    relationships_preview:
+      part_of: Organization
+references:
+  name: references
+  domain: Any
+  range: Reference
+  ranges: []
+  uri: ''
+  inverse: referenced_by
+  category: business
+  symmetric: false
+  range_profile:
+    description: Lookup tables, codes, categories, dimensions, or configuration
+    uri: https://schema.org/Thing
+    source_ontology: schema.org
+    keywords:
+    - reference
+    - lookup
+    - code
+    - category
+    - dim_
+    - type
+    - status
+    relationships_preview: {}
+placed_by:
+  name: placed_by
+  domain: Transaction
+  range: Person
+  ranges: []
+  uri: ''
+  inverse: placed
+  category: business
+  symmetric: false
+  domain_profile:
+    description: Orders, purchases, payments, invoices, or financial events
+    uri: https://schema.org/Invoice
+    source_ontology: schema.org
+    keywords:
+    - transaction
+    - order
+    - payment
+    - invoice
+    - purchase
+    - sale
+    - receipt
+    relationships_preview:
+      placed_by: Person
+      for_product: Product
+  range_profile:
+    description: People, customers, contacts, users, or employees
+    uri: https://schema.org/Person
+    source_ontology: schema.org
+    keywords:
+    - customer
+    - employee
+    - user
+    - contact
+    - person
+    - member
+    - staff
+    relationships_preview:
+      owns: Transaction
+      part_of: Organization
+for_product:
+  name: for_product
+  domain: Transaction
+  range: Product
+  ranges: []
+  uri: ''
+  inverse: sold_via
+  category: business
+  symmetric: false
+  domain_profile:
+    description: Orders, purchases, payments, invoices, or financial events
+    uri: https://schema.org/Invoice
+    source_ontology: schema.org
+    keywords:
+    - transaction
+    - order
+    - payment
+    - invoice
+    - purchase
+    - sale
+    - receipt
+    relationships_preview:
+      placed_by: Person
+      for_product: Product
+  range_profile:
+    description: Goods, services, SKUs, or catalog items
+    uri: https://schema.org/Product
+    source_ontology: schema.org
+    keywords:
+    - product
+    - item
+    - sku
+    - catalog
+    - offering
+    - service
+    - subscription
+    relationships_preview:
+      references: Reference
+derives_from:
+  name: derives_from
+  domain: Metric
+  range: Event
+  ranges: []
+  uri: ''
+  inverse: source_of
+  category: lineage
+  symmetric: false
+  domain_profile:
+    description: KPIs, aggregates, facts, summaries, or analytic measures
+    uri: https://schema.org/QuantitativeValue
+    source_ontology: schema.org
+    keywords:
+    - metric
+    - kpi
+    - aggregate
+    - fact_
+    - summary
+    - measure
+    - score
+    relationships_preview:
+      derives_from: Event
+  range_profile:
+    description: Activities, logs, sessions, audits, or system events
+    uri: https://schema.org/Event
+    source_ontology: schema.org
+    keywords:
+    - event
+    - activity
+    - log
+    - audit
+    - session
+    - incident
+    - alert
+    relationships_preview:
+      references: Person

@@ -1,12 +1,13 @@
 # Healthcare & Life Sciences Ontology Bundle
-# Aligned with FHIR R4, OMOP CDM, and Schema.org
+# Curated business-level entities informed by FHIR R4 and OMOP CDM
 
 metadata:
   name: "Healthcare & Life Sciences"
-  version: "2.0"
+  version: "3.0"
+  format_version: "2.0"
   industry: "healthcare"
-  description: "Comprehensive healthcare ontology covering clinical, payer, pharma, and cross-functional domains"
-  standards_alignment: "FHIR R4, OMOP CDM, Schema.org"
+  description: "Curated healthcare ontology covering clinical, payer, pharma, and cross-functional domains with ~30 business-level entity types"
+  standards_alignment: "Informed by FHIR R4 and OMOP CDM"
 
 ontology:
   version: "3.0"
@@ -84,6 +85,14 @@ ontology:
     covered_by: { inverse: covers_claim, domain: Claim, range: Coverage, symmetric: false, category: business }
     located_at: { inverse: location_of, domain: Any, range: Location, symmetric: false, category: business }
     references: { inverse: referenced_by, domain: Any, range: Any, symmetric: false, category: business }
+    # Trial / research edges
+    enrolled_in: { inverse: enrolls, domain: Patient, range: ClinicalTrial, symmetric: false, category: business }
+    collected_from: { inverse: provides_specimen, domain: Specimen, range: Patient, symmetric: false, category: business }
+    performed_at: { inverse: hosts, domain: [Encounter, Procedure], range: Facility, symmetric: false, category: business }
+    consented_by: { inverse: consents_to, domain: Consent, range: Patient, symmetric: false, category: business }
+    uses_device: { inverse: used_in, domain: [Procedure, Encounter], range: Device, symmetric: false, category: business }
+    tested_in: { inverse: has_result, domain: LabResult, range: Specimen, symmetric: false, category: business }
+    paid_by: { inverse: pays_for, domain: Claim, range: Payer, symmetric: false, category: business }
     # General business edges
     placed_by: { inverse: placed, domain: Transaction, range: Person, symmetric: false, category: business }
     created_by: { inverse: created, domain: Any, range: Person, symmetric: false, category: business }
@@ -103,6 +112,8 @@ ontology:
       # General entities
       Person:
         description: "People, customers, contacts, users, or employees"
+        uri: "https://schema.org/Person"
+        source_ontology: "schema.org"
         keywords: ["customer", "employee", "user", "contact", "person"]
         synonyms: ["individual", "member", "staff", "personnel"]
         typical_attributes: [id, name, email, phone, address, created_date]
@@ -114,6 +125,8 @@ ontology:
           part_of: { target: Organization, cardinality: "many-to-one" }
       Organization:
         description: "Companies, departments, facilities, or business units"
+        uri: "https://schema.org/Organization"
+        source_ontology: "schema.org"
         keywords: ["company", "organization", "department", "facility", "tenant"]
         synonyms: ["enterprise", "agency", "institution", "firm"]
         typical_attributes: [id, name, type, address, parent_id]
@@ -126,41 +139,55 @@ ontology:
           part_of: { target: Organization, cardinality: "many-to-one" }
       Product:
         description: "Goods, services, SKUs, or catalog items"
+        uri: "https://schema.org/Product"
+        source_ontology: "schema.org"
         keywords: ["product", "item", "sku", "catalog", "offering"]
         typical_attributes: [id, name, description, price, category, status]
         relationships:
           references: { target: Reference, cardinality: "many-to-one" }
       Transaction:
         description: "Orders, purchases, payments, invoices, or financial events"
+        uri: "https://schema.org/Invoice"
+        source_ontology: "schema.org"
         keywords: ["transaction", "order", "payment", "invoice", "purchase"]
         typical_attributes: [id, customer_id, amount, date, status, currency]
         relationships:
           references: { target: Person, cardinality: "many-to-one" }
       Location:
         description: "Addresses, sites, regions, facilities, or geographies"
+        uri: "https://schema.org/Place"
+        source_ontology: "schema.org"
         keywords: ["location", "address", "site", "region", "facility"]
         typical_attributes: [id, name, address, city, state, country, zip_code]
         relationships:
           part_of: { target: Organization, cardinality: "many-to-one" }
       Event:
         description: "Activities, logs, sessions, audits, or system events"
+        uri: "https://schema.org/Event"
+        source_ontology: "schema.org"
         keywords: ["event", "activity", "log", "audit", "session"]
         typical_attributes: [id, type, timestamp, user_id, details]
         relationships:
           references: { target: Person, cardinality: "many-to-one" }
       Reference:
         description: "Lookup tables, codes, categories, dimensions, or configuration"
+        uri: "https://schema.org/Thing"
+        source_ontology: "schema.org"
         keywords: ["reference", "lookup", "code", "category", "dim_"]
         typical_attributes: [id, code, name, description, active]
         relationships: {}
       Metric:
         description: "KPIs, aggregates, facts, summaries, or analytic measures"
+        uri: "https://schema.org/QuantitativeValue"
+        source_ontology: "schema.org"
         keywords: ["metric", "kpi", "aggregate", "fact_", "summary"]
         typical_attributes: [id, name, value, period, dimension]
         relationships:
           derives_from: { target: Event, cardinality: "many-to-one" }
       Document:
         description: "Unstructured content, notes, files, or text records"
+        uri: "https://schema.org/DigitalDocument"
+        source_ontology: "schema.org"
         keywords: ["document", "note", "file", "content", "text"]
         typical_attributes: [id, title, body, author, created_date, type]
         relationships:
@@ -169,6 +196,8 @@ ontology:
       # Healthcare / Life Sciences entities (FHIR R4 aligned)
       Patient:
         description: "Individuals receiving healthcare services (FHIR Patient)"
+        uri: "http://hl7.org/fhir/StructureDefinition/Patient"
+        source_ontology: "FHIR_R4"
         parent: Person
         keywords: ["patient", "mrn", "subject", "participant", "beneficiary"]
         synonyms: ["member", "enrollee", "client", "individual"]
@@ -211,6 +240,8 @@ ontology:
             typical_attributes: ["provider_id", "attending_id", "physician_id", "pcp_id"]
       Provider:
         description: "Practitioners, clinicians, or care team members (FHIR Practitioner)"
+        uri: "http://hl7.org/fhir/StructureDefinition/Practitioner"
+        source_ontology: "FHIR_R4"
         parent: Person
         keywords: ["provider", "physician", "practitioner", "clinician", "npi"]
         synonyms: ["doctor", "nurse", "specialist", "attending", "caregiver"]
@@ -224,6 +255,8 @@ ontology:
           part_of: { target: Organization, cardinality: "many-to-one" }
       Encounter:
         description: "Visits, admissions, or episodes of care (FHIR Encounter)"
+        uri: "http://hl7.org/fhir/StructureDefinition/Encounter"
+        source_ontology: "FHIR_R4"
         parent: Event
         keywords: ["encounter", "visit", "admission", "episode", "appointment"]
         synonyms: ["stay", "hospitalization", "consult", "session"]
@@ -274,6 +307,8 @@ ontology:
             typical_attributes: ["status", "encounter_status", "discharge_disposition"]
       Condition:
         description: "Diagnoses, problems, or diseases (FHIR Condition / OMOP CONDITION_OCCURRENCE)"
+        uri: "http://hl7.org/fhir/StructureDefinition/Condition"
+        source_ontology: "FHIR_R4"
         keywords: ["diagnosis", "condition", "icd", "disease", "problem"]
         typical_attributes: [id, code, description, patient_id, encounter_id, date, status]
         relationships:
@@ -281,6 +316,8 @@ ontology:
           diagnosed_in: { target: Encounter, cardinality: "many-to-one" }
       Procedure:
         description: "Medical procedures, surgeries, or interventions (FHIR Procedure)"
+        uri: "http://hl7.org/fhir/StructureDefinition/Procedure"
+        source_ontology: "FHIR_R4"
         keywords: ["procedure", "surgery", "cpt", "intervention", "operation"]
         typical_attributes: [id, code, description, date, provider_id, encounter_id, status]
         relationships:
@@ -289,6 +326,8 @@ ontology:
           references: { target: Patient, cardinality: "many-to-one" }
       Medication:
         description: "Drugs, prescriptions, or medication orders (FHIR MedicationRequest)"
+        uri: "http://hl7.org/fhir/StructureDefinition/Medication"
+        source_ontology: "FHIR_R4"
         parent: Product
         keywords: ["medication", "drug", "prescription", "pharmacy", "ndc", "rxnorm"]
         typical_attributes: [id, name, ndc, dose, frequency, route]
@@ -297,6 +336,8 @@ ontology:
           prescribed_to: { target: Patient, cardinality: "many-to-one" }
       Observation:
         description: "Lab results, vitals, or clinical measurements (FHIR Observation / OMOP MEASUREMENT)"
+        uri: "http://hl7.org/fhir/StructureDefinition/Observation"
+        source_ontology: "FHIR_R4"
         parent: Event
         keywords: ["lab", "result", "observation", "vital", "specimen", "measurement"]
         typical_attributes: [id, test_code, value, unit, reference_range, date]
@@ -305,6 +346,8 @@ ontology:
           recorded_in: { target: Encounter, cardinality: "many-to-one" }
       Claim:
         description: "Insurance claims or billing submissions (FHIR Claim)"
+        uri: "http://hl7.org/fhir/StructureDefinition/Claim"
+        source_ontology: "FHIR_R4"
         parent: Transaction
         keywords: ["claim", "billing", "adjudication", "remittance", "eob"]
         typical_attributes: [id, patient_id, amount, service_date, status, payer_id]
@@ -349,6 +392,8 @@ ontology:
             typical_attributes: ["payer_id", "plan_id", "coverage_id", "insurance_id"]
       Coverage:
         description: "Insurance plans, benefits, or member coverage (FHIR Coverage)"
+        uri: "http://hl7.org/fhir/StructureDefinition/Coverage"
+        source_ontology: "FHIR_R4"
         keywords: ["coverage", "insurance", "benefit", "plan", "enrollment"]
         typical_attributes: [id, member_id, payer, plan_name, start_date, end_date]
         relationships:
@@ -356,6 +401,8 @@ ontology:
           provided_by: { target: Organization, cardinality: "many-to-one" }
       DiagnosticReport:
         description: "Lab reports, pathology reports, or imaging study results (FHIR DiagnosticReport)"
+        uri: "http://hl7.org/fhir/StructureDefinition/DiagnosticReport"
+        source_ontology: "FHIR_R4"
         parent: Document
         keywords: ["diagnostic_report", "lab_report", "pathology_report", "report", "study_result"]
         typical_attributes: [id, patient_id, encounter_id, status, issued_date, category, code]
@@ -365,6 +412,8 @@ ontology:
           contains: { target: Observation, cardinality: "one-to-many" }
       Immunization:
         description: "Vaccination events and immunization records (FHIR Immunization)"
+        uri: "http://hl7.org/fhir/StructureDefinition/Immunization"
+        source_ontology: "FHIR_R4"
         parent: Event
         keywords: ["immunization", "vaccination", "vaccine", "immunization_record", "shot"]
         typical_attributes: [id, patient_id, vaccine_code, date, dose_number, status, site]
@@ -372,47 +421,140 @@ ontology:
           references: { target: Patient, cardinality: "many-to-one" }
       AllergyIntolerance:
         description: "Allergy and intolerance records (FHIR AllergyIntolerance)"
+        uri: "http://hl7.org/fhir/StructureDefinition/AllergyIntolerance"
+        source_ontology: "FHIR_R4"
         keywords: ["allergy", "intolerance", "allergen", "adverse_reaction", "sensitivity"]
         typical_attributes: [id, patient_id, code, type, category, criticality, onset_date]
         relationships:
           references: { target: Patient, cardinality: "many-to-one" }
       CarePlan:
         description: "Care plans, treatment protocols, and goals (FHIR CarePlan)"
+        uri: "http://hl7.org/fhir/StructureDefinition/CarePlan"
+        source_ontology: "FHIR_R4"
         parent: Document
         keywords: ["care_plan", "treatment_plan", "protocol", "goal", "care_team"]
         typical_attributes: [id, patient_id, status, intent, period_start, period_end, category]
         relationships:
           references: { target: Patient, cardinality: "many-to-one" }
           contains: { target: Procedure, cardinality: "one-to-many" }
+      ClinicalTrial:
+        description: "Clinical trials, research studies, and investigational protocols"
+        uri: "http://hl7.org/fhir/StructureDefinition/ResearchStudy"
+        source_ontology: "FHIR_R4"
+        keywords: ["clinical_trial", "trial", "study", "research_study", "protocol", "investigational"]
+        synonyms: ["research_study", "investigation", "trial_protocol"]
+        typical_attributes: [id, title, status, phase, sponsor, start_date, end_date, indication, therapeutic_area]
+        business_questions:
+          - "How many active trials are in each phase?"
+          - "Which therapeutic areas have the most enrolled patients?"
+        relationships:
+          enrolls: { target: Patient, cardinality: "one-to-many" }
+          references: { target: Organization, cardinality: "many-to-one" }
+      Device:
+        description: "Medical devices, equipment, implants, and instruments"
+        uri: "http://hl7.org/fhir/StructureDefinition/Device"
+        source_ontology: "FHIR_R4"
+        keywords: ["device", "equipment", "implant", "instrument", "medical_device", "udi"]
+        synonyms: ["medical_equipment", "apparatus", "implantable"]
+        typical_attributes: [id, type, manufacturer, model, serial_number, status, udi]
+        relationships:
+          used_in: { target: Procedure, cardinality: "many-to-many" }
+          owned_by: { target: Organization, cardinality: "many-to-one" }
+      Specimen:
+        description: "Laboratory specimens, biological samples, and biobank collections"
+        uri: "http://hl7.org/fhir/StructureDefinition/Specimen"
+        source_ontology: "FHIR_R4"
+        keywords: ["specimen", "sample", "biopsy", "biobank", "collection", "tissue"]
+        synonyms: ["biological_sample", "lab_sample", "biospecimen"]
+        typical_attributes: [id, type, patient_id, collection_date, status, body_site, container]
+        relationships:
+          collected_from: { target: Patient, cardinality: "many-to-one" }
+          references: { target: Encounter, cardinality: "many-to-one" }
+      Payer:
+        description: "Insurance companies, health plans, government payers, and third-party administrators"
+        keywords: ["payer", "insurer", "health_plan", "insurance", "tpa", "medicare", "medicaid"]
+        synonyms: ["insurance_company", "health_insurer", "plan_sponsor"]
+        parent: Organization
+        typical_attributes: [id, name, type, plan_type, network, coverage_area, cms_id]
+        business_questions:
+          - "What is the claim volume by payer?"
+          - "Which payers have the highest denial rates?"
+        relationships:
+          pays_for: { target: Claim, cardinality: "one-to-many" }
+          covers: { target: Patient, cardinality: "one-to-many" }
+      Practitioner:
+        description: "Individual clinicians, physicians, nurses, and allied health professionals"
+        uri: "http://hl7.org/fhir/StructureDefinition/Practitioner"
+        source_ontology: "FHIR_R4"
+        parent: Person
+        keywords: ["practitioner", "physician", "nurse", "clinician", "therapist", "npi"]
+        synonyms: ["doctor", "healthcare_worker", "provider_individual"]
+        typical_attributes: [id, name, npi, specialty, qualification, active, gender]
+        relationships:
+          performs: { target: Procedure, cardinality: "one-to-many" }
+          part_of: { target: Organization, cardinality: "many-to-one" }
+      Facility:
+        description: "Hospitals, clinics, labs, pharmacies, and care sites"
+        uri: "http://hl7.org/fhir/StructureDefinition/Location"
+        source_ontology: "FHIR_R4"
+        parent: Location
+        keywords: ["facility", "hospital", "clinic", "lab", "pharmacy", "care_site", "campus"]
+        synonyms: ["healthcare_facility", "medical_center", "care_location"]
+        typical_attributes: [id, name, type, address, status, managing_org_id, bed_count]
+        business_questions:
+          - "How many encounters per facility?"
+          - "What is the utilization rate by facility type?"
+        relationships:
+          hosts: { target: Encounter, cardinality: "one-to-many" }
+          part_of: { target: Organization, cardinality: "many-to-one" }
+      LabResult:
+        description: "Laboratory test results, panels, and diagnostic measurements"
+        parent: Observation
+        keywords: ["lab_result", "lab_test", "panel", "assay", "analyte", "cbc", "cmp"]
+        synonyms: ["laboratory_result", "test_result", "lab_value"]
+        typical_attributes: [id, patient_id, test_code, test_name, value, unit, reference_range, status, date]
+        relationships:
+          tested_in: { target: Specimen, cardinality: "many-to-one" }
+          references: { target: Patient, cardinality: "many-to-one" }
+      Consent:
+        description: "Patient consent records, authorizations, and IRB approvals"
+        uri: "http://hl7.org/fhir/StructureDefinition/Consent"
+        source_ontology: "FHIR_R4"
+        keywords: ["consent", "authorization", "irb", "informed_consent", "hipaa_authorization"]
+        synonyms: ["patient_consent", "research_consent", "data_sharing_agreement"]
+        typical_attributes: [id, patient_id, status, scope, category, date_time, period_start, period_end]
+        relationships:
+          consented_by: { target: Patient, cardinality: "many-to-one" }
+          references: { target: Organization, cardinality: "many-to-one" }
 
   domain_entity_affinity:
     clinical:
       [
-        Patient, Provider, Encounter, Condition, Procedure, Medication,
-        Observation, Claim, Coverage, Person, Organization, Location,
-        DiagnosticReport, Immunization, AllergyIntolerance, CarePlan,
+        Patient, Provider, Practitioner, Encounter, Condition, Procedure, Medication,
+        Observation, Claim, Coverage, Person, Organization, Location, Facility,
+        DiagnosticReport, Immunization, AllergyIntolerance, CarePlan, Device, LabResult,
       ]
-    diagnostics: [Patient, Observation, Condition, Procedure, DiagnosticReport, Person, Reference]
-    payer: [Claim, Coverage, Person, Organization, Transaction, Reference]
+    diagnostics: [Patient, Observation, Condition, Procedure, DiagnosticReport, LabResult, Specimen, Person, Reference, Device]
+    payer: [Claim, Coverage, Payer, Person, Organization, Transaction, Reference]
     pharmaceutical:
       [
-        Patient, Observation, Medication, Condition, Procedure,
-        Person, Document, Reference, Organization, Immunization,
+        Patient, Observation, Medication, Condition, Procedure, ClinicalTrial,
+        Person, Document, Reference, Organization, Immunization, Consent,
       ]
-    quality_safety: [Patient, Observation, Encounter, Condition, Metric, Event, CarePlan]
+    quality_safety: [Patient, Observation, Encounter, Condition, Metric, Event, CarePlan, Consent]
     research:
       [
-        Patient, Observation, Medication, Condition, Procedure,
-        Person, Document, Reference, DiagnosticReport,
+        Patient, Observation, Medication, Condition, Procedure, ClinicalTrial,
+        Person, Document, Reference, DiagnosticReport, Specimen, Consent,
       ]
     finance:
-      [Transaction, Person, Organization, Product, Reference, Event, Metric]
-    operations: [Product, Organization, Location, Event, Metric, Reference]
-    workforce: [Person, Organization, Location, Event, Reference]
+      [Transaction, Person, Organization, Product, Reference, Event, Metric, Payer]
+    operations: [Product, Organization, Location, Facility, Event, Metric, Reference, Device]
+    workforce: [Person, Practitioner, Organization, Location, Facility, Event, Reference]
     customer:
       [Person, Organization, Product, Transaction, Event, Metric, Location]
-    technology: [Event, Metric, Reference, Organization]
-    governance: [Document, Reference, Organization, Person]
+    technology: [Event, Metric, Reference, Organization, Device]
+    governance: [Document, Reference, Organization, Person, Consent]
 
   relationships:
     types:

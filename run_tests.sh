@@ -80,6 +80,7 @@ CORE_TESTS_PASSED=0
 DDL_TESTS_PASSED=0
 BINARY_TESTS_PASSED=0
 TOTAL_TESTS=0
+SUITES_FAILED=0
 
 echo -e "${BLUE}╔════════════════════════════════════════════════╗${NC}"
 echo -e "${BLUE}║       dbxmetagen Unit Test Runner             ║${NC}"
@@ -174,6 +175,7 @@ run_test_suite "DDL Regenerator Tests" "$DDL_CMD" "$YELLOW" DDL_TESTS_PASSED
 if [ $? -ne 0 ]; then
     echo -e "${RED}DDL regenerator tests failed. Continuing...${NC}"
     DDL_TESTS_PASSED=0
+    SUITES_FAILED=$((SUITES_FAILED + 1))
 fi
 
 echo ""
@@ -191,6 +193,7 @@ run_test_suite "Binary/Variant Tests" "$BINARY_CMD" "$YELLOW" BINARY_TESTS_PASSE
 if [ $? -ne 0 ]; then
     echo -e "${RED}Binary/variant tests failed. Continuing...${NC}"
     BINARY_TESTS_PASSED=0
+    SUITES_FAILED=$((SUITES_FAILED + 1))
 fi
 
 # Calculate total
@@ -211,12 +214,12 @@ printf "${GREEN}║  TOTAL:              %3d tests passing          ║${NC}\n" 
 echo -e "${GREEN}╚════════════════════════════════════════════════╝${NC}"
 echo ""
 
-# Check if all test suites passed
-if [ $CORE_TESTS_PASSED -gt 0 ] && [ $DDL_TESTS_PASSED -gt 0 ] && [ $BINARY_TESTS_PASSED -gt 0 ]; then
+# Check if all test suites passed (based on exit codes, not pass counts -- all-skipped is OK)
+if [ $SUITES_FAILED -eq 0 ]; then
     echo -e "${GREEN}✓ All test suites completed successfully!${NC}"
     exit 0
 else
-    echo -e "${RED}✗ Some test suites failed. Please check the output above.${NC}"
+    echo -e "${RED}✗ ${SUITES_FAILED} test suite(s) failed. Please check the output above.${NC}"
     exit 1
 fi
 

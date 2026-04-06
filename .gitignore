@@ -130,6 +130,7 @@ databricks/
 .env.*.local
 .databricks
 *.local
+*.local.md
 
 #specific folders
 **/.agents/
@@ -147,6 +148,8 @@ __pycache__/
 # Deployment -- generated from templates by deploy.sh
 databricks.yml
 apps/dbxmetagen-app/app/app.yaml
+apps/dbxmetagen-app/app/requirements.txt
+resources/apps/dbxmetagen_app.yml
 databricks_final.yml
 databricks_final.yml.tmp
 
@@ -159,9 +162,14 @@ databricks_final.yml.tmp
 *.env
 !example.env
 
-docs/*
-docs/operations/*/
-#!docs/operations/README.md
+# Internal roadmaps (not shipped)
+ROADMAP.md
+
+# docs/: ignore by default; whitelist only public paths (README + Ontology tab). Avoid !docs/ — it re-includes the whole tree.
+docs/**
+!docs/formal_semantics.md
+!docs/CONFIGURATION.md
+!docs/consumer-guide.md
 
 .cursor/*
 !.cursor/rules/
@@ -180,3 +188,9 @@ tools/
 # Local roadmap / tech-debt tracker
 ROADMAP.md
 CLAUDE.md
+
+# Ontology source files (large OWL/TTL downloads, cached locally)
+configurations/ontology_bundles/*/source_*.ttl
+configurations/ontology_bundles/*/source_*.owl
+configurations/ontology_bundles/*/source.ttl
+configurations/ontology_bundles/*/source.owl

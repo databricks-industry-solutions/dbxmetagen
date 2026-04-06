@@ -1,0 +1,147 @@
+Person:
+  description: People, customers, contacts, users, or employees
+  source_ontology: schema.org
+  uri: https://schema.org/Person
+  parents: []
+  edges:
+  - part_of
+Organization:
+  description: Companies, departments, facilities, or business units
+  source_ontology: schema.org
+  uri: https://schema.org/Organization
+  parents: []
+  edges:
+  - contains
+  - part_of
+Transaction:
+  description: Orders, purchases, payments, invoices, or financial events
+  source_ontology: schema.org
+  uri: https://schema.org/Invoice
+  parents: []
+  edges:
+  - placed_by
+Location:
+  description: Addresses, sites, regions, facilities, or geographies
+  source_ontology: schema.org
+  uri: https://schema.org/Place
+  parents: []
+  edges: []
+Event:
+  description: Activities, logs, sessions, audits, or system events
+  source_ontology: schema.org
+  uri: https://schema.org/Event
+  parents: []
+  edges:
+  - references
+Reference:
+  description: Lookup tables, codes, categories, dimensions, or configuration
+  source_ontology: schema.org
+  uri: https://schema.org/Thing
+  parents: []
+  edges: []
+Metric:
+  description: KPIs, aggregates, facts, summaries, or analytic measures
+  source_ontology: schema.org
+  uri: https://schema.org/QuantitativeValue
+  parents: []
+  edges: []
+Document:
+  description: Unstructured content, notes, files, or text records
+  source_ontology: schema.org
+  uri: https://schema.org/DigitalDocument
+  parents: []
+  edges: []
+Customer:
+  description: Retail customers, loyalty members, or shoppers
+  source_ontology: schema.org
+  uri: https://schema.org/Customer
+  parents: []
+  edges:
+  - places
+  - has_return
+LoyaltyProgram:
+  description: Loyalty programs, rewards programs, or membership tiers
+  source_ontology: schema.org
+  uri: https://schema.org/MemberProgram
+  parents: []
+  edges:
+  - enrolled_in
+Product:
+  description: Retail products, SKUs, items, or merchandise
+  source_ontology: schema.org
+  uri: https://schema.org/Product
+  parents: []
+  edges:
+  - belongs_to
+  - supplied_by
+Order:
+  description: Customer orders, carts, baskets, or purchase transactions
+  source_ontology: schema.org
+  uri: https://schema.org/Order
+  parents: []
+  edges:
+  - placed_by
+  - contains
+  - shipped_via
+  - purchased_at
+Store:
+  description: Physical retail stores, outlets, warehouses, or distribution centers
+  source_ontology: schema.org
+  uri: https://schema.org/Store
+  parents: []
+  edges:
+  - has_inventory
+  - part_of
+Campaign:
+  description: Marketing campaigns, ad campaigns, or promotional campaigns
+  source_ontology: schema.org
+  uri: https://schema.org/MarketingEvent
+  parents: []
+  edges:
+  - targets
+  - promotes
+Promotion:
+  description: Promotions, discounts, coupons, campaigns, or markdown events
+  source_ontology: schema.org
+  uri: https://schema.org/Offer
+  parents: []
+  edges:
+  - applies_to
+Supplier:
+  description: Vendors, manufacturers, distributors, or trading partners
+  source_ontology: schema.org
+  uri: https://schema.org/Organization
+  parents: []
+  edges:
+  - supplies
+Inventory:
+  description: Stock levels, warehouse inventory, or on-hand quantities
+  source_ontology: GS1
+  uri: https://www.gs1.org/voc/InventoryReport
+  parents: []
+  edges:
+  - for_product
+  - at_store
+Return:
+  description: Product returns, refunds, exchanges, or RMA records
+  source_ontology: schema.org
+  uri: https://schema.org/ReturnAction
+  parents: []
+  edges:
+  - for_order
+  - by_customer
+Shipment:
+  description: Shipping, delivery, fulfillment, or logistics records
+  source_ontology: schema.org
+  uri: https://schema.org/ParcelDelivery
+  parents: []
+  edges:
+  - for_order
+Category:
+  description: Product categories, departments, or merchandise hierarchies
+  source_ontology: GS1
+  uri: https://www.gs1.org/voc/ProductClassification
+  parents: []
+  edges:
+  - contains
+  - part_of

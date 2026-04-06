@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://databricks.com/dbxmetagen/ontology_bundle_v2.schema.json",
+  "title": "dbxmetagen ontology bundle (v2 application profile)",
+  "type": "object",
+  "required": ["metadata", "ontology"],
+  "properties": {
+    "metadata": {
+      "type": "object",
+      "required": ["format_version", "name"],
+      "properties": {
+        "format_version": { "type": "string", "const": "2.0" },
+        "name": { "type": "string", "minLength": 1 },
+        "version": { "type": "string" },
+        "description": { "type": "string" }
+      }
+    },
+    "ontology": {
+      "type": "object",
+      "required": ["entities"],
+      "properties": {
+        "entities": {
+          "type": "object",
+          "required": ["definitions"],
+          "properties": {
+            "definitions": { "type": "object", "minProperties": 1 }
+          }
+        },
+        "edge_catalog": { "type": "object" },
+        "property_roles": { "type": "object" }
+      }
+    },
+    "domains": { "type": "object" }
+  }
+}

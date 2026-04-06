@@ -58,6 +58,7 @@ resources:
               mode: "{{job.parameters.mode}}"
               table_names: "{{job.parameters.table_names}}"
               catalog_name: "{{job.parameters.catalog_name}}"
+              schema_name: "{{job.parameters.schema_name}}"
               current_user: "{{job.parameters.current_user}}"
               permission_groups: "{{job.parameters.permission_groups}}"
               permission_users: "{{job.parameters.permission_users}}"

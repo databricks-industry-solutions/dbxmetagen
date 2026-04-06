@@ -17,17 +17,21 @@ dbutils.widgets.text("catalog_name", "", "Catalog Name")
 dbutils.widgets.text("schema_name", "", "Schema Name")
 dbutils.widgets.text("max_tables", "", "Max Tables (empty for all)")
 dbutils.widgets.text("incremental", "true", "Incremental (true/false)")
+dbutils.widgets.text("table_names", "", "Table Names (comma-separated, empty=all)")
 
 catalog_name = dbutils.widgets.get("catalog_name")
 schema_name = dbutils.widgets.get("schema_name")
 max_tables_str = dbutils.widgets.get("max_tables")
 max_tables = int(max_tables_str) if max_tables_str else None
 incremental = dbutils.widgets.get("incremental").lower() == "true"
+table_names_raw = dbutils.widgets.get("table_names")
 
 print(f"Catalog: {catalog_name}")
 print(f"Schema: {schema_name}")
 print(f"Max Tables: {max_tables}")
 print(f"Incremental: {incremental}")
+if table_names_raw:
+    print(f"Table filter: {table_names_raw}")
 
 # COMMAND ----------
 
@@ -35,6 +39,9 @@ import sys
 sys.path.append("../src")  # For git-clone or DAB deployment; pip-installed package works without this
 
 from dbxmetagen.profiling import run_profiling
+from dbxmetagen.table_filter import parse_table_names
+
+table_names = parse_table_names(table_names_raw) or None
 
 result = run_profiling(
     spark=spark,
@@ -42,6 +49,7 @@ result = run_profiling(
     schema_name=schema_name,
     max_tables=max_tables,
     incremental=incremental,
+    table_names=table_names,
 )
 
 print(f"Profiling complete:")

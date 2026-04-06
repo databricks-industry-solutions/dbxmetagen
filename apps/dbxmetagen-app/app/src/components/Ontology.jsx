@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import ForceGraph2D from 'react-force-graph-2d'
 import { ErrorBanner } from '../App'
-import { cachedFetch, TTL } from '../apiCache'
+import { cachedFetch, cachedFetchObj, TTL } from '../apiCache'
 import { PageHeader, EmptyState, SkeletonCards } from './ui'
 
 const PALETTE = [
@@ -9,6 +9,54 @@ const PALETTE = [
   '#3b82f6', '#ec4899', '#8b5cf6', '#14b8a6', '#f97316',
 ]
 const shortName = id => (id || '').split('.').pop()
+
+function BundleQualityStrip({ qualitySummary }) {
+  if (!qualitySummary) return null
+  const bi = qualitySummary.bundle_info
+  const fe = qualitySummary.from_entities || {}
+  return (
+    <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+      <div className="border border-slate-200 dark:border-dbx-navy-400/30 rounded-xl p-4 bg-white dark:bg-dbx-navy-650">
+        <p className="text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400">Active bundle</p>
+        <p className="font-semibold text-slate-800 dark:text-slate-100 mt-0.5">{qualitySummary.active_bundle || '—'}</p>
+        {bi?.format_version && <p className="text-xs text-slate-500 mt-1">format_version {bi.format_version}</p>}
+        {bi?.tier_index_hash && (
+          <p className="text-[10px] font-mono text-slate-400 mt-1 break-all" title="Tier index fingerprint">tier_index_hash {bi.tier_index_hash}</p>
+        )}
+      </div>
+      <div className="border border-slate-200 dark:border-dbx-navy-400/30 rounded-xl p-4 bg-white dark:bg-dbx-navy-650 md:col-span-2">
+        <p className="text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400">Coverage & confidence (ontology_entities)</p>
+        {fe.entity_rows != null ? (
+          <div className="flex flex-wrap gap-4 mt-2 text-sm">
+            <span><span className="text-slate-500">rows</span> <span className="font-mono font-semibold">{fe.entity_rows}</span></span>
+            <span><span className="text-slate-500">avg conf</span> <span className="font-mono font-semibold">{fe.avg_confidence ?? '—'}</span></span>
+            <span><span className="text-slate-500">&lt;0.5</span> <span className="font-mono text-amber-600">{fe.below_05 ?? 0}</span></span>
+            <span><span className="text-slate-500">&lt;0.6</span> <span className="font-mono text-amber-700">{fe.below_06 ?? 0}</span></span>
+          </div>
+        ) : (
+          <p className="text-xs text-slate-400 mt-1">{qualitySummary.from_entities_error || 'No aggregate yet (table empty or unavailable).'}</p>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function FormalSemanticsNote() {
+  const [open, setOpen] = useState(false)
+  return (
+    <div className="border border-slate-200 dark:border-dbx-navy-400/25 rounded-lg">
+      <button type="button" onClick={() => setOpen(!open)} className="w-full text-left px-3 py-2 text-sm text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-dbx-navy-600/50 rounded-lg">
+        What is formalized here? {open ? '−' : '+'}
+      </button>
+      {open && (
+        <div className="px-3 pb-3 text-xs text-slate-600 dark:text-slate-400 space-y-2 border-t border-slate-100 dark:border-dbx-navy-500/30 pt-2">
+          <p>dbxmetagen ships an application profile (YAML + tier indexes) over published vocabularies, plus candidate table→class alignments with confidence and provenance. It does not perform OWL DL reasoning or replace Protégé.</p>
+          <p className="text-slate-400">See repository docs: <code className="text-[11px]">docs/formal_semantics.md</code></p>
+        </div>
+      )}
+    </div>
+  )
+}
 
 export function HealthCards({ metrics }) {
   const m = useMemo(() => {
@@ -29,16 +77,16 @@ export function HealthCards({ metrics }) {
     { label: 'Total Entities', value: m.total_entities, sub: `${m.total_entity_types || 0} types` },
     { label: 'Avg Confidence', value: m.avg_confidence ? Number(m.avg_confidence).toFixed(2) : '--' },
     { label: 'Table Coverage', value: m.table_coverage_pct ? `${m.table_coverage_pct}%` : '--' },
-    { label: 'Binding Rate', value: m.binding_completeness_pct ? `${m.binding_completeness_pct}%` : '--' },
-    { label: 'Ontology Edges', value: m.ontology_edges_total || '0' },
-    { label: 'Low Confidence', value: m.low_confidence_count || '0', warn: Number(m.low_confidence_count) > 0 },
+    { label: 'Binding Rate', value: m.binding_completeness_pct ? `${m.binding_completeness_pct}%` : '--', title: 'Percentage of discovered entities that are bound to an ontology type' },
+    { label: 'Ontology Edges', value: m.ontology_edges_total || '0', title: 'Total relationships between entity types in the ontology graph' },
+    { label: 'Low Confidence', value: m.low_confidence_count || '0', warn: Number(m.low_confidence_count) > 0, title: 'Number of entity classifications below the confidence threshold' },
   ]
 
   return (
     <div>
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
         {cards.map((c, i) => (
-          <div key={i} className="border border-slate-200 dark:border-dbx-navy-400/25 rounded-xl p-4 bg-gradient-to-br from-white to-slate-50 dark:from-dbx-navy-650 dark:to-dbx-navy-700">
+          <div key={i} className="border border-slate-200 dark:border-dbx-navy-400/25 rounded-xl p-4 bg-gradient-to-br from-white to-slate-50 dark:from-dbx-navy-650 dark:to-dbx-navy-700" title={c.title || ''}>
             <p className="text-xs text-slate-500 dark:text-slate-400 uppercase tracking-wider">{c.label}</p>
             <p className={`text-2xl font-bold mt-1 ${c.warn ? 'text-dbx-amber' : 'text-dbx-lava'}`}>{c.value ?? '--'}</p>
             {c.sub && <p className="text-xs text-slate-400 mt-0.5">{c.sub}</p>}
@@ -74,12 +122,9 @@ export function EntityGraph({ entities, relationships, allRelationships }) {
     if (!selectedType || !allRelationships) return []
     return allRelationships
       .filter(r => (r.relationship_name || r.relationship) === 'instance_of')
-      .filter(r => {
-        const matchingEntities = entities.filter(e => e.entity_type === selectedType)
-        return matchingEntities.some(e => e.entity_id === (r.dst_entity_type || r.dst))
-      })
+      .filter(r => (r.dst_entity_type || r.dst) === selectedType)
       .map(r => shortName(r.src_entity_type || r.src))
-  }, [selectedType, allRelationships, entities])
+  }, [selectedType, allRelationships])
 
   const graphData = useMemo(() => {
     if (!entities.length) return { nodes: [], links: [] }
@@ -180,7 +225,7 @@ export function EntityGraph({ entities, relationships, allRelationships }) {
       {selectedType && (
         <div className="mt-3 p-3 bg-indigo-50 border border-indigo-200 rounded-lg">
           <p className="text-sm font-semibold text-indigo-800">
-            Tables linked to "{selectedType}" via instance_of:
+            Tables classified as "{selectedType}":
           </p>
           {instanceOfLinks.length > 0 ? (
             <div className="flex flex-wrap gap-1.5 mt-2">
@@ -189,7 +234,7 @@ export function EntityGraph({ entities, relationships, allRelationships }) {
               ))}
             </div>
           ) : (
-            <p className="text-xs text-indigo-500 mt-1">No instance_of edges found. Run the ontology pipeline to generate them.</p>
+            <p className="text-xs text-indigo-500 mt-1">No entity classifications found. Run the ontology pipeline to generate them.</p>
           )}
           <button onClick={() => setSelectedType(null)} className="mt-2 text-xs text-indigo-500 hover:underline">Clear selection</button>
         </div>
@@ -246,7 +291,7 @@ export function OntologyOverview() {
           : <div className="overflow-x-auto max-h-96">
               <table className="min-w-full text-sm">
                 <thead><tr>
-                  {['Table', 'Entity', 'Type', 'Confidence', 'Validated'].map(h =>
+                  {['Table', 'Entity', 'Type', 'Confidence', 'Standard', 'Validated'].map(h =>
                     <th key={h} className="text-left px-3 py-2.5 bg-dbx-oat dark:bg-dbx-navy-500 font-semibold text-slate-600 dark:text-slate-300 border-b border-slate-200 dark:border-dbx-navy-400/30 text-xs uppercase tracking-wider">{h}</th>)}
                 </tr></thead>
                 <tbody>
@@ -258,6 +303,11 @@ export function OntologyOverview() {
                         <td className="px-3 py-2 font-medium text-slate-700 dark:text-slate-200">{e.entity_name}</td>
                         <td className="px-3 py-2"><span className="badge bg-orange-100 text-dbx-lava dark:bg-dbx-lava/20 dark:text-dbx-lava-light">{e.entity_type}</span></td>
                         <td className="px-3 py-2 text-slate-600 dark:text-slate-300 tabular-nums">{Number(e.confidence).toFixed(2)}</td>
+                        <td className="px-3 py-2">
+                          {e.source_ontology
+                            ? <span className="text-xs px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300">{e.source_ontology}</span>
+                            : <span className="text-xs text-slate-300">--</span>}
+                        </td>
                         <td className="px-3 py-2">{(e.validated === 'true' || e.validated === true) ? <span className="text-dbx-green font-medium">Yes</span> : <span className="text-slate-400">No</span>}</td>
                       </tr>
                     )
@@ -270,18 +320,168 @@ export function OntologyOverview() {
       </section>
       <section className="card p-6">
         <h2 className="heading-section mb-4">Entity Relationship Graph</h2>
-        <p className="text-xs text-slate-500 mb-3">Nodes = entity types (sized by table count). Click a node to see tables linked via instance_of.</p>
+        <p className="text-xs text-slate-500 mb-3">Nodes represent entity types, sized by table count. Click a node to see which tables are classified as that type.</p>
         <EntityGraph entities={entities} relationships={relationships} allRelationships={relationships} />
       </section>
     </div>
   )
 }
 
+function SourceStandardsBreakdown({ entities }) {
+  const breakdown = useMemo(() => {
+    const counts = {}
+    ;(entities || []).forEach(e => {
+      const src = e.source_ontology || 'Custom / Unlinked'
+      counts[src] = (counts[src] || 0) + 1
+    })
+    return Object.entries(counts).sort((a, b) => b[1] - a[1])
+  }, [entities])
+
+  const [downloading, setDownloading] = useState(false)
+  const [downloadError, setDownloadError] = useState(null)
+  const downloadTurtle = async () => {
+    setDownloading(true)
+    setDownloadError(null)
+    try {
+      const r = await fetch('/api/ontology/turtle')
+      if (!r.ok) { setDownloadError((await r.json().catch(() => ({}))).error || 'No Turtle file available'); return }
+      const blob = await r.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a'); a.href = url; a.download = 'ontology.ttl'; a.click()
+      URL.revokeObjectURL(url)
+    } catch (e) { setDownloadError('Download failed: ' + e.message) }
+    finally { setDownloading(false) }
+  }
+
+  if (breakdown.length <= 1 && breakdown[0]?.[0] === 'Custom / Unlinked') return null
+
+  return (
+    <div className="flex items-center gap-4 flex-wrap">
+      <div className="flex items-center gap-2 flex-wrap">
+        {breakdown.map(([src, cnt]) => (
+          <span key={src} className={`text-xs px-2 py-1 rounded-full font-medium ${
+            src === 'Custom / Unlinked' ? 'bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300'
+              : 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300'
+          }`}>
+            {src}: {cnt}
+          </span>
+        ))}
+      </div>
+      <button onClick={downloadTurtle} disabled={downloading}
+        className="text-xs px-3 py-1.5 rounded-lg border border-slate-300 dark:border-dbx-navy-400 bg-white dark:bg-dbx-navy-600 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-dbx-navy-500 disabled:opacity-50">
+        {downloading ? 'Downloading...' : 'Export Turtle (.ttl)'}
+      </button>
+      {downloadError && <span className="text-xs text-red-600 dark:text-red-400">{downloadError}</span>}
+    </div>
+  )
+}
+
+function SourceClassBrowser() {
+  const [bundles, setBundles] = useState([])
+  const [selectedBundle, setSelectedBundle] = useState('')
+  const [classes, setClasses] = useState([])
+  const [total, setTotal] = useState(0)
+  const [loading, setLoading] = useState(false)
+  const [filter, setFilter] = useState('')
+  const [expandedCls, setExpandedCls] = useState(new Set())
+
+  useEffect(() => {
+    fetch('/api/ontology/bundles').then(r => r.ok ? r.json() : []).then(setBundles).catch(() => {})
+  }, [])
+
+  useEffect(() => {
+    if (!selectedBundle) { setClasses([]); setTotal(0); return }
+    setLoading(true)
+    fetch(`/api/ontology/source-classes/${selectedBundle}?limit=1000`)
+      .then(r => r.ok ? r.json() : { classes: [], total: 0 })
+      .then(data => { setClasses(data.classes || []); setTotal(data.total || 0) })
+      .catch(() => { setClasses([]); setTotal(0) })
+      .finally(() => setLoading(false))
+  }, [selectedBundle])
+
+  const filtered = useMemo(() => {
+    if (!filter) return classes
+    const f = filter.toLowerCase()
+    return classes.filter(c => c.name.toLowerCase().includes(f) || (c.description || '').toLowerCase().includes(f))
+  }, [classes, filter])
+
+  const toggleCls = (name) => {
+    setExpandedCls(prev => { const n = new Set(prev); n.has(name) ? n.delete(name) : n.add(name); return n })
+  }
+
+  return (
+    <div>
+      <div className="flex items-center gap-3 mb-4">
+        <select value={selectedBundle} onChange={e => setSelectedBundle(e.target.value)}
+          className="select-base max-w-xs">
+          <option value="">Select a bundle...</option>
+          {bundles.filter(b => b.has_tier_indexes).map(b => (
+            <option key={b.key} value={b.key}>{b.name} ({b.entity_count} classes)</option>
+          ))}
+        </select>
+        {classes.length > 0 && (
+          <input type="text" placeholder="Filter classes..." value={filter} onChange={e => setFilter(e.target.value)}
+            className="input-base max-w-xs" />
+        )}
+        {total > 0 && <span className="text-xs text-slate-400">{filtered.length} / {total} classes</span>}
+      </div>
+      {loading && <p className="text-sm text-slate-400">Loading...</p>}
+      {!loading && filtered.length > 0 && (
+        <div className="overflow-y-auto max-h-[600px] space-y-1">
+          {filtered.map(c => (
+            <div key={c.name} className="border border-slate-200 dark:border-dbx-navy-400/25 rounded-lg">
+              <button onClick={() => toggleCls(c.name)}
+                className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-slate-50 dark:hover:bg-dbx-navy-600/50 transition-colors">
+                <span className="text-xs text-slate-400 font-mono">{expandedCls.has(c.name) ? '-' : '+'}</span>
+                <span className="text-sm font-medium text-slate-700 dark:text-slate-200">{c.name}</span>
+                {c.parents?.length > 0 && (
+                  <span className="text-[10px] text-slate-400 ml-1">extends {c.parents.join(', ')}</span>
+                )}
+                {c.source_ontology && (
+                  <span className="ml-auto text-[10px] px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300">{c.source_ontology}</span>
+                )}
+              </button>
+              {expandedCls.has(c.name) && (
+                <div className="px-4 pb-3 text-xs space-y-1.5 border-t border-slate-100 dark:border-dbx-navy-500/30 pt-2">
+                  <p className="text-slate-600 dark:text-slate-300">{c.description}</p>
+                  {c.uri && <p className="text-slate-400 font-mono break-all">{c.uri}</p>}
+                  {c.relationships?.length > 0 && (
+                    <div className="flex flex-wrap gap-1">
+                      <span className="text-slate-500 font-semibold mr-1">Edges:</span>
+                      {c.relationships.map(r => (
+                        <span key={r} className="bg-orange-50 text-orange-700 dark:bg-orange-900/30 dark:text-orange-300 px-1.5 py-0.5 rounded">{r}</span>
+                      ))}
+                    </div>
+                  )}
+                  {c.typical_attributes?.length > 0 && (
+                    <div className="flex flex-wrap gap-1">
+                      <span className="text-slate-500 font-semibold mr-1">Attributes:</span>
+                      {c.typical_attributes.map(a => (
+                        <span key={a} className="bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300 px-1.5 py-0.5 rounded">{a}</span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+      {!loading && selectedBundle && filtered.length === 0 && (
+        <p className="text-sm text-slate-400">No classes found. This bundle may not have tier indexes.</p>
+      )}
+    </div>
+  )
+}
+
+
 export default function Ontology() {
   const [entities, setEntities] = useState([])
   const [summary, setSummary] = useState([])
   const [relationships, setRelationships] = useState([])
   const [metrics, setMetrics] = useState([])
+  const [qualitySummary, setQualitySummary] = useState(null)
+  const [reviewQueue, setReviewQueue] = useState([])
   const [error, setError] = useState(null)
   const [selected, setSelected] = useState(new Set())
   const [applyResult, setApplyResult] = useState(null)
@@ -294,13 +494,19 @@ export default function Ontology() {
     cachedFetch('/api/ontology/summary', {}, TTL.DASHBOARD).then(r => { setSummary(r.data || []); if (r.error) setError(r.error) })
     cachedFetch('/api/ontology/relationships', {}, TTL.DASHBOARD).then(r => { setRelationships(r.data || []) })
     cachedFetch('/api/ontology/metrics', {}, TTL.DASHBOARD).then(r => { setMetrics(r.data || []) })
+    cachedFetchObj('/api/ontology/quality-summary', {}, TTL.DASHBOARD).then(r => {
+      if (!r.error) setQualitySummary(r.data)
+    })
+    cachedFetchObj('/api/ontology/review-queue?limit=25', {}, TTL.DASHBOARD).then(r => {
+      if (!r.error && r.data) setReviewQueue(Array.isArray(r.data) ? r.data : [])
+    })
   }, [])
 
   const groupedEntities = useMemo(() => {
     const map = new Map()
     entities.forEach(e => {
       const st = Array.isArray(e.source_tables) ? e.source_tables : (typeof e.source_tables === 'string' ? (() => { try { return JSON.parse(e.source_tables) } catch { return [e.source_tables] } })() : [])
-      const key = `${e.entity_type}::${st.sort().join(',')}`
+      const key = `${e.entity_type}::${[...st].sort().join(',')}`
       const existing = map.get(key)
       if (!existing || (Number(e.confidence) || 0) > (Number(existing.confidence) || 0)) {
         map.set(key, { ...e, source_tables: st, _count: (existing?._count || 0) + 1 })
@@ -328,13 +534,25 @@ export default function Ontology() {
     return []
   }
 
+  const markReviewed = async (entityId) => {
+    if (!entityId) return
+    try {
+      const r = await fetch('/api/ontology/entity-review', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ entity_id: entityId, validated: true }),
+      })
+      if (r.ok) setReviewQueue(q => q.filter(row => row.entity_id !== entityId))
+    } catch { /* ignore */ }
+  }
+
   const applyToTable = async () => {
     if (selected.size === 0) return
     setApplying(true)
     setApplyResult(null)
     const selections = []
     selected.forEach(i => {
-      const e = entities[i]
+      const e = groupedEntities[i]
       const tables = sourceTablesList(e)
       if (e?.entity_type && tables.length) selections.push({ entity_type: e.entity_type, source_tables: tables })
     })
@@ -350,6 +568,7 @@ export default function Ontology() {
   const tabs = [
     { key: 'graph', label: 'Relationship Graph' },
     { key: 'table', label: 'Entity Table' },
+    { key: 'browser', label: 'Source Classes' },
   ]
 
   return (
@@ -357,12 +576,66 @@ export default function Ontology() {
       <PageHeader title="Ontology" subtitle="Entity types and relationships" />
       <ErrorBanner error={error} />
 
+      <section className="card p-6">
+        <h2 className="heading-section mb-4">Bundle &amp; quality</h2>
+        <BundleQualityStrip qualitySummary={qualitySummary} />
+        <div className="mt-3">
+          <FormalSemanticsNote />
+        </div>
+      </section>
+
+      {reviewQueue.length > 0 && (
+        <section className="card p-6 border-amber-200 dark:border-amber-900/40">
+          <h2 className="heading-section mb-4">Low-confidence review ({reviewQueue.length})</h2>
+          <p className="text-xs text-slate-500 mb-3">Rows with confidence ≤ 0.6. Mark validated after manual check.</p>
+          <div className="overflow-x-auto max-h-64">
+            <table className="min-w-full text-sm">
+              <thead>
+                <tr>
+                  {['Entity', 'Type', 'Conf', 'Method / URI', ''].map(h => (
+                    <th key={h} className="text-left px-3 py-2 bg-dbx-oat dark:bg-dbx-navy-500 text-xs uppercase tracking-wider">{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {reviewQueue.map((row, i) => {
+                  let attrs = {}
+                  try {
+                    attrs = typeof row.attributes === 'string' ? JSON.parse(row.attributes) : (row.attributes || {})
+                  } catch { attrs = {} }
+                  const meth = attrs.discovery_method || '—'
+                  const uri = row.entity_uri || '—'
+                  return (
+                    <tr key={row.entity_id || i} className="border-b border-slate-100 dark:border-dbx-navy-500/50">
+                      <td className="px-3 py-2 font-mono text-xs max-w-[200px] truncate">{shortName((row.source_tables && row.source_tables[0]) || '')}</td>
+                      <td className="px-3 py-2">{row.entity_type}</td>
+                      <td className="px-3 py-2 tabular-nums">{Number(row.confidence).toFixed(2)}</td>
+                      <td className="px-3 py-2 text-xs text-slate-500 max-w-xs truncate" title={`${meth} ${uri}`}>{meth} · {String(uri).slice(0, 40)}{String(uri).length > 40 ? '…' : ''}</td>
+                      <td className="px-3 py-2">
+                        {row.entity_id && (
+                          <button type="button" onClick={() => markReviewed(row.entity_id)} className="text-xs px-2 py-1 rounded bg-emerald-600 text-white hover:bg-emerald-700">Validate</button>
+                        )}
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
+
       {/* Health cards */}
       <section className="card p-6">
         <h2 className="heading-section mb-4">Ontology Health</h2>
         <HealthCards metrics={metrics} />
         {!metrics.length && (
           <EmptyState title="No metrics computed yet" description="Run the ontology pipeline to generate health metrics" />
+        )}
+        {entities.length > 0 && (
+          <div className="mt-4">
+            <SourceStandardsBreakdown entities={entities} />
+          </div>
         )}
       </section>
 
@@ -402,9 +675,18 @@ export default function Ontology() {
         {tab === 'graph' && (
           <div>
             <p className="text-xs text-slate-500 mb-3">
-              Nodes = entity types (sized by table count). Click a node to see tables linked via instance_of.
+              Nodes represent entity types, sized by table count. Click a node to see which tables are classified as that type.
             </p>
             <EntityGraph entities={entities} relationships={relationships} allRelationships={relationships} />
+          </div>
+        )}
+
+        {tab === 'browser' && (
+          <div>
+            <p className="text-xs text-slate-500 mb-3">
+              Browse the source ontology classes from a bundle's tier indexes. Select a bundle to explore its class hierarchy.
+            </p>
+            <SourceClassBrowser />
           </div>
         )}
 
@@ -430,7 +712,7 @@ export default function Ontology() {
                   <table className="min-w-full text-sm">
                     <thead><tr>
                       <th className="w-10 px-2 py-2.5 bg-dbx-oat border-b border-slate-200"></th>
-                      {['Entity', 'Type', 'Conf', 'Validated', 'Source Tables', 'Columns / Bindings'].map(h =>
+                      {['Entity', 'Type', 'Conf', 'Standard', 'Validated', 'Source Tables', 'Columns / Bindings'].map(h =>
                         <th key={h} className="text-left px-3 py-2.5 bg-dbx-oat font-semibold text-slate-600 border-b border-slate-200 text-xs uppercase tracking-wider">{h}</th>)}
                     </tr></thead>
                     <tbody>
@@ -451,6 +733,11 @@ export default function Ontology() {
                               </td>
                               <td className="px-3 py-2 text-slate-600">{Number(e.confidence).toFixed(2)}</td>
                               <td className="px-3 py-2">
+                                {e.source_ontology
+                                  ? <span className="text-xs px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300">{e.source_ontology}</span>
+                                  : <span className="text-xs text-slate-300">--</span>}
+                              </td>
+                              <td className="px-3 py-2">
                                 {e.validated === 'true' || e.validated === true
                                   ? <span className="text-emerald-600 font-medium">Yes</span>
                                   : <span className="text-slate-400">No</span>}
@@ -468,7 +755,7 @@ export default function Ontology() {
                             {isExpanded && hasDetail && (
                               <tr className="bg-slate-50/60">
                                 <td></td>
-                                <td colSpan={6} className="px-3 py-2">
+                                <td colSpan={7} className="px-3 py-2">
                                   {bindings.length > 0 && (
                                     <div className="mb-1">
                                       <span className="text-xs font-semibold text-slate-500 mr-2">Attribute mappings:</span>

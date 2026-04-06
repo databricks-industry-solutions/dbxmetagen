@@ -73,6 +73,9 @@ print(f"Node types: {node_types}")
 
 # COMMAND ----------
 
+import mlflow
+mlflow.autolog(disable=True)
+
 import numpy as np
 from pyspark.sql import functions as F
 from pyspark.sql.window import Window

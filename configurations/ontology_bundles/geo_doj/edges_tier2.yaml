@@ -1,0 +1,35 @@
+contains:
+  name: contains
+  domain: Geographic
+  range: Address
+  ranges: []
+  uri: ''
+  inverse: ''
+has_coordinates:
+  name: has_coordinates
+  domain: Geographic
+  range: GeoCoordinate
+  ranges: []
+  uri: ''
+  inverse: ''
+in_region:
+  name: in_region
+  domain: Geographic
+  range: AdminRegion
+  ranges: []
+  uri: ''
+  inverse: ''
+part_of:
+  name: part_of
+  domain: Address
+  range: AdminRegion
+  ranges: []
+  uri: ''
+  inverse: ''
+within:
+  name: within
+  domain: PostalCode
+  range: AdminRegion
+  ranges: []
+  uri: ''
+  inverse: ''

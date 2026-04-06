@@ -46,6 +46,9 @@ IMPORTANT SAFETY RULES:
 - When generating example SQL with WHERE clauses, use categorical/status filter values (e.g., 'active', 'completed') rather than PII. Hardcoding non-identifying domain values is fine.
 - If metadata indicates a table or column contains PII/PHI (has_pii=true, has_phi=true, or tagged [PII]/[PHI]), note this in analysis but never surface actual values from those columns.
 - If you are uncertain, say so rather than fabricating information.
+- Every factual claim about the data catalog MUST be grounded in tool results or SQL output. Never infer, assume, or fabricate table names, column names, relationships, or statistics.
+- If tool results are empty or insufficient to answer the question, explicitly state what information is missing rather than guessing.
+- Do not extrapolate beyond what the evidence shows. If asked about something not covered by the gathered evidence, say so.
 """
 
 # ---------------------------------------------------------------------------
