@@ -28,6 +28,9 @@ dbutils.widgets.text("sample_size", "5", "Sample Size")
 dbutils.widgets.text("apply_ddl", "false", "Apply DDL")
 dbutils.widgets.text("dry_run", "false", "Dry Run (count only, no AI calls)")
 dbutils.widgets.text("incremental", "true", "Incremental embedding path only (true/false)")
+dbutils.widgets.text("max_ai_candidates", "200", "Max rows sent to AI_QUERY")
+dbutils.widgets.text("rule_score_min_for_ai", "0.50", "Min rule score to qualify for AI judge")
+dbutils.widgets.text("max_candidates_per_table_pair", "5", "Max candidates per table pair (name/ontology)")
 
 catalog_name = dbutils.widgets.get("catalog_name")
 schema_name = dbutils.widgets.get("schema_name")
@@ -44,6 +47,9 @@ sample_size = int(dbutils.widgets.get("sample_size"))
 apply_ddl = dbutils.widgets.get("apply_ddl").lower() == "true"
 dry_run = dbutils.widgets.get("dry_run").lower() == "true"
 incremental = dbutils.widgets.get("incremental").lower() == "true"
+max_ai_candidates = int(dbutils.widgets.get("max_ai_candidates"))
+rule_score_min_for_ai = float(dbutils.widgets.get("rule_score_min_for_ai"))
+max_candidates_per_table_pair = int(dbutils.widgets.get("max_candidates_per_table_pair"))
 
 if not catalog_name or not schema_name:
     raise ValueError("Both catalog_name and schema_name are required")
@@ -56,6 +62,9 @@ print(f"Confidence threshold: {confidence_threshold}")
 print(f"Apply DDL: {apply_ddl}")
 print(f"Dry run: {dry_run}")
 print(f"Incremental (embedding path): {incremental}")
+print(f"Max AI candidates: {max_ai_candidates}")
+print(f"Rule score min for AI: {rule_score_min_for_ai}")
+print(f"Max candidates per table pair: {max_candidates_per_table_pair}")
 
 # COMMAND ----------
 
@@ -81,6 +90,9 @@ result = predict_foreign_keys(
     apply_ddl=apply_ddl,
     dry_run=dry_run,
     incremental=incremental,
+    max_ai_candidates=max_ai_candidates,
+    rule_score_min_for_ai=rule_score_min_for_ai,
+    max_candidates_per_table_pair=max_candidates_per_table_pair,
 )
 
 print("FK prediction complete")

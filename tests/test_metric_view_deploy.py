@@ -22,10 +22,12 @@ from dbxmetagen.genie.context import GenieContextAssembler
 
 
 class TestResolveMvLocation:
-    """GenieContextAssembler._resolve_mv_location must prefer
-    deployed columns, then assembler fallback. It must NOT fall back
-    to source_table schema because that is where the DATA lives, not
-    the metric view object."""
+    """GenieContextAssembler._resolve_mv_location priority:
+    deployed cols > source_table catalog/schema > assembler fallback.
+
+    apply_metric_views deploys MVs into the source table's schema,
+    so source_table is a valid intermediate fallback when deployed cols
+    are NULL (e.g., rows applied before those columns existed)."""
 
     def test_deployed_columns_used(self):
         mv = {
@@ -37,7 +39,7 @@ class TestResolveMvLocation:
         assert cat == "prod"
         assert sch == "gold"
 
-    def test_fallback_to_assembler_when_deployed_null(self):
+    def test_fallback_to_source_table_when_deployed_null(self):
         mv = {
             "deployed_catalog": None,
             "deployed_schema": None,
@@ -45,15 +47,15 @@ class TestResolveMvLocation:
         }
         cat, sch = GenieContextAssembler._resolve_mv_location(mv, "prod", "metagen")
         assert cat == "prod"
-        assert sch == "metagen"
+        assert sch == "bronze"
 
-    def test_fallback_to_assembler_when_deployed_missing(self):
+    def test_fallback_to_source_table_when_deployed_missing(self):
         mv = {"source_table": "prod.bronze.orders"}
         cat, sch = GenieContextAssembler._resolve_mv_location(mv, "prod", "metagen")
         assert cat == "prod"
-        assert sch == "metagen"
+        assert sch == "bronze"
 
-    def test_fallback_to_assembler_when_deployed_empty(self):
+    def test_fallback_to_source_table_when_deployed_empty(self):
         mv = {
             "deployed_catalog": "",
             "deployed_schema": "",
@@ -61,7 +63,7 @@ class TestResolveMvLocation:
         }
         cat, sch = GenieContextAssembler._resolve_mv_location(mv, "prod", "analytics")
         assert cat == "prod"
-        assert sch == "analytics"
+        assert sch == "bronze"
 
     def test_partial_deployed_catalog_only(self):
         mv = {
@@ -71,7 +73,7 @@ class TestResolveMvLocation:
         }
         cat, sch = GenieContextAssembler._resolve_mv_location(mv, "fb_cat", "fb_sch")
         assert cat == "prod"
-        assert sch == "fb_sch"
+        assert sch == "bronze"
 
     def test_partial_deployed_schema_only(self):
         mv = {
@@ -80,13 +82,24 @@ class TestResolveMvLocation:
             "source_table": "prod.bronze.orders",
         }
         cat, sch = GenieContextAssembler._resolve_mv_location(mv, "fb_cat", "fb_sch")
-        assert cat == "fb_cat"
+        assert cat == "prod"
         assert sch == "gold"
 
     def test_empty_mv_uses_fallback(self):
         cat, sch = GenieContextAssembler._resolve_mv_location({}, "cat", "sch")
         assert cat == "cat"
         assert sch == "sch"
+
+    def test_non_fq_source_falls_through_to_assembler(self):
+        """source_table with <3 parts can't provide catalog/schema."""
+        mv = {
+            "deployed_catalog": None,
+            "deployed_schema": None,
+            "source_table": "orders",
+        }
+        cat, sch = GenieContextAssembler._resolve_mv_location(mv, "fb_cat", "fb_sch")
+        assert cat == "fb_cat"
+        assert sch == "fb_sch"
 
 
 # ── apply_metric_views ───────────────────────────────────────────────
@@ -101,6 +114,13 @@ class TestApplyMetricViewsDeployTracking:
         config = SemanticLayerConfig(catalog_name="mycat", schema_name="mysch")
         return SemanticLayerGenerator(spark, config)
 
+    def _make_row(self, data: dict):
+        """Create a mock Row whose .asDict() returns a real dict."""
+        row = MagicMock()
+        row.asDict.return_value = dict(data)
+        row.__getitem__ = lambda self, k: data[k]
+        return row
+
     def test_apply_sets_deployed_location(self, gen):
         defn = {
             "name": "revenue_metrics",
@@ -108,13 +128,12 @@ class TestApplyMetricViewsDeployTracking:
             "dimensions": [{"name": "region", "expr": "source.region"}],
             "measures": [{"name": "total", "expr": "SUM(source.amount)", "agg": "sum"}],
         }
-        row = MagicMock()
-        row.__getitem__ = lambda self, k: {
+        row = self._make_row({
             "definition_id": "def-123",
             "metric_view_name": "revenue_metrics",
             "source_table": "mycat.bronze.orders",
             "json_definition": json.dumps(defn),
-        }[k]
+        })
 
         gen.spark.sql.side_effect = [
             MagicMock(collect=MagicMock(return_value=[row])),  # SELECT
@@ -127,7 +146,6 @@ class TestApplyMetricViewsDeployTracking:
 
         update_call = gen.spark.sql.call_args_list[2]
         update_sql = update_call[0][0]
-        # deploy_cat/deploy_sch are parsed from defn["source"] (mycat.bronze.orders)
         assert "deployed_catalog = 'mycat'" in update_sql
         assert "deployed_schema = 'bronze'" in update_sql
 
@@ -138,13 +156,12 @@ class TestApplyMetricViewsDeployTracking:
             "dimensions": [{"name": "x", "expr": "source.x"}],
             "measures": [{"name": "y", "expr": "SUM(source.y)", "agg": "sum"}],
         }
-        row = MagicMock()
-        row.__getitem__ = lambda self, k: {
+        row = self._make_row({
             "definition_id": "def-456",
             "metric_view_name": "bad_metrics",
             "source_table": "mycat.bronze.orders",
             "json_definition": json.dumps(defn),
-        }[k]
+        })
 
         gen.spark.sql.side_effect = [
             MagicMock(collect=MagicMock(return_value=[row])),  # SELECT
@@ -169,13 +186,12 @@ class TestApplyMetricViewsDeployTracking:
             "dimensions": [{"name": "d", "expr": "source.d"}],
             "measures": [{"name": "m", "expr": "SUM(source.m)", "agg": "sum"}],
         }
-        row = MagicMock()
-        row.__getitem__ = lambda self, k: {
+        row = self._make_row({
             "definition_id": "def-789",
             "metric_view_name": "mv1",
             "source_table": "cat'test.sch'test.tbl",
             "json_definition": json.dumps(defn),
-        }[k]
+        })
         gen.spark.sql.side_effect = [
             MagicMock(collect=MagicMock(return_value=[row])),
             None,
@@ -258,8 +274,7 @@ class TestGenerateMetricViewsInsert:
 
 
 class TestCrossSchemaMetricViewResolution:
-    """End-to-end scenario: MV deployed to gold schema but source_table is in bronze.
-    Without the fix, _resolve_mv_location would return bronze, causing a FAILED lookup."""
+    """Cross-schema MV resolution scenarios."""
 
     def test_bronze_source_gold_deploy(self):
         mv = {
@@ -273,10 +288,9 @@ class TestCrossSchemaMetricViewResolution:
         assert cat == "prism_dev"
         assert sch == "ado_gold"
 
-    def test_bronze_source_null_deploy_uses_assembler(self):
-        """This is the exact bug scenario: deployed columns are NULL because
-        apply_metric_views didn't set them. Should fall back to assembler
-        (config) schema, not source_table schema."""
+    def test_null_deploy_uses_source_table_schema(self):
+        """When deployed columns are NULL, fall back to source_table's schema
+        since apply_metric_views deploys MVs next to their source."""
         mv = {
             "metric_view_name": "defect_sla_compliance_metrics",
             "source_table": "prism_dev.ado_bronze.incidents",
@@ -284,10 +298,9 @@ class TestCrossSchemaMetricViewResolution:
             "deployed_catalog": None,
             "deployed_schema": None,
         }
-        cat, sch = GenieContextAssembler._resolve_mv_location(mv, "prism_dev", "ado_gold")
-        assert sch == "ado_gold", (
-            "Should use assembler schema (ado_gold), not source_table schema (ado_bronze)"
-        )
+        cat, sch = GenieContextAssembler._resolve_mv_location(mv, "prism_dev", "metagen")
+        assert cat == "prism_dev"
+        assert sch == "ado_bronze"
 
 
 # ── _get_metric_views ambiguous short-name dedup ─────────────────────
@@ -351,13 +364,12 @@ class TestGetMetricViewsShortNameDedup:
         assert len(mvs) == 1, "No ambiguity, so short-name MV should pass through"
 
 
-# ── _get_metric_views existence check uses resolved location ─────────
+# ── _get_metric_views trusts applied status (no existence check) ─────
 
 
-class TestGetMetricViewsExistenceCheck:
-    """Applied MVs go through an existence check. The check must query
-    the location from deployed_catalog/deployed_schema (via _resolve_mv_location),
-    NOT the source_table schema or a hardcoded default."""
+class TestGetMetricViewsPassThrough:
+    """Applied MVs are trusted based on status -- no existence check.
+    All applied/validated MVs returned by the query should pass through."""
 
     def _make_assembler(self, config_cat="prism_dev", config_sch="metagen"):
         assembler = GenieContextAssembler.__new__(GenieContextAssembler)
@@ -367,14 +379,7 @@ class TestGetMetricViewsExistenceCheck:
         assembler.schema = config_sch
         return assembler
 
-    def _success_response(self):
-        r = MagicMock()
-        r.status.state.value = "SUCCEEDED"
-        return r
-
-    def test_existence_check_uses_deployed_location(self):
-        """Applied MV with deployed_catalog/schema set: existence check
-        must fire at the deployed location, not source_table's schema."""
+    def test_applied_mv_passes_through(self):
         assembler = self._make_assembler()
         mv_rows = [{
             "metric_view_name": "revenue_metrics",
@@ -385,46 +390,18 @@ class TestGetMetricViewsExistenceCheck:
             "json_definition": "{}",
         }]
 
-        assembler.ws.statement_execution.execute_statement.return_value = self._success_response()
-
         with patch("dbxmetagen.genie.context._safe_sql", return_value=mv_rows):
             mvs, warnings = assembler._get_metric_views(["prism_dev.ado_bronze.incidents"])
 
         assert len(mvs) == 1
         assert len(warnings) == 0
+        assert mvs[0]["metric_view_name"] == "revenue_metrics"
 
-        check_sql = assembler.ws.statement_execution.execute_statement.call_args[1]["statement"]
-        assert "`prism_dev`.`ado_bronze`.`revenue_metrics`" in check_sql
-
-    def test_existence_check_fallback_when_deployed_null(self):
-        """Applied MV with NULL deployed cols: existence check falls back
-        to assembler config schema (not source_table schema)."""
-        assembler = self._make_assembler(config_cat="prism_dev", config_sch="ado_gold")
-        mv_rows = [{
-            "metric_view_name": "incident_metrics",
-            "source_table": "prism_dev.ado_bronze.incidents",
-            "status": "applied",
-            "deployed_catalog": None,
-            "deployed_schema": None,
-            "json_definition": "{}",
-        }]
-
-        assembler.ws.statement_execution.execute_statement.return_value = self._success_response()
-
-        with patch("dbxmetagen.genie.context._safe_sql", return_value=mv_rows):
-            mvs, warnings = assembler._get_metric_views(["prism_dev.ado_bronze.incidents"])
-
-        check_sql = assembler.ws.statement_execution.execute_statement.call_args[1]["statement"]
-        assert "`prism_dev`.`ado_gold`.`incident_metrics`" in check_sql, (
-            "Fallback should use assembler schema 'ado_gold', not source schema 'ado_bronze'"
-        )
-
-    def test_failed_existence_check_produces_warning(self):
-        """If the existence check returns FAILED, the MV is excluded
-        and a warning is emitted with the checked location."""
+    def test_no_existence_check_executed(self):
+        """Verify no SQL warehouse statement_execution calls are made."""
         assembler = self._make_assembler()
         mv_rows = [{
-            "metric_view_name": "bad_mv",
+            "metric_view_name": "mv1",
             "source_table": "prism_dev.ado_bronze.incidents",
             "status": "applied",
             "deployed_catalog": "prism_dev",
@@ -432,21 +409,12 @@ class TestGetMetricViewsExistenceCheck:
             "json_definition": "{}",
         }]
 
-        r = MagicMock()
-        r.status.state.value = "FAILED"
-        assembler.ws.statement_execution.execute_statement.return_value = r
-
         with patch("dbxmetagen.genie.context._safe_sql", return_value=mv_rows):
-            mvs, warnings = assembler._get_metric_views(["prism_dev.ado_bronze.incidents"])
+            assembler._get_metric_views(["prism_dev.ado_bronze.incidents"])
 
-        assert len(mvs) == 0
-        assert len(warnings) == 1
-        assert "bad_mv" in warnings[0]
-        assert "ado_bronze" in warnings[0]
+        assembler.ws.statement_execution.execute_statement.assert_not_called()
 
-    def test_multi_schema_applied_mvs_checked_independently(self):
-        """Two applied MVs from different schemas: each gets checked
-        at its own deployed location."""
+    def test_multi_schema_applied_mvs_all_returned(self):
         assembler = self._make_assembler()
         mv_rows = [
             {
@@ -467,19 +435,39 @@ class TestGetMetricViewsExistenceCheck:
             },
         ]
 
-        assembler.ws.statement_execution.execute_statement.return_value = self._success_response()
-
         with patch("dbxmetagen.genie.context._safe_sql", return_value=mv_rows):
             mvs, warnings = assembler._get_metric_views(["cat.bronze.orders", "cat.gold.summary"])
 
         assert len(mvs) == 2
         assert len(warnings) == 0
-        stmts = [
-            c[1]["statement"]
-            for c in assembler.ws.statement_execution.execute_statement.call_args_list
+
+    def test_name_level_dedup_keeps_most_recent(self):
+        """When duplicate MV names exist, the first row wins (ORDER BY applied_at DESC)."""
+        assembler = self._make_assembler()
+        mv_rows = [
+            {
+                "metric_view_name": "dup_mv",
+                "source_table": "cat.sfdc.orders",
+                "status": "applied",
+                "deployed_catalog": "cat",
+                "deployed_schema": "sfdc",
+                "json_definition": "{}",
+            },
+            {
+                "metric_view_name": "dup_mv",
+                "source_table": "cat.sfdc.orders",
+                "status": "applied",
+                "deployed_catalog": None,
+                "deployed_schema": None,
+                "json_definition": "{}",
+            },
         ]
-        assert any("`cat`.`bronze`.`bronze_mv`" in s for s in stmts)
-        assert any("`cat`.`gold`.`gold_mv`" in s for s in stmts)
+
+        with patch("dbxmetagen.genie.context._safe_sql", return_value=mv_rows):
+            mvs, warnings = assembler._get_metric_views(["cat.sfdc.orders"])
+
+        assert len(mvs) == 1
+        assert mvs[0]["deployed_schema"] == "sfdc"
 
 
 # ── apply_metric_views deploys to source table's schema ──────────────
@@ -495,6 +483,12 @@ class TestApplyDeploysToSourceSchema:
         config = SemanticLayerConfig(catalog_name="mycat", schema_name="mysch")
         return SemanticLayerGenerator(spark, config)
 
+    def _make_row(self, data: dict):
+        row = MagicMock()
+        row.asDict.return_value = dict(data)
+        row.__getitem__ = lambda self, k: data[k]
+        return row
+
     def test_deploys_to_source_schema_not_config(self, gen):
         defn = {
             "name": "mv1",
@@ -502,13 +496,12 @@ class TestApplyDeploysToSourceSchema:
             "dimensions": [{"name": "d", "expr": "source.d"}],
             "measures": [{"name": "m", "expr": "SUM(source.x)", "agg": "sum"}],
         }
-        row = MagicMock()
-        row.__getitem__ = lambda self, k: {
+        row = self._make_row({
             "definition_id": "def-1",
             "metric_view_name": "mv1",
             "source_table": "prod.gold.fact_table",
             "json_definition": json.dumps(defn),
-        }[k]
+        })
 
         gen.spark.sql.side_effect = [
             MagicMock(collect=MagicMock(return_value=[row])),
@@ -531,13 +524,12 @@ class TestApplyDeploysToSourceSchema:
             "dimensions": [{"name": "d", "expr": "source.d"}],
             "measures": [{"name": "m", "expr": "SUM(source.x)", "agg": "sum"}],
         }
-        row = MagicMock()
-        row.__getitem__ = lambda self, k: {
+        row = self._make_row({
             "definition_id": "def-2",
             "metric_view_name": "mv2",
             "source_table": "some_table",
             "json_definition": json.dumps(defn),
-        }[k]
+        })
 
         gen.spark.sql.side_effect = [
             MagicMock(collect=MagicMock(return_value=[row])),

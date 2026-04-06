@@ -305,7 +305,7 @@ class TestAssembleMetricViewSplit:
              patch.object(asm, "_get_fk_predictions", return_value=[]), \
              patch.object(asm, "_get_ontology_entities", return_value=[]), \
              patch.object(asm, "_get_entity_relationships", return_value=[]), \
-             patch.object(asm, "_get_metric_views", return_value=(mvs, [])), \
+             patch.object(asm, "_get_metric_views_by_name", return_value=(mvs, [])), \
              patch.object(asm, "_sample_categorical_values", return_value={}), \
              patch.object(asm, "_format_context", return_value=""), \
              patch.object(asm, "_get_ontology_join_specs", return_value=[]), \
@@ -336,7 +336,7 @@ class TestAssembleMetricViewSplit:
              patch.object(asm, "_get_fk_predictions", return_value=[]), \
              patch.object(asm, "_get_ontology_entities", return_value=[]), \
              patch.object(asm, "_get_entity_relationships", return_value=[]), \
-             patch.object(asm, "_get_metric_views", return_value=(mvs, [])), \
+             patch.object(asm, "_get_metric_views_by_name", return_value=(mvs, [])), \
              patch.object(asm, "_sample_categorical_values", return_value={}), \
              patch.object(asm, "_format_context", return_value=""), \
              patch.object(asm, "_get_ontology_join_specs", return_value=[]), \

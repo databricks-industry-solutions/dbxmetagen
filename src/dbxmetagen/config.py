@@ -118,6 +118,9 @@ class MetadataConfig:
             "include_profiling_context",
             "include_constraint_context",
             "batch_ddl_apply",
+            "max_ai_candidates",
+            "rule_score_min_for_ai",
+            "max_candidates_per_table_pair",
         ],
         "yaml_advanced_file_path": "../variables.advanced.yml",
         "yaml_advanced_variable_names": [

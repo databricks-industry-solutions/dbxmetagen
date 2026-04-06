@@ -68,8 +68,8 @@ def _make_df(rows, columns):
 # ===================================================================
 
 class TestNewConfigVariables:
-    def test_batch_ddl_apply_defaults_false(self):
-        assert _cfg().batch_ddl_apply is False
+    def test_batch_ddl_apply_defaults_true(self):
+        assert _cfg().batch_ddl_apply is True
 
     def test_batch_ddl_apply_string_false(self):
         assert _cfg(batch_ddl_apply="false").batch_ddl_apply is False

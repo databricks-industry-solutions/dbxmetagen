@@ -23,10 +23,10 @@ def _hex_id() -> str:
 
 
 def _simplify_join_sql(sql: str) -> str:
-    """Reduce catalog.schema.table.column references to table.column in join SQL."""
+    """Reduce any multi-part dotted references (3+ parts) to table.column in join SQL."""
     return re.sub(
-        r"\b(\w+)\.(\w+)\.(\w+)\.(\w+)\b",
-        lambda m: f"{m.group(3)}.{m.group(4)}",
+        r"\b(\w+(?:\.\w+){2,})\b",
+        lambda m: ".".join(m.group(1).split(".")[-2:]),
         sql,
     )
 

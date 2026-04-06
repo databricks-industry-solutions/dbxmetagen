@@ -298,9 +298,21 @@ export default function GenieBuilder({ onNavigate }) {
 
   return (
     <div className="space-y-6">
-      <PageHeader title="Genie Space Builder" subtitle="Select tables and optionally provide business questions to generate a Genie space configuration" />
+      <PageHeader title="Genie Space Builder" subtitle="Create a Databricks Genie space from your tables, metric views, and business questions" />
 
       <ErrorBanner error={error} />
+
+      {/* Step-by-step workflow guide */}
+      <div className="card p-4 text-xs text-slate-600 dark:text-slate-300 leading-relaxed space-y-1">
+        <p className="font-semibold text-sm text-slate-700 dark:text-slate-200">How to build a Genie space</p>
+        <ol className="list-decimal list-inside space-y-0.5 text-slate-500 dark:text-slate-400">
+          <li><strong>Select tables</strong> below. Expand each schema to pick tables and any applied metric views.</li>
+          <li><strong>Add context</strong> (optional) &mdash; describe your business and key terminology to improve the AI output.</li>
+          <li><strong>Add questions</strong> (optional) &mdash; write sample questions or click Suggest to auto-generate them from your tables.</li>
+          <li>Click <strong>Generate Genie Config</strong> &mdash; AI builds the space configuration including joins, instructions, and SQL snippets.</li>
+          <li>Review the <strong>Config Preview</strong>, optionally refine, then enter a title and click <strong>Create Genie Space</strong> to deploy it.</li>
+        </ol>
+      </div>
 
       {/* Table selection */}
       <div className="card p-5">
@@ -589,7 +601,7 @@ export default function GenieBuilder({ onNavigate }) {
                   <div><span className="text-slate-500">Tables</span><p className="font-medium">{tblDisplay}{mvDisplay > 0 || (typeof mvDisplay === 'string') ? ` + ${mvDisplay} MVs` : ''}</p></div>
                   <div><span className="text-slate-500">Example SQL</span><p className="font-medium">{exampleSqlCount}</p></div>
                   <div><span className="text-slate-500">Joins</span><p className="font-medium">{joinCount}</p></div>
-                  <div><span className="text-slate-500">Snippets</span><p className="font-medium">{snippetFilters + snippetMeasures + snippetExprs} ({snippetFilters}F / {snippetMeasures}M / {snippetExprs}E)</p></div>
+                  <div><span className="text-slate-500">Snippets</span><p className="font-medium" title="Filters / Measures / Expressions">{snippetFilters + snippetMeasures + snippetExprs} ({snippetFilters} filters, {snippetMeasures} measures, {snippetExprs} exprs)</p></div>
                   <div><span className="text-slate-500">Sample Qs</span><p className="font-medium">{sampleQCount}</p></div>
                 </div>
                 {parsed.description && <p className="text-xs text-slate-500 mt-1 line-clamp-2">{parsed.description}</p>}
@@ -598,7 +610,7 @@ export default function GenieBuilder({ onNavigate }) {
                   <summary className="cursor-pointer font-medium text-slate-700 dark:text-slate-300 select-none">How joins and metric views work</summary>
                   <ul className="mt-2 ml-4 list-disc space-y-1.5">
                     <li><span className="font-medium text-slate-700 dark:text-slate-300">Joins</span> counts explicit <code className="text-[11px] bg-slate-100 dark:bg-slate-800 px-1 rounded">join_specs</code> between selected tables (and selected join targets). A low or zero count is normal when the space is metric-view heavy or when underlying fact tables are not in your <em>table</em> selection.</li>
-                    <li><span className="font-medium text-slate-700 dark:text-slate-300">Snippets</span> (filters / measures / expressions) are built from metric views that are <em>not yet applied</em> to Unity Catalog; applied MVs appear as metric view data sources instead.</li>
+                    <li><span className="font-medium text-slate-700 dark:text-slate-300">Snippets</span> (filters / measures / expressions) come from two sources: (1) MV-derived measures and expressions are generated only from <em>validated</em> (unapplied) metric views, and (2) filter snippets are generated from table column value samples regardless of MV status. The LLM may also add additional snippets from table metadata. Applied MVs are added as Genie data sources directly.</li>
                     <li>Join logic defined <em>inside</em> an MV definition is not the same as a high Joins count here; Genie still uses instructions and example SQL to query MVs.</li>
                   </ul>
                 </details>
@@ -669,7 +681,7 @@ export default function GenieBuilder({ onNavigate }) {
 
           <div className="flex items-end gap-3">
             <div className="flex-1">
-              <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Genie Space Title</label>
+              <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Genie Space Title <span className="font-normal text-xs text-slate-400">&mdash; review the config above, then name and create your space</span></label>
               <input
                 type="text"
                 value={title}

@@ -4,7 +4,7 @@
 Supports three workflows:
 
 1. Auto-extract from published OWL/Turtle (FHIR R4, OMOP CDM, Schema.org):
-     python scripts/build_ontology_indexes.py --bundle-name healthcare
+     python scripts/build_ontology_indexes.py --bundle-name fhir_r4_merged --force
 
 2. Generate from a curated bundle YAML (reads uri/source_ontology from definitions):
      python scripts/build_ontology_indexes.py --from-bundle financial_services
@@ -652,6 +652,8 @@ def main():
                         help="Upload cached source files to UC Volume (e.g. /Volumes/catalog/schema/ontology_sources)")
     parser.add_argument("--verify", action="store_true",
                         help="Re-download source and verify SHA-256 against provenance in existing bundle")
+    parser.add_argument("--force", action="store_true",
+                        help="Allow auto-extract to overwrite a curated bundle's tier indexes")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
@@ -701,6 +703,18 @@ def main():
         provenance_sources.append(prov_entry)
 
     else:
+        curated_yaml = repo_root / "configurations" / "ontology_bundles" / f"{args.bundle_name}.yaml"
+        if curated_yaml.is_file() and not args.force:
+            raw_meta = yaml.safe_load(curated_yaml.read_text(encoding="utf-8")).get("metadata", {})
+            if raw_meta.get("bundle_type") != "formal_ontology":
+                logger.error(
+                    "'%s' is a curated bundle. Auto-extract would overwrite its tier indexes "
+                    "with thousands of auto-extracted entities.\n"
+                    "  To rebuild from the curated YAML:  --from-bundle %s\n"
+                    "  To force auto-extract anyway:      --force",
+                    args.bundle_name, args.bundle_name,
+                )
+                sys.exit(1)
         try:
             import rdflib  # noqa: F401
         except ImportError:

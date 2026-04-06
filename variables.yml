@@ -224,3 +224,12 @@ variables:
   batch_ddl_apply:
     description: "When true, column-level DDL statements are combined into per-table batch ALTER TABLE statements for faster application. Falls back to individual statements on failure. Disable if you encounter issues with batch DDL on federated catalogs."
     default: false
+  max_ai_candidates:
+    description: "Maximum candidate column pairs sent to AI_QUERY for FK judgment. Lower values reduce LLM cost and runtime. Set to 0 to skip AI entirely and rely only on rule scores."
+    default: 200
+  rule_score_min_for_ai:
+    description: "Minimum rule score (0.0-1.0) a candidate pair must reach to qualify for AI_QUERY judgment. Higher values are more selective, reducing AI calls but potentially missing weaker FK relationships."
+    default: 0.50
+  max_candidates_per_table_pair:
+    description: "Maximum number of candidate column pairs retained per table pair from name/ontology matching. Lower values reduce combinatorial explosion for wide tables."
+    default: 5

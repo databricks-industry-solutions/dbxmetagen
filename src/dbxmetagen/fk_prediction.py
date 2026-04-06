@@ -52,11 +52,11 @@ class FKPredictionConfig:
     apply_ddl: bool = False
     dry_run: bool = False
     ontology_match_bonus_weight: float = 0.15
-    rule_score_min_for_ai: float = 0.40
+    rule_score_min_for_ai: float = 0.50
     incremental: bool = True
-    max_candidates_per_table_pair: int = 10
+    max_candidates_per_table_pair: int = 5
     cardinality_sample_rows: int = 100000
-    max_ai_candidates: int = 500
+    max_ai_candidates: int = 200
 
     def fq(self, table: str) -> str:
         return f"{self.catalog_name}.{self.schema_name}.{table}"
@@ -644,29 +644,37 @@ class FKPredictor:
         ).withColumn("samples_b", F.lit(None).cast("array<string>"))
 
     def _sample_from_source(self, candidates: DataFrame) -> DataFrame:
-        """Try to sample actual values from source tables for each column pair."""
+        """Sample values from source tables, batched per-table to minimize SQL calls."""
         rows = (
             candidates.select("col_a", "col_b", "table_a", "table_b")
             .distinct()
             .collect()
         )
-        sampled = []
         n = self.config.sample_size
 
+        # Group columns by table so we issue one query per table
+        table_cols: dict = {}  # table -> set of (fq_col_id, short_name)
         for row in rows:
             for col_id, tbl_id in [(row.col_a, row.table_a), (row.col_b, row.table_b)]:
-                col_short = col_id.split(".")[-1]
-                try:
-                    vals = self.spark.sql(
-                        f"SELECT DISTINCT CAST(`{col_short}` AS STRING) AS v "
-                        f"FROM {tbl_id} WHERE `{col_short}` IS NOT NULL LIMIT {n}"
-                    ).collect()
-                    sampled.append((col_id, [r.v for r in vals]))
-                except Exception:
-                    sampled.append((col_id, []))
+                table_cols.setdefault(tbl_id, set()).add((col_id, col_id.split(".")[-1]))
 
-        sample_map = dict(sampled)
-        # Broadcast as UDF
+        sample_map: dict = {}
+        for tbl_id, col_set in table_cols.items():
+            col_list = list(col_set)
+            selects = ", ".join(
+                f"CAST(`{short}` AS STRING) AS `{short}`" for _, short in col_list
+            )
+            try:
+                tbl_rows = self.spark.sql(
+                    f"SELECT {selects} FROM {tbl_id} LIMIT {n * 3}"
+                ).collect()
+                for fq_id, short in col_list:
+                    vals = list({getattr(r, short) for r in tbl_rows if getattr(r, short, None) is not None})[:n]
+                    sample_map[fq_id] = vals
+            except Exception:
+                for fq_id, _ in col_list:
+                    sample_map[fq_id] = []
+
         bc = self.spark.sparkContext.broadcast(sample_map)
         get_samples = F.udf(lambda cid: bc.value.get(cid, []), "array<string>")
         return candidates.withColumn(
@@ -807,7 +815,7 @@ class FKPredictor:
         return self._table_samples[view_key]
 
     def referential_integrity(self, candidates: DataFrame) -> DataFrame:
-        """Batch RI check using pre-sampled temp views for each (table, column)."""
+        """Batch RI check using UNION ALL to minimize round-trips."""
         ri_filter = F.col("rule_score") >= self.config.rule_score_min_for_ai
         if "skip_ai" in candidates.columns:
             ri_filter = ri_filter | F.col("skip_ai")
@@ -817,32 +825,56 @@ class FKPredictor:
             .distinct()
             .collect()
         )
+
+        # Pre-create all needed table sample views (cached)
+        for row in rows:
+            self._ensure_table_sample(row.table_a, row.col_a.split(".")[-1])
+            self._ensure_table_sample(row.table_b, row.col_b.split(".")[-1])
+
+        # Build a single UNION ALL query for all RI checks
+        fragments = []
+        for row in rows:
+            va = self._table_samples.get((row.table_a, row.col_a.split(".")[-1]))
+            vb = self._table_samples.get((row.table_b, row.col_b.split(".")[-1]))
+            if not va or not vb:
+                continue
+            ca, cb = row.col_a.replace("'", "''"), row.col_b.replace("'", "''")
+            fragments.append(
+                f"SELECT '{ca}' AS ca, '{cb}' AS cb, "
+                f"COUNT(DISTINCT a.val) AS total_a, "
+                f"SUM(CASE WHEN b.val IS NULL THEN 1 ELSE 0 END) AS orphan_ab "
+                f"FROM (SELECT DISTINCT val FROM {va}) a "
+                f"LEFT JOIN (SELECT DISTINCT val FROM {vb}) b ON a.val = b.val"
+            )
+            fragments.append(
+                f"SELECT '{cb}' AS ca, '{ca}' AS cb, "
+                f"COUNT(DISTINCT a.val) AS total_a, "
+                f"SUM(CASE WHEN b.val IS NULL THEN 1 ELSE 0 END) AS orphan_ab "
+                f"FROM (SELECT DISTINCT val FROM {vb}) a "
+                f"LEFT JOIN (SELECT DISTINCT val FROM {va}) b ON a.val = b.val"
+            )
+
+        if not fragments:
+            return candidates.withColumn("ri_score", F.lit(0.5))
+
+        BATCH = 200
+        all_ri_rows = []
+        for i in range(0, len(fragments), BATCH):
+            sql = " UNION ALL ".join(fragments[i : i + BATCH])
+            all_ri_rows.extend(self.spark.sql(sql).collect())
+
+        # Compute RI per pair: max(ri_ab, ri_ba)
+        pair_ri: dict = {}
+        for r in all_ri_rows:
+            total = max(r.total_a, 1)
+            ri = max(0.0, 1.0 - r.orphan_ab / total)
+            key = tuple(sorted([r.ca, r.cb]))
+            pair_ri[key] = max(pair_ri.get(key, 0.0), ri)
+
         stats = []
         for row in rows:
-            col_a_short = row.col_a.split(".")[-1]
-            col_b_short = row.col_b.split(".")[-1]
-            try:
-                va = self._ensure_table_sample(row.table_a, col_a_short)
-                vb = self._ensure_table_sample(row.table_b, col_b_short)
-                orphan_ab = self.spark.sql(
-                    f"SELECT COUNT(DISTINCT a.val) AS orphans "
-                    f"FROM {va} a LEFT ANTI JOIN {vb} b ON a.val = b.val"
-                ).collect()[0].orphans
-                total_a = self.spark.sql(f"SELECT COUNT(DISTINCT val) AS cnt FROM {va}").collect()[0].cnt
-                ri_ab = max(0.0, 1.0 - orphan_ab / max(total_a, 1))
-                orphan_ba = self.spark.sql(
-                    f"SELECT COUNT(DISTINCT b.val) AS orphans "
-                    f"FROM {vb} b LEFT ANTI JOIN {va} a ON b.val = a.val"
-                ).collect()[0].orphans
-                total_b = self.spark.sql(f"SELECT COUNT(DISTINCT val) AS cnt FROM {vb}").collect()[0].cnt
-                ri_ba = max(0.0, 1.0 - orphan_ba / max(total_b, 1))
-                stats.append((row.col_a, row.col_b, max(ri_ab, ri_ba)))
-            except Exception as e:
-                logger.debug("RI check failed for %s<->%s: %s", row.col_a, row.col_b, e)
-                stats.append((row.col_a, row.col_b, 0.5))
-
-        if not stats:
-            return candidates.withColumn("ri_score", F.lit(0.5))
+            key = tuple(sorted([row.col_a, row.col_b]))
+            stats.append((row.col_a, row.col_b, pair_ri.get(key, 0.5)))
 
         ri_df = self.spark.createDataFrame(stats, ["_ra", "_rb", "ri_score"])
         result = candidates.join(
@@ -1031,7 +1063,7 @@ class FKPredictor:
     # Step 4b: Join validation -- sample rows and test actual joinability
     # ------------------------------------------------------------------
     def join_validate(self, judged: DataFrame) -> DataFrame:
-        """Batch join validation using cached table samples."""
+        """Batch join validation using UNION ALL to minimize round-trips."""
         rows = (
             judged.filter(F.col("ai_confidence") > 0)
             .select("col_a", "col_b", "table_a", "table_b", "ai_confidence")
@@ -1039,29 +1071,41 @@ class FKPredictor:
             .collect()
         )
 
-        join_stats = []
+        # Pre-create all needed table sample views
         for row in rows:
-            col_a_short = row.col_a.split(".")[-1]
-            col_b_short = row.col_b.split(".")[-1]
-            try:
-                va = self._ensure_table_sample(row.table_a, col_a_short)
-                vb = self._ensure_table_sample(row.table_b, col_b_short)
-                a_count = self.spark.sql(f"SELECT COUNT(*) AS c FROM {va}").collect()[0].c
-                b_count = self.spark.sql(f"SELECT COUNT(*) AS c FROM {vb}").collect()[0].c
-                joined = self.spark.sql(
-                    f"SELECT COUNT(*) AS c FROM {va} a INNER JOIN {vb} b ON a.val = b.val"
-                ).collect()[0].c
-                min_count = min(a_count, b_count) or 1
-                join_stats.append(
-                    (row.col_a, row.col_b, joined / min_count, a_count, b_count, joined)
-                )
-            except Exception as e:
-                logger.warning("Join validation failed for %s <-> %s: %s", row.col_a, row.col_b, e)
-                join_stats.append((row.col_a, row.col_b, 0.0, 0, 0, 0))
+            self._ensure_table_sample(row.table_a, row.col_a.split(".")[-1])
+            self._ensure_table_sample(row.table_b, row.col_b.split(".")[-1])
 
-        if not join_stats:
+        fragments = []
+        for row in rows:
+            va = self._table_samples.get((row.table_a, row.col_a.split(".")[-1]))
+            vb = self._table_samples.get((row.table_b, row.col_b.split(".")[-1]))
+            if not va or not vb:
+                continue
+            ca, cb = row.col_a.replace("'", "''"), row.col_b.replace("'", "''")
+            fragments.append(
+                f"SELECT '{ca}' AS ca, '{cb}' AS cb, "
+                f"(SELECT COUNT(*) FROM {va}) AS a_count, "
+                f"(SELECT COUNT(*) FROM {vb}) AS b_count, "
+                f"(SELECT COUNT(*) FROM {va} a INNER JOIN {vb} b ON a.val = b.val) AS joined"
+            )
+
+        if not fragments:
             return judged.withColumn("join_rate", F.lit(0.0)).withColumn(
                 "join_matched", F.lit(0)
+            )
+
+        BATCH = 200
+        all_join_rows = []
+        for i in range(0, len(fragments), BATCH):
+            sql = " UNION ALL ".join(fragments[i : i + BATCH])
+            all_join_rows.extend(self.spark.sql(sql).collect())
+
+        join_stats = []
+        for r in all_join_rows:
+            min_count = min(r.a_count, r.b_count) or 1
+            join_stats.append(
+                (r.ca, r.cb, r.joined / min_count, r.a_count, r.b_count, r.joined)
             )
 
         stats_df = self.spark.createDataFrame(
@@ -1525,6 +1569,9 @@ def predict_foreign_keys(
     apply_ddl: bool = False,
     dry_run: bool = False,
     incremental: bool = True,
+    max_ai_candidates: int = 200,
+    rule_score_min_for_ai: float = 0.50,
+    max_candidates_per_table_pair: int = 5,
 ) -> Dict[str, Any]:
     """Convenience function to run FK prediction."""
     config = FKPredictionConfig(
@@ -1543,6 +1590,9 @@ def predict_foreign_keys(
         apply_ddl=apply_ddl,
         dry_run=dry_run,
         incremental=incremental,
+        max_ai_candidates=max_ai_candidates,
+        rule_score_min_for_ai=rule_score_min_for_ai,
+        max_candidates_per_table_pair=max_candidates_per_table_pair,
     )
     predictor = FKPredictor(spark, config)
     return predictor.run()

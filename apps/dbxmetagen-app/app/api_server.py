@@ -7241,6 +7241,7 @@ def _strip_out_of_scope_sql(ss: dict) -> dict:
     if join_specs:
         valid_short_lower = {v.split(".")[-1].lower() for v in valid_ids}
         valid_lower = {v.lower() for v in valid_ids} | valid_short_lower
+        logger.warning("[join-diag] valid_short_lower: %s", sorted(valid_short_lower)[:20])
         valid_joins = []
         for js in join_specs:
             sql_list = js.get("sql", [])
@@ -7258,8 +7259,8 @@ def _strip_out_of_scope_sql(ss: dict) -> dict:
                 left_id = js.get("left", {}).get("identifier", "?")
                 right_id = js.get("right", {}).get("identifier", "?")
                 logger.warning(
-                    "Stripped out-of-scope join_spec (%s <-> %s): bad refs %s in SQL %s",
-                    left_id, right_id, bad, sql_list,
+                    "[join-diag] STRIPPED join (%s <-> %s): extracted refs %s, bad refs %s, SQL %s",
+                    left_id, right_id, join_refs, bad, sql_list,
                 )
         inst["join_specs"] = valid_joins
 
@@ -7297,6 +7298,14 @@ def genie_create(req: GenieCreateRequest):
             if l_id and r_id:
                 prebuilt_pairs.add(tuple(sorted([l_id.lower(), r_id.lower()])))
     transformed = _transform_to_genie_schema(req.serialized_space)
+
+    _pre_strip_joins = transformed.get("instructions", {}).get("join_specs", [])
+    logger.warning(
+        "[join-diag] after build_serialized_space: %d joins. SQL samples: %s",
+        len(_pre_strip_joins),
+        [js.get("sql", [])[:1] for js in _pre_strip_joins[:3]],
+    )
+
     validation_errors = _validate_serialized_space(transformed)
     if validation_errors:
         raise HTTPException(
@@ -7313,6 +7322,13 @@ def genie_create(req: GenieCreateRequest):
         raise HTTPException(400, detail="Data source validation failed: " + "; ".join(exist_errors))
 
     transformed = _strip_out_of_scope_sql(transformed)
+
+    _post_strip_joins = transformed.get("instructions", {}).get("join_specs", [])
+    logger.warning(
+        "[join-diag] after _strip_out_of_scope_sql: %d joins (was %d)",
+        len(_post_strip_joins), len(_pre_strip_joins),
+    )
+
     transformed = _validate_sql_expressions(transformed, wh)
 
     _inst = transformed.get("instructions", {})
