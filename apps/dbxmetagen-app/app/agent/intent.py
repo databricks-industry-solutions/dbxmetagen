@@ -50,7 +50,7 @@ class IntentResult:
 KB_TABLE_CONTEXT = f"""Available knowledge base tables in {CATALOG}.{SCHEMA}:
 - table_knowledge_base: table_name, comment, domain, subdomain, has_pii, has_phi, row_count
 - column_knowledge_base: table_name, column_name, comment, data_type, classification
-- ontology_entities: entity_name, entity_type, source_tables, confidence
+- ontology_entities: entity_id, entity_name, entity_type, description, source_tables, confidence, entity_uri, source_ontology
 - fk_predictions: src_table, src_column, dst_table, dst_column, final_confidence, cardinality
 - metric_view_definitions: metric_view_name, source_table, json_definition, status
 - profiling_results: table_name, column_name, distinct_count, null_count"""

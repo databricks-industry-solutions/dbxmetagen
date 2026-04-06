@@ -36,6 +36,14 @@ resources:
           default: ${var.incremental}
         - name: model
           default: ${var.model}
+        - name: table_names
+          default: ""
+        - name: max_ai_candidates
+          default: ${var.max_ai_candidates}
+        - name: rule_score_min_for_ai
+          default: ${var.rule_score_min_for_ai}
+        - name: max_candidates_per_table_pair
+          default: ${var.max_candidates_per_table_pair}
 
       tasks:
         # Stage 1: Build knowledge bases (table, column, schema in parallel after table KB)
@@ -47,6 +55,7 @@ resources:
             base_parameters:
               catalog_name: "{{job.parameters.catalog_name}}"
               schema_name: "{{job.parameters.schema_name}}"
+              table_names: "{{job.parameters.table_names}}"
           libraries:
             - whl: ../../dist/*.whl
 
@@ -58,6 +67,7 @@ resources:
             base_parameters:
               catalog_name: "{{job.parameters.catalog_name}}"
               schema_name: "{{job.parameters.schema_name}}"
+              table_names: "{{job.parameters.table_names}}"
           libraries:
             - whl: ../../dist/*.whl
 
@@ -72,6 +82,7 @@ resources:
               catalog_name: "{{job.parameters.catalog_name}}"
               schema_name: "{{job.parameters.schema_name}}"
               generate_comments: "{{job.parameters.generate_comments}}"
+              table_names: "{{job.parameters.table_names}}"
           libraries:
             - whl: ../../dist/*.whl
 
@@ -86,6 +97,7 @@ resources:
               catalog_name: "{{job.parameters.catalog_name}}"
               schema_name: "{{job.parameters.schema_name}}"
               incremental: "{{job.parameters.incremental}}"
+              table_names: "{{job.parameters.table_names}}"
           libraries:
             - whl: ../../dist/*.whl
 
@@ -102,6 +114,7 @@ resources:
             base_parameters:
               catalog_name: "{{job.parameters.catalog_name}}"
               schema_name: "{{job.parameters.schema_name}}"
+              table_names: "{{job.parameters.table_names}}"
           libraries:
             - whl: ../../dist/*.whl
             - pypi:
@@ -133,6 +146,7 @@ resources:
               catalog_name: "{{job.parameters.catalog_name}}"
               schema_name: "{{job.parameters.schema_name}}"
               incremental: "{{job.parameters.incremental}}"
+              table_names: "{{job.parameters.table_names}}"
           libraries:
             - whl: ../../dist/*.whl
 
@@ -151,6 +165,7 @@ resources:
               domain_config_path: "{{job.parameters.domain_config_path}}"
               incremental: "{{job.parameters.incremental}}"
               model: "{{job.parameters.model}}"
+              table_names: "{{job.parameters.table_names}}"
           libraries:
             - whl: ../../dist/*.whl
 
@@ -229,6 +244,9 @@ resources:
               apply_ddl: "false"
               dry_run: "false"
               incremental: "{{job.parameters.incremental}}"
+              max_ai_candidates: "{{job.parameters.max_ai_candidates}}"
+              rule_score_min_for_ai: "{{job.parameters.rule_score_min_for_ai}}"
+              max_candidates_per_table_pair: "{{job.parameters.max_candidates_per_table_pair}}"
           libraries:
             - whl: ../../dist/*.whl
 

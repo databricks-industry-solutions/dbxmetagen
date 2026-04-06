@@ -213,7 +213,7 @@ def execute_metadata_sql(query: str) -> str:
     Allowed tables (use fully-qualified names with {catalog}.{schema}.table or just the table name):
     - table_knowledge_base: table_name, comment, domain, subdomain, has_pii, has_phi, row_count
     - column_knowledge_base: table_name, column_name, comment, data_type, classification, classification_type
-    - ontology_entities: entity_id, entity_name, entity_type, description, source_tables, confidence
+    - ontology_entities: entity_id, entity_name, entity_type, description, source_tables, confidence, entity_uri, source_ontology
     - fk_predictions: src_table, src_column, dst_table, dst_column, final_confidence, join_rate, pk_uniqueness, ri_score, ai_reasoning
     - metric_view_definitions: definition_id, metric_view_name, source_table, source_questions, json_definition, status
     - profiling_results: table_name, column_name, distinct_count, null_count, min_value, max_value, avg_value
@@ -272,16 +272,23 @@ def get_table_summary(table_name: str) -> str:
             SELECT src_table, src_column, dst_table, dst_column, ROUND(final_confidence, 2) AS confidence
             FROM {fq}fk_predictions
             WHERE (src_table LIKE '%{short}%' OR dst_table LIKE '%{short}%') AND final_confidence >= 0.5
+        ),
+        ents AS (
+            SELECT entity_type, entity_name, confidence, entity_uri, source_ontology
+            FROM {fq}ontology_entities
+            WHERE EXISTS(source_tables, t -> t LIKE '%{short}%')
         )
         SELECT 'table' AS _section, TO_JSON(STRUCT(*)) AS _data FROM tbl
         UNION ALL
         SELECT 'column', TO_JSON(STRUCT(*)) FROM cols
         UNION ALL
         SELECT 'fk', TO_JSON(STRUCT(*)) FROM fks
+        UNION ALL
+        SELECT 'ontology', TO_JSON(STRUCT(*)) FROM ents
     """
     try:
         result = _execute_query(query)
-        sections: dict = {"table": [], "columns": [], "foreign_keys": []}
+        sections: dict = {"table": [], "columns": [], "foreign_keys": [], "ontology_entities": []}
         for row in result.get("rows", []):
             sec = row.get("_section", "")
             data = json.loads(row.get("_data", "{}"))
@@ -291,6 +298,8 @@ def get_table_summary(table_name: str) -> str:
                 sections["columns"].append(data)
             elif sec == "fk":
                 sections["foreign_keys"].append(data)
+            elif sec == "ontology":
+                sections["ontology_entities"].append(data)
         _log_tool_end("get_table_summary", t0)
         return json.dumps(sections)
     except Exception as e:
@@ -353,20 +362,21 @@ def expand_vs_hits(
         max_per_node: Max neighbors per starting node.
     """
     t0 = _log_tool("expand_vs_hits")
-    from api_server import graph_query
+    from api_server import graph_query, _safe_sql_str
     all_neighbors = []
     for nid in node_ids[:20]:
+        safe_nid = _safe_sql_str(nid)
         et_filter = ""
         if edge_types:
-            et_list = ", ".join(f"'{t}'" for t in edge_types)
+            et_list = ", ".join(_safe_sql_str(t) for t in edge_types)
             et_filter = f" AND e.edge_type IN ({et_list})"
         q = f"""
             SELECT e.src, e.dst, e.relationship, e.edge_type, e.weight,
                    e.join_expression, e.join_confidence, e.source_system,
                    n.node_type, n.domain, n.display_name, n.short_description
             FROM public.graph_edges e
-            JOIN public.graph_nodes n ON n.id = CASE WHEN e.src = '{nid}' THEN e.dst ELSE e.src END
-            WHERE (e.src = '{nid}' OR e.dst = '{nid}'){et_filter}
+            JOIN public.graph_nodes n ON n.id = CASE WHEN e.src = {safe_nid} THEN e.dst ELSE e.src END
+            WHERE (e.src = {safe_nid} OR e.dst = {safe_nid}){et_filter}
             LIMIT {max_per_node}
         """
         rows = graph_query(q)
@@ -456,13 +466,64 @@ def execute_data_sql(query: str) -> str:
         return json.dumps({"error": str(e)})
 
 
+# ---------------------------------------------------------------------------
+# Tool: Graph SQL (Lakebase PG -> UC Delta fallback)
+# ---------------------------------------------------------------------------
+
+GRAPH_TABLES = {"graph_nodes", "graph_edges"}
+
+
+def _auto_qualify_graph(query: str) -> str:
+    """Replace bare graph table names with public.graph_nodes / public.graph_edges."""
+    result = query
+    for t in GRAPH_TABLES:
+        result = re.sub(rf'\b(?<!\.){t}\b', f'public.{t}', result)
+    return result
+
+
+@tool
+def execute_graph_sql(query: str) -> str:
+    """Execute a read-only SQL query against the knowledge graph tables.
+
+    Uses Lakebase (PostgreSQL) for low-latency queries when configured,
+    otherwise falls back to UC Delta tables via SQL warehouse.
+
+    Allowed tables (use public.graph_nodes / public.graph_edges or bare names):
+    - graph_nodes: id, node_type, table_name, catalog, schema, domain, subdomain,
+      display_name, short_description, comment, has_pii, has_phi, security_level,
+      sensitivity, status, quality_score, ontology_id, ontology_type, data_type
+    - graph_edges: src, dst, relationship, edge_type, weight, join_expression,
+      join_confidence, ontology_rel, source_system, direction, status
+
+    Args:
+        query: A SELECT query against graph_nodes and/or graph_edges.
+    """
+    t0 = _log_tool("execute_graph_sql")
+    from agent.common import check_select_only
+    err = check_select_only(query)
+    if err:
+        _log_tool_end("execute_graph_sql", t0, error=err)
+        return json.dumps({"error": err})
+    from api_server import graph_query
+    q = _auto_qualify_graph(query.rstrip().rstrip(";"))
+    if not re.search(r'\bLIMIT\b', q, re.IGNORECASE):
+        q += " LIMIT 100"
+    try:
+        rows = graph_query(q)
+        _log_tool_end("execute_graph_sql", t0)
+        return json.dumps({"rows": rows[:100], "row_count": len(rows)})
+    except Exception as e:
+        _log_tool_end("execute_graph_sql", t0, error=e)
+        return json.dumps({"error": str(e)})
+
+
 # Re-export existing graph tools
 from agent.tools import query_graph_nodes, get_node_details, find_similar_nodes, traverse_graph  # noqa: E402, F401
 
 ALL_METADATA_TOOLS = [
-    search_metadata, execute_metadata_sql, get_table_summary, get_data_quality,
-    query_graph_nodes, get_node_details, find_similar_nodes, traverse_graph,
+    search_metadata, execute_metadata_sql, execute_graph_sql, get_table_summary,
+    get_data_quality, query_graph_nodes, get_node_details, find_similar_nodes,
+    traverse_graph,
 ]
 
-GRAPHRAG_TOOLS = ALL_METADATA_TOOLS + [expand_vs_hits, execute_data_sql]
 BASELINE_TOOLS = [execute_baseline_sql]

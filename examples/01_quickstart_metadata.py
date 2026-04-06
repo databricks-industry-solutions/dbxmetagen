@@ -2,6 +2,11 @@
 # MAGIC %md
 # MAGIC # dbxmetagen Quickstart
 # MAGIC
+# MAGIC > **Library usage:** This notebook demonstrates using dbxmetagen as a **pip-installable library**.
+# MAGIC > It is intended for embedding dbxmetagen into your own projects or for ad-hoc use.
+# MAGIC > For the full deployment with the interactive dashboard, pre-configured jobs, and app,
+# MAGIC > see the main repo [README](https://github.com/databricks-industry-solutions/dbxmetagen) and `deploy.sh`.
+# MAGIC
 # MAGIC Generate table/column descriptions, classify sensitive information (PII/PHI/PCI),
 # MAGIC or classify tables into business domains -- all with a single function call.
 # MAGIC

@@ -58,6 +58,7 @@ export default function SemanticLayer() {
   // Per-definition action state
   const [actionLoading, setActionLoading] = useState({})
   const [globalTargetOverride, setGlobalTargetOverride] = useState('')
+  const userEditedTargetRef = useRef(false)
   const [perMvTargets, setPerMvTargets] = useState({})
   const [createError, setCreateError] = useState({})
   const [editDefId, setEditDefId] = useState(null)
@@ -101,7 +102,25 @@ export default function SemanticLayer() {
     if (globalTargetOverride) return globalTargetOverride
     return perMvTargets[d.definition_id] || getDefaultTarget(d)
   }
-  const schemaOptions = [...new Set(definitions.map(d => getDefaultTarget(d)).filter(Boolean))]
+  const schemaOptions = [...new Set([
+    ...definitions.map(d => getDefaultTarget(d)),
+    ...(globalTargetOverride ? [globalTargetOverride] : []),
+  ].filter(Boolean))]
+
+  // Auto-set "Create target" to most common catalog.schema from selected tables
+  useEffect(() => {
+    if (userEditedTargetRef.current || !selectedTables.length) return
+    const counts = {}
+    for (const t of selectedTables) {
+      const parts = t.split('.')
+      if (parts.length >= 3) {
+        const key = `${parts[0]}.${parts[1]}`
+        counts[key] = (counts[key] || 0) + 1
+      }
+    }
+    const best = Object.entries(counts).sort((a, b) => b[1] - a[1])[0]
+    if (best) setGlobalTargetOverride(best[0])
+  }, [selectedTables])
 
   // --- Init ---
   useEffect(() => {
@@ -121,8 +140,10 @@ export default function SemanticLayer() {
   const isRestoringTablesRef = useRef(true)
   useEffect(() => {
     refreshDefinitions()
+    userEditedTargetRef.current = false
     if (selectedProjectId) {
       const proj = projects.find(p => p.project_id === selectedProjectId)
+      let restored = false
       if (proj?.selected_tables) {
         try {
           const tbls = JSON.parse(proj.selected_tables)
@@ -130,8 +151,14 @@ export default function SemanticLayer() {
             isRestoringTablesRef.current = true
             setSelectedTables(tbls)
             setTimeout(() => { isRestoringTablesRef.current = false }, 150)
+            restored = true
           }
         } catch { /* ignore */ }
+      }
+      if (!restored) {
+        isRestoringTablesRef.current = true
+        setSelectedTables([])
+        setTimeout(() => { isRestoringTablesRef.current = false }, 150)
       }
     }
   }, [selectedProjectId])
@@ -148,7 +175,7 @@ export default function SemanticLayer() {
           clearInterval(pollRef.current)
           if (data.status === 'done') { refreshDefinitions(); loadProjects(); setActiveTab('definitions') }
         }
-      } catch { clearInterval(pollRef.current) }
+      } catch { clearInterval(pollRef.current); setTaskStatus(prev => prev?.status === 'done' || prev?.status === 'error' ? prev : { status: 'error', error: 'Lost connection to server. Try generating again.' }) }
     }, 2000)
     return () => clearInterval(pollRef.current)
   }, [taskId])
@@ -248,10 +275,6 @@ export default function SemanticLayer() {
       const qs = JSON.parse(p.questions || '[]')
       setQuestionsText(qs.join('\n'))
     } catch { setQuestionsText(p.questions || '') }
-    try {
-      const tbls = JSON.parse(p.table_patterns || '[]')
-      if (tbls.length) { isRestoringTablesRef.current = true; setSelectedTables(tbls); setTimeout(() => { isRestoringTablesRef.current = false }, 150) }
-    } catch { /* ignore */ }
   }
 
   const saveProfile = async () => {
@@ -259,10 +282,9 @@ export default function SemanticLayer() {
     if (!profileName.trim() || !lines.length) return
     setLoading(true); setError(null)
     try {
-      const fqTables = selectedTables.map(t => t.includes('.') ? t : `${selectedCatalog}.${selectedSchema}.${t}`)
       const res = await fetch('/api/semantic-layer/profiles', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ profile_name: profileName, questions: lines, table_patterns: fqTables, business_context: businessContext || undefined }),
+        body: JSON.stringify({ profile_name: profileName, questions: lines, business_context: businessContext || undefined }),
       })
       const data = await res.json()
       if (!res.ok) { setError(data.detail || 'Failed to save profile'); setLoading(false); return }
@@ -666,7 +688,7 @@ export default function SemanticLayer() {
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
-        <PageHeader title="Metric Views" subtitle="Define semantic layer definitions" />
+        <PageHeader title="Metric Views" subtitle="Build governed business metrics as Unity Catalog views" />
         <button onClick={async () => {
           const res = await fetch(`/api/semantic-layer/export-sql${globalTargetOverride ? `?catalog=${encodeURIComponent(globalTargetOverride.split('.')[0])}&schema=${encodeURIComponent(globalTargetOverride.split('.')[1])}` : ''}`)
           if (!res.ok) { setError((await res.json()).detail || 'Export failed'); return }
@@ -709,12 +731,21 @@ export default function SemanticLayer() {
         })}
       </div>
 
+      {/* Workflow guide */}
+      <div className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed px-1">
+        <span className="font-semibold text-slate-600 dark:text-slate-300">How it works:</span>{' '}
+        <span className={activeTab === 'setup' ? 'font-semibold text-dbx-lava' : ''}>1. Setup</span> &mdash; pick a project and select tables &rarr;{' '}
+        <span className={activeTab === 'questions' ? 'font-semibold text-dbx-lava' : ''}>2. Questions</span> &mdash; define business questions and KPIs &rarr;{' '}
+        <span className={activeTab === 'generate' ? 'font-semibold text-dbx-lava' : ''}>3. Generate</span> &mdash; AI creates metric view definitions &rarr;{' '}
+        <span className={activeTab === 'definitions' ? 'font-semibold text-dbx-lava' : ''}>4. Definitions</span> &mdash; review, validate, and deploy as UC views
+      </div>
+
       {/* === Setup Tab === */}
       {activeTab === 'setup' && <>
 
       {/* Project Selector */}
       <section className={section}>
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-4 mb-1">
           <h2 className="text-lg font-semibold dark:text-gray-100 whitespace-nowrap">Project</h2>
           <select value={selectedProjectId} onChange={e => setSelectedProjectId(e.target.value)} className={`${input} max-w-xs`}>
             <option value="">All definitions (no project)</option>
@@ -740,6 +771,7 @@ export default function SemanticLayer() {
               className="text-sm text-red-500 hover:underline ml-auto">Delete Project</button>
           )}
         </div>
+        <p className="text-xs text-slate-500 dark:text-slate-400">Projects group your table selections and generated definitions. Create one per use-case or team.</p>
         {selectedProjectId && selectedTables.length > 0 && (
           <div className="mt-2 text-xs text-gray-500 dark:text-gray-400">
             <span className="font-medium">Tables:</span> {selectedTables.join(', ')}
@@ -749,7 +781,8 @@ export default function SemanticLayer() {
 
       {/* Table Selection */}
       <section className={section}>
-        <h2 className="text-lg font-semibold mb-3 dark:text-gray-100">Select Tables</h2>
+        <h2 className="text-lg font-semibold mb-1 dark:text-gray-100">Select Tables</h2>
+        <p className="text-xs text-slate-500 dark:text-slate-400 mb-3">Choose the source tables you want to create metric views for. Tables can span multiple schemas.</p>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
           <div>
             <label className={label}>Catalog</label>
@@ -827,7 +860,8 @@ export default function SemanticLayer() {
 
       {/* Question Profiles */}
       <section className={section}>
-        <h2 className="text-lg font-semibold mb-3 dark:text-gray-100">Question Profile</h2>
+        <h2 className="text-lg font-semibold mb-1 dark:text-gray-100">Question Profile</h2>
+        <p className="text-xs text-slate-500 dark:text-slate-400 mb-3">Write the business questions your analysts would ask. These drive which metric views get generated. Profiles let you save and reuse question sets across projects.</p>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
           <div>
             <label className={label}>Load Profile</label>
@@ -835,7 +869,7 @@ export default function SemanticLayer() {
               <option value="">-- new profile --</option>
               {profiles.map(p => (
                 <option key={p.profile_id} value={p.profile_id}>
-                  {p.profile_name} ({JSON.parse(p.questions || '[]').length}q)
+                  {p.profile_name} ({(() => { try { return JSON.parse(p.questions || '[]').length } catch { return '?' } })()}q)
                 </option>
               ))}
             </select>
@@ -880,7 +914,7 @@ export default function SemanticLayer() {
         <div className="flex items-center justify-between mb-3">
           <div>
             <h2 className="text-lg font-semibold dark:text-gray-100">KPI Library</h2>
-            <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">KPIs are generated based on the selected tables and their discovered ontological entities (domains, relationships, entity types).</p>
+            <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">Define or auto-suggest business KPIs from your selected tables. KPIs feed into metric view generation and Genie space configuration.</p>
           </div>
           <div className="flex gap-2">
             <button onClick={suggestKpis} disabled={kpiSuggesting || !selectedTables.length}
@@ -895,9 +929,7 @@ export default function SemanticLayer() {
             )}
           </div>
         </div>
-        <p className="text-sm text-gray-500 dark:text-gray-400 mb-3">
-          Define or auto-suggest business KPIs. These feed into metric view generation and Genie space configuration.
-        </p>
+        
         {showKpiForm && (
           <div className="border border-slate-200 dark:border-slate-700 rounded-lg p-4 mb-3 space-y-2 bg-slate-50 dark:bg-slate-800/50">
             <input value={kpiDraft.name} onChange={e => setKpiDraft(d => ({ ...d, name: e.target.value }))}
@@ -994,7 +1026,8 @@ export default function SemanticLayer() {
 
       {/* Generation inputs summary */}
       <section className={section}>
-        <h2 className="text-lg font-semibold mb-3 dark:text-gray-100">Generation Inputs</h2>
+        <h2 className="text-lg font-semibold mb-1 dark:text-gray-100">Generation Inputs</h2>
+        <p className="text-xs text-slate-500 dark:text-slate-400 mb-3">Review your inputs below, then scroll down and click Generate. AI will create YAML metric view definitions from your tables, questions, and KPIs.</p>
         <div className="grid grid-cols-2 md:grid-cols-3 gap-3 text-sm">
           <div className="p-3 rounded-lg bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700">
             <span className="text-xs text-slate-500 dark:text-slate-400 block mb-1">Project</span>
@@ -1055,17 +1088,20 @@ export default function SemanticLayer() {
         <div className="flex gap-3 flex-wrap">
           <button onClick={() => startGeneration('replace')}
             disabled={loading || isGenerating || !selectedTables.length || !questionLines.length}
+            title="Create new metric view definitions (replaces any pending ones)"
             className={btnPrimary}>
             {isGenerating ? 'Generating...' : 'Generate'}
           </button>
           <button onClick={() => startGeneration('additive')}
             disabled={loading || isGenerating || !selectedTables.length || !questionLines.length}
+            title="Add more definitions without replacing existing ones"
             className="px-4 py-2 bg-teal-600 text-white rounded-md text-sm hover:bg-teal-700 disabled:opacity-50">
             Generate More
           </button>
           {selectedProjectId && (
             <button onClick={() => { if (!confirm('Regenerate all definitions? This will replace existing ones.')) return; startGeneration('replace_all') }}
               disabled={loading || isGenerating || !selectedTables.length || !questionLines.length}
+              title="Delete all existing definitions in this project and regenerate from scratch"
               className="px-4 py-2 bg-dbx-lava text-white rounded-md text-sm hover:bg-red-700 disabled:opacity-50">
               Regenerate All
             </button>
@@ -1104,12 +1140,15 @@ export default function SemanticLayer() {
       {/* === Definitions Tab === */}
       {activeTab === 'definitions' && <>
 
-      <div className="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
-        <span>Showing definitions for:</span>
-        <span className="font-medium text-slate-700 dark:text-slate-200">
-          {selectedProjectId ? projects.find(p => p.project_id === selectedProjectId)?.project_name : 'All projects'}
-        </span>
-        <button onClick={() => setActiveTab('setup')} className="text-blue-600 dark:text-blue-400 hover:underline ml-1">Change</button>
+      <div className="text-xs text-slate-500 dark:text-slate-400 space-y-1">
+        <p>Each definition below is a metric view. The lifecycle is: <strong>Generated</strong> &rarr; <strong>Validated</strong> (SQL checked) &rarr; <strong>Applied</strong> (created as a UC view). Use <strong>Improve</strong> to re-generate a definition with AI feedback.</p>
+        <div className="flex items-center gap-2">
+          <span>Showing definitions for:</span>
+          <span className="font-medium text-slate-700 dark:text-slate-200">
+            {selectedProjectId ? projects.find(p => p.project_id === selectedProjectId)?.project_name : 'All projects'}
+          </span>
+          <button onClick={() => setActiveTab('setup')} className="text-blue-600 dark:text-blue-400 hover:underline ml-1">Change</button>
+        </div>
       </div>
 
       {/* Definitions */}
@@ -1133,7 +1172,7 @@ export default function SemanticLayer() {
           {/* Deploy target override */}
           <div className="flex items-center gap-3 mb-4 p-3 bg-dbx-oat dark:bg-gray-900 rounded-md border dark:border-gray-700">
             <span className="text-xs font-medium text-gray-600 dark:text-gray-400 whitespace-nowrap" title="Override deploys all metric views to this schema instead of each view's source table schema">Deploy target override:</span>
-            <select value={globalTargetOverride} onChange={e => setGlobalTargetOverride(e.target.value)}
+            <select value={globalTargetOverride} onChange={e => { userEditedTargetRef.current = true; setGlobalTargetOverride(e.target.value) }}
               className="input-base !text-xs w-64">
               <option value="">(None - use each view's source schema)</option>
               {schemaOptions.map(s => <option key={s} value={s}>{s}</option>)}

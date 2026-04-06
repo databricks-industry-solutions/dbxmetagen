@@ -29,7 +29,7 @@ const NAV_STRUCTURE = [
   {
     category: 'Design',
     items: [
-      { id: 'jobs',     label: 'Generate Semantic Layer', desc: 'Build core metadata, advanced analytics, and metric views' },
+      { id: 'jobs',     label: 'Generate Metadata', desc: 'Descriptions, sensitivity, domains, ontology, FK predictions, and metrics' },
       { id: 'semantic', label: 'Define Metrics', desc: 'Define metric views and KPIs' },
       { id: 'genie',   label: 'Build Genie Space', desc: 'Build natural-language SQL spaces' },
     ],
@@ -58,11 +58,11 @@ export async function safeFetch(url, options) {
       const body = await res.text().catch(() => '')
       let msg = `Error ${res.status}`
       try { const j = JSON.parse(body); if (j.detail) msg = j.detail } catch {}
-      return { data: [], error: msg }
+      return { data: null, error: msg }
     }
     const data = await res.json()
-    return { data: Array.isArray(data) ? data : [], error: null }
-  } catch (e) { return { data: [], error: e.message } }
+    return { data, error: null }
+  } catch (e) { return { data: null, error: e.message } }
 }
 
 export async function safeFetchObj(url, options) {
@@ -116,19 +116,16 @@ const SLIDES = [
   {
     title: 'Workflow',
     body: [
-      'Design -- Generate metadata and define metrics.',
+      'Design -- Generate Metadata (core jobs, advanced analytics, metric assets) and Define Metrics.',
       'Review & Apply -- Edit and apply descriptions, tags, entity types, and foreign keys. Check coverage and ontology health.',
-      'Explore -- Chat with the metadata agent and run semantic searches.',
+      'Explore -- Chat with the metadata agent, graph explorer, and semantic search.',
     ],
   },
   {
     title: 'Getting Started',
     body: [
-      '1. Design > Generate Metadata -- run on your target tables',
-      '2. Review > Review & Apply -- edit and apply results',
-      '3. Review > Coverage -- check completeness and health',
-      '4. Design > Define Metrics',
-      '5. Design > Build Genie Space',
+      'Tip: start with a small set of tables to see results quickly, then expand.',
+      '1. Design > Generate Metadata -- run core and advanced jobs on your target tables\n2. Review > Review & Apply -- inspect, edit, and apply the generated metadata\n3. Review > Coverage -- check completeness and health across your catalog\n4. Design > Define Metrics -- create reusable KPI definitions\n5. Design > Build Genie Space -- enable natural-language SQL for end users',
     ],
   },
 ]
@@ -233,9 +230,12 @@ function NavDropdown({ cat, activeTab, onSelect }) {
   )
 }
 
+const VALID_TABS = new Set(Object.keys(COMPONENTS))
+const readHash = () => { const h = window.location.hash.replace('#', ''); return VALID_TABS.has(h) ? h : 'jobs' }
+
 export default function App() {
-  const [activeTab, setActiveTab] = useState('jobs')
-  const [visitedTabs, setVisitedTabs] = useState(new Set(['jobs']))
+  const [activeTab, setActiveTab] = useState(readHash)
+  const [visitedTabs, setVisitedTabs] = useState(new Set([readHash()]))
   const [showInfo, setShowInfo] = useState(false)
   const [dark, setDark] = useState(() => {
     if (typeof window !== 'undefined') {
@@ -253,6 +253,13 @@ export default function App() {
       next.add(activeTab)
       return next
     })
+    if (window.location.hash !== `#${activeTab}`) window.history.pushState(null, '', `#${activeTab}`)
+  }, [activeTab])
+
+  useEffect(() => {
+    const onHash = () => { const t = readHash(); if (t !== activeTab) setActiveTab(t) }
+    window.addEventListener('hashchange', onHash)
+    return () => window.removeEventListener('hashchange', onHash)
   }, [activeTab])
 
   useEffect(() => {
@@ -272,7 +279,7 @@ export default function App() {
             </div>
             <div>
               <h1 className="text-xl font-bold text-white tracking-tight">dbxmetagen</h1>
-              <p className="text-dbx-oat/60 text-xs mt-0.5">Metadata generation, knowledge graph, and semantic layer</p>
+              <p className="text-dbx-oat/60 text-xs mt-0.5">Automated metadata, knowledge graph, and semantic layer for Unity Catalog</p>
             </div>
           </div>
           <div className="flex items-center gap-1.5">

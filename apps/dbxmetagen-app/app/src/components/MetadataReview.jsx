@@ -26,9 +26,15 @@ function DataTable({ data, maxRows = 100 }) {
 }
 
 const Tip = ({ text }) => (
-  <span className="relative group cursor-help ml-1.5 inline-flex">
-    <span className="text-slate-400 dark:text-slate-500 text-xs font-bold border border-slate-300 dark:border-dbx-navy-400 rounded-full w-4 h-4 inline-flex items-center justify-center hover:text-dbx-teal hover:border-dbx-teal transition-colors">?</span>
-    <span className="absolute z-50 hidden group-hover:block bottom-full left-1/2 -translate-x-1/2 mb-1.5 w-60 text-xs bg-dbx-navy dark:bg-dbx-navy-600 text-white rounded-xl px-3 py-2 shadow-elevated pointer-events-none animate-fade-in">{text}</span>
+  <span className="relative group ml-1.5 inline-flex align-middle">
+    <button
+      type="button"
+      className="text-slate-400 dark:text-slate-500 text-xs font-bold border border-slate-300 dark:border-dbx-navy-400 rounded-full w-4 h-4 inline-flex items-center justify-center shrink-0 hover:text-dbx-teal hover:border-dbx-teal transition-colors cursor-help focus:outline-none focus:ring-2 focus:ring-dbx-teal/60 focus:ring-offset-1 dark:focus:ring-offset-dbx-navy-600"
+      aria-label={text}
+    >
+      ?
+    </button>
+    <span className="absolute z-50 hidden group-hover:block group-focus-within:block bottom-full left-1/2 -translate-x-1/2 mb-1.5 w-60 text-xs bg-dbx-navy dark:bg-dbx-navy-600 text-white rounded-xl px-3 py-2 shadow-elevated pointer-events-none animate-fade-in">{text}</span>
   </span>
 )
 
@@ -76,6 +82,7 @@ function ReviewEditor() {
   const [original, setOriginal] = useState([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
+  const [info, setInfo] = useState(null)
   const [expanded, setExpanded] = useState({})
   const [saving, setSaving] = useState(false)
   const [ddlSql, setDdlSql] = useState('')
@@ -128,12 +135,17 @@ function ReviewEditor() {
       const res = await fetch('/api/metadata/review-combined', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
       })
+      if (!res.ok) {
+        let detail = `Server error (${res.status})`
+        try { const ej = await res.json(); detail = ej.detail || detail } catch {}
+        throw new Error(detail)
+      }
       const j = await res.json()
-      if (!res.ok) throw new Error(j.detail || res.status)
       const tables = j.tables || []
       setReviewData(tables)
       setOriginal(JSON.parse(JSON.stringify(tables)))
       const exp = {}; tables.forEach(t => { exp[t.table_name] = true }); setExpanded(exp)
+      if (j.truncated) setInfo(`Showing 200 of ${j.total_count} tables. Use the filter to narrow results.`)
     } catch (e) { setError(e.message) }
     setLoading(false)
   }
@@ -317,6 +329,15 @@ function ReviewEditor() {
   return (
     <div className="space-y-4">
       <ErrorBanner error={error} />
+      {info && (
+        <div className="card border-l-4 border-l-amber-400 px-4 py-3 text-sm animate-slide-up flex justify-between items-start">
+          <div>
+            <span className="font-medium text-amber-600 dark:text-amber-400">Note:</span>{' '}
+            <span className="text-slate-600 dark:text-slate-300">{info}</span>
+          </div>
+          <button onClick={() => setInfo(null)} className="text-slate-400 hover:text-slate-600 ml-2">&times;</button>
+        </div>
+      )}
 
       {/* Scope Picker */}
       <div className="card p-5 space-y-3">
@@ -522,7 +543,10 @@ function ReviewEditor() {
                 <span className="text-xs text-slate-400">{expanded[tbl.table_name] ? '\u25BC' : '\u25B6'}</span>
                 <span className="font-semibold text-sm text-slate-700 dark:text-slate-200">{tbl.table_name}</span>
                 {tbl.domain && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300 font-medium">{tbl.domain}{tbl.subdomain ? ` / ${tbl.subdomain}` : ''}</span>}
-                {tbl.primary_entity && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300 font-medium">{tbl.primary_entity.entity_type} ({Number(tbl.primary_entity.confidence ?? 0).toFixed(2)})</span>}
+                {tbl.primary_entity && (<span className="inline-flex items-center gap-1">
+                  <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300 font-medium">{tbl.primary_entity.entity_type} ({Number(tbl.primary_entity.confidence ?? 0).toFixed(2)})</span>
+                  {tbl.primary_entity.source_ontology && <span className="text-[9px] px-1 py-0 rounded bg-indigo-100 dark:bg-indigo-900/40 text-indigo-600 dark:text-indigo-300">{tbl.primary_entity.source_ontology}</span>}
+                </span>)}
                 {show('ontology') && (() => {
                   const rs = tbl.review_status || 'unreviewed'
                   const rsCls = rs === 'approved' ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300' : rs === 'in_review' ? 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/40 dark:text-yellow-300' : 'bg-slate-100 text-slate-500 dark:bg-slate-800/40 dark:text-slate-400'
@@ -623,7 +647,10 @@ function ReviewEditor() {
                                     const c = Number(e.confidence ?? 0)
                                     const role = e.entity_role || 'primary'
                                     const cls = role === 'primary' ? 'bg-purple-100 text-purple-700' : c <= 0 ? 'bg-red-100 text-red-700' : c < 0.5 ? 'bg-yellow-100 text-yellow-700' : 'bg-green-100 text-green-700'
-                                    return <span key={ei} className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${cls}`}>{e.entity_type} ({c.toFixed(2)})</span>
+                                    return (<span key={ei} className="inline-flex items-center gap-1">
+                                      <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${cls}`}>{e.entity_type} ({c.toFixed(2)})</span>
+                                      {e.source_ontology && <span className="text-[9px] px-1 py-0 rounded bg-indigo-100 dark:bg-indigo-900/40 text-indigo-600 dark:text-indigo-300">{e.source_ontology}</span>}
+                                    </span>)
                                   })}</div>
                                 ) : <span className="text-[10px] text-slate-300">--</span>
                               })()}</td>}
@@ -638,7 +665,9 @@ function ReviewEditor() {
                                       const nr = ev.target.value
                                       setColPropOverrides(p => ({ ...p, [cpKey]: { ...(p[cpKey] || {}), property_role: nr } }))
                                       fetch('/api/ontology/update-column-property', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-                                        body: JSON.stringify({ property_id: cpKey, property_role: nr, linked_entity_type: curLinked || null }) }).catch(() => {})
+                                        body: JSON.stringify({ property_id: cpKey, property_role: nr, linked_entity_type: curLinked || null }) })
+                                        .then(r => { if (!r.ok) setError('Failed to save property role') })
+                                        .catch(() => setError('Failed to save property role — check connection'))
                                     }} className="text-[10px] border border-slate-300 dark:border-dbx-navy-400/40 rounded px-1 py-0.5 bg-white dark:bg-dbx-navy/60 dark:text-slate-200">
                                       <option value="">Select role...</option>
                                       {PROPERTY_ROLE_GROUPS.map(group => (
@@ -1347,8 +1376,14 @@ function EntityTagsPanel() {
   const shortName = id => (id || '').split('.').pop()
 
   useEffect(() => {
-    safeFetch('/api/ontology/entities').then(r => { setEntities(r.data || []); if (r.error) setError(r.error) })
-    safeFetch('/api/ontology/relationships').then(r => { setRelationships(r.data || []) })
+    safeFetch('/api/ontology/entities').then(r => {
+      setEntities(Array.isArray(r.data) ? r.data : [])
+      if (r.error) setError(r.error)
+    })
+    safeFetch('/api/ontology/relationships').then(r => {
+      setRelationships(Array.isArray(r.data) ? r.data : [])
+      if (r.error) setError(prev => prev || r.error)
+    })
   }, [])
 
   const groupedEntities = useMemo(() => {
@@ -1493,8 +1528,9 @@ export default function MetadataReview() {
   const load = async (key) => {
     setLoading(true)
     const r = await safeFetch(buildUrl(key))
-    setData(r.data || [])
-    setOriginal(r.data ? r.data.map(row => ({ ...row })) : [])
+    const rows = Array.isArray(r.data) ? r.data : []
+    setData(rows)
+    setOriginal(rows.map(row => ({ ...row })))
     setError(r.error)
     setLoading(false)
   }

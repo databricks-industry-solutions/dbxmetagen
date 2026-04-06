@@ -41,6 +41,13 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class SemanticLayerConfig:
+    """Configuration for the metric view semantic layer pipeline.
+
+    Controls catalog/schema targeting, model selection, FK enrichment threshold,
+    validation behavior, and two-phase generation mode. Use ``fq()`` to produce
+    fully-qualified ``catalog.schema.table`` references.
+    """
+
     catalog_name: str
     schema_name: str
     questions_table: str = "semantic_layer_questions"
@@ -203,6 +210,24 @@ def _select_few_shot(context: str) -> str:
 
 
 class SemanticLayerGenerator:
+    """Orchestrates metric view generation, validation, and deployment to Unity Catalog.
+
+    Pipeline stages:
+      1. ``create_tables`` -- provision control tables for questions and MV definitions
+      2. ``ingest_questions`` -- store business questions as pending rows
+      3. ``generate_metric_views`` -- read pending questions, build catalog context
+         (KB, FK, ontology), call AI_QUERY (single- or two-phase), parse/validate
+         JSON definitions, enrich joins from FK predictions, and persist to the
+         definitions table
+      4. ``apply_metric_views`` -- read validated definitions and execute
+         ``CREATE OR REPLACE VIEW ... WITH METRICS LANGUAGE YAML`` in UC
+      5. ``create_genie_space`` -- assemble applied MVs + context into a Genie
+         ``serialized_space`` and deploy via the Databricks REST API
+
+    Two-phase generation (``use_two_phase=True``): phase 1 plans view names,
+    sources, joins, and dimension/measure outlines; phase 2 fills in SQL
+    expressions per view. This improves quality on large question sets.
+    """
 
     def __init__(self, spark: SparkSession, config: SemanticLayerConfig):
         self.spark = spark
@@ -225,6 +250,7 @@ class SemanticLayerGenerator:
     # ------------------------------------------------------------------
 
     def create_tables(self) -> None:
+        """Create ``semantic_layer_questions`` and ``metric_view_definitions`` tables if they don't exist."""
         fq = self.config.fq
         self.spark.sql(
             f"""
@@ -249,7 +275,9 @@ class SemanticLayerGenerator:
                 validation_errors STRING,
                 genie_space_id STRING,
                 created_at TIMESTAMP,
-                applied_at TIMESTAMP
+                applied_at TIMESTAMP,
+                deployed_catalog STRING,
+                deployed_schema STRING
             ) COMMENT 'Generated metric view definitions'
         """
         )
@@ -260,6 +288,7 @@ class SemanticLayerGenerator:
     # ------------------------------------------------------------------
 
     def ingest_questions(self, questions: List[str]) -> int:
+        """Insert business questions as ``pending`` rows. Returns number ingested."""
         fq_table = self.config.fq(self.config.questions_table)
         now = datetime.utcnow().isoformat()
         rows = []
@@ -452,7 +481,15 @@ class SemanticLayerGenerator:
     # ------------------------------------------------------------------
 
     def generate_metric_views(self) -> Dict[str, Any]:
-        """Read pending questions, call AI_QUERY, validate, store definitions."""
+        """Generate metric view YAML definitions from pending business questions.
+
+        Reads pending questions, gathers catalog context (KB comments, FK
+        predictions, ontology entities, profiling stats), calls AI_QUERY in
+        single- or two-phase mode, parses JSON output, enriches with FK-derived
+        join columns, optionally dry-runs ``CREATE VIEW`` for validation, and
+        persists rows to ``metric_view_definitions``. Returns summary dict with
+        counts of generated, validated, and failed views.
+        """
         fq = self.config.fq
 
         # Read pending questions
@@ -581,7 +618,7 @@ class SemanticLayerGenerator:
                     INSERT INTO {fq(self.config.definitions_table)} VALUES (
                         '{defn_id}', '{mv_name}', '{source}', '{json_str}',
                         '{q_id_str}', '{status}', '{error_str}', NULL,
-                        '{now}', NULL
+                        '{now}', NULL, NULL, NULL
                     )
                 """
                 )
@@ -640,11 +677,11 @@ RULES:
 8. Join format (Unity Catalog): For each join use: name: <short_alias>, source: catalog.schema.table, on: source.<fk_column> = <join_name>.<pk_column>. The root table is always "source"; the joined table is referenced by its "name" (short alias). Example: on: source.customer_id = customers.id
 9. Include joins when RECOMMENDED JOINS exist; when questions ask for breakdowns by attributes in another table (e.g. by customer segment, department), you MUST add a join. Prefer at least one metric view with joins when FKs exist
 10. Every metric view MUST have at least one measure and one dimension
-11. Add a top-level "comment" describing the metric view's purpose
+11. Add a top-level "comment" (1-2 sentences) describing what the metric view measures, its analytical purpose, and which source tables it draws from. Do NOT reference question numbers, KPI numbers, or list which questions are/aren't answerable. Focus on content and lineage (e.g. "Analyzes order revenue by product family and sales representative, joining line items to the product catalog and parent order for discount tracking.")
 12. Add a "comment" to each dimension and measure explaining what it represents. Optionally add "display_name" (human-readable label, max 255 chars) and "synonyms" (array of 2-5 alternative names for Genie discoverability, e.g. ["revenue", "total sales"] for Total Revenue).
 13. Use "filter" (optional) for persistent WHERE clauses (e.g. excluding null/test rows)
 14. Use measure-level FILTER for conditional aggregation: SUM(col) FILTER (WHERE condition)
-15. If some questions are not answerable with metrics (e.g. document search, free-text lookups, SOP retrieval), generate metric views for the ones that ARE quantitative/analytical and silently ignore the rest
+15. If some questions are not answerable with metrics (e.g. document search, free-text lookups, SOP retrieval), generate metric views for the ones that ARE quantitative/analytical and silently ignore the rest. Do NOT mention skipped or unanswerable questions in the comment field
 16. Each metric view "name" must be unique and descriptive (e.g. staffing_efficiency_metrics, ed_throughput_analysis). Vary names based on the analytical theme, not just the table name
 17. Output ONLY a valid JSON array, no explanation
 18. Use domain and subdomain from table metadata to choose which dimensions (e.g. department, region, product category) are relevant to the questions.
@@ -683,7 +720,7 @@ TASK: Output a PLAN only (no SQL). Reply with a single JSON object: {{ "views": 
 For each metric view in "views", include:
 - "name": unique snake_case name (e.g. order_performance_metrics)
 - "source": fully qualified source table (catalog.schema.table)
-- "comment": one sentence purpose
+- "comment": one sentence describing what the view measures and its source lineage. Do NOT reference question numbers or KPI numbers
 - "joins": array of {{ "name": "<alias>", "source": "catalog.schema.table", "on": "source.<fk_col> = <alias>.<pk_col>" }} when RECOMMENDED JOINS exist and questions need breakdowns by another table
 - "dimensions": array of {{ "name": "Display Name", "comment": "what it is" }} (no expr)
 - "measures": array of {{ "name": "Display Name", "comment": "what it measures" }} (no expr)
@@ -726,6 +763,7 @@ PLANNED VIEW (names only; you must add "expr" for each dimension and measure):
 
 RULES:
 - Output a single object with keys: name, source, comment, filter (optional), dimensions, measures, joins.
+- comment: 1-2 sentences on what the view measures and its source lineage. Do NOT reference question numbers, KPI numbers, or list which questions are/aren't answerable.
 - dimensions: array of {{ "name", "expr", "comment" }}; optionally "display_name" and "synonyms" (array of strings) for semantic metadata. expr must be valid Databricks/Spark SQL using ONLY columns from the metadata below. Use DATE_TRUNC('MONTH', col) etc.; single-quote all string literals.
 - measures: array of {{ "name", "expr", "comment" }}; optionally "display_name" and "synonyms". Use SUM, COUNT, AVG, FILTER, etc. String literals single-quoted (e.g. status = 'fulfilled').
 - joins: use exactly: on: source.<fk_column> = <join_name>.<pk_column>. Keep the same join names and sources as in the plan.
@@ -1335,19 +1373,32 @@ OUTPUT (one JSON object only, no array, no explanation):"""
     # ------------------------------------------------------------------
 
     def apply_metric_views(self) -> Dict[str, Any]:
-        """Read validated definitions and create metric views in UC."""
+        """Deploy validated metric view definitions as UC views via ``CREATE OR REPLACE VIEW ... WITH METRICS LANGUAGE YAML``.
+
+        Reads rows with status ``validated`` from the definitions table, executes
+        the DDL, and updates each row's status to ``applied`` (recording
+        ``applied_at`` and ``deployed_catalog``/``deployed_schema``) or ``failed``
+        on error. Returns a summary dict of counts.
+        """
         fq = self.config.fq
-        rows = self.spark.sql(
-            f"SELECT definition_id, metric_view_name, source_table, json_definition "
-            f"FROM {fq(self.config.definitions_table)} WHERE status = 'validated'"
-        ).collect()
+        rows = [
+            r.asDict()
+            for r in self.spark.sql(
+                f"SELECT definition_id, metric_view_name, source_table, json_definition "
+                f"FROM {fq(self.config.definitions_table)} WHERE status = 'validated'"
+            ).collect()
+        ]
 
         applied = 0
         failed = 0
         for row in rows:
             defn = json.loads(row["json_definition"])
             mv_name = row["metric_view_name"]
-            fq_mv = f"{self.config.catalog_name}.{self.config.schema_name}.{mv_name}"
+            source = defn.get("source", row.get("source_table", ""))
+            src_parts = source.split(".") if source else []
+            deploy_cat = src_parts[0] if len(src_parts) >= 3 else self.config.catalog_name
+            deploy_sch = src_parts[1] if len(src_parts) >= 3 else self.config.schema_name
+            fq_mv = f"{deploy_cat}.{deploy_sch}.{mv_name}"
             with _trace_span("apply_metric_view") as apply_span:
                 if apply_span is not None:
                     apply_span.set_inputs({"metric_view_name": mv_name, "fq_mv": fq_mv})
@@ -1355,10 +1406,13 @@ OUTPUT (one JSON object only, no array, no explanation):"""
                     yaml_body = self._definition_to_yaml(defn)
                     sql = f"CREATE OR REPLACE VIEW {fq_mv}\nWITH METRICS LANGUAGE YAML AS $$\n{yaml_body}$$"
                     self.spark.sql(sql)
+                    cat_esc = deploy_cat.replace("'", "''")
+                    sch_esc = deploy_sch.replace("'", "''")
                     self.spark.sql(
                         f"""
                         UPDATE {fq(self.config.definitions_table)}
-                        SET status = 'applied', applied_at = current_timestamp()
+                        SET status = 'applied', applied_at = current_timestamp(),
+                            deployed_catalog = '{cat_esc}', deployed_schema = '{sch_esc}'
                         WHERE definition_id = '{row['definition_id']}'
                     """
                     )
@@ -1531,19 +1585,34 @@ OUTPUT (one JSON object only, no array, no explanation):"""
         return examples
 
     def create_genie_space(self, display_name: str, warehouse_id: str) -> Optional[str]:
-        """Create a Genie space from applied metric views with rich instructions. Returns space_id or None."""
+        """Assemble a Genie space from applied metric views and deploy via the REST API.
+
+        Gathers applied MV definitions, KB/FK/ontology/graph context via
+        ``GenieContextAssembler``, constructs a v2 ``serialized_space`` (data
+        sources, instructions, join specs, SQL snippets, example SQL, sample
+        questions), POSTs to the Genie spaces endpoint, and writes the resulting
+        ``genie_space_id`` back to the definitions table. Returns the space_id
+        or None on failure.
+        """
         fq = self.config.fq
 
-        applied = self.spark.sql(
-            f"SELECT metric_view_name, source_table, json_definition FROM {fq(self.config.definitions_table)} WHERE status = 'applied'"
-        ).collect()
+        applied = [
+            r.asDict()
+            for r in self.spark.sql(
+                f"SELECT metric_view_name, source_table, json_definition, deployed_catalog, deployed_schema "
+                f"FROM {fq(self.config.definitions_table)} WHERE status = 'applied'"
+            ).collect()
+        ]
         if not applied:
             logger.warning("No applied metric views -- skipping Genie space creation")
             return None
 
-        questions = self.spark.sql(
-            f"SELECT question_text FROM {fq(self.config.questions_table)} WHERE status = 'processed'"
-        ).collect()
+        questions = [
+            r.asDict()
+            for r in self.spark.sql(
+                f"SELECT question_text FROM {fq(self.config.questions_table)} WHERE status = 'processed'"
+            ).collect()
+        ]
         sample_qs = [r["question_text"] for r in questions if r.get("question_text")][:10]
 
         # Gather metadata for instructions
@@ -1582,7 +1651,9 @@ OUTPUT (one JSON object only, no array, no explanation):"""
             mv_name = r.get("metric_view_name")
             if not mv_name:
                 continue
-            identifier = f"{self.config.catalog_name}.{self.config.schema_name}.{mv_name}"
+            mv_cat = r.get("deployed_catalog") or self.config.catalog_name
+            mv_sch = r.get("deployed_schema") or self.config.schema_name
+            identifier = f"{mv_cat}.{mv_sch}.{mv_name}"
             desc_lines = []
             try:
                 defn = json.loads(r["json_definition"]) if isinstance(r.get("json_definition"), str) else {}

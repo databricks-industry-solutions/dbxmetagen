@@ -1,0 +1,217 @@
+owns:
+  name: owns
+  domain: Person
+  range: Transaction
+  ranges: []
+  uri: ''
+  inverse: ''
+part_of:
+  name: part_of
+  domain: Person
+  range: Organization
+  ranges: []
+  uri: ''
+  inverse: ''
+contains:
+  name: contains
+  domain: Organization
+  range: Person
+  ranges: []
+  uri: ''
+  inverse: contained_in
+contains_location:
+  name: contains_location
+  domain: Organization
+  range: Location
+  ranges: []
+  uri: ''
+  inverse: ''
+references:
+  name: references
+  domain: Product
+  range: Reference
+  ranges: []
+  uri: ''
+  inverse: referenced_by
+derives_from:
+  name: derives_from
+  domain: Metric
+  range: Event
+  ranges: []
+  uri: ''
+  inverse: source_of
+treated_by:
+  name: treated_by
+  domain: Patient
+  range: Provider
+  ranges: []
+  uri: ''
+  inverse: treats
+has_encounter:
+  name: has_encounter
+  domain: Patient
+  range: Encounter
+  ranges: []
+  uri: ''
+  inverse: encounter_for
+has_condition:
+  name: has_condition
+  domain: Patient
+  range: Condition
+  ranges: []
+  uri: ''
+  inverse: condition_of
+has_coverage:
+  name: has_coverage
+  domain: Patient
+  range: Coverage
+  ranges: []
+  uri: ''
+  inverse: covers
+treats:
+  name: treats
+  domain: Provider
+  range: Patient
+  ranges: []
+  uri: ''
+  inverse: treated_by
+ordered_for:
+  name: ordered_for
+  domain: Provider
+  range: Encounter
+  ranges: []
+  uri: ''
+  inverse: has_order
+has_order:
+  name: has_order
+  domain: Encounter
+  range: Procedure
+  ranges: []
+  uri: ''
+  inverse: ''
+located_at:
+  name: located_at
+  domain: Encounter
+  range: Location
+  ranges: []
+  uri: ''
+  inverse: location_of
+diagnosed_in:
+  name: diagnosed_in
+  domain: Condition
+  range: Encounter
+  ranges: []
+  uri: ''
+  inverse: has_diagnosis
+performed_by:
+  name: performed_by
+  domain: Procedure
+  range: Provider
+  ranges: []
+  uri: ''
+  inverse: performs
+prescribed_to:
+  name: prescribed_to
+  domain: Medication
+  range: Patient
+  ranges: []
+  uri: ''
+  inverse: has_prescription
+recorded_in:
+  name: recorded_in
+  domain: Observation
+  range: Encounter
+  ranges: []
+  uri: ''
+  inverse: records
+for_encounter:
+  name: for_encounter
+  domain: Claim
+  range: Encounter
+  ranges: []
+  uri: ''
+  inverse: encounter_claim
+covered_by:
+  name: covered_by
+  domain: Claim
+  range: Coverage
+  ranges: []
+  uri: ''
+  inverse: covers_claim
+provided_by:
+  name: provided_by
+  domain: Coverage
+  range: Organization
+  ranges: []
+  uri: ''
+  inverse: ''
+enrolls:
+  name: enrolls
+  domain: ClinicalTrial
+  range: Patient
+  ranges: []
+  uri: ''
+  inverse: ''
+used_in:
+  name: used_in
+  domain: Device
+  range: Procedure
+  ranges: []
+  uri: ''
+  inverse: ''
+owned_by:
+  name: owned_by
+  domain: Device
+  range: Organization
+  ranges: []
+  uri: ''
+  inverse: owns
+collected_from:
+  name: collected_from
+  domain: Specimen
+  range: Patient
+  ranges: []
+  uri: ''
+  inverse: provides_specimen
+pays_for:
+  name: pays_for
+  domain: Payer
+  range: Claim
+  ranges: []
+  uri: ''
+  inverse: ''
+covers:
+  name: covers
+  domain: Payer
+  range: Patient
+  ranges: []
+  uri: ''
+  inverse: ''
+performs:
+  name: performs
+  domain: Practitioner
+  range: Procedure
+  ranges: []
+  uri: ''
+  inverse: ''
+hosts:
+  name: hosts
+  domain: Facility
+  range: Encounter
+  ranges: []
+  uri: ''
+  inverse: ''
+tested_in:
+  name: tested_in
+  domain: LabResult
+  range: Specimen
+  ranges: []
+  uri: ''
+  inverse: has_result
+consented_by:
+  name: consented_by
+  domain: Consent
+  range: Patient
+  ranges: []
+  uri: ''
+  inverse: consents_to

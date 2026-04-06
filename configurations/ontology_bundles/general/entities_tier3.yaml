@@ -1,0 +1,620 @@
+Person:
+  description: People, customers, contacts, users, or employees
+  source_ontology: schema.org
+  uri: https://schema.org/Person
+  parents: []
+  keywords:
+  - customer
+  - employee
+  - user
+  - contact
+  - person
+  - member
+  - staff
+  synonyms: []
+  typical_attributes:
+  - id
+  - name
+  - email
+  - phone
+  - address
+  - created_date
+  business_questions: []
+  relationships:
+    owns:
+      target: Transaction
+      cardinality: one-to-many
+    part_of:
+      target: Organization
+      cardinality: many-to-one
+  properties:
+    identifier:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+      - person_id
+      - user_id
+      - customer_id
+      - employee_id
+    name:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - name
+      - full_name
+      - first_name
+      - last_name
+      - display_name
+    email:
+      kind: data_property
+      role: pii
+      typical_attributes:
+      - email
+      - email_address
+    phone:
+      kind: data_property
+      role: pii
+      typical_attributes:
+      - phone
+      - phone_number
+      - mobile
+    part_of:
+      kind: object_property
+      role: object_property
+      edge: member_of
+      target_entity: Organization
+      typical_attributes:
+      - org_id
+      - company_id
+      - department_id
+    created_at:
+      kind: data_property
+      role: audit
+      typical_attributes:
+      - created_at
+      - created_date
+      - create_date
+Organization:
+  description: Companies, departments, facilities, or business units
+  source_ontology: schema.org
+  uri: https://schema.org/Organization
+  parents: []
+  keywords:
+  - company
+  - organization
+  - department
+  - facility
+  - tenant
+  - branch
+  - division
+  synonyms: []
+  typical_attributes:
+  - id
+  - name
+  - type
+  - address
+  - parent_id
+  business_questions: []
+  relationships:
+    contains:
+      target: Person
+      cardinality: one-to-many
+    contains_location:
+      target: Location
+      cardinality: one-to-many
+    part_of:
+      target: Organization
+      cardinality: many-to-one
+  properties:
+    identifier:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+      - org_id
+      - organization_id
+      - company_id
+    name:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - name
+      - org_name
+      - company_name
+    type:
+      kind: data_property
+      role: dimension
+      typical_attributes:
+      - type
+      - org_type
+      - category
+    parent:
+      kind: object_property
+      role: object_property
+      edge: has_part
+      target_entity: Organization
+      typical_attributes:
+      - parent_id
+      - parent_org_id
+Product:
+  description: Goods, services, SKUs, or catalog items
+  source_ontology: schema.org
+  uri: https://schema.org/Product
+  parents: []
+  keywords:
+  - product
+  - item
+  - sku
+  - catalog
+  - offering
+  - service
+  - subscription
+  synonyms: []
+  typical_attributes:
+  - id
+  - name
+  - description
+  - price
+  - category
+  - status
+  business_questions: []
+  relationships:
+    references:
+      target: Reference
+      cardinality: many-to-one
+  properties:
+    identifier:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+      - product_id
+      - sku
+      - item_id
+    name:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - name
+      - product_name
+      - item_name
+      - title
+    price:
+      kind: data_property
+      role: measure
+      typical_attributes:
+      - price
+      - unit_price
+      - list_price
+      - msrp
+    category:
+      kind: data_property
+      role: dimension
+      typical_attributes:
+      - category
+      - product_category
+      - type
+      - product_type
+    status:
+      kind: data_property
+      role: dimension
+      typical_attributes:
+      - status
+      - product_status
+      - active
+Transaction:
+  description: Orders, purchases, payments, invoices, or financial events
+  source_ontology: schema.org
+  uri: https://schema.org/Invoice
+  parents: []
+  keywords:
+  - transaction
+  - order
+  - payment
+  - invoice
+  - purchase
+  - sale
+  - receipt
+  synonyms: []
+  typical_attributes:
+  - id
+  - customer_id
+  - amount
+  - date
+  - status
+  - currency
+  business_questions: []
+  relationships:
+    placed_by:
+      target: Person
+      cardinality: many-to-one
+    for_product:
+      target: Product
+      cardinality: many-to-many
+  properties:
+    identifier:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+      - order_id
+      - transaction_id
+      - invoice_id
+      - payment_id
+    business_key:
+      kind: data_property
+      role: business_key
+      typical_attributes:
+      - order_number
+      - invoice_number
+      - transaction_ref
+      - confirmation_number
+    amount:
+      kind: data_property
+      role: measure
+      typical_attributes:
+      - amount
+      - total
+      - total_amount
+      - price
+      - subtotal
+      - net_amount
+    currency:
+      kind: data_property
+      role: dimension
+      typical_attributes:
+      - currency
+      - currency_code
+    status:
+      kind: data_property
+      role: dimension
+      typical_attributes:
+      - status
+      - order_status
+      - payment_status
+      - state
+    occurred_at:
+      kind: data_property
+      role: temporal
+      typical_attributes:
+      - order_date
+      - transaction_date
+      - created_date
+      - date
+      - payment_date
+    placed_by:
+      kind: object_property
+      role: object_property
+      edge: placed_by
+      target_entity: Person
+      typical_attributes:
+      - customer_id
+      - user_id
+      - buyer_id
+      - person_id
+    for_product:
+      kind: object_property
+      role: object_property
+      edge: for_product
+      target_entity: Product
+      typical_attributes:
+      - product_id
+      - item_id
+      - sku
+    billed_to:
+      kind: object_property
+      role: object_property
+      edge: billed_to
+      target_entity:
+      - Person
+      - Organization
+      typical_attributes:
+      - account_id
+      - billing_account_id
+Location:
+  description: Addresses, sites, regions, facilities, or geographies
+  source_ontology: schema.org
+  uri: https://schema.org/Place
+  parents: []
+  keywords:
+  - location
+  - address
+  - site
+  - region
+  - facility
+  - warehouse
+  - store
+  synonyms: []
+  typical_attributes:
+  - id
+  - name
+  - address
+  - city
+  - state
+  - country
+  - zip_code
+  business_questions: []
+  relationships:
+    part_of:
+      target: Organization
+      cardinality: many-to-one
+  properties:
+    identifier:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+      - location_id
+      - site_id
+    name:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - name
+      - location_name
+      - site_name
+    city:
+      kind: data_property
+      role: composite_component
+      typical_attributes:
+      - city
+      - shipping_city
+      - billing_city
+    state:
+      kind: data_property
+      role: composite_component
+      typical_attributes:
+      - state
+      - shipping_state
+      - province
+      - region
+    country:
+      kind: data_property
+      role: composite_component
+      typical_attributes:
+      - country
+      - country_code
+    zip:
+      kind: data_property
+      role: composite_component
+      typical_attributes:
+      - zip
+      - zip_code
+      - postal_code
+Event:
+  description: Activities, logs, sessions, audits, or system events
+  source_ontology: schema.org
+  uri: https://schema.org/Event
+  parents: []
+  keywords:
+  - event
+  - activity
+  - log
+  - audit
+  - session
+  - incident
+  - alert
+  synonyms: []
+  typical_attributes:
+  - id
+  - type
+  - timestamp
+  - user_id
+  - details
+  business_questions: []
+  relationships:
+    references:
+      target: Person
+      cardinality: many-to-one
+  properties:
+    identifier:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+      - event_id
+      - log_id
+      - session_id
+    type:
+      kind: data_property
+      role: dimension
+      typical_attributes:
+      - type
+      - event_type
+      - category
+    occurred_at:
+      kind: data_property
+      role: temporal
+      typical_attributes:
+      - timestamp
+      - event_time
+      - created_at
+      - logged_at
+    actor:
+      kind: object_property
+      role: object_property
+      edge: created_by
+      target_entity: Person
+      typical_attributes:
+      - user_id
+      - actor_id
+      - performed_by
+Reference:
+  description: Lookup tables, codes, categories, dimensions, or configuration
+  source_ontology: schema.org
+  uri: https://schema.org/Thing
+  parents: []
+  keywords:
+  - reference
+  - lookup
+  - code
+  - category
+  - dim_
+  - type
+  - status
+  synonyms: []
+  typical_attributes:
+  - id
+  - code
+  - name
+  - description
+  - active
+  business_questions: []
+  relationships: {}
+  properties:
+    identifier:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+      - code
+      - reference_id
+    name:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - name
+      - description
+      - label
+      - display_name
+    active:
+      kind: data_property
+      role: dimension
+      typical_attributes:
+      - active
+      - is_active
+      - status
+      - enabled
+Metric:
+  description: KPIs, aggregates, facts, summaries, or analytic measures
+  source_ontology: schema.org
+  uri: https://schema.org/QuantitativeValue
+  parents: []
+  keywords:
+  - metric
+  - kpi
+  - aggregate
+  - fact_
+  - summary
+  - measure
+  - score
+  synonyms: []
+  typical_attributes:
+  - id
+  - name
+  - value
+  - period
+  - dimension
+  business_questions: []
+  relationships:
+    derives_from:
+      target: Event
+      cardinality: many-to-one
+  properties:
+    identifier:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+      - metric_id
+    name:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - name
+      - metric_name
+      - kpi_name
+    value:
+      kind: data_property
+      role: measure
+      typical_attributes:
+      - value
+      - score
+      - amount
+      - count
+      - total
+    period:
+      kind: data_property
+      role: temporal
+      typical_attributes:
+      - period
+      - date
+      - month
+      - quarter
+      - year
+    source:
+      kind: object_property
+      role: object_property
+      edge: derives_from
+      target_entity: Event
+      typical_attributes:
+      - source_id
+      - event_id
+Document:
+  description: Unstructured content, notes, files, or text records
+  source_ontology: schema.org
+  uri: https://schema.org/DigitalDocument
+  parents: []
+  keywords:
+  - document
+  - note
+  - file
+  - content
+  - text
+  - attachment
+  - report
+  synonyms: []
+  typical_attributes:
+  - id
+  - title
+  - body
+  - author
+  - created_date
+  - type
+  business_questions: []
+  relationships:
+    references:
+      target: Person
+      cardinality: many-to-one
+  properties:
+    identifier:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+      - document_id
+      - doc_id
+      - file_id
+    title:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - title
+      - name
+      - subject
+      - filename
+    body:
+      kind: data_property
+      role: dimension
+      typical_attributes:
+      - body
+      - content
+      - text
+      - description
+    author:
+      kind: object_property
+      role: object_property
+      edge: created_by
+      target_entity: Person
+      typical_attributes:
+      - author
+      - author_id
+      - created_by
+    created_at:
+      kind: data_property
+      role: temporal
+      typical_attributes:
+      - created_date
+      - created_at
+      - published_date

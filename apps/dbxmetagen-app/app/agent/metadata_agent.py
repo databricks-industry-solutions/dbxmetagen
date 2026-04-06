@@ -69,7 +69,7 @@ You help data engineers, analysts, and governance teams understand their data.
 Available knowledge base tables in {CATALOG}.{SCHEMA}:
 - table_knowledge_base: table_name, comment, domain, subdomain, has_pii, has_phi, row_count
 - column_knowledge_base: table_name, column_name, comment, data_type, classification
-- ontology_entities: entity_name, entity_type, source_tables, confidence
+- ontology_entities: entity_id, entity_name, entity_type, description, source_tables, confidence, entity_uri, source_ontology
 - fk_predictions: src_table, src_column, dst_table, dst_column, final_confidence, cardinality
 - metric_view_definitions: metric_view_name, source_table, json_definition, status
 - profiling_results: table_name, column_name, distinct_count, null_count
@@ -82,6 +82,7 @@ EFFICIENCY RULES (you MUST follow these):
 5. If search_metadata returns enough info, answer immediately without further SQL.
 6. Be concise and data-driven. Cite specific table/column names.
 7. Format answers in markdown with tables when presenting structured data.
+8. GROUNDING: Only state facts that are directly supported by tool results. If a tool returns no results for a query, tell the user rather than making up an answer.
 """ + SAFETY_PROMPT_BLOCK
 
     if "execute_metadata_sql" in tool_names:
@@ -246,7 +247,7 @@ run a SQL query to get precise numbers and return a chart specification.
 Available tables in {CATALOG}.{SCHEMA}:
 - table_knowledge_base: table_name, comment, domain, subdomain, has_pii, has_phi, row_count
 - column_knowledge_base: table_name, column_name, comment, data_type, classification, classification_type
-- ontology_entities: entity_id, entity_name, entity_type, description, source_tables, confidence
+- ontology_entities: entity_id, entity_name, entity_type, description, source_tables, confidence, entity_uri, source_ontology
 - fk_predictions: src_table, src_column, dst_table, dst_column, final_confidence, cardinality
 - metric_view_definitions: definition_id, metric_view_name, source_table, status
 - profiling_results: table_name, column_name, distinct_count, null_count, min_value, max_value

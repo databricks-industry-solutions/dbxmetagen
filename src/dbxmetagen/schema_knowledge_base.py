@@ -11,6 +11,8 @@ from typing import Dict, Any
 from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql import functions as F
 
+from dbxmetagen.table_filter import table_filter_sql
+
 logger = logging.getLogger(__name__)
 
 
@@ -22,7 +24,8 @@ class SchemaKnowledgeBaseConfig:
     source_table: str = "table_knowledge_base"
     target_table: str = "schema_knowledge_base"
     model: str = "databricks-gpt-oss-120b"
-    
+    table_names: list[str] | None = None
+
     @property
     def fully_qualified_source(self) -> str:
         return f"{self.catalog_name}.{self.schema_name}.{self.source_table}"
@@ -133,7 +136,7 @@ class SchemaKnowledgeBaseBuilder:
         self.spark.sql(ddl)
         logger.info(f"Target table {self.config.fully_qualified_target} ready")
     
-    def read_source_data(self) -> DataFrame:
+    def read_source_data(self, table_filter_clause: str = "") -> DataFrame:
         """Read table knowledge base data."""
         return self.spark.sql(f"""
             SELECT 
@@ -150,6 +153,7 @@ class SchemaKnowledgeBaseBuilder:
                 updated_at
             FROM {self.config.fully_qualified_source}
             WHERE catalog IS NOT NULL AND `schema` IS NOT NULL
+            {table_filter_clause}
         """)
     
     def aggregate_schema_metadata(self, source_df: DataFrame) -> DataFrame:
@@ -202,7 +206,8 @@ class SchemaKnowledgeBaseBuilder:
     
     def build_staged_updates(self, generate_comments: bool = True) -> DataFrame:
         """Build staged updates for merge."""
-        source_df = self.read_source_data()
+        tf = table_filter_sql(self.config.table_names or [], column="table_name")
+        source_df = self.read_source_data(table_filter_clause=tf)
         
         aggregated_df = self.aggregate_schema_metadata(source_df)
         
@@ -276,7 +281,8 @@ def build_schema_knowledge_base(
     spark: SparkSession,
     catalog_name: str,
     schema_name: str,
-    generate_comments: bool = True
+    generate_comments: bool = True,
+    table_names: list[str] | None = None,
 ) -> Dict[str, Any]:
     """
     Convenience function to build the schema knowledge base.
@@ -292,7 +298,8 @@ def build_schema_knowledge_base(
     """
     config = SchemaKnowledgeBaseConfig(
         catalog_name=catalog_name,
-        schema_name=schema_name
+        schema_name=schema_name,
+        table_names=table_names,
     )
     builder = SchemaKnowledgeBaseBuilder(spark, config)
     return builder.run(generate_comments)

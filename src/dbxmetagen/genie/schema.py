@@ -1,0 +1,504 @@
+"""Pydantic models and builder for the Databricks Genie API ``serialized_space`` proto schema.
+
+The Pydantic models mirror the v2 Genie proto (data sources, instructions, joins,
+snippets, sample questions) and act as a whitelist: only defined fields survive
+serialization. ``build_serialized_space()`` is the main entry point that coerces
+raw LLM/agent output into a valid API payload with SQL formatting, date fixes,
+join simplification, and deduplication.
+"""
+
+import re
+import uuid
+from typing import Optional
+
+from pydantic import BaseModel, Field
+
+try:
+    import sqlparse
+    def _format_sql(sql: str) -> str:
+        return sqlparse.format(sql, reindent=True, keyword_case="upper").strip()
+except ImportError:
+    def _format_sql(sql: str) -> str:
+        return sql
+
+
+def _hex_id() -> str:
+    return uuid.uuid4().hex
+
+
+def _simplify_join_sql(sql: str) -> str:
+    """Reduce any multi-part dotted references (3+ parts) to table.column in join SQL."""
+    return re.sub(
+        r"\b(\w+(?:\.\w+){2,})\b",
+        lambda m: ".".join(m.group(1).split(".")[-2:]),
+        sql,
+    )
+
+
+def _backtick_join_sql(sql: str) -> str:
+    """Backtick-quote table.column references in join SQL predicates."""
+    return re.sub(
+        r"\b(\w+)\.(\w+)\b",
+        lambda m: f"`{m.group(1)}`.`{m.group(2)}`",
+        sql,
+    )
+
+
+_DATE_UNITS = {
+    "YEARS": "YEAR",
+    "QUARTERS": "QUARTER",
+    "MONTHS": "MONTH",
+    "WEEKS": "WEEK",
+    "DAYS": "DAY",
+    "HOURS": "HOUR",
+    "MINUTES": "MINUTE",
+    "SECONDS": "SECOND",
+    "MILLISECONDS": "MILLISECOND",
+    "MICROSECONDS": "MICROSECOND",
+}
+_VALID_UNITS = {
+    "YEAR",
+    "QUARTER",
+    "MONTH",
+    "WEEK",
+    "DAY",
+    "DAYOFYEAR",
+    "HOUR",
+    "MINUTE",
+    "SECOND",
+    "MILLISECOND",
+    "MICROSECOND",
+}
+
+
+def _fix_date_func_units(sql: str) -> str:
+    """Fix TIMESTAMPADD/TIMESTAMPDIFF unit arguments: strip quotes, de-pluralize."""
+
+    def _fix_unit(m):
+        func = m.group(1)
+        quote = m.group(2) or ""
+        unit = m.group(3).upper()
+        rest = m.group(4)
+        unit = _DATE_UNITS.get(unit, unit)
+        return f"{func}({unit}{rest}"
+
+    return re.sub(
+        r"(TIMESTAMPADD|TIMESTAMPDIFF)\(\s*(['\"]?)(\w+)\2\s*(,)",
+        _fix_unit,
+        sql,
+        flags=re.IGNORECASE,
+    )
+
+
+def _fix_date_trunc_units(sql: str) -> str:
+    """Quote bare DATE_TRUNC unit args: DATE_TRUNC(MONTH, col) -> DATE_TRUNC('MONTH', col)."""
+
+    def _quote_unit(m):
+        func = m.group(1)
+        unit = m.group(2).upper()
+        rest = m.group(3)
+        if unit in _VALID_UNITS:
+            return f"{func}('{unit}'{rest}"
+        return m.group(0)
+
+    return re.sub(
+        r"(DATE_TRUNC)\(\s*(?!['\"])(\w+)\s*(,)",
+        _quote_unit,
+        sql,
+        flags=re.IGNORECASE,
+    )
+
+
+_CASE_BARE_LITERAL = re.compile(
+    r"(THEN|ELSE)\s+([A-Za-z][^'\"`,\n]*?)(?=\s+(?:WHEN|THEN|ELSE|END)\b)",
+    re.IGNORECASE,
+)
+_CASE_SKIP = {"NULL", "TRUE", "FALSE"}
+
+
+def _fix_case_string_literals(sql: str) -> str:
+    """Quote unquoted string literals in CASE THEN/ELSE clauses."""
+
+    def _quote_literal(m):
+        keyword = m.group(1)
+        value = m.group(2).strip()
+        if not value or value.upper() in _CASE_SKIP:
+            return m.group(0)
+        try:
+            float(value)
+            return m.group(0)
+        except ValueError:
+            pass
+        if value.startswith("'") or value.startswith('"'):
+            return m.group(0)
+        escaped = value.replace("'", "''")
+        return f"{keyword} '{escaped}'"
+
+    return _CASE_BARE_LITERAL.sub(_quote_literal, sql)
+
+
+# ---------------------------------------------------------------------------
+# Pydantic models matching the Genie API serialized_space proto (v2).
+#
+# These act as a whitelist: only fields defined here survive serialization,
+# so unknown/unsupported keys from LLM output are silently dropped before
+# the payload reaches the Databricks Genie REST API.
+# ---------------------------------------------------------------------------
+
+
+class DataSourceRef(BaseModel):
+    """A table or metric view registered as a Genie data source."""
+    identifier: str
+    description: Optional[list[str]] = None
+
+
+class DataSources(BaseModel):
+    """Top-level data sources: base tables and applied metric views."""
+    tables: list[DataSourceRef] = []
+    metric_views: list[DataSourceRef] = []
+
+
+class TextInstruction(BaseModel):
+    """Free-text instruction block for Genie (column disambiguation, business rules, etc.)."""
+    id: str = Field(default_factory=_hex_id)
+    content: list[str]
+
+
+class ExampleSQL(BaseModel):
+    """A sample question paired with its validated SQL query."""
+    id: str = Field(default_factory=_hex_id)
+    question: list[str]
+    sql: list[str]
+    parameters: Optional[list[dict]] = None
+    usage_guidance: Optional[list[str]] = None
+
+
+class JoinSide(BaseModel):
+    """One side of a join relationship (FQ table identifier + optional alias)."""
+    identifier: str
+    alias: Optional[str] = None
+
+
+class JoinSpec(BaseModel):
+    """An explicit join between two tables with SQL equality predicates."""
+    id: str = Field(default_factory=_hex_id)
+    left: JoinSide
+    right: JoinSide
+    sql: list[str]
+    instruction: Optional[list[str]] = None
+
+
+class SnippetMeasure(BaseModel):
+    """A reusable SQL aggregate expression (e.g. SUM, AVG) with synonyms."""
+    id: str = Field(default_factory=_hex_id)
+    alias: str
+    sql: list[str]
+    display_name: Optional[str] = None
+    synonyms: Optional[list[str]] = None
+    instruction: Optional[list[str]] = None
+    description: Optional[str] = Field(default=None, exclude=True)
+
+
+class SnippetFilter(BaseModel):
+    """A reusable WHERE-clause predicate snippet."""
+    id: str = Field(default_factory=_hex_id)
+    display_name: str
+    sql: list[str]
+    instruction: Optional[list[str]] = None
+    synonyms: Optional[list[str]] = None
+
+
+class SnippetExpression(BaseModel):
+    """A reusable computed column expression (e.g. TIMESTAMPDIFF, CASE) with synonyms."""
+    id: str = Field(default_factory=_hex_id)
+    alias: str
+    sql: list[str]
+    display_name: Optional[str] = None
+    synonyms: Optional[list[str]] = None
+    instruction: Optional[list[str]] = None
+    description: Optional[str] = Field(default=None, exclude=True)
+
+
+class SqlSnippets(BaseModel):
+    """Container for all three snippet types: measures, filters, expressions."""
+    measures: list[SnippetMeasure] = []
+    filters: list[SnippetFilter] = []
+    expressions: list[SnippetExpression] = []
+
+
+class Instructions(BaseModel):
+    """Full instruction payload: text, example SQL, joins, and snippets."""
+    text_instructions: list[TextInstruction] = []
+    example_question_sqls: list[ExampleSQL] = []
+    join_specs: list[JoinSpec] = []
+    sql_snippets: Optional[SqlSnippets] = None
+
+
+class SampleQuestion(BaseModel):
+    """A suggested starter question displayed in the Genie UI."""
+    id: str = Field(default_factory=_hex_id)
+    question: list[str]
+
+
+class GenieConfig(BaseModel):
+    """Genie space configuration (currently just sample questions)."""
+    sample_questions: list[SampleQuestion] = []
+
+
+class SerializedSpace(BaseModel):
+    """Top-level Genie serialized_space v2 schema sent to the REST API."""
+    version: int = 2
+    data_sources: DataSources
+    instructions: Instructions = Instructions()
+    config: Optional[GenieConfig] = None
+
+
+# ---------------------------------------------------------------------------
+# Whitelist-only construction from raw agent/builder output
+# ---------------------------------------------------------------------------
+
+
+def _to_str_list(val) -> Optional[list[str]]:
+    """Normalize a value to list[str] or None."""
+    if isinstance(val, list):
+        return [str(v) for v in val if v]
+    if isinstance(val, str) and val:
+        return [val]
+    return None
+
+
+def _ensure_list(val) -> list[str]:
+    if isinstance(val, list):
+        return [str(v) for v in val if v]
+    if isinstance(val, str) and val:
+        return [val]
+    return []
+
+
+def _name_from_sql(sql_list: list[str]) -> str:
+    """Derive a display name from a SQL expression when the alias is empty."""
+    if not sql_list:
+        return ""
+    raw = sql_list[0].strip()
+    raw = re.sub(r"[`'\"]", "", raw)
+    if len(raw) > 60:
+        raw = raw[:57] + "..."
+    return raw
+
+
+def _extract_table_refs_from_sql(sql: str) -> set[str]:
+    """Extract fully-qualified or short table references from a SQL string."""
+    refs: set[str] = set()
+    for m in re.finditer(r"\bFROM\s+(`?[\w.]+`?)", sql, re.IGNORECASE):
+        refs.add(m.group(1).replace("`", ""))
+    for m in re.finditer(r"\bJOIN\s+(`?[\w.]+`?)", sql, re.IGNORECASE):
+        refs.add(m.group(1).replace("`", ""))
+    return refs
+
+
+def _dedup_join_specs(joins: list[JoinSpec]) -> list[JoinSpec]:
+    """Remove duplicate join specs (same left+right pair)."""
+    seen: set[tuple[str, str]] = set()
+    deduped: list[JoinSpec] = []
+    for j in joins:
+        key = (j.left.identifier, j.right.identifier)
+        rev_key = (j.right.identifier, j.left.identifier)
+        if key not in seen and rev_key not in seen:
+            seen.add(key)
+            deduped.append(j)
+    return deduped
+
+
+def build_serialized_space(raw: dict) -> dict:
+    """Transform raw agent/builder output into a validated Genie ``serialized_space`` v2 dict.
+
+    Normalizes data_sources, flattens instruction text, formats and date-fixes
+    example SQL, simplifies/backticks join SQL predicates, deduplicates join
+    specs, builds snippet models with SQL autofixes, and optionally attaches
+    sample questions. Only Pydantic-whitelisted fields survive -- unknown keys
+    from LLM output are silently dropped.
+    """
+    # -- data_sources --
+    ds_raw = raw.get("data_sources", {})
+    tables = [
+        DataSourceRef(
+            identifier=t["identifier"], description=_to_str_list(t.get("description"))
+        )
+        for t in ds_raw.get("tables", [])
+        if t.get("identifier")
+    ]
+    mvs = [
+        DataSourceRef(
+            identifier=m["identifier"], description=_to_str_list(m.get("description"))
+        )
+        for m in ds_raw.get("metric_views", [])
+        if m.get("identifier")
+    ]
+
+    # -- instructions --
+    inst_raw = raw.get("instructions", {})
+
+    # text_instructions
+    text = inst_raw.get("text") or inst_raw.get("text_instructions") or ""
+    text_insts = []
+    if isinstance(text, str) and text:
+        text_insts = [TextInstruction(content=[text])]
+    elif isinstance(text, list):
+        all_parts = []
+        for t in text:
+            if isinstance(t, dict) and t.get("content"):
+                all_parts.extend(_ensure_list(t["content"]))
+            elif isinstance(t, str) and t:
+                all_parts.append(t)
+        if all_parts:
+            text_insts = [TextInstruction(content=["\n\n".join(all_parts)])]
+
+    # example_sql / example_question_sqls
+    examples_raw = (
+        inst_raw.get("example_sql") or inst_raw.get("example_question_sqls") or []
+    )
+    examples = []
+    for ex in examples_raw:
+        q = _ensure_list(ex.get("question"))
+        s = [_format_sql(_fix_date_func_units(x)) for x in _ensure_list(ex.get("sql"))]
+        if q and s:
+            examples.append(ExampleSQL(
+                question=q, sql=s,
+                parameters=ex.get("parameters") or None,
+                usage_guidance=_to_str_list(ex.get("usage_guidance")),
+            ))
+
+    # join_specs -- split compound AND, simplify FQ names
+    joins_raw = inst_raw.get("join_specs") or raw.get("join_specs") or []
+    joins = []
+    for j in joins_raw:
+        if isinstance(j.get("left"), dict):
+            left_id = j["left"].get("identifier", "")
+        else:
+            left_id = j.get("left_table", "")
+        if isinstance(j.get("right"), dict):
+            right_id = j["right"].get("identifier", "")
+        else:
+            right_id = j.get("right_table", "")
+
+        sql_list = j.get("sql", [])
+        if isinstance(j.get("join_condition"), str) and j["join_condition"]:
+            sql_list = [j["join_condition"]]
+        sql_list = _ensure_list(sql_list)
+
+        split: list[str] = []
+        for s in sql_list:
+            s = _simplify_join_sql(s)
+            for p in re.split(r"\s+AND\s+", s, flags=re.IGNORECASE):
+                p = p.strip()
+                if p:
+                    split.append(_backtick_join_sql(p))
+
+        if left_id and right_id and split:
+            left_alias = left_id.split(".")[-1]
+            right_alias = right_id.split(".")[-1]
+            split.append("--rt=FROM_RELATIONSHIP_TYPE_ONE_TO_MANY--")
+            joins.append(
+                JoinSpec(
+                    left=JoinSide(identifier=left_id, alias=left_alias),
+                    right=JoinSide(identifier=right_id, alias=right_alias),
+                    sql=split,
+                    instruction=[f"to join {left_alias} to {right_alias}"],
+                )
+            )
+    joins = _dedup_join_specs(joins)
+
+    # sql_snippets -- apply date-function autofix on all SQL
+    snip_raw = inst_raw.get("sql_snippets") or raw.get("sql_snippets") or {}
+
+    def _fix_sql_list(sl: list[str]) -> list[str]:
+        return [_fix_case_string_literals(_fix_date_trunc_units(_fix_date_func_units(s))) for s in sl]
+
+    snip_measures = []
+    for m in snip_raw.get("measures", []):
+        sql = _fix_sql_list(_ensure_list(m.get("sql")))
+        if not sql:
+            continue
+        alias = m.get("alias") or m.get("name") or _name_from_sql(sql)
+        if not alias:
+            continue
+        snip_measures.append(SnippetMeasure(
+            alias=alias, sql=sql,
+            display_name=m.get("display_name") or alias,
+            synonyms=m.get("synonyms"),
+            instruction=_to_str_list(m.get("instruction")),
+            description=m.get("description"),
+        ))
+
+    snip_filters = []
+    for m in snip_raw.get("filters", []):
+        sql = _fix_sql_list(_ensure_list(m.get("sql")))
+        if not sql:
+            continue
+        dn = (
+            m.get("display_name")
+            or m.get("name")
+            or m.get("description")
+            or _name_from_sql(sql)
+        )
+        if not dn:
+            continue
+        snip_filters.append(SnippetFilter(
+            display_name=dn, sql=sql,
+            instruction=_to_str_list(m.get("instruction")),
+            synonyms=m.get("synonyms"),
+        ))
+
+    snip_exprs = []
+    for m in snip_raw.get("expressions", []):
+        sql = _fix_sql_list(_ensure_list(m.get("sql")))
+        if not sql:
+            continue
+        alias = m.get("alias") or m.get("name") or _name_from_sql(sql)
+        if not alias:
+            continue
+        snip_exprs.append(SnippetExpression(
+            alias=alias, sql=sql,
+            display_name=m.get("display_name") or alias,
+            synonyms=m.get("synonyms"),
+            instruction=_to_str_list(m.get("instruction")),
+            description=m.get("description"),
+        ))
+    snippets = None
+    if snip_measures or snip_filters or snip_exprs:
+        snippets = SqlSnippets(
+            measures=sorted(snip_measures, key=lambda x: x.id),
+            filters=sorted(snip_filters, key=lambda x: x.id),
+            expressions=sorted(snip_exprs, key=lambda x: x.id),
+        )
+
+    # -- sample_questions --
+    sq_raw = raw.get("sample_questions") or []
+    sample_qs = []
+    for q in sq_raw:
+        if isinstance(q, str) and q:
+            sample_qs.append(SampleQuestion(question=[q]))
+        elif isinstance(q, dict):
+            qval = _ensure_list(q.get("question"))
+            if qval:
+                sample_qs.append(SampleQuestion(question=qval))
+
+    # -- assemble and sort --
+    space = SerializedSpace(
+        data_sources=DataSources(
+            tables=sorted(tables, key=lambda x: x.identifier),
+            metric_views=sorted(mvs, key=lambda x: x.identifier),
+        ),
+        instructions=Instructions(
+            text_instructions=sorted(text_insts, key=lambda x: x.id),
+            example_question_sqls=sorted(examples, key=lambda x: x.id),
+            join_specs=sorted(joins, key=lambda x: x.id),
+            sql_snippets=snippets,
+        ),
+        config=(
+            GenieConfig(sample_questions=sorted(sample_qs, key=lambda x: x.id))
+            if sample_qs
+            else None
+        ),
+    )
+    return space.model_dump(exclude_none=True)

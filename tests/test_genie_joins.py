@@ -21,15 +21,18 @@ _STUB_MODS = [
     "langchain_community", "langchain_community.chat_models",
     "langchain_community.chat_models.databricks",
     "langgraph", "langgraph.prebuilt",
+    "databricks", "databricks.sdk", "databricks.sdk.service",
+    "databricks.sdk.service.sql",
+    "mlflow",
 ]
 for mod_name in _STUB_MODS:
     if mod_name not in sys.modules:
         sys.modules[mod_name] = MagicMock()
 
 # Now safe to import
-sys.path.insert(0, "apps/dbxmetagen-app/app")
-from agent.genie_agent import _merge_prebuilt_join_specs, _validate_output  # noqa: E402
-from agent.genie_builder import GenieContextAssembler  # noqa: E402
+sys.path.insert(0, "src")
+from dbxmetagen.genie.agent import _merge_prebuilt_join_specs, _validate_output  # noqa: E402
+from dbxmetagen.genie.context import GenieContextAssembler  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -161,6 +164,24 @@ class TestValidateOutputJoins:
 # ---------------------------------------------------------------------------
 # _extract_mv_join_specs
 # ---------------------------------------------------------------------------
+class TestMergePrebuiltMutation:
+    """_merge_prebuilt_join_specs mutates prebuilt dicts with _prebuilt=True."""
+
+    def test_prebuilt_flag_set_on_input_dicts(self):
+        prebuilt = [_join("cat.sch.orders", "cat.sch.customers")]
+        raw = _raw_with_joins([])
+        _merge_prebuilt_join_specs(raw, prebuilt)
+        assert prebuilt[0].get("_prebuilt") is True
+
+    def test_raw_keys_preserved_after_merge(self):
+        prebuilt = [_join("cat.sch.orders", "cat.sch.customers")]
+        raw = _raw_with_joins([_join("cat.sch.a", "cat.sch.b")])
+        result = _merge_prebuilt_join_specs(raw, prebuilt)
+        assert "data_sources" in result
+        assert "instructions" in result
+        assert "sample_questions" in result
+
+
 class TestExtractMVJoinSpecs:
     def _asm(self):
         """Create a minimal assembler (we only test the extraction method)."""
@@ -284,7 +305,7 @@ class TestAssembleMetricViewSplit:
              patch.object(asm, "_get_fk_predictions", return_value=[]), \
              patch.object(asm, "_get_ontology_entities", return_value=[]), \
              patch.object(asm, "_get_entity_relationships", return_value=[]), \
-             patch.object(asm, "_get_metric_views", return_value=(mvs, [])), \
+             patch.object(asm, "_get_metric_views_by_name", return_value=(mvs, [])), \
              patch.object(asm, "_sample_categorical_values", return_value={}), \
              patch.object(asm, "_format_context", return_value=""), \
              patch.object(asm, "_get_ontology_join_specs", return_value=[]), \
@@ -315,7 +336,7 @@ class TestAssembleMetricViewSplit:
              patch.object(asm, "_get_fk_predictions", return_value=[]), \
              patch.object(asm, "_get_ontology_entities", return_value=[]), \
              patch.object(asm, "_get_entity_relationships", return_value=[]), \
-             patch.object(asm, "_get_metric_views", return_value=(mvs, [])), \
+             patch.object(asm, "_get_metric_views_by_name", return_value=(mvs, [])), \
              patch.object(asm, "_sample_categorical_values", return_value={}), \
              patch.object(asm, "_format_context", return_value=""), \
              patch.object(asm, "_get_ontology_join_specs", return_value=[]), \

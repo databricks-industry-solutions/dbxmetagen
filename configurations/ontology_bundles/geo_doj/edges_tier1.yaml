@@ -1,0 +1,15 @@
+- name: contains
+  domain: Geographic
+  range: Address
+- name: has_coordinates
+  domain: Geographic
+  range: GeoCoordinate
+- name: in_region
+  domain: Geographic
+  range: AdminRegion
+- name: part_of
+  domain: Address
+  range: AdminRegion
+- name: within
+  domain: PostalCode
+  range: AdminRegion

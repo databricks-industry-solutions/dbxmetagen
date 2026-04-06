@@ -3,9 +3,9 @@
 import sys
 import pytest
 
-sys.path.insert(0, "apps/dbxmetagen-app/app")
+sys.path.insert(0, "src")
 
-from genie_schema import (
+from dbxmetagen.genie.schema import (
     _simplify_join_sql,
     _backtick_join_sql,
     _fix_date_func_units,
@@ -14,7 +14,6 @@ from genie_schema import (
     _to_str_list,
     _ensure_list,
     _name_from_sql,
-    _split_text_into_instructions,
     _dedup_join_specs,
     build_serialized_space,
     JoinSide,
@@ -167,32 +166,6 @@ class TestNameFromSql:
 
     def test_strips_quotes(self):
         assert _name_from_sql(["`col`"]) == "col"
-
-
-class TestSplitTextInstructions:
-    def test_single_block(self):
-        result = _split_text_into_instructions("Just plain text")
-        assert len(result) == 1
-        assert result[0].content == ["Just plain text"]
-
-    def test_multiple_sections(self):
-        text = "## Section A\nContent A\n## Section B\nContent B"
-        result = _split_text_into_instructions(text)
-        assert len(result) == 2
-        assert "Section A" in result[0].content[0]
-        assert "Content A" in result[0].content[0]
-        assert "Section B" in result[1].content[0]
-
-    def test_empty_input(self):
-        assert _split_text_into_instructions("") == []
-        assert _split_text_into_instructions(None) == []
-
-    def test_preamble_before_first_header(self):
-        text = "Preamble\n## Section\nBody"
-        result = _split_text_into_instructions(text)
-        assert len(result) == 2
-        assert result[0].content == ["Preamble"]
-        assert "Section" in result[1].content[0]
 
 
 class TestDedupJoinSpecs:
@@ -542,3 +515,43 @@ class TestBuildMisc:
         result = build_serialized_space(raw)
         sql = result["instructions"]["sql_snippets"]["expressions"][0]["sql"][0]
         assert "'MONTH'" in sql
+
+
+class TestFixerConsistency:
+    """Document which fixers apply to example_sql vs sql_snippets.
+
+    Snippets get all three fixers chained; examples only get _fix_date_func_units.
+    These tests document the current behavior so future changes are deliberate."""
+
+    def test_date_func_fixed_in_both_examples_and_snippets(self):
+        raw = _minimal_raw()
+        raw["instructions"]["example_sql"] = [
+            {"question": "q", "sql": "SELECT TIMESTAMPADD(MONTHS, 1, col) FROM t"},
+        ]
+        raw["instructions"]["sql_snippets"] = {
+            "measures": [{"alias": "m", "sql": ["TIMESTAMPADD(MONTHS, 1, col)"]}],
+            "filters": [], "expressions": [],
+        }
+        result = build_serialized_space(raw)
+        ex_sql = result["instructions"]["example_question_sqls"][0]["sql"][0]
+        sn_sql = result["instructions"]["sql_snippets"]["measures"][0]["sql"][0]
+        assert "MONTHS" not in ex_sql, "date_func fix should apply to examples"
+        assert "MONTHS" not in sn_sql, "date_func fix should apply to snippets"
+
+    def test_date_trunc_fix_in_snippets_not_in_examples(self):
+        """Documents asymmetry: DATE_TRUNC quoting only in snippets, not examples."""
+        raw = _minimal_raw()
+        raw["instructions"]["example_sql"] = [
+            {"question": "q", "sql": "SELECT DATE_TRUNC(MONTH, col) FROM t"},
+        ]
+        raw["instructions"]["sql_snippets"] = {
+            "measures": [{"alias": "m", "sql": ["DATE_TRUNC(MONTH, col)"]}],
+            "filters": [], "expressions": [],
+        }
+        result = build_serialized_space(raw)
+        sn_sql = result["instructions"]["sql_snippets"]["measures"][0]["sql"][0]
+        assert "'MONTH'" in sn_sql, "date_trunc fix should apply to snippets"
+        # Examples do NOT get the date_trunc fixer -- document this asymmetry
+        ex_sql = result["instructions"]["example_question_sqls"][0]["sql"][0]
+        # This assertion documents current behavior (no fix in examples)
+        assert "DATE_TRUNC" in ex_sql

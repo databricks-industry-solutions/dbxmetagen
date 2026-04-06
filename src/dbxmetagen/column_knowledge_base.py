@@ -13,6 +13,8 @@ from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql import functions as F
 from pyspark.sql.window import Window
 
+from dbxmetagen.table_filter import table_filter_sql
+
 _MERGE_MAX_RETRIES = 3
 _MERGE_BACKOFF_SECONDS = [5, 15, 45]
 
@@ -26,7 +28,8 @@ class ColumnKnowledgeBaseConfig:
     schema_name: str
     source_table: str = "metadata_generation_log"
     target_table: str = "column_knowledge_base"
-    
+    table_names: list[str] | None = None
+
     @property
     def fully_qualified_source(self) -> str:
         return f"{self.catalog_name}.{self.schema_name}.{self.source_table}"
@@ -75,6 +78,7 @@ class ColumnKnowledgeBaseBuilder:
     
     def read_source_data(self) -> DataFrame:
         """Read and filter source data for column-level records."""
+        tf = table_filter_sql(self.config.table_names or [], column="`table`")
         df = self.spark.sql(f"""
             SELECT 
                 `table` as table_name,
@@ -89,6 +93,7 @@ class ColumnKnowledgeBaseBuilder:
             FROM {self.config.fully_qualified_source}
             WHERE `table` IS NOT NULL
               AND column_name IS NOT NULL
+              {tf}
               AND ddl_type = 'column'
         """)
         return df
@@ -362,7 +367,8 @@ class ColumnKnowledgeBaseBuilder:
 def build_column_knowledge_base(
     spark: SparkSession,
     catalog_name: str,
-    schema_name: str
+    schema_name: str,
+    table_names: list[str] | None = None,
 ) -> Dict[str, Any]:
     """
     Convenience function to build the column knowledge base.
@@ -377,7 +383,8 @@ def build_column_knowledge_base(
     """
     config = ColumnKnowledgeBaseConfig(
         catalog_name=catalog_name,
-        schema_name=schema_name
+        schema_name=schema_name,
+        table_names=table_names,
     )
     builder = ColumnKnowledgeBaseBuilder(spark, config)
     return builder.run()

@@ -103,7 +103,7 @@ generate_embeddings(spark, "my_catalog", "metadata_results")
 build_ontology(spark, "my_catalog", "metadata_results")
 ```
 
-See `examples/` for complete runnable notebooks:
+The `examples/` notebooks show how to use dbxmetagen as a **standalone pip-installable library** -- useful for embedding into your own projects or quick ad-hoc runs. They install directly from GitHub and do not require cloning the repo or running `deploy.sh`. See the [examples README](examples/README.md) for details.
 
 | Notebook | What it does |
 |----------|-------------|
@@ -308,6 +308,8 @@ The app is in `apps/dbxmetagen-app/` and provides a FastAPI backend with a React
 7. **Foreign Key Generation** -- AI-predicted FK relationships with confidence scores and approval workflow
 8. **Genie Builder** -- Create and configure Genie spaces with auto-generated instructions and ~10 example SQL queries
 
+**Permissions model:** The app uses two separate identities. The **app service principal** (SPN) controls what the app UI can *read* -- it needs SELECT on your catalog to browse tables, coverage, metadata, and graph data. The **deployer's identity** (the user who ran `deploy.sh`) controls what jobs can *write* -- jobs run as the deployer and need CREATE TABLE, ALTER TABLE, and SET TAGS on the target catalog. This means a user can see metadata in the app even if they don't have permission to generate or apply it, and conversely, the app SPN doesn't need write access to your tables. Run `deploy.sh --permissions` to grant the app SPN the required read access.
+
 **GraphRAG:** Natural-language queries against the knowledge graph using a LangGraph agent that traverses graph_nodes and graph_edges via Lakebase.
 
 ## Jobs
@@ -331,7 +333,8 @@ The app is in `apps/dbxmetagen-app/` and provides a FastAPI backend with a React
 ```bash
 uv sync                     # core deps (comment/domain modes)
 uv sync --extra pi          # also install the spaCy model for PI dev
-uv run pytest -v
+./run_tests.sh              # runs 3 test suites in isolated processes
+./run_tests.sh -q           # quick mode (core tests only)
 
 # Build and test wheel locally
 uv build
@@ -339,9 +342,30 @@ pip install dist/*.whl
 python -c "from dbxmetagen.config import MetadataConfig; print('OK')"
 ```
 
-Wheels are built automatically by CI on tagged releases (see `.github/workflows/release.yml`).
+DDL regenerator and binary/variant tests must run in separate processes due to import conflicts -- `run_tests.sh` handles this automatically. See `CLAUDE.md` for details.
 
 Requires DBR 17.3+ (ML runtime recommended). Serverless runtimes are supported for most operations.
+
+## Troubleshooting
+
+### `uv sync` fails with `invalid peer certificate: UnknownIssuer`
+
+If you see an error like:
+
+```
+error: Request failed after 3 retries
+  Caused by: invalid peer certificate: UnknownIssuer
+```
+
+This happens because `uv` uses `rustls` by default, which relies on a bundled certificate store rather than the system's native trust store. Corporate proxies and firewalls that inject their own CA certificates are not recognized.
+
+**Fix:** tell `uv` to use the system's native TLS stack:
+
+```bash
+export UV_NATIVE_TLS=1
+```
+
+Add this to your shell profile (`~/.zshrc`, `~/.bashrc`, etc.) to make it permanent.
 
 ## Analysis of Packages Used
 
@@ -354,7 +378,7 @@ Requires DBR 17.3+ (ML runtime recommended). Serverless runtimes are supported f
 | cloudpickle | 3.1.0 | BSD 3-Clause | https://github.com/cloudpipe/cloudpickle |
 | pydantic | 2.10.3 | MIT | https://github.com/pydantic/pydantic |
 | ydata-profiling | 4.17.0 | MIT | https://github.com/ydataai/ydata-profiling |
-| databricks-langchain | 0.4.0 | Apache 2.0 | https://github.com/databricks/databricks-ai-bridge |
+| databricks-langchain | 0.4.0 | Databricks License | https://github.com/databricks/databricks-ai-bridge |
 | databricks-sdk | 0.68.0 | Apache 2.0 | https://github.com/databricks/databricks-sdk-py |
 | openpyxl | 3.1.5 | MIT | https://foss.heptapod.net/openpyxl/openpyxl |
 | spacy | 3.8.7 | MIT | https://spacy.io |
@@ -362,7 +386,7 @@ Requires DBR 17.3+ (ML runtime recommended). Serverless runtimes are supported f
 | deprecated | 1.2.13 | MIT | https://github.com/tantale/deprecated |
 | pyyaml | 6.0.1 | MIT | https://pypi.org/project/PyYAML/ |
 | requests | 2.32.5 | Apache 2.0 | https://github.com/psf/requests |
-| nest-asyncio | 1.6.0 | BSD | https://github.com/erdewit/nest_asyncio |
+| nest-asyncio | 1.6.0 | BSD 2-Clause | https://github.com/erdewit/nest_asyncio |
 
 ### Python (key transitive dependencies used by the app/agent)
 
@@ -394,7 +418,7 @@ Requires DBR 17.3+ (ML runtime recommended). Serverless runtimes are supported f
 | tailwindcss | ^3.4.0 | MIT | https://github.com/tailwindlabs/tailwindcss |
 | vite | ^6.0.0 | MIT | https://github.com/vitejs/vite |
 
-All packages use permissive licenses (Apache 2.0, MIT, BSD, PSF) except Databricks proprietary components (databricks-connect, databricks-vectorsearch).
+All packages use permissive licenses (Apache 2.0, MIT, BSD, PSF) except Databricks proprietary components (databricks-langchain, databricks-connect, databricks-vectorsearch).
 
 ## License
 

@@ -1,0 +1,18 @@
+# Business questions for metric view generation (04_generate_semantic_layer.py).
+#
+# These questions are fed into dbxmetagen's generate_semantic_layer() to produce
+# metric view definitions (SQL expressions stored in metric_view_definitions table).
+#
+# If this list is empty, notebook 04 auto-generates questions from the
+# table_knowledge_base -- one per table based on its name and description.
+#
+# Tip: write questions the way a business analyst would ask them. Each question
+# becomes one or more metric view definitions with SQL expressions.
+
+questions:
+  # Uncomment and customize for your domain:
+  # - "What were total sales last quarter by region?"
+  # - "Which customers have the highest lifetime value?"
+  # - "What is the month-over-month revenue trend?"
+  # - "How many active patients are there by department?"
+  # - "What is the average claim processing time by payer?"

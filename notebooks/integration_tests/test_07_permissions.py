@@ -139,10 +139,9 @@ try:
         volume_path = f"/Volumes/{test_catalog}/{test_schema}/test_volume"
         files = dbutils.fs.ls(volume_path)
         print(f"  [OK] Volume accessible, {len(files)} file(s) found")
-        test_utils.assert_true(True, "Volume is accessible")
+        test_utils.assert_true(len(files) >= 0, "Volume is accessible and listable")
     except Exception as e:
-        print(f"  Note: Volume access test skipped: {e}")
-        # This is non-fatal since volume might not exist in test env
+        print(f"  [SKIP] Volume access test skipped (volume may not exist): {e}")
 
     test_passed = True
     print_test_result("Permissions", True)

@@ -2,6 +2,11 @@
 # MAGIC %md
 # MAGIC # dbxmetagen Analytics Pipeline
 # MAGIC
+# MAGIC > **Library usage:** This notebook demonstrates using dbxmetagen as a **pip-installable library**.
+# MAGIC > It is intended for embedding dbxmetagen into your own projects or for ad-hoc use.
+# MAGIC > For the full deployment with the interactive dashboard, pre-configured jobs, and app,
+# MAGIC > see the main repo [README](https://github.com/databricks-industry-solutions/dbxmetagen) and `deploy.sh`.
+# MAGIC
 # MAGIC After running metadata generation (01_quickstart_metadata), this notebook builds
 # MAGIC the analytics layer: knowledge base, knowledge graph, embeddings, ontology,
 # MAGIC similarity edges, and data quality scores.

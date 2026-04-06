@@ -1,0 +1,143 @@
+Person:
+  description: People, customers, contacts, users, or employees
+  source_ontology: schema.org
+  uri: https://schema.org/Person
+  parents: []
+  edges:
+  - has_account
+  - part_of
+Organization:
+  description: Companies, departments, facilities, or business units
+  source_ontology: schema.org
+  uri: https://schema.org/Organization
+  parents: []
+  edges:
+  - contains
+  - part_of
+Product:
+  description: Goods, services, SKUs, or catalog items
+  source_ontology: schema.org
+  uri: https://schema.org/Product
+  parents: []
+  edges: []
+Transaction:
+  description: Orders, purchases, payments, invoices, or financial events
+  source_ontology: schema.org
+  uri: https://schema.org/Invoice
+  parents: []
+  edges:
+  - on_account
+  - by_person
+Location:
+  description: Addresses, sites, regions, facilities, or geographies
+  source_ontology: schema.org
+  uri: https://schema.org/Place
+  parents: []
+  edges: []
+Event:
+  description: Activities, logs, sessions, audits, or system events
+  source_ontology: schema.org
+  uri: https://schema.org/Event
+  parents: []
+  edges:
+  - references
+Reference:
+  description: Lookup tables, codes, categories, dimensions, or configuration
+  source_ontology: schema.org
+  uri: https://schema.org/Thing
+  parents: []
+  edges: []
+Metric:
+  description: KPIs, aggregates, facts, summaries, or analytic measures
+  source_ontology: schema.org
+  uri: https://schema.org/QuantitativeValue
+  parents: []
+  edges: []
+Document:
+  description: Unstructured content, notes, files, or text records
+  source_ontology: schema.org
+  uri: https://schema.org/DigitalDocument
+  parents: []
+  edges:
+  - references
+Account:
+  description: Bank accounts, investment accounts, loan accounts, or general ledger
+    accounts
+  source_ontology: FIBO
+  uri: https://spec.edmcouncil.org/fibo/ontology/FND/AccountingExt/Account
+  parents: []
+  edges:
+  - owned_by
+  - has_transaction
+Portfolio:
+  description: Investment portfolios, fund holdings, or asset allocations
+  source_ontology: FIBO
+  uri: https://spec.edmcouncil.org/fibo/ontology/SEC/Securities/Portfolios/Portfolio
+  parents: []
+  edges:
+  - contains
+  - managed_by
+Trade:
+  description: Securities trades, FX transactions, or market orders
+  source_ontology: FIBO
+  uri: https://spec.edmcouncil.org/fibo/ontology/FBC/FunctionalEntities/Trade
+  parents: []
+  edges:
+  - of_instrument
+  - with_counterparty
+  - on_account
+Instrument:
+  description: Financial instruments -- equities, bonds, derivatives, currencies
+  source_ontology: FIBO
+  uri: https://spec.edmcouncil.org/fibo/ontology/FBC/FinancialInstruments/FinancialInstrument
+  parents: []
+  edges:
+  - hedges
+Counterparty:
+  description: Trading counterparties, custodians, or correspondent banks
+  source_ontology: FIBO
+  uri: https://spec.edmcouncil.org/fibo/ontology/FBC/FunctionalEntities/Counterparty
+  parents: []
+  edges:
+  - has_trade
+Risk:
+  description: Risk exposures, limits, VaR, stress tests, or credit scores
+  source_ontology: BIAN
+  uri: https://bian.org/servicedomain/RiskManagement
+  parents: []
+  edges:
+  - for_account
+  - for_instrument
+Compliance:
+  description: Regulatory filings, KYC records, AML alerts, or sanctions screening
+  source_ontology: BIAN
+  uri: https://bian.org/servicedomain/RegulatoryCompliance
+  parents: []
+  edges:
+  - for_person
+  - for_organization
+Claim:
+  description: Insurance claims, loss events, or reimbursement requests
+  source_ontology: BIAN
+  uri: https://bian.org/servicedomain/ClaimsHandling/Claim
+  parents: []
+  edges:
+  - on_policy
+  - filed_by
+Policy:
+  description: Insurance policies, coverage terms, or underwriting records
+  source_ontology: BIAN
+  uri: https://bian.org/servicedomain/InsurancePolicy
+  parents: []
+  edges:
+  - held_by
+  - issued_by
+Loan:
+  description: Loans, mortgages, credit facilities, or lending agreements
+  source_ontology: FIBO
+  uri: https://spec.edmcouncil.org/fibo/ontology/LOAN/LoanTypes/Loan
+  parents: []
+  edges:
+  - borrowed_by
+  - secures
+  - has_risk

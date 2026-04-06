@@ -63,7 +63,7 @@ export default function GraphExplorer({ initialNode, initialEdgeType }) {
     const t = setTimeout(async () => {
       setPickerLoading(true)
       const { data } = await safeFetch(`/api/graph/nodes?search=${encodeURIComponent(search)}&node_type=table&limit=20`)
-      setNodePicker(data || [])
+      setNodePicker(Array.isArray(data) ? data : [])
       setPickerLoading(false)
     }, 300)
     return () => clearTimeout(t)
@@ -118,7 +118,7 @@ export default function GraphExplorer({ initialNode, initialEdgeType }) {
             {search && search.length >= 2 && (
               <div className="card absolute z-30 mt-1 w-80 max-h-60 overflow-auto p-0">
                 {pickerLoading && <p className="px-3 py-2 text-xs text-slate-400 animate-pulse">Searching...</p>}
-                {!pickerLoading && nodePicker.length === 0 && <p className="px-3 py-2 text-xs text-slate-400">No results</p>}
+                {!pickerLoading && nodePicker.length === 0 && <p className="px-3 py-2 text-xs text-slate-400">No results. Build the knowledge graph first.</p>}
                 {nodePicker.map(n => (
                   <button key={n.id} className="w-full text-left px-3 py-2 text-sm hover:bg-dbx-oat dark:hover:bg-dbx-navy-600 truncate"
                     onClick={() => { setSelectedNode(n.id); setSearch(''); setNodePicker([]) }}>
@@ -126,6 +126,7 @@ export default function GraphExplorer({ initialNode, initialEdgeType }) {
                     {n.domain && <span className="ml-2 text-xs text-slate-400">{n.domain}</span>}
                   </button>
                 ))}
+                {nodePicker.length >= 20 && <p className="px-3 py-1.5 text-[10px] text-slate-400 border-t border-slate-200 dark:border-slate-600">Showing first 20 results. Refine your search for more.</p>}
               </div>
             )}
           </div>
@@ -216,7 +217,7 @@ export default function GraphExplorer({ initialNode, initialEdgeType }) {
           </div>
         </div>
       ) : (
-        !loading && <EmptyState icon="diagram-3" title="No graph loaded" subtitle="Search for a table above and click Traverse to explore the knowledge graph." />
+        !loading && <EmptyState title="No graph loaded" description="Search for a table above and click Traverse to explore the knowledge graph." />
       )}
 
       <div className="card overflow-hidden mt-4">

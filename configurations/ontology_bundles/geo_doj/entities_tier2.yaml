@@ -1,0 +1,56 @@
+Geographic:
+  description: Any column or table representing a physical location, address component,
+    or geographic area
+  source_ontology: custom
+  uri: urn:dbxmetagen:geo_doj:Geographic
+  parents: []
+  edges:
+  - contains
+  - has_coordinates
+  - in_region
+Address:
+  description: Street addresses, mailing addresses, or physical site addresses
+  source_ontology: custom
+  uri: urn:dbxmetagen:geo_doj:Address
+  parents:
+  - Geographic
+  edges:
+  - part_of
+GeoCoordinate:
+  description: Latitude/longitude pairs, GPS coordinates, or geospatial point data
+  source_ontology: schema.org
+  uri: https://schema.org/GeoCoordinates
+  parents:
+  - Geographic
+  edges: []
+AdminRegion:
+  description: Administrative or political geographic regions — countries, states,
+    provinces, counties, districts, municipalities, or named areas
+  source_ontology: schema.org
+  uri: https://schema.org/AdministrativeArea
+  parents:
+  - Geographic
+  edges:
+  - part_of
+PostalCode:
+  description: Postal codes, ZIP codes, or mail routing codes
+  source_ontology: custom
+  uri: urn:dbxmetagen:geo_doj:PostalCode
+  parents:
+  - Geographic
+  edges:
+  - within
+Timezone:
+  description: Timezone identifiers, UTC offsets, or time zone region names
+  source_ontology: custom
+  uri: urn:dbxmetagen:geo_doj:Timezone
+  parents:
+  - Geographic
+  edges: []
+NonGeographic:
+  description: Columns with location-like names that do NOT represent physical geography
+    (file paths, URLs, memory addresses)
+  source_ontology: custom
+  uri: urn:dbxmetagen:geo_doj:NonGeographic
+  parents: []
+  edges: []

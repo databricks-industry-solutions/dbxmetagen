@@ -3,6 +3,7 @@
 metadata:
   name: "Retail & CPG"
   version: "3.0"
+  format_version: "2.0"
   industry: "retail_cpg"
   description: "Retail, e-commerce, and CPG ontology with customer, product, and supply chain entity types"
   standards_alignment: "GS1, Schema.org"
@@ -90,12 +91,16 @@ ontology:
       # General entities
       Person:
         description: "People, customers, contacts, users, or employees"
+        uri: "https://schema.org/Person"
+        source_ontology: "schema.org"
         keywords: ["customer", "employee", "user", "contact", "person", "shopper", "member"]
         typical_attributes: [id, name, email, phone, address, created_date]
         relationships:
           part_of: { target: Organization, cardinality: "many-to-one" }
       Organization:
         description: "Companies, departments, facilities, or business units"
+        uri: "https://schema.org/Organization"
+        source_ontology: "schema.org"
         keywords: ["company", "organization", "department", "facility", "tenant", "brand"]
         typical_attributes: [id, name, type, address, parent_id]
         relationships:
@@ -103,33 +108,45 @@ ontology:
           part_of: { target: Organization, cardinality: "many-to-one" }
       Transaction:
         description: "Orders, purchases, payments, invoices, or financial events"
+        uri: "https://schema.org/Invoice"
+        source_ontology: "schema.org"
         keywords: ["transaction", "order", "payment", "invoice", "purchase", "sale", "receipt"]
         typical_attributes: [id, customer_id, amount, date, status, currency]
         relationships:
           placed_by: { target: Customer, cardinality: "many-to-one" }
       Location:
         description: "Addresses, sites, regions, facilities, or geographies"
+        uri: "https://schema.org/Place"
+        source_ontology: "schema.org"
         keywords: ["location", "address", "site", "region", "facility"]
         typical_attributes: [id, name, address, city, state, country, zip_code]
         relationships: {}
       Event:
         description: "Activities, logs, sessions, audits, or system events"
+        uri: "https://schema.org/Event"
+        source_ontology: "schema.org"
         keywords: ["event", "activity", "log", "audit", "session", "click", "pageview"]
         typical_attributes: [id, type, timestamp, user_id, details]
         relationships:
           references: { target: Customer, cardinality: "many-to-one" }
       Reference:
         description: "Lookup tables, codes, categories, dimensions, or configuration"
+        uri: "https://schema.org/Thing"
+        source_ontology: "schema.org"
         keywords: ["reference", "lookup", "code", "category", "dim_"]
         typical_attributes: [id, code, name, description, active]
         relationships: {}
       Metric:
         description: "KPIs, aggregates, facts, summaries, or analytic measures"
+        uri: "https://schema.org/QuantitativeValue"
+        source_ontology: "schema.org"
         keywords: ["metric", "kpi", "aggregate", "fact_", "summary"]
         typical_attributes: [id, name, value, period, dimension]
         relationships: {}
       Document:
         description: "Unstructured content, notes, files, or text records"
+        uri: "https://schema.org/DigitalDocument"
+        source_ontology: "schema.org"
         keywords: ["document", "note", "file", "content", "text"]
         typical_attributes: [id, title, body, author, created_date, type]
         relationships: {}
@@ -137,6 +154,8 @@ ontology:
       # Retail & CPG entities
       Customer:
         description: "Retail customers, loyalty members, or shoppers"
+        uri: "https://schema.org/Customer"
+        source_ontology: "schema.org"
         keywords: ["customer", "shopper", "member", "loyalty", "buyer", "consumer", "subscriber"]
         typical_attributes: [id, name, email, loyalty_tier, lifetime_value, segment, first_purchase_date]
         relationships:
@@ -173,6 +192,8 @@ ontology:
             typical_attributes: ["first_purchase_date", "first_order_date", "acquisition_date"]
       LoyaltyProgram:
         description: "Loyalty programs, rewards programs, or membership tiers"
+        uri: "https://schema.org/MemberProgram"
+        source_ontology: "schema.org"
         keywords: ["loyalty", "rewards", "points", "membership", "tier", "program"]
         typical_attributes: [id, name, type, points_earn_rate, redemption_rate, tier_thresholds]
         relationships:
@@ -200,6 +221,8 @@ ontology:
             typical_attributes: ["redemption_rate", "point_value", "cents_per_point"]
       Product:
         description: "Retail products, SKUs, items, or merchandise"
+        uri: "https://schema.org/Product"
+        source_ontology: "schema.org"
         keywords: ["product", "item", "sku", "merchandise", "upc", "gtin", "ean", "asin"]
         typical_attributes: [id, sku, name, category, brand, price, weight, upc]
         relationships:
@@ -207,6 +230,8 @@ ontology:
           supplied_by: { target: Supplier, cardinality: "many-to-many" }
       Order:
         description: "Customer orders, carts, baskets, or purchase transactions"
+        uri: "https://schema.org/Order"
+        source_ontology: "schema.org"
         keywords: ["order", "cart", "basket", "checkout", "purchase_order", "sales_order"]
         typical_attributes: [id, customer_id, total, status, channel, placed_date, shipped_date]
         relationships:
@@ -253,6 +278,8 @@ ontology:
             typical_attributes: ["store_id", "location_id", "fulfillment_center_id"]
       Store:
         description: "Physical retail stores, outlets, warehouses, or distribution centers"
+        uri: "https://schema.org/Store"
+        source_ontology: "schema.org"
         keywords: ["store", "outlet", "shop", "warehouse", "dc", "distribution_center", "fulfillment"]
         typical_attributes: [id, name, type, address, region, format, open_date]
         relationships:
@@ -285,6 +312,8 @@ ontology:
             typical_attributes: ["open_date", "launch_date", "opened_at"]
       Campaign:
         description: "Marketing campaigns, ad campaigns, or promotional campaigns"
+        uri: "https://schema.org/MarketingEvent"
+        source_ontology: "schema.org"
         keywords: ["campaign", "marketing_campaign", "ad_campaign", "promo_campaign"]
         typical_attributes: [id, name, type, budget, start_date, end_date, channel, status]
         relationships:
@@ -321,6 +350,8 @@ ontology:
             typical_attributes: ["status", "campaign_status", "state"]
       Promotion:
         description: "Promotions, discounts, coupons, campaigns, or markdown events"
+        uri: "https://schema.org/Offer"
+        source_ontology: "schema.org"
         keywords: ["promotion", "discount", "coupon", "markdown", "deal", "offer", "promo"]
         typical_attributes: [id, name, type, discount_value, start_date, end_date, channel]
         relationships:
@@ -356,6 +387,8 @@ ontology:
             typical_attributes: ["channel", "promotion_channel", "campaign_channel"]
       Supplier:
         description: "Vendors, manufacturers, distributors, or trading partners"
+        uri: "https://schema.org/Organization"
+        source_ontology: "schema.org"
         keywords: ["supplier", "vendor", "manufacturer", "distributor", "wholesaler"]
         typical_attributes: [id, name, type, lead_time, country, payment_terms]
         relationships:
@@ -389,6 +422,8 @@ ontology:
             typical_attributes: ["product_id", "sku"]
       Inventory:
         description: "Stock levels, warehouse inventory, or on-hand quantities"
+        uri: "https://www.gs1.org/voc/InventoryReport"
+        source_ontology: "GS1"
         keywords: ["inventory", "stock", "on_hand", "available", "reserved", "reorder"]
         typical_attributes: [id, sku, location_id, quantity, reserved, reorder_point]
         relationships:
@@ -396,6 +431,8 @@ ontology:
           at_store: { target: Store, cardinality: "many-to-one" }
       Return:
         description: "Product returns, refunds, exchanges, or RMA records"
+        uri: "https://schema.org/ReturnAction"
+        source_ontology: "schema.org"
         keywords: ["return", "refund", "exchange", "rma", "reversal"]
         typical_attributes: [id, order_id, reason, amount, status, date]
         relationships:
@@ -403,12 +440,16 @@ ontology:
           by_customer: { target: Customer, cardinality: "many-to-one" }
       Shipment:
         description: "Shipping, delivery, fulfillment, or logistics records"
+        uri: "https://schema.org/ParcelDelivery"
+        source_ontology: "schema.org"
         keywords: ["shipment", "delivery", "tracking", "carrier", "fulfillment", "package"]
         typical_attributes: [id, order_id, carrier, tracking_number, status, ship_date, delivery_date]
         relationships:
           for_order: { target: Order, cardinality: "many-to-one" }
       Category:
         description: "Product categories, departments, or merchandise hierarchies"
+        uri: "https://www.gs1.org/voc/ProductClassification"
+        source_ontology: "GS1"
         keywords: ["category", "department", "hierarchy", "classification", "taxonomy", "assortment"]
         typical_attributes: [id, name, parent_id, level, path]
         relationships:

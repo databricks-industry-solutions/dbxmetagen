@@ -142,7 +142,10 @@ try:
     else:
         # Table was dropped (legacy behavior or no other runs) - also acceptable
         print("  Control table was dropped (no rows remaining)")
-        test_utils.assert_true(True, "Control table cleaned up")
+        test_utils.assert_true(
+            not test_utils.table_exists(f"metadata_control_{sanitized_user}"),
+            "Control table should not exist after cleanup_control_table=true",
+        )
 
     test_passed = True
     print_test_result("Control Table Management", True)

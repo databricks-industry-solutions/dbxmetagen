@@ -42,7 +42,7 @@ variables:
     description: LLM endpoint used by model calls. Note that this is not the same as any registered model in UC that wraps the prompt engineering work, but is the serving endpoint called after prompt engineering. This can be changed to other served models as well as provisioned throughput models or external models for compliance purposes if needed. Recommend databricks-claude-sonnet-4-6 for best comments, with databricks-meta-llama-3-3-70b-instruct as a backup. Sonnet will generally give more complex responses. Review security, tenancy, and cost considerations before making a decision.
     default: databricks-claude-sonnet-4-6
   mode:
-    description: Mode for generating metadata. Options are 'comment', 'pi', or 'domain'. Comment mode generates descriptions for tables and columns. PI mode identifies and classifies sensitive information. Domain mode classifies tables into business domains using an agent.
+    description: "Mode for generating metadata. Options are 'comment', 'pi', 'domain', or 'all'. Comment mode generates descriptions. PI mode identifies sensitive information. Domain mode classifies business domains. All mode runs comment, PI, and domain in a single pass per table for maximum efficiency."
     default: comment
   job_table_names:
     description: default table names - get applied if there are no host overrides.
@@ -221,3 +221,12 @@ variables:
   include_constraint_context:
     description: "When true, inject PK/FK constraint roles into comment generation prompts. Requires extended metadata extraction to have run first."
     default: false
+  max_ai_candidates:
+    description: "Maximum candidate column pairs sent to AI_QUERY for FK judgment. Lower values reduce LLM cost and runtime. Set to 0 to skip AI entirely and rely only on rule scores."
+    default: 200
+  rule_score_min_for_ai:
+    description: "Minimum rule score (0.0-1.0) a candidate pair must reach to qualify for AI_QUERY judgment. Higher values are more selective, reducing AI calls but potentially missing weaker FK relationships."
+    default: 0.50
+  max_candidates_per_table_pair:
+    description: "Maximum number of candidate column pairs retained per table pair from name/ontology matching. Lower values reduce combinatorial explosion for wide tables."
+    default: 5

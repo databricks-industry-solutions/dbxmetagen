@@ -24,6 +24,7 @@ dbutils.widgets.text(
 dbutils.widgets.text("incremental", "true", "Incremental (true/false)")
 dbutils.widgets.text("entity_tag_key", "entity_type", "UC Tag Key for entities")
 dbutils.widgets.text("model", "", "Model Endpoint")
+dbutils.widgets.text("table_names", "", "Table Names (comma-separated, empty=all)")
 
 catalog_name = dbutils.widgets.get("catalog_name")
 schema_name = dbutils.widgets.get("schema_name")
@@ -33,6 +34,7 @@ ontology_bundle = dbutils.widgets.get("ontology_bundle").strip()
 incremental = dbutils.widgets.get("incremental").lower() == "true"
 entity_tag_key = dbutils.widgets.get("entity_tag_key").strip() or "entity_type"
 model_endpoint = dbutils.widgets.get("model").strip() or None
+table_names_raw = dbutils.widgets.get("table_names")
 
 print(f"Catalog: {catalog_name}")
 print(f"Schema: {schema_name}")
@@ -42,6 +44,8 @@ print(f"Apply tags: {apply_tags}")
 print(f"Entity tag key: {entity_tag_key}")
 print(f"Incremental: {incremental}")
 print(f"Model endpoint: {model_endpoint or '(default)'}")
+if table_names_raw:
+    print(f"Table filter: {table_names_raw}")
 
 # COMMAND ----------
 
@@ -50,6 +54,9 @@ import sys
 sys.path.append("../src")  # For git-clone or DAB deployment; pip-installed package works without this
 
 from dbxmetagen.ontology import build_ontology, resolve_bundle_path
+from dbxmetagen.table_filter import parse_table_names
+
+table_names = parse_table_names(table_names_raw) or None
 
 effective_config = config_path
 if ontology_bundle:
@@ -66,6 +73,7 @@ result = build_ontology(
     incremental=incremental,
     entity_tag_key=entity_tag_key,
     model_endpoint=model_endpoint,
+    table_names=table_names,
 )
 
 print(f"Ontology build complete:")

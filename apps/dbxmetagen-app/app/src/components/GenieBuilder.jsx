@@ -25,7 +25,7 @@ function formatElapsed(seconds) {
   return m > 0 ? `${m}m ${s}s` : `${s}s`
 }
 
-export default function GenieBuilder() {
+export default function GenieBuilder({ onNavigate }) {
   const [editingSpaceId, setEditingSpaceId] = useState(null)
   const [loadByIdValue, setLoadByIdValue] = useState('')
   const [tables, setTables] = useState([])
@@ -73,7 +73,8 @@ export default function GenieBuilder() {
   }, [loading])
 
   useEffect(() => {
-    fetch('/api/catalogs').then(r => r.ok ? r.json() : []).then(setCatalogs).catch(() => {})
+    fetch('/api/catalogs').then(r => r.ok ? r.json() : []).then(setCatalogs)
+      .catch(e => setFetchErrors(prev => ({ ...prev, catalogs: e.message })))
     fetch('/api/semantic/metric-views?status=applied')
       .then(r => r.ok ? r.json() : []).then(setMetricViews)
       .catch(e => setFetchErrors(prev => ({ ...prev, metricViews: e.message })))
@@ -82,13 +83,14 @@ export default function GenieBuilder() {
     fetch('/api/config').then(r => r.ok ? r.json() : {}).then(c => {
       setWorkspaceHost(c.workspace_host || '')
       if (c.catalog_name) setSelectedCatalog(c.catalog_name)
-    }).catch(() => {})
+    }).catch(e => setFetchErrors(prev => ({ ...prev, config: e.message })))
     loadTrackedSpaces()
     return () => { if (pollRef.current) clearInterval(pollRef.current) }
   }, [])
 
   const loadTrackedSpaces = () => {
-    fetch('/api/genie/spaces').then(r => r.ok ? r.json() : []).then(setTrackedSpaces).catch(() => {})
+    fetch('/api/genie/spaces').then(r => r.ok ? r.json() : []).then(setTrackedSpaces)
+      .catch(e => setFetchErrors(prev => ({ ...prev, spaces: e.message })))
   }
 
   const catalogChangeRef = useRef(false)
@@ -163,6 +165,7 @@ export default function GenieBuilder() {
 
   const startGeneration = async ({ feedback, priorResult } = {}) => {
     if (!selectedTables.length) return setError('Select at least one table')
+    if (pollRef.current) clearInterval(pollRef.current)
     setError(null); setCreatedSpace(null); setCreateError(null); setLoading(true)
     if (!feedback) { setResult(null) }
     const qs = questions.split('\n').map(q => q.trim()).filter(Boolean)
@@ -252,14 +255,15 @@ export default function GenieBuilder() {
     ? tables.filter(t => t.label.toLowerCase().includes(filterLower) || t.schema.toLowerCase().includes(filterLower))
     : tables
   const filteredMVs = metricViews.filter(mv => {
-    const parts = mv.source_table?.split('.') || []
-    if (parts.length < 3 || parts[0] !== selectedCatalog) return false
-    if (filterLower) return mv.metric_view_name.toLowerCase().includes(filterLower) || parts[1].toLowerCase().includes(filterLower)
+    const cat = mv.deployed_catalog || mv.source_table?.split('.')[0]
+    if (cat !== selectedCatalog) return false
+    const sch = mv.deployed_schema || mv.source_table?.split('.')[1] || ''
+    if (filterLower) return mv.metric_view_name.toLowerCase().includes(filterLower) || sch.toLowerCase().includes(filterLower)
     return true
   })
   const mvsBySchema = {}
   filteredMVs.forEach(mv => {
-    const schema = mv.source_table.split('.')[1]
+    const schema = mv.deployed_schema || mv.source_table.split('.')[1]
     ;(mvsBySchema[schema] ||= []).push(mv)
   })
   const schemas = [...new Set([...filteredTables.map(t => t.schema), ...Object.keys(mvsBySchema)])]
@@ -295,9 +299,21 @@ export default function GenieBuilder() {
 
   return (
     <div className="space-y-6">
-      <PageHeader title="Genie Space Builder" subtitle="Select tables and optionally provide business questions to generate a Genie space configuration" />
+      <PageHeader title="Genie Space Builder" subtitle="Create a Databricks Genie space from your tables, metric views, and business questions" />
 
       <ErrorBanner error={error} />
+
+      {/* Step-by-step workflow guide */}
+      <div className="card p-4 text-xs text-slate-600 dark:text-slate-300 leading-relaxed space-y-1">
+        <p className="font-semibold text-sm text-slate-700 dark:text-slate-200">How to build a Genie space</p>
+        <ol className="list-decimal list-inside space-y-0.5 text-slate-500 dark:text-slate-400">
+          <li><strong>Select tables</strong> below. Expand each schema to pick tables and any applied metric views.</li>
+          <li><strong>Add context</strong> (optional) &mdash; describe your business and key terminology to improve the AI output.</li>
+          <li><strong>Add questions</strong> (optional) &mdash; write sample questions or click Suggest to auto-generate them from your tables.</li>
+          <li>Click <strong>Generate Genie Config</strong> &mdash; AI builds the space configuration including joins, instructions, and SQL snippets. Most builds take one to three minutes.</li>
+          <li>Review the <strong>Config Preview</strong>, optionally refine, then enter a title and click <strong>Create Genie Space</strong> to deploy it.</li>
+        </ol>
+      </div>
 
       {/* Table selection */}
       <div className="card p-5">
@@ -354,7 +370,7 @@ export default function GenieBuilder() {
                       key={t.id}
                       onClick={() => toggleTable(t.id)}
                       className={`px-3 py-1.5 text-xs rounded-md border transition-colors ${selectedTables.includes(t.id)
-                        ? 'bg-orange-100 dark:bg-orange-900 border-orange-400 text-red-700 dark:text-orange-300'
+                        ? 'bg-orange-100 dark:bg-orange-900/50 border-orange-400 text-orange-900 dark:text-orange-200'
                         : 'bg-dbx-oat-light dark:bg-slate-700 border-slate-200 dark:border-slate-600 text-slate-600 dark:text-slate-300 hover:bg-dbx-oat dark:hover:bg-slate-600'
                         }`}
                     >
@@ -388,7 +404,13 @@ export default function GenieBuilder() {
           )
         })}
         {!tables.length && tablesLoading && <SkeletonTable rows={3} cols={3} />}
-        {!tables.length && !tablesLoading && <p className="text-sm text-slate-400">No tables found in this catalog.</p>}
+        {!tables.length && !tablesLoading && (
+          <EmptyState
+            title="No tables in this catalog"
+            description="Confirm the catalog has managed tables or views, or open Coverage to see registered assets."
+            action={onNavigate ? { label: 'Open Coverage', onClick: () => onNavigate('coverage') } : undefined}
+          />
+        )}
         {tables.length > 0 && !filteredTables.length && <p className="text-sm text-slate-400">No tables match "{tableFilter}".</p>}
       </div>
 
@@ -473,13 +495,6 @@ export default function GenieBuilder() {
         />
       </div>
 
-      {/* Table count warning (tables + metric views both count toward complexity) */}
-      {(selectedTables.length + selectedMVs.size) > 10 && (
-        <div className="bg-amber-50 dark:bg-amber-900/30 border border-amber-200 dark:border-amber-700 rounded-lg px-4 py-2.5 text-sm text-amber-700 dark:text-amber-300">
-          You have {selectedTables.length} table{selectedTables.length !== 1 ? 's' : ''}{selectedMVs.size > 0 ? ` + ${selectedMVs.size} metric view${selectedMVs.size !== 1 ? 's' : ''}` : ''} selected. Generation may be slow or fail with many sources. Start with 3-5 tables to test, then expand.
-        </div>
-      )}
-
       {/* Generate button */}
       <button
         onClick={() => startGeneration()}
@@ -491,15 +506,15 @@ export default function GenieBuilder() {
 
       {/* Progress */}
       {taskStatus && taskStatus.status === 'running' && (
-        <div className="bg-orange-50 dark:bg-orange-900/30 border border-orange-200 dark:border-red-700 rounded-lg px-4 py-3">
+        <div className="bg-blue-50 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-800/60 rounded-lg px-4 py-3">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
-              <div className="w-4 h-4 border-2 border-orange-400 border-t-transparent rounded-full animate-spin" />
-              <span className="text-sm font-medium text-red-700 dark:text-orange-300">
+              <div className="w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+              <span className="text-sm font-medium text-slate-800 dark:text-blue-200">
                 {taskStatus.message || STAGES[taskStatus.stage] || taskStatus.stage}
               </span>
               {taskStatus.round > 0 && (
-                <span className="text-xs px-1.5 py-0.5 rounded bg-orange-200 dark:bg-orange-800 text-orange-700 dark:text-orange-200">
+                <span className="text-xs px-1.5 py-0.5 rounded bg-blue-100 dark:bg-blue-900/60 text-blue-800 dark:text-blue-200">
                   Round {taskStatus.round}
                 </span>
               )}
@@ -557,7 +572,9 @@ export default function GenieBuilder() {
             </div>
           )}
           {(() => {
-            let parsed = null; try { parsed = JSON.parse(editedJson) } catch {}
+            let parsed = null, parseErr = false
+            try { parsed = JSON.parse(editedJson) } catch { parseErr = true }
+            if (parseErr) return <p className="text-xs text-amber-600 dark:text-amber-400 card p-3">Config preview unavailable — the JSON has a syntax error. Fix it in the editor below.</p>
             if (!parsed) return null
             const ds = parsed.data_sources || {}
             const tblCount = (ds.tables?.length || 0)
@@ -578,7 +595,7 @@ export default function GenieBuilder() {
                   <div><span className="text-slate-500">Tables</span><p className="font-medium">{tblDisplay}{mvDisplay > 0 || (typeof mvDisplay === 'string') ? ` + ${mvDisplay} MVs` : ''}</p></div>
                   <div><span className="text-slate-500">Example SQL</span><p className="font-medium">{exampleSqlCount}</p></div>
                   <div><span className="text-slate-500">Joins</span><p className="font-medium">{joinCount}</p></div>
-                  <div><span className="text-slate-500">Snippets</span><p className="font-medium">{snippetFilters + snippetMeasures + snippetExprs} ({snippetFilters}F / {snippetMeasures}M / {snippetExprs}E)</p></div>
+                  <div><span className="text-slate-500">Snippets</span><p className="font-medium" title="Filters / Measures / Expressions">{snippetFilters + snippetMeasures + snippetExprs} ({snippetFilters} filters, {snippetMeasures} measures, {snippetExprs} exprs)</p></div>
                   <div><span className="text-slate-500">Sample Qs</span><p className="font-medium">{sampleQCount}</p></div>
                 </div>
                 {parsed.description && <p className="text-xs text-slate-500 mt-1 line-clamp-2">{parsed.description}</p>}
@@ -587,7 +604,7 @@ export default function GenieBuilder() {
                   <summary className="cursor-pointer font-medium text-slate-700 dark:text-slate-300 select-none">How joins and metric views work</summary>
                   <ul className="mt-2 ml-4 list-disc space-y-1.5">
                     <li><span className="font-medium text-slate-700 dark:text-slate-300">Joins</span> counts explicit <code className="text-[11px] bg-slate-100 dark:bg-slate-800 px-1 rounded">join_specs</code> between selected tables (and selected join targets). A low or zero count is normal when the space is metric-view heavy or when underlying fact tables are not in your <em>table</em> selection.</li>
-                    <li><span className="font-medium text-slate-700 dark:text-slate-300">Snippets</span> (filters / measures / expressions) are built from metric views that are <em>not yet applied</em> to Unity Catalog; applied MVs appear as metric view data sources instead.</li>
+                    <li><span className="font-medium text-slate-700 dark:text-slate-300">Snippets</span> (filters / measures / expressions) come from two sources: (1) MV-derived measures and expressions are generated only from <em>validated</em> (unapplied) metric views, and (2) filter snippets are generated from table column value samples regardless of MV status. The LLM may also add additional snippets from table metadata. Applied MVs are added as Genie data sources directly.</li>
                     <li>Join logic defined <em>inside</em> an MV definition is not the same as a high Joins count here; Genie still uses instructions and example SQL to query MVs.</li>
                   </ul>
                 </details>
@@ -624,7 +641,9 @@ export default function GenieBuilder() {
                 <button
                   onClick={() => {
                     if (!refineFeedback.trim()) return setError('Enter feedback first')
-                    let prior; try { prior = JSON.parse(editedJson) } catch { prior = result }
+                    let prior, usingOriginal = false
+                    try { prior = JSON.parse(editedJson) } catch { prior = result; usingOriginal = true }
+                    if (usingOriginal && editedJson?.trim()) setError('Note: JSON edits had syntax errors, so refinement used the last generated config instead.')
                     startGeneration({ feedback: refineFeedback.trim(), priorResult: prior })
                     setShowRefine(false)
                   }}
@@ -656,7 +675,7 @@ export default function GenieBuilder() {
 
           <div className="flex items-end gap-3">
             <div className="flex-1">
-              <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Genie Space Title</label>
+              <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Genie Space Title <span className="font-normal text-xs text-slate-400">&mdash; review the config above, then name and create your space</span></label>
               <input
                 type="text"
                 value={title}

@@ -101,8 +101,12 @@ Structural relationships, join patterns, FK references found in evidence.
 - **Evidence**: Supporting data (cite source)
 - **Priority**: High / Medium / Low
 
-Be direct and avoid repetition. Lead with the most impactful finding.
-If evidence is sparse, say so honestly rather than fabricating details."""
+GROUNDING RULE: Every finding and recommendation MUST cite a specific evidence source
+(e.g. "[Source: search_metadata]", "[Source: SQL query]"). Do not include findings that
+lack evidence. If the user's question cannot be answered from the gathered evidence,
+state this clearly.
+
+Be direct and avoid repetition. Lead with the most impactful finding."""
 
 
 BASELINE_ANALYSIS_PROMPT = f"""You are a senior data catalog analyst.
@@ -129,7 +133,10 @@ Structural relationships or patterns between tables/columns.
 - **Evidence**: Supporting data
 - **Priority**: High / Medium / Low
 
-Be direct and avoid repetition. If evidence is sparse, say so honestly."""
+GROUNDING RULE: Every finding MUST reference the evidence provided. Do not include
+findings that lack evidence. If the question cannot be answered, state this clearly.
+
+Be direct and avoid repetition."""
 
 
 # ---------------------------------------------------------------------------
@@ -194,8 +201,15 @@ def _parse_json(raw: Optional[str]) -> Optional[dict]:
         return None
 
 
+_TABLE_LEVEL_DOC_TYPES = {"table", "fk_relationship"}
+
+
 def _extract_node_ids(vs_json: Optional[str]) -> list[str]:
-    """Extract node_id values from vector search results."""
+    """Extract node_id values from vector search results.
+
+    For non-table doc types (entity, metric_view), also include the table_name
+    so that graph expansion has table-level nodes to work with.
+    """
     data = _parse_json(vs_json)
     if not data:
         return []
@@ -204,6 +218,11 @@ def _extract_node_ids(vs_json: Optional[str]) -> list[str]:
         nid = m.get("node_id")
         if nid and nid not in ids:
             ids.append(nid)
+        doc_type = m.get("doc_type", "")
+        if doc_type not in _TABLE_LEVEL_DOC_TYPES:
+            tn = m.get("table_name")
+            if tn and tn not in ids:
+                ids.append(tn)
     return ids
 
 
@@ -221,17 +240,17 @@ def _extract_table_names(vs_json: Optional[str]) -> list[str]:
 
 
 def _pick_traversal_nodes(node_ids: list[str], table_names: list[str]) -> list[str]:
-    """Pick the best nodes for graph traversal (prefer table-level nodes)."""
-    table_ids = [nid for nid in node_ids if nid.count(".") == 2]
-    if table_ids:
-        return table_ids[:2]
+    """Pick the best nodes for graph traversal (prefer table-level nodes).
+
+    Uses table_names from VS results directly rather than guessing from ID format.
+    """
     if table_names:
-        return table_names[:2]
-    return node_ids[:2]
+        return table_names[:3]
+    return node_ids[:3]
 
 
 def _sql_escape(s: str) -> str:
-    return s.replace("'", "''")
+    return s.replace("\\", "\\\\").replace("'", "''")
 
 
 def _build_relevance_sql(table_names: list[str]) -> str:
@@ -438,19 +457,14 @@ def _structured_retrieval(question: str, table_names: list[str],
 # Query planner -- chooses edge_type filters to prevent graph fan-out
 # ---------------------------------------------------------------------------
 
-VALID_EDGE_TYPES = {
+BUILTIN_EDGE_TYPES = {
     "contains", "references", "instance_of", "has_property", "is_a",
     "same_domain", "same_subdomain", "same_catalog", "same_schema",
     "same_security_level", "same_classification", "similar_embedding",
     "derives_from",
 }
 
-PLANNER_PROMPT = f"""You are a retrieval planner for a metadata knowledge graph.
-
-Given a user question, decide which graph edge types to use so that multi-hop
-traversal stays focused and doesn't fan out into unrelated nodes.
-
-Available edge types:
+_BUILTIN_PROMPT_SECTION = """Available edge types:
   contains        -- schema->table, table->column (structural hierarchy)
   references      -- FK relationship between tables (join paths)
   instance_of     -- table is instance of ontology entity
@@ -459,7 +473,14 @@ Available edge types:
   same_domain     -- tables share business domain
   same_subdomain  -- tables share subdomain
   similar_embedding -- embedding similarity between nodes
-  derives_from    -- lineage: one table derives from another
+  derives_from    -- lineage: one table derives from another"""
+
+_PLANNER_TEMPLATE = """You are a retrieval planner for a metadata knowledge graph.
+
+Given a user question, decide which graph edge types to use so that multi-hop
+traversal stays focused and doesn't fan out into unrelated nodes.
+
+{edge_type_section}
 
 Respond with ONLY a JSON object (no markdown fencing):
 {{
@@ -471,7 +492,7 @@ Respond with ONLY a JSON object (no markdown fencing):
 
 CRITICAL RULES:
 - traverse_edge_type MUST always be set to exactly one type. NEVER null.
-  This controls 2-hop graph traversal; unfiltered traversal is too expensive.
+  This controls 3-hop graph traversal; unfiltered traversal is too expensive.
 - edge_types: 1-3 types for 1-hop expansion from vector search hits.
 - direction: "outgoing" (default, safest), "incoming", or "both" (use sparingly).
 - requires_structured_retrieval: true if the question needs data from actual tables
@@ -488,19 +509,56 @@ Decision guide:
 
 PLANNER_TIMEOUT = 10  # seconds; fast fail so pipeline isn't blocked
 
+_ontology_edge_cache: dict[str, set[str]] = {}
 
-def _plan_retrieval(query: str, cancel: threading.Event) -> dict:
+
+def _discover_ontology_edge_types() -> set[str]:
+    """Query graph_edges for dynamic ontology-sourced edge types not in the builtin set."""
+    cache_key = f"{CATALOG}.{SCHEMA}"
+    if cache_key in _ontology_edge_cache:
+        return _ontology_edge_cache[cache_key]
+    try:
+        from api_server import graph_query
+        rows = graph_query(
+            "SELECT DISTINCT edge_type FROM public.graph_edges "
+            "WHERE source_system = 'ontology' AND edge_type IS NOT NULL"
+        )
+        discovered = {r["edge_type"] for r in rows if r.get("edge_type")} - BUILTIN_EDGE_TYPES
+        _ontology_edge_cache[cache_key] = discovered
+        if discovered:
+            logger.info("[deep_analysis] Discovered %d ontology edge types: %s",
+                        len(discovered), sorted(discovered)[:10])
+        return discovered
+    except Exception as e:
+        logger.debug("[deep_analysis] Could not discover ontology edge types: %s", e)
+        _ontology_edge_cache[cache_key] = set()
+        return set()
+
+
+def _build_planner_prompt(extra_edge_types: set[str]) -> str:
+    """Build the planner system prompt, appending any dynamic ontology edge types."""
+    if not extra_edge_types:
+        return _PLANNER_TEMPLATE.format(edge_type_section=_BUILTIN_PROMPT_SECTION)
+    extras = "\n".join(f"  {et:20s}-- ontology relationship" for et in sorted(extra_edge_types)[:15])
+    section = _BUILTIN_PROMPT_SECTION + "\n\nOntology-specific edge types (from active bundle):\n" + extras
+    return _PLANNER_TEMPLATE.format(edge_type_section=section)
+
+
+def _plan_retrieval(query: str, cancel: threading.Event,
+                    extra_edge_types: set[str] | None = None) -> dict:
     """Fast LLM call to decide edge_type filters for graph traversal.
 
     Always returns a valid plan dict. On any failure, returns a safe default
     that filters to references+contains (the most common useful pattern).
     """
+    valid_types = BUILTIN_EDGE_TYPES | (extra_edge_types or set())
     default = {"edge_types": ["references", "contains"],
                "traverse_edge_type": "references", "direction": "outgoing",
                "requires_structured_retrieval": True}
     if cancel.is_set():
         return default
 
+    prompt = _build_planner_prompt(extra_edge_types or set())
     mlflow = get_mlflow()
     cm = mlflow.start_span(name="query_planner") if mlflow else nullcontext()
     with cm as span:
@@ -510,7 +568,7 @@ def _plan_retrieval(query: str, cancel: threading.Event) -> dict:
             with ThreadPoolExecutor(max_workers=1) as pool:
                 future = pool.submit(
                     _llm().invoke,
-                    [SystemMessage(content=PLANNER_PROMPT),
+                    [SystemMessage(content=prompt),
                      HumanMessage(content=query)],
                 )
                 resp = future.result(timeout=PLANNER_TIMEOUT)
@@ -521,13 +579,13 @@ def _plan_retrieval(query: str, cancel: threading.Event) -> dict:
             # Validate edge_types
             et = plan.get("edge_types")
             if isinstance(et, list):
-                plan["edge_types"] = [e for e in et if e in VALID_EDGE_TYPES] or default["edge_types"]
+                plan["edge_types"] = [e for e in et if e in valid_types] or default["edge_types"]
             else:
                 plan["edge_types"] = default["edge_types"]
 
             # Validate traverse_edge_type -- MUST be set
             tet = plan.get("traverse_edge_type")
-            if not tet or tet not in VALID_EDGE_TYPES:
+            if not tet or tet not in valid_types:
                 plan["traverse_edge_type"] = default["traverse_edge_type"]
 
             # Validate direction
@@ -573,11 +631,49 @@ def _merge_graph_data(existing: dict, new_chunk: dict) -> dict:
     return {"start_node": start, "nodes": nodes, "edges": edges}
 
 
+def _sparql_ontology_query(table_names: List[str]) -> Optional[str]:
+    """Query the formal RDF ontology graph for relationships between discovered tables."""
+    try:
+        from dbxmetagen.ontology_graph_store import OntologyGraphStore, is_available
+        if not is_available():
+            return None
+    except ImportError:
+        return None
+
+    ttl_candidates = [
+        f"/Volumes/{CATALOG}/{SCHEMA}/generated_metadata/ontology_output.ttl",
+        os.path.join(os.path.dirname(__file__), "..", "ontology_output.ttl"),
+        f"/tmp/dbxmetagen_ontology_{SCHEMA}.ttl",
+    ]
+    ttl_path = None
+    for p in ttl_candidates:
+        if os.path.isfile(p):
+            ttl_path = p
+            break
+    if not ttl_path:
+        return None
+
+    store = OntologyGraphStore(turtle_paths=[ttl_path])
+    if store.triple_count == 0:
+        return None
+
+    uc_base = f"https://databricks.com/unitycatalog/{CATALOG}/{SCHEMA}/"
+    results = []
+    for tbl in table_names[:5]:
+        related = store.get_related_tables(f"{uc_base}{tbl}")
+        if related:
+            results.append({"table": tbl, "ontology_relationships": related})
+
+    if not results:
+        return None
+    return json.dumps(results, indent=2)
+
+
 def _gather_graphrag(query: str, cancel: threading.Event,
                      session_id: Optional[str] = None, intent_type: str = "new_question"):
     """Deterministic GraphRAG data gathering with parallel execution.
 
-    Pipeline: plan -> VS -> [expand + traverse] parallel -> [FK SQL + structured retrieval] parallel
+    Pipeline: plan -> VS -> [expand + traverse] parallel -> SPARQL ontology -> [FK SQL + structured retrieval] parallel
     """
     parts = []
     tools_used = []
@@ -595,10 +691,13 @@ def _gather_graphrag(query: str, cancel: threading.Event,
         elif not tr.success:
             failed_sources.append(tr)
 
+    # Step 0: Discover dynamic ontology edge types (fast, cached)
+    ontology_edge_types = _discover_ontology_edge_types()
+
     # Step 1: LLM query planner
     with measure_phase("plan_retrieval", timing):
         _emit("gathering", f"Step 1/{total}: Planning retrieval strategy...")
-        plan = _plan_retrieval(query, cancel)
+        plan = _plan_retrieval(query, cancel, extra_edge_types=ontology_edge_types)
     planned_edge_types = plan["edge_types"]
     planned_traverse_et = plan["traverse_edge_type"]
     planned_direction = plan["direction"]
@@ -654,24 +753,29 @@ def _gather_graphrag(query: str, cancel: threading.Event,
     if cancel.is_set():
         return "\n\n".join(parts), graph_data, tools_used, failed_sources, timing
 
+    # Build traversal edge type list: primary type + expand types for broader coverage
+    traverse_et_list = [planned_traverse_et] + [
+        et for et in planned_edge_types if et != planned_traverse_et
+    ]
+
     # Group A (parallel): expand_vs_hits + traverse_graph
     with measure_phase("graph_expand_traverse", timing):
         if node_ids:
             trav_nodes = _pick_traversal_nodes(node_ids, table_names)
-            with ThreadPoolExecutor(max_workers=3) as pool:
+            with ThreadPoolExecutor(max_workers=4) as pool:
                 # Submit expand
                 expand_future = pool.submit(
                     _safe_tool_call, expand_vs_hits,
-                    {"node_ids": node_ids[:3], "edge_types": planned_edge_types},
+                    {"node_ids": node_ids[:5], "edge_types": planned_edge_types},
                     TOOL_TIMEOUT, "expand_vs_hits", 3, total,
                 )
-                # Submit traversals
+                # Submit traversals (3 seeds, 3 hops, multi-type filter)
                 trav_futures = []
-                for i, nid in enumerate(trav_nodes[:2]):
+                for i, nid in enumerate(trav_nodes[:3]):
                     trav_futures.append(pool.submit(
                         _safe_tool_call, traverse_graph,
-                        {"start_node": nid, "max_hops": 2,
-                         "edge_type": planned_traverse_et, "direction": planned_direction},
+                        {"start_node": nid, "max_hops": 3,
+                         "edge_types": traverse_et_list, "direction": planned_direction},
                         TOOL_TIMEOUT, f"traverse_graph({nid.split('.')[-1]})", 4 + i, total,
                     ))
 
@@ -694,6 +798,20 @@ def _gather_graphrag(query: str, cancel: threading.Event,
         else:
             logger.info("[deep_analysis] Group A: SKIP (no node_ids)")
             _emit("gathering", f"Step 3/{total}: No nodes to expand, skipping...")
+
+    if cancel.is_set():
+        return "\n\n".join(parts), graph_data, tools_used, failed_sources, timing
+
+    # SPARQL ontology query: enrich with formal ontology relationships
+    if table_names:
+        with measure_phase("sparql_ontology", timing):
+            try:
+                sparql_result = _sparql_ontology_query(table_names)
+                if sparql_result:
+                    tools_used.append("sparql_ontology_query")
+                    parts.append(f"### Source: sparql_ontology_query (formal RDF ontology)\n{_truncate_part(sparql_result, B.GRAPH_TRAVERSAL)}")
+            except Exception as e:
+                logger.debug("SPARQL ontology query failed (non-critical): %s", e)
 
     if cancel.is_set():
         return "\n\n".join(parts), graph_data, tools_used, failed_sources, timing
