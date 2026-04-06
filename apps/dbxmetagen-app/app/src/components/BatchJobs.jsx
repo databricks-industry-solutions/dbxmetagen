@@ -150,6 +150,7 @@ export default function BatchJobs({ onNavigate }) {
   const [ontologyBundle, setOntologyBundle] = useState('')
   const [entityTagKey, setEntityTagKey] = useState('entity_type')
   const [bundles, setBundles] = useState([])
+  const [bundlesLoading, setBundlesLoading] = useState(false)
   const [bundlesLoadError, setBundlesLoadError] = useState(null)
   const [domainConfig, setDomainConfig] = useState('')
   const [domainConfigs, setDomainConfigs] = useState([])
@@ -203,6 +204,7 @@ export default function BatchJobs({ onNavigate }) {
 
   const loadBundles = useCallback(() => {
     setBundlesLoadError(null)
+    setBundlesLoading(true)
     fetch('/api/ontology/bundles')
       .then(r => {
         if (!r.ok) throw new Error(`${r.status} ${r.statusText}`)
@@ -216,6 +218,7 @@ export default function BatchJobs({ onNavigate }) {
         setBundles([])
         setBundlesLoadError(e.message || 'Failed to load bundles')
       })
+      .finally(() => setBundlesLoading(false))
   }, [])
 
   useEffect(() => {
@@ -382,6 +385,12 @@ export default function BatchJobs({ onNavigate }) {
             <div>
               <label className="section-title mb-1.5 flex items-center gap-2">
                 Industry Ontology
+                {bundlesLoading && (
+                  <span className="text-[10px] text-dbx-oat-medium dark:text-dbx-navy-300 italic animate-pulse">Loading...</span>
+                )}
+                {!bundlesLoading && bundles.length === 0 && !bundlesLoadError && (
+                  <span className="text-[10px] text-dbx-oat-medium dark:text-dbx-navy-300 italic">May take a few seconds to load</span>
+                )}
                 {(() => {
                   const sel = bundles.find(b => b.key === ontologyBundle)
                   const isFormal = sel?.bundle_type === 'formal_ontology'

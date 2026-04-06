@@ -229,7 +229,7 @@ class MetadataConfig:
             getattr(self, "batch_ddl_max_columns", 200)
         )
         self.max_concurrent_llm_calls = int(
-            getattr(self, "max_concurrent_llm_calls", 1)
+            getattr(self, "max_concurrent_llm_calls", 4)
         )
 
         # Handle review_apply_ddl if present

@@ -332,10 +332,21 @@ def run_genie_agent(
     refinement_feedback: Optional[str] = None,
     prior_result: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Run the Genie builder agent using sectional generation.
+    """Run the Genie builder agent to produce a complete ``serialized_space`` dict.
 
-    Fresh generation: 3 focused LLM calls (core, example_sql, snippets).
-    Refinement: single LLM call with feedback context.
+    Fresh generation executes 3 sectional LLM calls:
+      1. **Core** -- description, instructions text, join_specs, sample_questions,
+         and data_sources (text only; table/MV data_sources come from assembler)
+      2. **Example SQL** -- question/SQL pairs validated in parallel against the warehouse
+      3. **Snippets** -- measures, filters, expressions with synonyms
+
+    Refinement mode (``refinement_feedback`` + ``prior_result``) makes a single
+    targeted LLM call incorporating user feedback.
+
+    After LLM phases, the function merges assembler-prebuilt join_specs, SQL
+    snippets, and data_sources (which are authoritative) into the LLM output,
+    deduplicates sample questions vs example SQL, backfills synonyms, and runs
+    ``_validate_output`` before pushing the final dict onto ``progress_queue``.
     """
     start_time = time.time()
 

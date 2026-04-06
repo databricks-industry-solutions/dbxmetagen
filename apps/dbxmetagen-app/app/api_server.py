@@ -4376,7 +4376,7 @@ def list_metric_views(status: Optional[str] = None):
         status_filter = "status = 'created'"
     q = (
         f"SELECT definition_id, metric_view_name, source_table, status, "
-        f"genie_space_id, created_at "
+        f"genie_space_id, created_at, deployed_catalog, deployed_schema "
         f"FROM ("
         f"  SELECT *, ROW_NUMBER() OVER ("
         f"    PARTITION BY metric_view_name, source_table "

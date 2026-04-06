@@ -1,6 +1,10 @@
-"""Pydantic models for the Databricks Genie API serialized_space proto schema.
+"""Pydantic models and builder for the Databricks Genie API ``serialized_space`` proto schema.
 
-Provides whitelist-only construction: only known-good fields reach the API.
+The Pydantic models mirror the v2 Genie proto (data sources, instructions, joins,
+snippets, sample questions) and act as a whitelist: only defined fields survive
+serialization. ``build_serialized_space()`` is the main entry point that coerces
+raw LLM/agent output into a valid API payload with SQL formatting, date fixes,
+join simplification, and deduplication.
 """
 
 import re
@@ -134,26 +138,34 @@ def _fix_case_string_literals(sql: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Pydantic models matching the Genie API proto
+# Pydantic models matching the Genie API serialized_space proto (v2).
+#
+# These act as a whitelist: only fields defined here survive serialization,
+# so unknown/unsupported keys from LLM output are silently dropped before
+# the payload reaches the Databricks Genie REST API.
 # ---------------------------------------------------------------------------
 
 
 class DataSourceRef(BaseModel):
+    """A table or metric view registered as a Genie data source."""
     identifier: str
     description: Optional[list[str]] = None
 
 
 class DataSources(BaseModel):
+    """Top-level data sources: base tables and applied metric views."""
     tables: list[DataSourceRef] = []
     metric_views: list[DataSourceRef] = []
 
 
 class TextInstruction(BaseModel):
+    """Free-text instruction block for Genie (column disambiguation, business rules, etc.)."""
     id: str = Field(default_factory=_hex_id)
     content: list[str]
 
 
 class ExampleSQL(BaseModel):
+    """A sample question paired with its validated SQL query."""
     id: str = Field(default_factory=_hex_id)
     question: list[str]
     sql: list[str]
@@ -162,11 +174,13 @@ class ExampleSQL(BaseModel):
 
 
 class JoinSide(BaseModel):
+    """One side of a join relationship (FQ table identifier + optional alias)."""
     identifier: str
     alias: Optional[str] = None
 
 
 class JoinSpec(BaseModel):
+    """An explicit join between two tables with SQL equality predicates."""
     id: str = Field(default_factory=_hex_id)
     left: JoinSide
     right: JoinSide
@@ -175,6 +189,7 @@ class JoinSpec(BaseModel):
 
 
 class SnippetMeasure(BaseModel):
+    """A reusable SQL aggregate expression (e.g. SUM, AVG) with synonyms."""
     id: str = Field(default_factory=_hex_id)
     alias: str
     sql: list[str]
@@ -185,6 +200,7 @@ class SnippetMeasure(BaseModel):
 
 
 class SnippetFilter(BaseModel):
+    """A reusable WHERE-clause predicate snippet."""
     id: str = Field(default_factory=_hex_id)
     display_name: str
     sql: list[str]
@@ -193,6 +209,7 @@ class SnippetFilter(BaseModel):
 
 
 class SnippetExpression(BaseModel):
+    """A reusable computed column expression (e.g. TIMESTAMPDIFF, CASE) with synonyms."""
     id: str = Field(default_factory=_hex_id)
     alias: str
     sql: list[str]
@@ -203,12 +220,14 @@ class SnippetExpression(BaseModel):
 
 
 class SqlSnippets(BaseModel):
+    """Container for all three snippet types: measures, filters, expressions."""
     measures: list[SnippetMeasure] = []
     filters: list[SnippetFilter] = []
     expressions: list[SnippetExpression] = []
 
 
 class Instructions(BaseModel):
+    """Full instruction payload: text, example SQL, joins, and snippets."""
     text_instructions: list[TextInstruction] = []
     example_question_sqls: list[ExampleSQL] = []
     join_specs: list[JoinSpec] = []
@@ -216,15 +235,18 @@ class Instructions(BaseModel):
 
 
 class SampleQuestion(BaseModel):
+    """A suggested starter question displayed in the Genie UI."""
     id: str = Field(default_factory=_hex_id)
     question: list[str]
 
 
 class GenieConfig(BaseModel):
+    """Genie space configuration (currently just sample questions)."""
     sample_questions: list[SampleQuestion] = []
 
 
 class SerializedSpace(BaseModel):
+    """Top-level Genie serialized_space v2 schema sent to the REST API."""
     version: int = 2
     data_sources: DataSources
     instructions: Instructions = Instructions()
@@ -288,9 +310,13 @@ def _dedup_join_specs(joins: list[JoinSpec]) -> list[JoinSpec]:
 
 
 def build_serialized_space(raw: dict) -> dict:
-    """Construct a clean serialized_space dict from raw agent output.
+    """Transform raw agent/builder output into a validated Genie ``serialized_space`` v2 dict.
 
-    Only known-good fields survive. Everything else is silently dropped.
+    Normalizes data_sources, flattens instruction text, formats and date-fixes
+    example SQL, simplifies/backticks join SQL predicates, deduplicates join
+    specs, builds snippet models with SQL autofixes, and optionally attaches
+    sample questions. Only Pydantic-whitelisted fields survive -- unknown keys
+    from LLM output are silently dropped.
     """
     # -- data_sources --
     ds_raw = raw.get("data_sources", {})

@@ -130,7 +130,18 @@ def _translate_mv_aliases(expr: str, source_short: str, joins: list) -> str:
 
 
 class GenieContextAssembler:
-    """Gathers metadata from knowledge bases and builds context for the Genie agent."""
+    """Gathers metadata from KB/FK/ontology tables and pre-builds deterministic Genie space sections.
+
+    Queries the SQL warehouse to collect table/column KB comments, FK predictions,
+    ontology entities, metric view definitions, and column profiling stats.
+    ``assemble()`` returns a dict containing:
+      - ``context_text``: formatted natural-language prompt context for the LLM agent
+      - ``join_specs``: FK-derived join_spec dicts ready for ``serialized_space``
+      - ``data_sources``: table + metric view data source dicts with descriptions
+      - ``sql_snippets``: MV-derived measures, filter samples, and expressions
+      - ``questions``: passthrough of user sample questions
+      - ``warnings``: diagnostic messages (e.g. MV resolution issues)
+    """
 
     def __init__(
         self, ws: WorkspaceClient, warehouse_id: str, catalog: str, schema: str
@@ -282,6 +293,7 @@ class GenieContextAssembler:
     # -- Data gathering methods -----------------------------------------------
 
     def _get_table_metadata(self, tables: List[str]) -> list[dict]:
+        """Fetch table-level KB comments, domain, and subdomain for selected tables."""
         table_list = ", ".join(f"'{t}'" for t in tables)
         return _safe_sql(
             self.ws,
@@ -294,6 +306,7 @@ class GenieContextAssembler:
         )
 
     def _get_column_metadata(self, tables: List[str]) -> list[dict]:
+        """Fetch column-level KB metadata (data type, comment, PII classification) for selected tables."""
         table_list = ", ".join(f"'{t}'" for t in tables)
         return _safe_sql(
             self.ws,
@@ -307,6 +320,7 @@ class GenieContextAssembler:
         )
 
     def _get_fk_predictions(self, tables: List[str]) -> list[dict]:
+        """Fetch FK predictions (confidence >= 0.7) where both endpoints are in the selected table set."""
         table_list = ", ".join(f"'{t}'" for t in tables)
         return _safe_sql(
             self.ws,
@@ -487,7 +501,13 @@ class GenieContextAssembler:
         return deduped, warnings
 
     def _get_metric_views(self, tables: List[str]) -> tuple[list[dict], list[str]]:
-        # Build FQ and short match sets separately to prefer exact FQ matches
+        """Load MV definitions whose ``source_table`` matches any selected table.
+
+        Returns (rows, warnings). Deduplicates by MV name, preferring ``applied``
+        over ``validated`` and most-recent ``applied_at``. Short-name matches are
+        only used when no FQ match exists to avoid pulling stale MVs from a
+        different schema.
+        """
         fq_values = set()
         short_values = set()
         for t in tables:
@@ -618,6 +638,12 @@ class GenieContextAssembler:
         self, table_meta, column_meta, fk_rows, entity_rows, value_samples,
         entity_rels=None,
     ) -> str:
+        """Build natural-language context block for the LLM agent prompt.
+
+        Produces per-table sections with fact/dimension hints, domain tags,
+        entity types, column descriptions + synonyms, categorical value samples,
+        FK relationships, and entity-relationship summaries.
+        """
         parts = []
         col_by_table: dict[str, list] = {}
         for c in column_meta:
@@ -758,6 +784,13 @@ class GenieContextAssembler:
         return "\n\n".join(parts)
 
     def _build_join_specs(self, fk_rows: list[dict]) -> list[dict]:
+        """Convert FK prediction rows into Genie join_spec dicts.
+
+        Each spec has a UUID ``id``, ``left``/``right`` FQ table identifiers,
+        and a ``sql`` list with ``short_table.column = short_table.column``
+        equality predicates. Column names are stripped to bare names (no FQ
+        prefix) to avoid malformed references in downstream simplification.
+        """
         specs = []
         for fk in fk_rows:
             src_col = fk['src_column'].split('.')[-1]
@@ -825,6 +858,13 @@ class GenieContextAssembler:
         self, table_ids: List[str], table_meta: list[dict], metric_views: list[dict],
         column_meta: list[dict] | None = None, entity_rows: list[dict] | None = None,
     ) -> dict:
+        """Build the ``data_sources`` dict for the Genie serialized_space.
+
+        Produces ``tables`` entries (FQ identifier + multi-line description from
+        KB comment, domain tag, entity types, and column summary) and
+        ``metric_views`` entries (resolved FQ identifier via ``_resolve_mv_location``
+        + description extracted from the MV's JSON definition).
+        """
         meta_map = {}
         for t in table_meta:
             name = t["table_name"]
@@ -1158,7 +1198,13 @@ def generate_section_assist(
     user_prompt: str = "",
     model_endpoint: str | None = None,
 ) -> dict:
-    """Generate a single section of a Genie space definition via a targeted LLM call."""
+    """Generate or augment a single Genie space section (e.g. joins, filters, example_sql) via LLM.
+
+    Runs ``GenieContextAssembler.assemble`` to gather table/column context, builds
+    a section-specific prompt from ``_SECTION_PROMPTS``, calls ``ChatDatabricks``,
+    and parses the fenced JSON response. Existing items are included in the prompt
+    so the LLM avoids duplicating them.
+    """
     from langchain_community.chat_models import ChatDatabricks
 
     model = model_endpoint or os.environ.get("LLM_MODEL", "databricks-claude-sonnet-4-6")

@@ -255,14 +255,15 @@ export default function GenieBuilder({ onNavigate }) {
     ? tables.filter(t => t.label.toLowerCase().includes(filterLower) || t.schema.toLowerCase().includes(filterLower))
     : tables
   const filteredMVs = metricViews.filter(mv => {
-    const parts = mv.source_table?.split('.') || []
-    if (parts.length < 3 || parts[0] !== selectedCatalog) return false
-    if (filterLower) return mv.metric_view_name.toLowerCase().includes(filterLower) || parts[1].toLowerCase().includes(filterLower)
+    const cat = mv.deployed_catalog || mv.source_table?.split('.')[0]
+    if (cat !== selectedCatalog) return false
+    const sch = mv.deployed_schema || mv.source_table?.split('.')[1] || ''
+    if (filterLower) return mv.metric_view_name.toLowerCase().includes(filterLower) || sch.toLowerCase().includes(filterLower)
     return true
   })
   const mvsBySchema = {}
   filteredMVs.forEach(mv => {
-    const schema = mv.source_table.split('.')[1]
+    const schema = mv.deployed_schema || mv.source_table.split('.')[1]
     ;(mvsBySchema[schema] ||= []).push(mv)
   })
   const schemas = [...new Set([...filteredTables.map(t => t.schema), ...Object.keys(mvsBySchema)])]
@@ -309,7 +310,7 @@ export default function GenieBuilder({ onNavigate }) {
           <li><strong>Select tables</strong> below. Expand each schema to pick tables and any applied metric views.</li>
           <li><strong>Add context</strong> (optional) &mdash; describe your business and key terminology to improve the AI output.</li>
           <li><strong>Add questions</strong> (optional) &mdash; write sample questions or click Suggest to auto-generate them from your tables.</li>
-          <li>Click <strong>Generate Genie Config</strong> &mdash; AI builds the space configuration including joins, instructions, and SQL snippets.</li>
+          <li>Click <strong>Generate Genie Config</strong> &mdash; AI builds the space configuration including joins, instructions, and SQL snippets. Most builds take one to three minutes.</li>
           <li>Review the <strong>Config Preview</strong>, optionally refine, then enter a title and click <strong>Create Genie Space</strong> to deploy it.</li>
         </ol>
       </div>
@@ -493,13 +494,6 @@ export default function GenieBuilder({ onNavigate }) {
           className="w-full border border-slate-200 dark:border-slate-600 rounded-md px-3 py-2 text-sm bg-dbx-oat-light dark:bg-slate-700 text-slate-800 dark:text-slate-200 placeholder-slate-400"
         />
       </div>
-
-      {/* Table count warning (tables + metric views both count toward complexity) */}
-      {(selectedTables.length + selectedMVs.size) > 10 && (
-        <div className="bg-amber-50 dark:bg-amber-900/30 border border-amber-200 dark:border-amber-700 rounded-lg px-4 py-2.5 text-sm text-amber-700 dark:text-amber-300">
-          You have {selectedTables.length} table{selectedTables.length !== 1 ? 's' : ''}{selectedMVs.size > 0 ? ` + ${selectedMVs.size} metric view${selectedMVs.size !== 1 ? 's' : ''}` : ''} selected. Generation may be slow or fail with many sources. Start with 3-5 tables to test, then expand.
-        </div>
-      )}
 
       {/* Generate button */}
       <button
