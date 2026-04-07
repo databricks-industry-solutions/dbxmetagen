@@ -3,6 +3,8 @@
 import logging
 import uuid
 from datetime import datetime
+from pathlib import Path
+
 import yaml
 from dbxmetagen.user_utils import sanitize_user_identifier, get_current_user
 
@@ -184,6 +186,10 @@ class MetadataConfig:
         for key, value in kwargs.items():
             setattr(self, key, value)
 
+        if not skip_yaml:
+            self._backfill_missing_yaml_defaults()
+            self._backfill_missing_advanced_yaml_defaults()
+
         # self.instantiate_environments()
         # Parse boolean fields properly (string "false" should be False, not True)
         self.allow_data = _parse_bool(getattr(self, "allow_data", True))
@@ -286,6 +292,46 @@ class MetadataConfig:
         # Fallback for run_id if not provided via kwargs/YAML
         if not self.run_id:
             self.run_id = str(uuid.uuid4())
+
+    def _backfill_missing_yaml_defaults(self) -> None:
+        """Fill attributes omitted by partial yaml_file_path from bundled variables.yml."""
+        bundled = Path(__file__).resolve().parent / "variables.yml"
+        if not bundled.is_file():
+            return
+        try:
+            with bundled.open("r", encoding="utf-8") as file:
+                data = yaml.safe_load(file)
+            if not data or "variables" not in data:
+                return
+            block = data["variables"]
+            for name in self.yaml_variable_names:
+                if hasattr(self, name):
+                    continue
+                if name not in block or "default" not in block[name]:
+                    continue
+                setattr(self, name, block[name]["default"])
+        except (OSError, yaml.YAMLError, KeyError, TypeError) as e:
+            _logger.debug("Skipped YAML backfill: %s", e)
+
+    def _backfill_missing_advanced_yaml_defaults(self) -> None:
+        """Fill advanced attributes from bundled variables.advanced.yml when paths resolve empty."""
+        bundled = Path(__file__).resolve().parent / "variables.advanced.yml"
+        if not bundled.is_file():
+            return
+        try:
+            with bundled.open("r", encoding="utf-8") as file:
+                data = yaml.safe_load(file)
+            if not data or "variables" not in data:
+                return
+            block = data["variables"]
+            for name in self.yaml_advanced_variable_names:
+                if hasattr(self, name):
+                    continue
+                if name not in block or "default" not in block[name]:
+                    continue
+                setattr(self, name, block[name]["default"])
+        except (OSError, yaml.YAMLError, KeyError, TypeError) as e:
+            _logger.debug("Skipped advanced YAML backfill: %s", e)
 
     def get_temp_metadata_log_table_name(self) -> str:
         """

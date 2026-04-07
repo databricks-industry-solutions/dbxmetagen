@@ -32,7 +32,11 @@
    cp example.env dev.env   # Edit with your workspace URL, catalog, schema, warehouse_id
    ```
 
-2. Deploy:
+2. **Azure / GCP users:** The default job cluster node type is `i3.2xlarge` (AWS). Update `node_type` in `variables.yml` before deploying:
+   - **Azure:** `Standard_DS4_v2`
+   - **GCP:** `n2-highmem-8`
+
+3. Deploy:
    ```bash
    ./deploy.sh --profile <your-profile> --target dev
    ```
@@ -43,9 +47,9 @@
    ./deploy.sh --profile <your-profile> --target dev --no-app
    ```
 
-3. Access the app at **Workspace > Apps > dbxmetagen-app**
+4. Access the app at **Workspace > Apps > dbxmetagen-app**
 
-4. Run jobs:
+5. Run jobs:
    ```bash
    databricks bundle run metadata_generator_job -t dev -p <profile> --params table_names='catalog.schema.*',mode=domain
    databricks bundle run full_analytics_pipeline_job -t dev -p <profile>
@@ -266,6 +270,7 @@ Settings are in `variables.yml`. Key options:
 | `mode` | `comment` | Generation mode: `comment`, `pi`, or `domain` |
 | `apply_ddl` | `false` | Apply generated metadata directly to Unity Catalog |
 | `allow_data` | `true` | Set `false` to prevent data from being sent to LLMs |
+| `node_type` | `i3.2xlarge` | Job cluster node type. Change for Azure (`Standard_DS4_v2`) or GCP (`n2-highmem-8`) |
 | `include_deterministic_pi` | `true` | Enable SpaCy/Presidio for rule-based PI detection (requires `en_core_web_lg` model -- see [Configuration docs](docs/CONFIGURATION.md)) |
 | `federation_mode` | `false` | Enable for federated catalog sources (Redshift, Snowflake) |
 
@@ -381,6 +386,20 @@ The deploy script runs `npm install` and `npm run build` to compile the React fr
   npm install && npm run build
   ```
   If that doesn't help, downgrade npm: `npm install -g npm@10`
+
+### Jobs fail with "Instance type not supported" or "NODE_TYPE_NOT_SUPPORTED"
+
+The default `node_type` in `variables.yml` is `i3.2xlarge`, which is an AWS instance type. If you're running on Azure or GCP, job clusters will fail to start.
+
+**Fix:** Update `node_type` in `variables.yml` to match your cloud:
+
+| Cloud | Recommended `node_type` |
+|-------|------------------------|
+| AWS   | `i3.2xlarge` (default) |
+| Azure | `Standard_DS4_v2`      |
+| GCP   | `n2-highmem-8`         |
+
+Then redeploy with `./deploy.sh`.
 
 **Workaround:** The pre-built frontend (`apps/dbxmetagen-app/app/src/dist/`) is committed to the repo, so you can skip the build entirely if you haven't changed any frontend code:
 
