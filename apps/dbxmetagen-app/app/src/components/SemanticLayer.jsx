@@ -1007,6 +1007,7 @@ export default function SemanticLayer() {
                     <span className={`transition-transform ${expandedKpiSections.has('__unassigned') ? 'rotate-90' : ''}`}>&#9654;</span>
                     Unassigned ({unassigned.length})
                   </button>
+                  <p className="text-[10px] text-slate-400 dark:text-slate-500 ml-4 mt-0.5">Created before profile support. Re-save from a profile to assign.</p>
                   {expandedKpiSections.has('__unassigned') && (
                     <div className="space-y-1.5 mt-1.5">{unassigned.map(k => <KpiRow key={k.kpi_id} k={k} dimmed />)}</div>
                   )}

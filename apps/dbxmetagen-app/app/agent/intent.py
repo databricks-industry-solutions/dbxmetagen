@@ -76,8 +76,11 @@ Conversation History:
 
 ## Tasks
 
-1. **Irrelevant detection**: Is this completely unrelated to data catalog / metadata analysis?
-   Examples: greetings, weather, jokes, general coding help.
+1. **Irrelevant detection**: Is this completely unrelated to the data in the catalog?
+   Examples of irrelevant: greetings, weather, jokes, general coding help.
+   **Data questions about tables, metrics, or business data ARE NOT irrelevant** -- classify
+   those as domain "query" even if they reference external systems (the user may have that data
+   in their catalog). When in doubt, treat it as a new_question with domain "query".
 
 2. **Meta-question detection**: Is this about the system itself?
    Examples: "what tables do you have?", "what can I ask?", "show me example questions".

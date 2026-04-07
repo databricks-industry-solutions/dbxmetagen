@@ -110,8 +110,16 @@ def classify_intent(state: DeepAnalysisState) -> dict:
 
 def quick_answer(state: DeepAnalysisState) -> dict:
     """Return the meta/irrelevant answer directly."""
+    raw = state.get("meta_answer", "")
+    # Guard: if the intent LLM leaked JSON instead of prose, extract the text field
+    if raw.lstrip().startswith("{"):
+        try:
+            obj = json.loads(raw)
+            raw = obj.get("meta_answer") or obj.get("context_summary") or raw
+        except (json.JSONDecodeError, TypeError):
+            pass
     return {
-        "answer": state.get("meta_answer", ""),
+        "answer": raw,
         "tool_calls": [],
         "graph_data": {},
         "timing": {},
@@ -132,7 +140,7 @@ def _should_continue(state: DeepAnalysisState) -> str:
 async def _gather_graphrag(query: str, session_id: Optional[str], intent_type: str,
                            parent_span_id: str = None, trace_request_id: str = None):
     """Async GraphRAG gathering with progress events and asyncio parallelism."""
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     parts: list[str] = []
     tools_used: list[str] = []
     graph_data: dict = {}
@@ -293,7 +301,7 @@ async def _gather_graphrag(query: str, session_id: Optional[str], intent_type: s
 
 async def _gather_baseline(query: str, parent_span_id: str = None, trace_request_id: str = None):
     """Async baseline gathering."""
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     parts: list[str] = []
     tools_used: list[str] = []
     failed: list[ToolResult] = []
@@ -472,20 +480,30 @@ async def analyze(state: DeepAnalysisState) -> dict:
     timing["total"] = round(sum(v for v in timing.values() if isinstance(v, (int, float))), 3)
     logger.info("[graph] LLM analysis: %.1fs, tokens=%s", elapsed, token_usage)
 
-    # Attach token usage to the MLflow span so it shows in the trace UI
+    # Attach token usage to the MLflow span. Try context-var span first,
+    # then fall back to MlflowClient trace search for the root span.
     mlflow = get_mlflow()
-    if mlflow and token_usage:
+    _tok_attrs = {
+        "llm.token_count.prompt": token_usage.get("input_tokens", 0),
+        "llm.token_count.completion": token_usage.get("output_tokens", 0),
+        "llm.token_count.total": token_usage.get("total_tokens", 0),
+        "token_usage.estimated": token_usage.get("estimated", False),
+    } if token_usage else {}
+    if mlflow and _tok_attrs:
         try:
             active = mlflow.get_current_active_span()
             if active:
-                active.set_attributes({
-                    "llm.token_count.prompt": token_usage.get("input_tokens", 0),
-                    "llm.token_count.completion": token_usage.get("output_tokens", 0),
-                    "llm.token_count.total": token_usage.get("total_tokens", 0),
-                    "token_usage.estimated": token_usage.get("estimated", False),
-                })
+                active.set_attributes(_tok_attrs)
+            else:
+                # autolog manages spans via callbacks, not context vars --
+                # walk up to the root span via MlflowClient
+                client = mlflow.MlflowClient()
+                trace = client.get_trace(mlflow.get_last_active_trace().info.request_id)
+                if trace and trace.data and trace.data.spans:
+                    root = trace.data.spans[0]
+                    root.set_attributes(_tok_attrs)
         except Exception:
-            pass
+            logger.debug("[graph] Could not attach token usage to trace span")
 
     return {
         "answer": sanitize_output(answer),
