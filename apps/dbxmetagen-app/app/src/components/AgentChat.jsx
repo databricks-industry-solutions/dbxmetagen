@@ -65,25 +65,25 @@ const STAGE_LABELS = {
 
 const MODE_QUESTIONS = {
   quick: [
-    { label: 'How do orders connect to accounts?', query: 'How do the order, product, and account tables relate to each other? Show the join keys and relationship paths.' },
-    { label: 'Sensitive data + connections', query: 'Which tables contain sensitive customer information (PII/PHI) and how are those tables connected to each other?' },
-    { label: 'Find "revenue" tables', query: 'Find all tables related to "revenue" and explain how they connect to the order pipeline.' },
+    { label: 'How are my tables related?', query: 'What are the key relationships between my tables? Show the join keys and relationship paths.' },
+    { label: 'Where is sensitive data?', query: 'Which tables and columns contain sensitive information (PII/PHI/PCI)? How are those tables connected?' },
+    { label: 'Summarize my catalog', query: 'Give me a high-level summary of the data catalog: how many tables, which domains, and what are the key relationship clusters?' },
     { label: 'Domain map + cross-domain links', query: 'What business domain does each table belong to and which domains share the most cross-domain relationships?' },
   ],
   graphrag: [
-    { label: 'How do orders connect to accounts?', query: 'How do the order, product, and account tables relate to each other? Show the join keys and relationship paths.' },
-    { label: 'Sensitive data + connections', query: 'Which tables contain sensitive customer information (PII/PHI) and how are those tables connected to each other?' },
+    { label: 'How are my tables related?', query: 'What are the key relationships between my tables? Show the join keys and relationship paths.' },
+    { label: 'Where is sensitive data?', query: 'Which tables and columns contain sensitive information (PII/PHI/PCI)? How are those tables connected?' },
     { label: 'Which columns are flagged as PII?', query: 'List all columns classified as PII or PHI across the catalog, grouped by table and classification type.' },
     { label: 'What business entities exist?', query: 'What business entities have been identified in the ontology? Which tables are associated with each entity?' },
     { label: 'Tables with data quality issues', query: 'Which tables have the highest null rates or lowest distinct counts? Highlight any data quality concerns from profiling results.' },
     { label: 'Domain map + cross-domain links', query: 'What business domain does each table belong to and which domains share the most cross-domain relationships?' },
-    { label: 'Find "revenue" tables', query: 'Find all tables related to "revenue" and explain how they connect to the order pipeline.' },
-    { label: 'Summarize the catalog', query: 'Give me a high-level summary of the data catalog: how many tables, which domains, and what are the key relationship clusters?' },
+    { label: 'What are my largest tables?', query: 'Which tables have the most columns and the most relationships to other tables? Are there any central hub tables?' },
+    { label: 'Summarize my catalog', query: 'Give me a high-level summary of the data catalog: how many tables, which domains, and what are the key relationship clusters?' },
   ],
   baseline: [
-    { label: 'How do orders connect to accounts?', query: 'How do the order, product, and account tables relate to each other? Show the join keys and relationship paths.' },
-    { label: 'Sensitive data + connections', query: 'Which tables contain sensitive customer information (PII/PHI) and how are those tables connected to each other?' },
-    { label: 'Find "revenue" tables', query: 'Find all tables related to "revenue" and explain how they connect to the order pipeline.' },
+    { label: 'How are my tables related?', query: 'What are the key relationships between my tables? Show the join keys and relationship paths.' },
+    { label: 'Where is sensitive data?', query: 'Which tables and columns contain sensitive information (PII/PHI/PCI)? How are those tables connected?' },
+    { label: 'Summarize my catalog', query: 'Give me a high-level summary of the data catalog: how many tables, which domains, and what are the key relationship clusters?' },
     { label: 'Domain map + cross-domain links', query: 'What business domain does each table belong to and which domains share the most cross-domain relationships?' },
   ],
 }

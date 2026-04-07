@@ -179,17 +179,31 @@ if [ "$SKIP_APP" = false ]; then
     }
 
     if [ -n "${APP_JSON}" ]; then
+        echo "  Raw apps get response keys: $(echo "${APP_JSON}" | python3 -c "import sys,json; print(list(json.load(sys.stdin).keys()))" 2>/dev/null || echo "(parse error)")"
         APP_SP_ID=$(echo "${APP_JSON}" | python3 -c "import sys,json; print(json.load(sys.stdin).get('service_principal_id',''))" 2>/dev/null || echo "")
+        echo "  service_principal_id raw value: '${APP_SP_ID}'"
         if [ -n "${APP_SP_ID}" ] && [ "${APP_SP_ID}" != "None" ]; then
-            echo "Found app SP ID: ${APP_SP_ID}"
+            echo "  Found app SP ID (numeric): ${APP_SP_ID}"
         else
             APP_SP_ID=""
+            echo "  service_principal_id not present or None"
         fi
+        APP_SP_CLIENT_ID=$(echo "${APP_JSON}" | python3 -c "import sys,json; print(json.load(sys.stdin).get('service_principal_client_id',''))" 2>/dev/null || echo "")
+        echo "  service_principal_client_id raw value: '${APP_SP_CLIENT_ID}'"
+        if [ -n "${APP_SP_CLIENT_ID}" ] && [ "${APP_SP_CLIENT_ID}" != "None" ]; then
+            echo "  Found app SP client ID (UUID): ${APP_SP_CLIENT_ID}"
+        else
+            APP_SP_CLIENT_ID=""
+            echo "  service_principal_client_id not present or None"
+        fi
+    else
+        echo "  No JSON response from apps get"
     fi
 else
     echo ""
     echo "=== Skipping app (--no-app) ==="
     APP_SP_ID=""
+    APP_SP_CLIENT_ID=""
 fi
 
 # --- Sync requirements.txt from lock file ---
@@ -258,22 +272,60 @@ if [ "$SKIP_APP" = false ]; then
     fi
 fi
 
+# --- Resolve SPN application_id (UUID) for UC GRANT statements ---
+echo ""
+echo "=== Resolving app SPN applicationId (UUID) ==="
+echo "  APP_SP_ID=${APP_SP_ID:-<empty>}  APP_SP_CLIENT_ID=${APP_SP_CLIENT_ID:-<empty>}"
+SPN_APP_ID=""
+
+# Tier 1: use service_principal_client_id from apps get (no admin required)
+if [ -n "${APP_SP_CLIENT_ID}" ] && [ "${APP_SP_CLIENT_ID}" != "None" ]; then
+    SPN_APP_ID="${APP_SP_CLIENT_ID}"
+    echo "  [Tier 1] Using service_principal_client_id from apps API: ${SPN_APP_ID}"
+else
+    echo "  [Tier 1] service_principal_client_id not available, skipping"
+fi
+
+# Tier 2: fall back to SCIM lookup (requires workspace admin)
+if [ -z "${SPN_APP_ID}" ] && [ -n "${APP_SP_ID}" ]; then
+    echo "  [Tier 2] Trying SCIM lookup: databricks service-principals get ${APP_SP_ID} ..."
+    SPN_JSON=$(databricks service-principals get "${APP_SP_ID}" --profile "$PROFILE" --output json 2>&1) && {
+        SPN_APP_ID=$(echo "${SPN_JSON}" | python3 -c "import sys,json; print(json.load(sys.stdin).get('applicationId',''))" 2>/dev/null || echo "")
+        echo "  [Tier 2] applicationId raw value: '${SPN_APP_ID}'"
+        if [ -n "${SPN_APP_ID}" ] && [ "${SPN_APP_ID}" != "None" ]; then
+            echo "  [Tier 2] Resolved applicationId via SCIM: ${SPN_APP_ID}"
+        else
+            SPN_APP_ID=""
+            echo "  [Tier 2] applicationId not found in SCIM response"
+        fi
+    } || {
+        echo "  [Tier 2] WARNING: SCIM lookup failed (not a workspace admin?): ${SPN_JSON}"
+    }
+elif [ -z "${SPN_APP_ID}" ]; then
+    echo "  [Tier 2] No numeric SP ID available, skipping SCIM lookup"
+fi
+
+echo "  Resolved SPN_APP_ID=${SPN_APP_ID:-<empty>}"
+
+# Tier 3: soft-fail with manual instructions
+if [ -z "${SPN_APP_ID}" ] && [ -n "${APP_SP_ID}" ]; then
+    echo ""
+    echo "WARNING: Could not resolve the app service principal's applicationId."
+    echo "  UC permissions must be granted manually. Run the following SQL as a catalog admin:"
+    echo "    GRANT USE CATALOG ON CATALOG \`${catalog_name}\` TO \`<applicationId>\`;"
+    echo "    GRANT USE SCHEMA ON SCHEMA \`${catalog_name}\`.\`${schema_name}\` TO \`<applicationId>\`;"
+    echo "    GRANT CREATE TABLE ON SCHEMA \`${catalog_name}\`.\`${schema_name}\` TO \`<applicationId>\`;"
+    echo "    GRANT SELECT ON SCHEMA \`${catalog_name}\`.\`${schema_name}\` TO \`<applicationId>\`;"
+    echo "    GRANT MODIFY ON SCHEMA \`${catalog_name}\`.\`${schema_name}\` TO \`<applicationId>\`;"
+    echo "  Find the applicationId in: Admin Console > Service Principals > (app name)"
+    echo "  Continuing deploy without UC grants..."
+    echo ""
+fi
+
 # --- Grant UC permissions to app SPN (idempotent, runs every deploy) ---
-if [ -n "${APP_SP_ID}" ]; then
+if [ -n "${SPN_APP_ID}" ]; then
     echo ""
     echo "=== Granting UC permissions to app SPN ==="
-
-    SPN_JSON=$(databricks service-principals get "${APP_SP_ID}" --profile "$PROFILE" --output json 2>&1) || {
-        echo "ERROR: Failed to get service principal: ${SPN_JSON}"
-        exit 1
-    }
-    SPN_APP_ID=$(echo "${SPN_JSON}" | python3 -c "import sys,json; print(json.load(sys.stdin).get('applicationId',''))")
-
-    if [ -z "${SPN_APP_ID}" ]; then
-        echo "ERROR: applicationId not found for SPN ${APP_SP_ID}"
-        exit 1
-    fi
-
     echo "SPN application_id: ${SPN_APP_ID}"
 
     # Ensure the output schema exists before granting permissions on it

@@ -165,7 +165,7 @@ assert (
 ), f"_resolve_mv_location should return deploy schema '{bronze_schema}'. Got '{resolved_sch}'"
 print(f"PASS: _resolve_mv_location correctly resolves to {resolved_cat}.{resolved_sch}")
 
-# Verify fallback when deployed columns are NULL -> uses assembler (config) schema
+# Verify fallback when deployed columns are NULL -> uses source table schema
 mv_null = {
     "metric_view_name": "test_order_metrics",
     "source_table": f"{catalog_name}.{test_schema}_bronze.test_orders",
@@ -176,9 +176,9 @@ fb_cat, fb_sch = GenieContextAssembler._resolve_mv_location(
     mv_null, catalog_name, test_schema
 )
 assert (
-    fb_sch == test_schema
-), f"Fallback should use assembler schema '{test_schema}', not source schema. Got '{fb_sch}'"
-print(f"PASS: fallback correctly uses assembler schema {fb_cat}.{fb_sch}")
+    fb_sch == bronze_schema
+), f"Fallback should use source table schema '{bronze_schema}' when deployed cols are NULL. Got '{fb_sch}'"
+print(f"PASS: fallback correctly uses source table schema {fb_cat}.{fb_sch}")
 
 # COMMAND ----------
 # MAGIC %md

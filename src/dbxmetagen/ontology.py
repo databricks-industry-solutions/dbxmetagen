@@ -3510,6 +3510,84 @@ class OntologyBuilder:
             logger.warning("Could not sync entity nodes to graph: %s", e)
             return 0
 
+    def _enrich_table_nodes_with_ontology(self) -> int:
+        """Backfill ontology_id/ontology_type on table-type graph nodes from primary entities."""
+        nodes_table = f"{self.config.catalog_name}.{self.config.schema_name}.{self.config.nodes_table}"
+        ent_table = self.config.fully_qualified_entities
+        try:
+            result = self.spark.sql(f"""
+                MERGE INTO {nodes_table} AS target
+                USING (
+                    SELECT EXPLODE(source_tables) AS table_name, entity_id, entity_type
+                    FROM {ent_table}
+                    WHERE COALESCE(entity_role, 'primary') = 'primary'
+                      AND source_tables IS NOT NULL AND SIZE(source_tables) > 0
+                ) AS source
+                ON target.id = source.table_name AND target.node_type = 'table'
+                WHEN MATCHED THEN UPDATE SET
+                    target.ontology_id = source.entity_id,
+                    target.ontology_type = source.entity_type
+            """)
+            count = self.spark.sql(
+                f"SELECT COUNT(*) AS cnt FROM {nodes_table} "
+                f"WHERE node_type = 'table' AND ontology_type IS NOT NULL"
+            ).collect()[0].cnt
+            logger.info("Enriched %d table nodes with ontology classifications", count)
+            return count
+        except Exception as e:
+            logger.warning("Could not enrich table nodes with ontology: %s", e)
+            return 0
+
+    def _add_same_entity_type_edges(self) -> int:
+        """Add same_entity_type edges between tables that share a primary ontology entity type."""
+        edges_table = f"{self.config.catalog_name}.{self.config.schema_name}.graph_edges"
+        ent_table = self.config.fully_qualified_entities
+        try:
+            pairs = self.spark.sql(f"""
+                SELECT a.table_name AS src, b.table_name AS dst, a.entity_type,
+                       CAST(1.0 AS DOUBLE) AS weight
+                FROM (
+                    SELECT EXPLODE(source_tables) AS table_name, entity_type
+                    FROM {ent_table}
+                    WHERE COALESCE(entity_role, 'primary') = 'primary'
+                      AND source_tables IS NOT NULL AND SIZE(source_tables) > 0
+                ) a
+                JOIN (
+                    SELECT EXPLODE(source_tables) AS table_name, entity_type
+                    FROM {ent_table}
+                    WHERE COALESCE(entity_role, 'primary') = 'primary'
+                      AND source_tables IS NOT NULL AND SIZE(source_tables) > 0
+                ) b
+                ON a.entity_type = b.entity_type AND a.table_name < b.table_name
+            """)
+            count = pairs.count()
+            if count == 0:
+                logger.info("No same_entity_type edges to add")
+                return 0
+
+            from pyspark.sql import functions as F
+            edge_df = pairs.select(
+                F.col("src"), F.col("dst"),
+                F.lit("same_entity_type").alias("relationship"),
+                F.col("weight"),
+                F.concat_ws("::", F.col("src"), F.col("dst"), F.lit("same_entity_type")).alias("edge_id"),
+                F.lit("same_entity_type").alias("edge_type"),
+                F.lit("undirected").alias("direction"),
+                F.lit(None).cast("string").alias("join_expression"),
+                F.lit(None).cast("double").alias("join_confidence"),
+                F.col("entity_type").alias("ontology_rel"),
+                F.lit("ontology").alias("source_system"),
+                F.lit("candidate").alias("status"),
+                F.current_timestamp().alias("created_at"),
+                F.current_timestamp().alias("updated_at"),
+            )
+            self._insert_edges_safe(edge_df, edges_table)
+            logger.info("Added %d same_entity_type edges", count)
+            return count
+        except Exception as e:
+            logger.warning("Could not add same_entity_type edges: %s", e)
+            return 0
+
     def _clear_ontology_edges(self) -> None:
         """Delete existing ontology-typed edges to prevent accumulation on re-runs.
 
@@ -3520,7 +3598,7 @@ class OntologyBuilder:
             self.spark.sql(
                 f"DELETE FROM {edges_table} "
                 f"WHERE source_system = 'ontology' "
-                f"   OR (relationship IN ('instance_of', 'has_attribute', 'has_property', 'is_a') "
+                f"   OR (relationship IN ('instance_of', 'has_attribute', 'has_property', 'is_a', 'same_entity_type') "
                 f"       AND (source_system IS NULL OR source_system = 'ontology'))"
             )
             logger.info("Cleared existing ontology edges before regeneration")
@@ -4611,6 +4689,8 @@ class OntologyBuilder:
         logger.info(f"Discovered {named_rels} named relationships")
 
         _step("sync_entity_nodes_to_graph", self._sync_entity_nodes_to_graph)
+        _step("enrich_table_nodes_with_ontology", self._enrich_table_nodes_with_ontology)
+        _step("add_same_entity_type_edges", self._add_same_entity_type_edges)
 
         edges_added = _step("add_entity_relationships_to_graph", self.add_entity_relationships_to_graph)
 

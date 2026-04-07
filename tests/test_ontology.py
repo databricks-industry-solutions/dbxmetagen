@@ -1518,3 +1518,116 @@ class TestClassificationModelConsolidation:
         from dbxmetagen.config import DEFAULT_CLASSIFICATION_MODEL
         assert DEFAULT_CLASSIFICATION_MODEL == "databricks-claude-sonnet-4-6"
 
+
+# ======================================================================
+# Enrich graph nodes with ontology data
+# ======================================================================
+
+
+class TestEnrichTableNodesWithOntology:
+    """Tests for _enrich_table_nodes_with_ontology."""
+
+    @pytest.fixture
+    def builder(self):
+        mock_spark = MagicMock()
+        config = OntologyConfig(catalog_name="cat", schema_name="sch")
+        with patch.object(OntologyLoader, 'load_config') as mock_load:
+            mock_load.return_value = OntologyLoader._default_config()
+            b = OntologyBuilder(mock_spark, config)
+        return b
+
+    def test_issues_merge_into_graph_nodes(self, builder):
+        mock_result = MagicMock()
+        mock_result.collect.return_value = [MagicMock(cnt=5)]
+        builder.spark.sql.return_value = mock_result
+        count = builder._enrich_table_nodes_with_ontology()
+        all_sql = [c[0][0] for c in builder.spark.sql.call_args_list]
+        merge_sql = all_sql[0]
+        assert "MERGE INTO" in merge_sql
+        assert "graph_nodes" in merge_sql
+        assert "ontology_id" in merge_sql
+        assert "ontology_type" in merge_sql
+        assert "node_type = 'table'" in merge_sql
+        assert count == 5
+
+    def test_filters_primary_entities_only(self, builder):
+        mock_result = MagicMock()
+        mock_result.collect.return_value = [MagicMock(cnt=0)]
+        builder.spark.sql.return_value = mock_result
+        builder._enrich_table_nodes_with_ontology()
+        merge_sql = builder.spark.sql.call_args_list[0][0][0]
+        assert "'primary'" in merge_sql
+
+    def test_returns_zero_on_failure(self, builder):
+        builder.spark.sql.side_effect = Exception("table not found")
+        assert builder._enrich_table_nodes_with_ontology() == 0
+
+    def test_uses_correct_table_names(self, builder):
+        mock_result = MagicMock()
+        mock_result.collect.return_value = [MagicMock(cnt=0)]
+        builder.spark.sql.return_value = mock_result
+        builder._enrich_table_nodes_with_ontology()
+        merge_sql = builder.spark.sql.call_args_list[0][0][0]
+        assert "cat.sch.graph_nodes" in merge_sql
+        assert "cat.sch.ontology_entities" in merge_sql
+
+
+class TestAddSameEntityTypeEdges:
+    """Tests for _add_same_entity_type_edges."""
+
+    @pytest.fixture
+    def builder(self):
+        mock_spark = MagicMock()
+        config = OntologyConfig(catalog_name="cat", schema_name="sch")
+        with patch.object(OntologyLoader, 'load_config') as mock_load:
+            mock_load.return_value = OntologyLoader._default_config()
+            b = OntologyBuilder(mock_spark, config)
+        return b
+
+    def test_no_pairs_returns_zero(self, builder):
+        mock_df = MagicMock()
+        mock_df.count.return_value = 0
+        builder.spark.sql.return_value = mock_df
+        assert builder._add_same_entity_type_edges() == 0
+
+    def test_self_join_uses_less_than_to_dedupe(self, builder):
+        mock_df = MagicMock()
+        mock_df.count.return_value = 0
+        builder.spark.sql.return_value = mock_df
+        builder._add_same_entity_type_edges()
+        join_sql = builder.spark.sql.call_args_list[0][0][0]
+        assert "a.table_name < b.table_name" in join_sql
+
+    def test_calls_insert_edges_safe_when_pairs_exist(self, builder):
+        mock_df = MagicMock()
+        mock_df.count.return_value = 3
+        mock_df.select.return_value = mock_df
+        builder.spark.sql.return_value = mock_df
+        with patch.object(builder, '_insert_edges_safe') as mock_insert:
+            builder._add_same_entity_type_edges()
+            mock_insert.assert_called_once()
+            args = mock_insert.call_args[0]
+            assert "graph_edges" in args[1]
+
+    def test_returns_zero_on_failure(self, builder):
+        builder.spark.sql.side_effect = Exception("boom")
+        assert builder._add_same_entity_type_edges() == 0
+
+
+class TestClearOntologyEdgesIncludesSameEntityType:
+    """Verify _clear_ontology_edges removes same_entity_type edges."""
+
+    @pytest.fixture
+    def builder(self):
+        mock_spark = MagicMock()
+        config = OntologyConfig(catalog_name="cat", schema_name="sch")
+        with patch.object(OntologyLoader, 'load_config') as mock_load:
+            mock_load.return_value = OntologyLoader._default_config()
+            b = OntologyBuilder(mock_spark, config)
+        return b
+
+    def test_delete_includes_same_entity_type(self, builder):
+        builder._clear_ontology_edges()
+        delete_sql = builder.spark.sql.call_args[0][0]
+        assert "same_entity_type" in delete_sql
+
