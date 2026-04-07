@@ -144,13 +144,50 @@ Be direct and avoid repetition."""
 # ---------------------------------------------------------------------------
 
 def _safe_tool_call(tool_fn, args: dict, timeout_s: int, label: str,
-                    step_num: int, total_steps: int) -> ToolResult:
-    """Run a LangChain tool with a hard timeout. Returns a ToolResult."""
+                    step_num: int, total_steps: int,
+                    parent_span_id: str = None, trace_request_id: str = None) -> ToolResult:
+    """Run a LangChain tool with a hard timeout. Returns a ToolResult.
+
+    When parent_span_id + trace_request_id are provided (cross-thread calls from
+    LangGraph nodes), uses MlflowClient for explicit child-span parenting.
+    Otherwise falls back to context-based mlflow.start_span().
+    """
     mlflow = get_mlflow()
-    cm = mlflow.start_span(name=f"tool_{label}") if mlflow else nullcontext()
-    with cm as span:
-        if span:
-            span.set_inputs({"tool": label, "args": str(args)[:200], "timeout_s": timeout_s})
+    span_inputs = {"tool": label, "args": str(args)[:200], "timeout_s": timeout_s}
+
+    # Client-API span for cross-thread parenting (LangGraph path)
+    _client = None
+    _client_span = None
+    if mlflow and parent_span_id and trace_request_id:
+        try:
+            _client = mlflow.MlflowClient()
+            _client_span = _client.start_span(
+                request_id=trace_request_id, name=f"tool_{label}",
+                parent_id=parent_span_id, span_type="TOOL",
+                inputs=span_inputs,
+            )
+        except Exception:
+            logger.debug("Failed to create child span for tool_%s", label)
+            _client, _client_span = None, None
+
+    # Context-based span fallback (original pipeline path)
+    cm = (mlflow.start_span(name=f"tool_{label}") if mlflow and not _client_span
+          else nullcontext())
+
+    def _finish(outputs):
+        if _client and _client_span:
+            try:
+                _client.end_span(
+                    request_id=trace_request_id,
+                    span_id=_client_span.span_id,
+                    outputs=outputs,
+                )
+            except Exception:
+                pass
+
+    with cm as ctx_span:
+        if ctx_span:
+            ctx_span.set_inputs(span_inputs)
         t0 = time.time()
         if step_num:
             _emit("gathering", f"Step {step_num}/{total_steps}: {label}...")
@@ -165,8 +202,10 @@ def _safe_tool_call(tool_fn, args: dict, timeout_s: int, label: str,
                         step_num, total_steps, label, elapsed, result_len)
             if step_num:
                 _emit("gathering", f"Step {step_num}/{total_steps}: {label} done ({elapsed}s)")
-            if span:
-                span.set_outputs({"status": "ok", "elapsed_s": elapsed, "result_len": result_len})
+            outputs = {"status": "ok", "elapsed_s": elapsed, "result_len": result_len}
+            if ctx_span:
+                ctx_span.set_outputs(outputs)
+            _finish(outputs)
             return ToolResult(success=True, data=result, elapsed_s=elapsed, label=label)
         except FuturesTimeout:
             elapsed = round(time.time() - t0, 1)
@@ -174,8 +213,10 @@ def _safe_tool_call(tool_fn, args: dict, timeout_s: int, label: str,
                            step_num, total_steps, label, elapsed)
             if step_num:
                 _emit("gathering", f"Step {step_num}/{total_steps}: {label} timed out, continuing...")
-            if span:
-                span.set_outputs({"status": "timeout", "elapsed_s": elapsed})
+            outputs = {"status": "timeout", "elapsed_s": elapsed}
+            if ctx_span:
+                ctx_span.set_outputs(outputs)
+            _finish(outputs)
             return ToolResult(success=False, data=None, error_type="timeout",
                               error_hint=f"Timed out after {timeout_s}s", elapsed_s=elapsed, label=label)
         except Exception as e:
@@ -185,8 +226,10 @@ def _safe_tool_call(tool_fn, args: dict, timeout_s: int, label: str,
                            step_num, total_steps, label, elapsed, e)
             if step_num:
                 _emit("gathering", f"Step {step_num}/{total_steps}: {label} failed, continuing...")
-            if span:
-                span.set_outputs({"status": "error", "error": err_str, "elapsed_s": elapsed})
+            outputs = {"status": "error", "error": err_str, "elapsed_s": elapsed}
+            if ctx_span:
+                ctx_span.set_outputs(outputs)
+            _finish(outputs)
             error_type = "sql_error" if "sql" in err_str.lower() else "unknown"
             return ToolResult(success=False, data=None, error_type=error_type,
                               error_hint=err_str, elapsed_s=elapsed, label=label)
@@ -384,7 +427,8 @@ def _fetch_table_schemas(table_names: list[str]) -> str:
 
 
 def _structured_retrieval(question: str, table_names: list[str],
-                          cancel: threading.Event, step_num: int, total_steps: int) -> ToolResult:
+                          cancel: threading.Event, step_num: int, total_steps: int,
+                          parent_span_id: str = None, trace_request_id: str = None) -> ToolResult:
     """Structured retrieval subagent: schema lookup -> SQL writer -> execute (with 1 retry).
 
     Returns a ToolResult with the generated SQL and results.
@@ -395,18 +439,50 @@ def _structured_retrieval(question: str, table_names: list[str],
                           error_hint="No tables to query", label=label)
 
     mlflow = get_mlflow()
-    cm = mlflow.start_span(name="structured_retrieval") if mlflow else nullcontext()
-    with cm as span:
+    span_inputs = {"question": question[:200], "tables": table_names[:8]}
+
+    # Client-API span for cross-thread parenting
+    _client = None
+    _client_span = None
+    if mlflow and parent_span_id and trace_request_id:
+        try:
+            _client = mlflow.MlflowClient()
+            _client_span = _client.start_span(
+                request_id=trace_request_id, name="structured_retrieval",
+                parent_id=parent_span_id, span_type="RETRIEVER",
+                inputs=span_inputs,
+            )
+        except Exception:
+            _client, _client_span = None, None
+
+    cm = (mlflow.start_span(name="structured_retrieval") if mlflow and not _client_span
+          else nullcontext())
+
+    def _finish(outputs):
+        if _client and _client_span:
+            try:
+                _client.end_span(request_id=trace_request_id,
+                                 span_id=_client_span.span_id, outputs=outputs)
+            except Exception:
+                pass
+
+    # Sub-tool calls should be children of this structured_retrieval span
+    sr_span_id = _client_span.span_id if _client_span else parent_span_id
+    sr_req_id = trace_request_id
+
+    with cm as ctx_span:
         t0 = time.time()
-        if span:
-            span.set_inputs({"question": question[:200], "tables": table_names[:8]})
+        if ctx_span:
+            ctx_span.set_inputs(span_inputs)
 
         _emit("gathering", f"Step {step_num}/{total_steps}: Fetching schemas for data retrieval...")
 
         schema_ctx = _fetch_table_schemas(table_names)
         if not schema_ctx or cancel.is_set():
-            if span:
-                span.set_outputs({"status": "no_schemas"})
+            out = {"status": "no_schemas"}
+            if ctx_span:
+                ctx_span.set_outputs(out)
+            _finish(out)
             return ToolResult(success=False, data=None, error_type="no_schemas",
                               error_hint="Could not fetch table schemas", label=label)
 
@@ -414,8 +490,10 @@ def _structured_retrieval(question: str, table_names: list[str],
 
         sql = _sql_writer(question, schema_ctx, cancel)
         if not sql or cancel.is_set():
-            if span:
-                span.set_outputs({"status": "no_sql"})
+            out = {"status": "no_sql"}
+            if ctx_span:
+                ctx_span.set_outputs(out)
+            _finish(out)
             return ToolResult(success=False, data=None, error_type="no_sql",
                               error_hint="SQL writer produced no query", label=label)
 
@@ -423,9 +501,9 @@ def _structured_retrieval(question: str, table_names: list[str],
         _emit("gathering", f"Step {step_num}/{total_steps}: Executing data query...")
 
         tr = _safe_tool_call(execute_data_sql, {"query": sql}, TOOL_TIMEOUT,
-                             "execute_data_sql", step_num, total_steps)
+                             "execute_data_sql", step_num, total_steps,
+                             parent_span_id=sr_span_id, trace_request_id=sr_req_id)
 
-        # One retry on failure: feed the error back to the SQL writer
         if not tr.success or (tr.data and "error" in tr.data.lower()):
             logger.info("[deep_analysis] structured_retrieval: first SQL attempt failed, retrying...")
             error_msg = tr.error_hint or (tr.data[:300] if tr.data else "Unknown error")
@@ -436,20 +514,25 @@ def _structured_retrieval(question: str, table_names: list[str],
             )
             if retry_sql and retry_sql != sql and not cancel.is_set():
                 tr = _safe_tool_call(execute_data_sql, {"query": retry_sql}, TOOL_TIMEOUT,
-                                     "execute_data_sql (retry)", step_num, total_steps)
+                                     "execute_data_sql (retry)", step_num, total_steps,
+                                     parent_span_id=sr_span_id, trace_request_id=sr_req_id)
                 if tr.success:
                     sql = retry_sql
 
         elapsed = round(time.time() - t0, 1)
         if not tr.success or not tr.data:
-            if span:
-                span.set_outputs({"status": "exec_failed", "sql": sql[:300]})
+            out = {"status": "exec_failed", "sql": sql[:300]}
+            if ctx_span:
+                ctx_span.set_outputs(out)
+            _finish(out)
             return ToolResult(success=False, data=None, error_type=tr.error_type or "exec_failed",
                               error_hint=f"SQL execution failed: {tr.error_hint}", elapsed_s=elapsed, label=label)
 
         output = f"**Generated SQL:**\n```sql\n{sql}\n```\n\n**Results:**\n{tr.data}"
-        if span:
-            span.set_outputs({"status": "ok", "sql": sql[:300], "result_len": len(output)})
+        out = {"status": "ok", "sql": sql[:300], "result_len": len(output)}
+        if ctx_span:
+            ctx_span.set_outputs(out)
+        _finish(out)
         return ToolResult(success=True, data=output, elapsed_s=elapsed, label=label)
 
 

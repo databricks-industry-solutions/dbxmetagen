@@ -358,7 +358,7 @@ class TestStructuredRetrievalSQLRetry:
                 "SELECT id, name FROM my_table LIMIT 10",  # retry
             ]
 
-            def tool_side_effect(tool_fn, args, timeout, label, step, total):
+            def tool_side_effect(tool_fn, args, timeout, label, step, total, **kwargs):
                 if "retry" in label:
                     return ToolResult(success=True, data='{"rows": [{"id": 1}]}', label=label)
                 return ToolResult(success=False, data="SQL error: table not found",

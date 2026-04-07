@@ -52,10 +52,13 @@ const VISIBLE_MODES = new Set(['graphrag'])
 const STAGE_LABELS = {
   starting: 'Starting...',
   routing: 'Classifying intent...',
+  classifying_intent: 'Classifying intent...',
   searching: 'Searching metadata...',
   planning: 'Planning analysis...',
   retrieving: 'Gathering evidence...',
-  analyzing: 'Interpreting results...',
+  gathering: 'Gathering evidence...',
+  assembling: 'Assembling evidence...',
+  analyzing: 'Generating analysis...',
   responding: 'Preparing response...',
   clarifying: 'Clarifying question...',
 }
@@ -323,6 +326,7 @@ export default function AgentChat() {
   const [deepMessage, setDeepMessage] = useState('')
   const [deepElapsedMs, setDeepElapsedMs] = useState(0)
   const [elapsedSec, setElapsedSec] = useState(0)
+  const [streamedAnswer, setStreamedAnswer] = useState('')
   const [error, setError] = useState(null)
   const [stats, setStats] = useState(null)
   const [domainStats, setDomainStats] = useState(null)
@@ -353,19 +357,91 @@ export default function AgentChat() {
     setDeepSteps([])
     setDeepMessage('')
     setDeepElapsedMs(0)
+    setStreamedAnswer('')
+
+    const history = messages.filter(m => m.role !== 'error').map(m => ({ role: m.role, content: m.content }))
+
+    // Try SSE stream first, fall back to polling on failure
     try {
-      const history = messages.filter(m => m.role !== 'error').map(m => ({ role: m.role, content: m.content }))
-      const submitRes = await fetch('/api/agent/deep/submit', {
+      const res = await fetch('/api/agent/deep/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: text, history, mode: useMode, session_id: sessionId }),
       })
-      if (!submitRes.ok) {
-        const data = await submitRes.json().catch(() => ({}))
+      if (!res.ok || !res.body) throw new Error('SSE not available')
+
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+      let completed = false
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        const parts = buffer.split('\n\n')
+        buffer = parts.pop() || ''
+
+        for (const part of parts) {
+          if (!part.trim()) continue
+          const lines = part.split('\n')
+          let eventType = '', eventData = ''
+          for (const line of lines) {
+            if (line.startsWith('event: ')) eventType = line.slice(7)
+            else if (line.startsWith('data: ')) eventData = line.slice(6)
+          }
+          if (!eventType || !eventData) continue
+
+          try {
+            const data = JSON.parse(eventData)
+            if (eventType === 'stage') {
+              setStage(data.stage)
+              if (data.message) setDeepMessage(data.message)
+            } else if (eventType === 'progress') {
+              if (data.message) setDeepMessage(data.message)
+              setDeepSteps(prev => [...prev, { stage: data.stage, message: data.message, ts: Date.now() / 1000 }])
+            } else if (eventType === 'token') {
+              setStreamedAnswer(prev => prev + (data.content || ''))
+            } else if (eventType === 'done') {
+              completed = true
+              setMessages(prev => [...prev, {
+                role: 'assistant',
+                content: data.answer || '',
+                tool_calls: data.tool_calls || [],
+                intent: data.intent || null,
+                mode: data.mode || useMode,
+                graph_data: data.graph_data || null,
+                trace_id: data.trace_id || null,
+              }])
+            } else if (eventType === 'error') {
+              completed = true
+              setMessages(prev => [...prev, { role: 'error', content: data.message || 'Analysis failed', _query: text, _mode: useMode }])
+            }
+          } catch { /* skip malformed event */ }
+        }
+      }
+      if (!completed) {
+        setMessages(prev => [...prev, { role: 'error', content: 'Stream ended without completion', _query: text, _mode: useMode }])
+      }
+      return
+    } catch (sseErr) {
+      // SSE failed, fall back to polling
+      console.warn('SSE stream failed, falling back to polling:', sseErr.message)
+    }
+
+    // Fallback: submit/poll (legacy path)
+    try {
+      const res = await fetch('/api/agent/deep/submit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: text, history, mode: useMode, session_id: sessionId }),
+      })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
         setMessages(prev => [...prev, { role: 'error', content: data.detail || 'Submit failed', _query: text, _mode: useMode }])
         return
       }
-      const { task_id, error: submitErr } = await submitRes.json()
+      const { task_id, error: submitErr } = await res.json()
       if (submitErr || !task_id) {
         setMessages(prev => [...prev, { role: 'error', content: submitErr || 'No task ID returned', _query: text, _mode: useMode }])
         return
@@ -377,12 +453,8 @@ export default function AgentChat() {
         const task = await pollRes.json()
         if (task.status === 'done') {
           setMessages(prev => [...prev, {
-            role: 'assistant',
-            content: task.answer || task.response || '',
-            tool_calls: task.tool_calls || [],
-            intent: null,
-            mode: task.mode || useMode,
-            elapsed_ms: task.elapsed_ms,
+            role: 'assistant', content: task.answer || '', tool_calls: task.tool_calls || [],
+            intent: null, mode: task.mode || useMode, elapsed_ms: task.elapsed_ms,
             graph_data: task.graph_data || null,
           }])
           return
@@ -396,7 +468,7 @@ export default function AgentChat() {
         if (task.steps) setDeepSteps(task.steps)
         if (task.elapsed_ms != null) setDeepElapsedMs(task.elapsed_ms)
       }
-      setMessages(prev => [...prev, { role: 'error', content: 'Analysis timed out after 10 minutes. Try a more specific question or a faster mode.', _query: text, _mode: useMode }])
+      setMessages(prev => [...prev, { role: 'error', content: 'Analysis timed out after 10 minutes.', _query: text, _mode: useMode }])
     } catch (e) {
       setMessages(prev => [...prev, { role: 'error', content: e.message, _query: text, _mode: useMode }])
     }
@@ -451,6 +523,7 @@ export default function AgentChat() {
     setDeepSteps([])
     setDeepMessage('')
     setDeepElapsedMs(0)
+    setStreamedAnswer('')
   }
 
   const generatePlot = async (idx) => {
@@ -560,11 +633,11 @@ export default function AgentChat() {
               })}
               {loading && (
                 <div className="flex justify-start mb-4 animate-slide-up">
-                  <div className="card px-4 py-3 text-sm text-slate-500 dark:text-slate-400 max-w-md w-full">
+                  <div className={`card px-4 py-3 text-sm text-slate-500 dark:text-slate-400 w-full ${streamedAnswer ? 'max-w-2xl' : 'max-w-md'}`}>
                     <div className="flex items-center gap-2.5 mb-1">
                       <span className="inline-block w-2 h-2 bg-dbx-lava rounded-full animate-pulse flex-shrink-0" />
                       <span className="font-medium text-slate-700 dark:text-slate-200">
-                        {deepMessage || STAGE_LABELS[stage] || 'Thinking...'}
+                        {streamedAnswer ? 'Generating analysis...' : (deepMessage || STAGE_LABELS[stage] || 'Thinking...')}
                       </span>
                       {elapsedSec > 0 && (
                         <span className="ml-auto text-xs tabular-nums text-slate-400">
@@ -572,7 +645,10 @@ export default function AgentChat() {
                         </span>
                       )}
                     </div>
-                    {deepSteps.length > 0 && (
+                    {streamedAnswer ? (
+                      <div className="mt-2 prose prose-sm max-w-none whitespace-pre-wrap break-words text-slate-700 dark:text-slate-300"
+                        dangerouslySetInnerHTML={{ __html: simpleMarkdown(streamedAnswer) }} />
+                    ) : deepSteps.length > 0 ? (
                       <details className="mt-2">
                         <summary className="cursor-pointer text-xs text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 select-none">
                           {deepSteps.length} step{deepSteps.length !== 1 ? 's' : ''} completed
@@ -586,7 +662,7 @@ export default function AgentChat() {
                           ))}
                         </div>
                       </details>
-                    )}
+                    ) : null}
                   </div>
                 </div>
               )}
