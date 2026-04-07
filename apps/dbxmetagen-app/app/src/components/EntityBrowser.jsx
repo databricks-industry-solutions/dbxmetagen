@@ -245,6 +245,11 @@ export default function EntityBrowser() {
         )
       })()}
 
+      {cst.error && (
+        <div className="rounded-lg border border-red-200 dark:border-red-800/40 bg-red-50 dark:bg-red-900/20 px-4 py-3 text-sm text-red-700 dark:text-red-300">
+          Could not load catalogs/schemas. Check that the SQL warehouse is running and the app service principal has USE permissions. <span className="font-mono text-red-500 dark:text-red-400">{cst.error}</span>
+        </div>
+      )}
       {error && <p className="text-sm text-red-600 dark:text-red-400">Could not load entities. Check permissions or try refreshing the page.</p>}
       {loading && <p className="text-sm text-slate-500">Loading entities...</p>}
       {!loading && !error && filtered.length === 0 && (

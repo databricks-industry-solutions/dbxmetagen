@@ -328,6 +328,11 @@ function ReviewEditor() {
 
   return (
     <div className="space-y-4">
+      {cst.error && (
+        <div className="rounded-lg border border-red-200 dark:border-red-800/40 bg-red-50 dark:bg-red-900/20 px-4 py-3 text-sm text-red-700 dark:text-red-300">
+          Could not load catalogs or tables. Check that the SQL warehouse is running and the app service principal has USE permissions on the target catalog. <span className="font-mono text-red-500 dark:text-red-400">{cst.error}</span>
+        </div>
+      )}
       <ErrorBanner error={error} />
       {info && (
         <div className="card border-l-4 border-l-amber-400 px-4 py-3 text-sm animate-slide-up flex justify-between items-start">

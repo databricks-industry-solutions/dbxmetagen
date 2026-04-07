@@ -230,6 +230,28 @@ function NavDropdown({ cat, activeTab, onSelect }) {
   )
 }
 
+class TabErrorBoundary extends React.Component {
+  state = { error: null }
+  static getDerivedStateFromError(error) { return { error } }
+  componentDidCatch(err, info) { console.error('TabErrorBoundary caught:', err, info) }
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="card border-l-4 border-l-red-500 p-6 m-4">
+          <h3 className="text-lg font-semibold text-red-600 dark:text-red-400 mb-2">Something went wrong</h3>
+          <p className="text-sm text-slate-600 dark:text-slate-300 mb-4">
+            {this.state.error?.message || 'An unexpected error occurred.'}
+            {' '}This may be a permissions issue -- check that the app service principal has access to Unity Catalog.
+          </p>
+          <button onClick={() => this.setState({ error: null })}
+            className="btn-primary btn-sm">Try again</button>
+        </div>
+      )
+    }
+    return this.props.children
+  }
+}
+
 const VALID_TABS = new Set(Object.keys(COMPONENTS))
 const readHash = () => { const h = window.location.hash.replace('#', ''); return VALID_TABS.has(h) ? h : 'jobs' }
 
@@ -328,7 +350,9 @@ export default function App() {
             <div key={tabId}
               className={`border-t-2 ${TAB_ACCENT[tabId] || 'border-t-transparent'} pt-4 ${isActive ? 'animate-slide-up' : ''}`}
               style={{ display: isActive ? 'block' : 'none' }}>
-              <Comp onNavigate={setActiveTab} />
+              <TabErrorBoundary>
+                <Comp onNavigate={setActiveTab} />
+              </TabErrorBoundary>
             </div>
           )
         })}
