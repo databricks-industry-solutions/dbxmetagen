@@ -17,7 +17,7 @@ from typing import Optional, Union
 from contextlib import asynccontextmanager
 
 from cachetools import TTLCache, cached
-from fastapi import Body, FastAPI, HTTPException, Query, UploadFile, File, Form
+from fastapi import Body, FastAPI, HTTPException, Query, Request, UploadFile, File, Form
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -3751,6 +3751,7 @@ def get_coverage_summary(catalog: Optional[str] = None):
         WHERE t.table_catalog = '{cat}'
           AND t.table_schema NOT IN ('information_schema', '__internal')
           AND t.table_type IN {_ALL_TABLE_TYPES}
+          AND NOT t.table_name RLIKE '^(__|event_log_[0-9a-f]{{8}}_)'
         GROUP BY t.table_catalog, t.table_schema
         ORDER BY unprofiled_tables DESC
     """
@@ -3766,6 +3767,7 @@ def get_coverage_summary(catalog: Optional[str] = None):
             WHERE table_catalog = '{cat}'
               AND table_schema NOT IN ('information_schema', '__internal')
               AND table_type IN {_ALL_TABLE_TYPES}
+              AND NOT table_name RLIKE '^(__|event_log_[0-9a-f]{{8}}_)'
             GROUP BY table_catalog, table_schema
             ORDER BY total_tables DESC
         """
@@ -3788,6 +3790,7 @@ def get_coverage_type_breakdown(catalog: Optional[str] = None):
         FROM system.information_schema.tables
         WHERE table_catalog = '{cat}'
           AND table_schema NOT IN ('information_schema', '__internal')
+          AND NOT table_name RLIKE '^(__|event_log_[0-9a-f]{{8}}_)'
         GROUP BY table_type
         ORDER BY count DESC
     """
@@ -3862,6 +3865,7 @@ def get_coverage_tables(catalog: Optional[str] = None, schema: Optional[str] = N
     else:
         conditions.append("t.table_schema NOT IN ('information_schema', '__internal')")
     conditions.append("t.table_type IN ('MANAGED', 'EXTERNAL', 'VIEW', 'STREAMING_TABLE', 'MATERIALIZED_VIEW', 'FOREIGN')")
+    conditions.append("NOT t.table_name RLIKE '^(__|event_log_[0-9a-f]{8}_)'")
     where = " AND ".join(conditions)
     q = f"""
         SELECT t.table_catalog, t.table_schema, t.table_name, t.table_type,
@@ -3911,6 +3915,7 @@ def get_coverage_holistic(catalog: Optional[str] = None):
                 WHERE table_catalog = '{cat}'
                   AND table_schema NOT IN ('information_schema','__internal')
                   AND table_type IN {_ALL_TYPES}
+                  AND NOT table_name RLIKE '^(__|event_log_[0-9a-f]{{8}}_)'
             ) t
             LEFT JOIN {fq('table_knowledge_base')} kb
               ON CONCAT(t.table_catalog, '.', t.table_schema, '.', t.table_name) = kb.table_name
@@ -4079,35 +4084,49 @@ def graph_nodes_endpoint(
 
 @app.get("/api/catalogs")
 def list_catalogs():
-    q = (
-        "SELECT catalog_name FROM system.information_schema.catalogs "
-        "WHERE catalog_name NOT IN ('system', '__databricks_internal') "
-        "ORDER BY catalog_name"
-    )
-    rows = execute_sql(q)
-    return [r["catalog_name"] for r in rows]
+    try:
+        q = (
+            "SELECT catalog_name FROM system.information_schema.catalogs "
+            "WHERE catalog_name NOT IN ('system', '__databricks_internal') "
+            "ORDER BY catalog_name"
+        )
+        rows = execute_sql(q)
+        return [r["catalog_name"] for r in rows]
+    except Exception as e:
+        logger.warning("list_catalogs failed (permissions?): %s", e)
+        raise HTTPException(status_code=403, detail=f"Cannot list catalogs: {e}")
 
 
 @app.get("/api/schemas")
 def list_schemas(catalog: str):
-    q = (
-        f"SELECT schema_name FROM `{catalog}`.information_schema.schemata "
-        f"WHERE schema_name NOT IN ('information_schema', '__internal') "
-        f"ORDER BY schema_name"
-    )
-    rows = execute_sql(q)
-    return [r["schema_name"] for r in rows]
+    try:
+        q = (
+            f"SELECT schema_name FROM `{catalog}`.information_schema.schemata "
+            f"WHERE schema_name NOT IN ('information_schema', '__internal') "
+            f"ORDER BY schema_name"
+        )
+        rows = execute_sql(q)
+        return [r["schema_name"] for r in rows]
+    except Exception as e:
+        logger.warning("list_schemas(%s) failed: %s", catalog, e)
+        raise HTTPException(status_code=403, detail=f"Cannot list schemas in {catalog}: {e}")
 
 
 @app.get("/api/tables")
 def list_tables(catalog: str, schema: str):
-    q = (
-        f"SELECT table_name FROM `{catalog}`.information_schema.tables "
-        f"WHERE table_schema = '{schema}' AND table_type = 'MANAGED' "
-        f"ORDER BY table_name"
-    )
-    rows = execute_sql(q)
-    return [r["table_name"] for r in rows]
+    try:
+        q = (
+            f"SELECT table_name FROM `{catalog}`.information_schema.tables "
+            f"WHERE table_schema = '{schema}' "
+            f"AND table_type IN ('MANAGED','EXTERNAL','VIEW','STREAMING_TABLE','MATERIALIZED_VIEW','FOREIGN') "
+            f"AND NOT table_name RLIKE '^(__|event_log_[0-9a-f]{{8}}_)' "
+            f"ORDER BY table_name"
+        )
+        rows = execute_sql(q)
+        return [r["table_name"] for r in rows]
+    except Exception as e:
+        logger.warning("list_tables(%s.%s) failed: %s", catalog, schema, e)
+        raise HTTPException(status_code=403, detail=f"Cannot list tables in {catalog}.{schema}: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -7835,6 +7854,10 @@ def _ensure_kpi_table():
         execute_sql(f"ALTER TABLE {fq('kpi_definitions')} ADD COLUMNS (validation_status STRING, validation_error STRING)", timeout=15)
     except Exception:
         pass
+    try:
+        execute_sql(f"ALTER TABLE {fq('kpi_definitions')} ADD COLUMNS (profile_id STRING)", timeout=15)
+    except Exception:
+        pass
 
 
 def _validate_kpi_formula(formula: str, target_tables: list[str]) -> tuple[str, str]:
@@ -7855,6 +7878,7 @@ class KpiRequest(BaseModel):
     formula: str = ""
     target_tables: list[str] = []
     domain: str = ""
+    profile_id: Optional[str] = None
 
 
 class KpiSuggestRequest(BaseModel):
@@ -7863,6 +7887,7 @@ class KpiSuggestRequest(BaseModel):
     model_endpoint: str = _LLM_MODEL
     business_context: Optional[str] = None
     questions: list[str] = []
+    profile_id: Optional[str] = None
 
 
 @app.get("/api/kpis")
@@ -7881,11 +7906,14 @@ def create_kpi(req: KpiRequest):
     arr = ",".join("'" + t + "'" for t in req.target_tables)
     v_status, v_error = _validate_kpi_formula(req.formula, req.target_tables)
     v_error_esc = v_error.replace("'", "''")
+    pid = req.profile_id or ""
     execute_sql(
-        f"INSERT INTO {fq('kpi_definitions')} VALUES "
+        f"INSERT INTO {fq('kpi_definitions')} "
+        f"(kpi_id, name, description, formula, target_tables, domain, source, "
+        f"created_at, updated_at, validation_status, validation_error, profile_id) VALUES "
         f"('{kpi_id}', '{name_esc}', '{desc_esc}', '{formula_esc}', "
         f"ARRAY({arr}), '{req.domain}', 'manual', current_timestamp(), current_timestamp(), "
-        f"'{v_status}', '{v_error_esc}')",
+        f"'{v_status}', '{v_error_esc}', '{pid}')",
         timeout=30,
     )
     return {"kpi_id": kpi_id, "name": req.name, "validation_status": v_status, "validation_error": v_error}
@@ -7900,10 +7928,12 @@ def update_kpi(kpi_id: str, req: KpiRequest):
     arr = ",".join("'" + t + "'" for t in req.target_tables)
     v_status, v_error = _validate_kpi_formula(req.formula, req.target_tables)
     v_error_esc = v_error.replace("'", "''")
+    pid = req.profile_id or ""
     execute_sql(
         f"UPDATE {fq('kpi_definitions')} SET name = '{name_esc}', description = '{desc_esc}', "
         f"formula = '{formula_esc}', target_tables = ARRAY({arr}), domain = '{req.domain}', "
         f"validation_status = '{v_status}', validation_error = '{v_error_esc}', "
+        f"profile_id = '{pid}', "
         f"updated_at = current_timestamp() WHERE kpi_id = '{kpi_id}'",
         timeout=30,
     )
@@ -8227,6 +8257,9 @@ def agent_deep_submit(req: AgentChatRequest):
                         "tool_calls": event.get("tool_calls", []),
                         "mode": event.get("mode", mode),
                         "routing_trace": event.get("routing_trace"),
+                        "graph_data": event.get("graph_data"),
+                        "timing": event.get("timing"),
+                        "intent": event.get("intent"),
                         "steps": prev_steps,
                         "created": created,
                         "elapsed_ms": int((time.time() - created) * 1000),
@@ -8276,6 +8309,120 @@ def agent_deep_poll(task_id: str):
     if not task:
         raise HTTPException(404, detail="Task not found")
     return task
+
+
+# ---------------------------------------------------------------------------
+# SSE streaming deep analysis (LangGraph-based, replaces submit/poll for new UI)
+# ---------------------------------------------------------------------------
+
+_DEEP_STREAM_TIMEOUT = 300  # 5-minute wall-clock max for SSE stream
+
+
+@app.post("/api/agent/deep/stream")
+async def agent_deep_stream(req: AgentChatRequest, request: Request):
+    """SSE endpoint: streams stage progress, token-level output, and final result.
+
+    Event types:
+      event: stage     -- {"stage": "...", "message": "..."}
+      event: progress  -- {"stage": "gathering", "message": "Step 2/7: ..."}
+      event: token     -- {"content": "partial text"}
+      event: done      -- {"answer": "...", "tool_calls": [...], "graph_data": {...}, ...}
+      event: error     -- {"message": "..."}
+    """
+    from agent.guardrails import validate_input
+    ok, err = validate_input(req.message)
+    if not ok:
+        raise HTTPException(400, detail=err)
+
+    mode = req.mode if req.mode in ("graphrag", "baseline") else "graphrag"
+
+    try:
+        from agent.deep_analysis_graph import get_graph, NODE_STAGE_MAP
+    except ImportError as e:
+        raise HTTPException(503, detail=f"Deep analysis graph not available: {e}")
+
+    def _sse(event_type: str, data: dict) -> str:
+        return f"event: {event_type}\ndata: {json.dumps(data, default=str)}\n\n"
+
+    async def event_generator():
+        # Fix #1: ensure MLflow context is set in the async worker thread
+        try:
+            from agent.tracing import ensure_mlflow_context
+            ensure_mlflow_context()
+        except Exception:
+            pass
+
+        graph = get_graph()
+        initial_state = {
+            "query": req.message,
+            "history": req.history or [],
+            "session_id": req.session_id or "",
+            "mode": mode,
+        }
+
+        t_start = time.time()
+        deadline = t_start + _DEEP_STREAM_TIMEOUT
+        answer_tokens: list[str] = []
+        root_run_id: str | None = None
+
+        try:
+            async for event in graph.astream_events(initial_state, version="v2"):
+                # Fix #3: wall-clock timeout check
+                if time.time() > deadline:
+                    elapsed_s = int(time.time() - t_start)
+                    logger.error("SSE deep stream timed out after %ds", elapsed_s)
+                    yield _sse("error", {"message": f"Analysis timed out after {elapsed_s}s. Try a simpler question."})
+                    return
+
+                # Fix #5: abort if client disconnected
+                if await request.is_disconnected():
+                    logger.info("SSE client disconnected, aborting stream")
+                    return
+
+                kind = event["event"]
+                name = event.get("name", "")
+
+                # Fix #2: capture root run_id from the first LangGraph chain start
+                if kind == "on_chain_start" and name == "LangGraph" and root_run_id is None:
+                    root_run_id = event.get("run_id")
+
+                if kind == "on_chain_start" and name in NODE_STAGE_MAP:
+                    yield _sse("stage", NODE_STAGE_MAP[name])
+
+                elif kind == "on_custom_event" and name == "progress":
+                    yield _sse("progress", event["data"])
+
+                elif kind == "on_chat_model_stream":
+                    chunk = event.get("data", {}).get("chunk")
+                    if chunk:
+                        content = getattr(chunk, "content", "") or ""
+                        if content:
+                            answer_tokens.append(content)
+                            yield _sse("token", {"content": content})
+
+                elif kind == "on_chain_end" and name == "LangGraph":
+                    output = event.get("data", {}).get("output", {})
+                    final_answer = "".join(answer_tokens) if answer_tokens else output.get("answer", "")
+                    elapsed_ms = int((time.time() - t_start) * 1000)
+
+                    timing = output.get("timing") or {}
+                    yield _sse("done", {
+                        "answer": final_answer,
+                        "tool_calls": output.get("tool_calls", []),
+                        "graph_data": output.get("graph_data"),
+                        "timing": timing,
+                        "token_usage": timing.get("token_usage"),
+                        "mode": output.get("mode", mode),
+                        "intent": output.get("intent_type"),
+                        "trace_id": root_run_id,
+                        "elapsed_ms": elapsed_ms,
+                    })
+
+        except Exception as e:
+            logger.error("SSE deep stream error: %s", e, exc_info=True)
+            yield _sse("error", {"message": str(e)})
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
 @app.get("/api/agent/stats")

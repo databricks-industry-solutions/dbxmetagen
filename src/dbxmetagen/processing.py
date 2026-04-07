@@ -3601,6 +3601,15 @@ def is_schema_wildcard(table_name: str) -> bool:
 _UNREADABLE_FORMATS = frozenset({"VECTOR_INDEX_FORMAT"})
 _UNREADABLE_TABLE_TYPES = frozenset({"METRIC_VIEW", "METRIC VIEW"})
 
+_EXCLUDE_INTERNAL_SQL = "AND NOT table_name RLIKE '^(__|event_log_[0-9a-f]{8}_)'"
+_INTERNAL_RE = re.compile(r"^(__|event_log_[0-9a-f]{8}_)")
+
+
+def is_internal_table(table_name: str) -> bool:
+    """Return True if the table name matches a Databricks-internal naming pattern."""
+    bare = table_name.rsplit(".", 1)[-1]
+    return bool(_INTERNAL_RE.match(bare))
+
 
 def get_tables_in_schema(catalog_name: str, schema_name: str) -> List[str]:
     """
@@ -3624,6 +3633,7 @@ def get_tables_in_schema(catalog_name: str, schema_name: str) -> List[str]:
             FROM `{catalog_name}`.information_schema.tables
             WHERE table_schema = '{schema_name}'
               AND table_type NOT IN ('METRIC_VIEW', 'METRIC VIEW')
+              {_EXCLUDE_INTERNAL_SQL}
         """
         )
         rows = tables_df.collect()
