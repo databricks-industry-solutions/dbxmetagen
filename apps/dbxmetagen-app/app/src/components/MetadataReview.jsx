@@ -108,6 +108,8 @@ function ReviewEditor() {
   const [tableTagApplying, setTableTagApplying] = useState({})
   const [tableTagResults, setTableTagResults] = useState({})
   const [statusFilter, setStatusFilter] = useState('all')
+  const [resultFilter, setResultFilter] = useState('')
+  const [resultSchemaFilter, setResultSchemaFilter] = useState('')
   const [importLoading, setImportLoading] = useState(false)
   const [importResult, setImportResult] = useState(null)
   const [showVolumeBrowser, setShowVolumeBrowser] = useState(false)
@@ -128,6 +130,7 @@ function ReviewEditor() {
 
   const loadData = async () => {
     setLoading(true); setError(null); setDdlSql(''); setDdlApplyResult(null); setExportResult(null)
+    setResultFilter(''); setResultSchemaFilter('')
     const body = scopeMode === 'schema'
       ? { schemas: [`${selectedCatalog}.${selectedSchema}`] }
       : { tables: selectedTables.map(t => `${selectedCatalog}.${selectedSchema}.${t}`) }
@@ -201,6 +204,26 @@ function ReviewEditor() {
   }
 
   const tableNames = useMemo(() => reviewData.map(t => t.table_name), [reviewData])
+
+  const resultSchemas = useMemo(() => {
+    const set = new Set()
+    for (const t of reviewData) {
+      const parts = t.table_name.split('.')
+      if (parts.length >= 3) set.add(`${parts[0]}.${parts[1]}`)
+    }
+    return [...set].sort()
+  }, [reviewData])
+
+  const visibleReview = useMemo(() => {
+    const lf = resultFilter.toLowerCase()
+    return reviewData.filter((tbl, idx) => {
+      if (statusFilter !== 'all' && (tbl.review_status || 'unreviewed') !== statusFilter) return false
+      if (resultSchemaFilter && !tbl.table_name.startsWith(resultSchemaFilter + '.')) return false
+      if (lf && !tbl.table_name.toLowerCase().includes(lf)) return false
+      return true
+    })
+  }, [reviewData, statusFilter, resultSchemaFilter, resultFilter])
+
   const [ddlCategory, setDdlCategory] = useState('comments')
   const [customDomainKey, setCustomDomainKey] = useState('')
   const [customSubdomainKey, setCustomSubdomainKey] = useState('')
@@ -328,6 +351,11 @@ function ReviewEditor() {
 
   return (
     <div className="space-y-4">
+      {cst.error && (
+        <div className="rounded-lg border border-red-200 dark:border-red-800/40 bg-red-50 dark:bg-red-900/20 px-4 py-3 text-sm text-red-700 dark:text-red-300">
+          Could not load catalogs or tables. Check that the SQL warehouse is running and the app service principal has USE permissions on the target catalog. <span className="font-mono text-red-500 dark:text-red-400">{cst.error}</span>
+        </div>
+      )}
       <ErrorBanner error={error} />
       {info && (
         <div className="card border-l-4 border-l-amber-400 px-4 py-3 text-sm animate-slide-up flex justify-between items-start">
@@ -530,10 +558,34 @@ function ReviewEditor() {
         ) : null
       })()}
 
+      {/* Result Filters */}
+      {reviewData.length > 0 && (
+        <div className="card p-3 flex flex-wrap items-center gap-3">
+          <input value={resultFilter} onChange={e => setResultFilter(e.target.value)}
+            placeholder="Search tables..." className={inp + ' !w-56 !py-1.5 !text-xs'} aria-label="Filter loaded tables by name" />
+          {resultSchemas.length > 1 && (
+            <select value={resultSchemaFilter} onChange={e => setResultSchemaFilter(e.target.value)}
+              className={inp + ' !w-auto !py-1.5 !text-xs'}>
+              <option value="">All schemas ({resultSchemas.length})</option>
+              {resultSchemas.map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
+          )}
+          <span className="text-xs text-slate-400 ml-auto">
+            {visibleReview.length === reviewData.length
+              ? `${reviewData.length} tables`
+              : `${visibleReview.length} of ${reviewData.length} tables`}
+          </span>
+          {(resultFilter || resultSchemaFilter) && (
+            <button onClick={() => { setResultFilter(''); setResultSchemaFilter('') }}
+              className="text-xs text-blue-600 dark:text-blue-400 hover:underline">Clear filters</button>
+          )}
+        </div>
+      )}
+
       {/* Combined Data View */}
       {reviewData.length > 0 && (
         <div className="space-y-3">
-          {reviewData.filter(tbl => statusFilter === 'all' || (tbl.review_status || 'unreviewed') === statusFilter).map((tbl, _fi) => {
+          {visibleReview.map((tbl, _fi) => {
             const tblIdx = reviewData.indexOf(tbl)
             return (
             <div key={tbl.table_name} className="bg-dbx-oat-light dark:bg-dbx-navy-650 rounded-xl border border-slate-200 dark:border-dbx-navy-400/25 shadow-sm overflow-hidden">

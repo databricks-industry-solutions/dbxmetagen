@@ -32,7 +32,11 @@
    cp example.env dev.env   # Edit with your workspace URL, catalog, schema, warehouse_id
    ```
 
-2. Deploy:
+2. **Azure / GCP users:** The default job cluster node type is `i3.2xlarge` (AWS). Update `node_type` in `variables.yml` before deploying:
+   - **Azure:** `Standard_DS4_v2`
+   - **GCP:** `n2-highmem-8`
+
+3. Deploy:
    ```bash
    ./deploy.sh --profile <your-profile> --target dev
    ```
@@ -43,9 +47,9 @@
    ./deploy.sh --profile <your-profile> --target dev --no-app
    ```
 
-3. Access the app at **Workspace > Apps > dbxmetagen-app**
+4. Access the app at **Workspace > Apps > dbxmetagen-app**
 
-4. Run jobs:
+5. Run jobs:
    ```bash
    databricks bundle run metadata_generator_job -t dev -p <profile> --params table_names='catalog.schema.*',mode=domain
    databricks bundle run full_analytics_pipeline_job -t dev -p <profile>
@@ -266,6 +270,7 @@ Settings are in `variables.yml`. Key options:
 | `mode` | `comment` | Generation mode: `comment`, `pi`, or `domain` |
 | `apply_ddl` | `false` | Apply generated metadata directly to Unity Catalog |
 | `allow_data` | `true` | Set `false` to prevent data from being sent to LLMs |
+| `node_type` | `i3.2xlarge` | Job cluster node type. Change for Azure (`Standard_DS4_v2`) or GCP (`n2-highmem-8`) |
 | `include_deterministic_pi` | `true` | Enable SpaCy/Presidio for rule-based PI detection (requires `en_core_web_lg` model -- see [Configuration docs](docs/CONFIGURATION.md)) |
 | `federation_mode` | `false` | Enable for federated catalog sources (Redshift, Snowflake) |
 
@@ -373,20 +378,30 @@ The deploy script runs `npm install` and `npm run build` to compile the React fr
 
 - **npm not installed:** Install Node.js (which includes npm) from https://nodejs.org/ or via `brew install node`.
 - **npm registry unreachable:** Corporate firewalls or VPNs may block `registry.npmjs.org`. Check your network/proxy settings.
-- **npm crashes ("Exit handler never called"):** This is a [known npm 11.x bug](https://github.com/npm/cli/issues). Fix by clearing the cache and retrying:
-  ```bash
-  cd apps/dbxmetagen-app/app/src
-  rm -rf node_modules package-lock.json
-  npm cache clean --force
-  npm install && npm run build
-  ```
+- **npm crashes ("Exit handler never called"):** This is a [known npm 11.x bug](https://github.com/npm/cli/issues). Fix by clearing the cache and retrying.
   If that doesn't help, downgrade npm: `npm install -g npm@10`
+
+Then redeploy with `./deploy.sh`.
 
 **Workaround:** The pre-built frontend (`apps/dbxmetagen-app/app/src/dist/`) is committed to the repo, so you can skip the build entirely if you haven't changed any frontend code:
 
 ```bash
 ./deploy.sh --profile <your-profile> --target dev --no-frontend
 ```
+
+### Jobs fail with "Instance type not supported" or "NODE_TYPE_NOT_SUPPORTED"
+
+The default `node_type` in `variables.yml` is `i3.2xlarge`, which is an AWS instance type. If you're running on Azure or GCP, job clusters will fail to start.
+
+**Fix:** Update `node_type` in `variables.yml` to match your cloud:
+
+| Cloud | Recommended `node_type` |
+|-------|------------------------|
+| AWS   | `i3.2xlarge` (default) |
+| Azure | `Standard_DS4_v2`      |
+| GCP   | `n2-highmem-8`         |
+
+You may need to try a couple different node types if your organization doesn't have capacity for these in your cloud.
 
 ## Analysis of Packages Used
 
@@ -399,7 +414,6 @@ The deploy script runs `npm install` and `npm run build` to compile the React fr
 | cloudpickle | 3.1.0 | BSD 3-Clause | https://github.com/cloudpipe/cloudpickle |
 | pydantic | 2.10.3 | MIT | https://github.com/pydantic/pydantic |
 | ydata-profiling | 4.17.0 | MIT | https://github.com/ydataai/ydata-profiling |
-| databricks-langchain | 0.4.0 | Databricks License | https://github.com/databricks/databricks-ai-bridge |
 | databricks-sdk | 0.68.0 | Apache 2.0 | https://github.com/databricks/databricks-sdk-py |
 | openpyxl | 3.1.5 | MIT | https://foss.heptapod.net/openpyxl/openpyxl |
 | spacy | 3.8.7 | MIT | https://spacy.io |
@@ -417,8 +431,6 @@ The deploy script runs `npm install` and `npm run build` to compile the React fr
 | langgraph | 1.1.3 | MIT | https://github.com/langchain-ai/langgraph |
 | langchain | 1.2.13 | MIT | https://github.com/langchain-ai/langchain |
 | langchain-community | 0.4.1 | MIT | https://github.com/langchain-ai/langchain |
-| databricks-vectorsearch | 0.66 | DB License | https://pypi.org/project/databricks-vectorsearch/ |
-| databricks-connect | -- | Databricks Proprietary | https://pypi.org/project/databricks-connect/ |
 | grpcio | 1.78.0 | Apache 2.0 | https://github.com/grpc/grpc |
 | uvicorn | 0.42.0 | BSD 3-Clause | https://github.com/encode/uvicorn |
 | tiktoken | 0.12.0 | MIT | https://github.com/openai/tiktoken |
@@ -439,7 +451,7 @@ The deploy script runs `npm install` and `npm run build` to compile the React fr
 | tailwindcss | ^3.4.0 | MIT | https://github.com/tailwindlabs/tailwindcss |
 | vite | ^6.0.0 | MIT | https://github.com/vitejs/vite |
 
-All packages use permissive licenses (Apache 2.0, MIT, BSD, PSF) except Databricks proprietary components (databricks-langchain, databricks-connect, databricks-vectorsearch).
+All packages use permissive licenses (Apache 2.0, MIT, BSD, PSF).
 
 ## License
 

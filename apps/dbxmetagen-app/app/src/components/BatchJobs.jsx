@@ -389,6 +389,11 @@ export default function BatchJobs({ onNavigate }) {
             <div>
               <label className="section-title mb-1.5 flex items-center gap-2">
                 Industry Ontology
+                <span className="relative group/tip cursor-help" title="Each bundle defines its own entity IDs. Entities from different bundles will not unify — use the same bundle across all data for consistent entity linkage.">
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5 text-slate-400 group-hover/tip:text-slate-600 dark:group-hover/tip:text-slate-300 transition-colors" viewBox="0 0 20 20" fill="currentColor">
+                    <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd"/>
+                  </svg>
+                </span>
                 {bundlesLoading && (
                   <span className="text-[10px] text-dbx-oat-medium dark:text-dbx-navy-300 italic animate-pulse">Loading...</span>
                 )}
@@ -586,6 +591,11 @@ export default function BatchJobs({ onNavigate }) {
                 </button>
                 {pickerOpen && (
                   <div className="mt-2 card p-3 space-y-2 animate-slide-up">
+                    {picker.error && (
+                      <div className="rounded-lg border border-red-200 dark:border-red-800/40 bg-red-50 dark:bg-red-900/20 px-3 py-2 text-xs text-red-700 dark:text-red-300">
+                        Could not load catalogs/schemas. Check that the SQL warehouse is running and the app service principal has USE permissions. <span className="text-red-500 dark:text-red-400 font-mono">{picker.error}</span>
+                      </div>
+                    )}
                     <div className="grid grid-cols-3 gap-2">
                       <select value={pickerCatalog} onChange={e => setPickerCatalog(e.target.value)} className="select-base !text-xs !py-1.5">
                         <option value="">Select catalog</option>
@@ -722,7 +732,7 @@ export default function BatchJobs({ onNavigate }) {
             </div>
             <p className="text-xs text-slate-400">
               {settings.build_kb_after && <><strong className="text-slate-500">+ KB</strong>: Builds table + column knowledge base after generation so the Review tab is populated. </>}
-              <strong className="text-slate-500">KB-Enriched Modes</strong>: Generates comments, builds the knowledge base, then runs PI + domain classification enriched with KB-generated descriptions.
+              <strong className="text-slate-500">KB-Enriched Modes</strong>: Generates comments, builds the knowledge base, then runs PI + domain classification enriched with KB-generated descriptions. Use this mode if you want comments to inform PI + domain, but don't want to apply your comments to your tables.
             </p>
           </div>
         </section>
@@ -770,11 +780,12 @@ export default function BatchJobs({ onNavigate }) {
                   placeholder="entity_type" title="Unity Catalog tag key for entity type classifications"
                   className="input-base !text-xs" />
               </div>
-              <div className="flex items-end pb-1">
+              <div className="pb-1">
                 <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer">
                   <input type="checkbox" checked={incremental} onChange={e => setIncremental(e.target.checked)} />
-                  Incremental mode (skip unchanged tables)
+                  Incremental mode (skip already-processed tables)
                 </label>
+                <p className="text-[10px] text-amber-600 dark:text-amber-400 mt-0.5 ml-5">Uncheck for your first run. Incremental mode requires a prior run's control table to exist.</p>
               </div>
             </div>
 
@@ -902,25 +913,9 @@ export default function BatchJobs({ onNavigate }) {
         })()}
       </section>
 
-      {/* Available Jobs */}
-      <details className="card overflow-hidden group">
-        <summary className="px-5 py-3 text-sm font-semibold text-slate-700 dark:text-slate-200 cursor-pointer hover:bg-dbx-oat-light dark:hover:bg-dbx-navy-500/50 flex items-center gap-1.5 transition-colors">
-          <svg className="w-3 h-3 transition-transform group-open:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-          </svg>
-          Available Jobs ({jobs.length})
-        </summary>
-        <div className="px-5 pb-4 divide-y divide-dbx-oat-dark/30 dark:divide-dbx-navy-400/20">
-          {jobs.length === 0 ? (
-            <p className="text-xs text-slate-400 dark:text-slate-500 py-4">{error?.includes('Failed to load jobs') ? 'Could not load jobs — check your connection and try refreshing.' : 'No jobs found. Deploy the Databricks Asset Bundle to your workspace first.'}</p>
-          ) : jobs.map(j => (
-            <div key={j.job_id} className="py-2.5 flex justify-between items-center text-sm">
-              <span className="text-slate-700 dark:text-slate-300">{j.name}</span>
-              <span className="text-slate-400 font-mono text-xs">#{j.job_id}</span>
-            </div>
-          ))}
-        </div>
-      </details>
+      {jobs.length === 0 && error?.includes('Failed to load jobs') && (
+        <p className="text-xs text-slate-400 dark:text-slate-500 py-2">Could not load jobs — check your connection and try refreshing.</p>
+      )}
     </div>
   )
 }

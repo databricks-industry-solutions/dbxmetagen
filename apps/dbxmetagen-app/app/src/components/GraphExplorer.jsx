@@ -8,9 +8,16 @@ const EDGE_TYPES = [
   { value: '', label: 'All edges' },
   { value: 'references', label: 'References (FK)' },
   { value: 'same_domain', label: 'Same domain' },
+  { value: 'same_subdomain', label: 'Same subdomain' },
+  { value: 'same_schema', label: 'Same schema' },
+  { value: 'same_catalog', label: 'Same catalog' },
+  { value: 'same_security_level', label: 'Same security level' },
   { value: 'similar_embedding', label: 'Similar (embedding)' },
   { value: 'derives_from', label: 'Derives from' },
   { value: 'contains', label: 'Contains' },
+  { value: 'instance_of', label: 'Instance of (ontology)' },
+  { value: 'has_attribute', label: 'Has attribute (ontology)' },
+  { value: 'is_a', label: 'Is-a (ontology)' },
 ]
 
 export default function GraphExplorer({ initialNode, initialEdgeType }) {

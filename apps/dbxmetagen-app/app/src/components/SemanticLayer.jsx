@@ -284,7 +284,7 @@ export default function SemanticLayer() {
     try {
       const res = await fetch('/api/semantic-layer/profiles', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ profile_name: profileName, questions: lines, business_context: businessContext || undefined }),
+        body: JSON.stringify({ profile_name: profileName, questions: lines, table_patterns: selectedTables, business_context: businessContext || undefined }),
       })
       const data = await res.json()
       if (!res.ok) { setError(data.detail || 'Failed to save profile'); setLoading(false); return }
@@ -366,7 +366,7 @@ export default function SemanticLayer() {
   }
   const saveKpi = async () => {
     try {
-      const body = { ...kpiDraft, target_tables: selectedTables }
+      const body = { ...kpiDraft, target_tables: selectedTables, profile_id: activeProfileId || undefined }
       const res = kpiEditId
         ? await fetch(`/api/kpis/${kpiEditId}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
         : await fetch('/api/kpis', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
@@ -398,11 +398,11 @@ export default function SemanticLayer() {
       const fqTables = selectedTables.map(t => t.includes('.') ? t : `${selectedCatalog}.${selectedSchema}.${t}`)
       const qLines = questionsText.split('\n').filter(l => l.trim())
       const res = await fetch('/api/kpis/suggest', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ table_identifiers: fqTables, business_context: businessContext || undefined, questions: qLines.length ? qLines : undefined }) })
+        body: JSON.stringify({ table_identifiers: fqTables, business_context: businessContext || undefined, questions: qLines.length ? qLines : undefined, profile_id: activeProfileId || undefined }) })
       const j = await res.json()
       for (const k of (j.kpis || [])) {
         await fetch('/api/kpis', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ...k, target_tables: fqTables, source: 'suggested' }) })
+          body: JSON.stringify({ ...k, target_tables: fqTables, source: 'suggested', profile_id: activeProfileId || undefined }) })
       }
       loadKpis()
     } catch (e) { setError(e.message) }
@@ -700,6 +700,11 @@ export default function SemanticLayer() {
           Export SQL
         </button>
       </div>
+      {cst.error && (
+        <div className="rounded-lg border border-red-200 dark:border-red-800/40 bg-red-50 dark:bg-red-900/20 px-4 py-3 text-sm text-red-700 dark:text-red-300">
+          Could not load catalogs or tables. Check that the SQL warehouse is running and the app service principal has USE permissions on the target catalog. <span className="font-mono text-red-500 dark:text-red-400">{cst.error}</span>
+        </div>
+      )}
       <ErrorBanner error={error} />
 
       {/* Unified catalog/schema display */}
@@ -975,9 +980,7 @@ export default function SemanticLayer() {
           )
           const assigned = new Set()
           const sections = profiles.map(p => {
-            let tables = []
-            try { tables = JSON.parse(p.table_patterns || '[]') } catch { /* ignore */ }
-            const matched = kpis.filter(k => tables.length ? kpiMatchesTables(k, tables) : false)
+            const matched = kpis.filter(k => k.profile_id === p.profile_id)
             matched.forEach(k => assigned.add(k.kpi_id))
             return { key: p.profile_id, label: p.profile_name, kpis: matched }
           }).filter(s => s.kpis.length > 0)
@@ -1004,6 +1007,7 @@ export default function SemanticLayer() {
                     <span className={`transition-transform ${expandedKpiSections.has('__unassigned') ? 'rotate-90' : ''}`}>&#9654;</span>
                     Unassigned ({unassigned.length})
                   </button>
+                  <p className="text-[10px] text-slate-400 dark:text-slate-500 ml-4 mt-0.5">Created before profile support. Re-save from a profile to assign.</p>
                   {expandedKpiSections.has('__unassigned') && (
                     <div className="space-y-1.5 mt-1.5">{unassigned.map(k => <KpiRow key={k.kpi_id} k={k} dimmed />)}</div>
                   )}

@@ -63,4 +63,4 @@ env:
   - name: LLM_MODEL
     value: "databricks-claude-sonnet-4-6"
   - name: MLFLOW_EXPERIMENT
-    value: "/Shared/dbxmetagen-app/traces"
+    value: "/Shared/dbxmetagen/dbxmetagen_agent_traces"

@@ -14,12 +14,18 @@
 
 dbutils.widgets.text("catalog_name", "", "Catalog Name")
 dbutils.widgets.text("schema_name", "", "Schema Name")
+dbutils.widgets.text("validate_columns", "false", "Validate Column Entities (true/false)")
+dbutils.widgets.text("force_revalidate", "false", "Force Re-validate All (true/false)")
 
 catalog_name = dbutils.widgets.get("catalog_name")
 schema_name = dbutils.widgets.get("schema_name")
+validate_columns = str(dbutils.widgets.get("validate_columns")).strip().lower() == "true"
+force_revalidate = str(dbutils.widgets.get("force_revalidate")).strip().lower() == "true"
 
 print(f"Catalog: {catalog_name}")
 print(f"Schema: {schema_name}")
+print(f"Validate columns: {validate_columns}")
+print(f"Force revalidate: {force_revalidate}")
 
 # COMMAND ----------
 
@@ -31,7 +37,9 @@ from dbxmetagen.ontology_validator import validate_ontology
 result = validate_ontology(
     spark=spark,
     catalog_name=catalog_name,
-    schema_name=schema_name
+    schema_name=schema_name,
+    validate_columns=validate_columns,
+    force_revalidate=force_revalidate,
 )
 
 print(f"Validation complete:")

@@ -42,6 +42,9 @@ _gc = sys.modules["grpc._channel"]
 _gc._InactiveRpcError = type("_InactiveRpcError", (Exception,), {})
 _gc._MultiThreadedRendezvous = type("_MultiThreadedRendezvous", (Exception,), {})
 
+# pyspark.sql.utils.AnalysisException must be a real exception class
+sys.modules["pyspark.sql.utils"].AnalysisException = type("AnalysisException", (Exception,), {})
+
 
 # Internal dbxmetagen submodule stubs -- these must be SCOPED (not global)
 # because other tests import the real modules (e.g. dbxmetagen.prompts.Prompt).

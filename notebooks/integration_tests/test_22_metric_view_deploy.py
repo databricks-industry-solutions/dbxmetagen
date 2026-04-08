@@ -24,6 +24,7 @@ print(f"Testing metric view deploy tracking in {catalog_name}.{test_schema}")
 # COMMAND ----------
 
 import sys
+
 sys.path.append("../../src")
 
 # COMMAND ----------
@@ -39,15 +40,19 @@ from datetime import datetime
 spark.sql(f"CREATE SCHEMA IF NOT EXISTS {catalog_name}.{test_schema}")
 spark.sql(f"CREATE SCHEMA IF NOT EXISTS {catalog_name}.{test_schema}_bronze")
 
-spark.sql(f"""
+spark.sql(
+    f"""
     CREATE OR REPLACE TABLE {catalog_name}.{test_schema}_bronze.test_orders (
         order_id INT, amount DOUBLE, region STRING
     )
-""")
-spark.sql(f"""
+"""
+)
+spark.sql(
+    f"""
     INSERT INTO {catalog_name}.{test_schema}_bronze.test_orders VALUES
     (1, 100.0, 'North'), (2, 200.0, 'South'), (3, 150.0, 'North')
-""")
+"""
+)
 
 print("Source table created in bronze schema")
 
@@ -77,14 +82,16 @@ defn_id = str(uuid.uuid4())
 now = datetime.utcnow().isoformat()
 json_str = json.dumps(defn).replace("'", "''")
 
-spark.sql(f"""
+spark.sql(
+    f"""
     INSERT INTO {catalog_name}.{test_schema}.{config.definitions_table} VALUES (
         '{defn_id}', 'test_order_metrics',
         '{catalog_name}.{test_schema}_bronze.test_orders',
         '{json_str}', 'q-test', 'validated', '', NULL,
         '{now}', NULL, NULL, NULL
     )
-""")
+"""
+)
 
 result = gen.apply_metric_views()
 print(f"apply result: {result}")
@@ -96,21 +103,23 @@ assert result["applied"] == 1, f"Expected 1 applied, got {result}"
 
 # COMMAND ----------
 
-row = spark.sql(f"""
+row = spark.sql(
+    f"""
     SELECT deployed_catalog, deployed_schema, status
     FROM {catalog_name}.{test_schema}.{config.definitions_table}
     WHERE definition_id = '{defn_id}'
-""").first()
+"""
+).first()
 
 assert row is not None, "Definition row not found"
 assert row.status == "applied", f"Expected status='applied', got '{row.status}'"
 bronze_schema = f"{test_schema}_bronze"
-assert row.deployed_catalog == catalog_name, (
-    f"Expected deployed_catalog='{catalog_name}', got '{row.deployed_catalog}'"
-)
-assert row.deployed_schema == bronze_schema, (
-    f"Expected deployed_schema='{bronze_schema}' (source table's schema), got '{row.deployed_schema}'"
-)
+assert (
+    row.deployed_catalog == catalog_name
+), f"Expected deployed_catalog='{catalog_name}', got '{row.deployed_catalog}'"
+assert (
+    row.deployed_schema == bronze_schema
+), f"Expected deployed_schema='{bronze_schema}' (source table's schema), got '{row.deployed_schema}'"
 print(f"deployed_catalog={row.deployed_catalog}, deployed_schema={row.deployed_schema}")
 print("PASS: apply_metric_views correctly records deployment location (source schema)")
 
@@ -151,23 +160,25 @@ mv_data = {
 resolved_cat, resolved_sch = GenieContextAssembler._resolve_mv_location(
     mv_data, catalog_name, test_schema
 )
-assert resolved_sch == bronze_schema, (
-    f"_resolve_mv_location should return deploy schema '{bronze_schema}'. Got '{resolved_sch}'"
-)
+assert (
+    resolved_sch == bronze_schema
+), f"_resolve_mv_location should return deploy schema '{bronze_schema}'. Got '{resolved_sch}'"
 print(f"PASS: _resolve_mv_location correctly resolves to {resolved_cat}.{resolved_sch}")
 
-# Verify fallback when deployed columns are NULL -> uses assembler (config) schema
+# Verify fallback when deployed columns are NULL -> uses source table schema
 mv_null = {
     "metric_view_name": "test_order_metrics",
     "source_table": f"{catalog_name}.{test_schema}_bronze.test_orders",
     "deployed_catalog": None,
     "deployed_schema": None,
 }
-fb_cat, fb_sch = GenieContextAssembler._resolve_mv_location(mv_null, catalog_name, test_schema)
-assert fb_sch == test_schema, (
-    f"Fallback should use assembler schema '{test_schema}', not source schema. Got '{fb_sch}'"
+fb_cat, fb_sch = GenieContextAssembler._resolve_mv_location(
+    mv_null, catalog_name, test_schema
 )
-print(f"PASS: fallback correctly uses assembler schema {fb_cat}.{fb_sch}")
+assert (
+    fb_sch == bronze_schema
+), f"Fallback should use source table schema '{bronze_schema}' when deployed cols are NULL. Got '{fb_sch}'"
+print(f"PASS: fallback correctly uses source table schema {fb_cat}.{fb_sch}")
 
 # COMMAND ----------
 # MAGIC %md
@@ -177,6 +188,8 @@ print(f"PASS: fallback correctly uses assembler schema {fb_cat}.{fb_sch}")
 
 spark.sql(f"DROP VIEW IF EXISTS {catalog_name}.{test_schema}_bronze.test_order_metrics")
 spark.sql(f"DROP TABLE IF EXISTS {catalog_name}.{test_schema}_bronze.test_orders")
-spark.sql(f"DELETE FROM {catalog_name}.{test_schema}.{config.definitions_table} WHERE definition_id = '{defn_id}'")
+spark.sql(
+    f"DELETE FROM {catalog_name}.{test_schema}.{config.definitions_table} WHERE definition_id = '{defn_id}'"
+)
 spark.sql(f"DROP SCHEMA IF EXISTS {catalog_name}.{test_schema}_bronze")
 print("Cleanup complete")

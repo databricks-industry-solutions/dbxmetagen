@@ -11,6 +11,7 @@ from dbxmetagen.processing import (
     upsert_table_names_to_control_table,
     generate_and_persist_metadata,
     get_control_table,
+    table_exists_uc,
 )
 from dbxmetagen.config import MetadataConfig
 from dbxmetagen.deterministic_pi import ensure_spacy_model
@@ -35,18 +36,16 @@ def get_dbr_version():
 
 def validate_runtime_compatibility(dbr_version, config):
     """Validate runtime compatibility with output formats."""
-    if "client" in dbr_version and "excel" in (
-        config.ddl_output_format,
-        config.review_output_file_type,
-    ):
+    ddl_fmt = getattr(config, "ddl_output_format", "tsv")
+    review_fmt = getattr(config, "review_output_file_type", "tsv")
+    if not dbr_version:
+        return
+    if "client" in dbr_version and "excel" in (ddl_fmt, review_fmt):
         raise ValueError(
             "Serverless runtime is supported, but Excel writes are not supported."
         )
 
-    if "ml" not in dbr_version and "excel" in (
-        config.ddl_output_format,
-        config.review_output_file_type,
-    ):
+    if "ml" not in dbr_version and "excel" in (ddl_fmt, review_fmt):
         raise ValueError(
             "Excel writes in dbxmetagen are not supported on standard runtimes. "
             "Please change your output file type to tsv or sql if appropriate."
@@ -313,6 +312,20 @@ def main(kwargs):
             "When running multiple modes in parallel on the same tables, "
             "set apply_ddl=false. Apply DDL separately after reviewing results."
         )
+
+    if config.incremental:
+        log_table = f"{config.catalog_name}.{config.schema_name}.metadata_generation_log"
+        if not table_exists_uc(spark, log_table):
+            _logger.warning(
+                "incremental=true but %s does not exist (first run?). "
+                "Disabling incremental mode -- all tables will be processed.",
+                log_table,
+            )
+            print(
+                f"WARNING: incremental mode disabled -- {log_table} not found. "
+                "This is expected on the first run. Re-enable incremental for subsequent runs."
+            )
+            config.incremental = False
 
     benchmarking_result = setup_benchmarking(config)
     experiment_name, run_start_time_ms = benchmarking_result if benchmarking_result else (None, 0)
