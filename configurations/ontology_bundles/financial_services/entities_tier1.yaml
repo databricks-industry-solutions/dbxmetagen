@@ -1,39 +1,58 @@
 - name: Account
   description: Bank accounts, investment accounts, loan accounts, or general ledger
     accounts
+  label: Account
 - name: Claim
   description: Insurance claims, loss events, or reimbursement requests
+  label: Claim
 - name: Compliance
   description: Regulatory filings, KYC records, AML alerts, or sanctions screening
+  label: Compliance
 - name: Counterparty
   description: Trading counterparties, custodians, or correspondent banks
+  label: Counterparty
 - name: Document
   description: Unstructured content, notes, files, or text records
+  label: Document
 - name: Event
   description: Activities, logs, sessions, audits, or system events
+  label: Event
 - name: Instrument
   description: Financial instruments -- equities, bonds, derivatives, currencies
+  label: Instrument
 - name: Loan
   description: Loans, mortgages, credit facilities, or lending agreements
+  label: Loan
 - name: Location
   description: Addresses, sites, regions, facilities, or geographies
+  label: Location
 - name: Metric
   description: KPIs, aggregates, facts, summaries, or analytic measures
+  label: Metric
 - name: Organization
   description: Companies, departments, facilities, or business units
+  label: Organization
 - name: Person
   description: People, customers, contacts, users, or employees
+  label: Person
 - name: Policy
   description: Insurance policies, coverage terms, or underwriting records
+  label: Policy
 - name: Portfolio
   description: Investment portfolios, fund holdings, or asset allocations
+  label: Portfolio
 - name: Product
   description: Goods, services, SKUs, or catalog items
+  label: Product
 - name: Reference
   description: Lookup tables, codes, categories, dimensions, or configuration
+  label: Reference
 - name: Risk
   description: Risk exposures, limits, VaR, stress tests, or credit scores
+  label: Risk
 - name: Trade
   description: Securities trades, FX transactions, or market orders
+  label: Trade
 - name: Transaction
   description: Orders, purchases, payments, invoices, or financial events
+  label: Transaction

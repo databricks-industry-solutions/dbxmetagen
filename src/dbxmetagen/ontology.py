@@ -4122,6 +4122,89 @@ class OntologyBuilder:
 
         return "references"
 
+    def emit_bundle_edges(self) -> int:
+        """Emit edges directly from the ontology bundle's tier-1 edge definitions.
+
+        For each tier-1 edge where both domain and range entity types have been
+        discovered in ontology_entities, writes a relationship to
+        ontology_relationships with source='bundle'. This ensures formal ontology
+        edges (e.g. FHIR) are present without requiring FK evidence.
+        """
+        disc = self.discoverer
+        loader = disc._get_index_loader() if hasattr(disc, "_get_index_loader") else None
+        if not loader or not loader.has_tier_indexes:
+            logger.info("emit_bundle_edges: no tier indexes available, skipping")
+            return 0
+
+        edges_t1 = loader.get_edges_tier1()
+        if not edges_t1:
+            return 0
+
+        ent_table = self.config.fully_qualified_entities
+        rels_table = self.config.fully_qualified_relationships
+        self.create_relationships_table()
+
+        try:
+            discovered_rows = self.spark.sql(f"""
+                SELECT DISTINCT entity_type FROM {ent_table}
+                WHERE confidence >= 0.4 AND entity_type IS NOT NULL
+            """).collect()
+        except Exception as e:
+            logger.warning("emit_bundle_edges: cannot read entities: %s", e)
+            return 0
+
+        discovered_types = {r.entity_type for r in discovered_rows}
+        if not discovered_types:
+            return 0
+
+        now = datetime.utcnow()
+        rels: List[Dict] = []
+        seen: set = set()
+
+        for edge in edges_t1:
+            domain = edge.get("domain")
+            rng = edge.get("range")
+            name = edge.get("name")
+            if not domain or not rng or not name:
+                continue
+            if domain not in discovered_types or rng not in discovered_types:
+                continue
+            key = (domain, rng, name)
+            if key in seen:
+                continue
+            seen.add(key)
+            rels.append({
+                "relationship_id": str(uuid.uuid4()),
+                "src_entity_type": domain,
+                "relationship_name": name,
+                "dst_entity_type": rng,
+                "cardinality": edge.get("cardinality", "unknown"),
+                "evidence_column": None,
+                "evidence_table": None,
+                "source": "bundle",
+                "confidence": 0.8,
+                "created_at": now,
+                "updated_at": now,
+            })
+
+        if not rels:
+            logger.info("emit_bundle_edges: no matching entity pairs found in tier-1 edges")
+            return 0
+
+        df = self.spark.createDataFrame(rels)
+        df.createOrReplaceTempView("_bundle_edges_staging")
+        self.spark.sql(f"""
+            MERGE INTO {rels_table} AS target
+            USING _bundle_edges_staging AS source
+            ON target.src_entity_type = source.src_entity_type
+               AND target.dst_entity_type = source.dst_entity_type
+               AND target.relationship_name = source.relationship_name
+            WHEN NOT MATCHED THEN INSERT *
+        """)
+        self.spark.catalog.dropTempView("_bundle_edges_staging")
+        logger.info("emit_bundle_edges: inserted %d bundle-defined edges", len(rels))
+        return len(rels)
+
     def discover_named_relationships(self) -> int:
         """Populate ontology_relationships from FK predictions and column link patterns.
 
@@ -4695,6 +4778,9 @@ class OntologyBuilder:
         named_rels = _step("discover_named_relationships", self.discover_named_relationships)
         logger.info(f"Discovered {named_rels} named relationships")
 
+        bundle_rels = _step("emit_bundle_edges", self.emit_bundle_edges)
+        logger.info(f"Emitted {bundle_rels} bundle-defined edges")
+
         _step("sync_entity_nodes_to_graph", self._sync_entity_nodes_to_graph)
         _step("enrich_table_nodes_with_ontology", self._enrich_table_nodes_with_ontology)
         _step("add_same_entity_type_edges", self._add_same_entity_type_edges)
@@ -4754,6 +4840,7 @@ class OntologyBuilder:
             "roles_classified": roles_classified,
             "column_properties": col_props,
             "named_relationships": named_rels,
+            "bundle_edges": bundle_rels,
             "discovery_diff": diff,
             "turtle_path": turtle_path,
         }

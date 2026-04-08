@@ -1,5 +1,6 @@
 Person:
   description: People, customers, contacts, users, or employees
+  label: Person
   source_ontology: schema.org
   uri: https://schema.org/Person
   parents: []
@@ -77,6 +78,7 @@ Person:
       - create_date
 Organization:
   description: Companies, departments, facilities, or business units
+  label: Organization
   source_ontology: schema.org
   uri: https://schema.org/Organization
   parents: []
@@ -139,6 +141,7 @@ Organization:
       - parent_org_id
 Product:
   description: Goods, services, SKUs, or catalog items
+  label: Product
   source_ontology: schema.org
   uri: https://schema.org/Product
   parents: []
@@ -205,6 +208,7 @@ Product:
       - active
 Transaction:
   description: Orders, purchases, payments, invoices, or financial events
+  label: Transaction
   source_ontology: schema.org
   uri: https://schema.org/Invoice
   parents: []
@@ -314,6 +318,7 @@ Transaction:
       - billing_account_id
 Location:
   description: Addresses, sites, regions, facilities, or geographies
+  label: Location
   source_ontology: schema.org
   uri: https://schema.org/Place
   parents: []
@@ -384,6 +389,7 @@ Location:
       - postal_code
 Event:
   description: Activities, logs, sessions, audits, or system events
+  label: Event
   source_ontology: schema.org
   uri: https://schema.org/Event
   parents: []
@@ -442,6 +448,7 @@ Event:
       - performed_by
 Reference:
   description: Lookup tables, codes, categories, dimensions, or configuration
+  label: Reference
   source_ontology: schema.org
   uri: https://schema.org/Thing
   parents: []
@@ -488,6 +495,7 @@ Reference:
       - enabled
 Metric:
   description: KPIs, aggregates, facts, summaries, or analytic measures
+  label: Metric
   source_ontology: schema.org
   uri: https://schema.org/QuantitativeValue
   parents: []
@@ -553,6 +561,7 @@ Metric:
       - event_id
 Document:
   description: Unstructured content, notes, files, or text records
+  label: Document
   source_ontology: schema.org
   uri: https://schema.org/DigitalDocument
   parents: []

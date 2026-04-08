@@ -5,6 +5,7 @@ owns:
   ranges: []
   uri: ''
   inverse: ''
+  cardinality: one-to-many
   domain_profile:
     description: People, customers, contacts, users, or employees
     uri: https://schema.org/Person
@@ -37,6 +38,7 @@ part_of:
   ranges: []
   uri: ''
   inverse: ''
+  cardinality: many-to-one
   domain_profile:
     description: People, customers, contacts, users, or employees
     uri: https://schema.org/Person
@@ -71,6 +73,7 @@ contains:
   ranges: []
   uri: ''
   inverse: contained_in
+  cardinality: one-to-many
   category: structural
   symmetric: false
   domain_profile:
@@ -107,6 +110,7 @@ contains_location:
   ranges: []
   uri: ''
   inverse: ''
+  cardinality: one-to-many
   domain_profile:
     description: Companies, departments, facilities, or business units
     uri: https://schema.org/Organization
@@ -140,6 +144,7 @@ references:
   ranges: []
   uri: ''
   inverse: referenced_by
+  cardinality: many-to-one
   category: business
   symmetric: false
 derives_from:
@@ -149,6 +154,7 @@ derives_from:
   ranges: []
   uri: ''
   inverse: source_of
+  cardinality: many-to-one
   category: lineage
   symmetric: false
   domain_profile:
@@ -182,6 +188,7 @@ treated_by:
   ranges: []
   uri: ''
   inverse: treats
+  cardinality: many-to-many
   category: business
   symmetric: false
   domain_profile:
@@ -220,6 +227,7 @@ has_encounter:
   ranges: []
   uri: ''
   inverse: encounter_for
+  cardinality: one-to-many
   category: business
   symmetric: false
   domain_profile:
@@ -259,6 +267,7 @@ has_condition:
   ranges: []
   uri: ''
   inverse: condition_of
+  cardinality: one-to-many
   category: business
   symmetric: false
   domain_profile:
@@ -296,6 +305,7 @@ has_coverage:
   ranges: []
   uri: ''
   inverse: covers
+  cardinality: one-to-many
   category: business
   symmetric: false
   domain_profile:
@@ -333,6 +343,7 @@ treats:
   ranges: []
   uri: ''
   inverse: treated_by
+  cardinality: many-to-many
   category: business
   symmetric: false
   domain_profile:
@@ -373,6 +384,7 @@ ordered_for:
   ranges: []
   uri: ''
   inverse: has_order
+  cardinality: one-to-many
   category: business
   symmetric: false
   domain_profile:
@@ -411,6 +423,7 @@ has_order:
   ranges: []
   uri: ''
   inverse: ''
+  cardinality: one-to-many
   domain_profile:
     description: Visits, admissions, or episodes of care (FHIR Encounter)
     uri: http://hl7.org/fhir/StructureDefinition/Encounter
@@ -447,6 +460,7 @@ located_at:
   ranges: []
   uri: ''
   inverse: location_of
+  cardinality: many-to-one
   category: business
   symmetric: false
   range_profile:
@@ -468,6 +482,7 @@ diagnosed_in:
   ranges: []
   uri: ''
   inverse: has_diagnosis
+  cardinality: many-to-one
   category: business
   symmetric: false
   domain_profile:
@@ -505,6 +520,7 @@ performed_by:
   ranges: []
   uri: ''
   inverse: performs
+  cardinality: many-to-one
   category: business
   symmetric: false
   domain_profile:
@@ -542,6 +558,7 @@ prescribed_to:
   ranges: []
   uri: ''
   inverse: has_prescription
+  cardinality: many-to-one
   category: business
   symmetric: false
   domain_profile:
@@ -580,6 +597,7 @@ recorded_in:
   ranges: []
   uri: ''
   inverse: records
+  cardinality: many-to-one
   category: lineage
   symmetric: false
   domain_profile:
@@ -619,6 +637,7 @@ for_encounter:
   ranges: []
   uri: ''
   inverse: encounter_claim
+  cardinality: many-to-one
   category: business
   symmetric: false
   domain_profile:
@@ -657,6 +676,7 @@ covered_by:
   ranges: []
   uri: ''
   inverse: covers_claim
+  cardinality: many-to-one
   category: business
   symmetric: false
   domain_profile:
@@ -693,6 +713,7 @@ provided_by:
   ranges: []
   uri: ''
   inverse: ''
+  cardinality: many-to-one
   domain_profile:
     description: Insurance plans, benefits, or member coverage (FHIR Coverage)
     uri: http://hl7.org/fhir/StructureDefinition/Coverage
@@ -727,6 +748,7 @@ enrolls:
   ranges: []
   uri: ''
   inverse: ''
+  cardinality: one-to-many
   domain_profile:
     description: Clinical trials, research studies, and investigational protocols
     uri: http://hl7.org/fhir/StructureDefinition/ResearchStudy
@@ -763,6 +785,7 @@ used_in:
   ranges: []
   uri: ''
   inverse: ''
+  cardinality: many-to-many
   domain_profile:
     description: Medical devices, equipment, implants, and instruments
     uri: http://hl7.org/fhir/StructureDefinition/Device
@@ -800,6 +823,7 @@ owned_by:
   ranges: []
   uri: ''
   inverse: owns
+  cardinality: many-to-one
   category: business
   symmetric: false
   range_profile:
@@ -822,6 +846,7 @@ collected_from:
   ranges: []
   uri: ''
   inverse: provides_specimen
+  cardinality: many-to-one
   category: business
   symmetric: false
   domain_profile:
@@ -860,6 +885,7 @@ pays_for:
   ranges: []
   uri: ''
   inverse: ''
+  cardinality: one-to-many
   domain_profile:
     description: Insurance companies, health plans, government payers, and third-party
       administrators
@@ -897,6 +923,7 @@ covers:
   ranges: []
   uri: ''
   inverse: ''
+  cardinality: one-to-many
   domain_profile:
     description: Insurance companies, health plans, government payers, and third-party
       administrators
@@ -935,6 +962,7 @@ performs:
   ranges: []
   uri: ''
   inverse: ''
+  cardinality: one-to-many
   domain_profile:
     description: Individual clinicians, physicians, nurses, and allied health professionals
     uri: http://hl7.org/fhir/StructureDefinition/Practitioner
@@ -970,6 +998,7 @@ hosts:
   ranges: []
   uri: ''
   inverse: ''
+  cardinality: one-to-many
   domain_profile:
     description: Hospitals, clinics, labs, pharmacies, and care sites
     uri: http://hl7.org/fhir/StructureDefinition/Location
@@ -1007,6 +1036,7 @@ tested_in:
   ranges: []
   uri: ''
   inverse: has_result
+  cardinality: many-to-one
   category: business
   symmetric: false
   domain_profile:
@@ -1045,6 +1075,7 @@ consented_by:
   ranges: []
   uri: ''
   inverse: consents_to
+  cardinality: many-to-one
   category: business
   symmetric: false
   domain_profile:

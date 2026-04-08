@@ -1,62 +1,92 @@
 - name: AllergyIntolerance
   description: Allergy and intolerance records (FHIR AllergyIntolerance)
+  label: AllergyIntolerance
 - name: CarePlan
   description: Care plans, treatment protocols, and goals (FHIR CarePlan)
+  label: CarePlan
 - name: Claim
   description: Insurance claims or billing submissions (FHIR Claim)
+  label: Claim
 - name: ClinicalTrial
   description: Clinical trials, research studies, and investigational protocols
+  label: ClinicalTrial
 - name: Condition
   description: Diagnoses, problems, or diseases (FHIR Condition / OMOP CONDITION_OCCURRENCE)
+  label: Condition
 - name: Consent
   description: Patient consent records, authorizations, and IRB approvals
+  label: Consent
 - name: Coverage
   description: Insurance plans, benefits, or member coverage (FHIR Coverage)
+  label: Coverage
 - name: Device
   description: Medical devices, equipment, implants, and instruments
+  label: Device
 - name: DiagnosticReport
   description: Lab reports, pathology reports, or imaging study results (FHIR DiagnosticReport)
+  label: DiagnosticReport
 - name: Document
   description: Unstructured content, notes, files, or text records
+  label: Document
 - name: Encounter
   description: Visits, admissions, or episodes of care (FHIR Encounter)
+  label: Encounter
 - name: Event
   description: Activities, logs, sessions, audits, or system events
+  label: Event
 - name: Facility
   description: Hospitals, clinics, labs, pharmacies, and care sites
+  label: Facility
 - name: Immunization
   description: Vaccination events and immunization records (FHIR Immunization)
+  label: Immunization
 - name: LabResult
   description: Laboratory test results, panels, and diagnostic measurements
+  label: LabResult
 - name: Location
   description: Addresses, sites, regions, facilities, or geographies
+  label: Location
 - name: Medication
   description: Drugs, prescriptions, or medication orders (FHIR MedicationRequest)
+  label: Medication
 - name: Metric
   description: KPIs, aggregates, facts, summaries, or analytic measures
+  label: Metric
 - name: Observation
   description: Lab results, vitals, or clinical measurements (FHIR Observation / OMOP
     MEASUREMENT)
+  label: Observation
 - name: Organization
   description: Companies, departments, facilities, or business units
+  label: Organization
 - name: Patient
   description: Individuals receiving healthcare services (FHIR Patient)
+  label: Patient
 - name: Payer
   description: Insurance companies, health plans, government payers, and third-party
     administrators
+  label: Payer
 - name: Person
   description: People, customers, contacts, users, or employees
+  label: Person
 - name: Practitioner
   description: Individual clinicians, physicians, nurses, and allied health professionals
+  label: Practitioner
 - name: Procedure
   description: Medical procedures, surgeries, or interventions (FHIR Procedure)
+  label: Procedure
 - name: Product
   description: Goods, services, SKUs, or catalog items
+  label: Product
 - name: Provider
   description: Practitioners, clinicians, or care team members (FHIR Practitioner)
+  label: Provider
 - name: Reference
   description: Lookup tables, codes, categories, dimensions, or configuration
+  label: Reference
 - name: Specimen
   description: Laboratory specimens, biological samples, and biobank collections
+  label: Specimen
 - name: Transaction
   description: Orders, purchases, payments, invoices, or financial events
+  label: Transaction

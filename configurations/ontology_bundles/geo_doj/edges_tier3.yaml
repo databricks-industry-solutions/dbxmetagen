@@ -5,6 +5,7 @@ contains:
   ranges: []
   uri: ''
   inverse: ''
+  cardinality: one-to-many
   domain_profile:
     description: Any column or table representing a physical location, address component,
       or geographic area
@@ -49,6 +50,7 @@ has_coordinates:
   ranges: []
   uri: ''
   inverse: ''
+  cardinality: one-to-many
   domain_profile:
     description: Any column or table representing a physical location, address component,
       or geographic area
@@ -92,6 +94,7 @@ in_region:
   ranges: []
   uri: ''
   inverse: ''
+  cardinality: many-to-one
   domain_profile:
     description: Any column or table representing a physical location, address component,
       or geographic area
@@ -137,6 +140,7 @@ part_of:
   ranges: []
   uri: ''
   inverse: ''
+  cardinality: many-to-one
   domain_profile:
     description: Street addresses, mailing addresses, or physical site addresses
     uri: urn:dbxmetagen:geo_doj:Address
@@ -179,6 +183,7 @@ within:
   ranges: []
   uri: ''
   inverse: ''
+  cardinality: many-to-one
   domain_profile:
     description: Postal codes, ZIP codes, or mail routing codes
     uri: urn:dbxmetagen:geo_doj:PostalCode

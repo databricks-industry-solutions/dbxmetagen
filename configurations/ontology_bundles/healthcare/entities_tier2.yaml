@@ -1,5 +1,6 @@
 Person:
   description: People, customers, contacts, users, or employees
+  label: Person
   source_ontology: schema.org
   uri: https://schema.org/Person
   parents: []
@@ -8,6 +9,7 @@ Person:
   - part_of
 Organization:
   description: Companies, departments, facilities, or business units
+  label: Organization
   source_ontology: schema.org
   uri: https://schema.org/Organization
   parents: []
@@ -17,6 +19,7 @@ Organization:
   - part_of
 Product:
   description: Goods, services, SKUs, or catalog items
+  label: Product
   source_ontology: schema.org
   uri: https://schema.org/Product
   parents: []
@@ -24,6 +27,7 @@ Product:
   - references
 Transaction:
   description: Orders, purchases, payments, invoices, or financial events
+  label: Transaction
   source_ontology: schema.org
   uri: https://schema.org/Invoice
   parents: []
@@ -31,6 +35,7 @@ Transaction:
   - references
 Location:
   description: Addresses, sites, regions, facilities, or geographies
+  label: Location
   source_ontology: schema.org
   uri: https://schema.org/Place
   parents: []
@@ -38,6 +43,7 @@ Location:
   - part_of
 Event:
   description: Activities, logs, sessions, audits, or system events
+  label: Event
   source_ontology: schema.org
   uri: https://schema.org/Event
   parents: []
@@ -45,12 +51,14 @@ Event:
   - references
 Reference:
   description: Lookup tables, codes, categories, dimensions, or configuration
+  label: Reference
   source_ontology: schema.org
   uri: https://schema.org/Thing
   parents: []
   edges: []
 Metric:
   description: KPIs, aggregates, facts, summaries, or analytic measures
+  label: Metric
   source_ontology: schema.org
   uri: https://schema.org/QuantitativeValue
   parents: []
@@ -58,6 +66,7 @@ Metric:
   - derives_from
 Document:
   description: Unstructured content, notes, files, or text records
+  label: Document
   source_ontology: schema.org
   uri: https://schema.org/DigitalDocument
   parents: []
@@ -65,6 +74,7 @@ Document:
   - references
 Patient:
   description: Individuals receiving healthcare services (FHIR Patient)
+  label: Patient
   source_ontology: FHIR_R4
   uri: http://hl7.org/fhir/StructureDefinition/Patient
   parents:
@@ -76,6 +86,7 @@ Patient:
   - has_coverage
 Provider:
   description: Practitioners, clinicians, or care team members (FHIR Practitioner)
+  label: Provider
   source_ontology: FHIR_R4
   uri: http://hl7.org/fhir/StructureDefinition/Practitioner
   parents:
@@ -86,6 +97,7 @@ Provider:
   - part_of
 Encounter:
   description: Visits, admissions, or episodes of care (FHIR Encounter)
+  label: Encounter
   source_ontology: FHIR_R4
   uri: http://hl7.org/fhir/StructureDefinition/Encounter
   parents:
@@ -97,6 +109,7 @@ Encounter:
   - located_at
 Condition:
   description: Diagnoses, problems, or diseases (FHIR Condition / OMOP CONDITION_OCCURRENCE)
+  label: Condition
   source_ontology: FHIR_R4
   uri: http://hl7.org/fhir/StructureDefinition/Condition
   parents: []
@@ -105,6 +118,7 @@ Condition:
   - diagnosed_in
 Procedure:
   description: Medical procedures, surgeries, or interventions (FHIR Procedure)
+  label: Procedure
   source_ontology: FHIR_R4
   uri: http://hl7.org/fhir/StructureDefinition/Procedure
   parents: []
@@ -114,6 +128,7 @@ Procedure:
   - references
 Medication:
   description: Drugs, prescriptions, or medication orders (FHIR MedicationRequest)
+  label: Medication
   source_ontology: FHIR_R4
   uri: http://hl7.org/fhir/StructureDefinition/Medication
   parents:
@@ -124,6 +139,7 @@ Medication:
 Observation:
   description: Lab results, vitals, or clinical measurements (FHIR Observation / OMOP
     MEASUREMENT)
+  label: Observation
   source_ontology: FHIR_R4
   uri: http://hl7.org/fhir/StructureDefinition/Observation
   parents:
@@ -133,6 +149,7 @@ Observation:
   - recorded_in
 Claim:
   description: Insurance claims or billing submissions (FHIR Claim)
+  label: Claim
   source_ontology: FHIR_R4
   uri: http://hl7.org/fhir/StructureDefinition/Claim
   parents:
@@ -143,6 +160,7 @@ Claim:
   - covered_by
 Coverage:
   description: Insurance plans, benefits, or member coverage (FHIR Coverage)
+  label: Coverage
   source_ontology: FHIR_R4
   uri: http://hl7.org/fhir/StructureDefinition/Coverage
   parents: []
@@ -151,6 +169,7 @@ Coverage:
   - provided_by
 DiagnosticReport:
   description: Lab reports, pathology reports, or imaging study results (FHIR DiagnosticReport)
+  label: DiagnosticReport
   source_ontology: FHIR_R4
   uri: http://hl7.org/fhir/StructureDefinition/DiagnosticReport
   parents:
@@ -161,6 +180,7 @@ DiagnosticReport:
   - contains
 Immunization:
   description: Vaccination events and immunization records (FHIR Immunization)
+  label: Immunization
   source_ontology: FHIR_R4
   uri: http://hl7.org/fhir/StructureDefinition/Immunization
   parents:
@@ -169,6 +189,7 @@ Immunization:
   - references
 AllergyIntolerance:
   description: Allergy and intolerance records (FHIR AllergyIntolerance)
+  label: AllergyIntolerance
   source_ontology: FHIR_R4
   uri: http://hl7.org/fhir/StructureDefinition/AllergyIntolerance
   parents: []
@@ -176,6 +197,7 @@ AllergyIntolerance:
   - references
 CarePlan:
   description: Care plans, treatment protocols, and goals (FHIR CarePlan)
+  label: CarePlan
   source_ontology: FHIR_R4
   uri: http://hl7.org/fhir/StructureDefinition/CarePlan
   parents:
@@ -185,6 +207,7 @@ CarePlan:
   - contains
 ClinicalTrial:
   description: Clinical trials, research studies, and investigational protocols
+  label: ClinicalTrial
   source_ontology: FHIR_R4
   uri: http://hl7.org/fhir/StructureDefinition/ResearchStudy
   parents: []
@@ -193,6 +216,7 @@ ClinicalTrial:
   - references
 Device:
   description: Medical devices, equipment, implants, and instruments
+  label: Device
   source_ontology: FHIR_R4
   uri: http://hl7.org/fhir/StructureDefinition/Device
   parents: []
@@ -201,6 +225,7 @@ Device:
   - owned_by
 Specimen:
   description: Laboratory specimens, biological samples, and biobank collections
+  label: Specimen
   source_ontology: FHIR_R4
   uri: http://hl7.org/fhir/StructureDefinition/Specimen
   parents: []
@@ -210,6 +235,7 @@ Specimen:
 Payer:
   description: Insurance companies, health plans, government payers, and third-party
     administrators
+  label: Payer
   source_ontology: custom
   uri: ''
   parents:
@@ -219,6 +245,7 @@ Payer:
   - covers
 Practitioner:
   description: Individual clinicians, physicians, nurses, and allied health professionals
+  label: Practitioner
   source_ontology: FHIR_R4
   uri: http://hl7.org/fhir/StructureDefinition/Practitioner
   parents:
@@ -228,6 +255,7 @@ Practitioner:
   - part_of
 Facility:
   description: Hospitals, clinics, labs, pharmacies, and care sites
+  label: Facility
   source_ontology: FHIR_R4
   uri: http://hl7.org/fhir/StructureDefinition/Location
   parents:
@@ -237,6 +265,7 @@ Facility:
   - part_of
 LabResult:
   description: Laboratory test results, panels, and diagnostic measurements
+  label: LabResult
   source_ontology: custom
   uri: ''
   parents:
@@ -246,6 +275,7 @@ LabResult:
   - references
 Consent:
   description: Patient consent records, authorizations, and IRB approvals
+  label: Consent
   source_ontology: FHIR_R4
   uri: http://hl7.org/fhir/StructureDefinition/Consent
   parents: []

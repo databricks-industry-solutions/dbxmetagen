@@ -5,6 +5,7 @@ owns:
   ranges: []
   uri: ''
   inverse: ''
+  cardinality: one-to-many
 part_of:
   name: part_of
   domain: Person
@@ -12,6 +13,7 @@ part_of:
   ranges: []
   uri: ''
   inverse: ''
+  cardinality: many-to-one
 contains:
   name: contains
   domain: Organization
@@ -19,6 +21,7 @@ contains:
   ranges: []
   uri: ''
   inverse: contained_in
+  cardinality: one-to-many
 contains_location:
   name: contains_location
   domain: Organization
@@ -26,6 +29,7 @@ contains_location:
   ranges: []
   uri: ''
   inverse: ''
+  cardinality: one-to-many
 references:
   name: references
   domain: Product
@@ -33,6 +37,7 @@ references:
   ranges: []
   uri: ''
   inverse: referenced_by
+  cardinality: many-to-one
 derives_from:
   name: derives_from
   domain: Metric
@@ -40,6 +45,7 @@ derives_from:
   ranges: []
   uri: ''
   inverse: source_of
+  cardinality: many-to-one
 treated_by:
   name: treated_by
   domain: Patient
@@ -47,6 +53,7 @@ treated_by:
   ranges: []
   uri: ''
   inverse: treats
+  cardinality: many-to-many
 has_encounter:
   name: has_encounter
   domain: Patient
@@ -54,6 +61,7 @@ has_encounter:
   ranges: []
   uri: ''
   inverse: encounter_for
+  cardinality: one-to-many
 has_condition:
   name: has_condition
   domain: Patient
@@ -61,6 +69,7 @@ has_condition:
   ranges: []
   uri: ''
   inverse: condition_of
+  cardinality: one-to-many
 has_coverage:
   name: has_coverage
   domain: Patient
@@ -68,6 +77,7 @@ has_coverage:
   ranges: []
   uri: ''
   inverse: covers
+  cardinality: one-to-many
 treats:
   name: treats
   domain: Provider
@@ -75,6 +85,7 @@ treats:
   ranges: []
   uri: ''
   inverse: treated_by
+  cardinality: many-to-many
 ordered_for:
   name: ordered_for
   domain: Provider
@@ -82,6 +93,7 @@ ordered_for:
   ranges: []
   uri: ''
   inverse: has_order
+  cardinality: one-to-many
 has_order:
   name: has_order
   domain: Encounter
@@ -89,6 +101,7 @@ has_order:
   ranges: []
   uri: ''
   inverse: ''
+  cardinality: one-to-many
 located_at:
   name: located_at
   domain: Encounter
@@ -96,6 +109,7 @@ located_at:
   ranges: []
   uri: ''
   inverse: location_of
+  cardinality: many-to-one
 diagnosed_in:
   name: diagnosed_in
   domain: Condition
@@ -103,6 +117,7 @@ diagnosed_in:
   ranges: []
   uri: ''
   inverse: has_diagnosis
+  cardinality: many-to-one
 performed_by:
   name: performed_by
   domain: Procedure
@@ -110,6 +125,7 @@ performed_by:
   ranges: []
   uri: ''
   inverse: performs
+  cardinality: many-to-one
 prescribed_to:
   name: prescribed_to
   domain: Medication
@@ -117,6 +133,7 @@ prescribed_to:
   ranges: []
   uri: ''
   inverse: has_prescription
+  cardinality: many-to-one
 recorded_in:
   name: recorded_in
   domain: Observation
@@ -124,6 +141,7 @@ recorded_in:
   ranges: []
   uri: ''
   inverse: records
+  cardinality: many-to-one
 for_encounter:
   name: for_encounter
   domain: Claim
@@ -131,6 +149,7 @@ for_encounter:
   ranges: []
   uri: ''
   inverse: encounter_claim
+  cardinality: many-to-one
 covered_by:
   name: covered_by
   domain: Claim
@@ -138,6 +157,7 @@ covered_by:
   ranges: []
   uri: ''
   inverse: covers_claim
+  cardinality: many-to-one
 provided_by:
   name: provided_by
   domain: Coverage
@@ -145,6 +165,7 @@ provided_by:
   ranges: []
   uri: ''
   inverse: ''
+  cardinality: many-to-one
 enrolls:
   name: enrolls
   domain: ClinicalTrial
@@ -152,6 +173,7 @@ enrolls:
   ranges: []
   uri: ''
   inverse: ''
+  cardinality: one-to-many
 used_in:
   name: used_in
   domain: Device
@@ -159,6 +181,7 @@ used_in:
   ranges: []
   uri: ''
   inverse: ''
+  cardinality: many-to-many
 owned_by:
   name: owned_by
   domain: Device
@@ -166,6 +189,7 @@ owned_by:
   ranges: []
   uri: ''
   inverse: owns
+  cardinality: many-to-one
 collected_from:
   name: collected_from
   domain: Specimen
@@ -173,6 +197,7 @@ collected_from:
   ranges: []
   uri: ''
   inverse: provides_specimen
+  cardinality: many-to-one
 pays_for:
   name: pays_for
   domain: Payer
@@ -180,6 +205,7 @@ pays_for:
   ranges: []
   uri: ''
   inverse: ''
+  cardinality: one-to-many
 covers:
   name: covers
   domain: Payer
@@ -187,6 +213,7 @@ covers:
   ranges: []
   uri: ''
   inverse: ''
+  cardinality: one-to-many
 performs:
   name: performs
   domain: Practitioner
@@ -194,6 +221,7 @@ performs:
   ranges: []
   uri: ''
   inverse: ''
+  cardinality: one-to-many
 hosts:
   name: hosts
   domain: Facility
@@ -201,6 +229,7 @@ hosts:
   ranges: []
   uri: ''
   inverse: ''
+  cardinality: one-to-many
 tested_in:
   name: tested_in
   domain: LabResult
@@ -208,6 +237,7 @@ tested_in:
   ranges: []
   uri: ''
   inverse: has_result
+  cardinality: many-to-one
 consented_by:
   name: consented_by
   domain: Consent
@@ -215,3 +245,4 @@ consented_by:
   ranges: []
   uri: ''
   inverse: consents_to
+  cardinality: many-to-one

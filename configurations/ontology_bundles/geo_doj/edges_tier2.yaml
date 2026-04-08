@@ -5,6 +5,7 @@ contains:
   ranges: []
   uri: ''
   inverse: ''
+  cardinality: one-to-many
 has_coordinates:
   name: has_coordinates
   domain: Geographic
@@ -12,6 +13,7 @@ has_coordinates:
   ranges: []
   uri: ''
   inverse: ''
+  cardinality: one-to-many
 in_region:
   name: in_region
   domain: Geographic
@@ -19,6 +21,7 @@ in_region:
   ranges: []
   uri: ''
   inverse: ''
+  cardinality: many-to-one
 part_of:
   name: part_of
   domain: Address
@@ -26,6 +29,7 @@ part_of:
   ranges: []
   uri: ''
   inverse: ''
+  cardinality: many-to-one
 within:
   name: within
   domain: PostalCode
@@ -33,3 +37,4 @@ within:
   ranges: []
   uri: ''
   inverse: ''
+  cardinality: many-to-one

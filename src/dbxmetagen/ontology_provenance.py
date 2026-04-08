@@ -9,15 +9,17 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-_TIER_FILES = (
-    "entities_tier1.yaml",
-    "entities_tier2.yaml",
-    "entities_tier3.yaml",
-    "edges_tier1.yaml",
-    "edges_tier2.yaml",
-    "edges_tier3.yaml",
-    "equivalent_class_uris.yaml",
+_TIER_STEMS = (
+    "entities_tier1",
+    "entities_tier2",
+    "entities_tier3",
+    "edges_tier1",
+    "edges_tier2",
+    "edges_tier3",
+    "equivalent_class_uris",
 )
+
+_TIER_FILES = tuple(f"{s}.yaml" for s in _TIER_STEMS)
 
 
 def tier_indexes_stale(bundle_yaml: Path, tier_subdir: Optional[Path] = None) -> bool:
@@ -33,23 +35,27 @@ def tier_indexes_stale(bundle_yaml: Path, tier_subdir: Optional[Path] = None) ->
     if not tier_subdir.is_dir():
         return True
     mtimes: list[float] = []
-    for fname in _TIER_FILES:
-        p = tier_subdir / fname
-        if p.is_file():
-            mtimes.append(p.stat().st_mtime)
+    for stem in _TIER_STEMS:
+        for ext in (".json", ".yaml"):
+            p = tier_subdir / f"{stem}{ext}"
+            if p.is_file():
+                mtimes.append(p.stat().st_mtime)
+                break
     if not mtimes:
         return True
     return bundle_mtime > max(mtimes)
 
 
 def compute_tier_index_hash(bundle_dir: Path) -> str:
-    """Short SHA-256 fingerprint of committed tier YAMLs for audit trails."""
+    """Short SHA-256 fingerprint of committed tier files for audit trails."""
     h = hashlib.sha256()
-    for fname in _TIER_FILES:
-        p = bundle_dir / fname
-        if p.is_file():
-            h.update(fname.encode())
-            h.update(p.read_bytes())
+    for stem in _TIER_STEMS:
+        for ext in (".json", ".yaml"):
+            p = bundle_dir / f"{stem}{ext}"
+            if p.is_file():
+                h.update(f"{stem}{ext}".encode())
+                h.update(p.read_bytes())
+                break
     return h.hexdigest()[:24]
 
 

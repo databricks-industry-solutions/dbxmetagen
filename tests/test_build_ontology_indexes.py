@@ -36,6 +36,7 @@ from build_ontology_indexes import (
     _extract_single_class,
     _extract_union_domain_edges,
     _get_comment,
+    _get_label,
     _resolve_cardinality,
 )
 from dbxmetagen.ontology_bundle_indexes import build_tiers
@@ -531,3 +532,81 @@ class TestDiscoverSchemaOrgClasses:
         g = _make_schema_graph()
         result = _discover_schema_org_classes(g, "https://schema.org/")
         assert result == {"Person", "Organization", "MedicalCondition", "Hospital", "Thing"}
+
+
+class TestGetLabel:
+    def test_rdfs_label(self):
+        g = Graph()
+        cls_uri = NS["Patient"]
+        g.add((cls_uri, RDFS.label, Literal("Patient Resource")))
+        assert _get_label(g, cls_uri, RDFS) == "Patient Resource"
+
+    def test_dc_title_fallback(self):
+        g = Graph()
+        cls_uri = NS["Patient"]
+        DC_TITLE = URIRef("http://purl.org/dc/elements/1.1/title")
+        g.add((cls_uri, DC_TITLE, Literal("Patient Title")))
+        assert _get_label(g, cls_uri, RDFS) == "Patient Title"
+
+    def test_camel_case_fallback(self):
+        g = Graph()
+        cls_uri = NS["AllergyIntolerance"]
+        assert _get_label(g, cls_uri, RDFS) == "Allergy Intolerance"
+
+
+class TestResolveCardinalityExtended:
+    """Tests for someValuesFrom / allValuesFrom cardinality mapping."""
+
+    def test_some_values_from_maps_to_one_to_many(self):
+        g = Graph()
+        cls = NS["Patient"]
+        prop = NS["hasEncounter"]
+        restriction = BNode()
+        g.add((cls, RDFS.subClassOf, restriction))
+        g.add((restriction, OWL.onProperty, prop))
+        g.add((restriction, OWL.someValuesFrom, NS["Encounter"]))
+        result = _resolve_cardinality(g, cls, OWL, RDFS)
+        assert result["hasEncounter"] == "one-to-many"
+
+    def test_all_values_from_maps_to_zero_to_many(self):
+        g = Graph()
+        cls = NS["Patient"]
+        prop = NS["hasAddress"]
+        restriction = BNode()
+        g.add((cls, RDFS.subClassOf, restriction))
+        g.add((restriction, OWL.onProperty, prop))
+        g.add((restriction, OWL.allValuesFrom, NS["Address"]))
+        result = _resolve_cardinality(g, cls, OWL, RDFS)
+        assert result["hasAddress"] == "zero-to-many"
+
+    def test_explicit_cardinality_overrides_some_values_from(self):
+        g = Graph()
+        cls = NS["Patient"]
+        prop = NS["hasIdentifier"]
+        r1 = BNode()
+        g.add((cls, RDFS.subClassOf, r1))
+        g.add((r1, OWL.onProperty, prop))
+        g.add((r1, OWL.maxCardinality, Literal(1)))
+        r2 = BNode()
+        g.add((cls, RDFS.subClassOf, r2))
+        g.add((r2, OWL.onProperty, prop))
+        g.add((r2, OWL.someValuesFrom, NS["Identifier"]))
+        result = _resolve_cardinality(g, cls, OWL, RDFS)
+        assert result["hasIdentifier"] == "one-to-one"
+
+
+class TestExtractSingleClassLabel:
+    """Verify _extract_single_class populates label from rdfs:label."""
+
+    def test_label_extracted(self):
+        g = Graph()
+        cls = NS["Patient"]
+        g.add((cls, RDF.type, OWL.Class))
+        g.add((cls, RDFS.comment, Literal("A patient record")))
+        g.add((cls, RDFS.label, Literal("Patient Resource")))
+
+        entities = {}
+        _extract_single_class(g, cls, {"Patient"}, "test", entities, OWL, RDF, RDFS)
+        assert entities["Patient"]["label"] == "Patient Resource"
+
+

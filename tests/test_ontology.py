@@ -2252,3 +2252,126 @@ class TestForceRevalidate:
                 validate_columns=False, force_revalidate=True
             )
 
+
+class TestEmitBundleEdges:
+    """Tests for OntologyBuilder.emit_bundle_edges()."""
+
+    @pytest.fixture
+    def builder(self, mock_spark):
+        config = MagicMock()
+        config.fully_qualified_entities = "cat.sch.ontology_entities"
+        config.fully_qualified_relationships = "cat.sch.ontology_relationships"
+        config.catalog_name = "cat"
+        config.schema_name = "sch"
+
+        mock_loader = MagicMock()
+        mock_loader.has_tier_indexes = True
+        mock_loader.get_edges_tier1.return_value = [
+            {"name": "treats", "domain": "Medication", "range": "Condition", "cardinality": "one-to-many"},
+            {"name": "prescribes", "domain": "Practitioner", "range": "Medication", "cardinality": "one-to-many"},
+            {"name": "has_encounter", "domain": "Patient", "range": "Encounter", "cardinality": "one-to-many"},
+        ]
+
+        with patch('dbxmetagen.ontology.OntologyLoader') as MockOntLoader, \
+             patch('dbxmetagen.ontology.EntityDiscoverer') as MockDisc, \
+             patch('dbxmetagen.ontology.load_domain_entity_affinity', return_value={}):
+            MockOntLoader.load_config.return_value = {"ontology": {"version": "1.0"}}
+            disc_instance = MockDisc.return_value
+            disc_instance._get_index_loader.return_value = mock_loader
+            disc_instance.entity_definitions = []
+
+            from dbxmetagen.ontology import OntologyBuilder
+            b = OntologyBuilder(mock_spark, config)
+            b.discoverer = disc_instance
+            yield b
+
+    def test_emits_edges_for_matching_entity_pairs(self, builder):
+        Row = type("Row", (), {"__init__": lambda self, **kw: self.__dict__.update(kw)})
+        discovered = [Row(entity_type="Medication"), Row(entity_type="Condition"), Row(entity_type="Patient")]
+        builder.spark.sql.return_value.collect.return_value = discovered
+        builder.spark.createDataFrame = MagicMock()
+        builder.spark.catalog = MagicMock()
+
+        result = builder.emit_bundle_edges()
+        assert result == 1
+        df_data = builder.spark.createDataFrame.call_args[0][0]
+        assert len(df_data) == 1
+        assert df_data[0]["relationship_name"] == "treats"
+        assert df_data[0]["source"] == "bundle"
+        assert df_data[0]["confidence"] == 0.8
+
+    def test_skips_when_no_loader(self, builder):
+        builder.discoverer._get_index_loader.return_value = None
+        assert builder.emit_bundle_edges() == 0
+
+    def test_skips_when_no_discovered_entities(self, builder):
+        builder.spark.sql.return_value.collect.return_value = []
+        assert builder.emit_bundle_edges() == 0
+
+
+class TestBuildTiersEnrichedSchema:
+    """Verify build_tiers outputs label on entities and cardinality on edges."""
+
+    def test_tier1_has_label_and_edge_has_cardinality(self):
+        import json as _json
+        import tempfile
+        from pathlib import Path
+        from dbxmetagen.ontology_bundle_indexes import build_tiers
+
+        entities = {
+            "Patient": {
+                "description": "Patient record",
+                "label": "Patient Resource",
+                "source": "FHIR R4",
+                "uri": "http://hl7.org/fhir/Patient",
+                "parents": [],
+                "outgoing_edges": [{"name": "hasEncounter", "uri": "", "range": "Encounter", "ranges": [], "inverse": None}],
+                "keywords": ["patient"],
+                "synonyms": [],
+                "typical_attributes": [],
+                "business_questions": [],
+                "relationships": {"hasEncounter": {"target": "Encounter", "cardinality": "one-to-many"}},
+                "properties": {},
+            }
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            build_tiers(entities, Path(tmp))
+            t1 = _json.loads((Path(tmp) / "entities_tier1.json").read_text())
+            assert t1[0]["label"] == "Patient Resource"
+            e1 = _json.loads((Path(tmp) / "edges_tier1.json").read_text())
+            assert e1[0]["cardinality"] == "one-to-many"
+
+
+class TestDualFormatLoader:
+    """Verify OntologyIndexLoader prefers JSON over YAML."""
+
+    def test_loads_json_when_both_exist(self):
+        import json as _json
+        import tempfile
+        from pathlib import Path
+        import yaml
+        from dbxmetagen.ontology_index import OntologyIndexLoader
+
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            yaml.dump([{"name": "A", "description": "from yaml"}], (d / "entities_tier1.yaml").open("w"))
+            _json.dump([{"name": "B", "description": "from json"}], (d / "entities_tier1.json").open("w"))
+            loader = OntologyIndexLoader(base_dir=str(d))
+            assert loader.has_tier_indexes
+            result = loader.get_entities_tier1()
+            assert result[0]["name"] == "B"
+
+    def test_falls_back_to_yaml(self):
+        import tempfile
+        from pathlib import Path
+        import yaml
+        from dbxmetagen.ontology_index import OntologyIndexLoader
+
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            yaml.dump([{"name": "C", "description": "yaml only"}], (d / "entities_tier1.yaml").open("w"))
+            loader = OntologyIndexLoader(base_dir=str(d))
+            assert loader.has_tier_indexes
+            result = loader.get_entities_tier1()
+            assert result[0]["name"] == "C"
+
