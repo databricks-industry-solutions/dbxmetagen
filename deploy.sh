@@ -215,7 +215,7 @@ bash scripts/export_requirements.sh
 echo ""
 echo "=== Building Python package ==="
 rm -rf dist/
-uv build
+uv build -q
 echo "Python package built: $(ls dist/*.whl)"
 
 # --- Copy configurations and wheel into app source for deployment ---

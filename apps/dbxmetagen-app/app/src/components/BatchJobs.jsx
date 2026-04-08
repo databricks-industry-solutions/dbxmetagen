@@ -732,7 +732,7 @@ export default function BatchJobs({ onNavigate }) {
             </div>
             <p className="text-xs text-slate-400">
               {settings.build_kb_after && <><strong className="text-slate-500">+ KB</strong>: Builds table + column knowledge base after generation so the Review tab is populated. </>}
-              <strong className="text-slate-500">KB-Enriched Modes</strong>: Generates comments, builds the knowledge base, then runs PI + domain classification enriched with KB-generated descriptions.
+              <strong className="text-slate-500">KB-Enriched Modes</strong>: Generates comments, builds the knowledge base, then runs PI + domain classification enriched with KB-generated descriptions. Use this mode if you want comments to inform PI + domain, but don't want to apply your comments to your tables.
             </p>
           </div>
         </section>

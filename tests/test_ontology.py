@@ -1,5 +1,6 @@
 """Unit tests for ontology module."""
 
+import json
 import pytest
 from unittest.mock import MagicMock, patch
 from pyspark.sql import SparkSession
@@ -1630,4 +1631,624 @@ class TestClearOntologyEdgesIncludesSameEntityType:
         builder._clear_ontology_edges()
         delete_sql = builder.spark.sql.call_args[0][0]
         assert "same_entity_type" in delete_sql
+
+
+# ======================================================================
+# OntologyValidator -- batched column validation
+# ======================================================================
+
+from pyspark.sql.utils import AnalysisException
+from dbxmetagen.ontology_validator import (
+    OntologyValidator,
+    OntologyValidatorConfig,
+    MAX_ENTITIES_PER_PROMPT,
+    RETRY_ENTITIES_PER_PROMPT,
+    CIRCUIT_BREAKER_THRESHOLD,
+)
+
+
+class TestParseAiArray:
+    """Tests for _parse_ai_array truncation-resilient parser."""
+
+    def test_parses_clean_array(self):
+        text = '[{"entity_id": "a", "is_valid": true}, {"entity_id": "b", "is_valid": false}]'
+        items, missing = OntologyValidator._parse_ai_array(text, ["a", "b"])
+        assert len(items) == 2
+        assert missing == []
+
+    def test_handles_markdown_fences(self):
+        text = '```json\n[{"entity_id": "x", "is_valid": true}]\n```'
+        items, missing = OntologyValidator._parse_ai_array(text, ["x"])
+        assert len(items) == 1
+        assert missing == []
+
+    def test_recovers_truncated_array(self):
+        text = '[{"entity_id": "a", "is_valid": true}, {"entity_id": "b", "is_val'
+        items, missing = OntologyValidator._parse_ai_array(text, ["a", "b"])
+        assert len(items) == 1
+        assert items[0]["entity_id"] == "a"
+        assert "b" in missing
+
+    def test_empty_response_returns_all_missing(self):
+        items, missing = OntologyValidator._parse_ai_array("", ["a", "b"])
+        assert items == []
+        assert set(missing) == {"a", "b"}
+
+    def test_no_bracket_returns_all_missing(self):
+        items, missing = OntologyValidator._parse_ai_array("No JSON here", ["x"])
+        assert items == []
+        assert missing == ["x"]
+
+    def test_tracks_missing_entity_ids(self):
+        text = '[{"entity_id": "a", "is_valid": true}]'
+        items, missing = OntologyValidator._parse_ai_array(text, ["a", "b", "c"])
+        assert len(items) == 1
+        assert set(missing) == {"b", "c"}
+
+    def test_total_parse_failure_returns_all_missing(self):
+        text = '[not valid json at all}'
+        items, missing = OntologyValidator._parse_ai_array(text, ["a", "b"])
+        assert items == []
+        assert set(missing) == {"a", "b"}
+
+
+class TestBuildEntitySection:
+
+    def test_with_column_bindings(self):
+        entity = {
+            "entity_id": "abc",
+            "entity_type": "Patient",
+            "confidence": 0.85,
+            "discovery_method": "keyword",
+            "column_bindings": [
+                {"attribute_name": "identifier", "bound_table": "t", "bound_column": "patient_id"},
+            ],
+            "source_columns": ["patient_id"],
+        }
+        section = OntologyValidator._build_entity_section(entity)
+        assert "Patient" in section
+        assert "patient_id" in section
+        assert "Patient.identifier" in section
+
+    def test_without_bindings_uses_source_columns(self):
+        entity = {
+            "entity_id": "abc",
+            "entity_type": "Address",
+            "confidence": 0.7,
+            "discovery_method": "ai_batch",
+            "column_bindings": [],
+            "source_columns": ["addr_line1", "addr_city"],
+        }
+        section = OntologyValidator._build_entity_section(entity)
+        assert "addr_line1" in section
+        assert "addr_city" in section
+
+
+class TestBuildBatchPrompt:
+
+    @pytest.fixture
+    def validator(self):
+        mock_spark = MagicMock()
+        config = OntologyValidatorConfig(catalog_name="cat", schema_name="sch")
+        return OntologyValidator(mock_spark, config)
+
+    def test_multi_table_prompt(self, validator):
+        entities = [
+            {
+                "entity_id": "e1", "entity_type": "Patient", "table_name": "t1",
+                "table_comment": "Patient records", "domain": "Healthcare",
+                "source_columns": ["pid"], "column_bindings": [],
+                "confidence": 0.9, "discovery_method": "keyword",
+            },
+            {
+                "entity_id": "e2", "entity_type": "Claim", "table_name": "t2",
+                "table_comment": "Claims data", "domain": "Healthcare",
+                "source_columns": ["claim_id"], "column_bindings": [],
+                "confidence": 0.7, "discovery_method": "ai_batch",
+            },
+        ]
+        prompt = validator._build_batch_prompt(entities)
+        assert "t1" in prompt
+        assert "t2" in prompt
+        assert "Patient" in prompt
+        assert "Claim" in prompt
+        assert "JSON array" in prompt
+
+
+class TestRunAiQueryBatch:
+
+    @pytest.fixture
+    def validator(self):
+        mock_spark = MagicMock()
+        config = OntologyValidatorConfig(catalog_name="cat", schema_name="sch")
+        return OntologyValidator(mock_spark, config)
+
+    def test_empty_input_returns_empty(self, validator):
+        s, f = validator._run_ai_query_batch([])
+        assert s == []
+        assert f == []
+
+    def test_circuit_breaker_all_null(self, validator):
+        mock_row = MagicMock()
+        mock_row.response = None
+        mock_row.entity_ids = ["a"]
+        mock_df = MagicMock()
+        mock_df.collect.return_value = [mock_row]
+        validator.spark.sql.return_value = mock_df
+        validator.spark.createDataFrame.return_value = MagicMock()
+
+        with pytest.raises(RuntimeError, match="all .* AI_QUERY calls returned errors"):
+            validator._run_ai_query_batch([{
+                "chunk_id": "0", "entity_ids": ["a"], "prompt_text": "test"
+            }])
+
+    def test_circuit_breaker_majority_null(self, validator):
+        row_ok = MagicMock()
+        row_ok.response = '[{"entity_id":"a","is_valid":true}]'
+        row_ok.entity_ids = ["a"]
+        row_fail1 = MagicMock()
+        row_fail1.response = None
+        row_fail1.entity_ids = ["b"]
+        row_fail2 = MagicMock()
+        row_fail2.response = None
+        row_fail2.entity_ids = ["c"]
+
+        mock_df = MagicMock()
+        mock_df.collect.return_value = [row_ok, row_fail1, row_fail2]
+        validator.spark.sql.return_value = mock_df
+        validator.spark.createDataFrame.return_value = MagicMock()
+
+        with pytest.raises(RuntimeError, match="model serving issue"):
+            validator._run_ai_query_batch([
+                {"chunk_id": "0", "entity_ids": ["a"], "prompt_text": "t1"},
+                {"chunk_id": "1", "entity_ids": ["b"], "prompt_text": "t2"},
+                {"chunk_id": "2", "entity_ids": ["c"], "prompt_text": "t3"},
+            ])
+
+    def test_partial_failure_below_threshold(self, validator):
+        row_ok1 = MagicMock()
+        row_ok1.response = '[{"entity_id":"a","is_valid":true}]'
+        row_ok1.entity_ids = ["a"]
+        row_ok2 = MagicMock()
+        row_ok2.response = '[{"entity_id":"b","is_valid":true}]'
+        row_ok2.entity_ids = ["b"]
+        row_fail = MagicMock()
+        row_fail.response = None
+        row_fail.entity_ids = ["c"]
+
+        mock_df = MagicMock()
+        mock_df.collect.return_value = [row_ok1, row_ok2, row_fail]
+        validator.spark.sql.return_value = mock_df
+        validator.spark.createDataFrame.return_value = MagicMock()
+
+        successes, failures = validator._run_ai_query_batch([
+            {"chunk_id": "0", "entity_ids": ["a"], "prompt_text": "t1"},
+            {"chunk_id": "1", "entity_ids": ["b"], "prompt_text": "t2"},
+            {"chunk_id": "2", "entity_ids": ["c"], "prompt_text": "t3"},
+        ])
+        assert len(successes) == 2
+        assert len(failures) == 1
+
+
+class TestBatchUpdateEntityValidation:
+
+    @pytest.fixture
+    def validator(self):
+        mock_spark = MagicMock()
+        config = OntologyValidatorConfig(catalog_name="cat", schema_name="sch")
+        return OntologyValidator(mock_spark, config)
+
+    def test_empty_results(self, validator):
+        assert validator.batch_update_entity_validation([]) == 0
+
+    def test_merge_sql_executed(self, validator):
+        results = [{
+            "entity_id": "e1",
+            "validation_result": {"is_valid": True, "confidence_adjustment": 0.1, "reasoning": "ok"},
+        }]
+        validator.spark.createDataFrame.return_value = MagicMock()
+        count = validator.batch_update_entity_validation(results)
+        assert count == 1
+        merge_sql = validator.spark.sql.call_args[0][0]
+        assert "MERGE INTO" in merge_sql
+        assert "cat.sch.ontology_entities" in merge_sql
+
+    def test_falls_back_to_per_entity_on_merge_failure(self, validator):
+        results = [{
+            "entity_id": "e1",
+            "validation_result": {"is_valid": True, "confidence_adjustment": 0, "reasoning": "ok"},
+        }]
+        validator.spark.createDataFrame.return_value = MagicMock()
+        validator.spark.sql.side_effect = [Exception("MERGE failed"), None]
+        with patch.object(validator, 'update_entity_validation', return_value=1) as mock_update:
+            count = validator.batch_update_entity_validation(results)
+            mock_update.assert_called_once()
+            assert count == 1
+
+
+class TestRunWithValidateColumns:
+
+    @pytest.fixture
+    def validator(self):
+        mock_spark = MagicMock()
+        config = OntologyValidatorConfig(catalog_name="cat", schema_name="sch")
+        v = OntologyValidator(mock_spark, config)
+        return v
+
+    def test_columns_skipped_by_default(self, validator):
+        with patch.object(validator, 'validate_table_entities_batched', return_value=([], [])) as mock_tbl, \
+             patch.object(validator, 'batch_update_entity_validation', return_value=0), \
+             patch.object(validator, 'check_consistency', return_value=[]), \
+             patch.object(validator, 'check_coverage', return_value=[]), \
+             patch.object(validator, 'validate_relationships', return_value=[]), \
+             patch.object(validator, 'prune_invalid_edges', return_value=0), \
+             patch.object(validator, 'generate_ontology_recommendations', return_value={}):
+            result = validator.run()
+            mock_tbl.assert_called_once()
+            assert result["column_entities_validated"] == 0
+
+    def test_columns_validated_when_opted_in(self, validator):
+        with patch.object(validator, 'validate_table_entities_batched', return_value=([], [])) as mock_tbl, \
+             patch.object(validator, 'validate_column_entities_batched', return_value=([], [])) as mock_col, \
+             patch.object(validator, 'batch_update_entity_validation', return_value=0), \
+             patch.object(validator, 'check_consistency', return_value=[]), \
+             patch.object(validator, 'check_coverage', return_value=[]), \
+             patch.object(validator, 'validate_relationships', return_value=[]), \
+             patch.object(validator, 'prune_invalid_edges', return_value=0), \
+             patch.object(validator, 'generate_ontology_recommendations', return_value={}):
+            result = validator.run(validate_columns=True)
+            mock_tbl.assert_called_once()
+            mock_col.assert_called_once()
+
+
+class TestContradictionInBatchedPath:
+    """Verify _detect_contradiction is applied to batched column validation results."""
+
+    def test_contradiction_flips_is_valid(self):
+        result = {
+            "entity_id": "e1",
+            "is_valid": True,
+            "confidence_adjustment": 0.1,
+            "reasoning": "This aligns with a Medication entity",
+            "suggested_type": "Medication",
+        }
+        checked = OntologyValidator._detect_contradiction(result, "Patient")
+        assert checked["is_valid"] is False
+        assert checked["confidence_adjustment"] <= -0.3
+
+    def test_no_contradiction_when_types_match(self):
+        result = {
+            "entity_id": "e1",
+            "is_valid": True,
+            "confidence_adjustment": 0.2,
+            "reasoning": "Correct classification",
+            "suggested_type": "Patient",
+        }
+        checked = OntologyValidator._detect_contradiction(result, "Patient")
+        assert checked["is_valid"] is True
+        assert checked["confidence_adjustment"] == 0.2
+
+    def test_no_contradiction_without_suggested_type(self):
+        result = {
+            "entity_id": "e1",
+            "is_valid": True,
+            "confidence_adjustment": 0.0,
+            "reasoning": "looks fine",
+        }
+        checked = OntologyValidator._detect_contradiction(result, "Patient")
+        assert checked["is_valid"] is True
+
+
+class TestColumnBindingsFallback:
+    """Verify column_bindings fallback when column doesn't exist in table."""
+
+    @pytest.fixture
+    def validator(self):
+        mock_spark = MagicMock()
+        config = OntologyValidatorConfig(catalog_name="cat", schema_name="sch")
+        return OntologyValidator(mock_spark, config)
+
+    def test_fallback_on_exception(self, validator):
+        """When first SQL raises, second query without column_bindings is used."""
+        mock_row = MagicMock()
+        mock_row.entity_id = "e1"
+        mock_row.entity_type = "Patient"
+        mock_row.table_name = "t1"
+        mock_row.source_columns = ["col1"]
+        mock_row.confidence = 0.8
+        mock_row.discovery_method = "keyword"
+        mock_row.table_comment = "a table"
+        mock_row.domain = "healthcare"
+
+        call_count = [0]
+        def sql_side_effect(query):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                raise AnalysisException("column_bindings not found")
+            mock_df = MagicMock()
+            mock_df.collect.return_value = [mock_row]
+            return mock_df
+
+        validator.spark.sql.side_effect = sql_side_effect
+
+        with patch.object(validator, '_run_ai_query_batch', return_value=([], [])):
+            results, unvalidated = validator.validate_column_entities_batched()
+
+        assert call_count[0] == 2
+        assert len(unvalidated) == 0 or len(results) == 0
+
+    def test_no_fallback_when_column_exists(self, validator):
+        """Normal path: first SQL succeeds, no fallback needed."""
+        mock_row = MagicMock()
+        mock_row.entity_id = "e1"
+        mock_row.entity_type = "Patient"
+        mock_row.table_name = "t1"
+        mock_row.source_columns = ["col1"]
+        mock_row.column_bindings = None
+        mock_row.confidence = 0.8
+        mock_row.discovery_method = "keyword"
+        mock_row.table_comment = "a table"
+        mock_row.domain = "healthcare"
+
+        mock_df = MagicMock()
+        mock_df.collect.return_value = [mock_row]
+        validator.spark.sql.return_value = mock_df
+
+        with patch.object(validator, '_run_ai_query_batch', return_value=([], [])):
+            results, unvalidated = validator.validate_column_entities_batched()
+
+        validator.spark.sql.assert_called_once()
+
+
+class TestTableBatchValidation:
+    """Tests for validate_table_entities_batched and related methods."""
+
+    @pytest.fixture
+    def validator(self):
+        mock_spark = MagicMock()
+        config = OntologyValidatorConfig(catalog_name="cat", schema_name="sch")
+        return OntologyValidator(mock_spark, config)
+
+    def test_build_table_entity_section(self):
+        entity = {
+            "entity_id": "e1",
+            "entity_name": "Patient",
+            "entity_type": "Person",
+            "confidence": 0.9,
+            "description": "A patient record",
+            "source_tables": ["schema.patients"],
+            "table_metadata": "  Comment: Patient info\n  Domain: healthcare",
+            "column_metadata": "  - patient_id (INT)\n  - name (STRING)",
+        }
+        section = OntologyValidator._build_table_entity_section(entity)
+        assert "Entity (id: e1):" in section
+        assert "Name: Patient" in section
+        assert "Type: Person" in section
+        assert "A patient record" in section
+        assert "schema.patients" in section
+        assert "patient_id" in section
+
+    def test_validate_table_entities_batched_empty(self, validator):
+        mock_df = MagicMock()
+        mock_df.collect.return_value = []
+        validator.spark.sql.return_value = mock_df
+
+        results, unvalidated = validator.validate_table_entities_batched()
+        assert results == []
+        assert unvalidated == []
+
+    def test_validate_table_entities_batched_basic(self, validator):
+        entity_row = MagicMock()
+        entity_row.entity_id = "e1"
+        entity_row.entity_name = "Patient"
+        entity_row.entity_type = "Person"
+        entity_row.description = "A patient"
+        entity_row.source_tables = ["t1"]
+        entity_row.source_columns = ["col1"]
+        entity_row.confidence = 0.8
+        entity_row.table_comment = "table about patients"
+        entity_row.domain = "healthcare"
+
+        col_row = MagicMock()
+        col_row.table_name = "t1"
+        col_row.column_name = "col1"
+        col_row.data_type = "STRING"
+        col_row.classification = None
+        col_row.comment = "patient name"
+
+        call_count = [0]
+        def sql_side_effect(query):
+            call_count[0] += 1
+            mock_df = MagicMock()
+            if call_count[0] == 1:
+                mock_df.collect.return_value = [entity_row]
+            elif call_count[0] == 2:
+                mock_df.collect.return_value = [col_row]
+            else:
+                mock_df.collect.return_value = []
+            return mock_df
+
+        validator.spark.sql.side_effect = sql_side_effect
+
+        success_row = MagicMock()
+        success_row.chunk_id = "0"
+        success_row.entity_ids = ["e1"]
+        success_row.response = json.dumps([{
+            "entity_id": "e1",
+            "is_valid": True,
+            "confidence_adjustment": 0.1,
+            "reasoning": "Correct",
+            "suggested_type": "",
+        }])
+
+        with patch.object(validator, '_run_ai_query_batch', return_value=([success_row], [])):
+            results, unvalidated = validator.validate_table_entities_batched()
+
+        assert len(results) == 1
+        assert results[0]["entity_id"] == "e1"
+        assert results[0]["validation_result"]["is_valid"] is True
+        assert unvalidated == []
+
+    def test_run_uses_batched_table_validation(self, validator):
+        with patch.object(validator, 'validate_table_entities_batched', return_value=([], [])) as mock_tbl, \
+             patch.object(validator, 'batch_update_entity_validation', return_value=0) as mock_update, \
+             patch.object(validator, 'check_consistency', return_value=[]), \
+             patch.object(validator, 'check_coverage', return_value=[]), \
+             patch.object(validator, 'validate_relationships', return_value=[]), \
+             patch.object(validator, 'prune_invalid_edges', return_value=0), \
+             patch.object(validator, 'generate_ontology_recommendations', return_value={}):
+            result = validator.run()
+            mock_tbl.assert_called_once()
+            mock_update.assert_called()
+            assert "table_entities_validated" in result
+
+
+class TestPruneInvalidEdges:
+    """Tests for prune_invalid_edges."""
+
+    @pytest.fixture
+    def validator(self):
+        mock_spark = MagicMock()
+        config = OntologyValidatorConfig(catalog_name="cat", schema_name="sch")
+        return OntologyValidator(mock_spark, config)
+
+    def test_prune_runs_delete(self, validator):
+        call_count = [0]
+        def sql_side_effect(query):
+            call_count[0] += 1
+            mock_df = MagicMock()
+            if "COUNT" in query and call_count[0] == 1:
+                mock_df.collect.return_value = [MagicMock(cnt=10)]
+            elif "DELETE" in query:
+                mock_df.collect.return_value = []
+            elif "COUNT" in query:
+                mock_df.collect.return_value = [MagicMock(cnt=7)]
+            return mock_df
+
+        validator.spark.sql.side_effect = sql_side_effect
+        pruned = validator.prune_invalid_edges()
+        assert pruned == 3
+
+    def test_prune_returns_zero_when_no_invalid(self, validator):
+        call_count = [0]
+        def sql_side_effect(query):
+            call_count[0] += 1
+            mock_df = MagicMock()
+            mock_df.collect.return_value = [MagicMock(cnt=5)]
+            return mock_df
+
+        validator.spark.sql.side_effect = sql_side_effect
+        pruned = validator.prune_invalid_edges()
+        assert pruned == 0
+
+    def test_prune_handles_missing_table(self, validator):
+        validator.spark.sql.side_effect = Exception("table not found")
+        pruned = validator.prune_invalid_edges()
+        assert pruned == 0
+
+    def test_run_calls_prune_and_includes_in_result(self, validator):
+        with patch.object(validator, 'validate_table_entities_batched', return_value=([], [])), \
+             patch.object(validator, 'batch_update_entity_validation', return_value=0), \
+             patch.object(validator, 'check_consistency', return_value=[]), \
+             patch.object(validator, 'check_coverage', return_value=[]), \
+             patch.object(validator, 'validate_relationships', return_value=[]), \
+             patch.object(validator, 'prune_invalid_edges', return_value=5) as mock_prune, \
+             patch.object(validator, 'generate_ontology_recommendations', return_value={}):
+            result = validator.run()
+            mock_prune.assert_called_once()
+            assert result["pruned_edges"] == 5
+
+
+class TestStoreEntitiesNonIncremental:
+    """Tests that _store_entities resets validated state when incremental=False."""
+
+    @pytest.fixture
+    def builder_incremental(self):
+        mock_spark = MagicMock()
+        config = OntologyConfig(catalog_name="cat", schema_name="sch", incremental=True)
+        with patch.object(OntologyLoader, 'load_config') as mock_load:
+            mock_load.return_value = OntologyLoader._default_config()
+            return OntologyBuilder(mock_spark, config)
+
+    @pytest.fixture
+    def builder_non_incremental(self):
+        mock_spark = MagicMock()
+        config = OntologyConfig(catalog_name="cat", schema_name="sch", incremental=False)
+        with patch.object(OntologyLoader, 'load_config') as mock_load:
+            mock_load.return_value = OntologyLoader._default_config()
+            return OntologyBuilder(mock_spark, config)
+
+    def _get_merge_sql(self, builder):
+        entities = [{"entity_id": "e1", "entity_type": "Patient", "source_tables": ["t1"], "confidence": 0.9}]
+        builder._store_entities(entities)
+        all_sql = [c[0][0] for c in builder.spark.sql.call_args_list]
+        merge_sqls = [s for s in all_sql if "MERGE INTO" in s]
+        assert len(merge_sqls) == 1
+        return merge_sqls[0]
+
+    def test_incremental_merge_requires_validated_false(self, builder_incremental):
+        sql = self._get_merge_sql(builder_incremental)
+        assert "target.validated = FALSE THEN UPDATE" in sql
+        assert "target.validated = FALSE," not in sql.split("THEN UPDATE")[1]
+
+    def test_non_incremental_merge_drops_validated_guard(self, builder_non_incremental):
+        sql = self._get_merge_sql(builder_non_incremental)
+        assert "AND target.validated = FALSE THEN UPDATE" not in sql
+
+    def test_non_incremental_merge_resets_validated(self, builder_non_incremental):
+        sql = self._get_merge_sql(builder_non_incremental)
+        after_update = sql.split("THEN UPDATE SET")[1]
+        assert "target.validated = FALSE" in after_update
+        assert "target.validation_notes = NULL" in after_update
+
+
+class TestForceRevalidate:
+    """Tests for the force_revalidate parameter in OntologyValidator.run()."""
+
+    @pytest.fixture
+    def validator(self):
+        mock_spark = MagicMock()
+        config = OntologyValidatorConfig(catalog_name="cat", schema_name="sch")
+        return OntologyValidator(mock_spark, config)
+
+    def test_force_revalidate_runs_reset_update(self, validator):
+        with patch.object(validator, 'validate_table_entities_batched', return_value=([], [])), \
+             patch.object(validator, 'batch_update_entity_validation', return_value=0), \
+             patch.object(validator, 'check_consistency', return_value=[]), \
+             patch.object(validator, 'check_coverage', return_value=[]), \
+             patch.object(validator, 'validate_relationships', return_value=[]), \
+             patch.object(validator, 'prune_invalid_edges', return_value=0), \
+             patch.object(validator, 'generate_ontology_recommendations', return_value={}):
+            validator.run(force_revalidate=True)
+            all_sql = [c[0][0] for c in validator.spark.sql.call_args_list]
+            reset_sqls = [s for s in all_sql if "UPDATE" in s and "validated = FALSE" in s and "validated = TRUE" in s]
+            assert len(reset_sqls) == 1
+            assert "auto_discovered = TRUE" in reset_sqls[0]
+
+    def test_force_revalidate_false_skips_reset(self, validator):
+        with patch.object(validator, 'validate_table_entities_batched', return_value=([], [])), \
+             patch.object(validator, 'batch_update_entity_validation', return_value=0), \
+             patch.object(validator, 'check_consistency', return_value=[]), \
+             patch.object(validator, 'check_coverage', return_value=[]), \
+             patch.object(validator, 'validate_relationships', return_value=[]), \
+             patch.object(validator, 'prune_invalid_edges', return_value=0), \
+             patch.object(validator, 'generate_ontology_recommendations', return_value={}):
+            validator.run(force_revalidate=False)
+            all_sql = [c[0][0] for c in validator.spark.sql.call_args_list]
+            reset_sqls = [s for s in all_sql if "UPDATE" in s and "SET validated = FALSE" in s and "WHERE" in s]
+            assert len(reset_sqls) == 0
+
+    def test_validate_ontology_passes_force_revalidate(self):
+        with patch('dbxmetagen.ontology_validator.OntologyValidator') as MockClass:
+            mock_instance = MagicMock()
+            mock_instance.run.return_value = {"entities_validated": 0}
+            MockClass.return_value = mock_instance
+            from dbxmetagen.ontology_validator import validate_ontology
+            validate_ontology(
+                spark=MagicMock(), catalog_name="c", schema_name="s",
+                force_revalidate=True,
+            )
+            mock_instance.run.assert_called_once_with(
+                validate_columns=False, force_revalidate=True
+            )
 

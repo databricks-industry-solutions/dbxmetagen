@@ -2733,6 +2733,13 @@ class OntologyBuilder:
         df = self.spark.createDataFrame(rows, schema=self.ENTITIES_SCHEMA)
         df.createOrReplaceTempView(view_name)
 
+        if self.config.incremental:
+            match_condition = "WHEN MATCHED AND target.auto_discovered = TRUE AND target.validated = FALSE THEN UPDATE SET"
+            extra_sets = ""
+        else:
+            match_condition = "WHEN MATCHED AND target.auto_discovered = TRUE THEN UPDATE SET"
+            extra_sets = ",\n            target.validated = FALSE,\n            target.validation_notes = NULL"
+
         self.spark.sql(
             f"""
         MERGE INTO {self.config.fully_qualified_entities} AS target
@@ -2740,7 +2747,7 @@ class OntologyBuilder:
         ON target.entity_name = source.entity_name
            AND array_join(array_sort(target.source_tables), ',') = array_join(array_sort(source.source_tables), ',')
            AND COALESCE(target.attributes['granularity'], 'table') = COALESCE(source.attributes['granularity'], 'table')
-        WHEN MATCHED AND target.auto_discovered = TRUE AND target.validated = FALSE THEN UPDATE SET
+        {match_condition}
             target.confidence = source.confidence,
             target.source_columns = source.source_columns,
             target.attributes = source.attributes,
@@ -2748,7 +2755,7 @@ class OntologyBuilder:
             target.bundle_version = source.bundle_version,
             target.entity_uri = source.entity_uri,
             target.source_ontology = source.source_ontology,
-            target.updated_at = source.updated_at
+            target.updated_at = source.updated_at{extra_sets}
         WHEN NOT MATCHED THEN INSERT *
         """
         )

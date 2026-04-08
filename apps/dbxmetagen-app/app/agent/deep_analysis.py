@@ -1066,6 +1066,9 @@ def run_deep_analysis(
 ) -> Dict:
     """Non-streaming deep analysis. mode is 'graphrag' or 'baseline'."""
     intent_result = classify_and_contextualize(message, history)
+    if intent_result.intent_type == "meta" and intent_result.domain in ("discovery", "query", "governance", "relationship"):
+        logger.info("[deep_analysis] reclassifying meta+%s as new_question", intent_result.domain)
+        intent_result.intent_type = "new_question"
     logger.info("[deep_analysis] intent=%s domain=%s clear=%s",
                 intent_result.intent_type, intent_result.domain, intent_result.question_clear)
 
@@ -1120,6 +1123,9 @@ def run_deep_analysis_streaming(
                     t0 = time.time()
 
                     intent_result = classify_and_contextualize(message, history)
+                    if intent_result.intent_type == "meta" and intent_result.domain in ("discovery", "query", "governance", "relationship"):
+                        logger.info("[deep_analysis:streaming] reclassifying meta+%s as new_question", intent_result.domain)
+                        intent_result.intent_type = "new_question"
                     logger.info("[deep_analysis:streaming] intent=%s", intent_result.intent_type)
 
                     if intent_result.intent_type in ("irrelevant", "meta"):

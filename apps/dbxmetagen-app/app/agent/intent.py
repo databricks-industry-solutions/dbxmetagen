@@ -82,8 +82,13 @@ Conversation History:
    those as domain "query" even if they reference external systems (the user may have that data
    in their catalog). When in doubt, treat it as a new_question with domain "query".
 
-2. **Meta-question detection**: Is this about the system itself?
-   Examples: "what tables do you have?", "what can I ask?", "show me example questions".
+2. **Meta-question detection**: Is this about the system's capabilities or features?
+   Examples: "what can I ask?", "show me example questions", "how does this work?".
+   **Questions asking about specific data IN the tables are NOT meta** -- even if they mention
+   system concepts like "ontology", "knowledge base", or "entities". For example,
+   "what entities are in the ontology?" or "which tables have PII?" are discovery/query questions
+   that need real data lookups, not meta questions.
+   Only classify as meta if the user is asking about the tool itself, not about their data.
    If meta, provide a direct markdown answer using the KB table context above.
 
 3. **Intent classification**: One of:

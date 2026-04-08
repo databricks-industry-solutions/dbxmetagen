@@ -343,6 +343,22 @@ export default function App() {
       </nav>
 
       <main className="p-6 max-w-[90rem] mx-auto">
+        <details className="mb-4 group">
+          <summary className="inline-flex items-center gap-1.5 text-sm font-medium text-slate-500 dark:text-slate-400 cursor-pointer select-none hover:text-dbx-lava dark:hover:text-dbx-lava transition-colors">
+            <svg className="w-3.5 h-3.5 transition-transform group-open:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+            </svg>
+            Not sure where to start?
+          </summary>
+          <ol className="mt-3 ml-1 space-y-2 text-sm text-slate-600 dark:text-slate-300 list-decimal list-inside bg-white/60 dark:bg-dbx-navy-600/50 rounded-xl p-5 border border-slate-200/80 dark:border-dbx-navy-400/20 animate-slide-up">
+            <li>Choose an <strong>ontology</strong> or <strong>domain bundle</strong> on the Generate Metadata page.</li>
+            <li>Run <strong>Generate Core Metadata</strong> on a few tables. Optionally check "Apply to tables" to write descriptions and tags directly.</li>
+            <li>Run <strong>Generate Advanced Metadata</strong> -- incremental mode will process only the tables you just generated.</li>
+            <li>Head to <strong>Review</strong> to inspect results, then either update the knowledge base tables or apply metadata to your tables.</li>
+            <li>Go to <strong>Define Metrics</strong> and generate metric views for your key tables.</li>
+            <li>That's it -- you have a semantic layer! Keep adding tables and it grows from here.</li>
+          </ol>
+        </details>
         {Object.entries(COMPONENTS).map(([tabId, Comp]) => {
           if (!visitedTabs.has(tabId)) return null
           const isActive = tabId === activeTab
