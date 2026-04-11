@@ -173,6 +173,7 @@ docs/**
 
 .cursor/*
 !.cursor/rules/
+.cursor/rules/roadmap-awareness.mdc
 !.cursor/skills/
 .cursor/skills/*
 !.cursor/skills/dbxmetagen-development/

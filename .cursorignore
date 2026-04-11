@@ -1,0 +1,10 @@
+# Built frontend artifacts
+apps/dbxmetagen-app/app/src/dist/
+apps/dbxmetagen-app/app/src/node_modules/
+
+# Large generated ontology JSON (YAML versions are canonical)
+configurations/ontology_bundles/**/*.json
+
+# Lock files
+uv.lock
+apps/dbxmetagen-app/app/src/package-lock.json
