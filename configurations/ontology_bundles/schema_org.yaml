@@ -26858,3 +26858,253 @@ ontology:
       source: WinAction
       target: Person
       uri: https://schema.org/loser
+
+  metrics:
+    auto_discover: false
+    definitions: []
+
+  validation:
+    min_entity_confidence: 0.5
+    max_entities_per_table: 3
+    ai_validation_enabled: true
+    classification_model: "databricks-claude-sonnet-4-6"
+
+# Curated data domains for table classification.
+# No published standard for data domains exists (unlike ontologies like Schema.org).
+# These are aligned with the curated general.yaml bundle.
+# Customers may customize these for their organization.
+domains:
+  finance:
+    name: Finance
+    description: Accounting, payments, revenue cycle, billing, and treasury
+    keywords:
+    - revenue
+    - billing
+    - ledger
+    - payment
+    - accounting
+    - invoice
+    - transaction
+    - cost
+    - budget
+    subdomains:
+      accounting:
+        name: Accounting
+        description: General ledger, journal entries, AP/AR, and financial statements
+        keywords:
+        - ledger
+        - journal
+        - gl
+        - ap
+        - ar
+        - account
+        - transaction
+        - balance
+      billing:
+        name: Billing & Payments
+        description: Billing, invoicing, payment processing, and charge capture
+        keywords:
+        - billing
+        - payment
+        - invoice
+        - charge
+        - receipt
+      treasury:
+        name: Treasury & Tax
+        description: Cash management, banking, investments, tax, and compliance
+        keywords:
+        - treasury
+        - cash
+        - tax
+        - investment
+        - audit
+  operations:
+    name: Operations
+    description: Supply chain, inventory, procurement, logistics, and facilities
+    keywords:
+    - inventory
+    - procurement
+    - logistics
+    - warehouse
+    - supply_chain
+    - order
+    - shipment
+    - fulfillment
+    subdomains:
+      inventory:
+        name: Inventory Management
+        description: Stock levels, warehouse management, SKUs, and cycle counts
+        keywords:
+        - inventory
+        - stock
+        - warehouse
+        - sku
+        - cycle_count
+      procurement:
+        name: Procurement
+        description: Purchasing, vendor management, contracts, and requisitions
+        keywords:
+        - procurement
+        - vendor
+        - purchase_order
+        - supplier
+        - rfp
+      logistics:
+        name: Logistics
+        description: Shipping, transportation, delivery tracking, and route planning
+        keywords:
+        - shipping
+        - delivery
+        - carrier
+        - freight
+        - tracking
+  workforce:
+    name: Workforce
+    description: HR, payroll, recruitment, and workforce management
+    keywords:
+    - employee
+    - payroll
+    - recruitment
+    - hr
+    - workforce
+    subdomains:
+      payroll_compensation:
+        name: Payroll & Compensation
+        description: Salaries, wages, bonuses, deductions, and tax withholding
+        keywords:
+        - payroll
+        - salary
+        - compensation
+        - bonus
+        - deduction
+      talent:
+        name: Talent Management
+        description: Recruitment, hiring, performance reviews, and training
+        keywords:
+        - recruitment
+        - candidate
+        - performance
+        - training
+        - hiring
+  customer:
+    name: Customer
+    description: CRM, sales, marketing, customer support, and product analytics
+    keywords:
+    - customer
+    - sales
+    - campaign
+    - support
+    - lead
+    - account
+    - contact
+    - order
+    - crm
+    subdomains:
+      sales:
+        name: Sales & Pipeline
+        description: Opportunities, deals, quotes, pipeline, and forecasting
+        keywords:
+        - opportunity
+        - deal
+        - quote
+        - pipeline
+        - forecast
+        - account
+        - contact
+        - order
+        - invoice
+        - line_item
+        - product
+        - price
+      marketing:
+        name: Marketing
+        description: Campaigns, leads, attribution, digital marketing, and content
+        keywords:
+        - campaign
+        - lead
+        - attribution
+        - email
+        - segment
+      support:
+        name: Customer Support
+        description: Tickets, cases, service requests, SLAs, and escalations
+        keywords:
+        - ticket
+        - case
+        - support
+        - resolution
+        - escalation
+  technology:
+    name: Technology
+    description: IT infrastructure, security, monitoring, and application operations
+    keywords:
+    - server
+    - security
+    - log
+    - monitoring
+    - infrastructure
+    subdomains:
+      security:
+        name: Security
+        description: Access control, authentication, threat detection, and compliance
+        keywords:
+        - security
+        - access
+        - auth
+        - threat
+        - vulnerability
+      monitoring:
+        name: Monitoring & Observability
+        description: System logs, alerts, uptime, performance metrics, and incident management
+        keywords:
+        - monitoring
+        - alert
+        - log
+        - uptime
+        - incident
+      infrastructure:
+        name: Infrastructure
+        description: Servers, networks, cloud resources, and configuration management
+        keywords:
+        - server
+        - network
+        - cloud
+        - deployment
+        - configuration
+  governance:
+    name: Governance
+    description: Legal, regulatory compliance, contracts, data governance, and IP
+    keywords:
+    - compliance
+    - contract
+    - governance
+    - policy
+    - regulation
+    subdomains:
+      legal:
+        name: Legal & Contracts
+        description: Contracts, agreements, litigation, and legal documentation
+        keywords:
+        - contract
+        - agreement
+        - litigation
+        - clause
+        - legal
+      regulatory:
+        name: Regulatory Compliance
+        description: Regulatory requirements, audits, violations, and reporting
+        keywords:
+        - regulatory
+        - audit
+        - compliance
+        - violation
+        - reporting
+      data_governance:
+        name: Data Governance
+        description: Data quality, lineage, metadata management, and catalog policies
+        keywords:
+        - data_lineage
+        - data_catalog
+        - data_governance
+        - data_steward
+        - retention_policy

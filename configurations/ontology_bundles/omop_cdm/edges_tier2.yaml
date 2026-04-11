@@ -6,6 +6,10 @@ has_definition:
   - CohortDefinition
   uri: https://w3id.org/omop/ontology/has_definition
   inverse: null
+  cardinality: zero-to-many
+  label: Has definition
+  facet: null
+  sub_property_of: null
 has_subject:
   name: has_subject
   domain: Cohort
@@ -13,6 +17,10 @@ has_subject:
   ranges: []
   uri: https://w3id.org/omop/ontology/has_subject
   inverse: null
+  cardinality: unknown
+  label: Has subject
+  facet: null
+  sub_property_of: null
 has_language:
   name: has_language
   domain: ConceptSynonym
@@ -21,6 +29,10 @@ has_language:
   - Concept
   uri: https://w3id.org/omop/ontology/has_language
   inverse: null
+  cardinality: unknown
+  label: Has language
+  facet: null
+  sub_property_of: null
 has_concept:
   name: has_concept
   domain: ConceptSynonym
@@ -29,6 +41,10 @@ has_concept:
   - Concept
   uri: https://w3id.org/omop/ontology/has_concept
   inverse: null
+  cardinality: unknown
+  label: Has concept
+  facet: null
+  sub_property_of: null
 has_period_type:
   name: has_period_type
   domain: ObservationPeriod
@@ -37,6 +53,10 @@ has_period_type:
   - Concept
   uri: https://w3id.org/omop/ontology/has_period_type
   inverse: null
+  cardinality: one-to-many
+  label: Has period type
+  facet: null
+  sub_property_of: null
 has_ancestor:
   name: has_ancestor
   domain: ConceptAncestor
@@ -45,6 +65,10 @@ has_ancestor:
   - Concept
   uri: https://w3id.org/omop/ontology/has_ancestor
   inverse: null
+  cardinality: zero-to-many
+  label: Has ancestor
+  facet: null
+  sub_property_of: null
 has_descendant:
   name: has_descendant
   domain: ConceptAncestor
@@ -53,6 +77,10 @@ has_descendant:
   - Concept
   uri: https://w3id.org/omop/ontology/has_descendant
   inverse: null
+  cardinality: zero-to-many
+  label: Has descendant
+  facet: null
+  sub_property_of: null
 has_unit:
   name: has_unit
   domain: DoseEra
@@ -61,6 +89,10 @@ has_unit:
   - Concept
   uri: https://w3id.org/omop/ontology/has_unit
   inverse: null
+  cardinality: unknown
+  label: Has unit
+  facet: null
+  sub_property_of: null
 has_entity:
   name: has_entity
   domain: LocationHistory
@@ -68,6 +100,10 @@ has_entity:
   ranges: []
   uri: https://w3id.org/omop/ontology/has_entity
   inverse: null
+  cardinality: zero-to-many
+  label: Has entity
+  facet: null
+  sub_property_of: null
 has_relationship_type:
   name: has_relationship_type
   domain: LocationHistory
@@ -76,6 +112,10 @@ has_relationship_type:
   - Concept
   uri: https://w3id.org/omop/ontology/has_relationship_type
   inverse: null
+  cardinality: zero-to-many
+  label: Has relationship type
+  facet: null
+  sub_property_of: null
 has_domain:
   name: has_domain
   domain: LocationHistory
@@ -84,6 +124,10 @@ has_domain:
   - Domain
   uri: https://w3id.org/omop/ontology/has_domain
   inverse: null
+  cardinality: unknown
+  label: Has domain
+  facet: null
+  sub_property_of: null
 has_location:
   name: has_location
   domain: LocationHistory
@@ -92,6 +136,10 @@ has_location:
   - Location
   uri: https://w3id.org/omop/ontology/has_location
   inverse: null
+  cardinality: unknown
+  label: Has location
+  facet: null
+  sub_property_of: null
 has_unique_device:
   name: has_unique_device
   domain: DeviceExposure
@@ -99,6 +147,10 @@ has_unique_device:
   ranges: []
   uri: https://w3id.org/omop/ontology/has_unique_device
   inverse: null
+  cardinality: zero-to-many
+  label: Has unique device
+  facet: null
+  sub_property_of: null
 has_relationship:
   name: has_relationship
   domain: FactRelationship
@@ -106,6 +158,10 @@ has_relationship:
   ranges: []
   uri: https://w3id.org/omop/ontology/has_relationship
   inverse: null
+  cardinality: unknown
+  label: Has relationship
+  facet: null
+  sub_property_of: null
 has_value_as_concept:
   name: has_value_as_concept
   domain: Metadata
@@ -114,6 +170,10 @@ has_value_as_concept:
   - Concept
   uri: https://w3id.org/omop/ontology/has_value_as_concept
   inverse: null
+  cardinality: unknown
+  label: Has value as concept
+  facet: null
+  sub_property_of: null
 has_type:
   name: has_type
   domain: Metadata
@@ -122,6 +182,10 @@ has_type:
   - Concept
   uri: https://w3id.org/omop/ontology/has_type
   inverse: null
+  cardinality: unknown
+  label: Has type
+  facet: null
+  sub_property_of: null
 has_cause:
   name: has_cause
   domain: Death
@@ -130,6 +194,10 @@ has_cause:
   - Concept
   uri: https://w3id.org/omop/ontology/has_cause
   inverse: null
+  cardinality: zero-to-many
+  label: Has cause
+  facet: null
+  sub_property_of: null
 has_cause_source:
   name: has_cause_source
   domain: Death
@@ -138,6 +206,10 @@ has_cause_source:
   - Concept
   uri: https://w3id.org/omop/ontology/has_cause_source
   inverse: null
+  cardinality: zero-to-many
+  label: Has cause source
+  facet: null
+  sub_property_of: null
 has_reverse_relationship:
   name: has_reverse_relationship
   domain: Relationship
@@ -145,6 +217,10 @@ has_reverse_relationship:
   ranges: []
   uri: https://w3id.org/omop/ontology/has_reverse_relationship
   inverse: null
+  cardinality: zero-to-many
+  label: Has reverse relationship
+  facet: null
+  sub_property_of: null
 has_place_of_service:
   name: has_place_of_service
   domain: CareSite
@@ -153,6 +229,10 @@ has_place_of_service:
   - Concept
   uri: https://w3id.org/omop/ontology/has_place_of_service
   inverse: null
+  cardinality: zero-to-many
+  label: Has place of service
+  facet: null
+  sub_property_of: null
 has_definition_type:
   name: has_definition_type
   domain: CohortDefinition
@@ -161,6 +241,10 @@ has_definition_type:
   - Concept
   uri: https://w3id.org/omop/ontology/has_definition_type
   inverse: null
+  cardinality: zero-to-many
+  label: Has definition type
+  facet: null
+  sub_property_of: null
 has_source_vocabulary:
   name: has_source_vocabulary
   domain: SourceToConceptMap
@@ -169,6 +253,10 @@ has_source_vocabulary:
   - Vocabulary
   uri: https://w3id.org/omop/ontology/has_source_vocabulary
   inverse: null
+  cardinality: zero-to-many
+  label: Has source vocabulary
+  facet: null
+  sub_property_of: null
 has_target:
   name: has_target
   domain: SourceToConceptMap
@@ -177,6 +265,10 @@ has_target:
   - Concept
   uri: https://w3id.org/omop/ontology/has_target
   inverse: null
+  cardinality: zero-to-many
+  label: Has target
+  facet: null
+  sub_property_of: null
 has_target_vocabulary:
   name: has_target_vocabulary
   domain: SourceToConceptMap
@@ -185,6 +277,10 @@ has_target_vocabulary:
   - Vocabulary
   uri: https://w3id.org/omop/ontology/has_target_vocabulary
   inverse: null
+  cardinality: zero-to-many
+  label: Has target vocabulary
+  facet: null
+  sub_property_of: null
 has_source:
   name: has_source
   domain: SourceToConceptMap
@@ -192,6 +288,10 @@ has_source:
   ranges: []
   uri: https://w3id.org/omop/ontology/has_source
   inverse: null
+  cardinality: unknown
+  label: Has source
+  facet: null
+  sub_property_of: null
 has_status:
   name: has_status
   domain: ConditionOccurrence
@@ -200,6 +300,10 @@ has_status:
   - Concept
   uri: https://w3id.org/omop/ontology/has_status
   inverse: null
+  cardinality: zero-to-many
+  label: Has status
+  facet: null
+  sub_property_of: null
 has_provider:
   name: has_provider
   domain: ConditionOccurrence
@@ -208,6 +312,10 @@ has_provider:
   - Provider
   uri: https://w3id.org/omop/ontology/has_provider
   inverse: null
+  cardinality: unknown
+  label: Has provider
+  facet: null
+  sub_property_of: null
 has_modifier:
   name: has_modifier
   domain: ProcedureOccurrence
@@ -216,6 +324,10 @@ has_modifier:
   - Concept
   uri: https://w3id.org/omop/ontology/has_modifier
   inverse: null
+  cardinality: zero-to-many
+  label: Has modifier
+  facet: null
+  sub_property_of: null
 has_parent:
   name: has_parent
   domain: VisitDetail
@@ -224,6 +336,10 @@ has_parent:
   - VisitDetail
   uri: https://w3id.org/omop/ontology/has_parent
   inverse: null
+  cardinality: zero-to-many
+  label: Has parent
+  facet: null
+  sub_property_of: null
 has_preceding_visit_detail:
   name: has_preceding_visit_detail
   domain: VisitDetail
@@ -232,6 +348,10 @@ has_preceding_visit_detail:
   - VisitDetail
   uri: https://w3id.org/omop/ontology/has_preceding_visit_detail
   inverse: null
+  cardinality: zero-to-many
+  label: Has preceding visit detail
+  facet: null
+  sub_property_of: null
 has_admitted_from:
   name: has_admitted_from
   domain: VisitDetail
@@ -240,6 +360,10 @@ has_admitted_from:
   - Concept
   uri: https://w3id.org/omop/ontology/has_admitted_from
   inverse: null
+  cardinality: unknown
+  label: Has admitted from
+  facet: null
+  sub_property_of: null
 has_amount_unit:
   name: has_amount_unit
   domain: DrugStrength
@@ -248,6 +372,10 @@ has_amount_unit:
   - Concept
   uri: https://w3id.org/omop/ontology/has_amount_unit
   inverse: null
+  cardinality: zero-to-many
+  label: Has amount unit
+  facet: null
+  sub_property_of: null
 has_denominator_unit:
   name: has_denominator_unit
   domain: DrugStrength
@@ -256,6 +384,10 @@ has_denominator_unit:
   - Concept
   uri: https://w3id.org/omop/ontology/has_denominator_unit
   inverse: null
+  cardinality: zero-to-many
+  label: Has denominator unit
+  facet: null
+  sub_property_of: null
 has_numerator_unit:
   name: has_numerator_unit
   domain: DrugStrength
@@ -264,6 +396,10 @@ has_numerator_unit:
   - Concept
   uri: https://w3id.org/omop/ontology/has_numerator_unit
   inverse: null
+  cardinality: zero-to-many
+  label: Has numerator unit
+  facet: null
+  sub_property_of: null
 has_ingredient:
   name: has_ingredient
   domain: DrugStrength
@@ -272,6 +408,10 @@ has_ingredient:
   - Concept
   uri: https://w3id.org/omop/ontology/has_ingredient
   inverse: null
+  cardinality: zero-to-many
+  label: Has ingredient
+  facet: null
+  sub_property_of: null
 has_section:
   name: has_section
   domain: NoteNlp
@@ -280,6 +420,10 @@ has_section:
   - Concept
   uri: https://w3id.org/omop/ontology/has_section
   inverse: null
+  cardinality: zero-to-many
+  label: Has section
+  facet: null
+  sub_property_of: null
 has_preceding_visit_occurrence:
   name: has_preceding_visit_occurrence
   domain: VisitOccurrence
@@ -288,6 +432,10 @@ has_preceding_visit_occurrence:
   - VisitOccurrence
   uri: https://w3id.org/omop/ontology/has_preceding_visit_occurrence
   inverse: null
+  cardinality: zero-to-many
+  label: Has preceding visit occurrence
+  facet: null
+  sub_property_of: null
 has_survey_conduct:
   name: has_survey_conduct
   domain: VisitOccurrence
@@ -296,6 +444,10 @@ has_survey_conduct:
   - SurveyConduct
   uri: https://w3id.org/omop/ontology/has_survey_conduct
   inverse: null
+  cardinality: unknown
+  label: Has survey conduct
+  facet: null
+  sub_property_of: null
 has_visit_detail:
   name: has_visit_detail
   domain: VisitOccurrence
@@ -304,6 +456,10 @@ has_visit_detail:
   - VisitDetail
   uri: https://w3id.org/omop/ontology/has_visit_detail
   inverse: null
+  cardinality: unknown
+  label: Has visit detail
+  facet: null
+  sub_property_of: null
 has_route:
   name: has_route
   domain: DrugExposure
@@ -312,6 +468,10 @@ has_route:
   - Concept
   uri: https://w3id.org/omop/ontology/has_route
   inverse: null
+  cardinality: zero-to-many
+  label: Has route
+  facet: null
+  sub_property_of: null
 has_anatomic_site:
   name: has_anatomic_site
   domain: Specimen
@@ -320,6 +480,10 @@ has_anatomic_site:
   - Concept
   uri: https://w3id.org/omop/ontology/has_anatomic_site
   inverse: null
+  cardinality: zero-to-many
+  label: Has anatomic site
+  facet: null
+  sub_property_of: null
 has_disease_status:
   name: has_disease_status
   domain: Specimen
@@ -328,6 +492,10 @@ has_disease_status:
   - Concept
   uri: https://w3id.org/omop/ontology/has_disease_status
   inverse: null
+  cardinality: zero-to-many
+  label: Has disease status
+  facet: null
+  sub_property_of: null
 has_encoding:
   name: has_encoding
   domain: Note
@@ -336,6 +504,10 @@ has_encoding:
   - Concept
   uri: https://w3id.org/omop/ontology/has_encoding
   inverse: null
+  cardinality: zero-to-many
+  label: Has encoding
+  facet: null
+  sub_property_of: null
 has_note_nlp:
   name: has_note_nlp
   domain: Note
@@ -344,6 +516,10 @@ has_note_nlp:
   - NoteNlp
   uri: https://w3id.org/omop/ontology/has_note_nlp
   inverse: null
+  cardinality: zero-to-many
+  label: Has note nlp
+  facet: null
+  sub_property_of: null
 has_event_field:
   name: has_event_field
   domain: Note
@@ -352,6 +528,10 @@ has_event_field:
   - Concept
   uri: https://w3id.org/omop/ontology/has_event_field
   inverse: null
+  cardinality: unknown
+  label: Has event field
+  facet: null
+  sub_property_of: null
 has_class:
   name: has_class
   domain: Note
@@ -359,6 +539,10 @@ has_class:
   ranges: []
   uri: https://w3id.org/omop/ontology/has_class
   inverse: null
+  cardinality: unknown
+  label: Has class
+  facet: null
+  sub_property_of: null
 has_event:
   name: has_event
   domain: Note
@@ -366,6 +550,10 @@ has_event:
   ranges: []
   uri: https://w3id.org/omop/ontology/has_event
   inverse: null
+  cardinality: unknown
+  label: Has event
+  facet: null
+  sub_property_of: null
 has_operator:
   name: has_operator
   domain: Measurement
@@ -374,6 +562,10 @@ has_operator:
   - Concept
   uri: https://w3id.org/omop/ontology/has_operator
   inverse: null
+  cardinality: zero-to-many
+  label: Has operator
+  facet: null
+  sub_property_of: null
 has_specialty:
   name: has_specialty
   domain: Provider
@@ -382,6 +574,10 @@ has_specialty:
   - Concept
   uri: https://w3id.org/omop/ontology/has_specialty
   inverse: null
+  cardinality: zero-to-many
+  label: Has specialty
+  facet: null
+  sub_property_of: null
 has_specialty_source:
   name: has_specialty_source
   domain: Provider
@@ -390,6 +586,10 @@ has_specialty_source:
   - Concept
   uri: https://w3id.org/omop/ontology/has_specialty_source
   inverse: null
+  cardinality: zero-to-many
+  label: Has specialty source
+  facet: null
+  sub_property_of: null
 has_currency:
   name: has_currency
   domain: Cost
@@ -398,6 +598,10 @@ has_currency:
   - Concept
   uri: https://w3id.org/omop/ontology/has_currency
   inverse: null
+  cardinality: zero-to-many
+  label: Has currency
+  facet: null
+  sub_property_of: null
 has_drg:
   name: has_drg
   domain: Cost
@@ -406,6 +610,10 @@ has_drg:
   - Concept
   uri: https://w3id.org/omop/ontology/has_drg
   inverse: null
+  cardinality: zero-to-many
+  label: Has drg
+  facet: null
+  sub_property_of: null
 has_revenue_code:
   name: has_revenue_code
   domain: Cost
@@ -414,6 +622,10 @@ has_revenue_code:
   - Concept
   uri: https://w3id.org/omop/ontology/has_revenue_code
   inverse: null
+  cardinality: zero-to-many
+  label: Has revenue code
+  facet: null
+  sub_property_of: null
 has_payer_plan_period:
   name: has_payer_plan_period
   domain: Cost
@@ -422,6 +634,10 @@ has_payer_plan_period:
   - PayerPlanPeriod
   uri: https://w3id.org/omop/ontology/has_payer_plan_period
   inverse: null
+  cardinality: unknown
+  label: Has payer plan period
+  facet: null
+  sub_property_of: null
 has_obs_event_field:
   name: has_obs_event_field
   domain: Observation
@@ -430,6 +646,10 @@ has_obs_event_field:
   - Concept
   uri: https://w3id.org/omop/ontology/has_obs_event_field
   inverse: null
+  cardinality: zero-to-many
+  label: Has obs event field
+  facet: null
+  sub_property_of: null
 has_qualifier:
   name: has_qualifier
   domain: Observation
@@ -438,6 +658,10 @@ has_qualifier:
   - Concept
   uri: https://w3id.org/omop/ontology/has_qualifier
   inverse: null
+  cardinality: zero-to-many
+  label: Has qualifier
+  facet: null
+  sub_property_of: null
 has_contract_person:
   name: has_contract_person
   domain: PayerPlanPeriod
@@ -446,6 +670,10 @@ has_contract_person:
   - Person
   uri: https://w3id.org/omop/ontology/has_contract_person
   inverse: null
+  cardinality: zero-to-many
+  label: Has contract person
+  facet: null
+  sub_property_of: null
 has_sponsor_source:
   name: has_sponsor_source
   domain: PayerPlanPeriod
@@ -454,6 +682,10 @@ has_sponsor_source:
   - Concept
   uri: https://w3id.org/omop/ontology/has_sponsor_source
   inverse: null
+  cardinality: zero-to-many
+  label: Has sponsor source
+  facet: null
+  sub_property_of: null
 has_stop_reason_concept:
   name: has_stop_reason_concept
   domain: PayerPlanPeriod
@@ -462,6 +694,10 @@ has_stop_reason_concept:
   - Concept
   uri: https://w3id.org/omop/ontology/has_stop_reason_concept
   inverse: null
+  cardinality: zero-to-many
+  label: Has stop reason concept
+  facet: null
+  sub_property_of: null
 has_stop_reason_source:
   name: has_stop_reason_source
   domain: PayerPlanPeriod
@@ -470,6 +706,10 @@ has_stop_reason_source:
   - Concept
   uri: https://w3id.org/omop/ontology/has_stop_reason_source
   inverse: null
+  cardinality: zero-to-many
+  label: Has stop reason source
+  facet: null
+  sub_property_of: null
 has_contract:
   name: has_contract
   domain: PayerPlanPeriod
@@ -478,6 +718,10 @@ has_contract:
   - Concept
   uri: https://w3id.org/omop/ontology/has_contract
   inverse: null
+  cardinality: zero-to-many
+  label: Has contract
+  facet: null
+  sub_property_of: null
 has_contract_source:
   name: has_contract_source
   domain: PayerPlanPeriod
@@ -486,6 +730,10 @@ has_contract_source:
   - Concept
   uri: https://w3id.org/omop/ontology/has_contract_source
   inverse: null
+  cardinality: zero-to-many
+  label: Has contract source
+  facet: null
+  sub_property_of: null
 has_payer:
   name: has_payer
   domain: PayerPlanPeriod
@@ -494,6 +742,10 @@ has_payer:
   - Concept
   uri: https://w3id.org/omop/ontology/has_payer
   inverse: null
+  cardinality: zero-to-many
+  label: Has payer
+  facet: null
+  sub_property_of: null
 has_payer_source:
   name: has_payer_source
   domain: PayerPlanPeriod
@@ -502,6 +754,10 @@ has_payer_source:
   - Concept
   uri: https://w3id.org/omop/ontology/has_payer_source
   inverse: null
+  cardinality: zero-to-many
+  label: Has payer source
+  facet: null
+  sub_property_of: null
 has_plan:
   name: has_plan
   domain: PayerPlanPeriod
@@ -510,6 +766,10 @@ has_plan:
   - Concept
   uri: https://w3id.org/omop/ontology/has_plan
   inverse: null
+  cardinality: zero-to-many
+  label: Has plan
+  facet: null
+  sub_property_of: null
 has_plan_source:
   name: has_plan_source
   domain: PayerPlanPeriod
@@ -518,6 +778,10 @@ has_plan_source:
   - Concept
   uri: https://w3id.org/omop/ontology/has_plan_source
   inverse: null
+  cardinality: zero-to-many
+  label: Has plan source
+  facet: null
+  sub_property_of: null
 has_sponsor:
   name: has_sponsor
   domain: PayerPlanPeriod
@@ -526,6 +790,10 @@ has_sponsor:
   - Concept
   uri: https://w3id.org/omop/ontology/has_sponsor
   inverse: null
+  cardinality: zero-to-many
+  label: Has sponsor
+  facet: null
+  sub_property_of: null
 has_response_visit_occurrence:
   name: has_response_visit_occurrence
   domain: SurveyConduct
@@ -534,6 +802,10 @@ has_response_visit_occurrence:
   - VisitOccurrence
   uri: https://w3id.org/omop/ontology/has_response_visit_occurrence
   inverse: null
+  cardinality: zero-to-many
+  label: Has response visit occurrence
+  facet: null
+  sub_property_of: null
 has_assisted:
   name: has_assisted
   domain: SurveyConduct
@@ -542,6 +814,10 @@ has_assisted:
   - Concept
   uri: https://w3id.org/omop/ontology/has_assisted
   inverse: null
+  cardinality: zero-to-many
+  label: Has assisted
+  facet: null
+  sub_property_of: null
 has_collection_method:
   name: has_collection_method
   domain: SurveyConduct
@@ -550,6 +826,10 @@ has_collection_method:
   - Concept
   uri: https://w3id.org/omop/ontology/has_collection_method
   inverse: null
+  cardinality: zero-to-many
+  label: Has collection method
+  facet: null
+  sub_property_of: null
 has_respondent_type:
   name: has_respondent_type
   domain: SurveyConduct
@@ -558,6 +838,10 @@ has_respondent_type:
   - Concept
   uri: https://w3id.org/omop/ontology/has_respondent_type
   inverse: null
+  cardinality: zero-to-many
+  label: Has respondent type
+  facet: null
+  sub_property_of: null
 has_survey:
   name: has_survey
   domain: SurveyConduct
@@ -566,6 +850,10 @@ has_survey:
   - Concept
   uri: https://w3id.org/omop/ontology/has_survey
   inverse: null
+  cardinality: zero-to-many
+  label: Has survey
+  facet: null
+  sub_property_of: null
 has_survey_source:
   name: has_survey_source
   domain: SurveyConduct
@@ -574,6 +862,10 @@ has_survey_source:
   - Concept
   uri: https://w3id.org/omop/ontology/has_survey_source
   inverse: null
+  cardinality: zero-to-many
+  label: Has survey source
+  facet: null
+  sub_property_of: null
 has_timing:
   name: has_timing
   domain: SurveyConduct
@@ -582,6 +874,10 @@ has_timing:
   - Concept
   uri: https://w3id.org/omop/ontology/has_timing
   inverse: null
+  cardinality: zero-to-many
+  label: Has timing
+  facet: null
+  sub_property_of: null
 has_validated_survey:
   name: has_validated_survey
   domain: SurveyConduct
@@ -590,6 +886,10 @@ has_validated_survey:
   - Concept
   uri: https://w3id.org/omop/ontology/has_validated_survey
   inverse: null
+  cardinality: zero-to-many
+  label: Has validated survey
+  facet: null
+  sub_property_of: null
 has_death:
   name: has_death
   domain: Person
@@ -598,6 +898,10 @@ has_death:
   - Death
   uri: https://w3id.org/omop/ontology/has_death
   inverse: null
+  cardinality: zero-to-many
+  label: Has death
+  facet: null
+  sub_property_of: null
 has_condition_era:
   name: has_condition_era
   domain: Person
@@ -606,6 +910,10 @@ has_condition_era:
   - ConditionEra
   uri: https://w3id.org/omop/ontology/has_condition_era
   inverse: null
+  cardinality: zero-to-many
+  label: Has condition era
+  facet: null
+  sub_property_of: null
 has_cost:
   name: has_cost
   domain: Person
@@ -614,6 +922,10 @@ has_cost:
   - Cost
   uri: https://w3id.org/omop/ontology/has_cost
   inverse: null
+  cardinality: zero-to-many
+  label: Has cost
+  facet: null
+  sub_property_of: null
 has_dose_era:
   name: has_dose_era
   domain: Person
@@ -622,6 +934,10 @@ has_dose_era:
   - DoseEra
   uri: https://w3id.org/omop/ontology/has_dose_era
   inverse: null
+  cardinality: zero-to-many
+  label: Has dose era
+  facet: null
+  sub_property_of: null
 has_drug_era:
   name: has_drug_era
   domain: Person
@@ -630,6 +946,10 @@ has_drug_era:
   - DrugEra
   uri: https://w3id.org/omop/ontology/has_drug_era
   inverse: null
+  cardinality: zero-to-many
+  label: Has drug era
+  facet: null
+  sub_property_of: null
 has_ethnicity:
   name: has_ethnicity
   domain: Person
@@ -638,6 +958,10 @@ has_ethnicity:
   - Concept
   uri: https://w3id.org/omop/ontology/has_ethnicity
   inverse: null
+  cardinality: zero-to-many
+  label: Has ethnicity
+  facet: null
+  sub_property_of: null
 has_ethnicity_source:
   name: has_ethnicity_source
   domain: Person
@@ -646,6 +970,10 @@ has_ethnicity_source:
   - Concept
   uri: https://w3id.org/omop/ontology/has_ethnicity_source
   inverse: null
+  cardinality: zero-to-many
+  label: Has ethnicity source
+  facet: null
+  sub_property_of: null
 has_observation_period:
   name: has_observation_period
   domain: Person
@@ -654,6 +982,10 @@ has_observation_period:
   - ObservationPeriod
   uri: https://w3id.org/omop/ontology/has_observation_period
   inverse: null
+  cardinality: zero-to-many
+  label: Has observation period
+  facet: null
+  sub_property_of: null
 has_race:
   name: has_race
   domain: Person
@@ -662,6 +994,10 @@ has_race:
   - Concept
   uri: https://w3id.org/omop/ontology/has_race
   inverse: null
+  cardinality: zero-to-many
+  label: Has race
+  facet: null
+  sub_property_of: null
 has_race_source:
   name: has_race_source
   domain: Person
@@ -670,6 +1006,10 @@ has_race_source:
   - Concept
   uri: https://w3id.org/omop/ontology/has_race_source
   inverse: null
+  cardinality: zero-to-many
+  label: Has race source
+  facet: null
+  sub_property_of: null
 has_specimen:
   name: has_specimen
   domain: Person
@@ -678,6 +1018,10 @@ has_specimen:
   - Specimen
   uri: https://w3id.org/omop/ontology/has_specimen
   inverse: null
+  cardinality: zero-to-many
+  label: Has specimen
+  facet: null
+  sub_property_of: null
 has_visit_occurrence:
   name: has_visit_occurrence
   domain: Person
@@ -686,6 +1030,10 @@ has_visit_occurrence:
   - VisitOccurrence
   uri: https://w3id.org/omop/ontology/has_visit_occurrence
   inverse: null
+  cardinality: zero-to-many
+  label: Has visit occurrence
+  facet: null
+  sub_property_of: null
 has_condition_occurrence:
   name: has_condition_occurrence
   domain: Person
@@ -694,6 +1042,10 @@ has_condition_occurrence:
   - ConditionOccurrence
   uri: https://w3id.org/omop/ontology/has_condition_occurrence
   inverse: null
+  cardinality: unknown
+  label: Has condition occurrence
+  facet: null
+  sub_property_of: null
 has_device_exposure:
   name: has_device_exposure
   domain: Person
@@ -702,6 +1054,10 @@ has_device_exposure:
   - DeviceExposure
   uri: https://w3id.org/omop/ontology/has_device_exposure
   inverse: null
+  cardinality: unknown
+  label: Has device exposure
+  facet: null
+  sub_property_of: null
 has_drug_exposure:
   name: has_drug_exposure
   domain: Person
@@ -710,6 +1066,10 @@ has_drug_exposure:
   - DrugExposure
   uri: https://w3id.org/omop/ontology/has_drug_exposure
   inverse: null
+  cardinality: unknown
+  label: Has drug exposure
+  facet: null
+  sub_property_of: null
 has_measurement:
   name: has_measurement
   domain: Person
@@ -718,6 +1078,10 @@ has_measurement:
   - Measurement
   uri: https://w3id.org/omop/ontology/has_measurement
   inverse: null
+  cardinality: unknown
+  label: Has measurement
+  facet: null
+  sub_property_of: null
 has_note:
   name: has_note
   domain: Person
@@ -726,6 +1090,10 @@ has_note:
   - Note
   uri: https://w3id.org/omop/ontology/has_note
   inverse: null
+  cardinality: unknown
+  label: Has note
+  facet: null
+  sub_property_of: null
 has_observation:
   name: has_observation
   domain: Person
@@ -734,6 +1102,10 @@ has_observation:
   - Observation
   uri: https://w3id.org/omop/ontology/has_observation
   inverse: null
+  cardinality: unknown
+  label: Has observation
+  facet: null
+  sub_property_of: null
 has_procedure_occurrence:
   name: has_procedure_occurrence
   domain: Person
@@ -742,6 +1114,10 @@ has_procedure_occurrence:
   - ProcedureOccurrence
   uri: https://w3id.org/omop/ontology/has_procedure_occurrence
   inverse: null
+  cardinality: unknown
+  label: Has procedure occurrence
+  facet: null
+  sub_property_of: null
 has_vocabulary:
   name: has_vocabulary
   domain: Concept
@@ -750,3 +1126,7 @@ has_vocabulary:
   - Vocabulary
   uri: https://w3id.org/omop/ontology/has_vocabulary
   inverse: null
+  cardinality: zero-to-many
+  label: Has vocabulary
+  facet: null
+  sub_property_of: null
