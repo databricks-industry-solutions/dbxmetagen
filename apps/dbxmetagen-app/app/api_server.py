@@ -24,6 +24,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from databricks.sdk import WorkspaceClient
 from db import pg_execute, get_engine, pg_configured
+from dbxmetagen.ddl_bundle_utils import rewrite_ddl_catalog_schema as _rewrite_ddl_catalog_schema, dq_grade as _dq_grade
 
 logger = logging.getLogger(__name__)
 
@@ -1318,83 +1319,352 @@ _GOVERNED_TAG_HINT = (
 )
 
 
+def _execute_stmts_batched(
+    stmts: list[str], batch: bool = True, timeout: int = 60,
+) -> tuple[int, list[dict]]:
+    """Execute DDL stmts with table-level column-ALTER batching. Returns (applied, errors).
+
+    When *batch* is True, column-level ALTER TABLEs for the same table are merged
+    into a single statement. Falls back to per-statement execution on batch failure.
+    """
+    applied = 0
+    errors: list[dict] = []
+
+    def _run_one(sql: str) -> None:
+        nonlocal applied
+        clean = sql.rstrip(";").strip()
+        if not clean or clean.startswith("--"):
+            return
+        try:
+            execute_sql(clean, timeout=timeout)
+            applied += 1
+        except Exception as e:
+            err_str = str(e)
+            detail: dict = {"statement": clean[:200], "error": err_str}
+            if "PERMISSION_DENIED" in err_str and "tag" in err_str.lower():
+                detail["governed_tag"] = True
+                detail["hint"] = _GOVERNED_TAG_HINT
+            errors.append(detail)
+
+    if not batch or len(stmts) <= 1:
+        for s in stmts:
+            _run_one(s)
+        return applied, errors
+
+    groups: dict[str, list[str]] = {}
+    table_level: list[str] = []
+    for s in stmts:
+        upper = s.strip().upper()
+        if upper.startswith("ALTER TABLE") and "ALTER COLUMN" in upper:
+            parts = s.strip().split(None, 3)
+            tbl = parts[2] if len(parts) > 2 else None
+            if tbl:
+                groups.setdefault(tbl, []).append(s)
+            else:
+                table_level.append(s)
+        else:
+            table_level.append(s)
+
+    for s in table_level:
+        _run_one(s)
+
+    for tbl, tbl_stmts in groups.items():
+        try:
+            alter_clauses = []
+            for s in tbl_stmts:
+                idx = s.upper().find("ALTER COLUMN")
+                if idx > 0:
+                    alter_clauses.append(s[idx:].rstrip(";").strip())
+            if alter_clauses:
+                batch_sql = f"ALTER TABLE {tbl} {' '.join(alter_clauses)};"
+                execute_sql(batch_sql, timeout=120)
+                applied += len(tbl_stmts)
+        except Exception:
+            for s in tbl_stmts:
+                _run_one(s)
+
+    return applied, errors
+
+
 @app.post("/api/metadata/apply-ddl")
 def apply_ddl(body: GenerateDDLBody, batch: bool = True):
     out = generate_ddl(body)
     stmts = out.get("statements") or []
-    errors = []
-    applied = 0
-
-    if batch and len(stmts) > 1:
-        groups: dict[str, list[str]] = {}
-        table_level = []
-        for s in stmts:
-            upper = s.strip().upper()
-            if upper.startswith("ALTER TABLE") and "ALTER COLUMN" in upper:
-                parts = s.strip().split(None, 3)
-                tbl = parts[2] if len(parts) > 2 else None
-                if tbl:
-                    groups.setdefault(tbl, []).append(s)
-                else:
-                    table_level.append(s)
-            else:
-                table_level.append(s)
-
-        for s in table_level:
-            try:
-                execute_sql(s, timeout=60)
-                applied += 1
-            except Exception as e:
-                err_str = str(e)
-                detail: dict = {"statement": s[:200], "error": err_str}
-                if "PERMISSION_DENIED" in err_str and "tag" in err_str.lower():
-                    detail["governed_tag"] = True
-                    detail["hint"] = _GOVERNED_TAG_HINT
-                errors.append(detail)
-
-        for tbl, tbl_stmts in groups.items():
-            try:
-                alter_clauses = []
-                for s in tbl_stmts:
-                    idx = s.upper().find("ALTER COLUMN")
-                    if idx > 0:
-                        alter_clauses.append(s[idx:].rstrip(";").strip())
-                if alter_clauses:
-                    batch_sql = f"ALTER TABLE {tbl} {' '.join(alter_clauses)};"
-                    execute_sql(batch_sql, timeout=120)
-                    applied += len(tbl_stmts)
-            except Exception:
-                for s in tbl_stmts:
-                    try:
-                        execute_sql(s, timeout=60)
-                        applied += 1
-                    except Exception as e2:
-                        err_str = str(e2)
-                        detail = {"statement": s[:200], "error": err_str}
-                        if "PERMISSION_DENIED" in err_str and "tag" in err_str.lower():
-                            detail["governed_tag"] = True
-                            detail["hint"] = _GOVERNED_TAG_HINT
-                        errors.append(detail)
-    else:
-        for s in stmts:
-            try:
-                execute_sql(s, timeout=60)
-                applied += 1
-            except Exception as e:
-                err_str = str(e)
-                detail: dict = {"statement": s[:200], "error": err_str}
-                if "PERMISSION_DENIED" in err_str and "tag" in err_str.lower():
-                    detail["governed_tag"] = True
-                    detail["hint"] = _GOVERNED_TAG_HINT
-                errors.append(detail)
-
+    applied, errors = _execute_stmts_batched(stmts, batch=batch)
     if errors:
-        return {
-            "message": "Some DDL statements failed",
-            "applied": applied,
-            "errors": errors,
-        }
+        return {"message": "Some DDL statements failed", "applied": applied, "errors": errors}
     return {"applied": applied}
+
+
+# ---------------------------------------------------------------------------
+# DDL Bundle builders (advanced metadata)
+# ---------------------------------------------------------------------------
+
+
+def _fetch_fk_rows(identifiers: Optional[list[str]] = None) -> list[dict]:
+    """Fetch parsed FK prediction rows (shared by tag and constraint builders)."""
+    fk_tbl = fq("fk_predictions")
+    where = "src_table != dst_table AND final_confidence >= 0.5"
+    if identifiers:
+        safe = [_safe_sql_str(x) for x in identifiers if _SAFE_IDENT_RE.match(x)]
+        if safe:
+            tbl_cond = " OR ".join([f"src_table = {s}" for s in safe])
+            where += f" AND ({tbl_cond})"
+    try:
+        rows = execute_sql(
+            f"SELECT src_table, src_column, dst_table, dst_column FROM {fk_tbl} WHERE {where} ORDER BY final_confidence DESC LIMIT 500"
+        )
+    except Exception:
+        return []
+    parsed = []
+    for r in rows:
+        src_tbl = (r.get("src_table") or "").strip()
+        src_col = (r.get("src_column") or "").strip().split(".")[-1]
+        dst_tbl = (r.get("dst_table") or "").strip()
+        dst_col = (r.get("dst_column") or "").strip().split(".")[-1]
+        if src_tbl and src_col and dst_tbl and dst_col:
+            parsed.append({"src_tbl": src_tbl, "src_col": src_col, "dst_tbl": dst_tbl, "dst_col": dst_col})
+    return parsed
+
+
+def _build_fk_tag_ddl(identifiers: Optional[list[str]] = None) -> list[str]:
+    """Build FK-as-tags DDL from fk_predictions without executing."""
+    return [
+        f"ALTER TABLE {r['src_tbl']} ALTER COLUMN `{r['src_col']}` SET TAGS ('fk_references' = '{_esc_sql(r['dst_tbl'] + '.' + r['dst_col'])}');"
+        for r in _fetch_fk_rows(identifiers)
+    ]
+
+
+def _build_fk_constraint_ddl(identifiers: Optional[list[str]] = None) -> list[str]:
+    """Build FK constraint DDL from fk_predictions without executing."""
+    return [
+        f"ALTER TABLE {r['src_tbl']} ADD CONSTRAINT fk_{r['src_col']}_{r['dst_col']} FOREIGN KEY ({r['src_col']}) REFERENCES {r['dst_tbl']}({r['dst_col']});"
+        for r in _fetch_fk_rows(identifiers)
+    ]
+
+
+def _build_data_quality_ddl(
+    identifiers: Optional[list[str]] = None,
+) -> list[str]:
+    """Build data quality tag DDL from data_quality_scores."""
+    dq_tbl = fq("data_quality_scores")
+    where = "1=1"
+    if identifiers:
+        safe = [_safe_sql_str(x) for x in identifiers if _SAFE_IDENT_RE.match(x)]
+        if safe:
+            tbl_cond = " OR ".join([f"table_name = {s}" for s in safe])
+            where = tbl_cond
+    try:
+        rows = execute_sql(
+            f"SELECT table_name, overall_score FROM {dq_tbl} WHERE {where} LIMIT 500"
+        )
+    except Exception:
+        return []
+    stmts: list[str] = []
+    for r in rows:
+        tbl = (r.get("table_name") or "").strip()
+        score = r.get("overall_score")
+        if not tbl or score is None:
+            continue
+        if not _SAFE_IDENT_RE.match(tbl.replace(".", "x")):
+            continue
+        score_f = round(float(score), 1)
+        grade = _dq_grade(score_f)
+        stmts.append(
+            f"ALTER TABLE {tbl} SET TAGS ('data_quality_score' = '{score_f}', 'data_quality_grade' = '{grade}');"
+        )
+    return stmts
+
+
+def _build_metric_view_ddl(
+    identifiers: Optional[list[str]] = None,
+    target_catalog: Optional[str] = None,
+    target_schema: Optional[str] = None,
+) -> list[str]:
+    """Build CREATE VIEW WITH METRICS DDL from metric_view_definitions."""
+    try:
+        _ensure_semantic_layer_tables()
+    except Exception:
+        return []
+    try:
+        rows = execute_sql(
+            f"SELECT * FROM {fq('metric_view_definitions')} WHERE status = 'applied'"
+        )
+    except Exception:
+        return []
+    if not rows:
+        return []
+    default_cat = target_catalog or CATALOG
+    default_sch = target_schema or SCHEMA
+    stmts: list[str] = []
+    for row in rows:
+        defn = json.loads(row["json_definition"]) if isinstance(row["json_definition"], str) else row["json_definition"]
+        mv_name = defn.get("name") or row.get("metric_view_name", "")
+        if not mv_name:
+            continue
+        if identifiers:
+            source = defn.get("source", "")
+            if source and not any(i in source for i in identifiers):
+                continue
+        mv_cat = row.get("deployed_catalog") or default_cat
+        mv_sch = row.get("deployed_schema") or default_sch
+        fq_mv = f"`{mv_cat}`.`{mv_sch}`.`{mv_name}`"
+        yaml_body = _definition_to_yaml(defn)
+        stmts.append(f"CREATE OR REPLACE VIEW {fq_mv}\nWITH METRICS LANGUAGE YAML AS $$\n{yaml_body}$$;")
+    return stmts
+
+
+def _build_geo_ddl(
+    identifiers: Optional[list[str]] = None,
+    tag_key: str = "geo_classification",
+) -> list[str]:
+    """Build geo classification tag DDL -- delegates to generate_ddl(scope='geo')."""
+    out = generate_ddl(GenerateDDLBody(scope="geo", identifiers=identifiers, tag_key=tag_key))
+    return out.get("statements") or []
+
+
+# ---------------------------------------------------------------------------
+# DDL Bundle endpoints
+# ---------------------------------------------------------------------------
+
+
+_BUNDLE_DDL_TYPES = [
+    "comments", "domain", "sensitivity", "ontology",
+    "fk_tags", "data_quality", "geo", "metric_views",
+]
+
+
+class DDLBundleBody(BaseModel):
+    types: list[str] = _BUNDLE_DDL_TYPES
+    identifiers: Optional[list[str]] = None
+    target_catalog: Optional[str] = None
+    target_schema: Optional[str] = None
+    domain_tag_key: Optional[str] = None
+    subdomain_tag_key: Optional[str] = None
+    sensitivity_tag_key: Optional[str] = None
+    geo_tag_key: Optional[str] = None
+
+
+@app.post("/api/metadata/generate-ddl-bundle")
+def generate_ddl_bundle(body: DDLBundleBody):
+    """Generate a unified DDL bundle combining core + advanced metadata types.
+
+    Each requested type produces a section of SQL statements. The combined script
+    is written to a UC volume and returned as JSON with per-section detail.
+    """
+    requested = {t.lower() for t in body.types}
+    ids = body.identifiers
+    sections: dict[str, list[str]] = {}
+
+    core_types = requested & {"comments", "domain", "sensitivity"}
+    if core_types:
+        for ct in sorted(core_types):
+            core_body = GenerateDDLBody(
+                scope="table",
+                identifiers=ids,
+                ddl_type=ct,
+                domain_tag_key=body.domain_tag_key,
+                subdomain_tag_key=body.subdomain_tag_key,
+                sensitivity_tag_key=body.sensitivity_tag_key,
+            )
+            core_out = generate_ddl(core_body)
+            core_stmts = core_out.get("statements") or []
+            if core_stmts:
+                sections[ct] = core_stmts
+
+    if "ontology" in requested:
+        sections["ontology"] = _build_ontology_tag_ddl(identifiers=ids)
+
+    if "fk_constraints" in requested:
+        sections["fk_constraints"] = _build_fk_constraint_ddl(identifiers=ids)
+
+    if "fk_tags" in requested:
+        sections["fk_tags"] = _build_fk_tag_ddl(identifiers=ids)
+
+    if "data_quality" in requested:
+        sections["data_quality"] = _build_data_quality_ddl(identifiers=ids)
+
+    if "geo" in requested:
+        sections["geo"] = _build_geo_ddl(identifiers=ids, tag_key=body.geo_tag_key or "geo_classification")
+
+    if "metric_views" in requested:
+        sections["metric_views"] = _build_metric_view_ddl(
+            identifiers=ids,
+            target_catalog=body.target_catalog,
+            target_schema=body.target_schema,
+        )
+
+    if body.target_catalog or body.target_schema:
+        target_cat = body.target_catalog or CATALOG
+        target_sch = body.target_schema or SCHEMA
+        for key in sections:
+            if key != "metric_views":
+                sections[key] = _rewrite_ddl_catalog_schema(sections[key], CATALOG, SCHEMA, target_cat, target_sch)
+
+    parts = []
+    total_count = 0
+    for section_name, section_stmts in sections.items():
+        if section_stmts:
+            parts.append(f"-- =============================================================")
+            parts.append(f"-- {section_name.upper().replace('_', ' ')} ({len(section_stmts)} statements)")
+            parts.append(f"-- =============================================================\n")
+            parts.extend(section_stmts)
+            parts.append("")
+            total_count += len(section_stmts)
+
+    sql = "\n".join(parts) if parts else "-- No DDL generated"
+
+    vol_path = None
+    if total_count > 0:
+        from datetime import datetime
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        current_date = datetime.now().strftime("%Y%m%d")
+        volume_name = os.environ.get("VOLUME_NAME", "generated_metadata")
+        ws = get_workspace_client()
+        current_user = "app"
+        try:
+            current_user = ws.current_user.me().user_name.split("@")[0]
+        except Exception:
+            pass
+        type_slug = "_".join(sorted(requested))[:60]
+        vol_path = f"/Volumes/{CATALOG}/{SCHEMA}/{volume_name}/{current_user}/{current_date}/ddl_bundle_{type_slug}_{ts}.sql"
+        try:
+            ws.files.upload(vol_path, io.BytesIO(sql.encode("utf-8")), overwrite=True)
+            logger.info("DDL bundle written to volume: %s", vol_path)
+        except Exception as e:
+            logger.warning("Failed to write DDL bundle to volume: %s", e)
+            vol_path = None
+
+    return {
+        "sql": sql,
+        "sections": {k: v for k, v in sections.items() if v},
+        "counts": {k: len(v) for k, v in sections.items()},
+        "total_statements": total_count,
+        "volume_path": vol_path,
+    }
+
+
+@app.post("/api/metadata/apply-ddl-bundle")
+def apply_ddl_bundle(body: DDLBundleBody):
+    """Generate and apply a unified DDL bundle with batched execution."""
+    out = generate_ddl_bundle(body)
+    sections = out.get("sections") or {}
+    results: dict[str, dict] = {}
+    total_applied = 0
+    total_errors = 0
+
+    for section_name, stmts in sections.items():
+        sec_applied, sec_errors = _execute_stmts_batched(stmts, batch=True)
+        results[section_name] = {"applied": sec_applied, "errors": sec_errors}
+        total_applied += sec_applied
+        total_errors += len(sec_errors)
+
+    return {
+        "applied": total_applied,
+        "errors": total_errors,
+        "results": results,
+        "volume_path": out.get("volume_path"),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -2031,7 +2301,7 @@ _ENTITY_UUID_RE = re.compile(
 @app.get("/api/ontology/quality-summary")
 def get_ontology_quality_summary():
     """Active bundle (env), tier hash from disk, and aggregate confidence from ontology_entities."""
-    active = os.environ.get("ONTOLOGY_BUNDLE") or os.environ.get("ontology_bundle") or "healthcare"
+    active = os.environ.get("ONTOLOGY_BUNDLE") or os.environ.get("ontology_bundle") or "general"
     bundles = _list_bundles_local()
     info = next((b for b in bundles if b["key"] == active), None)
     out: dict = {
@@ -2933,12 +3203,13 @@ class OntologyApplyBody(BaseModel):
     selections: list[OntologyApplyItem]
 
 
-def _apply_ontology_tags_from_tables(
+def _build_ontology_tag_ddl(
     selections: Optional[list] = None,
-) -> dict:
-    """Read ontology_entities and ontology_column_properties, apply ontology_* UC tags to tables/columns.
+    identifiers: Optional[list[str]] = None,
+) -> list[str]:
+    """Build ontology tag DDL statements without executing them.
 
-    When *selections* is provided, only matching (entity_type, source_table) pairs are applied.
+    Returns a list of ALTER TABLE ... SET TAGS SQL strings.
     """
     wh_id = os.environ.get("WAREHOUSE_ID", "")
     if not wh_id:
@@ -2947,10 +3218,8 @@ def _apply_ontology_tags_from_tables(
     cp_tbl = fq("ontology_column_properties")
     tkb_tbl = fq("table_knowledge_base")
     rel_tbl = fq("ontology_relationships")
-    table_results = []
-    col_results = []
+    stmts: list[str] = []
 
-    # Build allowed set from selections for filtering
     allowed_pairs: Optional[set] = None
     allowed_tables: Optional[set] = None
     if selections:
@@ -2964,8 +3233,13 @@ def _apply_ontology_tags_from_tables(
             for t in tbls:
                 allowed_pairs.add((et.strip(), t.strip()))
                 allowed_tables.add(t.strip())
+    if identifiers:
+        id_set = {t.strip() for t in identifiers}
+        if allowed_tables is not None:
+            allowed_tables &= id_set
+        else:
+            allowed_tables = id_set
 
-    # Table-level: ontology_entity_type, ontology_domain, ontology_confidence from ontology_entities
     try:
         ent_q = f"""
             SELECT e.entity_type, e.confidence, e.source_tables, e.entity_role,
@@ -2993,7 +3267,6 @@ def _apply_ontology_tags_from_tables(
                 tables = [tables]
         et = (e.get("entity_type") or "").strip()
         conf = e.get("confidence")
-        conf_str = str(round(float(conf), 2)) if conf is not None else "0"
         role = (e.get("entity_role") or "primary").strip()
         gran = (e.get("granularity") or "table").strip()
         if not et or gran != "table" or role != "primary":
@@ -3003,6 +3276,8 @@ def _apply_ontology_tags_from_tables(
                 continue
             tbl = tbl.strip()
             if allowed_pairs is not None and (et, tbl) not in allowed_pairs:
+                continue
+            if allowed_tables is not None and tbl not in allowed_tables:
                 continue
             domain = tkb_domain.get(tbl, "")
             prev = seen_tables.get(tbl)
@@ -3024,15 +3299,8 @@ def _apply_ontology_tags_from_tables(
         tags.append(f"'ontology_confidence' = '{conf_str}'")
         if vals.get("domain"):
             tags.append(f"'ontology_domain' = '{_esc_sql(vals['domain'])}'")
+        stmts.append(f"ALTER TABLE {tbl} SET TAGS ({', '.join(tags)});")
 
-        sql = f"ALTER TABLE {tbl} SET TAGS ({', '.join(tags)})"
-        try:
-            execute_sql(sql, warehouse_id=wh_id, timeout=30)
-            table_results.append({"table": tbl, "ok": True})
-        except Exception as ex:
-            table_results.append({"table": tbl, "ok": False, "error": str(ex)})
-
-    # Column-level: ontology_property_role, ontology_edge, ontology_linked_entity, ontology_confidence
     try:
         cp_q = f"""
             SELECT table_name, column_name, property_role, confidence, linked_entity_type
@@ -3071,13 +3339,39 @@ def _apply_ontology_tags_from_tables(
             tags.append(f"'ontology_edge' = '{_esc_sql(edge)}'")
         if linked:
             tags.append(f"'ontology_linked_entity' = '{_esc_sql(linked)}'")
+        stmts.append(f"ALTER TABLE {tbl} ALTER COLUMN `{col_safe}` SET TAGS ({', '.join(tags)});")
 
-        sql = f"ALTER TABLE {tbl} ALTER COLUMN `{col_safe}` SET TAGS ({', '.join(tags)})"
+    return stmts
+
+
+def _apply_ontology_tags_from_tables(
+    selections: Optional[list] = None,
+) -> dict:
+    """Read ontology_entities and ontology_column_properties, apply ontology_* UC tags to tables/columns.
+
+    Delegates DDL building to _build_ontology_tag_ddl, then executes each statement.
+    """
+    wh_id = os.environ.get("WAREHOUSE_ID", "")
+    if not wh_id:
+        raise HTTPException(500, detail="WAREHOUSE_ID not configured")
+    stmts = _build_ontology_tag_ddl(selections=selections)
+    table_results = []
+    col_results = []
+    for sql in stmts:
+        is_col = "ALTER COLUMN" in sql.upper()
+        tbl_match = sql.split("ALTER TABLE", 1)[-1].split("SET TAGS")[0].split("ALTER COLUMN")[0].strip()
         try:
-            execute_sql(sql, warehouse_id=wh_id, timeout=30)
-            col_results.append({"table": tbl, "column": col, "ok": True})
+            execute_sql(sql.rstrip(";"), warehouse_id=wh_id, timeout=30)
+            if is_col:
+                col_results.append({"table": tbl_match, "ok": True})
+            else:
+                table_results.append({"table": tbl_match, "ok": True})
         except Exception as ex:
-            col_results.append({"table": tbl, "column": col, "ok": False, "error": str(ex)})
+            entry = {"table": tbl_match, "ok": False, "error": str(ex)}
+            if is_col:
+                col_results.append(entry)
+            else:
+                table_results.append(entry)
 
     t_ok = sum(1 for r in table_results if r.get("ok"))
     t_fail = len(table_results) - t_ok
@@ -3093,7 +3387,7 @@ def _apply_ontology_tags_from_tables(
         "summary": summary,
         "table_results": table_results,
         "column_results": col_results,
-        "results": table_results,  # backward compat for MetadataReview
+        "results": table_results,
     }
 
 

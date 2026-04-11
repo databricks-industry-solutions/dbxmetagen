@@ -62,5 +62,11 @@ env:
     value: "metadata_vs_index"
   - name: LLM_MODEL
     value: "databricks-claude-sonnet-4-6"
-  - name: MLFLOW_EXPERIMENT
-    value: "/Shared/dbxmetagen/dbxmetagen_agent_traces"
+  - name: MLFLOW_TRACE_TIMEOUT_SECONDS
+    value: "120"
+  # MLFLOW_EXPERIMENT: optional override for trace experiment path.
+  # Default (unset): auto-resolves to /Users/{app_spn}/experiments/dbxmetagen_app_traces
+  # which is only visible to the app service principal and workspace admins.
+  # Uncomment to route traces to a custom path (e.g. /Shared/ for demos):
+  # - name: MLFLOW_EXPERIMENT
+  #   value: "/Shared/dbxmetagen/dbxmetagen_agent_traces"

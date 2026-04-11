@@ -15,18 +15,15 @@ import asyncio
 import json
 import logging
 import time
-from contextlib import nullcontext
-from functools import partial
 from typing import Optional, TypedDict
 
-from databricks_langchain import ChatDatabricks
 from langchain_core.callbacks import adispatch_custom_event
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.graph import END, START, StateGraph
 
 from agent.common import ToolResult, vs_cache_get, vs_cache_put
 from agent.guardrails import EvidenceBudget, sanitize_output
-from agent.intent import classify_and_contextualize
+from agent.intent import classify_and_contextualize_untraced
 from agent.metadata_tools import (
     CATALOG, SCHEMA,
     execute_baseline_sql, execute_metadata_sql,
@@ -34,15 +31,15 @@ from agent.metadata_tools import (
 )
 from agent.deep_analysis import (
     ANALYSIS_PROMPT, BASELINE_ANALYSIS_PROMPT,
-    MODEL, TOOL_TIMEOUT,
+    MODEL, TOOL_TIMEOUT, _llm,
     _build_baseline_queries, _build_relevance_sql,
     _discover_ontology_edge_types, _extract_keywords, _extract_node_ids,
-    _extract_table_names, _merge_graph_data,
+    _extract_table_names, _gather_discovery, _merge_graph_data,
     _parse_json, _pick_traversal_nodes, _plan_retrieval,
     _safe_tool_call, _sparql_ontology_query, _sql_escape,
     _truncate_part,
 )
-from agent.tracing import _init_tracing, get_mlflow
+from agent.tracing import AUTOLOG_ACTIVE, _init_tracing
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +69,7 @@ class DeepAnalysisState(TypedDict, total=False):
     mode: str
     # classify_intent
     intent_type: str
+    intent_domain: str
     effective_query: str
     meta_answer: str
     # gather_evidence
@@ -92,17 +90,19 @@ class DeepAnalysisState(TypedDict, total=False):
 
 def classify_intent(state: DeepAnalysisState) -> dict:
     """Classify intent and produce effective query. Sync -- auto-traced by autolog."""
-    result = classify_and_contextualize(state["query"], state.get("history"))
+    result = classify_and_contextualize_untraced(state["query"], state.get("history"))
     logger.info("[graph] intent=%s domain=%s", result.intent_type, result.domain)
 
     if result.intent_type in ("irrelevant", "meta"):
         return {
             "intent_type": result.intent_type,
+            "intent_domain": result.domain or "general",
             "effective_query": result.context_summary,
             "meta_answer": result.meta_answer or "I can help you analyze your data catalog metadata.",
         }
     return {
         "intent_type": result.intent_type,
+        "intent_domain": result.domain or "general",
         "effective_query": result.context_summary,
         "meta_answer": "",
     }
@@ -138,18 +138,18 @@ def _should_continue(state: DeepAnalysisState) -> str:
 # -- Gather: GraphRAG ---
 
 async def _gather_graphrag(query: str, session_id: Optional[str], intent_type: str,
-                           parent_span_id: str = None, trace_request_id: str = None):
-    """Async GraphRAG gathering with progress events and asyncio parallelism."""
-    loop = asyncio.get_running_loop()
+                           intent_domain: Optional[str] = None):
+    """Async GraphRAG gathering with progress events and asyncio parallelism.
+
+    asyncio.to_thread() automatically propagates contextvars, so all sync
+    functions called via to_thread inherit the parent evidence_retrieval span.
+    """
     parts: list[str] = []
     tools_used: list[str] = []
     graph_data: dict = {}
     failed: list[ToolResult] = []
     timing: dict = {}
     B = EvidenceBudget
-
-    _tool = (partial(_safe_tool_call, parent_span_id=parent_span_id, trace_request_id=trace_request_id)
-             if parent_span_id else _safe_tool_call)
 
     def collect(tr: ToolResult, source_label: str, limit: int):
         if tr.success and tr.data:
@@ -158,21 +158,28 @@ async def _gather_graphrag(query: str, session_id: Optional[str], intent_type: s
         elif not tr.success:
             failed.append(tr)
 
-    # Step 0: discover ontology edge types (cached, fast)
-    ontology_ets = await loop.run_in_executor(None, _discover_ontology_edge_types)
+    if intent_domain == "discovery":
+        await _safe_progress({"stage": "gathering", "message": "Querying ontology catalog for entity enumeration..."})
+        cancel = _make_cancel()
+        disc_parts, disc_tools, disc_failed, disc_timing = await asyncio.to_thread(
+            _gather_discovery, query, cancel)
+        parts.extend(disc_parts)
+        tools_used.extend(disc_tools)
+        failed.extend(disc_failed)
+        timing.update(disc_timing)
 
-    # Step 1: retrieval planner
+    ontology_ets = await asyncio.to_thread(_discover_ontology_edge_types)
+
     await _safe_progress({"stage": "gathering", "message": "Step 1/7: Planning retrieval strategy..."})
     t0 = time.time()
     cancel = _make_cancel()
-    plan = await loop.run_in_executor(None, _plan_retrieval, query, cancel, ontology_ets)
+    plan = await asyncio.to_thread(_plan_retrieval, query, cancel, ontology_ets)
     timing["plan_retrieval"] = round(time.time() - t0, 3)
 
     planned_edge_types = plan["edge_types"]
     planned_traverse_et = plan["traverse_edge_type"]
     planned_direction = plan["direction"]
 
-    # Step 2: vector search
     await _safe_progress({"stage": "gathering", "message": "Step 2/7: Searching knowledge base..."})
     t0 = time.time()
     vs_tr = None
@@ -181,8 +188,8 @@ async def _gather_graphrag(query: str, session_id: Optional[str], intent_type: s
         if cached:
             vs_tr = ToolResult(success=True, data=cached, label="search_metadata (cached)")
     if vs_tr is None:
-        vs_tr = await loop.run_in_executor(
-            None, _tool, search_metadata, {"query": query}, TOOL_TIMEOUT, "search_metadata", 2, 7,
+        vs_tr = await asyncio.to_thread(
+            _safe_tool_call, search_metadata, {"query": query}, TOOL_TIMEOUT, "search_metadata", 2, 7,
         )
         if vs_tr.success and vs_tr.data and session_id:
             vs_cache_put(session_id, query, vs_tr.data)
@@ -192,7 +199,6 @@ async def _gather_graphrag(query: str, session_id: Optional[str], intent_type: s
     node_ids = _extract_node_ids(vs_tr.data if vs_tr.success else None)
     table_names = _extract_table_names(vs_tr.data if vs_tr.success else None)
 
-    # Fallback: keyword SQL if VS empty
     if not node_ids and not table_names:
         keywords = _extract_keywords(query)
         if keywords:
@@ -204,8 +210,8 @@ async def _gather_graphrag(query: str, session_id: Optional[str], intent_type: s
                 f"SELECT table_name, domain, subdomain, comment, has_pii, row_count "
                 f"FROM {CATALOG}.{SCHEMA}.table_knowledge_base WHERE {like_clauses} LIMIT 20"
             )
-            fb_tr = await loop.run_in_executor(
-                None, _tool, execute_metadata_sql, {"query": fb_sql}, TOOL_TIMEOUT,
+            fb_tr = await asyncio.to_thread(
+                _safe_tool_call, execute_metadata_sql, {"query": fb_sql}, TOOL_TIMEOUT,
                 "execute_metadata_sql (keyword fallback)", 2, 7,
             )
             if fb_tr.success and fb_tr.data:
@@ -224,14 +230,14 @@ async def _gather_graphrag(query: str, session_id: Optional[str], intent_type: s
     t0 = time.time()
     if node_ids:
         trav_nodes = _pick_traversal_nodes(node_ids, table_names)
-        expand_coro = loop.run_in_executor(
-            None, _tool, expand_vs_hits,
+        expand_coro = asyncio.to_thread(
+            _safe_tool_call, expand_vs_hits,
             {"node_ids": node_ids[:5], "edge_types": planned_edge_types},
             TOOL_TIMEOUT, "expand_vs_hits", 3, 7,
         )
         trav_coros = [
-            loop.run_in_executor(
-                None, _tool, traverse_graph,
+            asyncio.to_thread(
+                _safe_tool_call, traverse_graph,
                 {"start_node": nid, "max_hops": 3, "edge_types": traverse_et_list, "direction": planned_direction},
                 TOOL_TIMEOUT, f"traverse_graph({nid.split('.')[-1]})", 4 + i, 7,
             )
@@ -257,10 +263,9 @@ async def _gather_graphrag(query: str, session_id: Optional[str], intent_type: s
                 failed.append(trav_tr)
     timing["graph_expand_traverse"] = round(time.time() - t0, 3)
 
-    # SPARQL ontology
     if table_names:
         try:
-            sparql_result = await loop.run_in_executor(None, _sparql_ontology_query, table_names)
+            sparql_result = await asyncio.to_thread(_sparql_ontology_query, table_names)
             if sparql_result:
                 tools_used.append("sparql_ontology_query")
                 parts.append(f"### Source: sparql_ontology_query (formal RDF ontology)\n{_truncate_part(sparql_result, B.GRAPH_TRAVERSAL)}")
@@ -271,17 +276,15 @@ async def _gather_graphrag(query: str, session_id: Optional[str], intent_type: s
     await _safe_progress({"stage": "gathering", "message": "Steps 6-7/7: Structured data retrieval..."})
     t0 = time.time()
     if table_names:
-        fk_coro = loop.run_in_executor(
-            None, _tool, execute_metadata_sql,
+        fk_coro = asyncio.to_thread(
+            _safe_tool_call, execute_metadata_sql,
             {"query": _build_relevance_sql(table_names)}, TOOL_TIMEOUT,
             "execute_metadata_sql (FK predictions)", 6, 7,
         )
         sr_coro = None
         if plan.get("requires_structured_retrieval", True):
             from agent.deep_analysis import _structured_retrieval
-            _sr = (partial(_structured_retrieval, parent_span_id=parent_span_id, trace_request_id=trace_request_id)
-                   if parent_span_id else _structured_retrieval)
-            sr_coro = loop.run_in_executor(None, _sr, query, table_names, cancel, 7, 7)
+            sr_coro = asyncio.to_thread(_structured_retrieval, query, table_names, cancel, 7, 7)
 
         fk_tr = await fk_coro
         collect(fk_tr, "execute_metadata_sql (FK predictions)", B.FK_PREDICTIONS)
@@ -299,23 +302,19 @@ async def _gather_graphrag(query: str, session_id: Optional[str], intent_type: s
     return parts, graph_data, tools_used, failed, timing
 
 
-async def _gather_baseline(query: str, parent_span_id: str = None, trace_request_id: str = None):
+async def _gather_baseline(query: str):
     """Async baseline gathering."""
-    loop = asyncio.get_running_loop()
     parts: list[str] = []
     tools_used: list[str] = []
     failed: list[ToolResult] = []
     timing: dict = {}
     queries = _build_baseline_queries(query)
 
-    _tool = (partial(_safe_tool_call, parent_span_id=parent_span_id, trace_request_id=trace_request_id)
-             if parent_span_id else _safe_tool_call)
-
     await _safe_progress({"stage": "gathering", "message": f"Running {len(queries)} baseline queries..."})
     t0 = time.time()
     coros = [
-        loop.run_in_executor(
-            None, _tool, execute_baseline_sql, {"query": sql_q}, TOOL_TIMEOUT,
+        asyncio.to_thread(
+            _safe_tool_call, execute_baseline_sql, {"query": sql_q}, TOOL_TIMEOUT,
             f"execute_baseline_sql (query {i + 1})", i + 1, len(queries),
         )
         for i, sql_q in enumerate(queries)
@@ -342,38 +341,35 @@ def _make_cancel() -> threading.Event:
 
 
 async def gather_evidence(state: DeepAnalysisState) -> dict:
-    """Async node: runs the full retrieval pipeline with progress events."""
+    """Async node: runs the full retrieval pipeline with progress events.
+
+    AUTOLOG_ACTIVE is set so that shared helpers (_safe_tool_call,
+    _plan_retrieval, etc.) skip their manual mlflow.start_span() calls.
+    The autolog traces this node and the LLM calls within it automatically.
+    """
+    token = AUTOLOG_ACTIVE.set(True)
+    try:
+        return await _gather_evidence_inner(state)
+    finally:
+        AUTOLOG_ACTIVE.reset(token)
+
+
+async def _gather_evidence_inner(state: DeepAnalysisState) -> dict:
     query = state["effective_query"]
     mode = state.get("mode", "graphrag")
     session_id = state.get("session_id")
     intent_type = state.get("intent_type", "new_question")
+    intent_domain = state.get("intent_domain")
 
     await _safe_progress({"stage": "gathering", "message": "Gathering evidence from metadata catalog..."})
 
-    # Create a manual span to bridge autolog context. mlflow.langchain.autolog()
-    # manages spans via callbacks, not the context-var API, so
-    # get_current_active_span() returns None inside nodes. A manual start_span()
-    # DOES inherit the autolog context and gives us IDs to parent tool-call spans.
-    mlflow = get_mlflow()
-    _span_cm = mlflow.start_span("evidence_retrieval", span_type="RETRIEVER") if mlflow else nullcontext()
-
-    with _span_cm as _parent:
-        _pid = getattr(_parent, "span_id", None) if _parent else None
-        _rid = getattr(_parent, "request_id", None) if _parent else None
-
-        t0 = time.time()
-        if mode == "graphrag":
-            parts, graph_data, tools_used, failed_sources, timing = await _gather_graphrag(
-                query, session_id, intent_type, _pid, _rid)
-        else:
-            parts, tools_used, failed_sources, timing = await _gather_baseline(query, _pid, _rid)
-            graph_data = {}
-
-        if _parent and hasattr(_parent, "set_attributes"):
-            _parent.set_attributes({
-                "mode": mode,
-                "tools_used": ",".join(dict.fromkeys(tools_used)) if tools_used else "",
-            })
+    t0 = time.time()
+    if mode == "graphrag":
+        parts, graph_data, tools_used, failed_sources, timing = await _gather_graphrag(
+            query, session_id, intent_type, intent_domain=intent_domain)
+    else:
+        parts, tools_used, failed_sources, timing = await _gather_baseline(query)
+        graph_data = {}
 
     timing["gather_total"] = round(time.time() - t0, 3)
 
@@ -414,9 +410,17 @@ def assemble_context(state: DeepAnalysisState) -> dict:
 async def analyze(state: DeepAnalysisState) -> dict:
     """Async node: final LLM analysis with token streaming via astream().
 
-    Conversation history is included as proper HumanMessage/AIMessage pairs
-    so the analysis model has multi-turn context.
+    AUTOLOG_ACTIVE is set so that any manual spans in shared code are
+    suppressed. The autolog traces the LLM astream() call automatically.
     """
+    token = AUTOLOG_ACTIVE.set(True)
+    try:
+        return await _analyze_inner(state)
+    finally:
+        AUTOLOG_ACTIVE.reset(token)
+
+
+async def _analyze_inner(state: DeepAnalysisState) -> dict:
     mode = state.get("mode", "graphrag")
     query = state["effective_query"]
     context = state.get("context", "")
@@ -426,7 +430,6 @@ async def analyze(state: DeepAnalysisState) -> dict:
 
     prompt = ANALYSIS_PROMPT if mode == "graphrag" else BASELINE_ANALYSIS_PROMPT
 
-    # Build message list with conversation history
     messages: list = [SystemMessage(content=prompt)]
     if history:
         for h in history[-MAX_HISTORY_TURNS:]:
@@ -440,7 +443,7 @@ async def analyze(state: DeepAnalysisState) -> dict:
                 messages.append(AIMessage(content=content))
     messages.append(HumanMessage(content=f"Current question: {query}\n\nGathered Evidence:\n{context}"))
 
-    llm = ChatDatabricks(endpoint=MODEL, temperature=0, max_retries=1, request_timeout=120)
+    llm = _llm()
 
     t0 = time.time()
     token_usage: dict = {}
@@ -451,7 +454,6 @@ async def analyze(state: DeepAnalysisState) -> dict:
             answer += chunk.content or ""
             last_chunk = chunk
         answer = answer or "Analysis produced no output."
-        # Extract token usage from the final chunk (model-reported)
         if last_chunk:
             um = getattr(last_chunk, "usage_metadata", None)
             if um and isinstance(um, dict):
@@ -460,7 +462,6 @@ async def analyze(state: DeepAnalysisState) -> dict:
                 rm = last_chunk.response_metadata or {}
                 if "usage" in rm:
                     token_usage = dict(rm["usage"])
-        # Fallback: rough char-based estimate (~4 chars/token) when model doesn't report
         if not token_usage:
             prompt_chars = sum(len(m.content) for m in messages)
             token_usage = {
@@ -479,31 +480,6 @@ async def analyze(state: DeepAnalysisState) -> dict:
     timing["token_usage"] = token_usage
     timing["total"] = round(sum(v for v in timing.values() if isinstance(v, (int, float))), 3)
     logger.info("[graph] LLM analysis: %.1fs, tokens=%s", elapsed, token_usage)
-
-    # Attach token usage to the MLflow span. Try context-var span first,
-    # then fall back to MlflowClient trace search for the root span.
-    mlflow = get_mlflow()
-    _tok_attrs = {
-        "llm.token_count.prompt": token_usage.get("input_tokens", 0),
-        "llm.token_count.completion": token_usage.get("output_tokens", 0),
-        "llm.token_count.total": token_usage.get("total_tokens", 0),
-        "token_usage.estimated": token_usage.get("estimated", False),
-    } if token_usage else {}
-    if mlflow and _tok_attrs:
-        try:
-            active = mlflow.get_current_active_span()
-            if active:
-                active.set_attributes(_tok_attrs)
-            else:
-                # autolog manages spans via callbacks, not context vars --
-                # walk up to the root span via MlflowClient
-                client = mlflow.MlflowClient()
-                trace = client.get_trace(mlflow.get_last_active_trace().info.request_id)
-                if trace and trace.data and trace.data.spans:
-                    root = trace.data.spans[0]
-                    root.set_attributes(_tok_attrs)
-        except Exception:
-            logger.debug("[graph] Could not attach token usage to trace span")
 
     return {
         "answer": sanitize_output(answer),

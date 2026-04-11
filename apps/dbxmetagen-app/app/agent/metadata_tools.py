@@ -43,6 +43,7 @@ ALLOWED_TABLES = {
     "table_knowledge_base", "column_knowledge_base", "ontology_entities",
     "fk_predictions", "metric_view_definitions", "profiling_results",
     "metadata_documents", "metadata_generation_log",
+    "graph_nodes", "graph_edges",
 }
 
 _ws = None
