@@ -33,7 +33,7 @@ from pyspark.sql.types import (
 )
 from pydantic import BaseModel, Field
 from dbxmetagen.config import DEFAULT_CLASSIFICATION_MODEL
-from dbxmetagen.table_filter import table_filter_sql
+from dbxmetagen.table_filter import table_filter_sql, infrastructure_exclude_sql
 
 logger = logging.getLogger(__name__)
 
@@ -487,13 +487,33 @@ DEFAULT_ENTITY_DEFINITIONS = {
 }
 
 
+_DEFAULT_ONTOLOGY_CONFIG_PATH = "configurations/ontology_config.yaml"
+
+
+def _resolve_ontology_config_path(config_path: str, ontology_bundle: str) -> str:
+    """Derive the ontology config path from the bundle when config_path is the default.
+
+    When the user hasn't explicitly overridden ``ontology_config_path``, the
+    bundle YAML is used instead so that entity discovery, domain classification,
+    and tier indexes all come from the same source.
+    """
+    if ontology_bundle and config_path == _DEFAULT_ONTOLOGY_CONFIG_PATH:
+        bundle_path = f"configurations/ontology_bundles/{ontology_bundle}.yaml"
+        logger.info(
+            "Deriving ontology config from bundle '%s' (config_path was default)",
+            ontology_bundle,
+        )
+        return bundle_path
+    return config_path
+
+
 @dataclass
 class OntologyConfig:
     """Configuration for ontology management."""
 
     catalog_name: str
     schema_name: str
-    config_path: str = "configurations/ontology_config.yaml"
+    config_path: str = _DEFAULT_ONTOLOGY_CONFIG_PATH
     ontology_bundle: str = ""
     entities_table: str = "ontology_entities"
     metrics_table: str = "ontology_metrics"
@@ -507,6 +527,7 @@ class OntologyConfig:
     entity_tag_key: str = "ontology_entity_type"
     metadata_cols_per_chunk: int = 120
     table_names: Optional[List[str]] = None
+    exclude_infrastructure: bool = True
     # Pass 0 shortlist for three-pass entity prediction (see ontology_predictor)
     pass0_mode: str = "off"
     pass0_max_candidates: int = 48
@@ -1165,6 +1186,8 @@ class EntityDiscoverer:
         names = self.config.table_names or []
         tf_kb = table_filter_sql(names, column="kb.table_name")
         tf = table_filter_sql(names, column="table_name")
+        infra_filter_kb = infrastructure_exclude_sql(column="kb.table_name") if self.config.exclude_infrastructure else ""
+        infra_filter = infrastructure_exclude_sql(column="table_name") if self.config.exclude_infrastructure else ""
         try:
             if self.config.incremental:
                 try:
@@ -1187,11 +1210,12 @@ class EntityDiscoverer:
                                OR kb.updated_at > oe.last_classified
                                OR COALESCE(oe.last_bundle_version, '') != '{current_bv}')
                           {tf_kb}
+                          {infra_filter_kb}
                     """
                     )
                     table_count = tables_df.count()
                     total = self.spark.sql(
-                        f"SELECT COUNT(*) AS n FROM {self.config.fully_qualified_kb} WHERE 1=1 {tf}"
+                        f"SELECT COUNT(*) AS n FROM {self.config.fully_qualified_kb} WHERE 1=1 {tf} {infra_filter}"
                     ).collect()[0].n
                     logger.info(f"Incremental mode: {table_count} tables need classification out of {total}")
                 except Exception as e:
@@ -1200,7 +1224,7 @@ class EntityDiscoverer:
                         f"""
                         SELECT table_name, table_short_name, comment, domain
                         FROM {self.config.fully_qualified_kb}
-                        WHERE 1=1 {tf}
+                        WHERE 1=1 {tf} {infra_filter}
                     """
                     )
                     table_count = tables_df.count()
@@ -1209,7 +1233,7 @@ class EntityDiscoverer:
                     f"""
                     SELECT table_name, table_short_name, comment, domain
                     FROM {self.config.fully_qualified_kb}
-                    WHERE 1=1 {tf}
+                    WHERE 1=1 {tf} {infra_filter}
                 """
                 )
                 table_count = tables_df.count()
@@ -1537,7 +1561,7 @@ class EntityDiscoverer:
         if self._three_pass_available is None:
             try:
                 from dbxmetagen.ontology_index import OntologyIndexLoader
-                bundle = self.config.ontology_bundle or "healthcare"
+                bundle = self.config.ontology_bundle or "general"
                 self._index_loader = OntologyIndexLoader(bundle_name=bundle)
                 self._three_pass_available = self._index_loader.has_tier_indexes
                 if self._three_pass_available:
@@ -2465,7 +2489,10 @@ class OntologyBuilder:
         self.spark = spark
         self.config = config
         self._model_endpoint = model_endpoint
-        self.ontology_config = OntologyLoader.load_config(config.config_path)
+        effective_path = _resolve_ontology_config_path(
+            config.config_path, config.ontology_bundle,
+        )
+        self.ontology_config = OntologyLoader.load_config(effective_path)
         bundle_tag_key = (
             self.ontology_config
             .get("_bundle_metadata", {})
@@ -2481,10 +2508,17 @@ class OntologyBuilder:
         )
 
     def _get_bundle_version(self) -> str:
-        """Get bundle version from ontology config (ontology.version or metadata.version)."""
+        """Get bundle version string for incremental tracking.
+
+        Must match the format used by EntityDiscoverer._get_bundle_version()
+        so that the stored bundle_version column and the incremental SQL
+        comparison target are consistent ('{bundle}:{ver}').
+        """
+        bundle = self.config.ontology_bundle or "default"
         ont = self.ontology_config.get("ontology", {}) or {}
         meta = self.ontology_config.get("metadata", {}) or {}
-        return str(ont.get("version") or meta.get("version") or "1.0")
+        ver = str(ont.get("version") or meta.get("version") or "1.0")
+        return f"{bundle}:{ver}"
 
     def _insert_edges_safe(self, df: DataFrame, table: str):
         """Schema-safe INSERT into graph_edges: align columns + named SQL INSERT."""
@@ -2640,6 +2674,13 @@ class OntologyBuilder:
         self.spark.sql(ddl)
         logger.info("Discovery diff table %s ready", self.config.fully_qualified_discovery_diff)
 
+    _REL_MIGRATION_COLUMNS = {
+        "label": "STRING",
+        "facet": "STRING",
+        "sub_property_of": "STRING",
+        "ranges": "ARRAY<STRING>",
+    }
+
     def create_relationships_table(self) -> None:
         """Create the ontology relationships table for named entity-to-entity relationships."""
         ddl = f"""
@@ -2653,12 +2694,26 @@ class OntologyBuilder:
             evidence_table STRING,
             source STRING,
             confidence DOUBLE,
+            label STRING,
+            facet STRING,
+            sub_property_of STRING,
+            ranges ARRAY<STRING>,
             created_at TIMESTAMP,
             updated_at TIMESTAMP
         )
         COMMENT 'Named relationships between ontology entity types'
         """
         self.spark.sql(ddl)
+        existing = {f.name for f in self.spark.table(self.config.fully_qualified_relationships).schema.fields}
+        for col_name, col_type in self._REL_MIGRATION_COLUMNS.items():
+            if col_name not in existing:
+                try:
+                    self.spark.sql(
+                        f"ALTER TABLE {self.config.fully_qualified_relationships} ADD COLUMN {col_name} {col_type}"
+                    )
+                    logger.info("Added column %s to relationships table", col_name)
+                except Exception as e:
+                    logger.warning("Could not add column %s to relationships: %s", col_name, e)
         logger.info("Relationships table %s ready", self.config.fully_qualified_relationships)
 
     def _purge_stale_bundle_entities(self, current_bundle: str) -> int:
@@ -3684,7 +3739,9 @@ class OntologyBuilder:
             raw = self.spark.sql(f"""
                 SELECT DISTINCT se.entity_id AS src, de.entity_id AS dst,
                        r.relationship_name AS rel_name,
-                       r.confidence AS weight
+                       r.confidence AS weight,
+                       r.label AS rel_label,
+                       r.facet AS rel_facet
                 FROM {rels_table} r
                 JOIN {ent_table} se ON se.entity_type = r.src_entity_type
                     AND COALESCE(se.entity_role, 'primary') = 'primary'
@@ -3706,6 +3763,8 @@ class OntologyBuilder:
                     F.col("rel_name").alias("ontology_rel"),
                     F.lit("ontology").alias("source_system"),
                     F.lit("candidate").alias("status"),
+                    F.col("rel_label").alias("edge_label"),
+                    F.col("rel_facet").alias("edge_facet"),
                     F.current_timestamp().alias("created_at"),
                     F.current_timestamp().alias("updated_at"),
                 )
@@ -3718,7 +3777,11 @@ class OntologyBuilder:
         return total
 
     def validate_ontology_completeness(self) -> Dict[str, Any]:
-        """Compare discovered entity types against the bundle's definitions."""
+        """Compare discovered entity types against the bundle's definitions.
+
+        Missing types are expected -- not all bundle entity types will have
+        matching tables in the data.  This is informational, not an error.
+        """
         defined_types = {e.name for e in self.discoverer.entity_definitions if e.name != "DataTable"}
         try:
             discovered = self.spark.sql(
@@ -4122,13 +4185,39 @@ class OntologyBuilder:
 
         return "references"
 
+    @staticmethod
+    def _resolve_reference_target(
+        edge_name: str, discovered_types_lower: Dict[str, str],
+    ) -> Optional[str]:
+        """Resolve a Reference-range edge to a concrete entity type via property name suffix.
+
+        FHIR properties are named after their target (e.g. ``managingOrganization``
+        -> ``Organization``).  Returns the original-case entity type if exactly one
+        discovered type matches as a case-insensitive suffix, else ``None``.
+        """
+        local = edge_name.rsplit(".", 1)[-1].lower()
+        matches = [
+            orig for low, orig in discovered_types_lower.items()
+            if local.endswith(low)
+        ]
+        return matches[0] if len(matches) == 1 else None
+
     def emit_bundle_edges(self) -> int:
         """Emit edges directly from the ontology bundle's tier-1 edge definitions.
 
+        Intentionally discovery-gated: only emits edges where both domain and
+        range entity types were discovered in actual data.  This prevents
+        dangling references in the knowledge graph.
+
         For each tier-1 edge where both domain and range entity types have been
         discovered in ontology_entities, writes a relationship to
-        ontology_relationships with source='bundle'. This ensures formal ontology
-        edges (e.g. FHIR) are present without requiring FK evidence.
+        ontology_relationships with source='bundle'.
+
+        Handles three resolution strategies for the range:
+        1. Direct match -- range is a discovered entity type
+        2. Multi-range -- any value in the tier-2 ``ranges`` list is discovered
+        3. Reference resolution -- for ``range=="Reference"``, resolve the target
+           from the property name suffix (FHIR convention)
         """
         disc = self.discoverer
         loader = disc._get_index_loader() if hasattr(disc, "_get_index_loader") else None
@@ -4139,6 +4228,12 @@ class OntologyBuilder:
         edges_t1 = loader.get_edges_tier1()
         if not edges_t1:
             return 0
+
+        edges_t2_raw = loader._load("edges_tier2.yaml") or {}
+        edges_t2_ranges: Dict[str, List[str]] = {}
+        for ename, edata in edges_t2_raw.items():
+            if isinstance(edata, dict) and edata.get("ranges"):
+                edges_t2_ranges[ename] = edata["ranges"]
 
         ent_table = self.config.fully_qualified_entities
         rels_table = self.config.fully_qualified_relationships
@@ -4157,19 +4252,41 @@ class OntologyBuilder:
         if not discovered_types:
             return 0
 
+        discovered_lower = {t.lower(): t for t in discovered_types}
+
         now = datetime.utcnow()
         rels: List[Dict] = []
         seen: set = set()
+        ref_resolved = 0
 
         for edge in edges_t1:
             domain = edge.get("domain")
             rng = edge.get("range")
             name = edge.get("name")
-            if not domain or not rng or not name:
+            if not domain or not name:
                 continue
-            if domain not in discovered_types or rng not in discovered_types:
+            if domain not in discovered_types:
                 continue
-            key = (domain, rng, name)
+
+            resolved_range = None
+            if rng and rng in discovered_types:
+                resolved_range = rng
+            elif rng and rng not in discovered_types:
+                # Multi-range fallback: check tier-2 ranges list
+                for alt in edges_t2_ranges.get(name, []):
+                    if alt in discovered_types:
+                        resolved_range = alt
+                        break
+                # Reference resolution: resolve from property name suffix
+                if not resolved_range and rng == "Reference":
+                    resolved_range = self._resolve_reference_target(name, discovered_lower)
+                    if resolved_range:
+                        ref_resolved += 1
+
+            if not resolved_range:
+                continue
+
+            key = (domain, resolved_range, name)
             if key in seen:
                 continue
             seen.add(key)
@@ -4177,12 +4294,16 @@ class OntologyBuilder:
                 "relationship_id": str(uuid.uuid4()),
                 "src_entity_type": domain,
                 "relationship_name": name,
-                "dst_entity_type": rng,
+                "dst_entity_type": resolved_range,
                 "cardinality": edge.get("cardinality", "unknown"),
                 "evidence_column": None,
                 "evidence_table": None,
                 "source": "bundle",
                 "confidence": 0.8,
+                "label": edge.get("label"),
+                "facet": edge.get("facet"),
+                "sub_property_of": edge.get("sub_property_of"),
+                "ranges": edges_t2_ranges.get(name, []),
                 "created_at": now,
                 "updated_at": now,
             })
@@ -4190,6 +4311,9 @@ class OntologyBuilder:
         if not rels:
             logger.info("emit_bundle_edges: no matching entity pairs found in tier-1 edges")
             return 0
+
+        if ref_resolved:
+            logger.info("emit_bundle_edges: resolved %d Reference-range edges via name heuristic", ref_resolved)
 
         df = self.spark.createDataFrame(rels)
         df.createOrReplaceTempView("_bundle_edges_staging")
@@ -4653,7 +4777,10 @@ class OntologyBuilder:
         try:
             from dbxmetagen.ontology_turtle import write_turtle
         except ImportError:
-            logger.debug("ontology_turtle not available (rdflib not installed)")
+            logger.warning(
+                "ontology_turtle unavailable (rdflib not installed) -- "
+                "SPARQL-based ontology queries will be disabled for the deep analysis agent"
+            )
             return None
 
         ents = self.spark.sql(
@@ -4755,6 +4882,25 @@ class OntologyBuilder:
         except Exception:
             pass
 
+        current_bundle = self.config.ontology_bundle or ""
+        if current_bundle:
+            try:
+                stored = self.spark.sql(
+                    f"SELECT DISTINCT ontology_bundle FROM {self.config.fully_qualified_entities} "
+                    "WHERE ontology_bundle IS NOT NULL"
+                ).collect()
+                old_bundles = {r.ontology_bundle for r in stored} - {current_bundle}
+                if old_bundles:
+                    logger.warning(
+                        "ontology_entities contains entities from bundle(s) %s but current "
+                        "bundle is '%s'. Unvalidated entities from previous bundles will be "
+                        "purged. Validated entities will be preserved. Consider running with "
+                        "incremental=false for a clean rebuild.",
+                        old_bundles, current_bundle,
+                    )
+            except Exception:
+                pass
+
         _step("create_entities_table", self.create_entities_table)
         _step("create_metrics_table", self.create_metrics_table)
 
@@ -4850,7 +4996,7 @@ def build_ontology(
     spark: SparkSession,
     catalog_name: str,
     schema_name: str,
-    config_path: str = "configurations/ontology_config.yaml",
+    config_path: str = _DEFAULT_ONTOLOGY_CONFIG_PATH,
     apply_tags: bool = False,
     ontology_bundle: str = "",
     incremental: bool = True,
@@ -4864,7 +5010,9 @@ def build_ontology(
         spark: SparkSession instance
         catalog_name: Catalog name for tables
         schema_name: Schema name for tables
-        config_path: Path to ontology configuration YAML
+        config_path: Path to ontology configuration YAML.  When left at the
+            default, the path is automatically derived from *ontology_bundle*
+            (e.g. ``ontology_bundles/general.yaml``).
         apply_tags: If True, write entity tags to UC tables/columns
         ontology_bundle: Optional bundle name (stored alongside entities)
         incremental: Only classify tables/columns changed since last run

@@ -57,6 +57,8 @@ def entities_from_bundle(bundle_path: Path) -> Dict[str, Dict[str, Any]]:
         outgoing_edges = []
         relationships: Dict[str, Dict[str, str]] = {}
         for edge_name, edge_info in rels.items():
+            if isinstance(edge_info, str):
+                edge_info = {"target": edge_info}
             target = edge_info.get("target", "")
             if isinstance(target, list):
                 target = target[0]
@@ -67,7 +69,11 @@ def entities_from_bundle(bundle_path: Path) -> Dict[str, Dict[str, Any]]:
                 "name": edge_name,
                 "uri": "",
                 "range": target,
+                "ranges": edge_info.get("ranges", [target] if target else []),
                 "inverse": inv,
+                "label": edge_info.get("label"),
+                "sub_property_of": edge_info.get("sub_property_of"),
+                "facet": edge_info.get("facet"),
             })
             relationships[edge_name] = {"target": target, "cardinality": cardinality}
 
@@ -159,6 +165,9 @@ def _build_edges_t3(
             if cat.get("range") is not None:
                 row["range"] = cat["range"]
 
+        if "category" not in row and row.get("facet"):
+            row["category"] = row["facet"]
+
         dom_n = _endpoint_name(row.get("domain"))
         rng_n = _endpoint_name(row.get("range"))
         if dom_n:
@@ -231,10 +240,14 @@ def build_tiers(
                     "uri": edge.get("uri"),
                     "inverse": edge.get("inverse"),
                     "cardinality": card,
+                    "label": edge.get("label"),
+                    "facet": edge.get("facet"),
+                    "sub_property_of": edge.get("sub_property_of"),
                 }
 
     edges_t1 = [{"name": e["name"], "domain": e["domain"], "range": e.get("range"),
-                  "cardinality": e.get("cardinality", "unknown")}
+                  "cardinality": e.get("cardinality", "unknown"),
+                  "label": e.get("label"), "facet": e.get("facet")}
                 for e in sorted(all_edges.values(), key=lambda x: x["name"])]
     edges_t2 = {k: v for k, v in all_edges.items()}
     edges_t3 = _build_edges_t3(edges_t2, all_entities, edge_catalog)

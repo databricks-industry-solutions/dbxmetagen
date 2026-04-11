@@ -1,0 +1,75 @@
+Patient:
+  description: A person receiving healthcare services
+  label: Patient
+  source_ontology: fhir
+  uri: http://hl7.org/fhir/Patient
+  parents: []
+  keywords:
+  - patient
+  - person
+  - individual
+  synonyms:
+  - person
+  - subject
+  typical_attributes:
+  - name
+  - birthDate
+  - gender
+  - address
+  business_questions: []
+  relationships:
+    managingOrganization:
+      target: Organization
+      cardinality: many-to-one
+  properties: {}
+Organization:
+  description: A formally recognized grouping of people or entities
+  label: Organization
+  source_ontology: fhir
+  uri: http://hl7.org/fhir/Organization
+  parents: []
+  keywords:
+  - organization
+  - hospital
+  - clinic
+  synonyms:
+  - institution
+  - facility
+  typical_attributes:
+  - name
+  - type
+  - address
+  - telecom
+  business_questions: []
+  relationships:
+    partOf:
+      target: Organization
+      cardinality: many-to-one
+  properties: {}
+Encounter:
+  description: An interaction between a patient and healthcare providers
+  label: Encounter
+  source_ontology: fhir
+  uri: http://hl7.org/fhir/Encounter
+  parents: []
+  keywords:
+  - encounter
+  - visit
+  - admission
+  synonyms:
+  - visit
+  - episode
+  typical_attributes:
+  - status
+  - class
+  - period
+  - reason
+  business_questions: []
+  relationships:
+    subject:
+      target: Patient
+      cardinality: many-to-one
+    serviceProvider:
+      target: Organization
+      cardinality: many-to-one
+  properties: {}

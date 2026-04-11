@@ -1,0 +1,44 @@
+ontology:
+  name: test_golden_bundle
+  entities:
+    definitions:
+      Patient:
+        description: A person receiving healthcare services
+        label: Patient
+        uri: http://hl7.org/fhir/Patient
+        source_ontology: fhir
+        keywords: [patient, person, individual]
+        synonyms: [person, subject]
+        typical_attributes: [name, birthDate, gender, address]
+        relationships:
+          managingOrganization:
+            target: Organization
+            cardinality: many-to-one
+      Organization:
+        description: A formally recognized grouping of people or entities
+        label: Organization
+        uri: http://hl7.org/fhir/Organization
+        source_ontology: fhir
+        keywords: [organization, hospital, clinic]
+        synonyms: [institution, facility]
+        typical_attributes: [name, type, address, telecom]
+        relationships:
+          partOf:
+            target: Organization
+            cardinality: many-to-one
+      Encounter:
+        description: An interaction between a patient and healthcare providers
+        label: Encounter
+        uri: http://hl7.org/fhir/Encounter
+        source_ontology: fhir
+        keywords: [encounter, visit, admission]
+        synonyms: [visit, episode]
+        typical_attributes: [status, class, period, reason]
+        relationships:
+          subject:
+            target: Patient
+            cardinality: many-to-one
+          serviceProvider:
+            target: Organization
+            cardinality: many-to-one
+  edge_catalog: {}

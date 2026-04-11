@@ -294,22 +294,32 @@ def _emit_bundle_yaml(
         if data.get("business_questions"):
             defn["business_questions"] = data["business_questions"]
         if rels:
-            defn["relationships"] = {
-                edge: {"target": info.get("target", ""), "cardinality": info.get("cardinality", "unknown")}
-                for edge, info in rels.items()
-            }
+            rel_dict = {}
+            for edge, info in rels.items():
+                rd: Dict[str, Any] = {"target": info.get("target", ""), "cardinality": info.get("cardinality", "unknown")}
+                for opt_key in ("label", "facet", "sub_property_of"):
+                    if info.get(opt_key):
+                        rd[opt_key] = info[opt_key]
+                if info.get("ranges"):
+                    rd["ranges"] = info["ranges"]
+                rel_dict[edge] = rd
+            defn["relationships"] = rel_dict
         definitions[ent_name] = defn
 
         for edge in data.get("outgoing_edges", []):
             ename = edge.get("name")
             if ename and ename not in edge_catalog:
-                edge_catalog[ename] = {
+                ec_entry: Dict[str, Any] = {
                     "domain": ent_name,
                     "range": edge.get("range", ""),
                     "uri": edge.get("uri", ""),
                 }
-                if edge.get("inverse"):
-                    edge_catalog[ename]["inverse"] = edge["inverse"]
+                for opt_key in ("inverse", "label", "facet", "sub_property_of", "cardinality", "description"):
+                    if edge.get(opt_key):
+                        ec_entry[opt_key] = edge[opt_key]
+                if edge.get("ranges"):
+                    ec_entry["ranges"] = edge["ranges"]
+                edge_catalog[ename] = ec_entry
 
     metadata["entity_count"] = len(definitions)
     metadata["edge_count"] = len(edge_catalog)
@@ -421,10 +431,12 @@ def _extract_schema_domain_edges(g, entities, classes_of_interest, rdflib_mod):
         data_ranges = [r for r in ranges if r in _SCHEMA_DATATYPE_NAMES]
 
         if obj_ranges:
+            prop_label = _get_label(g, prop, rdflib_mod.RDFS)
             for rng in obj_ranges:
                 entities[domain_name]["outgoing_edges"].append({
                     "name": prop_name, "uri": str(prop), "range": rng,
                     "ranges": obj_ranges, "inverse": None,
+                    "label": prop_label, "sub_property_of": None, "facet": None,
                 })
                 entities[domain_name]["relationships"][prop_name] = {
                     "target": rng, "cardinality": "unknown",
@@ -469,6 +481,17 @@ def _extract_union_domain_edges(g, entities, classes_of_interest, OWL, RDF, RDFS
         range_val = ranges[0] if ranges else None
         inverse_val = inverses[0] if inverses else None
 
+        prop_label = _get_label(g, prop, RDFS)
+        sub_props = [_local_name(sp) for sp in g.objects(prop, RDFS.subPropertyOf) if _local_name(sp)]
+        facet = None
+        for sp in sub_props:
+            for axis in ("who", "what", "when", "where", "why", "class"):
+                if sp.lower().startswith(axis):
+                    facet = axis
+                    break
+            if facet:
+                break
+
         for tgt in target_names:
             existing_names = {e["name"] for e in entities[tgt]["outgoing_edges"]}
             if prop_name in existing_names:
@@ -476,6 +499,7 @@ def _extract_union_domain_edges(g, entities, classes_of_interest, OWL, RDF, RDFS
             entities[tgt]["outgoing_edges"].append({
                 "name": prop_name, "uri": str(prop), "range": range_val,
                 "ranges": ranges, "inverse": inverse_val,
+                "label": prop_label, "sub_property_of": sub_props or None, "facet": facet,
             })
             entities[tgt]["relationships"][prop_name] = {
                 "target": range_val or "Thing", "cardinality": "unknown",
@@ -552,12 +576,24 @@ def _extract_single_class(g, cls, classes_of_interest, source_label, entities, O
                 data_props.append(prop_name)
             else:
                 inverses = [_local_name(i) for i in g.objects(prop, OWL.inverseOf) if _local_name(i)]
+                sub_props = [_local_name(sp) for sp in g.objects(prop, RDFS.subPropertyOf) if _local_name(sp)]
+                facet = None
+                for sp in sub_props:
+                    for axis in ("who", "what", "when", "where", "why", "class"):
+                        if sp.lower().startswith(axis):
+                            facet = axis
+                            break
+                    if facet:
+                        break
                 outgoing_edges.append({
                     "name": prop_name,
                     "uri": str(prop),
                     "range": primary_range,
                     "ranges": ranges,
                     "inverse": inverses[0] if inverses else None,
+                    "label": _get_label(g, prop, RDFS),
+                    "sub_property_of": sub_props or None,
+                    "facet": facet,
                 })
 
     # Extract cardinality from OWL restrictions

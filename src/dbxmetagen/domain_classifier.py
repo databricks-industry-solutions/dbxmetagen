@@ -95,9 +95,14 @@ def load_domain_config(
 ) -> Dict[str, Any]:
     """Load domain configuration from YAML file or ontology bundle.
 
-    When *bundle_path* is provided, the ``domains`` section is extracted
-    from the bundle YAML.  Otherwise falls back to *config_path* or the
-    default ``configurations/domain_config_healthcare.yaml``.
+    Resolution order:
+    1. ``bundle_path`` – extract the ``domains:`` section from the bundle YAML.
+    2. ``config_path`` – load a standalone domain config YAML.
+    3. Hardcoded fallback paths (``domain_config_healthcare.yaml`` etc.).
+    4. Last-resort single "unknown" domain.
+
+    Every return path logs where the domains came from so operators can
+    verify correct configuration.
     """
     if bundle_path:
         resolved = _resolve_path(bundle_path)
@@ -108,11 +113,20 @@ def load_domain_config(
                 with open(resolved, "r") as f:
                     bundle = yaml.safe_load(f)
                 if bundle and "domains" in bundle:
-                    logger.info("Loaded domain config from bundle %s", resolved)
+                    n = len(bundle["domains"])
+                    logger.info(
+                        "Domain source: bundle '%s' (%d domains)", resolved, n
+                    )
                     return {
                         "version": bundle.get("metadata", {}).get("version", "1.0"),
                         "domains": bundle["domains"],
                     }
+                else:
+                    logger.warning(
+                        "Bundle '%s' has no 'domains' section; falling back to "
+                        "config_path or default domain config",
+                        resolved,
+                    )
             except Exception as e:
                 logger.warning(
                     "Could not extract domains from bundle %s: %s", resolved, e
@@ -124,7 +138,12 @@ def load_domain_config(
             try:
                 with open(resolved, "r") as f:
                     config = yaml.safe_load(f)
-                logger.info("Loaded domain config from %s", resolved)
+                n = len(config.get("domains", {}))
+                logger.info(
+                    "Domain source: standalone config '%s' (%d domains)",
+                    resolved,
+                    n,
+                )
                 return config
             except Exception as e:
                 logger.warning("Could not load domain config from %s: %s", resolved, e)
@@ -141,12 +160,18 @@ def load_domain_config(
             if os.path.exists(path):
                 with open(path, "r") as f:
                     config = yaml.safe_load(f)
-                logger.info("Loaded domain config from %s", path)
+                n = len(config.get("domains", {}))
+                logger.info(
+                    "Domain source: hardcoded fallback '%s' (%d domains)", path, n
+                )
                 return config
         except Exception as e:
             logger.warning("Could not load domain config from %s: %s", path, e)
 
-    logger.warning("Could not load domain config from any path, using fallback")
+    logger.warning(
+        "Domain source: last-resort fallback (single 'unknown' domain). "
+        "Set ontology_bundle or domain_config_path to configure domains."
+    )
     return {
         "domains": {"unknown": {"name": "Unknown", "keywords": [], "subdomains": {}}}
     }

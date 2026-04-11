@@ -1,0 +1,130 @@
+managingOrganization:
+  name: managingOrganization
+  domain: Patient
+  range: Organization
+  ranges:
+  - Organization
+  uri: ''
+  inverse: ''
+  cardinality: many-to-one
+  label: null
+  facet: null
+  sub_property_of: null
+  domain_profile:
+    description: A person receiving healthcare services
+    uri: http://hl7.org/fhir/Patient
+    source_ontology: fhir
+    keywords:
+    - patient
+    - person
+    - individual
+    relationships_preview:
+      managingOrganization: Organization
+  range_profile:
+    description: A formally recognized grouping of people or entities
+    uri: http://hl7.org/fhir/Organization
+    source_ontology: fhir
+    keywords:
+    - organization
+    - hospital
+    - clinic
+    relationships_preview:
+      partOf: Organization
+partOf:
+  name: partOf
+  domain: Organization
+  range: Organization
+  ranges:
+  - Organization
+  uri: ''
+  inverse: ''
+  cardinality: many-to-one
+  label: null
+  facet: null
+  sub_property_of: null
+  domain_profile:
+    description: A formally recognized grouping of people or entities
+    uri: http://hl7.org/fhir/Organization
+    source_ontology: fhir
+    keywords:
+    - organization
+    - hospital
+    - clinic
+    relationships_preview:
+      partOf: Organization
+  range_profile:
+    description: A formally recognized grouping of people or entities
+    uri: http://hl7.org/fhir/Organization
+    source_ontology: fhir
+    keywords:
+    - organization
+    - hospital
+    - clinic
+    relationships_preview:
+      partOf: Organization
+subject:
+  name: subject
+  domain: Encounter
+  range: Patient
+  ranges:
+  - Patient
+  uri: ''
+  inverse: ''
+  cardinality: many-to-one
+  label: null
+  facet: null
+  sub_property_of: null
+  domain_profile:
+    description: An interaction between a patient and healthcare providers
+    uri: http://hl7.org/fhir/Encounter
+    source_ontology: fhir
+    keywords:
+    - encounter
+    - visit
+    - admission
+    relationships_preview:
+      subject: Patient
+      serviceProvider: Organization
+  range_profile:
+    description: A person receiving healthcare services
+    uri: http://hl7.org/fhir/Patient
+    source_ontology: fhir
+    keywords:
+    - patient
+    - person
+    - individual
+    relationships_preview:
+      managingOrganization: Organization
+serviceProvider:
+  name: serviceProvider
+  domain: Encounter
+  range: Organization
+  ranges:
+  - Organization
+  uri: ''
+  inverse: ''
+  cardinality: many-to-one
+  label: null
+  facet: null
+  sub_property_of: null
+  domain_profile:
+    description: An interaction between a patient and healthcare providers
+    uri: http://hl7.org/fhir/Encounter
+    source_ontology: fhir
+    keywords:
+    - encounter
+    - visit
+    - admission
+    relationships_preview:
+      subject: Patient
+      serviceProvider: Organization
+  range_profile:
+    description: A formally recognized grouping of people or entities
+    uri: http://hl7.org/fhir/Organization
+    source_ontology: fhir
+    keywords:
+    - organization
+    - hospital
+    - clinic
+    relationships_preview:
+      partOf: Organization

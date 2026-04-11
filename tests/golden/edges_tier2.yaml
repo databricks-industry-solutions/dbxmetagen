@@ -1,0 +1,48 @@
+managingOrganization:
+  name: managingOrganization
+  domain: Patient
+  range: Organization
+  ranges:
+  - Organization
+  uri: ''
+  inverse: ''
+  cardinality: many-to-one
+  label: null
+  facet: null
+  sub_property_of: null
+partOf:
+  name: partOf
+  domain: Organization
+  range: Organization
+  ranges:
+  - Organization
+  uri: ''
+  inverse: ''
+  cardinality: many-to-one
+  label: null
+  facet: null
+  sub_property_of: null
+subject:
+  name: subject
+  domain: Encounter
+  range: Patient
+  ranges:
+  - Patient
+  uri: ''
+  inverse: ''
+  cardinality: many-to-one
+  label: null
+  facet: null
+  sub_property_of: null
+serviceProvider:
+  name: serviceProvider
+  domain: Encounter
+  range: Organization
+  ranges:
+  - Organization
+  uri: ''
+  inverse: ''
+  cardinality: many-to-one
+  label: null
+  facet: null
+  sub_property_of: null

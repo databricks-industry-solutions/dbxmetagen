@@ -1,0 +1,25 @@
+Patient:
+  description: A person receiving healthcare services
+  label: Patient
+  source_ontology: fhir
+  uri: http://hl7.org/fhir/Patient
+  parents: []
+  edges:
+  - managingOrganization
+Organization:
+  description: A formally recognized grouping of people or entities
+  label: Organization
+  source_ontology: fhir
+  uri: http://hl7.org/fhir/Organization
+  parents: []
+  edges:
+  - partOf
+Encounter:
+  description: An interaction between a patient and healthcare providers
+  label: Encounter
+  source_ontology: fhir
+  uri: http://hl7.org/fhir/Encounter
+  parents: []
+  edges:
+  - subject
+  - serviceProvider

@@ -121,7 +121,14 @@ def _parse_tier_file(path: Path) -> Any:
     """Parse a tier file as JSON or YAML based on extension."""
     text = path.read_text(encoding="utf-8")
     if path.suffix == ".json":
-        return json.loads(text)
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            yaml_sibling = path.with_suffix(".yaml")
+            if yaml_sibling.exists():
+                logger.warning("Corrupt JSON %s, falling back to YAML sibling", path)
+                return yaml.safe_load(yaml_sibling.read_text(encoding="utf-8"))
+            raise
     return yaml.safe_load(text)
 
 
@@ -239,11 +246,15 @@ class OntologyIndexLoader:
     # --- URI lookup ---
 
     def get_uri(self, entity_name: str) -> Optional[str]:
-        """Look up the owl:equivalentClass URI for an entity."""
+        """Look up the owl:equivalentClass URI for an entity (case-insensitive)."""
         uris = self._load("equivalent_class_uris.yaml")
         if not uris:
             return None
-        return uris.get(entity_name)
+        hit = uris.get(entity_name)
+        if hit is not None:
+            return hit
+        lower_map = {k.lower(): v for k, v in uris.items()}
+        return lower_map.get(entity_name.lower())
 
     def get_all_uris(self) -> Dict[str, str]:
         """Return the full entity_name -> URI mapping."""
