@@ -45,6 +45,27 @@ const MODE_CONFIG = {
   impact: { label: 'Impact Analysis', color: 'bg-rose-600', ring: 'ring-rose-600', lightBg: 'bg-rose-50 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300', desc: 'What-if analysis for schema changes', valueColor: 'text-rose-600', embedded: true },
 }
 
+/**
+ * Strip leading JSON blocks (intent classification, retrieval plan) from the
+ * LLM answer. These are internal agent state that belongs in the reasoning
+ * panel, not the main answer body.
+ */
+function stripLeadingJson(text) {
+  if (!text) return text
+  let s = text.trimStart()
+  // Repeatedly strip JSON objects at the start of the text
+  while (s.startsWith('{')) {
+    let depth = 0, i = 0
+    for (; i < s.length; i++) {
+      if (s[i] === '{') depth++
+      else if (s[i] === '}') { depth--; if (depth === 0) { i++; break } }
+    }
+    if (depth !== 0) break
+    s = s.slice(i).trimStart()
+  }
+  return s
+}
+
 // Only these modes are shown in the UI; the rest are hidden but retained in MODE_CONFIG.
 // Hidden modes: baseline, governance, impact
 const VISIBLE_MODES = new Set(['graphrag'])
@@ -182,7 +203,7 @@ function MessageBubble({ msg, onRetry, chart, plotLoading, onGeneratePlot }) {
           )}
         </div>
         <div className="prose prose-sm max-w-none whitespace-pre-wrap break-words text-slate-700 dark:text-slate-300"
-          dangerouslySetInnerHTML={{ __html: simpleMarkdown(msg.content) }} />
+          dangerouslySetInnerHTML={{ __html: simpleMarkdown(stripLeadingJson(msg.content)) }} />
         {msg.graph_data && Object.keys(msg.graph_data.nodes || {}).length > 0 && (
           <Suspense fallback={<div className="h-48 flex items-center justify-center text-xs text-slate-400">Loading graph...</div>}>
             <div className="mt-3 border border-slate-200 dark:border-slate-600 rounded-xl overflow-hidden">
@@ -647,7 +668,7 @@ export default function AgentChat() {
                     </div>
                     {streamedAnswer ? (
                       <div className="mt-2 prose prose-sm max-w-none whitespace-pre-wrap break-words text-slate-700 dark:text-slate-300"
-                        dangerouslySetInnerHTML={{ __html: simpleMarkdown(streamedAnswer) }} />
+                        dangerouslySetInnerHTML={{ __html: simpleMarkdown(stripLeadingJson(streamedAnswer)) }} />
                     ) : deepSteps.length > 0 ? (
                       <details className="mt-2">
                         <summary className="cursor-pointer text-xs text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 select-none">

@@ -6,7 +6,7 @@ const EDGE_DASH = {
   predicted_fk: null, references: null, derives_from: null,
   similar_embedding: [4, 4], same_domain: [2, 3], same_subdomain: [2, 3],
   same_catalog: [2, 3], same_schema: [2, 3], same_security_level: [1, 4],
-  same_classification: [1, 4], instance_of: [6, 3], has_attribute: [6, 3],
+  instance_of: [6, 3], has_attribute: [6, 3],
 }
 const shortName = id => (id || '').split('.').pop()
 

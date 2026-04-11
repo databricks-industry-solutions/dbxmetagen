@@ -117,6 +117,20 @@ function ReviewEditor() {
   const [volumeFilesLoading, setVolumeFilesLoading] = useState(false)
   const [volumeFilesError, setVolumeFilesError] = useState(null)
   const [ddlError, setDdlError] = useState(null)
+
+  // DDL bundle state
+  const [bundleTypes, setBundleTypes] = useState({
+    comments: true, domain: true, sensitivity: true, ontology: true,
+    fk_tags: true, fk_constraints: false, data_quality: true, geo: true, metric_views: true,
+  })
+  const [bundleSql, setBundleSql] = useState('')
+  const [bundleCounts, setBundleCounts] = useState(null)
+  const [bundleLoading, setBundleLoading] = useState(false)
+  const [bundleError, setBundleError] = useState(null)
+  const [bundleApplyResult, setBundleApplyResult] = useState(null)
+  const [bundleVolumePath, setBundleVolumePath] = useState(null)
+  const [bundleTargetCatalog, setBundleTargetCatalog] = useState('')
+  const [bundleTargetSchema, setBundleTargetSchema] = useState('')
   const [globalOntoApplying, setGlobalOntoApplying] = useState(false)
   const [globalOntoResult, setGlobalOntoResult] = useState(null)
   const [globalFkTagApplying, setGlobalFkTagApplying] = useState(false)
@@ -274,6 +288,49 @@ function ReviewEditor() {
       setExportResult({ ok: true, path: j.path, rows: j.rows })
     } catch (e) { setExportResult({ ok: false, detail: e.message }) }
     setExportLoading(false)
+  }
+
+  // DDL bundle handlers
+  const bundlePayload = () => {
+    const types = Object.entries(bundleTypes).filter(([, v]) => v).map(([k]) => k)
+    return {
+      types,
+      identifiers: tableNames.length > 0 ? tableNames : undefined,
+      ...(bundleTargetCatalog ? { target_catalog: bundleTargetCatalog } : {}),
+      ...(bundleTargetSchema ? { target_schema: bundleTargetSchema } : {}),
+    }
+  }
+  const generateBundle = async () => {
+    setBundleLoading(true); setBundleError(null); setBundleApplyResult(null); setBundleSql(''); setBundleCounts(null); setBundleVolumePath(null)
+    try {
+      const res = await fetch('/api/metadata/generate-ddl-bundle', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(bundlePayload()) })
+      const j = await res.json().catch(() => ({}))
+      if (!res.ok) { setBundleError(errMsg(j.detail || `Request failed (${res.status})`)); return }
+      setBundleSql(j.sql || '')
+      setBundleCounts(j.counts || {})
+      setBundleVolumePath(j.volume_path || null)
+    } catch (e) { setBundleError(e.message || 'Network error') }
+    finally { setBundleLoading(false) }
+  }
+  const applyBundle = async () => {
+    if (!confirm('Apply all selected DDL types to your catalog? This modifies table/column metadata and may create views.')) return
+    setBundleLoading(true); setBundleError(null); setBundleApplyResult(null)
+    try {
+      const res = await fetch('/api/metadata/apply-ddl-bundle', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(bundlePayload()) })
+      const j = await res.json().catch(() => ({}))
+      if (!res.ok) { setBundleApplyResult({ ok: false, detail: errMsg(j.detail || `Request failed (${res.status})`) }); return }
+      setBundleApplyResult({ ok: j.errors === 0, applied: j.applied, errors: j.errors, results: j.results })
+      setBundleVolumePath(j.volume_path || null)
+    } catch (e) { setBundleApplyResult({ ok: false, detail: e.message || 'Network error' }) }
+    finally { setBundleLoading(false) }
+  }
+  const downloadBundleSql = () => {
+    if (!bundleSql) return
+    const blob = new Blob([bundleSql], { type: 'text/sql' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url; a.download = 'ddl_bundle.sql'; a.click()
+    URL.revokeObjectURL(url)
   }
 
   const openVolumeBrowser = async () => {
@@ -1256,6 +1313,60 @@ function ReviewEditor() {
           )}
         </div>
       )}
+
+      {/* DDL Bundle -- unified advanced metadata export */}
+      <div className="card p-5 space-y-3">
+        <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200">
+          DDL Bundle <Tip text="Generate a unified SQL script covering all metadata types -- comments, tags, ontology, FK, data quality, geo, and metric views. Export for use in other environments or apply directly." />
+        </h3>
+        <div className="flex flex-wrap gap-2">
+          {[
+            ['comments', 'Comments'], ['domain', 'Domain'], ['sensitivity', 'Sensitivity'],
+            ['ontology', 'Ontology Tags'], ['fk_tags', 'FK Tags'], ['fk_constraints', 'FK Constraints'],
+            ['data_quality', 'Data Quality'], ['geo', 'Geo Tags'], ['metric_views', 'Metric Views'],
+          ].map(([key, label]) => (
+            <label key={key} className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border cursor-pointer select-none transition-all duration-200 ${bundleTypes[key] ? 'bg-dbx-teal/10 border-dbx-teal text-dbx-teal dark:bg-dbx-teal/20 dark:text-dbx-teal-light' : 'bg-white dark:bg-dbx-navy/60 border-slate-300 dark:border-dbx-navy-400/40 text-slate-600 dark:text-slate-400'}`}>
+              <input type="checkbox" checked={!!bundleTypes[key]} onChange={() => setBundleTypes(prev => ({ ...prev, [key]: !prev[key] }))} className="sr-only" />
+              {label}
+            </label>
+          ))}
+        </div>
+        <div className="flex flex-wrap items-center gap-3">
+          <input value={bundleTargetCatalog} onChange={e => setBundleTargetCatalog(e.target.value)} placeholder="Target catalog (optional)"
+            className="border border-slate-300 dark:border-dbx-navy-400/40 rounded px-2 py-1.5 text-sm w-48 bg-white dark:bg-dbx-navy/60 dark:text-slate-200" />
+          <input value={bundleTargetSchema} onChange={e => setBundleTargetSchema(e.target.value)} placeholder="Target schema (optional)"
+            className="border border-slate-300 dark:border-dbx-navy-400/40 rounded px-2 py-1.5 text-sm w-48 bg-white dark:bg-dbx-navy/60 dark:text-slate-200" />
+          <button onClick={generateBundle} disabled={bundleLoading} className="px-4 py-1.5 bg-dbx-oat dark:bg-dbx-navy-500 text-slate-700 dark:text-slate-200 rounded-lg text-sm font-medium hover:bg-dbx-oat-dark dark:hover:bg-dbx-navy-400 disabled:opacity-50">Generate Bundle</button>
+          <button onClick={applyBundle} disabled={bundleLoading} className="px-4 py-1.5 bg-dbx-lava text-white rounded-lg text-sm font-medium hover:bg-red-700 disabled:opacity-50">Generate & Apply Bundle</button>
+          {bundleSql && (
+            <>
+              <button onClick={downloadBundleSql} className="px-4 py-1.5 bg-dbx-oat dark:bg-dbx-navy-500 text-slate-700 dark:text-slate-200 rounded-lg text-sm font-medium hover:bg-dbx-oat-dark dark:hover:bg-dbx-navy-400">Download .sql</button>
+              <button onClick={() => navigator.clipboard.writeText(bundleSql)} className="px-4 py-1.5 bg-dbx-oat dark:bg-dbx-navy-500 text-slate-700 dark:text-slate-200 rounded-lg text-sm font-medium hover:bg-dbx-oat-dark dark:hover:bg-dbx-navy-400">Copy SQL</button>
+            </>
+          )}
+        </div>
+        {bundleLoading && <p className="text-sm text-slate-500">Generating DDL bundle...</p>}
+        {bundleError && <p className="text-sm text-red-600">{bundleError}</p>}
+        {bundleCounts && (
+          <div className="flex flex-wrap gap-2">
+            {Object.entries(bundleCounts).filter(([, n]) => n > 0).map(([k, n]) => (
+              <span key={k} className="px-2 py-0.5 bg-dbx-teal/10 dark:bg-dbx-teal/20 text-dbx-teal dark:text-dbx-teal-light rounded text-xs font-medium">{k.replace(/_/g, ' ')}: {n}</span>
+            ))}
+          </div>
+        )}
+        {bundleVolumePath && <p className="text-xs text-slate-500 dark:text-slate-400 font-mono">Saved to: {bundleVolumePath}</p>}
+        {bundleApplyResult && (bundleApplyResult.ok
+          ? <p className="text-sm text-green-600">Applied {bundleApplyResult.applied} statement(s).</p>
+          : bundleApplyResult.detail
+            ? <p className="text-sm text-red-600">{bundleApplyResult.detail}</p>
+            : <p className="text-sm text-amber-700">Applied {bundleApplyResult.applied}, {bundleApplyResult.errors} failed.</p>
+        )}
+        {bundleSql && (
+          <div className="relative">
+            <pre className="text-xs text-slate-800 dark:text-slate-200 bg-dbx-oat dark:bg-dbx-navy-600 border border-slate-200 dark:border-dbx-navy-400/30 rounded-lg p-3 overflow-auto max-h-80 whitespace-pre-wrap">{bundleSql}</pre>
+          </div>
+        )}
+      </div>
 
       {/* Standalone import section (always visible) */}
       {reviewData.length === 0 && (
