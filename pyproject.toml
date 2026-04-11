@@ -1,6 +1,6 @@
 [project]
 name = "dbxmetagen"
-version = "0.8.5"
+version = "0.8.7"
 description = "Generates comments and identifies and classifies other metadata for Delta tables in Databricks."
 readme = "README.md"
 authors = [{ name = "Eli Swanson", email = "eli.swanson@databricks.com" }]
@@ -35,7 +35,7 @@ ontology = ["rdflib>=6.3.0", "pyoxigraph>=0.3.0"]
 main = "dbxmetagen.main:main"
 
 [dependency-groups]
-dev = ["pre-commit>=4.0.1,<5", "pytest>=8.3.4"]
+dev = ["pre-commit>=4.0.1,<5", "pytest>=8.3.4", "rdflib>=6.3.0", "hypothesis>=6.100.0"]
 
 [build-system]
 requires = ["hatchling"]

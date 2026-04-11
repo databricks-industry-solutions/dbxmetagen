@@ -55,13 +55,16 @@ class EmbeddingGenerator:
         try:
             return self.spark.sql(f"""
                 WITH table_entity AS (
-                    SELECT EXPLODE(source_tables) AS table_name, entity_type
+                    SELECT EXPLODE(source_tables) AS table_name,
+                           entity_type, description, attributes
                     FROM {ont}
                     WHERE confidence >= 0.4
                 ),
                 enriched AS (
                     SELECT n.id, n.comment, n.node_type, n.domain,
-                        COALESCE(CONCAT_WS(', ', COLLECT_SET(te.entity_type)), '') AS entity_type
+                        COALESCE(CONCAT_WS(', ', COLLECT_SET(te.entity_type)), '') AS entity_type,
+                        COALESCE(FIRST(te.description), '') AS entity_desc,
+                        COALESCE(FIRST(CONCAT_WS(', ', MAP_VALUES(te.attributes))), '') AS entity_attrs
                     FROM {nodes} n
                     LEFT JOIN table_entity te
                       ON te.table_name = CASE WHEN n.node_type = 'table' THEN n.id ELSE n.parent_id END
@@ -69,7 +72,13 @@ class EmbeddingGenerator:
                     GROUP BY n.id, n.comment, n.node_type, n.domain
                 )
                 SELECT id, node_type,
-                    SUBSTRING(CONCAT(COALESCE(comment, ''), ' Domain: ', COALESCE(domain, ''), ' Entity: ', COALESCE(entity_type, '')), 1, 2000) AS text_to_embed
+                    SUBSTRING(CONCAT(
+                        COALESCE(comment, ''),
+                        ' Domain: ', COALESCE(domain, ''),
+                        ' Entity: ', COALESCE(entity_type, ''),
+                        ' Description: ', COALESCE(entity_desc, ''),
+                        ' Attributes: ', COALESCE(entity_attrs, '')
+                    ), 1, 2000) AS text_to_embed
                 FROM enriched
             """)
         except Exception as e:

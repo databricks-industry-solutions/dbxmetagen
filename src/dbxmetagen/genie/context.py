@@ -144,12 +144,20 @@ class GenieContextAssembler:
     """
 
     def __init__(
-        self, ws: WorkspaceClient, warehouse_id: str, catalog: str, schema: str
+        self,
+        ws: WorkspaceClient,
+        warehouse_id: str,
+        catalog: str,
+        schema: str,
+        ontology_bundle: str | None = None,
     ):
         self.ws = ws
         self.wh = warehouse_id
         self.catalog = catalog
         self.schema = schema
+        self.ontology_bundle = ontology_bundle or os.environ.get(
+            "ONTOLOGY_BUNDLE"
+        ) or os.environ.get("ontology_bundle") or "general"
 
     def _fq(self, table: str) -> str:
         return f"`{self.catalog}`.`{self.schema}`.`{table}`"
@@ -380,19 +388,24 @@ class GenieContextAssembler:
         return [r for r in rows if r.get("src_type") in relevant_types or r.get("dst_type") in relevant_types]
 
     def _get_ontology_join_specs(self, tables: List[str]) -> list[dict]:
-        """Extract join_path specs from ontology YAML config for selected tables.
+        """Extract join_path specs from the active ontology bundle YAML.
 
-        Returns list of join_spec dicts suitable for the Genie API.
+        Only loads the bundle identified by ``self.ontology_bundle`` instead of
+        globbing every YAML in the bundles directory.
         """
-        import os, glob as _glob
         import yaml
 
-        bundle_dirs = ["configurations/ontology_bundles", "../configurations/ontology_bundles"]
-        yamls: list[str] = []
-        for d in bundle_dirs:
-            if os.path.isdir(d):
-                yamls.extend(_glob.glob(os.path.join(d, "*.yaml")))
+        bundle_name = self.ontology_bundle
+        candidates = [
+            f"configurations/ontology_bundles/{bundle_name}.yaml",
+            f"../configurations/ontology_bundles/{bundle_name}.yaml",
+        ]
+        yamls: list[str] = [p for p in candidates if os.path.isfile(p)]
         if not yamls:
+            logger.debug(
+                "No bundle YAML found for '%s', skipping ontology join specs",
+                bundle_name,
+            )
             return []
 
         entity_rows = getattr(self, "_cached_entity_rows", None) or self._get_ontology_entities(tables)

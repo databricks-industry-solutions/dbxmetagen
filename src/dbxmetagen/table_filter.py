@@ -2,6 +2,67 @@
 
 from __future__ import annotations
 
+import re
+
+# ---------------------------------------------------------------------------
+# Infrastructure table exclusion
+# ---------------------------------------------------------------------------
+
+INFRASTRUCTURE_TABLE_NAMES: frozenset[str] = frozenset({
+    "metadata_generation_log",
+    "table_knowledge_base",
+    "column_knowledge_base",
+    "schema_knowledge_base",
+    "extended_table_metadata",
+    "graph_nodes",
+    "graph_edges",
+    "ontology_entities",
+    "ontology_metrics",
+    "ontology_column_properties",
+    "ontology_relationships",
+    "discovery_diff_report",
+    "entity_tag_audit_log",
+    "fk_predictions",
+    "profiling_snapshots",
+    "column_profiling_stats",
+    "data_quality_scores",
+    "semantic_layer_questions",
+    "metric_view_definitions",
+    "llm_payloads",
+    "metadata_documents",
+    "dbxmetagen_token_usage",
+})
+
+_INFRASTRUCTURE_DYNAMIC_RE = re.compile(
+    r"^(metadata_control_|temp_metadata_generation_log_)"
+)
+
+
+def is_infrastructure_table(table_name: str) -> bool:
+    """Return True if *table_name* is a dbxmetagen infrastructure table.
+
+    Works with both bare names (``graph_nodes``) and fully-qualified names
+    (``catalog.schema.graph_nodes``).
+    """
+    bare = table_name.rsplit(".", 1)[-1]
+    return bare in INFRASTRUCTURE_TABLE_NAMES or bool(
+        _INFRASTRUCTURE_DYNAMIC_RE.match(bare)
+    )
+
+
+def infrastructure_exclude_sql(column: str = "table_name") -> str:
+    """Return a SQL ``AND NOT ...`` clause that excludes infrastructure tables.
+
+    The clause filters on the **bare** (unqualified) table name extracted from
+    *column* via ``substring_index(..., '.', -1)``.
+    """
+    quoted = ", ".join(f"'{n}'" for n in sorted(INFRASTRUCTURE_TABLE_NAMES))
+    bare_expr = f"substring_index({column}, '.', -1)"
+    return (
+        f"AND {bare_expr} NOT IN ({quoted}) "
+        f"AND NOT {bare_expr} RLIKE '^(metadata_control_|temp_metadata_generation_log_)'"
+    )
+
 
 def parse_table_names(raw: str) -> list[str]:
     """Parse comma-separated table names, strip whitespace, drop empties."""

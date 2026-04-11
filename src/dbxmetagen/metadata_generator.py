@@ -59,6 +59,8 @@ class CommentResponse(Response):
     @classmethod
     def validate_column_contents(cls, v):
         """Convert string to list if needed, flatten nested lists, parse stringified arrays."""
+        if v is None:
+            return []
 
         def try_parse_stringified_array(s):
             """Try to parse a string as a JSON array. Returns (success, parsed_list_or_original)."""

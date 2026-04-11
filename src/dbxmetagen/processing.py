@@ -53,6 +53,7 @@ import pandas as pd
 
 from grpc._channel import _InactiveRpcError, _MultiThreadedRendezvous
 from dbxmetagen.config import MetadataConfig
+from dbxmetagen.table_filter import is_infrastructure_table
 from dbxmetagen.sampling import determine_sampling_ratio
 from dbxmetagen.prompts import Prompt, PIPrompt, CommentPrompt, PromptFactory
 from dbxmetagen.error_handling import exponential_backoff, validate_csv
@@ -377,7 +378,7 @@ def sample_df(df: DataFrame, nrows: int, sample_size: int = 5) -> DataFrame:
         "null_count",
         sum(when(col(c).isNull(), 1).otherwise(0) for c in sampled_df.columns),
     )
-    threshold = len(sampled_df.columns) // 2
+    threshold = max(1, len(sampled_df.columns) // 2)
     filtered_df = null_counts_per_row.filter(col("null_count") < threshold).drop(
         "null_count"
     )
@@ -3395,8 +3396,8 @@ def setup_queue(config: MetadataConfig) -> List[str]:
     config_table_names = [
         name.strip() for name in config_table_string.split(",") if len(name.strip()) > 0
     ]
-    # Expand schema wildcards in config table names as well
-    config_table_names = expand_schema_wildcards(config_table_names)
+    exclude_infra = getattr(config, "exclude_infrastructure", True)
+    config_table_names = expand_schema_wildcards(config_table_names, exclude_infrastructure=exclude_infra)
     file_table_names = load_table_names_from_csv(config.source_file_path)
 
     # If include_previously_failed_tables is enabled, also include failed/abandoned tables
@@ -3611,7 +3612,11 @@ def is_internal_table(table_name: str) -> bool:
     return bool(_INTERNAL_RE.match(bare))
 
 
-def get_tables_in_schema(catalog_name: str, schema_name: str) -> List[str]:
+def get_tables_in_schema(
+    catalog_name: str,
+    schema_name: str,
+    exclude_infrastructure: bool = True,
+) -> List[str]:
     """
     Get all table names in a given catalog and schema.
     Excludes metric views and non-readable data source formats (e.g. vector
@@ -3620,6 +3625,8 @@ def get_tables_in_schema(catalog_name: str, schema_name: str) -> List[str]:
     Args:
         catalog_name (str): The catalog name.
         schema_name (str): The schema name.
+        exclude_infrastructure (bool): If True, exclude dbxmetagen's own
+            output tables from the results. Default True.
 
     Returns:
         List[str]: A list of fully qualified table names.
@@ -3640,15 +3647,20 @@ def get_tables_in_schema(catalog_name: str, schema_name: str) -> List[str]:
 
         table_names = []
         skipped = []
+        infra_skipped = []
         for row in rows:
             fmt = (row.data_source_format or "").upper()
             if fmt in _UNREADABLE_FORMATS:
                 skipped.append(f"{row.table_name} ({fmt})")
+            elif exclude_infrastructure and is_infrastructure_table(row.table_name):
+                infra_skipped.append(row.table_name)
             else:
                 table_names.append(f"{catalog_name}.{schema_name}.{row.table_name}")
 
         if skipped:
             print(f"Skipped {len(skipped)} non-readable objects: {', '.join(skipped)}")
+        if infra_skipped:
+            print(f"Excluded {len(infra_skipped)} dbxmetagen infrastructure tables: {', '.join(infra_skipped)}")
 
         print(f"Found {len(table_names)} tables in schema {catalog_name}.{schema_name}")
         return table_names
@@ -3660,12 +3672,16 @@ def get_tables_in_schema(catalog_name: str, schema_name: str) -> List[str]:
         return []
 
 
-def expand_schema_wildcards(table_names: List[str]) -> List[str]:
+def expand_schema_wildcards(
+    table_names: List[str],
+    exclude_infrastructure: bool = True,
+) -> List[str]:
     """
     Expand schema wildcard patterns in a list of table names.
 
     Args:
         table_names (List[str]): List of table names, possibly containing wildcards.
+        exclude_infrastructure (bool): Forwarded to ``get_tables_in_schema``.
 
     Returns:
         List[str]: Expanded list of table names with wildcards resolved.
@@ -3674,18 +3690,18 @@ def expand_schema_wildcards(table_names: List[str]) -> List[str]:
 
     for table_name in table_names:
         if is_schema_wildcard(table_name):
-            # Extract catalog and schema from the wildcard pattern
             parts = table_name.replace(".*", "").split(".")
             if len(parts) == 2:
                 catalog_name, schema_name = parts
-                # Get all tables in the schema
-                schema_tables = get_tables_in_schema(catalog_name, schema_name)
+                schema_tables = get_tables_in_schema(
+                    catalog_name, schema_name,
+                    exclude_infrastructure=exclude_infrastructure,
+                )
                 expanded_names.extend(schema_tables)
                 print(f"Expanded {table_name} to {len(schema_tables)} tables")
             else:
                 print(f"Warning: Invalid wildcard pattern {table_name}, skipping")
         else:
-            # Regular table name, add as-is
             expanded_names.append(table_name)
 
     return expanded_names
