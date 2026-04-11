@@ -12,7 +12,25 @@
 
 # COMMAND ----------
 
-# MAGIC %pip install -qqq git+https://github.com/databricks-industry-solutions/dbxmetagen.git@main
+import os
+import sys
+
+_mp = os.path.dirname(os.path.abspath(__file__)) if "__file__" in dir() else os.getcwd()
+if _mp not in sys.path:
+    sys.path.insert(0, _mp)
+try:
+    from install_dbxmetagen import install_dbxmetagen
+except ImportError:
+    sys.path.insert(0, os.path.join(os.getcwd(), "metagen_pipeline"))
+    from install_dbxmetagen import install_dbxmetagen
+
+dbutils.widgets.text("install_source", os.getenv("METAGEN_INSTALL_SOURCE", "auto"))
+src = dbutils.widgets.get("install_source")
+install_dbxmetagen(src)
+
+# COMMAND ----------
+
+dbutils.library.restartPython()
 
 # COMMAND ----------
 
@@ -23,6 +41,9 @@ dbutils.widgets.text("catalog_name", os.getenv("CATALOG_NAME", ""), "Catalog Nam
 dbutils.widgets.text("schema_name", os.getenv("SCHEMA_NAME", "default"), "Output Schema")
 dbutils.widgets.text("ontology_bundle", os.getenv("METAGEN_ONTOLOGY_BUNDLE", "general"), "Ontology Bundle")
 dbutils.widgets.text("model_endpoint", os.getenv("METAGEN_MODEL_ENDPOINT", "databricks-claude-sonnet-4-6"), "Model Endpoint")
+# Re-declared so DAB base_parameters can pass install_source without "widget not found" errors.
+dbutils.widgets.text("install_source", os.getenv("METAGEN_INSTALL_SOURCE", "auto"))
+
 catalog_name = dbutils.widgets.get("catalog_name")
 schema_name = dbutils.widgets.get("schema_name")
 ontology_bundle = dbutils.widgets.get("ontology_bundle")
@@ -50,7 +71,7 @@ from dbxmetagen.ontology import resolve_bundle_path
 config_path = resolve_bundle_path(ontology_bundle)
 if not os.path.exists(config_path):
     nb_path = dbutils.notebook.entry_point.getDbutils().notebook().getContext().notebookPath().get()
-    bundle_root = "/Workspace" + str(nb_path).rsplit("/", 3)[0]
+    bundle_root = "/Workspace" + str(nb_path).rsplit("/", 2)[0]
     config_path = f"{bundle_root}/configurations/ontology_bundles/{ontology_bundle}.yaml"
     print(f"Using workspace-resolved config: {config_path}")
 

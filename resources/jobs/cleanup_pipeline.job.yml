@@ -1,0 +1,50 @@
+resources:
+  jobs:
+    cleanup_pipeline_job:
+      name: "${var.app_name}_cleanup_pipeline"
+
+      permissions:
+        - service_principal_name: ${resources.apps.dbxmetagen_app.service_principal_client_id}
+          level: CAN_MANAGE_RUN
+
+      email_notifications:
+        on_failure:
+          - ${var.current_user}
+
+      parameters:
+        - name: catalog_name
+          default: ${var.catalog_name}
+        - name: schema_name
+          default: ${var.schema_name}
+        - name: dry_run
+          default: "true"
+        - name: include_control_table
+          default: "true"
+
+      tasks:
+        - task_key: cleanup_tables
+          job_cluster_key: cleanup_cluster
+
+          notebook_task:
+            notebook_path: ../../notebooks/cleanup_pipeline_tables.py
+            base_parameters:
+              catalog_name: "{{job.parameters.catalog_name}}"
+              schema_name: "{{job.parameters.schema_name}}"
+              dry_run: "{{job.parameters.dry_run}}"
+              include_control_table: "{{job.parameters.include_control_table}}"
+
+          libraries:
+            - whl: ../../dist/*.whl
+
+      job_clusters:
+        - job_cluster_key: cleanup_cluster
+          new_cluster:
+            spark_version: 17.3.x-scala2.13
+            node_type_id: ${var.node_type}
+            data_security_mode: SINGLE_USER
+            num_workers: 0
+            spark_conf:
+              spark.databricks.cluster.profile: singleNode
+              spark.master: "local[*]"
+            custom_tags:
+              ResourceClass: SingleNode

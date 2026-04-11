@@ -18,18 +18,21 @@ Your Project
   |-- your_etl/
   |     |-- your_notebooks...
   |
-  |-- metagen_pipeline/            <-- these example notebooks
+  |-- metagen_pipeline/                <-- copy these notebooks
+  |     |-- install_dbxmetagen.py      <-- shared install helper
   |     |-- 01_generate_metadata.py
   |     |-- 02_build_knowledge_bases.py
   |     |-- 03_build_analytics.py
   |     |-- 04_generate_semantic_layer.py
   |     |-- 05_create_genie_space.py
+  |     |-- vendor/                    <-- optional: pre-built .whl for air-gapped / fast installs
   |
   |-- configurations/
-  |     |-- metagen_overrides.yml   <-- minimal config overrides
-  |     |-- business_questions.yaml <-- questions for metric view generation
+  |     |-- dbxmetagen_variables.yml   <-- full config (recommended)
+  |     |-- metagen_overrides.yml      <-- OR minimal overrides (legacy)
+  |     |-- business_questions.yaml    <-- questions for metric view generation
   |
-  |-- databricks.yml               <-- your bundle with metagen job tasks
+  |-- databricks.yml                   <-- your bundle with metagen job tasks
 ```
 
 ## Pipeline Stages
@@ -44,37 +47,41 @@ Your Project
 
 Steps 3 and 4 can run in parallel since they both depend on step 2 only.
 
+## Installation
+
+Each notebook uses `install_dbxmetagen.py` instead of `%pip install git+...`. This handles:
+
+- **`auto` (default):** Uses a pre-built wheel from `vendor/` if present, otherwise downloads the pinned release tag zip from GitHub. No `git` binary required (works on serverless).
+- **Explicit spec:** Any pip-compatible source (zip URL, wheel path, `git+https://...`). Git failures automatically fall back to the tag zip.
+
+Override via the `install_source` widget, the `METAGEN_INSTALL_SOURCE` env var, or the DAB variable `${var.metagen_install_source}`.
+
+To vendor a wheel for fastest installs:
+
+```bash
+cd /path/to/dbxmetagen && uv build
+cp dist/dbxmetagen-*.whl /path/to/your_project/metagen_pipeline/vendor/
+```
+
 ## Configuration
 
-### `metagen_overrides.yml`
+### Full variables (recommended)
 
-Instead of copying dbxmetagen's full `variables.yml` (200+ lines), ship a **minimal overrides file** with only the parameters that differ from upstream defaults. See [`metagen_overrides.yml`](metagen_overrides.yml) for the template.
+Copy dbxmetagen's `variables.yml` into your project as `configurations/dbxmetagen_variables.yml`. This provides all MetadataConfig defaults and avoids missing-attribute errors when the library adds new parameters.
 
-Notebook `01_generate_metadata` loads this file via `yaml_file_path`, and MetadataConfig merges it over built-in defaults. Explicit `main()` kwargs override both.
+```bash
+cp /path/to/dbxmetagen/variables.yml configurations/dbxmetagen_variables.yml
+```
+
+Notebook `01_generate_metadata` prefers this file and also loads `configurations/variables.advanced.yml` if present. Runtime kwargs (`catalog_name`, `schema_name`, `mode`, `model`, `current_user`) override YAML values.
+
+### Minimal overrides (legacy)
+
+Ship only [`metagen_overrides.yml`](metagen_overrides.yml) with parameters that differ from upstream defaults. The notebook backfills required keys that the partial file omits. This works but is fragile when dbxmetagen adds new required parameters.
 
 ### `business_questions.yaml`
 
 Feed domain-specific questions into metric view generation. If empty, notebook 04 auto-generates questions from the table knowledge base. See [`business_questions.yaml`](business_questions.yaml) for the format.
-
-## Pinning `dbxmetagen` and runtime prerequisites
-
-**Pin the library in production.** Do not use `...@main` in scheduled jobs; pin to a **git tag** aligned with the version you tested (e.g. match [`pyproject.toml`](../../pyproject.toml) `version` or a GitHub release tag such as `v0.8.1`):
-
-```yaml
-metagen_install_source: "git+https://github.com/databricks-industry-solutions/dbxmetagen.git@v0.8.1"
-```
-
-**Unity Catalog prerequisites** before step 1:
-
-- Catalog and schema exist; the job identity can read source tables and write dbxmetagen output tables in that schema.
-- **UC volume** exists for `{catalog}.{schema}.{volume_name}` — step 5 exports Genie JSON under `/Volumes/.../genie_exports/`. Create the volume if missing.
-- **SQL warehouse** ID is valid for Genie space creation (step 5) and for any notebook path that requires warehouse SQL (step 4 notes `AI_QUERY` / warehouse context on classic compute).
-
-**Databricks Asset Bundles:** `notebook_task.base_parameters` are resolved at **`bundle deploy`**. After changing catalog, schema, warehouse, or install pin, **redeploy** or override parameters in the job UI so runs pick up new values.
-
-**Single Genie space title:** When the resolved table count is ≤ `max_tables_per_space`, step 5 creates **one** space titled `{catalog}.{schema} Analytics`. Downstream apps should persist `space_id` (e.g. Delta table + `GENIE_SPACE_ID` on model serving).
-
-**Upgrading:** Bump the git tag when you adopt a new dbxmetagen release; diff `examples/integration/` against any vendored copy in your repo and re-test the full pipeline.
 
 ## Job Definition (DAB)
 
@@ -93,7 +100,9 @@ resources:
               schema_name: ${var.schema_name}
               table_names: ${var.metagen_table_names}
               model_endpoint: ${var.metagen_model_endpoint}
+              mode: ${var.metagen_mode}
               install_source: ${var.metagen_install_source}
+              max_total_tables: ${var.metagen_max_tables}
 
         - task_key: build_knowledge_bases
           depends_on: [{task_key: generate_metadata}]
@@ -140,16 +149,23 @@ resources:
               warehouse_id: ${var.sql_warehouse_id}
               max_tables_per_space: ${var.genie_max_tables}
               install_source: ${var.metagen_install_source}
+              max_total_tables: ${var.metagen_max_tables}
 
 variables:
   metagen_table_names:
     default: "my_catalog.my_schema.*"
   metagen_model_endpoint:
     default: databricks-claude-sonnet-4-6
+  metagen_mode:
+    default: comment
   metagen_ontology_bundle:
     default: general
   metagen_install_source:
-    default: "git+https://github.com/databricks-industry-solutions/dbxmetagen.git@v0.8.1"
+    description: >-
+      pip install spec for dbxmetagen. "auto" uses vendor wheel or pinned tag zip.
+    default: "auto"
+  metagen_max_tables:
+    default: "100"
   genie_max_tables:
     default: "25"
 ```

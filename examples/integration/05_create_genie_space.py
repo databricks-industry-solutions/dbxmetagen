@@ -19,7 +19,25 @@
 
 # COMMAND ----------
 
-# MAGIC %pip install -qqq git+https://github.com/databricks-industry-solutions/dbxmetagen.git@main
+import os
+import sys
+
+_mp = os.path.dirname(os.path.abspath(__file__)) if "__file__" in dir() else os.getcwd()
+if _mp not in sys.path:
+    sys.path.insert(0, _mp)
+try:
+    from install_dbxmetagen import install_dbxmetagen
+except ImportError:
+    sys.path.insert(0, os.path.join(os.getcwd(), "metagen_pipeline"))
+    from install_dbxmetagen import install_dbxmetagen
+
+dbutils.widgets.text("install_source", os.getenv("METAGEN_INSTALL_SOURCE", "auto"))
+src = dbutils.widgets.get("install_source")
+install_dbxmetagen(src)
+
+# COMMAND ----------
+
+dbutils.library.restartPython()
 
 # COMMAND ----------
 
@@ -35,6 +53,9 @@ dbutils.widgets.text("model_endpoint", os.getenv("METAGEN_MODEL_ENDPOINT", "data
 dbutils.widgets.text("warehouse_id", os.getenv("SQL_WAREHOUSE_ID", ""), "SQL Warehouse ID (required)")
 dbutils.widgets.text("max_tables_per_space", os.getenv("GENIE_MAX_TABLES", "25"), "Max Tables per Space")
 dbutils.widgets.text("max_total_tables", os.getenv("METAGEN_MAX_TABLES", "100"), "Max Total Tables")
+# Re-declared so DAB base_parameters can pass install_source without "widget not found" errors.
+dbutils.widgets.text("install_source", os.getenv("METAGEN_INSTALL_SOURCE", "auto"))
+
 catalog_name = dbutils.widgets.get("catalog_name")
 schema_name = dbutils.widgets.get("schema_name")
 volume_name = dbutils.widgets.get("volume_name")
@@ -103,7 +124,7 @@ def _group_by_ontology(spark, catalog, schema, all_tables, max_per_space):
             f"SELECT entity_type, source_tables FROM `{catalog}`.`{schema}`.ontology_entities"
         ).collect()
     except Exception:
-        return None  # ontology not available
+        return None
 
     for row in ent_rows:
         etype = row.entity_type or "uncategorized"
@@ -116,7 +137,6 @@ def _group_by_ontology(spark, catalog, schema, all_tables, max_per_space):
     if unassigned:
         groups["uncategorized"].update(unassigned)
 
-    # Merge groups connected by FK predictions
     try:
         fk_rows = spark.sql(
             f"SELECT source_table, target_table FROM `{catalog}`.`{schema}`.fk_predictions"
@@ -126,7 +146,6 @@ def _group_by_ontology(spark, catalog, schema, all_tables, max_per_space):
         fk_pairs = []
 
     if fk_pairs:
-        group_names = list(groups.keys())
         table_to_group = {}
         for g, tbls in groups.items():
             for t in tbls:
@@ -143,7 +162,6 @@ def _group_by_ontology(spark, catalog, schema, all_tables, max_per_space):
                         table_to_group[t] = g1
                     del groups[g2]
 
-    # Split any group that still exceeds the cap
     final = {}
     for name, tbls in groups.items():
         tbl_list = sorted(tbls)
