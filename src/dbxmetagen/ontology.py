@@ -31,7 +31,7 @@ from pyspark.sql.types import (
     BooleanType,
     TimestampType,
 )
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from dbxmetagen.config import DEFAULT_CLASSIFICATION_MODEL
 from dbxmetagen.table_filter import table_filter_sql, infrastructure_exclude_sql
 
@@ -74,6 +74,13 @@ class BatchColumnClassificationResult(BaseModel):
         description="One classification per input column"
     )
 
+    @field_validator("classifications", mode="before")
+    @classmethod
+    def _coerce_string_to_list(cls, v):
+        if isinstance(v, str):
+            return json.loads(v)
+        return v
+
 
 class TableClassificationItem(BaseModel):
     """Single table classification within a batch response."""
@@ -96,6 +103,13 @@ class BatchTableClassificationResult(BaseModel):
     classifications: List[TableClassificationItem] = Field(
         description="One classification per input table"
     )
+
+    @field_validator("classifications", mode="before")
+    @classmethod
+    def _coerce_string_to_list(cls, v):
+        if isinstance(v, str):
+            return json.loads(v)
+        return v
 
 
 class _StructuredInvoker:
@@ -1084,14 +1098,14 @@ class EntityDiscoverer:
         from dbxmetagen.chat_client import invoke_structured
         return _StructuredInvoker(
             invoke_structured, self._model_endpoint,
-            BatchColumnClassificationResult, 0.0, 2048, 2,
+            BatchColumnClassificationResult, 0.0, 4096, 2,
         )
 
     def _get_batch_table_llm(self):
         from dbxmetagen.chat_client import invoke_structured
         return _StructuredInvoker(
             invoke_structured, self._model_endpoint,
-            BatchTableClassificationResult, 0.0, 2048, 2,
+            BatchTableClassificationResult, 0.0, 4096, 2,
         )
 
     @staticmethod
@@ -1550,10 +1564,12 @@ class EntityDiscoverer:
             return all_results
 
         except Exception as e:
-            logger.warning(
-                f"Batch table classification failed ({len(table_rows)} tables): {e}. "
-                "Falling back to per-table classification."
+            msg = (
+                f"Batch table classification failed ({len(table_rows)} tables): "
+                f"{type(e).__name__}: {e}. Falling back to per-table classification."
             )
+            logger.warning(msg)
+            print(f"[ontology] {msg}")
             return [self._ai_classify_table(row) for row in table_rows]
 
     def _get_index_loader(self):
@@ -1562,7 +1578,10 @@ class EntityDiscoverer:
             try:
                 from dbxmetagen.ontology_index import OntologyIndexLoader
                 bundle = self.config.ontology_bundle or "general"
-                self._index_loader = OntologyIndexLoader(bundle_name=bundle)
+                resolved_yaml = resolve_bundle_path(bundle)
+                tier_dir = os.path.join(os.path.dirname(resolved_yaml), bundle)
+                base = tier_dir if os.path.isdir(tier_dir) else None
+                self._index_loader = OntologyIndexLoader(bundle_name=bundle, base_dir=base)
                 self._three_pass_available = self._index_loader.has_tier_indexes
                 if self._three_pass_available:
                     logger.info(
@@ -1570,12 +1589,13 @@ class EntityDiscoverer:
                         self._index_loader.entity_count(),
                     )
                 else:
-                    logger.warning(
-                        "Formal ontology grounding OFF for bundle '%s': no tier index files found. "
+                    msg = (
+                        f"Formal ontology grounding OFF for bundle '{bundle}': no tier index files found. "
                         "Entity classification will use single-pass LLM without FHIR/OMOP/Schema.org alignment. "
-                        "Run scripts/build_ontology_indexes.py to generate tier indexes.",
-                        bundle,
+                        "Run scripts/build_ontology_indexes.py to generate tier indexes."
                     )
+                    logger.warning(msg)
+                    print(f"[ontology] {msg}")
             except Exception as e:
                 logger.debug("Three-pass prediction not available: %s", e)
                 self._three_pass_available = False
@@ -2319,21 +2339,25 @@ class EntityDiscoverer:
             try:
                 return self._classify_column_chunk(short_name, columns)
             except Exception as e:
-                logger.warning(
-                    f"Batch column classification failed for {table_name} ({len(columns)} cols): {e}. "
-                    "Retrying with sub-chunks before ai_query fallback."
+                msg = (
+                    f"Batch column classification failed for {table_name} ({len(columns)} cols): "
+                    f"{type(e).__name__}: {e}. Retrying with sub-chunks before ai_query fallback."
                 )
+                logger.warning(msg)
+                print(f"[ontology] {msg}")
                 # Sub-chunk retry: split in half
                 mid = len(columns) // 2
                 results = []
                 for sub in (columns[:mid], columns[mid:]):
                     try:
                         results.extend(self._classify_column_chunk(short_name, sub))
-                    except Exception:
-                        logger.warning(
-                            f"Sub-chunk ({len(sub)} cols) also failed for {table_name}. "
-                            "Falling back to ai_query batch."
+                    except Exception as sub_e:
+                        msg = (
+                            f"Sub-chunk ({len(sub)} cols) also failed for {table_name}: "
+                            f"{type(sub_e).__name__}. Falling back to ai_query."
                         )
+                        logger.warning(msg)
+                        print(f"[ontology] {msg}")
                         results.extend(self._ai_query_classify_columns(sub))
                 return results
 
@@ -2346,7 +2370,9 @@ class EntityDiscoverer:
             try:
                 all_results.extend(self._classify_column_chunk(short_name, chunk))
             except Exception as e:
-                logger.warning(f"Chunk {chunk_idx} failed for {table_name}, using ai_query fallback: {e}")
+                msg = f"Chunk {chunk_idx} failed for {table_name} ({len(chunk)} cols), using ai_query fallback: {type(e).__name__}"
+                logger.warning(msg)
+                print(f"[ontology] {msg}")
                 all_results.extend(self._ai_query_classify_columns(chunk))
         return all_results
 
@@ -2732,7 +2758,9 @@ class OntologyBuilder:
         )
         count = result.first()[0] if result.first() else 0
         if count:
-            logger.info("Purged %d stale entities from previous bundle (keeping validated)", count)
+            msg = f"Purged {count} stale entities from previous bundle (keeping validated)"
+            logger.info(msg)
+            print(f"[ontology] {msg}")
         return count
 
     def _store_entities(
@@ -3121,8 +3149,10 @@ class OntologyBuilder:
         except Exception as e:
             logger.warning("Could not read table-level entities for tagging: %s", e)
 
-        # Column-level tags
+        # Column-level tags (batched per table via multi-column ALTER TABLE, DBR 15.2+)
         try:
+            from collections import defaultdict as _defaultdict
+
             col_ents = self.spark.sql(
                 f"""
                 SELECT entity_type, confidence,
@@ -3135,25 +3165,33 @@ class OntologyBuilder:
                   AND SIZE(source_columns) > 0
             """
             ).collect()
+
+            table_col_tags = _defaultdict(list)
             for row in col_ents:
-                action = "failed"
+                table_col_tags[row.table_name].append(row)
+
+            for tbl, rows in table_col_tags.items():
+                clauses = [
+                    f"ALTER COLUMN `{r.col_name}` SET TAGS "
+                    f"('{tag_key}' = '{r.entity_type}', "
+                    f"'ontology_bundle_version' = '{bundle_ver}')"
+                    for r in rows
+                ]
                 try:
-                    self.spark.sql(
-                        f"ALTER TABLE {row.table_name} ALTER COLUMN {row.col_name} "
-                        f"SET TAGS ('{tag_key}' = '{row.entity_type}', "
-                        f"'ontology_bundle_version' = '{bundle_ver}')"
-                    )
-                    tagged += 1
-                    action = "applied"
+                    self.spark.sql(f"ALTER TABLE {tbl} {', '.join(clauses)}")
+                    tagged += len(rows)
+                    for r in rows:
+                        audit_rows.append((
+                            now, tbl, r.col_name, tag_key, r.entity_type,
+                            float(r.confidence), bundle_ver, r.discovery_method, "applied",
+                        ))
                 except Exception as e:
-                    logger.warning(
-                        "Failed to tag column %s.%s: %s",
-                        row.table_name, row.col_name, e,
-                    )
-                audit_rows.append((
-                    now, row.table_name, row.col_name, tag_key, row.entity_type,
-                    float(row.confidence), bundle_ver, row.discovery_method, action,
-                ))
+                    logger.warning("Batch column tagging failed for %s: %s", tbl, e)
+                    for r in rows:
+                        audit_rows.append((
+                            now, tbl, r.col_name, tag_key, r.entity_type,
+                            float(r.confidence), bundle_ver, r.discovery_method, "failed",
+                        ))
         except Exception as e:
             logger.warning("Could not read column-level entities for tagging: %s", e)
 
@@ -4061,81 +4099,92 @@ class OntologyBuilder:
             if etype not in bundle_indices:
                 bundle_indices[etype] = self._build_bundle_property_index(etype)
 
-        tbl_list = ",".join(f"'{t}'" for t in table_primary)
-        try:
-            columns = self.spark.sql(f"""
-                SELECT table_name, column_name, data_type,
-                       classification_type
-                FROM {col_kb}
-                WHERE table_name IN ({tbl_list})
-            """).collect()
-        except Exception as e:
-            logger.warning("classify_column_properties: cannot read column KB: %s", e)
-            return 0
+        # Group tables by entity type so we can chunk the collect() and avoid OOM
+        etype_to_tables: Dict[str, List[str]] = {}
+        for t, info in table_primary.items():
+            etype_to_tables.setdefault(info["entity_type"], []).append(t)
 
         now = datetime.utcnow()
         props = []
         bundle_match_count = 0
-        for c in columns:
-            tbl = c.table_name
-            col = c.column_name
-            dtype = (c.data_type or "").upper()
-            pe = table_primary.get(tbl)
-            if not pe:
-                continue
 
-            linked = col_entity_map.get((tbl, col))
-            col_lower = col.lower()
-            cls_type = (getattr(c, "classification_type", None) or "").upper()
-            is_sensitive = cls_type in ("PII", "PHI", "PCI")
-            is_surrogate_key = bool(
-                re.search(r'_(sk|surrogate)$', col_lower)
-                or (col_lower.endswith("_hash") and re.search(r'_(id|key)$', col_lower))
-            )
-            is_semi_structured = dtype in ("MAP", "STRUCT", "ARRAY", "VARIANT")
-
-            # Tier 1: Bundle property match
-            bindex = bundle_indices.get(pe["entity_type"], {})
-            bundle_hit = bindex.get(col_lower)
-
-            if bundle_hit:
-                role, prop_name, edge, target_entity = bundle_hit
-                linked_from_bundle = target_entity
-                if isinstance(linked_from_bundle, list):
-                    linked_from_bundle = linked_from_bundle[0] if linked_from_bundle else None
-                confidence = 0.95
-                discovery_method = "bundle_match"
-                if role == "object_property" and linked_from_bundle:
-                    linked = str(linked_from_bundle)
-                bundle_match_count += 1
-            else:
-                # Tier 2: Heuristic fallback
-                is_pk = col_lower in {cc.lower() for cc in pe["source_columns"]}
-                role, discovery_method, confidence = self._heuristic_classify(
-                    col_lower, dtype, is_pk, linked, cls_type, table_name=tbl,
+        for etype, etype_tables in etype_to_tables.items():
+            tbl_list = ",".join(f"'{t}'" for t in etype_tables)
+            try:
+                columns = self.spark.sql(f"""
+                    SELECT table_name, column_name, data_type,
+                           classification_type
+                    FROM {col_kb}
+                    WHERE table_name IN ({tbl_list})
+                """).collect()
+            except Exception as e:
+                logger.warning(
+                    "classify_column_properties: cannot read column KB for entity type %s: %s",
+                    etype, e,
                 )
-                prop_name = col
+                continue
+            logger.info(
+                "classify_column_properties: processing %d columns for entity type %s (%d tables)",
+                len(columns), etype, len(etype_tables),
+            )
+            for c in columns:
+                tbl = c.table_name
+                col = c.column_name
+                dtype = (c.data_type or "").upper()
+                pe = table_primary.get(tbl)
+                if not pe:
+                    continue
 
-            props.append({
-                "property_id": str(uuid.uuid4()),
-                "table_name": tbl,
-                "column_name": col,
-                "property_name": prop_name,
-                "property_role": role,
-                "owning_entity_id": pe["entity_id"],
-                "owning_entity_type": pe["entity_type"],
-                "linked_entity_type": linked,
-                "confidence": confidence,
-                "auto_discovered": True,
-                "discovery_method": discovery_method,
-                "is_sensitive": is_sensitive,
-                "is_surrogate_key": is_surrogate_key,
-                "is_semi_structured": is_semi_structured,
-                "bundle_version": self._get_bundle_version(),
-                "discovery_timestamp": now,
-                "created_at": now,
-                "updated_at": now,
-            })
+                linked = col_entity_map.get((tbl, col))
+                col_lower = col.lower()
+                cls_type = (getattr(c, "classification_type", None) or "").upper()
+                is_sensitive = cls_type in ("PII", "PHI", "PCI")
+                is_surrogate_key = bool(
+                    re.search(r'_(sk|surrogate)$', col_lower)
+                    or (col_lower.endswith("_hash") and re.search(r'_(id|key)$', col_lower))
+                )
+                is_semi_structured = dtype in ("MAP", "STRUCT", "ARRAY", "VARIANT")
+
+                bindex = bundle_indices.get(pe["entity_type"], {})
+                bundle_hit = bindex.get(col_lower)
+
+                if bundle_hit:
+                    role, prop_name, edge, target_entity = bundle_hit
+                    linked_from_bundle = target_entity
+                    if isinstance(linked_from_bundle, list):
+                        linked_from_bundle = linked_from_bundle[0] if linked_from_bundle else None
+                    confidence = 0.95
+                    discovery_method = "bundle_match"
+                    if role == "object_property" and linked_from_bundle:
+                        linked = str(linked_from_bundle)
+                    bundle_match_count += 1
+                else:
+                    is_pk = col_lower in {cc.lower() for cc in pe["source_columns"]}
+                    role, discovery_method, confidence = self._heuristic_classify(
+                        col_lower, dtype, is_pk, linked, cls_type, table_name=tbl,
+                    )
+                    prop_name = col
+
+                props.append({
+                    "property_id": str(uuid.uuid4()),
+                    "table_name": tbl,
+                    "column_name": col,
+                    "property_name": prop_name,
+                    "property_role": role,
+                    "owning_entity_id": pe["entity_id"],
+                    "owning_entity_type": pe["entity_type"],
+                    "linked_entity_type": linked,
+                    "confidence": confidence,
+                    "auto_discovered": True,
+                    "discovery_method": discovery_method,
+                    "is_sensitive": is_sensitive,
+                    "is_surrogate_key": is_surrogate_key,
+                    "is_semi_structured": is_semi_structured,
+                    "bundle_version": self._get_bundle_version(),
+                    "discovery_timestamp": now,
+                    "created_at": now,
+                    "updated_at": now,
+                })
 
         if not props:
             return 0
@@ -4375,12 +4424,11 @@ class OntologyBuilder:
             dst_type = table_to_primary.get(fk.dst_table)
             if not src_type or not dst_type or src_type == dst_type:
                 continue
-            key = (src_type, dst_type)
+            rel_name = self._resolve_edge_name(src_type, dst_type, fk.src_column)
+            key = (src_type, dst_type, rel_name)
             if key in seen:
                 continue
             seen.add(key)
-
-            rel_name = self._resolve_edge_name(src_type, dst_type, fk.src_column)
             valid, msg = catalog.validate(rel_name, src_type, dst_type)
             if not valid and rel_name != "references":
                 validation_warnings.append(msg)
@@ -4415,12 +4463,11 @@ class OntologyBuilder:
             dst_type = lr.linked_entity_type
             if not src_type or not dst_type or src_type == dst_type:
                 continue
-            key = (src_type, dst_type)
+            rel_name = self._resolve_edge_name(src_type, dst_type, lr.column_name)
+            key = (src_type, dst_type, rel_name)
             if key in seen:
                 continue
             seen.add(key)
-
-            rel_name = self._resolve_edge_name(src_type, dst_type, lr.column_name)
             valid, msg = catalog.validate(rel_name, src_type, dst_type)
             if not valid and rel_name != "references":
                 validation_warnings.append(msg)
@@ -4529,7 +4576,7 @@ class OntologyBuilder:
             inv_name = catalog.get_inverse(rel_name)
             if not inv_name:
                 continue
-            inv_key = (rel["dst_entity_type"], rel["src_entity_type"])
+            inv_key = (rel["dst_entity_type"], rel["src_entity_type"], inv_name)
             if inv_key in seen:
                 continue
             seen.add(inv_key)
@@ -4570,6 +4617,10 @@ class OntologyBuilder:
             StructField("evidence_table", StringType(), nullable=True),
             StructField("source", StringType()),
             StructField("confidence", DoubleType()),
+            StructField("label", StringType(), nullable=True),
+            StructField("facet", StringType(), nullable=True),
+            StructField("sub_property_of", StringType(), nullable=True),
+            StructField("ranges", ArrayType(StringType()), nullable=True),
             StructField("created_at", TimestampType()),
             StructField("updated_at", TimestampType()),
         ])
@@ -4891,13 +4942,14 @@ class OntologyBuilder:
                 ).collect()
                 old_bundles = {r.ontology_bundle for r in stored} - {current_bundle}
                 if old_bundles:
-                    logger.warning(
-                        "ontology_entities contains entities from bundle(s) %s but current "
-                        "bundle is '%s'. Unvalidated entities from previous bundles will be "
+                    msg = (
+                        f"ontology_entities contains entities from bundle(s) {old_bundles} but current "
+                        f"bundle is '{current_bundle}'. Unvalidated entities from previous bundles will be "
                         "purged. Validated entities will be preserved. Consider running with "
-                        "incremental=false for a clean rebuild.",
-                        old_bundles, current_bundle,
+                        "incremental=false for a clean rebuild."
                     )
+                    logger.warning(msg)
+                    print(f"[ontology] WARNING: {msg}")
             except Exception:
                 pass
 
@@ -4990,6 +5042,56 @@ class OntologyBuilder:
             "discovery_diff": diff,
             "turtle_path": turtle_path,
         }
+
+    def refresh_relationships(self) -> Dict[str, Any]:
+        """Re-run only edge-building steps after FK predictions are available.
+
+        Intended to be called as a post-FK-prediction task so that FK-evidence-
+        backed relationships land in the ontology within a single pipeline run,
+        without repeating entity discovery or column property classification.
+        """
+        import time as _time
+        start = _time.time()
+
+        self._clear_ontology_edges()
+        named = self.discover_named_relationships()
+        bundle = self.emit_bundle_edges()
+        self._sync_entity_nodes_to_graph()
+        self._add_same_entity_type_edges()
+        edges = self.add_entity_relationships_to_graph()
+        hierarchy = self.add_hierarchy_edges()
+        inter = self.discover_inter_entity_relationships()
+
+        elapsed = _time.time() - start
+        logger.info("[timing] refresh_relationships: %.1fs", elapsed)
+
+        return {
+            "named_relationships": named,
+            "bundle_edges": bundle,
+            "graph_edges": edges + hierarchy + inter.get("edges_added", 0),
+        }
+
+
+def refresh_ontology_relationships(
+    spark: SparkSession,
+    catalog_name: str,
+    schema_name: str,
+    config_path: str = _DEFAULT_ONTOLOGY_CONFIG_PATH,
+    ontology_bundle: str = "",
+    model_endpoint: Optional[str] = None,
+    table_names: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """Convenience function to refresh ontology edges after FK prediction."""
+    config = OntologyConfig(
+        catalog_name=catalog_name,
+        schema_name=schema_name,
+        config_path=config_path,
+        ontology_bundle=ontology_bundle,
+        incremental=True,
+        table_names=table_names,
+    )
+    builder = OntologyBuilder(spark, config, model_endpoint=model_endpoint)
+    return builder.refresh_relationships()
 
 
 def build_ontology(

@@ -31,31 +31,51 @@ from openai.types.chat.chat_completion_message import ChatCompletionMessage
 
 def _extract_and_validate_json(text: str, response_model: Type[BaseModel]) -> BaseModel:
     """Extract JSON from LLM text and validate with Pydantic."""
+    original_len = len(text)
     text = text.strip()
     text = re.sub(r"^```(?:json)?\s*", "", text)
     text = re.sub(r"\s*```$", "", text)
 
-    # Try object first, then array
-    for pattern in (r"\{.*\}", r"\[.*\]"):
-        m = re.search(pattern, text, re.DOTALL)
-        if m:
-            text = m.group()
-            break
-
+    # 1. Try direct parse (covers well-formed responses)
     try:
         data = json.loads(text)
-    except json.JSONDecodeError as e:
-        raise ValueError(
-            f"Could not extract valid JSON for {response_model.__name__}: {e}\n"
-            f"Raw text (first 500 chars): {text[:500]}"
-        ) from e
+    except json.JSONDecodeError:
+        data = None
 
-    try:
-        return response_model.model_validate(data)
-    except ValidationError as e:
+    if data is not None:
+        try:
+            return response_model.model_validate(data)
+        except ValidationError as e:
+            raise ValueError(
+                f"JSON did not match {response_model.__name__} schema: {e}"
+            ) from e
+
+    # 2. Use raw_decode from first { or [ (handles prose-wrapped or trailing text)
+    decoder = json.JSONDecoder()
+    last_validation_err = None
+    for start_char in ("{", "["):
+        idx = text.find(start_char)
+        if idx != -1:
+            try:
+                data, _ = decoder.raw_decode(text, idx)
+            except json.JSONDecodeError:
+                continue
+            try:
+                return response_model.model_validate(data)
+            except ValidationError as e:
+                last_validation_err = e
+                continue
+
+    if last_validation_err:
         raise ValueError(
-            f"JSON did not match {response_model.__name__} schema: {e}"
-        ) from e
+            f"JSON did not match {response_model.__name__} schema: {last_validation_err}"
+        ) from last_validation_err
+
+    raise ValueError(
+        f"Could not extract valid JSON for {response_model.__name__} "
+        f"(response length: {original_len} chars)\n"
+        f"Raw text (first 500 chars): {text[:500]}"
+    )
 
 
 def _append_json_instruction(
@@ -103,6 +123,10 @@ def invoke_structured(
             "with_structured_output failed for %s (%s), falling back to JSON parsing",
             endpoint, exc,
         )
+        print(
+            f"[structured_output] with_structured_output failed for {endpoint} "
+            f"({type(exc).__name__}), falling back to JSON parsing"
+        )
         msgs = _append_json_instruction(messages, response_model)
         raw = llm.invoke(msgs)
         content = raw.content if hasattr(raw, "content") else str(raw)
@@ -113,7 +137,15 @@ def invoke_structured(
             )
         else:
             text = str(content)
-        return _extract_and_validate_json(text, response_model)
+        try:
+            return _extract_and_validate_json(text, response_model)
+        except ValueError:
+            print(
+                f"[structured_output] JSON fallback also failed for {endpoint} "
+                f"(response length: {len(text)} chars, max_tokens: {max_tokens}). "
+                f"If response looks truncated, increase max_tokens."
+            )
+            raise
 
 
 class ChatClient(ABC):

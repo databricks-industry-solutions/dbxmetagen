@@ -78,6 +78,30 @@ class TestExtractAndValidateJson:
         with pytest.raises(ValueError, match="Could not extract valid JSON"):
             _extract_and_validate_json("no json here at all", SimpleModel)
 
+    def test_extra_data_after_json(self):
+        """LLM returns valid JSON followed by trailing prose (the 'Extra data' scenario)."""
+        text = '{"name": "first", "score": 0.8}\n\n{"name": "second", "score": 0.5}'
+        result = _extract_and_validate_json(text, SimpleModel)
+        assert result.name == "first"
+
+    def test_truncated_json_raises(self):
+        """Truncated JSON (from max_tokens cutoff) should raise with response length."""
+        text = '{"classifications": [{"name": "a", "score": 0.1}, {"name": "b", "sco'
+        with pytest.raises(ValueError, match="Could not extract valid JSON"):
+            _extract_and_validate_json(text, NestedModel)
+
+    def test_json_object_with_trailing_prose(self):
+        """JSON object followed by 'Hope this helps' -- raw_decode handles it."""
+        text = '{"classifications": [{"name": "a", "score": 0.5}]}\nI hope this helps!'
+        result = _extract_and_validate_json(text, NestedModel)
+        assert len(result.classifications) == 1
+
+    def test_bare_array_fails_validation(self):
+        """Bare array that doesn't match the wrapper model should fail schema validation."""
+        text = '[{"name": "a", "score": 0.1}]'
+        with pytest.raises(ValueError, match="did not match.*schema"):
+            _extract_and_validate_json(text, NestedModel)
+
 
 # ---------------------------------------------------------------------------
 # _append_json_instruction
@@ -309,3 +333,29 @@ class TestIntegrationBatchTableClassificationResult:
         result = invoke_structured("ep", [{"role": "user", "content": "x"}], BatchTableClassificationResult)
         assert len(result.classifications) == 1
         assert result.classifications[0].entity_type == "Patient"
+
+    def test_classifications_string_coercion(self):
+        """Claude sometimes returns classifications as a JSON string instead of a list."""
+        inner = json.dumps([{
+            "table_name": "patients",
+            "entity_type": "Patient",
+            "secondary_entity_type": None,
+            "confidence": 0.9,
+            "recommended_entity": None,
+            "reasoning": "Patient demographics",
+        }])
+        result = BatchTableClassificationResult.model_validate({"classifications": inner})
+        assert len(result.classifications) == 1
+        assert result.classifications[0].entity_type == "Patient"
+
+
+class TestBatchColumnClassificationStringCoercion:
+
+    def test_classifications_string_coercion(self):
+        from dbxmetagen.ontology import BatchColumnClassificationResult
+        inner = json.dumps([
+            {"column_name": "age", "entity_type": "Metric", "confidence": 0.9},
+        ])
+        result = BatchColumnClassificationResult.model_validate({"classifications": inner})
+        assert len(result.classifications) == 1
+        assert result.classifications[0].column_name == "age"
