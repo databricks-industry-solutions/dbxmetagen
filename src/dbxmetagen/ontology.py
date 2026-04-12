@@ -1667,6 +1667,18 @@ class EntityDiscoverer:
             )
 
         edef = next((e for e in self.entity_definitions if e.name == enforced), None)
+        # Canonical URI/vocabulary from bundle definition when snapped to a known type
+        if edef:
+            canon_uri = edef.uri
+            canon_so = edef.source_ontology
+        else:
+            canon_uri = result.equivalent_class_uri
+            canon_so = result.source_ontology or None
+        attr_extra = {}
+        if edef and result.equivalent_class_uri and result.equivalent_class_uri != (edef.uri or ""):
+            attr_extra["llm_equivalent_class_uri"] = result.equivalent_class_uri
+        if edef and result.source_ontology and result.source_ontology != (edef.source_ontology or ""):
+            attr_extra["llm_source_ontology"] = result.source_ontology
         entity_dict = {
             "entity_id": str(uuid.uuid4()),
             "entity_name": enforced,
@@ -1681,13 +1693,14 @@ class EntityDiscoverer:
                 "ontology_bundle_version": bundle_ver,
                 "tier_index_hash": tier_hash,
                 **({"owl_properties": str(result.matched_properties)} if result.matched_properties else {}),
+                **attr_extra,
             },
             "confidence": round(result.confidence_score, 3),
             "auto_discovered": True,
             "validated": False,
             "validation_notes": result.rationale,
-            "entity_uri": result.equivalent_class_uri or (edef.uri if edef else None),
-            "source_ontology": result.source_ontology or (edef.source_ontology if edef else None),
+            "entity_uri": canon_uri,
+            "source_ontology": canon_so,
         }
         if result.needs_human_review:
             entity_dict["attributes"]["needs_human_review"] = "true"
@@ -2016,6 +2029,10 @@ class EntityDiscoverer:
                 "description": (
                     entity_def.description if entity_def else f"Column-derived {etype}"
                 ),
+                "entity_uri": getattr(entity_def, "uri", None) if entity_def else None,
+                "source_ontology": getattr(entity_def, "source_ontology", None)
+                if entity_def
+                else None,
                 "source_tables": [tbl],
                 "source_columns": info["columns"],
                 "column_bindings": bindings,
@@ -2426,6 +2443,30 @@ class EntityDiscoverer:
     # ------------------------------------------------------------------
 
     @staticmethod
+    def enrich_provenance_from_definitions(
+        entities: List[Dict[str, Any]],
+        definitions: Optional[List[Any]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Backfill entity_uri / source_ontology from bundle definitions when missing."""
+        if not definitions:
+            return entities
+        name_to_def = {
+            getattr(d, "name", None): d
+            for d in definitions
+            if getattr(d, "name", None)
+        }
+        for ent in entities:
+            et = ent.get("entity_type")
+            edef = name_to_def.get(et) if et else None
+            if not edef:
+                continue
+            if not ent.get("source_ontology"):
+                ent["source_ontology"] = getattr(edef, "source_ontology", None)
+            if not ent.get("entity_uri"):
+                ent["entity_uri"] = getattr(edef, "uri", None)
+        return entities
+
+    @staticmethod
     def deduplicate_entities(entities: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Merge duplicate entities from different discovery methods.
 
@@ -2705,6 +2746,8 @@ class OntologyBuilder:
         "facet": "STRING",
         "sub_property_of": "STRING",
         "ranges": "ARRAY<STRING>",
+        "source_ontology": "STRING",
+        "edge_uri": "STRING",
     }
 
     def create_relationships_table(self) -> None:
@@ -2856,6 +2899,9 @@ class OntologyBuilder:
                 "No entities discovered. Check that table_knowledge_base has data."
             )
             return 0
+        entities = EntityDiscoverer.enrich_provenance_from_definitions(
+            entities, self.discoverer.entity_definitions
+        )
         entities = EntityDiscoverer.deduplicate_entities(entities)
         now = datetime.now()
         stored = self._store_entities(
@@ -2872,6 +2918,9 @@ class OntologyBuilder:
         if not entities:
             logger.info("No column-level entities discovered")
             return 0
+        entities = EntityDiscoverer.enrich_provenance_from_definitions(
+            entities, self.discoverer.entity_definitions
+        )
         entities = EntityDiscoverer.deduplicate_entities(entities)
         now = datetime.now()
         stored = self._store_entities(
@@ -3149,7 +3198,7 @@ class OntologyBuilder:
         except Exception as e:
             logger.warning("Could not read table-level entities for tagging: %s", e)
 
-        # Column-level tags (batched per table via multi-column ALTER TABLE, DBR 15.2+)
+        # Column-level tags (batched per table: one ALTER COLUMN, comma-separated cols; DBR 16.3+)
         try:
             from collections import defaultdict as _defaultdict
 
@@ -3171,14 +3220,14 @@ class OntologyBuilder:
                 table_col_tags[row.table_name].append(row)
 
             for tbl, rows in table_col_tags.items():
-                clauses = [
-                    f"ALTER COLUMN `{r.col_name}` SET TAGS "
+                col_specs = [
+                    f"`{r.col_name}` SET TAGS "
                     f"('{tag_key}' = '{r.entity_type}', "
                     f"'ontology_bundle_version' = '{bundle_ver}')"
                     for r in rows
                 ]
                 try:
-                    self.spark.sql(f"ALTER TABLE {tbl} {', '.join(clauses)}")
+                    self.spark.sql(f"ALTER TABLE {tbl} ALTER COLUMN {', '.join(col_specs)}")
                     tagged += len(rows)
                     for r in rows:
                         audit_rows.append((
@@ -4353,6 +4402,8 @@ class OntologyBuilder:
                 "facet": edge.get("facet"),
                 "sub_property_of": edge.get("sub_property_of"),
                 "ranges": edges_t2_ranges.get(name, []),
+                "source_ontology": edge.get("source_ontology"),
+                "edge_uri": edge.get("uri") or edge.get("edge_uri"),
                 "created_at": now,
                 "updated_at": now,
             })
@@ -4364,7 +4415,26 @@ class OntologyBuilder:
         if ref_resolved:
             logger.info("emit_bundle_edges: resolved %d Reference-range edges via name heuristic", ref_resolved)
 
-        df = self.spark.createDataFrame(rels)
+        _bundle_schema = StructType([
+            StructField("relationship_id", StringType()),
+            StructField("src_entity_type", StringType()),
+            StructField("relationship_name", StringType()),
+            StructField("dst_entity_type", StringType()),
+            StructField("cardinality", StringType()),
+            StructField("evidence_column", StringType(), nullable=True),
+            StructField("evidence_table", StringType(), nullable=True),
+            StructField("source", StringType()),
+            StructField("confidence", DoubleType()),
+            StructField("label", StringType(), nullable=True),
+            StructField("facet", StringType(), nullable=True),
+            StructField("sub_property_of", StringType(), nullable=True),
+            StructField("ranges", ArrayType(StringType()), nullable=True),
+            StructField("source_ontology", StringType(), nullable=True),
+            StructField("edge_uri", StringType(), nullable=True),
+            StructField("created_at", TimestampType()),
+            StructField("updated_at", TimestampType()),
+        ])
+        df = self.spark.createDataFrame(rels, schema=_bundle_schema)
         df.createOrReplaceTempView("_bundle_edges_staging")
         self.spark.sql(f"""
             MERGE INTO {rels_table} AS target
@@ -4443,6 +4513,8 @@ class OntologyBuilder:
                 "evidence_table": fk.src_table,
                 "source": "fk_inferred",
                 "confidence": float(fk.final_confidence or 0.5),
+                "source_ontology": None,
+                "edge_uri": None,
                 "created_at": now,
                 "updated_at": now,
             })
@@ -4482,6 +4554,8 @@ class OntologyBuilder:
                 "evidence_table": lr.table_name,
                 "source": "discovered",
                 "confidence": 0.7,
+                "source_ontology": None,
+                "edge_uri": None,
                 "created_at": now,
                 "updated_at": now,
             })
@@ -4503,6 +4577,8 @@ class OntologyBuilder:
                         "evidence_table": None,
                         "source": "configured",
                         "confidence": 1.0,
+                        "source_ontology": None,
+                        "edge_uri": None,
                         "created_at": now,
                         "updated_at": now,
                     })
@@ -4557,6 +4633,8 @@ class OntologyBuilder:
                                 "evidence_table": None,
                                 "source": "llm_predicted",
                                 "confidence": round(result.confidence_score, 3),
+                                "source_ontology": result.source_ontology or None,
+                                "edge_uri": result.edge_uri or None,
                                 "created_at": now,
                                 "updated_at": now,
                             })
@@ -4592,6 +4670,8 @@ class OntologyBuilder:
                 "evidence_table": rel["evidence_table"],
                 "source": "auto_inverse",
                 "confidence": rel["confidence"],
+                "source_ontology": rel.get("source_ontology"),
+                "edge_uri": rel.get("edge_uri"),
                 "created_at": now,
                 "updated_at": now,
             })
@@ -4621,6 +4701,8 @@ class OntologyBuilder:
             StructField("facet", StringType(), nullable=True),
             StructField("sub_property_of", StringType(), nullable=True),
             StructField("ranges", ArrayType(StringType()), nullable=True),
+            StructField("source_ontology", StringType(), nullable=True),
+            StructField("edge_uri", StringType(), nullable=True),
             StructField("created_at", TimestampType()),
             StructField("updated_at", TimestampType()),
         ])
@@ -4638,6 +4720,8 @@ class OntologyBuilder:
                 tgt.evidence_table = src.evidence_table,
                 tgt.source = src.source,
                 tgt.cardinality = src.cardinality,
+                tgt.source_ontology = src.source_ontology,
+                tgt.edge_uri = src.edge_uri,
                 tgt.updated_at = src.updated_at
             WHEN NOT MATCHED THEN INSERT *
         """)
