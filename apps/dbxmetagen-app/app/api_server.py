@@ -1376,7 +1376,7 @@ def _execute_stmts_batched(
                 if idx > 0:
                     alter_clauses.append(s[idx:].rstrip(";").strip())
             if alter_clauses:
-                batch_sql = f"ALTER TABLE {tbl} {' '.join(alter_clauses)};"
+                batch_sql = f"ALTER TABLE {tbl} {', '.join(alter_clauses)};"
                 execute_sql(batch_sql, timeout=120)
                 applied += len(tbl_stmts)
         except Exception:
@@ -3349,39 +3349,37 @@ def _apply_ontology_tags_from_tables(
 ) -> dict:
     """Read ontology_entities and ontology_column_properties, apply ontology_* UC tags to tables/columns.
 
-    Delegates DDL building to _build_ontology_tag_ddl, then executes each statement.
+    Delegates DDL building to _build_ontology_tag_ddl, then executes via
+    _execute_stmts_batched (column-level ALTERs are batched per table).
     """
-    wh_id = os.environ.get("WAREHOUSE_ID", "")
-    if not wh_id:
-        raise HTTPException(500, detail="WAREHOUSE_ID not configured")
     stmts = _build_ontology_tag_ddl(selections=selections)
-    table_results = []
-    col_results = []
-    for sql in stmts:
-        is_col = "ALTER COLUMN" in sql.upper()
-        tbl_match = sql.split("ALTER TABLE", 1)[-1].split("SET TAGS")[0].split("ALTER COLUMN")[0].strip()
-        try:
-            execute_sql(sql.rstrip(";"), warehouse_id=wh_id, timeout=30)
-            if is_col:
-                col_results.append({"table": tbl_match, "ok": True})
-            else:
-                table_results.append({"table": tbl_match, "ok": True})
-        except Exception as ex:
-            entry = {"table": tbl_match, "ok": False, "error": str(ex)}
-            if is_col:
-                col_results.append(entry)
-            else:
-                table_results.append(entry)
 
-    t_ok = sum(1 for r in table_results if r.get("ok"))
-    t_fail = len(table_results) - t_ok
-    c_ok = sum(1 for r in col_results if r.get("ok"))
-    c_fail = len(col_results) - c_ok
+    def _extract_table(sql):
+        return sql.split("ALTER TABLE", 1)[-1].split("SET TAGS")[0].split("ALTER COLUMN")[0].strip()
+
+    table_stmts = [s for s in stmts if "ALTER COLUMN" not in s.upper()]
+    col_stmts = [s for s in stmts if "ALTER COLUMN" in s.upper()]
+
+    t_applied, t_errors = _execute_stmts_batched(table_stmts, batch=False, timeout=30)
+    c_applied, c_errors = _execute_stmts_batched(col_stmts, batch=True, timeout=30)
+
+    t_err_set = {e["statement"][:80] for e in t_errors}
+    table_results = [
+        {"table": _extract_table(s), "ok": s.rstrip(";").strip()[:80] not in t_err_set}
+        for s in table_stmts if s.rstrip(";").strip()
+    ]
+    col_results = (
+        [{"table": t, "ok": True} for t in ["batched"] * c_applied]
+        + [{"table": e.get("statement", "")[:60], "ok": False, "error": e["error"]} for e in c_errors]
+    )
+
+    t_ok = sum(1 for r in table_results if r["ok"])
+    c_ok = c_applied
     summary = {
         "tables_tagged": t_ok,
-        "tables_failed": t_fail,
+        "tables_failed": len(table_results) - t_ok,
         "columns_tagged": c_ok,
-        "columns_failed": c_fail,
+        "columns_failed": len(c_errors),
     }
     return {
         "summary": summary,
@@ -3647,8 +3645,9 @@ class ApplyPropertyTagsBody(BaseModel):
 
 @app.post("/api/ontology/apply-property-tags")
 def apply_property_tags(body: ApplyPropertyTagsBody):
-    """Apply property_role tags to columns via ALTER TABLE ALTER COLUMN SET TAGS."""
-    results = []
+    """Apply property_role tags to columns via ALTER TABLE ALTER COLUMN SET TAGS (batched per table)."""
+    stmts: list[str] = []
+    stmt_meta: list[dict] = []
     for item in body.items:
         tbl = (item.get("table_name") or "").strip()
         col = (item.get("column_name") or "").strip()
@@ -3656,18 +3655,24 @@ def apply_property_tags(body: ApplyPropertyTagsBody):
         if not (tbl and col and role):
             continue
         col_safe = col.replace("`", "")
-        sql = f"ALTER TABLE {tbl} ALTER COLUMN `{col_safe}` SET TAGS ('property_role' = '{role}')"
         linked = (item.get("linked_entity_type") or "").strip()
-        try:
-            execute_sql(sql, timeout=30)
-            ok_entry = {"table": tbl, "column": col, "ok": True, "sql": sql}
-            if linked:
-                sql2 = f"ALTER TABLE {tbl} ALTER COLUMN `{col_safe}` SET TAGS ('linked_entity_type' = '{linked}')"
-                execute_sql(sql2, timeout=30)
-                ok_entry["sql2"] = sql2
-            results.append(ok_entry)
-        except Exception as e:
-            results.append({"table": tbl, "column": col, "ok": False, "sql": sql, "error": str(e)})
+        tags = [f"'property_role' = '{role}'"]
+        if linked:
+            tags.append(f"'linked_entity_type' = '{linked}'")
+        sql = f"ALTER TABLE {tbl} ALTER COLUMN `{col_safe}` SET TAGS ({', '.join(tags)})"
+        stmts.append(sql)
+        stmt_meta.append({"table": tbl, "column": col, "sql": sql})
+
+    applied, errors = _execute_stmts_batched(stmts, batch=True, timeout=30)
+    err_prefixes = {e["statement"][:80] for e in errors}
+    results = []
+    for meta in stmt_meta:
+        prefix = meta["sql"].rstrip(";").strip()[:80]
+        if prefix in err_prefixes:
+            err = next((e for e in errors if e["statement"][:80] == prefix), {})
+            results.append({"table": meta["table"], "column": meta["column"], "ok": False, "sql": meta["sql"], "error": err.get("error", "batch failed")})
+        else:
+            results.append({"table": meta["table"], "column": meta["column"], "ok": True, "sql": meta["sql"]})
 
     # --- Knowledge base write-back ---
     col_kb = fq("column_knowledge_base")
@@ -3906,18 +3911,25 @@ def fk_apply_as_tags(body: FKApplyPredictionsBody):
     """Apply FK relationships as column tags (requires APPLY_TAG, not MANAGE).
 
     Sets a tag like: ALTER TABLE <src_table> ALTER COLUMN <col> SET TAGS ('fk_references' = '<dst_table>.<col>')
+    Batches column-level ALTERs per table via _execute_stmts_batched.
     """
-    results = []
+    stmts: list[str] = []
     for p in body.predictions:
         src_col = p.src_column.split(".")[-1] if "." in p.src_column else p.src_column
         dst_col = p.dst_column.split(".")[-1] if "." in p.dst_column else p.dst_column
         tag_val = f"{p.dst_table}.{dst_col}"
-        sql = f"ALTER TABLE {p.src_table} ALTER COLUMN `{src_col}` SET TAGS ('fk_references' = '{tag_val}')"
-        try:
-            execute_sql(sql, timeout=60)
+        stmts.append(f"ALTER TABLE {p.src_table} ALTER COLUMN `{src_col}` SET TAGS ('fk_references' = '{tag_val}')")
+
+    applied, errors = _execute_stmts_batched(stmts, batch=True, timeout=60)
+    err_prefixes = {e["statement"][:80] for e in errors}
+    results = []
+    for sql in stmts:
+        prefix = sql.rstrip(";").strip()[:80]
+        if prefix in err_prefixes:
+            err = next((e for e in errors if e["statement"][:80] == prefix), {})
+            results.append({"sql": sql, "ok": False, "error": err.get("error", "batch failed")})
+        else:
             results.append({"sql": sql, "ok": True})
-        except Exception as e:
-            results.append({"sql": sql, "ok": False, "error": str(e)})
     return {"results": results}
 
 

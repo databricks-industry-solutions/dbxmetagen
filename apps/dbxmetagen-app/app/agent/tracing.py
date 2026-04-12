@@ -128,6 +128,20 @@ def get_mlflow_client():
     return _mlflow_client
 
 
+def tag_trace(session_id: str = None, **extra):
+    """Tag the current trace with session_id and optional metadata."""
+    if not MLFLOW_ENABLED or _mlflow_mod is None:
+        return
+    tags = {k: str(v) for k, v in extra.items() if v is not None}
+    if session_id:
+        tags["mlflow.trace.session_id"] = session_id
+    if tags:
+        try:
+            _mlflow_mod.update_current_trace(tags=tags)
+        except Exception:
+            pass
+
+
 def maybe_span(name: str, span_type: str = "CHAIN"):
     """Create an MLflow span only when manual tracing is appropriate.
 

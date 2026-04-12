@@ -243,6 +243,35 @@ def get_column_types_from_describe(spark: SparkSession, full_table_name: str) ->
     return columns
 
 
+def prefetch_column_types(spark: SparkSession, table_names: list, max_workers: int = 16) -> dict:
+    """Pre-fetch column types for all tables in parallel via ThreadPoolExecutor.
+
+    Returns:
+        dict: {full_table_name: {col_name: data_type}} cache
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    cache: dict = {}
+    if not table_names:
+        return cache
+
+    def _describe(tbl):
+        return tbl, get_column_types_from_describe(spark, tbl)
+
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {pool.submit(_describe, t): t for t in table_names}
+        for f in as_completed(futures):
+            tbl = futures[f]
+            try:
+                _, types = f.result()
+                cache[tbl] = types
+            except Exception as e:
+                logger.warning("prefetch_column_types: failed for %s: %s", tbl, e)
+
+    logger.info("prefetch_column_types: cached %d / %d tables", len(cache), len(table_names))
+    return cache
+
+
 def read_table_with_type_conversion(
     spark: SparkSession, full_table_name: str
 ) -> DataFrame:
@@ -257,8 +286,10 @@ def read_table_with_type_conversion(
     Returns:
         DataFrame with BINARY/VARIANT columns converted to strings
     """
-    # Get column types using DESCRIBE (works even with VARIANT)
-    column_types = get_column_types_from_describe(spark, full_table_name)
+    if full_table_name in _column_types_cache:
+        column_types = _column_types_cache[full_table_name]
+    else:
+        column_types = get_column_types_from_describe(spark, full_table_name)
 
     # Build SELECT expressions with type conversions
     select_exprs = []
@@ -1926,6 +1957,8 @@ def create_and_persist_ddl(
 _lineage_unavailable = False
 _lineage_cache: Dict[str, Optional[Dict[str, Any]]] = {}
 
+_column_types_cache: Dict[str, Dict[str, str]] = {}
+
 
 def _mark_lineage_unavailable(exc: Exception) -> None:
     """Log once and suppress further system.access.table_lineage attempts."""
@@ -2454,9 +2487,58 @@ def log_missing_governance_tags(error_msg: str, ddl_statement: str) -> None:
     return missing_tags, failed_statements
 
 
+def _is_column_level_ddl(ddl: str) -> bool:
+    upper = ddl.upper()
+    return "COMMENT ON COLUMN" in upper or "ALTER COLUMN" in upper
+
+
+_COL_DDL_RE_COMMENT_ON = re.compile(
+    r"COMMENT\s+ON\s+COLUMN\s+(.+?)\.`([^`]+)`\s+IS\s+([\"'])(.*?)\3",
+    re.IGNORECASE | re.DOTALL,
+)
+_COL_DDL_RE_ALTER = re.compile(
+    r"ALTER\s+TABLE\s+(\S+)\s+ALTER\s+COLUMN\s+`([^`]+)`\s+COMMENT\s+([\"'])(.*?)\3",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _parse_column_ddl(ddl: str):
+    """Extract (table_name, col_name, comment) from a single-column DDL string."""
+    m = _COL_DDL_RE_COMMENT_ON.search(ddl)
+    if m:
+        return m.group(1), m.group(2), m.group(4)
+    m = _COL_DDL_RE_ALTER.search(ddl)
+    if m:
+        return m.group(1), m.group(2), m.group(4)
+    return None, None, None
+
+
+def _batch_column_comment_ddl(table_name: str, col_comments: list) -> str:
+    """Build a single multi-column ALTER TABLE from a list of (col, comment) pairs (DBR 15.2+)."""
+    clauses = []
+    for col, comment in col_comments:
+        safe = comment.replace('""', "'").replace('"', "'")
+        clauses.append(f'ALTER COLUMN `{col}` COMMENT "{safe}"')
+    return f"ALTER TABLE {table_name} {', '.join(clauses)}"
+
+
+def _can_batch_ddl() -> bool:
+    """Return True if the runtime supports multi-column ALTER TABLE (DBR >= 15.2)."""
+    dbr = os.environ.get("DATABRICKS_RUNTIME_VERSION")
+    if dbr is None:
+        return True  # serverless / SQL warehouse -- assume 15.2+
+    try:
+        return float(dbr) >= 15.2
+    except (ValueError, TypeError):
+        return True
+
+
 def apply_comment_ddl(df: DataFrame, config: MetadataConfig) -> dict:
     """
     Applies the comment DDL statements stored in the DataFrame to the table.
+
+    On DBR 15.2+ batches all column comments per table into a single multi-column
+    ALTER TABLE statement to reduce round-trips from O(columns) to O(tables).
 
     Args:
         df (DataFrame): The DataFrame containing the DDL statements.
@@ -2464,47 +2546,79 @@ def apply_comment_ddl(df: DataFrame, config: MetadataConfig) -> dict:
     Returns:
         dict: Summary of DDL application including any missing tags
     """
+    from collections import defaultdict
+
     spark = SparkSession.builder.getOrCreate()
     ddl_statements = df.select("ddl").collect()
     missing_tags = []
     failed_statements = []
     success_count = 0
 
-    for row in ddl_statements:
-        # Security: DDL statements may contain sensitive data in comments/tags
-        # Log only metadata, not full DDL content
-        ddl_statement = row["ddl"]
-        logger.debug("Applying DDL statement (%d characters)", len(ddl_statement))
+    if config.dry_run:
+        return {
+            "success_count": 0,
+            "failed_count": 0,
+            "missing_tags": [],
+            "failed_statements": [],
+        }
 
-        if not config.dry_run:
+    use_batch = _can_batch_ddl()
+
+    if use_batch:
+        table_level_ddls = []
+        col_comments = defaultdict(list)  # table -> [(col, comment), ...]
+
+        for row in ddl_statements:
+            ddl = row["ddl"]
+            if _is_column_level_ddl(ddl):
+                tbl, col, comment = _parse_column_ddl(ddl)
+                if tbl and col and comment is not None:
+                    col_comments[tbl].append((col, comment))
+                else:
+                    table_level_ddls.append(ddl)
+            else:
+                table_level_ddls.append(ddl)
+
+        # Apply table-level DDLs (table comments, tags, etc.) individually
+        for ddl in table_level_ddls:
+            try:
+                spark.sql(ddl)
+                success_count += 1
+            except Exception as e:
+                concise_error = extract_concise_error(e)
+                logger.error("Error applying DDL: %s", concise_error)
+                if "Tag policy violation" in concise_error:
+                    match = re.search(r"'(\w+)' cannot be set to '(\S+)'", concise_error)
+                    if match:
+                        missing_tags.append(f"{match.group(1)}={match.group(2)}")
+                failed_statements.append({"statement": ddl, "error": concise_error})
+
+        # Apply batched column comments (1 statement per table)
+        for tbl, cols in col_comments.items():
+            batched = _batch_column_comment_ddl(tbl, cols)
+            try:
+                spark.sql(batched)
+                success_count += len(cols)
+                logger.info("Applied %d column comments for %s in 1 statement", len(cols), tbl)
+            except Exception as e:
+                concise_error = extract_concise_error(e)
+                logger.error("Batch DDL failed for %s (%d cols): %s", tbl, len(cols), concise_error)
+                failed_statements.append({"statement": batched[:200], "error": concise_error})
+    else:
+        # Fallback: per-statement execution (DBR < 15.2)
+        for row in ddl_statements:
+            ddl_statement = row["ddl"]
             try:
                 spark.sql(ddl_statement)
                 success_count += 1
-                print(
-                    f"Applied DDL statement successfully ({len(ddl_statement)} chars)"
-                )
             except Exception as e:
-                # Extract concise error message
                 concise_error = extract_concise_error(e)
                 logger.error("Error applying DDL: %s", concise_error)
-                print(f"Failed to apply DDL statement: {concise_error}")
-                # Security: Only log DDL structure, not full content (may contain sensitive data in comments)
-                logger.debug(
-                    "DDL statement first 100 chars: %s...", ddl_statement[:100]
-                )
-
-                # Track failed tags for summary
                 if "Tag policy violation" in concise_error:
-                    match = re.search(
-                        r"'(\w+)' cannot be set to '(\S+)'", concise_error
-                    )
+                    match = re.search(r"'(\w+)' cannot be set to '(\S+)'", concise_error)
                     if match:
-                        tag_key, tag_value = match.groups()
-                        missing_tags.append(f"{tag_key}={tag_value}")
-
-                failed_statements.append(
-                    {"statement": ddl_statement, "error": concise_error}
-                )
+                        missing_tags.append(f"{match.group(1)}={match.group(2)}")
+                failed_statements.append({"statement": ddl_statement, "error": concise_error})
 
     if missing_tags:
         logger.warning(
@@ -3223,6 +3337,10 @@ def generate_and_persist_metadata(config: Any) -> None:
     logger.setLevel(logging.INFO)
 
     validate_optional_tables(spark, config)
+
+    global _column_types_cache
+    if config.table_names and len(config.table_names) > 1:
+        _column_types_cache = prefetch_column_types(spark, config.table_names)
 
     skipped_tables = []
 

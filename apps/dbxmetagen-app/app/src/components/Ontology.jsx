@@ -260,6 +260,10 @@ export function OntologyOverview() {
   return (
     <div className="space-y-6">
       <PageHeader title="Ontology" subtitle="Entity types and relationships" />
+      <p className="text-xs text-slate-500 dark:text-slate-400 -mt-3 mb-2 max-w-3xl">
+        Tables are mapped to entity types from the active ontology bundle. Relationships are derived from foreign keys,
+        bundle edges, and naming conventions. Health metrics summarize coverage and confidence.
+      </p>
       <ErrorBanner error={error} />
       <section className="card p-6">
         <h2 className="heading-section mb-4">Ontology Health</h2>
@@ -579,6 +583,11 @@ export default function Ontology() {
   return (
     <div className="space-y-6">
       <PageHeader title="Ontology" subtitle="Entity types and relationships" />
+      <p className="text-xs text-slate-500 dark:text-slate-400 -mt-3 mb-2 max-w-3xl">
+        Tables are mapped to entity types from the active ontology bundle using tier-index matching and AI classification.
+        Each entity lists its source tables, confidence, and discovery method. Relationships are derived from foreign keys,
+        bundle edges, and naming conventions. Use the graph to explore connections and the table view to review or apply tags.
+      </p>
       <ErrorBanner error={error} />
 
       <section className="card p-6">

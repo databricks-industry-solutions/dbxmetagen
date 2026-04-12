@@ -39,7 +39,7 @@ from agent.deep_analysis import (
     _safe_tool_call, _sparql_ontology_query, _sql_escape,
     _truncate_part,
 )
-from agent.tracing import AUTOLOG_ACTIVE, _init_tracing
+from agent.tracing import AUTOLOG_ACTIVE, _init_tracing, tag_trace
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +92,11 @@ def classify_intent(state: DeepAnalysisState) -> dict:
     """Classify intent and produce effective query. Sync -- auto-traced by autolog."""
     result = classify_and_contextualize_untraced(state["query"], state.get("history"))
     logger.info("[graph] intent=%s domain=%s", result.intent_type, result.domain)
+    tag_trace(
+        session_id=state.get("session_id"),
+        agent="deep_analysis", mode=state.get("mode"),
+        intent=result.intent_type, domain=result.domain,
+    )
 
     if result.intent_type in ("irrelevant", "meta"):
         return {
@@ -473,6 +478,19 @@ async def _analyze_inner(state: DeepAnalysisState) -> dict:
     except Exception as e:
         logger.error("[graph] Analysis LLM error: %s", e, exc_info=True)
         answer = f"Analysis LLM call failed: {e}. Evidence gathered:\n\n{context[:2000]}"
+
+    if token_usage and not token_usage.get("estimated"):
+        try:
+            import mlflow
+            span = mlflow.get_current_active_span()
+            if span:
+                span.set_attributes({
+                    "llm.token_count.prompt": token_usage.get("input_tokens", 0),
+                    "llm.token_count.completion": token_usage.get("output_tokens", 0),
+                    "llm.token_count.total": token_usage.get("total_tokens", 0),
+                })
+        except Exception:
+            pass
 
     elapsed = round(time.time() - t0, 3)
     timing = dict(state.get("timing", {}))

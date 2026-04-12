@@ -13,7 +13,7 @@ from agent.common import (
 )
 from agent.guardrails import GuardrailConfig, SAFETY_PROMPT_BLOCK, sanitize_output
 from agent.governance_tools import GOVERNANCE_TOOLS
-from agent.tracing import trace
+from agent.tracing import trace, tag_trace
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +61,7 @@ async def run_governance_agent(
     question: str,
     history: Optional[List[Dict[str, str]]] = None,
 ) -> Dict[str, Any]:
+    tag_trace(agent="governance")
     graph = _get_graph()
     messages = history_to_messages(history, question)
 

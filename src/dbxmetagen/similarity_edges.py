@@ -24,6 +24,7 @@ class SimilarityEdgesConfig:
     similarity_threshold: float = 0.7
     max_edges_per_node: int = 15
     blocking_node_threshold: int = 5000
+    max_domain_nodes: int = 10000
     
     @property
     def fully_qualified_nodes(self) -> str:
@@ -92,47 +93,107 @@ class SimilarityEdgeBuilder:
     def get_nodes_with_embeddings(self) -> DataFrame:
         """Get all nodes that have embeddings."""
         return self.spark.sql(f"""
-            SELECT id, node_type, domain, embedding
+            SELECT id, node_type, domain, parent_id, embedding
             FROM {self.config.fully_qualified_nodes}
             WHERE embedding IS NOT NULL
         """)
 
+    def _has_large_domains(self) -> bool:
+        """Check if any domain exceeds max_domain_nodes."""
+        try:
+            row = self.spark.sql(f"""
+                SELECT MAX(cnt) as max_cnt FROM (
+                    SELECT domain, COUNT(*) as cnt FROM nodes_emb GROUP BY domain
+                )
+            """).first()
+            return row and row.max_cnt and row.max_cnt > self.config.max_domain_nodes
+        except Exception:
+            return False
+
     def _build_pairs_sql(self, node_count: int) -> str:
-        """Build SQL for node pair generation, using blocking for large node sets."""
+        """Build SQL for node pair generation, using blocking for large node sets.
+
+        Three-tier strategy:
+        1. Small catalog (< blocking_node_threshold): full cross-join
+        2. Medium catalog: intra-domain cross-join + cross-domain key-column bridge
+        3. Large domain (any domain > max_domain_nodes): intra-table cross-join +
+           intra-domain key-column bridge + cross-domain key-column bridge
+        """
+        _KEY_COL_FILTER = (
+            "(LOWER(ELEMENT_AT(SPLIT(a.id, '\\\\.'), -1)) RLIKE '(_id|_key|_code)$'"
+            " OR LOWER(ELEMENT_AT(SPLIT(b.id, '\\\\.'), -1)) RLIKE '(_id|_key|_code)$')"
+        )
+        _NO_ENTITY_PAIR = "NOT (a.node_type = 'entity' AND b.node_type = 'entity')"
+
         if node_count < self.config.blocking_node_threshold:
-            return """
+            return f"""
             SELECT a.id as src, a.node_type as src_type, a.domain as src_domain,
                    b.id as dst, b.node_type as dst_type, b.domain as dst_domain,
                    a.embedding as emb_a, b.embedding as emb_b
             FROM nodes_emb a CROSS JOIN nodes_emb b
-            WHERE a.id < b.id
-              AND NOT (a.node_type = 'entity' AND b.node_type = 'entity')
+            WHERE a.id < b.id AND {_NO_ENTITY_PAIR}
+            """
+
+        if not self._has_large_domains():
+            logger.info(
+                "Node count %d >= threshold %d, using domain blocking",
+                node_count, self.config.blocking_node_threshold,
+            )
+            return f"""
+            SELECT a.id as src, a.node_type as src_type, a.domain as src_domain,
+                   b.id as dst, b.node_type as dst_type, b.domain as dst_domain,
+                   a.embedding as emb_a, b.embedding as emb_b
+            FROM nodes_emb a CROSS JOIN nodes_emb b
+            WHERE a.id < b.id AND a.domain = b.domain AND {_NO_ENTITY_PAIR}
+
+            UNION ALL
+
+            SELECT a.id as src, a.node_type as src_type, a.domain as src_domain,
+                   b.id as dst, b.node_type as dst_type, b.domain as dst_domain,
+                   a.embedding as emb_a, b.embedding as emb_b
+            FROM nodes_emb a CROSS JOIN nodes_emb b
+            WHERE a.id < b.id AND a.domain != b.domain
+              AND a.node_type = 'column' AND b.node_type = 'column'
+              AND {_KEY_COL_FILTER}
             """
 
         logger.info(
-            f"Node count {node_count} >= threshold {self.config.blocking_node_threshold}, "
-            "using iterative blocking (intra-domain + cross-domain bridge)"
+            "Large domain detected (> %d nodes), using table-level sub-blocking",
+            self.config.max_domain_nodes,
         )
-        return """
+        return f"""
+        -- Tier 3a: intra-table full cross-join (same parent_id)
+        SELECT a.id as src, a.node_type as src_type, a.domain as src_domain,
+               b.id as dst, b.node_type as dst_type, b.domain as dst_domain,
+               a.embedding as emb_a, b.embedding as emb_b
+        FROM nodes_emb a CROSS JOIN nodes_emb b
+        WHERE a.id < b.id
+          AND a.parent_id IS NOT NULL AND a.parent_id = b.parent_id
+          AND {_NO_ENTITY_PAIR}
+
+        UNION ALL
+
+        -- Tier 3b: intra-domain key-column bridge (different tables, same domain)
         SELECT a.id as src, a.node_type as src_type, a.domain as src_domain,
                b.id as dst, b.node_type as dst_type, b.domain as dst_domain,
                a.embedding as emb_a, b.embedding as emb_b
         FROM nodes_emb a CROSS JOIN nodes_emb b
         WHERE a.id < b.id
           AND a.domain = b.domain
-          AND NOT (a.node_type = 'entity' AND b.node_type = 'entity')
+          AND COALESCE(a.parent_id, '') != COALESCE(b.parent_id, '')
+          AND a.node_type = 'column' AND b.node_type = 'column'
+          AND {_KEY_COL_FILTER}
 
         UNION ALL
 
+        -- Tier 3c: cross-domain key-column bridge
         SELECT a.id as src, a.node_type as src_type, a.domain as src_domain,
                b.id as dst, b.node_type as dst_type, b.domain as dst_domain,
                a.embedding as emb_a, b.embedding as emb_b
         FROM nodes_emb a CROSS JOIN nodes_emb b
-        WHERE a.id < b.id
-          AND a.domain != b.domain
+        WHERE a.id < b.id AND a.domain != b.domain
           AND a.node_type = 'column' AND b.node_type = 'column'
-          AND (LOWER(ELEMENT_AT(SPLIT(a.id, '\\\\.'), -1)) RLIKE '(_id|_key|_code)$'
-               OR LOWER(ELEMENT_AT(SPLIT(b.id, '\\\\.'), -1)) RLIKE '(_id|_key|_code)$')
+          AND {_KEY_COL_FILTER}
         """
     
     def compute_similarity_edges(self) -> DataFrame:

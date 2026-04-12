@@ -658,22 +658,34 @@ class FKPredictor:
             for col_id, tbl_id in [(row.col_a, row.table_a), (row.col_b, row.table_b)]:
                 table_cols.setdefault(tbl_id, set()).add((col_id, col_id.split(".")[-1]))
 
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
         sample_map: dict = {}
-        for tbl_id, col_set in table_cols.items():
-            col_list = list(col_set)
+
+        def _fetch_table_samples(tbl_id, col_list):
             selects = ", ".join(
                 f"CAST(`{short}` AS STRING) AS `{short}`" for _, short in col_list
             )
+            result = {}
             try:
                 tbl_rows = self.spark.sql(
                     f"SELECT {selects} FROM {tbl_id} LIMIT {n * 3}"
                 ).collect()
                 for fq_id, short in col_list:
                     vals = list({getattr(r, short) for r in tbl_rows if getattr(r, short, None) is not None})[:n]
-                    sample_map[fq_id] = vals
+                    result[fq_id] = vals
             except Exception:
                 for fq_id, _ in col_list:
-                    sample_map[fq_id] = []
+                    result[fq_id] = []
+            return result
+
+        with ThreadPoolExecutor(max_workers=16) as pool:
+            futures = {
+                pool.submit(_fetch_table_samples, tbl_id, list(col_set)): tbl_id
+                for tbl_id, col_set in table_cols.items()
+            }
+            for f in as_completed(futures):
+                sample_map.update(f.result())
 
         bc = self.spark.sparkContext.broadcast(sample_map)
         get_samples = F.udf(lambda cid: bc.value.get(cid, []), "array<string>")
@@ -857,11 +869,22 @@ class FKPredictor:
         if not fragments:
             return candidates.withColumn("ri_score", F.lit(0.5))
 
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
         BATCH = 200
         all_ri_rows = []
-        for i in range(0, len(fragments), BATCH):
-            sql = " UNION ALL ".join(fragments[i : i + BATCH])
-            all_ri_rows.extend(self.spark.sql(sql).collect())
+        batches = [
+            " UNION ALL ".join(fragments[i : i + BATCH])
+            for i in range(0, len(fragments), BATCH)
+        ]
+
+        def _exec_ri_batch(sql):
+            return self.spark.sql(sql).collect()
+
+        with ThreadPoolExecutor(max_workers=min(8, len(batches))) as pool:
+            futures = [pool.submit(_exec_ri_batch, b) for b in batches]
+            for f in as_completed(futures):
+                all_ri_rows.extend(f.result())
 
         # Compute RI per pair: max(ri_ab, ri_ba)
         pair_ri: dict = {}

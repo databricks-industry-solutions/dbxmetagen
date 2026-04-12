@@ -64,7 +64,7 @@ const LEGACY_ROLE_MAP = {
   'identifier': 'primary_key',
   'boolean_flag': 'dimension',
   'code': 'dimension',
-  'geo': 'composite_component',
+  'geo': 'geographic',
   'system_metadata': 'audit',
   'timestamp': 'temporal',
   'hierarchy_level': 'dimension',
@@ -504,6 +504,15 @@ function ReviewEditor() {
             )}
           </div>
         </>
+      )}
+
+      {/* Ontology context guide */}
+      {show('ontology') && reviewData.length > 0 && (
+        <div className="card px-4 py-3 text-xs text-slate-500 dark:text-slate-400 space-y-1 max-w-4xl">
+          <p className="font-medium text-slate-600 dark:text-slate-300">What you see when Ontology is selected</p>
+          <p>Each table shows three sections: <strong>Table Entity</strong> assigns the primary entity type (e.g. Patient, Order) as a UC tag on the table. <strong>Business Concepts</strong> lists all entity mappings for the table's columns, with per-entity confidence and an apply button. <strong>Column Properties</strong> classifies each column's role (identifier, measure, dimension, link, etc.) using a two-tier system: formal bundle definitions first, then heuristic fallback.</p>
+          <p>Property roles and review status save instantly. Tag application writes <code className="text-[10px]">entity_type</code>, <code className="text-[10px]">property_role</code>, and <code className="text-[10px]">linked_entity_type</code> as Unity Catalog tags.</p>
+        </div>
       )}
 
       {/* Global Ontology Apply Bar */}

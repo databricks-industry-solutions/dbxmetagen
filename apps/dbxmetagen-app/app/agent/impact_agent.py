@@ -16,7 +16,7 @@ from typing_extensions import TypedDict
 from agent.common import get_llm, history_to_messages, extract_tool_calls
 from agent.guardrails import GuardrailConfig, SAFETY_PROMPT_BLOCK, sanitize_output
 from agent.impact_tools import IMPACT_TOOLS
-from agent.tracing import trace
+from agent.tracing import trace, tag_trace
 
 logger = logging.getLogger(__name__)
 
@@ -194,6 +194,7 @@ def _get_graph():
 @trace(name="impact_analysis", span_type="CHAIN")
 def run_impact_analysis(question: str) -> Dict[str, Any]:
     """Run the full impact analysis supervisor agent (synchronous, called from thread)."""
+    tag_trace(agent="impact")
     graph = _get_graph()
     result = graph.invoke({
         "messages": [HumanMessage(content=question)],
@@ -222,6 +223,7 @@ async def run_impact_chat(
     history: Optional[List[Dict[str, str]]] = None,
 ) -> Dict[str, Any]:
     """Conversational follow-up for impact questions (lightweight ReAct)."""
+    tag_trace(agent="impact")
     agent = create_react_agent(get_llm(), IMPACT_TOOLS[:6])
     messages = history_to_messages(history, question)
 

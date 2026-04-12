@@ -31,7 +31,7 @@ from agent.common import ToolResult, measure_phase, vs_cache_get, vs_cache_put
 from agent.graph_skill import GRAPH_SCHEMA_CONTEXT
 from agent.guardrails import SAFETY_PROMPT_BLOCK, EvidenceBudget, sanitize_output
 from agent.intent import classify_and_contextualize
-from agent.tracing import trace, ensure_mlflow_context, get_mlflow, maybe_span
+from agent.tracing import trace, ensure_mlflow_context, get_mlflow, maybe_span, tag_trace
 
 logger = logging.getLogger(__name__)
 
@@ -1132,12 +1132,14 @@ def _run_deep_analysis_traced(
 ) -> Dict:
     """Traced inner -- span inputs show message (truncated) and history_len, not raw history."""
     ensure_mlflow_context()
+    tag_trace(session_id=session_id, agent="deep_analysis", mode=mode)
     intent_result = classify_and_contextualize(message, _history)
     if intent_result.intent_type == "meta" and intent_result.domain in ("discovery", "query", "governance", "relationship"):
         logger.info("[deep_analysis] reclassifying meta+%s as new_question", intent_result.domain)
         intent_result.intent_type = "new_question"
     logger.info("[deep_analysis] intent=%s domain=%s clear=%s",
                 intent_result.intent_type, intent_result.domain, intent_result.question_clear)
+    tag_trace(intent=intent_result.intent_type, domain=intent_result.domain)
 
     if intent_result.intent_type in ("irrelevant", "meta"):
         return {
