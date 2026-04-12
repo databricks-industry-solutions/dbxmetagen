@@ -6,6 +6,7 @@ This file is the highest-signal regression gate and runs in <2 seconds.
 """
 
 import json
+import os
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
@@ -68,7 +69,11 @@ class TestDetermineSamplingRatio:
 # 3. processing.extract_concise_error
 # ---------------------------------------------------------------------------
 
-from dbxmetagen.processing import extract_concise_error
+from dbxmetagen.processing import (
+    _batch_column_comment_ddl,
+    _can_batch_ddl,
+    extract_concise_error,
+)
 
 
 class TestExtractConciseError:
@@ -741,7 +746,56 @@ class TestDqGrade:
 
 
 # ---------------------------------------------------------------------------
-# 13. DDL bundle known-limitation xfail tests
+# 13. processing._batch_column_comment_ddl and _can_batch_ddl
+# ---------------------------------------------------------------------------
+
+
+class TestBatchColumnCommentDdl:
+    def test_two_columns_single_alter_column_keyword(self):
+        sql = _batch_column_comment_ddl(
+            "cat.sch.t",
+            [("a", "ca"), ("b", "cb")],
+        )
+        assert sql.count("ALTER COLUMN") == 1
+        assert sql == (
+            'ALTER TABLE cat.sch.t ALTER COLUMN `a` COMMENT "ca", `b` COMMENT "cb"'
+        )
+
+    def test_three_columns(self):
+        sql = _batch_column_comment_ddl("t", [("x", "1"), ("y", "2"), ("z", "3")])
+        assert "ALTER COLUMN `x`" in sql
+        assert ", `y` COMMENT" in sql
+        assert sql.endswith('`z` COMMENT "3"')
+
+    def test_double_quotes_sanitized_in_comment(self):
+        sql = _batch_column_comment_ddl("t", [("c", 'say "hi"')])
+        assert 'COMMENT "say \'hi\'"' in sql
+
+
+class TestCanBatchDdl:
+    def test_none_allows_batch(self):
+        env_wo = {k: v for k, v in os.environ.items() if k != "DATABRICKS_RUNTIME_VERSION"}
+        with patch.dict(os.environ, env_wo, clear=True):
+            assert "DATABRICKS_RUNTIME_VERSION" not in os.environ
+            assert _can_batch_ddl() is True
+
+    def test_numeric_16_3_and_above(self):
+        with patch.dict("os.environ", {"DATABRICKS_RUNTIME_VERSION": "16.3"}):
+            assert _can_batch_ddl() is True
+        with patch.dict("os.environ", {"DATABRICKS_RUNTIME_VERSION": "17.0"}):
+            assert _can_batch_ddl() is True
+
+    def test_numeric_below_16_3_disallows(self):
+        with patch.dict("os.environ", {"DATABRICKS_RUNTIME_VERSION": "15.4"}):
+            assert _can_batch_ddl() is False
+
+    def test_client_runtime_string_disallows(self):
+        with patch.dict("os.environ", {"DATABRICKS_RUNTIME_VERSION": "client.1.13"}):
+            assert _can_batch_ddl() is False
+
+
+# ---------------------------------------------------------------------------
+# 14. DDL bundle known-limitation xfail tests
 # ---------------------------------------------------------------------------
 
 

@@ -2514,31 +2514,35 @@ def _parse_column_ddl(ddl: str):
 
 
 def _batch_column_comment_ddl(table_name: str, col_comments: list) -> str:
-    """Build a single multi-column ALTER TABLE from a list of (col, comment) pairs (DBR 15.2+)."""
-    clauses = []
+    """Build one ALTER TABLE ... ALTER COLUMN with comma-separated column comments (DBR 16.3+).
+
+    Grammar matches Databricks docs: one ALTER COLUMN, then ``col COMMENT "..."`` per column
+    separated by commas (not repeated ALTER COLUMN keywords).
+    """
+    parts = []
     for col, comment in col_comments:
         safe = comment.replace('""', "'").replace('"', "'")
-        clauses.append(f'ALTER COLUMN `{col}` COMMENT "{safe}"')
-    return f"ALTER TABLE {table_name} {', '.join(clauses)}"
+        parts.append(f'`{col}` COMMENT "{safe}"')
+    return f"ALTER TABLE {table_name} ALTER COLUMN {', '.join(parts)}"
 
 
 def _can_batch_ddl() -> bool:
-    """Return True if the runtime supports multi-column ALTER TABLE (DBR >= 15.2)."""
+    """Return True if the runtime supports multi-column ALTER COLUMN in one clause (DBR >= 16.3)."""
     dbr = os.environ.get("DATABRICKS_RUNTIME_VERSION")
     if dbr is None:
-        return True  # serverless / SQL warehouse -- assume 15.2+
+        return True  # serverless often unset; assume modern runtime
     try:
-        return float(dbr) >= 15.2
+        return float(dbr) >= 16.3
     except (ValueError, TypeError):
-        return True
+        return False  # e.g. client.1.13 — do not assume batch support
 
 
 def apply_comment_ddl(df: DataFrame, config: MetadataConfig) -> dict:
     """
     Applies the comment DDL statements stored in the DataFrame to the table.
 
-    On DBR 15.2+ batches all column comments per table into a single multi-column
-    ALTER TABLE statement to reduce round-trips from O(columns) to O(tables).
+    On DBR 16.3+ batches all column comments per table into one ALTER TABLE ...
+    ALTER COLUMN statement (comma-separated columns) to reduce round-trips.
 
     Args:
         df (DataFrame): The DataFrame containing the DDL statements.
@@ -2605,7 +2609,7 @@ def apply_comment_ddl(df: DataFrame, config: MetadataConfig) -> dict:
                 logger.error("Batch DDL failed for %s (%d cols): %s", tbl, len(cols), concise_error)
                 failed_statements.append({"statement": batched[:200], "error": concise_error})
     else:
-        # Fallback: per-statement execution (DBR < 15.2)
+        # Fallback: per-statement execution (DBR < 16.3 or unknown client.* runtime)
         for row in ddl_statements:
             ddl_statement = row["ddl"]
             try:
