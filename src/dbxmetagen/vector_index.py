@@ -30,6 +30,12 @@ class VectorIndexConfig:
     index_suffix: str = "metadata_vs_index"
     documents_table: str = "metadata_documents"
     embedding_model: str = "databricks-gte-large-en"
+    # First-time VS provisioning: poll get_index until status.ready
+    index_ready_timeout_s: int = 900
+    index_ready_initial_delay_s: int = 30
+    # sync_index can race with readiness; retry transient errors
+    sync_max_attempts: int = 5
+    sync_initial_delay_s: int = 30
 
     @property
     def fq_documents(self) -> str:
@@ -41,6 +47,11 @@ class VectorIndexConfig:
 
     def fq(self, table: str) -> str:
         return f"{self.catalog_name}.{self.schema_name}.{table}"
+
+
+def _transient_vector_search_error(exc: BaseException) -> bool:
+    msg = str(exc).lower()
+    return "not ready" in msg
 
 
 _COLUMNS_TO_SYNC = [
@@ -357,6 +368,39 @@ class VectorIndexBuilder:
         logger.info("VS endpoint '%s' confirmed ONLINE (num_indexes=%s)", name, ep.num_indexes)
         return name
 
+    def _wait_until_index_ready(self, idx_name: str) -> None:
+        w = WorkspaceClient()
+        deadline = time.monotonic() + self.config.index_ready_timeout_s
+        delay = float(self.config.index_ready_initial_delay_s)
+        while True:
+            idx = w.vector_search_indexes.get_index(idx_name)
+            st = idx.status
+            ready = bool(st and st.ready)
+            if ready:
+                logger.info(
+                    "VS index '%s' is ready (indexed_rows=%s)",
+                    idx_name,
+                    getattr(st, "indexed_row_count", None) if st else None,
+                )
+                return
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            logger.info(
+                "VS index '%s' not ready yet (ready=%s, message=%s); sleeping %.0fs (%.0fs left)",
+                idx_name,
+                getattr(st, "ready", None) if st else None,
+                getattr(st, "message", None) if st else None,
+                min(delay, remaining),
+                remaining,
+            )
+            time.sleep(min(delay, remaining))
+            delay = min(delay * 2.0, 120.0)
+
+        raise TimeoutError(
+            f"VS index '{idx_name}' did not become ready within {self.config.index_ready_timeout_s}s"
+        )
+
     def ensure_index(self) -> str:
         w = WorkspaceClient()
         idx_name = self.config.fq_index
@@ -366,48 +410,67 @@ class VectorIndexBuilder:
                 "VS index '%s' already exists (ready=%s, message=%s, indexed_rows=%s)",
                 idx_name, idx.status.ready, idx.status.message, idx.status.indexed_row_count,
             )
-            return idx_name
         except Exception:
-            pass
-
-        logger.info("Creating Delta Sync index '%s' with managed embeddings", idx_name)
-        max_attempts, delay = 5, 30
-        for attempt in range(1, max_attempts + 1):
-            try:
-                w.vector_search_indexes.create_index(
-                    name=idx_name,
-                    endpoint_name=self.config.endpoint_name,
-                    primary_key="doc_id",
-                    index_type=VectorIndexType.DELTA_SYNC,
-                    delta_sync_index_spec=DeltaSyncVectorIndexSpecRequest(
-                        source_table=self.config.fq_documents,
-                        embedding_source_columns=[
-                            EmbeddingSourceColumn(
-                                name="content",
-                                embedding_model_endpoint_name=self.config.embedding_model,
-                            )
-                        ],
-                        pipeline_type=PipelineType.TRIGGERED,
-                        columns_to_sync=_COLUMNS_TO_SYNC,
-                    ),
-                )
-                logger.info("create_index succeeded on attempt %d", attempt)
-                return idx_name
-            except Exception as e:
-                if "not ready" in str(e).lower() and attempt < max_attempts:
-                    logger.warning(
-                        "create_index attempt %d/%d failed: %s -- retrying in %ds",
-                        attempt, max_attempts, e, delay,
+            logger.info("Creating Delta Sync index '%s' with managed embeddings", idx_name)
+            max_attempts, delay = 5, 30
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    w.vector_search_indexes.create_index(
+                        name=idx_name,
+                        endpoint_name=self.config.endpoint_name,
+                        primary_key="doc_id",
+                        index_type=VectorIndexType.DELTA_SYNC,
+                        delta_sync_index_spec=DeltaSyncVectorIndexSpecRequest(
+                            source_table=self.config.fq_documents,
+                            embedding_source_columns=[
+                                EmbeddingSourceColumn(
+                                    name="content",
+                                    embedding_model_endpoint_name=self.config.embedding_model,
+                                )
+                            ],
+                            pipeline_type=PipelineType.TRIGGERED,
+                            columns_to_sync=_COLUMNS_TO_SYNC,
+                        ),
                     )
-                    time.sleep(delay)
-                    delay = min(delay * 2, 120)
-                else:
-                    raise
+                    logger.info("create_index succeeded on attempt %d", attempt)
+                    break
+                except Exception as e:
+                    if _transient_vector_search_error(e) and attempt < max_attempts:
+                        logger.warning(
+                            "create_index attempt %d/%d failed: %s -- retrying in %ds",
+                            attempt, max_attempts, e, delay,
+                        )
+                        time.sleep(delay)
+                        delay = min(delay * 2, 120)
+                    else:
+                        raise
+
+        self._wait_until_index_ready(idx_name)
+        return idx_name
 
     def sync(self):
         w = WorkspaceClient()
-        logger.info("Triggering sync for '%s'", self.config.fq_index)
-        w.vector_search_indexes.sync_index(index_name=self.config.fq_index)
+        idx_name = self.config.fq_index
+        max_attempts = self.config.sync_max_attempts
+        delay = float(self.config.sync_initial_delay_s)
+        for attempt in range(1, max_attempts + 1):
+            try:
+                logger.info(
+                    "Triggering sync for '%s' (attempt %d/%d)",
+                    idx_name, attempt, max_attempts,
+                )
+                w.vector_search_indexes.sync_index(index_name=idx_name)
+                return
+            except Exception as e:
+                if _transient_vector_search_error(e) and attempt < max_attempts:
+                    logger.warning(
+                        "sync_index attempt %d/%d failed: %s -- retrying in %.0fs",
+                        attempt, max_attempts, e, delay,
+                    )
+                    time.sleep(delay)
+                    delay = min(delay * 2.0, 120.0)
+                else:
+                    raise
 
     def run(self) -> Dict[str, Any]:
         doc_count = self.build_documents_table()

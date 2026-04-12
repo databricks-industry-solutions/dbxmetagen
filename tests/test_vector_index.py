@@ -1,7 +1,7 @@
 """Tests for vector_index module -- config properties, endpoint readiness, index retry."""
 
 import pytest
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock, patch
 from dbxmetagen.vector_index import VectorIndexConfig, VectorIndexBuilder
 
 
@@ -113,10 +113,17 @@ class TestEnsureIndex:
     def test_retries_on_not_ready(self, mock_wc_cls, mock_time):
         mock_wc = MagicMock()
         mock_wc_cls.return_value = mock_wc
-        mock_wc.vector_search_indexes.get_index.side_effect = Exception("not found")
+        ready_idx = MagicMock()
+        ready_idx.status.ready = True
+        ready_idx.status.message = "ok"
+        ready_idx.status.indexed_row_count = 0
+        mock_wc.vector_search_indexes.get_index.side_effect = [
+            Exception("not found"),
+            ready_idx,
+        ]
         mock_wc.vector_search_indexes.create_index.side_effect = [
             Exception("BadRequest: Vector search endpoint dbxmetagen-vs is not ready yet."),
-            None,  # succeeds on second attempt
+            None,
         ]
         mock_time.sleep = MagicMock()
 
@@ -154,3 +161,86 @@ class TestEnsureIndex:
         with pytest.raises(Exception, match="insufficient privileges"):
             builder.ensure_index()
         assert mock_wc.vector_search_indexes.create_index.call_count == 1
+
+
+# ── wait_until_index_ready ────────────────────────────────────────────
+
+
+class TestWaitUntilIndexReady:
+
+    @patch("dbxmetagen.vector_index.time.sleep")
+    @patch("dbxmetagen.vector_index.WorkspaceClient")
+    def test_polls_until_ready(self, mock_wc_cls, mock_sleep):
+        mock_wc = MagicMock()
+        mock_wc_cls.return_value = mock_wc
+
+        def mk(ready: bool):
+            m = MagicMock()
+            m.status.ready = ready
+            m.status.message = "provisioning" if not ready else "ok"
+            m.status.indexed_row_count = 0
+            return m
+
+        mock_wc.vector_search_indexes.get_index.side_effect = [
+            mk(False),
+            mk(False),
+            mk(True),
+        ]
+
+        cfg = VectorIndexConfig("cat", "sch", index_ready_timeout_s=900)
+        builder = VectorIndexBuilder(MagicMock(), cfg)
+        builder._wait_until_index_ready("cat.sch.metadata_vs_index")
+
+        assert mock_wc.vector_search_indexes.get_index.call_count == 3
+        assert mock_sleep.call_count == 2
+
+    @patch("dbxmetagen.vector_index.WorkspaceClient")
+    def test_timeout_raises(self, mock_wc_cls):
+        mock_wc = MagicMock()
+        mock_wc_cls.return_value = mock_wc
+        m = MagicMock()
+        m.status.ready = False
+        m.status.message = "still provisioning"
+        mock_wc.vector_search_indexes.get_index.return_value = m
+
+        cfg = VectorIndexConfig("cat", "sch", index_ready_timeout_s=0)
+        builder = VectorIndexBuilder(MagicMock(), cfg)
+        with pytest.raises(TimeoutError, match="did not become ready"):
+            builder._wait_until_index_ready("cat.sch.metadata_vs_index")
+
+
+# ── sync ──────────────────────────────────────────────────────────────
+
+
+class TestSync:
+
+    @patch("dbxmetagen.vector_index.time")
+    @patch("dbxmetagen.vector_index.WorkspaceClient")
+    def test_retries_on_not_ready(self, mock_wc_cls, mock_time):
+        mock_wc = MagicMock()
+        mock_wc_cls.return_value = mock_wc
+        mock_wc.vector_search_indexes.sync_index.side_effect = [
+            Exception("BadRequest: Vector index cat.sch.metadata_vs_index is not ready."),
+            None,
+        ]
+        mock_time.sleep = MagicMock()
+
+        builder = VectorIndexBuilder(MagicMock(), VectorIndexConfig("cat", "sch"))
+        builder.sync()
+
+        assert mock_wc.vector_search_indexes.sync_index.call_count == 2
+        mock_time.sleep.assert_called_once_with(30.0)
+
+    @patch("dbxmetagen.vector_index.time")
+    @patch("dbxmetagen.vector_index.WorkspaceClient")
+    def test_non_transient_error_not_retried(self, mock_wc_cls, mock_time):
+        mock_wc = MagicMock()
+        mock_wc_cls.return_value = mock_wc
+        mock_wc.vector_search_indexes.sync_index.side_effect = Exception("PermissionDenied: denied")
+        mock_time.sleep = MagicMock()
+
+        builder = VectorIndexBuilder(MagicMock(), VectorIndexConfig("cat", "sch"))
+        with pytest.raises(Exception, match="denied"):
+            builder.sync()
+        assert mock_wc.vector_search_indexes.sync_index.call_count == 1
+        mock_time.sleep.assert_not_called()
