@@ -461,7 +461,7 @@ class KnowledgeGraphBuilder:
             .withColumn("updated_at", F.current_timestamp())
         )
 
-        return combined.select(*[c for c, _ in self._EDGE_SCHEMA])
+        return self._align_edge_schema(combined)
     
     def merge_nodes(self, nodes_df: DataFrame) -> Dict[str, int]:
         """
@@ -903,7 +903,8 @@ class ExtendedKnowledgeGraphBuilder(KnowledgeGraphBuilder):
         "src STRING, dst STRING, relationship STRING, weight DOUBLE, "
         "edge_id STRING, edge_type STRING, direction STRING, "
         "join_expression STRING, join_confidence DOUBLE, ontology_rel STRING, "
-        "source_system STRING, status STRING, created_at TIMESTAMP, updated_at TIMESTAMP"
+        "source_system STRING, status STRING, edge_label STRING, edge_facet STRING, "
+        "created_at TIMESTAMP, updated_at TIMESTAMP"
     )
 
     def _enrich_edges(self, df: DataFrame, edge_type: str, source_sys: str = "knowledge_graph") -> DataFrame:
@@ -921,7 +922,7 @@ class ExtendedKnowledgeGraphBuilder(KnowledgeGraphBuilder):
             .withColumn("created_at", F.current_timestamp())
             .withColumn("updated_at", F.current_timestamp())
         )
-        return enriched.select(*[c for c, _ in self._EDGE_SCHEMA])
+        return self._align_edge_schema(enriched)
 
     def build_containment_edges(self, nodes_df: DataFrame) -> DataFrame:
         """Build 'contains' edges for hierarchical relationships."""
@@ -1001,6 +1002,8 @@ class ExtendedKnowledgeGraphBuilder(KnowledgeGraphBuilder):
                     .withColumn("ontology_rel", F.lit(None).cast("string"))
                     .withColumn("source_system", F.lit("fk_predictions"))
                     .withColumn("status", F.lit("candidate"))
+                    .withColumn("edge_label", F.lit(None).cast("string"))
+                    .withColumn("edge_facet", F.lit(None).cast("string"))
                     .withColumn("created_at", F.current_timestamp())
                     .withColumn("updated_at", F.current_timestamp())
                     .drop("join_expr", "conf", "src_table", "dst_table", "src_column", "dst_column")
