@@ -19,7 +19,7 @@ from pathlib import Path
 
 # Pinned release tag (reproducible). Bump when your project should track a new release.
 ZIP_AUTO_FALLBACK = (
-    "https://github.com/databricks-industry-solutions/dbxmetagen/archive/refs/tags/v0.8.7.zip"
+    "https://github.com/databricks-industry-solutions/dbxmetagen/archive/refs/tags/v0.8.8.zip"
 )
 
 DEFAULT_INSTALL_SOURCE = "auto"
