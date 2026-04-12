@@ -2,11 +2,13 @@
 # MAGIC %md
 # MAGIC # DESTRUCTIVE: Pipeline Table Cleanup
 # MAGIC
-# MAGIC **WARNING: This notebook DROPS all tables created by the dbxmetagen pipeline.**
+# MAGIC **WARNING: This notebook DROPS most pipeline output tables (analytics, KB, graph, etc.).**
 # MAGIC
-# MAGIC This is intended for development/testing only -- to reset state before a
-# MAGIC clean re-run. It does NOT touch your source data tables, only the generated
-# MAGIC metadata/analytics tables.
+# MAGIC It does **not** drop `metadata_generation_log` (primary store of LLM-generated
+# MAGIC metadata). Drop that table manually if you need a full reset.
+# MAGIC
+# MAGIC This is intended for development/testing only -- to reset derived state before
+# MAGIC re-running downstream stages. It does NOT touch your source data tables.
 # MAGIC
 # MAGIC **There is no undo.** Tables are permanently deleted (including history).
 # MAGIC
@@ -18,7 +20,6 @@
 # MAGIC ```
 # MAGIC
 # MAGIC Tables deleted (when they exist):
-# MAGIC - `metadata_generation_log` -- LLM-generated metadata results
 # MAGIC - `metadata_control_*` -- concurrent processing control table(s)
 # MAGIC - `table_knowledge_base` / `column_knowledge_base` -- knowledge bases
 # MAGIC - `ontology_entities` / `ontology_relationships` / `ontology_column_properties` / `ontology_metrics`
@@ -29,6 +30,10 @@
 # MAGIC - `table_profiling_results` -- profiling stats
 # MAGIC - `similarity_edges` -- embedding-based similarity
 # MAGIC - `cluster_assignments` -- table clustering results
+# MAGIC - `metadata_documents` -- vector search source documents
+# MAGIC - `metadata_vs_index` -- vector search index (deleted before source table)
+# MAGIC
+# MAGIC **Preserved (not dropped):** `metadata_generation_log`
 
 # COMMAND ----------
 
@@ -48,7 +53,6 @@ assert catalog, "catalog_name is required"
 assert schema, "schema_name is required"
 
 TABLES = [
-    "metadata_generation_log",
     "table_knowledge_base",
     "column_knowledge_base",
     "ontology_entities",
@@ -63,6 +67,7 @@ TABLES = [
     "table_profiling_results",
     "similarity_edges",
     "cluster_assignments",
+    "metadata_documents",
 ]
 
 if include_control:
@@ -102,6 +107,37 @@ if missing:
     print(f"\nNot found (will skip): {len(missing)}")
     for t in sorted(missing):
         print(f"  [SKIP]   {t}")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Delete vector search index
+# MAGIC
+# MAGIC The VS index must be deleted **before** dropping `metadata_documents` to avoid
+# MAGIC a stale index with an invalid Delta CDF checkpoint.
+
+# COMMAND ----------
+
+from databricks.sdk import WorkspaceClient
+
+vs_index_name = f"{catalog}.{schema}.metadata_vs_index"
+w = WorkspaceClient()
+
+if is_dry_run:
+    try:
+        w.vector_search_indexes.get_index(vs_index_name)
+        print(f"\n  [EXISTS] VS index: {vs_index_name} (would be deleted)")
+    except Exception:
+        print(f"\n  [SKIP]   VS index: {vs_index_name} (not found)")
+else:
+    try:
+        w.vector_search_indexes.delete_index(vs_index_name)
+        print(f"  DELETED: VS index {vs_index_name}")
+    except Exception as e:
+        if "not found" in str(e).lower() or "does_not_exist" in str(e).lower():
+            print(f"  [SKIP]   VS index {vs_index_name} (not found)")
+        else:
+            print(f"  FAILED:  VS index {vs_index_name} -- {e}")
 
 # COMMAND ----------
 
