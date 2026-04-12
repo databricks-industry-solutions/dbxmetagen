@@ -1170,9 +1170,11 @@ def _generate_column_ddl_rows(
         if ddl_type in ("all", "sensitivity"):
             classification = (r.get("classification") or "").strip().replace("'", "''")
             if classification and classification.lower() != "none":
+                subclass = (r.get("classification_type") or "").strip().replace("'", "''")
+                subclass = subclass if subclass and subclass.lower() != "none" else classification
                 stmts.append(
                     f"ALTER TABLE {full} ALTER COLUMN `{col}` SET TAGS "
-                    f"('{pi_class_tag}' = '{classification}', '{pi_subclass_tag}' = '{classification}');"
+                    f"('{pi_class_tag}' = '{classification}', '{pi_subclass_tag}' = '{subclass}');"
                 )
     return stmts
 
@@ -1195,6 +1197,10 @@ def _table_where(identifiers: list[str]) -> str:
     return " OR ".join([f"table_name = {s}" for s in safe])
 
 
+_TBL_LIMIT = 5000
+_COL_LIMIT = 10000
+
+
 @app.post("/api/metadata/generate-ddl")
 def generate_ddl(body: GenerateDDLBody):
     scope = (body.scope or "table").lower()
@@ -1207,6 +1213,7 @@ def generate_ddl(body: GenerateDDLBody):
     tbl_kb = fq("table_knowledge_base")
     col_kb = fq("column_knowledge_base")
     stmts: list[str] = []
+    warnings: list[str] = []
 
     if scope in ("table", "schema"):
         if scope == "schema" and identifiers:
@@ -1218,8 +1225,10 @@ def generate_ddl(body: GenerateDDLBody):
             where = "1=1"
         if ddl_type in ("all", "comments", "domain"):
             tbl_rows = execute_sql(
-                f"SELECT catalog, `schema`, table_name, comment, domain, subdomain FROM {tbl_kb} WHERE {where} LIMIT 500"
+                f"SELECT catalog, `schema`, table_name, comment, domain, subdomain FROM {tbl_kb} WHERE {where} LIMIT {_TBL_LIMIT}"
             )
+            if len(tbl_rows) == _TBL_LIMIT:
+                warnings.append(f"Table results truncated at {_TBL_LIMIT} rows")
             stmts += _generate_table_ddl_rows(tbl_rows, ddl_type, domain_tag, subdomain_tag)
         if ddl_type in ("all", "comments", "sensitivity"):
             col_where = where if scope == "schema" else (
@@ -1227,8 +1236,10 @@ def generate_ddl(body: GenerateDDLBody):
                 if identifiers else "1=1"
             )
             col_rows = execute_sql(
-                f"SELECT catalog, `schema`, table_name, column_name, comment, classification FROM {col_kb} WHERE {col_where} LIMIT 2000"
+                f"SELECT catalog, `schema`, table_name, column_name, comment, classification, classification_type FROM {col_kb} WHERE {col_where} LIMIT {_COL_LIMIT}"
             )
+            if len(col_rows) == _COL_LIMIT:
+                warnings.append(f"Column results truncated at {_COL_LIMIT} rows")
             stmts += _generate_column_ddl_rows(col_rows, ddl_type, pi_class, pi_subclass)
 
     elif scope == "column":
@@ -1240,28 +1251,14 @@ def generate_ddl(body: GenerateDDLBody):
         else:
             where = "1=1"
         col_rows = execute_sql(
-            f"SELECT catalog, `schema`, table_name, column_name, comment, classification FROM {col_kb} WHERE {where} LIMIT 500"
+            f"SELECT catalog, `schema`, table_name, column_name, comment, classification, classification_type FROM {col_kb} WHERE {where} LIMIT {_TBL_LIMIT}"
         )
+        if len(col_rows) == _TBL_LIMIT:
+            warnings.append(f"Column results truncated at {_TBL_LIMIT} rows")
         stmts = _generate_column_ddl_rows(col_rows, ddl_type, pi_class, pi_subclass)
 
     elif scope == "geo":
-        geo_tbl = fq("geo_classifications")
-        tk = body.tag_key or "geo_classification"
-        _validate_filter(tk, "tag_key")
-        if identifiers:
-            safe = [_safe_sql_str(x) for x in identifiers if _SAFE_IDENT_RE.match(x)]
-            where = " OR ".join([f"table_name = {s}" for s in safe]) if safe else "1=0"
-        else:
-            where = "1=1"
-        rows = execute_sql(
-            f"SELECT table_name, column_name, classification FROM {geo_tbl} WHERE ({where}) AND confidence >= 0.5 LIMIT 2000"
-        )
-        for r in rows:
-            tn = (r.get("table_name") or "").strip()
-            cn = (r.get("column_name") or "").strip()
-            cls = (r.get("classification") or "").strip()
-            if tn and cn and cls:
-                stmts.append(f"ALTER TABLE {tn} ALTER COLUMN `{cn}` SET TAGS ('{tk}' = '{cls}');")
+        stmts = _build_geo_tag_stmts(identifiers=identifiers or None, tag_key=body.tag_key or "geo_classification")
     else:
         raise HTTPException(400, "scope must be table, schema, column, or geo")
 
@@ -1309,7 +1306,7 @@ def generate_ddl(body: GenerateDDLBody):
             logger.warning("Failed to write DDL to volume: %s", e)
             vol_path = None
 
-    return {"sql": sql, "statements": stmts, "volume_path": vol_path}
+    return {"sql": sql, "statements": stmts, "volume_path": vol_path, "warnings": warnings if warnings else None}
 
 
 _GOVERNED_TAG_HINT = (
@@ -1412,7 +1409,7 @@ def _fetch_fk_rows(identifiers: Optional[list[str]] = None) -> list[dict]:
             where += f" AND ({tbl_cond})"
     try:
         rows = execute_sql(
-            f"SELECT src_table, src_column, dst_table, dst_column FROM {fk_tbl} WHERE {where} ORDER BY final_confidence DESC LIMIT 500"
+            f"SELECT src_table, src_column, dst_table, dst_column FROM {fk_tbl} WHERE {where} ORDER BY final_confidence DESC LIMIT {_TBL_LIMIT}"
         )
     except Exception:
         return []
@@ -1437,10 +1434,18 @@ def _build_fk_tag_ddl(identifiers: Optional[list[str]] = None) -> list[str]:
 
 def _build_fk_constraint_ddl(identifiers: Optional[list[str]] = None) -> list[str]:
     """Build FK constraint DDL from fk_predictions without executing."""
-    return [
-        f"ALTER TABLE {r['src_tbl']} ADD CONSTRAINT fk_{r['src_col']}_{r['dst_col']} FOREIGN KEY ({r['src_col']}) REFERENCES {r['dst_tbl']}({r['dst_col']});"
-        for r in _fetch_fk_rows(identifiers)
-    ]
+    import re as _re
+    stmts = []
+    for r in _fetch_fk_rows(identifiers):
+        tbl_short = _re.sub(r'[^a-zA-Z0-9]', '_', r['src_tbl'].split('.')[-1])
+        src_col_safe = _re.sub(r'[^a-zA-Z0-9]', '_', r['src_col'])
+        dst_col_safe = _re.sub(r'[^a-zA-Z0-9]', '_', r['dst_col'])
+        name = f"fk_{tbl_short}_{src_col_safe}_{dst_col_safe}"
+        stmts.append(
+            f"ALTER TABLE {r['src_tbl']} ADD CONSTRAINT IF NOT EXISTS {name} "
+            f"FOREIGN KEY (`{r['src_col']}`) REFERENCES {r['dst_tbl']}(`{r['dst_col']}`);"
+        )
+    return stmts
 
 
 def _build_data_quality_ddl(
@@ -1514,13 +1519,32 @@ def _build_metric_view_ddl(
     return stmts
 
 
-def _build_geo_ddl(
+def _build_geo_tag_stmts(
     identifiers: Optional[list[str]] = None,
     tag_key: str = "geo_classification",
 ) -> list[str]:
-    """Build geo classification tag DDL -- delegates to generate_ddl(scope='geo')."""
-    out = generate_ddl(GenerateDDLBody(scope="geo", identifiers=identifiers, tag_key=tag_key))
-    return out.get("statements") or []
+    """Build geo classification tag DDL statements from geo_classifications table."""
+    geo_tbl = fq("geo_classifications")
+    _validate_filter(tag_key, "tag_key")
+    if identifiers:
+        safe = [_safe_sql_str(x) for x in identifiers if _SAFE_IDENT_RE.match(x)]
+        where = " OR ".join([f"table_name = {s}" for s in safe]) if safe else "1=0"
+    else:
+        where = "1=1"
+    try:
+        rows = execute_sql(
+            f"SELECT table_name, column_name, classification FROM {geo_tbl} WHERE ({where}) AND confidence >= 0.5 LIMIT {_COL_LIMIT}"
+        )
+    except Exception:
+        return []
+    stmts: list[str] = []
+    for r in rows:
+        tn = (r.get("table_name") or "").strip()
+        cn = (r.get("column_name") or "").strip()
+        cls = (r.get("classification") or "").strip()
+        if tn and cn and cls:
+            stmts.append(f"ALTER TABLE {tn} ALTER COLUMN `{cn}` SET TAGS ('{tag_key}' = '{cls}');")
+    return stmts
 
 
 # ---------------------------------------------------------------------------
@@ -1530,12 +1554,13 @@ def _build_geo_ddl(
 
 _BUNDLE_DDL_TYPES = [
     "comments", "domain", "sensitivity", "ontology",
-    "fk_tags", "data_quality", "geo", "metric_views",
+    "fk",
 ]
 
 
 class DDLBundleBody(BaseModel):
     types: list[str] = _BUNDLE_DDL_TYPES
+    fk_mode: Optional[str] = "tags"
     identifiers: Optional[list[str]] = None
     target_catalog: Optional[str] = None
     target_schema: Optional[str] = None
@@ -1555,6 +1580,7 @@ def generate_ddl_bundle(body: DDLBundleBody):
     requested = {t.lower() for t in body.types}
     ids = body.identifiers
     sections: dict[str, list[str]] = {}
+    warnings: list[str] = []
 
     core_types = requested & {"comments", "domain", "sensitivity"}
     if core_types:
@@ -1571,21 +1597,32 @@ def generate_ddl_bundle(body: DDLBundleBody):
             core_stmts = core_out.get("statements") or []
             if core_stmts:
                 sections[ct] = core_stmts
+            if core_out.get("warnings"):
+                warnings.extend(core_out["warnings"])
 
     if "ontology" in requested:
         sections["ontology"] = _build_ontology_tag_ddl(identifiers=ids)
 
-    if "fk_constraints" in requested:
+    # Unified FK toggle: dispatch based on fk_mode
+    if "fk" in requested:
+        fk_mode = (body.fk_mode or "tags").lower()
+        if fk_mode == "constraints":
+            fk_stmts = _build_fk_constraint_ddl(identifiers=ids)
+            if fk_stmts:
+                sections["fk_constraints"] = fk_stmts
+        else:
+            fk_stmts = _build_fk_tag_ddl(identifiers=ids)
+            if fk_stmts:
+                sections["fk_tags"] = fk_stmts
+
+    # Backward compat for old clients sending fk_tags/fk_constraints directly
+    if "fk_tags" in requested and "fk" not in requested:
+        sections["fk_tags"] = _build_fk_tag_ddl(identifiers=ids)
+    if "fk_constraints" in requested and "fk" not in requested:
         sections["fk_constraints"] = _build_fk_constraint_ddl(identifiers=ids)
 
-    if "fk_tags" in requested:
-        sections["fk_tags"] = _build_fk_tag_ddl(identifiers=ids)
-
-    if "data_quality" in requested:
-        sections["data_quality"] = _build_data_quality_ddl(identifiers=ids)
-
     if "geo" in requested:
-        sections["geo"] = _build_geo_ddl(identifiers=ids, tag_key=body.geo_tag_key or "geo_classification")
+        sections["geo"] = _build_geo_tag_stmts(identifiers=ids, tag_key=body.geo_tag_key or "geo_classification")
 
     if "metric_views" in requested:
         sections["metric_views"] = _build_metric_view_ddl(
@@ -1641,30 +1678,83 @@ def generate_ddl_bundle(body: DDLBundleBody):
         "counts": {k: len(v) for k, v in sections.items()},
         "total_statements": total_count,
         "volume_path": vol_path,
+        "warnings": warnings if warnings else None,
     }
+
+
+_bundle_apply_tasks: dict[str, dict] = {}
+
+
+def _run_bundle_apply(task_id: str, sections: dict[str, list[str]], volume_path: str = None):
+    """Background worker for applying DDL bundle sections."""
+    task = _bundle_apply_tasks[task_id]
+    results: dict[str, dict] = {}
+    total_applied = 0
+    total_errors = 0
+    try:
+        for section_name, stmts in sections.items():
+            task["current_section"] = section_name
+            task["total_applied"] = total_applied
+            sec_applied, sec_errors = _execute_stmts_batched(stmts, batch=True)
+            results[section_name] = {"applied": sec_applied, "errors": len(sec_errors)}
+            total_applied += sec_applied
+            total_errors += len(sec_errors)
+        task.update({
+            "status": "done", "results": results, "total_applied": total_applied,
+            "total_errors": total_errors, "volume_path": volume_path,
+            "current_section": None,
+        })
+    except Exception as e:
+        task.update({"status": "error", "error": str(e)})
 
 
 @app.post("/api/metadata/apply-ddl-bundle")
 def apply_ddl_bundle(body: DDLBundleBody):
-    """Generate and apply a unified DDL bundle with batched execution."""
+    """Generate and apply a unified DDL bundle asynchronously."""
     out = generate_ddl_bundle(body)
     sections = out.get("sections") or {}
-    results: dict[str, dict] = {}
-    total_applied = 0
-    total_errors = 0
-
-    for section_name, stmts in sections.items():
-        sec_applied, sec_errors = _execute_stmts_batched(stmts, batch=True)
-        results[section_name] = {"applied": sec_applied, "errors": sec_errors}
-        total_applied += sec_applied
-        total_errors += len(sec_errors)
-
-    return {
-        "applied": total_applied,
-        "errors": total_errors,
-        "results": results,
-        "volume_path": out.get("volume_path"),
+    if not sections:
+        return {"task_id": None, "applied": 0, "errors": 0, "results": {}}
+    task_id = str(_uuid.uuid4())[:12]
+    _bundle_apply_tasks[task_id] = {
+        "status": "running", "current_section": None,
+        "total_applied": 0, "total_errors": 0,
     }
+    threading.Thread(
+        target=_run_bundle_apply, args=(task_id, sections, out.get("volume_path")),
+        daemon=True,
+    ).start()
+    return {"task_id": task_id}
+
+
+class ApplyBundleSqlBody(BaseModel):
+    sections: dict[str, list[str]]
+
+
+@app.post("/api/metadata/apply-ddl-bundle-sql")
+def apply_ddl_bundle_sql(body: ApplyBundleSqlBody):
+    """Apply pre-generated DDL sections asynchronously (skips regeneration)."""
+    if not body.sections:
+        return {"task_id": None, "applied": 0, "errors": 0}
+    task_id = str(_uuid.uuid4())[:12]
+    _bundle_apply_tasks[task_id] = {
+        "status": "running", "current_section": None,
+        "total_applied": 0, "total_errors": 0,
+    }
+    threading.Thread(
+        target=_run_bundle_apply, args=(task_id, body.sections),
+        daemon=True,
+    ).start()
+    return {"task_id": task_id}
+
+
+@app.get("/api/metadata/apply-ddl-bundle/status/{task_id}")
+def apply_ddl_bundle_status(task_id: str):
+    """Poll apply-ddl-bundle progress."""
+    task = _bundle_apply_tasks.get(task_id)
+    if not task:
+        raise HTTPException(404, "Task not found")
+    return task
 
 
 # ---------------------------------------------------------------------------

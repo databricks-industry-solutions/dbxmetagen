@@ -121,13 +121,17 @@ function ReviewEditor() {
   // DDL bundle state
   const [bundleTypes, setBundleTypes] = useState({
     comments: true, domain: true, sensitivity: true, ontology: true,
-    fk_tags: true, fk_constraints: false, data_quality: true, geo: true, metric_views: true,
+    fk: true,
   })
+  const [fkMode, setFkMode] = useState('tags')
   const [bundleSql, setBundleSql] = useState('')
+  const [bundleSections, setBundleSections] = useState(null)
   const [bundleCounts, setBundleCounts] = useState(null)
+  const [bundleWarnings, setBundleWarnings] = useState(null)
   const [bundleLoading, setBundleLoading] = useState(false)
   const [bundleError, setBundleError] = useState(null)
   const [bundleApplyResult, setBundleApplyResult] = useState(null)
+  const [bundleApplyProgress, setBundleApplyProgress] = useState(null)
   const [bundleVolumePath, setBundleVolumePath] = useState(null)
   const [bundleTargetCatalog, setBundleTargetCatalog] = useState('')
   const [bundleTargetSchema, setBundleTargetSchema] = useState('')
@@ -295,32 +299,63 @@ function ReviewEditor() {
     const types = Object.entries(bundleTypes).filter(([, v]) => v).map(([k]) => k)
     return {
       types,
+      fk_mode: fkMode,
       identifiers: tableNames.length > 0 ? tableNames : undefined,
       ...(bundleTargetCatalog ? { target_catalog: bundleTargetCatalog } : {}),
       ...(bundleTargetSchema ? { target_schema: bundleTargetSchema } : {}),
     }
   }
   const generateBundle = async () => {
-    setBundleLoading(true); setBundleError(null); setBundleApplyResult(null); setBundleSql(''); setBundleCounts(null); setBundleVolumePath(null)
+    setBundleLoading(true); setBundleError(null); setBundleApplyResult(null); setBundleApplyProgress(null)
+    setBundleSql(''); setBundleSections(null); setBundleCounts(null); setBundleWarnings(null); setBundleVolumePath(null)
     try {
       const res = await fetch('/api/metadata/generate-ddl-bundle', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(bundlePayload()) })
       const j = await res.json().catch(() => ({}))
       if (!res.ok) { setBundleError(errMsg(j.detail || `Request failed (${res.status})`)); return }
       setBundleSql(j.sql || '')
+      setBundleSections(j.sections || null)
       setBundleCounts(j.counts || {})
+      setBundleWarnings(j.warnings || null)
       setBundleVolumePath(j.volume_path || null)
     } catch (e) { setBundleError(e.message || 'Network error') }
     finally { setBundleLoading(false) }
   }
   const applyBundle = async () => {
     if (!confirm('Apply all selected DDL types to your catalog? This modifies table/column metadata and may create views.')) return
-    setBundleLoading(true); setBundleError(null); setBundleApplyResult(null)
+    setBundleLoading(true); setBundleError(null); setBundleApplyResult(null); setBundleApplyProgress(null)
     try {
-      const res = await fetch('/api/metadata/apply-ddl-bundle', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(bundlePayload()) })
+      const payload = bundleSections
+        ? { sections: bundleSections }
+        : bundlePayload()
+      const endpoint = bundleSections
+        ? '/api/metadata/apply-ddl-bundle-sql'
+        : '/api/metadata/apply-ddl-bundle'
+      const res = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
       const j = await res.json().catch(() => ({}))
       if (!res.ok) { setBundleApplyResult({ ok: false, detail: errMsg(j.detail || `Request failed (${res.status})`) }); return }
-      setBundleApplyResult({ ok: j.errors === 0, applied: j.applied, errors: j.errors, results: j.results })
-      setBundleVolumePath(j.volume_path || null)
+      const taskId = j.task_id
+      if (!taskId) { setBundleApplyResult({ ok: false, detail: 'No task_id returned' }); return }
+      const poll = async () => {
+        for (let i = 0; i < 300; i++) {
+          await new Promise(r => setTimeout(r, 1500))
+          try {
+            const sr = await fetch(`/api/metadata/apply-ddl-bundle/status/${taskId}`)
+            const sj = await sr.json().catch(() => ({}))
+            setBundleApplyProgress(sj)
+            if (sj.status === 'done') {
+              setBundleApplyResult({ ok: (sj.total_errors || 0) === 0, applied: sj.total_applied, errors: sj.total_errors, results: sj.results })
+              setBundleVolumePath(sj.volume_path || null)
+              return
+            }
+            if (sj.status === 'error') {
+              setBundleApplyResult({ ok: false, detail: sj.error || 'Apply failed' })
+              return
+            }
+          } catch { /* retry */ }
+        }
+        setBundleApplyResult({ ok: false, detail: 'Apply timed out' })
+      }
+      await poll()
     } catch (e) { setBundleApplyResult({ ok: false, detail: e.message || 'Network error' }) }
     finally { setBundleLoading(false) }
   }
@@ -1326,19 +1361,25 @@ function ReviewEditor() {
       {/* DDL Bundle -- unified advanced metadata export */}
       <div className="card p-5 space-y-3">
         <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200">
-          DDL Bundle <Tip text="Generate a unified SQL script covering all metadata types -- comments, tags, ontology, FK, data quality, geo, and metric views. Export for use in other environments or apply directly." />
+          DDL Bundle <Tip text="Generate a unified SQL script covering comments, domain tags, sensitivity tags, ontology tags, and FK metadata. Export for use in other environments or apply directly." />
         </h3>
-        <div className="flex flex-wrap gap-2">
+        <div className="flex flex-wrap gap-2 items-center">
           {[
             ['comments', 'Comments'], ['domain', 'Domain'], ['sensitivity', 'Sensitivity'],
-            ['ontology', 'Ontology Tags'], ['fk_tags', 'FK Tags'], ['fk_constraints', 'FK Constraints'],
-            ['data_quality', 'Data Quality'], ['geo', 'Geo Tags'], ['metric_views', 'Metric Views'],
+            ['ontology', 'Ontology Tags'], ['fk', 'Foreign Keys'],
           ].map(([key, label]) => (
             <label key={key} className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border cursor-pointer select-none transition-all duration-200 ${bundleTypes[key] ? 'bg-dbx-teal/10 border-dbx-teal text-dbx-teal dark:bg-dbx-teal/20 dark:text-dbx-teal-light' : 'bg-white dark:bg-dbx-navy/60 border-slate-300 dark:border-dbx-navy-400/40 text-slate-600 dark:text-slate-400'}`}>
               <input type="checkbox" checked={!!bundleTypes[key]} onChange={() => setBundleTypes(prev => ({ ...prev, [key]: !prev[key] }))} className="sr-only" />
               {label}
             </label>
           ))}
+          {bundleTypes.fk && (
+            <select value={fkMode} onChange={e => setFkMode(e.target.value)}
+              className="border border-slate-300 dark:border-dbx-navy-400/40 rounded px-2 py-1 text-xs bg-white dark:bg-dbx-navy/60 dark:text-slate-200">
+              <option value="tags">FK as Tags</option>
+              <option value="constraints">FK as Constraints</option>
+            </select>
+          )}
         </div>
         <div className="flex flex-wrap items-center gap-3">
           <input value={bundleTargetCatalog} onChange={e => setBundleTargetCatalog(e.target.value)} placeholder="Target catalog (optional)"
@@ -1354,8 +1395,15 @@ function ReviewEditor() {
             </>
           )}
         </div>
-        {bundleLoading && <p className="text-sm text-slate-500">Generating DDL bundle...</p>}
+        {bundleLoading && <p className="text-sm text-slate-500">
+          {bundleApplyProgress ? `Applying: ${bundleApplyProgress.current_section || '...'} (${bundleApplyProgress.total_applied || 0} applied)` : 'Generating DDL bundle...'}
+        </p>}
         {bundleError && <p className="text-sm text-red-600">{bundleError}</p>}
+        {bundleWarnings && bundleWarnings.length > 0 && (
+          <div className="text-xs text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700/30 rounded px-3 py-2 space-y-0.5">
+            {bundleWarnings.map((w, i) => <p key={i}>{w}</p>)}
+          </div>
+        )}
         {bundleCounts && (
           <div className="flex flex-wrap gap-2">
             {Object.entries(bundleCounts).filter(([, n]) => n > 0).map(([k, n]) => (
