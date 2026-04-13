@@ -484,6 +484,7 @@ class SemanticGenerateRequest(BaseModel):
     schema_name: Optional[str] = None
     model_endpoint: str = _LLM_MODEL
     project_id: Optional[str] = None
+    profile_id: Optional[str] = None
     mode: str = (
         "replace"  # "replace" (supersede matching), "additive" (skip supersede), "replace_all" (supersede ALL in project)
     )
@@ -5023,11 +5024,11 @@ def _sl_extra_sql_context(in_clause: str) -> str:
 
 def _build_sl_context(
     tables: list[str], cat: str, sch: str, questions: list[str] | None = None,
-    business_context: str | None = None,
+    business_context: str | None = None, profile_id: str | None = None,
 ) -> str:
     """Build enriched context from KB tables, Vector Search, graph, and ontology. Cached 120s."""
     q_key = ",".join(sorted(questions)) if questions else ""
-    cache_key = f"{cat}.{sch}:" + ",".join(sorted(tables)) + ":" + q_key
+    cache_key = f"{cat}.{sch}:" + ",".join(sorted(tables)) + ":" + q_key + ":" + (profile_id or "")
     with _sl_context_lock:
         if cache_key in _sl_context_cache:
             return _sl_context_cache[cache_key]
@@ -5217,8 +5218,9 @@ def _build_sl_context(
 
     # KPI library enrichment (skip gracefully if table doesn't exist yet)
     try:
+        kpi_where = f" WHERE profile_id = '{profile_id}'" if profile_id else ""
         kpi_rows = execute_sql(
-            f"SELECT name, description, formula, domain, target_tables FROM {fq('kpi_definitions')}"
+            f"SELECT name, description, formula, domain, target_tables, validation_status FROM {fq('kpi_definitions')}{kpi_where}"
         )
         if kpi_rows:
             # Filter KPIs to those whose target_tables overlap with selected tables
@@ -6398,6 +6400,7 @@ def _run_sl_generation(
     project_id: str = None,
     mode: str = "replace",
     business_context: str = None,
+    profile_id: str = None,
 ):
     """Background thread for in-app metric view generation (two-phase)."""
     from datetime import datetime as _dt
@@ -6430,7 +6433,7 @@ def _run_sl_generation(
                 pass
 
         task["stage"] = "building_context"
-        context = _build_sl_context(tables, cat, sch, questions=questions, business_context=business_context)
+        context = _build_sl_context(tables, cat, sch, questions=questions, business_context=business_context, profile_id=profile_id)
         if not context.strip():
             task.update({"status": "error", "error": "No metadata found for selected tables. Run metadata generation first."})
             return
@@ -6703,6 +6706,7 @@ def start_sl_generation(req: SemanticGenerateRequest):
             req.project_id,
             req.mode,
             req.business_context,
+            req.profile_id,
         ),
         daemon=True,
     ).start()
@@ -8287,9 +8291,10 @@ class KpiSuggestRequest(BaseModel):
 
 
 @app.get("/api/kpis")
-def list_kpis():
+def list_kpis(profile_id: str = None):
     _ensure_kpi_table()
-    return execute_sql(f"SELECT * FROM {fq('kpi_definitions')} ORDER BY updated_at DESC")
+    where = f" WHERE profile_id = '{profile_id}'" if profile_id else ""
+    return execute_sql(f"SELECT * FROM {fq('kpi_definitions')}{where} ORDER BY updated_at DESC")
 
 
 @app.post("/api/kpis")
