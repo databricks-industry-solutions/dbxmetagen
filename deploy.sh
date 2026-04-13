@@ -215,7 +215,14 @@ bash scripts/export_requirements.sh
 echo ""
 echo "=== Building Python package ==="
 rm -rf dist/
+# Stamp version with deploy timestamp so the app platform always reinstalls.
+# DAB does this for job artifacts via dynamic_version; the app gets a direct
+# file copy whose version must differ each deploy to avoid pip skipping it.
+BASE_VERSION=$(python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+DEPLOY_VERSION="${BASE_VERSION}+$(date +%s)"
+sed -i.deploy_bak "s/^version = \"${BASE_VERSION}\"/version = \"${DEPLOY_VERSION}\"/" pyproject.toml
 uv build -q
+mv pyproject.toml.deploy_bak pyproject.toml
 echo "Python package built: $(ls dist/*.whl)"
 
 # --- Copy configurations and wheel into app source for deployment ---

@@ -6,6 +6,7 @@ Used by ``scripts/build_ontology_indexes.py`` and the app import-ontology path.
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -56,6 +57,8 @@ def entities_from_bundle(bundle_path: Path) -> Dict[str, Dict[str, Any]]:
         outgoing_edges = []
         relationships: Dict[str, Dict[str, str]] = {}
         for edge_name, edge_info in rels.items():
+            if isinstance(edge_info, str):
+                edge_info = {"target": edge_info}
             target = edge_info.get("target", "")
             if isinstance(target, list):
                 target = target[0]
@@ -66,7 +69,11 @@ def entities_from_bundle(bundle_path: Path) -> Dict[str, Dict[str, Any]]:
                 "name": edge_name,
                 "uri": "",
                 "range": target,
+                "ranges": edge_info.get("ranges", [target] if target else []),
                 "inverse": inv,
+                "label": edge_info.get("label"),
+                "sub_property_of": edge_info.get("sub_property_of"),
+                "facet": edge_info.get("facet"),
             })
             relationships[edge_name] = {"target": target, "cardinality": cardinality}
 
@@ -76,6 +83,7 @@ def entities_from_bundle(bundle_path: Path) -> Dict[str, Dict[str, Any]]:
 
         all_entities[name] = {
             "description": defn.get("description", f"{name} entity"),
+            "label": defn.get("label", name),
             "source": source,
             "uri": uri,
             "parents": parents,
@@ -157,6 +165,9 @@ def _build_edges_t3(
             if cat.get("range") is not None:
                 row["range"] = cat["range"]
 
+        if "category" not in row and row.get("facet"):
+            row["category"] = row["facet"]
+
         dom_n = _endpoint_name(row.get("domain"))
         rng_n = _endpoint_name(row.get("range"))
         if dom_n:
@@ -183,13 +194,15 @@ def build_tiers(
     Edge tier 3 adds bundle edge_catalog fields and domain/range endpoint profiles;
     edge tier 2 stays the lighter confirmation slice.
     """
-    tier1 = [{"name": k, "description": v["description"][:200]} for k, v in sorted(all_entities.items())]
+    tier1 = [{"name": k, "description": v["description"][:200], "label": v.get("label", k)}
+             for k, v in sorted(all_entities.items())]
 
     tier2 = {}
     for name, data in all_entities.items():
         edges = data.get("outgoing_edges", [])[:8]
         tier2[name] = {
             "description": data["description"],
+            "label": data.get("label", name),
             "source_ontology": data["source"],
             "uri": data["uri"],
             "parents": data.get("parents", []),
@@ -200,6 +213,7 @@ def build_tiers(
     for name, data in all_entities.items():
         tier3[name] = {
             "description": data["description"],
+            "label": data.get("label", name),
             "source_ontology": data["source"],
             "uri": data["uri"],
             "parents": data.get("parents", []),
@@ -213,9 +227,11 @@ def build_tiers(
 
     all_edges: Dict[str, Dict[str, Any]] = {}
     for ent_name, data in all_entities.items():
+        rels = data.get("relationships", {})
         for edge in data.get("outgoing_edges", []):
             ename = edge.get("name")
             if ename and ename not in all_edges:
+                card = rels.get(ename, {}).get("cardinality", "unknown") if isinstance(rels.get(ename), dict) else "unknown"
                 all_edges[ename] = {
                     "name": ename,
                     "domain": ent_name,
@@ -223,9 +239,15 @@ def build_tiers(
                     "ranges": edge.get("ranges", []),
                     "uri": edge.get("uri"),
                     "inverse": edge.get("inverse"),
+                    "cardinality": card,
+                    "label": edge.get("label"),
+                    "facet": edge.get("facet"),
+                    "sub_property_of": edge.get("sub_property_of"),
                 }
 
-    edges_t1 = [{"name": e["name"], "domain": e["domain"], "range": e.get("range")}
+    edges_t1 = [{"name": e["name"], "domain": e["domain"], "range": e.get("range"),
+                  "cardinality": e.get("cardinality", "unknown"),
+                  "label": e.get("label"), "facet": e.get("facet")}
                 for e in sorted(all_edges.values(), key=lambda x: x["name"])]
     edges_t2 = {k: v for k, v in all_edges.items()}
     edges_t3 = _build_edges_t3(edges_t2, all_entities, edge_catalog)
@@ -247,19 +269,22 @@ def build_tiers(
         return counts
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    files = {
-        "entities_tier1.yaml": tier1,
-        "entities_tier2.yaml": tier2,
-        "entities_tier3.yaml": tier3,
-        "edges_tier1.yaml": edges_t1,
-        "edges_tier2.yaml": edges_t2,
-        "edges_tier3.yaml": edges_t3,
-        "equivalent_class_uris.yaml": uris,
+    tier_data = {
+        "entities_tier1": tier1,
+        "entities_tier2": tier2,
+        "entities_tier3": tier3,
+        "edges_tier1": edges_t1,
+        "edges_tier2": edges_t2,
+        "edges_tier3": edges_t3,
+        "equivalent_class_uris": uris,
     }
-    for fname, data in files.items():
-        path = output_dir / fname
-        with open(path, "w", encoding="utf-8") as f:
+    for stem, data in tier_data.items():
+        yaml_path = output_dir / f"{stem}.yaml"
+        with open(yaml_path, "w", encoding="utf-8") as f:
             yaml.dump(data, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
-        logger.info("Wrote %s (%d bytes)", path, path.stat().st_size)
+        json_path = output_dir / f"{stem}.json"
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=None)
+        logger.info("Wrote %s (%d bytes) + .json (%d bytes)", yaml_path, yaml_path.stat().st_size, json_path.stat().st_size)
 
     return counts

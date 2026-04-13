@@ -91,8 +91,8 @@ Description: {sample}
 
 Prior candidates: {candidates}
 
-Return JSON: {{"predicted_entity": "Name", "source_ontology": "FHIR R4|OMOP CDM|Schema.org", "equivalent_class_uri": "http://...", "confidence_score": 0.0-1.0, "rationale": "one sentence", "needs_deep_pass": true|false}}
-Set needs_deep_pass=true only if confidence_score < 0.75."""
+Return JSON: {{"predicted_entity": "Name", "equivalent_class_uri": "http://...", "confidence_score": 0.0-1.0, "rationale": "one sentence", "needs_deep_pass": true|false}}
+Candidates and URIs must come only from the ENTITY INDEX / profiles above (active bundle). Set needs_deep_pass=true only if confidence_score < 0.75."""
 
 PASS3_USER = """Final classification. Full profiles:
 
@@ -105,12 +105,13 @@ Description: {sample}
 
 Remaining: {candidates}
 
-Return JSON: {{"predicted_entity": "Name", "source_ontology": "...", "equivalent_class_uri": "http://...", "confidence_score": 0.0-1.0, "rationale": "two sentences", "matched_properties": ["col -> ontology_property"]}}"""
+Return JSON: {{"predicted_entity": "Name", "equivalent_class_uri": "http://...", "confidence_score": 0.0-1.0, "rationale": "two sentences", "matched_properties": ["col -> ontology_property"]}}
+Use only entity names and URIs from the profiles above."""
 
 SYSTEM_PROMPT = (
     "You are an ontology classification expert. "
-    "Match database tables to formal ontology entities from published standards "
-    "(FHIR R4, OMOP CDM, Schema.org). Return ONLY valid JSON."
+    "Match database tables to entities from the active ontology bundle index shown in the prompt. "
+    "Do not invent classes from other standards. Return ONLY valid JSON."
 )
 
 EDGE_PASS1_USER = """Match this foreign key relationship to a formal ontology edge.
@@ -133,8 +134,8 @@ Source entity: {src_entity}
 Target entity: {dst_entity}
 Prior candidates: {candidates}
 
-Return JSON: {{"predicted_edge": "name", "edge_uri": "http://...", "inverse": "name_or_null", "source_ontology": "...", "confidence_score": 0.0-1.0, "rationale": "one sentence", "needs_deep_pass": true|false}}
-Set needs_deep_pass=true only if confidence_score < 0.75."""
+Return JSON: {{"predicted_edge": "name", "edge_uri": "http://...", "inverse": "name_or_null", "confidence_score": 0.0-1.0, "rationale": "one sentence", "needs_deep_pass": true|false}}
+Use only edges from the EDGE INDEX / profiles. Set needs_deep_pass=true only if confidence_score < 0.75."""
 
 EDGE_PASS3_USER = """Final edge classification. Tier-3 profiles add bundle edge_catalog fields (category, symmetric, canonical domain/range/inverse when present) and domain_profile / range_profile summaries for endpoint classes—use them to disambiguate.
 
@@ -145,7 +146,8 @@ Source entity: {src_entity}
 Target entity: {dst_entity}
 Prior candidates: {candidates}
 
-Return JSON: {{"predicted_edge": "name", "edge_uri": "http://...", "inverse": "name_or_null", "source_ontology": "...", "confidence_score": 0.0-1.0, "rationale": "two sentences"}}"""
+Return JSON: {{"predicted_edge": "name", "edge_uri": "http://...", "inverse": "name_or_null", "confidence_score": 0.0-1.0, "rationale": "two sentences"}}
+Use only edges and URIs from the profiles above."""
 
 
 # ---------------------------------------------------------------------------
@@ -318,11 +320,13 @@ def predict_entity(
     needs_deep = resp2.get("needs_deep_pass", score2 < 0.75)
 
     if not needs_deep:
-        uri = resp2.get("equivalent_class_uri") or loader.get_uri(resp2.get("predicted_entity", ""))
+        pred_ent = resp2.get("predicted_entity", candidates[0])
+        uri = resp2.get("equivalent_class_uri") or loader.get_uri(pred_ent)
+        canon_so = _entity_bundle_source_ontology(tier2, None, pred_ent)
         return PredictionResult(
             table_name=table_name,
-            predicted_entity=resp2.get("predicted_entity", candidates[0]),
-            source_ontology=resp2.get("source_ontology", ""),
+            predicted_entity=pred_ent,
+            source_ontology=canon_so,
             equivalent_class_uri=uri,
             confidence_score=score2,
             rationale=resp2.get("rationale", ""),
@@ -342,11 +346,13 @@ def predict_entity(
     resp3 = _safe_parse_response(llm_fn, SYSTEM_PROMPT, prompt3, f"Pass3:{table_name}")
     if not resp3 or not _validate_pass2(resp3):
         # Pass 3 failed -- return the Pass 2 result instead of crashing
-        uri = resp2.get("equivalent_class_uri") or loader.get_uri(resp2.get("predicted_entity", ""))
+        pred_ent = resp2.get("predicted_entity", candidates[0])
+        uri = resp2.get("equivalent_class_uri") or loader.get_uri(pred_ent)
+        canon_so = _entity_bundle_source_ontology(tier2, tier3, pred_ent)
         return PredictionResult(
             table_name=table_name,
-            predicted_entity=resp2.get("predicted_entity", candidates[0]),
-            source_ontology=resp2.get("source_ontology", ""),
+            predicted_entity=pred_ent,
+            source_ontology=canon_so,
             equivalent_class_uri=uri,
             confidence_score=score2,
             rationale=resp2.get("rationale", "Pass 3 failed, returning Pass 2 result"),
@@ -356,10 +362,11 @@ def predict_entity(
     score3 = _safe_float(resp3.get("confidence_score"), 0.0)
     entity = resp3.get("predicted_entity", candidates[0])
     uri = resp3.get("equivalent_class_uri") or loader.get_uri(entity)
+    canon_so3 = _entity_bundle_source_ontology(tier2, tier3, entity)
     return PredictionResult(
         table_name=table_name,
         predicted_entity=entity,
-        source_ontology=resp3.get("source_ontology", ""),
+        source_ontology=canon_so3,
         equivalent_class_uri=uri,
         confidence_score=score3,
         rationale=resp3.get("rationale", ""),
@@ -367,6 +374,69 @@ def predict_entity(
         passes_run=3,
         needs_human_review=score3 < 0.6,
     )
+
+
+def _entity_bundle_source_ontology(
+    tier2: Optional[Dict[str, Any]],
+    tier3: Optional[Dict[str, Any]],
+    entity_name: str,
+) -> str:
+    """Provenance label from scoped entity indexes (active bundle), not LLM text."""
+    if not entity_name:
+        return ""
+    for tier in (tier3, tier2):
+        if not tier or entity_name not in tier:
+            continue
+        node = tier[entity_name]
+        if not isinstance(node, dict):
+            continue
+        so = node.get("source_ontology")
+        if so:
+            return str(so)
+    return ""
+
+
+def _edge_bundle_source_ontology(
+    tier2: Optional[Dict[str, Any]],
+    tier3: Optional[Dict[str, Any]],
+    edge_name: str,
+) -> str:
+    """Prefer provenance from scoped edge indexes (active bundle), not LLM text."""
+    if not edge_name:
+        return ""
+    for tier in (tier3, tier2):
+        if not tier or edge_name not in tier:
+            continue
+        node = tier[edge_name]
+        if not isinstance(node, dict):
+            continue
+        so = node.get("source_ontology")
+        if so:
+            return str(so)
+        dp = node.get("domain_profile")
+        if isinstance(dp, dict) and dp.get("source_ontology"):
+            return str(dp["source_ontology"])
+    return ""
+
+
+def _edge_bundle_uri(
+    tier2: Optional[Dict[str, Any]],
+    tier3: Optional[Dict[str, Any]],
+    edge_name: str,
+) -> str:
+    """Canonical edge URI from scoped edge indexes when present."""
+    if not edge_name:
+        return ""
+    for tier in (tier3, tier2):
+        if not tier or edge_name not in tier:
+            continue
+        node = tier[edge_name]
+        if not isinstance(node, dict):
+            continue
+        u = node.get("edge_uri") or node.get("uri")
+        if u:
+            return str(u)
+    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -472,23 +542,28 @@ def predict_edge(
         resp3 = _safe_parse_response(llm_fn, SYSTEM_PROMPT, prompt3, f"Pass3:{ctx}")
         if resp3 and "predicted_edge" in resp3:
             pe = resp3.get("predicted_edge", resp2.get("predicted_edge", "references"))
+            canon_so = _edge_bundle_source_ontology(tier2, tier3, pe)
+            canon_uri = _edge_bundle_uri(tier2, tier3, pe)
             return EdgePredictionResult(
                 from_table=from_table, to_table=to_table,
                 predicted_edge=pe,
-                edge_uri=resp3.get("edge_uri") or resp2.get("edge_uri"),
+                edge_uri=canon_uri or resp3.get("edge_uri") or resp2.get("edge_uri"),
                 inverse=resp3.get("inverse") or resp2.get("inverse"),
-                source_ontology=resp3.get("source_ontology", "") or resp2.get("source_ontology", ""),
+                source_ontology=canon_so,
                 confidence_score=_safe_float(resp3.get("confidence_score"), score2),
                 rationale=resp3.get("rationale", resp2.get("rationale", "")),
                 passes_run=3,
             )
 
+    pe2 = resp2.get("predicted_edge", "references")
+    canon_so2 = _edge_bundle_source_ontology(tier2, tier3, pe2)
+    canon_uri2 = _edge_bundle_uri(tier2, tier3, pe2)
     return EdgePredictionResult(
         from_table=from_table, to_table=to_table,
-        predicted_edge=resp2.get("predicted_edge", "references"),
-        edge_uri=resp2.get("edge_uri"),
+        predicted_edge=pe2,
+        edge_uri=canon_uri2 or resp2.get("edge_uri"),
         inverse=resp2.get("inverse"),
-        source_ontology=resp2.get("source_ontology", ""),
+        source_ontology=canon_so2,
         confidence_score=score2,
         rationale=resp2.get("rationale", ""),
         passes_run=2,

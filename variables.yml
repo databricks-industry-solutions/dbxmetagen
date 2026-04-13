@@ -192,7 +192,7 @@ variables:
     description: Databricks Foundation Model endpoint for generating embeddings
     default: databricks-bge-large-en
   ontology_config_path:
-    description: Path to ontology configuration YAML file
+    description: Path to ontology configuration YAML file. When left at the default, the config is automatically derived from ontology_bundle instead (e.g. ontology_bundles/general.yaml). Set explicitly only to override the bundle's entity definitions.
     default: configurations/ontology_config.yaml
   similarity_threshold:
     description: Cosine similarity threshold for creating similar_embedding edges between nodes (0.0-1.0)

@@ -149,6 +149,8 @@ __pycache__/
 databricks.yml
 apps/dbxmetagen-app/app/app.yaml
 apps/dbxmetagen-app/app/requirements.txt
+apps/dbxmetagen-app/app/dbxmetagen-*.whl
+apps/dbxmetagen-app/app/configurations/
 resources/apps/dbxmetagen_app.yml
 databricks_final.yml
 databricks_final.yml.tmp
@@ -173,6 +175,7 @@ docs/**
 
 .cursor/*
 !.cursor/rules/
+.cursor/rules/roadmap-awareness.mdc
 !.cursor/skills/
 .cursor/skills/*
 !.cursor/skills/dbxmetagen-development/

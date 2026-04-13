@@ -25,7 +25,7 @@ from pyspark.sql import functions as F
 from pyspark.sql.types import ArrayType, FloatType
 from pyspark.sql.window import Window
 
-from dbxmetagen.table_filter import table_filter_sql
+from dbxmetagen.table_filter import table_filter_sql, infrastructure_exclude_sql
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +40,7 @@ class KnowledgeGraphConfig:
     edges_table: str = "graph_edges"
     max_edges_group_size: int = 500
     table_names: list[str] | None = None
+    exclude_infrastructure: bool = True
 
     @property
     def fully_qualified_source(self) -> str:
@@ -122,6 +123,7 @@ class KnowledgeGraphBuilder:
         ("direction", "STRING"), ("join_expression", "STRING"),
         ("join_confidence", "DOUBLE"), ("ontology_rel", "STRING"),
         ("source_system", "STRING"), ("status", "STRING"),
+        ("edge_label", "STRING"), ("edge_facet", "STRING"),
         ("created_at", "TIMESTAMP"), ("updated_at", "TIMESTAMP"),
     ]
 
@@ -231,6 +233,8 @@ class KnowledgeGraphBuilder:
         ("ontology_rel", "STRING"),
         ("source_system", "STRING"),
         ("status", "STRING"),
+        ("edge_label", "STRING"),
+        ("edge_facet", "STRING"),
     ]
 
     def create_edges_table(self) -> None:
@@ -249,6 +253,8 @@ class KnowledgeGraphBuilder:
             ontology_rel STRING,
             source_system STRING,
             status STRING,
+            edge_label STRING,
+            edge_facet STRING,
             created_at TIMESTAMP,
             updated_at TIMESTAMP
         )
@@ -275,6 +281,7 @@ class KnowledgeGraphBuilder:
         Each table becomes a node with id = table_name.
         """
         tf = table_filter_sql(self.config.table_names or [], column="table_name")
+        infra_filter = infrastructure_exclude_sql(column="table_name") if self.config.exclude_infrastructure else ""
         df = self.spark.sql(f"""
             SELECT 
                 table_name,
@@ -289,7 +296,7 @@ class KnowledgeGraphBuilder:
                 created_at,
                 updated_at
             FROM {self.config.fully_qualified_source}
-            WHERE 1=1 {tf}
+            WHERE 1=1 {tf} {infra_filter}
         """)
         
         df = (
@@ -424,11 +431,15 @@ class KnowledgeGraphBuilder:
         else:
             logger.info("Single catalog detected -- skipping same_catalog edges")
         
-        # Same schema edges
-        schema_edges = self.build_edges_for_attribute(
-            nodes_df, "schema", "same_schema", max_group_size=cap
-        )
-        all_edges.append(schema_edges)
+        # Same schema edges (skip if mono-schema -- every pair is vacuous)
+        distinct_schemas = nodes_df.select("schema").distinct().count()
+        if distinct_schemas > 1:
+            schema_edges = self.build_edges_for_attribute(
+                nodes_df, "schema", "same_schema", max_group_size=cap
+            )
+            all_edges.append(schema_edges)
+        else:
+            logger.info("Single schema detected -- skipping same_schema edges")
         
         # Same security level edges (exclude PUBLIC -- O(N^2) noise)
         sensitive_nodes = nodes_df.filter(F.col("security_level").isin("PII", "PHI"))
@@ -450,7 +461,7 @@ class KnowledgeGraphBuilder:
             .withColumn("updated_at", F.current_timestamp())
         )
 
-        return combined.select(*[c for c, _ in self._EDGE_SCHEMA])
+        return self._align_edge_schema(combined)
     
     def merge_nodes(self, nodes_df: DataFrame) -> Dict[str, int]:
         """
@@ -626,17 +637,20 @@ class KnowledgeGraphBuilder:
             target.ontology_rel = COALESCE(source.ontology_rel, target.ontology_rel),
             target.source_system = COALESCE(source.source_system, target.source_system),
             target.status = COALESCE(source.status, target.status),
+            target.edge_label = COALESCE(source.edge_label, target.edge_label),
+            target.edge_facet = COALESCE(source.edge_facet, target.edge_facet),
             target.updated_at = source.updated_at
 
         WHEN NOT MATCHED THEN INSERT (
             src, dst, relationship, weight, edge_id, edge_type,
             direction, join_expression, join_confidence, ontology_rel,
-            source_system, status, created_at, updated_at
+            source_system, status, edge_label, edge_facet, created_at, updated_at
         ) VALUES (
             source.src, source.dst, source.relationship, source.weight,
             source.edge_id, source.edge_type, source.direction,
             source.join_expression, source.join_confidence, source.ontology_rel,
-            source.source_system, source.status, source.created_at, source.updated_at
+            source.source_system, source.status, source.edge_label, source.edge_facet,
+            source.created_at, source.updated_at
         )
         """
         
@@ -766,6 +780,7 @@ class ExtendedKnowledgeGraphBuilder(KnowledgeGraphBuilder):
         """Build nodes DataFrame from column knowledge base."""
         try:
             tf = table_filter_sql(self.ext_config.table_names or [], column="table_name")
+            infra_filter = infrastructure_exclude_sql(column="table_name") if self.ext_config.exclude_infrastructure else ""
             df = self.spark.sql(f"""
                 SELECT 
                     column_id,
@@ -781,7 +796,7 @@ class ExtendedKnowledgeGraphBuilder(KnowledgeGraphBuilder):
                     created_at,
                     updated_at
                 FROM {self.ext_config.fully_qualified_column_kb}
-                WHERE 1=1 {tf}
+                WHERE 1=1 {tf} {infra_filter}
             """)
             
             return (
@@ -891,7 +906,8 @@ class ExtendedKnowledgeGraphBuilder(KnowledgeGraphBuilder):
         "src STRING, dst STRING, relationship STRING, weight DOUBLE, "
         "edge_id STRING, edge_type STRING, direction STRING, "
         "join_expression STRING, join_confidence DOUBLE, ontology_rel STRING, "
-        "source_system STRING, status STRING, created_at TIMESTAMP, updated_at TIMESTAMP"
+        "source_system STRING, status STRING, edge_label STRING, edge_facet STRING, "
+        "created_at TIMESTAMP, updated_at TIMESTAMP"
     )
 
     def _enrich_edges(self, df: DataFrame, edge_type: str, source_sys: str = "knowledge_graph") -> DataFrame:
@@ -909,7 +925,7 @@ class ExtendedKnowledgeGraphBuilder(KnowledgeGraphBuilder):
             .withColumn("created_at", F.current_timestamp())
             .withColumn("updated_at", F.current_timestamp())
         )
-        return enriched.select(*[c for c, _ in self._EDGE_SCHEMA])
+        return self._align_edge_schema(enriched)
 
     def build_containment_edges(self, nodes_df: DataFrame) -> DataFrame:
         """Build 'contains' edges for hierarchical relationships."""
@@ -989,6 +1005,8 @@ class ExtendedKnowledgeGraphBuilder(KnowledgeGraphBuilder):
                     .withColumn("ontology_rel", F.lit(None).cast("string"))
                     .withColumn("source_system", F.lit("fk_predictions"))
                     .withColumn("status", F.lit("candidate"))
+                    .withColumn("edge_label", F.lit(None).cast("string"))
+                    .withColumn("edge_facet", F.lit(None).cast("string"))
                     .withColumn("created_at", F.current_timestamp())
                     .withColumn("updated_at", F.current_timestamp())
                     .drop("join_expr", "conf", "src_table", "dst_table", "src_column", "dst_column")
@@ -1012,40 +1030,6 @@ class ExtendedKnowledgeGraphBuilder(KnowledgeGraphBuilder):
             logger.warning("Could not build reference edges: %s", e)
             return self.spark.createDataFrame([], self._EMPTY_EDGE_SCHEMA)
 
-    def build_column_classification_edges(self, nodes_df: DataFrame) -> DataFrame:
-        """Build 'same_classification' edges between columns sharing the same
-        *specific* classification type (e.g. email_address, ssn) rather than
-        the coarse PII/PHI bucket."""
-        try:
-            tf = table_filter_sql(self.ext_config.table_names or [], column="table_name")
-            classified = self.spark.sql(f"""
-                SELECT column_id, LOWER(TRIM(classification)) AS cls
-                FROM {self.ext_config.fully_qualified_column_kb}
-                WHERE classification IS NOT NULL
-                  AND LOWER(TRIM(classification)) NOT IN ('none', 'null', '', 'public')
-                  {tf}
-            """)
-            if classified.count() == 0:
-                logger.info("No classified columns found for same_classification edges")
-                return self.spark.createDataFrame([], self._EMPTY_EDGE_SCHEMA)
-
-            df_a = classified.select(F.col("column_id").alias("src"), F.col("cls").alias("cls_a"))
-            df_b = classified.select(F.col("column_id").alias("dst"), F.col("cls").alias("cls_b"))
-
-            edges = (
-                df_a.join(df_b, df_a.cls_a == df_b.cls_b)
-                .filter(F.col("src") < F.col("dst"))
-                .select("src", "dst")
-                .withColumn("relationship", F.lit("same_classification"))
-                .withColumn("weight", F.lit(1.0))
-            )
-            edges = self._enrich_edges(edges, "same_classification")
-            logger.info("Built same_classification edges (specific type) for columns")
-            return edges
-        except Exception as e:
-            logger.warning("Could not build column classification edges: %s", e)
-            return self.spark.createDataFrame([], self._EMPTY_EDGE_SCHEMA)
-    
     def build_all_extended_edges(self, all_nodes_df: DataFrame) -> DataFrame:
         """Build all edges including extended relationship types."""
         all_edges = []
@@ -1058,11 +1042,6 @@ class ExtendedKnowledgeGraphBuilder(KnowledgeGraphBuilder):
         # Containment edges
         containment_edges = self.build_containment_edges(all_nodes_df)
         all_edges.append(containment_edges)
-        
-        # Column classification edges (same PII/PHI type)
-        classification_edges = self.build_column_classification_edges(all_nodes_df)
-        if classification_edges.count() > 0:
-            all_edges.append(classification_edges)
         
         # Lineage edges
         lineage_edges = self.build_lineage_edges()

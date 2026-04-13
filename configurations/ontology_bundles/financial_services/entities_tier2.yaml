@@ -1,5 +1,6 @@
 Person:
   description: People, customers, contacts, users, or employees
+  label: Person
   source_ontology: schema.org
   uri: https://schema.org/Person
   parents: []
@@ -8,6 +9,7 @@ Person:
   - part_of
 Organization:
   description: Companies, departments, facilities, or business units
+  label: Organization
   source_ontology: schema.org
   uri: https://schema.org/Organization
   parents: []
@@ -16,12 +18,14 @@ Organization:
   - part_of
 Product:
   description: Goods, services, SKUs, or catalog items
+  label: Product
   source_ontology: schema.org
   uri: https://schema.org/Product
   parents: []
   edges: []
 Transaction:
   description: Orders, purchases, payments, invoices, or financial events
+  label: Transaction
   source_ontology: schema.org
   uri: https://schema.org/Invoice
   parents: []
@@ -30,12 +34,14 @@ Transaction:
   - by_person
 Location:
   description: Addresses, sites, regions, facilities, or geographies
+  label: Location
   source_ontology: schema.org
   uri: https://schema.org/Place
   parents: []
   edges: []
 Event:
   description: Activities, logs, sessions, audits, or system events
+  label: Event
   source_ontology: schema.org
   uri: https://schema.org/Event
   parents: []
@@ -43,18 +49,21 @@ Event:
   - references
 Reference:
   description: Lookup tables, codes, categories, dimensions, or configuration
+  label: Reference
   source_ontology: schema.org
   uri: https://schema.org/Thing
   parents: []
   edges: []
 Metric:
   description: KPIs, aggregates, facts, summaries, or analytic measures
+  label: Metric
   source_ontology: schema.org
   uri: https://schema.org/QuantitativeValue
   parents: []
   edges: []
 Document:
   description: Unstructured content, notes, files, or text records
+  label: Document
   source_ontology: schema.org
   uri: https://schema.org/DigitalDocument
   parents: []
@@ -63,6 +72,7 @@ Document:
 Account:
   description: Bank accounts, investment accounts, loan accounts, or general ledger
     accounts
+  label: Account
   source_ontology: FIBO
   uri: https://spec.edmcouncil.org/fibo/ontology/FND/AccountingExt/Account
   parents: []
@@ -71,6 +81,7 @@ Account:
   - has_transaction
 Portfolio:
   description: Investment portfolios, fund holdings, or asset allocations
+  label: Portfolio
   source_ontology: FIBO
   uri: https://spec.edmcouncil.org/fibo/ontology/SEC/Securities/Portfolios/Portfolio
   parents: []
@@ -79,6 +90,7 @@ Portfolio:
   - managed_by
 Trade:
   description: Securities trades, FX transactions, or market orders
+  label: Trade
   source_ontology: FIBO
   uri: https://spec.edmcouncil.org/fibo/ontology/FBC/FunctionalEntities/Trade
   parents: []
@@ -88,6 +100,7 @@ Trade:
   - on_account
 Instrument:
   description: Financial instruments -- equities, bonds, derivatives, currencies
+  label: Instrument
   source_ontology: FIBO
   uri: https://spec.edmcouncil.org/fibo/ontology/FBC/FinancialInstruments/FinancialInstrument
   parents: []
@@ -95,6 +108,7 @@ Instrument:
   - hedges
 Counterparty:
   description: Trading counterparties, custodians, or correspondent banks
+  label: Counterparty
   source_ontology: FIBO
   uri: https://spec.edmcouncil.org/fibo/ontology/FBC/FunctionalEntities/Counterparty
   parents: []
@@ -102,6 +116,7 @@ Counterparty:
   - has_trade
 Risk:
   description: Risk exposures, limits, VaR, stress tests, or credit scores
+  label: Risk
   source_ontology: BIAN
   uri: https://bian.org/servicedomain/RiskManagement
   parents: []
@@ -110,6 +125,7 @@ Risk:
   - for_instrument
 Compliance:
   description: Regulatory filings, KYC records, AML alerts, or sanctions screening
+  label: Compliance
   source_ontology: BIAN
   uri: https://bian.org/servicedomain/RegulatoryCompliance
   parents: []
@@ -118,6 +134,7 @@ Compliance:
   - for_organization
 Claim:
   description: Insurance claims, loss events, or reimbursement requests
+  label: Claim
   source_ontology: BIAN
   uri: https://bian.org/servicedomain/ClaimsHandling/Claim
   parents: []
@@ -126,6 +143,7 @@ Claim:
   - filed_by
 Policy:
   description: Insurance policies, coverage terms, or underwriting records
+  label: Policy
   source_ontology: BIAN
   uri: https://bian.org/servicedomain/InsurancePolicy
   parents: []
@@ -134,6 +152,7 @@ Policy:
   - issued_by
 Loan:
   description: Loans, mortgages, credit facilities, or lending agreements
+  label: Loan
   source_ontology: FIBO
   uri: https://spec.edmcouncil.org/fibo/ontology/LOAN/LoanTypes/Loan
   parents: []

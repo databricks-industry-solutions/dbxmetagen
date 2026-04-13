@@ -1,17 +1,24 @@
 - name: Address
   description: Street addresses, mailing addresses, or physical site addresses
+  label: Address
 - name: AdminRegion
   description: Administrative or political geographic regions — countries, states,
     provinces, counties, districts, municipalities, or named areas
+  label: AdminRegion
 - name: GeoCoordinate
   description: Latitude/longitude pairs, GPS coordinates, or geospatial point data
+  label: GeoCoordinate
 - name: Geographic
   description: Any column or table representing a physical location, address component,
     or geographic area
+  label: Geographic
 - name: NonGeographic
   description: Columns with location-like names that do NOT represent physical geography
     (file paths, URLs, memory addresses)
+  label: NonGeographic
 - name: PostalCode
   description: Postal codes, ZIP codes, or mail routing codes
+  label: PostalCode
 - name: Timezone
   description: Timezone identifiers, UTC offsets, or time zone region names
+  label: Timezone

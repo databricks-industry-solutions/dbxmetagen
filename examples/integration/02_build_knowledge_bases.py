@@ -12,7 +12,25 @@
 
 # COMMAND ----------
 
-# MAGIC %pip install -qqq git+https://github.com/databricks-industry-solutions/dbxmetagen.git@main
+import os
+import sys
+
+_mp = os.path.dirname(os.path.abspath(__file__)) if "__file__" in dir() else os.getcwd()
+if _mp not in sys.path:
+    sys.path.insert(0, _mp)
+try:
+    from install_dbxmetagen import install_dbxmetagen
+except ImportError:
+    sys.path.insert(0, os.path.join(os.getcwd(), "metagen_pipeline"))
+    from install_dbxmetagen import install_dbxmetagen
+
+dbutils.widgets.text("install_source", os.getenv("METAGEN_INSTALL_SOURCE", "auto"))
+src = dbutils.widgets.get("install_source")
+install_dbxmetagen(src)
+
+# COMMAND ----------
+
+dbutils.library.restartPython()
 
 # COMMAND ----------
 
@@ -21,6 +39,9 @@ from pyspark.sql import SparkSession
 
 dbutils.widgets.text("catalog_name", os.getenv("CATALOG_NAME", ""), "Catalog Name (required)")
 dbutils.widgets.text("schema_name", os.getenv("SCHEMA_NAME", "default"), "Output Schema")
+# Re-declared so DAB base_parameters can pass install_source without "widget not found" errors.
+dbutils.widgets.text("install_source", os.getenv("METAGEN_INSTALL_SOURCE", "auto"))
+
 catalog_name = dbutils.widgets.get("catalog_name")
 schema_name = dbutils.widgets.get("schema_name")
 

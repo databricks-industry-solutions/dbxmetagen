@@ -219,6 +219,9 @@ class MetadataConfig:
         self.build_knowledge_graph = _parse_bool(
             getattr(self, "build_knowledge_graph", False)
         )
+        self.exclude_infrastructure = _parse_bool(
+            getattr(self, "exclude_infrastructure", True)
+        )
 
         # Handle review_apply_ddl if present
         if hasattr(self, "review_apply_ddl"):

@@ -28,3 +28,11 @@ repos:
         files: ^(pyproject\.toml|uv\.lock)$
         pass_filenames: false
         stages: [pre-commit]
+
+      - id: pure-logic-tests
+        name: Pure logic tests
+        language: system
+        entry: bash -c 'uv run pytest tests/test_pure_logic.py -x -q'
+        files: ^src/dbxmetagen/
+        pass_filenames: false
+        stages: [pre-commit]

@@ -1,0 +1,9 @@
+- name: Encounter
+  description: An interaction between a patient and healthcare providers
+  label: Encounter
+- name: Organization
+  description: A formally recognized grouping of people or entities
+  label: Organization
+- name: Patient
+  description: A person receiving healthcare services
+  label: Patient

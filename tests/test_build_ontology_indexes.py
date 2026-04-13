@@ -36,6 +36,7 @@ from build_ontology_indexes import (
     _extract_single_class,
     _extract_union_domain_edges,
     _get_comment,
+    _get_label,
     _resolve_cardinality,
 )
 from dbxmetagen.ontology_bundle_indexes import build_tiers
@@ -531,3 +532,209 @@ class TestDiscoverSchemaOrgClasses:
         g = _make_schema_graph()
         result = _discover_schema_org_classes(g, "https://schema.org/")
         assert result == {"Person", "Organization", "MedicalCondition", "Hospital", "Thing"}
+
+
+class TestGetLabel:
+    def test_rdfs_label(self):
+        g = Graph()
+        cls_uri = NS["Patient"]
+        g.add((cls_uri, RDFS.label, Literal("Patient Resource")))
+        assert _get_label(g, cls_uri, RDFS) == "Patient Resource"
+
+    def test_dc_title_fallback(self):
+        g = Graph()
+        cls_uri = NS["Patient"]
+        DC_TITLE = URIRef("http://purl.org/dc/elements/1.1/title")
+        g.add((cls_uri, DC_TITLE, Literal("Patient Title")))
+        assert _get_label(g, cls_uri, RDFS) == "Patient Title"
+
+    def test_camel_case_fallback(self):
+        g = Graph()
+        cls_uri = NS["AllergyIntolerance"]
+        assert _get_label(g, cls_uri, RDFS) == "Allergy Intolerance"
+
+
+class TestResolveCardinalityExtended:
+    """Tests for someValuesFrom / allValuesFrom cardinality mapping."""
+
+    def test_some_values_from_maps_to_one_to_many(self):
+        g = Graph()
+        cls = NS["Patient"]
+        prop = NS["hasEncounter"]
+        restriction = BNode()
+        g.add((cls, RDFS.subClassOf, restriction))
+        g.add((restriction, OWL.onProperty, prop))
+        g.add((restriction, OWL.someValuesFrom, NS["Encounter"]))
+        result = _resolve_cardinality(g, cls, OWL, RDFS)
+        assert result["hasEncounter"] == "one-to-many"
+
+    def test_all_values_from_maps_to_zero_to_many(self):
+        g = Graph()
+        cls = NS["Patient"]
+        prop = NS["hasAddress"]
+        restriction = BNode()
+        g.add((cls, RDFS.subClassOf, restriction))
+        g.add((restriction, OWL.onProperty, prop))
+        g.add((restriction, OWL.allValuesFrom, NS["Address"]))
+        result = _resolve_cardinality(g, cls, OWL, RDFS)
+        assert result["hasAddress"] == "zero-to-many"
+
+    def test_explicit_cardinality_overrides_some_values_from(self):
+        g = Graph()
+        cls = NS["Patient"]
+        prop = NS["hasIdentifier"]
+        r1 = BNode()
+        g.add((cls, RDFS.subClassOf, r1))
+        g.add((r1, OWL.onProperty, prop))
+        g.add((r1, OWL.maxCardinality, Literal(1)))
+        r2 = BNode()
+        g.add((cls, RDFS.subClassOf, r2))
+        g.add((r2, OWL.onProperty, prop))
+        g.add((r2, OWL.someValuesFrom, NS["Identifier"]))
+        result = _resolve_cardinality(g, cls, OWL, RDFS)
+        assert result["hasIdentifier"] == "one-to-one"
+
+
+class TestExtractSingleClassLabel:
+    """Verify _extract_single_class populates label from rdfs:label."""
+
+    def test_label_extracted(self):
+        g = Graph()
+        cls = NS["Patient"]
+        g.add((cls, RDF.type, OWL.Class))
+        g.add((cls, RDFS.comment, Literal("A patient record")))
+        g.add((cls, RDFS.label, Literal("Patient Resource")))
+
+        entities = {}
+        _extract_single_class(g, cls, {"Patient"}, "test", entities, OWL, RDF, RDFS)
+        assert entities["Patient"]["label"] == "Patient Resource"
+
+
+class TestPropertyLabelExtraction:
+    """Verify _extract_single_class extracts labels on object properties."""
+
+    def test_property_label_from_rdfs_label(self):
+        g = Graph()
+        g.add((NS.Encounter, RDF.type, OWL.Class))
+        g.add((NS.Encounter, RDFS.comment, Literal("An encounter")))
+        g.add((NS.Patient, RDF.type, OWL.Class))
+        g.add((NS.subject, RDF.type, OWL.ObjectProperty))
+        g.add((NS.subject, RDFS.domain, NS.Encounter))
+        g.add((NS.subject, RDFS.range, NS.Patient))
+        g.add((NS.subject, RDFS.label, Literal("Subject")))
+
+        entities: Dict[str, Any] = {}
+        _extract_single_class(g, NS.Encounter, {"Encounter", "Patient"}, "Test", entities, OWL, RDF, RDFS)
+        edge = entities["Encounter"]["outgoing_edges"][0]
+        assert edge["label"] == "Subject"
+
+    def test_property_label_camelcase_fallback(self):
+        g = Graph()
+        g.add((NS.Encounter, RDF.type, OWL.Class))
+        g.add((NS.Encounter, RDFS.comment, Literal("An encounter")))
+        g.add((NS.Patient, RDF.type, OWL.Class))
+        g.add((NS.managingOrganization, RDF.type, OWL.ObjectProperty))
+        g.add((NS.managingOrganization, RDFS.domain, NS.Encounter))
+        g.add((NS.managingOrganization, RDFS.range, NS.Patient))
+
+        entities: Dict[str, Any] = {}
+        _extract_single_class(g, NS.Encounter, {"Encounter", "Patient"}, "Test", entities, OWL, RDF, RDFS)
+        edge = entities["Encounter"]["outgoing_edges"][0]
+        assert edge["label"] == "managing Organization"
+
+
+class TestW5FacetExtraction:
+    """Verify _extract_single_class extracts rdfs:subPropertyOf and derives W5 facets."""
+
+    def test_w5_facet_derived(self):
+        g = Graph()
+        g.add((NS.Encounter, RDF.type, OWL.Class))
+        g.add((NS.Encounter, RDFS.comment, Literal("An encounter")))
+        g.add((NS.Patient, RDF.type, OWL.Class))
+        W5 = Namespace("http://hl7.org/fhir/w5#")
+        g.add((NS.subject, RDF.type, OWL.ObjectProperty))
+        g.add((NS.subject, RDFS.domain, NS.Encounter))
+        g.add((NS.subject, RDFS.range, NS.Patient))
+        g.add((NS.subject, RDFS.subPropertyOf, W5["who.focus"]))
+
+        entities: Dict[str, Any] = {}
+        _extract_single_class(g, NS.Encounter, {"Encounter", "Patient"}, "Test", entities, OWL, RDF, RDFS)
+        edge = entities["Encounter"]["outgoing_edges"][0]
+        assert edge["facet"] == "who"
+        assert "who.focus" in edge["sub_property_of"]
+
+    def test_no_facet_when_no_sub_property(self):
+        g = _make_basic_graph()
+        entities: Dict[str, Any] = {}
+        _extract_single_class(g, NS.Encounter, {"Encounter", "Patient"}, "Test", entities, OWL, RDF, RDFS)
+        edge = entities["Encounter"]["outgoing_edges"][0]
+        assert edge["facet"] is None
+        assert edge["sub_property_of"] is None
+
+    def test_union_domain_edges_get_label_and_facet(self):
+        g = _make_union_domain_graph()
+        g.add((NS.has_visit, RDFS.label, Literal("Has Visit")))
+        coi = {"Person", "VisitOccurrence", "Concept"}
+        entities = _extract_classes(g, coi, "OMOP", "http://test.org/")
+        edge = [e for e in entities["Person"]["outgoing_edges"] if e["name"] == "has_visit"][0]
+        assert edge["label"] == "Has Visit"
+        assert edge["facet"] is None
+
+
+class TestFullPipelineRoundTrip:
+    """North-star test: OWL extraction -> tier files -> loader must preserve semantics.
+
+    This exercises the complete pipeline from an rdflib graph through
+    _extract_classes -> build_tiers -> OntologyIndexLoader, verifying that
+    property labels, W5 facets, cardinality, and sub_property_of survive
+    every stage without being silently dropped.
+    """
+
+    def test_extraction_to_tier_roundtrip_preserves_edge_semantics(self):
+        """Property label, facet, cardinality, ranges, and sub_property_of survive
+        extract -> build_tiers -> OntologyIndexLoader load."""
+        import json as _json
+
+        g = Graph()
+        g.add((NS.Encounter, RDF.type, OWL.Class))
+        g.add((NS.Encounter, RDFS.comment, Literal("An encounter")))
+        g.add((NS.Patient, RDF.type, OWL.Class))
+        g.add((NS.Patient, RDFS.comment, Literal("A patient")))
+
+        g.add((NS.subject, RDF.type, OWL.ObjectProperty))
+        g.add((NS.subject, RDFS.domain, NS.Encounter))
+        g.add((NS.subject, RDFS.range, NS.Patient))
+        g.add((NS.subject, RDFS.label, Literal("Subject")))
+
+        W5 = Namespace("http://hl7.org/fhir/w5#")
+        g.add((NS.subject, RDFS.subPropertyOf, W5["who.focus"]))
+
+        restriction = BNode()
+        g.add((NS.Encounter, RDFS.subClassOf, restriction))
+        g.add((restriction, OWL.onProperty, NS.subject))
+        g.add((restriction, OWL.someValuesFrom, NS.Patient))
+
+        entities = _extract_classes(g, {"Encounter", "Patient"}, "Test", "http://test.org/")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output = Path(tmpdir) / "test_bundle"
+            build_tiers(entities, output)
+
+            loader = OntologyIndexLoader("test_bundle", base_dir=str(output))
+            assert loader.has_tier_indexes
+
+            t1_edges = loader.get_edges_tier1()
+            edge = [e for e in t1_edges if e["name"] == "subject"][0]
+            assert edge["label"] == "Subject"
+            assert edge["facet"] == "who"
+            assert edge["cardinality"] == "one-to-many"
+
+            t2_raw = loader._load("edges_tier2.yaml")
+            assert t2_raw is not None
+            t2_edge = t2_raw["subject"]
+            assert t2_edge["label"] == "Subject"
+            assert t2_edge["sub_property_of"] == ["who.focus"]
+            assert t2_edge["facet"] == "who"
+            assert "Patient" in t2_edge.get("ranges", [])
+
+

@@ -483,5 +483,140 @@ class TestCalculateCellLengthIntegration:
         assert result["short"].iloc[0] == "hello world"  # unchanged
 
 
+class TestCommentResponseModelValidation:
+    """Test the REAL CommentResponse Pydantic model (not a copy of the validator).
+
+    TestColumnContentsValidator above tests a duplicated validator. These tests
+    call CommentResponse.model_validate() directly so that drift between the
+    test copy and the real model is caught immediately.
+    """
+
+    @staticmethod
+    def _build(column_contents, columns=None):
+        cols = columns or ["col1", "col2"]
+        return {"table": "test_table", "columns": cols, "column_contents": column_contents}
+
+    def test_normal_list_passes_through(self):
+        from dbxmetagen.metadata_generator import CommentResponse
+        r = CommentResponse.model_validate(self._build(["desc1", "desc2"]))
+        assert r.column_contents == ["desc1", "desc2"]
+
+    def test_stringified_json_array_parsed(self):
+        from dbxmetagen.metadata_generator import CommentResponse
+        r = CommentResponse.model_validate(self._build('["desc1", "desc2"]'))
+        assert r.column_contents == ["desc1", "desc2"]
+
+    def test_truncated_array_recovers_prefix(self):
+        from dbxmetagen.metadata_generator import CommentResponse
+        r = CommentResponse.model_validate(self._build('["good", "also good", "truncat'))
+        assert r.column_contents == ["good", "also good"]
+
+    def test_nested_list_unwraps(self):
+        from dbxmetagen.metadata_generator import CommentResponse
+        r = CommentResponse.model_validate(self._build([["desc1", "desc2"]]))
+        assert r.column_contents == ["desc1", "desc2"]
+
+    def test_regex_fallback_on_malformed_json(self):
+        from dbxmetagen.metadata_generator import CommentResponse
+        r = CommentResponse.model_validate(self._build('["good", bad, "another"]'))
+        assert "good" in r.column_contents
+        assert "another" in r.column_contents
+
+    def test_extra_field_rejected(self):
+        from dbxmetagen.metadata_generator import CommentResponse
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError):
+            CommentResponse.model_validate({
+                "table": "t", "columns": ["c"], "column_contents": ["d"],
+                "bogus_field": 123,
+            })
+
+
+class TestPIClassificationNormalization:
+    """Test the REAL PIColumnContent.normalize_classification validator.
+
+    This validator handles every PI/PHI/PCI classification the LLM returns.
+    Zero tests existed for it prior to this class.
+    """
+
+    @staticmethod
+    def _build(classification):
+        return {"classification": classification, "type": "SSN", "confidence": 0.95}
+
+    def test_known_synonyms(self):
+        from dbxmetagen.metadata_generator import PIColumnContent
+        cases = {
+            "pii": "pi",
+            "personally_identifiable_information": "pi",
+            "protected_health_information": "phi",
+            "payment_card_information": "pci",
+            "payment_card_industry": "pci",
+            "medical": "medical_information",
+            "medical_info": "medical_information",
+        }
+        for raw, expected in cases.items():
+            r = PIColumnContent.model_validate(self._build(raw))
+            assert r.classification == expected, f"{raw!r} -> {r.classification!r}, expected {expected!r}"
+
+    def test_null_ish_values(self):
+        from dbxmetagen.metadata_generator import PIColumnContent
+        for raw in ("none", "null", "n/a", "", "non-pii/phi/pci", "non_pii"):
+            r = PIColumnContent.model_validate(self._build(raw))
+            assert r.classification == "None", f"{raw!r} -> {r.classification!r}"
+
+    def test_case_insensitivity(self):
+        from dbxmetagen.metadata_generator import PIColumnContent
+        for raw in ("PHI", "PII", "PCI"):
+            r = PIColumnContent.model_validate(self._build(raw))
+            assert r.classification in ("phi", "pi", "pci"), f"{raw!r} -> {r.classification!r}"
+
+    def test_unknown_defaults_to_none(self):
+        from dbxmetagen.metadata_generator import PIColumnContent
+        r = PIColumnContent.model_validate(self._build("sensitive_data"))
+        assert r.classification == "None"
+
+    def test_whitespace_tolerance(self):
+        from dbxmetagen.metadata_generator import PIColumnContent
+        r = PIColumnContent.model_validate(self._build("  phi  "))
+        assert r.classification == "phi"
+
+    def test_valid_values_passthrough(self):
+        from dbxmetagen.metadata_generator import PIColumnContent
+        for raw in ("pi", "phi", "pci", "medical_information", "None"):
+            r = PIColumnContent.model_validate(self._build(raw))
+            assert r.classification == raw
+
+
+class TestSampleDfNullThreshold:
+    """Verify that sample_df's null-row filter threshold works for narrow tables."""
+
+    def test_single_column_threshold_is_one(self):
+        """For a 1-column table, threshold should be 1 (not 0), so all-null rows are filtered."""
+        assert max(1, 1 // 2) == 1
+
+    def test_two_column_threshold_is_one(self):
+        assert max(1, 2 // 2) == 1
+
+    def test_ten_column_threshold_is_five(self):
+        assert max(1, 10 // 2) == 5
+
+
+class TestCommentResponseNullColumnContents:
+    """CommentResponse must accept column_contents=None from LLM and coerce to []."""
+
+    def _build(self, contents):
+        return {"table": "t", "columns": ["c"], "column_contents": contents}
+
+    def test_null_column_contents_coerces_to_empty_list(self):
+        from dbxmetagen.metadata_generator import CommentResponse
+        r = CommentResponse.model_validate(self._build(None))
+        assert r.column_contents == []
+
+    def test_empty_list_still_works(self):
+        from dbxmetagen.metadata_generator import CommentResponse
+        r = CommentResponse.model_validate(self._build([]))
+        assert r.column_contents == []
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

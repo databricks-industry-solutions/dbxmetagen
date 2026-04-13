@@ -288,3 +288,70 @@ class TestClassifyTwoStageUsesPrefilter:
             "cat.sch.tbl", {}, MULTI_DOMAIN_CONFIG,
         )
         mock_pf.assert_called_once_with("cat.sch.tbl", {}, MULTI_DOMAIN_CONFIG)
+
+
+# ---------------------------------------------------------------------------
+# Domain resolution from bundles
+# ---------------------------------------------------------------------------
+
+BUNDLES_DIR = os.path.join(
+    os.path.dirname(__file__), "..", "configurations", "ontology_bundles"
+)
+
+
+class TestDomainResolutionFromBundles:
+    """Verify load_domain_config correctly extracts domains from bundles."""
+
+    def test_curated_healthcare_bundle(self):
+        cfg = load_domain_config(bundle_path=os.path.join(BUNDLES_DIR, "healthcare.yaml"))
+        domains = cfg["domains"]
+        assert "clinical" in domains
+        assert "diagnostics" in domains
+        assert len(domains) >= 10
+
+    def test_curated_general_bundle(self):
+        cfg = load_domain_config(bundle_path=os.path.join(BUNDLES_DIR, "general.yaml"))
+        domains = cfg["domains"]
+        assert "finance" in domains
+        assert "customer" in domains
+        assert len(domains) >= 6
+
+    def test_formal_fhir_has_healthcare_domains(self):
+        cfg = load_domain_config(bundle_path=os.path.join(BUNDLES_DIR, "fhir_r4.yaml"))
+        domains = cfg["domains"]
+        assert "clinical" in domains
+        assert "diagnostics" in domains
+        assert "payer" in domains
+
+    def test_formal_omop_has_healthcare_domains(self):
+        cfg = load_domain_config(bundle_path=os.path.join(BUNDLES_DIR, "omop_cdm.yaml"))
+        domains = cfg["domains"]
+        assert "clinical" in domains
+        assert len(domains) >= 10
+
+    def test_formal_schema_org_has_general_domains(self):
+        cfg = load_domain_config(bundle_path=os.path.join(BUNDLES_DIR, "schema_org.yaml"))
+        domains = cfg["domains"]
+        assert "finance" in domains
+        assert "technology" in domains
+        assert "clinical" not in domains
+
+    def test_config_path_overrides_bundle(self, tmp_path):
+        custom = tmp_path / "custom_domains.yaml"
+        custom.write_text("domains:\n  custom_domain:\n    name: Custom\n    keywords: [test]\n")
+        cfg = load_domain_config(config_path=str(custom))
+        assert "custom_domain" in cfg["domains"]
+
+    def test_bundle_without_domains_logs_warning(self, tmp_path, caplog):
+        bundle = tmp_path / "empty_bundle.yaml"
+        bundle.write_text("metadata:\n  name: Empty\nontology:\n  entities: {}\n")
+        import logging
+        with caplog.at_level(logging.WARNING, logger="dbxmetagen.domain_classifier"):
+            load_domain_config(bundle_path=str(bundle))
+        assert any("has no 'domains' section" in r.message for r in caplog.records)
+
+    def test_bundle_name_shorthand(self):
+        """Passing just 'healthcare' (no path) resolves to the bundle YAML."""
+        cfg = load_domain_config(bundle_path="healthcare")
+        domains = cfg.get("domains", {})
+        assert "clinical" in domains

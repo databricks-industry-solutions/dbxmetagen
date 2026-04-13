@@ -104,8 +104,7 @@ jobs:
 
       - name: Run tests with coverage
         run: |
-          uv run pytest --cov=src --cov=apps/dbxmetagen-app/app --cov-report=term --cov-report=html
-        continue-on-error: true
+          uv run pytest --cov=src --cov=apps/dbxmetagen-app/app --cov-report=term --cov-report=html --cov-fail-under=50
 
       - name: Upload coverage report
         uses: actions/upload-artifact@v4

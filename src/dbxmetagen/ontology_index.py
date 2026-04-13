@@ -9,6 +9,7 @@ Tier structure (progressive refinement):
   - Tier 3: Full profiles (keywords, relationships, attributes) for deep passes
 """
 
+import json
 import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -85,15 +86,50 @@ def _validate_uri_map(data: Any, filename: str) -> Tuple[Dict[str, str], List[st
     return valid, issues
 
 
+_TIER_STEMS = [
+    "entities_tier1", "entities_tier2", "entities_tier3",
+    "edges_tier1", "edges_tier2", "edges_tier3",
+    "equivalent_class_uris",
+]
+
 _VALIDATORS = {
-    "entities_tier1.yaml": lambda d: _validate_list_of_dicts(d, _ENTITIES_T1_REQUIRED, "entities_tier1.yaml"),
-    "entities_tier2.yaml": lambda d: _validate_dict_of_dicts(d, _ENTITIES_T2_REQUIRED, "entities_tier2.yaml"),
-    "entities_tier3.yaml": lambda d: _validate_dict_of_dicts(d, _ENTITIES_T3_REQUIRED, "entities_tier3.yaml"),
-    "edges_tier1.yaml": lambda d: _validate_list_of_dicts(d, _EDGES_T1_REQUIRED, "edges_tier1.yaml"),
-    "edges_tier2.yaml": lambda d: _validate_dict_of_dicts(d, _EDGES_T2_REQUIRED, "edges_tier2.yaml"),
-    "edges_tier3.yaml": lambda d: _validate_dict_of_dicts(d, _EDGES_T2_REQUIRED, "edges_tier3.yaml"),
-    "equivalent_class_uris.yaml": lambda d: _validate_uri_map(d, "equivalent_class_uris.yaml"),
+    "entities_tier1": lambda d: _validate_list_of_dicts(d, _ENTITIES_T1_REQUIRED, "entities_tier1"),
+    "entities_tier2": lambda d: _validate_dict_of_dicts(d, _ENTITIES_T2_REQUIRED, "entities_tier2"),
+    "entities_tier3": lambda d: _validate_dict_of_dicts(d, _ENTITIES_T3_REQUIRED, "entities_tier3"),
+    "edges_tier1": lambda d: _validate_list_of_dicts(d, _EDGES_T1_REQUIRED, "edges_tier1"),
+    "edges_tier2": lambda d: _validate_dict_of_dicts(d, _EDGES_T2_REQUIRED, "edges_tier2"),
+    "edges_tier3": lambda d: _validate_dict_of_dicts(d, _EDGES_T2_REQUIRED, "edges_tier3"),
+    "equivalent_class_uris": lambda d: _validate_uri_map(d, "equivalent_class_uris"),
 }
+
+# Legacy key mapping for backward compatibility
+_VALIDATORS_COMPAT = {f"{k}.yaml": v for k, v in _VALIDATORS.items()}
+
+
+def _resolve_tier_path(bundle_dir: Path, stem: str) -> Optional[Path]:
+    """Return the JSON path if it exists, else YAML, else None."""
+    json_path = bundle_dir / f"{stem}.json"
+    if json_path.is_file():
+        return json_path
+    yaml_path = bundle_dir / f"{stem}.yaml"
+    if yaml_path.is_file():
+        return yaml_path
+    return None
+
+
+def _parse_tier_file(path: Path) -> Any:
+    """Parse a tier file as JSON or YAML based on extension."""
+    text = path.read_text(encoding="utf-8")
+    if path.suffix == ".json":
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            yaml_sibling = path.with_suffix(".yaml")
+            if yaml_sibling.exists():
+                logger.warning("Corrupt JSON %s, falling back to YAML sibling", path)
+                return yaml.safe_load(yaml_sibling.read_text(encoding="utf-8"))
+            raise
+    return yaml.safe_load(text)
 
 
 def validate_bundle(bundle_name: str, base_dir: Optional[str] = None) -> List[str]:
@@ -105,17 +141,17 @@ def validate_bundle(bundle_name: str, base_dir: Optional[str] = None) -> List[st
         bundle_dir = pkg_root / "configurations" / "ontology_bundles" / bundle_name
 
     all_issues: List[str] = []
-    for filename, validator in _VALIDATORS.items():
-        path = bundle_dir / filename
-        if not path.is_file():
+    for stem, validator in _VALIDATORS.items():
+        path = _resolve_tier_path(bundle_dir, stem)
+        if not path:
             continue
         try:
-            data = yaml.safe_load(path.read_text(encoding="utf-8"))
+            data = _parse_tier_file(path)
         except Exception as e:
-            all_issues.append(f"{filename}: YAML parse error: {e}")
+            all_issues.append(f"{path.name}: parse error: {e}")
             continue
         if data is None:
-            all_issues.append(f"{filename}: file is empty")
+            all_issues.append(f"{path.name}: file is empty")
             continue
         _, issues = validator(data)
         all_issues.extend(issues)
@@ -143,17 +179,21 @@ class OntologyIndexLoader:
     @property
     def has_tier_indexes(self) -> bool:
         """Check whether tier index files exist for this bundle."""
-        return (self._bundle_dir / "entities_tier1.yaml").is_file()
+        return (
+            (self._bundle_dir / "entities_tier1.json").is_file()
+            or (self._bundle_dir / "entities_tier1.yaml").is_file()
+        )
 
     def _load(self, filename: str) -> Any:
         if filename not in self._cache:
-            path = self._bundle_dir / filename
-            if not path.is_file():
-                logger.debug("Tier file not found: %s", path)
+            stem = filename.rsplit(".", 1)[0]
+            path = _resolve_tier_path(self._bundle_dir, stem)
+            if not path:
+                logger.debug("Tier file not found: %s/{%s.json,%s}", self._bundle_dir, stem, filename)
                 self._cache[filename] = None
                 return None
-            raw = yaml.safe_load(path.read_text(encoding="utf-8"))
-            validator = _VALIDATORS.get(filename)
+            raw = _parse_tier_file(path)
+            validator = _VALIDATORS.get(stem)
             if validator and raw is not None:
                 validated, issues = validator(raw)
                 for issue in issues:
@@ -206,11 +246,15 @@ class OntologyIndexLoader:
     # --- URI lookup ---
 
     def get_uri(self, entity_name: str) -> Optional[str]:
-        """Look up the owl:equivalentClass URI for an entity."""
+        """Look up the owl:equivalentClass URI for an entity (case-insensitive)."""
         uris = self._load("equivalent_class_uris.yaml")
         if not uris:
             return None
-        return uris.get(entity_name)
+        hit = uris.get(entity_name)
+        if hit is not None:
+            return hit
+        lower_map = {k.lower(): v for k, v in uris.items()}
+        return lower_map.get(entity_name.lower())
 
     def get_all_uris(self) -> Dict[str, str]:
         """Return the full entity_name -> URI mapping."""

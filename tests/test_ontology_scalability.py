@@ -1,8 +1,10 @@
 """Unit tests for ontology scalability and correctness fixes (B1-B6, S1-S3)."""
 
+import os
+import tempfile
 import unittest
 from dataclasses import replace as dc_replace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 
 # ---------------------------------------------------------------------------
@@ -248,6 +250,101 @@ class TestThreePassUpgradeCap(unittest.TestCase):
         self.assertIn(1, indices)
         self.assertIn(3, indices)
         self.assertNotIn(0, indices)
+
+
+# ---------------------------------------------------------------------------
+# Provenance: bundle canonical URI / source_ontology
+# ---------------------------------------------------------------------------
+
+
+class TestBundleCanonicalProvenance(unittest.TestCase):
+    """Three-pass and column discovery must prefer bundle definitions over LLM text."""
+
+    def test_three_pass_prefers_edef_over_wrong_llm_provenance(self):
+        from dbxmetagen.ontology import EntityDiscoverer, OntologyConfig
+        from dbxmetagen.ontology_predictor import PredictionResult
+
+        d = tempfile.mkdtemp()
+        bundle_path = os.path.join(d, "healthcare.yaml")
+        with open(bundle_path, "w") as f:
+            f.write("metadata:\n  version: 'test'\n")
+        os.mkdir(os.path.join(d, "healthcare"))
+
+        ontology_config = {
+            "entities": {
+                "definitions": {
+                    "Patient": {
+                        "description": "Patient",
+                        "keywords": ["patient"],
+                        "typical_attributes": [],
+                        "uri": "http://omop.org/Patient",
+                        "source_ontology": "OMOP CDM",
+                    }
+                }
+            }
+        }
+        cfg = OntologyConfig(
+            catalog_name="c", schema_name="s", ontology_bundle="healthcare"
+        )
+        disc = EntityDiscoverer(MagicMock(), cfg, ontology_config)
+
+        mock_loader = MagicMock()
+        mock_loader.get_entities_tier1.return_value = [
+            {"name": "Patient", "description": "p"}
+        ]
+
+        row = MagicMock()
+        row.table_name = "c.s.patients"
+        row.table_short_name = "patients"
+        row.comment = "patient rows"
+        row.primary_domain = None
+        row.domain = None
+
+        wrong_llm = PredictionResult(
+            table_name="patients",
+            predicted_entity="Patient",
+            source_ontology="FHIR R4",
+            equivalent_class_uri="http://hl7.org/fhir/Patient",
+            confidence_score=0.95,
+            rationale="test",
+            passes_run=2,
+        )
+
+        with patch("dbxmetagen.ontology.resolve_bundle_path", return_value=bundle_path):
+            with patch.object(disc, "_get_index_loader", return_value=mock_loader):
+                with patch.object(
+                    disc, "_get_column_summary", return_value={row.table_name: "x int"}
+                ):
+                    with patch(
+                        "dbxmetagen.ontology_predictor.predict_entity",
+                        return_value=wrong_llm,
+                    ):
+                        out = disc._three_pass_classify_table(row)
+
+        self.assertIsNotNone(out)
+        ent = out[0]
+        self.assertEqual(ent["entity_uri"], "http://omop.org/Patient")
+        self.assertEqual(ent["source_ontology"], "OMOP CDM")
+        self.assertEqual(
+            ent["attributes"].get("llm_equivalent_class_uri"),
+            "http://hl7.org/fhir/Patient",
+        )
+
+    def test_enrich_provenance_from_definitions_backfills(self):
+        from dbxmetagen.ontology import EntityDefinition, EntityDiscoverer
+
+        edef = EntityDefinition(
+            name="Patient",
+            description="p",
+            keywords=[],
+            parent=None,
+            uri="http://omop.org/Patient",
+            source_ontology="OMOP CDM",
+        )
+        ents = [{"entity_type": "Patient", "confidence": 0.9}]
+        out = EntityDiscoverer.enrich_provenance_from_definitions(ents, [edef])
+        self.assertEqual(out[0]["entity_uri"], "http://omop.org/Patient")
+        self.assertEqual(out[0]["source_ontology"], "OMOP CDM")
 
 
 # ---------------------------------------------------------------------------

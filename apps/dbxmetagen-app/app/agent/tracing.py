@@ -7,13 +7,19 @@ All Databricks API calls are deferred to first runtime use so that importing
 this module never requires a live Databricks connection (important for unit tests).
 """
 
+import contextvars
 import functools
 import logging
 import os
+from contextlib import nullcontext
 
 logger = logging.getLogger(__name__)
 
 MLFLOW_ENABLED = False
+
+# When True, manual mlflow.start_span() calls are suppressed because
+# langchain.autolog() is managing the trace hierarchy (LangGraph path).
+AUTOLOG_ACTIVE = contextvars.ContextVar("autolog_active", default=False)
 MLFLOW_EXPERIMENT_ID = None
 MLFLOW_EXPERIMENT = os.environ.get("MLFLOW_EXPERIMENT", "")
 
@@ -29,8 +35,9 @@ def _resolve_experiment_name() -> str:
         me = WorkspaceClient().current_user.me().user_name
         return f"/Users/{me}/experiments/dbxmetagen_app_traces"
     except Exception as exc:
-        logger.warning("Could not resolve user for experiment path: %s", exc)
-        return "/experiments/dbxmetagen_app_traces"
+        logger.warning("Could not resolve user for experiment path, using catalog-scoped default: %s", exc)
+        catalog = os.environ.get("CATALOG_NAME", "default")
+        return f"/Users/{catalog}/experiments/dbxmetagen_app_traces"
 
 
 def _init_tracing():
@@ -106,3 +113,44 @@ def ensure_mlflow_context():
 def get_mlflow():
     """Return the mlflow module (or None if unavailable)."""
     return _mlflow_mod if MLFLOW_ENABLED else None
+
+
+_mlflow_client = None
+
+
+def get_mlflow_client():
+    """Return a singleton MlflowClient, or None if tracing is off."""
+    global _mlflow_client
+    if not MLFLOW_ENABLED or _mlflow_mod is None:
+        return None
+    if _mlflow_client is None:
+        _mlflow_client = _mlflow_mod.MlflowClient()
+    return _mlflow_client
+
+
+def tag_trace(session_id: str = None, **extra):
+    """Tag the current trace with session_id and optional metadata."""
+    if not MLFLOW_ENABLED or _mlflow_mod is None:
+        return
+    tags = {k: str(v) for k, v in extra.items() if v is not None}
+    if session_id:
+        tags["mlflow.trace.session_id"] = session_id
+    if tags:
+        try:
+            _mlflow_mod.update_current_trace(tags=tags)
+        except Exception:
+            pass
+
+
+def maybe_span(name: str, span_type: str = "CHAIN"):
+    """Create an MLflow span only when manual tracing is appropriate.
+
+    Returns nullcontext() when AUTOLOG_ACTIVE is set (LangGraph path) or
+    when MLflow is unavailable. This prevents orphaned root traces in the
+    graph path while preserving span hierarchy in the non-graph path.
+    """
+    if AUTOLOG_ACTIVE.get(False):
+        return nullcontext()
+    if not MLFLOW_ENABLED or _mlflow_mod is None:
+        return nullcontext()
+    return _mlflow_mod.start_span(name=name, span_type=span_type)

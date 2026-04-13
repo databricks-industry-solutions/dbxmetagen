@@ -6,6 +6,10 @@ has_definition:
   - CohortDefinition
   uri: https://w3id.org/omop/ontology/has_definition
   inverse: null
+  cardinality: zero-to-many
+  label: Has definition
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: The COHORT table contains records of subjects that satisfy a given
       set of criteria for a duration of time. The definition of the cohort is contained
@@ -47,6 +51,10 @@ has_subject:
   ranges: []
   uri: https://w3id.org/omop/ontology/has_subject
   inverse: null
+  cardinality: unknown
+  label: Has subject
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: The COHORT table contains records of subjects that satisfy a given
       set of criteria for a duration of time. The definition of the cohort is contained
@@ -72,6 +80,10 @@ has_language:
   - Concept
   uri: https://w3id.org/omop/ontology/has_language
   inverse: null
+  cardinality: unknown
+  label: Has language
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: The CONCEPT_SYNONYM table is used to store alternate names and descriptions
       for Concepts.
@@ -115,6 +127,10 @@ has_concept:
   - Concept
   uri: https://w3id.org/omop/ontology/has_concept
   inverse: null
+  cardinality: unknown
+  label: Has concept
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: The CONCEPT_SYNONYM table is used to store alternate names and descriptions
       for Concepts.
@@ -158,6 +174,10 @@ has_period_type:
   - Concept
   uri: https://w3id.org/omop/ontology/has_period_type
   inverse: null
+  cardinality: one-to-many
+  label: Has period type
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: 'This table contains records which define spans of time during which
       two conditions are expected to hold: (i) Clinical Events that happened to the
@@ -203,6 +223,10 @@ has_ancestor:
   - Concept
   uri: https://w3id.org/omop/ontology/has_ancestor
   inverse: null
+  cardinality: zero-to-many
+  label: Has ancestor
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: The CONCEPT_ANCESTOR table is designed to simplify observational
       analysis by providing the complete hierarchical relationships between Concepts.
@@ -248,6 +272,10 @@ has_descendant:
   - Concept
   uri: https://w3id.org/omop/ontology/has_descendant
   inverse: null
+  cardinality: zero-to-many
+  label: Has descendant
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: The CONCEPT_ANCESTOR table is designed to simplify observational
       analysis by providing the complete hierarchical relationships between Concepts.
@@ -293,6 +321,10 @@ has_unit:
   - Concept
   uri: https://w3id.org/omop/ontology/has_unit
   inverse: null
+  cardinality: unknown
+  label: Has unit
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: A Dose Era is defined as a span of time when the Person is assumed
       to be exposed to a constant dose of a specific active ingredient.
@@ -334,6 +366,10 @@ has_entity:
   ranges: []
   uri: https://w3id.org/omop/ontology/has_entity
   inverse: null
+  cardinality: zero-to-many
+  label: Has entity
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: The LOCATION HISTORY table stores relationships between Persons or
       Care Sites and geographic locations over time. **This table is new to CDM v6.0**
@@ -360,6 +396,10 @@ has_relationship_type:
   - Concept
   uri: https://w3id.org/omop/ontology/has_relationship_type
   inverse: null
+  cardinality: zero-to-many
+  label: Has relationship type
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: The LOCATION HISTORY table stores relationships between Persons or
       Care Sites and geographic locations over time. **This table is new to CDM v6.0**
@@ -405,6 +445,10 @@ has_domain:
   - Domain
   uri: https://w3id.org/omop/ontology/has_domain
   inverse: null
+  cardinality: unknown
+  label: Has domain
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: The LOCATION HISTORY table stores relationships between Persons or
       Care Sites and geographic locations over time. **This table is new to CDM v6.0**
@@ -448,6 +492,10 @@ has_location:
   - Location
   uri: https://w3id.org/omop/ontology/has_location
   inverse: null
+  cardinality: unknown
+  label: Has location
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: The LOCATION HISTORY table stores relationships between Persons or
       Care Sites and geographic locations over time. **This table is new to CDM v6.0**
@@ -488,6 +536,10 @@ has_unique_device:
   ranges: []
   uri: https://w3id.org/omop/ontology/has_unique_device
   inverse: null
+  cardinality: zero-to-many
+  label: Has unique device
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: The Device domain captures information about a person's exposure
       to a foreign physical object or instrument which is used for diagnostic or therapeutic
@@ -512,6 +564,10 @@ has_relationship:
   ranges: []
   uri: https://w3id.org/omop/ontology/has_relationship
   inverse: null
+  cardinality: unknown
+  label: Has relationship
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: 'The FACT_RELATIONSHIP table contains records about the relationships
       between facts stored as records in any table of the CDM. Relationships can be
@@ -536,6 +592,10 @@ has_value_as_concept:
   - Concept
   uri: https://w3id.org/omop/ontology/has_value_as_concept
   inverse: null
+  cardinality: unknown
+  label: Has value as concept
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: The METADATA table contains metadata information about a dataset
       that has been transformed to the OMOP Common Data Model.
@@ -579,6 +639,10 @@ has_type:
   - Concept
   uri: https://w3id.org/omop/ontology/has_type
   inverse: null
+  cardinality: unknown
+  label: Has type
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: The METADATA table contains metadata information about a dataset
       that has been transformed to the OMOP Common Data Model.
@@ -622,6 +686,10 @@ has_cause:
   - Concept
   uri: https://w3id.org/omop/ontology/has_cause
   inverse: null
+  cardinality: zero-to-many
+  label: Has cause
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: Death entity
     uri: https://w3id.org/omop/ontology/Death
@@ -660,6 +728,10 @@ has_cause_source:
   - Concept
   uri: https://w3id.org/omop/ontology/has_cause_source
   inverse: null
+  cardinality: zero-to-many
+  label: Has cause source
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: Death entity
     uri: https://w3id.org/omop/ontology/Death
@@ -697,6 +769,10 @@ has_reverse_relationship:
   ranges: []
   uri: https://w3id.org/omop/ontology/has_reverse_relationship
   inverse: null
+  cardinality: zero-to-many
+  label: Has reverse relationship
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: The RELATIONSHIP table provides a reference list of all types of
       relationships that can be used to associate any two concepts in the CONCEPT_RELATIONSHP
@@ -722,6 +798,10 @@ has_place_of_service:
   - Concept
   uri: https://w3id.org/omop/ontology/has_place_of_service
   inverse: null
+  cardinality: zero-to-many
+  label: Has place of service
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: The CARE_SITE table contains a list of uniquely identified institutional
       (physical or organizational) units where healthcare delivery is practiced (offices,
@@ -766,6 +846,10 @@ has_definition_type:
   - Concept
   uri: https://w3id.org/omop/ontology/has_definition_type
   inverse: null
+  cardinality: zero-to-many
+  label: Has definition type
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: The COHORT_DEFINITION table contains records defining a Cohort derived
       from the data through the associated description and syntax and upon instantiation
@@ -810,6 +894,10 @@ has_source_vocabulary:
   - Vocabulary
   uri: https://w3id.org/omop/ontology/has_source_vocabulary
   inverse: null
+  cardinality: zero-to-many
+  label: Has source vocabulary
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: The source to concept map table is a legacy data structure within
       the OMOP Common Data Model, recommended for use in ETL processes to maintain
@@ -855,6 +943,10 @@ has_target:
   - Concept
   uri: https://w3id.org/omop/ontology/has_target
   inverse: null
+  cardinality: zero-to-many
+  label: Has target
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: The source to concept map table is a legacy data structure within
       the OMOP Common Data Model, recommended for use in ETL processes to maintain
@@ -903,6 +995,10 @@ has_target_vocabulary:
   - Vocabulary
   uri: https://w3id.org/omop/ontology/has_target_vocabulary
   inverse: null
+  cardinality: zero-to-many
+  label: Has target vocabulary
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: The source to concept map table is a legacy data structure within
       the OMOP Common Data Model, recommended for use in ETL processes to maintain
@@ -947,6 +1043,10 @@ has_source:
   ranges: []
   uri: https://w3id.org/omop/ontology/has_source
   inverse: null
+  cardinality: unknown
+  label: Has source
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: The source to concept map table is a legacy data structure within
       the OMOP Common Data Model, recommended for use in ETL processes to maintain
@@ -976,6 +1076,10 @@ has_status:
   - Concept
   uri: https://w3id.org/omop/ontology/has_status
   inverse: null
+  cardinality: zero-to-many
+  label: Has status
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: This table contains records of Events of a Person suggesting the
       presence of a disease or medical condition stated as a diagnosis, a sign, or
@@ -1024,6 +1128,10 @@ has_provider:
   - Provider
   uri: https://w3id.org/omop/ontology/has_provider
   inverse: null
+  cardinality: unknown
+  label: Has provider
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: This table contains records of Events of a Person suggesting the
       presence of a disease or medical condition stated as a diagnosis, a sign, or
@@ -1070,6 +1178,10 @@ has_modifier:
   - Concept
   uri: https://w3id.org/omop/ontology/has_modifier
   inverse: null
+  cardinality: zero-to-many
+  label: Has modifier
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: This table contains records of activities or processes ordered by,
       or carried out by, a healthcare provider on the patient with a diagnostic or
@@ -1119,6 +1231,10 @@ has_parent:
   - VisitDetail
   uri: https://w3id.org/omop/ontology/has_parent
   inverse: null
+  cardinality: zero-to-many
+  label: Has parent
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: 'The VISIT_DETAIL table is an optional table used to represents details
       of each record in the parent VISIT_OCCURRENCE table. A good example of this
@@ -1163,6 +1279,10 @@ has_preceding_visit_detail:
   - VisitDetail
   uri: https://w3id.org/omop/ontology/has_preceding_visit_detail
   inverse: null
+  cardinality: zero-to-many
+  label: Has preceding visit detail
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: 'The VISIT_DETAIL table is an optional table used to represents details
       of each record in the parent VISIT_OCCURRENCE table. A good example of this
@@ -1207,6 +1327,10 @@ has_admitted_from:
   - Concept
   uri: https://w3id.org/omop/ontology/has_admitted_from
   inverse: null
+  cardinality: unknown
+  label: Has admitted from
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: 'The VISIT_DETAIL table is an optional table used to represents details
       of each record in the parent VISIT_OCCURRENCE table. A good example of this
@@ -1252,6 +1376,10 @@ has_amount_unit:
   - Concept
   uri: https://w3id.org/omop/ontology/has_amount_unit
   inverse: null
+  cardinality: zero-to-many
+  label: Has amount unit
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: The DRUG_STRENGTH table contains structured content about the amount
       or concentration and associated units of a specific ingredient contained within
@@ -1300,6 +1428,10 @@ has_denominator_unit:
   - Concept
   uri: https://w3id.org/omop/ontology/has_denominator_unit
   inverse: null
+  cardinality: zero-to-many
+  label: Has denominator unit
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: The DRUG_STRENGTH table contains structured content about the amount
       or concentration and associated units of a specific ingredient contained within
@@ -1348,6 +1480,10 @@ has_numerator_unit:
   - Concept
   uri: https://w3id.org/omop/ontology/has_numerator_unit
   inverse: null
+  cardinality: zero-to-many
+  label: Has numerator unit
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: The DRUG_STRENGTH table contains structured content about the amount
       or concentration and associated units of a specific ingredient contained within
@@ -1396,6 +1532,10 @@ has_ingredient:
   - Concept
   uri: https://w3id.org/omop/ontology/has_ingredient
   inverse: null
+  cardinality: zero-to-many
+  label: Has ingredient
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: The DRUG_STRENGTH table contains structured content about the amount
       or concentration and associated units of a specific ingredient contained within
@@ -1444,6 +1584,10 @@ has_section:
   - Concept
   uri: https://w3id.org/omop/ontology/has_section
   inverse: null
+  cardinality: zero-to-many
+  label: Has section
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: The NOTE_NLP table encodes all output of NLP on clinical notes. Each
       row represents a single extracted term from a note.
@@ -1487,6 +1631,10 @@ has_preceding_visit_occurrence:
   - VisitOccurrence
   uri: https://w3id.org/omop/ontology/has_preceding_visit_occurrence
   inverse: null
+  cardinality: zero-to-many
+  label: Has preceding visit occurrence
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: 'This table contains Events where Persons engage with the healthcare
       system for a duration of time. They are often also called "Encounters". Visits
@@ -1537,6 +1685,10 @@ has_survey_conduct:
   - SurveyConduct
   uri: https://w3id.org/omop/ontology/has_survey_conduct
   inverse: null
+  cardinality: unknown
+  label: Has survey conduct
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: 'This table contains Events where Persons engage with the healthcare
       system for a duration of time. They are often also called "Encounters". Visits
@@ -1588,6 +1740,10 @@ has_visit_detail:
   - VisitDetail
   uri: https://w3id.org/omop/ontology/has_visit_detail
   inverse: null
+  cardinality: unknown
+  label: Has visit detail
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: 'This table contains Events where Persons engage with the healthcare
       system for a duration of time. They are often also called "Encounters". Visits
@@ -1635,6 +1791,10 @@ has_route:
   - Concept
   uri: https://w3id.org/omop/ontology/has_route
   inverse: null
+  cardinality: zero-to-many
+  label: Has route
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: This table captures records about the exposure to a Drug ingested
       or otherwise introduced into the body. A Drug is a biochemical substance formulated
@@ -1678,6 +1838,10 @@ has_anatomic_site:
   - Concept
   uri: https://w3id.org/omop/ontology/has_anatomic_site
   inverse: null
+  cardinality: zero-to-many
+  label: Has anatomic site
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: The specimen domain contains the records identifying biological samples
       from a person.
@@ -1724,6 +1888,10 @@ has_disease_status:
   - Concept
   uri: https://w3id.org/omop/ontology/has_disease_status
   inverse: null
+  cardinality: zero-to-many
+  label: Has disease status
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: The specimen domain contains the records identifying biological samples
       from a person.
@@ -1770,6 +1938,10 @@ has_encoding:
   - Concept
   uri: https://w3id.org/omop/ontology/has_encoding
   inverse: null
+  cardinality: zero-to-many
+  label: Has encoding
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: The NOTE table captures unstructured information that was recorded
       by a provider about a patient in free text (in ASCII, or preferably in UTF8
@@ -1819,6 +1991,10 @@ has_note_nlp:
   - NoteNlp
   uri: https://w3id.org/omop/ontology/has_note_nlp
   inverse: null
+  cardinality: zero-to-many
+  label: Has note nlp
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: The NOTE table captures unstructured information that was recorded
       by a provider about a patient in free text (in ASCII, or preferably in UTF8
@@ -1865,6 +2041,10 @@ has_event_field:
   - Concept
   uri: https://w3id.org/omop/ontology/has_event_field
   inverse: null
+  cardinality: unknown
+  label: Has event field
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: The NOTE table captures unstructured information that was recorded
       by a provider about a patient in free text (in ASCII, or preferably in UTF8
@@ -1913,6 +2093,10 @@ has_class:
   ranges: []
   uri: https://w3id.org/omop/ontology/has_class
   inverse: null
+  cardinality: unknown
+  label: Has class
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: The NOTE table captures unstructured information that was recorded
       by a provider about a patient in free text (in ASCII, or preferably in UTF8
@@ -1942,6 +2126,10 @@ has_event:
   ranges: []
   uri: https://w3id.org/omop/ontology/has_event
   inverse: null
+  cardinality: unknown
+  label: Has event
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: The NOTE table captures unstructured information that was recorded
       by a provider about a patient in free text (in ASCII, or preferably in UTF8
@@ -1972,6 +2160,10 @@ has_operator:
   - Concept
   uri: https://w3id.org/omop/ontology/has_operator
   inverse: null
+  cardinality: zero-to-many
+  label: Has operator
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: The MEASUREMENT table contains records of Measurements, i.e. structured
       values (numerical or categorical) obtained through systematic and standardized
@@ -2022,6 +2214,10 @@ has_specialty:
   - Concept
   uri: https://w3id.org/omop/ontology/has_specialty
   inverse: null
+  cardinality: zero-to-many
+  label: Has specialty
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: The PROVIDER table contains a list of uniquely identified healthcare
       providers. These are individuals providing hands-on healthcare to patients,
@@ -2066,6 +2262,10 @@ has_specialty_source:
   - Concept
   uri: https://w3id.org/omop/ontology/has_specialty_source
   inverse: null
+  cardinality: zero-to-many
+  label: Has specialty source
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: The PROVIDER table contains a list of uniquely identified healthcare
       providers. These are individuals providing hands-on healthcare to patients,
@@ -2110,6 +2310,10 @@ has_currency:
   - Concept
   uri: https://w3id.org/omop/ontology/has_currency
   inverse: null
+  cardinality: zero-to-many
+  label: Has currency
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: 'The COST table captures records containing the cost of any medical
       event recorded in one of the OMOP clinical event tables such as DRUG_EXPOSURE,
@@ -2162,6 +2366,10 @@ has_drg:
   - Concept
   uri: https://w3id.org/omop/ontology/has_drg
   inverse: null
+  cardinality: zero-to-many
+  label: Has drg
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: 'The COST table captures records containing the cost of any medical
       event recorded in one of the OMOP clinical event tables such as DRUG_EXPOSURE,
@@ -2214,6 +2422,10 @@ has_revenue_code:
   - Concept
   uri: https://w3id.org/omop/ontology/has_revenue_code
   inverse: null
+  cardinality: zero-to-many
+  label: Has revenue code
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: 'The COST table captures records containing the cost of any medical
       event recorded in one of the OMOP clinical event tables such as DRUG_EXPOSURE,
@@ -2266,6 +2478,10 @@ has_payer_plan_period:
   - PayerPlanPeriod
   uri: https://w3id.org/omop/ontology/has_payer_plan_period
   inverse: null
+  cardinality: unknown
+  label: Has payer plan period
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: 'The COST table captures records containing the cost of any medical
       event recorded in one of the OMOP clinical event tables such as DRUG_EXPOSURE,
@@ -2322,6 +2538,10 @@ has_obs_event_field:
   - Concept
   uri: https://w3id.org/omop/ontology/has_obs_event_field
   inverse: null
+  cardinality: zero-to-many
+  label: Has obs event field
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: 'The OBSERVATION table captures clinical facts about a Person obtained
       in the context of examination, questioning or a procedure. Any data that cannot
@@ -2373,6 +2593,10 @@ has_qualifier:
   - Concept
   uri: https://w3id.org/omop/ontology/has_qualifier
   inverse: null
+  cardinality: zero-to-many
+  label: Has qualifier
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: 'The OBSERVATION table captures clinical facts about a Person obtained
       in the context of examination, questioning or a procedure. Any data that cannot
@@ -2424,6 +2648,10 @@ has_contract_person:
   - Person
   uri: https://w3id.org/omop/ontology/has_contract_person
   inverse: null
+  cardinality: zero-to-many
+  label: Has contract person
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: The PAYER_PLAN_PERIOD table captures details of the period of time
       that a Person is continuously enrolled under a specific health Plan benefit
@@ -2477,6 +2705,10 @@ has_sponsor_source:
   - Concept
   uri: https://w3id.org/omop/ontology/has_sponsor_source
   inverse: null
+  cardinality: zero-to-many
+  label: Has sponsor source
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: The PAYER_PLAN_PERIOD table captures details of the period of time
       that a Person is continuously enrolled under a specific health Plan benefit
@@ -2527,6 +2759,10 @@ has_stop_reason_concept:
   - Concept
   uri: https://w3id.org/omop/ontology/has_stop_reason_concept
   inverse: null
+  cardinality: zero-to-many
+  label: Has stop reason concept
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: The PAYER_PLAN_PERIOD table captures details of the period of time
       that a Person is continuously enrolled under a specific health Plan benefit
@@ -2577,6 +2813,10 @@ has_stop_reason_source:
   - Concept
   uri: https://w3id.org/omop/ontology/has_stop_reason_source
   inverse: null
+  cardinality: zero-to-many
+  label: Has stop reason source
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: The PAYER_PLAN_PERIOD table captures details of the period of time
       that a Person is continuously enrolled under a specific health Plan benefit
@@ -2627,6 +2867,10 @@ has_contract:
   - Concept
   uri: https://w3id.org/omop/ontology/has_contract
   inverse: null
+  cardinality: zero-to-many
+  label: Has contract
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: The PAYER_PLAN_PERIOD table captures details of the period of time
       that a Person is continuously enrolled under a specific health Plan benefit
@@ -2677,6 +2921,10 @@ has_contract_source:
   - Concept
   uri: https://w3id.org/omop/ontology/has_contract_source
   inverse: null
+  cardinality: zero-to-many
+  label: Has contract source
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: The PAYER_PLAN_PERIOD table captures details of the period of time
       that a Person is continuously enrolled under a specific health Plan benefit
@@ -2727,6 +2975,10 @@ has_payer:
   - Concept
   uri: https://w3id.org/omop/ontology/has_payer
   inverse: null
+  cardinality: zero-to-many
+  label: Has payer
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: The PAYER_PLAN_PERIOD table captures details of the period of time
       that a Person is continuously enrolled under a specific health Plan benefit
@@ -2777,6 +3029,10 @@ has_payer_source:
   - Concept
   uri: https://w3id.org/omop/ontology/has_payer_source
   inverse: null
+  cardinality: zero-to-many
+  label: Has payer source
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: The PAYER_PLAN_PERIOD table captures details of the period of time
       that a Person is continuously enrolled under a specific health Plan benefit
@@ -2827,6 +3083,10 @@ has_plan:
   - Concept
   uri: https://w3id.org/omop/ontology/has_plan
   inverse: null
+  cardinality: zero-to-many
+  label: Has plan
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: The PAYER_PLAN_PERIOD table captures details of the period of time
       that a Person is continuously enrolled under a specific health Plan benefit
@@ -2877,6 +3137,10 @@ has_plan_source:
   - Concept
   uri: https://w3id.org/omop/ontology/has_plan_source
   inverse: null
+  cardinality: zero-to-many
+  label: Has plan source
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: The PAYER_PLAN_PERIOD table captures details of the period of time
       that a Person is continuously enrolled under a specific health Plan benefit
@@ -2927,6 +3191,10 @@ has_sponsor:
   - Concept
   uri: https://w3id.org/omop/ontology/has_sponsor
   inverse: null
+  cardinality: zero-to-many
+  label: Has sponsor
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: The PAYER_PLAN_PERIOD table captures details of the period of time
       that a Person is continuously enrolled under a specific health Plan benefit
@@ -2977,6 +3245,10 @@ has_response_visit_occurrence:
   - VisitOccurrence
   uri: https://w3id.org/omop/ontology/has_response_visit_occurrence
   inverse: null
+  cardinality: zero-to-many
+  label: Has response visit occurrence
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: The SURVEY_CONDUCT table is used to store an instance of a completed
       survey or questionnaire.
@@ -3028,6 +3300,10 @@ has_assisted:
   - Concept
   uri: https://w3id.org/omop/ontology/has_assisted
   inverse: null
+  cardinality: zero-to-many
+  label: Has assisted
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: The SURVEY_CONDUCT table is used to store an instance of a completed
       survey or questionnaire.
@@ -3077,6 +3353,10 @@ has_collection_method:
   - Concept
   uri: https://w3id.org/omop/ontology/has_collection_method
   inverse: null
+  cardinality: zero-to-many
+  label: Has collection method
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: The SURVEY_CONDUCT table is used to store an instance of a completed
       survey or questionnaire.
@@ -3126,6 +3406,10 @@ has_respondent_type:
   - Concept
   uri: https://w3id.org/omop/ontology/has_respondent_type
   inverse: null
+  cardinality: zero-to-many
+  label: Has respondent type
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: The SURVEY_CONDUCT table is used to store an instance of a completed
       survey or questionnaire.
@@ -3175,6 +3459,10 @@ has_survey:
   - Concept
   uri: https://w3id.org/omop/ontology/has_survey
   inverse: null
+  cardinality: zero-to-many
+  label: Has survey
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: The SURVEY_CONDUCT table is used to store an instance of a completed
       survey or questionnaire.
@@ -3224,6 +3512,10 @@ has_survey_source:
   - Concept
   uri: https://w3id.org/omop/ontology/has_survey_source
   inverse: null
+  cardinality: zero-to-many
+  label: Has survey source
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: The SURVEY_CONDUCT table is used to store an instance of a completed
       survey or questionnaire.
@@ -3273,6 +3565,10 @@ has_timing:
   - Concept
   uri: https://w3id.org/omop/ontology/has_timing
   inverse: null
+  cardinality: zero-to-many
+  label: Has timing
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: The SURVEY_CONDUCT table is used to store an instance of a completed
       survey or questionnaire.
@@ -3322,6 +3618,10 @@ has_validated_survey:
   - Concept
   uri: https://w3id.org/omop/ontology/has_validated_survey
   inverse: null
+  cardinality: zero-to-many
+  label: Has validated survey
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: The SURVEY_CONDUCT table is used to store an instance of a completed
       survey or questionnaire.
@@ -3371,6 +3671,10 @@ has_death:
   - Death
   uri: https://w3id.org/omop/ontology/has_death
   inverse: null
+  cardinality: zero-to-many
+  label: Has death
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: This table serves as the central identity management for all Persons
       in the database. It contains records that uniquely identify each person or patient,
@@ -3412,6 +3716,10 @@ has_condition_era:
   - ConditionEra
   uri: https://w3id.org/omop/ontology/has_condition_era
   inverse: null
+  cardinality: zero-to-many
+  label: Has condition era
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: This table serves as the central identity management for all Persons
       in the database. It contains records that uniquely identify each person or patient,
@@ -3461,6 +3769,10 @@ has_cost:
   - Cost
   uri: https://w3id.org/omop/ontology/has_cost
   inverse: null
+  cardinality: zero-to-many
+  label: Has cost
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: This table serves as the central identity management for all Persons
       in the database. It contains records that uniquely identify each person or patient,
@@ -3516,6 +3828,10 @@ has_dose_era:
   - DoseEra
   uri: https://w3id.org/omop/ontology/has_dose_era
   inverse: null
+  cardinality: zero-to-many
+  label: Has dose era
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: This table serves as the central identity management for all Persons
       in the database. It contains records that uniquely identify each person or patient,
@@ -3561,6 +3877,10 @@ has_drug_era:
   - DrugEra
   uri: https://w3id.org/omop/ontology/has_drug_era
   inverse: null
+  cardinality: zero-to-many
+  label: Has drug era
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: This table serves as the central identity management for all Persons
       in the database. It contains records that uniquely identify each person or patient,
@@ -3607,6 +3927,10 @@ has_ethnicity:
   - Concept
   uri: https://w3id.org/omop/ontology/has_ethnicity
   inverse: null
+  cardinality: zero-to-many
+  label: Has ethnicity
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: This table serves as the central identity management for all Persons
       in the database. It contains records that uniquely identify each person or patient,
@@ -3656,6 +3980,10 @@ has_ethnicity_source:
   - Concept
   uri: https://w3id.org/omop/ontology/has_ethnicity_source
   inverse: null
+  cardinality: zero-to-many
+  label: Has ethnicity source
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: This table serves as the central identity management for all Persons
       in the database. It contains records that uniquely identify each person or patient,
@@ -3705,6 +4033,10 @@ has_observation_period:
   - ObservationPeriod
   uri: https://w3id.org/omop/ontology/has_observation_period
   inverse: null
+  cardinality: zero-to-many
+  label: Has observation period
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: This table serves as the central identity management for all Persons
       in the database. It contains records that uniquely identify each person or patient,
@@ -3753,6 +4085,10 @@ has_race:
   - Concept
   uri: https://w3id.org/omop/ontology/has_race
   inverse: null
+  cardinality: zero-to-many
+  label: Has race
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: This table serves as the central identity management for all Persons
       in the database. It contains records that uniquely identify each person or patient,
@@ -3802,6 +4138,10 @@ has_race_source:
   - Concept
   uri: https://w3id.org/omop/ontology/has_race_source
   inverse: null
+  cardinality: zero-to-many
+  label: Has race source
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: This table serves as the central identity management for all Persons
       in the database. It contains records that uniquely identify each person or patient,
@@ -3851,6 +4191,10 @@ has_specimen:
   - Specimen
   uri: https://w3id.org/omop/ontology/has_specimen
   inverse: null
+  cardinality: zero-to-many
+  label: Has specimen
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: This table serves as the central identity management for all Persons
       in the database. It contains records that uniquely identify each person or patient,
@@ -3900,6 +4244,10 @@ has_visit_occurrence:
   - VisitOccurrence
   uri: https://w3id.org/omop/ontology/has_visit_occurrence
   inverse: null
+  cardinality: zero-to-many
+  label: Has visit occurrence
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: This table serves as the central identity management for all Persons
       in the database. It contains records that uniquely identify each person or patient,
@@ -3951,6 +4299,10 @@ has_condition_occurrence:
   - ConditionOccurrence
   uri: https://w3id.org/omop/ontology/has_condition_occurrence
   inverse: null
+  cardinality: unknown
+  label: Has condition occurrence
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: This table serves as the central identity management for all Persons
       in the database. It contains records that uniquely identify each person or patient,
@@ -4002,6 +4354,10 @@ has_device_exposure:
   - DeviceExposure
   uri: https://w3id.org/omop/ontology/has_device_exposure
   inverse: null
+  cardinality: unknown
+  label: Has device exposure
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: This table serves as the central identity management for all Persons
       in the database. It contains records that uniquely identify each person or patient,
@@ -4049,6 +4405,10 @@ has_drug_exposure:
   - DrugExposure
   uri: https://w3id.org/omop/ontology/has_drug_exposure
   inverse: null
+  cardinality: unknown
+  label: Has drug exposure
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: This table serves as the central identity management for all Persons
       in the database. It contains records that uniquely identify each person or patient,
@@ -4095,6 +4455,10 @@ has_measurement:
   - Measurement
   uri: https://w3id.org/omop/ontology/has_measurement
   inverse: null
+  cardinality: unknown
+  label: Has measurement
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: This table serves as the central identity management for all Persons
       in the database. It contains records that uniquely identify each person or patient,
@@ -4148,6 +4512,10 @@ has_note:
   - Note
   uri: https://w3id.org/omop/ontology/has_note
   inverse: null
+  cardinality: unknown
+  label: Has note
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: This table serves as the central identity management for all Persons
       in the database. It contains records that uniquely identify each person or patient,
@@ -4200,6 +4568,10 @@ has_observation:
   - Observation
   uri: https://w3id.org/omop/ontology/has_observation
   inverse: null
+  cardinality: unknown
+  label: Has observation
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: This table serves as the central identity management for all Persons
       in the database. It contains records that uniquely identify each person or patient,
@@ -4254,6 +4626,10 @@ has_procedure_occurrence:
   - ProcedureOccurrence
   uri: https://w3id.org/omop/ontology/has_procedure_occurrence
   inverse: null
+  cardinality: unknown
+  label: Has procedure occurrence
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: This table serves as the central identity management for all Persons
       in the database. It contains records that uniquely identify each person or patient,
@@ -4306,6 +4682,10 @@ has_vocabulary:
   - Vocabulary
   uri: https://w3id.org/omop/ontology/has_vocabulary
   inverse: null
+  cardinality: zero-to-many
+  label: Has vocabulary
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: The Standardized Vocabularies contains records, or Concepts, that
       uniquely identify each fundamental unit of meaning used to express clinical

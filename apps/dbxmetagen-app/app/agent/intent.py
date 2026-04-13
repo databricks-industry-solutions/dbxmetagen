@@ -14,6 +14,8 @@ from typing import Dict, List, Literal, Optional
 
 from databricks_langchain import ChatDatabricks
 
+from agent.tracing import trace
+
 logger = logging.getLogger(__name__)
 
 INTENT_MODEL = os.environ.get("INTENT_MODEL", "databricks-claude-haiku-4-5")
@@ -53,7 +55,9 @@ KB_TABLE_CONTEXT = f"""Available knowledge base tables in {CATALOG}.{SCHEMA}:
 - ontology_entities: entity_id, entity_name, entity_type, description, source_tables, confidence, entity_uri, source_ontology
 - fk_predictions: src_table, src_column, dst_table, dst_column, final_confidence, cardinality
 - metric_view_definitions: metric_view_name, source_table, json_definition, status
-- profiling_results: table_name, column_name, distinct_count, null_count"""
+- profiling_results: table_name, column_name, distinct_count, null_count
+- graph_nodes: id, node_type, ontology_type, display_name, short_description, quality_score, source_system
+- graph_edges: src, dst, relationship, edge_type, weight, source_system"""
 
 
 def _build_intent_prompt(question: str, history: Optional[List[Dict[str, str]]] = None) -> str:
@@ -135,7 +139,41 @@ def classify_and_contextualize(
     question: str,
     history: Optional[List[Dict[str, str]]] = None,
 ) -> IntentResult:
-    """Single LLM call for intent + context summary + meta detection + clarity."""
+    """Single LLM call for intent + context summary + meta detection + clarity.
+
+    Uses @trace for the non-graph path. For LangGraph nodes (where autolog
+    manages tracing), call classify_and_contextualize_untraced() instead.
+    """
+    return _classify_traced(
+        question=question[:500],
+        history_len=len(history) if history else 0,
+        _history=history,
+    )
+
+
+def classify_and_contextualize_untraced(
+    question: str,
+    history: Optional[List[Dict[str, str]]] = None,
+) -> IntentResult:
+    """Untraced variant for use inside LangGraph nodes (autolog traces the node)."""
+    return _classify_core(question[:500], history)
+
+
+@trace(name="intent_classification", span_type="LLM")
+def _classify_traced(
+    question: str,
+    history_len: int = 0,
+    _history: Optional[List[Dict[str, str]]] = None,
+) -> IntentResult:
+    """Traced wrapper for the non-graph path."""
+    return _classify_core(question, _history)
+
+
+def _classify_core(
+    question: str,
+    history: Optional[List[Dict[str, str]]] = None,
+) -> IntentResult:
+    """Core classification logic shared by traced and untraced paths."""
     prompt = _build_intent_prompt(question, history)
     try:
         resp = _get_intent_llm().invoke(prompt)

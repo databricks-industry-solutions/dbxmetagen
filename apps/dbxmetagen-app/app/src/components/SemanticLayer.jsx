@@ -420,6 +420,7 @@ export default function SemanticLayer() {
         tables: fqTables, questions: lines, mode,
         catalog_name: selectedCatalog, schema_name: selectedSchema,
         business_context: businessContext || undefined,
+        profile_id: activeProfileId || undefined,
       }
       if (selectedProjectId) body.project_id = selectedProjectId
       const res = await fetch('/api/semantic-layer/generate', {
@@ -1025,7 +1026,8 @@ export default function SemanticLayer() {
 
       {/* === Generate Tab === */}
       {activeTab === 'generate' && (() => {
-        const relevantKpis = kpis.filter(k => kpiMatchesTables(k, selectedTables))
+        const profileFiltered = activeProfileId ? kpis.filter(k => k.profile_id === activeProfileId) : kpis
+        const relevantKpis = profileFiltered.filter(k => kpiMatchesTables(k, selectedTables))
         return <>
 
       {/* Generation inputs summary */}
@@ -1061,9 +1063,9 @@ export default function SemanticLayer() {
             </span>
           </div>
           <div className="p-3 rounded-lg bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700">
-            <span className="text-xs text-slate-500 dark:text-slate-400 block mb-1">Matching KPIs</span>
+            <span className="text-xs text-slate-500 dark:text-slate-400 block mb-1">Matching KPIs{activeProfileId ? ' (profile)' : ''}</span>
             <span className="font-medium dark:text-gray-200">
-              {selectedTables.length ? `${relevantKpis.length} of ${kpis.length}` : `${kpis.length} total`}
+              {selectedTables.length ? `${relevantKpis.length} of ${profileFiltered.length}` : `${profileFiltered.length} total`}
             </span>
           </div>
         </div>

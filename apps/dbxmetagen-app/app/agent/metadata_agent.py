@@ -13,7 +13,7 @@ from typing import Annotated, Dict, Any, List, Optional, TypedDict
 from agent.guardrails import GuardrailConfig, SAFETY_PROMPT_BLOCK, sanitize_output
 from agent.common import extract_token_usage
 from agent.intent import classify_and_contextualize, format_clarification, keyword_domain
-from agent.tracing import trace
+from agent.tracing import trace, tag_trace
 
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 from langchain_core.tools import BaseTool
@@ -167,6 +167,7 @@ async def run_metadata_agent(
     mode='baseline': same multi-agent but restricted to 3 KB tables only.
     mode='deep': legacy alias for 'graphrag'.
     """
+    tag_trace(session_id=session_id, agent="metadata", mode=mode)
     if mode in ("graphrag", "baseline", "deep"):
         from agent.deep_analysis import run_deep_analysis
         effective_mode = "graphrag" if mode == "deep" else mode

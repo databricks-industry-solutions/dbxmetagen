@@ -59,7 +59,8 @@ def main() -> int:
     for d in sorted(BUNDLES.iterdir()):
         if not d.is_dir():
             continue
-        if not (d / "entities_tier1.yaml").is_file():
+        has_tiers = (d / "entities_tier1.yaml").is_file() or (d / "entities_tier1.json").is_file()
+        if not has_tiers:
             continue
         issues = validate_tiers(d.name)
         tier_errors.extend(f"{d.name}: {i}" for i in issues)

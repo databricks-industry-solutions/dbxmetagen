@@ -1,0 +1,249 @@
+# Full copy of dbxmetagen/variables.yml -- sync when bumping dbxmetagen version.
+#
+# Notebook 01 resolves this from configurations/dbxmetagen_variables.yml relative to
+# the bundle root. If present, it provides all MetadataConfig defaults; the notebook
+# only overrides catalog, schema, table_names, mode, model, and current_user at runtime.
+#
+# To use: copy this file to your_project/configurations/dbxmetagen_variables.yml
+# and update defaults as needed for your environment.
+#
+# For a minimal overrides-only approach, see metagen_overrides.yml instead.
+# The full variables file is recommended for production to avoid missing-attribute errors.
+#
+# Source: https://github.com/databricks-industry-solutions/dbxmetagen/blob/main/variables.yml
+#
+# Run this to refresh from upstream:
+#   cp /path/to/dbxmetagen/variables.yml configurations/dbxmetagen_variables.yml
+
+variables:
+  catalog_name:
+    description: "(REQUIRED) Target catalog where data, models, and files are stored for this project. If source tables are in this catalog, then table names only have to be scoped with schema and table. If table names are in other catalogs then table names need to be fully scoped. Replace this catalog name with the main catalog you want to run dbxmetagen from. Cannot be 'none', 'null', or empty."
+    default: None
+  schema_name:
+    description: Primary schema where data, models, and files are written to for this project. This is not the source schema, which is specified elsewhere with the source table name.
+    default: metadata_results
+  allow_data:
+    description: Set this to false if you do not want data sent to LLMs, do not want any metadata stored in comments, and do not want metadata used that could leak data into metadata. Reduces quality of outputs. Internally sets sample_size to 0, allow_data_in_comments to false, and include_possible_data_fields_in_metadata to false.
+    default: True
+  sample_size:
+    description: Sample size used per chunk in the prompt generation. when set to 0, no data will be sent to LLM, but due to leakage from metadata if this field alone is set, does not prevent data being added to comments.
+    default: 5
+  allow_data_in_comments:
+    description: Whether to allow data in comments. Note that this does not prevent data from being used in the inputs, but is meant to keep data from the outputs. These comments still need to be reviewed, and to be 100% sure, either set allow_data to false, or set your combination of add_metadata, include_existing_table_comment, and other fields to the proper settings.
+    default: true
+  add_metadata:
+    description: Whether to use metadata from information schema and from a DESCRIBE EXTENDED ... COMPUTE STATISTICS... on each column or not. The most information will be used if ANALYZE ALL COLUMNS ... COMPUTE STATISTICS... is run on the table, but there are good reasons not to do that, please review the considerations. Setting add_metadata to true will also lead to a slower process. Note that some metadata can in theory leak data, such as min or max. Strings don't have values for min or max, but dates, floats, and integers do.
+    default: true
+  include_datatype_from_metadata:
+    description: Should datatype be included in the comment generation?
+    default: true
+  include_existing_table_comment:
+    description: If there's an existing comment at the table level, include it in the payload that is used to build the metadata. This can lead to data leakage, but can also help enrich AI generated comments with existing comments, or include information that the previous comment authors wanted to include.
+    default: true
+  include_possible_data_fields_in_metadata:
+    description: There are a few fields in extended metadata if ANALYZE TABLE...COMPUTE STATISTICS... is used that in theory could leak PII or PHI. For example, if a phone number or SSN is stored as an INT, or for appointment dates that could be classified as PHI. Set this to false if you want to exclude these fields. Note that these fields are some of the most useful for tools like Genie.
+    default: true
+  catalog_tokenizable:
+    description: tokenizable catalog name. You can add string formatting here for environment. For example, add _{env} so that config.env from widgets or from the asset bundle variables gets parameterized with the catalog name. Paired with format_catalog and making sure that there's a value in the instantiated config for the parameterized value, the token can be formatted in Databricks. If the token itself should be present in the DDL generated, then leave format_catalog as false.
+    default: __CATALOG_NAME__
+  format_catalog:
+    description: Whether or not to string format any bracketed variables in catalog name. If set to false, then __CATALOG_NAME__{env} will keep the _{env} suffix, if not it will be formatted with the current environment.
+    default: false
+  solo_medical_identifier:
+    description: When a medical identifier, such as a medical record number (MRN), is alone in a field, it should be classified as this value. Technically speaking, if for example a column is alone in a table MRN is PII, not PHI. However, a more conservative setting would be to classify all medical identifiers as PHI, even when they are PII.
+    default: pii
+  disable_medical_information_value:
+    description: Set this to true if you want all phi assumptions to be as secure as possible. Under this setting there is no 'medical information' category. Instead, all medical information is converted to PHI. Note that this will mean that any downstream masking you do, and security concerns around your data will be much more stringent.
+    default: false
+  model:
+    description: LLM endpoint used by model calls. Note that this is not the same as any registered model in UC that wraps the prompt engineering work, but is the serving endpoint called after prompt engineering. This can be changed to other served models as well as provisioned throughput models or external models for compliance purposes if needed. Recommend databricks-claude-sonnet-4-6 for best comments, with databricks-meta-llama-3-3-70b-instruct as a backup. Sonnet will generally give more complex responses. Review security, tenancy, and cost considerations before making a decision.
+    default: databricks-claude-sonnet-4-6
+  mode:
+    description: Mode for generating metadata. Options are 'comment', 'pi', or 'domain'. Comment mode generates descriptions for tables and columns. PI mode identifies and classifies sensitive information. Domain mode classifies tables into business domains using an agent.
+    default: comment
+  job_table_names:
+    description: default table names - get applied if there are no host overrides.
+    default: none
+  apply_ddl:
+    description: Whether to apply DDL directly to the specified environment or not. Modify permissions needed, and be aware that this will alter tables.
+    default: False
+  ddl_output_format:
+    description: Output format can be via sql file (default) or via tsv or excel if this improves reviewability. This file is the individual output files.
+    default: sql
+  reviewable_output_format:
+    description: Desired format for full run output for reviewability. tsv or excel
+    default: tsv
+  include_deterministic_pi:
+    description: Run presidio analyzer before using LLM-based PI identification.
+    default: true
+  spacy_model_names:
+    description: spacy models to use in presidio. Currently will only handle a single model. Adding support for multiple models is a planned feature.
+    default: en_core_web_lg
+  pi_classification_rules:
+    description: Rules for PI classification. These rules will be injected into the prompt and provided along with the prompt to the model.
+    default: |
+      PII (Personally Identifiable Information): Any data that can identify an individual, such as name, address, or social security number. 
+      PHI (Protected Health Information): Health-related data that includes any of the 18 HIPAA-identified elements, like medical records or treatment histories. A column is classified definitively as PHI when it has both health-related information and personal identifiers. 
+      PCI (Payment Card Information): Data related to payment card transactions, including card numbers, expiration dates, and security codes. 
+      Non-PII/PHI/PCI: Data that cannot be used to identify an individual or is not related to health or payment cards, such as general demographics or anonymized statistics.
+      ###
+      To identify these types:
+      ###
+      PII: Look for column names or data containing personal details like 'full_name', 'address', 'ssn', 'email', or 'phone_number', geo subdivisions smaller than a state, dates that relate to an individual such as birth date, medical record number (MRN), URLs, Certificate or license numbers, account numbers, VIN or license plate numbers, biometric identifiers, face photography, or unique identifying number characteristic or code.
+      PHI: Search for health-related terms in column names or data, such as 'medical_record_number', 'diagnosis', 'treatment_date', or any of the 18 HIPAA identifiers. If a column ONLY has medical information with absolutely no identifying information, then it is not PHI. It should be classified as medical information at the column level to allow table-level PHI to be evaluated.
+      PCI: Identify columns or data with payment card-related terms like 'card_number', 'expiration_date', 'cvv', or 'cardholder_name'.
+      Non-PII/PHI/PCI: Look for general, non-identifying information like 'state', 'country', 'age_group', or 'product_category'. Anything smaller than state is generally considered PII.
+      ###
+      Tables with PII vs columns with PII:
+      ###
+      If a column has only PII, then it should be considered only PII, even if other columns in the table have medical information in them. A specific example of this is that if a column only contains name, or address, then it should be marked as pii, not as phi. However, the column containing medical information would be considered PHI because it pertains to the health status, provision of health care, or payment for health care that can be linked to an individual.
+      If a table has columns with both PII and PHI, or with PII and medical information, then the table itself has PHI.
+  allow_manual_override:
+    description: Whether to allow manual overrides to fields. manual override csv allows overrides to be specified in a CSV.
+    default: true
+  override_csv_path:
+    description: Path and name of csv to be used for manual overrides.
+    default: metadata_overrides.csv
+  tag_none_fields:
+    description: Whether to tag fields with no PI, or not apply any tags. If a field is classified as 'None' in PI, it won't get tagged.
+    default: true
+  max_prompt_length:
+    description: maximum prompt length
+    default: 16384
+  word_limit_per_cell:
+    description: number of words for each cell of the source tables. any value from a source table larger than this will get truncated when added to prompt content.
+    default: 200
+  limit_prompt_based_on_cell_len:
+    description: whether or not to truncate cells longer than the value in word_limit_per_cell
+    default: true
+  columns_per_call:
+    description: columns per call - this is the number of columns sent to the prompt per chunk
+    default: 20
+  max_tokens:
+    description: maximum tokens for model
+    default: 8192
+  temperature:
+    description: temperature applied to the model
+    default: 0.1
+  acro_content:
+    description: acronyms that are commonly used in the data
+    default: |
+      {
+      "DBX": "Databricks",
+      "WHO": "World Health Organization",
+      "GMC": "Global Marketing Code",
+      }
+  domain_config_path:
+    description: Path to a standalone domain configuration YAML file. When set, overrides the domains section from the ontology bundle for domain prediction. Leave empty to use the ontology bundle's domains instead.
+    default: ""
+  ontology_bundle:
+    description: Ontology bundle name or path (e.g. 'general', 'healthcare'). Used by the ontology pipeline and, when domain_config_path is empty, also supplies domain definitions for domain prediction. Should align with domain_config_path industry.
+    default: general
+  domain_column_blacklist:
+    description: Comma-separated column names to exclude from domain classification (e.g. system columns like _updated_at, created_at that can bias results). Only affects domain mode.
+    default: "_updated_at,_created_at,created_at,updated_at"
+  include_lineage:
+    description: When true, query system.access.table_lineage on the fly and include truncated upstream/downstream table lists in LLM prompts for comment, PII, and domain modes. Requires access to system tables. Default true.
+    default: true
+  use_protected_classification_for_table:
+    description: Whether to use protected classification for the table.
+    default: true
+  volume_name:
+    description: volume name in which to store DDL files.
+    default: generated_metadata
+  registered_model_name:
+    description: registered model name
+    default: default
+  model_type:
+    description: Model type
+    default: default
+  table_names_source:
+    description: Path variable to table names. Set to 'parameter' when passing table names directly. When using parameter mode, table names cannot be 'none', 'null', or empty.
+    default: csv_file_path
+  source_file_path:
+    description: Path to the source file used in identifying table names.
+    default: table_names.csv
+  current_user:
+    description: User deploying the bundle. Can apply to service principals as well.
+    default: ${workspace.current_user.userName}
+  current_working_directory:
+    description: Working directory or bundle root.
+    default: /Users/${var.current_user}/.bundle/${bundle.name}/${bundle.target}
+  review_input_file_type:
+    description: excel or tsv. allows reviewed DDL to be in either format.
+    default: tsv
+  review_output_file_type:
+    description: sql, excel, or tsv. allows reviewed DDL to be exported in either format.
+    default: tsv
+  review_apply_ddl:
+    description: When running 'sync_reviewed_ddl', if this is set to true, the DDL will all be applied after running.
+    default: false
+  column_with_reviewed_ddl:
+    description: When reviewing content and supplying it back to the sync process, do not modify the DDL column, modify the columns 'column_content' or 'type' and 'classification'. For the alternative column the specified option should just be 'other'. We will add an option to modify the DDL in a future release.
+    default: other
+  control_table:
+    description: Control table name.
+    default: "metadata_control_{}"
+  dry_run:
+    description: Whether to perform a dry run. Not yet implemented, though if volume_name is set to null and apply_ddl is set to false this effectively is a dry run. Similarly, just setting apply_ddl to false is in a way a dry run.
+    default: false
+  grant_permissions_after_creation:
+    description: Whether to automatically grant read permissions on created schema, volume, and tables to specified groups/users after metadata generation completes. Requires appropriate permissions to grant.
+    default: true
+  node_type:
+    description: "Node type for job clusters. Must match your cloud provider. AWS: i3.2xlarge (default), Azure: Standard_DS4_v2, GCP: n2-highmem-8."
+    default: i3.2xlarge
+  permission_groups:
+    description: Comma-separated list of groups to grant read permissions to (e.g., "data_analysts,data_scientists"). Set to "none" to skip group permissions.
+    default: "none"
+  permission_users:
+    description: Comma-separated list of users to grant read permissions to (e.g., "user1@example.com,user2@example.com"). Set to "none" to skip user permissions.
+    default: "none"
+  deploying_user:
+    description: User deploying the bundle (for permissions).
+    default: ${workspace.current_user.userName}
+  generate_profiling_data:
+    description: Enable profiling payload capture and statistics collection. When true, LLM prompts are logged and table statistics are computed.
+    default: false
+  embedding_model:
+    description: Databricks Foundation Model endpoint for generating embeddings
+    default: databricks-bge-large-en
+  ontology_config_path:
+    description: Path to ontology configuration YAML file. When left at the default, the config is automatically derived from ontology_bundle instead (e.g. ontology_bundles/general.yaml). Set explicitly only to override the bundle's entity definitions.
+    default: configurations/ontology_config.yaml
+  similarity_threshold:
+    description: Cosine similarity threshold for creating similar_embedding edges between nodes (0.0-1.0)
+    default: 0.8
+  profiling_max_tables:
+    description: Maximum number of tables to profile per run (empty for all)
+    default: ""
+  freshness_threshold_days:
+    description: Number of days before data is considered stale for quality scoring
+    default: 7
+  warehouse_id:
+    description: SQL warehouse ID for dashboard queries. Required for dashboard deployment.
+    default: ""
+  federation_mode:
+    description: "Enable federation compatibility mode for running against federated catalogs (e.g., Redshift, Snowflake via Unity Catalog federation). When true: DESCRIBE DETAIL is skipped (Delta-specific), DESCRIBE EXTENDED is skipped, DDL apply is forced to false (cannot ALTER federated tables), and tag operations are disabled. SELECT, DESCRIBE TABLE, and SHOW TABLES still work. dbxmetagen output tables remain Delta."
+    default: false
+  use_kb_comments:
+    description: "When true, PI and domain classification prompts are enriched with comments from knowledge base tables (table_knowledge_base, column_knowledge_base) when UC table/column comments are empty. Requires the knowledge base to have been built first."
+    default: false
+  incremental:
+    description: "When true, pipeline steps (profiling, extended metadata, ontology, FK prediction) only process tables that changed since their last run. Uncheck for the first run if no prior metadata exists."
+    default: true
+  include_profiling_context:
+    description: "When true, inject profiling stats (distinct_count, null_rate, min/max) into comment generation prompts. Requires profiling to have run first."
+    default: false
+  include_constraint_context:
+    description: "When true, inject PK/FK constraint roles into comment generation prompts. Requires extended metadata extraction to have run first."
+    default: false
+  max_ai_candidates:
+    description: "Maximum candidate column pairs sent to AI_QUERY for FK judgment. Lower values reduce LLM cost and runtime. Set to 0 to skip AI entirely and rely only on rule scores."
+    default: 200
+  rule_score_min_for_ai:
+    description: "Minimum rule score (0.0-1.0) a candidate pair must reach to qualify for AI_QUERY judgment. Higher values are more selective, reducing AI calls but potentially missing weaker FK relationships."
+    default: 0.50
+  max_candidates_per_table_pair:
+    description: "Maximum number of candidate column pairs retained per table pair from name/ontology matching. Lower values reduce combinatorial explosion for wide tables."
+    default: 5

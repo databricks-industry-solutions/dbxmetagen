@@ -5,6 +5,7 @@ has_account:
   ranges: []
   uri: ''
   inverse: account_of
+  cardinality: one-to-many
 part_of:
   name: part_of
   domain: Person
@@ -12,6 +13,7 @@ part_of:
   ranges: []
   uri: ''
   inverse: ''
+  cardinality: many-to-one
 contains:
   name: contains
   domain: Organization
@@ -19,6 +21,7 @@ contains:
   ranges: []
   uri: ''
   inverse: contained_in
+  cardinality: one-to-many
 on_account:
   name: on_account
   domain: Transaction
@@ -26,6 +29,7 @@ on_account:
   ranges: []
   uri: ''
   inverse: ''
+  cardinality: many-to-one
 by_person:
   name: by_person
   domain: Transaction
@@ -33,6 +37,7 @@ by_person:
   ranges: []
   uri: ''
   inverse: ''
+  cardinality: many-to-one
 references:
   name: references
   domain: Event
@@ -40,6 +45,7 @@ references:
   ranges: []
   uri: ''
   inverse: referenced_by
+  cardinality: many-to-one
 owned_by:
   name: owned_by
   domain: Account
@@ -47,6 +53,7 @@ owned_by:
   ranges: []
   uri: ''
   inverse: owns
+  cardinality: many-to-one
 has_transaction:
   name: has_transaction
   domain: Account
@@ -54,6 +61,7 @@ has_transaction:
   ranges: []
   uri: ''
   inverse: ''
+  cardinality: one-to-many
 managed_by:
   name: managed_by
   domain: Portfolio
@@ -61,6 +69,7 @@ managed_by:
   ranges: []
   uri: ''
   inverse: ''
+  cardinality: many-to-one
 of_instrument:
   name: of_instrument
   domain: Trade
@@ -68,6 +77,7 @@ of_instrument:
   ranges: []
   uri: ''
   inverse: ''
+  cardinality: many-to-one
 with_counterparty:
   name: with_counterparty
   domain: Trade
@@ -75,6 +85,7 @@ with_counterparty:
   ranges: []
   uri: ''
   inverse: ''
+  cardinality: many-to-one
 hedges:
   name: hedges
   domain: Instrument
@@ -82,6 +93,7 @@ hedges:
   ranges: []
   uri: ''
   inverse: ''
+  cardinality: many-to-many
 has_trade:
   name: has_trade
   domain: Counterparty
@@ -89,6 +101,7 @@ has_trade:
   ranges: []
   uri: ''
   inverse: ''
+  cardinality: one-to-many
 for_account:
   name: for_account
   domain: Risk
@@ -96,6 +109,7 @@ for_account:
   ranges: []
   uri: ''
   inverse: ''
+  cardinality: many-to-one
 for_instrument:
   name: for_instrument
   domain: Risk
@@ -103,6 +117,7 @@ for_instrument:
   ranges: []
   uri: ''
   inverse: ''
+  cardinality: many-to-one
 for_person:
   name: for_person
   domain: Compliance
@@ -110,6 +125,7 @@ for_person:
   ranges: []
   uri: ''
   inverse: ''
+  cardinality: many-to-one
 for_organization:
   name: for_organization
   domain: Compliance
@@ -117,6 +133,7 @@ for_organization:
   ranges: []
   uri: ''
   inverse: ''
+  cardinality: many-to-one
 on_policy:
   name: on_policy
   domain: Claim
@@ -124,6 +141,7 @@ on_policy:
   ranges: []
   uri: ''
   inverse: ''
+  cardinality: many-to-one
 filed_by:
   name: filed_by
   domain: Claim
@@ -131,6 +149,7 @@ filed_by:
   ranges: []
   uri: ''
   inverse: ''
+  cardinality: many-to-one
 held_by:
   name: held_by
   domain: Policy
@@ -138,6 +157,7 @@ held_by:
   ranges: []
   uri: ''
   inverse: ''
+  cardinality: many-to-one
 issued_by:
   name: issued_by
   domain: Policy
@@ -145,6 +165,7 @@ issued_by:
   ranges: []
   uri: ''
   inverse: issues
+  cardinality: many-to-one
 borrowed_by:
   name: borrowed_by
   domain: Loan
@@ -152,6 +173,7 @@ borrowed_by:
   ranges: []
   uri: ''
   inverse: ''
+  cardinality: many-to-one
 secures:
   name: secures
   domain: Loan
@@ -159,6 +181,7 @@ secures:
   ranges: []
   uri: ''
   inverse: ''
+  cardinality: many-to-one
 has_risk:
   name: has_risk
   domain: Loan
@@ -166,3 +189,4 @@ has_risk:
   ranges: []
   uri: ''
   inverse: ''
+  cardinality: one-to-many

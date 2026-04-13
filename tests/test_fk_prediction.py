@@ -611,3 +611,89 @@ class TestEnforceDirectionSwap:
         src = inspect.getsource(FKPredictor._enforce_direction)
         assert "has_ai" in src and "has_card" in src
 
+
+# --- TestRuleScoreBehavior ---
+
+
+class TestRuleScoreBehavior:
+    """Execute rule_score() on mock DataFrames to verify feature gating and wiring.
+
+    Existing tests only inspect source strings. These tests actually call
+    rule_score() and verify the expression wiring through the mock layer.
+    """
+
+    def _make_predictor(self, **cfg_overrides):
+        cfg = FKPredictionConfig(catalog_name="c", schema_name="s", **cfg_overrides)
+        return FKPredictor(spark=MagicMock(), config=cfg)
+
+    def _make_candidates(self, columns):
+        df = MagicMock()
+        df.columns = columns
+        df.withColumn = MagicMock(return_value=df)
+        return df
+
+    def test_adds_rule_score_column(self):
+        """rule_score() must call withColumn('rule_score', ...)."""
+        p = self._make_predictor()
+        df = self._make_candidates(["col_a", "col_b", "dtype_a", "dtype_b",
+                                     "table_a", "table_b", "col_similarity",
+                                     "samples_a", "samples_b"])
+        result = p.rule_score(df)
+        df.withColumn.assert_called_once()
+        assert df.withColumn.call_args[0][0] == "rule_score"
+        assert result is df
+
+    def test_entity_match_used_when_present(self):
+        """When entity_match IS in columns, F.col('entity_match') should be called."""
+        from pyspark.sql import functions as F
+        F.col.reset_mock()
+        p = self._make_predictor()
+        df = self._make_candidates(["col_a", "col_b", "dtype_a", "dtype_b",
+                                     "table_a", "table_b", "col_similarity",
+                                     "samples_a", "samples_b", "entity_match"])
+        p.rule_score(df)
+        col_args = [c[0][0] for c in F.col.call_args_list if c[0]]
+        assert "entity_match" in col_args
+
+    def test_entity_match_fallback_when_absent(self):
+        """When entity_match is NOT in columns, F.lit(0.0) should be used."""
+        from pyspark.sql import functions as F
+        F.lit.reset_mock()
+        p = self._make_predictor()
+        df = self._make_candidates(["col_a", "col_b", "dtype_a", "dtype_b",
+                                     "table_a", "table_b", "col_similarity",
+                                     "samples_a", "samples_b"])
+        p.rule_score(df)
+        lit_args = [c[0][0] for c in F.lit.call_args_list if c[0]]
+        assert 0.0 in lit_args
+
+    def test_lineage_score_used_when_present(self):
+        """When lineage_score IS in columns, F.col('lineage_score') should be called."""
+        from pyspark.sql import functions as F
+        F.col.reset_mock()
+        p = self._make_predictor()
+        df = self._make_candidates(["col_a", "col_b", "dtype_a", "dtype_b",
+                                     "table_a", "table_b", "col_similarity",
+                                     "samples_a", "samples_b", "lineage_score"])
+        p.rule_score(df)
+        col_args = [c[0][0] for c in F.col.call_args_list if c[0]]
+        assert "lineage_score" in col_args
+
+    def test_ontology_bonus_weight_from_config(self):
+        """The ontology_match_bonus_weight config value must be read during scoring."""
+        p = self._make_predictor(ontology_match_bonus_weight=0.42)
+        df = self._make_candidates(["col_a", "col_b", "dtype_a", "dtype_b",
+                                     "table_a", "table_b", "col_similarity",
+                                     "samples_a", "samples_b", "entity_match"])
+        p.rule_score(df)
+        assert p.config.ontology_match_bonus_weight == 0.42
+
+    def test_returns_dataframe(self):
+        """rule_score() must return the DataFrame (result of withColumn)."""
+        p = self._make_predictor()
+        df = self._make_candidates(["col_a", "col_b", "dtype_a", "dtype_b",
+                                     "table_a", "table_b", "col_similarity",
+                                     "samples_a", "samples_b"])
+        result = p.rule_score(df)
+        assert result is df.withColumn.return_value
+

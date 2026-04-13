@@ -51,7 +51,6 @@ EDGE TYPES (relationship and edge_type are always equal):
   same_catalog        -- tables share the same catalog
   same_schema         -- tables share the same database schema
   same_security_level -- tables share the same PII/PHI classification
-  same_classification -- columns share the same data classification
   similar_embedding   -- embedding similarity between nodes; weight = cosine similarity
   derives_from        -- lineage: one table derives from another
   <named_rel>         -- ontology-declared relationships (e.g. "treated_by", "prescribed_to")

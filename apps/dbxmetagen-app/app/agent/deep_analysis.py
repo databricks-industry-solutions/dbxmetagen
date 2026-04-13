@@ -7,6 +7,7 @@ This replaces the previous multi-agent supervisor/planner/retrieval/analyst
 LangGraph architecture which was prone to infinite loops and timeouts.
 """
 
+import contextvars
 import json
 import logging
 import os
@@ -30,7 +31,7 @@ from agent.common import ToolResult, measure_phase, vs_cache_get, vs_cache_put
 from agent.graph_skill import GRAPH_SCHEMA_CONTEXT
 from agent.guardrails import SAFETY_PROMPT_BLOCK, EvidenceBudget, sanitize_output
 from agent.intent import classify_and_contextualize
-from agent.tracing import trace, ensure_mlflow_context, get_mlflow
+from agent.tracing import trace, ensure_mlflow_context, get_mlflow, maybe_span, tag_trace
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +86,23 @@ vector search, SQL queries on metadata tables, and structured data retrieval
 
 {GRAPH_SCHEMA_CONTEXT}
 
+## Ontology Entity Model
+
+The ontology uses a per-instance entity model:
+- Each discovered entity gets its own UUID (`entity_id`) and row in `ontology_entities`.
+- `entity_type` (e.g. Person, Metric, Reference) is the class label -- many entity
+  instances can share the same `entity_type`. Multiple UUIDs per type is by design,
+  not a deduplication issue.
+- `instance_of` edges link table nodes (src=table FQN) to entity nodes (dst=entity UUID)
+  with a fixed weight of 1.0. The discovery confidence is on the entity node's
+  `quality_score`, not the edge weight.
+- Entity types come from the active ontology bundle (e.g. general.yaml, healthcare.yaml).
+  Only entities with matching source_tables were actually discovered in user data;
+  entity types that appear only in bundle definitions or relationship metadata
+  (without source_tables) are not confirmed in user tables.
+- Distinguish clearly between "entity types defined in the bundle" and "entity instances
+  actually discovered and mapped to tables in this catalog."
+
 ## Response Format
 
 ### Key Findings
@@ -106,6 +124,7 @@ GROUNDING RULE: Every finding and recommendation MUST cite a specific evidence s
 lack evidence. If the user's question cannot be answered from the gathered evidence,
 state this clearly.
 
+Do NOT echo back raw JSON from intent classification or retrieval planning.
 Be direct and avoid repetition. Lead with the most impactful finding."""
 
 
@@ -144,58 +163,27 @@ Be direct and avoid repetition."""
 # ---------------------------------------------------------------------------
 
 def _safe_tool_call(tool_fn, args: dict, timeout_s: int, label: str,
-                    step_num: int, total_steps: int,
-                    parent_span_id: str = None, trace_request_id: str = None) -> ToolResult:
+                    step_num: int, total_steps: int) -> ToolResult:
     """Run a LangChain tool with a hard timeout. Returns a ToolResult.
 
-    When parent_span_id + trace_request_id are provided (cross-thread calls from
-    LangGraph nodes), uses MlflowClient for explicit child-span parenting.
-    Otherwise falls back to context-based mlflow.start_span().
+    Span parenting is handled via contextvars propagation -- callers wrap
+    pool.submit() with copy_context().run() so the OTel parent span is visible.
     """
-    mlflow = get_mlflow()
     span_inputs = {"tool": label, "args": str(args)[:200], "timeout_s": timeout_s}
+    cm = maybe_span(name=f"tool_{label}", span_type="TOOL")
 
-    # Client-API span for cross-thread parenting (LangGraph path)
-    _client = None
-    _client_span = None
-    if mlflow and parent_span_id and trace_request_id:
-        try:
-            _client = mlflow.MlflowClient()
-            _client_span = _client.start_span(
-                request_id=trace_request_id, name=f"tool_{label}",
-                parent_id=parent_span_id, span_type="TOOL",
-                inputs=span_inputs,
-            )
-        except Exception:
-            logger.debug("Failed to create child span for tool_%s", label)
-            _client, _client_span = None, None
-
-    # Context-based span fallback (original pipeline path)
-    cm = (mlflow.start_span(name=f"tool_{label}") if mlflow and not _client_span
-          else nullcontext())
-
-    def _finish(outputs):
-        if _client and _client_span:
-            try:
-                _client.end_span(
-                    request_id=trace_request_id,
-                    span_id=_client_span.span_id,
-                    outputs=outputs,
-                )
-            except Exception:
-                pass
-
-    with cm as ctx_span:
-        if ctx_span:
-            ctx_span.set_inputs(span_inputs)
+    with cm as span:
+        if span:
+            span.set_inputs(span_inputs)
         t0 = time.time()
         if step_num:
             _emit("gathering", f"Step {step_num}/{total_steps}: {label}...")
         logger.info("[deep_analysis] STEP %d/%d: %s -- START (timeout=%ds)",
                     step_num, total_steps, label, timeout_s)
         try:
+            ctx = contextvars.copy_context()
             with ThreadPoolExecutor(max_workers=1) as pool:
-                result = pool.submit(tool_fn.func, **args).result(timeout=timeout_s)
+                result = pool.submit(ctx.run, tool_fn.func, **args).result(timeout=timeout_s)
             elapsed = round(time.time() - t0, 1)
             result_len = len(result) if result else 0
             logger.info("[deep_analysis] STEP %d/%d: %s -- DONE in %.1fs (%d chars)",
@@ -203,9 +191,8 @@ def _safe_tool_call(tool_fn, args: dict, timeout_s: int, label: str,
             if step_num:
                 _emit("gathering", f"Step {step_num}/{total_steps}: {label} done ({elapsed}s)")
             outputs = {"status": "ok", "elapsed_s": elapsed, "result_len": result_len}
-            if ctx_span:
-                ctx_span.set_outputs(outputs)
-            _finish(outputs)
+            if span:
+                span.set_outputs(outputs)
             return ToolResult(success=True, data=result, elapsed_s=elapsed, label=label)
         except FuturesTimeout:
             elapsed = round(time.time() - t0, 1)
@@ -214,9 +201,8 @@ def _safe_tool_call(tool_fn, args: dict, timeout_s: int, label: str,
             if step_num:
                 _emit("gathering", f"Step {step_num}/{total_steps}: {label} timed out, continuing...")
             outputs = {"status": "timeout", "elapsed_s": elapsed}
-            if ctx_span:
-                ctx_span.set_outputs(outputs)
-            _finish(outputs)
+            if span:
+                span.set_outputs(outputs)
             return ToolResult(success=False, data=None, error_type="timeout",
                               error_hint=f"Timed out after {timeout_s}s", elapsed_s=elapsed, label=label)
         except Exception as e:
@@ -227,9 +213,8 @@ def _safe_tool_call(tool_fn, args: dict, timeout_s: int, label: str,
             if step_num:
                 _emit("gathering", f"Step {step_num}/{total_steps}: {label} failed, continuing...")
             outputs = {"status": "error", "error": err_str, "elapsed_s": elapsed}
-            if ctx_span:
-                ctx_span.set_outputs(outputs)
-            _finish(outputs)
+            if span:
+                span.set_outputs(outputs)
             error_type = "sql_error" if "sql" in err_str.lower() else "unknown"
             return ToolResult(success=False, data=None, error_type=error_type,
                               error_hint=err_str, elapsed_s=elapsed, label=label)
@@ -364,8 +349,7 @@ def _sql_writer(question: str, schema_context: str, cancel: threading.Event) -> 
     """LLM subagent that generates a SQL query from schema context."""
     if cancel.is_set():
         return None
-    mlflow = get_mlflow()
-    cm = mlflow.start_span(name="sql_writer") if mlflow else nullcontext()
+    cm = maybe_span(name="sql_writer")
     with cm as span:
         if span:
             span.set_inputs({"question": question[:200], "schema_kb": len(schema_context)})
@@ -427,8 +411,7 @@ def _fetch_table_schemas(table_names: list[str]) -> str:
 
 
 def _structured_retrieval(question: str, table_names: list[str],
-                          cancel: threading.Event, step_num: int, total_steps: int,
-                          parent_span_id: str = None, trace_request_id: str = None) -> ToolResult:
+                          cancel: threading.Event, step_num: int, total_steps: int) -> ToolResult:
     """Structured retrieval subagent: schema lookup -> SQL writer -> execute (with 1 retry).
 
     Returns a ToolResult with the generated SQL and results.
@@ -438,51 +421,19 @@ def _structured_retrieval(question: str, table_names: list[str],
         return ToolResult(success=False, data=None, error_type="skipped",
                           error_hint="No tables to query", label=label)
 
-    mlflow = get_mlflow()
-    span_inputs = {"question": question[:200], "tables": table_names[:8]}
+    cm = maybe_span(name="structured_retrieval", span_type="RETRIEVER")
 
-    # Client-API span for cross-thread parenting
-    _client = None
-    _client_span = None
-    if mlflow and parent_span_id and trace_request_id:
-        try:
-            _client = mlflow.MlflowClient()
-            _client_span = _client.start_span(
-                request_id=trace_request_id, name="structured_retrieval",
-                parent_id=parent_span_id, span_type="RETRIEVER",
-                inputs=span_inputs,
-            )
-        except Exception:
-            _client, _client_span = None, None
-
-    cm = (mlflow.start_span(name="structured_retrieval") if mlflow and not _client_span
-          else nullcontext())
-
-    def _finish(outputs):
-        if _client and _client_span:
-            try:
-                _client.end_span(request_id=trace_request_id,
-                                 span_id=_client_span.span_id, outputs=outputs)
-            except Exception:
-                pass
-
-    # Sub-tool calls should be children of this structured_retrieval span
-    sr_span_id = _client_span.span_id if _client_span else parent_span_id
-    sr_req_id = trace_request_id
-
-    with cm as ctx_span:
+    with cm as span:
         t0 = time.time()
-        if ctx_span:
-            ctx_span.set_inputs(span_inputs)
+        if span:
+            span.set_inputs({"question": question[:200], "tables": table_names[:8]})
 
         _emit("gathering", f"Step {step_num}/{total_steps}: Fetching schemas for data retrieval...")
 
         schema_ctx = _fetch_table_schemas(table_names)
         if not schema_ctx or cancel.is_set():
-            out = {"status": "no_schemas"}
-            if ctx_span:
-                ctx_span.set_outputs(out)
-            _finish(out)
+            if span:
+                span.set_outputs({"status": "no_schemas"})
             return ToolResult(success=False, data=None, error_type="no_schemas",
                               error_hint="Could not fetch table schemas", label=label)
 
@@ -490,10 +441,8 @@ def _structured_retrieval(question: str, table_names: list[str],
 
         sql = _sql_writer(question, schema_ctx, cancel)
         if not sql or cancel.is_set():
-            out = {"status": "no_sql"}
-            if ctx_span:
-                ctx_span.set_outputs(out)
-            _finish(out)
+            if span:
+                span.set_outputs({"status": "no_sql"})
             return ToolResult(success=False, data=None, error_type="no_sql",
                               error_hint="SQL writer produced no query", label=label)
 
@@ -501,8 +450,7 @@ def _structured_retrieval(question: str, table_names: list[str],
         _emit("gathering", f"Step {step_num}/{total_steps}: Executing data query...")
 
         tr = _safe_tool_call(execute_data_sql, {"query": sql}, TOOL_TIMEOUT,
-                             "execute_data_sql", step_num, total_steps,
-                             parent_span_id=sr_span_id, trace_request_id=sr_req_id)
+                             "execute_data_sql", step_num, total_steps)
 
         if not tr.success or (tr.data and "error" in tr.data.lower()):
             logger.info("[deep_analysis] structured_retrieval: first SQL attempt failed, retrying...")
@@ -514,25 +462,21 @@ def _structured_retrieval(question: str, table_names: list[str],
             )
             if retry_sql and retry_sql != sql and not cancel.is_set():
                 tr = _safe_tool_call(execute_data_sql, {"query": retry_sql}, TOOL_TIMEOUT,
-                                     "execute_data_sql (retry)", step_num, total_steps,
-                                     parent_span_id=sr_span_id, trace_request_id=sr_req_id)
+                                     "execute_data_sql (retry)", step_num, total_steps)
                 if tr.success:
                     sql = retry_sql
 
         elapsed = round(time.time() - t0, 1)
         if not tr.success or not tr.data:
             out = {"status": "exec_failed", "sql": sql[:300]}
-            if ctx_span:
-                ctx_span.set_outputs(out)
-            _finish(out)
+            if span:
+                span.set_outputs(out)
             return ToolResult(success=False, data=None, error_type=tr.error_type or "exec_failed",
                               error_hint=f"SQL execution failed: {tr.error_hint}", elapsed_s=elapsed, label=label)
 
         output = f"**Generated SQL:**\n```sql\n{sql}\n```\n\n**Results:**\n{tr.data}"
-        out = {"status": "ok", "sql": sql[:300], "result_len": len(output)}
-        if ctx_span:
-            ctx_span.set_outputs(out)
-        _finish(out)
+        if span:
+            span.set_outputs({"status": "ok", "sql": sql[:300], "result_len": len(output)})
         return ToolResult(success=True, data=output, elapsed_s=elapsed, label=label)
 
 
@@ -543,7 +487,7 @@ def _structured_retrieval(question: str, table_names: list[str],
 BUILTIN_EDGE_TYPES = {
     "contains", "references", "instance_of", "has_property", "is_a",
     "same_domain", "same_subdomain", "same_catalog", "same_schema",
-    "same_security_level", "same_classification", "similar_embedding",
+    "same_security_level", "similar_embedding",
     "derives_from",
 }
 
@@ -642,15 +586,16 @@ def _plan_retrieval(query: str, cancel: threading.Event,
         return default
 
     prompt = _build_planner_prompt(extra_edge_types or set())
-    mlflow = get_mlflow()
-    cm = mlflow.start_span(name="query_planner") if mlflow else nullcontext()
+    cm = maybe_span(name="query_planner", span_type="CHAIN")
+
     with cm as span:
         if span:
             span.set_inputs({"query": query[:200]})
         try:
+            ctx = contextvars.copy_context()
             with ThreadPoolExecutor(max_workers=1) as pool:
                 future = pool.submit(
-                    _llm().invoke,
+                    ctx.run, _llm().invoke,
                     [SystemMessage(content=prompt),
                      HumanMessage(content=query)],
                 )
@@ -659,23 +604,19 @@ def _plan_retrieval(query: str, cancel: threading.Event,
             raw = raw.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
             plan = json.loads(raw)
 
-            # Validate edge_types
             et = plan.get("edge_types")
             if isinstance(et, list):
                 plan["edge_types"] = [e for e in et if e in valid_types] or default["edge_types"]
             else:
                 plan["edge_types"] = default["edge_types"]
 
-            # Validate traverse_edge_type -- MUST be set
             tet = plan.get("traverse_edge_type")
             if not tet or tet not in valid_types:
                 plan["traverse_edge_type"] = default["traverse_edge_type"]
 
-            # Validate direction
             if plan.get("direction") not in ("outgoing", "incoming", "both"):
                 plan["direction"] = "outgoing"
 
-            # Validate requires_structured_retrieval
             plan.setdefault("requires_structured_retrieval", True)
 
             logger.info("[deep_analysis] query_planner: edges=%s traverse=%s",
@@ -719,6 +660,7 @@ def _sparql_ontology_query(table_names: List[str]) -> Optional[str]:
     try:
         from dbxmetagen.ontology_graph_store import OntologyGraphStore, is_available
         if not is_available():
+            logger.debug("pyoxigraph not installed, skipping SPARQL ontology query")
             return None
     except ImportError:
         return None
@@ -734,6 +676,7 @@ def _sparql_ontology_query(table_names: List[str]) -> Optional[str]:
             ttl_path = p
             break
     if not ttl_path:
+        logger.info("No ontology TTL file found, checked: %s", ttl_candidates)
         return None
 
     store = OntologyGraphStore(turtle_paths=[ttl_path])
@@ -752,11 +695,82 @@ def _sparql_ontology_query(table_names: List[str]) -> Optional[str]:
     return json.dumps(results, indent=2)
 
 
+def _build_discovery_sql() -> str:
+    """SQL to enumerate all discovered ontology entities grouped by type."""
+    return (
+        f"SELECT entity_type, entity_name, source_tables, confidence, entity_role, "
+        f"description, entity_uri, source_ontology "
+        f"FROM {CATALOG}.{SCHEMA}.ontology_entities "
+        f"ORDER BY entity_type, confidence DESC LIMIT 100"
+    )
+
+
+def _build_graph_entity_sql() -> str:
+    """SQL to list entity nodes from the knowledge graph with their relationships."""
+    return (
+        f"SELECT n.id, n.ontology_type, n.display_name, n.short_description, "
+        f"n.quality_score, n.status "
+        f"FROM {CATALOG}.{SCHEMA}.graph_nodes n "
+        f"WHERE n.node_type = 'entity' AND n.source_system = 'ontology' "
+        f"ORDER BY n.ontology_type, n.quality_score DESC LIMIT 100"
+    )
+
+
+def _build_entity_edge_sql() -> str:
+    """SQL to list instance_of edges linking tables to entities."""
+    return (
+        f"SELECT e.src AS table_name, e.dst AS entity_id, e.edge_type, e.weight, "
+        f"n.ontology_type AS entity_type, n.display_name AS entity_name "
+        f"FROM {CATALOG}.{SCHEMA}.graph_edges e "
+        f"JOIN {CATALOG}.{SCHEMA}.graph_nodes n ON e.dst = n.id "
+        f"WHERE e.edge_type = 'instance_of' AND e.source_system = 'ontology' "
+        f"ORDER BY n.ontology_type, e.src LIMIT 100"
+    )
+
+
+def _gather_discovery(query: str, cancel: threading.Event):
+    """Gather evidence for catalog-wide enumeration questions via direct SQL."""
+    parts: list[str] = []
+    tools_used: list[str] = []
+    failed: list[ToolResult] = []
+    timing: dict = {}
+    B = EvidenceBudget
+
+    queries = [
+        ("ontology_entities (all discovered entities)", _build_discovery_sql()),
+        ("graph_nodes (entity nodes)", _build_graph_entity_sql()),
+        ("graph_edges (table-to-entity mappings)", _build_entity_edge_sql()),
+    ]
+    with measure_phase("discovery_sql", timing):
+        for label, sql in queries:
+            if cancel.is_set():
+                break
+            tr = _safe_tool_call(
+                execute_metadata_sql, {"query": sql}, TOOL_TIMEOUT,
+                f"execute_metadata_sql ({label})", 1, len(queries),
+            )
+            if tr.success and tr.data:
+                tools_used.append("execute_metadata_sql")
+                parts.append(f"### Source: {label}\n{_truncate_part(tr.data, B.VS_RESULTS)}")
+            elif not tr.success:
+                failed.append(tr)
+
+    return parts, tools_used, failed, timing
+
+
 def _gather_graphrag(query: str, cancel: threading.Event,
-                     session_id: Optional[str] = None, intent_type: str = "new_question"):
+                     session_id: Optional[str] = None, intent_type: str = "new_question",
+                     intent_domain: Optional[str] = None):
     """Deterministic GraphRAG data gathering with parallel execution.
 
     Pipeline: plan -> VS -> [expand + traverse] parallel -> SPARQL ontology -> [FK SQL + structured retrieval] parallel
+
+    For discovery-domain enumeration questions, a direct SQL path against
+    ontology_entities and graph_nodes runs first to provide comprehensive coverage
+    before the VS -> BFS pipeline adds supplemental context.
+
+    Cross-thread span parenting is handled via contextvars.copy_context() so that
+    all ThreadPoolExecutor workers inherit the parent evidence_retrieval span.
     """
     parts = []
     tools_used = []
@@ -767,17 +781,25 @@ def _gather_graphrag(query: str, cancel: threading.Event,
     B = EvidenceBudget
 
     def _collect(tr: ToolResult, source_label: str, limit: int):
-        """Append a successful tool result to parts, or track as failed."""
         if tr.success and tr.data:
             tools_used.append(tr.label.split("(")[0].strip())
             parts.append(f"### Source: {source_label}\n{_truncate_part(tr.data, limit)}")
         elif not tr.success:
             failed_sources.append(tr)
 
-    # Step 0: Discover dynamic ontology edge types (fast, cached)
+    # Discovery-domain enumeration: direct SQL against ontology tables first
+    if intent_domain == "discovery":
+        _emit("gathering", "Querying ontology catalog for entity enumeration...")
+        disc_parts, disc_tools, disc_failed, disc_timing = _gather_discovery(query, cancel)
+        parts.extend(disc_parts)
+        tools_used.extend(disc_tools)
+        failed_sources.extend(disc_failed)
+        timing.update(disc_timing)
+        if cancel.is_set():
+            return "\n\n".join(parts), graph_data, tools_used, failed_sources, timing
+
     ontology_edge_types = _discover_ontology_edge_types()
 
-    # Step 1: LLM query planner
     with measure_phase("plan_retrieval", timing):
         _emit("gathering", f"Step 1/{total}: Planning retrieval strategy...")
         plan = _plan_retrieval(query, cancel, extra_edge_types=ontology_edge_types)
@@ -790,7 +812,6 @@ def _gather_graphrag(query: str, cancel: threading.Event,
     if cancel.is_set():
         return "\n\n".join(parts), graph_data, tools_used, failed_sources, timing
 
-    # Step 2: Vector search (use cache only on refinement/continuation)
     with measure_phase("vector_search", timing):
         vs_tr = None
         if session_id:
@@ -807,7 +828,6 @@ def _gather_graphrag(query: str, cancel: threading.Event,
     node_ids = _extract_node_ids(vs_tr.data if vs_tr.success else None)
     table_names = _extract_table_names(vs_tr.data if vs_tr.success else None)
 
-    # Fallback: SQL keyword discovery if VS failed
     if not node_ids and not table_names:
         logger.info("[deep_analysis] VS returned no matches -- falling back to SQL keyword discovery")
         _emit("gathering", f"Step 2/{total}: VS unavailable, using SQL keyword fallback...")
@@ -836,7 +856,6 @@ def _gather_graphrag(query: str, cancel: threading.Event,
     if cancel.is_set():
         return "\n\n".join(parts), graph_data, tools_used, failed_sources, timing
 
-    # Build traversal edge type list: primary type + expand types for broader coverage
     traverse_et_list = [planned_traverse_et] + [
         et for et in planned_edge_types if et != planned_traverse_et
     ]
@@ -846,27 +865,25 @@ def _gather_graphrag(query: str, cancel: threading.Event,
         if node_ids:
             trav_nodes = _pick_traversal_nodes(node_ids, table_names)
             with ThreadPoolExecutor(max_workers=4) as pool:
-                # Submit expand
+                ctx = contextvars.copy_context()
                 expand_future = pool.submit(
-                    _safe_tool_call, expand_vs_hits,
+                    ctx.run, _safe_tool_call, expand_vs_hits,
                     {"node_ids": node_ids[:5], "edge_types": planned_edge_types},
                     TOOL_TIMEOUT, "expand_vs_hits", 3, total,
                 )
-                # Submit traversals (3 seeds, 3 hops, multi-type filter)
                 trav_futures = []
                 for i, nid in enumerate(trav_nodes[:3]):
+                    ctx = contextvars.copy_context()
                     trav_futures.append(pool.submit(
-                        _safe_tool_call, traverse_graph,
+                        ctx.run, _safe_tool_call, traverse_graph,
                         {"start_node": nid, "max_hops": 3,
                          "edge_types": traverse_et_list, "direction": planned_direction},
                         TOOL_TIMEOUT, f"traverse_graph({nid.split('.')[-1]})", 4 + i, total,
                     ))
 
-                # Collect expand result
                 exp_tr = expand_future.result()
                 _collect(exp_tr, "expand_vs_hits (graph expansion)", B.GRAPH_EXPANSION)
 
-                # Collect traversal results
                 for ft in trav_futures:
                     trav_tr = ft.result()
                     if trav_tr.success and trav_tr.data:
@@ -885,7 +902,6 @@ def _gather_graphrag(query: str, cancel: threading.Event,
     if cancel.is_set():
         return "\n\n".join(parts), graph_data, tools_used, failed_sources, timing
 
-    # SPARQL ontology query: enrich with formal ontology relationships
     if table_names:
         with measure_phase("sparql_ontology", timing):
             try:
@@ -903,18 +919,18 @@ def _gather_graphrag(query: str, cancel: threading.Event,
     with measure_phase("fk_and_structured", timing):
         if table_names:
             with ThreadPoolExecutor(max_workers=2) as pool:
-                # FK predictions
+                ctx = contextvars.copy_context()
                 fk_future = pool.submit(
-                    _safe_tool_call, execute_metadata_sql,
+                    ctx.run, _safe_tool_call, execute_metadata_sql,
                     {"query": _build_relevance_sql(table_names)}, TOOL_TIMEOUT,
                     "execute_metadata_sql (FK predictions)", 6, total,
                 )
-                # Structured retrieval (only if plan says so)
                 sr_future = None
                 if plan.get("requires_structured_retrieval", True):
                     _emit("gathering", f"Step 7/{total}: Structured retrieval (SQL writer + data query)...")
+                    ctx = contextvars.copy_context()
                     sr_future = pool.submit(
-                        _structured_retrieval, query, table_names, cancel, 7, total,
+                        ctx.run, _structured_retrieval, query, table_names, cancel, 7, total,
                     )
 
                 fk_tr = fk_future.result()
@@ -966,20 +982,30 @@ def _gather_baseline(query: str, cancel: threading.Event):
 
 def _run_pipeline(query: str, mode: str, cancel: threading.Event,
                    session_id: Optional[str] = None,
-                   intent_type: str = "new_question") -> Optional[Dict]:
+                   intent_type: str = "new_question",
+                   intent_domain: Optional[str] = None) -> Optional[Dict]:
     """Two-phase pipeline: gather context deterministically, then single LLM call."""
     t0 = time.time()
     logger.info("[deep_analysis] PIPELINE START mode=%s query=%s", mode, query[:120])
     B = EvidenceBudget
 
-    # Phase 1: Gather context
+    # Phase 1: Gather context (wrapped in evidence_retrieval span for child parenting)
     _emit("gathering", "Gathering evidence from metadata catalog...")
-    if mode == "graphrag":
-        context, graph_data, tools_used, failed_sources, timing = _gather_graphrag(
-            query, cancel, session_id, intent_type=intent_type)
-    else:
-        context, tools_used, failed_sources, timing = _gather_baseline(query, cancel)
-        graph_data = {}
+    mlflow_gather = get_mlflow()
+    gather_cm = mlflow_gather.start_span(name="evidence_retrieval", span_type="RETRIEVER") if mlflow_gather else nullcontext()
+    with gather_cm as gather_span:
+        if mode == "graphrag":
+            context, graph_data, tools_used, failed_sources, timing = _gather_graphrag(
+                query, cancel, session_id, intent_type=intent_type,
+                intent_domain=intent_domain)
+        else:
+            context, tools_used, failed_sources, timing = _gather_baseline(query, cancel)
+            graph_data = {}
+        if gather_span and hasattr(gather_span, "set_attributes"):
+            gather_span.set_attributes({
+                "mode": mode,
+                "tools_used": ",".join(dict.fromkeys(tools_used)) if tools_used else "",
+            })
 
     gather_elapsed = round(time.time() - t0, 1)
     timing["gather_total"] = gather_elapsed
@@ -1014,10 +1040,11 @@ def _run_pipeline(query: str, mode: str, cancel: threading.Event,
                 len(context) / 1024, MODEL)
 
     mlflow = get_mlflow()
-    cm = mlflow.start_span(name="llm_analysis") if mlflow else nullcontext()
+    cm = mlflow.start_span(name="llm_analysis", span_type="LLM") if mlflow else nullcontext()
     with cm as span:
         if span:
             span.set_inputs({"query": query[:200], "context_kb": round(len(context) / 1024, 1)})
+        token_usage: dict = {}
         try:
             prompt = ANALYSIS_PROMPT if mode == "graphrag" else BASELINE_ANALYSIS_PROMPT
             resp = _llm().invoke([
@@ -1025,15 +1052,39 @@ def _run_pipeline(query: str, mode: str, cancel: threading.Event,
                 HumanMessage(content=f"User question: {query}\n\nGathered Evidence:\n{context}"),
             ])
             analysis = resp.content or "Analysis produced no output."
+            # Extract token usage from LLM response
+            um = getattr(resp, "usage_metadata", None)
+            if um:
+                token_usage = dict(um) if isinstance(um, dict) else {
+                    "input_tokens": getattr(um, "input_tokens", 0) or 0,
+                    "output_tokens": getattr(um, "output_tokens", 0) or 0,
+                    "total_tokens": getattr(um, "total_tokens", 0) or 0,
+                }
+            elif hasattr(resp, "response_metadata") and resp.response_metadata:
+                rm = resp.response_metadata
+                tu = rm.get("usage") or rm.get("token_usage") or {}
+                if isinstance(tu, dict):
+                    token_usage = {
+                        "input_tokens": tu.get("prompt_tokens", 0) or tu.get("input_tokens", 0) or 0,
+                        "output_tokens": tu.get("completion_tokens", 0) or tu.get("output_tokens", 0) or 0,
+                        "total_tokens": tu.get("total_tokens", 0) or 0,
+                    }
         except Exception as e:
             logger.error("[deep_analysis] LLM analysis error: %s", e, exc_info=True)
             analysis = f"Analysis LLM call failed: {e}. Evidence gathered:\n\n{context[:2000]}"
         llm_elapsed = round(time.time() - t0 - gather_elapsed, 1)
         timing["llm_analysis"] = llm_elapsed
-        logger.info("[deep_analysis] STEP FINAL: LLM analysis -- DONE in %.1fs (%d chars)",
-                    llm_elapsed, len(analysis))
+        timing["token_usage"] = token_usage
+        logger.info("[deep_analysis] STEP FINAL: LLM analysis -- DONE in %.1fs (%d chars) tokens=%s",
+                    llm_elapsed, len(analysis), token_usage)
         if span:
             span.set_outputs({"elapsed_s": llm_elapsed, "result_len": len(analysis)})
+            if token_usage:
+                span.set_attributes({
+                    "llm.token_count.prompt": token_usage.get("input_tokens", 0),
+                    "llm.token_count.completion": token_usage.get("output_tokens", 0),
+                    "llm.token_count.total": token_usage.get("total_tokens", 0),
+                })
 
     total_elapsed = round(time.time() - t0, 1)
     timing["total"] = total_elapsed
@@ -1057,7 +1108,6 @@ def _run_pipeline(query: str, mode: str, cancel: threading.Event,
 # Public API
 # ---------------------------------------------------------------------------
 
-@trace(name="deep_analysis")
 def run_deep_analysis(
     message: str,
     mode: str = "graphrag",
@@ -1065,12 +1115,31 @@ def run_deep_analysis(
     session_id: Optional[str] = None,
 ) -> Dict:
     """Non-streaming deep analysis. mode is 'graphrag' or 'baseline'."""
-    intent_result = classify_and_contextualize(message, history)
+    return _run_deep_analysis_traced(
+        message=message[:500], mode=mode,
+        history_len=len(history) if history else 0,
+        session_id=session_id, _history=history,
+    )
+
+
+@trace(name="deep_analysis")
+def _run_deep_analysis_traced(
+    message: str,
+    mode: str = "graphrag",
+    history_len: int = 0,
+    session_id: Optional[str] = None,
+    _history: Optional[List[Dict]] = None,
+) -> Dict:
+    """Traced inner -- span inputs show message (truncated) and history_len, not raw history."""
+    ensure_mlflow_context()
+    tag_trace(session_id=session_id, agent="deep_analysis", mode=mode)
+    intent_result = classify_and_contextualize(message, _history)
     if intent_result.intent_type == "meta" and intent_result.domain in ("discovery", "query", "governance", "relationship"):
         logger.info("[deep_analysis] reclassifying meta+%s as new_question", intent_result.domain)
         intent_result.intent_type = "new_question"
     logger.info("[deep_analysis] intent=%s domain=%s clear=%s",
                 intent_result.intent_type, intent_result.domain, intent_result.question_clear)
+    tag_trace(intent=intent_result.intent_type, domain=intent_result.domain)
 
     if intent_result.intent_type in ("irrelevant", "meta"):
         return {
@@ -1081,7 +1150,8 @@ def run_deep_analysis(
     query = intent_result.context_summary
     cancel = threading.Event()
     result = _run_pipeline(query, mode, cancel, session_id=session_id,
-                           intent_type=intent_result.intent_type)
+                           intent_type=intent_result.intent_type,
+                           intent_domain=intent_result.domain)
     if result:
         result["intent"] = intent_result.intent_type
     return result or {"answer": "Analysis could not be completed.", "tool_calls": [], "mode": mode}
@@ -1139,7 +1209,8 @@ def run_deep_analysis_streaming(
                     query_text = intent_result.context_summary
 
                     result = _run_pipeline(query_text, mode, cancel, session_id=session_id,
-                                           intent_type=intent_result.intent_type)
+                                           intent_type=intent_result.intent_type,
+                                           intent_domain=intent_result.domain)
 
                     elapsed = round(time.time() - t0, 1)
 

@@ -250,11 +250,29 @@ resources:
           libraries:
             - whl: ../../dist/*.whl
 
+        # Stage 5b: Refresh ontology edges with FK evidence
+        - task_key: refresh_ontology_edges
+          max_retries: 1
+          depends_on:
+            - task_key: predict_foreign_keys
+            - task_key: build_ontology
+          job_cluster_key: analytics_cluster
+          notebook_task:
+            notebook_path: ../../notebooks/refresh_ontology_edges.py
+            base_parameters:
+              catalog_name: "{{job.parameters.catalog_name}}"
+              schema_name: "{{job.parameters.schema_name}}"
+              ontology_bundle: "{{job.parameters.ontology_bundle}}"
+              model: "{{job.parameters.model}}"
+              table_names: "{{job.parameters.table_names}}"
+          libraries:
+            - whl: ../../dist/*.whl
+
         # Stage 6: Final analysis (depends on all previous tasks)
         - task_key: final_analysis
           max_retries: 1
           depends_on:
-            - task_key: predict_foreign_keys
+            - task_key: refresh_ontology_edges
             - task_key: cluster_analysis
             - task_key: compute_data_quality
             - task_key: validate_ontology

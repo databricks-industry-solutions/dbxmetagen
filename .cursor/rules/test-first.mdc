@@ -1,0 +1,39 @@
+---
+description: Test-first development rules for dbxmetagen
+globs:
+  - "src/dbxmetagen/**/*.py"
+  - "tests/**/*.py"
+---
+
+# Test-First Development Rules
+
+## When to write tests FIRST
+
+- **Behavioral changes:** When modifying a function's observable output (not just renaming/reformatting), write or update the test BEFORE changing the function. Run it to confirm it captures the current behavior, then make the change and verify the test reflects the new behavior.
+- **New code paths:** When adding a new if-branch, handler, or edge case, add a test that exercises it alongside the change.
+- **Bug fixes:** Write a failing test that reproduces the bug, then fix the code so it passes.
+
+## Pure logic gate
+
+After any edit to `src/dbxmetagen/`, run:
+
+```bash
+uv run pytest tests/test_pure_logic.py -x -q
+```
+
+This file tests ~20 critical pure-Python functions with real imports (no mocks) and runs in <2 seconds. It is the highest-signal regression check.
+
+## Where to put new tests
+
+- **Pure logic** (no Spark, no network, no mocks): `tests/test_pure_logic.py`
+- **Ontology pipeline**: `tests/test_ontology.py` or `tests/test_build_ontology_indexes.py`
+- **Pydantic validators / LLM response parsing**: `tests/test_truncation.py`
+- **FK prediction**: `tests/test_fk_prediction.py`
+- **Domain classification**: `tests/test_domain_classifier.py`
+- **DDL regenerator** (separate process): `tests/test_ddl_regenerator.py`
+
+## What NOT to do
+
+- Do not write tests that only exercise mocks. If the test would pass even if the real function were deleted, it is not testing anything.
+- Do not add `@pytest.mark.skip` for known bugs -- use `@pytest.mark.xfail(reason="...")` and remove it when fixed.
+- Do not run `pytest tests/` directly -- use `./run_tests.sh` or `uv run pytest tests/test_<specific>.py`.

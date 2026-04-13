@@ -1,5 +1,6 @@
 Person:
   description: People, customers, contacts, users, or employees
+  label: Person
   source_ontology: schema.org
   uri: https://schema.org/Person
   parents: []
@@ -7,6 +8,7 @@ Person:
   - part_of
 Organization:
   description: Companies, departments, facilities, or business units
+  label: Organization
   source_ontology: schema.org
   uri: https://schema.org/Organization
   parents: []
@@ -15,6 +17,7 @@ Organization:
   - part_of
 Transaction:
   description: Orders, purchases, payments, invoices, or financial events
+  label: Transaction
   source_ontology: schema.org
   uri: https://schema.org/Invoice
   parents: []
@@ -22,12 +25,14 @@ Transaction:
   - placed_by
 Location:
   description: Addresses, sites, regions, facilities, or geographies
+  label: Location
   source_ontology: schema.org
   uri: https://schema.org/Place
   parents: []
   edges: []
 Event:
   description: Activities, logs, sessions, audits, or system events
+  label: Event
   source_ontology: schema.org
   uri: https://schema.org/Event
   parents: []
@@ -35,24 +40,28 @@ Event:
   - references
 Reference:
   description: Lookup tables, codes, categories, dimensions, or configuration
+  label: Reference
   source_ontology: schema.org
   uri: https://schema.org/Thing
   parents: []
   edges: []
 Metric:
   description: KPIs, aggregates, facts, summaries, or analytic measures
+  label: Metric
   source_ontology: schema.org
   uri: https://schema.org/QuantitativeValue
   parents: []
   edges: []
 Document:
   description: Unstructured content, notes, files, or text records
+  label: Document
   source_ontology: schema.org
   uri: https://schema.org/DigitalDocument
   parents: []
   edges: []
 Customer:
   description: Retail customers, loyalty members, or shoppers
+  label: Customer
   source_ontology: schema.org
   uri: https://schema.org/Customer
   parents: []
@@ -61,6 +70,7 @@ Customer:
   - has_return
 LoyaltyProgram:
   description: Loyalty programs, rewards programs, or membership tiers
+  label: LoyaltyProgram
   source_ontology: schema.org
   uri: https://schema.org/MemberProgram
   parents: []
@@ -68,6 +78,7 @@ LoyaltyProgram:
   - enrolled_in
 Product:
   description: Retail products, SKUs, items, or merchandise
+  label: Product
   source_ontology: schema.org
   uri: https://schema.org/Product
   parents: []
@@ -76,6 +87,7 @@ Product:
   - supplied_by
 Order:
   description: Customer orders, carts, baskets, or purchase transactions
+  label: Order
   source_ontology: schema.org
   uri: https://schema.org/Order
   parents: []
@@ -86,6 +98,7 @@ Order:
   - purchased_at
 Store:
   description: Physical retail stores, outlets, warehouses, or distribution centers
+  label: Store
   source_ontology: schema.org
   uri: https://schema.org/Store
   parents: []
@@ -94,6 +107,7 @@ Store:
   - part_of
 Campaign:
   description: Marketing campaigns, ad campaigns, or promotional campaigns
+  label: Campaign
   source_ontology: schema.org
   uri: https://schema.org/MarketingEvent
   parents: []
@@ -102,6 +116,7 @@ Campaign:
   - promotes
 Promotion:
   description: Promotions, discounts, coupons, campaigns, or markdown events
+  label: Promotion
   source_ontology: schema.org
   uri: https://schema.org/Offer
   parents: []
@@ -109,6 +124,7 @@ Promotion:
   - applies_to
 Supplier:
   description: Vendors, manufacturers, distributors, or trading partners
+  label: Supplier
   source_ontology: schema.org
   uri: https://schema.org/Organization
   parents: []
@@ -116,6 +132,7 @@ Supplier:
   - supplies
 Inventory:
   description: Stock levels, warehouse inventory, or on-hand quantities
+  label: Inventory
   source_ontology: GS1
   uri: https://www.gs1.org/voc/InventoryReport
   parents: []
@@ -124,6 +141,7 @@ Inventory:
   - at_store
 Return:
   description: Product returns, refunds, exchanges, or RMA records
+  label: Return
   source_ontology: schema.org
   uri: https://schema.org/ReturnAction
   parents: []
@@ -132,6 +150,7 @@ Return:
   - by_customer
 Shipment:
   description: Shipping, delivery, fulfillment, or logistics records
+  label: Shipment
   source_ontology: schema.org
   uri: https://schema.org/ParcelDelivery
   parents: []
@@ -139,6 +158,7 @@ Shipment:
   - for_order
 Category:
   description: Product categories, departments, or merchandise hierarchies
+  label: Category
   source_ontology: GS1
   uri: https://www.gs1.org/voc/ProductClassification
   parents: []

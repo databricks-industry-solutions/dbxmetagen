@@ -1,6 +1,8 @@
 ---
 description: DDL generation and review handling patterns for dbxmetagen
-globs: "**/ddl_regenerator.py,**/processing.py"
+globs:
+  - "**/ddl_regenerator.py"
+  - "**/processing.py"
 ---
 
 # DDL Handling Rules

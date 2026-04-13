@@ -22,7 +22,6 @@
 # MAGIC - `same_security_level`: Tables with matching PII/PHI/PUBLIC classification
 # MAGIC - `contains`: Hierarchical (schema->table, table->column)
 # MAGIC - `derives_from`: Lineage relationships
-# MAGIC - `same_classification`: Columns with matching PII classification
 
 # COMMAND ----------
 
@@ -242,7 +241,7 @@ same_domain.limit(10).display()
 phi_connections = g.find("(a)-[e]->(b)").filter(
     (F.col("a.security_level") == "PHI") & 
     (F.col("b.security_level") == "PHI") &
-    (F.col("e.relationship").isin("same_security_level", "same_classification"))
+    (F.col("e.relationship") == "same_security_level")
 )
 
 print(f"Found {phi_connections.count()} PHI-to-PHI connections")

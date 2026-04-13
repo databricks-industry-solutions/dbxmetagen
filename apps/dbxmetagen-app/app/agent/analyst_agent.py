@@ -21,7 +21,7 @@ from agent.common import (
 )
 from agent.guardrails import GuardrailConfig, SAFETY_PROMPT_BLOCK, sanitize_output
 from agent.analyst_tools import BLIND_TOOLS, ENRICHED_TOOLS, execute_query
-from agent.tracing import trace, ensure_mlflow_context
+from agent.tracing import trace, ensure_mlflow_context, tag_trace
 
 logger = logging.getLogger(__name__)
 
@@ -167,6 +167,7 @@ def run_analyst_single(
 ) -> Dict[str, Any]:
     """Run the analyst agent in a single mode (blind or enriched)."""
     ensure_mlflow_context()
+    tag_trace(agent="analyst", mode=mode)
     tools = BLIND_TOOLS if mode == "blind" else ENRICHED_TOOLS
     prompt = _blind_prompt() if mode == "blind" else _enriched_prompt()
     graph = _build_analyst_graph(tools, prompt)
@@ -227,6 +228,7 @@ def run_analyst_compare(
 ) -> Dict[str, Any]:
     """Run both blind and enriched agents in parallel and return paired results."""
     ensure_mlflow_context()
+    tag_trace(agent="analyst", mode="compare")
     results = {"blind": None, "enriched": None}
     errors = {"blind": None, "enriched": None}
 

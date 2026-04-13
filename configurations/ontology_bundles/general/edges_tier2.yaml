@@ -5,6 +5,7 @@ owns:
   ranges: []
   uri: ''
   inverse: ''
+  cardinality: one-to-many
 part_of:
   name: part_of
   domain: Person
@@ -12,6 +13,7 @@ part_of:
   ranges: []
   uri: ''
   inverse: ''
+  cardinality: many-to-one
 contains:
   name: contains
   domain: Organization
@@ -19,6 +21,7 @@ contains:
   ranges: []
   uri: ''
   inverse: contained_in
+  cardinality: one-to-many
 contains_location:
   name: contains_location
   domain: Organization
@@ -26,6 +29,7 @@ contains_location:
   ranges: []
   uri: ''
   inverse: ''
+  cardinality: one-to-many
 references:
   name: references
   domain: Product
@@ -33,6 +37,7 @@ references:
   ranges: []
   uri: ''
   inverse: referenced_by
+  cardinality: many-to-one
 placed_by:
   name: placed_by
   domain: Transaction
@@ -40,6 +45,7 @@ placed_by:
   ranges: []
   uri: ''
   inverse: placed
+  cardinality: many-to-one
 for_product:
   name: for_product
   domain: Transaction
@@ -47,6 +53,7 @@ for_product:
   ranges: []
   uri: ''
   inverse: sold_via
+  cardinality: many-to-many
 derives_from:
   name: derives_from
   domain: Metric
@@ -54,3 +61,4 @@ derives_from:
   ranges: []
   uri: ''
   inverse: source_of
+  cardinality: many-to-one

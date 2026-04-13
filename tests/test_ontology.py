@@ -1,7 +1,9 @@
 """Unit tests for ontology module."""
 
 import json
+import tempfile
 import pytest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 from pyspark.sql import SparkSession
 
@@ -17,6 +19,8 @@ from dbxmetagen.ontology import (
     PropertyDefinition,
     build_ontology,
     _enforce_entity_value,
+    _resolve_ontology_config_path,
+    _DEFAULT_ONTOLOGY_CONFIG_PATH,
     DEFAULT_CLASSIFICATION_MODEL,
     DOMAIN_ENTITY_AFFINITY,
 )
@@ -984,6 +988,149 @@ class TestPurgeStaleBundleEntities:
         sql_calls = [c[0][0] for c in mock_spark.sql.call_args_list]
         delete_sqls = [s for s in sql_calls if "DELETE FROM" in s]
         assert len(delete_sqls) == 0
+
+
+# ======================================================================
+# Bundle version format alignment and mismatch warning
+# ======================================================================
+
+
+class TestBundleVersionFormat:
+    """OntologyBuilder._get_bundle_version must match EntityDiscoverer format."""
+
+    @pytest.fixture
+    def builder(self):
+        mock_spark = MagicMock()
+        config = OntologyConfig(catalog_name="cat", schema_name="sch", ontology_bundle="fhir_r4")
+        with patch.object(OntologyLoader, 'load_config') as mock_load:
+            cfg = OntologyLoader._default_config()
+            cfg.setdefault("metadata", {})["version"] = "2.0"
+            mock_load.return_value = cfg
+            b = OntologyBuilder(mock_spark, config)
+        return b
+
+    @pytest.fixture
+    def discoverer(self):
+        mock_spark = MagicMock()
+        config = OntologyConfig(catalog_name="cat", schema_name="sch", ontology_bundle="fhir_r4")
+        ontology_config = OntologyLoader._default_config()
+        ontology_config.setdefault("metadata", {})["version"] = "2.0"
+        return EntityDiscoverer(mock_spark, config, ontology_config)
+
+    def test_builder_includes_bundle_name(self, builder):
+        bv = builder._get_bundle_version()
+        assert bv.startswith("fhir_r4:")
+
+    def test_builder_and_discoverer_formats_match(self, builder, discoverer):
+        assert builder._get_bundle_version() == discoverer._get_bundle_version()
+
+    def test_default_bundle_fallback(self):
+        mock_spark = MagicMock()
+        config = OntologyConfig(catalog_name="cat", schema_name="sch", ontology_bundle="")
+        with patch.object(OntologyLoader, 'load_config') as mock_load:
+            mock_load.return_value = OntologyLoader._default_config()
+            b = OntologyBuilder(mock_spark, config)
+        assert b._get_bundle_version().startswith("default:")
+
+
+class TestBundleSwitchWarning:
+    """run() should warn when entities from a different bundle exist."""
+
+    @pytest.fixture
+    def builder(self):
+        mock_spark = MagicMock()
+        config = OntologyConfig(catalog_name="cat", schema_name="sch", ontology_bundle="omop_cdm")
+        with patch.object(OntologyLoader, 'load_config') as mock_load:
+            mock_load.return_value = OntologyLoader._default_config()
+            b = OntologyBuilder(mock_spark, config)
+        return b
+
+    def test_warns_on_bundle_switch(self, builder, caplog):
+        import logging
+
+        call_count = [0]
+
+        def sql_side_effect(query):
+            call_count[0] += 1
+            result = MagicMock()
+            if "MAX(bundle_version)" in query:
+                row = MagicMock()
+                row.v = "fhir_r4:1.0"
+                result.collect.return_value = [row]
+                return result
+            if "DISTINCT ontology_bundle" in query:
+                row = MagicMock()
+                row.ontology_bundle = "fhir_r4"
+                result.collect.return_value = [row]
+                return result
+            # All subsequent calls: abort the run early
+            raise StopIteration("short-circuit")
+
+        builder.spark.sql.side_effect = sql_side_effect
+
+        with caplog.at_level(logging.WARNING, logger="dbxmetagen.ontology"):
+            try:
+                builder.run()
+            except StopIteration:
+                pass
+
+        assert any("bundle(s)" in m and "omop_cdm" in m for m in caplog.messages)
+
+    def test_no_warning_when_same_bundle(self, builder, caplog):
+        import logging
+
+        builder.config = OntologyConfig(
+            catalog_name="cat", schema_name="sch", ontology_bundle="fhir_r4"
+        )
+
+        def sql_side_effect(query):
+            result = MagicMock()
+            if "MAX(bundle_version)" in query:
+                row = MagicMock()
+                row.v = "fhir_r4:1.0"
+                result.collect.return_value = [row]
+                return result
+            if "DISTINCT ontology_bundle" in query:
+                row = MagicMock()
+                row.ontology_bundle = "fhir_r4"
+                result.collect.return_value = [row]
+                return result
+            raise StopIteration("short-circuit")
+
+        builder.spark.sql.side_effect = sql_side_effect
+
+        with caplog.at_level(logging.WARNING, logger="dbxmetagen.ontology"):
+            try:
+                builder.run()
+            except StopIteration:
+                pass
+
+        assert not any("bundle(s)" in m for m in caplog.messages)
+
+    def test_no_warning_on_empty_table(self, builder, caplog):
+        import logging
+
+        def sql_side_effect(query):
+            result = MagicMock()
+            if "MAX(bundle_version)" in query:
+                row = MagicMock()
+                row.v = None
+                result.collect.return_value = [row]
+                return result
+            if "DISTINCT ontology_bundle" in query:
+                result.collect.return_value = []
+                return result
+            raise StopIteration("short-circuit")
+
+        builder.spark.sql.side_effect = sql_side_effect
+
+        with caplog.at_level(logging.WARNING, logger="dbxmetagen.ontology"):
+            try:
+                builder.run()
+            except StopIteration:
+                pass
+
+        assert not any("bundle(s)" in m for m in caplog.messages)
 
 
 # ======================================================================
@@ -2251,4 +2398,490 @@ class TestForceRevalidate:
             mock_instance.run.assert_called_once_with(
                 validate_columns=False, force_revalidate=True
             )
+
+
+class TestEmitBundleEdges:
+    """Tests for OntologyBuilder.emit_bundle_edges()."""
+
+    @pytest.fixture
+    def builder(self, mock_spark):
+        config = MagicMock()
+        config.fully_qualified_entities = "cat.sch.ontology_entities"
+        config.fully_qualified_relationships = "cat.sch.ontology_relationships"
+        config.catalog_name = "cat"
+        config.schema_name = "sch"
+
+        mock_loader = MagicMock()
+        mock_loader.has_tier_indexes = True
+        mock_loader.get_edges_tier1.return_value = [
+            {"name": "treats", "domain": "Medication", "range": "Condition", "cardinality": "one-to-many"},
+            {"name": "prescribes", "domain": "Practitioner", "range": "Medication", "cardinality": "one-to-many"},
+            {"name": "has_encounter", "domain": "Patient", "range": "Encounter", "cardinality": "one-to-many"},
+        ]
+
+        with patch('dbxmetagen.ontology.OntologyLoader') as MockOntLoader, \
+             patch('dbxmetagen.ontology.EntityDiscoverer') as MockDisc, \
+             patch('dbxmetagen.ontology.load_domain_entity_affinity', return_value={}):
+            MockOntLoader.load_config.return_value = {"ontology": {"version": "1.0"}}
+            disc_instance = MockDisc.return_value
+            disc_instance._get_index_loader.return_value = mock_loader
+            disc_instance.entity_definitions = []
+
+            from dbxmetagen.ontology import OntologyBuilder
+            b = OntologyBuilder(mock_spark, config)
+            b.discoverer = disc_instance
+            yield b
+
+    def test_emits_edges_for_matching_entity_pairs(self, builder):
+        Row = type("Row", (), {"__init__": lambda self, **kw: self.__dict__.update(kw)})
+        discovered = [Row(entity_type="Medication"), Row(entity_type="Condition"), Row(entity_type="Patient")]
+        builder.spark.sql.return_value.collect.return_value = discovered
+        builder.spark.createDataFrame = MagicMock()
+        builder.spark.catalog = MagicMock()
+        builder.discoverer._get_index_loader.return_value._load.return_value = {}
+
+        result = builder.emit_bundle_edges()
+        assert result == 1
+        df_data = builder.spark.createDataFrame.call_args[0][0]
+        assert len(df_data) == 1
+        row = df_data[0]
+        assert row["src_entity_type"] == "Medication"
+        assert row["dst_entity_type"] == "Condition"
+        assert row["relationship_name"] == "treats"
+        assert row["cardinality"] == "one-to-many"
+        assert row["source"] == "bundle"
+        assert row["confidence"] == 0.8
+        assert row["evidence_column"] is None
+        assert row["evidence_table"] is None
+        assert "relationship_id" in row
+
+        merge_calls = [c for c in builder.spark.sql.call_args_list if "MERGE INTO" in str(c)]
+        assert len(merge_calls) == 1
+
+    def test_skips_when_no_loader(self, builder):
+        builder.discoverer._get_index_loader.return_value = None
+        assert builder.emit_bundle_edges() == 0
+
+    def test_skips_when_no_discovered_entities(self, builder):
+        builder.spark.sql.return_value.collect.return_value = []
+        builder.discoverer._get_index_loader.return_value._load.return_value = {}
+        assert builder.emit_bundle_edges() == 0
+
+    def test_reference_resolution_resolves_from_property_name(self, builder):
+        """Edge with range='Reference' resolved via property name suffix."""
+        from dbxmetagen.ontology import OntologyBuilder
+
+        loader = builder.discoverer._get_index_loader.return_value
+        loader.get_edges_tier1.return_value = [
+            {"name": "Patient.managingOrganization", "domain": "Patient", "range": "Reference", "cardinality": "one-to-one"},
+        ]
+        loader._load.return_value = {}
+
+        Row = type("Row", (), {"__init__": lambda self, **kw: self.__dict__.update(kw)})
+        builder.spark.sql.return_value.collect.return_value = [
+            Row(entity_type="Patient"), Row(entity_type="Organization"),
+        ]
+        builder.spark.createDataFrame = MagicMock()
+        builder.spark.catalog = MagicMock()
+
+        result = builder.emit_bundle_edges()
+        assert result == 1
+        df_data = builder.spark.createDataFrame.call_args[0][0]
+        row = df_data[0]
+        assert row["src_entity_type"] == "Patient"
+        assert row["dst_entity_type"] == "Organization"
+        assert row["relationship_name"] == "Patient.managingOrganization"
+        assert row["cardinality"] == "one-to-one"
+        assert row["source"] == "bundle"
+
+    def test_multi_range_fallback(self, builder):
+        """Edge with non-discovered primary range falls back to tier-2 ranges list."""
+        loader = builder.discoverer._get_index_loader.return_value
+        loader.get_edges_tier1.return_value = [
+            {"name": "subject", "domain": "Observation", "range": "Resource", "cardinality": "one-to-one"},
+        ]
+        loader._load.return_value = {
+            "subject": {"name": "subject", "domain": "Observation", "range": "Resource",
+                        "ranges": ["Resource", "Patient", "Group"]},
+        }
+
+        Row = type("Row", (), {"__init__": lambda self, **kw: self.__dict__.update(kw)})
+        builder.spark.sql.return_value.collect.return_value = [
+            Row(entity_type="Observation"), Row(entity_type="Patient"),
+        ]
+        builder.spark.createDataFrame = MagicMock()
+        builder.spark.catalog = MagicMock()
+
+        result = builder.emit_bundle_edges()
+        assert result == 1
+        df_data = builder.spark.createDataFrame.call_args[0][0]
+        assert df_data[0]["dst_entity_type"] == "Patient"
+
+    def test_reference_resolution_skips_ambiguous(self, builder):
+        """Reference resolution skips when multiple entity types match the suffix."""
+        from dbxmetagen.ontology import OntologyBuilder
+
+        # "suborganization" ends with both "organization" and "suborganization"
+        result = OntologyBuilder._resolve_reference_target(
+            "Patient.subOrganization", {"organization": "Organization", "suborganization": "SubOrganization"}
+        )
+        assert result is None
+
+
+class TestBuildTiersEnrichedSchema:
+    """Verify build_tiers outputs label on entities and cardinality on edges."""
+
+    def test_tier1_has_label_and_edge_has_cardinality(self):
+        import json as _json
+        import tempfile
+        from pathlib import Path
+        from dbxmetagen.ontology_bundle_indexes import build_tiers
+
+        entities = {
+            "Patient": {
+                "description": "Patient record",
+                "label": "Patient Resource",
+                "source": "FHIR R4",
+                "uri": "http://hl7.org/fhir/Patient",
+                "parents": [],
+                "outgoing_edges": [{"name": "hasEncounter", "uri": "", "range": "Encounter", "ranges": [], "inverse": None}],
+                "keywords": ["patient"],
+                "synonyms": [],
+                "typical_attributes": [],
+                "business_questions": [],
+                "relationships": {"hasEncounter": {"target": "Encounter", "cardinality": "one-to-many"}},
+                "properties": {},
+            }
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            build_tiers(entities, Path(tmp))
+            t1 = _json.loads((Path(tmp) / "entities_tier1.json").read_text())
+            assert t1[0]["label"] == "Patient Resource"
+            e1 = _json.loads((Path(tmp) / "edges_tier1.json").read_text())
+            assert e1[0]["cardinality"] == "one-to-many"
+
+    def test_edge_tiers_include_label_and_facet(self):
+        import json as _json
+        import tempfile
+        from pathlib import Path
+        import yaml
+        from dbxmetagen.ontology_bundle_indexes import build_tiers
+
+        entities = {
+            "Encounter": {
+                "description": "An encounter",
+                "label": "Encounter",
+                "source": "FHIR R4",
+                "uri": "http://hl7.org/fhir/Encounter",
+                "parents": [],
+                "outgoing_edges": [{
+                    "name": "subject", "uri": "", "range": "Patient",
+                    "ranges": ["Patient"], "inverse": None,
+                    "label": "Subject", "facet": "who",
+                }],
+                "keywords": [],
+                "synonyms": [],
+                "typical_attributes": [],
+                "business_questions": [],
+                "relationships": {"subject": {"target": "Patient", "cardinality": "one-to-one"}},
+                "properties": {},
+            }
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            build_tiers(entities, Path(tmp))
+            e1 = _json.loads((Path(tmp) / "edges_tier1.json").read_text())
+            assert e1[0]["label"] == "Subject"
+            assert e1[0]["facet"] == "who"
+            e3 = _json.loads((Path(tmp) / "edges_tier3.json").read_text())
+            assert e3["subject"]["facet"] == "who"
+            assert e3["subject"]["category"] == "who"
+
+            e1_yaml = yaml.safe_load((Path(tmp) / "edges_tier1.yaml").read_text())
+            assert e1_yaml[0]["label"] == "Subject"
+            assert e1_yaml[0]["facet"] == "who"
+
+
+class TestDualFormatLoader:
+    """Verify OntologyIndexLoader prefers JSON over YAML."""
+
+    def test_loads_json_when_both_exist(self):
+        import json as _json
+        import tempfile
+        from pathlib import Path
+        import yaml
+        from dbxmetagen.ontology_index import OntologyIndexLoader
+
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            yaml.dump([{"name": "A", "description": "from yaml"}], (d / "entities_tier1.yaml").open("w"))
+            _json.dump([{"name": "B", "description": "from json"}], (d / "entities_tier1.json").open("w"))
+            loader = OntologyIndexLoader(base_dir=str(d))
+            assert loader.has_tier_indexes
+            result = loader.get_entities_tier1()
+            assert result[0]["name"] == "B"
+
+    def test_falls_back_to_yaml(self):
+        import tempfile
+        from pathlib import Path
+        import yaml
+        from dbxmetagen.ontology_index import OntologyIndexLoader
+
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            yaml.dump([{"name": "C", "description": "yaml only"}], (d / "entities_tier1.yaml").open("w"))
+            loader = OntologyIndexLoader(base_dir=str(d))
+            assert loader.has_tier_indexes
+            result = loader.get_entities_tier1()
+            assert result[0]["name"] == "C"
+
+    def test_edge_tier_prefers_json(self):
+        import json as _json
+        import tempfile
+        from pathlib import Path
+        import yaml
+        from dbxmetagen.ontology_index import OntologyIndexLoader
+
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            yaml.dump([{"name": "E", "description": "ent"}], (d / "entities_tier1.yaml").open("w"))
+            yaml.dump([{"name": "old_edge", "domain": "A", "range": "B"}],
+                      (d / "edges_tier1.yaml").open("w"))
+            _json.dump([{"name": "new_edge", "domain": "X", "range": "Y"}],
+                       (d / "edges_tier1.json").open("w"))
+            loader = OntologyIndexLoader(base_dir=str(d))
+            edges = loader.get_edges_tier1()
+            assert edges[0]["name"] == "new_edge"
+
+
+class TestEntitiesFromBundleFidelity:
+    """North-star tests: curated bundle metadata should flow through the pipeline."""
+
+    def test_bundle_relationship_label_propagates_to_outgoing_edges(self):
+        """Curated bundle labels on relationships should survive into outgoing_edges.
+
+        Currently entities_from_bundle() builds outgoing_edges with only name, uri,
+        range, inverse. The 'label' field from a bundle's relationship definition is
+        silently dropped. When curated bundles provide display labels (which they
+        should for non-OWL ontologies like general, financial_services, retail_cpg),
+        those labels must flow into outgoing_edges so build_tiers() can propagate
+        them to edge tier files for LLM context.
+        """
+        import tempfile
+        from pathlib import Path
+        import yaml
+        from dbxmetagen.ontology_bundle_indexes import entities_from_bundle
+
+        bundle = {
+            "ontology": {
+                "entities": {"definitions": {
+                    "Patient": {
+                        "description": "A patient",
+                        "keywords": ["patient"],
+                        "relationships": {
+                            "managingOrganization": {
+                                "target": "Organization",
+                                "cardinality": "one-to-one",
+                                "label": "Managing Organization",
+                            }
+                        },
+                    }
+                }},
+                "edge_catalog": {},
+            }
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "test_bundle.yaml"
+            yaml.dump(bundle, p.open("w"), default_flow_style=False)
+            entities = entities_from_bundle(p)
+
+        edge = entities["Patient"]["outgoing_edges"][0]
+        assert edge.get("label") == "Managing Organization"
+
+
+class TestEdgeTierSemanticCompleteness:
+    """North-star tests: W5 semantic annotations should survive into edge tier files."""
+
+    def test_sub_property_of_preserved_in_edge_tier2(self):
+        """W5 sub-property-of hierarchy should survive into edges_tier2 for LLM context.
+
+        Currently build_tiers() copies label and facet from outgoing_edges into
+        all_edges, but does NOT copy sub_property_of. This means the W5 semantic
+        classification (e.g. ["who.focus"]) extracted by _extract_single_class()
+        is lost when building tier-2 edge files. Downstream consumers (like LLM
+        prompts in predict_edge()) that read tier-2/3 edges never see the W5 path.
+        """
+        import json as _json
+        import tempfile
+        from pathlib import Path
+        from dbxmetagen.ontology_bundle_indexes import build_tiers
+
+        entities = {
+            "Encounter": {
+                "description": "An encounter",
+                "label": "Encounter",
+                "source": "FHIR R4",
+                "uri": "http://hl7.org/fhir/Encounter",
+                "parents": [],
+                "outgoing_edges": [{
+                    "name": "subject", "uri": "", "range": "Patient",
+                    "ranges": ["Patient"], "inverse": None,
+                    "label": "Subject", "facet": "who",
+                    "sub_property_of": ["who.focus"],
+                }],
+                "keywords": [],
+                "synonyms": [],
+                "typical_attributes": [],
+                "business_questions": [],
+                "relationships": {"subject": {"target": "Patient", "cardinality": "one-to-one"}},
+                "properties": {},
+            }
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            build_tiers(entities, Path(tmp))
+            e2 = _json.loads((Path(tmp) / "edges_tier2.json").read_text())
+            assert e2["subject"]["sub_property_of"] == ["who.focus"]
+
+
+class TestEntitiesFromBundleStringRelationship:
+    """entities_from_bundle must handle shorthand string relationships."""
+
+    def test_string_relationship_produces_entity_with_target(self):
+        import yaml as _yaml
+        from dbxmetagen.ontology_bundle_indexes import entities_from_bundle
+        bundle = {
+            "ontology": {
+                "entities": {
+                    "definitions": {
+                        "Patient": {
+                            "description": "A patient",
+                            "relationships": {
+                                "managingOrganization": "Organization",
+                            },
+                        },
+                    },
+                },
+            },
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "bundle.yaml"
+            p.write_text(_yaml.dump(bundle))
+            result = entities_from_bundle(p)
+        pat = result["Patient"]
+        edge_names = [e["name"] for e in pat["outgoing_edges"]]
+        assert "managingOrganization" in edge_names
+        edge = next(e for e in pat["outgoing_edges"] if e["name"] == "managingOrganization")
+        assert edge["range"] == "Organization"
+
+
+class TestParseTierFileJsonFallback:
+    """_parse_tier_file must fall back to YAML sibling on corrupt JSON."""
+
+    def test_corrupt_json_falls_back_to_yaml(self):
+        import yaml as _yaml
+        from dbxmetagen.ontology_index import _parse_tier_file
+        with tempfile.TemporaryDirectory() as tmp:
+            json_path = Path(tmp) / "entities_tier1.json"
+            yaml_path = Path(tmp) / "entities_tier1.yaml"
+            json_path.write_text("{corrupt json!!!", encoding="utf-8")
+            yaml_path.write_text(_yaml.dump({"Patient": {"desc": "ok"}}), encoding="utf-8")
+            result = _parse_tier_file(json_path)
+        assert result == {"Patient": {"desc": "ok"}}
+
+    def test_corrupt_json_no_yaml_sibling_raises(self):
+        from dbxmetagen.ontology_index import _parse_tier_file
+        with tempfile.TemporaryDirectory() as tmp:
+            json_path = Path(tmp) / "entities_tier1.json"
+            json_path.write_text("{corrupt json!!!", encoding="utf-8")
+            with pytest.raises(json.JSONDecodeError):
+                _parse_tier_file(json_path)
+
+
+class TestGetUriCaseInsensitive:
+    """get_uri must perform case-insensitive entity name lookup."""
+
+    def test_lowercase_input_matches_titlecase_key(self):
+        from dbxmetagen.ontology_index import OntologyIndexLoader
+        loader = OntologyIndexLoader.__new__(OntologyIndexLoader)
+        loader._cache = {}
+        loader.bundle_dir = None
+        uri_data = {"Patient": "http://hl7.org/fhir/Patient"}
+        with patch.object(loader, "_load", return_value=uri_data):
+            assert loader.get_uri("patient") == "http://hl7.org/fhir/Patient"
+
+    def test_exact_case_still_works(self):
+        from dbxmetagen.ontology_index import OntologyIndexLoader
+        loader = OntologyIndexLoader.__new__(OntologyIndexLoader)
+        loader._cache = {}
+        loader.bundle_dir = None
+        uri_data = {"Patient": "http://hl7.org/fhir/Patient"}
+        with patch.object(loader, "_load", return_value=uri_data):
+            assert loader.get_uri("Patient") == "http://hl7.org/fhir/Patient"
+
+
+class TestResolveOntologyConfigPath:
+    """Tests for _resolve_ontology_config_path auto-derive logic."""
+
+    def test_default_config_derives_from_bundle(self):
+        result = _resolve_ontology_config_path(
+            _DEFAULT_ONTOLOGY_CONFIG_PATH, "general",
+        )
+        assert result == "configurations/ontology_bundles/general.yaml"
+
+    def test_explicit_override_wins(self):
+        result = _resolve_ontology_config_path(
+            "custom/path.yaml", "general",
+        )
+        assert result == "custom/path.yaml"
+
+    def test_empty_bundle_keeps_default(self):
+        result = _resolve_ontology_config_path(
+            _DEFAULT_ONTOLOGY_CONFIG_PATH, "",
+        )
+        assert result == _DEFAULT_ONTOLOGY_CONFIG_PATH
+
+    def test_healthcare_bundle_derives_correctly(self):
+        result = _resolve_ontology_config_path(
+            _DEFAULT_ONTOLOGY_CONFIG_PATH, "healthcare",
+        )
+        assert result == "configurations/ontology_bundles/healthcare.yaml"
+
+    def test_formal_bundle_derives_correctly(self):
+        result = _resolve_ontology_config_path(
+            _DEFAULT_ONTOLOGY_CONFIG_PATH, "fhir_r4",
+        )
+        assert result == "configurations/ontology_bundles/fhir_r4.yaml"
+
+
+class TestOntologyConfigPathDerivation:
+    """Integration tests verifying that OntologyLoader.load_config
+    succeeds with derived bundle paths for real bundle files."""
+
+    def test_general_bundle_loads_general_entities(self):
+        path = _resolve_ontology_config_path(
+            _DEFAULT_ONTOLOGY_CONFIG_PATH, "general",
+        )
+        config = OntologyLoader.load_config(path)
+        defs = config.get("entities", {}).get("definitions", {})
+        assert "Person" in defs
+        assert "Organization" in defs
+        assert "Patient" not in defs
+
+    def test_healthcare_bundle_loads_healthcare_entities(self):
+        path = _resolve_ontology_config_path(
+            _DEFAULT_ONTOLOGY_CONFIG_PATH, "healthcare",
+        )
+        config = OntologyLoader.load_config(path)
+        defs = config.get("entities", {}).get("definitions", {})
+        assert "Patient" in defs
+        assert "Provider" in defs
+
+    def test_fhir_bundle_loads_with_validation(self):
+        path = _resolve_ontology_config_path(
+            _DEFAULT_ONTOLOGY_CONFIG_PATH, "fhir_r4",
+        )
+        config = OntologyLoader.load_config(path)
+        defs = config.get("entities", {}).get("definitions", {})
+        assert len(defs) > 50
+        validation = config.get("validation", {})
+        assert validation.get("ai_validation_enabled") is True
 

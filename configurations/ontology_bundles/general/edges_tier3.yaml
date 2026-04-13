@@ -5,6 +5,7 @@ owns:
   ranges: []
   uri: ''
   inverse: ''
+  cardinality: one-to-many
   domain_profile:
     description: People, customers, contacts, users, or employees
     uri: https://schema.org/Person
@@ -42,6 +43,7 @@ part_of:
   ranges: []
   uri: ''
   inverse: ''
+  cardinality: many-to-one
   domain_profile:
     description: People, customers, contacts, users, or employees
     uri: https://schema.org/Person
@@ -80,6 +82,7 @@ contains:
   ranges: []
   uri: ''
   inverse: contained_in
+  cardinality: one-to-many
   category: structural
   symmetric: false
   domain_profile:
@@ -120,6 +123,7 @@ contains_location:
   ranges: []
   uri: ''
   inverse: ''
+  cardinality: one-to-many
   domain_profile:
     description: Companies, departments, facilities, or business units
     uri: https://schema.org/Organization
@@ -157,6 +161,7 @@ references:
   ranges: []
   uri: ''
   inverse: referenced_by
+  cardinality: many-to-one
   category: business
   symmetric: false
   range_profile:
@@ -179,6 +184,7 @@ placed_by:
   ranges: []
   uri: ''
   inverse: placed
+  cardinality: many-to-one
   category: business
   symmetric: false
   domain_profile:
@@ -218,6 +224,7 @@ for_product:
   ranges: []
   uri: ''
   inverse: sold_via
+  cardinality: many-to-many
   category: business
   symmetric: false
   domain_profile:
@@ -256,6 +263,7 @@ derives_from:
   ranges: []
   uri: ''
   inverse: source_of
+  cardinality: many-to-one
   category: lineage
   symmetric: false
   domain_profile:

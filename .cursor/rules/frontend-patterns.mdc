@@ -1,0 +1,33 @@
+---
+description: Frontend conventions for the dbxmetagen React dashboard
+globs:
+  - "apps/dbxmetagen-app/app/src/**"
+---
+
+# Frontend Patterns
+
+## Stack
+
+React 19 + Vite + Tailwind CSS. JSX (not TSX). Entry point: `main.jsx`.
+
+## Build Requirement
+
+`dist/` is committed to the repo and synced to Databricks via DAB. After any frontend change:
+
+```bash
+cd apps/dbxmetagen-app/app/src
+npm run build
+```
+
+Forgetting this means the deployed app won't reflect your changes.
+
+## API Layer
+
+All backend calls go through `apiCache.js`, which handles fetch + caching. Add new API calls there rather than using raw `fetch` in components.
+
+## Structure
+
+- `components/` -- reusable UI components
+- `hooks/` -- custom React hooks
+- `utils/` -- helper functions
+- `public/` -- static assets

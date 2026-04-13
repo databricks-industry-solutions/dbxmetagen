@@ -147,7 +147,9 @@ export default function BatchJobs({ onNavigate }) {
   const [schemaName, setSchemaName] = useState('')
   const [runningAction, setRunningAction] = useState(null)
   const [error, setError] = useState(null)
-  const [ontologyBundle, setOntologyBundle] = useState('')
+  const [ontologyBundle, setOntologyBundle] = useState(() => {
+    try { return localStorage.getItem('dbxmetagen_ontologyBundle') || '' } catch { return '' }
+  })
   const [entityTagKey, setEntityTagKey] = useState('entity_type')
   const [bundles, setBundles] = useState([])
   const [bundlesLoading, setBundlesLoading] = useState(false)
@@ -424,7 +426,10 @@ export default function BatchJobs({ onNavigate }) {
                   </>)
                 })()}
               </label>
-              <select value={ontologyBundle} onChange={e => setOntologyBundle(e.target.value)} className="select-base">
+              <select value={ontologyBundle} onChange={e => {
+                setOntologyBundle(e.target.value)
+                try { localStorage.setItem('dbxmetagen_ontologyBundle', e.target.value) } catch {}
+              }} className="select-base">
                 <option value="">(None — use domain list only)</option>
                 {bundles.length > 0 && (() => {
                   const formal = bundles.filter(b => b.bundle_type === 'formal_ontology')

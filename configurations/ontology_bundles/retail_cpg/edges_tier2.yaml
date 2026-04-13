@@ -5,6 +5,7 @@ part_of:
   ranges: []
   uri: ''
   inverse: ''
+  cardinality: many-to-one
 contains:
   name: contains
   domain: Organization
@@ -12,6 +13,7 @@ contains:
   ranges: []
   uri: ''
   inverse: contained_in
+  cardinality: one-to-many
 placed_by:
   name: placed_by
   domain: Transaction
@@ -19,6 +21,7 @@ placed_by:
   ranges: []
   uri: ''
   inverse: placed
+  cardinality: many-to-one
 references:
   name: references
   domain: Event
@@ -26,6 +29,7 @@ references:
   ranges: []
   uri: ''
   inverse: referenced_by
+  cardinality: many-to-one
 places:
   name: places
   domain: Customer
@@ -33,6 +37,7 @@ places:
   ranges: []
   uri: ''
   inverse: ''
+  cardinality: one-to-many
 has_return:
   name: has_return
   domain: Customer
@@ -40,6 +45,7 @@ has_return:
   ranges: []
   uri: ''
   inverse: ''
+  cardinality: one-to-many
 enrolled_in:
   name: enrolled_in
   domain: LoyaltyProgram
@@ -47,6 +53,7 @@ enrolled_in:
   ranges: []
   uri: ''
   inverse: ''
+  cardinality: many-to-many
 belongs_to:
   name: belongs_to
   domain: Product
@@ -54,6 +61,7 @@ belongs_to:
   ranges: []
   uri: ''
   inverse: ''
+  cardinality: many-to-one
 supplied_by:
   name: supplied_by
   domain: Product
@@ -61,6 +69,7 @@ supplied_by:
   ranges: []
   uri: ''
   inverse: supplies
+  cardinality: many-to-many
 shipped_via:
   name: shipped_via
   domain: Order
@@ -68,6 +77,7 @@ shipped_via:
   ranges: []
   uri: ''
   inverse: ''
+  cardinality: one-to-many
 purchased_at:
   name: purchased_at
   domain: Order
@@ -75,6 +85,7 @@ purchased_at:
   ranges: []
   uri: ''
   inverse: ''
+  cardinality: many-to-one
 has_inventory:
   name: has_inventory
   domain: Store
@@ -82,6 +93,7 @@ has_inventory:
   ranges: []
   uri: ''
   inverse: ''
+  cardinality: one-to-many
 targets:
   name: targets
   domain: Campaign
@@ -89,6 +101,7 @@ targets:
   ranges: []
   uri: ''
   inverse: ''
+  cardinality: many-to-many
 promotes:
   name: promotes
   domain: Campaign
@@ -96,6 +109,7 @@ promotes:
   ranges: []
   uri: ''
   inverse: ''
+  cardinality: many-to-many
 applies_to:
   name: applies_to
   domain: Promotion
@@ -103,6 +117,7 @@ applies_to:
   ranges: []
   uri: ''
   inverse: ''
+  cardinality: many-to-many
 supplies:
   name: supplies
   domain: Supplier
@@ -110,6 +125,7 @@ supplies:
   ranges: []
   uri: ''
   inverse: ''
+  cardinality: many-to-many
 for_product:
   name: for_product
   domain: Inventory
@@ -117,6 +133,7 @@ for_product:
   ranges: []
   uri: ''
   inverse: ''
+  cardinality: many-to-one
 at_store:
   name: at_store
   domain: Inventory
@@ -124,6 +141,7 @@ at_store:
   ranges: []
   uri: ''
   inverse: ''
+  cardinality: many-to-one
 for_order:
   name: for_order
   domain: Return
@@ -131,6 +149,7 @@ for_order:
   ranges: []
   uri: ''
   inverse: ''
+  cardinality: many-to-one
 by_customer:
   name: by_customer
   domain: Return
@@ -138,3 +157,4 @@ by_customer:
   ranges: []
   uri: ''
   inverse: ''
+  cardinality: many-to-one
