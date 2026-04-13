@@ -637,17 +637,20 @@ class KnowledgeGraphBuilder:
             target.ontology_rel = COALESCE(source.ontology_rel, target.ontology_rel),
             target.source_system = COALESCE(source.source_system, target.source_system),
             target.status = COALESCE(source.status, target.status),
+            target.edge_label = COALESCE(source.edge_label, target.edge_label),
+            target.edge_facet = COALESCE(source.edge_facet, target.edge_facet),
             target.updated_at = source.updated_at
 
         WHEN NOT MATCHED THEN INSERT (
             src, dst, relationship, weight, edge_id, edge_type,
             direction, join_expression, join_confidence, ontology_rel,
-            source_system, status, created_at, updated_at
+            source_system, status, edge_label, edge_facet, created_at, updated_at
         ) VALUES (
             source.src, source.dst, source.relationship, source.weight,
             source.edge_id, source.edge_type, source.direction,
             source.join_expression, source.join_confidence, source.ontology_rel,
-            source.source_system, source.status, source.created_at, source.updated_at
+            source.source_system, source.status, source.edge_label, source.edge_facet,
+            source.created_at, source.updated_at
         )
         """
         

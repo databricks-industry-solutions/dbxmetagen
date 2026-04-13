@@ -1388,10 +1388,15 @@ def _execute_stmts_batched(
 def apply_ddl(body: GenerateDDLBody, batch: bool = True):
     out = generate_ddl(body)
     stmts = out.get("statements") or []
+    warnings = out.get("warnings") or []
     applied, errors = _execute_stmts_batched(stmts, batch=batch)
+    result: dict = {"applied": applied}
     if errors:
-        return {"message": "Some DDL statements failed", "applied": applied, "errors": errors}
-    return {"applied": applied}
+        result["message"] = "Some DDL statements failed"
+        result["errors"] = errors
+    if warnings:
+        result["warnings"] = warnings
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -1683,7 +1688,7 @@ def generate_ddl_bundle(body: DDLBundleBody):
     }
 
 
-_bundle_apply_tasks: dict[str, dict] = {}
+_bundle_apply_tasks: TTLCache = TTLCache(maxsize=64, ttl=3600)
 
 
 def _run_bundle_apply(task_id: str, sections: dict[str, list[str]], volume_path: str = None):
@@ -4751,8 +4756,9 @@ def save_profile(req: SemanticProfileRequest):
 @app.delete("/api/semantic-layer/profiles/{profile_id}")
 def delete_profile(profile_id: str):
     _ensure_semantic_layer_tables()
+    pid_esc = profile_id.replace("'", "''")
     execute_sql(
-        f"DELETE FROM {fq('semantic_layer_profiles')} WHERE profile_id = '{profile_id}'"
+        f"DELETE FROM {fq('semantic_layer_profiles')} WHERE profile_id = '{pid_esc}'"
     )
     return {"deleted": True}
 
@@ -5218,7 +5224,7 @@ def _build_sl_context(
 
     # KPI library enrichment (skip gracefully if table doesn't exist yet)
     try:
-        kpi_where = f" WHERE profile_id = '{profile_id}'" if profile_id else ""
+        kpi_where = f" WHERE profile_id = '{profile_id.replace(chr(39), chr(39)*2)}'" if profile_id else ""
         kpi_rows = execute_sql(
             f"SELECT name, description, formula, domain, target_tables, validation_status FROM {fq('kpi_definitions')}{kpi_where}"
         )
@@ -8293,7 +8299,7 @@ class KpiSuggestRequest(BaseModel):
 @app.get("/api/kpis")
 def list_kpis(profile_id: str = None):
     _ensure_kpi_table()
-    where = f" WHERE profile_id = '{profile_id}'" if profile_id else ""
+    where = f" WHERE profile_id = '{profile_id.replace(chr(39), chr(39)*2)}'" if profile_id else ""
     return execute_sql(f"SELECT * FROM {fq('kpi_definitions')}{where} ORDER BY updated_at DESC")
 
 

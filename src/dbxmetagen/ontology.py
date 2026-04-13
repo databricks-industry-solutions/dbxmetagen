@@ -78,7 +78,10 @@ class BatchColumnClassificationResult(BaseModel):
     @classmethod
     def _coerce_string_to_list(cls, v):
         if isinstance(v, str):
-            return json.loads(v)
+            try:
+                return json.loads(v)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"Invalid JSON in classifications: {v!r}") from exc
         return v
 
 
@@ -108,7 +111,10 @@ class BatchTableClassificationResult(BaseModel):
     @classmethod
     def _coerce_string_to_list(cls, v):
         if isinstance(v, str):
-            return json.loads(v)
+            try:
+                return json.loads(v)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"Invalid JSON in classifications: {v!r}") from exc
         return v
 
 
@@ -1077,10 +1083,15 @@ class EntityDiscoverer:
         return frozenset(patterns)
 
     def _get_bundle_version(self) -> str:
-        """Derive a version string from the bundle config for incremental tracking."""
+        """Derive a version string from the bundle config for incremental tracking.
+
+        Must match OntologyBuilder._get_bundle_version() so the stored
+        bundle_version column and incremental SQL comparison are consistent.
+        """
         bundle = self.config.ontology_bundle or "default"
-        meta = self.ontology_config.get("metadata", {})
-        ver = meta.get("version", self.ontology_config.get("ontology", {}).get("version", "1.0"))
+        ont = self.ontology_config.get("ontology", {}) or {}
+        meta = self.ontology_config.get("metadata", {}) or {}
+        ver = str(ont.get("version") or meta.get("version") or "1.0")
         return f"{bundle}:{ver}"
 
     # ------------------------------------------------------------------
@@ -1569,7 +1580,6 @@ class EntityDiscoverer:
                 f"{type(e).__name__}: {e}. Falling back to per-table classification."
             )
             logger.warning(msg)
-            print(f"[ontology] {msg}")
             return [self._ai_classify_table(row) for row in table_rows]
 
     def _get_index_loader(self):
@@ -1595,7 +1605,6 @@ class EntityDiscoverer:
                         "Run scripts/build_ontology_indexes.py to generate tier indexes."
                     )
                     logger.warning(msg)
-                    print(f"[ontology] {msg}")
             except Exception as e:
                 logger.debug("Three-pass prediction not available: %s", e)
                 self._three_pass_available = False
@@ -2361,7 +2370,6 @@ class EntityDiscoverer:
                     f"{type(e).__name__}: {e}. Retrying with sub-chunks before ai_query fallback."
                 )
                 logger.warning(msg)
-                print(f"[ontology] {msg}")
                 # Sub-chunk retry: split in half
                 mid = len(columns) // 2
                 results = []
@@ -2374,7 +2382,6 @@ class EntityDiscoverer:
                             f"{type(sub_e).__name__}. Falling back to ai_query."
                         )
                         logger.warning(msg)
-                        print(f"[ontology] {msg}")
                         results.extend(self._ai_query_classify_columns(sub))
                 return results
 
@@ -2389,7 +2396,6 @@ class EntityDiscoverer:
             except Exception as e:
                 msg = f"Chunk {chunk_idx} failed for {table_name} ({len(chunk)} cols), using ai_query fallback: {type(e).__name__}"
                 logger.warning(msg)
-                print(f"[ontology] {msg}")
                 all_results.extend(self._ai_query_classify_columns(chunk))
         return all_results
 
@@ -2803,7 +2809,6 @@ class OntologyBuilder:
         if count:
             msg = f"Purged {count} stale entities from previous bundle (keeping validated)"
             logger.info(msg)
-            print(f"[ontology] {msg}")
         return count
 
     def _store_entities(
@@ -5033,7 +5038,6 @@ class OntologyBuilder:
                         "incremental=false for a clean rebuild."
                     )
                     logger.warning(msg)
-                    print(f"[ontology] WARNING: {msg}")
             except Exception:
                 pass
 
