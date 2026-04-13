@@ -2530,7 +2530,9 @@ def _can_batch_ddl() -> bool:
     """Return True if the runtime supports multi-column ALTER COLUMN in one clause (DBR >= 16.3)."""
     dbr = os.environ.get("DATABRICKS_RUNTIME_VERSION")
     if dbr is None:
-        return True  # serverless often unset; assume modern runtime
+        # Serverless and Databricks Apps don't set DATABRICKS_RUNTIME_VERSION;
+        # both run on modern infra that supports batched ALTER COLUMN.
+        return True
     try:
         return float(dbr) >= 16.3
     except (ValueError, TypeError):

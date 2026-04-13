@@ -44,7 +44,7 @@ SELECT
     COUNT(CASE WHEN jr.result_state NOT IN ('SUCCESS', 'SKIPPED') THEN 1 END) AS failed_runs
 FROM system.lakeflow.job_run_timeline jr
 JOIN system.lakeflow.jobs j ON jr.job_id = j.job_id
-WHERE j.name LIKE '%metagen%' OR j.name LIKE '%dbxmetagen%'
+WHERE (j.name LIKE '%metagen%' OR j.name LIKE '%dbxmetagen%')
   AND jr.period_start_time >= current_date() - INTERVAL {lookback_days} DAY
 GROUP BY j.name
 ORDER BY total_runs DESC

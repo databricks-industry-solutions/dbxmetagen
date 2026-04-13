@@ -37,28 +37,34 @@ if not catalog_name or not schema_name:
 
 # COMMAND ----------
 
+stuck_count = 0
 try:
-    stuck_df = spark.sql(f"""
-    SELECT
-        table_name,
-        _status,
-        _run_id,
-        _task_id,
-        _updated_at,
-        ROUND((unix_timestamp(current_timestamp()) - unix_timestamp(_updated_at)) / 60, 1) AS minutes_stuck
-    FROM {fq}.metadata_generation_control
-    WHERE _status = 'in_progress'
-      AND _updated_at < current_timestamp() - INTERVAL {stuck_minutes} MINUTE
-    ORDER BY _updated_at
-    """)
-    stuck_count = stuck_df.count()
-    print(f"Stuck tables: {stuck_count}")
-    if stuck_count > 0:
-        display(stuck_df)
+    control_tables = [
+        r.tableName
+        for r in spark.sql(f"SHOW TABLES IN {fq} LIKE 'metadata_control_*'").collect()
+    ]
+    if not control_tables:
+        print("No control tables found (metadata_control_*).")
     else:
-        print("No tables stuck in in_progress state.")
+        union_sql = " UNION ALL ".join(
+            f"""
+            SELECT table_name, _status, _run_id, _task_id, _updated_at,
+                   ROUND((unix_timestamp(current_timestamp()) - unix_timestamp(_updated_at)) / 60, 1) AS minutes_stuck
+            FROM {fq}.{ct}
+            WHERE _status = 'in_progress'
+              AND _updated_at < current_timestamp() - INTERVAL {stuck_minutes} MINUTE
+            """
+            for ct in control_tables
+        )
+        stuck_df = spark.sql(f"{union_sql} ORDER BY _updated_at")
+        stuck_count = stuck_df.count()
+        print(f"Stuck tables: {stuck_count}")
+        if stuck_count > 0:
+            display(stuck_df)
+        else:
+            print("No tables stuck in in_progress state.")
 except Exception as e:
-    print(f"Control table not found or error: {e}")
+    print(f"Control table query error: {e}")
 
 # COMMAND ----------
 # MAGIC %md
@@ -99,15 +105,14 @@ output_tables = [
     "table_knowledge_base",
     "column_knowledge_base",
     "schema_knowledge_base",
-    "metadata_knowledge_graph_nodes",
-    "metadata_knowledge_graph_edges",
+    "graph_nodes",
+    "graph_edges",
     "ontology_entities",
     "ontology_column_properties",
     "ontology_relationships",
     "fk_predictions",
-    "metadata_embeddings",
-    "metadata_similarity_edges",
-    "metadata_clusters",
+    "similarity_edges",
+    "cluster_assignments",
     "data_quality_scores",
 ]
 
@@ -153,6 +158,9 @@ try:
           AND table_name NOT LIKE 'ontology_%'
           AND table_name NOT LIKE 'fk_%'
           AND table_name NOT LIKE 'data_quality_%'
+          AND table_name NOT IN ('graph_nodes', 'graph_edges', 'similarity_edges',
+                                 'cluster_assignments', 'table_knowledge_base',
+                                 'column_knowledge_base', 'schema_knowledge_base')
     ),
     generated AS (
         SELECT DISTINCT table_name, mode
