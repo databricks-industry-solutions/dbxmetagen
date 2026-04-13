@@ -8,6 +8,7 @@ sync:
     - apps/dbxmetagen-app/app/src/dist/**
     - apps/dbxmetagen-app/app/app.yaml
     - apps/dbxmetagen-app/app/requirements.txt
+    - apps/dbxmetagen-app/app/dbxmetagen-*.whl
 
 include:
   - resources/jobs/*.yml
