@@ -128,6 +128,7 @@ sed -e "s|__DATABRICKS_HOST__|${DATABRICKS_HOST}|g" \
 echo "=== Generating app.yaml from template ==="
 sed -e "s|__CATALOG_NAME__|${catalog_name}|g" \
     -e "s|__SCHEMA_NAME__|${schema_name}|g" \
+    -e "s|__ENABLE_OBO__|${enable_obo:-false}|g" \
     apps/dbxmetagen-app/app/app.yaml.template > apps/dbxmetagen-app/app/app.yaml
 
 echo "=== Generating app resource YAML with permissions ==="

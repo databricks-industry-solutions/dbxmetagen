@@ -1,5 +1,6 @@
 """FastAPI backend for dbxmetagen dashboard app."""
 
+import contextvars
 import io
 import os
 import re
@@ -74,13 +75,33 @@ _genie_tasks: dict[str, dict] = {}
 # ---------------------------------------------------------------------------
 
 _ws: Optional[WorkspaceClient] = None
+_OBO_ENABLED = os.environ.get("ENABLE_OBO", "false").lower() == "true"
+_obo_token_var: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    "_obo_token_var", default=None
+)
 
 
 def get_workspace_client() -> WorkspaceClient:
+    """Return the app service principal WorkspaceClient singleton."""
     global _ws
     if _ws is None:
         _ws = WorkspaceClient()
     return _ws
+
+
+def _get_effective_client() -> WorkspaceClient:
+    """Return user-scoped WS client when OBO is active for this request, else app SP.
+
+    Background daemon threads don't inherit the ContextVar, so they
+    automatically fall back to the app SP singleton.
+    """
+    if _OBO_ENABLED:
+        token = _obo_token_var.get(None)
+        if token:
+            from databricks.sdk.core import Config
+            cfg = Config(host=get_workspace_client().config.host, token=token)
+            return WorkspaceClient(config=cfg)
+    return get_workspace_client()
 
 
 _NOT_FOUND_RE = re.compile(
@@ -102,7 +123,7 @@ def execute_sql(query: str, warehouse_id: Optional[str] = None, timeout: int = 3
     if not wh:
         raise HTTPException(500, detail="WAREHOUSE_ID not configured")
     try:
-        ws = get_workspace_client()
+        ws = _get_effective_client()
         wait_s = min(timeout, 50)
         resp = ws.statement_execution.execute_statement(
             statement=query, warehouse_id=wh, wait_timeout=f"{wait_s}s"
@@ -343,7 +364,7 @@ def multi_hop_traverse(
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("dbxmetagen API starting – catalog=%s schema=%s", CATALOG, SCHEMA)
+    logger.info("dbxmetagen API starting – catalog=%s schema=%s obo=%s", CATALOG, SCHEMA, _OBO_ENABLED)
     if pg_configured():
         try:
             logger.info(
@@ -381,6 +402,14 @@ from starlette.requests import Request
 from starlette.responses import Response
 
 
+class OBOMiddleware(BaseHTTPMiddleware):
+    """Set the OBO user token ContextVar for the duration of each request."""
+    async def dispatch(self, request: Request, call_next):
+        if _OBO_ENABLED:
+            _obo_token_var.set(request.headers.get("x-forwarded-access-token"))
+        return await call_next(request)
+
+
 class DebugRoutingMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
@@ -395,6 +424,7 @@ class DebugRoutingMiddleware(BaseHTTPMiddleware):
 
 
 app.add_middleware(DebugRoutingMiddleware)
+app.add_middleware(OBOMiddleware)
 
 
 @app.get("/api/health")
@@ -430,6 +460,7 @@ def get_config():
         "workspace_host": host.rstrip("/"),
         "available_models": _AVAILABLE_MODELS,
         "lakebase_configured": pg_configured(),
+        "obo_enabled": _OBO_ENABLED,
     }
 
 
@@ -1293,7 +1324,7 @@ def generate_ddl(body: GenerateDDLBody):
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         current_date = datetime.now().strftime("%Y%m%d")
         volume_name = os.environ.get("VOLUME_NAME", "generated_metadata")
-        ws = get_workspace_client()
+        ws = _get_effective_client()
         current_user = "app"
         try:
             current_user = ws.current_user.me().user_name.split("@")[0]
@@ -1663,7 +1694,7 @@ def generate_ddl_bundle(body: DDLBundleBody):
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         current_date = datetime.now().strftime("%Y%m%d")
         volume_name = os.environ.get("VOLUME_NAME", "generated_metadata")
-        ws = get_workspace_client()
+        ws = _get_effective_client()
         current_user = "app"
         try:
             current_user = ws.current_user.me().user_name.split("@")[0]
@@ -2016,7 +2047,7 @@ def export_to_volume(body: ExportVolumeRequest):
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     current_date = datetime.now().strftime("%Y%m%d")
     volume_name = os.environ.get("VOLUME_NAME", "generated_metadata")
-    ws = get_workspace_client()
+    ws = _get_effective_client()
     current_user = "app"
     try:
         current_user = ws.current_user.me().user_name.split("@")[0]
@@ -2063,7 +2094,7 @@ def list_volume_files():
     """List importable TSV/Excel files in the volume for the current user."""
     volume_name = os.environ.get("VOLUME_NAME", "generated_metadata")
     base = f"/Volumes/{CATALOG}/{SCHEMA}/{volume_name}"
-    ws = get_workspace_client()
+    ws = _get_effective_client()
     results = []
 
     def _walk(path: str, depth: int = 0):
@@ -2178,7 +2209,7 @@ class ImportReviewedRequest(BaseModel):
 @app.post("/api/metadata/import-reviewed")
 def import_reviewed_from_volume(body: ImportReviewedRequest):
     """Import a reviewed TSV/Excel from a volume path into KB tables."""
-    ws = get_workspace_client()
+    ws = _get_effective_client()
     vp = body.volume_path.strip()
     if not vp:
         raise HTTPException(400, "volume_path is required")
@@ -2209,7 +2240,7 @@ async def import_reviewed_upload(file: UploadFile = File(...)):
         raise HTTPException(400, "File must be .tsv, .xlsx, or .xls")
 
     volume_name = os.environ.get("VOLUME_NAME", "generated_metadata")
-    ws = get_workspace_client()
+    ws = _get_effective_client()
     current_user = "app"
     try:
         current_user = ws.current_user.me().user_name.split("@")[0]
@@ -7327,7 +7358,7 @@ def genie_generate_questions(req: SuggestQuestionsRequest):
     from dbxmetagen.genie.context import GenieContextAssembler
     from langchain_community.chat_models import ChatDatabricks
 
-    ws = get_workspace_client()
+    ws = _get_effective_client()
     assembler = GenieContextAssembler(ws, wh, CATALOG, SCHEMA)
     ctx = assembler.assemble(
         req.table_identifiers,
@@ -8030,7 +8061,7 @@ def genie_update_assist(req: GenieUpdateAssistRequest):
         raise HTTPException(400, detail=f"Invalid section '{req.section}'. Must be one of: {', '.join(sorted(valid_sections))}")
     if not req.table_identifiers:
         raise HTTPException(400, detail="table_identifiers required")
-    ws = get_workspace_client()
+    ws = _get_effective_client()
     wh = os.environ.get("WAREHOUSE_ID", "")
     if not wh:
         raise HTTPException(500, detail="WAREHOUSE_ID not configured")
@@ -8522,7 +8553,7 @@ def suggest_kpis(req: KpiSuggestRequest):
     from dbxmetagen.genie.context import GenieContextAssembler
     from langchain_community.chat_models import ChatDatabricks
 
-    ws = get_workspace_client()
+    ws = _get_effective_client()
     assembler = GenieContextAssembler(ws, wh, CATALOG, SCHEMA)
     kpi_context = _build_kpi_context(assembler, req.table_identifiers)
 

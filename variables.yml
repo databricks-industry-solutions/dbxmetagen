@@ -230,3 +230,6 @@ variables:
   max_candidates_per_table_pair:
     description: "Maximum number of candidate column pairs retained per table pair from name/ontology matching. Lower values reduce combinatorial explosion for wide tables."
     default: 5
+  enable_obo:
+    description: "Enable On-Behalf-Of user authentication for the app. When true, catalog browsing and SQL queries run under the logged-in user's identity (requires workspace admin to enable user auth for the app). When false, all operations use the app service principal."
+    default: false

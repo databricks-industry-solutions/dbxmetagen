@@ -45,6 +45,7 @@ class TestYAMLVariableCoverage:
         acceptable_missing = {
             "current_working_directory",  # Runtime-determined
             "deploying_user",  # Bundle-level variable
+            "enable_obo",  # App-level env var, not a MetadataConfig param
             "job_table_names",  # Job-level default (table_names used instead)
         }
 

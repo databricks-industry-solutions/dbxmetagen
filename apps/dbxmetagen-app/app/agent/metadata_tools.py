@@ -46,16 +46,14 @@ ALLOWED_TABLES = {
     "graph_nodes", "graph_edges",
 }
 
-_ws = None
 _vsc = None
 _vs_indexes: dict = {}
 
 
 def _get_ws() -> WorkspaceClient:
-    global _ws
-    if _ws is None:
-        _ws = WorkspaceClient()
-    return _ws
+    """Return the OBO-aware client when available, else the app SP singleton."""
+    from api_server import _get_effective_client
+    return _get_effective_client()
 
 
 def _build_vs_client():

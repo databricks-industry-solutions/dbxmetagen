@@ -80,6 +80,5 @@ resources:
             permission: CAN_MANAGE_RUN
       user_api_scopes:
         - "files.files"
-        - "serving.serving-endpoints"
         - "sql.statement-execution"
 __APP_PERMISSIONS__
