@@ -4097,6 +4097,65 @@ def fk_apply(body: FKApplyBody):
     return {"results": results}
 
 
+class FKDeleteBody(BaseModel):
+    predictions: list[dict]
+
+
+@app.post("/api/analytics/fk-delete")
+def delete_fk_predictions(body: FKDeleteBody):
+    """Delete FK predictions and cascade to fk_ddl_statements and graph_edges."""
+    deleted = 0
+    errors = []
+    preds_tbl = fq("fk_predictions")
+    ddl_tbl = fq("fk_ddl_statements")
+    edges_tbl = fq("graph_edges")
+    for p in (body.predictions or []):
+        src_col = _esc_sql(p.get("src_column", ""))
+        dst_col = _esc_sql(p.get("dst_column", ""))
+        src_tbl = _esc_sql(p.get("src_table", ""))
+        dst_tbl = _esc_sql(p.get("dst_table", ""))
+        if not src_col or not dst_col:
+            errors.append({"prediction": p, "error": "Missing src_column or dst_column"})
+            continue
+        try:
+            execute_sql(
+                f"DELETE FROM {preds_tbl} WHERE src_column = '{src_col}' AND dst_column = '{dst_col}'"
+            )
+            deleted += 1
+        except Exception as e:
+            errors.append({"prediction": p, "error": f"fk_predictions: {e}"})
+            continue
+        try:
+            execute_sql(
+                f"DELETE FROM {ddl_tbl} WHERE src_column = '{src_col}' AND dst_column = '{dst_col}'"
+            )
+        except Exception:
+            pass
+        src_fq = _esc_sql(p.get("src_table", "") + "." + p.get("src_column", ""))
+        dst_fq = _esc_sql(p.get("dst_table", "") + "." + p.get("dst_column", ""))
+        try:
+            execute_sql(
+                f"DELETE FROM {edges_tbl} WHERE source_system = 'fk_predictions' "
+                f"AND src = '{src_tbl}' AND dst = '{dst_tbl}'"
+            )
+            execute_sql(
+                f"DELETE FROM {edges_tbl} WHERE source_system = 'fk_predictions' "
+                f"AND src = '{src_fq}' AND dst = '{dst_fq}'"
+            )
+        except Exception:
+            pass
+        try:
+            execute_sql(
+                f"DELETE FROM {edges_tbl} WHERE relationship = 'predicted_fk' "
+                f"AND ((src = '{src_fq}' AND dst = '{dst_fq}') "
+                f"OR (src = '{dst_fq}' AND dst = '{src_fq}'))"
+            )
+        except Exception:
+            pass
+    invalidate_query_caches()
+    return {"deleted": deleted, "errors": errors}
+
+
 # ---------------------------------------------------------------------------
 # Visualization composite endpoints
 # ---------------------------------------------------------------------------
