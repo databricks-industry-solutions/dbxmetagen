@@ -24,7 +24,7 @@ repos:
       - id: sync-requirements
         name: Sync requirements.txt from uv.lock
         language: system
-        entry: bash scripts/export_requirements.sh
+        entry: bash -c 'bash scripts/export_requirements.sh && git add requirements.txt'
         files: ^(pyproject\.toml|uv\.lock)$
         pass_filenames: false
         stages: [pre-commit]

@@ -141,6 +141,32 @@ function ReviewEditor() {
   const [globalFkTagResult, setGlobalFkTagResult] = useState(null)
   const [fkConfThreshold, setFkConfThreshold] = useState(0.5)
   const [fkGenSql, setFkGenSql] = useState(null)
+  const [fkDeleting, setFkDeleting] = useState(false)
+
+  const deleteFkPredictions = async (preds) => {
+    setFkDeleting(true)
+    try {
+      const r = await fetch('/api/analytics/fk-delete', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ predictions: preds }),
+      })
+      const j = await r.json().catch(() => ({}))
+      if (j.deleted > 0) {
+        setReviewData(prev => prev.map(tbl => ({
+          ...tbl,
+          fk_predictions: (tbl.fk_predictions || []).filter(fk =>
+            !preds.some(p => p.src_column === fk.src_column && p.dst_column === fk.dst_column)
+          ),
+        })))
+        setSelectedFKs({})
+      }
+      return j
+    } catch (err) {
+      return { error: err.message }
+    } finally {
+      setFkDeleting(false)
+    }
+  }
 
   useEffect(() => { fetch('/api/ontology/entity-type-options').then(r => r.json()).then(d => setEntityTypeOptions(Array.isArray(d) ? d : [])).catch(() => {}) }, [])
 
@@ -1154,6 +1180,11 @@ function ReviewEditor() {
                               }} className="text-xs px-2 py-0.5 bg-slate-600 text-white rounded hover:bg-slate-700">
                                 Generate SQL ({selCount})
                               </button>
+                              <button onClick={() => deleteFkPredictions(selPreds())}
+                                disabled={fkDeleting}
+                                className="text-xs px-2 py-0.5 bg-red-600 text-white rounded hover:bg-red-700 disabled:opacity-50">
+                                {fkDeleting ? 'Removing...' : `Remove (${selCount})`}
+                              </button>
                             </div>
                           ) : null
                         })()}
@@ -1217,9 +1248,18 @@ function ReviewEditor() {
                                   onClick={() => setExpandedFKs(p => ({ ...p, [fkKey]: !p[fkKey] }))}>
                                   {fk.ai_reasoning || '--'}
                                 </td>
+                                <td className="px-1 py-1">
+                                  <button onClick={() => deleteFkPredictions([{
+                                    src_table: fk.src_table, src_column: fk.src_column,
+                                    dst_table: fk.dst_table, dst_column: fk.dst_column,
+                                  }])} disabled={fkDeleting} title="Remove this FK prediction"
+                                    className="text-red-400 hover:text-red-600 disabled:opacity-50 text-xs">
+                                    &#x2715;
+                                  </button>
+                                </td>
                               </tr>
                               {isExpReasoning && fk.ai_reasoning && (
-                                <tr><td colSpan={7} className="px-3 py-2 bg-slate-50 dark:bg-dbx-navy-500/30 text-xs text-slate-600 dark:text-slate-300 italic">{fk.ai_reasoning}</td></tr>
+                                <tr><td colSpan={8} className="px-3 py-2 bg-slate-50 dark:bg-dbx-navy-500/30 text-xs text-slate-600 dark:text-slate-300 italic">{fk.ai_reasoning}</td></tr>
                               )}
                             </React.Fragment>
                           )
@@ -1239,6 +1279,7 @@ function ReviewEditor() {
                                     <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400" title="AI model confidence">AI</th>
                                     <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400" title="Column embedding similarity">Sim</th>
                                     <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400">Reasoning</th>
+                                    <th className="w-8 px-1 py-1"></th>
                                   </tr></thead>
                                   <tbody>
                                     {outgoing.map(item => renderRow(item,
@@ -1261,6 +1302,7 @@ function ReviewEditor() {
                                     <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400" title="AI model confidence">AI</th>
                                     <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400" title="Column embedding similarity">Sim</th>
                                     <th className="text-left px-2 py-1 font-semibold text-slate-500 dark:text-slate-400">Reasoning</th>
+                                    <th className="w-8 px-1 py-1"></th>
                                   </tr></thead>
                                   <tbody>
                                     {incoming.map(item => renderRow(item,
