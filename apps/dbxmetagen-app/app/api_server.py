@@ -4258,7 +4258,7 @@ def get_coverage_metadata_summary(catalog: Optional[str] = None, schema: Optiona
 
 
 @app.get("/api/coverage/tables")
-def get_coverage_tables(catalog: Optional[str] = None, schema: Optional[str] = None):
+def get_coverage_tables(catalog: Optional[str] = None, schema: Optional[str] = None, kb_only: bool = False):
     """List individual tables and whether they've been profiled."""
     cat = catalog or CATALOG
     conditions = [f"t.table_catalog = '{cat}'"]
@@ -4269,11 +4269,12 @@ def get_coverage_tables(catalog: Optional[str] = None, schema: Optional[str] = N
     conditions.append("t.table_type IN ('MANAGED', 'EXTERNAL', 'VIEW', 'STREAMING_TABLE', 'MATERIALIZED_VIEW', 'FOREIGN')")
     conditions.append("NOT t.table_name RLIKE '^(__|event_log_[0-9a-f]{8}_)'")
     where = " AND ".join(conditions)
+    join_type = "INNER" if kb_only else "LEFT"
     q = f"""
         SELECT t.table_catalog, t.table_schema, t.table_name, t.table_type,
                CASE WHEN kb.table_name IS NOT NULL THEN true ELSE false END as is_profiled
         FROM system.information_schema.tables t
-        LEFT JOIN {fq('table_knowledge_base')} kb
+        {join_type} JOIN {fq('table_knowledge_base')} kb
           ON CONCAT(t.table_catalog, '.', t.table_schema, '.', t.table_name) = kb.table_name
         WHERE {where}
         ORDER BY t.table_schema, t.table_name
@@ -4281,7 +4282,8 @@ def get_coverage_tables(catalog: Optional[str] = None, schema: Optional[str] = N
     try:
         return execute_sql(q)
     except HTTPException:
-        # Fallback without KB join
+        if kb_only:
+            return []
         q_simple = f"""
             SELECT table_catalog, table_schema, table_name, table_type,
                    false as is_profiled
