@@ -103,7 +103,7 @@ export default function GenieBuilder({ onNavigate }) {
     }
     catalogChangeRef.current = true
     ;(async () => {
-      const { data } = await cachedFetch(`/api/coverage/tables?catalog=${encodeURIComponent(selectedCatalog)}`, {}, TTL.CONFIG)
+      const { data } = await cachedFetch(`/api/coverage/tables?catalog=${encodeURIComponent(selectedCatalog)}&kb_only=true`, {}, TTL.CONFIG)
       setTables(data.length ? data.map(r => ({
         id: `${r.table_catalog}.${r.table_schema}.${r.table_name}`,
         label: r.table_name,
