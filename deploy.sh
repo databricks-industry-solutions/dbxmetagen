@@ -44,6 +44,11 @@ if ! command -v databricks &> /dev/null; then
     exit 1
 fi
 
+if ! command -v uv &> /dev/null; then
+    echo "Error: uv not found. Install: curl -LsSf https://astral.sh/uv/install.sh | sh"
+    exit 1
+fi
+
 if [ "$SKIP_FRONTEND" = false ] && [ "$SKIP_APP" = false ]; then
     if ! command -v npm &> /dev/null; then
         echo "Error: npm not found. npm is required to build the frontend app."
@@ -91,10 +96,24 @@ echo "Warehouse: ${warehouse_id}"
 
 # --- Authenticate ---
 if ! databricks current-user me --profile "$PROFILE" &> /dev/null; then
-    echo "Error: Not authenticated. Run: databricks configure --profile $PROFILE"
+    echo ""
+    echo "ERROR: Databricks authentication failed (profile: $PROFILE)."
+    echo ""
+    echo "  To configure authentication, run:"
+    echo "    databricks configure --profile $PROFILE"
+    echo ""
+    echo "  You will need:"
+    echo "    - Databricks host URL (e.g. https://<workspace>.cloud.databricks.com)"
+    echo "    - A personal access token (PAT) -- generate one at:"
+    echo "      ${DATABRICKS_HOST}/settings/user/developer/access-tokens"
+    echo ""
+    echo "  If you already configured, check:"
+    echo "    - The host in ~/.databrickscfg matches DATABRICKS_HOST in ${ENV_FILE}"
+    echo "    - Your token has not expired"
+    echo ""
     exit 1
 fi
-CURRENT_USER=$(databricks current-user me --profile "$PROFILE" --output json | jq -r '.userName')
+CURRENT_USER=$(databricks current-user me --profile "$PROFILE" --output json | python3 -c "import sys,json; print(json.load(sys.stdin)['userName'])")
 echo "Deploying as: ${CURRENT_USER}"
 
 # --- Generate databricks.yml from template ---
@@ -209,7 +228,11 @@ fi
 # --- Sync requirements.txt from lock file ---
 echo ""
 echo "=== Syncing requirements.txt ==="
-bash scripts/export_requirements.sh
+if git rev-parse --is-inside-work-tree &>/dev/null; then
+    bash scripts/export_requirements.sh
+else
+    echo "  Not inside a git repo -- skipping requirements.txt regeneration (using existing file)"
+fi
 
 # --- Build Python package ---
 echo ""
