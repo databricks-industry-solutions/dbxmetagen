@@ -235,7 +235,7 @@ langchain-core==1.2.20
     #   langgraph
     #   langgraph-checkpoint
     #   langgraph-prebuilt
-langchain-text-splitters==1.1.1
+langchain-text-splitters==1.1.2
     # via langchain-classic
 langcodes==3.5.1
     # via spacy
