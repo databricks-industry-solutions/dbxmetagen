@@ -1400,6 +1400,131 @@ class TestBuildBundlePropertyIndex:
         assert "TOTAL_AMOUNT" not in index
 
 
+class TestHealthcareBundlePropertyIndex:
+    """Verify healthcare bundle loads properties for Patient and Claim (ON-7)."""
+
+    @pytest.fixture
+    def builder(self):
+        mock_spark = MagicMock()
+        config = OntologyConfig(
+            catalog_name="cat", schema_name="sch",
+            ontology_bundle="healthcare",
+        )
+        real_config = OntologyLoader.load_config(
+            "configurations/ontology_bundles/healthcare.yaml"
+        )
+        with patch.object(OntologyLoader, 'load_config') as mock_load:
+            mock_load.return_value = real_config
+            return OntologyBuilder(mock_spark, config)
+
+    def test_patient_index_has_properties(self, builder):
+        index = builder._build_bundle_property_index("Patient")
+        assert index, "Patient bundle property index is empty -- properties not loaded"
+        assert "patient_id" in index, f"patient_id not in index. Keys: {sorted(index.keys())}"
+        assert index["patient_id"][0] == "primary_key"
+        assert "mrn" in index
+        assert "first_name" in index
+        assert index["first_name"][0] == "pii"
+        assert "date_of_birth" in index
+        assert "gender" in index
+        assert index["gender"][0] == "dimension"
+
+    def test_claim_index_has_properties(self, builder):
+        index = builder._build_bundle_property_index("Claim")
+        assert index, "Claim bundle property index is empty -- properties not loaded"
+        assert "claim_id" in index
+        assert index["claim_id"][0] == "primary_key"
+        assert "billed_amount" in index
+        assert index["billed_amount"][0] == "measure"
+        assert "service_date" in index
+        assert index["service_date"][0] == "temporal"
+
+    def test_encounter_index_has_properties(self, builder):
+        index = builder._build_bundle_property_index("Encounter")
+        assert index, "Encounter bundle property index is empty"
+        assert "encounter_id" in index
+        assert index["encounter_id"][0] == "primary_key"
+
+    def test_entity_def_map_populated(self, builder):
+        """Verify _entity_def_map has healthcare entities with properties."""
+        emap = builder.discoverer._entity_def_map
+        for etype in ("Patient", "Claim", "Encounter", "Provider"):
+            edef = emap.get(etype)
+            assert edef is not None, f"{etype} not in _entity_def_map"
+            if etype in ("Patient", "Claim", "Encounter"):
+                assert edef.properties, f"{etype} has no properties"
+
+
+class TestFhirBundlePropertyIndex:
+    """Verify fhir_r4 bundle loads properties for Patient, Encounter, Observation, Claim."""
+
+    @pytest.fixture
+    def builder(self):
+        mock_spark = MagicMock()
+        config = OntologyConfig(
+            catalog_name="cat", schema_name="sch",
+            ontology_bundle="fhir_r4",
+        )
+        real_config = OntologyLoader.load_config(
+            "configurations/ontology_bundles/fhir_r4.yaml"
+        )
+        with patch.object(OntologyLoader, 'load_config') as mock_load:
+            mock_load.return_value = real_config
+            return OntologyBuilder(mock_spark, config)
+
+    def test_patient_index_has_properties(self, builder):
+        index = builder._build_bundle_property_index("Patient")
+        assert index, "Patient bundle property index is empty"
+        assert "id" in index
+        assert index["id"][0] == "primary_key"
+        assert "birth_date" in index
+        assert index["birth_date"][0] == "temporal"
+        assert "gender" in index
+        assert index["gender"][0] == "dimension"
+        assert "address" in index
+        assert index["address"][0] == "pii"
+
+    def test_encounter_index_has_properties(self, builder):
+        index = builder._build_bundle_property_index("Encounter")
+        assert index, "Encounter bundle property index is empty"
+        assert "id" in index
+        assert index["id"][0] == "primary_key"
+        assert "status" in index
+        assert index["status"][0] == "dimension"
+        assert "subject_id" in index or "patient_id" in index
+
+    def test_observation_index_has_properties(self, builder):
+        index = builder._build_bundle_property_index("Observation")
+        assert index, "Observation bundle property index is empty"
+        assert "id" in index
+        assert "code" in index
+        assert index["code"][0] == "dimension"
+        assert "effective_date" in index or "effective_date_time" in index
+        assert "value_quantity" in index or "value" in index
+
+    def test_claim_index_has_properties(self, builder):
+        index = builder._build_bundle_property_index("Claim")
+        assert index, "Claim bundle property index is empty"
+        assert "id" in index
+        assert index["id"][0] == "primary_key"
+        assert "status" in index
+        assert index["status"][0] == "dimension"
+        assert "patient_id" in index
+
+    def test_entity_def_map_has_fhir_entities(self, builder):
+        emap = builder.discoverer._entity_def_map
+        for etype in ("Patient", "Encounter", "Observation", "Claim", "Condition", "Practitioner"):
+            edef = emap.get(etype)
+            assert edef is not None, f"{etype} not in _entity_def_map"
+            assert edef.properties, f"{etype} has no properties"
+
+    def test_property_count_reasonable(self, builder):
+        """Every FHIR entity with typical_attributes should have properties."""
+        emap = builder.discoverer._entity_def_map
+        entities_with_props = sum(1 for e in emap.values() if e.properties)
+        assert entities_with_props >= 100, f"Only {entities_with_props} entities have properties"
+
+
 # ======================================================================
 # Extended _enforce_entity_value tests (parity with domain _enforce_value)
 # ======================================================================
