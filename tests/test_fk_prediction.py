@@ -13,6 +13,7 @@ from dbxmetagen.fk_prediction import (
     FKPredictor,
     _FK_MODEL,
     predict_foreign_keys,
+    SR_COL_PROP,
     SR_DECLARED,
     SR_EMBEDDING,
     SR_NAME,
@@ -23,7 +24,7 @@ from dbxmetagen.fk_prediction import (
 
 def test_source_rank_ordering():
     """Lower number = higher trust for dedup."""
-    assert SR_DECLARED < SR_QUERY < SR_NAME < SR_ONTOLOGY < SR_EMBEDDING
+    assert SR_DECLARED < SR_QUERY < SR_COL_PROP < SR_NAME < SR_ONTOLOGY < SR_EMBEDDING
 
 
 def test_dedup_sort_key_tuple():
@@ -318,6 +319,7 @@ class TestRunOrchestration:
             patch.object(FKPredictor, "get_candidates", return_value=empty),
             patch.object(FKPredictor, "get_name_based_candidates", return_value=empty),
             patch.object(FKPredictor, "get_ontology_relationship_candidates", return_value=empty),
+            patch.object(FKPredictor, "get_column_property_candidates", return_value=empty),
             patch.object(FKPredictor, "get_declared_fk_candidates", return_value=empty),
             patch.object(FKPredictor, "get_query_join_candidates", return_value=empty),
         ):
@@ -326,7 +328,7 @@ class TestRunOrchestration:
         assert out["candidates"] == 0
         assert out["predictions"] == 0
 
-    def test_invokes_all_five_candidate_sources(self, spark):
+    def test_invokes_all_six_candidate_sources(self, spark):
         empty = _empty_candidate_df()
         with (
             _patch_fk_functions_for_run(),
@@ -334,6 +336,7 @@ class TestRunOrchestration:
             patch.object(FKPredictor, "get_candidates", return_value=empty) as m_emb,
             patch.object(FKPredictor, "get_name_based_candidates", return_value=empty) as m_nm,
             patch.object(FKPredictor, "get_ontology_relationship_candidates", return_value=empty) as m_on,
+            patch.object(FKPredictor, "get_column_property_candidates", return_value=empty) as m_cp,
             patch.object(FKPredictor, "get_declared_fk_candidates", return_value=empty) as m_dc,
             patch.object(FKPredictor, "get_query_join_candidates", return_value=empty) as m_qy,
         ):
@@ -342,6 +345,7 @@ class TestRunOrchestration:
         m_emb.assert_called_once()
         m_nm.assert_called_once()
         m_on.assert_called_once()
+        m_cp.assert_called_once()
         m_dc.assert_called_once()
         m_qy.assert_called_once()
 
@@ -355,6 +359,7 @@ class TestRunOrchestration:
             patch.object(FKPredictor, "get_candidates", return_value=df),
             patch.object(FKPredictor, "get_name_based_candidates", return_value=df),
             patch.object(FKPredictor, "get_ontology_relationship_candidates", return_value=df),
+            patch.object(FKPredictor, "get_column_property_candidates", return_value=df),
             patch.object(FKPredictor, "get_declared_fk_candidates", return_value=df),
             patch.object(FKPredictor, "get_query_join_candidates", return_value=df),
             patch.object(FKPredictor, "add_entity_match", side_effect=lambda c: c),
@@ -388,6 +393,7 @@ class TestDryRunAccounting:
             patch.object(FKPredictor, "get_candidates", return_value=df),
             patch.object(FKPredictor, "get_name_based_candidates", return_value=df),
             patch.object(FKPredictor, "get_ontology_relationship_candidates", return_value=df),
+            patch.object(FKPredictor, "get_column_property_candidates", return_value=df),
             patch.object(FKPredictor, "get_declared_fk_candidates", return_value=df),
             patch.object(FKPredictor, "get_query_join_candidates", return_value=df),
             patch.object(FKPredictor, "add_entity_match", side_effect=lambda c: c),
@@ -416,6 +422,7 @@ class TestDryRunAccounting:
             patch.object(FKPredictor, "get_candidates", return_value=df),
             patch.object(FKPredictor, "get_name_based_candidates", return_value=df),
             patch.object(FKPredictor, "get_ontology_relationship_candidates", return_value=df),
+            patch.object(FKPredictor, "get_column_property_candidates", return_value=df),
             patch.object(FKPredictor, "get_declared_fk_candidates", return_value=df),
             patch.object(FKPredictor, "get_query_join_candidates", return_value=df),
             patch.object(FKPredictor, "add_entity_match", side_effect=lambda c: c),
@@ -696,4 +703,71 @@ class TestRuleScoreBehavior:
                                      "samples_a", "samples_b"])
         result = p.rule_score(df)
         assert result is df.withColumn.return_value
+
+
+# --- TestColumnPropertyCandidates ---
+
+
+class TestColumnPropertyCandidates:
+    """Tests for the column-property FK candidate source."""
+
+    def test_source_rank_values(self):
+        """SR_COL_PROP sits between QUERY and NAME."""
+        assert SR_QUERY < SR_COL_PROP < SR_NAME
+
+    def test_column_property_candidates_empty(self):
+        """Returns empty DataFrame when column_properties table doesn't exist."""
+        spark = MagicMock()
+        spark.sql.side_effect = Exception("TABLE_OR_VIEW_NOT_FOUND")
+        p = FKPredictor(spark, _cfg())
+        result = p.get_column_property_candidates()
+        assert result is not None
+
+    def test_column_property_candidates_pk_pair(self):
+        """When object_property + PK exist, the SQL is executed with correct tables."""
+        spark = MagicMock()
+        # First call (existence check) succeeds; second call (main SQL) returns df
+        result_df = MagicMock()
+        result_df.withColumn = MagicMock(return_value=result_df)
+        result_df.count = MagicMock(return_value=3)
+        spark.sql.side_effect = [MagicMock(), result_df]
+        p = FKPredictor(spark, _cfg())
+        result = p.get_column_property_candidates()
+        # The main SQL should reference the column_properties table
+        main_sql = spark.sql.call_args_list[1][0][0]
+        assert "ontology_column_properties" in main_sql
+        assert "object_property" in main_sql
+        assert "primary_key" in main_sql
+
+    def test_column_property_candidates_name_fallback(self):
+        """SQL includes both pk_pairs and name_pairs strategies."""
+        spark = MagicMock()
+        result_df = MagicMock()
+        result_df.withColumn = MagicMock(return_value=result_df)
+        result_df.count = MagicMock(return_value=0)
+        spark.sql.side_effect = [MagicMock(), result_df]
+        p = FKPredictor(spark, _cfg())
+        p.get_column_property_candidates()
+        main_sql = spark.sql.call_args_list[1][0][0]
+        assert "pk_pairs" in main_sql
+        assert "name_pairs" in main_sql
+        assert "NOT EXISTS" in main_sql
+
+    def test_column_property_candidates_no_linked_entity(self):
+        """SQL filters for linked_entity_type IS NOT NULL."""
+        spark = MagicMock()
+        result_df = MagicMock()
+        result_df.withColumn = MagicMock(return_value=result_df)
+        result_df.count = MagicMock(return_value=0)
+        spark.sql.side_effect = [MagicMock(), result_df]
+        p = FKPredictor(spark, _cfg())
+        p.get_column_property_candidates()
+        main_sql = spark.sql.call_args_list[1][0][0]
+        assert "linked_entity_type IS NOT NULL" in main_sql
+
+    def test_config_has_column_properties_table(self):
+        """FKPredictionConfig includes the column_properties_table field."""
+        cfg = _cfg()
+        assert cfg.column_properties_table == "ontology_column_properties"
+        assert cfg.fq(cfg.column_properties_table) == "c.s.ontology_column_properties"
 

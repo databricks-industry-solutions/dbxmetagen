@@ -3,9 +3,9 @@ Foreign Key Prediction module.
 
 Join-key discovery uses: (1) blocking by catalog.schema, (2) column embedding
 similarity with same-block duplicate-table suppression and stricter cross-block
-floors, (3) declared FKs, query-history joins, naming and ontology heuristics,
-(4) rule-based scoring, (5) budgeted AI_QUERY as a tie-breaker, with optional
-skip-AI for high-trust declared/query pairs.
+floors, (3) declared FKs, query-history joins, naming, ontology entity-type,
+and column-property heuristics, (4) rule-based scoring, (5) budgeted AI_QUERY
+as a tie-breaker, with optional skip-AI for high-trust declared/query pairs.
 """
 
 import logging
@@ -24,9 +24,10 @@ _FK_MODEL = "databricks-gpt-oss-120b"
 
 SR_DECLARED = 0
 SR_QUERY = 1
-SR_NAME = 2
-SR_ONTOLOGY = 3
-SR_EMBEDDING = 4
+SR_COL_PROP = 2
+SR_NAME = 3
+SR_ONTOLOGY = 4
+SR_EMBEDDING = 5
 
 
 @dataclass
@@ -38,6 +39,7 @@ class FKPredictionConfig:
     column_kb_table: str = "column_knowledge_base"
     ontology_entities_table: str = "ontology_entities"
     ontology_relationships_table: str = "ontology_relationships"
+    column_properties_table: str = "ontology_column_properties"
     predictions_table: str = "fk_predictions"
     column_similarity_threshold: float = 0.85
     table_similarity_threshold: float = 0.9
@@ -401,6 +403,116 @@ class FKPredictor:
                 "table_similarity DOUBLE, source_rank INT, query_hit_count INT"
             )
 
+
+    # ------------------------------------------------------------------
+    # Step 1b-col: Column-property FK candidates
+    # ------------------------------------------------------------------
+    def get_column_property_candidates(self) -> DataFrame:
+        """Generate FK candidates from ontology_column_properties object_property linkage.
+
+        For each column classified as object_property with a linked_entity_type,
+        proposes a direct (src_column -> PK on linked entity's primary table) pair.
+        Falls back to same-column-name matching when no PK is found on the target.
+        """
+        cp = self.config.fq(self.config.column_properties_table)
+        ent = self.config.fq(self.config.ontology_entities_table)
+        nodes = self.config.fq(self.config.nodes_table)
+        empty = self.spark.createDataFrame(
+            [], "col_a STRING, col_b STRING, col_similarity DOUBLE, "
+            "table_a STRING, table_b STRING, dtype_a STRING, dtype_b STRING, "
+            "table_similarity DOUBLE, source_rank INT, query_hit_count INT"
+        )
+        try:
+            self.spark.sql(f"SELECT 1 FROM {cp} LIMIT 1").collect()
+        except Exception:
+            logger.info("ontology_column_properties table not available, skipping")
+            return empty
+
+        k = self.config.max_candidates_per_table_pair
+        sql = f"""
+        WITH obj_props AS (
+            SELECT table_name, column_name, linked_entity_type, confidence
+            FROM {cp}
+            WHERE property_role = 'object_property'
+              AND linked_entity_type IS NOT NULL
+              AND confidence >= 0.5
+        ),
+        entity_primary AS (
+            SELECT entity_type, EXPLODE(source_tables) AS primary_table
+            FROM {ent}
+            WHERE entity_role = 'primary'
+        ),
+        pk_cols AS (
+            SELECT table_name, column_name AS pk_col
+            FROM {cp}
+            WHERE property_role = 'primary_key'
+              AND confidence >= 0.5
+        ),
+        cols AS (
+            SELECT id, parent_id, data_type,
+                   LOWER(ELEMENT_AT(SPLIT(id, '.'), -1)) AS col_short
+            FROM {nodes} WHERE node_type = 'column'
+        ),
+        pk_pairs AS (
+            SELECT op.table_name AS table_a, op.column_name AS src_col,
+                   ep.primary_table AS table_b, pk.pk_col AS dst_col
+            FROM obj_props op
+            JOIN entity_primary ep ON op.linked_entity_type = ep.entity_type
+            JOIN pk_cols pk ON pk.table_name = ep.primary_table
+            WHERE op.table_name != ep.primary_table
+        ),
+        name_pairs AS (
+            SELECT op.table_name AS table_a, op.column_name AS src_col,
+                   ep.primary_table AS table_b, c.col_short AS dst_col
+            FROM obj_props op
+            JOIN entity_primary ep ON op.linked_entity_type = ep.entity_type
+            JOIN cols c ON c.parent_id = ep.primary_table
+                        AND c.col_short = LOWER(op.column_name)
+            WHERE op.table_name != ep.primary_table
+              AND NOT EXISTS (
+                  SELECT 1 FROM pk_pairs pp
+                  WHERE pp.table_a = op.table_name AND pp.src_col = op.column_name
+                    AND pp.table_b = ep.primary_table
+              )
+        ),
+        all_pairs AS (
+            SELECT * FROM pk_pairs
+            UNION ALL
+            SELECT * FROM name_pairs
+        ),
+        resolved AS (
+            SELECT sa.id AS col_a, da.id AS col_b,
+                   0.95 AS col_similarity,
+                   ap.table_a, ap.table_b,
+                   sa.data_type AS dtype_a, da.data_type AS dtype_b,
+                   0.9 AS table_similarity
+            FROM all_pairs ap
+            JOIN cols sa ON sa.parent_id = ap.table_a
+                         AND sa.col_short = LOWER(ap.src_col)
+            JOIN cols da ON da.parent_id = ap.table_b
+                         AND da.col_short = LOWER(ap.dst_col)
+        ),
+        capped AS (
+            SELECT *, ROW_NUMBER() OVER (
+                PARTITION BY table_a, table_b ORDER BY col_similarity DESC
+            ) AS _rn
+            FROM resolved
+        )
+        SELECT LEAST(col_a, col_b) AS col_a, GREATEST(col_a, col_b) AS col_b,
+               col_similarity, table_a, table_b, dtype_a, dtype_b, table_similarity
+        FROM capped WHERE _rn <= {k}
+        """
+        try:
+            df = self.spark.sql(sql)
+            df = df.withColumn("source_rank", F.lit(SR_COL_PROP)).withColumn(
+                "query_hit_count", F.lit(0)
+            )
+            cnt = df.count()
+            logger.info("Column-property FK candidates: %d", cnt)
+            return df
+        except Exception as e:
+            logger.warning("Column-property candidate generation failed: %s", e)
+            return empty
 
     # ------------------------------------------------------------------
     # Step 1c-pre: Declared FK candidates from extended_table_metadata
@@ -1464,12 +1576,14 @@ class FKPredictor:
         embedding_cands = self.get_candidates()
         name_cands = self.get_name_based_candidates()
         ontology_cands = self.get_ontology_relationship_candidates()
+        col_prop_cands = self.get_column_property_candidates()
         declared_cands = self.get_declared_fk_candidates()
         query_cands = self.get_query_join_candidates()
 
         candidates = (
             embedding_cands.unionByName(name_cands, allowMissingColumns=True)
             .unionByName(ontology_cands, allowMissingColumns=True)
+            .unionByName(col_prop_cands, allowMissingColumns=True)
             .unionByName(declared_cands, allowMissingColumns=True)
             .unionByName(query_cands, allowMissingColumns=True)
         )
