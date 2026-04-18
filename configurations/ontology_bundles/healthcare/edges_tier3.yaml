@@ -2,10 +2,14 @@ owns:
   name: owns
   domain: Person
   range: Transaction
-  ranges: []
+  ranges:
+  - Transaction
   uri: ''
   inverse: ''
   cardinality: one-to-many
+  label: null
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: People, customers, contacts, users, or employees
     uri: https://schema.org/Person
@@ -35,10 +39,14 @@ part_of:
   name: part_of
   domain: Person
   range: Organization
-  ranges: []
+  ranges:
+  - Organization
   uri: ''
   inverse: ''
   cardinality: many-to-one
+  label: null
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: People, customers, contacts, users, or employees
     uri: https://schema.org/Person
@@ -70,10 +78,14 @@ contains:
   name: contains
   domain: Organization
   range: Person
-  ranges: []
+  ranges:
+  - Person
   uri: ''
   inverse: contained_in
   cardinality: one-to-many
+  label: null
+  facet: null
+  sub_property_of: null
   category: structural
   symmetric: false
   domain_profile:
@@ -107,10 +119,14 @@ contains_location:
   name: contains_location
   domain: Organization
   range: Location
-  ranges: []
+  ranges:
+  - Location
   uri: ''
   inverse: ''
   cardinality: one-to-many
+  label: null
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: Companies, departments, facilities, or business units
     uri: https://schema.org/Organization
@@ -141,20 +157,28 @@ references:
   name: references
   domain: Any
   range: Any
-  ranges: []
+  ranges:
+  - Reference
   uri: ''
   inverse: referenced_by
   cardinality: many-to-one
+  label: null
+  facet: null
+  sub_property_of: null
   category: business
   symmetric: false
 derives_from:
   name: derives_from
   domain: Metric
   range: Event
-  ranges: []
+  ranges:
+  - Event
   uri: ''
   inverse: source_of
   cardinality: many-to-one
+  label: null
+  facet: null
+  sub_property_of: null
   category: lineage
   symmetric: false
   domain_profile:
@@ -185,10 +209,14 @@ treated_by:
   name: treated_by
   domain: Patient
   range: Provider
-  ranges: []
+  ranges:
+  - Provider
   uri: ''
   inverse: treats
   cardinality: many-to-many
+  label: null
+  facet: null
+  sub_property_of: null
   category: business
   symmetric: false
   domain_profile:
@@ -224,10 +252,14 @@ has_encounter:
   name: has_encounter
   domain: Patient
   range: Encounter
-  ranges: []
+  ranges:
+  - Encounter
   uri: ''
   inverse: encounter_for
   cardinality: one-to-many
+  label: null
+  facet: null
+  sub_property_of: null
   category: business
   symmetric: false
   domain_profile:
@@ -264,10 +296,14 @@ has_condition:
   name: has_condition
   domain: Patient
   range: Condition
-  ranges: []
+  ranges:
+  - Condition
   uri: ''
   inverse: condition_of
   cardinality: one-to-many
+  label: null
+  facet: null
+  sub_property_of: null
   category: business
   symmetric: false
   domain_profile:
@@ -302,10 +338,14 @@ has_coverage:
   name: has_coverage
   domain: Patient
   range: Coverage
-  ranges: []
+  ranges:
+  - Coverage
   uri: ''
   inverse: covers
   cardinality: one-to-many
+  label: null
+  facet: null
+  sub_property_of: null
   category: business
   symmetric: false
   domain_profile:
@@ -340,10 +380,14 @@ treats:
   name: treats
   domain: Provider
   range: Patient
-  ranges: []
+  ranges:
+  - Patient
   uri: ''
   inverse: treated_by
   cardinality: many-to-many
+  label: null
+  facet: null
+  sub_property_of: null
   category: business
   symmetric: false
   domain_profile:
@@ -381,10 +425,14 @@ ordered_for:
   - Procedure
   - Medication
   range: Encounter
-  ranges: []
+  ranges:
+  - Encounter
   uri: ''
   inverse: has_order
   cardinality: one-to-many
+  label: null
+  facet: null
+  sub_property_of: null
   category: business
   symmetric: false
   domain_profile:
@@ -420,10 +468,14 @@ has_order:
   name: has_order
   domain: Encounter
   range: Procedure
-  ranges: []
+  ranges:
+  - Procedure
   uri: ''
   inverse: ''
   cardinality: one-to-many
+  label: null
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: Visits, admissions, or episodes of care (FHIR Encounter)
     uri: http://hl7.org/fhir/StructureDefinition/Encounter
@@ -457,10 +509,14 @@ located_at:
   name: located_at
   domain: Any
   range: Location
-  ranges: []
+  ranges:
+  - Location
   uri: ''
   inverse: location_of
   cardinality: many-to-one
+  label: null
+  facet: null
+  sub_property_of: null
   category: business
   symmetric: false
   range_profile:
@@ -479,10 +535,14 @@ diagnosed_in:
   name: diagnosed_in
   domain: Condition
   range: Encounter
-  ranges: []
+  ranges:
+  - Encounter
   uri: ''
   inverse: has_diagnosis
   cardinality: many-to-one
+  label: null
+  facet: null
+  sub_property_of: null
   category: business
   symmetric: false
   domain_profile:
@@ -517,10 +577,14 @@ performed_by:
   name: performed_by
   domain: Procedure
   range: Provider
-  ranges: []
+  ranges:
+  - Provider
   uri: ''
   inverse: performs
   cardinality: many-to-one
+  label: null
+  facet: null
+  sub_property_of: null
   category: business
   symmetric: false
   domain_profile:
@@ -555,10 +619,14 @@ prescribed_to:
   name: prescribed_to
   domain: Medication
   range: Patient
-  ranges: []
+  ranges:
+  - Patient
   uri: ''
   inverse: has_prescription
   cardinality: many-to-one
+  label: null
+  facet: null
+  sub_property_of: null
   category: business
   symmetric: false
   domain_profile:
@@ -594,10 +662,14 @@ recorded_in:
   name: recorded_in
   domain: Observation
   range: Encounter
-  ranges: []
+  ranges:
+  - Encounter
   uri: ''
   inverse: records
   cardinality: many-to-one
+  label: null
+  facet: null
+  sub_property_of: null
   category: lineage
   symmetric: false
   domain_profile:
@@ -634,10 +706,14 @@ for_encounter:
   name: for_encounter
   domain: Claim
   range: Encounter
-  ranges: []
+  ranges:
+  - Encounter
   uri: ''
   inverse: encounter_claim
   cardinality: many-to-one
+  label: null
+  facet: null
+  sub_property_of: null
   category: business
   symmetric: false
   domain_profile:
@@ -673,10 +749,14 @@ covered_by:
   name: covered_by
   domain: Claim
   range: Coverage
-  ranges: []
+  ranges:
+  - Coverage
   uri: ''
   inverse: covers_claim
   cardinality: many-to-one
+  label: null
+  facet: null
+  sub_property_of: null
   category: business
   symmetric: false
   domain_profile:
@@ -710,10 +790,14 @@ provided_by:
   name: provided_by
   domain: Coverage
   range: Organization
-  ranges: []
+  ranges:
+  - Organization
   uri: ''
   inverse: ''
   cardinality: many-to-one
+  label: null
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: Insurance plans, benefits, or member coverage (FHIR Coverage)
     uri: http://hl7.org/fhir/StructureDefinition/Coverage
@@ -745,10 +829,14 @@ enrolls:
   name: enrolls
   domain: ClinicalTrial
   range: Patient
-  ranges: []
+  ranges:
+  - Patient
   uri: ''
   inverse: ''
   cardinality: one-to-many
+  label: null
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: Clinical trials, research studies, and investigational protocols
     uri: http://hl7.org/fhir/StructureDefinition/ResearchStudy
@@ -782,10 +870,14 @@ used_in:
   name: used_in
   domain: Device
   range: Procedure
-  ranges: []
+  ranges:
+  - Procedure
   uri: ''
   inverse: ''
   cardinality: many-to-many
+  label: null
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: Medical devices, equipment, implants, and instruments
     uri: http://hl7.org/fhir/StructureDefinition/Device
@@ -820,10 +912,14 @@ owned_by:
   range:
   - Person
   - Organization
-  ranges: []
+  ranges:
+  - Organization
   uri: ''
   inverse: owns
   cardinality: many-to-one
+  label: null
+  facet: null
+  sub_property_of: null
   category: business
   symmetric: false
   range_profile:
@@ -843,10 +939,14 @@ collected_from:
   name: collected_from
   domain: Specimen
   range: Patient
-  ranges: []
+  ranges:
+  - Patient
   uri: ''
   inverse: provides_specimen
   cardinality: many-to-one
+  label: null
+  facet: null
+  sub_property_of: null
   category: business
   symmetric: false
   domain_profile:
@@ -882,10 +982,14 @@ pays_for:
   name: pays_for
   domain: Payer
   range: Claim
-  ranges: []
+  ranges:
+  - Claim
   uri: ''
   inverse: ''
   cardinality: one-to-many
+  label: null
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: Insurance companies, health plans, government payers, and third-party
       administrators
@@ -920,10 +1024,14 @@ covers:
   name: covers
   domain: Payer
   range: Patient
-  ranges: []
+  ranges:
+  - Patient
   uri: ''
   inverse: ''
   cardinality: one-to-many
+  label: null
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: Insurance companies, health plans, government payers, and third-party
       administrators
@@ -959,10 +1067,14 @@ performs:
   name: performs
   domain: Practitioner
   range: Procedure
-  ranges: []
+  ranges:
+  - Procedure
   uri: ''
   inverse: ''
   cardinality: one-to-many
+  label: null
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: Individual clinicians, physicians, nurses, and allied health professionals
     uri: http://hl7.org/fhir/StructureDefinition/Practitioner
@@ -995,10 +1107,14 @@ hosts:
   name: hosts
   domain: Facility
   range: Encounter
-  ranges: []
+  ranges:
+  - Encounter
   uri: ''
   inverse: ''
   cardinality: one-to-many
+  label: null
+  facet: null
+  sub_property_of: null
   domain_profile:
     description: Hospitals, clinics, labs, pharmacies, and care sites
     uri: http://hl7.org/fhir/StructureDefinition/Location
@@ -1033,10 +1149,14 @@ tested_in:
   name: tested_in
   domain: LabResult
   range: Specimen
-  ranges: []
+  ranges:
+  - Specimen
   uri: ''
   inverse: has_result
   cardinality: many-to-one
+  label: null
+  facet: null
+  sub_property_of: null
   category: business
   symmetric: false
   domain_profile:
@@ -1072,10 +1192,14 @@ consented_by:
   name: consented_by
   domain: Consent
   range: Patient
-  ranges: []
+  ranges:
+  - Patient
   uri: ''
   inverse: consents_to
   cardinality: many-to-one
+  label: null
+  facet: null
+  sub_property_of: null
   category: business
   symmetric: false
   domain_profile:

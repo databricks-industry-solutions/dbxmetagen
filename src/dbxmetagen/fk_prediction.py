@@ -87,23 +87,14 @@ class FKPredictor:
         )
         return df.withColumn("_rn", F.row_number().over(w)).filter(F.col("_rn") <= k).drop("_rn")
 
-    def _apply_tiered_ai_cap(self, candidates: DataFrame) -> DataFrame:
-        """Cap only embedding-sourced rows; deterministic sources are never dropped."""
-        max_ai = self.config.max_ai_candidates
-        min_rule = self.config.rule_score_min_for_ai
-        tier_a = candidates.filter(F.col("source_rank") != F.lit(SR_EMBEDDING))
-        tier_b = candidates.filter(F.col("source_rank") == F.lit(SR_EMBEDDING))
-        tier_b_hi = tier_b.filter(F.col("rule_score") >= min_rule)
-        tier_b_lo = tier_b.filter(F.col("rule_score") < min_rule)
-        if tier_b_hi.count() <= max_ai:
-            return tier_a.unionByName(tier_b)
-        w = Window.orderBy(F.col("rule_score").desc())
-        tier_b_hi = (
-            tier_b_hi.withColumn("_rn", F.row_number().over(w))
-            .filter(F.col("_rn") <= max_ai)
-            .drop("_rn")
+    def _budget_overflow_fill(self, df: DataFrame) -> DataFrame:
+        """Heuristic fill for candidates that exceeded the AI budget."""
+        return (
+            df.withColumn("ai_is_fk", F.lit(True))
+            .withColumn("ai_confidence", F.col("rule_score"))
+            .withColumn("ai_reasoning", F.lit("budget_overflow_heuristic"))
+            .withColumn("ai_fk_side", F.lit(None).cast("string"))
         )
-        return tier_a.unionByName(tier_b_hi).unionByName(tier_b_lo)
 
     def _with_skip_ai_flags(self, df: DataFrame) -> DataFrame:
         qmin = self.config.skip_ai_query_min_observations
@@ -450,7 +441,7 @@ class FKPredictor:
         ),
         cols AS (
             SELECT id, parent_id, data_type,
-                   LOWER(ELEMENT_AT(SPLIT(id, '.'), -1)) AS col_short
+                   LOWER(ELEMENT_AT(SPLIT(id, '\\\\.'), -1)) AS col_short
             FROM {nodes} WHERE node_type = 'column'
         ),
         pk_pairs AS (
@@ -469,6 +460,7 @@ class FKPredictor:
             JOIN cols c ON c.parent_id = ep.primary_table
                         AND c.col_short = LOWER(op.column_name)
             WHERE op.table_name != ep.primary_table
+              AND (c.col_short RLIKE '(_id|_key|_code)$' OR c.col_short = 'id')
               AND NOT EXISTS (
                   SELECT 1 FROM pk_pairs pp
                   WHERE pp.table_a = op.table_name AND pp.src_col = op.column_name
@@ -482,15 +474,20 @@ class FKPredictor:
         ),
         resolved AS (
             SELECT sa.id AS col_a, da.id AS col_b,
-                   0.95 AS col_similarity,
+                   0.0 AS col_similarity,
                    ap.table_a, ap.table_b,
                    sa.data_type AS dtype_a, da.data_type AS dtype_b,
-                   0.9 AS table_similarity
+                   0.0 AS table_similarity
             FROM all_pairs ap
             JOIN cols sa ON sa.parent_id = ap.table_a
                          AND sa.col_short = LOWER(ap.src_col)
             JOIN cols da ON da.parent_id = ap.table_b
                          AND da.col_short = LOWER(ap.dst_col)
+            WHERE sa.data_type IS NOT NULL AND da.data_type IS NOT NULL
+              AND NOT (
+                sa.data_type IN ('timestamp', 'date', 'boolean', 'float', 'double', 'binary')
+                OR da.data_type IN ('timestamp', 'date', 'boolean', 'float', 'double', 'binary')
+              )
         ),
         capped AS (
             SELECT *, ROW_NUMBER() OVER (
@@ -1001,8 +998,8 @@ class FKPredictor:
         # Compute RI per pair: max(ri_ab, ri_ba)
         pair_ri: dict = {}
         for r in all_ri_rows:
-            total = max(r.total_a, 1)
-            ri = max(0.0, 1.0 - r.orphan_ab / total)
+            total = max(r.total_a or 0, 1)
+            ri = max(0.0, 1.0 - (r.orphan_ab or 0) / total)
             key = tuple(sorted([r.ca, r.cb]))
             pair_ri[key] = max(pair_ri.get(key, 0.0), ri)
 
@@ -1076,17 +1073,27 @@ class FKPredictor:
         lineage_sig = F.col("lineage_score") if "lineage_score" in candidates.columns else F.lit(0.0)
         bonus = self.config.ontology_match_bonus_weight
 
+        source_bonus = (
+            F.when(F.col("source_rank") == F.lit(SR_DECLARED), 0.25)
+            .when(F.col("source_rank") == F.lit(SR_QUERY), 0.20)
+            .when(F.col("source_rank") == F.lit(SR_COL_PROP), 0.20)
+            .when(F.col("source_rank") == F.lit(SR_NAME), 0.15)
+            .when(F.col("source_rank") == F.lit(SR_ONTOLOGY), 0.10)
+            .otherwise(0.0)
+        )
+
         return candidates.withColumn(
             "rule_score",
             F.round(
-                F.col("col_similarity") * 0.25
+                F.col("col_similarity") * 0.10
                 + dtype_score * 0.15
                 + id_pattern * 0.1
                 + table_name_match * 0.15
                 + fk_prefix * 0.05
                 + overlap * 0.1
                 + entity_match * bonus
-                + lineage_sig * 0.1,
+                + lineage_sig * 0.1
+                + source_bonus * 0.15,
                 4,
             ),
         )
@@ -1631,31 +1638,49 @@ class FKPredictor:
 
         candidates = self._with_skip_ai_flags(candidates)
         min_rule = self.config.rule_score_min_for_ai
-        candidates = self._apply_tiered_ai_cap(candidates)
+        max_ai = self.config.max_ai_candidates
 
-        need_llm = candidates.filter((~F.col("skip_ai")) & (F.col("rule_score") >= min_rule))
         skip_llm = candidates.filter(F.col("skip_ai"))
+        need_review = candidates.filter((~F.col("skip_ai")) & (F.col("rule_score") >= min_rule))
 
-        ai_eligible = need_llm.count()
+        ai_eligible = need_review.count()
         if self.config.dry_run:
             logger.info(
                 "DRY RUN: %d candidates, %d would be sent to AI_QUERY, %d heuristic",
                 total_cand,
-                ai_eligible,
+                min(ai_eligible, max_ai),
                 skip_llm.count(),
             )
             return {
                 "dry_run": True,
                 "candidates": total_cand,
-                "ai_query_rows": ai_eligible,
+                "ai_query_rows": min(ai_eligible, max_ai),
                 "predictions": 0,
                 "edges": 0,
                 "ddl_applied": 0,
             }
 
+        overflow = None
+        if ai_eligible > max_ai:
+            w = Window.orderBy(F.col("rule_score").desc())
+            ranked = need_review.withColumn("_ai_rn", F.row_number().over(w))
+            need_llm = ranked.filter(F.col("_ai_rn") <= max_ai).drop("_ai_rn")
+            overflow = ranked.filter(F.col("_ai_rn") > max_ai).drop("_ai_rn")
+            logger.info(
+                "AI budget: %d eligible, %d sent to LLM, %d overflow -> heuristic",
+                ai_eligible, max_ai, ai_eligible - max_ai,
+            )
+        else:
+            need_llm = need_review
+
         judged_ai = self.ai_judge(need_llm)
         judged_skip = self._heuristic_ai_fill(skip_llm)
-        judged = judged_ai.unionByName(judged_skip, allowMissingColumns=True)
+        parts = [judged_ai, judged_skip]
+        if overflow is not None:
+            parts.append(self._budget_overflow_fill(overflow))
+        judged = parts[0]
+        for p in parts[1:]:
+            judged = judged.unionByName(p, allowMissingColumns=True)
 
         ai_positive = judged.filter(F.col("ai_is_fk") == True).count()
         ai_negative = judged.filter(F.col("ai_is_fk") == False).count()

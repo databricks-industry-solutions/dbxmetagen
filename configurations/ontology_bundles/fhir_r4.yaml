@@ -28367,6 +28367,10 @@ ontology:
       description: Natural key meaningful to users (MRN, NPI)
       maps_to_kind: data_property
       semantic_role: identifier
+    object_property:
+      description: FK or reference to another entity's identifier
+      maps_to_kind: object_property
+      semantic_role: relationship
     measure:
       description: Numeric value to aggregate
       maps_to_kind: data_property
@@ -28383,14 +28387,6 @@ ontology:
       description: Location-based dimension (country, city, region, coordinates)
       maps_to_kind: data_property
       semantic_role: geographic
-    object_property:
-      description: FK or reference to another entity's identifier
-      maps_to_kind: object_property
-      semantic_role: relationship
-    composite_component:
-      description: Part of a multi-column value object
-      maps_to_kind: data_property
-      semantic_role: component
     label:
       description: Human-readable name or title
       maps_to_kind: data_property
@@ -28408,6 +28404,10 @@ ontology:
       description: Computed from other columns
       maps_to_kind: data_property
       semantic_role: derived
+    composite_component:
+      description: Part of a multi-column value object
+      maps_to_kind: data_property
+      semantic_role: component
 domains:
   clinical:
     name: Clinical

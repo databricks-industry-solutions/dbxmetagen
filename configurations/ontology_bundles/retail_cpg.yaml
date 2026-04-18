@@ -1,726 +1,1931 @@
-# Retail & Consumer Packaged Goods Ontology Bundle
-
 metadata:
-  name: "Retail & CPG"
-  version: "3.0"
-  format_version: "2.0"
-  industry: "retail_cpg"
-  description: "Retail, e-commerce, and CPG ontology with customer, product, and supply chain entity types"
-  standards_alignment: "GS1, Schema.org"
-
+  name: Retail & CPG
+  version: '3.0'
+  format_version: '2.0'
+  industry: retail_cpg
+  description: Retail, e-commerce, and CPG ontology with customer, product, and supply chain entity types
+  standards_alignment: GS1, Schema.org
 ontology:
-  version: "3.0"
-  name: "Retail & CPG Business Ontology"
-  description: "Entity types for retail operations, e-commerce, merchandising, and supply chain"
-
+  version: '3.0'
+  name: Retail & CPG Business Ontology
+  description: Entity types for retail operations, e-commerce, merchandising, and supply chain
   property_roles:
     primary_key:
-      description: "Surrogate or technical row identifier"
-      maps_to_kind: "data_property"
-      semantic_role: "identifier"
+      description: Surrogate or technical row identifier
+      maps_to_kind: data_property
+      semantic_role: identifier
     business_key:
-      description: "Natural key meaningful to users"
-      maps_to_kind: "data_property"
-      semantic_role: "identifier"
-    measure:
-      description: "Numeric value to aggregate"
-      maps_to_kind: "data_property"
-      semantic_role: "metric"
-    dimension:
-      description: "Categorical filter or grouping attribute"
-      maps_to_kind: "data_property"
-      semantic_role: "dimension"
-    temporal:
-      description: "Date or timestamp of event"
-      maps_to_kind: "data_property"
-      semantic_role: "temporal"
-    geographic:
-      description: "Location-based dimension (country, city, region, coordinates)"
-      maps_to_kind: "data_property"
-      semantic_role: "geographic"
+      description: Natural key meaningful to users (MRN, NPI)
+      maps_to_kind: data_property
+      semantic_role: identifier
     object_property:
-      description: "FK or reference to another entity's identifier"
-      maps_to_kind: "object_property"
-      semantic_role: "relationship"
-    composite_component:
-      description: "Part of a multi-column value object"
-      maps_to_kind: "data_property"
-      semantic_role: "component"
+      description: FK or reference to another entity's identifier
+      maps_to_kind: object_property
+      semantic_role: relationship
+    measure:
+      description: Numeric value to aggregate
+      maps_to_kind: data_property
+      semantic_role: metric
+    dimension:
+      description: Categorical filter or grouping attribute
+      maps_to_kind: data_property
+      semantic_role: dimension
+    temporal:
+      description: Date or timestamp of event
+      maps_to_kind: data_property
+      semantic_role: temporal
+    geographic:
+      description: Location-based dimension (country, city, region, coordinates)
+      maps_to_kind: data_property
+      semantic_role: geographic
     label:
-      description: "Human-readable name or title"
-      maps_to_kind: "data_property"
-      semantic_role: "label"
+      description: Human-readable name or title
+      maps_to_kind: data_property
+      semantic_role: label
     pii:
-      description: "Personally identifiable information"
-      maps_to_kind: "data_property"
-      semantic_role: "pii"
+      description: Personally identifiable information
+      maps_to_kind: data_property
+      semantic_role: pii
       governance_flag: true
     audit:
-      description: "System-generated provenance column"
-      maps_to_kind: "data_property"
-      semantic_role: "provenance"
+      description: System-generated provenance column
+      maps_to_kind: data_property
+      semantic_role: provenance
     derived:
-      description: "Computed from other columns"
-      maps_to_kind: "data_property"
-      semantic_role: "derived"
-
+      description: Computed from other columns
+      maps_to_kind: data_property
+      semantic_role: derived
+    composite_component:
+      description: Part of a multi-column value object
+      maps_to_kind: data_property
+      semantic_role: component
   edge_catalog:
-    instance_of: { inverse: type_of, symmetric: false, category: structural }
-    subclass_of: { inverse: superclass_of, symmetric: false, category: structural }
-    has_part: { inverse: part_of, symmetric: false, category: structural }
-    contains: { inverse: contained_in, symmetric: false, category: structural }
-    member_of: { inverse: has_member, symmetric: false, category: structural }
-    purchased_by: { inverse: purchased, domain: Transaction, range: Customer, symmetric: false, category: business }
-    sold_at: { inverse: sells, domain: Transaction, range: Store, symmetric: false, category: business }
-    in_category: { inverse: categorizes, domain: Product, range: Reference, symmetric: false, category: business }
-    supplied_by: { inverse: supplies, domain: Product, range: Supplier, symmetric: false, category: business }
-    placed_by: { inverse: placed, domain: Transaction, range: Person, symmetric: false, category: business }
-    created_by: { inverse: created, domain: Any, range: Person, symmetric: false, category: business }
-    owned_by: { inverse: owns, domain: Any, range: [Person, Organization], symmetric: false, category: business }
-    references: { inverse: referenced_by, domain: Any, range: Any, symmetric: false, category: business }
-    located_at: { inverse: location_of, domain: Any, range: Location, symmetric: false, category: business }
-    derives_from: { inverse: source_of, symmetric: false, category: lineage }
-    same_as: { symmetric: true, category: semantic }
-    similar_to: { symmetric: true, category: semantic }
-
+    instance_of:
+      inverse: type_of
+      symmetric: false
+      category: structural
+    subclass_of:
+      inverse: superclass_of
+      symmetric: false
+      category: structural
+    has_part:
+      inverse: part_of
+      symmetric: false
+      category: structural
+    contains:
+      inverse: contained_in
+      symmetric: false
+      category: structural
+    member_of:
+      inverse: has_member
+      symmetric: false
+      category: structural
+    purchased_by:
+      inverse: purchased
+      domain: Transaction
+      range: Customer
+      symmetric: false
+      category: business
+    sold_at:
+      inverse: sells
+      domain: Transaction
+      range: Store
+      symmetric: false
+      category: business
+    in_category:
+      inverse: categorizes
+      domain: Product
+      range: Reference
+      symmetric: false
+      category: business
+    supplied_by:
+      inverse: supplies
+      domain: Product
+      range: Supplier
+      symmetric: false
+      category: business
+    placed_by:
+      inverse: placed
+      domain: Transaction
+      range: Person
+      symmetric: false
+      category: business
+    created_by:
+      inverse: created
+      domain: Any
+      range: Person
+      symmetric: false
+      category: business
+    owned_by:
+      inverse: owns
+      domain: Any
+      range:
+      - Person
+      - Organization
+      symmetric: false
+      category: business
+    references:
+      inverse: referenced_by
+      domain: Any
+      range: Any
+      symmetric: false
+      category: business
+    located_at:
+      inverse: location_of
+      domain: Any
+      range: Location
+      symmetric: false
+      category: business
+    derives_from:
+      inverse: source_of
+      symmetric: false
+      category: lineage
+    same_as:
+      symmetric: true
+      category: semantic
+    similar_to:
+      symmetric: true
+      category: semantic
   entities:
     auto_discover: true
     discovery_confidence_threshold: 0.4
-
     definitions:
-      # General entities
       Person:
-        description: "People, customers, contacts, users, or employees"
-        uri: "https://schema.org/Person"
-        source_ontology: "schema.org"
-        keywords: ["customer", "employee", "user", "contact", "person", "shopper", "member"]
-        typical_attributes: [id, name, email, phone, address, created_date]
+        description: People, customers, contacts, users, or employees
+        uri: https://schema.org/Person
+        source_ontology: schema.org
+        keywords:
+        - customer
+        - employee
+        - user
+        - contact
+        - person
+        - shopper
+        - member
+        typical_attributes:
+        - id
+        - name
+        - email
+        - phone
+        - address
+        - created_date
         relationships:
-          part_of: { target: Organization, cardinality: "many-to-one" }
-      Organization:
-        description: "Companies, departments, facilities, or business units"
-        uri: "https://schema.org/Organization"
-        source_ontology: "schema.org"
-        keywords: ["company", "organization", "department", "facility", "tenant", "brand"]
-        typical_attributes: [id, name, type, address, parent_id]
-        relationships:
-          contains: { target: Store, cardinality: "one-to-many" }
-          part_of: { target: Organization, cardinality: "many-to-one" }
-      Transaction:
-        description: "Orders, purchases, payments, invoices, or financial events"
-        uri: "https://schema.org/Invoice"
-        source_ontology: "schema.org"
-        keywords: ["transaction", "order", "payment", "invoice", "purchase", "sale", "receipt"]
-        typical_attributes: [id, customer_id, amount, date, status, currency]
-        relationships:
-          placed_by: { target: Customer, cardinality: "many-to-one" }
-      Location:
-        description: "Addresses, sites, regions, facilities, or geographies"
-        uri: "https://schema.org/Place"
-        source_ontology: "schema.org"
-        keywords: ["location", "address", "site", "region", "facility"]
-        typical_attributes: [id, name, address, city, state, country, zip_code]
-        relationships: {}
-      Event:
-        description: "Activities, logs, sessions, audits, or system events"
-        uri: "https://schema.org/Event"
-        source_ontology: "schema.org"
-        keywords: ["event", "activity", "log", "audit", "session", "click", "pageview"]
-        typical_attributes: [id, type, timestamp, user_id, details]
-        relationships:
-          references: { target: Customer, cardinality: "many-to-one" }
-      Reference:
-        description: "Lookup tables, codes, categories, dimensions, or configuration"
-        uri: "https://schema.org/Thing"
-        source_ontology: "schema.org"
-        keywords: ["reference", "lookup", "code", "category", "dim_"]
-        typical_attributes: [id, code, name, description, active]
-        relationships: {}
-      Metric:
-        description: "KPIs, aggregates, facts, summaries, or analytic measures"
-        uri: "https://schema.org/QuantitativeValue"
-        source_ontology: "schema.org"
-        keywords: ["metric", "kpi", "aggregate", "fact_", "summary"]
-        typical_attributes: [id, name, value, period, dimension]
-        relationships: {}
-      Document:
-        description: "Unstructured content, notes, files, or text records"
-        uri: "https://schema.org/DigitalDocument"
-        source_ontology: "schema.org"
-        keywords: ["document", "note", "file", "content", "text"]
-        typical_attributes: [id, title, body, author, created_date, type]
-        relationships: {}
-
-      # Retail & CPG entities
-      Customer:
-        description: "Retail customers, loyalty members, or shoppers"
-        uri: "https://schema.org/Customer"
-        source_ontology: "schema.org"
-        keywords: ["customer", "shopper", "member", "loyalty", "buyer", "consumer", "subscriber"]
-        typical_attributes: [id, name, email, loyalty_tier, lifetime_value, segment, first_purchase_date]
-        relationships:
-          places: { target: Order, cardinality: "one-to-many" }
-          has_return: { target: Return, cardinality: "one-to-many" }
+          part_of:
+            target: Organization
+            cardinality: many-to-one
         properties:
-          identifier:
+          id:
             kind: data_property
             role: primary_key
-            typical_attributes: ["id", "customer_id", "cust_id"]
+            typical_attributes:
+            - id
           name:
             kind: data_property
             role: label
-            typical_attributes: ["name", "customer_name", "full_name"]
+            typical_attributes:
+            - name
           email:
             kind: data_property
             role: pii
-            typical_attributes: ["email", "email_address"]
-          loyalty_tier:
+            typical_attributes:
+            - email
+          phone:
             kind: data_property
-            role: dimension
-            typical_attributes: ["loyalty_tier", "tier", "segment", "membership_level"]
-          lifetime_value:
+            role: pii
+            typical_attributes:
+            - phone
+          address:
             kind: data_property
-            role: measure
-            typical_attributes: ["lifetime_value", "ltv", "clv", "total_spend"]
-          segment:
-            kind: data_property
-            role: dimension
-            typical_attributes: ["segment", "customer_segment", "rfm_segment"]
-          first_purchase_date:
+            role: pii
+            typical_attributes:
+            - address
+          created_date:
             kind: data_property
             role: temporal
-            typical_attributes: ["first_purchase_date", "first_order_date", "acquisition_date"]
-      LoyaltyProgram:
-        description: "Loyalty programs, rewards programs, or membership tiers"
-        uri: "https://schema.org/MemberProgram"
-        source_ontology: "schema.org"
-        keywords: ["loyalty", "rewards", "points", "membership", "tier", "program"]
-        typical_attributes: [id, name, type, points_earn_rate, redemption_rate, tier_thresholds]
+            typical_attributes:
+            - created_date
+      Organization:
+        description: Companies, departments, facilities, or business units
+        uri: https://schema.org/Organization
+        source_ontology: schema.org
+        keywords:
+        - company
+        - organization
+        - department
+        - facility
+        - tenant
+        - brand
+        typical_attributes:
+        - id
+        - name
+        - type
+        - address
+        - parent_id
         relationships:
-          enrolled_in: { target: Customer, cardinality: "many-to-many" }
+          contains:
+            target: Store
+            cardinality: one-to-many
+          part_of:
+            target: Organization
+            cardinality: many-to-one
         properties:
-          identifier:
+          id:
             kind: data_property
             role: primary_key
-            typical_attributes: ["id", "program_id", "loyalty_program_id"]
+            typical_attributes:
+            - id
           name:
             kind: data_property
             role: label
-            typical_attributes: ["name", "program_name", "loyalty_name"]
+            typical_attributes:
+            - name
           type:
             kind: data_property
-            role: dimension
-            typical_attributes: ["type", "program_type", "reward_type"]
-          points_earn_rate:
+            role: label
+            typical_attributes:
+            - type
+          address:
             kind: data_property
-            role: measure
-            typical_attributes: ["points_earn_rate", "earn_rate", "points_per_dollar"]
-          redemption_rate:
-            kind: data_property
-            role: measure
-            typical_attributes: ["redemption_rate", "point_value", "cents_per_point"]
-      Product:
-        description: "Retail products, SKUs, items, or merchandise"
-        uri: "https://schema.org/Product"
-        source_ontology: "schema.org"
-        keywords: ["product", "item", "sku", "merchandise", "upc", "gtin", "ean", "asin"]
-        typical_attributes: [id, sku, name, category, brand, price, weight, upc]
+            role: pii
+            typical_attributes:
+            - address
+          parent_id:
+            kind: object_property
+            role: object_property
+            typical_attributes:
+            - parent_id
+            edge: has_parent
+      Transaction:
+        description: Orders, purchases, payments, invoices, or financial events
+        uri: https://schema.org/Invoice
+        source_ontology: schema.org
+        keywords:
+        - transaction
+        - order
+        - payment
+        - invoice
+        - purchase
+        - sale
+        - receipt
+        typical_attributes:
+        - id
+        - customer_id
+        - amount
+        - date
+        - status
+        - currency
         relationships:
-          belongs_to: { target: Category, cardinality: "many-to-one" }
-          supplied_by: { target: Supplier, cardinality: "many-to-many" }
-      Order:
-        description: "Customer orders, carts, baskets, or purchase transactions"
-        uri: "https://schema.org/Order"
-        source_ontology: "schema.org"
-        keywords: ["order", "cart", "basket", "checkout", "purchase_order", "sales_order"]
-        typical_attributes: [id, customer_id, total, status, channel, placed_date, shipped_date]
-        relationships:
-          placed_by: { target: Customer, cardinality: "many-to-one" }
-          contains: { target: Product, cardinality: "many-to-many" }
-          shipped_via: { target: Shipment, cardinality: "one-to-many" }
-          purchased_at: { target: Store, cardinality: "many-to-one" }
+          placed_by:
+            target: Customer
+            cardinality: many-to-one
         properties:
+          id:
+            kind: data_property
+            role: primary_key
+            typical_attributes:
+            - id
+          customer_id:
+            kind: object_property
+            role: object_property
+            typical_attributes:
+            - customer_id
+            target_entity: Customer
+            edge: placed_by
+          amount:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - amount
+          date:
+            kind: data_property
+            role: temporal
+            typical_attributes:
+            - date
+          status:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - status
+          currency:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - currency
+      Location:
+        description: Addresses, sites, regions, facilities, or geographies
+        uri: https://schema.org/Place
+        source_ontology: schema.org
+        keywords:
+        - location
+        - address
+        - site
+        - region
+        - facility
+        typical_attributes:
+        - id
+        - name
+        - address
+        - city
+        - state
+        - country
+        - zip_code
+        relationships: {}
+        properties:
+          id:
+            kind: data_property
+            role: primary_key
+            typical_attributes:
+            - id
+          name:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - name
+          address:
+            kind: data_property
+            role: pii
+            typical_attributes:
+            - address
+          city:
+            kind: data_property
+            role: geographic
+            typical_attributes:
+            - city
+          state:
+            kind: data_property
+            role: geographic
+            typical_attributes:
+            - state
+          country:
+            kind: data_property
+            role: geographic
+            typical_attributes:
+            - country
+          zip_code:
+            kind: data_property
+            role: geographic
+            typical_attributes:
+            - zip_code
+      Event:
+        description: Activities, logs, sessions, audits, or system events
+        uri: https://schema.org/Event
+        source_ontology: schema.org
+        keywords:
+        - event
+        - activity
+        - log
+        - audit
+        - session
+        - click
+        - pageview
+        typical_attributes:
+        - id
+        - type
+        - timestamp
+        - user_id
+        - details
+        relationships:
+          references:
+            target: Customer
+            cardinality: many-to-one
+        properties:
+          id:
+            kind: data_property
+            role: primary_key
+            typical_attributes:
+            - id
+          type:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - type
+          timestamp:
+            kind: data_property
+            role: temporal
+            typical_attributes:
+            - timestamp
+          user_id:
+            kind: object_property
+            role: object_property
+            typical_attributes:
+            - user_id
+            edge: has_user
+          details:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - details
+      Reference:
+        description: Lookup tables, codes, categories, dimensions, or configuration
+        uri: https://schema.org/Thing
+        source_ontology: schema.org
+        keywords:
+        - reference
+        - lookup
+        - code
+        - category
+        - dim_
+        typical_attributes:
+        - id
+        - code
+        - name
+        - description
+        - active
+        relationships: {}
+        properties:
+          id:
+            kind: data_property
+            role: primary_key
+            typical_attributes:
+            - id
+          code:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - code
+          name:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - name
+          description:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - description
+          active:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - active
+      Metric:
+        description: KPIs, aggregates, facts, summaries, or analytic measures
+        uri: https://schema.org/QuantitativeValue
+        source_ontology: schema.org
+        keywords:
+        - metric
+        - kpi
+        - aggregate
+        - fact_
+        - summary
+        typical_attributes:
+        - id
+        - name
+        - value
+        - period
+        - dimension
+        relationships: {}
+        properties:
+          id:
+            kind: data_property
+            role: primary_key
+            typical_attributes:
+            - id
+          name:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - name
+          value:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - value
+          period:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - period
+          dimension:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - dimension
+      Document:
+        description: Unstructured content, notes, files, or text records
+        uri: https://schema.org/DigitalDocument
+        source_ontology: schema.org
+        keywords:
+        - document
+        - note
+        - file
+        - content
+        - text
+        typical_attributes:
+        - id
+        - title
+        - body
+        - author
+        - created_date
+        - type
+        relationships: {}
+        properties:
+          id:
+            kind: data_property
+            role: primary_key
+            typical_attributes:
+            - id
+          title:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - title
+          body:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - body
+          author:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - author
+          created_date:
+            kind: data_property
+            role: temporal
+            typical_attributes:
+            - created_date
+          type:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - type
+      Customer:
+        description: Retail customers, loyalty members, or shoppers
+        uri: https://schema.org/Customer
+        source_ontology: schema.org
+        keywords:
+        - customer
+        - shopper
+        - member
+        - loyalty
+        - buyer
+        - consumer
+        - subscriber
+        typical_attributes:
+        - id
+        - name
+        - email
+        - loyalty_tier
+        - lifetime_value
+        - segment
+        - first_purchase_date
+        relationships:
+          places:
+            target: Order
+            cardinality: one-to-many
+          has_return:
+            target: Return
+            cardinality: one-to-many
+        properties:
+          id:
+            kind: data_property
+            role: primary_key
+            typical_attributes:
+            - id
+          name:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - name
+            - customer_name
+            - full_name
+          email:
+            kind: data_property
+            role: pii
+            typical_attributes:
+            - email
+            - email_address
+          loyalty_tier:
+            kind: data_property
+            role: dimension
+            typical_attributes:
+            - loyalty_tier
+            - tier
+            - segment
+            - membership_level
+          lifetime_value:
+            kind: data_property
+            role: measure
+            typical_attributes:
+            - lifetime_value
+            - ltv
+            - clv
+            - total_spend
+          segment:
+            kind: data_property
+            role: dimension
+            typical_attributes:
+            - segment
+            - customer_segment
+            - rfm_segment
+          first_purchase_date:
+            kind: data_property
+            role: temporal
+            typical_attributes:
+            - first_purchase_date
+            - first_order_date
+            - acquisition_date
           identifier:
             kind: data_property
             role: primary_key
-            typical_attributes: ["id", "order_id", "order_number"]
+            typical_attributes:
+            - id
+            - customer_id
+            - cust_id
+      LoyaltyProgram:
+        description: Loyalty programs, rewards programs, or membership tiers
+        uri: https://schema.org/MemberProgram
+        source_ontology: schema.org
+        keywords:
+        - loyalty
+        - rewards
+        - points
+        - membership
+        - tier
+        - program
+        typical_attributes:
+        - id
+        - name
+        - type
+        - points_earn_rate
+        - redemption_rate
+        - tier_thresholds
+        relationships:
+          enrolled_in:
+            target: Customer
+            cardinality: many-to-many
+        properties:
+          id:
+            kind: data_property
+            role: primary_key
+            typical_attributes:
+            - id
+          name:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - name
+            - program_name
+            - loyalty_name
+          type:
+            kind: data_property
+            role: dimension
+            typical_attributes:
+            - type
+            - program_type
+            - reward_type
+          points_earn_rate:
+            kind: data_property
+            role: measure
+            typical_attributes:
+            - points_earn_rate
+            - earn_rate
+            - points_per_dollar
+          redemption_rate:
+            kind: data_property
+            role: measure
+            typical_attributes:
+            - redemption_rate
+            - point_value
+            - cents_per_point
+          tier_thresholds:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - tier_thresholds
+          identifier:
+            kind: data_property
+            role: primary_key
+            typical_attributes:
+            - id
+            - program_id
+            - loyalty_program_id
+      Product:
+        description: Retail products, SKUs, items, or merchandise
+        uri: https://schema.org/Product
+        source_ontology: schema.org
+        keywords:
+        - product
+        - item
+        - sku
+        - merchandise
+        - upc
+        - gtin
+        - ean
+        - asin
+        typical_attributes:
+        - id
+        - sku
+        - name
+        - category
+        - brand
+        - price
+        - weight
+        - upc
+        relationships:
+          belongs_to:
+            target: Category
+            cardinality: many-to-one
+          supplied_by:
+            target: Supplier
+            cardinality: many-to-many
+        properties:
+          id:
+            kind: data_property
+            role: primary_key
+            typical_attributes:
+            - id
+          sku:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - sku
+          name:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - name
+          category:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - category
+          brand:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - brand
+          price:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - price
+          weight:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - weight
+          upc:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - upc
+      Order:
+        description: Customer orders, carts, baskets, or purchase transactions
+        uri: https://schema.org/Order
+        source_ontology: schema.org
+        keywords:
+        - order
+        - cart
+        - basket
+        - checkout
+        - purchase_order
+        - sales_order
+        typical_attributes:
+        - id
+        - customer_id
+        - total
+        - status
+        - channel
+        - placed_date
+        - shipped_date
+        relationships:
+          placed_by:
+            target: Customer
+            cardinality: many-to-one
+          contains:
+            target: Product
+            cardinality: many-to-many
+          shipped_via:
+            target: Shipment
+            cardinality: one-to-many
+          purchased_at:
+            target: Store
+            cardinality: many-to-one
+        properties:
+          id:
+            kind: data_property
+            role: primary_key
+            typical_attributes:
+            - id
+          customer_id:
+            kind: object_property
+            role: object_property
+            typical_attributes:
+            - customer_id
+            target_entity: Customer
+            edge: placed_by
+          total:
+            kind: data_property
+            role: measure
+            typical_attributes:
+            - total
+            - order_total
+            - amount
+            - grand_total
+          status:
+            kind: data_property
+            role: dimension
+            typical_attributes:
+            - status
+            - order_status
+            - state
+          channel:
+            kind: data_property
+            role: dimension
+            typical_attributes:
+            - channel
+            - sales_channel
+            - order_channel
+          placed_date:
+            kind: data_property
+            role: temporal
+            typical_attributes:
+            - placed_date
+            - order_date
+            - created_at
+          shipped_date:
+            kind: data_property
+            role: temporal
+            typical_attributes:
+            - shipped_date
+            - ship_date
+            - delivery_date
+          identifier:
+            kind: data_property
+            role: primary_key
+            typical_attributes:
+            - id
+            - order_id
+            - order_number
           customer:
             kind: object_property
             role: object_property
             edge: purchased_by
             target_entity: Customer
-            typical_attributes: ["customer_id", "cust_id", "buyer_id"]
-          total:
-            kind: data_property
-            role: measure
-            typical_attributes: ["total", "order_total", "amount", "grand_total"]
-          status:
-            kind: data_property
-            role: dimension
-            typical_attributes: ["status", "order_status", "state"]
-          channel:
-            kind: data_property
-            role: dimension
-            typical_attributes: ["channel", "sales_channel", "order_channel"]
-          placed_date:
-            kind: data_property
-            role: temporal
-            typical_attributes: ["placed_date", "order_date", "created_at"]
-          shipped_date:
-            kind: data_property
-            role: temporal
-            typical_attributes: ["shipped_date", "ship_date", "delivery_date"]
+            typical_attributes:
+            - customer_id
+            - cust_id
+            - buyer_id
           store:
             kind: object_property
             role: object_property
             edge: sold_at
             target_entity: Store
-            typical_attributes: ["store_id", "location_id", "fulfillment_center_id"]
+            typical_attributes:
+            - store_id
+            - location_id
+            - fulfillment_center_id
       Store:
-        description: "Physical retail stores, outlets, warehouses, or distribution centers"
-        uri: "https://schema.org/Store"
-        source_ontology: "schema.org"
-        keywords: ["store", "outlet", "shop", "warehouse", "dc", "distribution_center", "fulfillment"]
-        typical_attributes: [id, name, type, address, region, format, open_date]
+        description: Physical retail stores, outlets, warehouses, or distribution centers
+        uri: https://schema.org/Store
+        source_ontology: schema.org
+        keywords:
+        - store
+        - outlet
+        - shop
+        - warehouse
+        - dc
+        - distribution_center
+        - fulfillment
+        typical_attributes:
+        - id
+        - name
+        - type
+        - address
+        - region
+        - format
+        - open_date
         relationships:
-          has_inventory: { target: Inventory, cardinality: "one-to-many" }
-          part_of: { target: Organization, cardinality: "many-to-one" }
+          has_inventory:
+            target: Inventory
+            cardinality: one-to-many
+          part_of:
+            target: Organization
+            cardinality: many-to-one
         properties:
-          identifier:
+          id:
             kind: data_property
             role: primary_key
-            typical_attributes: ["id", "store_id", "location_id", "warehouse_id"]
+            typical_attributes:
+            - id
           name:
             kind: data_property
             role: label
-            typical_attributes: ["name", "store_name", "location_name"]
+            typical_attributes:
+            - name
+            - store_name
+            - location_name
           type:
             kind: data_property
             role: dimension
-            typical_attributes: ["type", "store_type", "format"]
+            typical_attributes:
+            - type
+            - store_type
+            - format
           address:
             kind: data_property
             role: dimension
-            typical_attributes: ["address", "street", "city", "state", "zip_code"]
+            typical_attributes:
+            - address
+            - street
+            - city
+            - state
+            - zip_code
           region:
             kind: data_property
             role: dimension
-            typical_attributes: ["region", "district", "territory"]
+            typical_attributes:
+            - region
+            - district
+            - territory
+          format:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - format
           open_date:
             kind: data_property
             role: temporal
-            typical_attributes: ["open_date", "launch_date", "opened_at"]
-      Campaign:
-        description: "Marketing campaigns, ad campaigns, or promotional campaigns"
-        uri: "https://schema.org/MarketingEvent"
-        source_ontology: "schema.org"
-        keywords: ["campaign", "marketing_campaign", "ad_campaign", "promo_campaign"]
-        typical_attributes: [id, name, type, budget, start_date, end_date, channel, status]
-        relationships:
-          targets: { target: Customer, cardinality: "many-to-many" }
-          promotes: { target: Product, cardinality: "many-to-many" }
-        properties:
+            typical_attributes:
+            - open_date
+            - launch_date
+            - opened_at
           identifier:
             kind: data_property
             role: primary_key
-            typical_attributes: ["id", "campaign_id", "marketing_campaign_id"]
+            typical_attributes:
+            - id
+            - store_id
+            - location_id
+            - warehouse_id
+      Campaign:
+        description: Marketing campaigns, ad campaigns, or promotional campaigns
+        uri: https://schema.org/MarketingEvent
+        source_ontology: schema.org
+        keywords:
+        - campaign
+        - marketing_campaign
+        - ad_campaign
+        - promo_campaign
+        typical_attributes:
+        - id
+        - name
+        - type
+        - budget
+        - start_date
+        - end_date
+        - channel
+        - status
+        relationships:
+          targets:
+            target: Customer
+            cardinality: many-to-many
+          promotes:
+            target: Product
+            cardinality: many-to-many
+        properties:
+          id:
+            kind: data_property
+            role: primary_key
+            typical_attributes:
+            - id
           name:
             kind: data_property
             role: label
-            typical_attributes: ["name", "campaign_name", "campaign_title"]
+            typical_attributes:
+            - name
+            - campaign_name
+            - campaign_title
           type:
             kind: data_property
             role: dimension
-            typical_attributes: ["type", "campaign_type", "channel"]
+            typical_attributes:
+            - type
+            - campaign_type
+            - channel
           budget:
             kind: data_property
             role: measure
-            typical_attributes: ["budget", "campaign_budget", "spend"]
+            typical_attributes:
+            - budget
+            - campaign_budget
+            - spend
           start_date:
             kind: data_property
             role: temporal
-            typical_attributes: ["start_date", "launch_date", "begin_date"]
+            typical_attributes:
+            - start_date
+            - launch_date
+            - begin_date
           end_date:
             kind: data_property
             role: temporal
-            typical_attributes: ["end_date", "expiry_date", "expiration_date"]
+            typical_attributes:
+            - end_date
+            - expiry_date
+            - expiration_date
+          channel:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - channel
           status:
             kind: data_property
             role: dimension
-            typical_attributes: ["status", "campaign_status", "state"]
-      Promotion:
-        description: "Promotions, discounts, coupons, campaigns, or markdown events"
-        uri: "https://schema.org/Offer"
-        source_ontology: "schema.org"
-        keywords: ["promotion", "discount", "coupon", "markdown", "deal", "offer", "promo"]
-        typical_attributes: [id, name, type, discount_value, start_date, end_date, channel]
-        relationships:
-          applies_to: { target: Product, cardinality: "many-to-many" }
-        properties:
+            typical_attributes:
+            - status
+            - campaign_status
+            - state
           identifier:
             kind: data_property
             role: primary_key
-            typical_attributes: ["id", "promotion_id", "campaign_id", "promo_id"]
+            typical_attributes:
+            - id
+            - campaign_id
+            - marketing_campaign_id
+      Promotion:
+        description: Promotions, discounts, coupons, campaigns, or markdown events
+        uri: https://schema.org/Offer
+        source_ontology: schema.org
+        keywords:
+        - promotion
+        - discount
+        - coupon
+        - markdown
+        - deal
+        - offer
+        - promo
+        typical_attributes:
+        - id
+        - name
+        - type
+        - discount_value
+        - start_date
+        - end_date
+        - channel
+        relationships:
+          applies_to:
+            target: Product
+            cardinality: many-to-many
+        properties:
+          id:
+            kind: data_property
+            role: primary_key
+            typical_attributes:
+            - id
           name:
             kind: data_property
             role: label
-            typical_attributes: ["name", "promotion_name", "campaign_name"]
+            typical_attributes:
+            - name
+            - promotion_name
+            - campaign_name
           type:
             kind: data_property
             role: dimension
-            typical_attributes: ["type", "promotion_type", "discount_type"]
+            typical_attributes:
+            - type
+            - promotion_type
+            - discount_type
           discount_value:
             kind: data_property
             role: measure
-            typical_attributes: ["discount_value", "discount_amount", "discount_pct"]
+            typical_attributes:
+            - discount_value
+            - discount_amount
+            - discount_pct
           start_date:
             kind: data_property
             role: temporal
-            typical_attributes: ["start_date", "effective_date", "begin_date"]
+            typical_attributes:
+            - start_date
+            - effective_date
+            - begin_date
           end_date:
             kind: data_property
             role: temporal
-            typical_attributes: ["end_date", "expiry_date", "expiration_date"]
+            typical_attributes:
+            - end_date
+            - expiry_date
+            - expiration_date
           channel:
             kind: data_property
             role: dimension
-            typical_attributes: ["channel", "promotion_channel", "campaign_channel"]
-      Supplier:
-        description: "Vendors, manufacturers, distributors, or trading partners"
-        uri: "https://schema.org/Organization"
-        source_ontology: "schema.org"
-        keywords: ["supplier", "vendor", "manufacturer", "distributor", "wholesaler"]
-        typical_attributes: [id, name, type, lead_time, country, payment_terms]
-        relationships:
-          supplies: { target: Product, cardinality: "many-to-many" }
-        properties:
+            typical_attributes:
+            - channel
+            - promotion_channel
+            - campaign_channel
           identifier:
             kind: data_property
             role: primary_key
-            typical_attributes: ["id", "supplier_id", "vendor_id"]
+            typical_attributes:
+            - id
+            - promotion_id
+            - campaign_id
+            - promo_id
+      Supplier:
+        description: Vendors, manufacturers, distributors, or trading partners
+        uri: https://schema.org/Organization
+        source_ontology: schema.org
+        keywords:
+        - supplier
+        - vendor
+        - manufacturer
+        - distributor
+        - wholesaler
+        typical_attributes:
+        - id
+        - name
+        - type
+        - lead_time
+        - country
+        - payment_terms
+        relationships:
+          supplies:
+            target: Product
+            cardinality: many-to-many
+        properties:
+          id:
+            kind: data_property
+            role: primary_key
+            typical_attributes:
+            - id
           name:
             kind: data_property
             role: label
-            typical_attributes: ["name", "supplier_name", "vendor_name"]
+            typical_attributes:
+            - name
+            - supplier_name
+            - vendor_name
           type:
             kind: data_property
             role: dimension
-            typical_attributes: ["type", "supplier_type", "vendor_type"]
+            typical_attributes:
+            - type
+            - supplier_type
+            - vendor_type
           lead_time:
             kind: data_property
             role: measure
-            typical_attributes: ["lead_time", "lead_time_days", "delivery_days"]
+            typical_attributes:
+            - lead_time
+            - lead_time_days
+            - delivery_days
           country:
             kind: data_property
             role: dimension
-            typical_attributes: ["country", "origin_country", "supplier_country"]
+            typical_attributes:
+            - country
+            - origin_country
+            - supplier_country
+          payment_terms:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - payment_terms
+          identifier:
+            kind: data_property
+            role: primary_key
+            typical_attributes:
+            - id
+            - supplier_id
+            - vendor_id
           supplies:
             kind: object_property
             role: object_property
             edge: supplied_by
             target_entity: Product
-            typical_attributes: ["product_id", "sku"]
+            typical_attributes:
+            - product_id
+            - sku
       Inventory:
-        description: "Stock levels, warehouse inventory, or on-hand quantities"
-        uri: "https://www.gs1.org/voc/InventoryReport"
-        source_ontology: "GS1"
-        keywords: ["inventory", "stock", "on_hand", "available", "reserved", "reorder"]
-        typical_attributes: [id, sku, location_id, quantity, reserved, reorder_point]
+        description: Stock levels, warehouse inventory, or on-hand quantities
+        uri: https://www.gs1.org/voc/InventoryReport
+        source_ontology: GS1
+        keywords:
+        - inventory
+        - stock
+        - on_hand
+        - available
+        - reserved
+        - reorder
+        typical_attributes:
+        - id
+        - sku
+        - location_id
+        - quantity
+        - reserved
+        - reorder_point
         relationships:
-          for_product: { target: Product, cardinality: "many-to-one" }
-          at_store: { target: Store, cardinality: "many-to-one" }
+          for_product:
+            target: Product
+            cardinality: many-to-one
+          at_store:
+            target: Store
+            cardinality: many-to-one
+        properties:
+          id:
+            kind: data_property
+            role: primary_key
+            typical_attributes:
+            - id
+          sku:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - sku
+          location_id:
+            kind: object_property
+            role: object_property
+            typical_attributes:
+            - location_id
+            target_entity: Location
+            edge: instance_of
+          quantity:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - quantity
+          reserved:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - reserved
+          reorder_point:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - reorder_point
       Return:
-        description: "Product returns, refunds, exchanges, or RMA records"
-        uri: "https://schema.org/ReturnAction"
-        source_ontology: "schema.org"
-        keywords: ["return", "refund", "exchange", "rma", "reversal"]
-        typical_attributes: [id, order_id, reason, amount, status, date]
+        description: Product returns, refunds, exchanges, or RMA records
+        uri: https://schema.org/ReturnAction
+        source_ontology: schema.org
+        keywords:
+        - return
+        - refund
+        - exchange
+        - rma
+        - reversal
+        typical_attributes:
+        - id
+        - order_id
+        - reason
+        - amount
+        - status
+        - date
         relationships:
-          for_order: { target: Order, cardinality: "many-to-one" }
-          by_customer: { target: Customer, cardinality: "many-to-one" }
+          for_order:
+            target: Order
+            cardinality: many-to-one
+          by_customer:
+            target: Customer
+            cardinality: many-to-one
+        properties:
+          id:
+            kind: data_property
+            role: primary_key
+            typical_attributes:
+            - id
+          order_id:
+            kind: object_property
+            role: object_property
+            typical_attributes:
+            - order_id
+            target_entity: Order
+            edge: for_order
+          reason:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - reason
+          amount:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - amount
+          status:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - status
+          date:
+            kind: data_property
+            role: temporal
+            typical_attributes:
+            - date
       Shipment:
-        description: "Shipping, delivery, fulfillment, or logistics records"
-        uri: "https://schema.org/ParcelDelivery"
-        source_ontology: "schema.org"
-        keywords: ["shipment", "delivery", "tracking", "carrier", "fulfillment", "package"]
-        typical_attributes: [id, order_id, carrier, tracking_number, status, ship_date, delivery_date]
+        description: Shipping, delivery, fulfillment, or logistics records
+        uri: https://schema.org/ParcelDelivery
+        source_ontology: schema.org
+        keywords:
+        - shipment
+        - delivery
+        - tracking
+        - carrier
+        - fulfillment
+        - package
+        typical_attributes:
+        - id
+        - order_id
+        - carrier
+        - tracking_number
+        - status
+        - ship_date
+        - delivery_date
         relationships:
-          for_order: { target: Order, cardinality: "many-to-one" }
+          for_order:
+            target: Order
+            cardinality: many-to-one
+        properties:
+          id:
+            kind: data_property
+            role: primary_key
+            typical_attributes:
+            - id
+          order_id:
+            kind: object_property
+            role: object_property
+            typical_attributes:
+            - order_id
+            target_entity: Order
+            edge: for_order
+          carrier:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - carrier
+          tracking_number:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - tracking_number
+          status:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - status
+          ship_date:
+            kind: data_property
+            role: temporal
+            typical_attributes:
+            - ship_date
+          delivery_date:
+            kind: data_property
+            role: temporal
+            typical_attributes:
+            - delivery_date
       Category:
-        description: "Product categories, departments, or merchandise hierarchies"
-        uri: "https://www.gs1.org/voc/ProductClassification"
-        source_ontology: "GS1"
-        keywords: ["category", "department", "hierarchy", "classification", "taxonomy", "assortment"]
-        typical_attributes: [id, name, parent_id, level, path]
+        description: Product categories, departments, or merchandise hierarchies
+        uri: https://www.gs1.org/voc/ProductClassification
+        source_ontology: GS1
+        keywords:
+        - category
+        - department
+        - hierarchy
+        - classification
+        - taxonomy
+        - assortment
+        typical_attributes:
+        - id
+        - name
+        - parent_id
+        - level
+        - path
         relationships:
-          contains: { target: Product, cardinality: "one-to-many" }
-          part_of: { target: Category, cardinality: "many-to-one" }
-
+          contains:
+            target: Product
+            cardinality: one-to-many
+          part_of:
+            target: Category
+            cardinality: many-to-one
+        properties:
+          id:
+            kind: data_property
+            role: primary_key
+            typical_attributes:
+            - id
+          name:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - name
+          parent_id:
+            kind: object_property
+            role: object_property
+            typical_attributes:
+            - parent_id
+            edge: has_parent
+          level:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - level
+          path:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - path
   domain_entity_affinity:
-    merchandising: [Product, Category, Promotion, Supplier, Metric, Reference]
+    merchandising:
+    - Product
+    - Category
+    - Promotion
+    - Supplier
+    - Metric
+    - Reference
     ecommerce:
-      [Customer, Order, Product, Promotion, Event, Shipment, Return, Metric]
+    - Customer
+    - Order
+    - Product
+    - Promotion
+    - Event
+    - Shipment
+    - Return
+    - Metric
     store_operations:
-      [Store, Inventory, Person, Event, Metric, Location, Reference]
+    - Store
+    - Inventory
+    - Person
+    - Event
+    - Metric
+    - Location
+    - Reference
     supply_chain:
-      [Supplier, Inventory, Shipment, Product, Store, Organization, Location]
-    customer_engagement: [Customer, LoyaltyProgram, Promotion, Campaign, Order, Event, Metric, Person]
-    marketing: [Customer, Campaign, Promotion, Event, Metric, Reference, Product]
-    finance: [Transaction, Order, Metric, Reference, Organization, Event]
+    - Supplier
+    - Inventory
+    - Shipment
+    - Product
+    - Store
+    - Organization
+    - Location
+    customer_engagement:
+    - Customer
+    - LoyaltyProgram
+    - Promotion
+    - Campaign
+    - Order
+    - Event
+    - Metric
+    - Person
+    marketing:
+    - Customer
+    - Campaign
+    - Promotion
+    - Event
+    - Metric
+    - Reference
+    - Product
+    finance:
+    - Transaction
+    - Order
+    - Metric
+    - Reference
+    - Organization
+    - Event
     operations:
-      [
-        Inventory,
-        Store,
-        Shipment,
-        Organization,
-        Location,
-        Event,
-        Metric,
-        Reference,
-      ]
-    workforce: [Person, Organization, Location, Event, Reference, Store]
+    - Inventory
+    - Store
+    - Shipment
+    - Organization
+    - Location
+    - Event
+    - Metric
+    - Reference
+    workforce:
+    - Person
+    - Organization
+    - Location
+    - Event
+    - Reference
+    - Store
     customer:
-      [Customer, Person, Order, Product, Transaction, Event, Metric, Location]
-    technology: [Event, Metric, Reference, Organization]
-    governance: [Document, Reference, Organization, Person]
-
+    - Customer
+    - Person
+    - Order
+    - Product
+    - Transaction
+    - Event
+    - Metric
+    - Location
+    technology:
+    - Event
+    - Metric
+    - Reference
+    - Organization
+    governance:
+    - Document
+    - Reference
+    - Organization
+    - Person
   relationships:
     types:
-      - name: owns
-        description: "Entity owns or is responsible for another"
-        inverse: owned_by
-      - name: contains
-        description: "Entity contains or includes another"
-        inverse: contained_in
-      - name: references
-        description: "Entity references another (foreign key)"
-        inverse: referenced_by
-      - name: derives_from
-        description: "Entity is derived from another (lineage)"
-        inverse: source_of
-      - name: similar_to
-        description: "Entity is semantically similar to another"
-        inverse: similar_to
-        symmetric: true
-      - name: part_of
-        description: "Entity is part of a larger entity"
-        inverse: has_part
-      - name: instance_of
-        description: "Entity is an instance of a type"
-        inverse: type_of
-      - name: supplies
-        description: "Supplier supplies a product"
-        inverse: supplied_by
-      - name: purchased_at
-        description: "Order was placed at a store or channel"
-        inverse: sold
-
+    - name: owns
+      description: Entity owns or is responsible for another
+      inverse: owned_by
+    - name: contains
+      description: Entity contains or includes another
+      inverse: contained_in
+    - name: references
+      description: Entity references another (foreign key)
+      inverse: referenced_by
+    - name: derives_from
+      description: Entity is derived from another (lineage)
+      inverse: source_of
+    - name: similar_to
+      description: Entity is semantically similar to another
+      inverse: similar_to
+      symmetric: true
+    - name: part_of
+      description: Entity is part of a larger entity
+      inverse: has_part
+    - name: instance_of
+      description: Entity is an instance of a type
+      inverse: type_of
+    - name: supplies
+      description: Supplier supplies a product
+      inverse: supplied_by
+    - name: purchased_at
+      description: Order was placed at a store or channel
+      inverse: sold
   metrics:
     auto_discover: false
     definitions: []
-
   validation:
     min_entity_confidence: 0.5
     max_entities_per_table: 3
     ai_validation_enabled: true
-    classification_model: "databricks-claude-sonnet-4-6"
-
+    classification_model: databricks-claude-sonnet-4-6
 domains:
   merchandising:
-    name: "Merchandising"
-    description: "Product assortment, pricing, planograms, and category management"
+    name: Merchandising
+    description: Product assortment, pricing, planograms, and category management
     keywords:
-      ["product", "assortment", "planogram", "price", "category", "merchandise"]
+    - product
+    - assortment
+    - planogram
+    - price
+    - category
+    - merchandise
     subdomains:
       assortment:
-        name: "Assortment Planning"
-        description: "Product assortment selection, planogram design, and space allocation"
-        keywords: ["assortment", "planogram", "allocation", "space"]
+        name: Assortment Planning
+        description: Product assortment selection, planogram design, and space allocation
+        keywords:
+        - assortment
+        - planogram
+        - allocation
+        - space
       pricing:
-        name: "Pricing"
-        description: "Price optimization, markdowns, competitive pricing, and MSRP management"
-        keywords: ["price", "markdown", "optimization", "competitive", "msrp"]
+        name: Pricing
+        description: Price optimization, markdowns, competitive pricing, and MSRP management
+        keywords:
+        - price
+        - markdown
+        - optimization
+        - competitive
+        - msrp
       category_management:
-        name: "Category Management"
-        description: "Category performance reviews, department hierarchies, and captain programs"
-        keywords: ["category", "department", "hierarchy", "captain", "review"]
-
+        name: Category Management
+        description: Category performance reviews, department hierarchies, and captain programs
+        keywords:
+        - category
+        - department
+        - hierarchy
+        - captain
+        - review
   ecommerce:
-    name: "E-Commerce"
-    description: "Online shopping, digital storefront, cart, and checkout"
+    name: E-Commerce
+    description: Online shopping, digital storefront, cart, and checkout
     keywords:
-      ["ecommerce", "online", "cart", "checkout", "digital", "website", "app"]
+    - ecommerce
+    - online
+    - cart
+    - checkout
+    - digital
+    - website
+    - app
     subdomains:
       storefront:
-        name: "Storefront"
-        description: "Product catalog, search, browse experience, and recommendations"
-        keywords: ["catalog", "search", "browse", "recommendation", "pdp"]
+        name: Storefront
+        description: Product catalog, search, browse experience, and recommendations
+        keywords:
+        - catalog
+        - search
+        - browse
+        - recommendation
+        - pdp
       checkout:
-        name: "Cart & Checkout"
-        description: "Shopping cart, checkout flow, payment processing, and order confirmation"
-        keywords: ["cart", "checkout", "payment", "order", "confirmation"]
+        name: Cart & Checkout
+        description: Shopping cart, checkout flow, payment processing, and order confirmation
+        keywords:
+        - cart
+        - checkout
+        - payment
+        - order
+        - confirmation
       digital_experience:
-        name: "Digital Experience"
-        description: "Clickstream analytics, session tracking, conversion rates, and bounce analysis"
-        keywords: ["click", "session", "pageview", "conversion", "bounce"]
-
+        name: Digital Experience
+        description: Clickstream analytics, session tracking, conversion rates, and bounce analysis
+        keywords:
+        - click
+        - session
+        - pageview
+        - conversion
+        - bounce
   store_operations:
-    name: "Store Operations"
-    description: "Physical store management, POS, staffing, and facilities"
-    keywords: ["store", "pos", "register", "floor", "staff"]
+    name: Store Operations
+    description: Physical store management, POS, staffing, and facilities
+    keywords:
+    - store
+    - pos
+    - register
+    - floor
+    - staff
     subdomains:
       pos:
-        name: "Point of Sale"
-        description: "Register transactions, tender types, receipt generation, and barcode scanning"
-        keywords: ["pos", "register", "tender", "receipt", "scan"]
+        name: Point of Sale
+        description: Register transactions, tender types, receipt generation, and barcode scanning
+        keywords:
+        - pos
+        - register
+        - tender
+        - receipt
+        - scan
       store_mgmt:
-        name: "Store Management"
-        description: "Floor planning, fixture management, planogram compliance, and facility maintenance"
-        keywords: ["store", "floor", "planogram", "fixture", "maintenance"]
-
+        name: Store Management
+        description: Floor planning, fixture management, planogram compliance, and facility maintenance
+        keywords:
+        - store
+        - floor
+        - planogram
+        - fixture
+        - maintenance
   supply_chain:
-    name: "Supply Chain"
-    description: "Procurement, logistics, warehousing, and distribution"
+    name: Supply Chain
+    description: Procurement, logistics, warehousing, and distribution
     keywords:
-      ["supply_chain", "procurement", "logistics", "warehouse", "distribution"]
+    - supply_chain
+    - procurement
+    - logistics
+    - warehouse
+    - distribution
     subdomains:
       procurement:
-        name: "Procurement"
-        description: "Vendor management, purchase orders, supplier sourcing, and contract negotiation"
+        name: Procurement
+        description: Vendor management, purchase orders, supplier sourcing, and contract negotiation
         keywords:
-          ["procurement", "vendor", "purchase_order", "supplier", "sourcing"]
+        - procurement
+        - vendor
+        - purchase_order
+        - supplier
+        - sourcing
       warehousing:
-        name: "Warehousing"
-        description: "Distribution center operations, pick/pack/ship, putaway, and WMS"
-        keywords: ["warehouse", "dc", "pick", "pack", "putaway", "wms"]
+        name: Warehousing
+        description: Distribution center operations, pick/pack/ship, putaway, and WMS
+        keywords:
+        - warehouse
+        - dc
+        - pick
+        - pack
+        - putaway
+        - wms
       distribution:
-        name: "Distribution"
-        description: "Shipping logistics, carrier management, route optimization, and last-mile delivery"
-        keywords: ["distribution", "shipping", "carrier", "route", "delivery"]
-
+        name: Distribution
+        description: Shipping logistics, carrier management, route optimization, and last-mile delivery
+        keywords:
+        - distribution
+        - shipping
+        - carrier
+        - route
+        - delivery
   customer_engagement:
-    name: "Customer Engagement"
-    description: "Loyalty programs, personalization, and customer analytics"
+    name: Customer Engagement
+    description: Loyalty programs, personalization, and customer analytics
     keywords:
-      ["loyalty", "engagement", "personalization", "segment", "retention"]
+    - loyalty
+    - engagement
+    - personalization
+    - segment
+    - retention
     subdomains:
       loyalty:
-        name: "Loyalty"
-        description: "Points programs, reward tiers, and redemption tracking"
-        keywords: ["loyalty", "points", "reward", "tier", "redemption"]
+        name: Loyalty
+        description: Points programs, reward tiers, and redemption tracking
+        keywords:
+        - loyalty
+        - points
+        - reward
+        - tier
+        - redemption
       personalization:
-        name: "Personalization"
-        description: "Product recommendations, preference profiling, and targeted experiences"
-        keywords: ["personalization", "recommendation", "preference", "profile"]
-
+        name: Personalization
+        description: Product recommendations, preference profiling, and targeted experiences
+        keywords:
+        - personalization
+        - recommendation
+        - preference
+        - profile
   marketing:
-    name: "Marketing"
-    description: "Campaigns, promotions, advertising, and media spend"
-    keywords: ["marketing", "campaign", "promotion", "advertising", "media"]
+    name: Marketing
+    description: Campaigns, promotions, advertising, and media spend
+    keywords:
+    - marketing
+    - campaign
+    - promotion
+    - advertising
+    - media
     subdomains:
       campaigns:
-        name: "Campaigns"
-        description: "Email, SMS, push notifications, and marketing attribution"
-        keywords: ["campaign", "email", "sms", "push", "attribution"]
+        name: Campaigns
+        description: Email, SMS, push notifications, and marketing attribution
+        keywords:
+        - campaign
+        - email
+        - sms
+        - push
+        - attribution
       promotions:
-        name: "Promotions"
-        description: "Coupons, discounts, BOGO deals, and promotional offers"
-        keywords: ["promotion", "coupon", "discount", "deal", "bogo"]
+        name: Promotions
+        description: Coupons, discounts, BOGO deals, and promotional offers
+        keywords:
+        - promotion
+        - coupon
+        - discount
+        - deal
+        - bogo
       advertising:
-        name: "Advertising"
-        description: "Ad spend, impressions, click-through rates, and return on ad spend"
-        keywords: ["advertising", "ad", "media", "impression", "click", "roas"]
-
+        name: Advertising
+        description: Ad spend, impressions, click-through rates, and return on ad spend
+        keywords:
+        - advertising
+        - ad
+        - media
+        - impression
+        - click
+        - roas
   finance:
-    name: "Finance"
-    description: "Revenue, accounting, and financial operations"
-    keywords: ["revenue", "billing", "ledger", "payment", "accounting"]
+    name: Finance
+    description: Revenue, accounting, and financial operations
+    keywords:
+    - revenue
+    - billing
+    - ledger
+    - payment
+    - accounting
     subdomains:
       accounting:
-        name: "Accounting"
-        description: "General ledger, journal entries, accounts payable/receivable"
-        keywords: ["ledger", "journal", "gl", "ap", "ar"]
+        name: Accounting
+        description: General ledger, journal entries, accounts payable/receivable
+        keywords:
+        - ledger
+        - journal
+        - gl
+        - ap
+        - ar
       revenue:
-        name: "Revenue Management"
-        description: "Revenue analysis, margin tracking, shrink reduction, and loss prevention"
-        keywords: ["revenue", "margin", "shrink", "loss_prevention"]
-
+        name: Revenue Management
+        description: Revenue analysis, margin tracking, shrink reduction, and loss prevention
+        keywords:
+        - revenue
+        - margin
+        - shrink
+        - loss_prevention
   operations:
-    name: "Operations"
-    description: "Inventory management, replenishment, and forecasting"
-    keywords: ["inventory", "replenishment", "forecast", "demand"]
+    name: Operations
+    description: Inventory management, replenishment, and forecasting
+    keywords:
+    - inventory
+    - replenishment
+    - forecast
+    - demand
     subdomains:
       inventory:
-        name: "Inventory Management"
-        description: "Stock levels, on-hand quantities, safety stock, and cycle counting"
+        name: Inventory Management
+        description: Stock levels, on-hand quantities, safety stock, and cycle counting
         keywords:
-          ["inventory", "stock", "on_hand", "safety_stock", "cycle_count"]
+        - inventory
+        - stock
+        - on_hand
+        - safety_stock
+        - cycle_count
       demand:
-        name: "Demand Planning"
-        description: "Demand forecasting, seasonality modeling, and replenishment planning"
-        keywords: ["demand", "forecast", "planning", "seasonality"]
-
+        name: Demand Planning
+        description: Demand forecasting, seasonality modeling, and replenishment planning
+        keywords:
+        - demand
+        - forecast
+        - planning
+        - seasonality
   workforce:
-    name: "Workforce"
-    description: "Store associates, scheduling, and HR"
-    keywords: ["employee", "associate", "schedule", "payroll", "hr"]
+    name: Workforce
+    description: Store associates, scheduling, and HR
+    keywords:
+    - employee
+    - associate
+    - schedule
+    - payroll
+    - hr
     subdomains:
       scheduling:
-        name: "Scheduling"
-        description: "Shift scheduling, labor availability, and workforce allocation"
-        keywords: ["schedule", "shift", "availability", "labor"]
+        name: Scheduling
+        description: Shift scheduling, labor availability, and workforce allocation
+        keywords:
+        - schedule
+        - shift
+        - availability
+        - labor
       hr:
-        name: "HR"
-        description: "Payroll processing, recruitment, training, and performance management"
-        keywords: ["payroll", "recruitment", "training", "performance"]
-
+        name: HR
+        description: Payroll processing, recruitment, training, and performance management
+        keywords:
+        - payroll
+        - recruitment
+        - training
+        - performance
   customer:
-    name: "Customer"
-    description: "CRM, customer service, and voice of customer"
-    keywords: ["customer", "service", "support", "review", "feedback"]
+    name: Customer
+    description: CRM, customer service, and voice of customer
+    keywords:
+    - customer
+    - service
+    - support
+    - review
+    - feedback
     subdomains:
       service:
-        name: "Customer Service"
-        description: "Support tickets, case management, call center operations, and resolution tracking"
-        keywords: ["ticket", "case", "support", "resolution", "call_center"]
+        name: Customer Service
+        description: Support tickets, case management, call center operations, and resolution tracking
+        keywords:
+        - ticket
+        - case
+        - support
+        - resolution
+        - call_center
       voice:
-        name: "Voice of Customer"
-        description: "Product reviews, star ratings, feedback surveys, and NPS"
-        keywords: ["review", "rating", "feedback", "nps", "survey"]
-
+        name: Voice of Customer
+        description: Product reviews, star ratings, feedback surveys, and NPS
+        keywords:
+        - review
+        - rating
+        - feedback
+        - nps
+        - survey
   technology:
-    name: "Technology"
-    description: "IT, e-commerce platform, and data infrastructure"
-    keywords: ["server", "security", "log", "monitoring", "infrastructure"]
+    name: Technology
+    description: IT, e-commerce platform, and data infrastructure
+    keywords:
+    - server
+    - security
+    - log
+    - monitoring
+    - infrastructure
     subdomains:
       platform:
-        name: "Platform"
-        description: "APIs, integrations, microservices, and platform infrastructure"
-        keywords: ["platform", "api", "integration", "microservice"]
+        name: Platform
+        description: APIs, integrations, microservices, and platform infrastructure
+        keywords:
+        - platform
+        - api
+        - integration
+        - microservice
       monitoring:
-        name: "Monitoring"
-        description: "System logs, alerts, uptime tracking, and incident management"
-        keywords: ["monitoring", "alert", "log", "uptime", "incident"]
-
+        name: Monitoring
+        description: System logs, alerts, uptime tracking, and incident management
+        keywords:
+        - monitoring
+        - alert
+        - log
+        - uptime
+        - incident
   governance:
-    name: "Governance"
-    description: "Legal, compliance, data governance, and privacy"
+    name: Governance
+    description: Legal, compliance, data governance, and privacy
     keywords:
-      [
-        "compliance",
-        "contract",
-        "governance",
-        "policy",
-        "regulation",
-        "gdpr",
-        "ccpa",
-      ]
+    - compliance
+    - contract
+    - governance
+    - policy
+    - regulation
+    - gdpr
+    - ccpa
     subdomains:
       data_governance:
-        name: "Data Governance"
-        description: "Data quality, lineage, metadata management, and catalog policies"
-        keywords: ["data_lineage", "data_catalog", "data_governance", "data_steward", "retention_policy"]
+        name: Data Governance
+        description: Data quality, lineage, metadata management, and catalog policies
+        keywords:
+        - data_lineage
+        - data_catalog
+        - data_governance
+        - data_steward
+        - retention_policy
       privacy:
-        name: "Privacy & Compliance"
-        description: "GDPR, CCPA, consent management, and PII handling"
-        keywords: ["privacy", "gdpr", "ccpa", "consent", "pii"]
+        name: Privacy & Compliance
+        description: GDPR, CCPA, consent management, and PII handling
+        keywords:
+        - privacy
+        - gdpr
+        - ccpa
+        - consent
+        - pii

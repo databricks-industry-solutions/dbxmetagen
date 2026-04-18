@@ -2,31 +2,47 @@
   domain: Organization
   range: Person
   cardinality: one-to-many
+  label: null
+  facet: null
 - name: contains_location
   domain: Organization
   range: Location
   cardinality: one-to-many
+  label: null
+  facet: null
 - name: derives_from
   domain: Metric
   range: Event
   cardinality: many-to-one
+  label: null
+  facet: null
 - name: for_product
   domain: Transaction
   range: Product
   cardinality: many-to-many
+  label: null
+  facet: null
 - name: owns
   domain: Person
   range: Transaction
   cardinality: one-to-many
+  label: null
+  facet: null
 - name: part_of
   domain: Person
   range: Organization
   cardinality: many-to-one
+  label: null
+  facet: null
 - name: placed_by
   domain: Transaction
   range: Person
   cardinality: many-to-one
+  label: null
+  facet: null
 - name: references
   domain: Product
   range: Reference
   cardinality: many-to-one
+  label: null
+  facet: null

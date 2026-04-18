@@ -33,6 +33,11 @@ from pyspark.sql.types import (
 )
 from pydantic import BaseModel, Field, field_validator
 from dbxmetagen.config import DEFAULT_CLASSIFICATION_MODEL
+from dbxmetagen.ontology_roles import (
+    AUDIT_COLUMN_NAMES as _AUDIT_PATTERNS_CANONICAL,
+    GEO_COLUMN_NAMES as _GEO_PATTERNS_CANONICAL,
+    LABEL_COLUMN_NAMES as _LABEL_PATTERNS_CANONICAL,
+)
 from dbxmetagen.table_filter import table_filter_sql, infrastructure_exclude_sql
 
 logger = logging.getLogger(__name__)
@@ -997,8 +1002,8 @@ class OntologyLoader:
             catalog[edge_name] = EdgeCatalogEntry(
                 name=edge_name,
                 inverse=info.get("inverse"),
-                domain=info.get("domain"),
-                range=info.get("range"),
+                domain=info.get("domain") or info.get("source"),
+                range=info.get("range") or info.get("target"),
                 symmetric=info.get("symmetric", False),
                 category=info.get("category", "business"),
                 uri=info.get("uri"),
@@ -4032,31 +4037,19 @@ class OntologyBuilder:
         table_name: str = "",
     ) -> Tuple[str, str, float]:
         """Heuristic fallback classification. Returns (role, discovery_method, confidence)."""
-        _GEO_PATTERNS_DEFAULT = frozenset({
-            "country", "country_code", "state", "state_code", "city", "postal_code",
-            "zip_code", "zipcode", "zip", "latitude", "longitude", "lat", "lon",
-            "geo_region", "region", "county", "province", "address",
-        })
         _bundle_geo = getattr(self.discoverer, "_bundle_geo_patterns", frozenset())
-        _GEO_PATTERNS = _bundle_geo or _GEO_PATTERNS_DEFAULT
+        _GEO_PATTERNS = _bundle_geo or _GEO_PATTERNS_CANONICAL
         _HIERARCHY_PATTERNS = frozenset({
             "year", "quarter", "month", "week", "day", "fiscal_year", "fiscal_quarter",
             "product_category", "product_subcategory", "category", "subcategory",
             "department", "division",
         })
-        _TEXT_PATTERNS = frozenset({
-            "note_text", "notes", "clinical_summary", "summary", "comment",
-            "description", "text_content", "body", "narrative", "remarks",
-            "free_text", "memo", "abstract",
-        })
-        _SYSTEM_PATTERNS = frozenset({
-            "ingest_ts", "ingestion_timestamp", "batch_id", "row_hash", "source_system",
-            "etl_timestamp", "etl_batch_id", "load_date", "load_ts", "created_by_etl",
-            "upload_ts", "_rescued_data", "processing_timestamp",
-        })
+        _TEXT_PATTERNS = _LABEL_PATTERNS_CANONICAL
+        _SYSTEM_PATTERNS = _AUDIT_PATTERNS_CANONICAL
 
         if linked_entity:
-            return "object_property", "heuristic_strong", 0.80
+            if col_lower.endswith(("_id", "_key", "_ref")) or col_lower == "id":
+                return "object_property", "heuristic_strong", 0.80
         if is_pk_column:
             return "primary_key", "heuristic_strong", 0.85
         if re.search(r'_(id|key)$', col_lower):

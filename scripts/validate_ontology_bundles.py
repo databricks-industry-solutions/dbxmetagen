@@ -29,10 +29,14 @@ ENTITY_OPTIONAL_FIELDS_TIER2 = {
 EDGE_REQUIRED_FIELDS = {"name", "domain", "range"}
 EDGE_OPTIONAL_FIELDS = {"cardinality", "inverse", "description", "label"}
 
-VALID_PROPERTY_ROLES = {
-    "object_property", "primary_key", "pii", "dimension",
-    "geographic", "audit", "temporal", "label", "measure",
-}
+try:
+    from dbxmetagen.ontology_roles import VALID_ROLE_NAMES as VALID_PROPERTY_ROLES
+except ImportError:
+    VALID_PROPERTY_ROLES = {
+        "object_property", "primary_key", "business_key", "pii", "dimension",
+        "geographic", "audit", "temporal", "label", "measure",
+        "derived", "composite_component",
+    }
 
 VALID_CARDINALITIES = {"one-to-one", "one-to-many", "many-to-one", "many-to-many"}
 
@@ -99,7 +103,8 @@ def validate_tier1_entities(data: Any, path: Path, result: ValidationResult):
 
 
 def validate_tier2_entities(
-    data: Any, path: Path, all_entities: set[str], result: ValidationResult
+    data: Any, path: Path, all_entities: set[str], result: ValidationResult,
+    edge_catalog_names: set[str] | None = None,
 ):
     """Tier2/3 entities are a dict of {EntityName: {description, edges, ...}}."""
     if data is None:
@@ -118,17 +123,24 @@ def validate_tier2_entities(
             for p in parents:
                 if p and p not in all_entities:
                     result.warn(f"{path}: Entity '{name}' parent '{p}' not found in bundle")
-        validate_properties(defn.get("properties"), name, path, result)
+        validate_properties(defn.get("properties"), name, path, result,
+                            all_entities=all_entities, edge_catalog_names=edge_catalog_names)
 
 
 def validate_properties(
-    props: Any, entity_name: str, path: Path, result: ValidationResult
+    props: Any,
+    entity_name: str,
+    path: Path,
+    result: ValidationResult,
+    all_entities: set[str] | None = None,
+    edge_catalog_names: set[str] | None = None,
 ):
     """Validate property definitions if present. Accepts list or dict format."""
     if props is None:
         return
     if isinstance(props, dict):
-        return  # dict-format properties (e.g. schema_org) -- skip structural validation
+        _validate_dict_properties(props, entity_name, path, result, all_entities, edge_catalog_names)
+        return
     if not isinstance(props, list):
         result.error(f"{path}: Entity '{entity_name}' properties should be a list or dict")
         return
@@ -142,13 +154,72 @@ def validate_properties(
         if "role" in prop and prop["role"] not in VALID_PROPERTY_ROLES:
             result.error(
                 f"{path}: Entity '{entity_name}' property '{pname}' "
-                f"invalid role '{prop['role']}' (valid: {VALID_PROPERTY_ROLES})"
+                f"invalid role '{prop['role']}' (valid: {sorted(VALID_PROPERTY_ROLES)})"
             )
         if prop.get("role") == "link":
             result.error(
                 f"{path}: Entity '{entity_name}' property '{pname}' "
                 f"uses deprecated role 'link' -- use 'object_property' instead"
             )
+
+
+def _validate_dict_properties(
+    props: dict,
+    entity_name: str,
+    path: Path,
+    result: ValidationResult,
+    all_entities: set[str] | None = None,
+    edge_catalog_names: set[str] | None = None,
+):
+    """Validate dict-format properties (generated or hand-curated)."""
+    for pname, pinfo in props.items():
+        if not isinstance(pinfo, dict):
+            result.error(f"{path}: Entity '{entity_name}' property '{pname}' value should be dict")
+            continue
+        role = pinfo.get("role")
+        if role and role not in VALID_PROPERTY_ROLES:
+            result.error(
+                f"{path}: Entity '{entity_name}' property '{pname}' "
+                f"invalid role '{role}' (valid: {sorted(VALID_PROPERTY_ROLES)})"
+            )
+        kind = pinfo.get("kind")
+        if kind and kind not in ("data_property", "object_property"):
+            result.error(
+                f"{path}: Entity '{entity_name}' property '{pname}' "
+                f"invalid kind '{kind}' (expected data_property or object_property)"
+            )
+        if role == "object_property" and kind and kind != "object_property":
+            result.warn(
+                f"{path}: Entity '{entity_name}' property '{pname}' "
+                f"role is object_property but kind is '{kind}'"
+            )
+        attrs = pinfo.get("typical_attributes")
+        if attrs is not None and not isinstance(attrs, list):
+            result.error(
+                f"{path}: Entity '{entity_name}' property '{pname}' "
+                f"typical_attributes should be a list"
+            )
+        elif isinstance(attrs, list) and len(attrs) == 0:
+            result.warn(
+                f"{path}: Entity '{entity_name}' property '{pname}' "
+                f"typical_attributes is empty"
+            )
+        if role == "object_property":
+            target = pinfo.get("target_entity")
+            if target and all_entities:
+                targets = target if isinstance(target, list) else [target]
+                for t in targets:
+                    if t not in all_entities:
+                        result.warn(
+                            f"{path}: Entity '{entity_name}' property '{pname}' "
+                            f"target_entity '{t}' not found in bundle entities"
+                        )
+            edge = pinfo.get("edge")
+            if edge and edge_catalog_names and edge not in edge_catalog_names:
+                result.warn(
+                    f"{path}: Entity '{entity_name}' property '{pname}' "
+                    f"edge '{edge}' not found in edge_catalog"
+                )
 
 
 def _normalize_edges(data: Any) -> list[dict]:
@@ -224,13 +295,22 @@ def validate_bundle(bundle_dir: Path, result: ValidationResult):
         result.warn(f"{bundle_dir}: No entities found")
         return
 
+    # Load root bundle YAML for cross-referencing (edge_catalog, entity names)
+    root_yaml = load_yaml(bundle_dir.parent / f"{bundle_dir.name}.yaml")
+    edge_catalog_names: set[str] = set()
+    if root_yaml and isinstance(root_yaml, dict):
+        ec = root_yaml.get("ontology", {}).get("edge_catalog", {})
+        if isinstance(ec, dict):
+            edge_catalog_names = set(ec.keys())
+
     for tier_file in ["entities_tier1.yaml"]:
         data = load_yaml(bundle_dir / tier_file)
         validate_tier1_entities(data, bundle_dir / tier_file, result)
 
     for tier_file in ["entities_tier2.yaml", "entities_tier3.yaml"]:
         data = load_yaml(bundle_dir / tier_file)
-        validate_tier2_entities(data, bundle_dir / tier_file, all_entities, result)
+        validate_tier2_entities(data, bundle_dir / tier_file, all_entities, result,
+                                edge_catalog_names=edge_catalog_names)
 
     for edge_file in ["edges_tier1.yaml", "edges_tier2.yaml", "edges_tier3.yaml"]:
         data = load_yaml(bundle_dir / edge_file)

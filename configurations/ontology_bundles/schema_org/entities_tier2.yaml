@@ -64,10 +64,10 @@ Accommodation:
   - accommodationFloorPlan
   - amenityFeature
   - bed
-  - bed
-  - bed
   - floorLevel
   - floorSize
+  - leaseLength
+  - numberOfBathroomsTotal
 AccountingService:
   description: "Accountancy business.\\n\\nAs a [[LocalBusiness]] it can be described\
     \ as a [[provider]] of one or more [[Service]]\\(s).\n      "
@@ -100,11 +100,11 @@ Action:
   - actionProcess
   - actionStatus
   - agent
-  - agent
-  - endTime
   - endTime
   - error
   - startTime
+  - target
+  - provider
 ActionAccessSpecification:
   description: A set of requirements that must be fulfilled in order to perform an
     Action.
@@ -115,13 +115,12 @@ ActionAccessSpecification:
   - Intangible
   edges:
   - availabilityEnds
-  - availabilityEnds
-  - availabilityEnds
-  - availabilityStarts
-  - availabilityStarts
   - availabilityStarts
   - eligibleRegion
-  - eligibleRegion
+  - expectsAcceptanceOf
+  - ineligibleRegion
+  - requiresSubscription
+  - category
 ActionStatusType:
   description: The status of an Action.
   label: ActionStatusType
@@ -195,11 +194,8 @@ AggregateOffer:
   - Offer
   edges:
   - highPrice
-  - highPrice
-  - lowPrice
   - lowPrice
   - offerCount
-  - offers
   - offers
 AggregateRating:
   description: The average rating based on multiple ratings or reviews.
@@ -326,7 +322,6 @@ AnatomicalSystem:
   edges:
   - associatedPathophysiology
   - comprisedOf
-  - comprisedOf
   - relatedCondition
   - relatedStructure
   - relatedTherapy
@@ -348,8 +343,6 @@ Answer:
   - Comment
   edges:
   - answerExplanation
-  - answerExplanation
-  - parentItem
   - parentItem
 Apartment:
   description: 'An apartment (in American English) or flat (in British English) is
@@ -361,7 +354,6 @@ Apartment:
   parents:
   - Accommodation
   edges:
-  - numberOfRooms
   - numberOfRooms
   - occupancy
 ApartmentComplex:
@@ -375,8 +367,6 @@ ApartmentComplex:
   - numberOfAccommodationUnits
   - numberOfAvailableAccommodationUnits
   - numberOfBedrooms
-  - numberOfBedrooms
-  - petsAllowed
   - petsAllowed
   - tourBookingPage
 AppendAction:
@@ -424,8 +414,6 @@ ArchiveComponent:
   parents:
   - CreativeWork
   edges:
-  - itemLocation
-  - itemLocation
   - itemLocation
   - holdingArchive
 ArchiveOrganization:
@@ -479,11 +467,11 @@ Article:
   - articleBody
   - articleSection
   - backstory
-  - backstory
-  - pageEnd
   - pageEnd
   - pageStart
-  - pageStart
+  - pagination
+  - speakable
+  - wordCount
 AskAction:
   description: 'The act of posing a question / favor to someone.\n\nRelated actions:\n\n*
     [[ReplyAction]]: Appears generally as a response to AskAction.'
@@ -561,7 +549,6 @@ AudioObject:
   - embeddedTextCaption
   - transcript
   - caption
-  - caption
 AudioObjectSnapshot:
   description: A specific and exact (byte-for-byte) version of an [[AudioObject]].
     Two byte-for-byte identical files, for the purposes of this type, considered identical.
@@ -584,7 +571,6 @@ Audiobook:
   edges:
   - readBy
   - duration
-  - duration
 AuthenticateAction:
   description: The action of authenticating into a device or application.
   label: AuthenticateAction
@@ -601,9 +587,6 @@ AuthorizeAction:
   parents:
   - AllocateAction
   edges:
-  - recipient
-  - recipient
-  - recipient
   - recipient
 AutoBodyShop:
   description: Auto body shop.
@@ -701,7 +684,6 @@ BankAccount:
   - accountMinimumInflow
   - accountOverdraftLimit
   - bankAccountType
-  - bankAccountType
 BankOrCreditUnion:
   description: Bank or credit union.
   label: BankOrCreditUnion
@@ -771,7 +753,6 @@ BedDetails:
   edges:
   - numberOfBeds
   - typeOfBed
-  - typeOfBed
 BedType:
   description: A type of bed. This is used for indicating the bed or beds available
     in an accommodation.
@@ -809,13 +790,13 @@ BioChemEntity:
   - Thing
   edges:
   - associatedDisease
-  - associatedDisease
-  - associatedDisease
   - bioChemInteraction
   - bioChemSimilarity
   - biologicalRole
   - hasMolecularFunction
-  - hasMolecularFunction
+  - isInvolvedInBiologicalProcess
+  - isLocatedInSubcellularLocation
+  - taxonomicRange
 Blog:
   description: A [blog](https://en.wikipedia.org/wiki/Blog), sometimes known as a
     "weblog". Note that the individual posts ([[BlogPosting]]s) in a [[Blog]] are
@@ -975,7 +956,6 @@ BorrowAction:
   - TransferAction
   edges:
   - lender
-  - lender
 BowlingAlley:
   description: A bowling alley.
   label: BowlingAlley
@@ -1004,7 +984,6 @@ Brand:
   - Intangible
   edges:
   - aggregateRating
-  - logo
   - logo
   - slogan
   - review
@@ -1046,12 +1025,10 @@ BroadcastChannel:
   edges:
   - broadcastChannelId
   - broadcastFrequency
-  - broadcastFrequency
   - broadcastServiceTier
   - inBroadcastLineup
   - genre
-  - genre
-  - genre
+  - providesBroadcastService
 BroadcastEvent:
   description: An over the air or online broadcast event.
   label: BroadcastEvent
@@ -1063,7 +1040,6 @@ BroadcastEvent:
   - broadcastOfEvent
   - isLiveBroadcast
   - subtitleLanguage
-  - subtitleLanguage
   - videoFormat
 BroadcastFrequencySpecification:
   description: The frequency in MHz and the modulation used for a particular BroadcastService.
@@ -1074,8 +1050,6 @@ BroadcastFrequencySpecification:
   - Intangible
   edges:
   - broadcastFrequencyValue
-  - broadcastFrequencyValue
-  - broadcastSignalModulation
   - broadcastSignalModulation
   - broadcastSubChannel
 BroadcastService:
@@ -1091,10 +1065,10 @@ BroadcastService:
   - broadcastAffiliateOf
   - broadcastDisplayName
   - broadcastFrequency
-  - broadcastFrequency
   - broadcastTimezone
   - broadcaster
   - callSign
+  - parentService
 BrokerageAccount:
   description: An account that allows an investor to deposit funds and place investment
     orders with a licensed broker or brokerage firm.
@@ -1158,10 +1132,8 @@ BusTrip:
   - Trip
   edges:
   - arrivalBusStop
-  - arrivalBusStop
   - busName
   - busNumber
-  - departureBusStop
   - departureBusStop
 BusinessAudience:
   description: A set of characteristics belonging to businesses, e.g. who compose
@@ -1216,9 +1188,7 @@ BuyAction:
   - TradeAction
   edges:
   - vendor
-  - vendor
   - warrantyPromise
-  - seller
   - seller
 CDCPMDRecord:
   description: "A CDCPMDRecord is a data structure representing a record in a CDC\
@@ -1232,13 +1202,13 @@ CDCPMDRecord:
   - StructuredValue
   edges:
   - cvdCollectionDate
-  - cvdCollectionDate
   - cvdFacilityCounty
   - cvdFacilityId
   - cvdNumBeds
   - cvdNumBedsOcc
   - cvdNumC19Died
   - cvdNumC19HOPats
+  - cvdNumC19HospPats
 CableOrSatelliteService:
   description: A service which provides access to media programming like TV or radio.
     Access may be via cable or satellite.
@@ -1336,7 +1306,6 @@ CategoryCode:
   edges:
   - codeValue
   - inCodeSet
-  - inCodeSet
 CategoryCodeSet:
   description: A set of Category Code values.
   label: CategoryCodeSet
@@ -1374,13 +1343,13 @@ Certification:
   - CreativeWork
   edges:
   - auditDate
-  - auditDate
-  - certificationIdentification
   - certificationIdentification
   - certificationRating
   - certificationStatus
   - datePublished
-  - datePublished
+  - expires
+  - hasMeasurement
+  - issuedBy
 CertificationStatusEnumeration:
   description: Enumerates the different statuses of a Certification (Active and Inactive).
   label: CertificationStatusEnumeration
@@ -1399,8 +1368,6 @@ Chapter:
   - CreativeWork
   edges:
   - pageEnd
-  - pageEnd
-  - pageStart
   - pageStart
   - pagination
 CheckAction:
@@ -1481,8 +1448,6 @@ ChooseAction:
   - AssessAction
   edges:
   - option
-  - option
-  - actionOption
   - actionOption
 Church:
   description: A church.
@@ -1530,7 +1495,6 @@ Claim:
   edges:
   - appearance
   - claimInterpreter
-  - claimInterpreter
   - firstAppearance
 ClaimReview:
   description: A fact-checking review of claims made (or reported) in some creative
@@ -1551,8 +1515,6 @@ Class:
   - Intangible
   edges:
   - supersededBy
-  - supersededBy
-  - supersededBy
 Clip:
   description: A short TV or radio program or a segment/part of a program.
   label: Clip
@@ -1563,12 +1525,12 @@ Clip:
   edges:
   - actors
   - clipNumber
-  - clipNumber
   - directors
   - endOffset
-  - endOffset
   - musicBy
-  - musicBy
+  - partOfEpisode
+  - partOfSeason
+  - startOffset
 ClothingStore:
   description: A clothing store.
   label: ClothingStore
@@ -1691,7 +1653,6 @@ Comment:
   edges:
   - downvoteCount
   - parentItem
-  - parentItem
   - sharedContent
   - upvoteCount
 CommentAction:
@@ -1714,11 +1675,7 @@ CommunicateAction:
   edges:
   - language
   - inLanguage
-  - inLanguage
   - about
-  - recipient
-  - recipient
-  - recipient
   - recipient
 CompleteDataFeed:
   description: 'A [[CompleteDataFeed]] is a [[DataFeed]] whose standard representation
@@ -1746,7 +1703,6 @@ CompoundPriceSpecification:
   - PriceSpecification
   edges:
   - priceComponent
-  - priceType
   - priceType
 ComputerLanguage:
   description: This type covers computer programming languages such as Scheme and
@@ -1805,7 +1761,6 @@ ConstraintNode:
   - Intangible
   edges:
   - constraintProperty
-  - constraintProperty
   - numConstraints
 ConsumeAction:
   description: The act of ingesting information/resources/food.
@@ -1834,13 +1789,13 @@ ContactPoint:
   - StructuredValue
   edges:
   - availableLanguage
-  - availableLanguage
   - contactOption
   - contactType
   - email
   - faxNumber
   - hoursAvailable
   - productSupported
+  - telephone
 ContactPointOption:
   description: Enumerated options related to a ContactPoint.
   label: ContactPointOption
@@ -1892,7 +1847,6 @@ CookAction:
   - CreateAction
   edges:
   - foodEstablishment
-  - foodEstablishment
   - foodEvent
   - recipe
 Cooperative:
@@ -1942,13 +1896,13 @@ Course:
   - LearningResource
   edges:
   - availableLanguage
-  - availableLanguage
   - courseCode
   - coursePrerequisites
-  - coursePrerequisites
-  - coursePrerequisites
   - educationalCredentialAwarded
-  - educationalCredentialAwarded
+  - financialAidEligible
+  - hasCourseInstance
+  - numberOfCredits
+  - occupationalCredentialAwarded
 CourseInstance:
   description: An instance of a [[Course]] which is distinct from other instances
     because it is offered at a different time or location or through different media
@@ -1959,7 +1913,6 @@ CourseInstance:
   parents:
   - Event
   edges:
-  - courseMode
   - courseMode
   - courseSchedule
   - courseWorkload
@@ -2029,10 +1982,10 @@ CreativeWorkSeason:
   - numberOfEpisodes
   - productionCompany
   - seasonNumber
-  - seasonNumber
-  - startDate
   - startDate
   - trailer
+  - director
+  - endDate
 CreativeWorkSeries:
   description: A CreativeWorkSeries in schema.org is a group of related items, typically
     but not necessarily of the same kind. CreativeWorkSeries are usually organized
@@ -2047,8 +2000,6 @@ CreativeWorkSeries:
   edges:
   - issn
   - startDate
-  - startDate
-  - endDate
   - endDate
 Credential:
   description: A credential is a certificate that is used to verify the identity of
@@ -2059,8 +2010,6 @@ Credential:
   parents:
   - CreativeWork
   edges:
-  - credentialCategory
-  - credentialCategory
   - credentialCategory
   - recognizedBy
   - validFor
@@ -2160,12 +2109,7 @@ DataCatalog:
   - CreativeWork
   edges:
   - measurementMethod
-  - measurementMethod
-  - measurementMethod
-  - measurementMethod
   - dataset
-  - measurementTechnique
-  - measurementTechnique
   - measurementTechnique
 DataDownload:
   description: 'All or part of a [[Dataset]] in downloadable form. '
@@ -2176,12 +2120,6 @@ DataDownload:
   - MediaObject
   edges:
   - measurementMethod
-  - measurementMethod
-  - measurementMethod
-  - measurementMethod
-  - measurementTechnique
-  - measurementTechnique
-  - measurementTechnique
   - measurementTechnique
 DataFeed:
   description: A single feed providing structured information about one or more entities
@@ -2193,8 +2131,6 @@ DataFeed:
   - Dataset
   edges:
   - dataFeedElement
-  - dataFeedElement
-  - dataFeedElement
 DataFeedItem:
   description: A single item within a larger data feed.
   label: DataFeedItem
@@ -2204,11 +2140,8 @@ DataFeedItem:
   - Intangible
   edges:
   - dateDeleted
-  - dateDeleted
-  - dateModified
   - dateModified
   - item
-  - dateCreated
   - dateCreated
 DataType:
   description: The basic data types such as Integers, Strings, etc.
@@ -2232,8 +2165,8 @@ Dataset:
   - includedDataCatalog
   - issn
   - measurementMethod
-  - measurementMethod
-  - measurementMethod
+  - variableMeasured
+  - measurementTechnique
 Date:
   description: A date value in [ISO 8601 date format](http://en.wikipedia.org/wiki/ISO_8601).
   label: Date
@@ -2261,11 +2194,8 @@ DatedMoneySpecification:
   - StructuredValue
   edges:
   - amount
-  - amount
   - currency
   - startDate
-  - startDate
-  - endDate
   - endDate
 DayOfWeek:
   description: 'The day of the week, e.g. used to specify to which day the opening
@@ -2321,8 +2251,6 @@ DefinedRegion:
   - StructuredValue
   edges:
   - addressCountry
-  - addressCountry
-  - addressRegion
   - addressRegion
   - postalCode
   - postalCodePrefix
@@ -2338,7 +2266,6 @@ DefinedTerm:
   parents:
   - Intangible
   edges:
-  - inDefinedTermSet
   - inDefinedTermSet
   - termCode
   - about
@@ -2373,10 +2300,6 @@ DeliveryChargeSpecification:
   edges:
   - appliesToDeliveryMethod
   - eligibleRegion
-  - eligibleRegion
-  - eligibleRegion
-  - ineligibleRegion
-  - ineligibleRegion
   - ineligibleRegion
   - areaServed
 DeliveryEvent:
@@ -2414,13 +2337,13 @@ Demand:
   - Intangible
   edges:
   - acceptedPaymentMethod
-  - acceptedPaymentMethod
-  - acceptedPaymentMethod
   - advanceBookingRequirement
-  - asin
   - asin
   - availability
   - availabilityEnds
+  - availabilityStarts
+  - availableAtOrFrom
+  - availableDeliveryMethod
 Dentist:
   description: A dentist.
   label: Dentist
@@ -2488,7 +2411,6 @@ Diet:
   edges:
   - dietFeatures
   - endorsers
-  - endorsers
   - expertConsiderations
   - physiologicalBenefits
   - risks
@@ -2507,11 +2429,11 @@ DietarySupplement:
   - activeIngredient
   - isProprietary
   - legalStatus
-  - legalStatus
-  - legalStatus
   - maximumIntake
   - mechanismOfAction
   - nonProprietaryName
+  - proprietaryName
+  - recommendedIntake
 DigitalDocument:
   description: An electronic file or document.
   label: DigitalDocument
@@ -2530,9 +2452,6 @@ DigitalDocumentPermission:
   parents:
   - Intangible
   edges:
-  - grantee
-  - grantee
-  - grantee
   - grantee
   - permissionType
 DigitalDocumentPermissionType:
@@ -2615,12 +2534,8 @@ DonateAction:
   - TransferAction
   edges:
   - price
-  - price
   - priceCurrency
   - priceSpecification
-  - recipient
-  - recipient
-  - recipient
   - recipient
 DoseSchedule:
   description: A specific dosing schedule for a drug or supplement.
@@ -2631,7 +2546,6 @@ DoseSchedule:
   - MedicalIntangible
   edges:
   - doseUnit
-  - doseValue
   - doseValue
   - targetPopulation
   - frequency
@@ -2724,8 +2638,6 @@ DrugCost:
   - costCurrency
   - costOrigin
   - costPerUnit
-  - costPerUnit
-  - costPerUnit
   - drugUnit
 DrugCostCategory:
   description: Enumerated categories of medical drug costs.
@@ -2817,11 +2729,7 @@ EducationEvent:
   - Event
   edges:
   - assesses
-  - assesses
   - educationalLevel
-  - educationalLevel
-  - educationalLevel
-  - teaches
   - teaches
 EducationalAudience:
   description: An EducationalAudience.
@@ -2843,10 +2751,6 @@ EducationalOccupationalCredential:
   - Credential
   edges:
   - competencyRequired
-  - competencyRequired
-  - competencyRequired
-  - educationalLevel
-  - educationalLevel
   - educationalLevel
 EducationalOccupationalProgram:
   description: A program offered by an institution which determines the learning progress
@@ -2860,13 +2764,13 @@ EducationalOccupationalProgram:
   - Intangible
   edges:
   - applicationDeadline
-  - applicationDeadline
   - applicationStartDate
   - dayOfWeek
   - educationalCredentialAwarded
-  - educationalCredentialAwarded
-  - educationalCredentialAwarded
   - educationalProgramMode
+  - financialAidEligible
+  - hasCourse
+  - maximumEnrollment
 EducationalOrganization:
   description: An educational organization.
   label: EducationalOrganization
@@ -2934,8 +2838,6 @@ EmployeeRole:
   - OrganizationRole
   edges:
   - baseSalary
-  - baseSalary
-  - baseSalary
   - salaryCurrency
 EmployerAggregateRating:
   description: An aggregate rating of an Organization related to its role as an employer.
@@ -2970,7 +2872,6 @@ EndorseAction:
   parents:
   - ReactAction
   edges:
-  - endorsee
   - endorsee
 EndorsementRating:
   description: 'An EndorsementRating is a rating that expresses some level of endorsement,
@@ -3038,11 +2939,8 @@ EngineSpecification:
   - engineDisplacement
   - enginePower
   - engineType
-  - engineType
-  - engineType
   - fuelType
-  - fuelType
-  - fuelType
+  - torque
 EntertainmentBusiness:
   description: A business providing entertainment.
   label: EntertainmentBusiness
@@ -3060,13 +2958,12 @@ EntryPoint:
   - Intangible
   edges:
   - actionPlatform
-  - actionPlatform
-  - actionPlatform
   - application
   - contentType
   - encodingType
   - httpMethod
   - urlTemplate
+  - actionApplication
 Enumeration:
   description: Lists or enumerations—for example, a list of cuisines or music genres,
     etc.
@@ -3076,8 +2973,6 @@ Enumeration:
   parents:
   - Intangible
   edges:
-  - supersededBy
-  - supersededBy
   - supersededBy
 Episode:
   description: A media episode (e.g. TV, radio, video game) which can be part of a
@@ -3091,11 +2986,11 @@ Episode:
   - actors
   - directors
   - episodeNumber
-  - episodeNumber
-  - musicBy
   - musicBy
   - partOfSeason
   - productionCompany
+  - trailer
+  - director
 Error:
   description: Representation of an Error.
   label: Error
@@ -3104,9 +2999,6 @@ Error:
   parents:
   - InstantaneousEvent
   edges:
-  - errorCode
-  - errorCode
-  - errorCode
   - errorCode
 Event:
   description: An event happening at a certain time and location, such as a concert,
@@ -3120,12 +3012,12 @@ Event:
   edges:
   - aggregateRating
   - attendees
-  - attendees
   - composer
-  - composer
-  - contributor
   - contributor
   - doorTime
+  - eventAttendanceMode
+  - eventSchedule
+  - eventStatus
 EventAttendanceModeEnumeration:
   description: An EventAttendanceModeEnumeration value is one of potentially several
     modes of organising an event, relating to whether it is online or offline.
@@ -3190,7 +3082,6 @@ ExchangeRateSpecification:
   - currency
   - currentExchangeRate
   - exchangeRateSpread
-  - exchangeRateSpread
 ExerciseAction:
   description: The act of participating in exertive activity for the purposes of improving
     health and fitness.
@@ -3227,13 +3118,13 @@ ExercisePlan:
   - PhysicalActivity
   edges:
   - activityDuration
-  - activityDuration
-  - activityFrequency
   - activityFrequency
   - additionalVariable
   - exerciseType
   - intensity
-  - intensity
+  - repetitions
+  - restPeriods
+  - workload
 ExhibitionEvent:
   description: 'Event type: Exhibition event, e.g. at a museum, library, archive,
     tradeshow, ...'
@@ -3300,12 +3191,12 @@ FinancialIncentive:
   edges:
   - eligibleWithSupplier
   - incentiveAmount
-  - incentiveAmount
-  - incentiveAmount
   - incentiveStatus
   - incentiveType
   - incentivizedItem
-  - incentivizedItem
+  - incomeLimit
+  - publisher
+  - purchasePriceLimit
 FinancialProduct:
   description: A product provided to consumers and businesses by financial institutions
     such as banks, insurance companies, brokerage firms, consumer finance companies,
@@ -3317,10 +3208,7 @@ FinancialProduct:
   - Service
   edges:
   - annualPercentageRate
-  - annualPercentageRate
   - feesAndCommissionsSpecification
-  - feesAndCommissionsSpecification
-  - interestRate
   - interestRate
 FinancialService:
   description: Financial services business.
@@ -3330,7 +3218,6 @@ FinancialService:
   parents:
   - LocalBusiness
   edges:
-  - feesAndCommissionsSpecification
   - feesAndCommissionsSpecification
 FindAction:
   description: 'The act of finding an object.\n\nRelated actions:\n\n* [[SearchAction]]:
@@ -3359,13 +3246,13 @@ Flight:
   - Trip
   edges:
   - aircraft
-  - aircraft
   - arrivalAirport
   - arrivalGate
   - arrivalTerminal
   - boardingPolicy
   - carrier
   - departureAirport
+  - departureGate
 FlightReservation:
   description: 'A reservation for air travel.\n\nNote: This type is for information
     about actual reservations, e.g. in confirmation emails or HTML pages with individual
@@ -3377,7 +3264,6 @@ FlightReservation:
   - Reservation
   edges:
   - boardingGroup
-  - passengerPriorityStatus
   - passengerPriorityStatus
   - passengerSequenceNumber
   - securityScreening
@@ -3404,10 +3290,10 @@ FloorPlan:
   - floorSize
   - isPlanForApartment
   - layoutImage
-  - layoutImage
   - numberOfAccommodationUnits
   - numberOfAvailableAccommodationUnits
   - numberOfBathroomsTotal
+  - numberOfBedrooms
 Florist:
   description: A florist.
   label: Florist
@@ -3428,7 +3314,6 @@ FollowAction:
   - InteractAction
   edges:
   - followee
-  - followee
 FoodEstablishment:
   description: A food-related business.
   label: FoodEstablishment
@@ -3438,13 +3323,10 @@ FoodEstablishment:
   - LocalBusiness
   edges:
   - acceptsReservations
-  - acceptsReservations
-  - acceptsReservations
-  - menu
-  - menu
   - menu
   - servesCuisine
   - starRating
+  - hasMenu
 FoodEstablishmentReservation:
   description: 'A reservation to dine at a food-related business.\n\nNote: This type
     is for information about actual reservations, e.g. in confirmation emails or HTML
@@ -3456,10 +3338,7 @@ FoodEstablishmentReservation:
   - Reservation
   edges:
   - endTime
-  - endTime
   - partySize
-  - partySize
-  - startTime
   - startTime
 FoodEvent:
   description: 'Event type: Food event.'
@@ -3528,8 +3407,6 @@ Game:
   edges:
   - characterAttribute
   - gameItem
-  - gameLocation
-  - gameLocation
   - gameLocation
   - numberOfPlayers
   - quest
@@ -3614,9 +3491,6 @@ Gene:
   edges:
   - alternativeOf
   - expressedIn
-  - expressedIn
-  - expressedIn
-  - expressedIn
   - hasBioPolymerSequence
   - encodesBioChemEntity
 GeneralContractor:
@@ -3641,8 +3515,6 @@ GeoCircle:
   edges:
   - geoMidpoint
   - geoRadius
-  - geoRadius
-  - geoRadius
 GeoCoordinates:
   description: The geographic coordinates of a place or event.
   label: GeoCoordinates
@@ -3652,13 +3524,11 @@ GeoCoordinates:
   - StructuredValue
   edges:
   - address
-  - address
-  - addressCountry
   - addressCountry
   - elevation
-  - elevation
   - latitude
-  - latitude
+  - longitude
+  - postalCode
 GeoShape:
   description: The geographic shape of a place. A GeoShape can be described using
     several properties whose values are based on latitude/longitude pairs. Either
@@ -3671,13 +3541,13 @@ GeoShape:
   - StructuredValue
   edges:
   - address
-  - address
-  - addressCountry
   - addressCountry
   - box
   - circle
   - elevation
-  - elevation
+  - line
+  - polygon
+  - postalCode
 GeospatialGeometry:
   description: (Eventually to be defined as) a supertype of GeoShape designed to accommodate
     definitions from Geo-Spatial best practices.
@@ -3688,13 +3558,13 @@ GeospatialGeometry:
   - Intangible
   edges:
   - geoContains
-  - geoContains
-  - geoCoveredBy
   - geoCoveredBy
   - geoCovers
-  - geoCovers
   - geoCrosses
-  - geoCrosses
+  - geoDisjoint
+  - geoEquals
+  - geoIntersects
+  - geoOverlaps
 GiveAction:
   description: 'The act of transferring ownership of an object to a destination. Reciprocal
     of TakeAction.\n\nRelated actions:\n\n* [[TakeAction]]: Reciprocal of GiveAction.\n*
@@ -3706,9 +3576,6 @@ GiveAction:
   parents:
   - TransferAction
   edges:
-  - recipient
-  - recipient
-  - recipient
   - recipient
 GolfCourse:
   description: A golf course.
@@ -3771,7 +3638,6 @@ GovernmentService:
   edges:
   - serviceOperator
   - jurisdiction
-  - jurisdiction
 Grant:
   description: "A grant, typically financial or otherwise quantifiable, of resources.\
     \ Typically a [[funder]] sponsors some [[MonetaryAmount]] to an [[Organization]]\
@@ -3784,13 +3650,8 @@ Grant:
   - Intangible
   edges:
   - funder
-  - funder
   - fundedItem
-  - fundedItem
-  - fundedItem
-  - fundedItem
-  - fundedItem
-  - fundedItem
+  - sponsor
 GroceryStore:
   description: A grocery store.
   label: GroceryStore
@@ -3811,11 +3672,6 @@ Guide:
   - CreativeWork
   edges:
   - reviewAspect
-  - reviewAspect
-  - category
-  - category
-  - category
-  - category
   - category
 HVACBusiness:
   description: A business that provides Heating, Ventilation and Air Conditioning
@@ -3915,7 +3771,6 @@ HealthPlanFormulary:
   - Intangible
   edges:
   - healthPlanCostSharing
-  - healthPlanCostSharing
   - healthPlanDrugTier
   - offersPrescriptionByMail
 HealthPlanNetwork:
@@ -3926,7 +3781,6 @@ HealthPlanNetwork:
   parents:
   - Intangible
   edges:
-  - healthPlanCostSharing
   - healthPlanCostSharing
   - healthPlanNetworkId
   - healthPlanNetworkTier
@@ -3995,9 +3849,6 @@ Hospital:
   - MedicalOrganization
   edges:
   - availableService
-  - availableService
-  - availableService
-  - healthcareReportingData
   - healthcareReportingData
   - medicalSpecialty
 Hostel:
@@ -4045,8 +3896,6 @@ HotelRoom:
   - Room
   edges:
   - bed
-  - bed
-  - bed
   - occupancy
 House:
   description: 'A house is a building or structure that has the ability to be occupied
@@ -4058,7 +3907,6 @@ House:
   parents:
   - Accommodation
   edges:
-  - numberOfRooms
   - numberOfRooms
 HousePainter:
   description: A house painting service.
@@ -4078,13 +3926,13 @@ HowTo:
   - CreativeWork
   edges:
   - estimatedCost
-  - estimatedCost
   - prepTime
   - steps
-  - steps
-  - steps
   - tool
-  - tool
+  - totalTime
+  - performTime
+  - yield
+  - step
 HowToDirection:
   description: A direction indicating a single action to do in the instructions for
     how to achieve a result.
@@ -4096,13 +3944,13 @@ HowToDirection:
   - ListItem
   edges:
   - afterMedia
-  - afterMedia
   - beforeMedia
-  - beforeMedia
-  - duringMedia
   - duringMedia
   - prepTime
   - tool
+  - totalTime
+  - performTime
+  - supply
 HowToItem:
   description: An item used as either a tool or supply when performing the instructions
     for how to achieve a result.
@@ -4112,8 +3960,6 @@ HowToItem:
   parents:
   - ListItem
   edges:
-  - requiredQuantity
-  - requiredQuantity
   - requiredQuantity
 HowToSection:
   description: A sub-grouping of steps in the instructions for how to achieve a result
@@ -4126,8 +3972,6 @@ HowToSection:
   - ItemList
   - ListItem
   edges:
-  - steps
-  - steps
   - steps
 HowToStep:
   description: A step in the instructions for how to achieve a result. It is an ordered
@@ -4149,7 +3993,6 @@ HowToSupply:
   parents:
   - HowToItem
   edges:
-  - estimatedCost
   - estimatedCost
 HowToTip:
   description: An explanation in the instructions for how to achieve a result. It
@@ -4255,9 +4098,7 @@ ImageObject:
   edges:
   - embeddedTextCaption
   - exifData
-  - exifData
   - representativeOfPage
-  - caption
   - caption
 ImageObjectSnapshot:
   description: A specific and exact (byte-for-byte) version of an [[ImageObject]].
@@ -4432,13 +4273,11 @@ InteractionCounter:
   - StructuredValue
   edges:
   - endTime
-  - endTime
-  - interactionService
   - interactionService
   - interactionType
   - startTime
-  - startTime
   - userInteractionCount
+  - location
 InternetCafe:
   description: An internet cafe.
   label: InternetCafe
@@ -4466,7 +4305,6 @@ InvestmentOrDeposit:
   - FinancialProduct
   edges:
   - amount
-  - amount
 InviteAction:
   description: The act of asking someone to attend an event. Reciprocal of RsvpAction.
   label: InviteAction
@@ -4488,10 +4326,10 @@ Invoice:
   - billingPeriod
   - confirmationNumber
   - customer
-  - customer
-  - minimumPaymentDue
   - minimumPaymentDue
   - paymentDue
+  - paymentMethod
+  - paymentMethodId
 ItemAvailability:
   description: A list of possible product availability options.
   label: ItemAvailability
@@ -4512,9 +4350,6 @@ ItemList:
   edges:
   - aggregateElement
   - itemListElement
-  - itemListElement
-  - itemListElement
-  - itemListOrder
   - itemListOrder
   - numberOfItems
 ItemListOrderType:
@@ -4553,11 +4388,11 @@ JobPosting:
   - applicantLocationRequirements
   - applicationContact
   - baseSalary
-  - baseSalary
-  - baseSalary
   - benefits
   - datePosted
-  - datePosted
+  - directApply
+  - educationRequirements
+  - eligibilityToWorkRequirement
 JoinAction:
   description: 'An agent joins an event/group with participants/friends at a location.\n\nRelated
     actions:\n\n* [[RegisterAction]]: Unlike RegisterAction, JoinAction refers to
@@ -4579,7 +4414,6 @@ Joint:
   - AnatomicalStructure
   edges:
   - biomechnicalClass
-  - functionalClass
   - functionalClass
   - structuralClass
 LakeBodyOfWater:
@@ -4634,13 +4468,12 @@ LearningResource:
   - CreativeWork
   edges:
   - assesses
-  - assesses
-  - competencyRequired
-  - competencyRequired
   - competencyRequired
   - educationalAlignment
   - educationalLevel
-  - educationalLevel
+  - educationalUse
+  - learningResourceType
+  - teaches
 LeaveAction:
   description: 'An agent leaves an event / group with participants/friends at a location.\n\nRelated
     actions:\n\n* [[JoinAction]]: The antonym of LeaveAction.\n* [[UnRegisterAction]]:
@@ -4693,9 +4526,9 @@ Legislation:
   - legislationConsolidates
   - legislationCorrects
   - legislationCountersignedBy
-  - legislationCountersignedBy
   - legislationDate
   - legislationDateOfApplicability
+  - legislationDateVersion
 LegislationObject:
   description: A specific object or file containing a Legislation. Note that the same
     Legislation can be published in multiple files. For example, a digitally signed
@@ -4783,7 +4616,6 @@ LinkRole:
   edges:
   - linkRelationship
   - inLanguage
-  - inLanguage
 LiquorStore:
   description: A shop that sells alcoholic drinks such as wine, beer, whisky and other
     spirits.
@@ -4804,7 +4636,6 @@ ListItem:
   - item
   - nextItem
   - previousItem
-  - position
   - position
 ListenAction:
   description: The act of consuming audio content.
@@ -4844,13 +4675,13 @@ LoanOrCredit:
   - FinancialProduct
   edges:
   - amount
-  - amount
   - currency
   - gracePeriod
   - loanRepaymentForm
   - loanTerm
   - loanType
-  - loanType
+  - recourseLoan
+  - renegotiableLoan
 LocalBusiness:
   description: A particular physical business or branch of an organization. Examples
     of LocalBusiness include a restaurant, a particular branch of a restaurant chain,
@@ -4879,8 +4710,6 @@ LocationFeatureSpecification:
   edges:
   - hoursAvailable
   - validFrom
-  - validFrom
-  - validThrough
   - validThrough
 Locksmith:
   description: A locksmith.
@@ -4900,12 +4729,12 @@ LodgingBusiness:
   edges:
   - amenityFeature
   - availableLanguage
-  - availableLanguage
   - checkinTime
-  - checkinTime
-  - checkoutTime
   - checkoutTime
   - numberOfRooms
+  - petsAllowed
+  - starRating
+  - audience
 LodgingReservation:
   description: 'A reservation for lodging at a hotel, motel, inn, etc.\n\nNote: This
     type is for information about actual reservations, e.g. in confirmation emails
@@ -4917,13 +4746,11 @@ LodgingReservation:
   - Reservation
   edges:
   - checkinTime
-  - checkinTime
-  - checkoutTime
   - checkoutTime
   - lodgingUnitDescription
   - lodgingUnitType
-  - lodgingUnitType
   - numAdults
+  - numChildren
 LoginAction:
   description: The action of logging into a device or application.
   label: LoginAction
@@ -4951,7 +4778,6 @@ LymphaticVessel:
   - Vessel
   edges:
   - originatesFrom
-  - regionDrained
   - regionDrained
   - runsTo
 Manuscript:
@@ -5006,7 +4832,6 @@ MathSolver:
   parents:
   - CreativeWork
   edges:
-  - mathExpression
   - mathExpression
 MaximumDoseSchedule:
   description: The maximum dosing schedule considered safe for a drug or supplement
@@ -5082,8 +4907,8 @@ MediaObject:
   - contentUrl
   - embedUrl
   - endTime
-  - endTime
   - height
+  - ineligibleRegion
 MediaReview:
   description: "A [[MediaReview]] is a more specialized form of Review dedicated to\
     \ the evaluation of media content online, typically in the context of fact-checking\
@@ -5097,8 +4922,6 @@ MediaReview:
   edges:
   - mediaAuthenticityCategory
   - originalMediaContextDescription
-  - originalMediaLink
-  - originalMediaLink
   - originalMediaLink
 MediaReviewItem:
   description: Represents an item or group of closely related items treated as a unit
@@ -5173,8 +4996,6 @@ MedicalClinic:
   - MedicalOrganization
   edges:
   - availableService
-  - availableService
-  - availableService
   - medicalSpecialty
 MedicalCode:
   description: A code for a medical entity.
@@ -5198,13 +5019,13 @@ MedicalCondition:
   - MedicalEntity
   edges:
   - associatedAnatomy
-  - associatedAnatomy
-  - associatedAnatomy
   - differentialDiagnosis
   - drug
   - epidemiology
   - expectedPrognosis
   - naturalProgression
+  - pathophysiology
+  - possibleComplication
 MedicalConditionStage:
   description: A stage of a medical condition, such as 'Stage IIIa'.
   label: MedicalConditionStage
@@ -5237,7 +5058,6 @@ MedicalDevice:
   edges:
   - adverseOutcome
   - contraindication
-  - contraindication
   - postOp
   - preOp
   - procedure
@@ -5263,11 +5083,11 @@ MedicalEntity:
   - code
   - guideline
   - legalStatus
-  - legalStatus
-  - legalStatus
   - medicineSystem
   - recognizingAuthority
   - relevantSpecialty
+  - study
+  - funding
 MedicalEnumeration:
   description: 'Enumerations related to health and the practice of medicine: A concept
     that is used to attribute a quality to another concept, as a qualifier, a collection
@@ -5393,9 +5213,7 @@ MedicalProcedure:
   - followup
   - howPerformed
   - preparation
-  - preparation
   - procedureType
-  - status
   - status
 MedicalProcedureType:
   description: An enumeration that describes different types of medical procedures.
@@ -5476,9 +5294,6 @@ MedicalSignOrSymptom:
   - MedicalCondition
   edges:
   - possibleTreatment
-  - possibleTreatment
-  - possibleTreatment
-  - possibleTreatment
 MedicalSpecialty:
   description: Any specific branch of medical science or practice. Medical specialities
     include clinical specialties that pertain to particular organ systems and their
@@ -5503,11 +5318,8 @@ MedicalStudy:
   edges:
   - healthCondition
   - status
-  - status
-  - status
   - studyLocation
   - studySubject
-  - sponsor
   - sponsor
 MedicalStudyStatus:
   description: The status of a medical study. Enumerated type.
@@ -5536,7 +5348,6 @@ MedicalTest:
   edges:
   - affectedBy
   - normalRange
-  - normalRange
   - signDetected
   - usedToDiagnose
   - usesDevice
@@ -5560,7 +5371,6 @@ MedicalTherapy:
   parents:
   - TherapeuticProcedure
   edges:
-  - contraindication
   - contraindication
   - duplicateTherapy
   - seriousAdverseOutcome
@@ -5593,7 +5403,6 @@ MedicalWebPage:
   - WebPage
   edges:
   - aspect
-  - medicalAudience
   - medicalAudience
 MedicineSystem:
   description: Systems of medical practice.
@@ -5641,10 +5450,6 @@ MemberProgramTier:
   edges:
   - hasTierBenefit
   - hasTierRequirement
-  - hasTierRequirement
-  - hasTierRequirement
-  - hasTierRequirement
-  - membershipPointsEarned
   - membershipPointsEarned
   - isTierOf
 MensClothingStore:
@@ -5675,11 +5480,8 @@ MenuItem:
   - Intangible
   edges:
   - menuAddOn
-  - menuAddOn
   - nutrition
   - suitableForDiet
-  - suitableForDiet
-  - offers
   - offers
 MenuSection:
   description: A sub-grouping of food or drink items in a menu. E.g. courses (such
@@ -5712,12 +5514,12 @@ MerchantReturnPolicy:
   edges:
   - additionalProperty
   - applicableCountry
-  - applicableCountry
   - customerRemorseReturnFees
   - customerRemorseReturnLabelSource
   - customerRemorseReturnShippingFeesAmount
   - inStoreReturnsOffered
   - itemCondition
+  - itemDefectReturnFees
 MerchantReturnPolicySeasonalOverride:
   description: A seasonal override of a return policy, for example used for holidays.
   label: MerchantReturnPolicySeasonalOverride
@@ -5727,13 +5529,13 @@ MerchantReturnPolicySeasonalOverride:
   - Intangible
   edges:
   - merchantReturnDays
-  - merchantReturnDays
-  - merchantReturnDays
   - refundType
-  - restockingFee
   - restockingFee
   - returnFees
   - returnMethod
+  - returnPolicyCategory
+  - returnShippingFeesAmount
+  - startDate
 Message:
   description: A single message from a sender to one or more organizations or people.
   label: Message
@@ -5743,13 +5545,13 @@ Message:
   - CreativeWork
   edges:
   - bccRecipient
-  - bccRecipient
-  - bccRecipient
-  - ccRecipient
-  - ccRecipient
   - ccRecipient
   - dateRead
-  - dateRead
+  - dateReceived
+  - dateSent
+  - messageAttachment
+  - sender
+  - toRecipient
 MiddleSchool:
   description: A middle school (typically for children aged around 11-14, although
     this varies somewhat).
@@ -5793,8 +5595,8 @@ MolecularEntity:
   - iupacName
   - molecularFormula
   - molecularWeight
-  - molecularWeight
   - monoisotopicMolecularWeight
+  - potentialUse
 MonetaryAmount:
   description: A monetary value or range. This type can be used to describe an amount
     of money such as $50 USD, or a range as in describing a bank account being suitable
@@ -5810,8 +5612,6 @@ MonetaryAmount:
   - maxValue
   - minValue
   - validFrom
-  - validFrom
-  - validThrough
   - validThrough
   - value
 MonetaryAmountDistribution:
@@ -5832,8 +5632,6 @@ MonetaryGrant:
   - Grant
   edges:
   - amount
-  - amount
-  - funder
   - funder
 MoneyTransfer:
   description: The act of transferring money from one place to another place. This
@@ -5845,8 +5643,6 @@ MoneyTransfer:
   - TransferAction
   edges:
   - amount
-  - amount
-  - beneficiaryBank
   - beneficiaryBank
 MortgageLoan:
   description: A loan in which property or real estate is used as collateral. (A loan
@@ -5947,10 +5743,10 @@ Movie:
   - countryOfOrigin
   - directors
   - musicBy
-  - musicBy
   - productionCompany
   - subtitleLanguage
-  - subtitleLanguage
+  - titleEIDR
+  - trailer
 MovieClip:
   description: A short segment/part of a movie.
   label: MovieClip
@@ -5978,7 +5774,6 @@ MovieSeries:
   edges:
   - actors
   - directors
-  - musicBy
   - musicBy
   - productionCompany
   - trailer
@@ -6035,7 +5830,6 @@ MusicAlbum:
   - albumProductionType
   - albumReleaseType
   - byArtist
-  - byArtist
   - albumRelease
 MusicAlbumProductionType:
   description: 'Classification of the album by its type of content: soundtrack, live
@@ -6063,13 +5857,13 @@ MusicComposition:
   - CreativeWork
   edges:
   - composer
-  - composer
   - firstPerformance
   - includedComposition
   - iswcCode
   - lyricist
   - lyrics
   - musicArrangement
+  - musicCompositionForm
 MusicEvent:
   description: 'Event type: Music event.'
   label: MusicEvent
@@ -6092,8 +5886,6 @@ MusicGroup:
   - tracks
   - album
   - genre
-  - genre
-  - genre
   - track
 MusicPlaylist:
   description: A collection of music tracks in playlist form.
@@ -6106,7 +5898,6 @@ MusicPlaylist:
   - numTracks
   - tracks
   - track
-  - track
 MusicRecording:
   description: A music recording (track), usually a single song.
   label: MusicRecording
@@ -6116,12 +5907,10 @@ MusicRecording:
   - CreativeWork
   edges:
   - byArtist
-  - byArtist
   - inAlbum
   - inPlaylist
   - isrcCode
   - recordingOf
-  - duration
   - duration
 MusicRelease:
   description: A MusicRelease is a specific release of a music album.
@@ -6133,11 +5922,9 @@ MusicRelease:
   edges:
   - catalogNumber
   - creditedTo
-  - creditedTo
   - musicReleaseFormat
   - recordLabel
   - releaseOf
-  - duration
   - duration
 MusicReleaseFormatType:
   description: Format of this release (the type of recording media used, i.e. compact
@@ -6209,7 +5996,6 @@ Nerve:
   - branch
   - nerveMotor
   - sensoryUnit
-  - sensoryUnit
   - sourcedFrom
 NewsArticle:
   description: 'A NewsArticle is an article whose content reports news, or provides
@@ -6240,13 +6026,13 @@ NewsMediaOrganization:
   - Organization
   edges:
   - actionableFeedbackPolicy
-  - actionableFeedbackPolicy
-  - correctionsPolicy
   - correctionsPolicy
   - diversityPolicy
-  - diversityPolicy
   - diversityStaffingReport
-  - diversityStaffingReport
+  - ethicsPolicy
+  - masthead
+  - missionCoveragePrioritiesPolicy
+  - noBylinesPolicy
 Newspaper:
   description: A publication containing information about varied topics that are pertinent
     to general information, a geographic area, or a specific subject matter (i.e.
@@ -6332,10 +6118,10 @@ Observation:
   - measuredProperty
   - measurementDenominator
   - measurementMethod
-  - measurementMethod
-  - measurementMethod
-  - measurementMethod
   - measurementQualifier
+  - observationAbout
+  - observationDate
+  - observationPeriod
 Occupation:
   description: A profession, may involve prolonged training and/or a formal qualification.
   label: Occupation
@@ -6345,13 +6131,13 @@ Occupation:
   - Intangible
   edges:
   - educationRequirements
-  - educationRequirements
   - estimatedSalary
-  - estimatedSalary
-  - estimatedSalary
-  - experienceRequirements
   - experienceRequirements
   - occupationLocation
+  - occupationalCategory
+  - qualifications
+  - responsibilities
+  - skills
 OccupationalExperienceRequirements:
   description: Indicates employment-related experience requirements, e.g. [[monthsOfExperience]].
   label: OccupationalExperienceRequirements
@@ -6390,13 +6176,13 @@ Offer:
   - Intangible
   edges:
   - acceptedPaymentMethod
-  - acceptedPaymentMethod
-  - acceptedPaymentMethod
   - addOn
   - additionalProperty
   - advanceBookingRequirement
   - aggregateRating
   - asin
+  - availability
+  - availabilityEnds
 OfferCatalog:
   description: An OfferCatalog is an ItemList that contains related Offers and/or
     further OfferCatalogs that are offeredBy the same provider.
@@ -6457,12 +6243,12 @@ OfferShippingDetails:
   edges:
   - deliveryTime
   - depth
-  - depth
   - doesNotShip
   - hasShippingService
   - height
-  - height
   - shippingDestination
+  - shippingOrigin
+  - shippingRate
 OfficeEquipmentStore:
   description: An office equipment store.
   label: OfficeEquipmentStore
@@ -6526,8 +6312,6 @@ OpeningHoursSpecification:
   - dayOfWeek
   - opens
   - validFrom
-  - validFrom
-  - validThrough
   - validThrough
 OperatingSystem:
   description: System software that manages computer hardware and software resources,
@@ -6572,10 +6356,10 @@ Order:
   - billingAddress
   - confirmationNumber
   - customer
-  - customer
-  - discount
   - discount
   - discountCode
+  - discountCurrency
+  - isGift
 OrderAction:
   description: An agent orders an object/product/service to be delivered/sent.
   label: OrderAction
@@ -6598,9 +6382,6 @@ OrderItem:
   - orderItemNumber
   - orderItemStatus
   - orderQuantity
-  - orderQuantity
-  - orderedItem
-  - orderedItem
   - orderedItem
 OrderStatus:
   description: Enumerated status values for Order.
@@ -6619,13 +6400,13 @@ Organization:
   - Thing
   edges:
   - acceptedPaymentMethod
-  - acceptedPaymentMethod
-  - acceptedPaymentMethod
   - actionableFeedbackPolicy
-  - actionableFeedbackPolicy
-  - address
   - address
   - agentInteractionStatistic
+  - aggregateRating
+  - awards
+  - brand
+  - companyRegistration
 OrganizationRole:
   description: A subclass of Role used to describe roles within organizations.
   label: OrganizationRole
@@ -6662,10 +6443,8 @@ OwnershipInfo:
   - StructuredValue
   edges:
   - acquiredFrom
-  - acquiredFrom
   - ownedFrom
   - ownedThrough
-  - typeOfGood
   - typeOfGood
 PaintAction:
   description: The act of producing a painting, typically with paint and canvas as
@@ -6707,10 +6486,10 @@ ParcelDelivery:
   - deliveryAddress
   - deliveryStatus
   - expectedArrivalFrom
-  - expectedArrivalFrom
-  - expectedArrivalUntil
   - expectedArrivalUntil
   - hasDeliveryMethod
+  - itemShipped
+  - originAddress
 ParentAudience:
   description: A set of characteristics describing parents, who can be interested
     in viewing some content.
@@ -6778,9 +6557,6 @@ PayAction:
   - TradeAction
   edges:
   - recipient
-  - recipient
-  - recipient
-  - recipient
 PaymentCard:
   description: A payment method using a credit, debit, store or other card to associate
     the payment with an account.
@@ -6792,10 +6568,8 @@ PaymentCard:
   - PaymentMethod
   edges:
   - cashBack
-  - cashBack
   - contactlessPayment
   - floorLimit
-  - monthlyMinimumRepaymentAmount
   - monthlyMinimumRepaymentAmount
 PaymentChargeSpecification:
   description: The costs of settling the payment using a particular payment method.
@@ -6862,8 +6636,8 @@ PeopleAudience:
   - requiredMinAge
   - suggestedAge
   - suggestedGender
-  - suggestedGender
   - suggestedMaxAge
+  - suggestedMeasurement
 PerformAction:
   description: The act of participating in performance arts.
   label: PerformAction
@@ -6933,7 +6707,6 @@ Permit:
   - permitAudience
   - validFor
   - validFrom
-  - validFrom
   - validIn
   - validUntil
 Person:
@@ -6946,12 +6719,12 @@ Person:
   edges:
   - additionalName
   - address
-  - address
   - affiliation
   - agentInteractionStatistic
   - awards
   - birthDate
   - birthPlace
+  - brand
 PetStore:
   description: A pet store.
   label: PetStore
@@ -6997,12 +6770,8 @@ PhysicalActivity:
   - LifestyleModification
   edges:
   - associatedAnatomy
-  - associatedAnatomy
-  - associatedAnatomy
   - epidemiology
   - pathophysiology
-  - category
-  - category
   - category
 PhysicalActivityCategory:
   description: Categories of physical activity, organized by physiologic classification.
@@ -7040,11 +6809,8 @@ Physician:
   - MedicalOrganization
   edges:
   - availableService
-  - availableService
-  - availableService
   - hospitalAffiliation
   - medicalSpecialty
-  - occupationalCategory
   - occupationalCategory
   - usNPI
 PhysiciansOffice:
@@ -7065,12 +6831,12 @@ Place:
   edges:
   - additionalProperty
   - address
-  - address
   - aggregateRating
   - amenityFeature
   - branchCode
   - containedIn
   - events
+  - faxNumber
 PlaceOfWorship:
   description: Place of worship, such as a church, synagogue, or mosque.
   label: PlaceOfWorship
@@ -7088,7 +6854,6 @@ PlanAction:
   parents:
   - OrganizeAction
   edges:
-  - scheduledTime
   - scheduledTime
 Play:
   description: 'A play is a form of literature, usually consisting of dialogue between
@@ -7122,7 +6887,6 @@ PlayGameAction:
   parents:
   - ConsumeAction
   edges:
-  - gameAvailabilityType
   - gameAvailabilityType
 Playground:
   description: A playground.
@@ -7167,8 +6931,6 @@ PodcastSeries:
   - CreativeWorkSeries
   edges:
   - webFeed
-  - webFeed
-  - actor
   - actor
 PoliceStation:
   description: A police station.
@@ -7212,13 +6974,12 @@ PostalAddress:
   - ContactPoint
   edges:
   - addressCountry
-  - addressCountry
   - addressLocality
-  - addressRegion
   - addressRegion
   - extendedAddress
   - postOfficeBoxNumber
   - postalCode
+  - streetAddress
 PostalCodeRangeSpecification:
   description: Indicates a range of postal codes, usually defined as the set of valid
     codes between [[postalCodeBegin]] and [[postalCodeEnd]], inclusively.
@@ -7303,10 +7064,10 @@ PriceSpecification:
   - eligibleTransactionVolume
   - maxPrice
   - membershipPointsEarned
-  - membershipPointsEarned
   - minPrice
   - price
-  - price
+  - priceCurrency
+  - validForMemberTier
 PriceTypeEnumeration:
   description: Enumerates different price types, for example list price, invoice price,
     and sale price.
@@ -7328,11 +7089,11 @@ Product:
   - additionalProperty
   - aggregateRating
   - asin
-  - asin
   - awards
   - brand
-  - brand
   - color
+  - colorSwatch
+  - countryOfAssembly
 ProductCollection:
   description: A set of products (either [[ProductGroup]]s or specific variants) that
     are listed together e.g. in an [[Offer]].
@@ -7360,7 +7121,6 @@ ProductGroup:
   edges:
   - productGroupID
   - variesBy
-  - variesBy
   - hasVariant
 ProductModel:
   description: A datasheet or vendor specification of a product (in the sense of a
@@ -7373,7 +7133,6 @@ ProductModel:
   edges:
   - predecessorOf
   - successorOf
-  - isVariantOf
   - isVariantOf
 ProfessionalService:
   description: "Original definition: \"provider of professional services.\"\\n\\nThe\
@@ -7406,12 +7165,11 @@ ProgramMembership:
   edges:
   - hostingOrganization
   - members
-  - members
   - membershipNumber
-  - membershipPointsEarned
   - membershipPointsEarned
   - program
   - programName
+  - member
 Project:
   description: "An enterprise (potentially individual but typically collaborative),\
     \ planned to achieve a particular aim.\nUse properties from [[Organization]],\
@@ -7435,7 +7193,6 @@ PronounceableText:
   - speechToTextMarkup
   - textValue
   - inLanguage
-  - inLanguage
 Property:
   description: A property, used to indicate attributes and relationships of some Thing;
     equivalent to rdf:Property.
@@ -7448,8 +7205,6 @@ Property:
   - domainIncludes
   - inverseOf
   - rangeIncludes
-  - supersededBy
-  - supersededBy
   - supersededBy
 PropertyValue:
   description: A property-value pair, e.g. representing a feature of a product or
@@ -7464,12 +7219,12 @@ PropertyValue:
   edges:
   - maxValue
   - measurementMethod
-  - measurementMethod
-  - measurementMethod
-  - measurementMethod
   - minValue
   - propertyID
-  - propertyID
+  - unitCode
+  - unitText
+  - value
+  - valueReference
 PropertyValueSpecification:
   description: A Property value specification.
   label: PropertyValueSpecification
@@ -7479,13 +7234,13 @@ PropertyValueSpecification:
   - Intangible
   edges:
   - defaultValue
-  - defaultValue
   - maxValue
   - minValue
   - multipleValues
   - readonlyValue
   - stepValue
   - valueMaxLength
+  - valueMinLength
 Protein:
   description: Protein is here used in its widest possible definition, as classes
     of amino acid based molecules. Amyloid-beta Protein in human (UniProt P05067),
@@ -7537,7 +7292,6 @@ PublicationEvent:
   edges:
   - free
   - publishedBy
-  - publishedBy
   - publishedOn
 PublicationIssue:
   description: A part of a successively published publication such as a periodical
@@ -7550,10 +7304,7 @@ PublicationIssue:
   - CreativeWork
   edges:
   - issueNumber
-  - issueNumber
   - pageEnd
-  - pageEnd
-  - pageStart
   - pageStart
   - pagination
 PublicationVolume:
@@ -7567,11 +7318,8 @@ PublicationVolume:
   - CreativeWork
   edges:
   - pageEnd
-  - pageEnd
-  - pageStart
   - pageStart
   - pagination
-  - volumeNumber
   - volumeNumber
 PurchaseType:
   description: Enumerates a purchase type for an item.
@@ -7619,10 +7367,9 @@ QuantitativeValue:
   - maxValue
   - minValue
   - unitCode
-  - unitCode
   - unitText
   - value
-  - value
+  - valueReference
 QuantitativeValueDistribution:
   description: A statistical distribution of values.
   label: QuantitativeValueDistribution
@@ -7636,7 +7383,6 @@ QuantitativeValueDistribution:
   - percentile25
   - percentile75
   - percentile90
-  - duration
   - duration
 Quantity:
   description: Quantities such as distance, time, mass, weight, etc. Particular instances
@@ -7656,12 +7402,9 @@ Question:
   - Comment
   edges:
   - acceptedAnswer
-  - acceptedAnswer
   - answerCount
   - eduQuestionType
   - parentItem
-  - parentItem
-  - suggestedAnswer
   - suggestedAnswer
 Quiz:
   description: 'Quiz: A test of knowledge, skills and abilities.'
@@ -7682,7 +7425,6 @@ Quotation:
   parents:
   - CreativeWork
   edges:
-  - spokenByCharacter
   - spokenByCharacter
 QuoteAction:
   description: An agent quotes/estimates/appraises an object/product/service with
@@ -7765,10 +7507,10 @@ RadioSeries:
   - directors
   - episodes
   - musicBy
-  - musicBy
   - numberOfEpisodes
   - numberOfSeasons
   - productionCompany
+  - seasons
 RadioStation:
   description: A radio station.
   label: RadioStation
@@ -7786,13 +7528,11 @@ Rating:
   - Intangible
   edges:
   - author
-  - author
-  - bestRating
   - bestRating
   - ratingExplanation
   - ratingValue
-  - ratingValue
   - reviewAspect
+  - worstRating
 ReactAction:
   description: The act of responding instinctively and emotionally to an object, expressing
     a sentiment.
@@ -7830,8 +7570,6 @@ RealEstateListing:
   - WebPage
   edges:
   - datePosted
-  - datePosted
-  - leaseLength
   - leaseLength
 ReceiveAction:
   description: 'The act of physically/electronically taking delivery of an object
@@ -7845,8 +7583,6 @@ ReceiveAction:
   - TransferAction
   edges:
   - deliveryMethod
-  - sender
-  - sender
   - sender
 Recipe:
   description: A recipe. For dietary restrictions covered by the recipe, a few common
@@ -7865,7 +7601,7 @@ Recipe:
   - recipeCategory
   - recipeCuisine
   - recipeInstructions
-  - recipeInstructions
+  - recipeYield
 Recommendation:
   description: '[[Recommendation]] is a type of [[Review]] that suggests or proposes
     something as the best option or best course of action. Recommendations may be
@@ -7877,10 +7613,6 @@ Recommendation:
   parents:
   - Review
   edges:
-  - category
-  - category
-  - category
-  - category
   - category
 RecommendedDoseSchedule:
   description: A recommended dosing schedule for a drug or supplement as prescribed
@@ -7939,7 +7671,6 @@ RentAction:
   - TradeAction
   edges:
   - landlord
-  - landlord
   - realEstateAgent
 RentalCarReservation:
   description: 'A reservation for a rental car.\n\nNote: This type is for information
@@ -7963,7 +7694,6 @@ RepaymentSpecification:
   parents:
   - StructuredValue
   edges:
-  - downPayment
   - downPayment
   - earlyPrepaymentPenalty
   - loanPaymentAmount
@@ -8055,13 +7785,13 @@ Reservation:
   - Intangible
   edges:
   - bookingAgent
-  - bookingAgent
   - bookingTime
   - modifiedTime
   - priceCurrency
   - programMembershipUsed
   - reservationFor
   - reservationId
+  - reservationStatus
 ReservationPackage:
   description: A group of multiple reservations with common values for all sub-reservations.
   label: ReservationPackage
@@ -8163,9 +7893,6 @@ ReturnAction:
   - TransferAction
   edges:
   - recipient
-  - recipient
-  - recipient
-  - recipient
 ReturnFeesEnumeration:
   description: Enumerates several kinds of policies for product return fees.
   label: ReturnFeesEnumeration
@@ -8202,10 +7929,10 @@ Review:
   - associatedMediaReview
   - itemReviewed
   - negativeNotes
-  - negativeNotes
-  - negativeNotes
-  - negativeNotes
   - positiveNotes
+  - reviewAspect
+  - reviewBody
+  - reviewRating
 ReviewAction:
   description: The act of producing a balanced opinion about the object for an audience.
     An agent reviews an object with participants resulting in a review.
@@ -8246,12 +7973,8 @@ Role:
   - Intangible
   edges:
   - namedPosition
-  - namedPosition
-  - startDate
   - startDate
   - endDate
-  - endDate
-  - roleName
   - roleName
 RoofingContractor:
   description: A roofing contractor.
@@ -8336,13 +8059,13 @@ Schedule:
   - Intangible
   edges:
   - byDay
-  - byDay
   - byMonth
   - byMonthDay
   - byMonthWeek
   - endTime
-  - endTime
   - exceptDate
+  - repeatCount
+  - repeatFrequency
 ScheduleAction:
   description: 'Scheduling future actions, events, or tasks.\n\nRelated actions:\n\n*
     [[ReserveAction]]: Unlike ReserveAction, ScheduleAction allocates future actions
@@ -8386,7 +8109,6 @@ ScreeningEvent:
   parents:
   - Event
   edges:
-  - subtitleLanguage
   - subtitleLanguage
   - videoFormat
   - workPresented
@@ -8452,7 +8174,6 @@ Seat:
   - seatRow
   - seatSection
   - seatingType
-  - seatingType
 SeekToAction:
   description: This is the [[Action]] of navigating to a specific [[startOffset]]
     timestamp within a [[VideoObject]], typically represented with a URL template
@@ -8463,7 +8184,6 @@ SeekToAction:
   parents:
   - Action
   edges:
-  - startOffset
   - startOffset
 SelfStorage:
   description: A self-storage facility.
@@ -8484,7 +8204,6 @@ SellAction:
   - TradeAction
   edges:
   - buyer
-  - buyer
   - warrantyPromise
 SendAction:
   description: 'The act of physically/electronically dispatching an object for transfer
@@ -8498,9 +8217,6 @@ SendAction:
   - TransferAction
   edges:
   - deliveryMethod
-  - recipient
-  - recipient
-  - recipient
   - recipient
 SequentialArt:
   description: An art forms that use images deployed in a specific order for the purpose
@@ -8535,11 +8251,11 @@ Service:
   - aggregateRating
   - availableChannel
   - brand
-  - brand
   - hasCertification
   - hasOfferCatalog
   - hoursAvailable
   - isRelatedTo
+  - isSimilarTo
 ServiceChannel:
   description: A means for accessing a service, e.g. a government office location,
     web site, or phone number.
@@ -8550,13 +8266,13 @@ ServiceChannel:
   - Intangible
   edges:
   - availableLanguage
-  - availableLanguage
   - processingTime
   - providesService
   - serviceLocation
   - servicePhone
   - servicePostalAddress
   - serviceSmsNumber
+  - serviceUrl
 ServicePeriod:
   description: ServicePeriod represents a duration with some constraints about cutoff
     time and business days. This is used e.g. in shipping for handling times or transit
@@ -8568,9 +8284,7 @@ ServicePeriod:
   - StructuredValue
   edges:
   - businessDays
-  - businessDays
   - cutoffTime
-  - duration
   - duration
 ShareAction:
   description: The act of distributing content to people for their amusement or edification.
@@ -8600,13 +8314,13 @@ ShippingConditions:
   - StructuredValue
   edges:
   - depth
-  - depth
   - doesNotShip
-  - height
   - height
   - numItems
   - orderValue
   - seasonalOverride
+  - shippingDestination
+  - shippingOrigin
 ShippingDeliveryTime:
   description: ShippingDeliveryTime provides various pieces of information about delivery
     times for shipping.
@@ -8617,11 +8331,8 @@ ShippingDeliveryTime:
   - StructuredValue
   edges:
   - businessDays
-  - businessDays
   - cutoffTime
   - handlingTime
-  - handlingTime
-  - transitTime
   - transitTime
 ShippingRateSettings:
   description: A ShippingRateSettings represents re-usable pieces of shipping information.
@@ -8636,12 +8347,11 @@ ShippingRateSettings:
   edges:
   - doesNotShip
   - freeShippingThreshold
-  - freeShippingThreshold
   - isUnlabelledFallback
   - orderPercentage
   - shippingDestination
   - shippingRate
-  - shippingRate
+  - weightPercentage
 ShippingService:
   description: ShippingService represents the criteria used to determine if and how
     an offer could be shipped to a customer.
@@ -8652,7 +8362,6 @@ ShippingService:
   - StructuredValue
   edges:
   - fulfillmentType
-  - handlingTime
   - handlingTime
   - shippingConditions
   - validForMemberTier
@@ -8690,7 +8399,6 @@ SingleFamilyResidence:
   - House
   edges:
   - numberOfRooms
-  - numberOfRooms
   - occupancy
 SiteNavigationElement:
   description: A navigation element of the page.
@@ -8721,12 +8429,10 @@ SizeSpecification:
   edges:
   - hasMeasurement
   - sizeGroup
-  - sizeGroup
-  - sizeSystem
   - sizeSystem
   - suggestedAge
   - suggestedGender
-  - suggestedGender
+  - suggestedMeasurement
 SizeSystemEnumeration:
   description: Enumerates common size systems for different categories of products,
     for example "EN-13402" or "UK" for wearables or "Imperial" for screws.
@@ -8772,13 +8478,13 @@ SoftwareApplication:
   - CreativeWork
   edges:
   - applicationCategory
-  - applicationCategory
-  - applicationSubCategory
   - applicationSubCategory
   - applicationSuite
   - countriesNotSupported
   - countriesSupported
   - device
+  - downloadUrl
+  - featureList
 SoftwareSourceCode:
   description: 'Computer programming source code. Example: Full (compile ready) solutions,
     code snippet samples, scripts, templates.'
@@ -8789,7 +8495,6 @@ SoftwareSourceCode:
   - CreativeWork
   edges:
   - codeRepository
-  - programmingLanguage
   - programmingLanguage
   - runtime
   - sampleType
@@ -8840,13 +8545,13 @@ SpecialAnnouncement:
   - CreativeWork
   edges:
   - announcementLocation
-  - announcementLocation
-  - datePosted
   - datePosted
   - diseasePreventionInfo
-  - diseasePreventionInfo
   - diseaseSpreadStatistics
-  - diseaseSpreadStatistics
+  - gettingTestedInfo
+  - governmentBenefitsInfo
+  - newsUpdatesAndGuidelines
+  - publicTransportClosuresInfo
 Specialty:
   description: Any branch of a field in which people typically develop specific expertise,
     usually after significant study, time, and effort.
@@ -8889,11 +8594,8 @@ SportsEvent:
   - Event
   edges:
   - awayTeam
-  - awayTeam
-  - homeTeam
   - homeTeam
   - referee
-  - sport
   - sport
   - competitor
 SportsOrganization:
@@ -8906,7 +8608,6 @@ SportsOrganization:
   - Organization
   edges:
   - sport
-  - sport
 SportsTeam:
   description: 'Organization: Sports team.'
   label: SportsTeam
@@ -8917,7 +8618,6 @@ SportsTeam:
   edges:
   - athlete
   - coach
-  - gender
   - gender
 SpreadsheetDigitalDocument:
   description: A spreadsheet file.
@@ -8981,11 +8681,10 @@ StatisticalVariable:
   - measuredProperty
   - measurementDenominator
   - measurementMethod
-  - measurementMethod
-  - measurementMethod
-  - measurementMethod
   - measurementQualifier
   - populationType
+  - statType
+  - measurementTechnique
 StatusEnumeration:
   description: Lists or enumerations dealing with status types.
   label: StatusEnumeration
@@ -9065,9 +8764,6 @@ Suite:
   - Accommodation
   edges:
   - bed
-  - bed
-  - bed
-  - numberOfRooms
   - numberOfRooms
   - occupancy
 SuperficialAnatomy:
@@ -9082,7 +8778,6 @@ SuperficialAnatomy:
   - MedicalEntity
   edges:
   - associatedPathophysiology
-  - relatedAnatomy
   - relatedAnatomy
   - relatedCondition
   - relatedTherapy
@@ -9143,8 +8838,6 @@ TVEpisode:
   - countryOfOrigin
   - partOfTVSeries
   - subtitleLanguage
-  - subtitleLanguage
-  - titleEIDR
   - titleEIDR
 TVSeason:
   description: Season dedicated to TV broadcast and associated online delivery.
@@ -9157,7 +8850,6 @@ TVSeason:
   edges:
   - countryOfOrigin
   - partOfTVSeries
-  - titleEIDR
   - titleEIDR
 TVSeries:
   description: CreativeWorkSeries dedicated to TV broadcast and associated online
@@ -9174,9 +8866,9 @@ TVSeries:
   - directors
   - episodes
   - musicBy
-  - musicBy
   - numberOfEpisodes
   - numberOfSeasons
+  - productionCompany
 Table:
   description: A table on a Web page.
   label: Table
@@ -9223,7 +8915,6 @@ TaxiReservation:
   - Reservation
   edges:
   - partySize
-  - partySize
   - pickupLocation
   - pickupTime
 TaxiService:
@@ -9253,10 +8944,6 @@ Taxon:
   - Thing
   edges:
   - taxonRank
-  - taxonRank
-  - taxonRank
-  - childTaxon
-  - childTaxon
   - childTaxon
   - hasDefinedTerm
   - parentTaxon
@@ -9366,13 +9053,13 @@ Thing:
   parents: []
   edges:
   - additionalType
-  - additionalType
   - disambiguatingDescription
   - name
   - potentialAction
   - sameAs
   - url
   - alternateName
+  - mainEntityOfPage
 Ticket:
   description: Used to describe a ticket to an event, a flight, a bus ride, etc.
   label: Ticket
@@ -9382,13 +9069,13 @@ Ticket:
   - Intangible
   edges:
   - dateIssued
-  - dateIssued
   - issuedBy
   - priceCurrency
   - ticketNumber
   - ticketToken
-  - ticketToken
   - ticketedSeat
+  - totalPrice
+  - underName
 TieAction:
   description: The act of reaching a draw in a competitive activity.
   label: TieAction
@@ -9424,9 +9111,6 @@ TipAction:
   - TradeAction
   edges:
   - recipient
-  - recipient
-  - recipient
-  - recipient
 TireShop:
   description: A tire shop.
   label: TireShop
@@ -9447,8 +9131,6 @@ TouristAttraction:
   - Place
   edges:
   - availableLanguage
-  - availableLanguage
-  - touristType
   - touristType
 TouristDestination:
   description: A tourist destination. In principle any [[Place]] can be a [[TouristDestination]]
@@ -9462,7 +9144,6 @@ TouristDestination:
   - Place
   edges:
   - includesAttraction
-  - touristType
   - touristType
 TouristInformationCenter:
   description: A tourist information center.
@@ -9483,7 +9164,6 @@ TouristTrip:
   parents:
   - Trip
   edges:
-  - touristType
   - touristType
 ToyStore:
   description: A toy store.
@@ -9515,7 +9195,6 @@ TradeAction:
   parents:
   - Action
   edges:
-  - price
   - price
   - priceCurrency
   - priceSpecification
@@ -9597,13 +9276,13 @@ Trip:
   - Intangible
   edges:
   - arrivalTime
-  - arrivalTime
   - departureTime
-  - departureTime
-  - itinerary
   - itinerary
   - tripOrigin
   - offers
+  - partOfTrip
+  - provider
+  - subTrip
 TypeAndQuantityNode:
   description: A structured value indicating the quantity, unit of measurement, and
     business function of goods included in a bundle offer.
@@ -9616,8 +9295,6 @@ TypeAndQuantityNode:
   - amountOfThisGood
   - businessFunction
   - typeOfGood
-  - typeOfGood
-  - unitCode
   - unitCode
   - unitText
 UKNonprofitType:
@@ -9667,13 +9344,13 @@ UnitPriceSpecification:
   - PriceSpecification
   edges:
   - billingDuration
-  - billingDuration
-  - billingDuration
   - billingIncrement
   - billingStart
   - priceComponentType
   - priceType
-  - priceType
+  - referenceQuantity
+  - unitCode
+  - unitText
 UpdateAction:
   description: The act of managing by changing/editing the state of the object.
   label: UpdateAction
@@ -9724,10 +9401,8 @@ UserComments:
   edges:
   - commentText
   - commentTime
-  - commentTime
   - discusses
   - replyToUrl
-  - creator
   - creator
 UserDownloads:
   description: UserInteraction and its subtypes is an old way of talking about users
@@ -9828,12 +9503,12 @@ Vehicle:
   edges:
   - accelerationTime
   - bodyType
-  - bodyType
-  - bodyType
   - callSign
   - cargoVolume
   - dateVehicleFirstRegistered
   - driveWheelConfiguration
+  - emissionsCO2
+  - fuelCapacity
 Vein:
   description: A type of blood vessel that specifically carries blood to the heart.
   label: Vein
@@ -9843,7 +9518,6 @@ Vein:
   - Vessel
   edges:
   - drainsTo
-  - regionDrained
   - regionDrained
   - tributary
 Vessel:
@@ -9886,9 +9560,9 @@ VideoGame:
   - directors
   - gameEdition
   - gamePlatform
-  - gamePlatform
-  - gamePlatform
   - gameTip
+  - musicBy
+  - playMode
 VideoGameClip:
   description: A short segment/part of a video game.
   label: VideoGameClip
@@ -9912,7 +9586,7 @@ VideoGameSeries:
   - episodes
   - gameItem
   - gameLocation
-  - gameLocation
+  - gamePlatform
 VideoObject:
   description: A video file.
   label: VideoObject
@@ -9925,10 +9599,10 @@ VideoObject:
   - directors
   - embeddedTextCaption
   - musicBy
-  - musicBy
   - transcript
   - videoFrameSize
   - videoQuality
+  - caption
 VideoObjectSnapshot:
   description: A specific and exact (byte-for-byte) version of a [[VideoObject]].
     Two byte-for-byte identical files, for the purposes of this type, considered identical.
@@ -9976,13 +9650,13 @@ VisualArtwork:
   - CreativeWork
   edges:
   - artEdition
-  - artEdition
   - artMedium
-  - artMedium
-  - artform
   - artform
   - artist
   - colorist
+  - depth
+  - height
+  - inker
 VitalSign:
   description: Vital signs are measures of various physiological functions in order
     to assess the most basic body functions.
@@ -10132,7 +9806,6 @@ WebAPI:
   - Service
   edges:
   - documentation
-  - documentation
 WebApplication:
   description: Web applications.
   label: WebApplication
@@ -10165,13 +9838,13 @@ WebPage:
   - CreativeWork
   edges:
   - breadcrumb
-  - breadcrumb
   - lastReviewed
   - primaryImageOfPage
   - relatedLink
   - reviewedBy
-  - reviewedBy
   - significantLinks
+  - speakable
+  - specialty
 WebPageElement:
   description: A web page element, like a table or an image.
   label: WebPageElement
@@ -10229,7 +9902,6 @@ WorkBasedProgram:
   - EducationalOccupationalProgram
   edges:
   - occupationalCategory
-  - occupationalCategory
   - trainingSalary
 WorkersUnion:
   description: A Workers Union (also known as a Labor Union, Labour Union, or Trade
@@ -10250,7 +9922,6 @@ WriteAction:
   - CreateAction
   edges:
   - language
-  - inLanguage
   - inLanguage
 XPathType:
   description: Text representing an XPath (typically but not necessarily version 1.0).
