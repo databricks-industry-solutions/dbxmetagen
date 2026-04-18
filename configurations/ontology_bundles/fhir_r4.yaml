@@ -1620,7 +1620,7 @@ ontology:
             target_entity: Patient
           telecom:
             kind: data_property
-            role: pii
+            role: label
             typical_attributes:
             - phone
             - email
@@ -4921,7 +4921,7 @@ ontology:
         properties:
           contact:
             kind: data_property
-            role: pii
+            role: label
             typical_attributes:
             - contact
           definition:
@@ -5152,7 +5152,7 @@ ontology:
         properties:
           contact:
             kind: data_property
-            role: pii
+            role: label
             typical_attributes:
             - contact
           identifier:
@@ -6920,7 +6920,7 @@ ontology:
             - connectiontype
           contact:
             kind: data_property
-            role: pii
+            role: label
             typical_attributes:
             - contact
           header:
@@ -9234,7 +9234,7 @@ ontology:
             - specialty
           telecom:
             kind: data_property
-            role: pii
+            role: label
             typical_attributes:
             - phone
             - email
@@ -10551,7 +10551,7 @@ ontology:
         properties:
           address:
             kind: data_property
-            role: pii
+            role: label
             typical_attributes:
             - address
             - street_address
@@ -10638,7 +10638,7 @@ ontology:
             - status
           telecom:
             kind: data_property
-            role: pii
+            role: label
             typical_attributes:
             - phone
             - email
@@ -14528,7 +14528,7 @@ ontology:
             - is_active
           address:
             kind: data_property
-            role: pii
+            role: label
             typical_attributes:
             - address
             - street_address
@@ -14572,7 +14572,7 @@ ontology:
             target_entity: Resource
           telecom:
             kind: data_property
-            role: pii
+            role: label
             typical_attributes:
             - phone
             - email
@@ -14727,7 +14727,7 @@ ontology:
             - specialty
           telecom:
             kind: data_property
-            role: pii
+            role: label
             typical_attributes:
             - phone
             - email
@@ -14828,7 +14828,7 @@ ontology:
             - is_active
           address:
             kind: data_property
-            role: pii
+            role: label
             typical_attributes:
             - address
             - street_address
@@ -14905,7 +14905,7 @@ ontology:
             - multiplebirthinteger
           name:
             kind: data_property
-            role: pii
+            role: label
             typical_attributes:
             - name
             - full_name
@@ -14920,7 +14920,7 @@ ontology:
             - image
           telecom:
             kind: data_property
-            role: pii
+            role: label
             typical_attributes:
             - phone
             - email
@@ -15276,7 +15276,7 @@ ontology:
             - is_active
           address:
             kind: data_property
-            role: pii
+            role: label
             typical_attributes:
             - address
             - street_address
@@ -15314,7 +15314,7 @@ ontology:
             target_entity: Organization
           name:
             kind: data_property
-            role: pii
+            role: label
             typical_attributes:
             - name
             - full_name
@@ -15329,7 +15329,7 @@ ontology:
             - image
           telecom:
             kind: data_property
-            role: pii
+            role: label
             typical_attributes:
             - phone
             - email
@@ -15399,7 +15399,7 @@ ontology:
             - is_active
           address:
             kind: data_property
-            role: pii
+            role: label
             typical_attributes:
             - address
             - street_address
@@ -15435,7 +15435,7 @@ ontology:
             - practitioner_id
           name:
             kind: data_property
-            role: pii
+            role: label
             typical_attributes:
             - name
             - full_name
@@ -15450,7 +15450,7 @@ ontology:
             - image
           telecom:
             kind: data_property
-            role: pii
+            role: label
             typical_attributes:
             - phone
             - email
@@ -15606,7 +15606,7 @@ ontology:
             - specialty
           telecom:
             kind: data_property
-            role: pii
+            role: label
             typical_attributes:
             - phone
             - email
@@ -16471,7 +16471,7 @@ ontology:
             - is_active
           address:
             kind: data_property
-            role: pii
+            role: label
             typical_attributes:
             - address
             - street_address
@@ -16500,7 +16500,7 @@ ontology:
             - related_person_id
           name:
             kind: data_property
-            role: pii
+            role: label
             typical_attributes:
             - name
             - full_name
@@ -16536,7 +16536,7 @@ ontology:
             - relationship
           telecom:
             kind: data_property
-            role: pii
+            role: label
             typical_attributes:
             - phone
             - email
@@ -18892,7 +18892,7 @@ ontology:
         properties:
           contact:
             kind: data_property
-            role: pii
+            role: label
             typical_attributes:
             - contact
           criteria:
@@ -28391,11 +28391,6 @@ ontology:
       description: Human-readable name or title
       maps_to_kind: data_property
       semantic_role: label
-    pii:
-      description: Personally identifiable information
-      maps_to_kind: data_property
-      semantic_role: pii
-      governance_flag: true
     audit:
       description: System-generated provenance column
       maps_to_kind: data_property

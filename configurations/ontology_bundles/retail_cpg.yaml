@@ -42,11 +42,6 @@ ontology:
       description: Human-readable name or title
       maps_to_kind: data_property
       semantic_role: label
-    pii:
-      description: Personally identifiable information
-      maps_to_kind: data_property
-      semantic_role: pii
-      governance_flag: true
     audit:
       description: System-generated provenance column
       maps_to_kind: data_property
@@ -186,17 +181,17 @@ ontology:
             - name
           email:
             kind: data_property
-            role: pii
+            role: label
             typical_attributes:
             - email
           phone:
             kind: data_property
-            role: pii
+            role: label
             typical_attributes:
             - phone
           address:
             kind: data_property
-            role: pii
+            role: label
             typical_attributes:
             - address
           created_date:
@@ -246,7 +241,7 @@ ontology:
             - type
           address:
             kind: data_property
-            role: pii
+            role: label
             typical_attributes:
             - address
           parent_id:
@@ -343,7 +338,7 @@ ontology:
             - name
           address:
             kind: data_property
-            role: pii
+            role: label
             typical_attributes:
             - address
           city:
@@ -592,7 +587,7 @@ ontology:
             - full_name
           email:
             kind: data_property
-            role: pii
+            role: label
             typical_attributes:
             - email
             - email_address

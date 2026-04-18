@@ -179,34 +179,33 @@ class SchemaKnowledgeBaseBuilder:
     
     def generate_schema_comments(self, aggregated_df: DataFrame, source_df: DataFrame) -> DataFrame:
         """Generate AI comments for each schema."""
-        # Collect schemas to process
         schemas = aggregated_df.select("schema_id", "catalog", "schema_name").collect()
-        
+
+        if not schemas:
+            logger.warning("No schemas found in aggregated data -- skipping comment generation")
+            return aggregated_df.withColumn("comment", F.lit(None).cast("string"))
+
         comments_data = []
         for schema in schemas:
-            schema_id = schema.schema_id
-            catalog = schema.catalog
-            schema_name = schema.schema_name
-            
-            # Get tables for this schema
             tables_df = source_df.filter(
-                (F.col("catalog") == catalog) & 
-                (F.col("schema") == schema_name)
+                (F.col("catalog") == schema.catalog) &
+                (F.col("schema") == schema.schema_name)
             )
-            
-            # Generate summary
-            comment = self.summarizer.summarize_schema(schema_id, tables_df)
-            comments_data.append((schema_id, comment))
-        
-        # Create DataFrame with comments
-        comments_df = self.spark.createDataFrame(comments_data, ["schema_id", "comment"])
-        
-        # Join back to aggregated data
+            comment = self.summarizer.summarize_schema(schema.schema_id, tables_df)
+            comments_data.append((schema.schema_id, comment))
+
+        from pyspark.sql.types import StructType, StructField, StringType
+        schema_type = StructType([
+            StructField("schema_id", StringType()),
+            StructField("comment", StringType()),
+        ])
+        comments_df = self.spark.createDataFrame(comments_data, schema_type)
         return aggregated_df.join(comments_df, "schema_id", "left")
     
     def build_staged_updates(self, generate_comments: bool = True) -> DataFrame:
         """Build staged updates for merge."""
         tf = table_filter_sql(self.config.table_names or [], column="table_name")
+        logger.info("Schema KB table_names=%s  filter_clause=%s", self.config.table_names, tf)
         source_df = self.read_source_data(table_filter_clause=tf)
         
         aggregated_df = self.aggregate_schema_metadata(source_df)

@@ -35,6 +35,7 @@ from pydantic import BaseModel, Field, field_validator
 from dbxmetagen.config import DEFAULT_CLASSIFICATION_MODEL
 from dbxmetagen.ontology_roles import (
     AUDIT_COLUMN_NAMES as _AUDIT_PATTERNS_CANONICAL,
+    BUSINESS_KEY_COLUMN_NAMES as _BUSINESS_KEY_PATTERNS_CANONICAL,
     GEO_COLUMN_NAMES as _GEO_PATTERNS_CANONICAL,
     LABEL_COLUMN_NAMES as _LABEL_PATTERNS_CANONICAL,
 )
@@ -4047,19 +4048,30 @@ class OntologyBuilder:
         _TEXT_PATTERNS = _LABEL_PATTERNS_CANONICAL
         _SYSTEM_PATTERNS = _AUDIT_PATTERNS_CANONICAL
 
-        if linked_entity:
+        tbl_raw = table_name.rsplit(".", 1)[-1].lower() if table_name else ""
+
+        def _is_table_pk(col: str, tbl: str) -> bool:
+            if col == "id":
+                return True
+            m = re.match(r'^(.+?)_(id|key)$', col)
+            if not m or not tbl:
+                return False
+            stem = m.group(1)
+            return tbl.startswith(stem) or stem.startswith(tbl.rstrip("s"))
+
+        is_self_pk = _is_table_pk(col_lower, tbl_raw)
+
+        if linked_entity and not is_self_pk:
             if col_lower.endswith(("_id", "_key", "_ref")) or col_lower == "id":
                 return "object_property", "heuristic_strong", 0.80
-        if is_pk_column:
+        if is_pk_column or is_self_pk:
             return "primary_key", "heuristic_strong", 0.85
         if re.search(r'_(id|key)$', col_lower):
-            # Self-referencing PK detection: e.g. order_id on the orders table
-            table_short = table_name.rsplit(".", 1)[-1].lower().rstrip("s") if table_name else ""
-            if table_short and (col_lower == f"{table_short}_id" or col_lower == f"{table_short}_key"):
+            if _is_table_pk(col_lower, tbl_raw):
                 return "primary_key", "heuristic_strong", 0.80
             return "object_property", "heuristic_weak", 0.55
-        if cls_type in ("PII", "PHI"):
-            return "pii", "heuristic_strong", 0.85
+        if col_lower in _BUSINESS_KEY_PATTERNS_CANONICAL:
+            return "business_key", "heuristic_strong", 0.80
         if dtype == "BOOLEAN" or col_lower.startswith(("is_", "has_", "flag_")):
             return "dimension", "heuristic_weak", 0.60
         _is_geo = col_lower in _GEO_PATTERNS or col_lower.startswith("geo_")
@@ -4080,7 +4092,9 @@ class OntologyBuilder:
             return "temporal", "heuristic_strong", 0.80
         if col_lower in _HIERARCHY_PATTERNS:
             return "dimension", "heuristic_weak", 0.60
-        if dtype == "STRING" and col_lower in _TEXT_PATTERNS:
+        _LABEL_SUFFIXES = ("_name", "_text", "_notes", "_description", "_summary")
+        if dtype == "STRING" and (col_lower in _TEXT_PATTERNS
+                or any(col_lower.endswith(s) for s in _LABEL_SUFFIXES)):
             return "label", "heuristic_weak", 0.55
         if dtype in ("INT", "INTEGER", "BIGINT", "LONG", "DOUBLE", "FLOAT", "DECIMAL"):
             return "measure", "heuristic_weak", 0.60
@@ -4206,7 +4220,14 @@ class OntologyBuilder:
                         linked = str(linked_from_bundle)
                     bundle_match_count += 1
                 else:
-                    is_pk = col_lower in {cc.lower() for cc in pe["source_columns"]}
+                    tbl_short = tbl.rsplit(".", 1)[-1].lower()
+                    pk_match = re.match(r'^(.+?)_(id|key)$', col_lower)
+                    is_pk = col_lower == "id" or (
+                        bool(pk_match) and tbl_short and (
+                            tbl_short.startswith(pk_match.group(1))
+                            or pk_match.group(1).startswith(tbl_short.rstrip("s"))
+                        )
+                    )
                     role, discovery_method, confidence = self._heuristic_classify(
                         col_lower, dtype, is_pk, linked, cls_type, table_name=tbl,
                     )
@@ -4339,6 +4360,7 @@ class OntologyBuilder:
             discovered_rows = self.spark.sql(f"""
                 SELECT DISTINCT entity_type FROM {ent_table}
                 WHERE confidence >= 0.4 AND entity_type IS NOT NULL
+                  AND entity_role = 'primary'
             """).collect()
         except Exception as e:
             logger.warning("emit_bundle_edges: cannot read entities: %s", e)
@@ -4470,6 +4492,7 @@ class OntologyBuilder:
         table_to_primary: Dict[str, str] = {}
         for r in primary_rows:
             table_to_primary[r.table_name] = r.entity_type
+        primary_entity_types = set(table_to_primary.values())
 
         rels: List[Dict] = []
         seen: set = set()
@@ -4532,6 +4555,8 @@ class OntologyBuilder:
             src_type = lr.owning_entity_type
             dst_type = lr.linked_entity_type
             if not src_type or not dst_type or src_type == dst_type:
+                continue
+            if dst_type not in primary_entity_types:
                 continue
             rel_name = self._resolve_edge_name(src_type, dst_type, lr.column_name)
             key = (src_type, dst_type, rel_name)

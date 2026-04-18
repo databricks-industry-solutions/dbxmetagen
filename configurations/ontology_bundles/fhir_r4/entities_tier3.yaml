@@ -1652,7 +1652,7 @@ CareTeam:
       target_entity: Patient
     telecom:
       kind: data_property
-      role: pii
+            role: label
       typical_attributes:
       - phone
       - email
@@ -5029,7 +5029,7 @@ Device:
   properties:
     contact:
       kind: data_property
-      role: pii
+            role: label
       typical_attributes:
       - contact
     definition:
@@ -5264,7 +5264,7 @@ DeviceDefinition:
   properties:
     contact:
       kind: data_property
-      role: pii
+            role: label
       typical_attributes:
       - contact
     identifier:
@@ -7076,7 +7076,7 @@ Endpoint:
       - connectiontype
     contact:
       kind: data_property
-      role: pii
+            role: label
       typical_attributes:
       - contact
     header:
@@ -9446,7 +9446,7 @@ HealthcareService:
       - specialty
     telecom:
       kind: data_property
-      role: pii
+            role: label
       typical_attributes:
       - phone
       - email
@@ -10802,7 +10802,7 @@ Location:
   properties:
     address:
       kind: data_property
-      role: pii
+            role: label
       typical_attributes:
       - address
       - street_address
@@ -10889,7 +10889,7 @@ Location:
       - status
     telecom:
       kind: data_property
-      role: pii
+            role: label
       typical_attributes:
       - phone
       - email
@@ -14886,7 +14886,7 @@ Organization:
       - is_active
     address:
       kind: data_property
-      role: pii
+            role: label
       typical_attributes:
       - address
       - street_address
@@ -14930,7 +14930,7 @@ Organization:
       target_entity: Resource
     telecom:
       kind: data_property
-      role: pii
+            role: label
       typical_attributes:
       - phone
       - email
@@ -15089,7 +15089,7 @@ OrganizationAffiliation:
       - specialty
     telecom:
       kind: data_property
-      role: pii
+            role: label
       typical_attributes:
       - phone
       - email
@@ -15194,7 +15194,7 @@ Patient:
       - is_active
     address:
       kind: data_property
-      role: pii
+            role: label
       typical_attributes:
       - address
       - street_address
@@ -15271,7 +15271,7 @@ Patient:
       - multiplebirthinteger
     name:
       kind: data_property
-      role: pii
+            role: label
       typical_attributes:
       - name
       - full_name
@@ -15286,7 +15286,7 @@ Patient:
       - image
     telecom:
       kind: data_property
-      role: pii
+            role: label
       typical_attributes:
       - phone
       - email
@@ -15655,7 +15655,7 @@ Person:
       - is_active
     address:
       kind: data_property
-      role: pii
+            role: label
       typical_attributes:
       - address
       - street_address
@@ -15693,7 +15693,7 @@ Person:
       target_entity: Organization
     name:
       kind: data_property
-      role: pii
+            role: label
       typical_attributes:
       - name
       - full_name
@@ -15708,7 +15708,7 @@ Person:
       - image
     telecom:
       kind: data_property
-      role: pii
+            role: label
       typical_attributes:
       - phone
       - email
@@ -15783,7 +15783,7 @@ Practitioner:
       - is_active
     address:
       kind: data_property
-      role: pii
+            role: label
       typical_attributes:
       - address
       - street_address
@@ -15819,7 +15819,7 @@ Practitioner:
       - practitioner_id
     name:
       kind: data_property
-      role: pii
+            role: label
       typical_attributes:
       - name
       - full_name
@@ -15834,7 +15834,7 @@ Practitioner:
       - image
     telecom:
       kind: data_property
-      role: pii
+            role: label
       typical_attributes:
       - phone
       - email
@@ -15994,7 +15994,7 @@ PractitionerRole:
       - specialty
     telecom:
       kind: data_property
-      role: pii
+            role: label
       typical_attributes:
       - phone
       - email
@@ -16884,7 +16884,7 @@ RelatedPerson:
       - is_active
     address:
       kind: data_property
-      role: pii
+            role: label
       typical_attributes:
       - address
       - street_address
@@ -16913,7 +16913,7 @@ RelatedPerson:
       - related_person_id
     name:
       kind: data_property
-      role: pii
+            role: label
       typical_attributes:
       - name
       - full_name
@@ -16949,7 +16949,7 @@ RelatedPerson:
       - relationship
     telecom:
       kind: data_property
-      role: pii
+            role: label
       typical_attributes:
       - phone
       - email
@@ -19358,7 +19358,7 @@ Subscription:
   properties:
     contact:
       kind: data_property
-      role: pii
+            role: label
       typical_attributes:
       - contact
     criteria:

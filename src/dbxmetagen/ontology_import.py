@@ -298,12 +298,6 @@ def _default_property_roles() -> Dict[str, Dict]:
             "maps_to_kind": "data_property",
             "semantic_role": "label",
         },
-        "pii": {
-            "description": "Personally identifiable information",
-            "maps_to_kind": "data_property",
-            "semantic_role": "pii",
-            "governance_flag": True,
-        },
         "audit": {
             "description": "System-generated provenance",
             "maps_to_kind": "data_property",

@@ -45,17 +45,17 @@ Person:
       - name
     email:
       kind: data_property
-      role: pii
+            role: label
       typical_attributes:
       - email
     phone:
       kind: data_property
-      role: pii
+            role: label
       typical_attributes:
       - phone
     address:
       kind: data_property
-      role: pii
+            role: label
       typical_attributes:
       - address
     created_date:
@@ -117,7 +117,7 @@ Organization:
       - type
     address:
       kind: data_property
-      role: pii
+            role: label
       typical_attributes:
       - address
     parent_id:
@@ -278,7 +278,7 @@ Location:
       - name
     address:
       kind: data_property
-      role: pii
+            role: label
       typical_attributes:
       - address
     city:
@@ -562,7 +562,7 @@ Patient:
       - patient_mrn
     name:
       kind: data_property
-      role: pii
+            role: label
       typical_attributes:
       - name
       - full_name
@@ -571,7 +571,7 @@ Patient:
       - patient_name
     dob:
       kind: data_property
-      role: pii
+            role: label
       typical_attributes:
       - dob
       - date_of_birth
@@ -586,7 +586,7 @@ Patient:
       - gender_code
     address:
       kind: data_property
-      role: pii
+            role: label
       typical_attributes:
       - address
     identifier:
@@ -652,7 +652,7 @@ Provider:
       - id
     npi:
       kind: data_property
-      role: pii
+            role: label
       typical_attributes:
       - npi
     name:
@@ -1858,7 +1858,7 @@ Practitioner:
       - name
     npi:
       kind: data_property
-      role: pii
+            role: label
       typical_attributes:
       - npi
     specialty:
@@ -1936,7 +1936,7 @@ Facility:
       - type
     address:
       kind: data_property
-      role: pii
+            role: label
       typical_attributes:
       - address
     status:

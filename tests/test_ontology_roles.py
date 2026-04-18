@@ -15,8 +15,9 @@ from dbxmetagen.ontology_roles import (
 
 
 class TestCanonicalRoles:
-    def test_twelve_roles_defined(self):
-        assert len(PROPERTY_ROLES) == 12
+    def test_eleven_roles_defined(self):
+        assert len(PROPERTY_ROLES) == 11
+        assert "pii" not in PROPERTY_ROLES
 
     def test_valid_role_names_matches_keys(self):
         assert VALID_ROLE_NAMES == frozenset(PROPERTY_ROLES.keys())
@@ -34,8 +35,8 @@ class TestCanonicalRoles:
     def test_object_property_has_object_kind(self):
         assert PROPERTY_ROLES["object_property"]["kind"] == "object_property"
 
-    def test_pii_has_governance_flag(self):
-        assert PROPERTY_ROLES["pii"].get("governance_flag") is True
+    def test_no_pii_role(self):
+        assert "pii" not in PROPERTY_ROLES
 
 
 class TestInferRole:
@@ -55,8 +56,11 @@ class TestInferRole:
     def test_fk_to_unknown_entity(self, entities):
         assert infer_role_from_column_name("widget_id", "Claim", entities) == "object_property"
 
-    def test_pii_column(self, entities):
-        assert infer_role_from_column_name("email", "Patient", entities) == "pii"
+    def test_label_column_email(self, entities):
+        assert infer_role_from_column_name("email", "Patient", entities) == "label"
+
+    def test_business_key_column(self, entities):
+        assert infer_role_from_column_name("mrn", "Patient", entities) == "business_key"
 
     def test_temporal_suffix(self, entities):
         assert infer_role_from_column_name("admission_date", "Encounter", entities) == "temporal"
@@ -98,7 +102,7 @@ class TestPropertyRolesForYaml:
     def test_returns_dict(self):
         result = property_roles_for_yaml()
         assert isinstance(result, dict)
-        assert len(result) == 12
+        assert len(result) == 11
 
     def test_has_maps_to_kind(self):
         result = property_roles_for_yaml()

@@ -45,20 +45,20 @@ Person:
       - display_name
     email:
       kind: data_property
-      role: pii
+            role: label
       typical_attributes:
       - email
       - email_address
     phone:
       kind: data_property
-      role: pii
+            role: label
       typical_attributes:
       - phone
       - phone_number
       - mobile
     address:
       kind: data_property
-      role: pii
+            role: label
       typical_attributes:
       - address
     created_date:
@@ -145,7 +145,7 @@ Organization:
       - category
     address:
       kind: data_property
-      role: pii
+            role: label
       typical_attributes:
       - address
     parent_id:
@@ -416,7 +416,7 @@ Location:
       - site_name
     address:
       kind: data_property
-      role: pii
+            role: label
       typical_attributes:
       - address
     city:

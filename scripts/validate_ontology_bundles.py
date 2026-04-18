@@ -33,7 +33,7 @@ try:
     from dbxmetagen.ontology_roles import VALID_ROLE_NAMES as VALID_PROPERTY_ROLES
 except ImportError:
     VALID_PROPERTY_ROLES = {
-        "object_property", "primary_key", "business_key", "pii", "dimension",
+        "object_property", "primary_key", "business_key", "dimension",
         "geographic", "audit", "temporal", "label", "measure",
         "derived", "composite_component",
     }

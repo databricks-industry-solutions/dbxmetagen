@@ -2215,7 +2215,7 @@ Provider:
       - dea
     npi:
       kind: data_property
-      role: pii
+            role: label
       typical_attributes:
       - npi
     specialty_source_value:

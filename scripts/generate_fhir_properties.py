@@ -34,11 +34,9 @@ _MEASURE_TYPES: Set[str] = {
     "Money", "Quantity", "integer", "decimal", "positiveInt", "unsignedInt",
     "Age", "Duration", "Count", "Distance", "SimpleQuantity",
 }
-_PII_TYPES: Set[str] = {
-    "HumanName", "Address", "ContactPoint",
-}
 _LABEL_TYPES: Set[str] = {
     "string", "markdown", "Annotation", "Attachment", "Narrative",
+    "HumanName", "Address", "ContactPoint",
 }
 _IDENTIFIER_TYPE = "Identifier"
 _REFERENCE_TYPE = "Reference"
@@ -52,8 +50,6 @@ def _fhir_type_to_role(target_type: str) -> Optional[str]:
         return "business_key"
     if target_type == _REFERENCE_TYPE:
         return "object_property"
-    if target_type in _PII_TYPES:
-        return "pii"
     if target_type in _TEMPORAL_TYPES:
         return "temporal"
     if target_type in _DIMENSION_TYPES:
@@ -223,12 +219,6 @@ PROPERTY_ROLES = {
         "description": "Human-readable name or title",
         "maps_to_kind": "data_property",
         "semantic_role": "label",
-    },
-    "pii": {
-        "description": "Personally identifiable information",
-        "maps_to_kind": "data_property",
-        "semantic_role": "pii",
-        "governance_flag": True,
     },
     "audit": {
         "description": "System-generated provenance column",

@@ -63,8 +63,8 @@ _FHIR_MEASURE = {
     "Money", "Quantity", "integer", "decimal", "positiveInt", "unsignedInt",
     "Age", "Duration", "Count", "Distance", "SimpleQuantity",
 }
-_FHIR_PII = {"HumanName", "Address", "ContactPoint"}
-_FHIR_LABEL = {"string", "markdown", "Annotation", "Attachment", "Narrative"}
+_FHIR_LABEL = {"string", "markdown", "Annotation", "Attachment", "Narrative",
+               "HumanName", "Address", "ContactPoint"}
 
 _FHIR_REFERENCE_TARGETS: Dict[str, str] = {
     "subject": "Patient", "patient": "Patient", "encounter": "Encounter",
@@ -158,8 +158,6 @@ def _map_type_to_role(target: str, source: str, all_entities: Set[str]) -> Optio
             return "business_key"
         if target == "Reference":
             return "object_property"
-        if target in _FHIR_PII:
-            return "pii"
         if target in _FHIR_TEMPORAL:
             return "temporal"
         if target in _FHIR_DIMENSION:

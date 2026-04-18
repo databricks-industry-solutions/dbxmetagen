@@ -38,17 +38,17 @@ Person:
       - name
     email:
       kind: data_property
-      role: pii
+            role: label
       typical_attributes:
       - email
     phone:
       kind: data_property
-      role: pii
+            role: label
       typical_attributes:
       - phone
     address:
       kind: data_property
-      role: pii
+            role: label
       typical_attributes:
       - address
     created_date:
@@ -102,7 +102,7 @@ Organization:
       - type
     address:
       kind: data_property
-      role: pii
+            role: label
       typical_attributes:
       - address
     parent_id:
@@ -207,7 +207,7 @@ Location:
       - name
     address:
       kind: data_property
-      role: pii
+            role: label
       typical_attributes:
       - address
     city:
@@ -476,7 +476,7 @@ Customer:
       - full_name
     email:
       kind: data_property
-      role: pii
+            role: label
       typical_attributes:
       - email
       - email_address

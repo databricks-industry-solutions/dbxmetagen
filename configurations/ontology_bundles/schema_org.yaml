@@ -43206,11 +43206,6 @@ ontology:
       description: Human-readable name or title
       maps_to_kind: data_property
       semantic_role: label
-    pii:
-      description: Personally identifiable information
-      maps_to_kind: data_property
-      semantic_role: pii
-      governance_flag: true
     audit:
       description: System-generated provenance column
       maps_to_kind: data_property

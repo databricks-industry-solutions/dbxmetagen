@@ -14,6 +14,28 @@ description: >-
 For full architecture details, read [CLAUDE.md](../../../CLAUDE.md). This skill covers
 the essentials and hard-won pitfalls.
 
+## Current Environment
+
+**Always use these values for deployment and CLI operations:**
+
+| Setting | Value |
+|---------|-------|
+| Databricks CLI profile | `DMVM` |
+| Deploy target | `demo` |
+| Catalog | `eswanson_demo` |
+| Schema | `metadata_results` |
+
+```bash
+# Deploy
+./deploy.sh --profile DMVM --target demo --no-app
+
+# Run jobs
+databricks bundle run <job_name> -t demo -p DMVM
+
+# Or via jobs API (needed when param values contain commas)
+databricks jobs run-now -p DMVM --json '{"job_id": ..., "job_parameters": [...]}'
+```
+
 ## Project Overview
 
 **What:** Python library + Databricks App for automated metadata generation on Unity Catalog tables.
@@ -163,13 +185,13 @@ All autofix functions need guards to avoid corrupting:
 
 ```bash
 # Standard deploy (builds wheel, syncs bundle, starts app)
-./deploy.sh --profile DEFAULT --target dev
+./deploy.sh --profile DMVM --target demo
 
 # Jobs only, skip app entirely
-./deploy.sh --profile DEFAULT --target dev --no-app
+./deploy.sh --profile DMVM --target demo --no-app
 
 # Grant UC permissions for app service principal
-./deploy.sh --profile DEFAULT --target dev --permissions
+./deploy.sh --profile DMVM --target demo --permissions
 ```
 
 **Key rules:**
@@ -198,10 +220,18 @@ cd /path/to/dbxmetagen-eval
 #    IMPORTANT: You MUST pass ontology_bundle and table_names explicitly.
 #    The job YAML default for ontology_bundle is "healthcare" (not fhir_r4)
 #    and table_names defaults to "" (all tables). Neither is correct for eval.
-databricks bundle run full_analytics_pipeline_job -t demo -p DMVM \
-  --param ontology_bundle=fhir_r4 \
-  --param incremental=false \
-  --param table_names='eswanson_demo.metadata_results.patients,eswanson_demo.metadata_results.providers,eswanson_demo.metadata_results.encounters,eswanson_demo.metadata_results.diagnoses,eswanson_demo.metadata_results.medications,eswanson_demo.metadata_results.lab_results'
+#
+#    NOTE: `databricks bundle run --param` chokes when values contain commas.
+#    Use `databricks jobs run-now --json` instead (get job_id from `databricks bundle summary`):
+JOB_ID=$(databricks bundle summary -t demo -p DMVM -o json | python3 -c "import sys,json; print(json.load(sys.stdin)['resources']['jobs']['full_analytics_pipeline_job']['id'])")
+databricks jobs run-now -p DMVM --json "{
+  \"job_id\": $JOB_ID,
+  \"job_parameters\": {
+    \"ontology_bundle\": \"fhir_r4\",
+    \"incremental\": \"false\",
+    \"table_names\": \"eswanson_demo.metadata_results.patients,eswanson_demo.metadata_results.providers,eswanson_demo.metadata_results.encounters,eswanson_demo.metadata_results.diagnoses,eswanson_demo.metadata_results.medications,eswanson_demo.metadata_results.lab_results\"
+  }
+}"
 
 # 3. Run the eval comparison (scores pipeline output against ground truth)
 databricks bundle run eval_compare_job -t demo -p DMVM \

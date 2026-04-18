@@ -1,9 +1,13 @@
 """Canonical property-role vocabulary for ontology bundles.
 
 Single source of truth for:
-- PROPERTY_ROLES: the 12 recognised roles with metadata
+- PROPERTY_ROLES: the 11 recognised structural roles with metadata
 - ROLE_PATTERNS: column-name / dtype patterns for build-time inference
 - VALID_ROLE_NAMES: set of legal role strings
+
+PII/sensitivity is NOT a property role -- it is an orthogonal governance
+concern captured by the ``is_sensitive`` boolean on each column property row
+and by the separate PI detection pipeline (``classification_type``).
 
 Imported by ontology.py (runtime heuristic), the property generator (build-time),
 and validate_ontology_bundles.py (validation).
@@ -52,12 +56,6 @@ PROPERTY_ROLES: dict[str, dict] = {
         "kind": "data_property",
         "semantic_role": "label",
     },
-    "pii": {
-        "description": "Personally identifiable information",
-        "kind": "data_property",
-        "semantic_role": "pii",
-        "governance_flag": True,
-    },
     "audit": {
         "description": "System-generated provenance column",
         "kind": "data_property",
@@ -82,12 +80,10 @@ VALID_ROLE_NAMES: frozenset[str] = frozenset(PROPERTY_ROLES)
 # roles from entity-level typical_attributes (flat column name lists).
 # ---------------------------------------------------------------------------
 
-PII_COLUMN_NAMES: frozenset[str] = frozenset({
-    "email", "phone", "phone_number", "ssn", "social_security_number",
-    "first_name", "last_name", "full_name", "date_of_birth", "dob",
-    "address", "street_address", "home_address", "mrn", "npi",
-    "drivers_license", "passport_number", "credit_card_number",
-    "bank_account_number", "tax_id", "national_id",
+BUSINESS_KEY_COLUMN_NAMES: frozenset[str] = frozenset({
+    "ssn", "social_security_number", "drivers_license", "passport_number",
+    "credit_card_number", "bank_account_number", "tax_id", "national_id",
+    "mrn", "npi", "policy_number",
 })
 
 TEMPORAL_SUFFIXES: tuple[str, ...] = (
@@ -97,6 +93,7 @@ TEMPORAL_SUFFIXES: tuple[str, ...] = (
 TEMPORAL_COLUMN_NAMES: frozenset[str] = frozenset({
     "date", "time", "timestamp", "created", "updated", "modified",
     "effective_date", "start_date", "end_date", "birth_date",
+    "date_of_birth", "dob",
 })
 
 MEASURE_SUFFIXES: tuple[str, ...] = (
@@ -121,13 +118,15 @@ GEO_COLUMN_NAMES: frozenset[str] = frozenset({
     "country", "country_code", "state", "state_code", "city",
     "postal_code", "zip_code", "zipcode", "zip", "latitude",
     "longitude", "lat", "lon", "geo_region", "region", "county",
-    "province", "address",
+    "province", "address", "street_address", "home_address",
 })
 
 LABEL_COLUMN_NAMES: frozenset[str] = frozenset({
     "name", "title", "label", "description", "note_text", "notes",
     "clinical_summary", "summary", "comment", "text_content", "body",
     "narrative", "remarks", "free_text", "memo", "abstract",
+    "email", "phone", "phone_number",
+    "first_name", "last_name", "full_name",
 })
 
 
@@ -158,8 +157,8 @@ def infer_role_from_column_name(
                 return "object_property"
         return "object_property"  # still an FK even if target unknown
 
-    if c in PII_COLUMN_NAMES:
-        return "pii"
+    if c in BUSINESS_KEY_COLUMN_NAMES:
+        return "business_key"
     if c in AUDIT_COLUMN_NAMES or c.startswith("etl_"):
         return "audit"
     if c in GEO_COLUMN_NAMES or c.startswith("geo_"):

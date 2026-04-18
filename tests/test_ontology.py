@@ -1424,7 +1424,7 @@ class TestHealthcareBundlePropertyIndex:
         assert index["patient_id"][0] == "primary_key"
         assert "mrn" in index
         assert "first_name" in index
-        assert index["first_name"][0] == "pii"
+        assert index["first_name"][0] == "label"
         assert "date_of_birth" in index
         assert "gender" in index
         assert index["gender"][0] == "dimension"
@@ -1482,7 +1482,7 @@ class TestFhirBundlePropertyIndex:
         assert "gender" in index
         assert index["gender"][0] == "dimension"
         assert "address" in index
-        assert index["address"][0] == "pii"
+        assert index["address"][0] == "label"
 
     def test_encounter_index_has_properties(self, builder):
         index = builder._build_bundle_property_index("Encounter")
