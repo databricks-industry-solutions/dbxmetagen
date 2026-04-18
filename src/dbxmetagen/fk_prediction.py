@@ -1074,11 +1074,15 @@ class FKPredictor:
         # Token-boundary match: col must start with table stem or have it after '_'
         tbl_b_stem = F.regexp_replace(tbl_b_short, "s$", "")
         tbl_a_stem = F.regexp_replace(tbl_a_short, "s$", "")
-        table_name_match = F.when(
-            col_a_short.rlike(F.concat(F.lit("(^|_)"), tbl_b_stem, F.lit("(_|$)")))
-            | col_b_short.rlike(F.concat(F.lit("(^|_)"), tbl_a_stem, F.lit("(_|$)"))),
-            1.0,
-        ).otherwise(0.0)
+        _a_matches_b = F.expr(
+            "rlike(lower(element_at(split(col_a, '\\\\.'), -1)), "
+            "concat('(^|_)', regexp_replace(lower(element_at(split(table_b, '\\\\.'), -1)), 's$', ''), '(_|$)'))"
+        )
+        _b_matches_a = F.expr(
+            "rlike(lower(element_at(split(col_b, '\\\\.'), -1)), "
+            "concat('(^|_)', regexp_replace(lower(element_at(split(table_a, '\\\\.'), -1)), 's$', ''), '(_|$)'))"
+        )
+        table_name_match = F.when(_a_matches_b | _b_matches_a, 1.0).otherwise(0.0)
 
         # fk_ or ref_ prefix stripping
         fk_prefix = F.when(
@@ -1316,14 +1320,15 @@ class FKPredictor:
             return df
 
         # Name-convention fallback: patient_id on encounters -> FK child
-        _ca = F.lower(F.element_at(F.split(F.col("col_a"), "\\."), -1))
-        _cb = F.lower(F.element_at(F.split(F.col("col_b"), "\\."), -1))
-        _ta_stem = F.regexp_replace(F.lower(F.element_at(F.split(F.col("table_a"), "\\."), -1)), "s$", "")
-        _tb_stem = F.regexp_replace(F.lower(F.element_at(F.split(F.col("table_b"), "\\."), -1)), "s$", "")
-        # col_a references table_b (col_a is FK) -> no swap
-        # col_b references table_a (col_b is FK) -> swap
-        _a_refs_b = _ca.rlike(F.concat(F.lit("(^|_)"), _tb_stem, F.lit("(_|$)")))
-        _b_refs_a = _cb.rlike(F.concat(F.lit("(^|_)"), _ta_stem, F.lit("(_|$)")))
+        # Use SQL-level rlike() which supports Column patterns
+        _a_refs_b = F.expr(
+            "rlike(lower(element_at(split(col_a, '\\\\.'), -1)), "
+            "concat('(^|_)', regexp_replace(lower(element_at(split(table_b, '\\\\.'), -1)), 's$', ''), '(_|$)'))"
+        )
+        _b_refs_a = F.expr(
+            "rlike(lower(element_at(split(col_b, '\\\\.'), -1)), "
+            "concat('(^|_)', regexp_replace(lower(element_at(split(table_a, '\\\\.'), -1)), 's$', ''), '(_|$)'))"
+        )
         name_swap = F.when(_b_refs_a & ~_a_refs_b, F.lit(True)).when(
             _a_refs_b & ~_b_refs_a, F.lit(False)
         )
