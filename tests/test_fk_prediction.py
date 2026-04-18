@@ -71,9 +71,9 @@ def _nonempty_candidate_df(total=4, ai_eligible=2, skip_n=1):
     def _filter(*_a, **_k):
         fc["n"] += 1
         if fc["n"] == 3:
-            return need
-        if fc["n"] == 4:
             return skip
+        if fc["n"] == 4:
+            return need
         return df
 
     df.filter = MagicMock(side_effect=_filter)
@@ -367,7 +367,6 @@ class TestRunOrchestration:
             patch.object(FKPredictor, "_sample_from_source", side_effect=lambda c: c),
             patch.object(FKPredictor, "rule_score", side_effect=lambda c: c),
             patch.object(FKPredictor, "cardinality_analysis", side_effect=lambda c: c),
-            patch.object(FKPredictor, "_apply_tiered_ai_cap", side_effect=lambda c: c),
             patch.object(FKPredictor, "_with_skip_ai_flags", side_effect=lambda c: c),
             patch.object(FKPredictor, "ai_judge") as m_ai,
         ):
@@ -401,7 +400,6 @@ class TestDryRunAccounting:
             patch.object(FKPredictor, "_sample_from_source", side_effect=lambda c: c),
             patch.object(FKPredictor, "rule_score", side_effect=lambda c: c),
             patch.object(FKPredictor, "cardinality_analysis", side_effect=lambda c: c),
-            patch.object(FKPredictor, "_apply_tiered_ai_cap", side_effect=lambda c: c),
             patch.object(FKPredictor, "_with_skip_ai_flags", side_effect=lambda c: c),
             patch.object(FKPredictor, "ai_judge") as m_ai,
             patch.object(FKPredictor, "_heuristic_ai_fill") as m_heur,
@@ -430,7 +428,6 @@ class TestDryRunAccounting:
             patch.object(FKPredictor, "_sample_from_source", side_effect=lambda c: c),
             patch.object(FKPredictor, "rule_score", side_effect=lambda c: c),
             patch.object(FKPredictor, "cardinality_analysis", side_effect=lambda c: c),
-            patch.object(FKPredictor, "_apply_tiered_ai_cap", side_effect=lambda c: c),
             patch.object(FKPredictor, "_with_skip_ai_flags", side_effect=lambda c: c),
         ):
             p = FKPredictor(spark, cfg)
@@ -571,14 +568,6 @@ class TestConfidenceScoringLogic:
     def test_rule_score_includes_col_similarity_weight(self):
         src = inspect.getsource(FKPredictor.rule_score)
         assert "col_similarity" in src
-
-    def test_tiered_ai_cap_keeps_non_embedding_rows(self):
-        src = inspect.getsource(FKPredictor._apply_tiered_ai_cap)
-        assert "SR_EMBEDDING" in src
-
-    def test_max_ai_candidates_config_used(self):
-        src = inspect.getsource(FKPredictor._apply_tiered_ai_cap)
-        assert "max_ai_candidates" in src
 
     def test_skip_ai_declared_requires_flag_and_rank(self):
         src = inspect.getsource(FKPredictor._with_skip_ai_flags)
