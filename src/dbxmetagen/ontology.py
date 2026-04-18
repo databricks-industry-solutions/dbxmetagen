@@ -2078,7 +2078,7 @@ class EntityDiscoverer:
         return discovered
 
     def _match_column_to_entities(self, col_row) -> List[tuple]:
-        """Match a column to entity definitions. Returns list of (entity_type, confidence)."""
+        """Match a column to entity definitions. Returns top-1 entity (+ close runner-up)."""
         col_name = (col_row.column_name or "").lower()
         comment = (col_row.comment or "").lower()
         classification = (col_row.classification or "").lower()
@@ -2093,7 +2093,11 @@ class EntityDiscoverer:
             )
             if score >= 0.4:
                 matches.append((entity_def.name, score))
-        return matches
+        if not matches:
+            return []
+        matches.sort(key=lambda x: x[1], reverse=True)
+        best_score = matches[0][1]
+        return [m for m in matches if m[1] >= best_score - 0.1]
 
     def _column_match_score(
         self,
@@ -2111,16 +2115,16 @@ class EntityDiscoverer:
             max_score += 2.0
             if attr_lower == col_name:
                 score += 2.0
-            elif attr_lower in col_name or col_name in attr_lower:
+            elif len(attr_lower) >= 4 and (attr_lower in col_name or col_name in attr_lower):
                 score += 1.2
-            elif any(attr_lower in v for v in col_variations):
+            elif len(attr_lower) >= 4 and any(attr_lower in v for v in col_variations):
                 score += 0.8
         for kw in entity_def.keywords:
             kw_lower = kw.lower()
             max_score += 1.0
-            if kw_lower in col_name:
+            if len(kw_lower) >= 4 and kw_lower in col_name:
                 score += 1.0
-            elif kw_lower in comment:
+            elif len(kw_lower) >= 4 and kw_lower in comment:
                 score += 0.5
         entity_lower = entity_def.name.lower()
         if re.match(rf"{entity_lower}[_\s]?id$", col_name):
@@ -4036,6 +4040,7 @@ class OntologyBuilder:
         linked_entity: Optional[str],
         cls_type: str,
         table_name: str = "",
+        known_table_stems: Optional[frozenset] = None,
     ) -> Tuple[str, str, float]:
         """Heuristic fallback classification. Returns (role, discovery_method, confidence)."""
         _bundle_geo = getattr(self.discoverer, "_bundle_geo_patterns", frozenset())
@@ -4069,6 +4074,11 @@ class OntologyBuilder:
         if re.search(r'_(id|key)$', col_lower):
             if _is_table_pk(col_lower, tbl_raw):
                 return "primary_key", "heuristic_strong", 0.80
+            stem = re.sub(r'_(id|key)$', '', col_lower)
+            if known_table_stems and not any(
+                ts.startswith(stem) or stem.startswith(ts) for ts in known_table_stems
+            ):
+                return "business_key", "heuristic_weak", 0.55
             return "object_property", "heuristic_weak", 0.55
         if col_lower in _BUSINESS_KEY_PATTERNS_CANONICAL:
             return "business_key", "heuristic_strong", 0.80
@@ -4136,18 +4146,21 @@ class OntologyBuilder:
 
         try:
             ref_ents = self.spark.sql(f"""
-                SELECT entity_type, source_tables, source_columns
+                SELECT entity_type, source_tables, source_columns, confidence
                 FROM {ent_table}
                 WHERE entity_role = 'referenced' AND source_columns IS NOT NULL AND SIZE(source_columns) > 0
             """).collect()
         except Exception:
             ref_ents = []
 
-        col_entity_map: Dict[tuple, str] = {}
+        col_entity_map: Dict[tuple, tuple] = {}
         for r in ref_ents:
+            conf = r.confidence or 0.0
             for t in r.source_tables or []:
                 for c in r.source_columns or []:
-                    col_entity_map[(t, c)] = r.entity_type
+                    existing = col_entity_map.get((t, c))
+                    if not existing or conf > existing[1]:
+                        col_entity_map[(t, c)] = (r.entity_type, conf)
 
         if not table_primary:
             logger.info("classify_column_properties: no primary entities found")
@@ -4159,6 +4172,11 @@ class OntologyBuilder:
             etype = pe_info["entity_type"]
             if etype not in bundle_indices:
                 bundle_indices[etype] = self._build_bundle_property_index(etype)
+
+        # Build known table stems for orphan-id heuristic
+        _known_table_stems = frozenset(
+            t.rsplit(".", 1)[-1].lower().rstrip("s") for t in table_primary
+        )
 
         # Group tables by entity type so we can chunk the collect() and avoid OOM
         etype_to_tables: Dict[str, List[str]] = {}
@@ -4196,7 +4214,9 @@ class OntologyBuilder:
                 if not pe:
                     continue
 
-                linked = col_entity_map.get((tbl, col))
+                _linked_entry = col_entity_map.get((tbl, col))
+                linked = _linked_entry[0] if _linked_entry else None
+                linked_conf = _linked_entry[1] if _linked_entry else 0.0
                 col_lower = col.lower()
                 cls_type = (getattr(c, "classification_type", None) or "").upper()
                 is_sensitive = cls_type in ("PII", "PHI", "PCI")
@@ -4228,8 +4248,10 @@ class OntologyBuilder:
                             or pk_match.group(1).startswith(tbl_short.rstrip("s"))
                         )
                     )
+                    gated_linked = linked if linked_conf >= 0.6 else None
                     role, discovery_method, confidence = self._heuristic_classify(
-                        col_lower, dtype, is_pk, linked, cls_type, table_name=tbl,
+                        col_lower, dtype, is_pk, gated_linked, cls_type,
+                        table_name=tbl, known_table_stems=_known_table_stems,
                     )
                     prop_name = col
 

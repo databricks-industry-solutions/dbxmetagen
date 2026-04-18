@@ -83,15 +83,29 @@ class FKPredictor:
         """Limit candidates to top-K per table pair by name match quality."""
         k = self.config.max_candidates_per_table_pair
         w = Window.partitionBy("table_a", "table_b").orderBy(
-            F.col("col_similarity").desc()
+            F.col("col_similarity").desc(),
+            F.col("col_a").asc(),
+            F.col("col_b").asc(),
         )
         return df.withColumn("_rn", F.row_number().over(w)).filter(F.col("_rn") <= k).drop("_rn")
 
     def _budget_overflow_fill(self, df: DataFrame) -> DataFrame:
-        """Heuristic fill for candidates that exceeded the AI budget."""
+        """Heuristic fill for candidates that exceeded the AI budget.
+
+        Only marks candidates as FK when rule_score meets the confidence
+        threshold -- prevents low-confidence candidates from flipping to
+        True just because they missed the LLM budget cut.
+        """
+        thresh = self.config.confidence_threshold
         return (
-            df.withColumn("ai_is_fk", F.lit(True))
-            .withColumn("ai_confidence", F.col("rule_score"))
+            df.withColumn(
+                "ai_is_fk",
+                F.when(F.col("rule_score") >= thresh, F.lit(True)).otherwise(F.lit(False)),
+            )
+            .withColumn(
+                "ai_confidence",
+                F.when(F.col("rule_score") >= thresh, F.col("rule_score")).otherwise(F.lit(0.0)),
+            )
             .withColumn("ai_reasoning", F.lit("budget_overflow_heuristic"))
             .withColumn("ai_fk_side", F.lit(None).cast("string"))
         )
@@ -581,6 +595,7 @@ class FKPredictor:
                 WHERE start_time >= DATEADD(DAY, -30, CURRENT_TIMESTAMP())
                   AND statement LIKE '%JOIN%'
                   AND statement LIKE '%{cat}.{sch}%'
+                ORDER BY start_time DESC
                 LIMIT 2000
             """).collect()
         except Exception as e:
@@ -879,7 +894,7 @@ class FKPredictor:
                     for ci, cs in cols_list
                 )
                 row = self.spark.sql(
-                    f"SELECT COUNT(*) AS total, {count_exprs} FROM {tbl} TABLESAMPLE ({sample_n} ROWS)"
+                    f"SELECT COUNT(*) AS total, {count_exprs} FROM {tbl} TABLESAMPLE ({sample_n} ROWS) REPEATABLE (42)"
                 ).collect()[0]
                 total = max(row.total, 1)
                 for ci, cs in cols_list:
@@ -927,7 +942,7 @@ class FKPredictor:
             try:
                 self.spark.sql(
                     f"SELECT CAST(`{col_short}` AS STRING) AS val "
-                    f"FROM {table} TABLESAMPLE ({n} ROWS) "
+                    f"FROM {table} TABLESAMPLE ({n} ROWS) REPEATABLE (42) "
                     f"WHERE `{col_short}` IS NOT NULL"
                 ).createOrReplaceTempView(view_name)
             except Exception:
@@ -1022,19 +1037,27 @@ class FKPredictor:
     def rule_score(self, candidates: DataFrame) -> DataFrame:
         """Compute a heuristic joinability score with improved name matching."""
         # dtype compatibility
+        _int_types = ("int", "bigint", "long", "integer")
+        _str_types = ("string", "varchar", "char")
         dtype_score = (
             F.when(F.col("dtype_a") == F.col("dtype_b"), 1.0)
             .when(
-                (F.col("dtype_a").isin("string", "varchar", "char"))
-                & (F.col("dtype_b").isin("int", "bigint", "long", "integer")),
+                (F.col("dtype_a").isin(*_str_types)) & (F.col("dtype_b").isin(*_int_types)),
                 0.7,
             )
             .when(
-                (F.col("dtype_b").isin("string", "varchar", "char"))
-                & (F.col("dtype_a").isin("int", "bigint", "long", "integer")),
+                (F.col("dtype_b").isin(*_str_types)) & (F.col("dtype_a").isin(*_int_types)),
                 0.7,
             )
-            .otherwise(0.3)
+            .when(
+                F.col("dtype_a").isin(*_int_types) & F.col("dtype_b").isin(*_int_types),
+                0.9,
+            )
+            .when(
+                F.col("dtype_a").isin(*_str_types) & F.col("dtype_b").isin(*_str_types),
+                0.9,
+            )
+            .otherwise(0.0)
         )
 
         # Column name suffix heuristic (id, key, code patterns)
@@ -1044,15 +1067,16 @@ class FKPredictor:
             1.0,
         ).otherwise(0.0)
 
-        # table_name + _id pattern: e.g. encounters.patient_id -> patients.id
         col_a_short = F.lower(F.element_at(F.split(F.col("col_a"), "\\."), -1))
         col_b_short = F.lower(F.element_at(F.split(F.col("col_b"), "\\."), -1))
         tbl_a_short = F.lower(F.element_at(F.split(F.col("table_a"), "\\."), -1))
         tbl_b_short = F.lower(F.element_at(F.split(F.col("table_b"), "\\."), -1))
-        # Check if col_a contains table_b name (e.g. patient_id contains 'patient' from 'patients')
+        # Token-boundary match: col must start with table stem or have it after '_'
+        tbl_b_stem = F.regexp_replace(tbl_b_short, "s$", "")
+        tbl_a_stem = F.regexp_replace(tbl_a_short, "s$", "")
         table_name_match = F.when(
-            col_a_short.contains(F.regexp_replace(tbl_b_short, "s$", ""))
-            | col_b_short.contains(F.regexp_replace(tbl_a_short, "s$", "")),
+            col_a_short.rlike(F.concat(F.lit("(^|_)"), tbl_b_stem, F.lit("(_|$)")))
+            | col_b_short.rlike(F.concat(F.lit("(^|_)"), tbl_a_stem, F.lit("(_|$)"))),
             1.0,
         ).otherwise(0.0)
 
@@ -1282,14 +1306,31 @@ class FKPredictor:
         """Swap col_a/col_b so col_a is always the FK (child) side.
 
         Uses AI judgment (ai_fk_side) as primary signal. Falls back to
-        cardinality ratios: the column with lower uniqueness (more duplicates)
-        is more likely the FK side.
+        cardinality ratios, then naming convention (column whose short name
+        contains the OTHER table's stem is the FK child).
         """
         has_ai = "ai_fk_side" in df.columns
         has_card = "_card_ratio_a" in df.columns and "_card_ratio_b" in df.columns
 
         if not has_ai and not has_card:
             return df
+
+        # Name-convention fallback: patient_id on encounters -> FK child
+        _ca = F.lower(F.element_at(F.split(F.col("col_a"), "\\."), -1))
+        _cb = F.lower(F.element_at(F.split(F.col("col_b"), "\\."), -1))
+        _ta_stem = F.regexp_replace(F.lower(F.element_at(F.split(F.col("table_a"), "\\."), -1)), "s$", "")
+        _tb_stem = F.regexp_replace(F.lower(F.element_at(F.split(F.col("table_b"), "\\."), -1)), "s$", "")
+        # col_a references table_b (col_a is FK) -> no swap
+        # col_b references table_a (col_b is FK) -> swap
+        _a_refs_b = _ca.rlike(F.concat(F.lit("(^|_)"), _tb_stem, F.lit("(_|$)")))
+        _b_refs_a = _cb.rlike(F.concat(F.lit("(^|_)"), _ta_stem, F.lit("(_|$)")))
+        name_swap = F.when(_b_refs_a & ~_a_refs_b, F.lit(True)).when(
+            _a_refs_b & ~_b_refs_a, F.lit(False)
+        )
+
+        card_swap = None
+        if has_card:
+            card_swap = F.col("_card_ratio_b") < F.col("_card_ratio_a")
 
         # should_swap = True means col_b is the FK, so we need to swap a<->b
         if has_ai and has_card:
@@ -1298,13 +1339,18 @@ class FKPredictor:
             ).when(
                 F.col("ai_fk_side") == F.lit("a"), F.lit(False)
             ).otherwise(
-                # Fallback: lower uniqueness = more duplicates = FK side
-                F.col("_card_ratio_b") < F.col("_card_ratio_a")
+                F.coalesce(card_swap, name_swap, F.lit(False))
             )
         elif has_ai:
-            should_swap = F.col("ai_fk_side") == F.lit("b")
+            should_swap = F.when(
+                F.col("ai_fk_side") == F.lit("b"), F.lit(True)
+            ).when(
+                F.col("ai_fk_side") == F.lit("a"), F.lit(False)
+            ).otherwise(
+                F.coalesce(name_swap, F.lit(False))
+            )
         else:
-            should_swap = F.col("_card_ratio_b") < F.col("_card_ratio_a")
+            should_swap = F.coalesce(card_swap, name_swap, F.lit(False))
 
         swap_pairs = [
             ("col_a", "col_b"), ("table_a", "table_b"),
@@ -1601,6 +1647,8 @@ class FKPredictor:
             F.col("source_rank").asc(),
             F.col("col_similarity").desc(),
             F.col("query_hit_count").desc(),
+            F.col("table_a").asc(),
+            F.col("table_b").asc(),
         )
         candidates = (
             candidates.withColumn("_rn", F.row_number().over(dedup_w))
@@ -1662,7 +1710,11 @@ class FKPredictor:
 
         overflow = None
         if ai_eligible > max_ai:
-            w = Window.orderBy(F.col("rule_score").desc())
+            w = Window.orderBy(
+                F.col("rule_score").desc(),
+                F.col("col_a").asc(),
+                F.col("col_b").asc(),
+            )
             ranked = need_review.withColumn("_ai_rn", F.row_number().over(w))
             need_llm = ranked.filter(F.col("_ai_rn") <= max_ai).drop("_ai_rn")
             overflow = ranked.filter(F.col("_ai_rn") > max_ai).drop("_ai_rn")
