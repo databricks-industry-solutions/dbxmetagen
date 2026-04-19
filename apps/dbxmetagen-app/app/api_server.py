@@ -365,6 +365,11 @@ def multi_hop_traverse(
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("dbxmetagen API starting – catalog=%s schema=%s obo=%s", CATALOG, SCHEMA, _OBO_ENABLED)
+    if _OBO_ENABLED:
+        logger.info(
+            "OBO mode active – ensure workspace preview "
+            "'Databricks Apps - On-Behalf-Of User Authorization' is enabled"
+        )
     if pg_configured():
         try:
             logger.info(
@@ -441,6 +446,16 @@ def health():
     }
 
 
+def _resolve_user_identity() -> Optional[str]:
+    """Return the OBO user's email when available, else None."""
+    if not _OBO_ENABLED:
+        return None
+    try:
+        return _get_effective_client().current_user.me().user_name
+    except Exception:
+        return None
+
+
 @app.get("/api/config")
 def get_config():
     """Return current catalog/schema defaults and processing settings for frontend."""
@@ -462,6 +477,26 @@ def get_config():
         "lakebase_configured": pg_configured(),
         "obo_enabled": _OBO_ENABLED,
     }
+
+
+@app.get("/api/auth/check")
+def auth_check():
+    """Verify the current caller's UC access to the configured catalog/schema."""
+    if not _OBO_ENABLED:
+        return {"obo_enabled": False, "message": "OBO is disabled; all operations use the app service principal"}
+    identity = _resolve_user_identity()
+    result = {"obo_enabled": True, "user_identity": identity, "has_catalog_access": False, "has_schema_access": False}
+    try:
+        execute_sql(f"USE CATALOG `{CATALOG}`")
+        result["has_catalog_access"] = True
+    except Exception:
+        return result
+    try:
+        rows = execute_sql(f"SHOW SCHEMAS IN `{CATALOG}` LIKE '{SCHEMA}'")
+        result["has_schema_access"] = len(rows) > 0
+    except Exception:
+        pass
+    return result
 
 
 # ---------------------------------------------------------------------------
