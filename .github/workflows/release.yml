@@ -41,6 +41,9 @@ jobs:
         working-directory: apps/dbxmetagen-app/app/src
         run: npm install && npm run build
 
+      - name: Stage configurations into app source
+        run: cp -r configurations apps/dbxmetagen-app/app/configurations
+
       - name: Package app directory
         run: tar -czf dbxmetagen-app-${{ github.ref_name || 'dev' }}.tar.gz -C apps/dbxmetagen-app app
 

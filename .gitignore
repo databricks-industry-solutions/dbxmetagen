@@ -172,6 +172,7 @@ docs/**
 !docs/formal_semantics.md
 !docs/CONFIGURATION.md
 !docs/consumer-guide.md
+!docs/MANUAL_DEPLOYMENT.md
 
 .cursor/*
 !.cursor/rules/
