@@ -176,6 +176,12 @@ variables:
   node_type:
     description: "Node type for job clusters. Must match your cloud provider. AWS: i3.2xlarge (default), Azure: Standard_DS4_v2, GCP: n2-highmem-8."
     default: i3.2xlarge
+  policy_id:
+    description: "Cluster policy ID for classic job clusters. Leave empty for no policy. To resolve by name, override with lookup in your target (see databricks.yml.template)."
+    default: ""
+  budget_policy_id:
+    description: "Serverless budget policy ID for cost attribution on serverless jobs. Get the ID from Settings > Compute > Serverless usage policies. Leave empty for no policy."
+    default: ""
   permission_groups:
     description: Comma-separated list of groups to grant read permissions to (e.g., "data_analysts,data_scientists"). Set to "none" to skip group permissions.
     default: "none"

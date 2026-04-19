@@ -274,6 +274,12 @@ DEPLOY_VARS=(--var "deploying_user=${CURRENT_USER}")
 if [ -n "${node_type:-}" ]; then
     DEPLOY_VARS+=(--var "node_type=${node_type}")
 fi
+if [ -n "${policy_id:-}" ]; then
+    DEPLOY_VARS+=(--var "policy_id=${policy_id}")
+fi
+if [ -n "${budget_policy_id:-}" ]; then
+    DEPLOY_VARS+=(--var "budget_policy_id=${budget_policy_id}")
+fi
 if [ -n "${APP_SP_ID}" ]; then
     DEPLOY_VARS+=(--var "app_service_principal_application_id=${APP_SP_ID}")
 fi
