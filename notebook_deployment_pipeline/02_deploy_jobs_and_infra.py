@@ -5,7 +5,12 @@
 # MAGIC Creates the 5 essential dbxmetagen jobs, grants UC permissions, and
 # MAGIC provisions a Vector Search endpoint. Supports `setup` and `teardown`.
 # MAGIC
-# MAGIC **Requirements**: DBR 16.2+. Run **after** Notebook 01 (app must exist).
+# MAGIC **Requirements**: Run **after** Notebook 01 (app must exist).
+
+# COMMAND ----------
+
+# MAGIC %pip install databricks-sdk==0.68.0 -q
+# MAGIC dbutils.library.restartPython()
 
 # COMMAND ----------
 
@@ -41,23 +46,6 @@ assert volume_path, "volume_path is required (wheel built by NB01)"
 # COMMAND ----------
 
 import os, glob
-
-REQUIRED_SDK_VERSION = "0.68.0"
-
-try:
-    from importlib.metadata import version as _pkg_version
-    _sdk_ver = _pkg_version("databricks-sdk")
-except Exception:
-    _sdk_ver = getattr(__import__("databricks.sdk"), "__version__", "unknown")
-
-if _sdk_ver == "unknown":
-    print(f"WARNING: Could not detect databricks-sdk version (serverless runtime?). "
-          f"Proceeding -- expected {REQUIRED_SDK_VERSION}.")
-elif _sdk_ver != REQUIRED_SDK_VERSION:
-    raise AssertionError(
-        f"databricks-sdk {REQUIRED_SDK_VERSION} required, found {_sdk_ver}. "
-        f"Run: %pip install databricks-sdk=={REQUIRED_SDK_VERSION}"
-    )
 
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.service import jobs, compute

@@ -15,11 +15,9 @@ instructions in `docs/MANUAL_DEPLOYMENT.md` instead.
 
 ## Prerequisites
 
-- **DBR 16.2+** cluster (needed for workspace file writes via `shutil`)
-- **`databricks-sdk==0.68.0`** (pre-installed on DBR 16.2+, verified at
-  notebook startup)
-- **PyPI access** from the cluster (the wheel build installs `hatchling`;
-  if your cluster is air-gapped, pre-install hatchling on the cluster
+- **PyPI access** from the cluster (the first cell installs
+  `databricks-sdk==0.68.0` and `hatchling` via `%pip install`;
+  if your cluster is air-gapped, pre-install these on the cluster
   image or via an init script)
 - **The dbxmetagen repo cloned as a Git folder** in the workspace
   (e.g. `/Workspace/Repos/<user>/dbxmetagen`)
