@@ -3690,7 +3690,7 @@ def load_table_names_from_csv(csv_file_path):
         return []
 
     try:
-        df_pandas = pd.read_csv(csv_file_path)
+        df_pandas = pd.read_csv(csv_file_path, keep_default_na=False, na_values=[])
 
         if "table_name" not in df_pandas.columns:
             print(
