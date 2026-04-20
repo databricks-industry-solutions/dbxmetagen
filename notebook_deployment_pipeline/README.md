@@ -37,7 +37,7 @@ instructions in `docs/MANUAL_DEPLOYMENT.md` instead.
 2. **NB01 stages the app** by copying the app source from
    `{repo_path}/apps/dbxmetagen-app/app/`, `configurations/` from the
    repo root, and the freshly-built wheel into
-   `/Workspace/Shared/<app_name>/`. It also copies the wheel to the UC
+   `/Workspace/Users/<you>/.dbxmetagen_deploy/<app_name>/`. It also copies the wheel to the UC
    Volume for job cluster library references.
 
 3. **NB02 creates jobs** that point to notebooks at

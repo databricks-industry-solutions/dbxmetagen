@@ -176,7 +176,7 @@ export default function BatchJobs({ onNavigate }) {
     sample_size: 5,
     columns_per_call: 20,
     use_kb_comments: false,
-    include_lineage: false,
+    include_lineage: true,
     build_kb_after: true,
     use_serverless: true,
   })

@@ -39,12 +39,20 @@ assert os.path.exists(f"{repo_path}/pyproject.toml"), (
 
 REQUIRED_SDK_VERSION = "0.68.0"
 
-import databricks.sdk
-_sdk_ver = getattr(databricks.sdk, "__version__", "unknown")
-assert _sdk_ver == REQUIRED_SDK_VERSION, (
-    f"databricks-sdk {REQUIRED_SDK_VERSION} required, found {_sdk_ver}. "
-    f"Run: %pip install databricks-sdk=={REQUIRED_SDK_VERSION}"
-)
+try:
+    from importlib.metadata import version as _pkg_version
+    _sdk_ver = _pkg_version("databricks-sdk")
+except Exception:
+    _sdk_ver = getattr(__import__("databricks.sdk"), "__version__", "unknown")
+
+if _sdk_ver == "unknown":
+    print(f"WARNING: Could not detect databricks-sdk version (serverless runtime?). "
+          f"Proceeding -- expected {REQUIRED_SDK_VERSION}.")
+elif _sdk_ver != REQUIRED_SDK_VERSION:
+    raise AssertionError(
+        f"databricks-sdk {REQUIRED_SDK_VERSION} required, found {_sdk_ver}. "
+        f"Run: %pip install databricks-sdk=={REQUIRED_SDK_VERSION}"
+    )
 
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.service.apps import (
@@ -60,7 +68,8 @@ from databricks.sdk.service.apps import (
 from databricks.sdk.errors import NotFound, ResourceAlreadyExists
 
 w = WorkspaceClient()
-deploy_dir = f"/Workspace/Shared/{app_name}"
+_current_user = w.current_user.me().user_name
+deploy_dir = f"/Workspace/Users/{_current_user}/.dbxmetagen_deploy/{app_name}"
 
 # COMMAND ----------
 

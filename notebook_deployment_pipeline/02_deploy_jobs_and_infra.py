@@ -44,12 +44,20 @@ import os, glob
 
 REQUIRED_SDK_VERSION = "0.68.0"
 
-import databricks.sdk
-_sdk_ver = getattr(databricks.sdk, "__version__", "unknown")
-assert _sdk_ver == REQUIRED_SDK_VERSION, (
-    f"databricks-sdk {REQUIRED_SDK_VERSION} required, found {_sdk_ver}. "
-    f"Run: %pip install databricks-sdk=={REQUIRED_SDK_VERSION}"
-)
+try:
+    from importlib.metadata import version as _pkg_version
+    _sdk_ver = _pkg_version("databricks-sdk")
+except Exception:
+    _sdk_ver = getattr(__import__("databricks.sdk"), "__version__", "unknown")
+
+if _sdk_ver == "unknown":
+    print(f"WARNING: Could not detect databricks-sdk version (serverless runtime?). "
+          f"Proceeding -- expected {REQUIRED_SDK_VERSION}.")
+elif _sdk_ver != REQUIRED_SDK_VERSION:
+    raise AssertionError(
+        f"databricks-sdk {REQUIRED_SDK_VERSION} required, found {_sdk_ver}. "
+        f"Run: %pip install databricks-sdk=={REQUIRED_SDK_VERSION}"
+    )
 
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.service import jobs, compute
@@ -472,7 +480,7 @@ if mode == "setup" and created_jobs:
     w.apps.update(name=app_name, app=app_obj)
     print(f"Updated app resources with {len(job_res)} job bindings")
 
-    deploy_dir = f"/Workspace/Shared/{app_name}"
+    deploy_dir = f"/Workspace/Users/{current_user}/.dbxmetagen_deploy/{app_name}"
     bound_names = {r.name for r in all_res}
     app_yaml = generate_app_yaml(catalog_name, schema_name, bound_names)
     with open(f"{deploy_dir}/app.yaml", "w") as f:
