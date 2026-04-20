@@ -2,6 +2,10 @@
 
 End-to-end notebooks for running the full dbxmetagen pipeline via `pip install`. Upload these notebooks to a Databricks workspace and run them in order to go from raw tables to production-ready Genie spaces.
 
+These are NOT meant for the full experience of dbxmetagen, these are instead intended to be used if you need to use dbxmetagen in OTHER projects. You can pip install dbxmetagen and then run notebooks like these.
+
+These are NOT meant to be the only way to use these. They are examples.
+
 ## Prerequisites
 
 - A Databricks workspace with Unity Catalog enabled
