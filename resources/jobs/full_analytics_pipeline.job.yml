@@ -29,7 +29,7 @@ resources:
         - name: cluster_node_types
           default: "table"
         - name: ontology_bundle
-          default: "healthcare"
+          default: ${var.ontology_bundle}
         - name: domain_config_path
           default: ""
         - name: incremental
