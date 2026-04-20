@@ -174,8 +174,14 @@ variables:
     description: Whether to automatically grant read permissions on created schema, volume, and tables to specified groups/users after metadata generation completes. Requires appropriate permissions to grant.
     default: true
   node_type:
-    description: Node type for job clusters
+    description: "Node type for job clusters. Must match your cloud provider. AWS: i3.2xlarge (default), Azure: Standard_DS4_v2, GCP: n2-highmem-8."
     default: i3.2xlarge
+  policy_id:
+    description: "Cluster policy ID for classic job clusters. Leave empty for no policy. To resolve by name, override with lookup in your target (see databricks.yml.template)."
+    default: ""
+  budget_policy_id:
+    description: "Serverless budget policy ID for cost attribution on serverless jobs. Get the ID from Settings > Compute > Serverless usage policies. Leave empty for no policy."
+    default: ""
   permission_groups:
     description: Comma-separated list of groups to grant read permissions to (e.g., "data_analysts,data_scientists"). Set to "none" to skip group permissions.
     default: "none"
@@ -230,3 +236,6 @@ variables:
   max_candidates_per_table_pair:
     description: "Maximum number of candidate column pairs retained per table pair from name/ontology matching. Lower values reduce combinatorial explosion for wide tables."
     default: 5
+  enable_obo:
+    description: "Enable On-Behalf-Of user authentication for the app. When true, catalog browsing and SQL queries run under the logged-in user's identity (requires workspace admin to enable user auth for the app). When false, all operations use the app service principal."
+    default: false

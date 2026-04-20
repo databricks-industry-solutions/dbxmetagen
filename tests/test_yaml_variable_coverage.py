@@ -47,6 +47,8 @@ class TestYAMLVariableCoverage:
             "deploying_user",  # Bundle-level variable
             "enable_obo",  # App-level env var, not a MetadataConfig param
             "job_table_names",  # Job-level default (table_names used instead)
+            "policy_id",  # Bundle-level cluster policy, not a MetadataConfig param
+            "budget_policy_id",  # Bundle-level serverless budget policy, not a MetadataConfig param
         }
 
         # Check for unexpected missing params

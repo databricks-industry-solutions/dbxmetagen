@@ -302,7 +302,7 @@ if [ "$SKIP_APP" = false ]; then
                 echo "New SP detected: ${APP_SP_ID}"
                 echo "Redeploying with SP permissions..."
                 databricks bundle deploy -t "$TARGET" --profile "$PROFILE" \
-                    --var "deploying_user=${CURRENT_USER}" \
+                    "${DEPLOY_VARS[@]}" \
                     --var "app_service_principal_application_id=${APP_SP_ID}"
             fi
         fi
