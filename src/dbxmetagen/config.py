@@ -368,17 +368,21 @@ class MetadataConfig:
             }
             return selected_variables
         except FileNotFoundError:
-            # variables.advanced.yml is optional, but variables.yml is required
+            # variables.advanced.yml is optional
             if "advanced" in str(file_path):
                 print(f"Note: Optional config file not found: {file_path}")
                 return {}
-            else:
-                raise FileNotFoundError(
-                    f"[ERROR] Required configuration file not found: {file_path}\n"
-                    f"Current working directory: {os.getcwd()}\n"
-                    f"Expected path: {os.path.abspath(file_path) if os.path.exists('.') else 'N/A'}\n\n"
-                    f"This usually means:\n"
-                    f"  - Running from wrong directory (should run from notebooks/ or have correct relative path)\n"
-                    f"  - For integration tests: Pass all required config parameters explicitly\n"
-                    f"  - For job runs: Ensure yaml_file_path points to deployed location"
-                )
+            # Fall back to bundled variables.yml inside the package (pip install use case)
+            bundled = Path(__file__).resolve().parent / "variables.yml"
+            if bundled.is_file():
+                _logger.debug("Relative YAML not found, using bundled: %s", bundled)
+                return self.load_yaml(file_path=str(bundled), variable_names=variable_names)
+            raise FileNotFoundError(
+                f"[ERROR] Required configuration file not found: {file_path}\n"
+                f"Current working directory: {os.getcwd()}\n"
+                f"Expected path: {os.path.abspath(file_path) if os.path.exists('.') else 'N/A'}\n\n"
+                f"This usually means:\n"
+                f"  - Running from wrong directory (should run from notebooks/ or have correct relative path)\n"
+                f"  - For integration tests: Pass all required config parameters explicitly\n"
+                f"  - For job runs: Ensure yaml_file_path points to deployed location"
+            )

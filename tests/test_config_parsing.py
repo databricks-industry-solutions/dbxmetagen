@@ -245,23 +245,20 @@ class TestBackwardCompatibility:
         benchmark_table = getattr(config, "benchmark_table_name", None)
         assert benchmark_table is None or isinstance(benchmark_table, str)
 
-    def test_missing_variables_yml_raises_error(self):
-        """Test that missing variables.yml raises clear error message.
+    def test_missing_variables_yml_falls_back_to_bundled(self):
+        """Test that missing variables.yml falls back to the bundled copy.
 
-        This validates that the required variables.yml file must exist and load properly.
-        Without it, users should get a clear error rather than cryptic AttributeErrors.
+        When the relative path doesn't exist (pip install use case), config should
+        silently use the bundled variables.yml inside the package rather than crashing.
         """
-        # Create a config that would normally try to load variables.yml from wrong location
-        # We expect this to raise FileNotFoundError with helpful message
-        # NOTE: Don't skip YAML loading for this test - we want to test the error
-        with pytest.raises(FileNotFoundError) as exc_info:
-            # Use a clearly non-existent path (don't skip YAML loading)
-            config = MetadataConfig(yaml_file_path="/nonexistent/path/variables.yml")
-
-        # Verify error message is helpful
-        error_msg = str(exc_info.value)
-        assert "Required configuration file not found" in error_msg
-        assert "integration tests" in error_msg.lower()
+        config = MetadataConfig(
+            yaml_file_path="/nonexistent/path/variables.yml",
+            catalog_name="test_cat",
+            table_names="test_cat.s.t",
+            mode="comment",
+        )
+        # Should have loaded control_table default from bundled YAML
+        assert hasattr(config, "control_table")
 
 
 if __name__ == "__main__":
