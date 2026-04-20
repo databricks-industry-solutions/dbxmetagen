@@ -303,9 +303,11 @@ for res_name, suffix in RESOURCE_TO_JOB_SUFFIX.items():
     else:
         missing_jobs.append((res_name, expected_name))
 
-print(f"Found {len(job_resources)} jobs, {len(missing_jobs)} missing")
-for res_name, expected in missing_jobs:
-    print(f"  WARNING: {res_name} -> {expected} not found")
+print(f"Found {len(job_resources)} jobs, {len(missing_jobs)} not yet created")
+if missing_jobs:
+    print("  (This is expected on first deploy -- NB02 will create them and redeploy)")
+    for res_name, expected in missing_jobs:
+        print(f"    {res_name} -> {expected}")
 
 # COMMAND ----------
 
@@ -391,5 +393,4 @@ print(f"Jobs wired:             {len(job_resources)}")
 print(f"Jobs missing:           {len(missing_jobs)}")
 print("=" * 60)
 if missing_jobs:
-    print("\nRun Notebook 02 with mode=setup to create essential jobs.")
-    print("Then re-run this notebook with mode=deploy to wire them to the app.")
+    print("\nNext: Run Notebook 02 with mode=setup to create jobs and redeploy the app.")
