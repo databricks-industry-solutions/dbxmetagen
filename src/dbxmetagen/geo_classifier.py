@@ -3,7 +3,7 @@
 Classifies columns as geographic (suitable for location-based filtering) or
 non-geographic using keyword matching with LLM fallback for ambiguous cases.
 
-DEPRECATED: For new deployments, use the geo_doj ontology bundle via
+DEPRECATED: For new deployments, use an ontology bundle (e.g. 'general') via
 EntityDiscoverer instead. This module is retained for backward compatibility
 with existing customers who have a custom geo_config.yaml.
 """
@@ -23,7 +23,7 @@ from pyspark.sql import SparkSession
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_CONFIG_PATH = None  # Legacy geo_config.yaml removed; pass explicit path or use geo_doj ontology bundle
+_DEFAULT_CONFIG_PATH = None  # Legacy geo_config.yaml removed; pass explicit path or use an ontology bundle
 _DEFAULT_TAG_KEY = "geo_classification"
 _TABLE_NAME = "geo_classifications"
 

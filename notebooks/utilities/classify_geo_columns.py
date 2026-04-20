@@ -19,7 +19,7 @@ dbutils.widgets.text("table_names", "", "Table Names (comma-separated, optional)
 dbutils.widgets.text("apply_ddl", "false", "Apply DDL (tags)")
 dbutils.widgets.text("tag_key", "geo_classification", "UC Tag Key")
 dbutils.widgets.text(
-    "config_path", "", "Geo Config Path (legacy, leave blank to use geo_doj ontology bundle)"
+    "config_path", "", "Geo Config Path (legacy, leave blank to use an ontology bundle)"
 )
 
 catalog_name = dbutils.widgets.get("catalog_name")
