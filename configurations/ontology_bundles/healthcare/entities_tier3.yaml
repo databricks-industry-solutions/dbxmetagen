@@ -32,7 +32,37 @@ Person:
     part_of:
       target: Organization
       cardinality: many-to-one
-  properties: {}
+  properties:
+    id:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+    name:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - name
+    email:
+      kind: data_property
+            role: label
+      typical_attributes:
+      - email
+    phone:
+      kind: data_property
+            role: label
+      typical_attributes:
+      - phone
+    address:
+      kind: data_property
+            role: label
+      typical_attributes:
+      - address
+    created_date:
+      kind: data_property
+      role: temporal
+      typical_attributes:
+      - created_date
 Organization:
   description: Companies, departments, facilities, or business units
   label: Organization
@@ -69,7 +99,33 @@ Organization:
     part_of:
       target: Organization
       cardinality: many-to-one
-  properties: {}
+  properties:
+    id:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+    name:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - name
+    type:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - type
+    address:
+      kind: data_property
+            role: label
+      typical_attributes:
+      - address
+    parent_id:
+      kind: object_property
+      role: object_property
+      typical_attributes:
+      - parent_id
+      edge: has_parent
 Product:
   description: Goods, services, SKUs, or catalog items
   label: Product
@@ -95,7 +151,37 @@ Product:
     references:
       target: Reference
       cardinality: many-to-one
-  properties: {}
+  properties:
+    id:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+    name:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - name
+    description:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - description
+    price:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - price
+    category:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - category
+    status:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - status
 Transaction:
   description: Orders, purchases, payments, invoices, or financial events
   label: Transaction
@@ -121,7 +207,38 @@ Transaction:
     references:
       target: Person
       cardinality: many-to-one
-  properties: {}
+  properties:
+    id:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+    customer_id:
+      kind: object_property
+      role: object_property
+      typical_attributes:
+      - customer_id
+      edge: has_customer
+    amount:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - amount
+    date:
+      kind: data_property
+      role: temporal
+      typical_attributes:
+      - date
+    status:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - status
+    currency:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - currency
 Location:
   description: Addresses, sites, regions, facilities, or geographies
   label: Location
@@ -148,7 +265,42 @@ Location:
     part_of:
       target: Organization
       cardinality: many-to-one
-  properties: {}
+  properties:
+    id:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+    name:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - name
+    address:
+      kind: data_property
+            role: label
+      typical_attributes:
+      - address
+    city:
+      kind: data_property
+      role: geographic
+      typical_attributes:
+      - city
+    state:
+      kind: data_property
+      role: geographic
+      typical_attributes:
+      - state
+    country:
+      kind: data_property
+      role: geographic
+      typical_attributes:
+      - country
+    zip_code:
+      kind: data_property
+      role: geographic
+      typical_attributes:
+      - zip_code
 Event:
   description: Activities, logs, sessions, audits, or system events
   label: Event
@@ -173,7 +325,33 @@ Event:
     references:
       target: Person
       cardinality: many-to-one
-  properties: {}
+  properties:
+    id:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+    type:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - type
+    timestamp:
+      kind: data_property
+      role: temporal
+      typical_attributes:
+      - timestamp
+    user_id:
+      kind: object_property
+      role: object_property
+      typical_attributes:
+      - user_id
+      edge: has_user
+    details:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - details
 Reference:
   description: Lookup tables, codes, categories, dimensions, or configuration
   label: Reference
@@ -195,7 +373,32 @@ Reference:
   - active
   business_questions: []
   relationships: {}
-  properties: {}
+  properties:
+    id:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+    code:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - code
+    name:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - name
+    description:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - description
+    active:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - active
 Metric:
   description: KPIs, aggregates, facts, summaries, or analytic measures
   label: Metric
@@ -220,7 +423,32 @@ Metric:
     derives_from:
       target: Event
       cardinality: many-to-one
-  properties: {}
+  properties:
+    id:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+    name:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - name
+    value:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - value
+    period:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - period
+    dimension:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - dimension
 Document:
   description: Unstructured content, notes, files, or text records
   label: Document
@@ -246,7 +474,37 @@ Document:
     references:
       target: Person
       cardinality: many-to-one
-  properties: {}
+  properties:
+    id:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+    title:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - title
+    body:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - body
+    author:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - author
+    created_date:
+      kind: data_property
+      role: temporal
+      typical_attributes:
+      - created_date
+    type:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - type
 Patient:
   description: Individuals receiving healthcare services (FHIR Patient)
   label: Patient
@@ -290,13 +548,11 @@ Patient:
       target: Coverage
       cardinality: one-to-many
   properties:
-    identifier:
+    id:
       kind: data_property
       role: primary_key
       typical_attributes:
       - id
-      - patient_id
-      - pat_id
     mrn:
       kind: data_property
       role: business_key
@@ -306,7 +562,7 @@ Patient:
       - patient_mrn
     name:
       kind: data_property
-      role: pii
+            role: label
       typical_attributes:
       - name
       - full_name
@@ -315,7 +571,7 @@ Patient:
       - patient_name
     dob:
       kind: data_property
-      role: pii
+            role: label
       typical_attributes:
       - dob
       - date_of_birth
@@ -328,6 +584,18 @@ Patient:
       - gender
       - sex
       - gender_code
+    address:
+      kind: data_property
+            role: label
+      typical_attributes:
+      - address
+    identifier:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+      - patient_id
+      - pat_id
     treated_by:
       kind: object_property
       role: object_property
@@ -376,7 +644,32 @@ Provider:
     part_of:
       target: Organization
       cardinality: many-to-one
-  properties: {}
+  properties:
+    id:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+    npi:
+      kind: data_property
+            role: label
+      typical_attributes:
+      - npi
+    name:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - name
+    specialty:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - specialty
+    organization:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - organization
 Encounter:
   description: Visits, admissions, or episodes of care (FHIR Encounter)
   label: Encounter
@@ -421,6 +714,49 @@ Encounter:
       target: Location
       cardinality: many-to-one
   properties:
+    id:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+    patient_id:
+      kind: object_property
+      role: object_property
+      typical_attributes:
+      - patient_id
+      target_entity: Patient
+      edge: references
+    date:
+      kind: data_property
+      role: temporal
+      typical_attributes:
+      - date
+    type:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - type
+    provider_id:
+      kind: object_property
+      role: object_property
+      typical_attributes:
+      - provider_id
+      target_entity: Provider
+      edge: instance_of
+    location_id:
+      kind: object_property
+      role: object_property
+      typical_attributes:
+      - location_id
+      target_entity: Location
+      edge: located_at
+    status:
+      kind: data_property
+      role: dimension
+      typical_attributes:
+      - status
+      - encounter_status
+      - discharge_disposition
     identifier:
       kind: data_property
       role: primary_key
@@ -473,13 +809,6 @@ Encounter:
       - encounter_type
       - visit_type
       - class
-    status:
-      kind: data_property
-      role: dimension
-      typical_attributes:
-      - status
-      - encounter_status
-      - discharge_disposition
 Condition:
   description: Diagnoses, problems, or diseases (FHIR Condition / OMOP CONDITION_OCCURRENCE)
   label: Condition
@@ -509,7 +838,46 @@ Condition:
     diagnosed_in:
       target: Encounter
       cardinality: many-to-one
-  properties: {}
+  properties:
+    id:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+    code:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - code
+    description:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - description
+    patient_id:
+      kind: object_property
+      role: object_property
+      typical_attributes:
+      - patient_id
+      target_entity: Patient
+      edge: references
+    encounter_id:
+      kind: object_property
+      role: object_property
+      typical_attributes:
+      - encounter_id
+      target_entity: Encounter
+      edge: diagnosed_in
+    date:
+      kind: data_property
+      role: temporal
+      typical_attributes:
+      - date
+    status:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - status
 Procedure:
   description: Medical procedures, surgeries, or interventions (FHIR Procedure)
   label: Procedure
@@ -542,7 +910,46 @@ Procedure:
     references:
       target: Patient
       cardinality: many-to-one
-  properties: {}
+  properties:
+    id:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+    code:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - code
+    description:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - description
+    date:
+      kind: data_property
+      role: temporal
+      typical_attributes:
+      - date
+    provider_id:
+      kind: object_property
+      role: object_property
+      typical_attributes:
+      - provider_id
+      target_entity: Provider
+      edge: performed_by
+    encounter_id:
+      kind: object_property
+      role: object_property
+      typical_attributes:
+      - encounter_id
+      target_entity: Encounter
+      edge: ordered_for
+    status:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - status
 Medication:
   description: Drugs, prescriptions, or medication orders (FHIR MedicationRequest)
   label: Medication
@@ -573,7 +980,37 @@ Medication:
     prescribed_to:
       target: Patient
       cardinality: many-to-one
-  properties: {}
+  properties:
+    id:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+    name:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - name
+    ndc:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - ndc
+    dose:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - dose
+    frequency:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - frequency
+    route:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - route
 Observation:
   description: Lab results, vitals, or clinical measurements (FHIR Observation / OMOP
     MEASUREMENT)
@@ -605,7 +1042,37 @@ Observation:
     recorded_in:
       target: Encounter
       cardinality: many-to-one
-  properties: {}
+  properties:
+    id:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+    test_code:
+      kind: data_property
+      role: dimension
+      typical_attributes:
+      - test_code
+    value:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - value
+    unit:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - unit
+    reference_range:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - reference_range
+    date:
+      kind: data_property
+      role: temporal
+      typical_attributes:
+      - date
 Claim:
   description: Insurance claims or billing submissions (FHIR Claim)
   label: Claim
@@ -639,22 +1106,18 @@ Claim:
       target: Coverage
       cardinality: many-to-one
   properties:
-    identifier:
+    id:
       kind: data_property
       role: primary_key
       typical_attributes:
       - id
-      - claim_id
-      - claim_number
-    patient:
+    patient_id:
       kind: object_property
       role: object_property
-      edge: references
-      target_entity: Patient
       typical_attributes:
       - patient_id
-      - member_id
-      - subscriber_id
+      target_entity: Patient
+      edge: references
     amount:
       kind: data_property
       role: measure
@@ -679,6 +1142,29 @@ Claim:
       - status
       - claim_status
       - adjudication_status
+    payer_id:
+      kind: object_property
+      role: object_property
+      typical_attributes:
+      - payer_id
+      target_entity: Payer
+      edge: instance_of
+    identifier:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+      - claim_id
+      - claim_number
+    patient:
+      kind: object_property
+      role: object_property
+      edge: references
+      target_entity: Patient
+      typical_attributes:
+      - patient_id
+      - member_id
+      - subscriber_id
     encounter:
       kind: object_property
       role: object_property
@@ -725,7 +1211,38 @@ Coverage:
     provided_by:
       target: Organization
       cardinality: many-to-one
-  properties: {}
+  properties:
+    id:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+    member_id:
+      kind: object_property
+      role: object_property
+      typical_attributes:
+      - member_id
+      edge: has_member
+    payer:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - payer
+    plan_name:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - plan_name
+    start_date:
+      kind: data_property
+      role: temporal
+      typical_attributes:
+      - start_date
+    end_date:
+      kind: data_property
+      role: temporal
+      typical_attributes:
+      - end_date
 DiagnosticReport:
   description: Lab reports, pathology reports, or imaging study results (FHIR DiagnosticReport)
   label: DiagnosticReport
@@ -759,7 +1276,46 @@ DiagnosticReport:
     contains:
       target: Observation
       cardinality: one-to-many
-  properties: {}
+  properties:
+    id:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+    patient_id:
+      kind: object_property
+      role: object_property
+      typical_attributes:
+      - patient_id
+      target_entity: Patient
+      edge: references
+    encounter_id:
+      kind: object_property
+      role: object_property
+      typical_attributes:
+      - encounter_id
+      target_entity: Encounter
+      edge: for_encounter
+    status:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - status
+    issued_date:
+      kind: data_property
+      role: temporal
+      typical_attributes:
+      - issued_date
+    category:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - category
+    code:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - code
 Immunization:
   description: Vaccination events and immunization records (FHIR Immunization)
   label: Immunization
@@ -787,7 +1343,44 @@ Immunization:
     references:
       target: Patient
       cardinality: many-to-one
-  properties: {}
+  properties:
+    id:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+    patient_id:
+      kind: object_property
+      role: object_property
+      typical_attributes:
+      - patient_id
+      target_entity: Patient
+      edge: references
+    vaccine_code:
+      kind: data_property
+      role: dimension
+      typical_attributes:
+      - vaccine_code
+    date:
+      kind: data_property
+      role: temporal
+      typical_attributes:
+      - date
+    dose_number:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - dose_number
+    status:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - status
+    site:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - site
 AllergyIntolerance:
   description: Allergy and intolerance records (FHIR AllergyIntolerance)
   label: AllergyIntolerance
@@ -814,7 +1407,44 @@ AllergyIntolerance:
     references:
       target: Patient
       cardinality: many-to-one
-  properties: {}
+  properties:
+    id:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+    patient_id:
+      kind: object_property
+      role: object_property
+      typical_attributes:
+      - patient_id
+      target_entity: Patient
+      edge: references
+    code:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - code
+    type:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - type
+    category:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - category
+    criticality:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - criticality
+    onset_date:
+      kind: data_property
+      role: temporal
+      typical_attributes:
+      - onset_date
 CarePlan:
   description: Care plans, treatment protocols, and goals (FHIR CarePlan)
   label: CarePlan
@@ -845,7 +1475,44 @@ CarePlan:
     contains:
       target: Procedure
       cardinality: one-to-many
-  properties: {}
+  properties:
+    id:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+    patient_id:
+      kind: object_property
+      role: object_property
+      typical_attributes:
+      - patient_id
+      target_entity: Patient
+      edge: references
+    status:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - status
+    intent:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - intent
+    period_start:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - period_start
+    period_end:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - period_end
+    category:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - category
 ClinicalTrial:
   description: Clinical trials, research studies, and investigational protocols
   label: ClinicalTrial
@@ -883,7 +1550,52 @@ ClinicalTrial:
     references:
       target: Organization
       cardinality: many-to-one
-  properties: {}
+  properties:
+    id:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+    title:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - title
+    status:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - status
+    phase:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - phase
+    sponsor:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - sponsor
+    start_date:
+      kind: data_property
+      role: temporal
+      typical_attributes:
+      - start_date
+    end_date:
+      kind: data_property
+      role: temporal
+      typical_attributes:
+      - end_date
+    indication:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - indication
+    therapeutic_area:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - therapeutic_area
 Device:
   description: Medical devices, equipment, implants, and instruments
   label: Device
@@ -917,7 +1629,42 @@ Device:
     owned_by:
       target: Organization
       cardinality: many-to-one
-  properties: {}
+  properties:
+    id:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+    type:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - type
+    manufacturer:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - manufacturer
+    model:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - model
+    serial_number:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - serial_number
+    status:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - status
+    udi:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - udi
 Specimen:
   description: Laboratory specimens, biological samples, and biobank collections
   label: Specimen
@@ -951,7 +1698,44 @@ Specimen:
     references:
       target: Encounter
       cardinality: many-to-one
-  properties: {}
+  properties:
+    id:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+    type:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - type
+    patient_id:
+      kind: object_property
+      role: object_property
+      typical_attributes:
+      - patient_id
+      target_entity: Patient
+      edge: collected_from
+    collection_date:
+      kind: data_property
+      role: temporal
+      typical_attributes:
+      - collection_date
+    status:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - status
+    body_site:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - body_site
+    container:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - container
 Payer:
   description: Insurance companies, health plans, government payers, and third-party
     administrators
@@ -990,7 +1774,43 @@ Payer:
     covers:
       target: Patient
       cardinality: one-to-many
-  properties: {}
+  properties:
+    id:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+    name:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - name
+    type:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - type
+    plan_type:
+      kind: data_property
+      role: dimension
+      typical_attributes:
+      - plan_type
+    network:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - network
+    coverage_area:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - coverage_area
+    cms_id:
+      kind: object_property
+      role: object_property
+      typical_attributes:
+      - cms_id
+      edge: has_cms
 Practitioner:
   description: Individual clinicians, physicians, nurses, and allied health professionals
   label: Practitioner
@@ -1025,7 +1845,42 @@ Practitioner:
     part_of:
       target: Organization
       cardinality: many-to-one
-  properties: {}
+  properties:
+    id:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+    name:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - name
+    npi:
+      kind: data_property
+            role: label
+      typical_attributes:
+      - npi
+    specialty:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - specialty
+    qualification:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - qualification
+    active:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - active
+    gender:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - gender
 Facility:
   description: Hospitals, clinics, labs, pharmacies, and care sites
   label: Facility
@@ -1063,7 +1918,43 @@ Facility:
     part_of:
       target: Organization
       cardinality: many-to-one
-  properties: {}
+  properties:
+    id:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+    name:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - name
+    type:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - type
+    address:
+      kind: data_property
+            role: label
+      typical_attributes:
+      - address
+    status:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - status
+    managing_org_id:
+      kind: object_property
+      role: object_property
+      typical_attributes:
+      - managing_org_id
+      edge: has_managing_org
+    bed_count:
+      kind: data_property
+      role: measure
+      typical_attributes:
+      - bed_count
 LabResult:
   description: Laboratory test results, panels, and diagnostic measurements
   label: LabResult
@@ -1101,7 +1992,54 @@ LabResult:
     references:
       target: Patient
       cardinality: many-to-one
-  properties: {}
+  properties:
+    id:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+    patient_id:
+      kind: object_property
+      role: object_property
+      typical_attributes:
+      - patient_id
+      target_entity: Patient
+      edge: references
+    test_code:
+      kind: data_property
+      role: dimension
+      typical_attributes:
+      - test_code
+    test_name:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - test_name
+    value:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - value
+    unit:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - unit
+    reference_range:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - reference_range
+    status:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - status
+    date:
+      kind: data_property
+      role: temporal
+      typical_attributes:
+      - date
 Consent:
   description: Patient consent records, authorizations, and IRB approvals
   label: Consent
@@ -1135,4 +2073,46 @@ Consent:
     references:
       target: Organization
       cardinality: many-to-one
-  properties: {}
+  properties:
+    id:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+    patient_id:
+      kind: object_property
+      role: object_property
+      typical_attributes:
+      - patient_id
+      target_entity: Patient
+      edge: consented_by
+    status:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - status
+    scope:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - scope
+    category:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - category
+    date_time:
+      kind: data_property
+      role: temporal
+      typical_attributes:
+      - date_time
+    period_start:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - period_start
+    period_end:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - period_end

@@ -29,7 +29,7 @@ resources:
         - name: cluster_node_types
           default: "table"
         - name: ontology_bundle
-          default: "healthcare"
+          default: ${var.ontology_bundle}
         - name: domain_config_path
           default: ""
         - name: incremental
@@ -44,6 +44,8 @@ resources:
           default: ${var.rule_score_min_for_ai}
         - name: max_candidates_per_table_pair
           default: ${var.max_candidates_per_table_pair}
+        - name: apply_ddl
+          default: "false"
 
       tasks:
         # Stage 1: Build knowledge bases (table, column, schema in parallel after table KB)
@@ -166,6 +168,7 @@ resources:
               incremental: "{{job.parameters.incremental}}"
               model: "{{job.parameters.model}}"
               table_names: "{{job.parameters.table_names}}"
+              apply_ddl: "{{job.parameters.apply_ddl}}"
           libraries:
             - whl: ../../dist/*.whl
 
@@ -241,7 +244,7 @@ resources:
               column_similarity_threshold: "0.75"
               table_similarity_threshold: "0.7"
               confidence_threshold: "0.7"
-              apply_ddl: "false"
+              apply_ddl: "{{job.parameters.apply_ddl}}"
               dry_run: "false"
               incremental: "{{job.parameters.incremental}}"
               max_ai_candidates: "{{job.parameters.max_ai_candidates}}"
@@ -303,6 +306,7 @@ resources:
       job_clusters:
         - job_cluster_key: analytics_cluster
           new_cluster:
+            policy_id: ${var.policy_id}
             spark_version: 17.3.x-cpu-ml-scala2.13
             node_type_id: ${var.node_type}
             data_security_mode: SINGLE_USER

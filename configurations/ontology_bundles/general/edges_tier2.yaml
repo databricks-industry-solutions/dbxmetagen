@@ -2,63 +2,95 @@ owns:
   name: owns
   domain: Person
   range: Transaction
-  ranges: []
+  ranges:
+  - Transaction
   uri: ''
   inverse: ''
   cardinality: one-to-many
+  label: null
+  facet: null
+  sub_property_of: null
 part_of:
   name: part_of
   domain: Person
   range: Organization
-  ranges: []
+  ranges:
+  - Organization
   uri: ''
   inverse: ''
   cardinality: many-to-one
+  label: null
+  facet: null
+  sub_property_of: null
 contains:
   name: contains
   domain: Organization
   range: Person
-  ranges: []
+  ranges:
+  - Person
   uri: ''
   inverse: contained_in
   cardinality: one-to-many
+  label: null
+  facet: null
+  sub_property_of: null
 contains_location:
   name: contains_location
   domain: Organization
   range: Location
-  ranges: []
+  ranges:
+  - Location
   uri: ''
   inverse: ''
   cardinality: one-to-many
+  label: null
+  facet: null
+  sub_property_of: null
 references:
   name: references
   domain: Product
   range: Reference
-  ranges: []
+  ranges:
+  - Reference
   uri: ''
   inverse: referenced_by
   cardinality: many-to-one
+  label: null
+  facet: null
+  sub_property_of: null
 placed_by:
   name: placed_by
   domain: Transaction
   range: Person
-  ranges: []
+  ranges:
+  - Person
   uri: ''
   inverse: placed
   cardinality: many-to-one
+  label: null
+  facet: null
+  sub_property_of: null
 for_product:
   name: for_product
   domain: Transaction
   range: Product
-  ranges: []
+  ranges:
+  - Product
   uri: ''
   inverse: sold_via
   cardinality: many-to-many
+  label: null
+  facet: null
+  sub_property_of: null
 derives_from:
   name: derives_from
   domain: Metric
   range: Event
-  ranges: []
+  ranges:
+  - Event
   uri: ''
   inverse: source_of
   cardinality: many-to-one
+  label: null
+  facet: null
+  sub_property_of: null

@@ -200,22 +200,59 @@ export function FKMapViz() {
 export function FKPredictionsTable({ onRefresh }) {
   const [predictions, setPredictions] = useState([])
   const [error, setError] = useState(null)
+  const [selected, setSelected] = useState(new Set())
+  const [deleting, setDeleting] = useState(false)
 
   const load = useCallback(() => {
     safeFetch('/api/analytics/fk-predictions').then(r => {
       setPredictions(Array.isArray(r.data) ? r.data : [])
       if (r.error) setError(r.error)
+      setSelected(new Set())
     })
   }, [])
 
   useEffect(() => { load() }, [load])
   useEffect(() => { if (onRefresh) onRefresh(load) }, [onRefresh, load])
 
+  const toggle = (i) => setSelected(prev => {
+    const next = new Set(prev); next.has(i) ? next.delete(i) : next.add(i); return next
+  })
+
+  const deletePreds = async (rows) => {
+    setDeleting(true)
+    try {
+      const body = rows.map(r => ({
+        src_table: r.src_table || parseFQColumn(r.src_column).table,
+        src_column: r.src_column,
+        dst_table: r.dst_table || parseFQColumn(r.dst_column).table,
+        dst_column: r.dst_column,
+      }))
+      const res = await fetch('/api/analytics/fk-delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ predictions: body }) })
+      const j = await res.json().catch(() => ({}))
+      if (!res.ok) { setError(j.detail || `Server error (${res.status})`); return }
+      if (j.deleted > 0) {
+        const removed = new Set(rows.map(r => `${r.src_column}::${r.dst_column}`))
+        setPredictions(prev => prev.filter(p => !removed.has(`${p.src_column}::${p.dst_column}`)))
+        setSelected(new Set())
+      }
+    } catch (err) { setError(err.message) }
+    setDeleting(false)
+  }
+
   return (
     <div className="bg-dbx-oat-light rounded-xl border border-slate-200 p-6 shadow-sm">
       <div className="flex items-center justify-between mb-4">
         <h2 className="text-lg font-semibold text-slate-800">Predicted Foreign Keys</h2>
-        <button type="button" onClick={load} className="text-sm text-dbx-lava hover:underline" title="Reload FK predictions">Refresh</button>
+        <div className="flex items-center gap-2">
+          <button type="button" onClick={load} className="text-sm text-dbx-lava hover:underline" title="Reload FK predictions">Refresh</button>
+          {selected.size > 0 && (
+            <button type="button" onClick={() => deletePreds([...selected].map(i => predictions[i]).filter(Boolean))}
+              disabled={deleting}
+              className="px-3 py-1.5 bg-red-600 text-white rounded-lg text-sm font-medium hover:bg-red-700 disabled:opacity-50">
+              {deleting ? 'Removing...' : `Remove (${selected.size})`}
+            </button>
+          )}
+        </div>
       </div>
       <ErrorBanner error={error} />
       {predictions.length === 0
@@ -223,6 +260,7 @@ export function FKPredictionsTable({ onRefresh }) {
         : <div className="overflow-x-auto max-h-96">
           <table className="min-w-full text-sm">
             <thead><tr>
+              <th className="w-10 px-2 py-2.5 bg-dbx-oat border-b border-slate-200"></th>
               {['Source Column', 'Target Column', 'Col Sim', 'Rule', 'AI Conf', 'Final', 'Reasoning'].map(h =>
                 <th key={h} className="text-left px-3 py-2.5 bg-dbx-oat font-semibold text-slate-600 border-b border-slate-200 text-xs uppercase tracking-wider" title={
                   h === 'Source Column' ? 'Source table.column (referencing table)' :
@@ -233,10 +271,14 @@ export function FKPredictionsTable({ onRefresh }) {
                   h === 'Final' ? 'Combined final confidence score' :
                   'AI explanation for the prediction'
                 }>{h}</th>)}
+              <th className="w-10 px-2 py-2.5 bg-dbx-oat border-b border-slate-200"></th>
             </tr></thead>
             <tbody>
               {predictions.map((p, i) => (
-                <tr key={i} className="border-b border-slate-100 hover:bg-orange-50/30 transition-colors">
+                <tr key={i} className={`border-b border-slate-100 hover:bg-orange-50/30 transition-colors ${selected.has(i) ? 'bg-orange-50/50' : ''}`}>
+                  <td className="px-2 py-2">
+                    <input type="checkbox" checked={selected.has(i)} onChange={() => toggle(i)} className="rounded border-slate-300" />
+                  </td>
                   <td className="px-3 py-2 text-slate-700 font-mono text-xs" title={p.src_column}>{tableColumn(p.src_column)}</td>
                   <td className="px-3 py-2 text-slate-700 font-mono text-xs" title={p.dst_column}>{tableColumn(p.dst_column)}</td>
                   <td className="px-3 py-2">{Number(p.col_similarity).toFixed(2)}</td>
@@ -244,6 +286,10 @@ export function FKPredictionsTable({ onRefresh }) {
                   <td className="px-3 py-2 font-medium text-emerald-700">{Number(p.ai_confidence).toFixed(2)}</td>
                   <td className="px-3 py-2 font-bold text-slate-800">{Number(p.final_confidence).toFixed(2)}</td>
                   <td className="px-3 py-2 text-slate-500 text-xs max-w-xs truncate" title={p.ai_reasoning}>{p.ai_reasoning}</td>
+                  <td className="px-2 py-2">
+                    <button onClick={() => deletePreds([p])} disabled={deleting} title="Remove this FK prediction"
+                      className="text-red-400 hover:text-red-600 disabled:opacity-50 text-sm">&#x2715;</button>
+                  </td>
                 </tr>
               ))}
             </tbody>

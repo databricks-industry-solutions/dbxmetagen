@@ -14,6 +14,28 @@ description: >-
 For full architecture details, read [CLAUDE.md](../../../CLAUDE.md). This skill covers
 the essentials and hard-won pitfalls.
 
+## Current Environment
+
+**Always use these values for deployment and CLI operations:**
+
+| Setting | Value |
+|---------|-------|
+| Databricks CLI profile | `DMVM` |
+| Deploy target | `demo` |
+| Catalog | `eswanson_demo` |
+| Schema | `metadata_results` |
+
+```bash
+# Deploy
+./deploy.sh --profile DMVM --target demo --no-app
+
+# Run jobs
+databricks bundle run <job_name> -t demo -p DMVM
+
+# Or via jobs API (needed when param values contain commas)
+databricks jobs run-now -p DMVM --json '{"job_id": ..., "job_parameters": [...]}'
+```
+
 ## Project Overview
 
 **What:** Python library + Databricks App for automated metadata generation on Unity Catalog tables.
@@ -151,6 +173,9 @@ All autofix functions need guards to avoid corrupting:
 
 ### FK Prediction
 
+- FK prediction does NOT take a `table_names` param -- it reads from `graph_nodes`/`graph_edges`
+  which contain all previously processed tables. Running the pipeline for a subset of tables
+  still produces FK candidates against the full knowledge graph.
 - Self-referential FKs (`src_table == dst_table AND src_column == dst_column`) are filtered
 - Direction is enforced via AI judge + cardinality fallback (`_enforce_direction`)
 - Reverse-pair cleanup runs before MERGE to prevent duplicates
@@ -160,13 +185,13 @@ All autofix functions need guards to avoid corrupting:
 
 ```bash
 # Standard deploy (builds wheel, syncs bundle, starts app)
-./deploy.sh --profile DEFAULT --target dev
+./deploy.sh --profile DMVM --target demo
 
 # Jobs only, skip app entirely
-./deploy.sh --profile DEFAULT --target dev --no-app
+./deploy.sh --profile DMVM --target demo --no-app
 
 # Grant UC permissions for app service principal
-./deploy.sh --profile DEFAULT --target dev --permissions
+./deploy.sh --profile DMVM --target demo --permissions
 ```
 
 **Key rules:**
@@ -176,6 +201,61 @@ All autofix functions need guards to avoid corrupting:
 - Requires `{target}.env` file (copy from `example.env`). Required vars:
   `DATABRICKS_HOST`, `catalog_name`, `schema_name`, `warehouse_id`.
 - `configurations/` is copied into the app source dir temporarily for DAB sync (cleaned up after).
+
+## Running the Eval Pipeline from CLI
+
+The eval harness lives in a git worktree at `../dbxmetagen-eval` on branch `feat/evaluation-job`.
+It uses synthetic FHIR healthcare tables (patients, providers, encounters, diagnoses, medications,
+lab_results) with known ground truth for comments, PII, domain, ontology, and FK predictions.
+
+### Three-step workflow
+
+```bash
+cd /path/to/dbxmetagen-eval
+
+# 1. Deploy (builds wheel, syncs bundle -- skip the app)
+./deploy.sh --profile DMVM --target demo --no-app
+
+# 2. Run the full analytics pipeline with FHIR bundle + eval tables
+#    IMPORTANT: You MUST pass ontology_bundle and table_names explicitly.
+#    The job YAML default for ontology_bundle is "healthcare" (not fhir_r4)
+#    and table_names defaults to "" (all tables). Neither is correct for eval.
+#
+#    NOTE: `databricks bundle run --param` chokes when values contain commas.
+#    Use `databricks jobs run-now --json` instead (get job_id from `databricks bundle summary`):
+JOB_ID=$(databricks bundle summary -t demo -p DMVM -o json | python3 -c "import sys,json; print(json.load(sys.stdin)['resources']['jobs']['full_analytics_pipeline_job']['id'])")
+databricks jobs run-now -p DMVM --json "{
+  \"job_id\": $JOB_ID,
+  \"job_parameters\": {
+    \"ontology_bundle\": \"fhir_r4\",
+    \"incremental\": \"false\",
+    \"table_names\": \"eswanson_demo.metadata_results.patients,eswanson_demo.metadata_results.providers,eswanson_demo.metadata_results.encounters,eswanson_demo.metadata_results.diagnoses,eswanson_demo.metadata_results.medications,eswanson_demo.metadata_results.lab_results\"
+  }
+}"
+
+# 3. Run the eval comparison (scores pipeline output against ground truth)
+databricks bundle run eval_compare_job -t demo -p DMVM \
+  --param run_label="describe-your-change"
+```
+
+Alternatively, run step 2 through the **app UI** where you select the FHIR ontology
+and the specific eval tables -- the app passes `ontology_bundle` and `table_names`
+as job parameters, overriding the defaults correctly.
+
+### What the eval jobs do
+
+| Job | What it does |
+|-----|-------------|
+| `eval_setup_job` | Creates synthetic tables + expected-value tables in `eval_data` schema (run once) |
+| `full_analytics_pipeline_job` | Runs the full pipeline (KB, ontology, embeddings, FK, etc.) against the eval tables |
+| `eval_compare_job` | Compares pipeline output tables against expected values, writes scores to `eval_results` |
+
+### Key gotcha
+
+The `full_analytics_pipeline_job` YAML has `ontology_bundle` defaulting to `"healthcare"`
+(hardcoded, not `${var.ontology_bundle}`). When triggered from the app, the app overrides this
+with whatever you select. When running from CLI, you **must** pass `--param ontology_bundle=fhir_r4`
+or it will use the wrong bundle.
 
 ## Common Tasks
 

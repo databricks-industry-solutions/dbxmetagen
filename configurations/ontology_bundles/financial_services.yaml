@@ -1,803 +1,1973 @@
-# Financial Services Ontology Bundle
-# Aligned with BIAN (Banking Industry Architecture Network) and FIBO
-
 metadata:
-  name: "Financial Services"
-  version: "3.0"
-  format_version: "2.0"
-  industry: "financial_services"
-  description: "Banking, insurance, and capital markets ontology with financial instrument and risk entity types"
-  standards_alignment: "BIAN, FIBO, ISO 20022"
-
+  name: Financial Services
+  version: '3.0'
+  format_version: '2.0'
+  industry: financial_services
+  description: Banking, insurance, and capital markets ontology with financial instrument and risk entity types
+  standards_alignment: BIAN, FIBO, ISO 20022
 ontology:
-  version: "3.0"
-  name: "Financial Services Business Ontology"
-  description: "Entity types for banking, insurance, investments, and financial operations"
-
+  version: '3.0'
+  name: Financial Services Business Ontology
+  description: Entity types for banking, insurance, investments, and financial operations
   property_roles:
     primary_key:
-      description: "Surrogate or technical row identifier"
-      maps_to_kind: "data_property"
-      semantic_role: "identifier"
+      description: Surrogate or technical row identifier
+      maps_to_kind: data_property
+      semantic_role: identifier
     business_key:
-      description: "Natural key meaningful to users"
-      maps_to_kind: "data_property"
-      semantic_role: "identifier"
-    measure:
-      description: "Numeric value to aggregate"
-      maps_to_kind: "data_property"
-      semantic_role: "metric"
-    dimension:
-      description: "Categorical filter or grouping attribute"
-      maps_to_kind: "data_property"
-      semantic_role: "dimension"
-    temporal:
-      description: "Date or timestamp of event"
-      maps_to_kind: "data_property"
-      semantic_role: "temporal"
-    geographic:
-      description: "Location-based dimension (country, city, region, coordinates)"
-      maps_to_kind: "data_property"
-      semantic_role: "geographic"
+      description: Natural key meaningful to users (MRN, NPI)
+      maps_to_kind: data_property
+      semantic_role: identifier
     object_property:
-      description: "FK or reference to another entity's identifier"
-      maps_to_kind: "object_property"
-      semantic_role: "relationship"
-    composite_component:
-      description: "Part of a multi-column value object"
-      maps_to_kind: "data_property"
-      semantic_role: "component"
+      description: FK or reference to another entity's identifier
+      maps_to_kind: object_property
+      semantic_role: relationship
+    measure:
+      description: Numeric value to aggregate
+      maps_to_kind: data_property
+      semantic_role: metric
+    dimension:
+      description: Categorical filter or grouping attribute
+      maps_to_kind: data_property
+      semantic_role: dimension
+    temporal:
+      description: Date or timestamp of event
+      maps_to_kind: data_property
+      semantic_role: temporal
+    geographic:
+      description: Location-based dimension (country, city, region, coordinates)
+      maps_to_kind: data_property
+      semantic_role: geographic
     label:
-      description: "Human-readable name or title"
-      maps_to_kind: "data_property"
-      semantic_role: "label"
-    pii:
-      description: "Personally identifiable information"
-      maps_to_kind: "data_property"
-      semantic_role: "pii"
-      governance_flag: true
+      description: Human-readable name or title
+      maps_to_kind: data_property
+      semantic_role: label
     audit:
-      description: "System-generated provenance column"
-      maps_to_kind: "data_property"
-      semantic_role: "provenance"
+      description: System-generated provenance column
+      maps_to_kind: data_property
+      semantic_role: provenance
     derived:
-      description: "Computed from other columns"
-      maps_to_kind: "data_property"
-      semantic_role: "derived"
-
+      description: Computed from other columns
+      maps_to_kind: data_property
+      semantic_role: derived
+    composite_component:
+      description: Part of a multi-column value object
+      maps_to_kind: data_property
+      semantic_role: component
   edge_catalog:
-    instance_of: { inverse: type_of, symmetric: false, category: structural }
-    subclass_of: { inverse: superclass_of, symmetric: false, category: structural }
-    has_part: { inverse: part_of, symmetric: false, category: structural }
-    contains: { inverse: contained_in, symmetric: false, category: structural }
-    member_of: { inverse: has_member, symmetric: false, category: structural }
-    has_account: { inverse: account_of, domain: Person, range: Account, symmetric: false, category: business }
-    holds: { inverse: held_by, domain: [Person, Organization], range: Portfolio, symmetric: false, category: business }
-    issued_by: { inverse: issues, domain: [Loan, Policy, Instrument], range: Organization, symmetric: false, category: business }
-    covers: { inverse: covered_by, domain: Policy, range: [Person, Organization], symmetric: false, category: business }
-    placed_by: { inverse: placed, domain: Transaction, range: Person, symmetric: false, category: business }
-    created_by: { inverse: created, domain: Any, range: Person, symmetric: false, category: business }
-    owned_by: { inverse: owns, domain: Any, range: [Person, Organization], symmetric: false, category: business }
-    references: { inverse: referenced_by, domain: Any, range: Reference, symmetric: false, category: business }
-    located_at: { inverse: location_of, domain: Any, range: Location, symmetric: false, category: business }
-    derives_from: { inverse: source_of, symmetric: false, category: lineage }
-    same_as: { symmetric: true, category: semantic }
-    similar_to: { symmetric: true, category: semantic }
-
+    instance_of:
+      inverse: type_of
+      symmetric: false
+      category: structural
+    subclass_of:
+      inverse: superclass_of
+      symmetric: false
+      category: structural
+    has_part:
+      inverse: part_of
+      symmetric: false
+      category: structural
+    contains:
+      inverse: contained_in
+      symmetric: false
+      category: structural
+    member_of:
+      inverse: has_member
+      symmetric: false
+      category: structural
+    has_account:
+      inverse: account_of
+      domain: Person
+      range: Account
+      symmetric: false
+      category: business
+    holds:
+      inverse: held_by
+      domain:
+      - Person
+      - Organization
+      range: Portfolio
+      symmetric: false
+      category: business
+    issued_by:
+      inverse: issues
+      domain:
+      - Loan
+      - Policy
+      - Instrument
+      range: Organization
+      symmetric: false
+      category: business
+    covers:
+      inverse: covered_by
+      domain: Policy
+      range:
+      - Person
+      - Organization
+      symmetric: false
+      category: business
+    placed_by:
+      inverse: placed
+      domain: Transaction
+      range: Person
+      symmetric: false
+      category: business
+    created_by:
+      inverse: created
+      domain: Any
+      range: Person
+      symmetric: false
+      category: business
+    owned_by:
+      inverse: owns
+      domain: Any
+      range:
+      - Person
+      - Organization
+      symmetric: false
+      category: business
+    references:
+      inverse: referenced_by
+      domain: Any
+      range: Reference
+      symmetric: false
+      category: business
+    located_at:
+      inverse: location_of
+      domain: Any
+      range: Location
+      symmetric: false
+      category: business
+    derives_from:
+      inverse: source_of
+      symmetric: false
+      category: lineage
+    same_as:
+      symmetric: true
+      category: semantic
+    similar_to:
+      symmetric: true
+      category: semantic
   entities:
     auto_discover: true
     discovery_confidence_threshold: 0.4
-
     definitions:
-      # General entities
       Person:
-        description: "People, customers, contacts, users, or employees"
-        uri: "https://schema.org/Person"
-        source_ontology: "schema.org"
-        keywords: ["customer", "employee", "user", "contact", "person", "applicant", "borrower"]
-        typical_attributes: [id, name, email, phone, address, created_date]
+        description: People, customers, contacts, users, or employees
+        uri: https://schema.org/Person
+        source_ontology: schema.org
+        keywords:
+        - customer
+        - employee
+        - user
+        - contact
+        - person
+        - applicant
+        - borrower
+        typical_attributes:
+        - id
+        - name
+        - email
+        - phone
+        - address
+        - created_date
         relationships:
-          has_account: { target: Account, cardinality: "one-to-many" }
-          part_of: { target: Organization, cardinality: "many-to-one" }
-      Organization:
-        description: "Companies, departments, facilities, or business units"
-        uri: "https://schema.org/Organization"
-        source_ontology: "schema.org"
-        keywords: ["company", "organization", "department", "facility", "tenant", "branch", "subsidiary"]
-        typical_attributes: [id, name, type, address, parent_id]
-        relationships:
-          contains: { target: Person, cardinality: "one-to-many" }
-          part_of: { target: Organization, cardinality: "many-to-one" }
-      Product:
-        description: "Goods, services, SKUs, or catalog items"
-        uri: "https://schema.org/Product"
-        source_ontology: "schema.org"
-        keywords: ["product", "item", "sku", "catalog", "offering"]
-        typical_attributes: [id, name, description, price, category, status]
-        relationships: {}
-      Transaction:
-        description: "Orders, purchases, payments, invoices, or financial events"
-        uri: "https://schema.org/Invoice"
-        source_ontology: "schema.org"
-        keywords: ["transaction", "order", "payment", "invoice", "purchase", "transfer", "wire"]
-        typical_attributes: [id, customer_id, amount, date, status, currency]
-        relationships:
-          on_account: { target: Account, cardinality: "many-to-one" }
-          by_person: { target: Person, cardinality: "many-to-one" }
-      Location:
-        description: "Addresses, sites, regions, facilities, or geographies"
-        uri: "https://schema.org/Place"
-        source_ontology: "schema.org"
-        keywords: ["location", "address", "site", "region", "facility", "branch"]
-        typical_attributes: [id, name, address, city, state, country, zip_code]
-        relationships: {}
-      Event:
-        description: "Activities, logs, sessions, audits, or system events"
-        uri: "https://schema.org/Event"
-        source_ontology: "schema.org"
-        keywords: ["event", "activity", "log", "audit", "session"]
-        typical_attributes: [id, type, timestamp, user_id, details]
-        relationships:
-          references: { target: Person, cardinality: "many-to-one" }
-      Reference:
-        description: "Lookup tables, codes, categories, dimensions, or configuration"
-        uri: "https://schema.org/Thing"
-        source_ontology: "schema.org"
-        keywords: ["reference", "lookup", "code", "category", "dim_"]
-        typical_attributes: [id, code, name, description, active]
-        relationships: {}
-      Metric:
-        description: "KPIs, aggregates, facts, summaries, or analytic measures"
-        uri: "https://schema.org/QuantitativeValue"
-        source_ontology: "schema.org"
-        keywords: ["metric", "kpi", "aggregate", "fact_", "summary"]
-        typical_attributes: [id, name, value, period, dimension]
-        relationships: {}
-      Document:
-        description: "Unstructured content, notes, files, or text records"
-        uri: "https://schema.org/DigitalDocument"
-        source_ontology: "schema.org"
-        keywords: ["document", "note", "file", "content", "text", "contract", "agreement"]
-        typical_attributes: [id, title, body, author, created_date, type]
-        relationships:
-          references: { target: Person, cardinality: "many-to-one" }
-
-      # Financial Services entities
-      Account:
-        description: "Bank accounts, investment accounts, loan accounts, or general ledger accounts"
-        uri: "https://spec.edmcouncil.org/fibo/ontology/FND/AccountingExt/Account"
-        source_ontology: "FIBO"
-        keywords: ["account", "deposit", "savings", "checking", "loan_account", "gl_account"]
-        typical_attributes: [id, account_number, type, balance, currency, status, open_date]
-        relationships:
-          owned_by: { target: Person, cardinality: "many-to-one" }
-          has_transaction: { target: Transaction, cardinality: "one-to-many" }
+          has_account:
+            target: Account
+            cardinality: one-to-many
+          part_of:
+            target: Organization
+            cardinality: many-to-one
         properties:
-          identifier:
+          id:
             kind: data_property
             role: primary_key
-            typical_attributes: ["id", "account_id"]
+            typical_attributes:
+            - id
+          name:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - name
+          email:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - email
+          phone:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - phone
+          address:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - address
+          created_date:
+            kind: data_property
+            role: temporal
+            typical_attributes:
+            - created_date
+      Organization:
+        description: Companies, departments, facilities, or business units
+        uri: https://schema.org/Organization
+        source_ontology: schema.org
+        keywords:
+        - company
+        - organization
+        - department
+        - facility
+        - tenant
+        - branch
+        - subsidiary
+        typical_attributes:
+        - id
+        - name
+        - type
+        - address
+        - parent_id
+        relationships:
+          contains:
+            target: Person
+            cardinality: one-to-many
+          part_of:
+            target: Organization
+            cardinality: many-to-one
+        properties:
+          id:
+            kind: data_property
+            role: primary_key
+            typical_attributes:
+            - id
+          name:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - name
+          type:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - type
+          address:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - address
+          parent_id:
+            kind: object_property
+            role: object_property
+            typical_attributes:
+            - parent_id
+            edge: has_parent
+      Product:
+        description: Goods, services, SKUs, or catalog items
+        uri: https://schema.org/Product
+        source_ontology: schema.org
+        keywords:
+        - product
+        - item
+        - sku
+        - catalog
+        - offering
+        typical_attributes:
+        - id
+        - name
+        - description
+        - price
+        - category
+        - status
+        relationships: {}
+        properties:
+          id:
+            kind: data_property
+            role: primary_key
+            typical_attributes:
+            - id
+          name:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - name
+          description:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - description
+          price:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - price
+          category:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - category
+          status:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - status
+      Transaction:
+        description: Orders, purchases, payments, invoices, or financial events
+        uri: https://schema.org/Invoice
+        source_ontology: schema.org
+        keywords:
+        - transaction
+        - order
+        - payment
+        - invoice
+        - purchase
+        - transfer
+        - wire
+        typical_attributes:
+        - id
+        - customer_id
+        - amount
+        - date
+        - status
+        - currency
+        relationships:
+          on_account:
+            target: Account
+            cardinality: many-to-one
+          by_person:
+            target: Person
+            cardinality: many-to-one
+        properties:
+          id:
+            kind: data_property
+            role: primary_key
+            typical_attributes:
+            - id
+          customer_id:
+            kind: object_property
+            role: object_property
+            typical_attributes:
+            - customer_id
+            edge: has_customer
+          amount:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - amount
+          date:
+            kind: data_property
+            role: temporal
+            typical_attributes:
+            - date
+          status:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - status
+          currency:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - currency
+      Location:
+        description: Addresses, sites, regions, facilities, or geographies
+        uri: https://schema.org/Place
+        source_ontology: schema.org
+        keywords:
+        - location
+        - address
+        - site
+        - region
+        - facility
+        - branch
+        typical_attributes:
+        - id
+        - name
+        - address
+        - city
+        - state
+        - country
+        - zip_code
+        relationships: {}
+        properties:
+          id:
+            kind: data_property
+            role: primary_key
+            typical_attributes:
+            - id
+          name:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - name
+          address:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - address
+          city:
+            kind: data_property
+            role: geographic
+            typical_attributes:
+            - city
+          state:
+            kind: data_property
+            role: geographic
+            typical_attributes:
+            - state
+          country:
+            kind: data_property
+            role: geographic
+            typical_attributes:
+            - country
+          zip_code:
+            kind: data_property
+            role: geographic
+            typical_attributes:
+            - zip_code
+      Event:
+        description: Activities, logs, sessions, audits, or system events
+        uri: https://schema.org/Event
+        source_ontology: schema.org
+        keywords:
+        - event
+        - activity
+        - log
+        - audit
+        - session
+        typical_attributes:
+        - id
+        - type
+        - timestamp
+        - user_id
+        - details
+        relationships:
+          references:
+            target: Person
+            cardinality: many-to-one
+        properties:
+          id:
+            kind: data_property
+            role: primary_key
+            typical_attributes:
+            - id
+          type:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - type
+          timestamp:
+            kind: data_property
+            role: temporal
+            typical_attributes:
+            - timestamp
+          user_id:
+            kind: object_property
+            role: object_property
+            typical_attributes:
+            - user_id
+            edge: has_user
+          details:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - details
+      Reference:
+        description: Lookup tables, codes, categories, dimensions, or configuration
+        uri: https://schema.org/Thing
+        source_ontology: schema.org
+        keywords:
+        - reference
+        - lookup
+        - code
+        - category
+        - dim_
+        typical_attributes:
+        - id
+        - code
+        - name
+        - description
+        - active
+        relationships: {}
+        properties:
+          id:
+            kind: data_property
+            role: primary_key
+            typical_attributes:
+            - id
+          code:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - code
+          name:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - name
+          description:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - description
+          active:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - active
+      Metric:
+        description: KPIs, aggregates, facts, summaries, or analytic measures
+        uri: https://schema.org/QuantitativeValue
+        source_ontology: schema.org
+        keywords:
+        - metric
+        - kpi
+        - aggregate
+        - fact_
+        - summary
+        typical_attributes:
+        - id
+        - name
+        - value
+        - period
+        - dimension
+        relationships: {}
+        properties:
+          id:
+            kind: data_property
+            role: primary_key
+            typical_attributes:
+            - id
+          name:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - name
+          value:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - value
+          period:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - period
+          dimension:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - dimension
+      Document:
+        description: Unstructured content, notes, files, or text records
+        uri: https://schema.org/DigitalDocument
+        source_ontology: schema.org
+        keywords:
+        - document
+        - note
+        - file
+        - content
+        - text
+        - contract
+        - agreement
+        typical_attributes:
+        - id
+        - title
+        - body
+        - author
+        - created_date
+        - type
+        relationships:
+          references:
+            target: Person
+            cardinality: many-to-one
+        properties:
+          id:
+            kind: data_property
+            role: primary_key
+            typical_attributes:
+            - id
+          title:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - title
+          body:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - body
+          author:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - author
+          created_date:
+            kind: data_property
+            role: temporal
+            typical_attributes:
+            - created_date
+          type:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - type
+      Account:
+        description: Bank accounts, investment accounts, loan accounts, or general ledger accounts
+        uri: https://spec.edmcouncil.org/fibo/ontology/FND/AccountingExt/Account
+        source_ontology: FIBO
+        keywords:
+        - account
+        - deposit
+        - savings
+        - checking
+        - loan_account
+        - gl_account
+        typical_attributes:
+        - id
+        - account_number
+        - type
+        - balance
+        - currency
+        - status
+        - open_date
+        relationships:
+          owned_by:
+            target: Person
+            cardinality: many-to-one
+          has_transaction:
+            target: Transaction
+            cardinality: one-to-many
+        properties:
+          id:
+            kind: data_property
+            role: primary_key
+            typical_attributes:
+            - id
           account_number:
             kind: data_property
             role: business_key
-            typical_attributes: ["account_number", "acct_number", "account_no"]
-          balance:
-            kind: data_property
-            role: measure
-            typical_attributes: ["balance", "current_balance", "available_balance"]
+            typical_attributes:
+            - account_number
+            - acct_number
+            - account_no
           type:
             kind: data_property
             role: dimension
-            typical_attributes: ["type", "account_type", "product_type"]
-          status:
+            typical_attributes:
+            - type
+            - account_type
+            - product_type
+          balance:
             kind: data_property
-            role: dimension
-            typical_attributes: ["status", "account_status", "state"]
+            role: measure
+            typical_attributes:
+            - balance
+            - current_balance
+            - available_balance
           currency:
             kind: data_property
             role: dimension
-            typical_attributes: ["currency", "currency_code"]
+            typical_attributes:
+            - currency
+            - currency_code
+          status:
+            kind: data_property
+            role: dimension
+            typical_attributes:
+            - status
+            - account_status
+            - state
           open_date:
             kind: data_property
             role: temporal
-            typical_attributes: ["open_date", "opened_date", "created_date"]
+            typical_attributes:
+            - open_date
+            - opened_date
+            - created_date
+          identifier:
+            kind: data_property
+            role: primary_key
+            typical_attributes:
+            - id
+            - account_id
           owned_by:
             kind: object_property
             role: object_property
             edge: owned_by
             target_entity: Person
-            typical_attributes: ["owner_id", "customer_id", "person_id"]
+            typical_attributes:
+            - owner_id
+            - customer_id
+            - person_id
       Portfolio:
-        description: "Investment portfolios, fund holdings, or asset allocations"
-        uri: "https://spec.edmcouncil.org/fibo/ontology/SEC/Securities/Portfolios/Portfolio"
-        source_ontology: "FIBO"
-        keywords: ["portfolio", "fund", "holding", "allocation", "basket"]
-        typical_attributes: [id, name, manager, strategy, aum, benchmark]
+        description: Investment portfolios, fund holdings, or asset allocations
+        uri: https://spec.edmcouncil.org/fibo/ontology/SEC/Securities/Portfolios/Portfolio
+        source_ontology: FIBO
+        keywords:
+        - portfolio
+        - fund
+        - holding
+        - allocation
+        - basket
+        typical_attributes:
+        - id
+        - name
+        - manager
+        - strategy
+        - aum
+        - benchmark
         relationships:
-          contains: { target: Instrument, cardinality: "many-to-many" }
-          managed_by: { target: Person, cardinality: "many-to-one" }
+          contains:
+            target: Instrument
+            cardinality: many-to-many
+          managed_by:
+            target: Person
+            cardinality: many-to-one
         properties:
-          identifier:
+          id:
             kind: data_property
             role: primary_key
-            typical_attributes: ["id", "portfolio_id"]
+            typical_attributes:
+            - id
           name:
             kind: data_property
             role: label
-            typical_attributes: ["name", "portfolio_name"]
-          aum:
+            typical_attributes:
+            - name
+            - portfolio_name
+          manager:
             kind: data_property
-            role: measure
-            typical_attributes: ["aum", "assets_under_management", "total_value"]
+            role: label
+            typical_attributes:
+            - manager
           strategy:
             kind: data_property
             role: dimension
-            typical_attributes: ["strategy", "investment_strategy", "style"]
+            typical_attributes:
+            - strategy
+            - investment_strategy
+            - style
+          aum:
+            kind: data_property
+            role: measure
+            typical_attributes:
+            - aum
+            - assets_under_management
+            - total_value
           benchmark:
             kind: data_property
             role: dimension
-            typical_attributes: ["benchmark", "benchmark_index"]
+            typical_attributes:
+            - benchmark
+            - benchmark_index
+          identifier:
+            kind: data_property
+            role: primary_key
+            typical_attributes:
+            - id
+            - portfolio_id
           managed_by:
             kind: object_property
             role: object_property
             edge: held_by
             target_entity: Person
-            typical_attributes: ["manager", "manager_id", "advisor_id"]
+            typical_attributes:
+            - manager
+            - manager_id
+            - advisor_id
       Trade:
-        description: "Securities trades, FX transactions, or market orders"
-        uri: "https://spec.edmcouncil.org/fibo/ontology/FBC/FunctionalEntities/Trade"
-        source_ontology: "FIBO"
-        keywords: ["trade", "execution", "fill", "market_order", "limit_order", "swap"]
-        typical_attributes: [id, instrument_id, side, quantity, price, timestamp, status]
+        description: Securities trades, FX transactions, or market orders
+        uri: https://spec.edmcouncil.org/fibo/ontology/FBC/FunctionalEntities/Trade
+        source_ontology: FIBO
+        keywords:
+        - trade
+        - execution
+        - fill
+        - market_order
+        - limit_order
+        - swap
+        typical_attributes:
+        - id
+        - instrument_id
+        - side
+        - quantity
+        - price
+        - timestamp
+        - status
         relationships:
-          of_instrument: { target: Instrument, cardinality: "many-to-one" }
-          with_counterparty: { target: Counterparty, cardinality: "many-to-one" }
-          on_account: { target: Account, cardinality: "many-to-one" }
-      Instrument:
-        description: "Financial instruments -- equities, bonds, derivatives, currencies"
-        uri: "https://spec.edmcouncil.org/fibo/ontology/FBC/FinancialInstruments/FinancialInstrument"
-        source_ontology: "FIBO"
-        keywords: ["instrument", "security", "equity", "bond", "derivative", "option", "future", "isin", "cusip"]
-        typical_attributes: [id, symbol, isin, cusip, type, currency, issuer, maturity_date]
-        relationships:
-          hedges: { target: Risk, cardinality: "many-to-many" }
+          of_instrument:
+            target: Instrument
+            cardinality: many-to-one
+          with_counterparty:
+            target: Counterparty
+            cardinality: many-to-one
+          on_account:
+            target: Account
+            cardinality: many-to-one
         properties:
-          identifier:
+          id:
             kind: data_property
             role: primary_key
-            typical_attributes: ["id", "instrument_id", "security_id"]
+            typical_attributes:
+            - id
+          instrument_id:
+            kind: object_property
+            role: object_property
+            typical_attributes:
+            - instrument_id
+            target_entity: Instrument
+            edge: of_instrument
+          side:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - side
+          quantity:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - quantity
+          price:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - price
+          timestamp:
+            kind: data_property
+            role: temporal
+            typical_attributes:
+            - timestamp
+          status:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - status
+      Instrument:
+        description: Financial instruments -- equities, bonds, derivatives, currencies
+        uri: https://spec.edmcouncil.org/fibo/ontology/FBC/FinancialInstruments/FinancialInstrument
+        source_ontology: FIBO
+        keywords:
+        - instrument
+        - security
+        - equity
+        - bond
+        - derivative
+        - option
+        - future
+        - isin
+        - cusip
+        typical_attributes:
+        - id
+        - symbol
+        - isin
+        - cusip
+        - type
+        - currency
+        - issuer
+        - maturity_date
+        relationships:
+          hedges:
+            target: Risk
+            cardinality: many-to-many
+        properties:
+          id:
+            kind: data_property
+            role: primary_key
+            typical_attributes:
+            - id
           symbol:
             kind: data_property
             role: business_key
-            typical_attributes: ["symbol", "ticker", "ticker_symbol"]
+            typical_attributes:
+            - symbol
+            - ticker
+            - ticker_symbol
           isin:
             kind: data_property
             role: business_key
-            typical_attributes: ["isin", "isin_code"]
+            typical_attributes:
+            - isin
+            - isin_code
           cusip:
             kind: data_property
             role: business_key
-            typical_attributes: ["cusip", "cusip_id"]
+            typical_attributes:
+            - cusip
+            - cusip_id
           type:
             kind: data_property
             role: dimension
-            typical_attributes: ["type", "instrument_type", "asset_class"]
+            typical_attributes:
+            - type
+            - instrument_type
+            - asset_class
           currency:
             kind: data_property
             role: dimension
-            typical_attributes: ["currency", "currency_code"]
+            typical_attributes:
+            - currency
+            - currency_code
+          issuer:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - issuer
           maturity_date:
             kind: data_property
             role: temporal
-            typical_attributes: ["maturity_date", "maturity", "expiry_date"]
+            typical_attributes:
+            - maturity_date
+            - maturity
+            - expiry_date
+          identifier:
+            kind: data_property
+            role: primary_key
+            typical_attributes:
+            - id
+            - instrument_id
+            - security_id
           issued_by:
             kind: object_property
             role: object_property
             edge: issued_by
             target_entity: Organization
-            typical_attributes: ["issuer", "issuer_id", "issuing_org_id"]
+            typical_attributes:
+            - issuer
+            - issuer_id
+            - issuing_org_id
       Counterparty:
-        description: "Trading counterparties, custodians, or correspondent banks"
-        uri: "https://spec.edmcouncil.org/fibo/ontology/FBC/FunctionalEntities/Counterparty"
-        source_ontology: "FIBO"
-        keywords: ["counterparty", "custodian", "broker", "dealer", "correspondent", "clearing"]
-        typical_attributes: [id, name, type, lei, credit_rating, jurisdiction]
+        description: Trading counterparties, custodians, or correspondent banks
+        uri: https://spec.edmcouncil.org/fibo/ontology/FBC/FunctionalEntities/Counterparty
+        source_ontology: FIBO
+        keywords:
+        - counterparty
+        - custodian
+        - broker
+        - dealer
+        - correspondent
+        - clearing
+        typical_attributes:
+        - id
+        - name
+        - type
+        - lei
+        - credit_rating
+        - jurisdiction
         relationships:
-          has_trade: { target: Trade, cardinality: "one-to-many" }
-      Risk:
-        description: "Risk exposures, limits, VaR, stress tests, or credit scores"
-        uri: "https://bian.org/servicedomain/RiskManagement"
-        source_ontology: "BIAN"
-        keywords: ["risk", "exposure", "var", "stress_test", "credit_score", "limit", "collateral"]
-        typical_attributes: [id, type, value, threshold, entity_id, date]
-        relationships:
-          for_account: { target: Account, cardinality: "many-to-one" }
-          for_instrument: { target: Instrument, cardinality: "many-to-one" }
+          has_trade:
+            target: Trade
+            cardinality: one-to-many
         properties:
-          identifier:
+          id:
             kind: data_property
             role: primary_key
-            typical_attributes: ["id", "risk_id", "assessment_id"]
-          value:
+            typical_attributes:
+            - id
+          name:
             kind: data_property
-            role: measure
-            typical_attributes: ["value", "var", "exposure", "credit_score"]
-          threshold:
+            role: label
+            typical_attributes:
+            - name
+          type:
             kind: data_property
-            role: measure
-            typical_attributes: ["threshold", "limit", "max_exposure"]
+            role: label
+            typical_attributes:
+            - type
+          lei:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - lei
+          credit_rating:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - credit_rating
+          jurisdiction:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - jurisdiction
+      Risk:
+        description: Risk exposures, limits, VaR, stress tests, or credit scores
+        uri: https://bian.org/servicedomain/RiskManagement
+        source_ontology: BIAN
+        keywords:
+        - risk
+        - exposure
+        - var
+        - stress_test
+        - credit_score
+        - limit
+        - collateral
+        typical_attributes:
+        - id
+        - type
+        - value
+        - threshold
+        - entity_id
+        - date
+        relationships:
+          for_account:
+            target: Account
+            cardinality: many-to-one
+          for_instrument:
+            target: Instrument
+            cardinality: many-to-one
+        properties:
+          id:
+            kind: data_property
+            role: primary_key
+            typical_attributes:
+            - id
           type:
             kind: data_property
             role: dimension
-            typical_attributes: ["type", "risk_type", "exposure_type"]
+            typical_attributes:
+            - type
+            - risk_type
+            - exposure_type
+          value:
+            kind: data_property
+            role: measure
+            typical_attributes:
+            - value
+            - var
+            - exposure
+            - credit_score
+          threshold:
+            kind: data_property
+            role: measure
+            typical_attributes:
+            - threshold
+            - limit
+            - max_exposure
+          entity_id:
+            kind: object_property
+            role: object_property
+            typical_attributes:
+            - entity_id
+            edge: has_entity
           date:
             kind: data_property
             role: temporal
-            typical_attributes: ["date", "as_of_date", "assessment_date"]
+            typical_attributes:
+            - date
+            - as_of_date
+            - assessment_date
+          identifier:
+            kind: data_property
+            role: primary_key
+            typical_attributes:
+            - id
+            - risk_id
+            - assessment_id
           for_account:
             kind: object_property
             role: object_property
             edge: references
             target_entity: Account
-            typical_attributes: ["entity_id", "account_id"]
+            typical_attributes:
+            - entity_id
+            - account_id
           for_instrument:
             kind: object_property
             role: object_property
             edge: references
             target_entity: Instrument
-            typical_attributes: ["instrument_id", "security_id"]
+            typical_attributes:
+            - instrument_id
+            - security_id
       Compliance:
-        description: "Regulatory filings, KYC records, AML alerts, or sanctions screening"
-        uri: "https://bian.org/servicedomain/RegulatoryCompliance"
-        source_ontology: "BIAN"
-        keywords: ["compliance", "kyc", "aml", "sanctions", "filing", "regulatory", "sar"]
-        typical_attributes: [id, type, status, entity_id, date, resolution]
+        description: Regulatory filings, KYC records, AML alerts, or sanctions screening
+        uri: https://bian.org/servicedomain/RegulatoryCompliance
+        source_ontology: BIAN
+        keywords:
+        - compliance
+        - kyc
+        - aml
+        - sanctions
+        - filing
+        - regulatory
+        - sar
+        typical_attributes:
+        - id
+        - type
+        - status
+        - entity_id
+        - date
+        - resolution
         relationships:
-          for_person: { target: Person, cardinality: "many-to-one" }
-          for_organization: { target: Organization, cardinality: "many-to-one" }
-      Claim:
-        description: "Insurance claims, loss events, or reimbursement requests"
-        uri: "https://bian.org/servicedomain/ClaimsHandling/Claim"
-        source_ontology: "BIAN"
-        keywords: ["claim", "loss", "incident", "reimbursement", "adjudication"]
-        typical_attributes: [id, policy_id, amount, date, status, type]
-        relationships:
-          on_policy: { target: Policy, cardinality: "many-to-one" }
-          filed_by: { target: Person, cardinality: "many-to-one" }
-      Policy:
-        description: "Insurance policies, coverage terms, or underwriting records"
-        uri: "https://bian.org/servicedomain/InsurancePolicy"
-        source_ontology: "BIAN"
-        keywords: ["policy", "coverage", "underwriting", "premium", "insured", "endorsement"]
-        typical_attributes: [id, policy_number, type, premium, effective_date, expiry_date]
-        relationships:
-          held_by: { target: Person, cardinality: "many-to-one" }
-          issued_by: { target: Organization, cardinality: "many-to-one" }
+          for_person:
+            target: Person
+            cardinality: many-to-one
+          for_organization:
+            target: Organization
+            cardinality: many-to-one
         properties:
-          identifier:
+          id:
             kind: data_property
             role: primary_key
-            typical_attributes: ["id", "policy_id"]
+            typical_attributes:
+            - id
+          type:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - type
+          status:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - status
+          entity_id:
+            kind: object_property
+            role: object_property
+            typical_attributes:
+            - entity_id
+            edge: has_entity
+          date:
+            kind: data_property
+            role: temporal
+            typical_attributes:
+            - date
+          resolution:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - resolution
+      Claim:
+        description: Insurance claims, loss events, or reimbursement requests
+        uri: https://bian.org/servicedomain/ClaimsHandling/Claim
+        source_ontology: BIAN
+        keywords:
+        - claim
+        - loss
+        - incident
+        - reimbursement
+        - adjudication
+        typical_attributes:
+        - id
+        - policy_id
+        - amount
+        - date
+        - status
+        - type
+        relationships:
+          on_policy:
+            target: Policy
+            cardinality: many-to-one
+          filed_by:
+            target: Person
+            cardinality: many-to-one
+        properties:
+          id:
+            kind: data_property
+            role: primary_key
+            typical_attributes:
+            - id
+          policy_id:
+            kind: object_property
+            role: object_property
+            typical_attributes:
+            - policy_id
+            target_entity: Policy
+            edge: on_policy
+          amount:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - amount
+          date:
+            kind: data_property
+            role: temporal
+            typical_attributes:
+            - date
+          status:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - status
+          type:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - type
+      Policy:
+        description: Insurance policies, coverage terms, or underwriting records
+        uri: https://bian.org/servicedomain/InsurancePolicy
+        source_ontology: BIAN
+        keywords:
+        - policy
+        - coverage
+        - underwriting
+        - premium
+        - insured
+        - endorsement
+        typical_attributes:
+        - id
+        - policy_number
+        - type
+        - premium
+        - effective_date
+        - expiry_date
+        relationships:
+          held_by:
+            target: Person
+            cardinality: many-to-one
+          issued_by:
+            target: Organization
+            cardinality: many-to-one
+        properties:
+          id:
+            kind: data_property
+            role: primary_key
+            typical_attributes:
+            - id
           policy_number:
             kind: data_property
             role: business_key
-            typical_attributes: ["policy_number", "policy_no", "policy_ref"]
-          premium:
-            kind: data_property
-            role: measure
-            typical_attributes: ["premium", "annual_premium", "premium_amount"]
+            typical_attributes:
+            - policy_number
+            - policy_no
+            - policy_ref
           type:
             kind: data_property
             role: dimension
-            typical_attributes: ["type", "policy_type", "coverage_type"]
+            typical_attributes:
+            - type
+            - policy_type
+            - coverage_type
+          premium:
+            kind: data_property
+            role: measure
+            typical_attributes:
+            - premium
+            - annual_premium
+            - premium_amount
           effective_date:
             kind: data_property
             role: temporal
-            typical_attributes: ["effective_date", "start_date", "inception_date"]
+            typical_attributes:
+            - effective_date
+            - start_date
+            - inception_date
           expiry_date:
             kind: data_property
             role: temporal
-            typical_attributes: ["expiry_date", "end_date", "expiration_date"]
+            typical_attributes:
+            - expiry_date
+            - end_date
+            - expiration_date
+          identifier:
+            kind: data_property
+            role: primary_key
+            typical_attributes:
+            - id
+            - policy_id
           held_by:
             kind: object_property
             role: object_property
             edge: covers
-            target_entity: [Person, Organization]
-            typical_attributes: ["insured_id", "policyholder_id", "holder_id"]
+            target_entity:
+            - Person
+            - Organization
+            typical_attributes:
+            - insured_id
+            - policyholder_id
+            - holder_id
           issued_by:
             kind: object_property
             role: object_property
             edge: issued_by
             target_entity: Organization
-            typical_attributes: ["issuer_id", "carrier_id", "underwriter_id"]
+            typical_attributes:
+            - issuer_id
+            - carrier_id
+            - underwriter_id
       Loan:
-        description: "Loans, mortgages, credit facilities, or lending agreements"
-        uri: "https://spec.edmcouncil.org/fibo/ontology/LOAN/LoanTypes/Loan"
-        source_ontology: "FIBO"
-        keywords: ["loan", "mortgage", "credit_facility", "lending", "origination", "amortization"]
-        typical_attributes: [id, borrower_id, principal, rate, term, status, origination_date]
+        description: Loans, mortgages, credit facilities, or lending agreements
+        uri: https://spec.edmcouncil.org/fibo/ontology/LOAN/LoanTypes/Loan
+        source_ontology: FIBO
+        keywords:
+        - loan
+        - mortgage
+        - credit_facility
+        - lending
+        - origination
+        - amortization
+        typical_attributes:
+        - id
+        - borrower_id
+        - principal
+        - rate
+        - term
+        - status
+        - origination_date
         relationships:
-          borrowed_by: { target: Person, cardinality: "many-to-one" }
-          secures: { target: Account, cardinality: "many-to-one" }
-          has_risk: { target: Risk, cardinality: "one-to-many" }
+          borrowed_by:
+            target: Person
+            cardinality: many-to-one
+          secures:
+            target: Account
+            cardinality: many-to-one
+          has_risk:
+            target: Risk
+            cardinality: one-to-many
         properties:
-          identifier:
+          id:
             kind: data_property
             role: primary_key
-            typical_attributes: ["id", "loan_id"]
+            typical_attributes:
+            - id
+          borrower_id:
+            kind: object_property
+            role: object_property
+            typical_attributes:
+            - borrower_id
+            edge: has_borrower
           principal:
             kind: data_property
             role: measure
-            typical_attributes: ["principal", "loan_amount", "original_principal"]
+            typical_attributes:
+            - principal
+            - loan_amount
+            - original_principal
           rate:
             kind: data_property
             role: measure
-            typical_attributes: ["rate", "interest_rate", "apr"]
+            typical_attributes:
+            - rate
+            - interest_rate
+            - apr
           term:
             kind: data_property
             role: measure
-            typical_attributes: ["term", "term_months", "loan_term"]
+            typical_attributes:
+            - term
+            - term_months
+            - loan_term
           status:
             kind: data_property
             role: dimension
-            typical_attributes: ["status", "loan_status", "state"]
+            typical_attributes:
+            - status
+            - loan_status
+            - state
           origination_date:
             kind: data_property
             role: temporal
-            typical_attributes: ["origination_date", "originated_date", "funding_date"]
+            typical_attributes:
+            - origination_date
+            - originated_date
+            - funding_date
+          identifier:
+            kind: data_property
+            role: primary_key
+            typical_attributes:
+            - id
+            - loan_id
           borrowed_by:
             kind: object_property
             role: object_property
             edge: owned_by
             target_entity: Person
-            typical_attributes: ["borrower_id", "customer_id", "applicant_id"]
+            typical_attributes:
+            - borrower_id
+            - customer_id
+            - applicant_id
           issued_by:
             kind: object_property
             role: object_property
             edge: issued_by
             target_entity: Organization
-            typical_attributes: ["lender_id", "issuer_id", "originating_org_id"]
-
+            typical_attributes:
+            - lender_id
+            - issuer_id
+            - originating_org_id
   domain_entity_affinity:
     banking:
-      [
-        Account,
-        Transaction,
-        Person,
-        Organization,
-        Loan,
-        Counterparty,
-        Reference,
-        Location,
-      ]
+    - Account
+    - Transaction
+    - Person
+    - Organization
+    - Loan
+    - Counterparty
+    - Reference
+    - Location
     capital_markets:
-      [
-        Trade,
-        Instrument,
-        Portfolio,
-        Counterparty,
-        Risk,
-        Account,
-        Metric,
-        Reference,
-      ]
+    - Trade
+    - Instrument
+    - Portfolio
+    - Counterparty
+    - Risk
+    - Account
+    - Metric
+    - Reference
     insurance:
-      [
-        Policy,
-        Claim,
-        Person,
-        Organization,
-        Risk,
-        Transaction,
-        Reference,
-        Document,
-      ]
+    - Policy
+    - Claim
+    - Person
+    - Organization
+    - Risk
+    - Transaction
+    - Reference
+    - Document
     risk_management:
-      [Risk, Counterparty, Instrument, Portfolio, Account, Metric, Event]
+    - Risk
+    - Counterparty
+    - Instrument
+    - Portfolio
+    - Account
+    - Metric
+    - Event
     compliance_regulatory:
-      [
-        Compliance,
-        Document,
-        Person,
-        Organization,
-        Transaction,
-        Reference,
-        Event,
-      ]
+    - Compliance
+    - Document
+    - Person
+    - Organization
+    - Transaction
+    - Reference
+    - Event
     lending:
-      [
-        Loan,
-        Account,
-        Person,
-        Organization,
-        Risk,
-        Transaction,
-        Document,
-        Reference,
-      ]
+    - Loan
+    - Account
+    - Person
+    - Organization
+    - Risk
+    - Transaction
+    - Document
+    - Reference
     wealth_management:
-      [
-        Portfolio,
-        Account,
-        Instrument,
-        Person,
-        Organization,
-        Transaction,
-        Metric,
-      ]
-    payments: [Transaction, Account, Person, Organization, Reference, Event]
-    finance: [Transaction, Account, Metric, Reference, Organization, Event]
-    operations: [Product, Organization, Location, Event, Metric, Reference]
-    workforce: [Person, Organization, Location, Event, Reference]
+    - Portfolio
+    - Account
+    - Instrument
+    - Person
+    - Organization
+    - Transaction
+    - Metric
+    payments:
+    - Transaction
+    - Account
+    - Person
+    - Organization
+    - Reference
+    - Event
+    finance:
+    - Transaction
+    - Account
+    - Metric
+    - Reference
+    - Organization
+    - Event
+    operations:
+    - Product
+    - Organization
+    - Location
+    - Event
+    - Metric
+    - Reference
+    workforce:
+    - Person
+    - Organization
+    - Location
+    - Event
+    - Reference
     customer:
-      [Person, Organization, Account, Transaction, Event, Metric, Location]
-    technology: [Event, Metric, Reference, Organization]
-    governance: [Compliance, Document, Reference, Organization, Person]
-
+    - Person
+    - Organization
+    - Account
+    - Transaction
+    - Event
+    - Metric
+    - Location
+    technology:
+    - Event
+    - Metric
+    - Reference
+    - Organization
+    governance:
+    - Compliance
+    - Document
+    - Reference
+    - Organization
+    - Person
   relationships:
     types:
-      - name: owns
-        description: "Entity owns or is responsible for another"
-        inverse: owned_by
-      - name: contains
-        description: "Entity contains or includes another"
-        inverse: contained_in
-      - name: references
-        description: "Entity references another (foreign key)"
-        inverse: referenced_by
-      - name: derives_from
-        description: "Entity is derived from another (lineage)"
-        inverse: source_of
-      - name: similar_to
-        description: "Entity is semantically similar to another"
-        inverse: similar_to
-        symmetric: true
-      - name: part_of
-        description: "Entity is part of a larger entity"
-        inverse: has_part
-      - name: instance_of
-        description: "Entity is an instance of a type"
-        inverse: type_of
-      - name: hedges
-        description: "Instrument or trade hedges risk exposure"
-        inverse: hedged_by
-      - name: secures
-        description: "Collateral secures a loan or position"
-        inverse: secured_by
-
+    - name: owns
+      description: Entity owns or is responsible for another
+      inverse: owned_by
+    - name: contains
+      description: Entity contains or includes another
+      inverse: contained_in
+    - name: references
+      description: Entity references another (foreign key)
+      inverse: referenced_by
+    - name: derives_from
+      description: Entity is derived from another (lineage)
+      inverse: source_of
+    - name: similar_to
+      description: Entity is semantically similar to another
+      inverse: similar_to
+      symmetric: true
+    - name: part_of
+      description: Entity is part of a larger entity
+      inverse: has_part
+    - name: instance_of
+      description: Entity is an instance of a type
+      inverse: type_of
+    - name: hedges
+      description: Instrument or trade hedges risk exposure
+      inverse: hedged_by
+    - name: secures
+      description: Collateral secures a loan or position
+      inverse: secured_by
   metrics:
     auto_discover: false
     definitions: []
-
   validation:
     min_entity_confidence: 0.5
     max_entities_per_table: 3
     ai_validation_enabled: true
-    classification_model: "databricks-claude-sonnet-4-6"
-
+    classification_model: databricks-claude-sonnet-4-6
 domains:
   banking:
-    name: "Banking"
-    description: "Retail and commercial banking, accounts, deposits, and branch operations"
+    name: Banking
+    description: Retail and commercial banking, accounts, deposits, and branch operations
     keywords:
-      ["account", "deposit", "branch", "banking", "checking", "savings", "atm"]
+    - account
+    - deposit
+    - branch
+    - banking
+    - checking
+    - savings
+    - atm
     subdomains:
       retail_banking:
-        name: "Retail Banking"
-        description: "Consumer accounts, checking, savings, debit, and credit card services"
+        name: Retail Banking
+        description: Consumer accounts, checking, savings, debit, and credit card services
         keywords:
-          ["retail", "consumer", "checking", "savings", "debit", "credit_card"]
+        - retail
+        - consumer
+        - checking
+        - savings
+        - debit
+        - credit_card
       commercial_banking:
-        name: "Commercial Banking"
-        description: "Corporate accounts, treasury services, cash management, and lockbox"
+        name: Commercial Banking
+        description: Corporate accounts, treasury services, cash management, and lockbox
         keywords:
-          ["commercial", "corporate", "treasury", "cash_management", "lockbox"]
+        - commercial
+        - corporate
+        - treasury
+        - cash_management
+        - lockbox
       digital_banking:
-        name: "Digital Banking"
-        description: "Mobile banking, online channels, and digital customer experience"
-        keywords: ["digital", "mobile", "online", "app", "channel"]
-
+        name: Digital Banking
+        description: Mobile banking, online channels, and digital customer experience
+        keywords:
+        - digital
+        - mobile
+        - online
+        - app
+        - channel
   capital_markets:
-    name: "Capital Markets"
-    description: "Trading, securities, derivatives, and market operations"
-    keywords: ["trade", "security", "equity", "bond", "derivative", "exchange"]
+    name: Capital Markets
+    description: Trading, securities, derivatives, and market operations
+    keywords:
+    - trade
+    - security
+    - equity
+    - bond
+    - derivative
+    - exchange
     subdomains:
       equities:
-        name: "Equities"
-        description: "Stock trading, equity positions, IPOs, and listings"
-        keywords: ["equity", "stock", "share", "ipo", "listing"]
+        name: Equities
+        description: Stock trading, equity positions, IPOs, and listings
+        keywords:
+        - equity
+        - stock
+        - share
+        - ipo
+        - listing
       fixed_income:
-        name: "Fixed Income"
-        description: "Bonds, treasuries, yield curves, and coupon payments"
-        keywords: ["bond", "treasury", "yield", "coupon", "maturity"]
+        name: Fixed Income
+        description: Bonds, treasuries, yield curves, and coupon payments
+        keywords:
+        - bond
+        - treasury
+        - yield
+        - coupon
+        - maturity
       derivatives:
-        name: "Derivatives"
-        description: "Options, futures, swaps, forwards, and OTC instruments"
-        keywords: ["option", "future", "swap", "forward", "otc"]
-
+        name: Derivatives
+        description: Options, futures, swaps, forwards, and OTC instruments
+        keywords:
+        - option
+        - future
+        - swap
+        - forward
+        - otc
   insurance:
-    name: "Insurance"
-    description: "Property, casualty, life, and health insurance operations"
-    keywords: ["policy", "claim", "premium", "underwriting", "insured"]
+    name: Insurance
+    description: Property, casualty, life, and health insurance operations
+    keywords:
+    - policy
+    - claim
+    - premium
+    - underwriting
+    - insured
     subdomains:
       underwriting:
-        name: "Underwriting"
-        description: "Risk assessment, premium rating, and actuarial analysis"
+        name: Underwriting
+        description: Risk assessment, premium rating, and actuarial analysis
         keywords:
-          ["underwriting", "risk_assessment", "premium", "rating", "actuarial"]
+        - underwriting
+        - risk_assessment
+        - premium
+        - rating
+        - actuarial
       claims:
-        name: "Claims"
-        description: "Claim filing, loss adjustment, settlement, and subrogation"
-        keywords: ["claim", "loss", "adjuster", "settlement", "subrogation"]
-      policy_admin:
-        name: "Policy Administration"
-        description: "Policy lifecycle, endorsements, renewals, and cancellations"
+        name: Claims
+        description: Claim filing, loss adjustment, settlement, and subrogation
         keywords:
-          ["policy", "endorsement", "renewal", "cancellation", "billing"]
-
+        - claim
+        - loss
+        - adjuster
+        - settlement
+        - subrogation
+      policy_admin:
+        name: Policy Administration
+        description: Policy lifecycle, endorsements, renewals, and cancellations
+        keywords:
+        - policy
+        - endorsement
+        - renewal
+        - cancellation
+        - billing
   risk_management:
-    name: "Risk Management"
-    description: "Credit, market, operational, and liquidity risk"
-    keywords: ["risk", "exposure", "var", "stress_test", "limit"]
+    name: Risk Management
+    description: Credit, market, operational, and liquidity risk
+    keywords:
+    - risk
+    - exposure
+    - var
+    - stress_test
+    - limit
     subdomains:
       credit_risk:
-        name: "Credit Risk"
-        description: "Default probability, loss given default, exposure at default, and credit ratings"
-        keywords: ["credit", "default", "probability", "lgd", "ead", "rating"]
+        name: Credit Risk
+        description: Default probability, loss given default, exposure at default, and credit ratings
+        keywords:
+        - credit
+        - default
+        - probability
+        - lgd
+        - ead
+        - rating
       market_risk:
-        name: "Market Risk"
-        description: "Value-at-risk, volatility, sensitivity analysis, and greeks"
-        keywords: ["market", "var", "volatility", "sensitivity", "greeks"]
+        name: Market Risk
+        description: Value-at-risk, volatility, sensitivity analysis, and greeks
+        keywords:
+        - market
+        - var
+        - volatility
+        - sensitivity
+        - greeks
       operational_risk:
-        name: "Operational Risk"
-        description: "Loss events, risk and control self-assessments, and incident management"
-        keywords: ["operational", "loss_event", "rcsa", "incident", "control"]
-
+        name: Operational Risk
+        description: Loss events, risk and control self-assessments, and incident management
+        keywords:
+        - operational
+        - loss_event
+        - rcsa
+        - incident
+        - control
   compliance_regulatory:
-    name: "Compliance & Regulatory"
-    description: "KYC, AML, sanctions, regulatory reporting, and audit"
-    keywords: ["compliance", "kyc", "aml", "regulatory", "sanctions", "sar"]
+    name: Compliance & Regulatory
+    description: KYC, AML, sanctions, regulatory reporting, and audit
+    keywords:
+    - compliance
+    - kyc
+    - aml
+    - regulatory
+    - sanctions
+    - sar
     subdomains:
       kyc_aml:
-        name: "KYC & AML"
-        description: "Customer due diligence, enhanced due diligence, sanctions screening, and SARs"
-        keywords: ["kyc", "aml", "cdd", "edd", "sanctions", "screening"]
+        name: KYC & AML
+        description: Customer due diligence, enhanced due diligence, sanctions screening, and SARs
+        keywords:
+        - kyc
+        - aml
+        - cdd
+        - edd
+        - sanctions
+        - screening
       regulatory_reporting:
-        name: "Regulatory Reporting"
-        description: "Regulatory filings, CCAR, DFAST, Basel reporting, and stress tests"
-        keywords: ["regulatory", "filing", "report", "ccar", "dfast", "basel"]
-
+        name: Regulatory Reporting
+        description: Regulatory filings, CCAR, DFAST, Basel reporting, and stress tests
+        keywords:
+        - regulatory
+        - filing
+        - report
+        - ccar
+        - dfast
+        - basel
   lending:
-    name: "Lending"
-    description: "Loan origination, servicing, collections, and mortgage operations"
-    keywords: ["loan", "mortgage", "origination", "servicing", "collections"]
+    name: Lending
+    description: Loan origination, servicing, collections, and mortgage operations
+    keywords:
+    - loan
+    - mortgage
+    - origination
+    - servicing
+    - collections
     subdomains:
       origination:
-        name: "Origination"
-        description: "Loan applications, approvals, underwriting, and closing"
+        name: Origination
+        description: Loan applications, approvals, underwriting, and closing
         keywords:
-          ["origination", "application", "approval", "underwriting", "closing"]
+        - origination
+        - application
+        - approval
+        - underwriting
+        - closing
       servicing:
-        name: "Servicing"
-        description: "Payment processing, escrow management, statements, and delinquency tracking"
-        keywords: ["servicing", "payment", "escrow", "statement", "delinquency"]
-      collections:
-        name: "Collections"
-        description: "Delinquent account management, charge-offs, recovery, and workouts"
+        name: Servicing
+        description: Payment processing, escrow management, statements, and delinquency tracking
         keywords:
-          ["collections", "delinquent", "charge_off", "recovery", "workout"]
-
+        - servicing
+        - payment
+        - escrow
+        - statement
+        - delinquency
+      collections:
+        name: Collections
+        description: Delinquent account management, charge-offs, recovery, and workouts
+        keywords:
+        - collections
+        - delinquent
+        - charge_off
+        - recovery
+        - workout
   wealth_management:
-    name: "Wealth Management"
-    description: "Portfolio management, advisory, trust, and private banking"
-    keywords: ["portfolio", "advisory", "wealth", "trust", "private_banking"]
+    name: Wealth Management
+    description: Portfolio management, advisory, trust, and private banking
+    keywords:
+    - portfolio
+    - advisory
+    - wealth
+    - trust
+    - private_banking
     subdomains:
       portfolio_management:
-        name: "Portfolio Management"
-        description: "Asset allocation, rebalancing, benchmark tracking, and performance reporting"
+        name: Portfolio Management
+        description: Asset allocation, rebalancing, benchmark tracking, and performance reporting
         keywords:
-          ["portfolio", "allocation", "rebalance", "benchmark", "performance"]
+        - portfolio
+        - allocation
+        - rebalance
+        - benchmark
+        - performance
       advisory:
-        name: "Advisory"
-        description: "Financial planning, goals-based advice, and investment recommendations"
-        keywords: ["advisory", "financial_plan", "goal", "recommendation"]
-
+        name: Advisory
+        description: Financial planning, goals-based advice, and investment recommendations
+        keywords:
+        - advisory
+        - financial_plan
+        - goal
+        - recommendation
   payments:
-    name: "Payments"
-    description: "Payment processing, ACH, wire transfers, and clearing"
-    keywords: ["payment", "ach", "wire", "clearing", "settlement", "remittance"]
+    name: Payments
+    description: Payment processing, ACH, wire transfers, and clearing
+    keywords:
+    - payment
+    - ach
+    - wire
+    - clearing
+    - settlement
+    - remittance
     subdomains:
       processing:
-        name: "Payment Processing"
-        description: "Authorization, clearing, settlement, and reconciliation"
-        keywords: ["processing", "authorization", "clearing", "settlement"]
+        name: Payment Processing
+        description: Authorization, clearing, settlement, and reconciliation
+        keywords:
+        - processing
+        - authorization
+        - clearing
+        - settlement
       channels:
-        name: "Payment Channels"
-        description: "ACH, wire transfer, real-time payments, checks, and P2P"
-        keywords: ["ach", "wire", "real_time", "check", "p2p"]
-
+        name: Payment Channels
+        description: ACH, wire transfer, real-time payments, checks, and P2P
+        keywords:
+        - ach
+        - wire
+        - real_time
+        - check
+        - p2p
   finance:
-    name: "Finance"
-    description: "Accounting, GL, budgeting, and financial reporting"
-    keywords: ["revenue", "billing", "ledger", "payment", "accounting"]
+    name: Finance
+    description: Accounting, GL, budgeting, and financial reporting
+    keywords:
+    - revenue
+    - billing
+    - ledger
+    - payment
+    - accounting
     subdomains:
       accounting:
-        name: "Accounting"
-        description: "General ledger, journal entries, AP/AR, and financial statements"
-        keywords: ["ledger", "journal", "gl", "ap", "ar"]
+        name: Accounting
+        description: General ledger, journal entries, AP/AR, and financial statements
+        keywords:
+        - ledger
+        - journal
+        - gl
+        - ap
+        - ar
       treasury:
-        name: "Treasury"
-        description: "Cash management, liquidity, funding, and collateral management"
-        keywords: ["treasury", "cash", "liquidity", "funding", "collateral"]
-
+        name: Treasury
+        description: Cash management, liquidity, funding, and collateral management
+        keywords:
+        - treasury
+        - cash
+        - liquidity
+        - funding
+        - collateral
   operations:
-    name: "Operations"
-    description: "Back-office operations, reconciliation, and settlement"
+    name: Operations
+    description: Back-office operations, reconciliation, and settlement
     keywords:
-      ["operations", "reconciliation", "settlement", "processing", "exception"]
+    - operations
+    - reconciliation
+    - settlement
+    - processing
+    - exception
     subdomains:
       trade_ops:
-        name: "Trade Operations"
-        description: "Trade confirmation, matching, settlement, and fail management"
-        keywords: ["confirmation", "matching", "settlement", "fail"]
+        name: Trade Operations
+        description: Trade confirmation, matching, settlement, and fail management
+        keywords:
+        - confirmation
+        - matching
+        - settlement
+        - fail
       reconciliation:
-        name: "Reconciliation"
-        description: "Break resolution, exception handling, and nostro/vostro reconciliation"
-        keywords: ["reconciliation", "break", "exception", "nostro", "vostro"]
-
+        name: Reconciliation
+        description: Break resolution, exception handling, and nostro/vostro reconciliation
+        keywords:
+        - reconciliation
+        - break
+        - exception
+        - nostro
+        - vostro
   workforce:
-    name: "Workforce"
-    description: "HR, payroll, and talent management"
-    keywords: ["employee", "payroll", "recruitment", "hr", "workforce"]
+    name: Workforce
+    description: HR, payroll, and talent management
+    keywords:
+    - employee
+    - payroll
+    - recruitment
+    - hr
+    - workforce
     subdomains:
       payroll:
-        name: "Payroll & Compensation"
-        description: "Salaries, wages, bonuses, and compensation structures"
-        keywords: ["payroll", "salary", "compensation", "bonus"]
+        name: Payroll & Compensation
+        description: Salaries, wages, bonuses, and compensation structures
+        keywords:
+        - payroll
+        - salary
+        - compensation
+        - bonus
       talent:
-        name: "Talent"
-        description: "Recruitment, hiring, performance reviews, and professional development"
-        keywords: ["recruitment", "candidate", "performance", "training"]
-
+        name: Talent
+        description: Recruitment, hiring, performance reviews, and professional development
+        keywords:
+        - recruitment
+        - candidate
+        - performance
+        - training
   customer:
-    name: "Customer"
-    description: "CRM, onboarding, sales, and customer analytics"
-    keywords: ["customer", "client", "onboarding", "relationship", "segment"]
+    name: Customer
+    description: CRM, onboarding, sales, and customer analytics
+    keywords:
+    - customer
+    - client
+    - onboarding
+    - relationship
+    - segment
     subdomains:
       onboarding:
-        name: "Client Onboarding"
-        description: "Account applications, enrollment, activation, and KYC intake"
-        keywords: ["onboarding", "application", "enrollment", "activation"]
+        name: Client Onboarding
+        description: Account applications, enrollment, activation, and KYC intake
+        keywords:
+        - onboarding
+        - application
+        - enrollment
+        - activation
       relationship:
-        name: "Relationship Management"
-        description: "Advisor assignments, client segmentation, and tier management"
-        keywords: ["relationship", "advisor", "rm", "segment", "tier"]
-
+        name: Relationship Management
+        description: Advisor assignments, client segmentation, and tier management
+        keywords:
+        - relationship
+        - advisor
+        - rm
+        - segment
+        - tier
   technology:
-    name: "Technology"
-    description: "IT infrastructure, cybersecurity, and application operations"
-    keywords: ["server", "security", "log", "monitoring", "infrastructure"]
+    name: Technology
+    description: IT infrastructure, cybersecurity, and application operations
+    keywords:
+    - server
+    - security
+    - log
+    - monitoring
+    - infrastructure
     subdomains:
       security:
-        name: "Cybersecurity"
-        description: "Access control, authentication, threat detection, fraud prevention, and vulnerability management"
+        name: Cybersecurity
+        description: Access control, authentication, threat detection, fraud prevention, and vulnerability management
         keywords:
-          ["security", "access", "auth", "threat", "vulnerability", "fraud"]
+        - security
+        - access
+        - auth
+        - threat
+        - vulnerability
+        - fraud
       monitoring:
-        name: "Monitoring"
-        description: "System logs, alerts, uptime tracking, and incident management"
-        keywords: ["monitoring", "alert", "log", "uptime", "incident"]
-
+        name: Monitoring
+        description: System logs, alerts, uptime tracking, and incident management
+        keywords:
+        - monitoring
+        - alert
+        - log
+        - uptime
+        - incident
   governance:
-    name: "Governance"
-    description: "Legal, contracts, data governance, and regulatory compliance"
-    keywords: ["compliance", "contract", "governance", "policy", "regulation"]
+    name: Governance
+    description: Legal, contracts, data governance, and regulatory compliance
+    keywords:
+    - compliance
+    - contract
+    - governance
+    - policy
+    - regulation
     subdomains:
       legal:
-        name: "Legal"
-        description: "Contracts, agreements, litigation, and legal documentation"
-        keywords: ["contract", "agreement", "litigation", "clause"]
+        name: Legal
+        description: Contracts, agreements, litigation, and legal documentation
+        keywords:
+        - contract
+        - agreement
+        - litigation
+        - clause
       data_governance:
-        name: "Data Governance"
-        description: "Data quality, lineage, metadata management, and catalog policies"
-        keywords: ["data_lineage", "data_catalog", "data_governance", "data_steward", "retention_policy"]
+        name: Data Governance
+        description: Data quality, lineage, metadata management, and catalog policies
+        keywords:
+        - data_lineage
+        - data_catalog
+        - data_governance
+        - data_steward
+        - retention_policy

@@ -53,6 +53,7 @@ resources:
       job_clusters:
         - job_cluster_key: kb_cluster
           new_cluster:
+            policy_id: ${var.policy_id}
             spark_version: 17.3.x-cpu-ml-scala2.13
             node_type_id: ${var.node_type}
             data_security_mode: SINGLE_USER

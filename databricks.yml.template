@@ -27,6 +27,23 @@ artifacts:
     dynamic_version: true
     path: .
 
+# --- Optional: Cluster policy / serverless budget policy ---
+# By default, no policies are applied (policy_id and budget_policy_id
+# default to empty in variables.yml). To set a policy:
+#
+# Option 1 - Raw ID (set via .env, --var, or BUNDLE_VAR_policy_id):
+#   policy_id=001DD81A49229D7C
+#
+# Option 2 - Name-based lookup (add to your target block below):
+#   targets:
+#     dev:
+#       variables:
+#         policy_id:
+#           lookup:
+#             cluster_policy: "your-policy-name"
+#
+# budget_policy_id is set the same way (raw ID only; no lookup support yet).
+
 targets:
   dev:
     mode: development
@@ -43,7 +60,6 @@ targets:
 
   demo:
     mode: development
-    default: true
     workspace:
       host: __DATABRICKS_HOST__
     variables:

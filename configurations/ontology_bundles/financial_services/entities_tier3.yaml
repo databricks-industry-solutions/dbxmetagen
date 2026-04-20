@@ -28,7 +28,37 @@ Person:
     part_of:
       target: Organization
       cardinality: many-to-one
-  properties: {}
+  properties:
+    id:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+    name:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - name
+    email:
+      kind: data_property
+            role: label
+      typical_attributes:
+      - email
+    phone:
+      kind: data_property
+            role: label
+      typical_attributes:
+      - phone
+    address:
+      kind: data_property
+            role: label
+      typical_attributes:
+      - address
+    created_date:
+      kind: data_property
+      role: temporal
+      typical_attributes:
+      - created_date
 Organization:
   description: Companies, departments, facilities, or business units
   label: Organization
@@ -58,7 +88,33 @@ Organization:
     part_of:
       target: Organization
       cardinality: many-to-one
-  properties: {}
+  properties:
+    id:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+    name:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - name
+    type:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - type
+    address:
+      kind: data_property
+            role: label
+      typical_attributes:
+      - address
+    parent_id:
+      kind: object_property
+      role: object_property
+      typical_attributes:
+      - parent_id
+      edge: has_parent
 Product:
   description: Goods, services, SKUs, or catalog items
   label: Product
@@ -81,7 +137,37 @@ Product:
   - status
   business_questions: []
   relationships: {}
-  properties: {}
+  properties:
+    id:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+    name:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - name
+    description:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - description
+    price:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - price
+    category:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - category
+    status:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - status
 Transaction:
   description: Orders, purchases, payments, invoices, or financial events
   label: Transaction
@@ -112,7 +198,38 @@ Transaction:
     by_person:
       target: Person
       cardinality: many-to-one
-  properties: {}
+  properties:
+    id:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+    customer_id:
+      kind: object_property
+      role: object_property
+      typical_attributes:
+      - customer_id
+      edge: has_customer
+    amount:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - amount
+    date:
+      kind: data_property
+      role: temporal
+      typical_attributes:
+      - date
+    status:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - status
+    currency:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - currency
 Location:
   description: Addresses, sites, regions, facilities, or geographies
   label: Location
@@ -137,7 +254,42 @@ Location:
   - zip_code
   business_questions: []
   relationships: {}
-  properties: {}
+  properties:
+    id:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+    name:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - name
+    address:
+      kind: data_property
+            role: label
+      typical_attributes:
+      - address
+    city:
+      kind: data_property
+      role: geographic
+      typical_attributes:
+      - city
+    state:
+      kind: data_property
+      role: geographic
+      typical_attributes:
+      - state
+    country:
+      kind: data_property
+      role: geographic
+      typical_attributes:
+      - country
+    zip_code:
+      kind: data_property
+      role: geographic
+      typical_attributes:
+      - zip_code
 Event:
   description: Activities, logs, sessions, audits, or system events
   label: Event
@@ -162,7 +314,33 @@ Event:
     references:
       target: Person
       cardinality: many-to-one
-  properties: {}
+  properties:
+    id:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+    type:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - type
+    timestamp:
+      kind: data_property
+      role: temporal
+      typical_attributes:
+      - timestamp
+    user_id:
+      kind: object_property
+      role: object_property
+      typical_attributes:
+      - user_id
+      edge: has_user
+    details:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - details
 Reference:
   description: Lookup tables, codes, categories, dimensions, or configuration
   label: Reference
@@ -184,7 +362,32 @@ Reference:
   - active
   business_questions: []
   relationships: {}
-  properties: {}
+  properties:
+    id:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+    code:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - code
+    name:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - name
+    description:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - description
+    active:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - active
 Metric:
   description: KPIs, aggregates, facts, summaries, or analytic measures
   label: Metric
@@ -206,7 +409,32 @@ Metric:
   - dimension
   business_questions: []
   relationships: {}
-  properties: {}
+  properties:
+    id:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+    name:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - name
+    value:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - value
+    period:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - period
+    dimension:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - dimension
 Document:
   description: Unstructured content, notes, files, or text records
   label: Document
@@ -234,7 +462,37 @@ Document:
     references:
       target: Person
       cardinality: many-to-one
-  properties: {}
+  properties:
+    id:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+    title:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - title
+    body:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - body
+    author:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - author
+    created_date:
+      kind: data_property
+      role: temporal
+      typical_attributes:
+      - created_date
+    type:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - type
 Account:
   description: Bank accounts, investment accounts, loan accounts, or general ledger
     accounts
@@ -267,12 +525,11 @@ Account:
       target: Transaction
       cardinality: one-to-many
   properties:
-    identifier:
+    id:
       kind: data_property
       role: primary_key
       typical_attributes:
       - id
-      - account_id
     account_number:
       kind: data_property
       role: business_key
@@ -280,13 +537,6 @@ Account:
       - account_number
       - acct_number
       - account_no
-    balance:
-      kind: data_property
-      role: measure
-      typical_attributes:
-      - balance
-      - current_balance
-      - available_balance
     type:
       kind: data_property
       role: dimension
@@ -294,6 +544,19 @@ Account:
       - type
       - account_type
       - product_type
+    balance:
+      kind: data_property
+      role: measure
+      typical_attributes:
+      - balance
+      - current_balance
+      - available_balance
+    currency:
+      kind: data_property
+      role: dimension
+      typical_attributes:
+      - currency
+      - currency_code
     status:
       kind: data_property
       role: dimension
@@ -301,12 +564,6 @@ Account:
       - status
       - account_status
       - state
-    currency:
-      kind: data_property
-      role: dimension
-      typical_attributes:
-      - currency
-      - currency_code
     open_date:
       kind: data_property
       role: temporal
@@ -314,6 +571,12 @@ Account:
       - open_date
       - opened_date
       - created_date
+    identifier:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+      - account_id
     owned_by:
       kind: object_property
       role: object_property
@@ -352,25 +615,22 @@ Portfolio:
       target: Person
       cardinality: many-to-one
   properties:
-    identifier:
+    id:
       kind: data_property
       role: primary_key
       typical_attributes:
       - id
-      - portfolio_id
     name:
       kind: data_property
       role: label
       typical_attributes:
       - name
       - portfolio_name
-    aum:
+    manager:
       kind: data_property
-      role: measure
+      role: label
       typical_attributes:
-      - aum
-      - assets_under_management
-      - total_value
+      - manager
     strategy:
       kind: data_property
       role: dimension
@@ -378,12 +638,25 @@ Portfolio:
       - strategy
       - investment_strategy
       - style
+    aum:
+      kind: data_property
+      role: measure
+      typical_attributes:
+      - aum
+      - assets_under_management
+      - total_value
     benchmark:
       kind: data_property
       role: dimension
       typical_attributes:
       - benchmark
       - benchmark_index
+    identifier:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+      - portfolio_id
     managed_by:
       kind: object_property
       role: object_property
@@ -426,7 +699,44 @@ Trade:
     on_account:
       target: Account
       cardinality: many-to-one
-  properties: {}
+  properties:
+    id:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+    instrument_id:
+      kind: object_property
+      role: object_property
+      typical_attributes:
+      - instrument_id
+      target_entity: Instrument
+      edge: of_instrument
+    side:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - side
+    quantity:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - quantity
+    price:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - price
+    timestamp:
+      kind: data_property
+      role: temporal
+      typical_attributes:
+      - timestamp
+    status:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - status
 Instrument:
   description: Financial instruments -- equities, bonds, derivatives, currencies
   label: Instrument
@@ -459,13 +769,11 @@ Instrument:
       target: Risk
       cardinality: many-to-many
   properties:
-    identifier:
+    id:
       kind: data_property
       role: primary_key
       typical_attributes:
       - id
-      - instrument_id
-      - security_id
     symbol:
       kind: data_property
       role: business_key
@@ -498,6 +806,11 @@ Instrument:
       typical_attributes:
       - currency
       - currency_code
+    issuer:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - issuer
     maturity_date:
       kind: data_property
       role: temporal
@@ -505,6 +818,13 @@ Instrument:
       - maturity_date
       - maturity
       - expiry_date
+    identifier:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+      - instrument_id
+      - security_id
     issued_by:
       kind: object_property
       role: object_property
@@ -540,7 +860,37 @@ Counterparty:
     has_trade:
       target: Trade
       cardinality: one-to-many
-  properties: {}
+  properties:
+    id:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+    name:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - name
+    type:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - type
+    lei:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - lei
+    credit_rating:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - credit_rating
+    jurisdiction:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - jurisdiction
 Risk:
   description: Risk exposures, limits, VaR, stress tests, or credit scores
   label: Risk
@@ -572,13 +922,18 @@ Risk:
       target: Instrument
       cardinality: many-to-one
   properties:
-    identifier:
+    id:
       kind: data_property
       role: primary_key
       typical_attributes:
       - id
-      - risk_id
-      - assessment_id
+    type:
+      kind: data_property
+      role: dimension
+      typical_attributes:
+      - type
+      - risk_type
+      - exposure_type
     value:
       kind: data_property
       role: measure
@@ -594,13 +949,12 @@ Risk:
       - threshold
       - limit
       - max_exposure
-    type:
-      kind: data_property
-      role: dimension
+    entity_id:
+      kind: object_property
+      role: object_property
       typical_attributes:
-      - type
-      - risk_type
-      - exposure_type
+      - entity_id
+      edge: has_entity
     date:
       kind: data_property
       role: temporal
@@ -608,6 +962,13 @@ Risk:
       - date
       - as_of_date
       - assessment_date
+    identifier:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+      - risk_id
+      - assessment_id
     for_account:
       kind: object_property
       role: object_property
@@ -654,7 +1015,38 @@ Compliance:
     for_organization:
       target: Organization
       cardinality: many-to-one
-  properties: {}
+  properties:
+    id:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+    type:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - type
+    status:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - status
+    entity_id:
+      kind: object_property
+      role: object_property
+      typical_attributes:
+      - entity_id
+      edge: has_entity
+    date:
+      kind: data_property
+      role: temporal
+      typical_attributes:
+      - date
+    resolution:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - resolution
 Claim:
   description: Insurance claims, loss events, or reimbursement requests
   label: Claim
@@ -683,7 +1075,39 @@ Claim:
     filed_by:
       target: Person
       cardinality: many-to-one
-  properties: {}
+  properties:
+    id:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+    policy_id:
+      kind: object_property
+      role: object_property
+      typical_attributes:
+      - policy_id
+      target_entity: Policy
+      edge: on_policy
+    amount:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - amount
+    date:
+      kind: data_property
+      role: temporal
+      typical_attributes:
+      - date
+    status:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - status
+    type:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - type
 Policy:
   description: Insurance policies, coverage terms, or underwriting records
   label: Policy
@@ -714,12 +1138,11 @@ Policy:
       target: Organization
       cardinality: many-to-one
   properties:
-    identifier:
+    id:
       kind: data_property
       role: primary_key
       typical_attributes:
       - id
-      - policy_id
     policy_number:
       kind: data_property
       role: business_key
@@ -727,13 +1150,6 @@ Policy:
       - policy_number
       - policy_no
       - policy_ref
-    premium:
-      kind: data_property
-      role: measure
-      typical_attributes:
-      - premium
-      - annual_premium
-      - premium_amount
     type:
       kind: data_property
       role: dimension
@@ -741,6 +1157,13 @@ Policy:
       - type
       - policy_type
       - coverage_type
+    premium:
+      kind: data_property
+      role: measure
+      typical_attributes:
+      - premium
+      - annual_premium
+      - premium_amount
     effective_date:
       kind: data_property
       role: temporal
@@ -755,6 +1178,12 @@ Policy:
       - expiry_date
       - end_date
       - expiration_date
+    identifier:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+      - policy_id
     held_by:
       kind: object_property
       role: object_property
@@ -809,12 +1238,17 @@ Loan:
       target: Risk
       cardinality: one-to-many
   properties:
-    identifier:
+    id:
       kind: data_property
       role: primary_key
       typical_attributes:
       - id
-      - loan_id
+    borrower_id:
+      kind: object_property
+      role: object_property
+      typical_attributes:
+      - borrower_id
+      edge: has_borrower
     principal:
       kind: data_property
       role: measure
@@ -850,6 +1284,12 @@ Loan:
       - origination_date
       - originated_date
       - funding_date
+    identifier:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+      - loan_id
     borrowed_by:
       kind: object_property
       role: object_property

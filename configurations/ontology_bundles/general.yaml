@@ -1,545 +1,1209 @@
-# General Cross-Industry Ontology Bundle
-# 9 universal entity types, 6 cross-industry domains
-
 metadata:
-  name: "General Cross-Industry"
-  version: "3.0"
-  format_version: "2.0"
-  industry: "general"
-  description: "Industry-agnostic ontology with universal entity types and cross-functional domains"
-  standards_alignment: "Schema.org"
-
+  name: General Cross-Industry
+  version: '3.0'
+  format_version: '2.0'
+  industry: general
+  description: Industry-agnostic ontology with universal entity types and cross-functional domains
+  standards_alignment: Schema.org
 ontology:
-  version: "3.0"
-  name: "General Business Ontology"
-  description: "Universal business ontology suitable for any industry"
-
-  # Global property role taxonomy
+  version: '3.0'
+  name: General Business Ontology
+  description: Universal business ontology suitable for any industry
   property_roles:
     primary_key:
-      description: "Surrogate or technical row identifier"
-      maps_to_kind: "data_property"
-      semantic_role: "identifier"
+      description: Surrogate or technical row identifier
+      maps_to_kind: data_property
+      semantic_role: identifier
     business_key:
-      description: "Natural key meaningful to users"
-      maps_to_kind: "data_property"
-      semantic_role: "identifier"
-    measure:
-      description: "Numeric value to aggregate"
-      maps_to_kind: "data_property"
-      semantic_role: "metric"
-    dimension:
-      description: "Categorical filter or grouping attribute"
-      maps_to_kind: "data_property"
-      semantic_role: "dimension"
-    temporal:
-      description: "Date or timestamp of event"
-      maps_to_kind: "data_property"
-      semantic_role: "temporal"
-    geographic:
-      description: "Location-based dimension (country, city, region, coordinates)"
-      maps_to_kind: "data_property"
-      semantic_role: "geographic"
+      description: Natural key meaningful to users (MRN, NPI)
+      maps_to_kind: data_property
+      semantic_role: identifier
     object_property:
-      description: "FK or reference to another entity's identifier"
-      maps_to_kind: "object_property"
-      semantic_role: "relationship"
-    composite_component:
-      description: "Part of a multi-column value object"
-      maps_to_kind: "data_property"
-      semantic_role: "component"
+      description: FK or reference to another entity's identifier
+      maps_to_kind: object_property
+      semantic_role: relationship
+    measure:
+      description: Numeric value to aggregate
+      maps_to_kind: data_property
+      semantic_role: metric
+    dimension:
+      description: Categorical filter or grouping attribute
+      maps_to_kind: data_property
+      semantic_role: dimension
+    temporal:
+      description: Date or timestamp of event
+      maps_to_kind: data_property
+      semantic_role: temporal
+    geographic:
+      description: Location-based dimension (country, city, region, coordinates)
+      maps_to_kind: data_property
+      semantic_role: geographic
     label:
-      description: "Human-readable name or title"
-      maps_to_kind: "data_property"
-      semantic_role: "label"
-    pii:
-      description: "Personally identifiable information"
-      maps_to_kind: "data_property"
-      semantic_role: "pii"
-      governance_flag: true
+      description: Human-readable name or title
+      maps_to_kind: data_property
+      semantic_role: label
     audit:
-      description: "System-generated provenance column"
-      maps_to_kind: "data_property"
-      semantic_role: "provenance"
+      description: System-generated provenance column
+      maps_to_kind: data_property
+      semantic_role: provenance
     derived:
-      description: "Computed from other columns"
-      maps_to_kind: "data_property"
-      semantic_role: "derived"
-
-  # Global edge catalog
+      description: Computed from other columns
+      maps_to_kind: data_property
+      semantic_role: derived
+    composite_component:
+      description: Part of a multi-column value object
+      maps_to_kind: data_property
+      semantic_role: component
   edge_catalog:
-    # Structural
-    instance_of: { inverse: type_of, symmetric: false, category: structural }
-    subclass_of: { inverse: superclass_of, symmetric: false, category: structural }
-    has_part: { inverse: part_of, symmetric: false, category: structural }
-    contains: { inverse: contained_in, symmetric: false, category: structural }
-    member_of: { inverse: has_member, symmetric: false, category: structural }
-    # Business
-    placed_by: { inverse: placed, domain: Transaction, range: Person, symmetric: false, category: business }
-    created_by: { inverse: created, domain: Any, range: Person, symmetric: false, category: business }
-    owned_by: { inverse: owns, domain: Any, range: [Person, Organization], symmetric: false, category: business }
-    employs: { inverse: employed_by, domain: Organization, range: Person, symmetric: false, category: business }
-    references: { inverse: referenced_by, domain: Any, range: Reference, symmetric: false, category: business }
-    located_at: { inverse: location_of, domain: Any, range: Location, symmetric: false, category: business }
-    for_product: { inverse: sold_via, domain: Transaction, range: Product, symmetric: false, category: business }
-    billed_to: { inverse: billing_target_of, domain: Transaction, range: [Person, Organization], symmetric: false, category: business }
-    assigned_to: { inverse: assigned_from, domain: [Event, Document], range: Person, symmetric: false, category: business }
-    applies_to: { inverse: subject_of, domain: [Document, Reference], range: Any, symmetric: false, category: business }
-    # Lineage
-    derives_from: { inverse: source_of, symmetric: false, category: lineage }
-    recorded_in: { inverse: records, symmetric: false, category: lineage }
-    supersedes: { inverse: superseded_by, symmetric: false, category: lineage }
-    # Semantic
-    same_as: { symmetric: true, category: semantic }
-    equivalent_class: { symmetric: true, category: semantic }
-    close_match: { symmetric: true, category: semantic }
-    similar_to: { symmetric: true, category: semantic }
-    related_to: { symmetric: true, category: semantic }
-
+    instance_of:
+      inverse: type_of
+      symmetric: false
+      category: structural
+    subclass_of:
+      inverse: superclass_of
+      symmetric: false
+      category: structural
+    has_part:
+      inverse: part_of
+      symmetric: false
+      category: structural
+    contains:
+      inverse: contained_in
+      symmetric: false
+      category: structural
+    member_of:
+      inverse: has_member
+      symmetric: false
+      category: structural
+    placed_by:
+      inverse: placed
+      domain: Transaction
+      range: Person
+      symmetric: false
+      category: business
+    created_by:
+      inverse: created
+      domain: Any
+      range: Person
+      symmetric: false
+      category: business
+    owned_by:
+      inverse: owns
+      domain: Any
+      range:
+      - Person
+      - Organization
+      symmetric: false
+      category: business
+    employs:
+      inverse: employed_by
+      domain: Organization
+      range: Person
+      symmetric: false
+      category: business
+    references:
+      inverse: referenced_by
+      domain: Any
+      range: Reference
+      symmetric: false
+      category: business
+    located_at:
+      inverse: location_of
+      domain: Any
+      range: Location
+      symmetric: false
+      category: business
+    for_product:
+      inverse: sold_via
+      domain: Transaction
+      range: Product
+      symmetric: false
+      category: business
+    billed_to:
+      inverse: billing_target_of
+      domain: Transaction
+      range:
+      - Person
+      - Organization
+      symmetric: false
+      category: business
+    assigned_to:
+      inverse: assigned_from
+      domain:
+      - Event
+      - Document
+      range: Person
+      symmetric: false
+      category: business
+    applies_to:
+      inverse: subject_of
+      domain:
+      - Document
+      - Reference
+      range: Any
+      symmetric: false
+      category: business
+    derives_from:
+      inverse: source_of
+      symmetric: false
+      category: lineage
+    recorded_in:
+      inverse: records
+      symmetric: false
+      category: lineage
+    supersedes:
+      inverse: superseded_by
+      symmetric: false
+      category: lineage
+    same_as:
+      symmetric: true
+      category: semantic
+    equivalent_class:
+      symmetric: true
+      category: semantic
+    close_match:
+      symmetric: true
+      category: semantic
+    similar_to:
+      symmetric: true
+      category: semantic
+    related_to:
+      symmetric: true
+      category: semantic
   entities:
     auto_discover: true
     discovery_confidence_threshold: 0.4
-
     definitions:
       Person:
-        description: "People, customers, contacts, users, or employees"
-        uri: "https://schema.org/Person"
-        source_ontology: "schema.org"
-        keywords: ["customer", "employee", "user", "contact", "person", "member", "staff"]
-        typical_attributes: [id, name, email, phone, address, created_date]
+        description: People, customers, contacts, users, or employees
+        uri: https://schema.org/Person
+        source_ontology: schema.org
+        keywords:
+        - customer
+        - employee
+        - user
+        - contact
+        - person
+        - member
+        - staff
+        typical_attributes:
+        - id
+        - name
+        - email
+        - phone
+        - address
+        - created_date
         relationships:
-          owns: { target: Transaction, cardinality: "one-to-many" }
-          part_of: { target: Organization, cardinality: "many-to-one" }
+          owns:
+            target: Transaction
+            cardinality: one-to-many
+          part_of:
+            target: Organization
+            cardinality: many-to-one
         properties:
-          identifier:
+          id:
             kind: data_property
             role: primary_key
-            typical_attributes: ["id", "person_id", "user_id", "customer_id", "employee_id"]
+            typical_attributes:
+            - id
           name:
             kind: data_property
             role: label
-            typical_attributes: ["name", "full_name", "first_name", "last_name", "display_name"]
+            typical_attributes:
+            - name
+            - full_name
+            - first_name
+            - last_name
+            - display_name
           email:
             kind: data_property
-            role: pii
-            typical_attributes: ["email", "email_address"]
+            role: label
+            typical_attributes:
+            - email
+            - email_address
           phone:
             kind: data_property
-            role: pii
-            typical_attributes: ["phone", "phone_number", "mobile"]
+            role: label
+            typical_attributes:
+            - phone
+            - phone_number
+            - mobile
+          address:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - address
+          created_date:
+            kind: data_property
+            role: temporal
+            typical_attributes:
+            - created_date
+          identifier:
+            kind: data_property
+            role: primary_key
+            typical_attributes:
+            - id
+            - person_id
+            - user_id
+            - customer_id
+            - employee_id
           part_of:
             kind: object_property
             role: object_property
             edge: member_of
             target_entity: Organization
-            typical_attributes: ["org_id", "company_id", "department_id"]
+            typical_attributes:
+            - org_id
+            - company_id
+            - department_id
           created_at:
             kind: data_property
             role: audit
-            typical_attributes: ["created_at", "created_date", "create_date"]
+            typical_attributes:
+            - created_at
+            - created_date
+            - create_date
       Organization:
-        description: "Companies, departments, facilities, or business units"
-        uri: "https://schema.org/Organization"
-        source_ontology: "schema.org"
-        keywords: ["company", "organization", "department", "facility", "tenant", "branch", "division"]
-        typical_attributes: [id, name, type, address, parent_id]
+        description: Companies, departments, facilities, or business units
+        uri: https://schema.org/Organization
+        source_ontology: schema.org
+        keywords:
+        - company
+        - organization
+        - department
+        - facility
+        - tenant
+        - branch
+        - division
+        typical_attributes:
+        - id
+        - name
+        - type
+        - address
+        - parent_id
         relationships:
-          contains: { target: Person, cardinality: "one-to-many" }
-          contains_location: { target: Location, cardinality: "one-to-many" }
-          part_of: { target: Organization, cardinality: "many-to-one" }
+          contains:
+            target: Person
+            cardinality: one-to-many
+          contains_location:
+            target: Location
+            cardinality: one-to-many
+          part_of:
+            target: Organization
+            cardinality: many-to-one
         properties:
-          identifier:
+          id:
             kind: data_property
             role: primary_key
-            typical_attributes: ["id", "org_id", "organization_id", "company_id"]
+            typical_attributes:
+            - id
           name:
             kind: data_property
             role: label
-            typical_attributes: ["name", "org_name", "company_name"]
+            typical_attributes:
+            - name
+            - org_name
+            - company_name
           type:
             kind: data_property
             role: dimension
-            typical_attributes: ["type", "org_type", "category"]
+            typical_attributes:
+            - type
+            - org_type
+            - category
+          address:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - address
+          parent_id:
+            kind: object_property
+            role: object_property
+            typical_attributes:
+            - parent_id
+            edge: has_parent
+          identifier:
+            kind: data_property
+            role: primary_key
+            typical_attributes:
+            - id
+            - org_id
+            - organization_id
+            - company_id
           parent:
             kind: object_property
             role: object_property
             edge: has_part
             target_entity: Organization
-            typical_attributes: ["parent_id", "parent_org_id"]
+            typical_attributes:
+            - parent_id
+            - parent_org_id
       Product:
-        description: "Goods, services, SKUs, or catalog items"
-        uri: "https://schema.org/Product"
-        source_ontology: "schema.org"
-        keywords: ["product", "item", "sku", "catalog", "offering", "service", "subscription"]
-        typical_attributes: [id, name, description, price, category, status]
+        description: Goods, services, SKUs, or catalog items
+        uri: https://schema.org/Product
+        source_ontology: schema.org
+        keywords:
+        - product
+        - item
+        - sku
+        - catalog
+        - offering
+        - service
+        - subscription
+        typical_attributes:
+        - id
+        - name
+        - description
+        - price
+        - category
+        - status
         relationships:
-          references: { target: Reference, cardinality: "many-to-one" }
+          references:
+            target: Reference
+            cardinality: many-to-one
         properties:
-          identifier:
+          id:
             kind: data_property
             role: primary_key
-            typical_attributes: ["id", "product_id", "sku", "item_id"]
+            typical_attributes:
+            - id
           name:
             kind: data_property
             role: label
-            typical_attributes: ["name", "product_name", "item_name", "title"]
+            typical_attributes:
+            - name
+            - product_name
+            - item_name
+            - title
+          description:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - description
           price:
             kind: data_property
             role: measure
-            typical_attributes: ["price", "unit_price", "list_price", "msrp"]
+            typical_attributes:
+            - price
+            - unit_price
+            - list_price
+            - msrp
           category:
             kind: data_property
             role: dimension
-            typical_attributes: ["category", "product_category", "type", "product_type"]
+            typical_attributes:
+            - category
+            - product_category
+            - type
+            - product_type
           status:
             kind: data_property
             role: dimension
-            typical_attributes: ["status", "product_status", "active"]
-      Transaction:
-        description: "Orders, purchases, payments, invoices, or financial events"
-        uri: "https://schema.org/Invoice"
-        source_ontology: "schema.org"
-        keywords: ["transaction", "order", "payment", "invoice", "purchase", "sale", "receipt"]
-        typical_attributes: [id, customer_id, amount, date, status, currency]
-        relationships:
-          placed_by: { target: Person, cardinality: "many-to-one" }
-          for_product: { target: Product, cardinality: "many-to-many" }
-        properties:
+            typical_attributes:
+            - status
+            - product_status
+            - active
           identifier:
             kind: data_property
             role: primary_key
-            typical_attributes: ["id", "order_id", "transaction_id", "invoice_id", "payment_id"]
-          business_key:
+            typical_attributes:
+            - id
+            - product_id
+            - sku
+            - item_id
+      Transaction:
+        description: Orders, purchases, payments, invoices, or financial events
+        uri: https://schema.org/Invoice
+        source_ontology: schema.org
+        keywords:
+        - transaction
+        - order
+        - payment
+        - invoice
+        - purchase
+        - sale
+        - receipt
+        typical_attributes:
+        - id
+        - customer_id
+        - amount
+        - date
+        - status
+        - currency
+        relationships:
+          placed_by:
+            target: Person
+            cardinality: many-to-one
+          for_product:
+            target: Product
+            cardinality: many-to-many
+        properties:
+          id:
             kind: data_property
-            role: business_key
-            typical_attributes: ["order_number", "invoice_number", "transaction_ref", "confirmation_number"]
+            role: primary_key
+            typical_attributes:
+            - id
+          customer_id:
+            kind: object_property
+            role: object_property
+            typical_attributes:
+            - customer_id
+            edge: has_customer
           amount:
             kind: data_property
             role: measure
-            typical_attributes: ["amount", "total", "total_amount", "price", "subtotal", "net_amount"]
-          currency:
+            typical_attributes:
+            - amount
+            - total
+            - total_amount
+            - price
+            - subtotal
+            - net_amount
+          date:
             kind: data_property
-            role: dimension
-            typical_attributes: ["currency", "currency_code"]
+            role: temporal
+            typical_attributes:
+            - date
           status:
             kind: data_property
             role: dimension
-            typical_attributes: ["status", "order_status", "payment_status", "state"]
+            typical_attributes:
+            - status
+            - order_status
+            - payment_status
+            - state
+          currency:
+            kind: data_property
+            role: dimension
+            typical_attributes:
+            - currency
+            - currency_code
+          identifier:
+            kind: data_property
+            role: primary_key
+            typical_attributes:
+            - id
+            - order_id
+            - transaction_id
+            - invoice_id
+            - payment_id
+          business_key:
+            kind: data_property
+            role: business_key
+            typical_attributes:
+            - order_number
+            - invoice_number
+            - transaction_ref
+            - confirmation_number
           occurred_at:
             kind: data_property
             role: temporal
-            typical_attributes: ["order_date", "transaction_date", "created_date", "date", "payment_date"]
+            typical_attributes:
+            - order_date
+            - transaction_date
+            - created_date
+            - date
+            - payment_date
           placed_by:
             kind: object_property
             role: object_property
             edge: placed_by
             target_entity: Person
-            typical_attributes: ["customer_id", "user_id", "buyer_id", "person_id"]
+            typical_attributes:
+            - customer_id
+            - user_id
+            - buyer_id
+            - person_id
           for_product:
             kind: object_property
             role: object_property
             edge: for_product
             target_entity: Product
-            typical_attributes: ["product_id", "item_id", "sku"]
+            typical_attributes:
+            - product_id
+            - item_id
+            - sku
           billed_to:
             kind: object_property
             role: object_property
             edge: billed_to
-            target_entity: [Person, Organization]
-            typical_attributes: ["account_id", "billing_account_id"]
+            target_entity:
+            - Person
+            - Organization
+            typical_attributes:
+            - account_id
+            - billing_account_id
       Location:
-        description: "Addresses, sites, regions, facilities, or geographies"
-        uri: "https://schema.org/Place"
-        source_ontology: "schema.org"
-        keywords: ["location", "address", "site", "region", "facility", "warehouse", "store"]
-        typical_attributes: [id, name, address, city, state, country, zip_code]
+        description: Addresses, sites, regions, facilities, or geographies
+        uri: https://schema.org/Place
+        source_ontology: schema.org
+        keywords:
+        - location
+        - address
+        - site
+        - region
+        - facility
+        - warehouse
+        - store
+        typical_attributes:
+        - id
+        - name
+        - address
+        - city
+        - state
+        - country
+        - zip_code
         relationships:
-          part_of: { target: Organization, cardinality: "many-to-one" }
+          part_of:
+            target: Organization
+            cardinality: many-to-one
         properties:
-          identifier:
+          id:
             kind: data_property
             role: primary_key
-            typical_attributes: ["id", "location_id", "site_id"]
+            typical_attributes:
+            - id
           name:
             kind: data_property
             role: label
-            typical_attributes: ["name", "location_name", "site_name"]
+            typical_attributes:
+            - name
+            - location_name
+            - site_name
+          address:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - address
           city:
             kind: data_property
             role: composite_component
-            typical_attributes: ["city", "shipping_city", "billing_city"]
+            typical_attributes:
+            - city
+            - shipping_city
+            - billing_city
           state:
             kind: data_property
             role: composite_component
-            typical_attributes: ["state", "shipping_state", "province", "region"]
+            typical_attributes:
+            - state
+            - shipping_state
+            - province
+            - region
           country:
             kind: data_property
             role: composite_component
-            typical_attributes: ["country", "country_code"]
-          zip:
+            typical_attributes:
+            - country
+            - country_code
+          zip_code:
             kind: data_property
-            role: composite_component
-            typical_attributes: ["zip", "zip_code", "postal_code"]
-      Event:
-        description: "Activities, logs, sessions, audits, or system events"
-        uri: "https://schema.org/Event"
-        source_ontology: "schema.org"
-        keywords: ["event", "activity", "log", "audit", "session", "incident", "alert"]
-        typical_attributes: [id, type, timestamp, user_id, details]
-        relationships:
-          references: { target: Person, cardinality: "many-to-one" }
-        properties:
+            role: geographic
+            typical_attributes:
+            - zip_code
           identifier:
             kind: data_property
             role: primary_key
-            typical_attributes: ["id", "event_id", "log_id", "session_id"]
+            typical_attributes:
+            - id
+            - location_id
+            - site_id
+          zip:
+            kind: data_property
+            role: composite_component
+            typical_attributes:
+            - zip
+            - zip_code
+            - postal_code
+      Event:
+        description: Activities, logs, sessions, audits, or system events
+        uri: https://schema.org/Event
+        source_ontology: schema.org
+        keywords:
+        - event
+        - activity
+        - log
+        - audit
+        - session
+        - incident
+        - alert
+        typical_attributes:
+        - id
+        - type
+        - timestamp
+        - user_id
+        - details
+        relationships:
+          references:
+            target: Person
+            cardinality: many-to-one
+        properties:
+          id:
+            kind: data_property
+            role: primary_key
+            typical_attributes:
+            - id
           type:
             kind: data_property
             role: dimension
-            typical_attributes: ["type", "event_type", "category"]
+            typical_attributes:
+            - type
+            - event_type
+            - category
+          timestamp:
+            kind: data_property
+            role: temporal
+            typical_attributes:
+            - timestamp
+          user_id:
+            kind: object_property
+            role: object_property
+            typical_attributes:
+            - user_id
+            edge: has_user
+          details:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - details
+          identifier:
+            kind: data_property
+            role: primary_key
+            typical_attributes:
+            - id
+            - event_id
+            - log_id
+            - session_id
           occurred_at:
             kind: data_property
             role: temporal
-            typical_attributes: ["timestamp", "event_time", "created_at", "logged_at"]
+            typical_attributes:
+            - timestamp
+            - event_time
+            - created_at
+            - logged_at
           actor:
             kind: object_property
             role: object_property
             edge: created_by
             target_entity: Person
-            typical_attributes: ["user_id", "actor_id", "performed_by"]
+            typical_attributes:
+            - user_id
+            - actor_id
+            - performed_by
       Reference:
-        description: "Lookup tables, codes, categories, dimensions, or configuration"
-        uri: "https://schema.org/Thing"
-        source_ontology: "schema.org"
-        keywords: ["reference", "lookup", "code", "category", "dim_", "type", "status"]
-        typical_attributes: [id, code, name, description, active]
+        description: Lookup tables, codes, categories, dimensions, or configuration
+        uri: https://schema.org/Thing
+        source_ontology: schema.org
+        keywords:
+        - reference
+        - lookup
+        - code
+        - category
+        - dim_
+        - type
+        - status
+        typical_attributes:
+        - id
+        - code
+        - name
+        - description
+        - active
         relationships: {}
         properties:
-          identifier:
+          id:
             kind: data_property
             role: primary_key
-            typical_attributes: ["id", "code", "reference_id"]
+            typical_attributes:
+            - id
+          code:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - code
           name:
             kind: data_property
             role: label
-            typical_attributes: ["name", "description", "label", "display_name"]
+            typical_attributes:
+            - name
+            - description
+            - label
+            - display_name
+          description:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - description
           active:
             kind: data_property
             role: dimension
-            typical_attributes: ["active", "is_active", "status", "enabled"]
-      Metric:
-        description: "KPIs, aggregates, facts, summaries, or analytic measures"
-        uri: "https://schema.org/QuantitativeValue"
-        source_ontology: "schema.org"
-        keywords: ["metric", "kpi", "aggregate", "fact_", "summary", "measure", "score"]
-        typical_attributes: [id, name, value, period, dimension]
-        relationships:
-          derives_from: { target: Event, cardinality: "many-to-one" }
-        properties:
+            typical_attributes:
+            - active
+            - is_active
+            - status
+            - enabled
           identifier:
             kind: data_property
             role: primary_key
-            typical_attributes: ["id", "metric_id"]
+            typical_attributes:
+            - id
+            - code
+            - reference_id
+      Metric:
+        description: KPIs, aggregates, facts, summaries, or analytic measures
+        uri: https://schema.org/QuantitativeValue
+        source_ontology: schema.org
+        keywords:
+        - metric
+        - kpi
+        - aggregate
+        - fact_
+        - summary
+        - measure
+        - score
+        typical_attributes:
+        - id
+        - name
+        - value
+        - period
+        - dimension
+        relationships:
+          derives_from:
+            target: Event
+            cardinality: many-to-one
+        properties:
+          id:
+            kind: data_property
+            role: primary_key
+            typical_attributes:
+            - id
           name:
             kind: data_property
             role: label
-            typical_attributes: ["name", "metric_name", "kpi_name"]
+            typical_attributes:
+            - name
+            - metric_name
+            - kpi_name
           value:
             kind: data_property
             role: measure
-            typical_attributes: ["value", "score", "amount", "count", "total"]
+            typical_attributes:
+            - value
+            - score
+            - amount
+            - count
+            - total
           period:
             kind: data_property
             role: temporal
-            typical_attributes: ["period", "date", "month", "quarter", "year"]
+            typical_attributes:
+            - period
+            - date
+            - month
+            - quarter
+            - year
+          dimension:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - dimension
+          identifier:
+            kind: data_property
+            role: primary_key
+            typical_attributes:
+            - id
+            - metric_id
           source:
             kind: object_property
             role: object_property
             edge: derives_from
             target_entity: Event
-            typical_attributes: ["source_id", "event_id"]
+            typical_attributes:
+            - source_id
+            - event_id
       Document:
-        description: "Unstructured content, notes, files, or text records"
-        uri: "https://schema.org/DigitalDocument"
-        source_ontology: "schema.org"
-        keywords: ["document", "note", "file", "content", "text", "attachment", "report"]
-        typical_attributes: [id, title, body, author, created_date, type]
+        description: Unstructured content, notes, files, or text records
+        uri: https://schema.org/DigitalDocument
+        source_ontology: schema.org
+        keywords:
+        - document
+        - note
+        - file
+        - content
+        - text
+        - attachment
+        - report
+        typical_attributes:
+        - id
+        - title
+        - body
+        - author
+        - created_date
+        - type
         relationships:
-          references: { target: Person, cardinality: "many-to-one" }
+          references:
+            target: Person
+            cardinality: many-to-one
         properties:
-          identifier:
+          id:
             kind: data_property
             role: primary_key
-            typical_attributes: ["id", "document_id", "doc_id", "file_id"]
+            typical_attributes:
+            - id
           title:
             kind: data_property
             role: label
-            typical_attributes: ["title", "name", "subject", "filename"]
+            typical_attributes:
+            - title
+            - name
+            - subject
+            - filename
           body:
             kind: data_property
             role: dimension
-            typical_attributes: ["body", "content", "text", "description"]
+            typical_attributes:
+            - body
+            - content
+            - text
+            - description
           author:
             kind: object_property
             role: object_property
             edge: created_by
             target_entity: Person
-            typical_attributes: ["author", "author_id", "created_by"]
+            typical_attributes:
+            - author
+            - author_id
+            - created_by
+          created_date:
+            kind: data_property
+            role: temporal
+            typical_attributes:
+            - created_date
+          type:
+            kind: data_property
+            role: label
+            typical_attributes:
+            - type
+          identifier:
+            kind: data_property
+            role: primary_key
+            typical_attributes:
+            - id
+            - document_id
+            - doc_id
+            - file_id
           created_at:
             kind: data_property
             role: temporal
-            typical_attributes: ["created_date", "created_at", "published_date"]
-
+            typical_attributes:
+            - created_date
+            - created_at
+            - published_date
   domain_entity_affinity:
     finance:
-      [Transaction, Person, Organization, Product, Reference, Event, Metric]
-    operations: [Product, Organization, Location, Event, Metric, Reference]
-    workforce: [Person, Organization, Location, Event, Reference]
+    - Transaction
+    - Person
+    - Organization
+    - Product
+    - Reference
+    - Event
+    - Metric
+    operations:
+    - Product
+    - Organization
+    - Location
+    - Event
+    - Metric
+    - Reference
+    workforce:
+    - Person
+    - Organization
+    - Location
+    - Event
+    - Reference
     customer:
-      [Person, Organization, Product, Transaction, Event, Metric, Location]
-    technology: [Event, Metric, Reference, Organization]
-    governance: [Document, Reference, Organization, Person]
-
+    - Person
+    - Organization
+    - Product
+    - Transaction
+    - Event
+    - Metric
+    - Location
+    technology:
+    - Event
+    - Metric
+    - Reference
+    - Organization
+    governance:
+    - Document
+    - Reference
+    - Organization
+    - Person
   relationships:
     types:
-      - name: owns
-        description: "Entity owns or is responsible for another"
-        inverse: owned_by
-      - name: contains
-        description: "Entity contains or includes another"
-        inverse: contained_in
-      - name: references
-        description: "Entity references another (foreign key)"
-        inverse: referenced_by
-      - name: derives_from
-        description: "Entity is derived from another (lineage)"
-        inverse: source_of
-      - name: similar_to
-        description: "Entity is semantically similar to another"
-        inverse: similar_to
-        symmetric: true
-      - name: part_of
-        description: "Entity is part of a larger entity"
-        inverse: has_part
-      - name: instance_of
-        description: "Entity is an instance of a type"
-        inverse: type_of
-
+    - name: owns
+      description: Entity owns or is responsible for another
+      inverse: owned_by
+    - name: contains
+      description: Entity contains or includes another
+      inverse: contained_in
+    - name: references
+      description: Entity references another (foreign key)
+      inverse: referenced_by
+    - name: derives_from
+      description: Entity is derived from another (lineage)
+      inverse: source_of
+    - name: similar_to
+      description: Entity is semantically similar to another
+      inverse: similar_to
+      symmetric: true
+    - name: part_of
+      description: Entity is part of a larger entity
+      inverse: has_part
+    - name: instance_of
+      description: Entity is an instance of a type
+      inverse: type_of
   metrics:
     auto_discover: false
     definitions: []
-
   validation:
     min_entity_confidence: 0.5
     max_entities_per_table: 3
     ai_validation_enabled: true
-    classification_model: "databricks-claude-sonnet-4-6"
-
+    classification_model: databricks-claude-sonnet-4-6
 domains:
   finance:
-    name: "Finance"
-    description: "Accounting, payments, revenue cycle, billing, and treasury"
+    name: Finance
+    description: Accounting, payments, revenue cycle, billing, and treasury
     keywords:
-      ["revenue", "billing", "ledger", "payment", "accounting", "invoice", "transaction", "cost", "budget"]
+    - revenue
+    - billing
+    - ledger
+    - payment
+    - accounting
+    - invoice
+    - transaction
+    - cost
+    - budget
     subdomains:
       accounting:
-        name: "Accounting"
-        description: "General ledger, journal entries, AP/AR, and financial statements"
-        keywords: ["ledger", "journal", "gl", "ap", "ar", "account", "transaction", "balance"]
+        name: Accounting
+        description: General ledger, journal entries, AP/AR, and financial statements
+        keywords:
+        - ledger
+        - journal
+        - gl
+        - ap
+        - ar
+        - account
+        - transaction
+        - balance
       billing:
-        name: "Billing & Payments"
-        description: "Billing, invoicing, payment processing, and charge capture"
-        keywords: ["billing", "payment", "invoice", "charge", "receipt"]
+        name: Billing & Payments
+        description: Billing, invoicing, payment processing, and charge capture
+        keywords:
+        - billing
+        - payment
+        - invoice
+        - charge
+        - receipt
       treasury:
-        name: "Treasury & Tax"
-        description: "Cash management, banking, investments, tax, and compliance"
-        keywords: ["treasury", "cash", "tax", "investment", "audit"]
-
+        name: Treasury & Tax
+        description: Cash management, banking, investments, tax, and compliance
+        keywords:
+        - treasury
+        - cash
+        - tax
+        - investment
+        - audit
   operations:
-    name: "Operations"
-    description: "Supply chain, inventory, procurement, logistics, and facilities"
+    name: Operations
+    description: Supply chain, inventory, procurement, logistics, and facilities
     keywords:
-      ["inventory", "procurement", "logistics", "warehouse", "supply_chain", "order", "shipment", "fulfillment"]
+    - inventory
+    - procurement
+    - logistics
+    - warehouse
+    - supply_chain
+    - order
+    - shipment
+    - fulfillment
     subdomains:
       inventory:
-        name: "Inventory Management"
-        description: "Stock levels, warehouse management, SKUs, and cycle counts"
-        keywords: ["inventory", "stock", "warehouse", "sku", "cycle_count"]
+        name: Inventory Management
+        description: Stock levels, warehouse management, SKUs, and cycle counts
+        keywords:
+        - inventory
+        - stock
+        - warehouse
+        - sku
+        - cycle_count
       procurement:
-        name: "Procurement"
-        description: "Purchasing, vendor management, contracts, and requisitions"
-        keywords: ["procurement", "vendor", "purchase_order", "supplier", "rfp"]
+        name: Procurement
+        description: Purchasing, vendor management, contracts, and requisitions
+        keywords:
+        - procurement
+        - vendor
+        - purchase_order
+        - supplier
+        - rfp
       logistics:
-        name: "Logistics"
-        description: "Shipping, transportation, delivery tracking, and route planning"
-        keywords: ["shipping", "delivery", "carrier", "freight", "tracking"]
-
+        name: Logistics
+        description: Shipping, transportation, delivery tracking, and route planning
+        keywords:
+        - shipping
+        - delivery
+        - carrier
+        - freight
+        - tracking
   workforce:
-    name: "Workforce"
-    description: "HR, payroll, recruitment, and workforce management"
-    keywords: ["employee", "payroll", "recruitment", "hr", "workforce"]
+    name: Workforce
+    description: HR, payroll, recruitment, and workforce management
+    keywords:
+    - employee
+    - payroll
+    - recruitment
+    - hr
+    - workforce
     subdomains:
       payroll_compensation:
-        name: "Payroll & Compensation"
-        description: "Salaries, wages, bonuses, deductions, and tax withholding"
-        keywords: ["payroll", "salary", "compensation", "bonus", "deduction"]
-      talent:
-        name: "Talent Management"
-        description: "Recruitment, hiring, performance reviews, and training"
+        name: Payroll & Compensation
+        description: Salaries, wages, bonuses, deductions, and tax withholding
         keywords:
-          ["recruitment", "candidate", "performance", "training", "hiring"]
-
+        - payroll
+        - salary
+        - compensation
+        - bonus
+        - deduction
+      talent:
+        name: Talent Management
+        description: Recruitment, hiring, performance reviews, and training
+        keywords:
+        - recruitment
+        - candidate
+        - performance
+        - training
+        - hiring
   customer:
-    name: "Customer"
-    description: "CRM, sales, marketing, customer support, and product analytics"
-    keywords: ["customer", "sales", "campaign", "support", "lead", "account", "contact", "order", "crm"]
+    name: Customer
+    description: CRM, sales, marketing, customer support, and product analytics
+    keywords:
+    - customer
+    - sales
+    - campaign
+    - support
+    - lead
+    - account
+    - contact
+    - order
+    - crm
     subdomains:
       sales:
-        name: "Sales & Pipeline"
-        description: "Opportunities, deals, quotes, pipeline, and forecasting"
-        keywords: ["opportunity", "deal", "quote", "pipeline", "forecast", "account", "contact", "order", "invoice", "line_item", "product", "price"]
+        name: Sales & Pipeline
+        description: Opportunities, deals, quotes, pipeline, and forecasting
+        keywords:
+        - opportunity
+        - deal
+        - quote
+        - pipeline
+        - forecast
+        - account
+        - contact
+        - order
+        - invoice
+        - line_item
+        - product
+        - price
       marketing:
-        name: "Marketing"
-        description: "Campaigns, leads, attribution, digital marketing, and content"
-        keywords: ["campaign", "lead", "attribution", "email", "segment"]
+        name: Marketing
+        description: Campaigns, leads, attribution, digital marketing, and content
+        keywords:
+        - campaign
+        - lead
+        - attribution
+        - email
+        - segment
       support:
-        name: "Customer Support"
-        description: "Tickets, cases, service requests, SLAs, and escalations"
-        keywords: ["ticket", "case", "support", "resolution", "escalation"]
-
+        name: Customer Support
+        description: Tickets, cases, service requests, SLAs, and escalations
+        keywords:
+        - ticket
+        - case
+        - support
+        - resolution
+        - escalation
   technology:
-    name: "Technology"
-    description: "IT infrastructure, security, monitoring, and application operations"
-    keywords: ["server", "security", "log", "monitoring", "infrastructure"]
+    name: Technology
+    description: IT infrastructure, security, monitoring, and application operations
+    keywords:
+    - server
+    - security
+    - log
+    - monitoring
+    - infrastructure
     subdomains:
       security:
-        name: "Security"
-        description: "Access control, authentication, threat detection, and compliance"
-        keywords: ["security", "access", "auth", "threat", "vulnerability"]
+        name: Security
+        description: Access control, authentication, threat detection, and compliance
+        keywords:
+        - security
+        - access
+        - auth
+        - threat
+        - vulnerability
       monitoring:
-        name: "Monitoring & Observability"
-        description: "System logs, alerts, uptime, performance metrics, and incident management"
-        keywords: ["monitoring", "alert", "log", "uptime", "incident"]
+        name: Monitoring & Observability
+        description: System logs, alerts, uptime, performance metrics, and incident management
+        keywords:
+        - monitoring
+        - alert
+        - log
+        - uptime
+        - incident
       infrastructure:
-        name: "Infrastructure"
-        description: "Servers, networks, cloud resources, and configuration management"
-        keywords: ["server", "network", "cloud", "deployment", "configuration"]
-
+        name: Infrastructure
+        description: Servers, networks, cloud resources, and configuration management
+        keywords:
+        - server
+        - network
+        - cloud
+        - deployment
+        - configuration
   governance:
-    name: "Governance"
-    description: "Legal, regulatory compliance, contracts, data governance, and IP"
-    keywords: ["compliance", "contract", "governance", "policy", "regulation"]
+    name: Governance
+    description: Legal, regulatory compliance, contracts, data governance, and IP
+    keywords:
+    - compliance
+    - contract
+    - governance
+    - policy
+    - regulation
     subdomains:
       legal:
-        name: "Legal & Contracts"
-        description: "Contracts, agreements, litigation, and legal documentation"
-        keywords: ["contract", "agreement", "litigation", "clause", "legal"]
-      regulatory:
-        name: "Regulatory Compliance"
-        description: "Regulatory requirements, audits, violations, and reporting"
+        name: Legal & Contracts
+        description: Contracts, agreements, litigation, and legal documentation
         keywords:
-          ["regulatory", "audit", "compliance", "violation", "reporting"]
+        - contract
+        - agreement
+        - litigation
+        - clause
+        - legal
+      regulatory:
+        name: Regulatory Compliance
+        description: Regulatory requirements, audits, violations, and reporting
+        keywords:
+        - regulatory
+        - audit
+        - compliance
+        - violation
+        - reporting
       data_governance:
-        name: "Data Governance"
-        description: "Data quality, lineage, metadata management, and catalog policies"
-        keywords: ["data_lineage", "data_catalog", "data_governance", "data_steward", "retention_policy"]
+        name: Data Governance
+        description: Data quality, lineage, metadata management, and catalog policies
+        keywords:
+        - data_lineage
+        - data_catalog
+        - data_governance
+        - data_steward
+        - retention_policy

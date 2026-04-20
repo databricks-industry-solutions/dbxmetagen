@@ -29,15 +29,11 @@ Person:
       target: Organization
       cardinality: many-to-one
   properties:
-    identifier:
+    id:
       kind: data_property
       role: primary_key
       typical_attributes:
       - id
-      - person_id
-      - user_id
-      - customer_id
-      - employee_id
     name:
       kind: data_property
       role: label
@@ -49,17 +45,36 @@ Person:
       - display_name
     email:
       kind: data_property
-      role: pii
+            role: label
       typical_attributes:
       - email
       - email_address
     phone:
       kind: data_property
-      role: pii
+            role: label
       typical_attributes:
       - phone
       - phone_number
       - mobile
+    address:
+      kind: data_property
+            role: label
+      typical_attributes:
+      - address
+    created_date:
+      kind: data_property
+      role: temporal
+      typical_attributes:
+      - created_date
+    identifier:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+      - person_id
+      - user_id
+      - customer_id
+      - employee_id
     part_of:
       kind: object_property
       role: object_property
@@ -109,14 +124,11 @@ Organization:
       target: Organization
       cardinality: many-to-one
   properties:
-    identifier:
+    id:
       kind: data_property
       role: primary_key
       typical_attributes:
       - id
-      - org_id
-      - organization_id
-      - company_id
     name:
       kind: data_property
       role: label
@@ -131,6 +143,25 @@ Organization:
       - type
       - org_type
       - category
+    address:
+      kind: data_property
+            role: label
+      typical_attributes:
+      - address
+    parent_id:
+      kind: object_property
+      role: object_property
+      typical_attributes:
+      - parent_id
+      edge: has_parent
+    identifier:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+      - org_id
+      - organization_id
+      - company_id
     parent:
       kind: object_property
       role: object_property
@@ -167,14 +198,11 @@ Product:
       target: Reference
       cardinality: many-to-one
   properties:
-    identifier:
+    id:
       kind: data_property
       role: primary_key
       typical_attributes:
       - id
-      - product_id
-      - sku
-      - item_id
     name:
       kind: data_property
       role: label
@@ -183,6 +211,11 @@ Product:
       - product_name
       - item_name
       - title
+    description:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - description
     price:
       kind: data_property
       role: measure
@@ -206,6 +239,14 @@ Product:
       - status
       - product_status
       - active
+    identifier:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+      - product_id
+      - sku
+      - item_id
 Transaction:
   description: Orders, purchases, payments, invoices, or financial events
   label: Transaction
@@ -237,6 +278,46 @@ Transaction:
       target: Product
       cardinality: many-to-many
   properties:
+    id:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+    customer_id:
+      kind: object_property
+      role: object_property
+      typical_attributes:
+      - customer_id
+      edge: has_customer
+    amount:
+      kind: data_property
+      role: measure
+      typical_attributes:
+      - amount
+      - total
+      - total_amount
+      - price
+      - subtotal
+      - net_amount
+    date:
+      kind: data_property
+      role: temporal
+      typical_attributes:
+      - date
+    status:
+      kind: data_property
+      role: dimension
+      typical_attributes:
+      - status
+      - order_status
+      - payment_status
+      - state
+    currency:
+      kind: data_property
+      role: dimension
+      typical_attributes:
+      - currency
+      - currency_code
     identifier:
       kind: data_property
       role: primary_key
@@ -254,30 +335,6 @@ Transaction:
       - invoice_number
       - transaction_ref
       - confirmation_number
-    amount:
-      kind: data_property
-      role: measure
-      typical_attributes:
-      - amount
-      - total
-      - total_amount
-      - price
-      - subtotal
-      - net_amount
-    currency:
-      kind: data_property
-      role: dimension
-      typical_attributes:
-      - currency
-      - currency_code
-    status:
-      kind: data_property
-      role: dimension
-      typical_attributes:
-      - status
-      - order_status
-      - payment_status
-      - state
     occurred_at:
       kind: data_property
       role: temporal
@@ -345,13 +402,11 @@ Location:
       target: Organization
       cardinality: many-to-one
   properties:
-    identifier:
+    id:
       kind: data_property
       role: primary_key
       typical_attributes:
       - id
-      - location_id
-      - site_id
     name:
       kind: data_property
       role: label
@@ -359,6 +414,11 @@ Location:
       - name
       - location_name
       - site_name
+    address:
+      kind: data_property
+            role: label
+      typical_attributes:
+      - address
     city:
       kind: data_property
       role: composite_component
@@ -380,6 +440,18 @@ Location:
       typical_attributes:
       - country
       - country_code
+    zip_code:
+      kind: data_property
+      role: geographic
+      typical_attributes:
+      - zip_code
+    identifier:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+      - location_id
+      - site_id
     zip:
       kind: data_property
       role: composite_component
@@ -414,6 +486,34 @@ Event:
       target: Person
       cardinality: many-to-one
   properties:
+    id:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+    type:
+      kind: data_property
+      role: dimension
+      typical_attributes:
+      - type
+      - event_type
+      - category
+    timestamp:
+      kind: data_property
+      role: temporal
+      typical_attributes:
+      - timestamp
+    user_id:
+      kind: object_property
+      role: object_property
+      typical_attributes:
+      - user_id
+      edge: has_user
+    details:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - details
     identifier:
       kind: data_property
       role: primary_key
@@ -422,13 +522,6 @@ Event:
       - event_id
       - log_id
       - session_id
-    type:
-      kind: data_property
-      role: dimension
-      typical_attributes:
-      - type
-      - event_type
-      - category
     occurred_at:
       kind: data_property
       role: temporal
@@ -470,13 +563,16 @@ Reference:
   business_questions: []
   relationships: {}
   properties:
-    identifier:
+    id:
       kind: data_property
       role: primary_key
       typical_attributes:
       - id
+    code:
+      kind: data_property
+      role: label
+      typical_attributes:
       - code
-      - reference_id
     name:
       kind: data_property
       role: label
@@ -485,6 +581,11 @@ Reference:
       - description
       - label
       - display_name
+    description:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - description
     active:
       kind: data_property
       role: dimension
@@ -493,6 +594,13 @@ Reference:
       - is_active
       - status
       - enabled
+    identifier:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+      - code
+      - reference_id
 Metric:
   description: KPIs, aggregates, facts, summaries, or analytic measures
   label: Metric
@@ -520,12 +628,11 @@ Metric:
       target: Event
       cardinality: many-to-one
   properties:
-    identifier:
+    id:
       kind: data_property
       role: primary_key
       typical_attributes:
       - id
-      - metric_id
     name:
       kind: data_property
       role: label
@@ -551,6 +658,17 @@ Metric:
       - month
       - quarter
       - year
+    dimension:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - dimension
+    identifier:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+      - metric_id
     source:
       kind: object_property
       role: object_property
@@ -587,14 +705,11 @@ Document:
       target: Person
       cardinality: many-to-one
   properties:
-    identifier:
+    id:
       kind: data_property
       role: primary_key
       typical_attributes:
       - id
-      - document_id
-      - doc_id
-      - file_id
     title:
       kind: data_property
       role: label
@@ -620,6 +735,24 @@ Document:
       - author
       - author_id
       - created_by
+    created_date:
+      kind: data_property
+      role: temporal
+      typical_attributes:
+      - created_date
+    type:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - type
+    identifier:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+      - document_id
+      - doc_id
+      - file_id
     created_at:
       kind: data_property
       role: temporal

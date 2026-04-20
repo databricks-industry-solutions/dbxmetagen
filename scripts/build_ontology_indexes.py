@@ -14,7 +14,7 @@ Supports three workflows:
          --custom-label "My Ontology" --bundle-name my_bundle
 
 Curated alignment approach:
-  Bundles like financial_services, retail_cpg, and geo_doj use hand-mapped URIs
+  Bundles like financial_services and retail_cpg use hand-mapped URIs
   to published standards (FIBO, BIAN, GS1, ISO 3166) rather than auto-extracting
   from OWL downloads. This is appropriate when:
     - The source ontology is very large (FIBO: ~30k classes)

@@ -1,0 +1,46 @@
+resources:
+  jobs:
+    eval_setup_job:
+      name: "${var.app_name}_eval_setup"
+
+      permissions:
+        - service_principal_name: ${resources.apps.dbxmetagen_app.service_principal_client_id}
+          level: CAN_MANAGE_RUN
+
+      email_notifications:
+        on_failure:
+          - ${var.current_user}
+
+      parameters:
+        - name: catalog_name
+          default: ${var.catalog_name}
+        - name: schema_name
+          default: eval_data
+
+      tasks:
+        - task_key: create_eval_tables
+          max_retries: 0
+          job_cluster_key: eval_cluster
+          notebook_task:
+            notebook_path: ../../notebooks/evaluation/eval_setup.py
+            base_parameters:
+              catalog_name: "{{job.parameters.catalog_name}}"
+              schema_name: "{{job.parameters.schema_name}}"
+          libraries:
+            - whl: ../../dist/*.whl
+            - pypi:
+                package: faker
+
+      job_clusters:
+        - job_cluster_key: eval_cluster
+          new_cluster:
+            policy_id: ${var.policy_id}
+            spark_version: 17.3.x-cpu-ml-scala2.13
+            node_type_id: ${var.node_type}
+            data_security_mode: SINGLE_USER
+            num_workers: 0
+            spark_conf:
+              spark.databricks.cluster.profile: singleNode
+              spark.master: "local[*]"
+            custom_tags:
+              ResourceClass: SingleNode

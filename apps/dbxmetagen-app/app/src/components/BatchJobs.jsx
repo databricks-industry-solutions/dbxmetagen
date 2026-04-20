@@ -176,7 +176,7 @@ export default function BatchJobs({ onNavigate }) {
     sample_size: 5,
     columns_per_call: 20,
     use_kb_comments: false,
-    include_lineage: false,
+    include_lineage: true,
     build_kb_after: true,
     use_serverless: true,
   })
@@ -792,6 +792,13 @@ export default function BatchJobs({ onNavigate }) {
                 </label>
                 <p className="text-[10px] text-amber-600 dark:text-amber-400 mt-0.5 ml-5">Uncheck for your first run. Incremental mode requires a prior run's control table to exist.</p>
               </div>
+              <div className="pb-1">
+                <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer"
+                  title="Apply ontology tags and FK constraints directly to Unity Catalog tables. Disable to review results first.">
+                  <input type="checkbox" checked={applyDdl} onChange={e => setApplyDdl(e.target.checked)} />
+                  Apply DDL (tags &amp; FK constraints)
+                </label>
+              </div>
             </div>
 
             <div>
@@ -805,6 +812,7 @@ export default function BatchJobs({ onNavigate }) {
             <button onClick={() => runJob('_full_analytics_pipeline', {
               catalog_name: catalogName, schema_name: schemaName,
               ontology_bundle: ontologyBundle,
+              apply_ddl: applyDdl,
               use_kb_comments: settings.use_kb_comments,
               include_lineage: settings.include_lineage,
               ...(tableNames.trim() ? { table_names: tableNames } : {}),

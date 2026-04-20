@@ -3,9 +3,9 @@ Foreign Key Prediction module.
 
 Join-key discovery uses: (1) blocking by catalog.schema, (2) column embedding
 similarity with same-block duplicate-table suppression and stricter cross-block
-floors, (3) declared FKs, query-history joins, naming and ontology heuristics,
-(4) rule-based scoring, (5) budgeted AI_QUERY as a tie-breaker, with optional
-skip-AI for high-trust declared/query pairs.
+floors, (3) declared FKs, query-history joins, naming, ontology entity-type,
+and column-property heuristics, (4) rule-based scoring, (5) budgeted AI_QUERY
+as a tie-breaker, with optional skip-AI for high-trust declared/query pairs.
 """
 
 import logging
@@ -24,9 +24,10 @@ _FK_MODEL = "databricks-gpt-oss-120b"
 
 SR_DECLARED = 0
 SR_QUERY = 1
-SR_NAME = 2
-SR_ONTOLOGY = 3
-SR_EMBEDDING = 4
+SR_COL_PROP = 2
+SR_NAME = 3
+SR_ONTOLOGY = 4
+SR_EMBEDDING = 5
 
 
 @dataclass
@@ -38,6 +39,7 @@ class FKPredictionConfig:
     column_kb_table: str = "column_knowledge_base"
     ontology_entities_table: str = "ontology_entities"
     ontology_relationships_table: str = "ontology_relationships"
+    column_properties_table: str = "ontology_column_properties"
     predictions_table: str = "fk_predictions"
     column_similarity_threshold: float = 0.85
     table_similarity_threshold: float = 0.9
@@ -81,27 +83,32 @@ class FKPredictor:
         """Limit candidates to top-K per table pair by name match quality."""
         k = self.config.max_candidates_per_table_pair
         w = Window.partitionBy("table_a", "table_b").orderBy(
-            F.col("col_similarity").desc()
+            F.col("col_similarity").desc(),
+            F.col("col_a").asc(),
+            F.col("col_b").asc(),
         )
         return df.withColumn("_rn", F.row_number().over(w)).filter(F.col("_rn") <= k).drop("_rn")
 
-    def _apply_tiered_ai_cap(self, candidates: DataFrame) -> DataFrame:
-        """Cap only embedding-sourced rows; deterministic sources are never dropped."""
-        max_ai = self.config.max_ai_candidates
-        min_rule = self.config.rule_score_min_for_ai
-        tier_a = candidates.filter(F.col("source_rank") != F.lit(SR_EMBEDDING))
-        tier_b = candidates.filter(F.col("source_rank") == F.lit(SR_EMBEDDING))
-        tier_b_hi = tier_b.filter(F.col("rule_score") >= min_rule)
-        tier_b_lo = tier_b.filter(F.col("rule_score") < min_rule)
-        if tier_b_hi.count() <= max_ai:
-            return tier_a.unionByName(tier_b)
-        w = Window.orderBy(F.col("rule_score").desc())
-        tier_b_hi = (
-            tier_b_hi.withColumn("_rn", F.row_number().over(w))
-            .filter(F.col("_rn") <= max_ai)
-            .drop("_rn")
+    def _budget_overflow_fill(self, df: DataFrame) -> DataFrame:
+        """Heuristic fill for candidates that exceeded the AI budget.
+
+        Only marks candidates as FK when rule_score meets the confidence
+        threshold -- prevents low-confidence candidates from flipping to
+        True just because they missed the LLM budget cut.
+        """
+        thresh = self.config.confidence_threshold
+        return (
+            df.withColumn(
+                "ai_is_fk",
+                F.when(F.col("rule_score") >= thresh, F.lit(True)).otherwise(F.lit(False)),
+            )
+            .withColumn(
+                "ai_confidence",
+                F.when(F.col("rule_score") >= thresh, F.col("rule_score")).otherwise(F.lit(0.0)),
+            )
+            .withColumn("ai_reasoning", F.lit("budget_overflow_heuristic"))
+            .withColumn("ai_fk_side", F.lit(None).cast("string"))
         )
-        return tier_a.unionByName(tier_b_hi).unionByName(tier_b_lo)
 
     def _with_skip_ai_flags(self, df: DataFrame) -> DataFrame:
         qmin = self.config.skip_ai_query_min_observations
@@ -403,6 +410,122 @@ class FKPredictor:
 
 
     # ------------------------------------------------------------------
+    # Step 1b-col: Column-property FK candidates
+    # ------------------------------------------------------------------
+    def get_column_property_candidates(self) -> DataFrame:
+        """Generate FK candidates from ontology_column_properties object_property linkage.
+
+        For each column classified as object_property with a linked_entity_type,
+        proposes a direct (src_column -> PK on linked entity's primary table) pair.
+        Falls back to same-column-name matching when no PK is found on the target.
+        """
+        cp = self.config.fq(self.config.column_properties_table)
+        ent = self.config.fq(self.config.ontology_entities_table)
+        nodes = self.config.fq(self.config.nodes_table)
+        empty = self.spark.createDataFrame(
+            [], "col_a STRING, col_b STRING, col_similarity DOUBLE, "
+            "table_a STRING, table_b STRING, dtype_a STRING, dtype_b STRING, "
+            "table_similarity DOUBLE, source_rank INT, query_hit_count INT"
+        )
+        try:
+            self.spark.sql(f"SELECT 1 FROM {cp} LIMIT 1").collect()
+        except Exception:
+            logger.info("ontology_column_properties table not available, skipping")
+            return empty
+
+        k = self.config.max_candidates_per_table_pair
+        sql = f"""
+        WITH obj_props AS (
+            SELECT table_name, column_name, linked_entity_type, confidence
+            FROM {cp}
+            WHERE property_role = 'object_property'
+              AND linked_entity_type IS NOT NULL
+              AND confidence >= 0.5
+        ),
+        entity_primary AS (
+            SELECT entity_type, EXPLODE(source_tables) AS primary_table
+            FROM {ent}
+            WHERE entity_role = 'primary'
+        ),
+        pk_cols AS (
+            SELECT table_name, column_name AS pk_col
+            FROM {cp}
+            WHERE property_role = 'primary_key'
+              AND confidence >= 0.5
+        ),
+        cols AS (
+            SELECT id, parent_id, data_type,
+                   LOWER(ELEMENT_AT(SPLIT(id, '\\\\.'), -1)) AS col_short
+            FROM {nodes} WHERE node_type = 'column'
+        ),
+        pk_pairs AS (
+            SELECT op.table_name AS table_a, op.column_name AS src_col,
+                   ep.primary_table AS table_b, pk.pk_col AS dst_col
+            FROM obj_props op
+            JOIN entity_primary ep ON op.linked_entity_type = ep.entity_type
+            JOIN pk_cols pk ON pk.table_name = ep.primary_table
+            WHERE op.table_name != ep.primary_table
+        ),
+        name_pairs AS (
+            SELECT op.table_name AS table_a, op.column_name AS src_col,
+                   ep.primary_table AS table_b, c.col_short AS dst_col
+            FROM obj_props op
+            JOIN entity_primary ep ON op.linked_entity_type = ep.entity_type
+            JOIN cols c ON c.parent_id = ep.primary_table
+                        AND c.col_short = LOWER(op.column_name)
+            WHERE op.table_name != ep.primary_table
+              AND (c.col_short RLIKE '(_id|_key|_code)$' OR c.col_short = 'id')
+              AND NOT EXISTS (
+                  SELECT 1 FROM pk_pairs pp
+                  WHERE pp.table_a = op.table_name AND pp.src_col = op.column_name
+                    AND pp.table_b = ep.primary_table
+              )
+        ),
+        all_pairs AS (
+            SELECT * FROM pk_pairs
+            UNION ALL
+            SELECT * FROM name_pairs
+        ),
+        resolved AS (
+            SELECT sa.id AS col_a, da.id AS col_b,
+                   0.0 AS col_similarity,
+                   ap.table_a, ap.table_b,
+                   sa.data_type AS dtype_a, da.data_type AS dtype_b,
+                   0.0 AS table_similarity
+            FROM all_pairs ap
+            JOIN cols sa ON sa.parent_id = ap.table_a
+                         AND sa.col_short = LOWER(ap.src_col)
+            JOIN cols da ON da.parent_id = ap.table_b
+                         AND da.col_short = LOWER(ap.dst_col)
+            WHERE sa.data_type IS NOT NULL AND da.data_type IS NOT NULL
+              AND NOT (
+                sa.data_type IN ('timestamp', 'date', 'boolean', 'float', 'double', 'binary')
+                OR da.data_type IN ('timestamp', 'date', 'boolean', 'float', 'double', 'binary')
+              )
+        ),
+        capped AS (
+            SELECT *, ROW_NUMBER() OVER (
+                PARTITION BY table_a, table_b ORDER BY col_similarity DESC
+            ) AS _rn
+            FROM resolved
+        )
+        SELECT LEAST(col_a, col_b) AS col_a, GREATEST(col_a, col_b) AS col_b,
+               col_similarity, table_a, table_b, dtype_a, dtype_b, table_similarity
+        FROM capped WHERE _rn <= {k}
+        """
+        try:
+            df = self.spark.sql(sql)
+            df = df.withColumn("source_rank", F.lit(SR_COL_PROP)).withColumn(
+                "query_hit_count", F.lit(0)
+            )
+            cnt = df.count()
+            logger.info("Column-property FK candidates: %d", cnt)
+            return df
+        except Exception as e:
+            logger.warning("Column-property candidate generation failed: %s", e)
+            return empty
+
+    # ------------------------------------------------------------------
     # Step 1c-pre: Declared FK candidates from extended_table_metadata
     # ------------------------------------------------------------------
     def get_declared_fk_candidates(self) -> DataFrame:
@@ -472,6 +595,7 @@ class FKPredictor:
                 WHERE start_time >= DATEADD(DAY, -30, CURRENT_TIMESTAMP())
                   AND statement LIKE '%JOIN%'
                   AND statement LIKE '%{cat}.{sch}%'
+                ORDER BY start_time DESC
                 LIMIT 2000
             """).collect()
         except Exception as e:
@@ -770,7 +894,7 @@ class FKPredictor:
                     for ci, cs in cols_list
                 )
                 row = self.spark.sql(
-                    f"SELECT COUNT(*) AS total, {count_exprs} FROM {tbl} TABLESAMPLE ({sample_n} ROWS)"
+                    f"SELECT COUNT(*) AS total, {count_exprs} FROM {tbl} TABLESAMPLE ({sample_n} ROWS) REPEATABLE (42)"
                 ).collect()[0]
                 total = max(row.total, 1)
                 for ci, cs in cols_list:
@@ -818,7 +942,7 @@ class FKPredictor:
             try:
                 self.spark.sql(
                     f"SELECT CAST(`{col_short}` AS STRING) AS val "
-                    f"FROM {table} TABLESAMPLE ({n} ROWS) "
+                    f"FROM {table} TABLESAMPLE ({n} ROWS) REPEATABLE (42) "
                     f"WHERE `{col_short}` IS NOT NULL"
                 ).createOrReplaceTempView(view_name)
             except Exception:
@@ -889,8 +1013,8 @@ class FKPredictor:
         # Compute RI per pair: max(ri_ab, ri_ba)
         pair_ri: dict = {}
         for r in all_ri_rows:
-            total = max(r.total_a, 1)
-            ri = max(0.0, 1.0 - r.orphan_ab / total)
+            total = max(r.total_a or 0, 1)
+            ri = max(0.0, 1.0 - (r.orphan_ab or 0) / total)
             key = tuple(sorted([r.ca, r.cb]))
             pair_ri[key] = max(pair_ri.get(key, 0.0), ri)
 
@@ -913,19 +1037,27 @@ class FKPredictor:
     def rule_score(self, candidates: DataFrame) -> DataFrame:
         """Compute a heuristic joinability score with improved name matching."""
         # dtype compatibility
+        _int_types = ("int", "bigint", "long", "integer")
+        _str_types = ("string", "varchar", "char")
         dtype_score = (
             F.when(F.col("dtype_a") == F.col("dtype_b"), 1.0)
             .when(
-                (F.col("dtype_a").isin("string", "varchar", "char"))
-                & (F.col("dtype_b").isin("int", "bigint", "long", "integer")),
+                (F.col("dtype_a").isin(*_str_types)) & (F.col("dtype_b").isin(*_int_types)),
                 0.7,
             )
             .when(
-                (F.col("dtype_b").isin("string", "varchar", "char"))
-                & (F.col("dtype_a").isin("int", "bigint", "long", "integer")),
+                (F.col("dtype_b").isin(*_str_types)) & (F.col("dtype_a").isin(*_int_types)),
                 0.7,
             )
-            .otherwise(0.3)
+            .when(
+                F.col("dtype_a").isin(*_int_types) & F.col("dtype_b").isin(*_int_types),
+                0.9,
+            )
+            .when(
+                F.col("dtype_a").isin(*_str_types) & F.col("dtype_b").isin(*_str_types),
+                0.9,
+            )
+            .otherwise(0.0)
         )
 
         # Column name suffix heuristic (id, key, code patterns)
@@ -935,17 +1067,22 @@ class FKPredictor:
             1.0,
         ).otherwise(0.0)
 
-        # table_name + _id pattern: e.g. encounters.patient_id -> patients.id
         col_a_short = F.lower(F.element_at(F.split(F.col("col_a"), "\\."), -1))
         col_b_short = F.lower(F.element_at(F.split(F.col("col_b"), "\\."), -1))
         tbl_a_short = F.lower(F.element_at(F.split(F.col("table_a"), "\\."), -1))
         tbl_b_short = F.lower(F.element_at(F.split(F.col("table_b"), "\\."), -1))
-        # Check if col_a contains table_b name (e.g. patient_id contains 'patient' from 'patients')
-        table_name_match = F.when(
-            col_a_short.contains(F.regexp_replace(tbl_b_short, "s$", ""))
-            | col_b_short.contains(F.regexp_replace(tbl_a_short, "s$", "")),
-            1.0,
-        ).otherwise(0.0)
+        # Token-boundary match: col must start with table stem or have it after '_'
+        tbl_b_stem = F.regexp_replace(tbl_b_short, "s$", "")
+        tbl_a_stem = F.regexp_replace(tbl_a_short, "s$", "")
+        _a_matches_b = F.expr(
+            "rlike(lower(element_at(split(col_a, '\\\\.'), -1)), "
+            "concat('(^|_)', regexp_replace(lower(element_at(split(table_b, '\\\\.'), -1)), 's$', ''), '(_|$)'))"
+        )
+        _b_matches_a = F.expr(
+            "rlike(lower(element_at(split(col_b, '\\\\.'), -1)), "
+            "concat('(^|_)', regexp_replace(lower(element_at(split(table_a, '\\\\.'), -1)), 's$', ''), '(_|$)'))"
+        )
+        table_name_match = F.when(_a_matches_b | _b_matches_a, 1.0).otherwise(0.0)
 
         # fk_ or ref_ prefix stripping
         fk_prefix = F.when(
@@ -964,17 +1101,27 @@ class FKPredictor:
         lineage_sig = F.col("lineage_score") if "lineage_score" in candidates.columns else F.lit(0.0)
         bonus = self.config.ontology_match_bonus_weight
 
+        source_bonus = (
+            F.when(F.col("source_rank") == F.lit(SR_DECLARED), 0.25)
+            .when(F.col("source_rank") == F.lit(SR_QUERY), 0.20)
+            .when(F.col("source_rank") == F.lit(SR_COL_PROP), 0.20)
+            .when(F.col("source_rank") == F.lit(SR_NAME), 0.15)
+            .when(F.col("source_rank") == F.lit(SR_ONTOLOGY), 0.10)
+            .otherwise(0.0)
+        )
+
         return candidates.withColumn(
             "rule_score",
             F.round(
-                F.col("col_similarity") * 0.25
+                F.col("col_similarity") * 0.10
                 + dtype_score * 0.15
                 + id_pattern * 0.1
                 + table_name_match * 0.15
                 + fk_prefix * 0.05
                 + overlap * 0.1
                 + entity_match * bonus
-                + lineage_sig * 0.1,
+                + lineage_sig * 0.1
+                + source_bonus * 0.15,
                 4,
             ),
         )
@@ -1163,14 +1310,32 @@ class FKPredictor:
         """Swap col_a/col_b so col_a is always the FK (child) side.
 
         Uses AI judgment (ai_fk_side) as primary signal. Falls back to
-        cardinality ratios: the column with lower uniqueness (more duplicates)
-        is more likely the FK side.
+        cardinality ratios, then naming convention (column whose short name
+        contains the OTHER table's stem is the FK child).
         """
         has_ai = "ai_fk_side" in df.columns
         has_card = "_card_ratio_a" in df.columns and "_card_ratio_b" in df.columns
 
         if not has_ai and not has_card:
             return df
+
+        # Name-convention fallback: patient_id on encounters -> FK child
+        # Use SQL-level rlike() which supports Column patterns
+        _a_refs_b = F.expr(
+            "rlike(lower(element_at(split(col_a, '\\\\.'), -1)), "
+            "concat('(^|_)', regexp_replace(lower(element_at(split(table_b, '\\\\.'), -1)), 's$', ''), '(_|$)'))"
+        )
+        _b_refs_a = F.expr(
+            "rlike(lower(element_at(split(col_b, '\\\\.'), -1)), "
+            "concat('(^|_)', regexp_replace(lower(element_at(split(table_a, '\\\\.'), -1)), 's$', ''), '(_|$)'))"
+        )
+        name_swap = F.when(_b_refs_a & ~_a_refs_b, F.lit(True)).when(
+            _a_refs_b & ~_b_refs_a, F.lit(False)
+        )
+
+        card_swap = None
+        if has_card:
+            card_swap = F.col("_card_ratio_b") < F.col("_card_ratio_a")
 
         # should_swap = True means col_b is the FK, so we need to swap a<->b
         if has_ai and has_card:
@@ -1179,13 +1344,18 @@ class FKPredictor:
             ).when(
                 F.col("ai_fk_side") == F.lit("a"), F.lit(False)
             ).otherwise(
-                # Fallback: lower uniqueness = more duplicates = FK side
-                F.col("_card_ratio_b") < F.col("_card_ratio_a")
+                F.coalesce(card_swap, name_swap, F.lit(False))
             )
         elif has_ai:
-            should_swap = F.col("ai_fk_side") == F.lit("b")
+            should_swap = F.when(
+                F.col("ai_fk_side") == F.lit("b"), F.lit(True)
+            ).when(
+                F.col("ai_fk_side") == F.lit("a"), F.lit(False)
+            ).otherwise(
+                F.coalesce(name_swap, F.lit(False))
+            )
         else:
-            should_swap = F.col("_card_ratio_b") < F.col("_card_ratio_a")
+            should_swap = F.coalesce(card_swap, name_swap, F.lit(False))
 
         swap_pairs = [
             ("col_a", "col_b"), ("table_a", "table_b"),
@@ -1464,12 +1634,14 @@ class FKPredictor:
         embedding_cands = self.get_candidates()
         name_cands = self.get_name_based_candidates()
         ontology_cands = self.get_ontology_relationship_candidates()
+        col_prop_cands = self.get_column_property_candidates()
         declared_cands = self.get_declared_fk_candidates()
         query_cands = self.get_query_join_candidates()
 
         candidates = (
             embedding_cands.unionByName(name_cands, allowMissingColumns=True)
             .unionByName(ontology_cands, allowMissingColumns=True)
+            .unionByName(col_prop_cands, allowMissingColumns=True)
             .unionByName(declared_cands, allowMissingColumns=True)
             .unionByName(query_cands, allowMissingColumns=True)
         )
@@ -1480,6 +1652,8 @@ class FKPredictor:
             F.col("source_rank").asc(),
             F.col("col_similarity").desc(),
             F.col("query_hit_count").desc(),
+            F.col("table_a").asc(),
+            F.col("table_b").asc(),
         )
         candidates = (
             candidates.withColumn("_rn", F.row_number().over(dedup_w))
@@ -1517,31 +1691,53 @@ class FKPredictor:
 
         candidates = self._with_skip_ai_flags(candidates)
         min_rule = self.config.rule_score_min_for_ai
-        candidates = self._apply_tiered_ai_cap(candidates)
+        max_ai = self.config.max_ai_candidates
 
-        need_llm = candidates.filter((~F.col("skip_ai")) & (F.col("rule_score") >= min_rule))
         skip_llm = candidates.filter(F.col("skip_ai"))
+        need_review = candidates.filter((~F.col("skip_ai")) & (F.col("rule_score") >= min_rule))
 
-        ai_eligible = need_llm.count()
+        ai_eligible = need_review.count()
         if self.config.dry_run:
             logger.info(
                 "DRY RUN: %d candidates, %d would be sent to AI_QUERY, %d heuristic",
                 total_cand,
-                ai_eligible,
+                min(ai_eligible, max_ai),
                 skip_llm.count(),
             )
             return {
                 "dry_run": True,
                 "candidates": total_cand,
-                "ai_query_rows": ai_eligible,
+                "ai_query_rows": min(ai_eligible, max_ai),
                 "predictions": 0,
                 "edges": 0,
                 "ddl_applied": 0,
             }
 
+        overflow = None
+        if ai_eligible > max_ai:
+            w = Window.orderBy(
+                F.col("rule_score").desc(),
+                F.col("col_a").asc(),
+                F.col("col_b").asc(),
+            )
+            ranked = need_review.withColumn("_ai_rn", F.row_number().over(w))
+            need_llm = ranked.filter(F.col("_ai_rn") <= max_ai).drop("_ai_rn")
+            overflow = ranked.filter(F.col("_ai_rn") > max_ai).drop("_ai_rn")
+            logger.info(
+                "AI budget: %d eligible, %d sent to LLM, %d overflow -> heuristic",
+                ai_eligible, max_ai, ai_eligible - max_ai,
+            )
+        else:
+            need_llm = need_review
+
         judged_ai = self.ai_judge(need_llm)
         judged_skip = self._heuristic_ai_fill(skip_llm)
-        judged = judged_ai.unionByName(judged_skip, allowMissingColumns=True)
+        parts = [judged_ai, judged_skip]
+        if overflow is not None:
+            parts.append(self._budget_overflow_fill(overflow))
+        judged = parts[0]
+        for p in parts[1:]:
+            judged = judged.unionByName(p, allowMissingColumns=True)
 
         ai_positive = judged.filter(F.col("ai_is_fk") == True).count()
         ai_negative = judged.filter(F.col("ai_is_fk") == False).count()

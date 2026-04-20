@@ -8,7 +8,7 @@ Most users only need one setting. In `variables.yml`, set `ontology_bundle` to m
 
 ```yaml
 ontology_bundle:
-  default: healthcare    # or: general, financial_services, retail_cpg, geo_doj
+  default: healthcare    # or: general, financial_services, retail_cpg, fhir_r4, omop_cdm, schema_org
 ```
 
 The bundle handles both domain and ontology prediction. Done.
@@ -23,7 +23,9 @@ ontology_bundles/
   general.yaml             # Cross-industry defaults
   financial_services.yaml  # Banking, insurance, capital markets
   retail_cpg.yaml          # E-commerce, merchandising, supply chain
-  geo_doj.yaml             # Geographic column tagging for DOJ filtering
+  fhir_r4.yaml             # FHIR R4 formal ontology (healthcare interop)
+  omop_cdm.yaml            # OMOP CDM formal ontology (observational research)
+  schema_org.yaml          # Schema.org formal ontology (general/web)
 ```
 
 A bundle has three sections:
@@ -123,7 +125,7 @@ ontology:
 
 ### Tag key override
 
-Bundles can specify a custom UC tag key via `metadata.tag_key`. When set, `apply_tags` writes entity classifications under that tag instead of the default `entity_type`. The geo_doj bundle uses this to write `doj_geo_filter` tags.
+Bundles can specify a custom UC tag key via `metadata.tag_key`. When set, `apply_tags` writes entity classifications under that tag instead of the default `entity_type`.
 
 ## Variable reference
 

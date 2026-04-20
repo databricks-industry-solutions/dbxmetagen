@@ -2,569 +2,569 @@
   domain: VisitDetail
   range: Concept
   cardinality: unknown
-  label: Has admitted from
+  label: null
   facet: null
 - name: has_amount_unit
   domain: DrugStrength
   range: Concept
-  cardinality: zero-to-many
-  label: Has amount unit
+  cardinality: unknown
+  label: null
   facet: null
 - name: has_anatomic_site
   domain: Specimen
   range: Concept
-  cardinality: zero-to-many
-  label: Has anatomic site
+  cardinality: unknown
+  label: null
   facet: null
 - name: has_ancestor
   domain: ConceptAncestor
   range: Concept
-  cardinality: zero-to-many
-  label: Has ancestor
+  cardinality: unknown
+  label: null
   facet: null
 - name: has_assisted
   domain: SurveyConduct
   range: Concept
-  cardinality: zero-to-many
-  label: Has assisted
+  cardinality: unknown
+  label: null
   facet: null
 - name: has_cause
   domain: Death
   range: Concept
-  cardinality: zero-to-many
-  label: Has cause
+  cardinality: unknown
+  label: null
   facet: null
 - name: has_cause_source
   domain: Death
   range: Concept
-  cardinality: zero-to-many
-  label: Has cause source
+  cardinality: unknown
+  label: null
   facet: null
 - name: has_class
-  domain: Note
-  range: null
+  domain: Concept
+  range: Thing
   cardinality: unknown
-  label: Has class
+  label: null
   facet: null
 - name: has_collection_method
   domain: SurveyConduct
   range: Concept
-  cardinality: zero-to-many
-  label: Has collection method
+  cardinality: unknown
+  label: null
   facet: null
 - name: has_concept
-  domain: ConceptSynonym
+  domain: ConceptClass
   range: Concept
   cardinality: unknown
-  label: Has concept
+  label: null
   facet: null
 - name: has_condition_era
   domain: Person
   range: ConditionEra
-  cardinality: zero-to-many
-  label: Has condition era
+  cardinality: unknown
+  label: null
   facet: null
 - name: has_condition_occurrence
   domain: Person
   range: ConditionOccurrence
   cardinality: unknown
-  label: Has condition occurrence
+  label: null
   facet: null
 - name: has_contract
   domain: PayerPlanPeriod
   range: Concept
-  cardinality: zero-to-many
-  label: Has contract
+  cardinality: unknown
+  label: null
   facet: null
 - name: has_contract_person
   domain: PayerPlanPeriod
   range: Person
-  cardinality: zero-to-many
-  label: Has contract person
+  cardinality: unknown
+  label: null
   facet: null
 - name: has_contract_source
   domain: PayerPlanPeriod
   range: Concept
-  cardinality: zero-to-many
-  label: Has contract source
+  cardinality: unknown
+  label: null
   facet: null
 - name: has_cost
   domain: Person
   range: Cost
-  cardinality: zero-to-many
-  label: Has cost
+  cardinality: unknown
+  label: null
   facet: null
 - name: has_currency
   domain: Cost
   range: Concept
-  cardinality: zero-to-many
-  label: Has currency
+  cardinality: unknown
+  label: null
   facet: null
 - name: has_death
   domain: Person
   range: Death
-  cardinality: zero-to-many
-  label: Has death
+  cardinality: unknown
+  label: null
   facet: null
 - name: has_definition
   domain: Cohort
   range: CohortDefinition
-  cardinality: zero-to-many
-  label: Has definition
+  cardinality: unknown
+  label: null
   facet: null
 - name: has_definition_type
   domain: CohortDefinition
   range: Concept
-  cardinality: zero-to-many
-  label: Has definition type
+  cardinality: unknown
+  label: null
   facet: null
 - name: has_denominator_unit
   domain: DrugStrength
   range: Concept
-  cardinality: zero-to-many
-  label: Has denominator unit
+  cardinality: unknown
+  label: null
   facet: null
 - name: has_descendant
   domain: ConceptAncestor
   range: Concept
-  cardinality: zero-to-many
-  label: Has descendant
+  cardinality: unknown
+  label: null
   facet: null
 - name: has_device_exposure
   domain: Person
   range: DeviceExposure
   cardinality: unknown
-  label: Has device exposure
+  label: null
   facet: null
 - name: has_disease_status
   domain: Specimen
   range: Concept
-  cardinality: zero-to-many
-  label: Has disease status
+  cardinality: unknown
+  label: null
   facet: null
 - name: has_domain
-  domain: LocationHistory
+  domain: Concept
   range: Domain
   cardinality: unknown
-  label: Has domain
+  label: null
   facet: null
 - name: has_dose_era
   domain: Person
   range: DoseEra
-  cardinality: zero-to-many
-  label: Has dose era
+  cardinality: unknown
+  label: null
   facet: null
 - name: has_drg
   domain: Cost
   range: Concept
-  cardinality: zero-to-many
-  label: Has drg
+  cardinality: unknown
+  label: null
   facet: null
 - name: has_drug_era
   domain: Person
   range: DrugEra
-  cardinality: zero-to-many
-  label: Has drug era
+  cardinality: unknown
+  label: null
   facet: null
 - name: has_drug_exposure
   domain: Person
   range: DrugExposure
   cardinality: unknown
-  label: Has drug exposure
+  label: null
   facet: null
 - name: has_encoding
   domain: Note
   range: Concept
-  cardinality: zero-to-many
-  label: Has encoding
+  cardinality: unknown
+  label: null
   facet: null
 - name: has_entity
   domain: LocationHistory
-  range: null
-  cardinality: zero-to-many
-  label: Has entity
+  range: Thing
+  cardinality: unknown
+  label: null
   facet: null
 - name: has_ethnicity
   domain: Person
   range: Concept
-  cardinality: zero-to-many
-  label: Has ethnicity
+  cardinality: unknown
+  label: null
   facet: null
 - name: has_ethnicity_source
   domain: Person
   range: Concept
-  cardinality: zero-to-many
-  label: Has ethnicity source
+  cardinality: unknown
+  label: null
   facet: null
 - name: has_event
-  domain: Note
-  range: null
+  domain: Cost
+  range: Thing
   cardinality: unknown
-  label: Has event
+  label: null
   facet: null
 - name: has_event_field
-  domain: Note
+  domain: Cost
   range: Concept
   cardinality: unknown
-  label: Has event field
+  label: null
   facet: null
 - name: has_ingredient
   domain: DrugStrength
   range: Concept
-  cardinality: zero-to-many
-  label: Has ingredient
+  cardinality: unknown
+  label: null
   facet: null
 - name: has_language
   domain: ConceptSynonym
   range: Concept
   cardinality: unknown
-  label: Has language
+  label: null
   facet: null
 - name: has_location
-  domain: LocationHistory
+  domain: CareSite
   range: Location
   cardinality: unknown
-  label: Has location
+  label: null
   facet: null
 - name: has_measurement
   domain: Person
   range: Measurement
   cardinality: unknown
-  label: Has measurement
+  label: null
   facet: null
 - name: has_modifier
   domain: ProcedureOccurrence
   range: Concept
-  cardinality: zero-to-many
-  label: Has modifier
+  cardinality: unknown
+  label: null
   facet: null
 - name: has_note
   domain: Person
   range: Note
   cardinality: unknown
-  label: Has note
+  label: null
   facet: null
 - name: has_note_nlp
   domain: Note
   range: NoteNlp
-  cardinality: zero-to-many
-  label: Has note nlp
+  cardinality: unknown
+  label: null
   facet: null
 - name: has_numerator_unit
   domain: DrugStrength
   range: Concept
-  cardinality: zero-to-many
-  label: Has numerator unit
+  cardinality: unknown
+  label: null
   facet: null
 - name: has_obs_event_field
   domain: Observation
   range: Concept
-  cardinality: zero-to-many
-  label: Has obs event field
+  cardinality: unknown
+  label: null
   facet: null
 - name: has_observation
   domain: Person
   range: Observation
   cardinality: unknown
-  label: Has observation
+  label: null
   facet: null
 - name: has_observation_period
   domain: Person
   range: ObservationPeriod
-  cardinality: zero-to-many
-  label: Has observation period
+  cardinality: unknown
+  label: null
   facet: null
 - name: has_operator
   domain: Measurement
   range: Concept
-  cardinality: zero-to-many
-  label: Has operator
+  cardinality: unknown
+  label: null
   facet: null
 - name: has_parent
   domain: VisitDetail
   range: VisitDetail
-  cardinality: zero-to-many
-  label: Has parent
+  cardinality: unknown
+  label: null
   facet: null
 - name: has_payer
   domain: PayerPlanPeriod
   range: Concept
-  cardinality: zero-to-many
-  label: Has payer
+  cardinality: unknown
+  label: null
   facet: null
 - name: has_payer_plan_period
   domain: Cost
   range: PayerPlanPeriod
   cardinality: unknown
-  label: Has payer plan period
+  label: null
   facet: null
 - name: has_payer_source
   domain: PayerPlanPeriod
   range: Concept
-  cardinality: zero-to-many
-  label: Has payer source
+  cardinality: unknown
+  label: null
   facet: null
 - name: has_period_type
   domain: ObservationPeriod
   range: Concept
-  cardinality: one-to-many
-  label: Has period type
+  cardinality: unknown
+  label: null
   facet: null
 - name: has_place_of_service
   domain: CareSite
   range: Concept
-  cardinality: zero-to-many
-  label: Has place of service
+  cardinality: unknown
+  label: null
   facet: null
 - name: has_plan
   domain: PayerPlanPeriod
   range: Concept
-  cardinality: zero-to-many
-  label: Has plan
+  cardinality: unknown
+  label: null
   facet: null
 - name: has_plan_source
   domain: PayerPlanPeriod
   range: Concept
-  cardinality: zero-to-many
-  label: Has plan source
+  cardinality: unknown
+  label: null
   facet: null
 - name: has_preceding_visit_detail
   domain: VisitDetail
   range: VisitDetail
-  cardinality: zero-to-many
-  label: Has preceding visit detail
+  cardinality: unknown
+  label: null
   facet: null
 - name: has_preceding_visit_occurrence
   domain: VisitOccurrence
   range: VisitOccurrence
-  cardinality: zero-to-many
-  label: Has preceding visit occurrence
+  cardinality: unknown
+  label: null
   facet: null
 - name: has_procedure_occurrence
   domain: Person
   range: ProcedureOccurrence
   cardinality: unknown
-  label: Has procedure occurrence
+  label: null
   facet: null
 - name: has_provider
   domain: ConditionOccurrence
   range: Provider
   cardinality: unknown
-  label: Has provider
+  label: null
   facet: null
 - name: has_qualifier
   domain: Observation
   range: Concept
-  cardinality: zero-to-many
-  label: Has qualifier
+  cardinality: unknown
+  label: null
   facet: null
 - name: has_race
   domain: Person
   range: Concept
-  cardinality: zero-to-many
-  label: Has race
+  cardinality: unknown
+  label: null
   facet: null
 - name: has_race_source
   domain: Person
   range: Concept
-  cardinality: zero-to-many
-  label: Has race source
+  cardinality: unknown
+  label: null
   facet: null
 - name: has_relationship
-  domain: FactRelationship
-  range: null
+  domain: ConceptRelationship
+  range: Thing
   cardinality: unknown
-  label: Has relationship
+  label: null
   facet: null
 - name: has_relationship_type
   domain: LocationHistory
   range: Concept
-  cardinality: zero-to-many
-  label: Has relationship type
+  cardinality: unknown
+  label: null
   facet: null
 - name: has_respondent_type
   domain: SurveyConduct
   range: Concept
-  cardinality: zero-to-many
-  label: Has respondent type
+  cardinality: unknown
+  label: null
   facet: null
 - name: has_response_visit_occurrence
   domain: SurveyConduct
   range: VisitOccurrence
-  cardinality: zero-to-many
-  label: Has response visit occurrence
+  cardinality: unknown
+  label: null
   facet: null
 - name: has_revenue_code
   domain: Cost
   range: Concept
-  cardinality: zero-to-many
-  label: Has revenue code
+  cardinality: unknown
+  label: null
   facet: null
 - name: has_reverse_relationship
   domain: Relationship
-  range: null
-  cardinality: zero-to-many
-  label: Has reverse relationship
+  range: Thing
+  cardinality: unknown
+  label: null
   facet: null
 - name: has_route
   domain: DrugExposure
   range: Concept
-  cardinality: zero-to-many
-  label: Has route
+  cardinality: unknown
+  label: null
   facet: null
 - name: has_section
   domain: NoteNlp
   range: Concept
-  cardinality: zero-to-many
-  label: Has section
+  cardinality: unknown
+  label: null
   facet: null
 - name: has_source
-  domain: SourceToConceptMap
-  range: null
+  domain: ConditionOccurrence
+  range: Thing
   cardinality: unknown
-  label: Has source
+  label: null
   facet: null
 - name: has_source_vocabulary
   domain: SourceToConceptMap
   range: Vocabulary
-  cardinality: zero-to-many
-  label: Has source vocabulary
+  cardinality: unknown
+  label: null
   facet: null
 - name: has_specialty
   domain: Provider
   range: Concept
-  cardinality: zero-to-many
-  label: Has specialty
+  cardinality: unknown
+  label: null
   facet: null
 - name: has_specialty_source
   domain: Provider
   range: Concept
-  cardinality: zero-to-many
-  label: Has specialty source
+  cardinality: unknown
+  label: null
   facet: null
 - name: has_specimen
   domain: Person
   range: Specimen
-  cardinality: zero-to-many
-  label: Has specimen
+  cardinality: unknown
+  label: null
   facet: null
 - name: has_sponsor
   domain: PayerPlanPeriod
   range: Concept
-  cardinality: zero-to-many
-  label: Has sponsor
+  cardinality: unknown
+  label: null
   facet: null
 - name: has_sponsor_source
   domain: PayerPlanPeriod
   range: Concept
-  cardinality: zero-to-many
-  label: Has sponsor source
+  cardinality: unknown
+  label: null
   facet: null
 - name: has_status
   domain: ConditionOccurrence
   range: Concept
-  cardinality: zero-to-many
-  label: Has status
+  cardinality: unknown
+  label: null
   facet: null
 - name: has_stop_reason_concept
   domain: PayerPlanPeriod
   range: Concept
-  cardinality: zero-to-many
-  label: Has stop reason concept
+  cardinality: unknown
+  label: null
   facet: null
 - name: has_stop_reason_source
   domain: PayerPlanPeriod
   range: Concept
-  cardinality: zero-to-many
-  label: Has stop reason source
+  cardinality: unknown
+  label: null
   facet: null
 - name: has_subject
   domain: Cohort
-  range: null
+  range: Thing
   cardinality: unknown
-  label: Has subject
+  label: null
   facet: null
 - name: has_survey
   domain: SurveyConduct
   range: Concept
-  cardinality: zero-to-many
-  label: Has survey
+  cardinality: unknown
+  label: null
   facet: null
 - name: has_survey_conduct
-  domain: VisitOccurrence
+  domain: Person
   range: SurveyConduct
   cardinality: unknown
-  label: Has survey conduct
+  label: null
   facet: null
 - name: has_survey_source
   domain: SurveyConduct
   range: Concept
-  cardinality: zero-to-many
-  label: Has survey source
+  cardinality: unknown
+  label: null
   facet: null
 - name: has_target
   domain: SourceToConceptMap
   range: Concept
-  cardinality: zero-to-many
-  label: Has target
+  cardinality: unknown
+  label: null
   facet: null
 - name: has_target_vocabulary
   domain: SourceToConceptMap
   range: Vocabulary
-  cardinality: zero-to-many
-  label: Has target vocabulary
+  cardinality: unknown
+  label: null
   facet: null
 - name: has_timing
   domain: SurveyConduct
   range: Concept
-  cardinality: zero-to-many
-  label: Has timing
+  cardinality: unknown
+  label: null
   facet: null
 - name: has_type
-  domain: Metadata
+  domain: ConditionOccurrence
   range: Concept
   cardinality: unknown
-  label: Has type
+  label: null
   facet: null
 - name: has_unique_device
   domain: DeviceExposure
-  range: null
-  cardinality: zero-to-many
-  label: Has unique device
+  range: Thing
+  cardinality: unknown
+  label: null
   facet: null
 - name: has_unit
   domain: DoseEra
   range: Concept
   cardinality: unknown
-  label: Has unit
+  label: null
   facet: null
 - name: has_validated_survey
   domain: SurveyConduct
   range: Concept
-  cardinality: zero-to-many
-  label: Has validated survey
+  cardinality: unknown
+  label: null
   facet: null
 - name: has_value_as_concept
-  domain: Metadata
+  domain: Measurement
   range: Concept
   cardinality: unknown
-  label: Has value as concept
+  label: null
   facet: null
 - name: has_visit_detail
-  domain: VisitOccurrence
+  domain: Person
   range: VisitDetail
   cardinality: unknown
-  label: Has visit detail
+  label: null
   facet: null
 - name: has_visit_occurrence
   domain: Person
   range: VisitOccurrence
-  cardinality: zero-to-many
-  label: Has visit occurrence
+  cardinality: unknown
+  label: null
   facet: null
 - name: has_vocabulary
   domain: Concept
   range: Vocabulary
-  cardinality: zero-to-many
-  label: Has vocabulary
+  cardinality: unknown
+  label: null
   facet: null

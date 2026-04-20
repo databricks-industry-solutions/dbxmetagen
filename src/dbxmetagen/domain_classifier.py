@@ -491,8 +491,17 @@ def _build_user_message(table_name: str, table_metadata: Dict[str, Any]) -> str:
     return msg
 
 
+def _split_table_name(table_name: str):
+    parts = table_name.split(".")
+    if len(parts) >= 3:
+        return parts[0], parts[1], ".".join(parts[2:])
+    if len(parts) == 2:
+        return "", parts[0], parts[1]
+    return "", "", parts[0] if parts else table_name
+
+
 def _error_result(table_name: str, error: Exception) -> Dict[str, Any]:
-    catalog, schema, table = table_name.split(".")
+    catalog, schema, table = _split_table_name(table_name)
     return {
         "catalog": catalog,
         "schema": schema,
@@ -607,7 +616,7 @@ def _classify_single_shot(
     from dbxmetagen.chat_client import invoke_structured
 
     system_prompt = create_system_prompt(domain_config)
-    catalog, schema, table = table_name.split(".")
+    catalog, schema, table = _split_table_name(table_name)
     user_message = _build_user_message(table_name, table_metadata)
 
     response = invoke_structured(
@@ -675,7 +684,7 @@ def _domain_keyword_prefilter(
     if len(all_keys) <= top_n:
         return all_keys
 
-    _catalog, schema, table = table_name.split(".")
+    _catalog, schema, table = _split_table_name(table_name)
     schema_lower = schema.lower()
     table_lower = table.lower()
     comment_lower = (table_metadata.get("table_comments") or "").lower()
@@ -740,7 +749,7 @@ def _classify_two_stage(
     confidence_threshold: float = 0.5,
 ) -> Dict[str, Any]:
     """Two-stage pipeline: domain LLM -> subdomain LLM."""
-    catalog, schema, table = table_name.split(".")
+    catalog, schema, table = _split_table_name(table_name)
 
     candidates = _domain_keyword_prefilter(table_name, table_metadata, domain_config)
     logger.info("Stage-1 candidates for %s: %s", table_name, candidates)

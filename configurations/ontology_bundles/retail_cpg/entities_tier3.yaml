@@ -25,7 +25,37 @@ Person:
     part_of:
       target: Organization
       cardinality: many-to-one
-  properties: {}
+  properties:
+    id:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+    name:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - name
+    email:
+      kind: data_property
+            role: label
+      typical_attributes:
+      - email
+    phone:
+      kind: data_property
+            role: label
+      typical_attributes:
+      - phone
+    address:
+      kind: data_property
+            role: label
+      typical_attributes:
+      - address
+    created_date:
+      kind: data_property
+      role: temporal
+      typical_attributes:
+      - created_date
 Organization:
   description: Companies, departments, facilities, or business units
   label: Organization
@@ -54,7 +84,33 @@ Organization:
     part_of:
       target: Organization
       cardinality: many-to-one
-  properties: {}
+  properties:
+    id:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+    name:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - name
+    type:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - type
+    address:
+      kind: data_property
+            role: label
+      typical_attributes:
+      - address
+    parent_id:
+      kind: object_property
+      role: object_property
+      typical_attributes:
+      - parent_id
+      edge: has_parent
 Transaction:
   description: Orders, purchases, payments, invoices, or financial events
   label: Transaction
@@ -82,7 +138,39 @@ Transaction:
     placed_by:
       target: Customer
       cardinality: many-to-one
-  properties: {}
+  properties:
+    id:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+    customer_id:
+      kind: object_property
+      role: object_property
+      typical_attributes:
+      - customer_id
+      target_entity: Customer
+      edge: placed_by
+    amount:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - amount
+    date:
+      kind: data_property
+      role: temporal
+      typical_attributes:
+      - date
+    status:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - status
+    currency:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - currency
 Location:
   description: Addresses, sites, regions, facilities, or geographies
   label: Location
@@ -106,7 +194,42 @@ Location:
   - zip_code
   business_questions: []
   relationships: {}
-  properties: {}
+  properties:
+    id:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+    name:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - name
+    address:
+      kind: data_property
+            role: label
+      typical_attributes:
+      - address
+    city:
+      kind: data_property
+      role: geographic
+      typical_attributes:
+      - city
+    state:
+      kind: data_property
+      role: geographic
+      typical_attributes:
+      - state
+    country:
+      kind: data_property
+      role: geographic
+      typical_attributes:
+      - country
+    zip_code:
+      kind: data_property
+      role: geographic
+      typical_attributes:
+      - zip_code
 Event:
   description: Activities, logs, sessions, audits, or system events
   label: Event
@@ -133,7 +256,33 @@ Event:
     references:
       target: Customer
       cardinality: many-to-one
-  properties: {}
+  properties:
+    id:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+    type:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - type
+    timestamp:
+      kind: data_property
+      role: temporal
+      typical_attributes:
+      - timestamp
+    user_id:
+      kind: object_property
+      role: object_property
+      typical_attributes:
+      - user_id
+      edge: has_user
+    details:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - details
 Reference:
   description: Lookup tables, codes, categories, dimensions, or configuration
   label: Reference
@@ -155,7 +304,32 @@ Reference:
   - active
   business_questions: []
   relationships: {}
-  properties: {}
+  properties:
+    id:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+    code:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - code
+    name:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - name
+    description:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - description
+    active:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - active
 Metric:
   description: KPIs, aggregates, facts, summaries, or analytic measures
   label: Metric
@@ -177,7 +351,32 @@ Metric:
   - dimension
   business_questions: []
   relationships: {}
-  properties: {}
+  properties:
+    id:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+    name:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - name
+    value:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - value
+    period:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - period
+    dimension:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - dimension
 Document:
   description: Unstructured content, notes, files, or text records
   label: Document
@@ -200,7 +399,37 @@ Document:
   - type
   business_questions: []
   relationships: {}
-  properties: {}
+  properties:
+    id:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+    title:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - title
+    body:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - body
+    author:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - author
+    created_date:
+      kind: data_property
+      role: temporal
+      typical_attributes:
+      - created_date
+    type:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - type
 Customer:
   description: Retail customers, loyalty members, or shoppers
   label: Customer
@@ -233,13 +462,11 @@ Customer:
       target: Return
       cardinality: one-to-many
   properties:
-    identifier:
+    id:
       kind: data_property
       role: primary_key
       typical_attributes:
       - id
-      - customer_id
-      - cust_id
     name:
       kind: data_property
       role: label
@@ -249,7 +476,7 @@ Customer:
       - full_name
     email:
       kind: data_property
-      role: pii
+            role: label
       typical_attributes:
       - email
       - email_address
@@ -283,6 +510,13 @@ Customer:
       - first_purchase_date
       - first_order_date
       - acquisition_date
+    identifier:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+      - customer_id
+      - cust_id
 LoyaltyProgram:
   description: Loyalty programs, rewards programs, or membership tiers
   label: LoyaltyProgram
@@ -310,13 +544,11 @@ LoyaltyProgram:
       target: Customer
       cardinality: many-to-many
   properties:
-    identifier:
+    id:
       kind: data_property
       role: primary_key
       typical_attributes:
       - id
-      - program_id
-      - loyalty_program_id
     name:
       kind: data_property
       role: label
@@ -345,6 +577,18 @@ LoyaltyProgram:
       - redemption_rate
       - point_value
       - cents_per_point
+    tier_thresholds:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - tier_thresholds
+    identifier:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+      - program_id
+      - loyalty_program_id
 Product:
   description: Retail products, SKUs, items, or merchandise
   label: Product
@@ -378,7 +622,47 @@ Product:
     supplied_by:
       target: Supplier
       cardinality: many-to-many
-  properties: {}
+  properties:
+    id:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+    sku:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - sku
+    name:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - name
+    category:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - category
+    brand:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - brand
+    price:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - price
+    weight:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - weight
+    upc:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - upc
 Order:
   description: Customer orders, carts, baskets, or purchase transactions
   label: Order
@@ -416,22 +700,18 @@ Order:
       target: Store
       cardinality: many-to-one
   properties:
-    identifier:
+    id:
       kind: data_property
       role: primary_key
       typical_attributes:
       - id
-      - order_id
-      - order_number
-    customer:
+    customer_id:
       kind: object_property
       role: object_property
-      edge: purchased_by
-      target_entity: Customer
       typical_attributes:
       - customer_id
-      - cust_id
-      - buyer_id
+      target_entity: Customer
+      edge: placed_by
     total:
       kind: data_property
       role: measure
@@ -468,6 +748,22 @@ Order:
       - shipped_date
       - ship_date
       - delivery_date
+    identifier:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+      - order_id
+      - order_number
+    customer:
+      kind: object_property
+      role: object_property
+      edge: purchased_by
+      target_entity: Customer
+      typical_attributes:
+      - customer_id
+      - cust_id
+      - buyer_id
     store:
       kind: object_property
       role: object_property
@@ -509,14 +805,11 @@ Store:
       target: Organization
       cardinality: many-to-one
   properties:
-    identifier:
+    id:
       kind: data_property
       role: primary_key
       typical_attributes:
       - id
-      - store_id
-      - location_id
-      - warehouse_id
     name:
       kind: data_property
       role: label
@@ -547,6 +840,11 @@ Store:
       - region
       - district
       - territory
+    format:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - format
     open_date:
       kind: data_property
       role: temporal
@@ -554,6 +852,14 @@ Store:
       - open_date
       - launch_date
       - opened_at
+    identifier:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+      - store_id
+      - location_id
+      - warehouse_id
 Campaign:
   description: Marketing campaigns, ad campaigns, or promotional campaigns
   label: Campaign
@@ -584,13 +890,11 @@ Campaign:
       target: Product
       cardinality: many-to-many
   properties:
-    identifier:
+    id:
       kind: data_property
       role: primary_key
       typical_attributes:
       - id
-      - campaign_id
-      - marketing_campaign_id
     name:
       kind: data_property
       role: label
@@ -626,6 +930,11 @@ Campaign:
       - end_date
       - expiry_date
       - expiration_date
+    channel:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - channel
     status:
       kind: data_property
       role: dimension
@@ -633,6 +942,13 @@ Campaign:
       - status
       - campaign_status
       - state
+    identifier:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+      - campaign_id
+      - marketing_campaign_id
 Promotion:
   description: Promotions, discounts, coupons, campaigns, or markdown events
   label: Promotion
@@ -662,14 +978,11 @@ Promotion:
       target: Product
       cardinality: many-to-many
   properties:
-    identifier:
+    id:
       kind: data_property
       role: primary_key
       typical_attributes:
       - id
-      - promotion_id
-      - campaign_id
-      - promo_id
     name:
       kind: data_property
       role: label
@@ -712,6 +1025,14 @@ Promotion:
       - channel
       - promotion_channel
       - campaign_channel
+    identifier:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+      - promotion_id
+      - campaign_id
+      - promo_id
 Supplier:
   description: Vendors, manufacturers, distributors, or trading partners
   label: Supplier
@@ -738,13 +1059,11 @@ Supplier:
       target: Product
       cardinality: many-to-many
   properties:
-    identifier:
+    id:
       kind: data_property
       role: primary_key
       typical_attributes:
       - id
-      - supplier_id
-      - vendor_id
     name:
       kind: data_property
       role: label
@@ -773,6 +1092,18 @@ Supplier:
       - country
       - origin_country
       - supplier_country
+    payment_terms:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - payment_terms
+    identifier:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+      - supplier_id
+      - vendor_id
     supplies:
       kind: object_property
       role: object_property
@@ -810,7 +1141,39 @@ Inventory:
     at_store:
       target: Store
       cardinality: many-to-one
-  properties: {}
+  properties:
+    id:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+    sku:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - sku
+    location_id:
+      kind: object_property
+      role: object_property
+      typical_attributes:
+      - location_id
+      target_entity: Location
+      edge: instance_of
+    quantity:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - quantity
+    reserved:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - reserved
+    reorder_point:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - reorder_point
 Return:
   description: Product returns, refunds, exchanges, or RMA records
   label: Return
@@ -839,7 +1202,39 @@ Return:
     by_customer:
       target: Customer
       cardinality: many-to-one
-  properties: {}
+  properties:
+    id:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+    order_id:
+      kind: object_property
+      role: object_property
+      typical_attributes:
+      - order_id
+      target_entity: Order
+      edge: for_order
+    reason:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - reason
+    amount:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - amount
+    status:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - status
+    date:
+      kind: data_property
+      role: temporal
+      typical_attributes:
+      - date
 Shipment:
   description: Shipping, delivery, fulfillment, or logistics records
   label: Shipment
@@ -867,7 +1262,44 @@ Shipment:
     for_order:
       target: Order
       cardinality: many-to-one
-  properties: {}
+  properties:
+    id:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+    order_id:
+      kind: object_property
+      role: object_property
+      typical_attributes:
+      - order_id
+      target_entity: Order
+      edge: for_order
+    carrier:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - carrier
+    tracking_number:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - tracking_number
+    status:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - status
+    ship_date:
+      kind: data_property
+      role: temporal
+      typical_attributes:
+      - ship_date
+    delivery_date:
+      kind: data_property
+      role: temporal
+      typical_attributes:
+      - delivery_date
 Category:
   description: Product categories, departments, or merchandise hierarchies
   label: Category
@@ -896,4 +1328,30 @@ Category:
     part_of:
       target: Category
       cardinality: many-to-one
-  properties: {}
+  properties:
+    id:
+      kind: data_property
+      role: primary_key
+      typical_attributes:
+      - id
+    name:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - name
+    parent_id:
+      kind: object_property
+      role: object_property
+      typical_attributes:
+      - parent_id
+      edge: has_parent
+    level:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - level
+    path:
+      kind: data_property
+      role: label
+      typical_attributes:
+      - path

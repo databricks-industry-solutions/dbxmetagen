@@ -1,5 +1,6 @@
 """FastAPI backend for dbxmetagen dashboard app."""
 
+import contextvars
 import io
 import os
 import re
@@ -74,13 +75,33 @@ _genie_tasks: dict[str, dict] = {}
 # ---------------------------------------------------------------------------
 
 _ws: Optional[WorkspaceClient] = None
+_OBO_ENABLED = os.environ.get("ENABLE_OBO", "false").lower() == "true"
+_obo_token_var: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    "_obo_token_var", default=None
+)
 
 
 def get_workspace_client() -> WorkspaceClient:
+    """Return the app service principal WorkspaceClient singleton."""
     global _ws
     if _ws is None:
         _ws = WorkspaceClient()
     return _ws
+
+
+def _get_effective_client() -> WorkspaceClient:
+    """Return user-scoped WS client when OBO is active for this request, else app SP.
+
+    Background daemon threads don't inherit the ContextVar, so they
+    automatically fall back to the app SP singleton.
+    """
+    if _OBO_ENABLED:
+        token = _obo_token_var.get(None)
+        if token:
+            from databricks.sdk.core import Config
+            cfg = Config(host=get_workspace_client().config.host, token=token)
+            return WorkspaceClient(config=cfg)
+    return get_workspace_client()
 
 
 _NOT_FOUND_RE = re.compile(
@@ -102,7 +123,7 @@ def execute_sql(query: str, warehouse_id: Optional[str] = None, timeout: int = 3
     if not wh:
         raise HTTPException(500, detail="WAREHOUSE_ID not configured")
     try:
-        ws = get_workspace_client()
+        ws = _get_effective_client()
         wait_s = min(timeout, 50)
         resp = ws.statement_execution.execute_statement(
             statement=query, warehouse_id=wh, wait_timeout=f"{wait_s}s"
@@ -343,7 +364,12 @@ def multi_hop_traverse(
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("dbxmetagen API starting – catalog=%s schema=%s", CATALOG, SCHEMA)
+    logger.info("dbxmetagen API starting – catalog=%s schema=%s obo=%s", CATALOG, SCHEMA, _OBO_ENABLED)
+    if _OBO_ENABLED:
+        logger.info(
+            "OBO mode active – ensure workspace preview "
+            "'Databricks Apps - On-Behalf-Of User Authorization' is enabled"
+        )
     if pg_configured():
         try:
             logger.info(
@@ -368,7 +394,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="dbxmetagen API", version="0.8.8", lifespan=lifespan)
+app = FastAPI(title="dbxmetagen API", version="0.8.9", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -379,6 +405,14 @@ app.add_middleware(
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
+
+
+class OBOMiddleware(BaseHTTPMiddleware):
+    """Set the OBO user token ContextVar for the duration of each request."""
+    async def dispatch(self, request: Request, call_next):
+        if _OBO_ENABLED:
+            _obo_token_var.set(request.headers.get("x-forwarded-access-token"))
+        return await call_next(request)
 
 
 class DebugRoutingMiddleware(BaseHTTPMiddleware):
@@ -395,6 +429,7 @@ class DebugRoutingMiddleware(BaseHTTPMiddleware):
 
 
 app.add_middleware(DebugRoutingMiddleware)
+app.add_middleware(OBOMiddleware)
 
 
 @app.get("/api/health")
@@ -409,6 +444,16 @@ def health():
             for r in app.routes if hasattr(r, "methods")
         ][:20],
     }
+
+
+def _resolve_user_identity() -> Optional[str]:
+    """Return the OBO user's email when available, else None."""
+    if not _OBO_ENABLED:
+        return None
+    try:
+        return _get_effective_client().current_user.me().user_name
+    except Exception:
+        return None
 
 
 @app.get("/api/config")
@@ -430,7 +475,28 @@ def get_config():
         "workspace_host": host.rstrip("/"),
         "available_models": _AVAILABLE_MODELS,
         "lakebase_configured": pg_configured(),
+        "obo_enabled": _OBO_ENABLED,
     }
+
+
+@app.get("/api/auth/check")
+def auth_check():
+    """Verify the current caller's UC access to the configured catalog/schema."""
+    if not _OBO_ENABLED:
+        return {"obo_enabled": False, "message": "OBO is disabled; all operations use the app service principal"}
+    identity = _resolve_user_identity()
+    result = {"obo_enabled": True, "user_identity": identity, "has_catalog_access": False, "has_schema_access": False}
+    try:
+        execute_sql(f"USE CATALOG `{CATALOG}`")
+        result["has_catalog_access"] = True
+    except Exception:
+        return result
+    try:
+        rows = execute_sql(f"SHOW SCHEMAS IN `{CATALOG}` LIKE '{SCHEMA}'")
+        result["has_schema_access"] = len(rows) > 0
+    except Exception:
+        pass
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -1293,7 +1359,7 @@ def generate_ddl(body: GenerateDDLBody):
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         current_date = datetime.now().strftime("%Y%m%d")
         volume_name = os.environ.get("VOLUME_NAME", "generated_metadata")
-        ws = get_workspace_client()
+        ws = _get_effective_client()
         current_user = "app"
         try:
             current_user = ws.current_user.me().user_name.split("@")[0]
@@ -1663,7 +1729,7 @@ def generate_ddl_bundle(body: DDLBundleBody):
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         current_date = datetime.now().strftime("%Y%m%d")
         volume_name = os.environ.get("VOLUME_NAME", "generated_metadata")
-        ws = get_workspace_client()
+        ws = _get_effective_client()
         current_user = "app"
         try:
             current_user = ws.current_user.me().user_name.split("@")[0]
@@ -2016,7 +2082,7 @@ def export_to_volume(body: ExportVolumeRequest):
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     current_date = datetime.now().strftime("%Y%m%d")
     volume_name = os.environ.get("VOLUME_NAME", "generated_metadata")
-    ws = get_workspace_client()
+    ws = _get_effective_client()
     current_user = "app"
     try:
         current_user = ws.current_user.me().user_name.split("@")[0]
@@ -2063,7 +2129,7 @@ def list_volume_files():
     """List importable TSV/Excel files in the volume for the current user."""
     volume_name = os.environ.get("VOLUME_NAME", "generated_metadata")
     base = f"/Volumes/{CATALOG}/{SCHEMA}/{volume_name}"
-    ws = get_workspace_client()
+    ws = _get_effective_client()
     results = []
 
     def _walk(path: str, depth: int = 0):
@@ -2178,7 +2244,7 @@ class ImportReviewedRequest(BaseModel):
 @app.post("/api/metadata/import-reviewed")
 def import_reviewed_from_volume(body: ImportReviewedRequest):
     """Import a reviewed TSV/Excel from a volume path into KB tables."""
-    ws = get_workspace_client()
+    ws = _get_effective_client()
     vp = body.volume_path.strip()
     if not vp:
         raise HTTPException(400, "volume_path is required")
@@ -2209,7 +2275,7 @@ async def import_reviewed_upload(file: UploadFile = File(...)):
         raise HTTPException(400, "File must be .tsv, .xlsx, or .xls")
 
     volume_name = os.environ.get("VOLUME_NAME", "generated_metadata")
-    ws = get_workspace_client()
+    ws = _get_effective_client()
     current_user = "app"
     try:
         current_user = ws.current_user.me().user_name.split("@")[0]
@@ -4097,6 +4163,67 @@ def fk_apply(body: FKApplyBody):
     return {"results": results}
 
 
+class FKDeleteBody(BaseModel):
+    predictions: list[dict]
+
+
+@app.post("/api/analytics/fk-delete")
+def delete_fk_predictions(body: FKDeleteBody):
+    """Delete FK predictions and cascade to fk_ddl_statements and graph_edges."""
+    deleted = 0
+    errors = []
+    preds_tbl = fq("fk_predictions")
+    ddl_tbl = fq("fk_ddl_statements")
+    edges_tbl = fq("graph_edges")
+    for p in (body.predictions or []):
+        src_col = _esc_sql(p.get("src_column", ""))
+        dst_col = _esc_sql(p.get("dst_column", ""))
+        src_tbl = _esc_sql(p.get("src_table", ""))
+        dst_tbl = _esc_sql(p.get("dst_table", ""))
+        if not src_col or not dst_col:
+            errors.append({"prediction": p, "error": "Missing src_column or dst_column"})
+            continue
+        try:
+            execute_sql(
+                f"DELETE FROM {preds_tbl} WHERE src_column = '{src_col}' AND dst_column = '{dst_col}'"
+                f" AND src_table = '{src_tbl}' AND dst_table = '{dst_tbl}'"
+            )
+            deleted += 1
+        except Exception as e:
+            errors.append({"prediction": p, "error": f"fk_predictions: {e}"})
+            continue
+        try:
+            execute_sql(
+                f"DELETE FROM {ddl_tbl} WHERE src_column = '{src_col}' AND dst_column = '{dst_col}'"
+                f" AND src_table = '{src_tbl}' AND dst_table = '{dst_tbl}'"
+            )
+        except Exception:
+            pass
+        src_fq = _esc_sql(p.get("src_table", "") + "." + p.get("src_column", ""))
+        dst_fq = _esc_sql(p.get("dst_table", "") + "." + p.get("dst_column", ""))
+        try:
+            execute_sql(
+                f"DELETE FROM {edges_tbl} WHERE source_system = 'fk_predictions' "
+                f"AND src = '{src_tbl}' AND dst = '{dst_tbl}'"
+            )
+            execute_sql(
+                f"DELETE FROM {edges_tbl} WHERE source_system = 'fk_predictions' "
+                f"AND src = '{src_fq}' AND dst = '{dst_fq}'"
+            )
+        except Exception:
+            pass
+        try:
+            execute_sql(
+                f"DELETE FROM {edges_tbl} WHERE relationship = 'predicted_fk' "
+                f"AND ((src = '{src_fq}' AND dst = '{dst_fq}') "
+                f"OR (src = '{dst_fq}' AND dst = '{src_fq}'))"
+            )
+        except Exception:
+            pass
+    invalidate_query_caches()
+    return {"deleted": deleted, "errors": errors}
+
+
 # ---------------------------------------------------------------------------
 # Visualization composite endpoints
 # ---------------------------------------------------------------------------
@@ -4258,7 +4385,7 @@ def get_coverage_metadata_summary(catalog: Optional[str] = None, schema: Optiona
 
 
 @app.get("/api/coverage/tables")
-def get_coverage_tables(catalog: Optional[str] = None, schema: Optional[str] = None):
+def get_coverage_tables(catalog: Optional[str] = None, schema: Optional[str] = None, kb_only: bool = False):
     """List individual tables and whether they've been profiled."""
     cat = catalog or CATALOG
     conditions = [f"t.table_catalog = '{cat}'"]
@@ -4269,11 +4396,12 @@ def get_coverage_tables(catalog: Optional[str] = None, schema: Optional[str] = N
     conditions.append("t.table_type IN ('MANAGED', 'EXTERNAL', 'VIEW', 'STREAMING_TABLE', 'MATERIALIZED_VIEW', 'FOREIGN')")
     conditions.append("NOT t.table_name RLIKE '^(__|event_log_[0-9a-f]{8}_)'")
     where = " AND ".join(conditions)
+    join_type = "INNER" if kb_only else "LEFT"
     q = f"""
         SELECT t.table_catalog, t.table_schema, t.table_name, t.table_type,
                CASE WHEN kb.table_name IS NOT NULL THEN true ELSE false END as is_profiled
         FROM system.information_schema.tables t
-        LEFT JOIN {fq('table_knowledge_base')} kb
+        {join_type} JOIN {fq('table_knowledge_base')} kb
           ON CONCAT(t.table_catalog, '.', t.table_schema, '.', t.table_name) = kb.table_name
         WHERE {where}
         ORDER BY t.table_schema, t.table_name
@@ -4281,7 +4409,8 @@ def get_coverage_tables(catalog: Optional[str] = None, schema: Optional[str] = N
     try:
         return execute_sql(q)
     except HTTPException:
-        # Fallback without KB join
+        if kb_only:
+            return []
         q_simple = f"""
             SELECT table_catalog, table_schema, table_name, table_type,
                    false as is_profiled
@@ -7266,7 +7395,7 @@ def genie_generate_questions(req: SuggestQuestionsRequest):
     from dbxmetagen.genie.context import GenieContextAssembler
     from langchain_community.chat_models import ChatDatabricks
 
-    ws = get_workspace_client()
+    ws = _get_effective_client()
     assembler = GenieContextAssembler(ws, wh, CATALOG, SCHEMA)
     ctx = assembler.assemble(
         req.table_identifiers,
@@ -7969,7 +8098,7 @@ def genie_update_assist(req: GenieUpdateAssistRequest):
         raise HTTPException(400, detail=f"Invalid section '{req.section}'. Must be one of: {', '.join(sorted(valid_sections))}")
     if not req.table_identifiers:
         raise HTTPException(400, detail="table_identifiers required")
-    ws = get_workspace_client()
+    ws = _get_effective_client()
     wh = os.environ.get("WAREHOUSE_ID", "")
     if not wh:
         raise HTTPException(500, detail="WAREHOUSE_ID not configured")
@@ -8461,7 +8590,7 @@ def suggest_kpis(req: KpiSuggestRequest):
     from dbxmetagen.genie.context import GenieContextAssembler
     from langchain_community.chat_models import ChatDatabricks
 
-    ws = get_workspace_client()
+    ws = _get_effective_client()
     assembler = GenieContextAssembler(ws, wh, CATALOG, SCHEMA)
     kpi_context = _build_kpi_context(assembler, req.table_identifiers)
 
