@@ -105,18 +105,24 @@ def add_result(dimension, result_type, table_name, column_name, expected, actual
 try:
     expected_comments = spark.table(eval_fq("eval_expected_comments")).collect()
     actual_comments_df = spark.sql(f"""
-        SELECT table_name, column_name, column_content
-        FROM {pipe_fq('metadata_generation_log')}
-        WHERE table_name IN ({_eval_in_clause})
-          AND metadata_type = 'comment'
-          AND column_name IS NOT NULL
+        SELECT table_name, column_name, column_content FROM (
+            SELECT table_name, column_name, column_content,
+                   ROW_NUMBER() OVER (PARTITION BY table_name, column_name ORDER BY _created_at DESC) AS rn
+            FROM {pipe_fq('metadata_generation_log')}
+            WHERE table_name IN ({_eval_in_clause})
+              AND metadata_type = 'comment'
+              AND column_name IS NOT NULL
+        ) WHERE rn = 1
     """)
     actual_table_comments_df = spark.sql(f"""
-        SELECT table_name, column_content
-        FROM {pipe_fq('metadata_generation_log')}
-        WHERE table_name IN ({_eval_in_clause})
-          AND metadata_type = 'comment'
-          AND (column_name IS NULL OR column_name = 'None')
+        SELECT table_name, column_content FROM (
+            SELECT table_name, column_content,
+                   ROW_NUMBER() OVER (PARTITION BY table_name ORDER BY _created_at DESC) AS rn
+            FROM {pipe_fq('metadata_generation_log')}
+            WHERE table_name IN ({_eval_in_clause})
+              AND metadata_type = 'comment'
+              AND (column_name IS NULL OR column_name = 'None')
+        ) WHERE rn = 1
     """)
 
     actual_col_map = {
@@ -169,11 +175,14 @@ except Exception as e:
 try:
     expected_pi = spark.table(eval_fq("eval_expected_pi")).collect()
     actual_pi_df = spark.sql(f"""
-        SELECT table_name, column_name, type
-        FROM {pipe_fq('metadata_generation_log')}
-        WHERE table_name IN ({_eval_in_clause})
-          AND metadata_type = 'pi'
-          AND column_name IS NOT NULL
+        SELECT table_name, column_name, type FROM (
+            SELECT table_name, column_name, type,
+                   ROW_NUMBER() OVER (PARTITION BY table_name, column_name ORDER BY _created_at DESC) AS rn
+            FROM {pipe_fq('metadata_generation_log')}
+            WHERE table_name IN ({_eval_in_clause})
+              AND metadata_type = 'pi'
+              AND column_name IS NOT NULL
+        ) WHERE rn = 1
     """)
     actual_pi_map = {
         (r.table_name, r.column_name): (r.type or "None")
@@ -236,11 +245,14 @@ except Exception as e:
 try:
     expected_domains = spark.table(eval_fq("eval_expected_domains")).collect()
     actual_domain_df = spark.sql(f"""
-        SELECT table_name, domain, subdomain
-        FROM {pipe_fq('metadata_generation_log')}
-        WHERE table_name IN ({_eval_in_clause})
-          AND metadata_type = 'domain'
-          AND (column_name IS NULL OR column_name = 'None')
+        SELECT table_name, domain, subdomain FROM (
+            SELECT table_name, domain, subdomain,
+                   ROW_NUMBER() OVER (PARTITION BY table_name ORDER BY _created_at DESC) AS rn
+            FROM {pipe_fq('metadata_generation_log')}
+            WHERE table_name IN ({_eval_in_clause})
+              AND metadata_type = 'domain'
+              AND (column_name IS NULL OR column_name = 'None')
+        ) WHERE rn = 1
     """)
     actual_domain_map = {
         r.table_name: (r.domain, r.subdomain) for r in actual_domain_df.collect()

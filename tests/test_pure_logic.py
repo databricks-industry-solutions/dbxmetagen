@@ -824,3 +824,60 @@ class TestRewriteDdlKnownLimitations:
         ]
         out = rewrite_ddl_catalog_schema(stmts, "dev", "raw", "prod", "clean")
         assert "prod.clean.customers" in out[0], "FK tag value must also be rewritten"
+
+
+# ---------------------------------------------------------------------------
+# 15. load_domain_config bundle resolution
+# ---------------------------------------------------------------------------
+
+from dbxmetagen.domain_classifier import load_domain_config
+
+
+class TestLoadDomainConfigBundleResolution:
+    """Verify that load_domain_config resolves bundle names to the right YAML."""
+
+    CONFIGS_DIR = os.path.join(
+        os.path.dirname(__file__), "..", "configurations", "ontology_bundles"
+    )
+
+    def test_general_bundle_has_six_domains(self):
+        config = load_domain_config(bundle_path=os.path.join(self.CONFIGS_DIR, "general.yaml"))
+        domains = config["domains"]
+        assert len(domains) == 6
+        assert "clinical" not in domains
+        assert "diagnostics" not in domains
+        assert "payer" not in domains
+
+    def test_healthcare_bundle_has_twelve_domains(self):
+        config = load_domain_config(bundle_path=os.path.join(self.CONFIGS_DIR, "healthcare.yaml"))
+        domains = config["domains"]
+        assert len(domains) >= 12
+        assert "clinical" in domains
+        assert "diagnostics" in domains
+        assert "payer" in domains
+        assert "finance" in domains
+
+    def test_empty_bundle_path_skips_bundle(self):
+        """Empty string must NOT load general.yaml (6 domains) -- root cause of domain=0 bug."""
+        config = load_domain_config(bundle_path="", config_path="/nonexistent")
+        domains = config.get("domains", {})
+        general_only = {"finance", "operations", "workforce", "customer", "technology", "governance"}
+        assert set(domains.keys()) != general_only, (
+            "Empty bundle_path loaded general.yaml (6 domains). "
+            "Expected hardcoded healthcare fallback or 'unknown'."
+        )
+
+    def test_none_bundle_path_skips_bundle(self):
+        config = load_domain_config(bundle_path=None, config_path="/nonexistent")
+        domains = config.get("domains", {})
+        general_only = {"finance", "operations", "workforce", "customer", "technology", "governance"}
+        assert set(domains.keys()) != general_only
+
+    def test_healthcare_config_path(self):
+        path = os.path.join(
+            os.path.dirname(__file__), "..", "configurations", "domain_config_healthcare.yaml"
+        )
+        if os.path.exists(path):
+            config = load_domain_config(config_path=path)
+            assert "clinical" in config["domains"]
+            assert "payer" in config["domains"]

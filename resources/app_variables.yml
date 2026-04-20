@@ -3,7 +3,12 @@ variables:
     description: User who deploys the asset bundle (for notebook paths). Must match the deploying_user in variables.yml.
     default: ${workspace.current_user.userName}
   app_name:
-    description: "Name of the app"
+    description: >-
+      Display name of the Databricks App and prefix for all job names
+      (e.g. <app_name>_metadata_job). Change this to avoid collisions
+      when deploying multiple instances to the same workspace outside
+      of DAB development mode. In development mode, DAB already
+      prefixes with the deploying user's name.
     default: "dbxmetagen-app"
   app_service_principal_application_id:
     description: Application ID of the service principal used for the Databricks app. This service principal will be granted CAN_MANAGE permissions on the bundle resources. If not set, the app will use the current user context.
