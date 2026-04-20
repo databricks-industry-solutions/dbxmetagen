@@ -394,7 +394,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="dbxmetagen API", version="0.8.8", lifespan=lifespan)
+app = FastAPI(title="dbxmetagen API", version="0.8.9", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -4186,6 +4186,7 @@ def delete_fk_predictions(body: FKDeleteBody):
         try:
             execute_sql(
                 f"DELETE FROM {preds_tbl} WHERE src_column = '{src_col}' AND dst_column = '{dst_col}'"
+                f" AND src_table = '{src_tbl}' AND dst_table = '{dst_tbl}'"
             )
             deleted += 1
         except Exception as e:
@@ -4194,6 +4195,7 @@ def delete_fk_predictions(body: FKDeleteBody):
         try:
             execute_sql(
                 f"DELETE FROM {ddl_tbl} WHERE src_column = '{src_col}' AND dst_column = '{dst_col}'"
+                f" AND src_table = '{src_tbl}' AND dst_table = '{dst_tbl}'"
             )
         except Exception:
             pass

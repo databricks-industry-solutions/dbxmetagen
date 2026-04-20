@@ -151,6 +151,7 @@ function ReviewEditor() {
         body: JSON.stringify({ predictions: preds }),
       })
       const j = await r.json().catch(() => ({}))
+      if (!r.ok) return { error: j.detail || `Server error (${r.status})` }
       if (j.deleted > 0) {
         setReviewData(prev => prev.map(tbl => ({
           ...tbl,
@@ -656,7 +657,7 @@ function ReviewEditor() {
                 try {
                   const r = await fetch('/api/analytics/fk-generate-sql', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ predictions: allFkPreds }) })
                   const j = await r.json().catch(() => ({}))
-                  setFkGenSql(j.sql || '')
+                  setFkGenSql(r.ok ? (j.sql || '') : `-- Error: ${j.detail || 'Server error'}`)
                 } catch (err) { setFkGenSql(`-- Error: ${err.message}`) }
               }} className="px-4 py-1.5 bg-slate-600 text-white rounded-lg text-sm font-medium hover:bg-slate-700 shadow-sm"
                 title="Generate ALTER TABLE ADD CONSTRAINT DDL (requires MANAGE to execute)">
@@ -1163,8 +1164,12 @@ function ReviewEditor() {
                                 try {
                                   const r = await fetch('/api/analytics/fk-apply-from-predictions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ predictions: selPreds() }) })
                                   const j = await r.json().catch(() => ({}))
-                                  setFkApplyResult(j)
-                                  setSelectedFKs(p => ({ ...p, [tblKey]: new Set() }))
+                                  if (r.ok) {
+                                    setFkApplyResult(j)
+                                    setSelectedFKs(p => ({ ...p, [tblKey]: new Set() }))
+                                  } else {
+                                    setFkApplyResult({ error: j.detail || `Server error (${r.status})` })
+                                  }
                                 } catch (err) { setFkApplyResult({ error: err.message }) }
                                 setFkApplying(false)
                               }} disabled={fkApplying} className="text-xs px-2 py-0.5 bg-indigo-600 text-white rounded hover:bg-indigo-700 disabled:opacity-50"
@@ -1175,7 +1180,7 @@ function ReviewEditor() {
                                 try {
                                   const r = await fetch('/api/analytics/fk-generate-sql', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ predictions: selPreds() }) })
                                   const j = await r.json().catch(() => ({}))
-                                  setFkGenSql(j.sql || '')
+                                  setFkGenSql(r.ok ? (j.sql || '') : `-- Error: ${j.detail || 'Server error'}`)
                                 } catch (err) { setFkGenSql(`-- Error: ${err.message}`) }
                               }} className="text-xs px-2 py-0.5 bg-slate-600 text-white rounded hover:bg-slate-700">
                                 Generate SQL ({selCount})

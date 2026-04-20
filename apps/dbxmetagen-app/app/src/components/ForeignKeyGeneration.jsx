@@ -229,12 +229,13 @@ export function FKPredictionsTable({ onRefresh }) {
       }))
       const res = await fetch('/api/analytics/fk-delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ predictions: body }) })
       const j = await res.json().catch(() => ({}))
+      if (!res.ok) { setError(j.detail || `Server error (${res.status})`); return }
       if (j.deleted > 0) {
         const removed = new Set(rows.map(r => `${r.src_column}::${r.dst_column}`))
         setPredictions(prev => prev.filter(p => !removed.has(`${p.src_column}::${p.dst_column}`)))
         setSelected(new Set())
       }
-    } catch { /* swallow */ }
+    } catch (err) { setError(err.message) }
     setDeleting(false)
   }
 
