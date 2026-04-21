@@ -9,12 +9,16 @@
 
 # COMMAND ----------
 
-# MAGIC %pip install databricks-sdk==0.68.0 hatchling -q
+# MAGIC %pip install databricks-sdk==0.68.0 hatchling tomli -q
 # MAGIC dbutils.library.restartPython()
 
 # COMMAND ----------
 
-import os, glob, shutil, subprocess, sys, time, tomllib
+import os, glob, shutil, subprocess, sys, time
+try:
+    import tomllib
+except ModuleNotFoundError:
+    import tomli as tomllib
 
 dbutils.widgets.text("catalog_name", "", "Catalog Name")
 dbutils.widgets.text("schema_name", "metadata_results", "Schema Name")
