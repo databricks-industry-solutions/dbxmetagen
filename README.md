@@ -111,9 +111,11 @@ The `examples/` notebooks show how to use dbxmetagen as a **standalone pip-insta
 
 | Notebook | What it does |
 |----------|-------------|
-| `examples/01_quickstart_metadata.py` | Comment, PI, or domain generation with widgets |
-| `examples/02_analytics_pipeline.py` | Full KB, graph, embeddings, ontology, similarity, quality pipeline |
-| `examples/03_advanced_analytics.py` | FK prediction and ontology validation |
+| `examples/01_generate_metadata.py` | Run all three modes (comment, PI, domain) for richest Genie context |
+| `examples/02_build_knowledge_bases.py` | Structured KB tables from raw metadata |
+| `examples/03_build_analytics.py` | Graph, ontology, embeddings, profiling, FK prediction, quality |
+| `examples/04_generate_semantic_layer.py` | Metric view definitions from business questions |
+| `examples/05_create_genie_spaces.py` | Genie spaces with auto-splitting for large schemas |
 
 ## Disclaimer
 

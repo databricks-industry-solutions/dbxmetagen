@@ -339,6 +339,100 @@ print("[TEST 11] PASSED: nonexistent table returns valid fallback dict (domain='
 
 # COMMAND ----------
 # MAGIC %md
+# MAGIC ## Test 12: Empty ontology_bundle must NOT resolve to general.yaml
+# MAGIC
+# MAGIC This catches the regression where `get_widgets()` stripped empty strings,
+# MAGIC causing `MetadataConfig` to keep the YAML default `ontology_bundle="general"`.
+# MAGIC The domain classifier would then load `general.yaml` (6 generic domains)
+# MAGIC instead of the healthcare config, producing 0% accuracy on healthcare tables.
+
+# COMMAND ----------
+
+config_empty_bundle = load_domain_config(bundle_path="", config_path=None)
+domains_empty = config_empty_bundle.get("domains", {})
+# With empty bundle_path, should fall to hardcoded healthcare fallback or unknown
+# Must NOT be the 6-domain general config
+general_only_domains = {"finance", "operations", "workforce", "customer", "technology", "governance"}
+if set(domains_empty.keys()) == general_only_domains:
+    raise AssertionError(
+        f"Empty bundle_path loaded general.yaml ({len(domains_empty)} domains). "
+        f"This is the root cause of the domain=0 eval bug."
+    )
+
+print(f"[TEST 12] PASSED: empty bundle_path did NOT load general.yaml "
+      f"(got {len(domains_empty)} domains: {list(domains_empty.keys())[:5]}...)")
+
+# COMMAND ----------
+# MAGIC %md
+# MAGIC ## Test 13: healthcare bundle loads 12+ domains including clinical
+
+# COMMAND ----------
+
+hc_bundle_path = os.path.join(repo_root, "configurations", "ontology_bundles", "healthcare.yaml")
+if os.path.exists(hc_bundle_path):
+    config_hc = load_domain_config(bundle_path=hc_bundle_path)
+    hc_domains = config_hc["domains"]
+    assert len(hc_domains) >= 12, f"healthcare.yaml has only {len(hc_domains)} domains"
+    for required in ["clinical", "diagnostics", "payer", "finance"]:
+        assert required in hc_domains, f"healthcare.yaml missing expected domain '{required}'"
+    print(f"[TEST 13] PASSED: healthcare.yaml has {len(hc_domains)} domains including clinical, diagnostics, payer")
+else:
+    print(f"[TEST 13] SKIPPED: healthcare.yaml not found at {hc_bundle_path}")
+
+# COMMAND ----------
+# MAGIC %md
+# MAGIC ## Test 14: Healthcare table + healthcare config -> clinical domain
+
+# COMMAND ----------
+
+config_hc_standalone = load_domain_config(config_path=standalone_path)
+hc_domain_keys = list(config_hc_standalone["domains"].keys())
+
+result_hc_check = classify_table_domain(
+    f"{catalog_name}.{domain_test_schema}.patient_encounters",
+    table_meta_patient,
+    config_hc_standalone,
+    two_stage=True,
+)
+
+assert result_hc_check["domain"] == "clinical", (
+    f"patient_encounters with healthcare config should be 'clinical', got '{result_hc_check['domain']}'"
+)
+print(f"[TEST 14] PASSED: patient_encounters -> clinical/{result_hc_check.get('subdomain', '?')} with healthcare config")
+
+# COMMAND ----------
+# MAGIC %md
+# MAGIC ## Test 15: Same table + general config -> NOT clinical
+# MAGIC
+# MAGIC Demonstrates that the wrong config produces wrong results deterministically.
+
+# COMMAND ----------
+
+general_bundle_path = os.path.join(repo_root, "configurations", "ontology_bundles", "general.yaml")
+if os.path.exists(general_bundle_path):
+    config_general = load_domain_config(bundle_path=general_bundle_path)
+    general_domain_keys = list(config_general["domains"].keys())
+
+    result_general = classify_table_domain(
+        f"{catalog_name}.{domain_test_schema}.patient_encounters",
+        table_meta_patient,
+        config_general,
+        two_stage=True,
+    )
+
+    assert result_general["domain"] != "clinical", (
+        f"general.yaml should NOT produce 'clinical' (it's not in the config). "
+        f"Got domain='{result_general['domain']}'"
+    )
+    assert result_general["domain"] in general_domain_keys, (
+        f"Domain '{result_general['domain']}' not in general config keys {general_domain_keys}"
+    )
+    print(f"[TEST 15] PASSED: patient_encounters + general.yaml -> '{result_general['domain']}' (not clinical, as expected)")
+else:
+    print(f"[TEST 15] SKIPPED: general.yaml not found at {general_bundle_path}")
+
+# COMMAND ----------
+# MAGIC %md
 # MAGIC ## Cleanup
 
 # COMMAND ----------
