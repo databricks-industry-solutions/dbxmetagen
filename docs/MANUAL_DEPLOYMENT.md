@@ -5,6 +5,10 @@ Step-by-step instructions for deploying dbxmetagen when you can only use
 workstation). Every action that `deploy.sh` performs is broken out below
 as an explicit command you can run yourself.
 
+> **No CLI at all?** If you cannot run the Databricks CLI or any local
+> tooling, see `notebook_deployment_pipeline/README.md` for a fully
+> notebook-based deployment using the Python SDK.
+
 ---
 
 ## 1. Prerequisites

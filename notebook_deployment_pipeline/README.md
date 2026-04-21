@@ -30,38 +30,38 @@ instructions in `docs/MANUAL_DEPLOYMENT.md` instead.
 1. **NB01 builds the wheel** from the Git folder source using
    `pip wheel` -- no pre-built artifacts or GitHub Release downloads needed.
    The version is stamped with a deploy timestamp (same as `deploy.sh`)
-   so the app platform always reinstalls on each deploy.
+   so the app platform always reinstalls on each deploy. It then creates
+   the 5 essential jobs and provisions a Vector Search endpoint.
 
-2. **NB01 stages the app** by copying the app source from
+2. **NB02 stages the app** by copying the app source from
    `{repo_path}/apps/dbxmetagen-app/app/`, `configurations/` from the
-   repo root, and the freshly-built wheel into
-   `/Workspace/Users/<you>/.dbxmetagen_deploy/<app_name>/`. It also copies the wheel to the UC
-   Volume for job cluster library references.
+   repo root, and a freshly-built wheel into
+   `/Workspace/Users/<you>/.dbxmetagen_deploy/<app_name>/`. It also
+   builds its own wheel copy for the app `requirements.txt`.
 
-3. **NB02 creates jobs** that point to notebooks at
-   `{repo_path}/notebooks/`. Since the repo is a Git folder, the
-   notebooks and `configurations/` are already in the right place.
+3. **NB02 creates the app** and binds it to the jobs created by NB01.
+   Since the jobs already exist, all resource bindings are wired on the
+   first deploy -- **no redeploy is needed**. After deploying, NB02
+   grants the app's service principal `CAN_MANAGE_RUN` on all jobs and
+   UC catalog/schema permissions.
 
 ## Execution Order
 
 ### Initial Deploy
 
-1. **Run `01_deploy_app.py`** with `mode=deploy`
+1. **Run `01_deploy_jobs_and_infra.py`** with `mode=setup`
    - Builds the wheel from source with deploy timestamp
-   - Creates the Databricks App and its service principal
-   - Stages app source + wheel + configurations to workspace
-   - Copies wheel to UC Volume
-   - Wires any existing jobs as app resources
-
-2. **Run `02_deploy_jobs_and_infra.py`** with `mode=setup`
-   - Creates 5 essential jobs via SDK (referencing wheel from Volume)
-   - Grants UC permissions to the app service principal
+   - Copies wheel to UC Volume for job cluster libraries
+   - Creates 5 essential jobs via SDK (without SPN ACLs)
    - Provisions a Vector Search endpoint
-   - Updates the app with the new job resource bindings and redeploys
 
-3. **(Optional) Re-run `01_deploy_app.py`** with `mode=deploy`
-   - Only needed if you want to wire additional jobs created outside
-     these notebooks (e.g. from a prior bundle deploy)
+2. **Run `02_deploy_app.py`** with `mode=deploy`
+   - Builds the wheel (app-specific copy with deploy timestamp)
+   - Stages app source + wheel + configurations to workspace
+   - Discovers existing jobs and binds them as app resources
+   - Creates the app and deploys -- single deploy, all bindings wired
+   - Resolves the app SPN and grants `CAN_MANAGE_RUN` on all jobs
+   - Grants UC permissions to the app SPN
 
 ### Update
 
@@ -70,13 +70,13 @@ with a new timestamp, so the app platform always picks up the latest code.
 
 ### Teardown
 
-1. **Run `02_deploy_jobs_and_infra.py`** with `mode=teardown`
-   - Deletes jobs, revokes UC permissions, removes VS endpoint
-   - Optionally drops the metadata schema (set `confirm_drop_schema=yes`)
-
-2. **Run `01_deploy_app.py`** with `mode=destroy`
+1. **Run `02_deploy_app.py`** with `mode=destroy`
    - Stops and deletes the app
    - Cleans up staged source files
+
+2. **Run `01_deploy_jobs_and_infra.py`** with `mode=teardown`
+   - Deletes jobs, removes VS endpoint
+   - Optionally drops the metadata schema (set `confirm_drop_schema=yes`)
 
 ## Differences from `deploy.sh` / DABs
 
@@ -107,7 +107,7 @@ review, analytics pipeline). Dashboard buttons for missing jobs will show
 errors or be unavailable.
 
 To add more jobs, deploy once via `deploy.sh` or bundle (which creates
-all 16+ jobs), then re-run NB01 to wire them to the app.
+all 16+ jobs), then re-run NB02 to wire them to the app.
 
 ### No email notifications
 
@@ -141,32 +141,32 @@ notebook's job builder functions.
 
 ## Widget Reference
 
-### 01_deploy_app.py
+### 01_deploy_jobs_and_infra.py
 
 | Widget | Required | Default | Notes |
 |--------|----------|---------|-------|
 | `catalog_name` | Yes | | UC catalog for metadata tables |
 | `schema_name` | Yes | `metadata_results` | Schema for metadata output |
-| `warehouse_id` | Yes | | SQL warehouse for the app |
+| `warehouse_id` | Yes | | SQL warehouse (used for teardown schema drop) |
 | `repo_path` | Yes | | Repo root, e.g. `/Workspace/Repos/<user>/dbxmetagen` |
-| `volume_path` | Yes | | UC Volume for the built wheel (used by NB02 for job libraries) |
-| `app_name` | No | `dbxmetagen-app` | Databricks App name |
-| `mode` | No | `deploy` | `deploy` or `destroy` |
+| `volume_path` | Yes | | UC Volume for the built wheel (job libraries) |
+| `app_name` | No | `dbxmetagen-app` | Prefix for job names |
+| `node_type` | No | `i3.2xlarge` | Instance type for job clusters |
+| `spark_version` | No | `17.3.x-cpu-ml-scala2.13` | DBR version for job clusters |
+| `vs_endpoint_name` | No | `dbxmetagen-vs` | Vector Search endpoint name |
+| `mode` | No | `setup` | `setup` or `teardown` |
 
-### 02_deploy_jobs_and_infra.py
+### 02_deploy_app.py
 
 | Widget | Required | Default | Notes |
 |--------|----------|---------|-------|
 | `catalog_name` | Yes | | Must match NB01 |
 | `schema_name` | Yes | `metadata_results` | Must match NB01 |
-| `warehouse_id` | Yes | | Must match NB01 |
-| `repo_path` | Yes | | Must match NB01 -- notebooks are at `{repo_path}/notebooks/` |
+| `warehouse_id` | Yes | | SQL warehouse for the app and UC grants |
+| `repo_path` | Yes | | Must match NB01 |
 | `volume_path` | Yes | | Must match NB01 -- wheel location |
-| `app_name` | No | `dbxmetagen-app` | Must match NB01 |
-| `node_type` | No | `i3.2xlarge` | Instance type for job clusters |
-| `spark_version` | No | `17.3.x-cpu-ml-scala2.13` | DBR version for job clusters |
-| `vs_endpoint_name` | No | `dbxmetagen-vs` | Vector Search endpoint name |
-| `mode` | No | `setup` | `setup` or `teardown` |
+| `app_name` | No | `dbxmetagen-app` | Databricks App name |
+| `mode` | No | `deploy` | `deploy` or `destroy` |
 
 ## Jobs Created
 
