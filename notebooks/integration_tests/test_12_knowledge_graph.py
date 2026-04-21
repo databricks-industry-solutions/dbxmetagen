@@ -33,12 +33,13 @@ catalog_name = dbutils.widgets.get("catalog_name")
 test_schema = dbutils.widgets.get("test_schema")
 skip_cleanup = dbutils.widgets.get("skip_cleanup").strip().lower() == "true"
 
-# Create unique test schema for isolation
+# Create unique test schemas for isolation (two schemas so same_schema edges fire)
 test_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 graph_test_schema = f"graph_test_{test_timestamp}"
+graph_test_schema_2 = f"graph_test_{test_timestamp}_b"
 
 print(f"Test catalog: {catalog_name}")
-print(f"Test schema: {graph_test_schema}")
+print(f"Test schemas: {graph_test_schema}, {graph_test_schema_2}")
 print(f"Skip cleanup: {skip_cleanup}")
 
 # COMMAND ----------
@@ -47,9 +48,10 @@ print(f"Skip cleanup: {skip_cleanup}")
 
 # COMMAND ----------
 
-# Create test schema
+# Create test schemas
 spark.sql(f"CREATE SCHEMA IF NOT EXISTS {catalog_name}.{graph_test_schema}")
-print(f"[SETUP] Created test schema: {catalog_name}.{graph_test_schema}")
+spark.sql(f"CREATE SCHEMA IF NOT EXISTS {catalog_name}.{graph_test_schema_2}")
+print(f"[SETUP] Created test schemas: {graph_test_schema}, {graph_test_schema_2}")
 
 # COMMAND ----------
 
@@ -106,10 +108,10 @@ test_kb_data = [
         has_pii=True, has_phi=True,
         created_at=datetime(2024, 1, 1), updated_at=datetime(2024, 1, 1)
     ),
-    # Public reference table (no PII/PHI)
+    # Public reference table in a SECOND schema so same_schema edges are created
     Row(
-        table_name=f"{catalog_name}.{graph_test_schema}.product_catalog",
-        catalog=catalog_name, schema=graph_test_schema, table_short_name="product_catalog",
+        table_name=f"{catalog_name}.{graph_test_schema_2}.product_catalog",
+        catalog=catalog_name, schema=graph_test_schema_2, table_short_name="product_catalog",
         comment="Product catalog", domain="Product", subdomain="Master",
         has_pii=False, has_phi=False,
         created_at=datetime(2024, 1, 1), updated_at=datetime(2024, 1, 1)
@@ -185,7 +187,7 @@ assert patients_node["security_level"] == "PHI", "Security level should be PHI f
 assert patients_node["has_phi"] == True, "has_phi should be True"
 
 # Check product_catalog node (PUBLIC)
-products_node = nodes[f"{catalog_name}.{graph_test_schema}.product_catalog"]
+products_node = nodes[f"{catalog_name}.{graph_test_schema_2}.product_catalog"]
 assert products_node["security_level"] == "PUBLIC", "Security level should be PUBLIC"
 assert products_node["has_pii"] == False, "has_pii should be False"
 
@@ -273,7 +275,7 @@ print("[TEST 5] PASSED: No duplicate or self-loop edges")
 spark.sql(f"""
     UPDATE {catalog_name}.{graph_test_schema}.table_knowledge_base
     SET domain = 'Customer', subdomain = 'Reference', updated_at = current_timestamp()
-    WHERE table_name = '{catalog_name}.{graph_test_schema}.product_catalog'
+    WHERE table_name = '{catalog_name}.{graph_test_schema_2}.product_catalog'
 """)
 
 # Count same_domain edges before refresh
@@ -329,11 +331,12 @@ print("[TEST 7] PASSED: product_catalog now connected to Customer domain tables"
 # COMMAND ----------
 
 if skip_cleanup:
-    print(f"[CLEANUP] Skipping cleanup -- schema {catalog_name}.{graph_test_schema} left for downstream tests")
+    print(f"[CLEANUP] Skipping cleanup -- schemas left for downstream tests")
     dbutils.jobs.taskValues.set(key="graph_test_schema", value=graph_test_schema)
 else:
     spark.sql(f"DROP SCHEMA IF EXISTS {catalog_name}.{graph_test_schema} CASCADE")
-    print(f"[CLEANUP] Dropped test schema: {catalog_name}.{graph_test_schema}")
+    spark.sql(f"DROP SCHEMA IF EXISTS {catalog_name}.{graph_test_schema_2} CASCADE")
+    print(f"[CLEANUP] Dropped test schemas: {graph_test_schema}, {graph_test_schema_2}")
 
 # COMMAND ----------
 
