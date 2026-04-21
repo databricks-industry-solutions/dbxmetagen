@@ -538,6 +538,7 @@ export default function BatchJobs({ onNavigate }) {
                 ))}
               </select>
               {ontologyBundle && <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">Replaces the default domain list from the selected ontology.</p>}
+              <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">Recommended: select an Industry Ontology above instead of a standalone domain list. Ontology bundles include domain definitions along with entity types, properties, and relationships. Standalone domain lists are provided for legacy compatibility.</p>
             </div>
           </div>
         </details>
