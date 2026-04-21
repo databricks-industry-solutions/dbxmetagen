@@ -568,7 +568,8 @@ try:
     actual_fk_df = spark.sql(f"""
         SELECT src_table, src_column, dst_table, dst_column, final_confidence
         FROM {pipe_fq('fk_predictions')}
-        WHERE (src_table IN ({_fq_fk_in}) OR dst_table IN ({_fq_fk_in}))
+        WHERE src_table IN ({_fq_fk_in})
+          AND dst_table IN ({_fq_fk_in})
           AND is_fk = true
     """)
     actual_fk_directed = set()
