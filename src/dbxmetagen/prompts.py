@@ -1,11 +1,15 @@
 import logging
 from abc import ABC, abstractmethod
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, Any, Tuple
 import pandas as pd
 from dbxmetagen.deterministic_pi import detect_pi
 
 from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql.functions import collect_list, struct, to_json, col
+
+STATS_FIELDS = {"min", "max", "num_nulls", "distinct_count", "avg_col_len", "max_col_len"}
+_INFO_SCHEMA_TO_DESCRIBE = {"column_name": "col_name", "data_type": "data_type", "comment": "comment"}
 
 logging.basicConfig(
     level=logging.WARNING,
@@ -355,60 +359,139 @@ class Prompt(ABC):
         return filtered_df
 
     def add_metadata_to_comment_input(self) -> None:
+        """Add metadata to the comment input.
+
+        Fetches column tags once and shares the result with both
+        extract_column_metadata and the table-metadata path, avoiding
+        redundant information_schema queries.  The three table-level
+        queries run concurrently via a thread pool.
         """
-        Add metadata to the comment input.
-        """
-        column_metadata_dict = self.extract_column_metadata()
-        table_metadata = self.get_table_metadata()
+        column_tags = self.get_column_tags()
+        column_metadata_dict = self.extract_column_metadata(column_tags=column_tags)
+
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            f_tags = pool.submit(self.get_table_tags)
+            f_constraints = pool.submit(self.get_table_constraints)
+            f_comment = pool.submit(self.get_table_comment)
+        table_metadata = (column_tags, f_tags.result(), f_constraints.result(), f_comment.result())
+
         self.add_table_metadata_to_column_contents(table_metadata)
         self.prompt_content["column_contents"]["column_metadata"] = column_metadata_dict
 
-    def extract_column_metadata(self) -> Dict[str, Dict[str, Any]]:
+    def _excluded_info_names(self) -> set:
+        """Return info_name keys to exclude, replicating mode-specific filter logic."""
+        excluded = set()
+        if self.config.mode == "comment":
+            excluded.update({"description", "comment"})
+            excluded.update({
+                getattr(self.config, "pi_classification_tag_name", "data_classification"),
+                getattr(self.config, "pi_subclassification_tag_name", "data_subclassification"),
+            })
+            if not self.config.include_datatype_from_metadata:
+                excluded.add("data_type")
+            if not self.config.include_possible_data_fields_in_metadata:
+                excluded.update({"min", "max"})
+        elif self.config.mode == "pi":
+            excluded.update({
+                getattr(self.config, "pi_classification_tag_name", "data_classification"),
+                getattr(self.config, "pi_subclassification_tag_name", "data_subclassification"),
+            })
+        elif self.config.mode == "domain":
+            excluded.update({
+                getattr(self.config, "domain_tag_name", "domain"),
+                getattr(self.config, "subdomain_tag_name", "subdomain"),
+            })
+        return excluded
+
+    def _fetch_batch_column_metadata(
+        self, columns, column_tags=None,
+    ) -> Dict[str, Dict[str, Any]]:
+        """Batch-fetch basic column metadata from information_schema.columns.
+
+        Returns a dict matching the shape of the old per-column DESCRIBE
+        EXTENDED output: ``{column_name: {info_name: info_value, ...}}``.
         """
-        Extract metadata for each column.
+        if not columns:
+            return {}
+        catalog, schema, table = self.full_table_name.split(".")
+        quoted = ", ".join(f"'{c.replace(chr(39), chr(39)*2)}'" for c in columns)
+        df = self.spark.sql(
+            f"SELECT column_name, data_type, comment "
+            f"FROM {catalog}.information_schema.columns "
+            f"WHERE table_catalog = '{catalog}' AND table_schema = '{schema}' "
+            f"AND table_name = '{table}' AND column_name IN ({quoted})"
+        )
+        rows = df.collect()
+        excluded = self._excluded_info_names()
+        result = {}
+        for row in rows:
+            col_dict = {}
+            for src_col, info_name in _INFO_SCHEMA_TO_DESCRIBE.items():
+                if info_name in excluded:
+                    continue
+                val = row[src_col]
+                if val is None:
+                    continue
+                col_dict[info_name] = str(val)
+            if column_tags and row["column_name"] in column_tags:
+                col_dict["tags"] = column_tags[row["column_name"]]
+            result[row["column_name"]] = col_dict
+        return result
+
+    def _fetch_column_stats_concurrent(self, columns) -> Dict[str, Dict[str, str]]:
+        """Fetch column statistics via concurrent DESCRIBE EXTENDED calls.
+
+        Only extracts STATS_FIELDS (min, max, num_nulls, etc.) that are
+        unavailable from information_schema.  Per-column failures are
+        logged and skipped so Tier 1 data is still usable.
+        """
+        if not columns:
+            return {}
+        excluded = self._excluded_info_names()
+
+        def _fetch_one(col_name):
+            df = self.spark.sql(
+                f"DESCRIBE EXTENDED {self.full_table_name} `{col_name}`"
+            )
+            rows = df.filter(df["info_name"].isin(STATS_FIELDS)).toPandas()
+            stats = {}
+            for _, r in rows.iterrows():
+                if r["info_name"] in excluded or r["info_value"] == "NULL":
+                    continue
+                stats[r["info_name"]] = str(r["info_value"])
+            return col_name, stats
+
+        result = {}
+        with ThreadPoolExecutor(max_workers=min(len(columns), 8)) as pool:
+            futures = {pool.submit(_fetch_one, c): c for c in columns}
+            for f in as_completed(futures):
+                try:
+                    col, stats = f.result()
+                    result[col] = stats
+                except Exception as e:
+                    logger.warning("Failed to fetch stats for %s: %s", futures[f], e)
+        return result
+
+    def extract_column_metadata(self, column_tags=None) -> Dict[str, Dict[str, Any]]:
+        """Extract metadata for each column via batched info_schema + concurrent stats.
+
+        Args:
+            column_tags: Pre-fetched column tags dict. If None, fetched internally.
 
         Returns:
-            Dict[str, Dict[str, Any]]: Dictionary containing metadata for each column.
+            Dict keyed by column name, each value a dict of info_name -> info_value.
         """
-        column_metadata_dict = {}
-        for column_name in self.prompt_content["column_contents"]["columns"]:
+        if column_tags is None:
+            column_tags = self.get_column_tags()
+        columns = self.prompt_content["column_contents"]["columns"]
 
-            extended_metadata_df = self.spark.sql(
-                f"DESCRIBE EXTENDED {self.full_table_name} `{column_name}`"
-            )
+        # Tier 1: batch basic metadata from information_schema
+        column_metadata_dict = self._fetch_batch_column_metadata(columns, column_tags)
 
-            # try:
-            #     sample_rows = extended_metadata_df.limit(3).collect()
-            #     for i, row in enumerate(sample_rows):
-            #         print(f"  Row {i}: {dict(row.asDict())}")
-            # except Exception as e:
-            #     print(f"[DEBUG] Error sampling DESCRIBE EXTENDED rows: {e}")
-
-            filtered_metadata_df = self.filter_extended_metadata_fields(
-                extended_metadata_df
-            )
-
-            # # Check if the filtered DataFrame is empty or has problematic data
-            # try:
-            #     filtered_sample = filtered_metadata_df.limit(3).collect()
-            #     for i, row in enumerate(filtered_sample):
-            #         print(f"  Row {i}: {dict(row.asDict())}")
-            # except Exception as e:
-            #     print(f"[DEBUG] Error sampling filtered rows: {e}")
-
-            try:
-                column_metadata = filtered_metadata_df.toPandas().to_dict(orient="list")
-            except Exception as e:
-                print(f"ERROR in pandas conversion for {column_name}: {e}")
-                raise
-
-            combined_metadata = dict(
-                zip(column_metadata["info_name"], column_metadata["info_value"])
-            )
-            combined_metadata = self.add_column_metadata_to_column_contents(
-                column_name, combined_metadata
-            )
-            column_metadata_dict[column_name] = combined_metadata
+        # Tier 2: concurrent stats from DESCRIBE EXTENDED
+        stats = self._fetch_column_stats_concurrent(columns)
+        for col, col_stats in stats.items():
+            column_metadata_dict.setdefault(col, {}).update(col_stats)
 
         return column_metadata_dict
 
@@ -444,23 +527,21 @@ class Prompt(ABC):
         logger.debug("column tags dict: %s", column_tags_dict)
         return column_tags_dict
 
-    def add_column_metadata_to_column_contents(
-        self, column_name: str, combined_metadata: Dict[str, Any]
+    @staticmethod
+    def _merge_column_tags(
+        column_name: str, combined_metadata: Dict[str, Any],
+        column_tags: Dict[str, Dict[str, str]],
     ) -> Dict[str, Any]:
-        """
-        Add column metadata to the column contents.
-
-        Args:
-            column_name (str): Name of the column.
-            combined_metadata (Dict[str, Any]): Combined metadata for the column.
-
-        Returns:
-            Dict[str, Any]: Updated combined metadata with column tags.
-        """
-        column_tags = self.get_column_tags()
+        """Merge pre-fetched column tags into column metadata dict."""
         if column_name in column_tags:
             combined_metadata["tags"] = column_tags[column_name]
         return combined_metadata
+
+    def add_column_metadata_to_column_contents(
+        self, column_name: str, combined_metadata: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Backward-compat wrapper around _merge_column_tags."""
+        return self._merge_column_tags(column_name, combined_metadata, self.get_column_tags())
 
     def add_table_metadata_to_column_contents(
         self, table_metadata: Tuple[Dict[str, str], str, str, str]
