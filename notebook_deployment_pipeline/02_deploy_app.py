@@ -404,7 +404,7 @@ if app_spn_uuid and bound_job_ids:
         service_principal_name=app_spn_uuid,
         permission_level=jobs_svc.JobPermissionLevel.CAN_MANAGE_RUN)]
     for res_name, jid in bound_job_ids.items():
-        w.jobs.set_permissions(job_id=str(jid), access_control_list=acl)
+        w.jobs.update_permissions(job_id=str(jid), access_control_list=acl)
         print(f"  Granted CAN_MANAGE_RUN on {res_name} (id={jid})")
 elif not app_spn_uuid:
     print("WARNING: Could not resolve app SPN -- skipping job ACLs")
