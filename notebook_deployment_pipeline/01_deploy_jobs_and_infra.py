@@ -158,6 +158,16 @@ def nb_task(key, notebook, params, deps=None, extra_libs=None):
         libraries=libs,
         depends_on=[jobs.TaskDependency(task_key=d) for d in (deps or [])])
 
+def serverless_task(key, notebook, params, deps=None):
+    return jobs.Task(
+        task_key=key,
+        max_retries=1,
+        environment_key="default",
+        notebook_task=jobs.NotebookTask(
+            notebook_path=f"{notebooks_path}/{notebook}",
+            base_parameters=params),
+        depends_on=[jobs.TaskDependency(task_key=d) for d in (deps or [])])
+
 def jp(name, default):
     return jobs.JobParameterDefinition(name=name, default=str(default))
 
@@ -367,6 +377,95 @@ def build_sync_ddl_job():
 # COMMAND ----------
 
 # MAGIC %md
+# MAGIC ## Job 6: Metadata Serverless (single mode + KB)
+
+# COMMAND ----------
+
+def build_metadata_serverless_job():
+    params = [
+        jp("table_names", "none"), jp("mode", "comment"),
+        jp("catalog_name", catalog_name), jp("schema_name", schema_name),
+        jp("current_user", current_user), jp("permission_groups", "none"),
+        jp("permission_users", "none"), jp("run_id", "{{job.run_id}}"),
+        jp("include_previously_failed_tables", "false"),
+        jp("apply_ddl", "false"), jp("use_kb_comments", "false"),
+        jp("ontology_bundle", ""), jp("domain_config_path", ""),
+        jp("sample_size", "50"), jp("include_lineage", "false"),
+        jp("model", "databricks-claude-sonnet-4-6"),
+    ]
+    ref = lambda n: f"{{{{job.parameters.{n}}}}}"
+    base = {p.name: ref(p.name) for p in params}
+    cat_sch = {"catalog_name": ref("catalog_name"), "schema_name": ref("schema_name")}
+    tasks = [
+        serverless_task("generate_metadata", "generate_metadata.py", base),
+        serverless_task("build_knowledge_base", "build_knowledge_base.py",
+                        cat_sch, deps=["generate_metadata"]),
+        serverless_task("build_column_kb", "build_column_kb.py",
+                        cat_sch, deps=["generate_metadata"]),
+    ]
+    return (f"{app_name}_metadata_serverless_job", tasks, params,
+            None, "metadata_serverless_job", 5)
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Job 7: Parallel Serverless (all 3 modes + KB)
+
+# COMMAND ----------
+
+def build_parallel_serverless_job():
+    params = [
+        jp("table_names", "none"), jp("catalog_name", catalog_name),
+        jp("schema_name", schema_name), jp("apply_ddl", "false"),
+        jp("current_user", current_user), jp("permission_groups", "none"),
+        jp("permission_users", "none"), jp("run_id", "{{job.run_id}}"),
+        jp("include_previously_failed_tables", "false"),
+        jp("use_kb_comments", "false"), jp("ontology_bundle", ""),
+        jp("domain_config_path", ""), jp("sample_size", "5"),
+        jp("include_lineage", "false"),
+        jp("model", "databricks-claude-sonnet-4-6"),
+    ]
+    ref = lambda n: f"{{{{job.parameters.{n}}}}}"
+    common = {
+        "table_names": ref("table_names"),
+        "catalog_name": ref("catalog_name"),
+        "schema_name": ref("schema_name"),
+        "apply_ddl": ref("apply_ddl"),
+        "current_user": ref("current_user"),
+        "permission_groups": ref("permission_groups"),
+        "permission_users": ref("permission_users"),
+        "run_id": ref("run_id"),
+        "cleanup_control_table": "false",
+        "include_previously_failed_tables": ref("include_previously_failed_tables"),
+        "ontology_bundle": ref("ontology_bundle"),
+        "domain_config_path": ref("domain_config_path"),
+        "sample_size": ref("sample_size"),
+        "include_lineage": ref("include_lineage"),
+        "model": ref("model"),
+    }
+    cat_sch = {"catalog_name": ref("catalog_name"), "schema_name": ref("schema_name")}
+    tasks = [
+        serverless_task("generate_comments", "generate_metadata.py",
+                        {**common, "mode": "comment"}),
+        serverless_task("generate_pi", "generate_metadata.py",
+                        {**common, "mode": "pi", "include_existing_table_comment": "true",
+                         "use_kb_comments": ref("use_kb_comments")},
+                        deps=["generate_comments"]),
+        serverless_task("generate_domain", "generate_metadata.py",
+                        {**common, "mode": "domain", "include_existing_table_comment": "true",
+                         "use_kb_comments": ref("use_kb_comments")},
+                        deps=["generate_comments"]),
+        serverless_task("build_knowledge_base", "build_knowledge_base.py",
+                        cat_sch, deps=["generate_pi", "generate_domain"]),
+        serverless_task("build_column_kb", "build_column_kb.py",
+                        cat_sch, deps=["generate_pi", "generate_domain"]),
+    ]
+    return (f"{app_name}_parallel_serverless_job", tasks, params,
+            None, "metadata_parallel_serverless_job", 5)
+
+# COMMAND ----------
+
+# MAGIC %md
 # MAGIC ## Create or Update Jobs
 # MAGIC
 # MAGIC Jobs are created **without** SPN ACLs -- those are granted by Notebook 02
@@ -380,6 +479,8 @@ ESSENTIAL_JOBS = [
     build_analytics_pipeline_job,
     build_kb_job,
     build_sync_ddl_job,
+    build_metadata_serverless_job,
+    build_parallel_serverless_job,
 ]
 
 if mode == "teardown":
@@ -389,23 +490,34 @@ else:
                      if j.settings and j.settings.name}
     created_jobs = {}
 
+    serverless_env = [jobs.JobEnvironment(
+        environment_key="default",
+        spec=compute.Environment(
+            client="1",
+            dependencies=[whl_volume_path] if whl_volume_path else []))]
+
     for builder in ESSENTIAL_JOBS:
         name, tasks, params, clusters, res_name, max_concurrent = builder()
+        is_serverless = clusters is None
+        settings = jobs.JobSettings(
+            name=name, tasks=tasks, parameters=params,
+            max_concurrent_runs=max_concurrent)
+        if is_serverless:
+            settings.environments = serverless_env
+        else:
+            settings.job_clusters = clusters
         if name in existing_jobs:
             jid = existing_jobs[name].job_id
-            w.jobs.reset(
-                job_id=jid,
-                new_settings=jobs.JobSettings(
-                    name=name, tasks=tasks, parameters=params,
-                    job_clusters=clusters,
-                    max_concurrent_runs=max_concurrent))
+            w.jobs.reset(job_id=jid, new_settings=settings)
             created_jobs[res_name] = jid
             print(f"  Updated: {name} (id={jid})")
         else:
-            result = w.jobs.create(
-                name=name, tasks=tasks, parameters=params,
-                job_clusters=clusters,
-                max_concurrent_runs=max_concurrent)
+            result = w.jobs.create(**{
+                "name": name, "tasks": tasks, "parameters": params,
+                "max_concurrent_runs": max_concurrent,
+                **({} if is_serverless else {"job_clusters": clusters}),
+                **({"environments": serverless_env} if is_serverless else {}),
+            })
             created_jobs[res_name] = result.job_id
             print(f"  Created: {name} (id={result.job_id})")
 
