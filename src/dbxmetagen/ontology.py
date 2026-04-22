@@ -2576,6 +2576,7 @@ class OntologyBuilder:
             config.config_path, config.ontology_bundle,
         )
         self.ontology_config = OntologyLoader.load_config(effective_path)
+        self._validation_cfg = self.ontology_config.get("validation", {})
         bundle_tag_key = (
             self.ontology_config
             .get("_bundle_metadata", {})
