@@ -422,6 +422,15 @@ if [ "$SKIP_VS" = false ]; then
             --json "{\"name\": \"${VS_ENDPOINT}\", \"endpoint_type\": \"STANDARD\"}" 2>&1 || echo "  (may already exist)"
         echo "VS endpoint creation requested"
     fi
+
+    # Grant CAN_USE on the VS endpoint to the app service principal
+    if [ -n "${SPN_APP_ID}" ]; then
+        echo "  Granting CAN_USE on VS endpoint '${VS_ENDPOINT}' to app SPN (${SPN_APP_ID})..."
+        databricks api patch "/api/2.0/permissions/vector-search-endpoints/${VS_ENDPOINT}" \
+            --profile "$PROFILE" \
+            --json "{\"access_control_list\": [{\"service_principal_name\": \"${SPN_APP_ID}\", \"permission_level\": \"CAN_USE\"}]}" 2>&1 || \
+            echo "  WARNING: Could not grant VS endpoint permissions (may need manual grant)"
+    fi
 else
     echo ""
     echo "=== Skipping Vector Search endpoint (--no-vs) ==="
