@@ -120,8 +120,8 @@ function ReviewEditor() {
 
   // DDL bundle state
   const [bundleTypes, setBundleTypes] = useState({
-    comments: true, domain: true, sensitivity: true, ontology: true,
-    fk: true,
+    comments: false, domain: false, sensitivity: false, ontology: false,
+    fk: false,
   })
   const [fkMode, setFkMode] = useState('tags')
   const [bundleSql, setBundleSql] = useState('')
@@ -1410,6 +1410,10 @@ function ReviewEditor() {
         <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200">
           DDL Bundle <Tip text="Generate a unified SQL script covering comments, domain tags, sensitivity tags, ontology tags, and FK metadata. Export for use in other environments or apply directly." />
         </h3>
+        <p className="text-xs text-slate-500 dark:text-slate-400">
+          Select the metadata types to include, then <strong>Generate Bundle</strong> to preview the SQL or <strong>Generate & Apply Bundle</strong> to execute it against your catalog.
+          Use the optional target catalog/schema fields to redirect output to a different location. You can also download or copy the generated SQL for manual review.
+        </p>
         <div className="flex flex-wrap gap-2 items-center">
           {[
             ['comments', 'Comments'], ['domain', 'Domain'], ['sensitivity', 'Sensitivity'],
