@@ -808,7 +808,7 @@ function ReviewEditor() {
                             <tr key={col.column_id || ci} className={`border-b border-slate-100 dark:border-dbx-navy-400/20 ${isColDirty(tblIdx, ci) ? 'bg-amber-50 dark:bg-amber-900/20' : ''} hover:bg-orange-50/30 dark:hover:bg-dbx-navy-500/30`}>
                               <td className="px-3 py-1.5 text-slate-600 dark:text-slate-300 font-mono text-xs truncate">{col.column_name}</td>
                               <td className="px-3 py-1.5 text-slate-400 dark:text-slate-500 text-xs truncate">{col.data_type}</td>
-                              {show('comments') && <td className="px-2 py-1"><input value={col.comment ?? ''} onChange={e => onColChange(tblIdx, ci, 'comment', e.target.value)} className={inp} /></td>}
+                              {show('comments') && <td className="px-2 py-1"><textarea value={col.comment ?? ''} onChange={e => onColChange(tblIdx, ci, 'comment', e.target.value)} rows={2} className={inp + ' resize-y whitespace-pre-wrap break-words'} /></td>}
                               {show('pii') && <td className="px-2 py-1">
                                 <div className="flex items-center gap-1.5">
                                   <input value={col.classification ?? ''} onChange={e => onColChange(tblIdx, ci, 'classification', e.target.value)} className={inp} placeholder="Unclassified" />
