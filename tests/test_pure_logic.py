@@ -9,7 +9,7 @@ import json
 import os
 import tempfile
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 import pytest
 import yaml
@@ -881,3 +881,90 @@ class TestLoadDomainConfigBundleResolution:
             config = load_domain_config(config_path=path)
             assert "clinical" in config["domains"]
             assert "payer" in config["domains"]
+
+
+# ---------------------------------------------------------------------------
+# R3: _excluded_info_names / constants / key mapping
+# ---------------------------------------------------------------------------
+
+from dbxmetagen.prompts import STATS_FIELDS, _INFO_SCHEMA_TO_DESCRIBE, Prompt
+
+
+def _make_prompt_stub(mode, **extra):
+    """Build a minimal object that satisfies _excluded_info_names without Spark."""
+    obj = MagicMock(spec=Prompt)
+    cfg = MagicMock()
+    cfg.mode = mode
+    cfg.include_datatype_from_metadata = extra.get("include_datatype_from_metadata", True)
+    cfg.include_possible_data_fields_in_metadata = extra.get(
+        "include_possible_data_fields_in_metadata", True,
+    )
+    cfg.pi_classification_tag_name = extra.get("pi_classification_tag_name", "data_classification")
+    cfg.pi_subclassification_tag_name = extra.get(
+        "pi_subclassification_tag_name", "data_subclassification",
+    )
+    cfg.domain_tag_name = extra.get("domain_tag_name", "domain")
+    cfg.subdomain_tag_name = extra.get("subdomain_tag_name", "subdomain")
+    obj.config = cfg
+    return obj
+
+
+class TestExcludedInfoNames:
+    """Verify _excluded_info_names matches the old _filter_*_mode logic."""
+
+    def test_comment_mode_defaults(self):
+        obj = _make_prompt_stub("comment")
+        result = Prompt._excluded_info_names(obj)
+        assert "comment" in result
+        assert "description" in result
+        assert "data_classification" in result
+        assert "data_subclassification" in result
+        assert "data_type" not in result  # included by default
+        assert "min" not in result        # included by default
+
+    def test_comment_mode_exclude_datatype(self):
+        obj = _make_prompt_stub("comment", include_datatype_from_metadata=False)
+        result = Prompt._excluded_info_names(obj)
+        assert "data_type" in result
+
+    def test_comment_mode_exclude_stats(self):
+        obj = _make_prompt_stub("comment", include_possible_data_fields_in_metadata=False)
+        result = Prompt._excluded_info_names(obj)
+        assert "min" in result
+        assert "max" in result
+
+    def test_pi_mode(self):
+        obj = _make_prompt_stub("pi")
+        result = Prompt._excluded_info_names(obj)
+        assert result == {"data_classification", "data_subclassification"}
+
+    def test_domain_mode(self):
+        obj = _make_prompt_stub("domain")
+        result = Prompt._excluded_info_names(obj)
+        assert result == {"domain", "subdomain"}
+
+    def test_custom_tag_names(self):
+        obj = _make_prompt_stub(
+            "pi",
+            pi_classification_tag_name="my_pi_tag",
+            pi_subclassification_tag_name="my_sub_tag",
+        )
+        result = Prompt._excluded_info_names(obj)
+        assert result == {"my_pi_tag", "my_sub_tag"}
+
+
+class TestInfoSchemaConstants:
+    def test_key_mapping_uses_col_name(self):
+        assert _INFO_SCHEMA_TO_DESCRIBE["column_name"] == "col_name"
+
+    def test_key_mapping_data_type(self):
+        assert _INFO_SCHEMA_TO_DESCRIBE["data_type"] == "data_type"
+
+    def test_key_mapping_comment(self):
+        assert _INFO_SCHEMA_TO_DESCRIBE["comment"] == "comment"
+
+    def test_is_nullable_not_mapped(self):
+        assert "is_nullable" not in _INFO_SCHEMA_TO_DESCRIBE
+
+    def test_stats_fields_complete(self):
+        assert STATS_FIELDS == {"min", "max", "num_nulls", "distinct_count", "avg_col_len", "max_col_len"}

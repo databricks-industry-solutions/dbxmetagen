@@ -1,20 +1,26 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # Deploy dbxmetagen App
+# MAGIC # Deploy dbxmetagen App & Grant Permissions
 # MAGIC
-# MAGIC Deploys or destroys the dbxmetagen Databricks App using the SDK.
-# MAGIC No CLI required -- runs entirely from a Databricks notebook.
+# MAGIC Deploys or destroys the dbxmetagen Databricks App using the SDK, then
+# MAGIC grants the app's service principal permissions on jobs and Unity Catalog.
+# MAGIC
+# MAGIC Run this **after** Notebook 01 (jobs must exist so the app can bind to them).
 # MAGIC
 # MAGIC **Requirements**: the dbxmetagen repo cloned as a Git folder.
 
 # COMMAND ----------
 
-# MAGIC %pip install databricks-sdk==0.68.0 hatchling -q
+# MAGIC %pip install databricks-sdk==0.68.0 hatchling tomli -q
 # MAGIC dbutils.library.restartPython()
 
 # COMMAND ----------
 
-import os, glob, shutil, subprocess, sys, time, tomllib
+import os, glob, shutil, subprocess, sys, time
+try:
+    import tomllib
+except ModuleNotFoundError:
+    import tomli as tomllib
 
 dbutils.widgets.text("catalog_name", "", "Catalog Name")
 dbutils.widgets.text("schema_name", "metadata_results", "Schema Name")
@@ -43,6 +49,7 @@ assert os.path.exists(f"{repo_path}/pyproject.toml"), (
 # COMMAND ----------
 
 from databricks.sdk import WorkspaceClient
+from databricks.sdk.service import jobs as jobs_svc
 from databricks.sdk.service.apps import (
     App,
     AppDeployment,
@@ -53,7 +60,7 @@ from databricks.sdk.service.apps import (
     AppResourceSqlWarehouse,
     AppResourceSqlWarehouseSqlWarehousePermission,
 )
-from databricks.sdk.errors import NotFound, ResourceAlreadyExists
+from databricks.sdk.errors import NotFound
 
 w = WorkspaceClient()
 _current_user = w.current_user.me().user_name
@@ -63,7 +70,6 @@ deploy_dir = f"/Workspace/Users/{_current_user}/.dbxmetagen_deploy/{app_name}"
 
 # MAGIC %md
 # MAGIC ## Embedded Templates
-# MAGIC These match the repo's `.template` files so the notebook is self-contained.
 
 # COMMAND ----------
 
@@ -178,7 +184,7 @@ if mode == "destroy":
     if os.path.exists(deploy_dir):
         shutil.rmtree(deploy_dir)
         print(f"  Cleaned up {deploy_dir}")
-    print("Done. Run Notebook 02 with mode=teardown to clean up jobs and infra.")
+    print("Done. Run Notebook 01 with mode=teardown to clean up jobs and infra.")
     dbutils.notebook.exit("destroyed")
 
 # COMMAND ----------
@@ -186,9 +192,8 @@ if mode == "destroy":
 # MAGIC %md
 # MAGIC ## Build Wheel
 # MAGIC
-# MAGIC Builds the wheel from the Git folder with a deploy timestamp stamped into
-# MAGIC the version (same as `deploy.sh`) so the app platform always reinstalls.
-# MAGIC The build runs in `/tmp` to avoid modifying the Git folder.
+# MAGIC Builds from the Git folder with a deploy timestamp so the app platform
+# MAGIC always reinstalls. The build runs in `/tmp` to avoid modifying the repo.
 
 # COMMAND ----------
 
@@ -198,10 +203,9 @@ deploy_version = f"{base_version}+{int(time.time())}"
 
 build_dir = "/tmp/dbxmetagen_build"
 dist_dir = "/tmp/dbxmetagen_dist"
-if os.path.exists(build_dir):
-    shutil.rmtree(build_dir)
-if os.path.exists(dist_dir):
-    shutil.rmtree(dist_dir)
+for d in (build_dir, dist_dir):
+    if os.path.exists(d):
+        shutil.rmtree(d)
 
 shutil.copytree(f"{repo_path}/src", f"{build_dir}/src")
 shutil.copy(f"{repo_path}/pyproject.toml", f"{build_dir}/pyproject.toml")
@@ -209,14 +213,12 @@ shutil.copy(f"{repo_path}/README.md", f"{build_dir}/README.md")
 if os.path.exists(f"{repo_path}/LICENSE.md"):
     shutil.copy(f"{repo_path}/LICENSE.md", f"{build_dir}/LICENSE.md")
 
-# Keep bundled config copies in sync (MetadataConfig loads these from the wheel)
 for cfg in ("variables.yml", "variables.advanced.yml"):
     repo_cfg = f"{repo_path}/{cfg}"
     pkg_cfg = f"{build_dir}/src/dbxmetagen/{cfg}"
     if os.path.exists(repo_cfg):
         shutil.copy(repo_cfg, pkg_cfg)
 
-# Stamp deploy version
 pyproject = f"{build_dir}/pyproject.toml"
 with open(pyproject) as f:
     content = f.read()
@@ -234,7 +236,6 @@ whl_path = glob.glob(f"{dist_dir}/dbxmetagen-*.whl")[0]
 whl_name = os.path.basename(whl_path)
 print(f"Built wheel: {whl_name} (version {deploy_version})")
 
-# Copy to UC Volume so NB02 can reference it for job cluster libraries
 os.makedirs(volume_path, exist_ok=True)
 shutil.copy(whl_path, f"{volume_path}/{whl_name}")
 print(f"Copied wheel to {volume_path}/{whl_name}")
@@ -256,11 +257,9 @@ if os.path.exists(deploy_dir):
 shutil.copytree(app_source_dir, deploy_dir)
 print(f"Copied app source to {deploy_dir}")
 
-# Stage wheel into app source
 shutil.copy(whl_path, f"{deploy_dir}/{whl_name}")
 print(f"Staged wheel: {whl_name}")
 
-# Stage configurations from repo root
 configs_src = f"{repo_path}/configurations"
 if os.path.exists(configs_src):
     shutil.copytree(configs_src, f"{deploy_dir}/configurations", dirs_exist_ok=True)
@@ -284,6 +283,9 @@ print(f"Generated requirements.txt (wheel: {whl_name})")
 
 # MAGIC %md
 # MAGIC ## Look Up Existing Jobs
+# MAGIC
+# MAGIC Finds jobs created by Notebook 01 (or a prior bundle deploy) so the app
+# MAGIC can bind to them on its first deploy -- no redeploy needed.
 
 # COMMAND ----------
 
@@ -291,31 +293,30 @@ all_jobs = {j.settings.name: j.job_id
             for j in w.jobs.list() if j.settings and j.settings.name}
 
 job_resources = []
+bound_job_ids = {}
 missing_jobs = []
 for res_name, suffix in RESOURCE_TO_JOB_SUFFIX.items():
     expected_name = f"{app_name}_{suffix}"
     if expected_name in all_jobs:
+        jid = all_jobs[expected_name]
         job_resources.append(AppResource(
             name=res_name,
             job=AppResourceJob(
-                id=str(all_jobs[expected_name]),
+                id=str(jid),
                 permission=AppResourceJobJobPermission.CAN_MANAGE_RUN)))
+        bound_job_ids[res_name] = jid
     else:
         missing_jobs.append((res_name, expected_name))
 
 print(f"Found {len(job_resources)} jobs, {len(missing_jobs)} not yet created")
 if missing_jobs:
-    print("  (This is expected on first deploy -- NB02 will create them and redeploy)")
     for res_name, expected in missing_jobs:
-        print(f"    {res_name} -> {expected}")
+        print(f"  missing: {res_name} -> {expected}")
 
 # COMMAND ----------
 
 # MAGIC %md
 # MAGIC ## Generate app.yaml
-# MAGIC
-# MAGIC Only uses `valueFrom` for resources that are actually bound.
-# MAGIC Unbound job env vars get `value: ""` so the deploy doesn't fail.
 
 # COMMAND ----------
 
@@ -373,24 +374,87 @@ print(f"Deployment complete: {deployment.status}")
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Summary
+# MAGIC ## Resolve App SPN and Grant Permissions
+# MAGIC
+# MAGIC Now that the app exists, grant its service principal `CAN_MANAGE_RUN` on
+# MAGIC all jobs and the necessary UC catalog/schema permissions.
 
 # COMMAND ----------
 
 app_info = w.apps.get(app_name)
-sp_id = getattr(app_info, "service_principal_id", None)
-sp_client_id = getattr(app_info, "service_principal_client_id", None)
+app_spn_id = getattr(app_info, "service_principal_id", None)
+app_spn_uuid = getattr(app_info, "service_principal_client_id", None)
+
+if not app_spn_uuid and app_spn_id:
+    sp = w.service_principals.get(app_spn_id)
+    app_spn_uuid = sp.application_id
+
+print(f"App SPN UUID:       {app_spn_uuid}")
+print(f"App SPN numeric ID: {app_spn_id}")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### Grant CAN_MANAGE_RUN on jobs
+
+# COMMAND ----------
+
+if app_spn_uuid and bound_job_ids:
+    acl = [jobs_svc.JobAccessControlRequest(
+        service_principal_name=app_spn_uuid,
+        permission_level=jobs_svc.JobPermissionLevel.CAN_MANAGE_RUN)]
+    for res_name, jid in bound_job_ids.items():
+        w.jobs.update_permissions(job_id=str(jid), access_control_list=acl)
+        print(f"  Granted CAN_MANAGE_RUN on {res_name} (id={jid})")
+elif not app_spn_uuid:
+    print("WARNING: Could not resolve app SPN -- skipping job ACLs")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### Grant UC permissions
+
+# COMMAND ----------
+
+def run_sql(statement):
+    resp = w.statement_execution.execute_statement(
+        warehouse_id=warehouse_id, statement=statement, wait_timeout="30s")
+    state = resp.status.state.value
+    print(f"  [{state}] {statement[:90]}")
+    return state
+
+if app_spn_uuid:
+    print("=== Granting UC permissions ===")
+    run_sql(f"CREATE SCHEMA IF NOT EXISTS `{catalog_name}`.`{schema_name}`")
+    for grant in [
+        f"GRANT USE CATALOG ON CATALOG `{catalog_name}` TO `{app_spn_uuid}`",
+        f"GRANT USE SCHEMA ON SCHEMA `{catalog_name}`.`{schema_name}` TO `{app_spn_uuid}`",
+        f"GRANT CREATE TABLE ON SCHEMA `{catalog_name}`.`{schema_name}` TO `{app_spn_uuid}`",
+        f"GRANT SELECT ON SCHEMA `{catalog_name}`.`{schema_name}` TO `{app_spn_uuid}`",
+        f"GRANT MODIFY ON SCHEMA `{catalog_name}`.`{schema_name}` TO `{app_spn_uuid}`",
+    ]:
+        run_sql(grant)
+else:
+    print("WARNING: Could not resolve app SPN -- skipping UC grants")
+    print("  Grant manually after the app SPN is available.")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Summary
+
+# COMMAND ----------
 
 print("=" * 60)
 print(f"App Name:               {app_name}")
 print(f"App URL:                Open in Workspace > Apps > {app_name}")
-print(f"Service Principal ID:   {sp_id}")
-print(f"SPN Client ID (UUID):   {sp_client_id}")
+print(f"Service Principal ID:   {app_spn_id}")
+print(f"SPN Client ID (UUID):   {app_spn_uuid}")
 print(f"Source staged at:       {deploy_dir}")
 print(f"Wheel version:          {deploy_version}")
 print(f"Wheel in Volume:        {volume_path}/{whl_name}")
-print(f"Jobs wired:             {len(job_resources)}")
+print(f"Jobs bound:             {len(bound_job_ids)}")
 print(f"Jobs missing:           {len(missing_jobs)}")
 print("=" * 60)
-if missing_jobs:
-    print("\nNext: Run Notebook 02 with mode=setup to create jobs and redeploy the app.")
+if not app_spn_uuid:
+    print("\nWARNING: SPN not resolved -- grant job ACLs and UC perms manually.")
