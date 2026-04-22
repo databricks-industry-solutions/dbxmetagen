@@ -423,13 +423,23 @@ if [ "$SKIP_VS" = false ]; then
         echo "VS endpoint creation requested"
     fi
 
-    # Grant CAN_USE on the VS endpoint to the app service principal
+    # Grant CAN_USE on the VS endpoint to the app service principal.
+    # The Permissions API requires the numeric endpoint_id, not the name.
     if [ -n "${SPN_APP_ID}" ]; then
-        echo "  Granting CAN_USE on VS endpoint '${VS_ENDPOINT}' to app SPN (${SPN_APP_ID})..."
-        databricks api patch "/api/2.0/permissions/vector-search-endpoints/${VS_ENDPOINT}" \
-            --profile "$PROFILE" \
-            --json "{\"access_control_list\": [{\"service_principal_name\": \"${SPN_APP_ID}\", \"permission_level\": \"CAN_USE\"}]}" 2>&1 || \
-            echo "  WARNING: Could not grant VS endpoint permissions (may need manual grant)"
+        VS_EP_ID=$(echo "${VS_CHECK}" | python3 -c "import sys,json; print(json.load(sys.stdin).get('id',''))" 2>/dev/null || echo "")
+        if [ -z "${VS_EP_ID}" ]; then
+            VS_FRESH=$(databricks api get "/api/2.0/vector-search/endpoints/${VS_ENDPOINT}" --profile "$PROFILE" 2>&1) || VS_FRESH=""
+            VS_EP_ID=$(echo "${VS_FRESH}" | python3 -c "import sys,json; print(json.load(sys.stdin).get('id',''))" 2>/dev/null || echo "")
+        fi
+        if [ -n "${VS_EP_ID}" ]; then
+            echo "  Granting CAN_USE on VS endpoint '${VS_ENDPOINT}' (id=${VS_EP_ID}) to app SPN (${SPN_APP_ID})..."
+            databricks api patch "/api/2.0/permissions/vector-search-endpoints/${VS_EP_ID}" \
+                --profile "$PROFILE" \
+                --json "{\"access_control_list\": [{\"service_principal_name\": \"${SPN_APP_ID}\", \"permission_level\": \"CAN_USE\"}]}" 2>&1 || \
+                echo "  WARNING: Could not grant VS endpoint permissions (may need manual grant)"
+        else
+            echo "  WARNING: Could not resolve VS endpoint numeric ID -- grant CAN_USE manually"
+        fi
     fi
 else
     echo ""
