@@ -55,7 +55,7 @@ assert os.path.exists(f"{repo_path}/pyproject.toml"), (
 # COMMAND ----------
 
 from databricks.sdk import WorkspaceClient
-from databricks.sdk.service import jobs, compute
+from databricks.sdk.service import jobs, compute, vectorsearch as vs_svc
 from databricks.sdk.errors import NotFound
 
 w = WorkspaceClient()
@@ -537,7 +537,7 @@ if mode == "setup":
     except NotFound:
         print(f"Creating VS endpoint '{vs_endpoint_name}'...")
         w.vector_search_endpoints.create_endpoint(
-            name=vs_endpoint_name, endpoint_type="STANDARD")
+            name=vs_endpoint_name, endpoint_type=vs_svc.EndpointType.STANDARD)
         print("Creation requested -- may take a few minutes to come online")
 
 # COMMAND ----------
