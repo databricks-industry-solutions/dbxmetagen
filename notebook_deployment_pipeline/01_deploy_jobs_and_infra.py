@@ -146,6 +146,9 @@ def make_cluster(key, min_w=2, max_w=4, num_w=None):
         spec.autoscale = compute.AutoScale(min_workers=min_w, max_workers=max_w)
     return jobs.JobCluster(job_cluster_key=key, new_cluster=spec)
 
+def _nb_path(notebook):
+    return f"{notebooks_path}/{notebook.removesuffix('.py')}"
+
 def nb_task(key, notebook, params, deps=None, extra_libs=None):
     libs = [whl_lib] + (extra_libs or [])
     return jobs.Task(
@@ -153,7 +156,7 @@ def nb_task(key, notebook, params, deps=None, extra_libs=None):
         max_retries=1,
         job_cluster_key="cluster",
         notebook_task=jobs.NotebookTask(
-            notebook_path=f"{notebooks_path}/{notebook}",
+            notebook_path=_nb_path(notebook),
             base_parameters=params),
         libraries=libs,
         depends_on=[jobs.TaskDependency(task_key=d) for d in (deps or [])])
@@ -164,7 +167,7 @@ def serverless_task(key, notebook, params, deps=None):
         max_retries=1,
         environment_key="default",
         notebook_task=jobs.NotebookTask(
-            notebook_path=f"{notebooks_path}/{notebook}",
+            notebook_path=_nb_path(notebook),
             base_parameters=params),
         depends_on=[jobs.TaskDependency(task_key=d) for d in (deps or [])])
 
