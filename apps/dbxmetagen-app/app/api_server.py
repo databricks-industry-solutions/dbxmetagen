@@ -99,7 +99,11 @@ def _get_effective_client() -> WorkspaceClient:
         token = _obo_token_var.get(None)
         if token:
             from databricks.sdk.core import Config
-            cfg = Config(host=get_workspace_client().config.host, token=token)
+            cfg = Config(
+                host=get_workspace_client().config.host,
+                token=token,
+                auth_type="pat",
+            )
             return WorkspaceClient(config=cfg)
     return get_workspace_client()
 

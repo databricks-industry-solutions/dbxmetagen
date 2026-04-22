@@ -235,6 +235,15 @@ else
     echo "  Not inside a git repo -- skipping requirements.txt regeneration (using existing file)"
 fi
 
+cleanup() {
+    [ -f pyproject.toml.deploy_bak ] && mv pyproject.toml.deploy_bak pyproject.toml
+    rm -rf apps/dbxmetagen-app/app/configurations
+    rm -f apps/dbxmetagen-app/app/dbxmetagen-*.whl
+    rm -f apps/dbxmetagen-app/app/requirements.txt
+    rm -f resources/apps/dbxmetagen_app.yml
+}
+trap cleanup EXIT
+
 # --- Build Python package ---
 echo ""
 echo "=== Building Python package ==="
@@ -242,9 +251,9 @@ rm -rf dist/
 # Stamp version with deploy timestamp so the app platform always reinstalls.
 # DAB does this for job artifacts via dynamic_version; the app gets a direct
 # file copy whose version must differ each deploy to avoid pip skipping it.
-BASE_VERSION=$(python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+BASE_VERSION=$(python3 -c "import tomllib; v=tomllib.load(open('pyproject.toml','rb'))['project']['version']; print(v.split('+')[0])")
 DEPLOY_VERSION="${BASE_VERSION}+$(date +%s)"
-sed -i.deploy_bak "s/^version = \"${BASE_VERSION}\"/version = \"${DEPLOY_VERSION}\"/" pyproject.toml
+sed -i.deploy_bak "s/^version = \"${BASE_VERSION}[^\"]*\"/version = \"${DEPLOY_VERSION}\"/" pyproject.toml
 uv build -q
 mv pyproject.toml.deploy_bak pyproject.toml
 echo "Python package built: $(ls dist/*.whl)"
@@ -259,13 +268,6 @@ sed "s|__WHL_NAME__|${WHL_NAME}|" \
     apps/dbxmetagen-app/app/requirements.txt.template \
     > apps/dbxmetagen-app/app/requirements.txt
 echo "Wheel: ${WHL_NAME}"
-cleanup() {
-    rm -rf apps/dbxmetagen-app/app/configurations
-    rm -f apps/dbxmetagen-app/app/dbxmetagen-*.whl
-    rm -f apps/dbxmetagen-app/app/requirements.txt
-    rm -f resources/apps/dbxmetagen_app.yml
-}
-trap cleanup EXIT
 
 # --- Validate and deploy ---
 echo ""
