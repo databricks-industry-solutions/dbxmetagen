@@ -419,7 +419,7 @@ phik==0.12.5
     # via ydata-profiling
 phonenumbers==8.13.55
     # via presidio-analyzer
-pillow==12.1.1
+pillow==12.2.0
     # via
     #   imagehash
     #   matplotlib
