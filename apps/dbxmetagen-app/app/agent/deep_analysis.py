@@ -158,6 +158,34 @@ findings that lack evidence. If the question cannot be answered, state this clea
 Be direct and avoid repetition."""
 
 
+DATA_ANALYSIS_PROMPT = f"""You are a data analyst on Databricks.
+{SAFETY_PROMPT_BLOCK}
+
+Given a user's data question and the SQL query + results from an executed query,
+provide a concise, data-driven answer.
+
+## Response Format
+
+### Answer
+Direct answer to the question with key numbers/findings. Cite specific values
+from the results. Use a markdown table for multi-row results when helpful.
+Keep this to 2-5 sentences plus any table.
+
+### SQL
+Include the executed query verbatim from the evidence (in a sql code block).
+
+### Notes
+Optional. 1-3 bullets on caveats, alternative definitions, or follow-up ideas.
+Omit this section entirely if there is nothing non-obvious to add.
+
+RULES:
+- Lead with the data answer. The user asked a data question, not a metadata question.
+- Do NOT echo raw JSON from intermediate steps.
+- Do NOT generate empty sections or section headers with no content.
+- Do NOT repeat the question back to the user.
+- Be concise. If the data answers the question completely, say so briefly."""
+
+
 # ---------------------------------------------------------------------------
 # Deterministic tool calling
 # ---------------------------------------------------------------------------
@@ -338,10 +366,19 @@ user question, produce a single read-only SELECT query that answers the question
 Rules:
 - Databricks SQL dialect (ANSI SQL with Spark extensions).
 - SELECT only. Never use INSERT/UPDATE/DELETE/DROP/CREATE/ALTER/TRUNCATE.
-- Always include LIMIT (max 200 rows).
 - Use fully-qualified table names (catalog.schema.table).
 - If the question cannot be answered from the given schemas, return SKIP.
 - Output ONLY the SQL query, nothing else. No markdown fencing, no explanation.
+
+Query quality:
+- When a "Relationships (FK Predictions)" section is provided, JOIN dimension/reference
+  tables to enrich results with descriptive context (names, categories, phases, etc.).
+- Use CTEs (WITH clauses) to separate aggregation logic from enrichment joins.
+- For division, use try_divide(numerator, NULLIF(denominator, 0)) -- Databricks-native
+  safe division that returns NULL instead of erroring on zero.
+- When a column comment identifies a primary key, prefer COUNT(pk_column) over COUNT(*).
+- For GROUP BY / aggregate queries, omit LIMIT unless the result set could be very large.
+  For detail/row-level queries, include LIMIT 200.
 {SAFETY_PROMPT_BLOCK}"""
 
 
@@ -379,17 +416,18 @@ def _sql_writer(question: str, schema_context: str, cancel: threading.Event) -> 
 # ---------------------------------------------------------------------------
 
 def _fetch_table_schemas(table_names: list[str]) -> str:
-    """Fetch column schemas for discovered tables from column_knowledge_base."""
+    """Fetch column schemas, table descriptions, and FK predictions for discovered tables."""
     if not table_names:
         return ""
     tn_list = ", ".join(f"'{_sql_escape(t)}'" for t in table_names[:8])
-    sql = (
+
+    col_sql = (
         f"SELECT table_name, column_name, data_type, comment "
         f"FROM {CATALOG}.{SCHEMA}.column_knowledge_base "
         f"WHERE table_name IN ({tn_list}) "
         f"ORDER BY table_name, column_name LIMIT 200"
     )
-    tr = _safe_tool_call(execute_metadata_sql, {"query": sql}, TOOL_TIMEOUT,
+    tr = _safe_tool_call(execute_metadata_sql, {"query": col_sql}, TOOL_TIMEOUT,
                          "fetch_schemas", 0, 0)
     if not tr.success or not tr.data:
         return ""
@@ -407,6 +445,45 @@ def _fetch_table_schemas(table_names: list[str]) -> str:
         dt = row.get("data_type", "")
         cmt = row.get("comment", "")
         lines.append(f"  {col} {dt}" + (f"  -- {cmt}" if cmt else ""))
+
+    # Table descriptions -- helps the SQL writer understand dimension vs fact tables
+    tbl_sql = (
+        f"SELECT table_name, comment "
+        f"FROM {CATALOG}.{SCHEMA}.table_knowledge_base "
+        f"WHERE table_name IN ({tn_list}) LIMIT 10"
+    )
+    tbl_tr = _safe_tool_call(execute_metadata_sql, {"query": tbl_sql}, TOOL_TIMEOUT,
+                             "fetch_table_descriptions", 0, 0)
+    if tbl_tr.success and tbl_tr.data:
+        tbl_data = _parse_json(tbl_tr.data)
+        if tbl_data and tbl_data.get("rows"):
+            lines.append("\n## Table Descriptions")
+            for row in tbl_data["rows"]:
+                cmt = row.get("comment", "")
+                if cmt:
+                    lines.append(f"  {row.get('table_name', '')}: {cmt[:300]}")
+
+    # FK predictions -- gives the SQL writer join paths
+    fk_sql = (
+        f"SELECT src_table, src_column, dst_table, dst_column, final_confidence "
+        f"FROM {CATALOG}.{SCHEMA}.fk_predictions "
+        f"WHERE (src_table IN ({tn_list}) OR dst_table IN ({tn_list})) "
+        f"AND final_confidence >= 0.5 "
+        f"ORDER BY final_confidence DESC LIMIT 10"
+    )
+    fk_tr = _safe_tool_call(execute_metadata_sql, {"query": fk_sql}, TOOL_TIMEOUT,
+                            "fetch_fk_predictions", 0, 0)
+    if fk_tr.success and fk_tr.data:
+        fk_data = _parse_json(fk_tr.data)
+        if fk_data and fk_data.get("rows"):
+            lines.append("\n## Relationships (FK Predictions)")
+            for row in fk_data["rows"]:
+                lines.append(
+                    f"  {row.get('src_table','')}.{row.get('src_column','')}"
+                    f" -> {row.get('dst_table','')}.{row.get('dst_column','')}"
+                    f" (confidence: {row.get('final_confidence','')})"
+                )
+
     return "\n".join(lines)
 
 
@@ -947,7 +1024,7 @@ def _gather_graphrag(query: str, cancel: threading.Event,
         else:
             logger.info("[deep_analysis] Group B: SKIP (no tables)")
 
-    return "\n\n".join(parts), graph_data, tools_used, failed_sources, timing
+    return "\n\n".join(parts), graph_data, tools_used, failed_sources, timing, parts
 
 
 def _gather_baseline(query: str, cancel: threading.Event):
@@ -994,8 +1071,9 @@ def _run_pipeline(query: str, mode: str, cancel: threading.Event,
     mlflow_gather = get_mlflow()
     gather_cm = mlflow_gather.start_span(name="evidence_retrieval", span_type="RETRIEVER") if mlflow_gather else nullcontext()
     with gather_cm as gather_span:
+        raw_parts = []
         if mode == "graphrag":
-            context, graph_data, tools_used, failed_sources, timing = _gather_graphrag(
+            context, graph_data, tools_used, failed_sources, timing, raw_parts = _gather_graphrag(
                 query, cancel, session_id, intent_type=intent_type,
                 intent_domain=intent_domain)
         else:
@@ -1019,6 +1097,15 @@ def _run_pipeline(query: str, mode: str, cancel: threading.Event,
 
     if not context.strip():
         context = "No evidence could be gathered. The metadata catalog may be empty or inaccessible."
+
+    # For data questions with successful structured retrieval, filter to only SR + FK evidence
+    has_sr = any("structured_retrieval" in p for p in raw_parts)
+    use_data_prompt = intent_domain == "query" and has_sr and raw_parts
+    if use_data_prompt:
+        sr_parts = [p for p in raw_parts if "structured_retrieval" in p or "FK predictions" in p]
+        context = "\n\n".join(sr_parts)
+        logger.info("[deep_analysis] Data-question path: filtered to %d SR/FK parts (%.1fKB)",
+                    len(sr_parts), len(context) / 1024)
 
     # Append failed sources section so the LLM knows what's missing
     if failed_sources:
@@ -1046,7 +1133,12 @@ def _run_pipeline(query: str, mode: str, cancel: threading.Event,
             span.set_inputs({"query": query[:200], "context_kb": round(len(context) / 1024, 1)})
         token_usage: dict = {}
         try:
-            prompt = ANALYSIS_PROMPT if mode == "graphrag" else BASELINE_ANALYSIS_PROMPT
+            if use_data_prompt:
+                prompt = DATA_ANALYSIS_PROMPT
+            elif mode == "graphrag":
+                prompt = ANALYSIS_PROMPT
+            else:
+                prompt = BASELINE_ANALYSIS_PROMPT
             resp = _llm().invoke([
                 SystemMessage(content=prompt),
                 HumanMessage(content=f"User question: {query}\n\nGathered Evidence:\n{context}"),
