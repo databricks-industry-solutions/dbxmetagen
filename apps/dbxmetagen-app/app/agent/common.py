@@ -58,8 +58,8 @@ def get_llm() -> ChatDatabricks:
 def check_select_only(query: str) -> Optional[str]:
     """Return an error string if the query is not a safe read-only statement, else None."""
     q_upper = query.strip().upper()
-    if not q_upper.startswith("SELECT") and not q_upper.startswith("DESCRIBE") and not q_upper.startswith("SHOW"):
-        return "Only SELECT, DESCRIBE, and SHOW queries are allowed."
+    if not q_upper.startswith(("SELECT", "DESCRIBE", "SHOW", "WITH")):
+        return "Only SELECT, DESCRIBE, SHOW, and WITH (CTE) queries are allowed."
     for kw in _DML_KEYWORDS:
         if re.search(rf'\b{kw}\b', q_upper):
             return f"Blocked keyword: {kw}"

@@ -520,11 +520,14 @@ async def _analyze_inner(state: DeepAnalysisState) -> dict:
     timing["total"] = round(sum(v for v in timing.values() if isinstance(v, (int, float))), 3)
     logger.info("[graph] LLM analysis: %.1fs, tokens=%s", elapsed, token_usage)
 
-    return {
+    result = {
         "answer": sanitize_output(answer),
         "timing": timing,
         "mode": mode,
     }
+    if state.get("_use_data_prompt"):
+        result["graph_data"] = {}
+    return result
 
 
 # ---------------------------------------------------------------------------

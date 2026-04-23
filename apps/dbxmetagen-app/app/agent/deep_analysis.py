@@ -167,12 +167,10 @@ provide a concise, data-driven answer.
 ## Response Format
 
 ### Answer
-Direct answer to the question with key numbers/findings. Cite specific values
-from the results. Use a markdown table for multi-row results when helpful.
-Keep this to 2-5 sentences plus any table.
-
-### SQL
-Include the executed query verbatim from the evidence (in a sql code block).
+Direct answer with key numbers. Include a markdown table showing the top/key
+results (first 10-20 rows or the most relevant subset). Keep prose to 2-5
+sentences that interpret the data. The SQL query is already shown in the
+evidence above -- do NOT repeat it.
 
 ### Notes
 Optional. 1-3 bullets on caveats, alternative definitions, or follow-up ideas.
@@ -181,6 +179,7 @@ Omit this section entirely if there is nothing non-obvious to add.
 RULES:
 - Lead with the data answer. The user asked a data question, not a metadata question.
 - Do NOT echo raw JSON from intermediate steps.
+- Do NOT repeat the SQL query -- it is already visible to the user.
 - Do NOT generate empty sections or section headers with no content.
 - Do NOT repeat the question back to the user.
 - Be concise. If the data answers the question completely, say so briefly."""
@@ -373,7 +372,10 @@ Rules:
 Query quality:
 - When a "Relationships (FK Predictions)" section is provided, JOIN dimension/reference
   tables to enrich results with descriptive context (names, categories, phases, etc.).
-- Use CTEs (WITH clauses) to separate aggregation logic from enrichment joins.
+- When joining multiple tables, use CTEs (WITH clauses) to separate aggregation from
+  enrichment. For simple single-table queries, a flat SELECT is preferred.
+- Include relevant context columns (identifiers, names, categories) so results are
+  self-explanatory without needing to look up codes in other tables.
 - For division, use try_divide(numerator, NULLIF(denominator, 0)) -- Databricks-native
   safe division that returns NULL instead of erroring on zero.
 - When a column comment identifies a primary key, prefer COUNT(pk_column) over COUNT(*).
@@ -487,6 +489,24 @@ def _fetch_table_schemas(table_names: list[str]) -> str:
     return "\n".join(lines)
 
 
+def _format_results_table(json_str: str, max_rows: int = 30) -> str:
+    """Convert execute_data_sql JSON output to a markdown table."""
+    data = _parse_json(json_str)
+    if not data or not data.get("columns") or not data.get("rows"):
+        return json_str
+    cols = data["columns"]
+    rows = data["rows"][:max_rows]
+    header = "| " + " | ".join(cols) + " |"
+    sep = "| " + " | ".join("---" for _ in cols) + " |"
+    lines = [header, sep]
+    for row in rows:
+        vals = [str(row.get(c, "")) for c in cols]
+        lines.append("| " + " | ".join(vals) + " |")
+    if data.get("row_count", 0) > max_rows:
+        lines.append(f"\n*({data['row_count']} total rows, showing first {max_rows})*")
+    return "\n".join(lines)
+
+
 def _structured_retrieval(question: str, table_names: list[str],
                           cancel: threading.Event, step_num: int, total_steps: int) -> ToolResult:
     """Structured retrieval subagent: schema lookup -> SQL writer -> execute (with 1 retry).
@@ -544,14 +564,16 @@ def _structured_retrieval(question: str, table_names: list[str],
                     sql = retry_sql
 
         elapsed = round(time.time() - t0, 1)
-        if not tr.success or not tr.data:
+        if not tr.success or not tr.data or (tr.data and "error" in tr.data.lower()):
             out = {"status": "exec_failed", "sql": sql[:300]}
             if span:
                 span.set_outputs(out)
             return ToolResult(success=False, data=None, error_type=tr.error_type or "exec_failed",
                               error_hint=f"SQL execution failed: {tr.error_hint}", elapsed_s=elapsed, label=label)
 
-        output = f"**Generated SQL:**\n```sql\n{sql}\n```\n\n**Results:**\n{tr.data}"
+        results_table = _format_results_table(tr.data)
+        row_ct = _parse_json(tr.data).get("row_count", "") if _parse_json(tr.data) else ""
+        output = f"**Generated SQL:**\n```sql\n{sql}\n```\n\n**Results ({row_ct} rows):**\n{results_table}"
         if span:
             span.set_outputs({"status": "ok", "sql": sql[:300], "result_len": len(output)})
         return ToolResult(success=True, data=output, elapsed_s=elapsed, label=label)
@@ -1191,7 +1213,7 @@ def _run_pipeline(query: str, mode: str, cancel: threading.Event,
         "steps": len(tools_used),
         "timing": timing,
     }
-    if graph_data and (graph_data.get("nodes") or graph_data.get("edges")):
+    if not use_data_prompt and graph_data and (graph_data.get("nodes") or graph_data.get("edges")):
         result["graph_data"] = graph_data
     return result
 
