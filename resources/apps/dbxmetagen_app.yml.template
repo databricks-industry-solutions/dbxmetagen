@@ -9,6 +9,8 @@ resources:
           sql_warehouse:
             id: ${var.warehouse_id}
             permission: CAN_USE
+        # vector_search_index is not yet supported in DAB YAML (UI-only resource).
+        # VS endpoint CAN_USE is granted via deploy.sh; index UC perms via schema grants.
         # - name: app_database
         #   database:
         #     database_name: ${var.lakebase_database_name}

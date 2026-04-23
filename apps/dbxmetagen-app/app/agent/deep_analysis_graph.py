@@ -30,7 +30,7 @@ from agent.metadata_tools import (
     expand_vs_hits, search_metadata, traverse_graph,
 )
 from agent.deep_analysis import (
-    ANALYSIS_PROMPT, BASELINE_ANALYSIS_PROMPT,
+    ANALYSIS_PROMPT, BASELINE_ANALYSIS_PROMPT, DATA_ANALYSIS_PROMPT,
     MODEL, TOOL_TIMEOUT, _llm,
     _build_baseline_queries, _build_relevance_sql,
     _discover_ontology_edge_types, _extract_keywords, _extract_node_ids,
@@ -78,6 +78,8 @@ class DeepAnalysisState(TypedDict, total=False):
     tool_calls: list[str]
     failed_sources: list[str]
     timing: dict
+    # assemble_context
+    _use_data_prompt: bool
     # assemble_context
     context: str
     # analyze
@@ -393,12 +395,26 @@ async def _gather_evidence_inner(state: DeepAnalysisState) -> dict:
 
 
 def assemble_context(state: DeepAnalysisState) -> dict:
-    """Sync node: concatenate evidence parts, apply budget truncation."""
+    """Sync node: concatenate evidence parts, apply budget truncation.
+
+    For data questions (domain=query) with successful structured retrieval,
+    filter to only SR + FK evidence so the analysis LLM stays focused.
+    """
     parts = state.get("evidence_parts", [])
     failed = state.get("failed_sources", [])
+    intent_domain = state.get("intent_domain")
     B = EvidenceBudget
 
-    context = "\n\n".join(parts) if parts else ""
+    has_sr = any("structured_retrieval" in p for p in parts)
+    use_data_prompt = intent_domain == "query" and has_sr
+
+    if use_data_prompt:
+        filtered = [p for p in parts if "structured_retrieval" in p or "FK predictions" in p]
+        context = "\n\n".join(filtered) if filtered else ""
+        logger.info("[graph] Data-question path: filtered to %d SR/FK parts", len(filtered))
+    else:
+        context = "\n\n".join(parts) if parts else ""
+
     if not context.strip():
         context = "No evidence could be gathered. The metadata catalog may be empty or inaccessible."
 
@@ -409,7 +425,7 @@ def assemble_context(state: DeepAnalysisState) -> dict:
         logger.warning("[graph] Context too large (%d chars), truncating to %d", len(context), B.TOTAL)
         context = context[:B.TOTAL] + f"\n...[context truncated from {len(context):,} to {B.TOTAL:,} chars]"
 
-    return {"context": context}
+    return {"context": context, "_use_data_prompt": use_data_prompt}
 
 
 async def analyze(state: DeepAnalysisState) -> dict:
@@ -433,7 +449,12 @@ async def _analyze_inner(state: DeepAnalysisState) -> dict:
 
     await _safe_progress({"stage": "analyzing", "message": "Generating analysis..."})
 
-    prompt = ANALYSIS_PROMPT if mode == "graphrag" else BASELINE_ANALYSIS_PROMPT
+    if state.get("_use_data_prompt"):
+        prompt = DATA_ANALYSIS_PROMPT
+    elif mode == "graphrag":
+        prompt = ANALYSIS_PROMPT
+    else:
+        prompt = BASELINE_ANALYSIS_PROMPT
 
     messages: list = [SystemMessage(content=prompt)]
     if history:
@@ -499,11 +520,14 @@ async def _analyze_inner(state: DeepAnalysisState) -> dict:
     timing["total"] = round(sum(v for v in timing.values() if isinstance(v, (int, float))), 3)
     logger.info("[graph] LLM analysis: %.1fs, tokens=%s", elapsed, token_usage)
 
-    return {
+    result = {
         "answer": sanitize_output(answer),
         "timing": timing,
         "mode": mode,
     }
+    if state.get("_use_data_prompt"):
+        result["graph_data"] = {}
+    return result
 
 
 # ---------------------------------------------------------------------------

@@ -5,6 +5,7 @@ knowledge-base tables, and convenience functions for table summaries
 and data quality lookups.
 """
 
+import concurrent.futures
 import json
 import logging
 import os
@@ -82,7 +83,6 @@ def _get_vs_index(index_name: str, _retry: bool = True):
         return _vs_indexes[index_name]
     if _vsc is None:
         _vsc = _build_vs_client()
-    import concurrent.futures
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
             idx = pool.submit(_vsc.get_index, endpoint_name=VS_ENDPOINT, index_name=index_name).result(timeout=15)
@@ -158,7 +158,6 @@ def search_metadata(query: str, doc_type_filter: Optional[str] = None, num_resul
             kwargs["filters"] = {"doc_type": doc_type_filter}
         kwargs["query_type"] = "HYBRID"
         # Run VS call with a timeout to prevent indefinite hangs
-        import concurrent.futures
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
             future = pool.submit(index.similarity_search, **kwargs)
             results = future.result(timeout=30)
@@ -184,8 +183,7 @@ def search_metadata(query: str, doc_type_filter: Optional[str] = None, num_resul
             _vs_indexes.pop(vs_index, None)
             try:
                 index = _get_vs_index(vs_index)
-                import concurrent.futures as _cf2
-                with _cf2.ThreadPoolExecutor(max_workers=1) as pool2:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool2:
                     results = pool2.submit(index.similarity_search, **kwargs).result(timeout=30)
                 matches = []
                 cols = results.get("manifest", {}).get("columns", [])

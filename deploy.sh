@@ -235,6 +235,15 @@ else
     echo "  Not inside a git repo -- skipping requirements.txt regeneration (using existing file)"
 fi
 
+cleanup() {
+    [ -f pyproject.toml.deploy_bak ] && mv pyproject.toml.deploy_bak pyproject.toml
+    rm -rf apps/dbxmetagen-app/app/configurations
+    rm -f apps/dbxmetagen-app/app/dbxmetagen-*.whl
+    rm -f apps/dbxmetagen-app/app/requirements.txt
+    rm -f resources/apps/dbxmetagen_app.yml
+}
+trap cleanup EXIT
+
 # --- Build Python package ---
 echo ""
 echo "=== Building Python package ==="
@@ -242,9 +251,9 @@ rm -rf dist/
 # Stamp version with deploy timestamp so the app platform always reinstalls.
 # DAB does this for job artifacts via dynamic_version; the app gets a direct
 # file copy whose version must differ each deploy to avoid pip skipping it.
-BASE_VERSION=$(python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+BASE_VERSION=$(python3 -c "import tomllib; v=tomllib.load(open('pyproject.toml','rb'))['project']['version']; print(v.split('+')[0])")
 DEPLOY_VERSION="${BASE_VERSION}+$(date +%s)"
-sed -i.deploy_bak "s/^version = \"${BASE_VERSION}\"/version = \"${DEPLOY_VERSION}\"/" pyproject.toml
+sed -i.deploy_bak "s/^version = \"${BASE_VERSION}[^\"]*\"/version = \"${DEPLOY_VERSION}\"/" pyproject.toml
 uv build -q
 mv pyproject.toml.deploy_bak pyproject.toml
 echo "Python package built: $(ls dist/*.whl)"
@@ -259,13 +268,6 @@ sed "s|__WHL_NAME__|${WHL_NAME}|" \
     apps/dbxmetagen-app/app/requirements.txt.template \
     > apps/dbxmetagen-app/app/requirements.txt
 echo "Wheel: ${WHL_NAME}"
-cleanup() {
-    rm -rf apps/dbxmetagen-app/app/configurations
-    rm -f apps/dbxmetagen-app/app/dbxmetagen-*.whl
-    rm -f apps/dbxmetagen-app/app/requirements.txt
-    rm -f resources/apps/dbxmetagen_app.yml
-}
-trap cleanup EXIT
 
 # --- Validate and deploy ---
 echo ""
@@ -419,6 +421,25 @@ if [ "$SKIP_VS" = false ]; then
         databricks api post /api/2.0/vector-search/endpoints --profile "$PROFILE" \
             --json "{\"name\": \"${VS_ENDPOINT}\", \"endpoint_type\": \"STANDARD\"}" 2>&1 || echo "  (may already exist)"
         echo "VS endpoint creation requested"
+    fi
+
+    # Grant CAN_USE on the VS endpoint to the app service principal.
+    # The Permissions API requires the numeric endpoint_id, not the name.
+    if [ -n "${SPN_APP_ID}" ]; then
+        VS_EP_ID=$(echo "${VS_CHECK}" | python3 -c "import sys,json; print(json.load(sys.stdin).get('id',''))" 2>/dev/null || echo "")
+        if [ -z "${VS_EP_ID}" ]; then
+            VS_FRESH=$(databricks api get "/api/2.0/vector-search/endpoints/${VS_ENDPOINT}" --profile "$PROFILE" 2>&1) || VS_FRESH=""
+            VS_EP_ID=$(echo "${VS_FRESH}" | python3 -c "import sys,json; print(json.load(sys.stdin).get('id',''))" 2>/dev/null || echo "")
+        fi
+        if [ -n "${VS_EP_ID}" ]; then
+            echo "  Granting CAN_USE on VS endpoint '${VS_ENDPOINT}' (id=${VS_EP_ID}) to app SPN (${SPN_APP_ID})..."
+            databricks api patch "/api/2.0/permissions/vector-search-endpoints/${VS_EP_ID}" \
+                --profile "$PROFILE" \
+                --json "{\"access_control_list\": [{\"service_principal_name\": \"${SPN_APP_ID}\", \"permission_level\": \"CAN_USE\"}]}" 2>&1 || \
+                echo "  WARNING: Could not grant VS endpoint permissions (may need manual grant)"
+        else
+            echo "  WARNING: Could not resolve VS endpoint numeric ID -- grant CAN_USE manually"
+        fi
     fi
 else
     echo ""
