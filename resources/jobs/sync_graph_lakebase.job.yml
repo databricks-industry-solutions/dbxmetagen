@@ -18,9 +18,26 @@ resources:
           default: ${var.schema_name}
         - name: lakebase_catalog
           default: ${var.lakebase_catalog}
+        - name: lakebase_instance_name
+          default: ${var.lakebase_instance_name}
+
+      job_clusters:
+        - job_cluster_key: lakebase_cluster
+          new_cluster:
+            policy_id: ${var.policy_id}
+            spark_version: 16.3.x-scala2.12
+            node_type_id: ${var.node_type}
+            data_security_mode: SINGLE_USER
+            num_workers: 0
+            spark_conf:
+              spark.databricks.cluster.profile: singleNode
+              spark.master: "local[*]"
+            custom_tags:
+              ResourceClass: SingleNode
 
       tasks:
         - task_key: sync_to_lakebase
+          job_cluster_key: lakebase_cluster
           max_retries: 1
           notebook_task:
             notebook_path: ../../notebooks/sync_graph_to_lakebase.py
@@ -28,3 +45,4 @@ resources:
               source_catalog: "{{job.parameters.catalog_name}}"
               source_schema: "{{job.parameters.schema_name}}"
               lakebase_catalog: "{{job.parameters.lakebase_catalog}}"
+              lakebase_instance_name: "{{job.parameters.lakebase_instance_name}}"
