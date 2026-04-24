@@ -21,13 +21,13 @@ from langchain_core.callbacks import adispatch_custom_event
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.graph import END, START, StateGraph
 
-from agent.common import ToolResult, vs_cache_get, vs_cache_put
+from agent.common import ToolResult, vs_cache_get, vs_cache_put, plan_cache_get, plan_cache_put
 from agent.guardrails import EvidenceBudget, sanitize_output
 from agent.intent import classify_and_contextualize_untraced
 from agent.metadata_tools import (
     CATALOG, SCHEMA,
     execute_baseline_sql, execute_metadata_sql,
-    expand_vs_hits, search_metadata, traverse_graph,
+    expand_vs_hits, profile_key_columns, search_metadata, traverse_graph,
 )
 from agent.deep_analysis import (
     ANALYSIS_PROMPT, BASELINE_ANALYSIS_PROMPT, DATA_ANALYSIS_PROMPT,
@@ -70,6 +70,8 @@ class DeepAnalysisState(TypedDict, total=False):
     # classify_intent
     intent_type: str
     intent_domain: str
+    complexity: str
+    comparison_intent: bool
     effective_query: str
     meta_answer: str
     # gather_evidence
@@ -104,12 +106,16 @@ def classify_intent(state: DeepAnalysisState) -> dict:
         return {
             "intent_type": result.intent_type,
             "intent_domain": result.domain or "general",
+            "complexity": result.complexity,
+            "comparison_intent": result.comparison_intent,
             "effective_query": result.context_summary,
             "meta_answer": result.meta_answer or "I can help you analyze your data catalog metadata.",
         }
     return {
         "intent_type": result.intent_type,
         "intent_domain": result.domain or "general",
+        "complexity": result.complexity,
+        "comparison_intent": result.comparison_intent,
         "effective_query": result.context_summary,
         "meta_answer": "",
     }
@@ -139,13 +145,198 @@ def quick_answer(state: DeepAnalysisState) -> dict:
 def _should_continue(state: DeepAnalysisState) -> str:
     if state.get("intent_type") in ("irrelevant", "meta"):
         return "quick_answer"
+    c = state.get("complexity", "moderate")
+    if c == "simple":
+        return "gather_vs_only"
+    if c == "moderate":
+        return "gather_vs_expand"
     return "gather_evidence"
 
 
-# -- Gather: GraphRAG ---
+# -- Lightweight gather paths (simple / moderate) ---
+
+_NUM_RESULTS_BY_COMPLEXITY = {"simple": 3, "moderate": 5, "complex": 10}
+_DEFAULT_EDGE_TYPES = ["references", "contains"]
+
+
+async def _gather_vs_only(query: str, session_id: Optional[str], intent_type: str,
+                          intent_domain: Optional[str] = None, num_results: int = 3):
+    """VS + metadata SQL only. No graph traversal, no _plan_retrieval LLM call."""
+    parts: list[str] = []
+    tools_used: list[str] = []
+    failed: list[ToolResult] = []
+    timing: dict = {}
+    B = EvidenceBudget
+
+    def collect(tr: ToolResult, source_label: str, limit: int):
+        if tr.success and tr.data:
+            tools_used.append(tr.label.split("(")[0].strip())
+            parts.append(f"### Source: {source_label}\n{_truncate_part(tr.data, limit)}")
+        elif not tr.success:
+            failed.append(tr)
+
+    await _safe_progress({"stage": "gathering", "message": "Searching knowledge base..."})
+    t0 = time.time()
+    vs_tr = None
+    if session_id:
+        cached = vs_cache_get(session_id, intent_type=intent_type)
+        if cached:
+            vs_tr = ToolResult(success=True, data=cached, label="search_metadata (cached)")
+    if vs_tr is None:
+        vs_tr = await asyncio.to_thread(
+            _safe_tool_call, search_metadata, {"query": query, "num_results": num_results},
+            TOOL_TIMEOUT, "search_metadata", 1, 3,
+        )
+        if vs_tr.success and vs_tr.data and session_id:
+            vs_cache_put(session_id, query, vs_tr.data)
+    collect(vs_tr, "search_metadata (vector search)", B.VS_RESULTS)
+    timing["vector_search"] = round(time.time() - t0, 3)
+
+    table_names = _extract_table_names(vs_tr.data if vs_tr.success else None)
+
+    # FK predictions SQL
+    if table_names:
+        await _safe_progress({"stage": "gathering", "message": "Fetching related metadata..."})
+        t0 = time.time()
+        fk_tr = await asyncio.to_thread(
+            _safe_tool_call, execute_metadata_sql,
+            {"query": _build_relevance_sql(table_names)}, TOOL_TIMEOUT,
+            "execute_metadata_sql (FK predictions)", 2, 3,
+        )
+        collect(fk_tr, "execute_metadata_sql (FK predictions)", B.FK_PREDICTIONS)
+        timing["fk_sql"] = round(time.time() - t0, 3)
+
+    # Profiling for data queries
+    if table_names and intent_domain == "query":
+        from agent.deep_analysis import _pick_profiling_columns
+        prof_cols = await asyncio.to_thread(_pick_profiling_columns, table_names[:1])
+        if prof_cols:
+            tbl, cols = prof_cols[0]
+            prof_tr = await asyncio.to_thread(
+                _safe_tool_call, profile_key_columns,
+                {"table_fqn": tbl, "columns": cols}, TOOL_TIMEOUT,
+                "profile_key_columns", 3, 3,
+            )
+            if prof_tr.success and prof_tr.data:
+                tools_used.append("profile_key_columns")
+                parts.append(f"### Source: profile_key_columns (live data distribution)\n"
+                             f"{_truncate_part(prof_tr.data, B.PROFILING)}")
+            elif not prof_tr.success:
+                failed.append(prof_tr)
+
+    return parts, {}, tools_used, failed, timing
+
+
+async def _gather_vs_expand(query: str, session_id: Optional[str], intent_type: str,
+                            intent_domain: Optional[str] = None, num_results: int = 5,
+                            comparison_intent: bool = False):
+    """VS + 1-hop expand + FK SQL. No BFS traversal, no _plan_retrieval LLM call."""
+    parts: list[str] = []
+    tools_used: list[str] = []
+    graph_data: dict = {}
+    failed: list[ToolResult] = []
+    timing: dict = {}
+    B = EvidenceBudget
+
+    def collect(tr: ToolResult, source_label: str, limit: int):
+        if tr.success and tr.data:
+            tools_used.append(tr.label.split("(")[0].strip())
+            parts.append(f"### Source: {source_label}\n{_truncate_part(tr.data, limit)}")
+        elif not tr.success:
+            failed.append(tr)
+
+    await _safe_progress({"stage": "gathering", "message": "Searching knowledge base..."})
+    t0 = time.time()
+    vs_tr = None
+    if session_id:
+        cached = vs_cache_get(session_id, intent_type=intent_type)
+        if cached:
+            vs_tr = ToolResult(success=True, data=cached, label="search_metadata (cached)")
+    if vs_tr is None:
+        vs_tr = await asyncio.to_thread(
+            _safe_tool_call, search_metadata, {"query": query, "num_results": num_results},
+            TOOL_TIMEOUT, "search_metadata", 1, 5,
+        )
+        if vs_tr.success and vs_tr.data and session_id:
+            vs_cache_put(session_id, query, vs_tr.data)
+    collect(vs_tr, "search_metadata (vector search)", B.VS_RESULTS)
+    timing["vector_search"] = round(time.time() - t0, 3)
+
+    node_ids = _extract_node_ids(vs_tr.data if vs_tr.success else None)
+    table_names = _extract_table_names(vs_tr.data if vs_tr.success else None)
+
+    # 1-hop expand (no BFS traverse)
+    await _safe_progress({"stage": "gathering", "message": "Expanding graph connections..."})
+    t0 = time.time()
+    if node_ids:
+        exp_tr = await asyncio.to_thread(
+            _safe_tool_call, expand_vs_hits,
+            {"node_ids": node_ids[:5], "edge_types": _DEFAULT_EDGE_TYPES},
+            TOOL_TIMEOUT, "expand_vs_hits", 2, 5,
+        )
+        collect(exp_tr, "expand_vs_hits (graph expansion)", B.GRAPH_EXPANSION)
+    timing["graph_expand"] = round(time.time() - t0, 3)
+
+    # FK + profiling + structured retrieval in parallel
+    await _safe_progress({"stage": "gathering", "message": "Fetching related metadata..."})
+    t0 = time.time()
+    if table_names:
+        cancel = _make_cancel()
+        fk_coro = asyncio.to_thread(
+            _safe_tool_call, execute_metadata_sql,
+            {"query": _build_relevance_sql(table_names)}, TOOL_TIMEOUT,
+            "execute_metadata_sql (FK predictions)", 3, 5,
+        )
+
+        prof_coro = None
+        if intent_domain == "query":
+            from agent.deep_analysis import _pick_profiling_columns
+            prof_cols = await asyncio.to_thread(_pick_profiling_columns, table_names[:1])
+            if prof_cols:
+                tbl, cols = prof_cols[0]
+                prof_coro = asyncio.to_thread(
+                    _safe_tool_call, profile_key_columns,
+                    {"table_fqn": tbl, "columns": cols}, TOOL_TIMEOUT,
+                    "profile_key_columns", 4, 5,
+                )
+
+        fk_tr = await fk_coro
+        collect(fk_tr, "execute_metadata_sql (FK predictions)", B.FK_PREDICTIONS)
+
+        profiling_summary = ""
+        if prof_coro:
+            prof_tr = await prof_coro
+            if prof_tr.success and prof_tr.data:
+                tools_used.append("profile_key_columns")
+                profiling_summary = _truncate_part(prof_tr.data, B.PROFILING)
+                parts.append(f"### Source: profile_key_columns (live data distribution)\n{profiling_summary}")
+            elif not prof_tr.success:
+                failed.append(prof_tr)
+
+        # Structured retrieval if query-domain
+        if intent_domain == "query":
+            from agent.deep_analysis import _structured_retrieval
+            sr_tr = await asyncio.to_thread(_structured_retrieval, query, table_names, cancel, 5, 5,
+                                            profiling_context=profiling_summary,
+                                            comparison_intent=comparison_intent)
+            if sr_tr.success and sr_tr.data:
+                tools_used.extend(["sql_writer", "execute_data_sql"])
+                parts.append(f"### Source: structured_retrieval (LLM-generated SQL on data)\n"
+                             f"{_truncate_part(sr_tr.data, B.STRUCTURED_RETRIEVAL)}")
+            elif not sr_tr.success:
+                failed.append(sr_tr)
+
+    timing["fk_and_structured"] = round(time.time() - t0, 3)
+
+    return parts, graph_data, tools_used, failed, timing
+
+
+# -- Gather: GraphRAG (complex) ---
 
 async def _gather_graphrag(query: str, session_id: Optional[str], intent_type: str,
-                           intent_domain: Optional[str] = None):
+                           intent_domain: Optional[str] = None,
+                           max_hops: int = 3, max_traversal_nodes: int = 3,
+                           num_results: int = 10, comparison_intent: bool = False):
     """Async GraphRAG gathering with progress events and asyncio parallelism.
 
     asyncio.to_thread() automatically propagates contextvars, so all sync
@@ -180,7 +371,13 @@ async def _gather_graphrag(query: str, session_id: Optional[str], intent_type: s
     await _safe_progress({"stage": "gathering", "message": "Step 1/7: Planning retrieval strategy..."})
     t0 = time.time()
     cancel = _make_cancel()
-    plan = await asyncio.to_thread(_plan_retrieval, query, cancel, ontology_ets)
+    cached_plan = plan_cache_get(session_id or "", intent_domain or "general") if session_id else None
+    if cached_plan:
+        plan = cached_plan
+    else:
+        plan = await asyncio.to_thread(_plan_retrieval, query, cancel, ontology_ets)
+        if session_id:
+            plan_cache_put(session_id, intent_domain or "general", plan)
     timing["plan_retrieval"] = round(time.time() - t0, 3)
 
     planned_edge_types = plan["edge_types"]
@@ -196,7 +393,8 @@ async def _gather_graphrag(query: str, session_id: Optional[str], intent_type: s
             vs_tr = ToolResult(success=True, data=cached, label="search_metadata (cached)")
     if vs_tr is None:
         vs_tr = await asyncio.to_thread(
-            _safe_tool_call, search_metadata, {"query": query}, TOOL_TIMEOUT, "search_metadata", 2, 7,
+            _safe_tool_call, search_metadata, {"query": query, "num_results": num_results},
+            TOOL_TIMEOUT, "search_metadata", 2, 7,
         )
         if vs_tr.success and vs_tr.data and session_id:
             vs_cache_put(session_id, query, vs_tr.data)
@@ -245,10 +443,10 @@ async def _gather_graphrag(query: str, session_id: Optional[str], intent_type: s
         trav_coros = [
             asyncio.to_thread(
                 _safe_tool_call, traverse_graph,
-                {"start_node": nid, "max_hops": 3, "edge_types": traverse_et_list, "direction": planned_direction},
+                {"start_node": nid, "max_hops": max_hops, "edge_types": traverse_et_list, "direction": planned_direction},
                 TOOL_TIMEOUT, f"traverse_graph({nid.split('.')[-1]})", 4 + i, 7,
             )
-            for i, nid in enumerate(trav_nodes[:3])
+            for i, nid in enumerate(trav_nodes[:max_traversal_nodes])
         ]
         results = await asyncio.gather(expand_coro, *trav_coros, return_exceptions=True)
 
@@ -279,22 +477,47 @@ async def _gather_graphrag(query: str, session_id: Optional[str], intent_type: s
         except Exception as e:
             logger.debug("SPARQL ontology query failed (non-critical): %s", e)
 
-    # Steps 6-7: parallel FK + structured retrieval
-    await _safe_progress({"stage": "gathering", "message": "Steps 6-7/7: Structured data retrieval..."})
+    # Steps 6-8: parallel FK + profiling + structured retrieval
+    await _safe_progress({"stage": "gathering", "message": "Steps 6-8/8: Structured data retrieval..."})
     t0 = time.time()
     if table_names:
         fk_coro = asyncio.to_thread(
             _safe_tool_call, execute_metadata_sql,
             {"query": _build_relevance_sql(table_names)}, TOOL_TIMEOUT,
-            "execute_metadata_sql (FK predictions)", 6, 7,
+            "execute_metadata_sql (FK predictions)", 6, 8,
         )
-        sr_coro = None
+        # Profile key columns on the first discovered table for cohort detection
+        prof_coro = None
         if plan.get("requires_structured_retrieval", True):
-            from agent.deep_analysis import _structured_retrieval
-            sr_coro = asyncio.to_thread(_structured_retrieval, query, table_names, cancel, 7, 7)
+            from agent.deep_analysis import _pick_profiling_columns
+            prof_cols = await asyncio.to_thread(_pick_profiling_columns, table_names[:1])
+            if prof_cols:
+                tbl, cols = prof_cols[0]
+                prof_coro = asyncio.to_thread(
+                    _safe_tool_call, profile_key_columns,
+                    {"table_fqn": tbl, "columns": cols}, TOOL_TIMEOUT,
+                    "profile_key_columns", 7, 8,
+                )
 
         fk_tr = await fk_coro
         collect(fk_tr, "execute_metadata_sql (FK predictions)", B.FK_PREDICTIONS)
+
+        profiling_summary = ""
+        if prof_coro:
+            prof_tr = await prof_coro
+            if prof_tr.success and prof_tr.data:
+                tools_used.append("profile_key_columns")
+                profiling_summary = _truncate_part(prof_tr.data, B.PROFILING)
+                parts.append(f"### Source: profile_key_columns (live data distribution)\n{profiling_summary}")
+            elif not prof_tr.success:
+                failed.append(prof_tr)
+
+        sr_coro = None
+        if plan.get("requires_structured_retrieval", True):
+            from agent.deep_analysis import _structured_retrieval
+            sr_coro = asyncio.to_thread(_structured_retrieval, query, table_names, cancel, 8, 8,
+                                        profiling_context=profiling_summary,
+                                        comparison_intent=comparison_intent)
 
         if sr_coro:
             sr_tr = await sr_coro
@@ -361,30 +584,11 @@ async def gather_evidence(state: DeepAnalysisState) -> dict:
         AUTOLOG_ACTIVE.reset(token)
 
 
-async def _gather_evidence_inner(state: DeepAnalysisState) -> dict:
-    query = state["effective_query"]
-    mode = state.get("mode", "graphrag")
-    session_id = state.get("session_id")
-    intent_type = state.get("intent_type", "new_question")
-    intent_domain = state.get("intent_domain")
-
-    await _safe_progress({"stage": "gathering", "message": "Gathering evidence from metadata catalog..."})
-
-    t0 = time.time()
-    if mode == "graphrag":
-        parts, graph_data, tools_used, failed_sources, timing = await _gather_graphrag(
-            query, session_id, intent_type, intent_domain=intent_domain)
-    else:
-        parts, tools_used, failed_sources, timing = await _gather_baseline(query)
-        graph_data = {}
-
-    timing["gather_total"] = round(time.time() - t0, 3)
-
+def _format_gather_result(parts, graph_data, tools_used, failed_sources, timing):
     failed_strs = []
     for fs in failed_sources:
         hint = f" -- {fs.error_hint}" if fs.error_hint else ""
         failed_strs.append(f"{fs.label}: {fs.error_type or 'failed'}{hint}")
-
     return {
         "evidence_parts": parts,
         "graph_data": graph_data,
@@ -394,8 +598,122 @@ async def _gather_evidence_inner(state: DeepAnalysisState) -> dict:
     }
 
 
+async def _gather_evidence_inner(state: DeepAnalysisState) -> dict:
+    """Full GraphRAG or baseline gathering -- reserved for complex queries."""
+    query = state["effective_query"]
+    mode = state.get("mode", "graphrag")
+    session_id = state.get("session_id")
+    intent_type = state.get("intent_type", "new_question")
+    intent_domain = state.get("intent_domain")
+
+    c = state.get("complexity", "complex")
+    comparison_intent = state.get("comparison_intent", False)
+    max_hops = {"simple": 2, "moderate": 3, "complex": 5}.get(c, 5)
+    max_traversal_nodes = {"simple": 1, "moderate": 3, "complex": 5}.get(c, 5)
+    num_results = _NUM_RESULTS_BY_COMPLEXITY.get(c, 10)
+
+    await _safe_progress({"stage": "gathering", "message": "Gathering evidence from metadata catalog..."})
+
+    t0 = time.time()
+    if mode == "graphrag":
+        parts, graph_data, tools_used, failed_sources, timing = await _gather_graphrag(
+            query, session_id, intent_type, intent_domain=intent_domain,
+            max_hops=max_hops, max_traversal_nodes=max_traversal_nodes,
+            num_results=num_results, comparison_intent=comparison_intent)
+    else:
+        parts, tools_used, failed_sources, timing = await _gather_baseline(query)
+        graph_data = {}
+
+    timing["gather_total"] = round(time.time() - t0, 3)
+    return _format_gather_result(parts, graph_data, tools_used, failed_sources, timing)
+
+
+async def _gather_vs_only_inner(state: DeepAnalysisState) -> dict:
+    """Simple queries: VS + metadata SQL only."""
+    query = state["effective_query"]
+    session_id = state.get("session_id")
+    intent_type = state.get("intent_type", "new_question")
+    intent_domain = state.get("intent_domain")
+    num_results = _NUM_RESULTS_BY_COMPLEXITY.get("simple", 3)
+
+    t0 = time.time()
+    parts, graph_data, tools_used, failed_sources, timing = await _gather_vs_only(
+        query, session_id, intent_type, intent_domain=intent_domain,
+        num_results=num_results)
+    timing["gather_total"] = round(time.time() - t0, 3)
+    return _format_gather_result(parts, graph_data, tools_used, failed_sources, timing)
+
+
+async def _gather_vs_expand_inner(state: DeepAnalysisState) -> dict:
+    """Moderate queries: VS + 1-hop expand + FK."""
+    query = state["effective_query"]
+    session_id = state.get("session_id")
+    intent_type = state.get("intent_type", "new_question")
+    intent_domain = state.get("intent_domain")
+    comparison_intent = state.get("comparison_intent", False)
+    num_results = _NUM_RESULTS_BY_COMPLEXITY.get("moderate", 5)
+
+    t0 = time.time()
+    parts, graph_data, tools_used, failed_sources, timing = await _gather_vs_expand(
+        query, session_id, intent_type, intent_domain=intent_domain,
+        num_results=num_results, comparison_intent=comparison_intent)
+    timing["gather_total"] = round(time.time() - t0, 3)
+    return _format_gather_result(parts, graph_data, tools_used, failed_sources, timing)
+
+
+async def gather_vs_only_node(state: DeepAnalysisState) -> dict:
+    """Graph node wrapper for simple queries."""
+    token = AUTOLOG_ACTIVE.set(True)
+    try:
+        return await _gather_vs_only_inner(state)
+    finally:
+        AUTOLOG_ACTIVE.reset(token)
+
+
+async def gather_vs_expand_node(state: DeepAnalysisState) -> dict:
+    """Graph node wrapper for moderate queries."""
+    token = AUTOLOG_ACTIVE.set(True)
+    try:
+        return await _gather_vs_expand_inner(state)
+    finally:
+        AUTOLOG_ACTIVE.reset(token)
+
+
+def _score_part(part: str, query_tokens: set[str]) -> float:
+    """Keyword-overlap relevance score for an evidence part against the query."""
+    if not query_tokens:
+        return 0.0
+    part_tokens = set(part.lower().split())
+    if not part_tokens:
+        return 0.0
+    return len(query_tokens & part_tokens) / len(query_tokens)
+
+
+def _rank_and_assemble(parts: list[str], query: str, budget: int) -> str:
+    """Sort evidence parts by relevance score, greedily fill budget."""
+    if not parts:
+        return ""
+    query_tokens = set(query.lower().split())
+    scored = sorted(
+        [(p, _score_part(p, query_tokens)) for p in parts],
+        key=lambda x: x[1],
+        reverse=True,
+    )
+    assembled = []
+    total_len = 0
+    for part_text, _score in scored:
+        if total_len + len(part_text) > budget:
+            remaining = budget - total_len
+            if remaining > 200:
+                assembled.append(part_text[:remaining])
+            break
+        assembled.append(part_text)
+        total_len += len(part_text)
+    return "\n\n".join(assembled)
+
+
 def assemble_context(state: DeepAnalysisState) -> dict:
-    """Sync node: concatenate evidence parts, apply budget truncation.
+    """Sync node: re-rank evidence parts by relevance, apply budget truncation.
 
     For data questions (domain=query) with successful structured retrieval,
     filter to only SR + FK evidence so the analysis LLM stays focused.
@@ -403,17 +721,19 @@ def assemble_context(state: DeepAnalysisState) -> dict:
     parts = state.get("evidence_parts", [])
     failed = state.get("failed_sources", [])
     intent_domain = state.get("intent_domain")
+    query = state.get("effective_query", "")
     B = EvidenceBudget
 
     has_sr = any("structured_retrieval" in p for p in parts)
     use_data_prompt = intent_domain == "query" and has_sr
 
     if use_data_prompt:
-        filtered = [p for p in parts if "structured_retrieval" in p or "FK predictions" in p]
-        context = "\n\n".join(filtered) if filtered else ""
-        logger.info("[graph] Data-question path: filtered to %d SR/FK parts", len(filtered))
+        filtered = [p for p in parts if "structured_retrieval" in p or "FK predictions" in p
+                     or "profile_key_columns" in p]
+        context = _rank_and_assemble(filtered, query, B.TOTAL)
+        logger.info("[graph] Data-question path: ranked %d SR/FK/profiling parts", len(filtered))
     else:
-        context = "\n\n".join(parts) if parts else ""
+        context = _rank_and_assemble(parts, query, B.TOTAL)
 
     if not context.strip():
         context = "No evidence could be gathered. The metadata catalog may be empty or inaccessible."
@@ -422,8 +742,7 @@ def assemble_context(state: DeepAnalysisState) -> dict:
         context += "\n\n### Failed Evidence Sources\n" + "\n".join(f"- {f}" for f in failed)
 
     if len(context) > B.TOTAL:
-        logger.warning("[graph] Context too large (%d chars), truncating to %d", len(context), B.TOTAL)
-        context = context[:B.TOTAL] + f"\n...[context truncated from {len(context):,} to {B.TOTAL:,} chars]"
+        context = context[:B.TOTAL] + f"\n...[context truncated to {B.TOTAL:,} chars]"
 
     return {"context": context, "_use_data_prompt": use_data_prompt}
 
@@ -540,6 +859,8 @@ def build_deep_analysis_graph() -> StateGraph:
 
     graph.add_node("classify_intent", classify_intent)
     graph.add_node("quick_answer", quick_answer)
+    graph.add_node("gather_vs_only", gather_vs_only_node)
+    graph.add_node("gather_vs_expand", gather_vs_expand_node)
     graph.add_node("gather_evidence", gather_evidence)
     graph.add_node("assemble_context", assemble_context)
     graph.add_node("analyze", analyze)
@@ -547,9 +868,13 @@ def build_deep_analysis_graph() -> StateGraph:
     graph.add_edge(START, "classify_intent")
     graph.add_conditional_edges("classify_intent", _should_continue, {
         "quick_answer": "quick_answer",
+        "gather_vs_only": "gather_vs_only",
+        "gather_vs_expand": "gather_vs_expand",
         "gather_evidence": "gather_evidence",
     })
     graph.add_edge("quick_answer", END)
+    graph.add_edge("gather_vs_only", "assemble_context")
+    graph.add_edge("gather_vs_expand", "assemble_context")
     graph.add_edge("gather_evidence", "assemble_context")
     graph.add_edge("assemble_context", "analyze")
     graph.add_edge("analyze", END)
@@ -575,7 +900,9 @@ def get_graph():
 
 NODE_STAGE_MAP = {
     "classify_intent": {"stage": "classifying_intent", "message": "Understanding your question..."},
-    "gather_evidence": {"stage": "gathering", "message": "Gathering evidence from metadata catalog..."},
+    "gather_vs_only": {"stage": "gathering", "message": "Quick lookup from knowledge base..."},
+    "gather_vs_expand": {"stage": "gathering", "message": "Searching knowledge base with expansion..."},
+    "gather_evidence": {"stage": "gathering", "message": "Full evidence gathering from metadata catalog..."},
     "assemble_context": {"stage": "assembling", "message": "Assembling evidence..."},
     "analyze": {"stage": "analyzing", "message": "Generating analysis (streaming)..."},
     "quick_answer": {"stage": "responding", "message": "Responding..."},

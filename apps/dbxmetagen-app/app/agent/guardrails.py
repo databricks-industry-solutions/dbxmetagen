@@ -29,6 +29,7 @@ class EvidenceBudget:
     GRAPH_TRAVERSAL = 20_000
     FK_PREDICTIONS = 15_000
     STRUCTURED_RETRIEVAL = 20_000
+    PROFILING = 10_000
     TOTAL = 120_000
 
 # ---------------------------------------------------------------------------

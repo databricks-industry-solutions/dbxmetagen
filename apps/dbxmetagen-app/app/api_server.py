@@ -279,11 +279,19 @@ def multi_hop_traverse(
     edge_type: str | None = None,
     edge_types: list[str] | None = None,
     direction: str = "outgoing",
+    quality_threshold: float = 0.0,
+    fan_out_limit: int = 0,
 ) -> dict:
-    """Iterative BFS-style graph traversal with support for edge_type filtering.
+    """Iterative best-first graph traversal with edge_type filtering.
 
     Accepts either a single ``edge_type`` or a list of ``edge_types`` (OR filter).
     If both are provided, ``edge_types`` takes precedence.
+
+    ``quality_threshold`` filters edges by weight and nodes by quality_score
+    (NULL values are treated as high-quality).
+
+    ``fan_out_limit`` caps neighbors per hop via ORDER BY weight DESC LIMIT N.
+    Set to 0 for unlimited (original BFS behavior).
     """
     _validate_filter(relationship, "relationship")
     if edge_types:
@@ -304,7 +312,13 @@ def multi_hop_traverse(
         filters.append(f"e.edge_type IN ({et_list})")
     elif edge_type:
         filters.append(f"e.edge_type = {_safe_sql_str(edge_type)}")
+    if quality_threshold > 0:
+        filters.append(f"COALESCE(e.weight, 1.0) >= {quality_threshold}")
     filter_clause = (" AND " + " AND ".join(filters)) if filters else ""
+
+    order_limit = ""
+    if fan_out_limit > 0:
+        order_limit = f" ORDER BY e.weight DESC NULLS LAST LIMIT {fan_out_limit}"
 
     cols = (
         "e.src, e.dst, e.relationship, e.edge_type, e.weight, "
@@ -316,13 +330,13 @@ def multi_hop_traverse(
             break
         id_list = ", ".join(_safe_sql_str(n) for n in frontier)
         if direction == "outgoing":
-            q = f"SELECT {cols} FROM public.graph_edges e WHERE e.src IN ({id_list}) {filter_clause}"
+            q = f"SELECT {cols} FROM public.graph_edges e WHERE e.src IN ({id_list}) {filter_clause}{order_limit}"
         elif direction == "incoming":
-            q = f"SELECT {cols} FROM public.graph_edges e WHERE e.dst IN ({id_list}) {filter_clause}"
+            q = f"SELECT {cols} FROM public.graph_edges e WHERE e.dst IN ({id_list}) {filter_clause}{order_limit}"
         else:
             q = (
                 f"SELECT {cols} FROM public.graph_edges e "
-                f"WHERE (e.src IN ({id_list}) OR e.dst IN ({id_list})) {filter_clause}"
+                f"WHERE (e.src IN ({id_list}) OR e.dst IN ({id_list})) {filter_clause}{order_limit}"
             )
         rows = graph_query(q)
         next_frontier = set()
@@ -333,15 +347,21 @@ def multi_hop_traverse(
                 if nid and nid not in visited_nodes:
                     next_frontier.add(nid)
         frontier = next_frontier - set(visited_nodes.keys()) - {start_node}
-        # Fetch node details for new frontier
+        # Fetch node details for new frontier, with optional quality filter
         if frontier:
             nid_list = ", ".join(_safe_sql_str(n) for n in frontier)
+            quality_filter = ""
+            if quality_threshold > 0:
+                quality_filter = f" AND COALESCE(quality_score, 1.0) >= {quality_threshold}"
             nq = (
                 f"SELECT id, node_type, domain, display_name, short_description, "
-                f"sensitivity, status FROM public.graph_nodes WHERE id IN ({nid_list})"
+                f"sensitivity, status FROM public.graph_nodes WHERE id IN ({nid_list}){quality_filter}"
             )
+            accepted_ids = set()
             for nr in graph_query(nq):
                 visited_nodes[nr["id"]] = nr
+                accepted_ids.add(nr["id"])
+            frontier = frontier & accepted_ids
 
     # Also fetch start node details
     start_rows = graph_query(
@@ -8904,6 +8924,7 @@ async def agent_deep_stream(req: AgentChatRequest, request: Request):
         deadline = t_start + _DEEP_STREAM_TIMEOUT
         answer_tokens: list[str] = []
         root_run_id: str | None = None
+        in_analyze_node = False
 
         try:
             async for event in graph.astream_events(initial_state, version="v2"):
@@ -8928,11 +8949,13 @@ async def agent_deep_stream(req: AgentChatRequest, request: Request):
 
                 if kind == "on_chain_start" and name in NODE_STAGE_MAP:
                     yield _sse("stage", NODE_STAGE_MAP[name])
+                    if name == "analyze":
+                        in_analyze_node = True
 
                 elif kind == "on_custom_event" and name == "progress":
                     yield _sse("progress", event["data"])
 
-                elif kind == "on_chat_model_stream":
+                elif kind == "on_chat_model_stream" and in_analyze_node:
                     chunk = event.get("data", {}).get("chunk")
                     if chunk:
                         content = getattr(chunk, "content", "") or ""
