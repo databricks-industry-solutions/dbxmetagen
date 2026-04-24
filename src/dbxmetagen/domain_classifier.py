@@ -488,6 +488,8 @@ def _build_user_message(table_name: str, table_metadata: Dict[str, Any]) -> str:
         msg += f"\nTable Constraints:\n{table_metadata['table_constraints']}\n"
     if table_metadata.get("column_metadata"):
         msg += f"\nColumn Metadata:\n{json.dumps(table_metadata['column_metadata'], indent=2)}\n"
+    if table_metadata.get("customer_context"):
+        msg += f"\nCustomer Context:\n{table_metadata['customer_context']}\n"
     return msg
 
 

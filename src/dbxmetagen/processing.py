@@ -1959,6 +1959,8 @@ _lineage_cache: Dict[str, Optional[Dict[str, Any]]] = {}
 
 _column_types_cache: Dict[str, Dict[str, str]] = {}
 
+_customer_context_cache: List[Dict[str, Any]] = []
+
 
 def _mark_lineage_unavailable(exc: Exception) -> None:
     """Log once and suppress further system.access.table_lineage attempts."""
@@ -2166,6 +2168,8 @@ def get_domain_classification(
         prompt.enrich_from_knowledge_base()
     if getattr(config, "use_ontology_context", False):
         prompt.enrich_from_ontology()
+    if getattr(config, "use_customer_context", False) and _customer_context_cache:
+        prompt.enrich_from_customer_context(_customer_context_cache)
     prompt_messages = prompt.create_prompt_template()
 
     # Check prompt length to avoid excessive token usage
@@ -2191,6 +2195,9 @@ def get_domain_classification(
 
     if getattr(config, "include_lineage", False):
         table_metadata["lineage"] = prompt.prompt_content.get("lineage")
+
+    if getattr(config, "use_customer_context", False):
+        table_metadata["customer_context"] = prompt.prompt_content.get("customer_context")
 
     # Classify the table
     classification_result = classify_table_domain(
@@ -2317,6 +2324,8 @@ def get_generated_metadata_data_aware(
             prompt.enrich_from_knowledge_base()
         if getattr(config, "use_ontology_context", False):
             prompt.enrich_from_ontology()
+        if getattr(config, "use_customer_context", False) and _customer_context_cache:
+            prompt.enrich_from_customer_context(_customer_context_cache)
         prompt_messages = prompt.create_prompt_template()
         check_token_length_against_num_words(prompt_messages, config)
         if config.registered_model_name != "default":
@@ -3278,6 +3287,11 @@ _OPTIONAL_TABLE_DEPS = {
         "warn_flags": [],
         "created_by": "Build Knowledge Base step",
     },
+    "customer_context": {
+        "disable_flags": ["use_customer_context"],
+        "warn_flags": [],
+        "created_by": "Build Customer Context step or App UI",
+    },
 }
 
 
@@ -3347,6 +3361,13 @@ def generate_and_persist_metadata(config: Any) -> None:
     global _column_types_cache
     if config.table_names and len(config.table_names) > 1:
         _column_types_cache = prefetch_column_types(spark, config.table_names)
+
+    global _customer_context_cache
+    if getattr(config, "use_customer_context", False):
+        from dbxmetagen.customer_context import prefetch_customer_context
+        _customer_context_cache = prefetch_customer_context(
+            spark, config.catalog_name, config.schema_name
+        )
 
     skipped_tables = []
 

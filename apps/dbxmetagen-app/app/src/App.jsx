@@ -7,10 +7,11 @@ import EntityBrowser from './components/EntityBrowser'
 import SemanticLayer from './components/SemanticLayer'
 import GenieBuilder from './components/GenieBuilder'
 import AnalystChat from './components/AnalystChat'
+import CustomerContext from './components/CustomerContext'
 const COMPONENTS = {
   agent: AgentChat, coverage: Coverage, jobs: BatchJobs, metadata: MetadataReview,
   entities: EntityBrowser, semantic: SemanticLayer, genie: GenieBuilder,
-  analyst: AnalystChat,
+  analyst: AnalystChat, context: CustomerContext,
 }
 
 const NAV_CAT_COLORS = {
@@ -20,7 +21,7 @@ const NAV_CAT_COLORS = {
 }
 
 const TAB_ACCENT = {
-  jobs: 'border-t-dbx-lava', semantic: 'border-t-dbx-lava', genie: 'border-t-dbx-lava',
+  jobs: 'border-t-dbx-lava', semantic: 'border-t-dbx-lava', genie: 'border-t-dbx-lava', context: 'border-t-dbx-lava',
   metadata: 'border-t-dbx-sky', coverage: 'border-t-dbx-sky', entities: 'border-t-dbx-sky',
   agent: 'border-t-dbx-teal',
 }
@@ -32,6 +33,7 @@ const NAV_STRUCTURE = [
       { id: 'jobs',     label: 'Generate Metadata', desc: 'Descriptions, sensitivity, domains, ontology, FK predictions, and metrics' },
       { id: 'semantic', label: 'Define Metrics', desc: 'Define metric views and KPIs' },
       { id: 'genie',   label: 'Build Genie Space', desc: 'Build natural-language SQL spaces' },
+      { id: 'context', label: 'Customer Context', desc: 'Add domain knowledge to enrich LLM prompts' },
     ],
   },
   {

@@ -1,0 +1,70 @@
+# Example customer context for a ClinicalTrials.gov data lakehouse.
+# Replace catalog/schema names with your actual Unity Catalog paths.
+
+contexts:
+  - scope: "clinical_data"
+    scope_type: "catalog"
+    context_label: "Clinical trials catalog"
+    context_text: |
+      This catalog contains clinical trial data sourced from ClinicalTrials.gov
+      (the U.S. National Library of Medicine registry). Data is refreshed weekly
+      via batch ingestion. NCT Number (e.g. NCT03456789) is the universal trial
+      identifier across all tables. Sponsor names may appear as both the
+      organization and lead_sponsor fields. All date columns use ISO 8601 format
+      and are stored in UTC.
+
+  - scope: "clinical_data.trials"
+    scope_type: "schema"
+    context_label: "Core trials schema"
+    context_text: |
+      The trials schema contains the core registry data: study protocols,
+      enrollment status, interventions, outcomes, and eligibility criteria.
+      Tables follow the ClinicalTrials.gov XML schema structure. The studies
+      table is the central fact table; most other tables join via nct_id. Status
+      fields use the NLM controlled vocabulary (e.g. Recruiting, Completed,
+      Terminated, Withdrawn). Phase values follow FDA phase definitions (Phase 1,
+      Phase 1/Phase 2, Phase 2, Phase 3, Phase 4, N/A for observational).
+
+  - scope: "clinical_data.trials.studies"
+    scope_type: "table"
+    context_label: "Studies table"
+    context_text: |
+      Central study registration table. Each row is one clinical trial. nct_id
+      is the primary key. brief_title is the public-facing name, official_title
+      is the formal protocol name. overall_status tracks current recruitment
+      state. study_type distinguishes Interventional from Observational.
+      enrollment is the target participant count, enrollment_type indicates
+      Actual vs Anticipated. The why_stopped column is only populated for
+      Terminated or Withdrawn trials.
+
+  - scope: "clinical_data.trials.interventions"
+    scope_type: "table"
+    context_label: "Interventions table"
+    context_text: |
+      One row per intervention arm per trial. intervention_type uses NLM
+      controlled vocabulary: Drug, Biological, Device, Procedure, Radiation,
+      Behavioral, Dietary Supplement, Genetic, Combination Product, Diagnostic
+      Test, Other. intervention_name is the specific drug or treatment name.
+      arm_group_label links to the arms table. A single trial may have multiple
+      intervention rows for combination therapies.
+
+  - scope: "clinical_data.trials.dim_*"
+    scope_type: "pattern"
+    context_label: "Dimension tables"
+    context_text: |
+      Dimension tables follow SCD Type 1 (overwrite). They are reference lookups
+      derived from the NLM controlled vocabulary. Each has a surrogate key
+      column ending in _sk and a natural key matching the source enum value.
+      These are refreshed only when the NLM vocabulary changes.
+
+  - scope: "clinical_data.outcomes"
+    scope_type: "schema"
+    context_label: "Outcomes schema"
+    context_text: |
+      The outcomes schema contains reported results from completed trials. Tables
+      include primary_outcomes, secondary_outcomes, adverse_events, and
+      participant_flow. Data is only available for trials that have posted
+      results (roughly 40% of completed trials). outcome_measure columns contain
+      free-text descriptions from investigators. p_value and ci_lower/ci_upper
+      columns may be null when not reported. Units vary by measure and are stored
+      in the units column, not standardized.

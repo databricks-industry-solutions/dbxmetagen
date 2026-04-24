@@ -16,8 +16,9 @@
 - **Ontology discovery**: Business entity extraction and validation against standard ontologies (FHIR, OMOP, etc.)
 - **FK prediction**: AI-assisted foreign key relationship discovery using column similarity and LLM judgment
 - **Semantic layer**: Auto-generated metric views and Genie space creation from knowledge base
+- **Customer context**: Inject domain-specific knowledge into prompts, scoped by catalog/schema/table/pattern
 - **Metadata review**: Interactive review, edit, and apply workflow for generated metadata
-- **Web dashboard**: FastAPI + React app with 8 tabs covering the full metadata lifecycle
+- **Web dashboard**: FastAPI + React app with 9 tabs covering the full metadata lifecycle
 
 > **Note:** This project recently migrated from Poetry to [uv](https://docs.astral.sh/uv/) for dependency management. If you have an existing clone that used Poetry, remove any old `poetry.lock` and virtual environments, then run `uv sync` to set up a fresh environment.
 

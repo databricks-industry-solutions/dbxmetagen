@@ -58,6 +58,7 @@ Most important settings in `variables.yml`:
 | tag_none_fields | Tag non-sensitive columns | true |
 | allow_manual_override | Enable CSV overrides | true |
 | override_csv_path | Override CSV path | metadata_overrides.csv |
+| use_customer_context | Enrich prompts with customer context | false |
 | acro_content | Acronym dictionary | {"DBX":"Databricks"} |
 | table_names_source | Table list source | csv_file_path |
 | source_file_path | Table list file | table_names.csv |
@@ -66,6 +67,69 @@ Most important settings in `variables.yml`:
 | format_catalog | Format catalog variable | false |
 
 See `variables.yml` for complete descriptions and additional advanced options.
+
+## Prompt Enrichment
+
+These features inject additional context into the LLM prompt alongside table metadata and sample data. Each is independently toggleable and requires a prerequisite step to have run first.
+
+| Variable | What it does | Prerequisite |
+|----------|-------------|--------------|
+| `use_kb_comments` | Fill empty UC comments with knowledge base descriptions | Build Knowledge Base step |
+| `use_ontology_context` | Add entity type classification as a hint | Ontology Discovery step |
+| `include_profiling_context` | Inject column profiling stats (distinct count, null rate, min/max) | Profiling step |
+| `include_constraint_context` | Inject PK/FK constraint roles | Extended Metadata step |
+| `include_lineage` | Append upstream/downstream table lineage | Extended Metadata step (or live system tables) |
+| `use_customer_context` | Inject customer-provided domain knowledge scoped by catalog/schema/table | Customer Context table (seed from YAML or app) |
+
+All flags default to `false` except `include_lineage` (defaults `true`). If the prerequisite table doesn't exist, the flag is automatically disabled for that run with a warning.
+
+### Customer Context
+
+Customer context lets you inject domain-specific knowledge into LLM prompts so that generated descriptions, PI classifications, and domain predictions reflect your organization's terminology and conventions. Context is scoped hierarchically -- one entry at the schema level enriches every table in that schema.
+
+**Scope types:**
+
+| scope_type | scope format | matches |
+|---|---|---|
+| `catalog` | `my_catalog` | All tables in the catalog |
+| `schema` | `my_catalog.my_schema` | All tables in the schema |
+| `table` | `my_catalog.my_schema.my_table` | One specific table |
+| `pattern` | `my_catalog.my_schema.dim_*` | Tables matching the glob pattern |
+
+When multiple scopes match, they are concatenated from broadest to most specific. Total injected context is capped at **500 words** per table.
+
+**Setup:**
+
+1. Create YAML files in `configurations/customer_context/`:
+
+   ```yaml
+   contexts:
+     - scope: "prod_healthcare.claims"
+       scope_type: "schema"
+       context_label: "Claims schema"
+       context_text: |
+         This schema contains healthcare claims data sourced from our Cerner EHR
+         integration. The MRN (medical record number) is the primary patient
+         identifier across all tables. Date fields use UTC.
+   ```
+
+2. Seed the Delta table by running the `build_customer_context` notebook, or manage entries directly in the app (Design > Customer Context).
+
+3. Enable in your job configuration:
+
+   ```yaml
+   use_customer_context: true
+   ```
+
+**Performance:** The entire `customer_context` table is loaded once per run (1 SQL query). Per-table scope resolution is pure Python string matching against the cached rows -- zero SQL overhead per table, making it the lowest-cost enricher in the pipeline.
+
+**App UI:** The Customer Context page (Design > Customer Context) provides:
+- Create, edit, and soft-delete context entries with a live word counter
+- Upload YAML files to bulk-import entries
+- Filter by scope type (catalog, schema, table, pattern)
+- Resolve preview -- enter any table name and see exactly what context would be injected
+
+**Example:** A ClinicalTrials.gov example is included at `configurations/customer_context/example_clinical_trials.yaml` with entries for catalog, schema, table, and pattern scopes covering NCT identifiers, NLM controlled vocabularies, and dimension table conventions.
 
 ## Privacy Controls
 

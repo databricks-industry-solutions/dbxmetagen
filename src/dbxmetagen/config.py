@@ -119,6 +119,7 @@ class MetadataConfig:
             "use_kb_comments",
             "include_profiling_context",
             "include_constraint_context",
+            "use_customer_context",
             "max_ai_candidates",
             "rule_score_min_for_ai",
             "max_candidates_per_table_pair",
@@ -210,6 +211,9 @@ class MetadataConfig:
         )
         self.use_ontology_context = _parse_bool(
             getattr(self, "use_ontology_context", False)
+        )
+        self.use_customer_context = _parse_bool(
+            getattr(self, "use_customer_context", False)
         )
         self.include_lineage = _parse_bool(getattr(self, "include_lineage", True))
         self.include_deterministic_pi = _parse_bool(

@@ -9492,6 +9492,186 @@ async def impact_chat(req: dict):
     return result
 
 
+# --- Customer Context ---
+
+
+class CustomerContextRequest(BaseModel):
+    scope: str
+    scope_type: str
+    context_text: str
+    context_label: str = ""
+    priority: int = 0
+
+
+_CC_TABLE = "customer_context"
+_CC_VALID_TYPES = {"catalog", "schema", "table", "pattern"}
+_CC_MAX_WORDS = 500
+
+
+def _ensure_customer_context_table():
+    execute_sql(f"""
+        CREATE TABLE IF NOT EXISTS {fq(_CC_TABLE)} (
+            context_id    STRING NOT NULL,
+            scope         STRING NOT NULL,
+            scope_type    STRING NOT NULL,
+            context_text  STRING NOT NULL,
+            context_label STRING,
+            priority      INT,
+            active        BOOLEAN,
+            created_by    STRING,
+            created_at    TIMESTAMP,
+            updated_at    TIMESTAMP
+        ) USING DELTA
+    """, timeout=30)
+
+
+@app.get("/api/customer-context")
+def list_customer_context(scope_type: str = None):
+    """List all active customer context entries."""
+    _ensure_customer_context_table()
+    where = "WHERE active = TRUE"
+    if scope_type and scope_type in _CC_VALID_TYPES:
+        where += f" AND scope_type = '{scope_type}'"
+    rows = execute_sql(
+        f"SELECT context_id, scope, scope_type, context_text, context_label, "
+        f"priority, active, created_by, created_at, updated_at "
+        f"FROM {fq(_CC_TABLE)} {where} ORDER BY scope_type, scope"
+    )
+    for r in rows:
+        r["word_count"] = len((r.get("context_text") or "").split())
+    return rows
+
+
+@app.get("/api/customer-context/{context_id}")
+def get_customer_context(context_id: str):
+    if not _SAFE_IDENT_RE.match(context_id):
+        raise HTTPException(400, detail="Invalid context_id")
+    rows = execute_sql(
+        f"SELECT * FROM {fq(_CC_TABLE)} WHERE context_id = '{context_id}'"
+    )
+    if not rows:
+        raise HTTPException(404, detail="Context entry not found")
+    return rows[0]
+
+
+@app.post("/api/customer-context")
+def upsert_customer_context(req: CustomerContextRequest):
+    """Create or update a customer context entry."""
+    _ensure_customer_context_table()
+    if req.scope_type not in _CC_VALID_TYPES:
+        raise HTTPException(400, detail=f"scope_type must be one of {_CC_VALID_TYPES}")
+    if not req.scope.strip():
+        raise HTTPException(400, detail="scope must be non-empty")
+    words = req.context_text.split()
+    if len(words) > _CC_MAX_WORDS:
+        raise HTTPException(400, detail=f"context_text exceeds {_CC_MAX_WORDS} word limit ({len(words)} words)")
+    if not words:
+        raise HTTPException(400, detail="context_text must be non-empty")
+
+    import hashlib
+    from datetime import datetime as _dt
+    ctx_id = hashlib.sha256(req.scope.encode()).hexdigest()[:16]
+    now = _dt.utcnow().isoformat()
+    escaped_text = req.context_text.replace("'", "''")
+    escaped_label = req.context_label.replace("'", "''")
+
+    execute_sql(f"""
+        MERGE INTO {fq(_CC_TABLE)} AS tgt
+        USING (SELECT '{ctx_id}' AS context_id) AS src
+        ON tgt.context_id = src.context_id
+        WHEN MATCHED THEN UPDATE SET
+            scope = '{req.scope}', scope_type = '{req.scope_type}',
+            context_text = '{escaped_text}', context_label = '{escaped_label}',
+            priority = {req.priority}, active = TRUE, updated_at = '{now}'
+        WHEN NOT MATCHED THEN INSERT (
+            context_id, scope, scope_type, context_text, context_label,
+            priority, active, created_by, created_at, updated_at
+        ) VALUES (
+            '{ctx_id}', '{req.scope}', '{req.scope_type}',
+            '{escaped_text}', '{escaped_label}',
+            {req.priority}, TRUE, 'app', '{now}', '{now}'
+        )
+    """, timeout=30)
+    return {"context_id": ctx_id, "scope": req.scope, "word_count": len(words)}
+
+
+@app.delete("/api/customer-context/{context_id}")
+def delete_customer_context(context_id: str):
+    """Soft-delete a customer context entry."""
+    if not _SAFE_IDENT_RE.match(context_id):
+        raise HTTPException(400, detail="Invalid context_id")
+    from datetime import datetime as _dt
+    now = _dt.utcnow().isoformat()
+    execute_sql(
+        f"UPDATE {fq(_CC_TABLE)} SET active = FALSE, updated_at = '{now}' "
+        f"WHERE context_id = '{context_id}'"
+    )
+    return {"deleted": True, "context_id": context_id}
+
+
+@app.post("/api/customer-context/upload")
+def upload_customer_context_yaml(file: UploadFile):
+    """Upload a YAML file and insert/update all context entries."""
+    _ensure_customer_context_table()
+    import yaml as _yaml
+    content = file.file.read().decode("utf-8")
+    try:
+        data = _yaml.safe_load(content)
+    except Exception as exc:
+        raise HTTPException(400, detail=f"Invalid YAML: {exc}")
+    if not data or "contexts" not in data:
+        raise HTTPException(400, detail="YAML must contain a 'contexts' list")
+
+    results = []
+    for entry in data["contexts"]:
+        try:
+            req = CustomerContextRequest(**entry)
+            result = upsert_customer_context(req)
+            results.append(result)
+        except HTTPException as exc:
+            results.append({"error": exc.detail, "scope": entry.get("scope", "?")})
+        except Exception as exc:
+            results.append({"error": str(exc), "scope": entry.get("scope", "?")})
+    return {"uploaded": len(results), "results": results}
+
+
+@app.get("/api/customer-context/resolve/{full_table_name:path}")
+def resolve_customer_context_preview(full_table_name: str):
+    """Preview what context would be injected for a given table."""
+    _ensure_customer_context_table()
+    rows = execute_sql(
+        f"SELECT scope, scope_type, context_text, context_label, priority "
+        f"FROM {fq(_CC_TABLE)} WHERE active = TRUE"
+    )
+    from dbxmetagen.customer_context import resolve_customer_context
+    resolved = resolve_customer_context(rows, full_table_name)
+    return {
+        "full_table_name": full_table_name,
+        "resolved_context": resolved,
+        "word_count": len(resolved.split()) if resolved else 0,
+        "matching_scopes": [
+            r["scope"] for r in rows
+            if _matches_scope(r, full_table_name)
+        ],
+    }
+
+
+def _matches_scope(row: dict, full_table_name: str) -> bool:
+    """Check if a context row matches a table name (for preview display)."""
+    from fnmatch import fnmatch
+    st = row.get("scope_type", "")
+    scope = row.get("scope", "")
+    parts = full_table_name.split(".")
+    catalog = parts[0] if parts else ""
+    schema_scope = f"{parts[0]}.{parts[1]}" if len(parts) >= 2 else ""
+    return (
+        (st == "catalog" and scope == catalog)
+        or (st == "schema" and scope == schema_scope)
+        or (st == "table" and scope == full_table_name)
+        or (st == "pattern" and fnmatch(full_table_name, scope))
+    )
+
+
 # ---------------------------------------------------------------------------
 # Serve React static files (production build)
 # ---------------------------------------------------------------------------
