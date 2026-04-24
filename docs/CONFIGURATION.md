@@ -11,7 +11,7 @@ Most important settings in `variables.yml`:
 - `disable_medical_information_value`: Treat all medical data as PHI
 
 **Model & Performance:**
-- `model`: LLM endpoint (recommend `databricks-meta-llama-3-3-70b-instruct` or `databricks-claude-3-7-sonnet`)
+- `model`: LLM endpoint (recommend `databricks-claude-sonnet-4-6`)
 - `columns_per_call`: Columns per LLM call (5-10 recommended)
 - `temperature`: Model creativity (0.1 for consistency)
 - `max_tokens`: Maximum output length
@@ -40,7 +40,7 @@ Most important settings in `variables.yml`:
 | include_possible_data_fields_in_metadata | Include min/max (may leak PII) | true |
 | disable_medical_information_value | Treat medical data as PHI | true |
 | solo_medical_identifier | MRN classification (pii or phi) | pii |
-| model | LLM endpoint | databricks-meta-llama-3-3-70b-instruct |
+| model | LLM endpoint | databricks-claude-sonnet-4-6 |
 | temperature | Model temperature | 0.1 |
 | max_tokens | Maximum output tokens | 4096 |
 | max_prompt_length | Maximum prompt length | 4096 |

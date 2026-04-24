@@ -156,15 +156,22 @@ flowchart TB
     end
 
     subgraph ontology [Ontology Layer]
-        ONT_CFG[ontology_config.yaml]
+        ONT_CFG[ontology_bundles]
         ENT[ontology_entities]
-        MET[ontology_metrics stub]
+        OCP[ontology_column_properties]
+        ORL[ontology_relationships]
+        OCH[ontology_chunks]
+    end
+
+    subgraph vector [Vector Index]
+        VSI[metadata_vs_index]
     end
 
     subgraph app [Dashboard App]
         API[FastAPI Backend]
         UI[React Frontend]
         AGT[LangGraph GraphRAG Agent]
+        LB[Lakebase]
     end
 
     SYS --> EXT
@@ -186,10 +193,18 @@ flowchart TB
     NCA --> CM
 
     ONT_CFG --> ENT
+    ONT_CFG --> OCH
     GN --> ENT
+    ENT --> OCP
+    ENT --> ORL
 
-    GN --> API
-    GE --> API
+    GN --> VSI
+    OCH --> VSI
+
+    GN --> LB
+    GE --> LB
+    LB --> AGT
+    VSI --> AGT
     API --> AGT
     API --> UI
 ```
@@ -216,7 +231,8 @@ dbxmetagen has two phases:
 | **Knowledge Base** | `table_knowledge_base`, `column_knowledge_base`, `schema_knowledge_base`, `extended_metadata` | Aggregated metadata from LLM outputs and system tables |
 | **Profiling** | `profiling_snapshots`, `column_profiling_stats`, `data_quality_scores` | Statistical profiling and quality scoring |
 | **Graph** | `graph_nodes`, `graph_edges`, `node_cluster_assignments`, `clustering_metrics` | Graph analytics with embeddings, similarity edges, and K-means clustering |
-| **Ontology** | `ontology_entities`, `ontology_metrics` (stub) | Business entity discovery and validation |
+| **Ontology** | `ontology_entities`, `ontology_column_properties`, `ontology_relationships`, `ontology_chunks`, `ontology_metrics` | Business entity discovery, column classification, relationship detection, and vector retrieval |
+| **Vector Index** | `metadata_vs_index` | Hybrid semantic search over all metadata documents |
 
 ### Relationship to semantic web standards
 
@@ -250,6 +266,10 @@ Core functions exported by the `dbxmetagen` package:
 | `run_profiling(spark, catalog, schema)` | Profile tables and columns |
 | `compute_data_quality(spark, catalog, schema)` | Compute data quality scores |
 | `predict_foreign_keys(spark, catalog, schema)` | Predict FK relationships using AI + heuristics |
+| `build_vector_index(spark, catalog, schema)` | Build or refresh Vector Search index over metadata |
+| `build_genie_space(spark, catalog, schema)` | Create Genie space from knowledge base |
+| `generate_semantic_layer(spark, catalog, schema)` | Generate metric view definitions |
+| `classify_columns_geo(spark, catalog, schema)` | Geographic column classification |
 
 ## Notebooks
 
@@ -304,21 +324,24 @@ When `federation_mode=true`, dbxmetagen adapts for federated catalogs in Unity C
 
 ## Dashboard App
 
-The app is in `apps/dbxmetagen-app/` and provides a FastAPI backend with a React frontend. Deployed via DAB. Batch jobs support model selection between `databricks-claude-sonnet-4-6` and `databricks-gpt-oss-120b`.
+The app is in `apps/dbxmetagen-app/` and provides a FastAPI backend with a React frontend. Deployed via DAB. Navigation is organized into three categories:
 
-**Tabs:**
-1. **Semantic Layer** (landing page) -- Auto-generated metric views with SQL expression autofix, KPI Library grouped by Question Profile, and Genie space creation
-2. **Coverage** -- Schema-wide metadata coverage summary and completeness metrics
-3. **Batch Jobs** -- Trigger and monitor all metadata generation, analytics, and sync jobs with real-time status and model selection
-4. **Metadata Review** -- Browse, edit, approve, and apply generated metadata back to Unity Catalog
-5. **Ontology** -- Entity type summary, discovered entities, validation status
-6. **Graph Explorer** -- Browse graph nodes, filter by type, query the GraphRAG agent
-7. **Foreign Key Generation** -- AI-predicted FK relationships with confidence scores and approval workflow
-8. **Genie Builder** -- Create and configure Genie spaces with auto-generated instructions and ~10 example SQL queries
+**Design:**
+- **Generate Metadata** -- Trigger core (descriptions, sensitivity, domain) and advanced (ontology, FK, knowledge graph) jobs with model selection, Customer Context management
+- **Define Metrics** -- Auto-generated metric views with SQL expression autofix, KPI Library grouped by Question Profile
+- **Build Genie Space** -- Create and configure Genie spaces with auto-generated instructions and example SQL queries
+
+**Review:**
+- **Review & Apply** -- Browse, edit, approve, and apply generated metadata back to Unity Catalog
+- **Coverage** -- Schema-wide metadata coverage summary and completeness metrics
+
+**Explore:**
+- **Agent** -- Deep analysis chat with GraphRAG, graph explorer, semantic search, and MLflow trace links
+- **Entity Browser** -- Entity-first navigation with conformance view
 
 **Permissions model:** The app uses two separate identities. The **app service principal** (SPN) controls what the app UI can *read* -- it needs SELECT on your catalog to browse tables, coverage, metadata, and graph data. The **deployer's identity** (the user who ran `deploy.sh`) controls what jobs can *write* -- jobs run as the deployer and need CREATE TABLE, ALTER TABLE, and SET TAGS on the target catalog. This means a user can see metadata in the app even if they don't have permission to generate or apply it, and conversely, the app SPN doesn't need write access to your tables. Run `deploy.sh --permissions` to grant the app SPN the required read access.
 
-**GraphRAG:** Natural-language queries against the knowledge graph using a LangGraph agent that traverses graph_nodes and graph_edges via Lakebase.
+**Deep Analysis Agent:** Natural-language queries using a LangGraph GraphRAG pipeline that combines Vector Search retrieval, multi-hop graph traversal via Lakebase, FK/KB lookups, and LLM-generated data queries. Results include MLflow trace links for observability.
 
 ## Jobs
 
