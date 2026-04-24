@@ -500,7 +500,16 @@ def get_config():
         "available_models": _AVAILABLE_MODELS,
         "lakebase_configured": pg_configured(),
         "obo_enabled": _OBO_ENABLED,
+        "mlflow_experiment_id": _get_mlflow_experiment_id(),
     }
+
+
+def _get_mlflow_experiment_id() -> str | None:
+    try:
+        from agent.tracing import MLFLOW_EXPERIMENT_ID
+        return MLFLOW_EXPERIMENT_ID
+    except Exception:
+        return None
 
 
 @app.get("/api/auth/check")
@@ -2820,11 +2829,20 @@ def _read_bundle_metadata_fast(filepath: str) -> dict | None:
 
 
 def _count_yaml_list(path: str) -> int:
-    """Load a YAML file and return its length if it's a list, else 0."""
+    """Load a YAML or JSON tier file and return its length if it's a list/dict, else 0."""
     try:
         with open(path, "r") as f:
-            data = yaml.safe_load(f)
-        return len(data) if isinstance(data, list) else 0
+            text = f.read()
+        if path.endswith(".json"):
+            import json as _json
+            data = _json.loads(text)
+        else:
+            data = yaml.safe_load(text)
+        if isinstance(data, list):
+            return len(data)
+        if isinstance(data, dict):
+            return len(data)
+        return 0
     except Exception:
         return 0
 
@@ -2849,7 +2867,10 @@ def _list_bundles_local() -> list[dict]:
             filepath = os.path.join(bd, fname)
             bundle_key = fname.replace(".yaml", "")
             tier_dir = os.path.join(bd, bundle_key)
-            has_tiers = os.path.isdir(tier_dir) and os.path.isfile(os.path.join(tier_dir, "entities_tier1.yaml"))
+            has_tiers = os.path.isdir(tier_dir) and (
+                os.path.isfile(os.path.join(tier_dir, "entities_tier1.json"))
+                or os.path.isfile(os.path.join(tier_dir, "entities_tier1.yaml"))
+            )
 
             file_size = os.path.getsize(filepath)
             meta = None
@@ -2873,20 +2894,22 @@ def _list_bundles_local() -> list[dict]:
                 domain_count = meta.get("domain_count", domain_count)
 
             if has_tiers:
-                tier_entity_total = 0
-                tier_edge_total = 0
-                for tier_name in ("entities_tier1.yaml", "entities_tier2.yaml"):
-                    p = os.path.join(tier_dir, tier_name)
+                tier_entity_count = 0
+                tier_edge_count = 0
+                for ext in (".json", ".yaml"):
+                    p = os.path.join(tier_dir, "entities_tier1" + ext)
                     if os.path.isfile(p):
-                        tier_entity_total += _count_yaml_list(p)
-                for tier_name in ("edges_tier1.yaml", "edges_tier2.yaml", "edges_tier3.yaml"):
-                    p = os.path.join(tier_dir, tier_name)
+                        tier_entity_count = _count_yaml_list(p)
+                        break
+                for ext in (".json", ".yaml"):
+                    p = os.path.join(tier_dir, "edges_tier1" + ext)
                     if os.path.isfile(p):
-                        tier_edge_total += _count_yaml_list(p)
-                if tier_entity_total > entity_count:
-                    entity_count = tier_entity_total
-                if tier_edge_total > edge_count:
-                    edge_count = tier_edge_total
+                        tier_edge_count = _count_yaml_list(p)
+                        break
+                if tier_entity_count > entity_count:
+                    entity_count = tier_entity_count
+                if tier_edge_count > edge_count:
+                    edge_count = tier_edge_count
 
             bundle_info = {
                 "key": bundle_key,
