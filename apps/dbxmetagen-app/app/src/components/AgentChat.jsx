@@ -338,6 +338,26 @@ function ToolsPanel() {
   )
 }
 
+function TraceLink({ messages, host, experimentId }) {
+  const last = [...messages].reverse().find(m => m.role === 'assistant' && m.trace_id)
+  if (!last?.trace_id || !host || !experimentId) return null
+  const url = `${host}/ml/experiments/${experimentId}/traces/${last.trace_id}`
+  return (
+    <div className="flex items-center gap-1.5 mt-1.5">
+      <a href={url} target="_blank" rel="noopener noreferrer"
+        className="text-[11px] text-slate-400 dark:text-slate-500 hover:text-violet-600 dark:hover:text-violet-400 transition-colors flex items-center gap-1">
+        <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+        </svg>
+        View MLflow Trace
+        <svg className="w-2.5 h-2.5 opacity-60" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+        </svg>
+      </a>
+    </div>
+  )
+}
+
 export default function AgentChat() {
   const [subTab, setSubTab] = useState('chat')
   const [messages, setMessages] = useState([])
@@ -357,12 +377,16 @@ export default function AgentChat() {
   const [mode, setMode] = useState('graphrag')
   const [chartData, setChartData] = useState({})
   const [plotLoading, setPlotLoading] = useState({})
+  const [traceConfig, setTraceConfig] = useState({ host: '', experimentId: null })
   const chatEndRef = useRef(null)
 
   useEffect(() => {
     fetch('/api/agent/stats').then(r => r.ok ? r.json() : null).then(setStats).catch(() => {})
     fetch('/api/agent/suggestions').then(r => r.ok ? r.json() : []).then(setSuggestions).catch(() => {})
     fetch('/api/agent/domain-stats').then(r => r.ok ? r.json() : null).then(setDomainStats).catch(() => {})
+    fetch('/api/config').then(r => r.ok ? r.json() : {}).then(c => {
+      setTraceConfig({ host: c.workspace_host || '', experimentId: c.mlflow_experiment_id || null })
+    }).catch(() => {})
   }, [])
 
   useEffect(() => {
@@ -700,6 +724,7 @@ export default function AgentChat() {
           placeholder={mode === 'quick' ? 'Ask about your data catalog...' : `Ask for ${cfg.label.toLowerCase()}...`}
           buttonLabel="Send" buttonColor={cfg.color}
           onClear={messages.length > 0 ? clearChat : undefined} />
+        <TraceLink messages={messages} host={traceConfig.host} experimentId={traceConfig.experimentId} />
       </div>
 
       {/* Right: Stats Panel */}
