@@ -558,6 +558,8 @@ class OntologyConfig:
     pass0_mode: str = "off"
     pass0_max_candidates: int = 48
     pass0_min_candidates: int = 12
+    # Vector Search index for ontology retrieval (empty = disabled)
+    ontology_vs_index: str = ""
 
     @property
     def fully_qualified_entities(self) -> str:
@@ -1656,17 +1658,24 @@ class EntityDiscoverer:
             table_row, "domain", None
         )
 
+        vs_index = getattr(self.config, "ontology_vs_index", "") or ""
+        effective_pass0 = getattr(self.config, "pass0_mode", "off")
+        if vs_index and effective_pass0 != "vector":
+            effective_pass0 = "vector"
+
         result = predict_entity(
             table_name=short_name,
             columns=columns,
             sample=f"Description: {comment[:500]}",
             loader=loader,
             llm_fn=llm_fn,
-            pass0_mode=getattr(self.config, "pass0_mode", "off"),
+            pass0_mode=effective_pass0,
             pass0_max_candidates=getattr(self.config, "pass0_max_candidates", 48),
             pass0_min_candidates=getattr(self.config, "pass0_min_candidates", 12),
             domain_hint=str(domain_hint) if domain_hint else None,
             domain_entity_affinity=getattr(self, "_domain_entity_affinity", None),
+            vs_index=vs_index if effective_pass0 == "vector" else None,
+            vs_bundle=bundle if effective_pass0 == "vector" else None,
         )
 
         # Accept any entity name the LLM was shown (tier-1) plus bundle definitions
@@ -4660,12 +4669,16 @@ class OntologyBuilder:
                 if len(candidate_pairs) > max_llm_edge_calls:
                     logger.info("LLM edge prediction: capping %d pairs to %d", len(candidate_pairs), max_llm_edge_calls)
                     candidate_pairs = set(sorted(candidate_pairs)[:max_llm_edge_calls])
+                vs_index = getattr(self.config, "ontology_vs_index", "") or ""
+                vs_bundle = getattr(self.config, "ontology_bundle", "") or ""
                 llm_fn = _llm_fn
                 for src_t, dst_t in candidate_pairs:
                     try:
                         result = predict_edge(
                             src_entity=src_t, dst_entity=dst_t,
                             loader=loader, llm_fn=llm_fn,
+                            vs_index=vs_index or None,
+                            vs_bundle=vs_bundle or None,
                         )
                         if result and result.predicted_edge and result.confidence_score >= 0.5:
                             seen.add((src_t, dst_t))

@@ -256,6 +256,18 @@ def _get_comment(g, subject, rdfs) -> Optional[str]:
     return None
 
 
+def owl_to_chunks(owl_path: str, bundle_name: str) -> List[Dict[str, Any]]:
+    """Extract entity and edge text chunks directly from an OWL/TTL file via rdflib.
+
+    This is a convenience wrapper that delegates to
+    :func:`ontology_chunker.chunks_from_owl`. Use it at import time when the
+    user provides an OWL/TTL file so chunks are written to the Delta table
+    immediately without requiring a full bundle intermediate format.
+    """
+    from dbxmetagen.ontology_chunker import chunks_from_owl
+    return chunks_from_owl(owl_path, bundle_name)
+
+
 def _default_property_roles() -> Dict[str, Dict]:
     return {
         "primary_key": {

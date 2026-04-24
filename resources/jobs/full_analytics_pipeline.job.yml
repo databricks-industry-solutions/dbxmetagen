@@ -172,6 +172,21 @@ resources:
           libraries:
             - whl: ../../dist/*.whl
 
+        - task_key: build_ontology_vector_index
+          max_retries: 1
+          depends_on:
+            - task_key: build_ontology
+          job_cluster_key: analytics_cluster
+          notebook_task:
+            notebook_path: ../../notebooks/build_ontology_vector_index.py
+            base_parameters:
+              catalog_name: "{{job.parameters.catalog_name}}"
+              schema_name: "{{job.parameters.schema_name}}"
+              ontology_bundle: "{{job.parameters.ontology_bundle}}"
+              endpoint_name: "dbxmetagen-vs"
+          libraries:
+            - whl: ../../dist/*.whl
+
         # Stage 4: Secondary tasks
         - task_key: build_similarity_edges
           max_retries: 1

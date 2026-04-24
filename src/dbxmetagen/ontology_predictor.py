@@ -30,6 +30,8 @@ import yaml
 
 from dbxmetagen.ontology_index import OntologyIndexLoader
 from dbxmetagen.ontology_pass0 import pass0_keyword_candidates
+from dbxmetagen.ontology_vector_index import query_entities as vs_query_entities
+from dbxmetagen.ontology_vector_index import query_edges as vs_query_edges
 
 logger = logging.getLogger(__name__)
 
@@ -223,6 +225,10 @@ def predict_entity(
     pass0_min_candidates: int = 12,
     domain_hint: Optional[str] = None,
     domain_entity_affinity: Optional[Dict[str, Set[str]]] = None,
+    vs_index: Optional[str] = None,
+    vs_bundle: Optional[str] = None,
+    vs_endpoint: str = "dbxmetagen-vs",
+    vs_num_results: int = 8,
 ) -> PredictionResult:
     """Progressive entity classification using tiered ontology indexes.
 
@@ -231,28 +237,63 @@ def predict_entity(
     Pass 2 confirms with scoped tier-2 profiles. Pass 3 fires when Pass 2
     requests deep pass or confidence < 0.75.
 
+    When ``pass0_mode="vector"`` and ``vs_index`` is set, Pass 0 + Pass 1 are
+    replaced entirely by a single HYBRID Vector Search query. The returned
+    entity names are used directly as Pass 2 candidates, saving one LLM call.
+
     Args:
         table_name: Short table name.
         columns: Column summary string from _get_column_summary.
         sample: Table description text (e.g. "Description: ...").
         loader: OntologyIndexLoader with tier files for the active bundle.
         llm_fn: Callable(system_prompt, user_prompt) -> raw LLM text.
-        pass0_mode: ``off`` | ``keyword`` | ``hybrid`` (keyword-only for now).
+        pass0_mode: ``off`` | ``keyword`` | ``hybrid`` | ``vector``.
         pass0_max_candidates: Cap Pass 0 shortlist size.
         pass0_min_candidates: Minimum entities to send to Pass 1 when possible.
         domain_hint: Optional domain key for affinity boost.
         domain_entity_affinity: Optional map domain -> set of entity names.
+        vs_index: Fully-qualified VS index name for vector mode.
+        vs_bundle: Bundle name filter for VS queries.
+        vs_endpoint: VS endpoint name (default: dbxmetagen-vs).
+        vs_num_results: Number of VS results to retrieve.
 
     Returns:
         PredictionResult with entity name, URI, confidence, and pass count.
     """
-    # --- Pass 0 + Pass 1: Broad screen ---
+    # --- Vector mode: replace Pass 0 + Pass 1 with a single VS query ---
+    if pass0_mode == "vector" and vs_index and vs_bundle:
+        table_blob = f"{table_name} {columns} {sample}"
+        vs_results = vs_query_entities(
+            fq_index=vs_index, table_blob=table_blob,
+            bundle=vs_bundle, num_results=vs_num_results,
+            endpoint_name=vs_endpoint,
+        )
+        candidates = [r["name"] for r in vs_results if r.get("name")]
+        if not candidates:
+            return PredictionResult(
+                table_name=table_name, predicted_entity="Unknown",
+                source_ontology="", equivalent_class_uri=None,
+                confidence_score=0.0,
+                rationale="Vector search returned no entity candidates",
+                passes_run=0, needs_human_review=True,
+            )
+        logger.info(
+            "Vector retrieval for %s: %d candidates from VS (%s)",
+            table_name, len(candidates), ", ".join(candidates[:5]),
+        )
+        # Skip directly to Pass 2 with VS candidates
+        return _run_pass2_and_pass3(
+            table_name, columns, sample, candidates, loader, llm_fn,
+            passes_offset=0,
+        )
+
+    # --- Standard path: Pass 0 + Pass 1: Broad screen ---
     tier1_full = loader.get_entities_tier1()
     if not tier1_full:
         return PredictionResult(
             table_name=table_name, predicted_entity="Unknown",
             source_ontology="", equivalent_class_uri=None,
-            confidence_score=0.0,             rationale="No tier indexes available",
+            confidence_score=0.0, rationale="No tier indexes available",
         )
 
     if pass0_mode in ("keyword", "hybrid"):
@@ -298,7 +339,22 @@ def predict_entity(
     logger.info("Pass 1 for %s: %d candidates, confidence=%s",
                 table_name, len(candidates), resp1.get("confidence", "low"))
 
-    # --- Pass 2: Confirm ---
+    return _run_pass2_and_pass3(
+        table_name, columns, sample, candidates, loader, llm_fn,
+        passes_offset=1,
+    )
+
+
+def _run_pass2_and_pass3(
+    table_name: str,
+    columns: str,
+    sample: str,
+    candidates: List[str],
+    loader: OntologyIndexLoader,
+    llm_fn: Callable[[str, str], str],
+    passes_offset: int = 1,
+) -> PredictionResult:
+    """Shared Pass 2 + Pass 3 logic used by both standard and vector paths."""
     tier2 = loader.get_entities_tier2_scoped(candidates)
     tier2_yaml = yaml.dump(tier2, default_flow_style=False, sort_keys=False)
     prompt2 = PASS2_USER.format(
@@ -312,8 +368,8 @@ def predict_entity(
             table_name=table_name, predicted_entity=candidates[0],
             source_ontology="", equivalent_class_uri=uri,
             confidence_score=0.3,
-            rationale="Pass 2 failed, using Pass 1 best candidate",
-            passes_run=1, needs_human_review=True,
+            rationale="Pass 2 failed, using best candidate",
+            passes_run=passes_offset, needs_human_review=True,
         )
 
     score2 = _safe_float(resp2.get("confidence_score"), 0.0)
@@ -330,13 +386,12 @@ def predict_entity(
             equivalent_class_uri=uri,
             confidence_score=score2,
             rationale=resp2.get("rationale", ""),
-            passes_run=2,
+            passes_run=passes_offset + 1,
             needs_human_review=score2 < 0.6,
         )
 
     logger.info("Pass 2 for %s: score=%.2f, proceeding to Pass 3", table_name, score2)
 
-    # --- Pass 3: Deep ---
     tier3 = loader.get_entities_tier3_scoped(candidates)
     tier3_yaml = yaml.dump(tier3, default_flow_style=False, sort_keys=False)
     prompt3 = PASS3_USER.format(
@@ -345,7 +400,6 @@ def predict_entity(
     )
     resp3 = _safe_parse_response(llm_fn, SYSTEM_PROMPT, prompt3, f"Pass3:{table_name}")
     if not resp3 or not _validate_pass2(resp3):
-        # Pass 3 failed -- return the Pass 2 result instead of crashing
         pred_ent = resp2.get("predicted_entity", candidates[0])
         uri = resp2.get("equivalent_class_uri") or loader.get_uri(pred_ent)
         canon_so = _entity_bundle_source_ontology(tier2, tier3, pred_ent)
@@ -356,7 +410,7 @@ def predict_entity(
             equivalent_class_uri=uri,
             confidence_score=score2,
             rationale=resp2.get("rationale", "Pass 3 failed, returning Pass 2 result"),
-            passes_run=2, needs_human_review=True,
+            passes_run=passes_offset + 1, needs_human_review=True,
         )
 
     score3 = _safe_float(resp3.get("confidence_score"), 0.0)
@@ -371,7 +425,7 @@ def predict_entity(
         confidence_score=score3,
         rationale=resp3.get("rationale", ""),
         matched_properties=resp3.get("matched_properties", []),
-        passes_run=3,
+        passes_run=passes_offset + 2,
         needs_human_review=score3 < 0.6,
     )
 
@@ -453,6 +507,10 @@ def predict_edge(
     from_column: str = "",
     to_table: str = "",
     to_column: str = "",
+    vs_index: Optional[str] = None,
+    vs_bundle: Optional[str] = None,
+    vs_endpoint: str = "dbxmetagen-vs",
+    vs_num_results: int = 8,
 ) -> EdgePredictionResult:
     """Two- or three-pass edge classification using tiered ontology indexes.
 
@@ -460,6 +518,9 @@ def predict_edge(
     Pass 2 confirms against scoped tier-2 edge profiles. Pass 3 runs when
     tier-3 is strictly richer than tier-2 for the scoped candidates and
     Pass 2 sets needs_deep_pass or low confidence.
+
+    When ``vs_index`` is set, Pass 1 is replaced by a Vector Search query
+    and candidates are fed directly to Pass 2.
     """
     _default = EdgePredictionResult(
         from_table=from_table, to_table=to_table,
@@ -468,19 +529,44 @@ def predict_edge(
         rationale="No edge tier indexes available",
     )
 
+    ctx = f"Edge:{from_table}->{to_table}"
+
+    # --- Vector mode for edge retrieval ---
+    if vs_index and vs_bundle:
+        fk_blob = (
+            f"{from_table}.{from_column} references {to_table}.{to_column}. "
+            f"Source entity: {src_entity}. Target entity: {dst_entity}."
+        )
+        vs_results = vs_query_edges(
+            fq_index=vs_index, fk_blob=fk_blob,
+            bundle=vs_bundle, src_entity=src_entity, dst_entity=dst_entity,
+            num_results=vs_num_results, endpoint_name=vs_endpoint,
+        )
+        candidates = [r["name"] for r in vs_results if r.get("name")]
+        if candidates:
+            logger.info(
+                "Vector edge retrieval for %s: %d candidates", ctx, len(candidates),
+            )
+            # Skip to Pass 2 with VS candidates
+            return _run_edge_pass2_and_pass3(
+                candidates=candidates, loader=loader, llm_fn=llm_fn,
+                from_table=from_table, from_column=from_column,
+                to_table=to_table, to_column=to_column,
+                src_entity=src_entity, dst_entity=dst_entity,
+            )
+        logger.info("Vector edge retrieval returned 0 candidates, falling back to tier-1")
+
     all_edges_t1 = loader.get_edges_tier1()
     if not all_edges_t1:
         return _default
 
-    # Pre-filter: only edges whose domain/range match our entity types
     scoped = [
         e for e in all_edges_t1
         if _edge_domain_matches(e, src_entity, dst_entity)
     ]
     if not scoped:
-        scoped = all_edges_t1[:30]  # fallback to top 30
+        scoped = all_edges_t1[:30]
 
-    ctx = f"Edge:{from_table}->{to_table}"
     prompt1 = EDGE_PASS1_USER.format(
         tier1_yaml=_tier1_to_yaml(scoped),
         from_table=from_table, from_column=from_column,
@@ -505,7 +591,28 @@ def predict_edge(
             rationale="No edge candidates from Pass 1", passes_run=1,
         )
 
-    # Pass 2
+    return _run_edge_pass2_and_pass3(
+        candidates=candidates, loader=loader, llm_fn=llm_fn,
+        from_table=from_table, from_column=from_column,
+        to_table=to_table, to_column=to_column,
+        src_entity=src_entity, dst_entity=dst_entity,
+    )
+
+
+def _run_edge_pass2_and_pass3(
+    *,
+    candidates: List[str],
+    loader: OntologyIndexLoader,
+    llm_fn: Callable[[str, str], str],
+    from_table: str,
+    from_column: str,
+    to_table: str,
+    to_column: str,
+    src_entity: str,
+    dst_entity: str,
+) -> EdgePredictionResult:
+    """Shared Pass 2 + Pass 3 edge logic used by both standard and vector paths."""
+    ctx = f"Edge:{from_table}->{to_table}"
     tier2 = loader.get_edges_tier2_scoped(candidates)
     tier2_yaml_str = _edge_scoped_yaml_dump(tier2)
     prompt2 = EDGE_PASS2_USER.format(
@@ -517,12 +624,11 @@ def predict_edge(
     )
     resp2 = _safe_parse_response(llm_fn, SYSTEM_PROMPT, prompt2, f"Pass2:{ctx}")
     if not resp2 or "predicted_edge" not in resp2:
-        # Pass 2 failed -- return Pass 1's best candidate with low confidence
         return EdgePredictionResult(
             from_table=from_table, to_table=to_table,
             predicted_edge=candidates[0], edge_uri=None, inverse=None,
             source_ontology="", confidence_score=0.3,
-            rationale="Edge Pass 2 failed, using Pass 1 best candidate",
+            rationale="Edge Pass 2 failed, using best candidate",
             passes_run=1,
         )
 
