@@ -303,11 +303,27 @@ resources:
           libraries:
             - whl: ../../dist/*.whl
 
+        # Stage 6b: Community summaries (after final analysis, before VS index)
+        - task_key: build_community_summaries
+          max_retries: 1
+          depends_on:
+            - task_key: final_analysis
+          job_cluster_key: analytics_cluster
+          notebook_task:
+            notebook_path: ../../notebooks/build_community_summaries.py
+            base_parameters:
+              catalog_name: "{{job.parameters.catalog_name}}"
+              schema_name: "{{job.parameters.schema_name}}"
+              model: "{{job.parameters.model}}"
+          libraries:
+            - whl: ../../dist/*.whl
+
         # Stage 7: Build vector search index (after all metadata is ready)
         - task_key: build_vector_index
           max_retries: 1
           depends_on:
             - task_key: final_analysis
+            - task_key: build_community_summaries
           job_cluster_key: analytics_cluster
           notebook_task:
             notebook_path: ../../notebooks/build_vector_index.py

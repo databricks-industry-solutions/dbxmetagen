@@ -323,11 +323,33 @@ class VectorIndexBuilder:
             WHERE f.final_confidence >= 0.5
         """
 
+        community_docs = f"""
+            SELECT
+                CONCAT('community::', cs.community_id) AS doc_id,
+                'community_summary' AS doc_type,
+                cs.community_id AS node_id,
+                CONCAT(cs.domain, ' / ', COALESCE(cs.subdomain, 'general'), ': ', cs.summary) AS content,
+                CAST(NULL AS STRING) AS catalog_name,
+                CAST(NULL AS STRING) AS schema_name,
+                CAST(NULL AS STRING) AS table_name,
+                cs.domain AS domain,
+                cs.subdomain AS subdomain,
+                CAST(NULL AS STRING) AS entity_type,
+                CAST(NULL AS BOOLEAN) AS has_pii,
+                CAST(NULL AS BOOLEAN) AS has_phi,
+                CAST(NULL AS STRING) AS security_level,
+                CAST(NULL AS STRING) AS data_type,
+                CAST(NULL AS FLOAT) AS confidence_score,
+                current_timestamp() AS updated_at
+            FROM {cfg.fq('community_summaries')} cs
+        """
+
         parts = [table_docs, column_docs]
         for tbl, sql in [
             ("ontology_entities", entity_docs),
             ("metric_view_definitions", metric_docs),
             ("fk_predictions", fk_docs),
+            ("community_summaries", community_docs),
         ]:
             if self.spark.catalog.tableExists(cfg.fq(tbl)):
                 parts.append(sql)
