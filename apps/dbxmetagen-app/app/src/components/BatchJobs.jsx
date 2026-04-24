@@ -740,6 +740,16 @@ export default function BatchJobs({ onNavigate }) {
               {settings.build_kb_after && <><strong className="text-slate-500">+ KB</strong>: Builds table + column knowledge base after generation so the Review tab is populated. </>}
               <strong className="text-slate-500">KB-Enriched Modes</strong>: Generates comments, builds the knowledge base, then runs PI + domain classification enriched with KB-generated descriptions. Use this mode if you want comments to inform PI + domain, but don't want to apply your comments to your tables.
             </p>
+
+            <div className="border-t border-slate-200/80 dark:border-dbx-navy-400/20 pt-4 mt-2">
+              <button onClick={() => onNavigate?.('context')} className="btn-ghost btn-sm text-slate-600 dark:text-slate-300">
+                <svg className="w-4 h-4 mr-1.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
+                </svg>
+                Customer Context
+                <span className="text-xs text-slate-400 dark:text-slate-500 ml-1.5">Add domain knowledge to enrich LLM prompts</span>
+              </button>
+            </div>
           </div>
         </section>
       )}

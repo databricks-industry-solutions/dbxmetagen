@@ -33,7 +33,6 @@ const NAV_STRUCTURE = [
       { id: 'jobs',     label: 'Generate Metadata', desc: 'Descriptions, sensitivity, domains, ontology, FK predictions, and metrics' },
       { id: 'semantic', label: 'Define Metrics', desc: 'Define metric views and KPIs' },
       { id: 'genie',   label: 'Build Genie Space', desc: 'Build natural-language SQL spaces' },
-      { id: 'context', label: 'Customer Context', desc: 'Add domain knowledge to enrich LLM prompts' },
     ],
   },
   {
