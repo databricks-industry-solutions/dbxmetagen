@@ -1,9 +1,0 @@
-Person: https://schema.org/Person
-Organization: https://schema.org/Organization
-Product: https://schema.org/Product
-Transaction: https://schema.org/Invoice
-Location: https://schema.org/Place
-Event: https://schema.org/Event
-Reference: https://schema.org/Thing
-Metric: https://schema.org/QuantitativeValue
-Document: https://schema.org/DigitalDocument

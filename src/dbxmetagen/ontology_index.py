@@ -107,7 +107,7 @@ _VALIDATORS_COMPAT = {f"{k}.yaml": v for k, v in _VALIDATORS.items()}
 
 
 def _resolve_tier_path(bundle_dir: Path, stem: str) -> Optional[Path]:
-    """Return the JSON path if it exists, else YAML, else None."""
+    """Return the JSON path if it exists, else YAML (legacy), else None."""
     json_path = bundle_dir / f"{stem}.json"
     if json_path.is_file():
         return json_path
@@ -118,17 +118,10 @@ def _resolve_tier_path(bundle_dir: Path, stem: str) -> Optional[Path]:
 
 
 def _parse_tier_file(path: Path) -> Any:
-    """Parse a tier file as JSON or YAML based on extension."""
+    """Parse a tier file (JSON preferred, YAML supported for custom bundles)."""
     text = path.read_text(encoding="utf-8")
     if path.suffix == ".json":
-        try:
-            return json.loads(text)
-        except json.JSONDecodeError:
-            yaml_sibling = path.with_suffix(".yaml")
-            if yaml_sibling.exists():
-                logger.warning("Corrupt JSON %s, falling back to YAML sibling", path)
-                return yaml.safe_load(yaml_sibling.read_text(encoding="utf-8"))
-            raise
+        return json.loads(text)
     return yaml.safe_load(text)
 
 
