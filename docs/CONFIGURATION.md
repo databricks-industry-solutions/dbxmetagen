@@ -65,6 +65,10 @@ Most important settings in `variables.yml`:
 | control_table | Checkpoint table | metadata_control_{} |
 | catalog_tokenizable | Tokenizable catalog name | __CATALOG_NAME__ |
 | format_catalog | Format catalog variable | false |
+| domain_config_path | Path to custom domain config YAML | (bundled default) |
+| ontology_bundle | Ontology bundle name from `configurations/ontology_bundles/` | general |
+| ontology_config_path | Path to custom ontology config YAML | (bundled default) |
+| federation_mode | Enable for federated catalog sources | false |
 
 See `variables.yml` for complete descriptions and additional advanced options.
 
@@ -237,6 +241,29 @@ Configure with `solo_medical_identifier` and `disable_medical_information_value`
 - Supports resuming incomplete runs
 - Prevents duplicate processing
 
+## Domain Classification
+
+Categorizes tables into business domains using a two-stage LLM pipeline: keyword pre-filter, then domain classification, then subdomain classification. Configured via `configurations/domain_config.yaml`.
+
+**12 default domains** (aligned with DAMA DMBOK, FHIR, OMOP): clinical, diagnostics, payer, pharmaceutical, quality_safety, research, finance, operations, workforce, customer, technology, governance. Each domain includes subdomains with keywords and descriptions -- see the YAML config for details.
+
+Customize domains and subdomains by editing the YAML file or providing your own via `domain_config_path`.
+
+## Federation Mode
+
+When `federation_mode=true`, dbxmetagen adapts for federated catalogs in Unity Catalog:
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| SELECT / spark.read.table | Works | Standard reads via federation |
+| DESCRIBE TABLE | Works | Basic column info available |
+| SHOW TABLES IN | Works | Schema listing via federation |
+| DESCRIBE DETAIL | Skipped | Delta-specific |
+| DESCRIBE EXTENDED | Skipped | May return limited metadata |
+| ALTER TABLE / COMMENT ON | Skipped | Cannot modify federated tables |
+| SET TAGS / UNSET TAGS | Skipped | Cannot tag federated tables |
+| Output tables | Works | All output tables are Delta |
+
 ## Compatibility
 
 **Databricks Runtime:**
@@ -247,8 +274,4 @@ Configure with `solo_medical_identifier` and `disable_medical_information_value`
 **Cross-version DDL:**
 - DDL generated on 16.4 may not apply on 14.3
 - Test in same environment where applying
-
-For deployment details, see [ENV_SETUP.md](ENV_SETUP.md).
-
-For user workflows, see [PERSONAS_AND_WORKFLOWS.md](PERSONAS_AND_WORKFLOWS.md).
 

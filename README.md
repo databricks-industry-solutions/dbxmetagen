@@ -18,13 +18,11 @@
 - **Semantic layer**: Auto-generated metric views and Genie space creation from knowledge base
 - **Customer context**: Inject domain-specific knowledge into prompts, scoped by catalog/schema/table/pattern
 - **Metadata review**: Interactive review, edit, and apply workflow for generated metadata
-- **Web dashboard**: FastAPI + React app with 9 tabs covering the full metadata lifecycle
-
-> **Note:** This project recently migrated from Poetry to [uv](https://docs.astral.sh/uv/) for dependency management. If you have an existing clone that used Poetry, remove any old `poetry.lock` and virtual environments, then run `uv sync` to set up a fresh environment.
+- **Web dashboard**: FastAPI + React app covering the full metadata lifecycle
 
 ## Quickstart
 
-**Prerequisites:** Databricks CLI (>=0.283.0), Python 3.10+, [uv](https://docs.astral.sh/uv/) (for dependency management), Node.js (for frontend build), a Databricks workspace with Unity Catalog enabled and a Foundation Model endpoint (e.g. `databricks-claude-sonnet-4-6`). Read the quickstart! Don't just guess at how to use this utility.
+**Prerequisites:** Databricks CLI (>=0.283.0), Python 3.10+, [uv](https://docs.astral.sh/uv/) (for dependency management), Node.js (for frontend build), a Databricks workspace with Unity Catalog enabled, and a Foundation Model endpoint (e.g. `databricks-claude-sonnet-4-6`).
 
 1. Clone the repo and configure:
    ```bash
@@ -234,18 +232,7 @@ dbxmetagen has two phases:
 | **Ontology** | `ontology_entities`, `ontology_column_properties`, `ontology_relationships`, `ontology_chunks`, `ontology_metrics` | Business entity discovery, column classification, relationship detection, and vector retrieval |
 | **Vector Index** | `metadata_vs_index` | Hybrid semantic search over all metadata documents |
 
-### Relationship to semantic web standards
-
-dbxmetagen's ontology and graph system is inspired by — but does not implement — formal semantic web standards. Here's an honest comparison:
-
-| Standard | What it does | How dbxmetagen relates |
-|----------|-------------|----------------------|
-| **RDF** (triples: subject, predicate, object) | Standard data model for knowledge graphs | `graph_nodes` + `graph_edges` stores triples in Delta tables — nodes have types and properties, edges have labels, direction, and confidence. Functionally similar but SQL-queryable, not a triple store. No RDF serialization on the read or write path. |
-| **OWL** (Web Ontology Language) | Formal class hierarchies with automated reasoning | Ontology bundles define entity types with keywords, typed properties, and `parent` (subclass_of) relationships. Discovery uses LLM classification + keyword matching, not a formal OWL reasoner. Bundles are YAML, not OWL — simpler to author but without automated inference or transitive closure. |
-| **SHACL** (Shapes Constraint Language) | Validates graph data against declared shapes | `validate_ontology_completeness()` checks that discovered entity types cover the bundle's defined types. `validate_entity_conformance()` checks whether discovered column properties match the bundle's declared property schema. Similar in purpose to SHACL but implemented as Python/SQL checks, not a constraint language. |
-| **SPARQL** (Semantic query language) | Query language for RDF graphs | All graph queries use SQL against Delta tables. The GraphRAG agent and Graph Explorer traverse `graph_nodes`/`graph_edges` via SQL joins. Vector search is used for semantic metadata retrieval (finding relevant docs/tables), not for graph traversal. |
-
-Industry bundles (`healthcare.yaml`, `financial_services.yaml`) use entity names aligned with domain standards (e.g., FHIR Patient, OMOP CONDITION_OCCURRENCE) but don't import OWL/RDF files. A JSON-LD export endpoint (`/api/ontology/export`) provides basic Schema.org interoperability. The design is pragmatic: all consumers speak SQL natively, so a triple store would add infrastructure without benefiting the primary use case.
+The ontology and graph system is inspired by semantic web standards (RDF, OWL, SHACL) but stores everything in Delta tables queryable via SQL. Industry bundles align with domain standards (FHIR, OMOP, Schema.org). See [docs/formal_semantics.md](docs/formal_semantics.md) for a detailed comparison.
 
 ## API Reference
 
@@ -299,28 +286,7 @@ Settings are in `variables.yml`. Key options:
 
 For full reference, see [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 
-## Domain Classification
-
-Categorizes tables into business domains using a two-stage LLM pipeline: keyword pre-filter, then domain classification, then subdomain classification. Configured via `configurations/domain_config.yaml`.
-
-**12 default domains** (aligned with DAMA DMBOK, FHIR, OMOP): clinical, diagnostics, payer, pharmaceutical, quality_safety, research, finance, operations, workforce, customer, technology, governance. Each domain includes subdomains with keywords and descriptions -- see the YAML config for details.
-
-Customize domains and subdomains by editing the YAML file or providing your own via `domain_config_path`.
-
-## Federation Mode
-
-When `federation_mode=true`, dbxmetagen adapts for federated catalogs in Unity Catalog:
-
-| Feature | Status | Notes |
-|---------|--------|-------|
-| SELECT / spark.read.table | Works | Standard reads via federation |
-| DESCRIBE TABLE | Works | Basic column info available |
-| SHOW TABLES IN | Works | Schema listing via federation |
-| DESCRIBE DETAIL | Skipped | Delta-specific |
-| DESCRIBE EXTENDED | Skipped | May return limited metadata |
-| ALTER TABLE / COMMENT ON | Skipped | Cannot modify federated tables |
-| SET TAGS / UNSET TAGS | Skipped | Cannot tag federated tables |
-| Output tables | Works | All output tables are Delta |
+Domain classification and federation mode are covered in [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 
 ## Dashboard App
 
@@ -380,9 +346,9 @@ pip install dist/*.whl
 python -c "from dbxmetagen.config import MetadataConfig; print('OK')"
 ```
 
-DDL regenerator and binary/variant tests must run in separate processes due to import conflicts -- `run_tests.sh` handles this automatically. See `CLAUDE.md` for details.
+DDL regenerator and binary/variant tests must run in separate processes due to import conflicts -- `run_tests.sh` handles this automatically.
 
-Requires DBR 17.3+ (ML runtime recommended). Serverless runtimes are supported for most operations.
+Requires DBR 14.3+ (ML runtime recommended for PI detection with spaCy). Serverless runtimes are supported for most operations.
 
 ## Troubleshooting
 
@@ -436,55 +402,9 @@ The default `node_type` in `variables.yml` is `i3.2xlarge`, which is an AWS inst
 
 You may need to try a couple different node types if your organization doesn't have capacity for these in your cloud.
 
-## Analysis of Packages Used
+## Dependencies
 
-### Python (direct dependencies from pyproject.toml)
-
-| Package | Version | License | Source |
-|---------|---------|---------|--------|
-| mlflow | 3.6.0 | Apache 2.0 | https://github.com/mlflow/mlflow |
-| openai | 1.56.1 | Apache 2.0 | https://github.com/openai/openai-python |
-| cloudpickle | 3.1.0 | BSD 3-Clause | https://github.com/cloudpipe/cloudpickle |
-| pydantic | 2.10.3 | MIT | https://github.com/pydantic/pydantic |
-| ydata-profiling | 4.17.0 | MIT | https://github.com/ydataai/ydata-profiling |
-| databricks-sdk | 0.68.0 | Apache 2.0 | https://github.com/databricks/databricks-sdk-py |
-| openpyxl | 3.1.5 | MIT | https://foss.heptapod.net/openpyxl/openpyxl |
-| spacy | 3.8.7 | MIT | https://spacy.io |
-| presidio-analyzer | 2.2.358 | MIT | https://github.com/microsoft/presidio |
-| deprecated | 1.2.13 | MIT | https://github.com/tantale/deprecated |
-| pyyaml | 6.0.1 | MIT | https://pypi.org/project/PyYAML/ |
-| requests | 2.32.5 | Apache 2.0 | https://github.com/psf/requests |
-| nest-asyncio | 1.6.0 | BSD 2-Clause | https://github.com/erdewit/nest_asyncio |
-
-### Python (key transitive dependencies used by the app/agent)
-
-| Package | Version | License | Source |
-|---------|---------|---------|--------|
-| fastapi | 0.135.1 | MIT | https://github.com/tiangolo/fastapi |
-| langgraph | 1.1.3 | MIT | https://github.com/langchain-ai/langgraph |
-| langchain | 1.2.13 | MIT | https://github.com/langchain-ai/langchain |
-| langchain-community | 0.4.1 | MIT | https://github.com/langchain-ai/langchain |
-| grpcio | 1.78.0 | Apache 2.0 | https://github.com/grpc/grpc |
-| uvicorn | 0.42.0 | BSD 3-Clause | https://github.com/encode/uvicorn |
-| tiktoken | 0.12.0 | MIT | https://github.com/openai/tiktoken |
-| scikit-learn | 1.8.0 | BSD 3-Clause | https://github.com/scikit-learn/scikit-learn |
-| numpy | 2.1.3 | BSD 3-Clause | https://github.com/numpy/numpy |
-| pandas | 2.3.3 | BSD 3-Clause | https://github.com/pandas-dev/pandas |
-| scipy | 1.15.3 | BSD 3-Clause | https://github.com/scipy/scipy |
-| matplotlib | 3.10.0 | PSF | https://github.com/matplotlib/matplotlib |
-
-### JavaScript (frontend)
-
-| Package | Version | License | Source |
-|---------|---------|---------|--------|
-| react | ^19.0.0 | MIT | https://github.com/facebook/react |
-| react-dom | ^19.0.0 | MIT | https://github.com/facebook/react |
-| react-force-graph-2d | ^1.26.0 | MIT | https://github.com/vasturiano/react-force-graph |
-| recharts | ^2.15.0 | MIT | https://github.com/recharts/recharts |
-| tailwindcss | ^3.4.0 | MIT | https://github.com/tailwindlabs/tailwindcss |
-| vite | ^6.0.0 | MIT | https://github.com/vitejs/vite |
-
-All packages use permissive licenses (Apache 2.0, MIT, BSD, PSF).
+All packages use permissive licenses (Apache 2.0, MIT, BSD, PSF). See [docs/DEPENDENCIES.md](docs/DEPENDENCIES.md) for the full package analysis.
 
 ## License
 
