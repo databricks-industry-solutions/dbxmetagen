@@ -1,0 +1,48 @@
+# Setup MCP Servers
+#
+# Creates UC Functions that expose dbxmetagen knowledge base and knowledge graph
+# as Databricks Managed MCP servers. Validates vector search index availability.
+# Run once after the analytics pipeline has populated the metadata schema.
+
+resources:
+  jobs:
+    setup_mcp_servers_job:
+      name: "${var.app_name}_setup_mcp_servers"
+      budget_policy_id: ${var.budget_policy_id}
+
+      permissions:
+        - service_principal_name: ${resources.apps.dbxmetagen_app.service_principal_client_id}
+          level: CAN_MANAGE_RUN
+
+      email_notifications:
+        on_failure:
+          - ${var.current_user}
+
+      parameters:
+        - name: catalog_name
+          default: ${var.catalog_name}
+        - name: schema_name
+          default: ${var.schema_name}
+        - name: vs_index_name
+          default: "metadata_vs_index"
+        - name: drop_existing
+          default: "false"
+
+      tasks:
+        - task_key: setup_mcp_servers
+          max_retries: 0
+          environment_key: default
+          notebook_task:
+            notebook_path: ../../tests/data/setup_mcp_servers.py
+            base_parameters:
+              catalog_name: "{{job.parameters.catalog_name}}"
+              schema_name: "{{job.parameters.schema_name}}"
+              vs_index_name: "{{job.parameters.vs_index_name}}"
+              drop_existing: "{{job.parameters.drop_existing}}"
+
+      environments:
+        - environment_key: default
+          spec:
+            client: "1"
+            dependencies:
+              - ../../dist/*.whl

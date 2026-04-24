@@ -173,6 +173,7 @@ docs/**
 !docs/CONFIGURATION.md
 !docs/consumer-guide.md
 !docs/MANUAL_DEPLOYMENT.md
+!docs/MCP_SERVERS.md
 
 .cursor/*
 !.cursor/rules/
@@ -192,6 +193,9 @@ tools/
 # Local roadmap / tech-debt tracker
 ROADMAP.md
 CLAUDE.md
+
+# Test data warehouse (local-only, not shipped)
+tests/data/
 
 # Ontology source files (large OWL/TTL downloads, cached locally)
 configurations/ontology_bundles/*/source_*.ttl

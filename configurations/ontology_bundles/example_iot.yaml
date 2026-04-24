@@ -1,0 +1,69 @@
+# Minimal custom ontology bundle -- IoT / Manufacturing
+#
+# This file demonstrates the simplest viable bundle: a standalone YAML with
+# no tier index subdirectory. Entity discovery works out of the box via
+# single-pass LLM classification. To enable three-pass progressive
+# classification, run:
+#   python scripts/build_ontology_indexes.py --bundle example_iot
+
+metadata:
+  name: IoT / Manufacturing (Example)
+  version: "1.0"
+  format_version: "2.0"
+  industry: manufacturing
+  description: Minimal example bundle for IoT and manufacturing use cases
+
+ontology:
+  version: "1.0"
+  name: IoT Manufacturing Ontology
+  description: Covers devices, sensors, readings, and alerts
+  entities:
+    auto_discover: true
+    discovery_confidence_threshold: 0.4
+    definitions:
+      Device:
+        description: Physical equipment, machine, or IoT gateway
+        keywords: [device, machine, equipment, asset, gateway, controller]
+        typical_attributes: [device_id, serial_number, model, location, install_date]
+        relationships:
+          has_sensor:
+            target: Sensor
+            cardinality: one-to-many
+      Sensor:
+        description: Measurement instrument attached to a device
+        keywords: [sensor, probe, meter, transducer, detector]
+        typical_attributes: [sensor_id, sensor_type, unit, device_id, calibration_date]
+        relationships:
+          produces:
+            target: Reading
+            cardinality: one-to-many
+          part_of:
+            target: Device
+            cardinality: many-to-one
+      Reading:
+        description: Time-series measurement from a sensor
+        keywords: [reading, measurement, observation, telemetry, signal, data_point]
+        typical_attributes: [reading_id, sensor_id, timestamp, value, quality_flag]
+      Alert:
+        description: Threshold breach or anomaly notification
+        keywords: [alert, alarm, notification, fault, incident, warning]
+        typical_attributes: [alert_id, device_id, severity, triggered_at, resolved_at]
+        relationships:
+          triggered_by:
+            target: Reading
+            cardinality: many-to-one
+
+domain_config:
+  domains:
+    IoT:
+      description: Internet of Things data ingestion and telemetry
+      subdomains:
+        - Telemetry
+        - Device Management
+        - Edge Computing
+    Manufacturing:
+      description: Production, quality, and maintenance operations
+      subdomains:
+        - Production
+        - Quality Control
+        - Predictive Maintenance
