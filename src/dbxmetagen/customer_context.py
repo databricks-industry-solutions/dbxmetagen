@@ -66,8 +66,9 @@ def prefetch_customer_context(spark: Any, catalog: str, schema: str) -> List[Dic
         cache = [row.asDict() for row in rows]
         logger.info("Prefetched %d customer context entries", len(cache))
         return cache
-    except Exception:
-        logger.debug("customer_context table not readable, returning empty cache")
+    except Exception as exc:
+        logger.warning("customer_context table not readable (%s: %s), returning empty cache",
+                        type(exc).__name__, exc)
         return []
 
 
@@ -100,8 +101,8 @@ def resolve_customer_context(
     if not matches:
         return ""
 
-    matches.sort(key=lambda r: (_SCOPE_ORDER.get(r.get("scope_type", ""), 9), r.get("priority", 0)))
-    combined = "\n".join(r.get("context_text", "") for r in matches)
+    matches.sort(key=lambda r: (_SCOPE_ORDER.get(r.get("scope_type", ""), 9), int(r.get("priority") or 0)))
+    combined = "\n".join(str(r.get("context_text") or "") for r in matches)
     words = combined.split()
     return " ".join(words[:max_words]) if words else ""
 

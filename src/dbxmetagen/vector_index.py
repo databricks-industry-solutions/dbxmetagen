@@ -328,7 +328,7 @@ class VectorIndexBuilder:
                 CONCAT('community::', cs.community_id) AS doc_id,
                 'community_summary' AS doc_type,
                 cs.community_id AS node_id,
-                CONCAT(cs.domain, ' / ', COALESCE(cs.subdomain, 'general'), ': ', cs.summary) AS content,
+                CONCAT(COALESCE(cs.domain, 'unknown'), ' / ', COALESCE(cs.subdomain, 'general'), ': ', cs.summary) AS content,
                 CAST(NULL AS STRING) AS catalog_name,
                 CAST(NULL AS STRING) AS schema_name,
                 CAST(NULL AS STRING) AS table_name,
@@ -342,6 +342,7 @@ class VectorIndexBuilder:
                 CAST(NULL AS FLOAT) AS confidence_score,
                 current_timestamp() AS updated_at
             FROM {cfg.fq('community_summaries')} cs
+            WHERE cs.summary IS NOT NULL
         """
 
         parts = [table_docs, column_docs]

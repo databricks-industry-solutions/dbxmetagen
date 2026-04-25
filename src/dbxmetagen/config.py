@@ -123,6 +123,7 @@ class MetadataConfig:
             "max_ai_candidates",
             "rule_score_min_for_ai",
             "max_candidates_per_table_pair",
+            "ontology_vs_index",
         ],
         "yaml_advanced_file_path": "../variables.advanced.yml",
         "yaml_advanced_variable_names": [

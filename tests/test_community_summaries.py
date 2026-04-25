@@ -1,8 +1,10 @@
 """Tests for community_summaries module."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
-from dbxmetagen.community_summaries import build_prompt, community_id, discover_communities
+from dbxmetagen.community_summaries import (
+    build_prompt, community_id, discover_communities, generate_summaries_batch,
+)
 
 
 class TestCommunityId:
@@ -73,3 +75,35 @@ class TestDiscoverCommunities:
 
         result = discover_communities(mock_spark, "cat", "sch")
         assert result == []
+
+
+class TestGenerateSummariesBatch:
+    @patch("dbxmetagen.community_summaries.discover_communities", return_value=[])
+    def test_returns_zero_when_no_communities(self, mock_discover):
+        mock_spark = MagicMock()
+        result = generate_summaries_batch(mock_spark, "cat", "sch")
+        assert result == 0
+        mock_spark.sql.assert_not_called()
+
+    @patch("dbxmetagen.community_summaries.discover_communities")
+    def test_writes_table_for_one_community(self, mock_discover):
+        mock_discover.return_value = [{
+            "community_id": "abc123",
+            "domain": "finance",
+            "subdomain": "accounting",
+            "table_names": ["ledger", "journal"],
+            "comments": ["General ledger", "Journal entries"],
+            "table_count": 2,
+        }]
+        mock_result_df = MagicMock()
+        mock_spark = MagicMock()
+        mock_spark.sql.return_value = mock_result_df
+        mock_spark.createDataFrame.return_value = MagicMock()
+
+        result = generate_summaries_batch(mock_spark, "cat", "sch", model="test-model")
+        assert result == 1
+
+        sql_calls = [str(c) for c in mock_spark.sql.call_args_list]
+        assert any("CREATE TABLE" in s for s in sql_calls)
+        assert any("AI_QUERY" in s for s in sql_calls)
+        mock_result_df.write.format().mode().option().saveAsTable.assert_called_once()

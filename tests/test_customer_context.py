@@ -1,13 +1,16 @@
 """Unit tests for customer context enrichment pipeline."""
 
+import logging
 import os
 import tempfile
 import unittest
+from unittest.mock import MagicMock
 
 import yaml
 
 from dbxmetagen.customer_context import (
     MAX_WORDS,
+    prefetch_customer_context,
     resolve_customer_context,
     validate_context_text,
     _scope_id,
@@ -109,6 +112,49 @@ class TestResolveCustomerContext(unittest.TestCase):
         ]
         result = resolve_customer_context(big_cache, "cat.sch.tbl", max_words=100)
         self.assertLessEqual(len(result.split()), 100)
+
+    def test_null_priority_does_not_crash(self):
+        cache = [
+            {"scope": "cat", "scope_type": "catalog", "context_text": "ctx", "priority": None},
+            {"scope": "cat", "scope_type": "catalog", "context_text": "ctx2", "priority": 1},
+        ]
+        result = resolve_customer_context(cache, "cat.sch.tbl")
+        self.assertIn("ctx", result)
+
+    def test_null_context_text_does_not_crash(self):
+        cache = [
+            {"scope": "cat", "scope_type": "catalog", "context_text": None, "priority": 0},
+        ]
+        result = resolve_customer_context(cache, "cat.sch.tbl")
+        self.assertEqual(result, "")
+
+
+class TestPrefetchCustomerContext(unittest.TestCase):
+
+    def test_returns_empty_on_spark_error(self):
+        mock_spark = MagicMock()
+        mock_spark.sql.side_effect = Exception("TABLE_OR_VIEW_NOT_FOUND")
+        result = prefetch_customer_context(mock_spark, "cat", "sch")
+        self.assertEqual(result, [])
+
+    def test_logs_warning_on_error(self):
+        mock_spark = MagicMock()
+        mock_spark.sql.side_effect = RuntimeError("permission denied")
+        with self.assertLogs("dbxmetagen.customer_context", level="WARNING") as cm:
+            prefetch_customer_context(mock_spark, "cat", "sch")
+        self.assertTrue(any("permission denied" in msg for msg in cm.output))
+
+    def test_returns_rows_on_success(self):
+        mock_row = MagicMock()
+        mock_row.asDict.return_value = {"scope": "cat", "scope_type": "catalog",
+                                         "context_text": "hi", "priority": 0}
+        mock_df = MagicMock()
+        mock_df.collect.return_value = [mock_row]
+        mock_spark = MagicMock()
+        mock_spark.sql.return_value = mock_df
+        result = prefetch_customer_context(mock_spark, "cat", "sch")
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["context_text"], "hi")
 
 
 class TestYamlSeeding(unittest.TestCase):

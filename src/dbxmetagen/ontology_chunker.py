@@ -450,8 +450,9 @@ def build_ontology_chunks_table(
     """)
     spark.sql("DROP VIEW IF EXISTS _ontology_chunks_src")
 
+    safe_bundle = bundle_name.replace("'", "''")
     count = spark.sql(
-        f"SELECT COUNT(*) AS cnt FROM {fq_table} WHERE ontology_bundle = '{bundle_name}'"
+        f"SELECT COUNT(*) AS cnt FROM {fq_table} WHERE ontology_bundle = '{safe_bundle}'"
     ).collect()[0]["cnt"]
     logger.info("ontology_chunks now has %d rows for bundle '%s'", count, bundle_name)
     return count

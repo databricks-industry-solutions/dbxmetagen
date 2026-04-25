@@ -224,9 +224,6 @@ variables:
   include_profiling_context:
     description: "When true, inject profiling stats (distinct_count, null_rate, min/max) into comment generation prompts. Requires profiling to have run first."
     default: false
-  use_customer_context:
-    description: "When true, enrich prompts with customer-provided context from the customer_context Delta table. Context is scoped hierarchically (catalog > schema > pattern > table). Requires the customer_context table to exist (seed from YAML or create via the app)."
-    default: false
   include_constraint_context:
     description: "When true, inject PK/FK constraint roles into comment generation prompts. Requires extended metadata extraction to have run first."
     default: false
@@ -239,6 +236,9 @@ variables:
   max_candidates_per_table_pair:
     description: "Maximum number of candidate column pairs retained per table pair from name/ontology matching. Lower values reduce combinatorial explosion for wide tables."
     default: 5
+  use_customer_context:
+    description: "When true, enrich prompts with customer-provided context from the customer_context Delta table. Context is scoped hierarchically (catalog > schema > pattern > table). Requires the customer_context table to exist (seed from YAML or create via the app)."
+    default: false
   ontology_vs_index:
     description: "Fully-qualified name of the Databricks Vector Search index for ontology retrieval (e.g. catalog.schema.ontology_vs_index). When set and the index exists, entity/edge classification uses HYBRID vector search instead of the keyword pass0 + full tier-1 LLM dump, dramatically reducing token cost for large ontologies. Leave empty to disable vector retrieval (default)."
     default: ""

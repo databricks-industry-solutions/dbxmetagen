@@ -261,6 +261,11 @@ def predict_entity(
         PredictionResult with entity name, URI, confidence, and pass count.
     """
     # --- Vector mode: replace Pass 0 + Pass 1 with a single VS query ---
+    if pass0_mode == "vector" and not (vs_index and vs_bundle):
+        logger.warning(
+            "pass0_mode='vector' but vs_index=%r / vs_bundle=%r missing; falling back to keyword path",
+            vs_index, vs_bundle,
+        )
     if pass0_mode == "vector" and vs_index and vs_bundle:
         table_blob = f"{table_name} {columns} {sample}"
         vs_results = vs_query_entities(
