@@ -147,6 +147,6 @@ def generate_summaries_batch(spark, catalog_name: str, schema_name: str,
         "mergeSchema", "true"
     ).saveAsTable(fq_table)
 
-    count = result_df.count()
+    count = len(communities)
     logger.info("Generated %d community summaries -> %s", count, fq_table)
     return count

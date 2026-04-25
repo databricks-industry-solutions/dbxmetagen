@@ -145,6 +145,8 @@ def quick_answer(state: DeepAnalysisState) -> dict:
 def _should_continue(state: DeepAnalysisState) -> str:
     if state.get("intent_type") in ("irrelevant", "meta"):
         return "quick_answer"
+    if state.get("mode") == "baseline":
+        return "gather_evidence"
     c = state.get("complexity", "moderate")
     if c == "simple":
         return "gather_vs_only"

@@ -1033,7 +1033,10 @@ class CommentNoDataPrompt(Prompt):
     @staticmethod
     def _build_nodata_user_content(content: dict, acro_content: Any) -> str:
         lineage = content.pop("lineage", None)
+        customer_ctx = content.pop("customer_context", None)
         base = f"Content is here - {content} and abbreviations are here - {acro_content}"
+        if customer_ctx:
+            base += f"\n\nCustomer-provided context:\n{customer_ctx}"
         if lineage:
             base += "\n\n" + _format_lineage_section(lineage)
         return base

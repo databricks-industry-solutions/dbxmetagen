@@ -8,6 +8,7 @@ Usage:
 """
 
 import argparse
+import json
 import sys
 from pathlib import Path
 from typing import Any
@@ -59,6 +60,10 @@ class ValidationResult:
 
 def load_yaml(path: Path) -> Any:
     if not path.exists():
+        json_path = path.with_suffix(".json")
+        if json_path.exists():
+            with open(json_path) as f:
+                return json.load(f)
         return None
     with open(path) as f:
         return yaml.safe_load(f)

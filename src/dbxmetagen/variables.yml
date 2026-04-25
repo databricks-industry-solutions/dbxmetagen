@@ -225,7 +225,7 @@ variables:
     description: "When true, inject profiling stats (distinct_count, null_rate, min/max) into comment generation prompts. Requires profiling to have run first."
     default: false
   use_customer_context:
-    description: "When true, enrich prompts with customer-provided context from the customer_context Delta table. Context is scoped hierarchically (catalog > schema > table > pattern). Requires the customer_context table to exist (seed from YAML or create via the app)."
+    description: "When true, enrich prompts with customer-provided context from the customer_context Delta table. Context is scoped hierarchically (catalog > schema > pattern > table). Requires the customer_context table to exist (seed from YAML or create via the app)."
     default: false
   include_constraint_context:
     description: "When true, inject PK/FK constraint roles into comment generation prompts. Requires extended metadata extraction to have run first."
