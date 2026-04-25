@@ -118,10 +118,19 @@ def _resolve_tier_path(bundle_dir: Path, stem: str) -> Optional[Path]:
 
 
 def _parse_tier_file(path: Path) -> Any:
-    """Parse a tier file (JSON preferred, YAML supported for custom bundles)."""
+    """Parse a tier file (JSON preferred, YAML supported for custom bundles).
+
+    On corrupt JSON, falls back to a YAML sibling (same stem) if one exists.
+    """
     text = path.read_text(encoding="utf-8")
     if path.suffix == ".json":
-        return json.loads(text)
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            yaml_sibling = path.with_suffix(".yaml")
+            if yaml_sibling.is_file():
+                return yaml.safe_load(yaml_sibling.read_text(encoding="utf-8"))
+            raise
     return yaml.safe_load(text)
 
 

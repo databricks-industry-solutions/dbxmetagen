@@ -466,7 +466,7 @@ class TestValidateOptionalTables:
             catalog_name="cat", schema_name="sch",
             include_lineage=True, include_constraint_context=False,
             include_profiling_context=False, use_ontology_context=False,
-            use_kb_comments=False,
+            use_kb_comments=False, use_customer_context=False,
         )
         defaults.update(overrides)
         cfg = MagicMock()

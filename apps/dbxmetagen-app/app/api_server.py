@@ -2665,11 +2665,17 @@ def get_ontology_source_classes(bundle_name: str, limit: int = 500):
     safe = _safe_bundle_path(bd, bundle_name)
     if not safe:
         return JSONResponse({"error": "Invalid bundle name"}, status_code=400)
-    tier3_path = os.path.join(safe, "entities_tier3.yaml")
-    if not os.path.isfile(tier3_path):
+    tier3_path = None
+    for ext in (".json", ".yaml"):
+        candidate = os.path.join(safe, f"entities_tier3{ext}")
+        if os.path.isfile(candidate):
+            tier3_path = candidate
+            break
+    if not tier3_path:
         return JSONResponse({"error": f"No tier3 index for bundle '{bundle_name}'"}, status_code=404)
     with open(tier3_path, "r", encoding="utf-8") as f:
-        tier3 = yaml.safe_load(f) or {}
+        raw = f.read()
+    tier3 = json.loads(raw) if tier3_path.endswith(".json") else (yaml.safe_load(raw) or {})
     classes = []
     for name, data in list(tier3.items())[:limit]:
         classes.append({
