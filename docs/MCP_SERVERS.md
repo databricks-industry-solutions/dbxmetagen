@@ -89,7 +89,7 @@ Add to `.cursor/mcp.json`:
 }
 ```
 
-Replace `<workspace-host>`, `<catalog>`, `<schema>`, and `<PAT>` with your values. The setup notebook prints this config with your actual values filled in.
+Replace `<workspace-host>`, `<catalog>`, `<schema>`, and `<PAT>` with your values.
 
 For OAuth instead of PAT, see [Databricks MCP OAuth setup](https://docs.databricks.com/aws/en/generative-ai/mcp/connect-external-services#connect-oauth).
 

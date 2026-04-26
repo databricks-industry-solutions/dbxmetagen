@@ -69,6 +69,7 @@ Most important settings in `variables.yml`:
 | ontology_bundle | Ontology bundle name from `configurations/ontology_bundles/` | general |
 | ontology_config_path | Path to custom ontology config YAML | (bundled default) |
 | federation_mode | Enable for federated catalog sources | false |
+| ontology_vs_index | FQ name of VS index for ontology vector retrieval (e.g. `catalog.schema.ontology_vs_index`). When set, entity/edge classification uses vector search instead of full tier-1 dump, reducing token cost for large ontologies. Leave empty to disable. | (empty) |
 
 See `variables.yml` for complete descriptions and additional advanced options.
 
@@ -117,7 +118,7 @@ When multiple scopes match, they are concatenated from broadest to most specific
          identifier across all tables. Date fields use UTC.
    ```
 
-2. Seed the Delta table by running the `build_customer_context` notebook, or manage entries directly in the app (Design > Customer Context).
+2. Seed the Delta table by running the `build_customer_context` notebook, or manage entries directly in the app (Customer Context button on the Generate Metadata page).
 
 3. Enable in your job configuration:
 
@@ -127,7 +128,7 @@ When multiple scopes match, they are concatenated from broadest to most specific
 
 **Performance:** The entire `customer_context` table is loaded once per run (1 SQL query). Per-table scope resolution is pure Python string matching against the cached rows -- zero SQL overhead per table, making it the lowest-cost enricher in the pipeline.
 
-**App UI:** The Customer Context page (Design > Customer Context) provides:
+**App UI:** The Customer Context page (accessible via the Customer Context button on the Generate Metadata page) provides:
 - Create, edit, and soft-delete context entries with a live word counter
 - Upload YAML files to bulk-import entries
 - Filter by scope type (catalog, schema, table, pattern)
@@ -263,6 +264,36 @@ When `federation_mode=true`, dbxmetagen adapts for federated catalogs in Unity C
 | ALTER TABLE / COMMENT ON | Skipped | Cannot modify federated tables |
 | SET TAGS / UNSET TAGS | Skipped | Cannot tag federated tables |
 | Output tables | Works | All output tables are Delta |
+
+## Lakebase (Optional)
+
+Lakebase accelerates graph queries in the dashboard's deep analysis agent by serving `graph_nodes` and `graph_edges` from a managed PostgreSQL instance instead of the SQL warehouse. This is **optional** -- the app automatically falls back to UC Delta queries when Lakebase is not configured.
+
+**Setup:**
+
+1. Provision a Lakebase instance in your workspace (Settings > Compute > Lakebase)
+2. Run `sync_graph_lakebase_job` after the analytics pipeline to replicate graph tables:
+   ```bash
+   databricks bundle run sync_graph_lakebase_job -t dev -p <profile>
+   ```
+3. Attach the Lakebase database as a resource to the dbxmetagen app in the Databricks Apps UI. This automatically sets `PGHOST` and related connection variables for the app.
+
+**Job parameters:**
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `lakebase_catalog` | `dbxmetagen_graphrag` | Unity Catalog name for the synced Lakebase database |
+| `lakebase_instance_name` | `dbxmetagen` | Lakebase instance name in your workspace |
+
+The sync job uses the Databricks SDK's synced database tables API to replicate Delta tables into Lakebase with automatic change data capture. The app detects Lakebase via the `PGHOST` environment variable and uses OAuth token authentication.
+
+## Community Summaries
+
+The analytics pipeline generates AI summaries for groups of tables that share the same `(domain, subdomain)` in `table_knowledge_base`. Summaries are stored in the `community_summaries` Delta table and automatically included in the metadata vector index as `community_summary` documents, enabling the deep analysis agent to answer broad questions about data domains.
+
+The `build_community_summaries` task runs as part of `full_analytics_pipeline_job` (after `final_analysis`, before `build_vector_index`). It uses `AI_QUERY` to generate 3-5 sentence summaries per community.
+
+**Configuration:** The notebook accepts a `min_tables` widget (default `2`) controlling the minimum number of tables a domain/subdomain group must have to qualify as a community. When run via the pipeline job, the default is always used.
 
 ## Compatibility
 
