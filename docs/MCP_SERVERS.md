@@ -48,18 +48,6 @@ Both servers are governed by Unity Catalog permissions and support on-behalf-of-
 
 ## Setup
 
-Run the setup notebook to create the UC Functions:
-
-```bash
-databricks bundle run setup_mcp_servers_job -t dev -p <profile>
-```
-
-Or open `tests/data/setup_mcp_servers.py` in the Databricks UI and Run All. The notebook:
-
-1. Validates that KB, graph, and VS tables exist in your schema
-2. Creates 9 UC SQL functions (the MCP tools)
-3. Prints ready-to-paste configuration for Cursor/Claude Code
-
 ### Prerequisites
 
 The UC Functions query tables created by the dbxmetagen analytics pipeline. Run the pipeline first:
@@ -73,6 +61,10 @@ The Vector Search MCP server requires the `metadata_vs_index` to be built:
 ```bash
 databricks bundle run build_vector_index_job -t dev -p <profile>
 ```
+
+### Creating UC Functions
+
+Create the 9 UC SQL functions listed in the [Available Tools](#available-tools) section as `CREATE FUNCTION` statements in your catalog and schema. Each function wraps a `SELECT` query against the corresponding KB, graph, or ontology table. A setup notebook and bundle job for automated creation are planned for a future release.
 
 ## Client Configuration
 

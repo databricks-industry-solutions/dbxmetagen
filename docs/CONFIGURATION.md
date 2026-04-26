@@ -32,24 +32,24 @@ Most important settings in `variables.yml`:
 | catalog_name | Target catalog | None |
 | schema_name | Output schema | metadata_results |
 | volume_name | Output volume | generated_metadata |
-| allow_data | Send data to LLM | false |
+| allow_data | Send data to LLM | true |
 | allow_data_in_comments | Include data in comments | true |
-| sample_size | Rows to sample | 10 |
+| sample_size | Rows to sample | 5 |
 | add_metadata | Include extended metadata | true |
 | include_datatype_from_metadata | Include data types | false |
 | include_possible_data_fields_in_metadata | Include min/max (may leak PII) | true |
-| disable_medical_information_value | Treat medical data as PHI | true |
+| disable_medical_information_value | Treat medical data as PHI | false |
 | solo_medical_identifier | MRN classification (pii or phi) | pii |
 | model | LLM endpoint | databricks-claude-sonnet-4-6 |
 | temperature | Model temperature | 0.1 |
-| max_tokens | Maximum output tokens | 4096 |
-| max_prompt_length | Maximum prompt length | 4096 |
-| columns_per_call | Columns per LLM call | 5 |
+| max_tokens | Maximum output tokens | 8192 |
+| max_prompt_length | Maximum prompt length | 16384 |
+| columns_per_call | Columns per LLM call | 20 |
 | word_limit_per_cell | Max words per cell | 100 |
 | limit_prompt_based_on_cell_len | Truncate long cells | true |
 | apply_ddl | Apply DDL to tables | false |
-| ddl_output_format | DDL format (sql/tsv/excel) | excel |
-| reviewable_output_format | Review file format | excel |
+| ddl_output_format | DDL format (sql/tsv/excel) | sql |
+| reviewable_output_format | Review file format | tsv |
 | review_input_file_type | Review input format | tsv |
 | review_output_file_type | Review output format | excel |
 | review_apply_ddl | Apply reviewed DDL | false |
@@ -243,11 +243,11 @@ Configure with `solo_medical_identifier` and `disable_medical_information_value`
 
 ## Domain Classification
 
-Categorizes tables into business domains using a two-stage LLM pipeline: keyword pre-filter, then domain classification, then subdomain classification. Configured via `configurations/domain_config.yaml`.
+Categorizes tables into business domains using a two-stage LLM pipeline: keyword pre-filter, then domain classification, then subdomain classification. Domain configuration is defined in the `domain_config` section of an ontology bundle YAML (e.g. `configurations/ontology_bundles/example_iot.yaml`) or as a standalone YAML file passed via `domain_config_path`.
 
-**12 default domains** (aligned with DAMA DMBOK, FHIR, OMOP): clinical, diagnostics, payer, pharmaceutical, quality_safety, research, finance, operations, workforce, customer, technology, governance. Each domain includes subdomains with keywords and descriptions -- see the YAML config for details.
+**12 default domains** (aligned with DAMA DMBOK, FHIR, OMOP): clinical, diagnostics, payer, pharmaceutical, quality_safety, research, finance, operations, workforce, customer, technology, governance. Each domain includes subdomains with keywords and descriptions.
 
-Customize domains and subdomains by editing the YAML file or providing your own via `domain_config_path`.
+Customize domains and subdomains by editing the bundle's `domain_config` section or providing a standalone YAML via `domain_config_path`.
 
 ## Federation Mode
 
