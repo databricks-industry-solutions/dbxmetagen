@@ -3368,6 +3368,8 @@ def generate_and_persist_metadata(config: Any) -> None:
         _customer_context_cache = prefetch_customer_context(
             spark, config.catalog_name, config.schema_name
         )
+    else:
+        _customer_context_cache = []
 
     skipped_tables = []
 

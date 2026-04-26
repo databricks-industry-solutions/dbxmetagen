@@ -141,7 +141,7 @@ def search_metadata(query: str, doc_type_filter: Optional[str] = None, num_resul
 
     Args:
         query: Natural language search query.
-        doc_type_filter: Optional filter -- one of 'table', 'column', 'entity', 'metric_view', 'fk_relationship'.
+        doc_type_filter: Optional filter -- one of 'table', 'column', 'entity', 'metric_view', 'fk_relationship', 'community_summary'.
         num_results: Number of results (1-20).
     """
     t0 = _log_tool("search_metadata")

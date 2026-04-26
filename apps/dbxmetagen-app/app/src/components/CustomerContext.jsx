@@ -80,7 +80,7 @@ export default function CustomerContext() {
         <div>
           <h2 className="text-lg font-bold text-slate-800 dark:text-slate-100">Customer Context</h2>
           <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">
-            Add domain knowledge that enriches LLM prompts during metadata generation. Scoped hierarchically: catalog &gt; schema &gt; table &gt; pattern.
+            Add domain knowledge that enriches LLM prompts during metadata generation. Scoped hierarchically: catalog &gt; schema &gt; pattern &gt; table.
             Each entry is limited to {MAX_WORDS} words.
           </p>
         </div>

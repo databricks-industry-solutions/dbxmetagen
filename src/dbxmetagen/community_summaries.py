@@ -52,8 +52,7 @@ def discover_communities(spark, catalog_name: str, schema_name: str,
     fq = f"`{catalog_name}`.`{schema_name}`.table_knowledge_base"
     df = spark.sql(f"""
         SELECT domain, subdomain,
-               COLLECT_LIST(table_name) AS table_names,
-               COLLECT_LIST(COALESCE(comment, '')) AS comments,
+               SORT_ARRAY(COLLECT_LIST(STRUCT(table_name, COALESCE(comment, '') AS comment))) AS table_entries,
                COUNT(*) AS table_count
         FROM {fq}
         WHERE domain IS NOT NULL AND domain != ''
@@ -66,12 +65,13 @@ def discover_communities(spark, catalog_name: str, schema_name: str,
     for r in rows:
         dom = r["domain"] or "unknown"
         sub = r["subdomain"] or "general"
+        entries = r["table_entries"]
         communities.append({
             "community_id": community_id(dom, sub),
             "domain": dom,
             "subdomain": sub,
-            "table_names": list(r["table_names"]),
-            "comments": list(r["comments"]),
+            "table_names": [e["table_name"] for e in entries],
+            "comments": [e["comment"] for e in entries],
             "table_count": r["table_count"],
         })
     logger.info("Discovered %d communities with >= %d tables", len(communities), min_tables)
