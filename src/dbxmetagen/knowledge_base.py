@@ -345,9 +345,15 @@ class KnowledgeBaseBuilder:
             target.catalog = COALESCE(source.catalog, target.catalog),
             target.`schema` = COALESCE(source.`schema`, target.`schema`),
             target.table_short_name = COALESCE(source.table_short_name, target.table_short_name),
-            target.comment = COALESCE(source.comment, target.comment),
-            target.domain = COALESCE(source.domain, target.domain),
-            target.subdomain = COALESCE(source.subdomain, target.subdomain),
+            target.comment = CASE
+                WHEN target.review_updated_at IS NOT NULL AND target.review_updated_at > source.updated_at
+                THEN target.comment ELSE COALESCE(source.comment, target.comment) END,
+            target.domain = CASE
+                WHEN target.review_updated_at IS NOT NULL AND target.review_updated_at > source.updated_at
+                THEN target.domain ELSE COALESCE(source.domain, target.domain) END,
+            target.subdomain = CASE
+                WHEN target.review_updated_at IS NOT NULL AND target.review_updated_at > source.updated_at
+                THEN target.subdomain ELSE COALESCE(source.subdomain, target.subdomain) END,
             target.has_pii = source.has_pii OR target.has_pii,
             target.has_phi = source.has_phi OR target.has_phi,
             target.updated_at = GREATEST(source.updated_at, target.updated_at)

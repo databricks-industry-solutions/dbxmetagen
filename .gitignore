@@ -175,6 +175,7 @@ docs/**
 !docs/MANUAL_DEPLOYMENT.md
 !docs/MCP_SERVERS.md
 !docs/DEPENDENCIES.md
+!docs/metadata_governance_workflow.md
 
 .cursor/*
 !.cursor/rules/

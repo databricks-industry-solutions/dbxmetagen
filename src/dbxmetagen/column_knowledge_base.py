@@ -245,9 +245,13 @@ class ColumnKnowledgeBaseBuilder:
             target.`schema` = COALESCE(source.`schema`, target.`schema`),
             target.table_short_name = COALESCE(source.table_short_name, target.table_short_name),
             target.column_name = COALESCE(source.column_name, target.column_name),
-            target.comment = COALESCE(source.comment, target.comment),
+            target.comment = CASE
+                WHEN target.review_updated_at IS NOT NULL AND target.review_updated_at > source.updated_at
+                THEN target.comment ELSE COALESCE(source.comment, target.comment) END,
             target.data_type = COALESCE(source.data_type, target.data_type),
-            target.classification = COALESCE(source.classification, target.classification),
+            target.classification = CASE
+                WHEN target.review_updated_at IS NOT NULL AND target.review_updated_at > source.updated_at
+                THEN target.classification ELSE COALESCE(source.classification, target.classification) END,
             target.classification_type = COALESCE(source.classification_type, target.classification_type),
             target.confidence = COALESCE(source.confidence, target.confidence),
             target.nullable = COALESCE(source.nullable, target.nullable),
