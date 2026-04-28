@@ -1492,24 +1492,28 @@ class FKPredictor:
     # ------------------------------------------------------------------
     # Step 6: Graph edges
     # ------------------------------------------------------------------
-    def write_graph_edges(self, df: DataFrame) -> int:
-        """Insert predicted_fk edges into graph_edges."""
+    def write_graph_edges(self) -> int:
+        """Insert predicted_fk edges into graph_edges.
+
+        Reads from the authoritative fk_predictions table (cumulative via MERGE)
+        so that edges reflect all accumulated predictions, not just the current batch.
+        """
         edges_table = self.config.fq(self.config.edges_table)
-        # Remove old predicted_fk edges
         self.spark.sql(
             f"DELETE FROM {edges_table} WHERE relationship = '{self.RELATIONSHIP_TYPE}'"
         )
 
-        high_conf = df.filter(
-            F.col("ai_confidence") >= self.config.confidence_threshold
+        preds_table = self.config.fq(self.config.predictions_table)
+        high_conf = self.spark.table(preds_table).filter(
+            (F.col("ai_confidence") >= self.config.confidence_threshold)
+            & (F.col("is_fk") == True)
         )
-        # Dedup by (col_a, col_b) keeping highest confidence
-        w = Window.partitionBy("col_a", "col_b").orderBy(F.col("ai_confidence").desc())
+        w = Window.partitionBy("src_column", "dst_column").orderBy(F.col("ai_confidence").desc())
         high_conf = high_conf.withColumn("_rn", F.row_number().over(w)) \
             .filter(F.col("_rn") == 1).drop("_rn")
         edges = high_conf.select(
-            F.col("col_a").alias("src"),
-            F.col("col_b").alias("dst"),
+            F.col("src_column").alias("src"),
+            F.col("dst_column").alias("dst"),
             F.lit(self.RELATIONSHIP_TYPE).alias("relationship"),
             F.col("ai_confidence").alias("weight"),
             F.current_timestamp().alias("created_at"),
@@ -1524,34 +1528,38 @@ class FKPredictor:
     # ------------------------------------------------------------------
     # Step 7: DDL generation
     # ------------------------------------------------------------------
-    def generate_ddl(self, df: DataFrame) -> DataFrame:
-        """Generate ALTER TABLE ADD CONSTRAINT FK statements."""
-        high_conf = df.filter(
-            F.col("ai_confidence") >= self.config.confidence_threshold
+    def generate_ddl(self) -> DataFrame:
+        """Generate ALTER TABLE ADD CONSTRAINT FK statements.
+
+        Reads from the authoritative fk_predictions table (cumulative via MERGE)
+        so that DDL reflects all accumulated predictions, not just the current batch.
+        """
+        preds_table = self.config.fq(self.config.predictions_table)
+        high_conf = self.spark.table(preds_table).filter(
+            (F.col("ai_confidence") >= self.config.confidence_threshold)
+            & (F.col("is_fk") == True)
         )
         ddl = high_conf.withColumn(
             "ddl_statement",
             F.concat(
                 F.lit("ALTER TABLE "),
-                F.col("table_a"),
+                F.col("src_table"),
                 F.lit(" ADD CONSTRAINT fk_"),
-                F.regexp_replace(F.col("col_a"), "[^a-zA-Z0-9]", "_"),
+                F.regexp_replace(F.col("src_column"), "[^a-zA-Z0-9]", "_"),
                 F.lit("_"),
-                F.regexp_replace(F.col("col_b"), "[^a-zA-Z0-9]", "_"),
+                F.regexp_replace(F.col("dst_column"), "[^a-zA-Z0-9]", "_"),
                 F.lit(" FOREIGN KEY (`"),
-                F.element_at(F.split(F.col("col_a"), "\\."), -1),
+                F.element_at(F.split(F.col("src_column"), "\\."), -1),
                 F.lit("`) REFERENCES "),
-                F.col("table_b"),
+                F.col("dst_table"),
                 F.lit(" (`"),
-                F.element_at(F.split(F.col("col_b"), "\\."), -1),
+                F.element_at(F.split(F.col("dst_column"), "\\."), -1),
                 F.lit("`);"),
             ),
         )
         target = self.config.fq("fk_ddl_statements")
         ddl_out = ddl.select(
-            F.col("col_a").alias("src_column"),
-            F.col("col_b").alias("dst_column"),
-            "ddl_statement",
+            "src_column", "dst_column", "ddl_statement",
             F.col("ai_confidence").alias("confidence"),
             F.current_timestamp().alias("created_at"),
         )
@@ -1754,8 +1762,8 @@ class FKPredictor:
         judged = self._enforce_direction(judged)
 
         n_preds = self.write_predictions(judged)
-        n_edges = self.write_graph_edges(judged)
-        ddl_df = self.generate_ddl(judged)
+        n_edges = self.write_graph_edges()
+        ddl_df = self.generate_ddl()
         n_ddl = 0
         if self.config.apply_ddl:
             n_ddl = self.apply_ddl(ddl_df)
