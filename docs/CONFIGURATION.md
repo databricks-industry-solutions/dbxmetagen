@@ -295,6 +295,43 @@ The `build_community_summaries` task runs as part of `full_analytics_pipeline_jo
 
 **Configuration:** The notebook accepts a `min_tables` widget (default `2`) controlling the minimum number of tables a domain/subdomain group must have to qualify as a community. When run via the pipeline job, the default is always used.
 
+## Vector Search
+
+dbxmetagen uses Databricks Vector Search for hybrid (ANN + keyword) semantic search. All indexes share a single endpoint and use the `databricks-gte-large-en` embedding model.
+
+### Endpoint
+
+All indexes are hosted on a shared `dbxmetagen-vs` endpoint (STANDARD type). The endpoint is created automatically by whichever index builder runs first -- no manual provisioning is needed. Both builders call `ensure_endpoint()` which is idempotent: create if missing, skip if already online.
+
+To create the endpoint manually (e.g. via `docs/MANUAL_DEPLOYMENT.md`):
+
+```bash
+databricks api post /api/2.0/vector-search/endpoints --json '{"name": "dbxmetagen-vs", "endpoint_type": "STANDARD"}'
+```
+
+### Indexes
+
+| Index | Source Table | Purpose | Built By | Pipeline Stage |
+|-------|-------------|---------|----------|----------------|
+| `metadata_vs_index` | `metadata_documents` | Semantic search over all metadata: tables, columns, entities, FKs, metric views, community summaries | `build_vector_index` task | End (after all metadata is ready) |
+| `ontology_vs_index` | `ontology_chunks` | Entity/edge classification via vector retrieval instead of full tier-1 dump. Reduces token cost for large ontologies. | `build_ontology_vector_index` task | Mid-pipeline (after `build_ontology`) |
+
+**`metadata_vs_index`** is the primary index. It powers the deep analysis agent's `search_metadata` tool, the MCP Vector Search server, and the app's semantic search. It unions documents from `table_knowledge_base`, `column_knowledge_base`, `ontology_entities`, `metric_view_definitions`, `fk_predictions`, and `community_summaries` into a single `metadata_documents` Delta table, then syncs to Vector Search. Built by:
+
+```bash
+databricks bundle run build_vector_index_job -t dev -p <profile>
+```
+
+**`ontology_vs_index`** is optional. When set via `ontology_vs_index` in your configuration, entity/edge classification uses HYBRID vector search to narrow candidates instead of loading the full tier-1 entity list into the LLM prompt. This is only beneficial for large ontologies (100+ entities). Built by:
+
+```bash
+databricks bundle run full_analytics_pipeline_job -t dev -p <profile>
+# Or standalone:
+# Run the build_ontology_vector_index notebook directly
+```
+
+In the full analytics pipeline, `build_ontology_vector_index` runs after `build_ontology` and before `build_vector_index`. On a first run, `build_ontology_vector_index` creates the endpoint; `build_vector_index` reuses it.
+
 ## Compatibility
 
 **Databricks Runtime:**

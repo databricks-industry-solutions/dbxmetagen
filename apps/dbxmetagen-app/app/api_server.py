@@ -3205,6 +3205,25 @@ def get_ontology_entities_summary(
     except Exception:
         roles_by_entity = {}
 
+    rel_tbl = fq("ontology_relationships")
+    rel_counts: dict[str, int] = {}
+    try:
+        rel_rows = execute_sql(
+            f"""
+            SELECT entity_type, SUM(cnt) AS total FROM (
+                SELECT src_entity_type AS entity_type, COUNT(*) AS cnt FROM {rel_tbl} GROUP BY src_entity_type
+                UNION ALL
+                SELECT dst_entity_type AS entity_type, COUNT(*) AS cnt FROM {rel_tbl} GROUP BY dst_entity_type
+            ) GROUP BY entity_type
+            """,
+            timeout=20,
+        )
+        for r in rel_rows:
+            if r.get("entity_type"):
+                rel_counts[r["entity_type"]] = int(r["total"] or 0)
+    except Exception:
+        pass
+
     entity_types = set(tables_by_entity.keys())
     for row in cp_agg:
         entity_types.add(row["owning_entity_type"])
@@ -3226,6 +3245,7 @@ def get_ontology_entities_summary(
             "avg_confidence": round(avg_conf, 2),
             "bundle_matches": bundle_m,
             "heuristic_matches": heur_m,
+            "relationship_count": rel_counts.get(et, 0),
             "roles": roles_by_entity.get(et, {}),
             "tables": tables,
             "source_ontology": ", ".join(sorted(source_onto_by_entity.get(et, set()))) or None,
@@ -3333,9 +3353,15 @@ def get_entity_detail(entity_type: str):
     except Exception as e:
         logger.debug("entity-detail tables failed: %s", e)
     try:
+        cp_cols = execute_sql(f"DESCRIBE TABLE {cp_tbl}", timeout=10)
+        has_dm = any(c.get("col_name") == "discovery_method" for c in cp_cols)
+    except Exception:
+        has_dm = False
+    dm_col = ", discovery_method" if has_dm else ""
+    try:
         prop_rows = execute_sql(
             f"""
-            SELECT table_name, column_name, property_role, confidence, linked_entity_type
+            SELECT table_name, column_name, property_role, confidence, linked_entity_type{dm_col}
             FROM {cp_tbl}
             WHERE owning_entity_type = '{entity_type.replace("'", "''")}'
             ORDER BY table_name, column_name

@@ -41,10 +41,11 @@ function buildGraphData(nodes, edges, collapsedColumns, highlightedNodes) {
 
 export default function GraphSubgraph({
   nodes, edges, collapsedColumns, highlightedNodes, startNode,
-  height = 380, onNodeClick, onNodeExpand,
+  height = 380, onNodeClick, onNodeExpand, showLegend = false,
 }) {
   const graphRef = useRef()
   const containerRef = useRef()
+  const needsFit = useRef(true)
   const [hovered, setHovered] = useState(null)
   const [width, setWidth] = useState(600)
 
@@ -63,6 +64,15 @@ export default function GraphSubgraph({
     () => buildGraphData(nodes, edges, collapsedColumns, highlightedNodes),
     [nodes, edges, collapsedColumns, highlightedNodes],
   )
+
+  useEffect(() => { needsFit.current = true }, [graphData])
+
+  const legendTypes = useMemo(() => {
+    if (!showLegend) return []
+    const seen = new Set()
+    for (const n of graphData.nodes) seen.add(n.nodeType)
+    return [...seen]
+  }, [showLegend, graphData])
 
   const paintNode = useCallback((node, ctx) => {
     const r = node.nodeType === 'table' ? 8 : 5
@@ -123,7 +133,8 @@ export default function GraphSubgraph({
       const my = (link.source.y + link.target.y) / 2
       ctx.font = 'bold 8px Inter, system-ui, sans-serif'
       ctx.textAlign = 'center'
-      ctx.fillStyle = '#312e81'
+      const isDark = document.documentElement.classList.contains('dark')
+      ctx.fillStyle = isDark ? '#c7d2fe' : '#312e81'
       ctx.fillText(link.rel, mx, my - 4)
     }
     ctx.globalAlpha = 1.0
@@ -140,7 +151,7 @@ export default function GraphSubgraph({
 
   return (
     <div ref={containerRef}>
-      <div className="rounded-xl overflow-hidden bg-dbx-oat-light dark:bg-dbx-navy-700" style={{ height }}>
+      <div className="relative rounded-xl overflow-hidden bg-dbx-oat-light dark:bg-dbx-navy-700" style={{ height }}>
         <ForceGraph2D
           ref={graphRef}
           graphData={graphData}
@@ -149,12 +160,41 @@ export default function GraphSubgraph({
           nodeCanvasObject={paintNode}
           linkCanvasObject={paintLink}
           onNodeHover={n => setHovered(n?.id || null)}
-          onNodeClick={handleClick}
+          onNodeClick={(onNodeClick || onNodeExpand) ? handleClick : undefined}
+          nodePointerAreaPaint={(node, color, ctx) => {
+            const r = node.nodeType === 'table' ? 10 : 7
+            ctx.fillStyle = color
+            ctx.beginPath()
+            ctx.arc(node.x, node.y, r, 0, 2 * Math.PI)
+            ctx.fill()
+          }}
           nodeLabel={n => `${n.id}\n${n.domain ? 'Domain: ' + n.domain : ''}${n.sensitivity ? ' | ' + n.sensitivity : ''}${n.desc ? '\n' + n.desc : ''}`}
           linkLabel={l => `${l.rel} (${l.weight.toFixed(2)})`}
           cooldownTicks={80}
           d3VelocityDecay={0.3}
+          onEngineStop={() => {
+            if (needsFit.current) {
+              graphRef.current?.zoomToFit(400, 40)
+              needsFit.current = false
+            }
+          }}
         />
+        {showLegend && legendTypes.length > 0 && (
+          <div className="absolute bottom-2 left-2 flex items-center gap-2.5 px-2 py-1 rounded-md bg-white/80 dark:bg-slate-800/80 backdrop-blur-sm pointer-events-none">
+            {legendTypes.map(t => (
+              <span key={t} className="flex items-center gap-1 text-[10px] text-slate-600 dark:text-slate-300">
+                <span className="inline-block w-2 h-2 rounded-full" style={{ backgroundColor: NODE_COLORS[t] || '#94a3b8' }} />
+                {t.charAt(0).toUpperCase() + t.slice(1)}
+              </span>
+            ))}
+            {startNode && (
+              <span className="flex items-center gap-1 text-[10px] text-slate-600 dark:text-slate-300">
+                <span className="inline-block w-2 h-2 rounded-full" style={{ backgroundColor: '#FF3621' }} />
+                Start
+              </span>
+            )}
+          </div>
+        )}
       </div>
     </div>
   )

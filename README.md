@@ -230,7 +230,7 @@ dbxmetagen has two phases:
 | **Profiling** | `profiling_snapshots`, `column_profiling_stats`, `data_quality_scores` | Statistical profiling and quality scoring |
 | **Graph** | `graph_nodes`, `graph_edges`, `node_cluster_assignments`, `clustering_metrics`, `community_summaries` | Graph analytics with embeddings, similarity edges, K-means clustering, and AI-generated community summaries |
 | **Ontology** | `ontology_entities`, `ontology_column_properties`, `ontology_relationships`, `ontology_chunks`, `ontology_metrics` | Business entity discovery, column classification, relationship detection, and vector retrieval |
-| **Vector Index** | `metadata_vs_index` | Hybrid semantic search over all metadata documents |
+| **Vector Index** | `metadata_vs_index`, `ontology_vs_index` | Hybrid semantic search over metadata documents and ontology entities. See [docs/CONFIGURATION.md](docs/CONFIGURATION.md#vector-search) |
 
 The ontology and graph system is inspired by semantic web standards (RDF, OWL, SHACL) but stores everything in Delta tables queryable via SQL. Industry bundles align with domain standards (FHIR, OMOP, Schema.org). See [docs/formal_semantics.md](docs/formal_semantics.md) for a detailed comparison.
 
