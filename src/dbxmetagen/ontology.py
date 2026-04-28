@@ -2675,11 +2675,13 @@ class OntologyBuilder:
         try:
             self.spark.sql(
                 f"UPDATE {self.config.fully_qualified_entities} "
-                f"SET confidence = GREATEST(0.0, LEAST(1.0, confidence)) "
-                f"WHERE confidence < 0.0 OR confidence > 1.0"
+                f"SET confidence = GREATEST(0.0, LEAST(1.0, confidence)), "
+                f"    discovery_confidence = GREATEST(0.0, LEAST(1.0, COALESCE(discovery_confidence, confidence))) "
+                f"WHERE confidence < 0.0 OR confidence > 1.0 "
+                f"   OR discovery_confidence < 0.0 OR discovery_confidence > 1.0"
             )
         except Exception as e:
-            logger.warning("Confidence cleanup failed (table may be empty): %s", e)
+            logger.error("Confidence cleanup FAILED on %s: %s", self.config.fully_qualified_entities, e)
         logger.info(f"Entities table {self.config.fully_qualified_entities} ready")
 
     def create_metrics_table(self) -> None:
@@ -2910,6 +2912,16 @@ class OntologyBuilder:
         WHEN NOT MATCHED THEN INSERT *
         """
         )
+        try:
+            self.spark.sql(
+                f"UPDATE {self.config.fully_qualified_entities} "
+                f"SET confidence = GREATEST(0.0, LEAST(1.0, confidence)), "
+                f"    discovery_confidence = GREATEST(0.0, LEAST(1.0, COALESCE(discovery_confidence, confidence))) "
+                f"WHERE confidence < 0.0 OR confidence > 1.0 "
+                f"   OR discovery_confidence < 0.0 OR discovery_confidence > 1.0"
+            )
+        except Exception as e:
+            logger.error("Post-MERGE confidence clamp failed: %s", e)
         return len(entities)
 
     def discover_and_store_entities(self) -> int:
