@@ -2,7 +2,7 @@
 # MAGIC %md
 # MAGIC # Deploy Jobs & Infrastructure
 # MAGIC
-# MAGIC Builds the wheel, creates the 5 essential dbxmetagen jobs, and provisions
+# MAGIC Builds the wheel, creates the 8 essential dbxmetagen jobs, and provisions
 # MAGIC a Vector Search endpoint. Run this **before** Notebook 02 (app deploy).
 # MAGIC
 # MAGIC Supports `setup` and `teardown` modes.
@@ -29,6 +29,8 @@ dbutils.widgets.text("app_name", "dbxmetagen-app", "App Name")
 dbutils.widgets.text("node_type", "i3.2xlarge", "Node Type")
 dbutils.widgets.text("spark_version", "17.3.x-cpu-ml-scala2.13", "Spark Version")
 dbutils.widgets.text("vs_endpoint_name", "dbxmetagen-vs", "Vector Search Endpoint")
+dbutils.widgets.text("policy_id", "", "Cluster Policy ID (optional)")
+dbutils.widgets.text("budget_policy_id", "", "Serverless Budget Policy ID (optional)")
 dbutils.widgets.dropdown("mode", "setup", ["setup", "teardown"], "Mode")
 
 catalog_name = dbutils.widgets.get("catalog_name")
@@ -40,6 +42,8 @@ app_name = dbutils.widgets.get("app_name")
 node_type = dbutils.widgets.get("node_type")
 spark_version = dbutils.widgets.get("spark_version")
 vs_endpoint_name = dbutils.widgets.get("vs_endpoint_name")
+policy_id = dbutils.widgets.get("policy_id").strip()
+budget_policy_id = dbutils.widgets.get("budget_policy_id").strip()
 mode = dbutils.widgets.get("mode")
 
 notebooks_path = f"{repo_path}/notebooks"
@@ -51,6 +55,32 @@ assert volume_path, "volume_path is required -- wheel is copied here for job clu
 assert os.path.exists(f"{repo_path}/pyproject.toml"), (
     f"pyproject.toml not found at {repo_path}. Is this the dbxmetagen repo root?"
 )
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Load variables.yml defaults
+# MAGIC
+# MAGIC Job parameter defaults come from `variables.yml` in the repo so they stay
+# MAGIC in sync with `deploy.sh` / DAB deployments.
+
+# COMMAND ----------
+
+import yaml
+
+_vars_path = f"{repo_path}/variables.yml"
+with open(_vars_path) as f:
+    _all_vars = yaml.safe_load(f).get("variables", {})
+
+def var(name, fallback=""):
+    """Get default value from variables.yml, with optional fallback."""
+    v = _all_vars.get(name, {})
+    val = v.get("default", fallback) if isinstance(v, dict) else v
+    if isinstance(val, bool):
+        return "true" if val else "false"
+    return str(val)
+
+print(f"Loaded {len(_all_vars)} variables from {_vars_path}")
 
 # COMMAND ----------
 
@@ -134,13 +164,22 @@ if mode == "setup":
 whl_lib = compute.Library(whl=whl_volume_path) if whl_volume_path else None
 graphframes_lib = compute.Library(pypi=compute.PythonPyPiLibrary(package="graphframes"))
 
-def make_cluster(key, min_w=2, max_w=4, num_w=None):
+def make_cluster(key, min_w=2, max_w=4, num_w=None, single_node=False):
     spec = compute.ClusterSpec(
         spark_version=spark_version,
         node_type_id=node_type,
         data_security_mode=compute.DataSecurityMode.SINGLE_USER,
     )
-    if num_w is not None:
+    if policy_id:
+        spec.policy_id = policy_id
+    if single_node:
+        spec.num_workers = 0
+        spec.spark_conf = {
+            "spark.master": "local[*, 4]",
+            "spark.databricks.cluster.profile": "singleNode",
+        }
+        spec.custom_tags = {"ResourceClass": "SingleNode"}
+    elif num_w is not None:
         spec.num_workers = num_w
     else:
         spec.autoscale = compute.AutoScale(min_workers=min_w, max_workers=max_w)
@@ -183,15 +222,18 @@ def jp(name, default):
 
 def build_metadata_generator_job():
     params = [
-        jp("table_names", "none"), jp("mode", "comment"),
+        jp("table_names", var("job_table_names", "none")), jp("mode", "comment"),
         jp("catalog_name", catalog_name), jp("schema_name", schema_name),
         jp("current_user", current_user), jp("permission_groups", "none"),
         jp("permission_users", "none"), jp("run_id", "{{job.run_id}}"),
         jp("include_previously_failed_tables", "false"),
-        jp("apply_ddl", "false"), jp("use_kb_comments", "false"),
-        jp("ontology_bundle", ""), jp("domain_config_path", ""),
-        jp("sample_size", "5"), jp("include_lineage", "false"),
-        jp("model", "databricks-claude-sonnet-4-6"),
+        jp("apply_ddl", var("apply_ddl", "false")),
+        jp("use_kb_comments", "false"),
+        jp("ontology_bundle", var("ontology_bundle", "")),
+        jp("domain_config_path", ""),
+        jp("sample_size", var("sample_size", "5")),
+        jp("include_lineage", var("include_lineage", "false")),
+        jp("model", var("model", "databricks-claude-sonnet-4-6")),
     ]
     base = {p.name: f"{{{{job.parameters.{p.name}}}}}" for p in params}
     tasks = [nb_task("generate_metadata", "generate_metadata.py", base)]
@@ -207,15 +249,19 @@ def build_metadata_generator_job():
 
 def build_parallel_modes_job():
     params = [
-        jp("table_names", "none"), jp("catalog_name", catalog_name),
-        jp("schema_name", schema_name), jp("apply_ddl", "false"),
+        jp("table_names", var("job_table_names", "none")),
+        jp("catalog_name", catalog_name),
+        jp("schema_name", schema_name),
+        jp("apply_ddl", var("apply_ddl", "false")),
         jp("current_user", current_user), jp("permission_groups", "none"),
         jp("permission_users", "none"), jp("run_id", "{{job.run_id}}"),
         jp("include_previously_failed_tables", "false"),
-        jp("use_kb_comments", "false"), jp("ontology_bundle", ""),
-        jp("domain_config_path", ""), jp("sample_size", "5"),
-        jp("include_lineage", "false"),
-        jp("model", "databricks-claude-sonnet-4-6"),
+        jp("use_kb_comments", "false"),
+        jp("ontology_bundle", var("ontology_bundle", "")),
+        jp("domain_config_path", ""),
+        jp("sample_size", var("sample_size", "5")),
+        jp("include_lineage", var("include_lineage", "false")),
+        jp("model", var("model", "databricks-claude-sonnet-4-6")),
     ]
     ref = lambda n: f"{{{{job.parameters.{n}}}}}"
     common = {
@@ -253,23 +299,29 @@ def build_parallel_modes_job():
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Job 3: Full Analytics Pipeline (16 tasks, 7 stages)
+# MAGIC ## Job 3: Full Analytics Pipeline (18 tasks, 7 stages)
 
 # COMMAND ----------
 
 def build_analytics_pipeline_job():
     params = [
         jp("catalog_name", catalog_name), jp("schema_name", schema_name),
-        jp("similarity_threshold", "0.8"), jp("max_edges_per_node", "10"),
-        jp("generate_comments", "true"), jp("cluster_min_k", "2"),
-        jp("cluster_max_k", "15"), jp("cluster_node_types", "table"),
-        jp("ontology_bundle", "healthcare"), jp("domain_config_path", ""),
-        jp("incremental", "true"),
-        jp("model", "databricks-claude-sonnet-4-6"),
-        jp("table_names", ""), jp("max_ai_candidates", "200"),
-        jp("rule_score_min_for_ai", "0.50"),
-        jp("max_candidates_per_table_pair", "5"),
-        jp("apply_ddl", "false"),
+        jp("similarity_threshold", var("similarity_threshold", "0.8")),
+        jp("max_edges_per_node", var("max_edges_per_node", "10")),
+        jp("use_ann_similarity", var("use_ann_similarity", "true")),
+        jp("generate_comments", "true"),
+        jp("cluster_min_k", var("cluster_min_k", "2")),
+        jp("cluster_max_k", var("cluster_max_k", "15")),
+        jp("cluster_node_types", var("cluster_node_types", "table")),
+        jp("ontology_bundle", var("ontology_bundle", "general")),
+        jp("domain_config_path", ""),
+        jp("incremental", var("incremental", "true")),
+        jp("model", var("model", "databricks-claude-sonnet-4-6")),
+        jp("table_names", ""),
+        jp("max_ai_candidates", var("max_ai_candidates", "200")),
+        jp("rule_score_min_for_ai", var("rule_score_min_for_ai", "0.50")),
+        jp("max_candidates_per_table_pair", var("max_candidates_per_table_pair", "5")),
+        jp("apply_ddl", var("apply_ddl", "false")),
     ]
     ref = lambda n: f"{{{{job.parameters.{n}}}}}"
     cat_sch = {"catalog_name": ref("catalog_name"), "schema_name": ref("schema_name")}
@@ -296,11 +348,16 @@ def build_analytics_pipeline_job():
                  "incremental": ref("incremental"), "model": ref("model"),
                  "apply_ddl": ref("apply_ddl")},
                 deps=["build_knowledge_base", "build_column_kb"]),
+        nb_task("build_ontology_vector_index", "build_ontology_vector_index.py",
+                {**cat_sch, "ontology_bundle": ref("ontology_bundle"),
+                 "endpoint_name": "dbxmetagen-vs"},
+                deps=["build_ontology"]),
         nb_task("generate_embeddings", "generate_embeddings.py", cat_sch,
                 deps=["build_knowledge_graph", "build_ontology"]),
         nb_task("build_similarity_edges", "build_similarity_edges.py",
                 {**cat_sch, "similarity_threshold": ref("similarity_threshold"),
-                 "max_edges_per_node": ref("max_edges_per_node")},
+                 "max_edges_per_node": ref("max_edges_per_node"),
+                 "use_ann_similarity": ref("use_ann_similarity")},
                 deps=["generate_embeddings"]),
         nb_task("cluster_analysis", "cluster_analysis.py",
                 {**cat_sch, "min_k": ref("cluster_min_k"),
@@ -327,9 +384,12 @@ def build_analytics_pipeline_job():
         nb_task("final_analysis", "final_analysis.py", cat_sch,
                 deps=["refresh_ontology_edges", "cluster_analysis",
                       "compute_data_quality", "validate_ontology"]),
+        nb_task("build_community_summaries", "build_community_summaries.py",
+                {**cat_sch, "model": ref("model")},
+                deps=["final_analysis"]),
         nb_task("build_vector_index", "build_vector_index.py",
                 {**cat_sch, "endpoint_name": "dbxmetagen-vs"},
-                deps=["final_analysis"]),
+                deps=["final_analysis", "build_community_summaries"]),
     ]
     return (f"{app_name}_full_analytics_pipeline", tasks, params,
             [make_cluster("cluster")], "full_analytics_pipeline_job", 1)
@@ -386,15 +446,18 @@ def build_sync_ddl_job():
 
 def build_metadata_serverless_job():
     params = [
-        jp("table_names", "none"), jp("mode", "comment"),
+        jp("table_names", var("job_table_names", "none")), jp("mode", "comment"),
         jp("catalog_name", catalog_name), jp("schema_name", schema_name),
         jp("current_user", current_user), jp("permission_groups", "none"),
         jp("permission_users", "none"), jp("run_id", "{{job.run_id}}"),
         jp("include_previously_failed_tables", "false"),
-        jp("apply_ddl", "false"), jp("use_kb_comments", "false"),
-        jp("ontology_bundle", ""), jp("domain_config_path", ""),
-        jp("sample_size", "50"), jp("include_lineage", "false"),
-        jp("model", "databricks-claude-sonnet-4-6"),
+        jp("apply_ddl", var("apply_ddl", "false")),
+        jp("use_kb_comments", "false"),
+        jp("ontology_bundle", var("ontology_bundle", "")),
+        jp("domain_config_path", ""),
+        jp("sample_size", "50"),
+        jp("include_lineage", var("include_lineage", "false")),
+        jp("model", var("model", "databricks-claude-sonnet-4-6")),
     ]
     ref = lambda n: f"{{{{job.parameters.{n}}}}}"
     base = {p.name: ref(p.name) for p in params}
@@ -418,15 +481,19 @@ def build_metadata_serverless_job():
 
 def build_parallel_serverless_job():
     params = [
-        jp("table_names", "none"), jp("catalog_name", catalog_name),
-        jp("schema_name", schema_name), jp("apply_ddl", "false"),
+        jp("table_names", var("job_table_names", "none")),
+        jp("catalog_name", catalog_name),
+        jp("schema_name", schema_name),
+        jp("apply_ddl", var("apply_ddl", "false")),
         jp("current_user", current_user), jp("permission_groups", "none"),
         jp("permission_users", "none"), jp("run_id", "{{job.run_id}}"),
         jp("include_previously_failed_tables", "false"),
-        jp("use_kb_comments", "false"), jp("ontology_bundle", ""),
-        jp("domain_config_path", ""), jp("sample_size", "5"),
-        jp("include_lineage", "false"),
-        jp("model", "databricks-claude-sonnet-4-6"),
+        jp("use_kb_comments", "false"),
+        jp("ontology_bundle", var("ontology_bundle", "")),
+        jp("domain_config_path", ""),
+        jp("sample_size", var("sample_size", "5")),
+        jp("include_lineage", var("include_lineage", "false")),
+        jp("model", var("model", "databricks-claude-sonnet-4-6")),
     ]
     ref = lambda n: f"{{{{job.parameters.{n}}}}}"
     common = {
@@ -469,6 +536,24 @@ def build_parallel_serverless_job():
 # COMMAND ----------
 
 # MAGIC %md
+# MAGIC ## Job 8: Setup MCP Servers
+
+# COMMAND ----------
+
+def build_setup_mcp_servers_job():
+    params = [
+        jp("catalog_name", catalog_name), jp("schema_name", schema_name),
+        jp("vs_index_name", "metadata_vs_index"), jp("drop_existing", "false"),
+    ]
+    ref = lambda n: f"{{{{job.parameters.{n}}}}}"
+    tasks = [nb_task("setup_mcp", "setup_mcp_servers.py",
+                     {p.name: ref(p.name) for p in params})]
+    return (f"{app_name}_setup_mcp_servers", tasks, params,
+            [make_cluster("cluster", single_node=True)], "setup_mcp_servers_job", 1)
+
+# COMMAND ----------
+
+# MAGIC %md
 # MAGIC ## Create or Update Jobs
 # MAGIC
 # MAGIC Jobs are created **without** SPN ACLs -- those are granted by Notebook 02
@@ -484,6 +569,7 @@ ESSENTIAL_JOBS = [
     build_sync_ddl_job,
     build_metadata_serverless_job,
     build_parallel_serverless_job,
+    build_setup_mcp_servers_job,
 ]
 
 if mode == "teardown":
@@ -507,6 +593,8 @@ else:
             max_concurrent_runs=max_concurrent)
         if is_serverless:
             settings.environments = serverless_env
+            if budget_policy_id:
+                settings.budget_policy_id = budget_policy_id
         else:
             settings.job_clusters = clusters
         if name in existing_jobs:
@@ -515,12 +603,7 @@ else:
             created_jobs[res_name] = jid
             print(f"  Updated: {name} (id={jid})")
         else:
-            result = w.jobs.create(**{
-                "name": name, "tasks": tasks, "parameters": params,
-                "max_concurrent_runs": max_concurrent,
-                **({} if is_serverless else {"job_clusters": clusters}),
-                **({"environments": serverless_env} if is_serverless else {}),
-            })
+            result = w.jobs.create(settings=settings)
             created_jobs[res_name] = result.job_id
             print(f"  Created: {name} (id={result.job_id})")
 

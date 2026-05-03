@@ -31,15 +31,19 @@ instructions in `docs/MANUAL_DEPLOYMENT.md` instead.
    `pip wheel` -- no pre-built artifacts or GitHub Release downloads needed.
    The version is stamped with a deploy timestamp (same as `deploy.sh`)
    so the app platform always reinstalls on each deploy. It then creates
-   the 5 essential jobs and provisions a Vector Search endpoint.
+   the 8 essential jobs and provisions a Vector Search endpoint.
 
-2. **NB02 stages the app** by copying the app source from
+2. **NB01 loads `variables.yml`** from the repo and uses it as the source
+   of truth for job parameter defaults (model, sample_size, ontology_bundle,
+   etc.). This keeps notebook-deployed jobs in sync with DAB deployments.
+
+3. **NB02 stages the app** by copying the app source from
    `{repo_path}/apps/dbxmetagen-app/app/`, `configurations/` from the
    repo root, and a freshly-built wheel into
    `/Workspace/Users/<you>/.dbxmetagen_deploy/<app_name>/`. It also
    builds its own wheel copy for the app `requirements.txt`.
 
-3. **NB02 creates the app** and binds it to the jobs created by NB01.
+4. **NB02 creates the app** and binds it to the jobs created by NB01.
    Since the jobs already exist, all resource bindings are wired on the
    first deploy -- **no redeploy is needed**. After deploying, NB02
    grants the app's service principal `CAN_MANAGE_RUN` on all jobs and
@@ -52,7 +56,7 @@ instructions in `docs/MANUAL_DEPLOYMENT.md` instead.
 1. **Run `01_deploy_jobs_and_infra.py`** with `mode=setup`
    - Builds the wheel from source with deploy timestamp
    - Copies wheel to UC Volume for job cluster libraries
-   - Creates 5 essential jobs via SDK (without SPN ACLs)
+   - Creates 8 essential jobs via SDK (without SPN ACLs)
    - Provisions a Vector Search endpoint
 
 2. **Run `02_deploy_app.py`** with `mode=deploy`
@@ -61,7 +65,7 @@ instructions in `docs/MANUAL_DEPLOYMENT.md` instead.
    - Discovers existing jobs and binds them as app resources
    - Creates the app and deploys -- single deploy, all bindings wired
    - Resolves the app SPN and grants `CAN_MANAGE_RUN` on all jobs
-   - Grants UC permissions to the app SPN
+   - Grants UC permissions and VS endpoint `CAN_USE` to the app SPN
 
 ### Update
 
@@ -83,10 +87,10 @@ with a new timestamp, so the app platform always picks up the latest code.
 This pipeline is a simplified alternative. The following features from the
 full DABs deployment are **not replicated**:
 
-### Only 5 of 16+ jobs created
+### Only 8 of 16+ jobs created
 
-The notebooks create the 5 most essential jobs. The remaining 11 jobs
-are not created:
+The notebooks create the 8 most essential jobs (6 classic + 2 serverless).
+The remaining jobs are not created:
 
 | Missing Job | Dashboard Feature Affected |
 |---|---|
@@ -98,13 +102,11 @@ are not created:
 | `metagen_with_kb_job` | KB-enriched single-mode generation |
 | `metadata_kb_build_job` | Metadata + KB build combo |
 | `parallel_kb_build_job` | Parallel modes + KB build combo |
-| `metadata_serverless_job` | Serverless single-mode generation |
-| `parallel_serverless_job` | Serverless parallel modes |
 | `kb_enriched_modes_job` | KB-enriched parallel modes |
 
 The app will start and work for core features (metadata generation,
-review, analytics pipeline). Dashboard buttons for missing jobs will show
-errors or be unavailable.
+review, analytics pipeline, MCP servers). Dashboard buttons for missing
+jobs will show errors or be unavailable.
 
 To add more jobs, deploy once via `deploy.sh` or bundle (which creates
 all 16+ jobs), then re-run NB02 to wire them to the app.
@@ -131,14 +133,6 @@ w.apps.update(name="dbxmetagen-app", app=App(
 ))
 ```
 
-### Hardcoded parameter defaults
-
-DABs jobs resolve defaults from `variables.yml` (e.g.
-`${var.max_ai_candidates}`, `${var.model}`). The notebook jobs use
-hardcoded defaults that match the current `variables.yml` values. If your
-deployment uses non-default values, update the `jp()` calls in the
-notebook's job builder functions.
-
 ## Widget Reference
 
 ### 01_deploy_jobs_and_infra.py
@@ -154,6 +148,8 @@ notebook's job builder functions.
 | `node_type` | No | `i3.2xlarge` | Instance type for job clusters |
 | `spark_version` | No | `17.3.x-cpu-ml-scala2.13` | DBR version for job clusters |
 | `vs_endpoint_name` | No | `dbxmetagen-vs` | Vector Search endpoint name |
+| `policy_id` | No | | Cluster policy ID for classic job clusters |
+| `budget_policy_id` | No | | Serverless budget policy ID for cost attribution |
 | `mode` | No | `setup` | `setup` or `teardown` |
 
 ### 02_deploy_app.py
@@ -166,16 +162,20 @@ notebook's job builder functions.
 | `repo_path` | Yes | | Must match NB01 |
 | `volume_path` | Yes | | Must match NB01 -- wheel location |
 | `app_name` | No | `dbxmetagen-app` | Databricks App name |
+| `enable_obo` | No | `false` | Enable On-Behalf-Of user authentication |
 | `mode` | No | `deploy` | `deploy` or `destroy` |
 
 ## Jobs Created
 
-The notebooks create 5 essential jobs (out of 16+ available via bundle):
+The notebooks create 8 essential jobs (out of 16+ available via bundle):
 
 | Job | Purpose |
 |-----|---------|
 | `<app>_metadata_job` | Single-mode metadata generation |
 | `<app>_parallel_modes_job` | Comment -> PI + Domain pipeline |
-| `<app>_full_analytics_pipeline` | 16-task analytics DAG |
+| `<app>_full_analytics_pipeline` | 18-task analytics DAG |
 | `<app>_knowledge_base_job` | KB + knowledge graph build |
 | `<app>_sync_ddl_job` | Apply reviewed DDL changes |
+| `<app>_metadata_serverless_job` | Serverless single-mode generation + KB |
+| `<app>_parallel_serverless_job` | Serverless parallel modes + KB |
+| `<app>_setup_mcp_servers` | MCP server setup (single-node) |
