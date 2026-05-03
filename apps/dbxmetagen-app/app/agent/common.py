@@ -16,9 +16,12 @@ from typing import Annotated, Dict, List, Optional, TypedDict
 
 from databricks_langchain import ChatDatabricks
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
-from langgraph.graph import StateGraph, START, END
-from langgraph.graph.message import add_messages
-from langgraph.prebuilt import ToolNode
+try:
+    from langgraph.graph import StateGraph, START, END
+    from langgraph.graph.message import add_messages
+    from langgraph.prebuilt import ToolNode
+except ImportError:
+    StateGraph = START = END = add_messages = ToolNode = None
 
 from agent.guardrails import GuardrailConfig
 

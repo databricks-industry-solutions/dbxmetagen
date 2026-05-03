@@ -11,9 +11,13 @@ const NODE_TYPES = [
   { value: 'entity', label: 'Entity', color: '#8b5cf6' },
 ]
 
-const EDGE_TYPES = [
-  { value: '', label: 'All edges' },
+const EDGE_PRESETS = [
   { value: 'references', label: 'References (FK)' },
+  { value: 'semantic', label: 'Semantic (no structural noise)', edgeTypes: 'references,derives_from,instance_of,has_attribute,similar_embedding,has_property' },
+  { value: '', label: 'All edges' },
+]
+
+const SINGLE_EDGE_TYPES = [
   { value: 'same_domain', label: 'Same domain' },
   { value: 'same_subdomain', label: 'Same subdomain' },
   { value: 'same_schema', label: 'Same schema' },
@@ -27,13 +31,20 @@ const EDGE_TYPES = [
   { value: 'is_a', label: 'Is-a (ontology)' },
 ]
 
+function getEdgeParams(edgeType) {
+  const preset = EDGE_PRESETS.find(p => p.value === edgeType && p.edgeTypes)
+  if (preset) return { edge_types: preset.edgeTypes }
+  if (edgeType) return { edge_type: edgeType }
+  return {}
+}
+
 export default function GraphExplorer({ initialNode, initialEdgeType }) {
   const [search, setSearch] = useState('')
   const [nodePicker, setNodePicker] = useState([])
   const [pickerLoading, setPickerLoading] = useState(false)
   const [selectedNode, setSelectedNode] = useState(initialNode || '')
   const [maxHops, setMaxHops] = useState(2)
-  const [edgeType, setEdgeType] = useState(initialEdgeType || '')
+  const [edgeType, setEdgeType] = useState(initialEdgeType || 'references')
   const [hideContains, setHideContains] = useState(true)
   const [graphResult, setGraphResult] = useState(null)
   const [loading, setLoading] = useState(false)
@@ -41,19 +52,24 @@ export default function GraphExplorer({ initialNode, initialEdgeType }) {
   const [detailNode, setDetailNode] = useState(null)
   const [visibleNodeTypes, setVisibleNodeTypes] = useState(() => new Set(NODE_TYPES.map(t => t.value)))
   const [edgeCatalogOpen, setEdgeCatalogOpen] = useState(false)
+  const [edgeFilterPulse, setEdgeFilterPulse] = useState(false)
   const autoTraversed = useRef(false)
+  const edgeFilterRef = useRef(null)
+  const graphAreaRef = useRef(null)
 
   useEffect(() => {
     if (initialEdgeType != null) setEdgeType(initialEdgeType)
   }, [initialEdgeType])
 
-  const doTraverse = useCallback(async (nodeId) => {
+  const doTraverse = useCallback(async (nodeId, overrideEdgeType) => {
     const node = nodeId || selectedNode
     if (!node) return
     setLoading(true)
     setError(null)
-    const params = new URLSearchParams({ start_node: node, max_hops: maxHops, direction: 'both', hide_contains: hideContains })
-    if (edgeType) params.set('edge_type', edgeType)
+    const params = new URLSearchParams({ start_node: node, max_hops: maxHops, direction: 'both', hide_contains: hideContains, max_nodes: 200 })
+    const ep = getEdgeParams(overrideEdgeType ?? edgeType)
+    if (ep.edge_type) params.set('edge_type', ep.edge_type)
+    if (ep.edge_types) params.set('edge_types', ep.edge_types)
     try {
       const res = await fetch(`/api/graph/traverse?${params}`)
       if (!res.ok) throw new Error(`Error ${res.status}`)
@@ -96,7 +112,12 @@ export default function GraphExplorer({ initialNode, initialEdgeType }) {
 
   const handleViewEdgeInGraph = useCallback((edgeName) => {
     setEdgeType(edgeName)
-    if (selectedNode) doTraverse()
+    setEdgeFilterPulse(true)
+    setTimeout(() => setEdgeFilterPulse(false), 1200)
+    if (selectedNode) {
+      doTraverse(null, edgeName)
+      graphAreaRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+    }
   }, [selectedNode, doTraverse])
 
   const toggleNodeType = useCallback((type) => {
@@ -107,12 +128,17 @@ export default function GraphExplorer({ initialNode, initialEdgeType }) {
     })
   }, [])
 
-  const availableNodeTypes = useMemo(() => {
-    if (!graphResult?.nodes) return new Set()
-    const types = new Set()
-    for (const n of Object.values(graphResult.nodes)) types.add(n.node_type || 'table')
-    return types
+  const nodeTypeCounts = useMemo(() => {
+    if (!graphResult?.nodes) return {}
+    const counts = {}
+    for (const n of Object.values(graphResult.nodes)) {
+      const t = n.node_type || 'table'
+      counts[t] = (counts[t] || 0) + 1
+    }
+    return counts
   }, [graphResult])
+
+  const availableNodeTypes = useMemo(() => new Set(Object.keys(nodeTypeCounts)), [nodeTypeCounts])
 
   const filteredGraph = useMemo(() => {
     if (!graphResult) return null
@@ -177,6 +203,7 @@ export default function GraphExplorer({ initialNode, initialEdgeType }) {
 
           <div>
             <label className="section-title mb-1.5 block">Hops</label>
+            <p className="text-[10px] text-slate-400 mb-1">Traversal depth</p>
             <select value={maxHops} onChange={e => setMaxHops(Number(e.target.value))} className="select-base w-20" aria-label="Max hops">
               {[1, 2, 3, 4].map(h => <option key={h} value={h}>{h}</option>)}
             </select>
@@ -184,31 +211,20 @@ export default function GraphExplorer({ initialNode, initialEdgeType }) {
 
           <div>
             <label className="section-title mb-1.5 block">Edge filter</label>
-            <select value={edgeType} onChange={e => setEdgeType(e.target.value)} className="select-base w-44" aria-label="Edge type filter">
-              {EDGE_TYPES.map(et => <option key={et.value} value={et.value}>{et.label}</option>)}
+            <p className="text-[10px] text-slate-400 mb-1">Relationship type to follow</p>
+            <select
+              ref={edgeFilterRef}
+              value={edgeType}
+              onChange={e => setEdgeType(e.target.value)}
+              className={`select-base w-52 transition-shadow ${edgeFilterPulse ? 'ring-2 ring-dbx-lava/60' : ''}`}
+              aria-label="Edge type filter"
+            >
+              {EDGE_PRESETS.map(et => <option key={`p-${et.value}`} value={et.value}>{et.label}</option>)}
+              <optgroup label="Individual types">
+                {SINGLE_EDGE_TYPES.map(et => <option key={et.value} value={et.value}>{et.label}</option>)}
+              </optgroup>
             </select>
           </div>
-
-          {graphResult && availableNodeTypes.size > 1 && (
-            <div>
-              <label className="section-title mb-1.5 block">Node types</label>
-              <div className="flex gap-1">
-                {NODE_TYPES.filter(t => availableNodeTypes.has(t.value)).map(t => (
-                  <button key={t.value} onClick={() => toggleNodeType(t.value)}
-                    className={`px-2 py-1 text-xs rounded-full border transition-colors ${
-                      visibleNodeTypes.has(t.value)
-                        ? 'border-transparent text-white'
-                        : 'border-slate-300 dark:border-slate-600 text-slate-400 bg-transparent'
-                    }`}
-                    style={visibleNodeTypes.has(t.value) ? { backgroundColor: t.color } : undefined}
-                    aria-pressed={visibleNodeTypes.has(t.value)}
-                  >
-                    {t.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
 
           <label className="flex items-center gap-1.5 text-xs text-slate-600 dark:text-slate-400 cursor-pointer">
             <input type="checkbox" checked={hideContains} onChange={e => setHideContains(e.target.checked)} className="rounded" />
@@ -223,6 +239,31 @@ export default function GraphExplorer({ initialNode, initialEdgeType }) {
       </div>
 
       {error && <ErrorBanner error={error} onDismiss={() => setError(null)} />}
+
+      {graphResult?.truncated && (
+        <div className="rounded-lg border border-amber-200 dark:border-amber-800/40 bg-amber-50 dark:bg-amber-900/20 px-4 py-3 text-sm text-amber-700 dark:text-amber-300">
+          Showing {graphResult.node_count} of {graphResult.total_nodes} nodes (closest to start). Filter by edge type or reduce hops to see the full subgraph.
+        </div>
+      )}
+
+      {filteredGraph && availableNodeTypes.size > 0 && (
+        <div ref={graphAreaRef} className="flex items-center gap-2 flex-wrap">
+          <span className="text-xs font-medium text-slate-500 dark:text-slate-400">Show:</span>
+          {NODE_TYPES.filter(t => availableNodeTypes.has(t.value)).map(t => (
+            <button key={t.value} onClick={() => toggleNodeType(t.value)}
+              className={`px-2.5 py-1 text-xs rounded-full border transition-colors ${
+                visibleNodeTypes.has(t.value)
+                  ? 'border-transparent text-white'
+                  : 'border-slate-300 dark:border-slate-600 text-slate-400 bg-transparent'
+              }`}
+              style={visibleNodeTypes.has(t.value) ? { backgroundColor: t.color } : undefined}
+              aria-pressed={visibleNodeTypes.has(t.value)}
+            >
+              {t.label} ({nodeTypeCounts[t.value] || 0})
+            </button>
+          ))}
+        </div>
+      )}
 
       {filteredGraph ? (
         <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
@@ -245,6 +286,7 @@ export default function GraphExplorer({ initialNode, initialEdgeType }) {
             {stats && (
               <div className="card p-3 space-y-2">
                 <h4 className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Summary</h4>
+                <p className="text-[10px] text-slate-400">Counts for the current subgraph view</p>
                 <div className="grid grid-cols-2 gap-2 text-sm">
                   <div><span className="text-slate-500">Nodes</span> <span className="font-semibold">{stats.nodeCount}</span></div>
                   <div><span className="text-slate-500">Edges</span> <span className="font-semibold">{stats.edgeCount}</span></div>
@@ -292,7 +334,10 @@ export default function GraphExplorer({ initialNode, initialEdgeType }) {
           className="w-full flex items-center justify-between px-4 py-3 text-left hover:bg-slate-50 dark:hover:bg-dbx-navy-500/30 transition-colors"
           aria-expanded={edgeCatalogOpen}
         >
-          <h4 className="text-sm font-semibold text-slate-700 dark:text-slate-200">Edge Catalog</h4>
+          <div>
+            <h4 className="text-sm font-semibold text-slate-700 dark:text-slate-200">Edge Catalog</h4>
+            <p className="text-[10px] text-slate-400 mt-0.5">Browse relationship types defined in the ontology. Click a row to filter the graph.</p>
+          </div>
           <span className="text-slate-400 text-sm">{edgeCatalogOpen ? '▼' : '▶'}</span>
         </button>
         {edgeCatalogOpen && (

@@ -40,6 +40,7 @@ const INTENT_LABELS = {
 const MODE_CONFIG = {
   quick: { label: 'Quick Query', color: 'bg-blue-600', ring: 'ring-blue-600', lightBg: 'bg-blue-50 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300', desc: 'Fast query using search and graph traversal', valueColor: 'text-blue-600' },
   graphrag: { label: 'dbxmetagen Agent', color: 'bg-violet-600', ring: 'ring-violet-600', lightBg: 'bg-violet-50 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300', desc: 'Deep analysis with knowledge graph, vector search, and SQL', valueColor: 'text-violet-600' },
+  graph_eval: { label: 'Graph Evaluation', color: 'bg-emerald-600', ring: 'ring-emerald-600', lightBg: 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300', desc: 'Compare answers with and without knowledge graph', valueColor: 'text-emerald-600' },
   baseline: { label: 'Baseline Analysis', color: 'bg-slate-600', ring: 'ring-slate-600', lightBg: 'bg-slate-50 text-slate-700 dark:bg-slate-800/40 dark:text-slate-300', desc: 'Multi-agent analysis using knowledge base tables', valueColor: 'text-slate-600' },
   governance: { label: 'Governance', color: 'bg-orange-600', ring: 'ring-orange-600', lightBg: 'bg-orange-50 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300', desc: 'Sensitivity, compliance & protection audit', valueColor: 'text-orange-600', embedded: true },
   impact: { label: 'Impact Analysis', color: 'bg-rose-600', ring: 'ring-rose-600', lightBg: 'bg-rose-50 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300', desc: 'What-if analysis for schema changes', valueColor: 'text-rose-600', embedded: true },
@@ -68,7 +69,7 @@ function stripLeadingJson(text) {
 
 // Only these modes are shown in the UI; the rest are hidden but retained in MODE_CONFIG.
 // Hidden modes: baseline, governance, impact
-const VISIBLE_MODES = new Set(['graphrag'])
+const VISIBLE_MODES = new Set(['graphrag', 'graph_eval'])
 
 const STAGE_LABELS = {
   starting: 'Starting...',
@@ -376,6 +377,7 @@ export default function AgentChat() {
   const [suggestions, setSuggestions] = useState([])
   const [mode, setMode] = useState('graphrag')
   const [chartData, setChartData] = useState({})
+  const [compareResult, setCompareResult] = useState(null)
   const [plotLoading, setPlotLoading] = useState({})
   const [traceConfig, setTraceConfig] = useState({ host: '', experimentId: null })
   const chatEndRef = useRef(null)
@@ -521,6 +523,47 @@ export default function AgentChat() {
     }
   }
 
+  const sendGraphEval = async (text) => {
+    setStage('starting')
+    setCompareResult(null)
+    const history = messages.filter(m => m.role !== 'error').map(m => ({ role: m.role, content: m.content }))
+    try {
+      const res = await fetch('/api/agent/deep/compare', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: text, history, session_id: sessionId }),
+      })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        setMessages(prev => [...prev, { role: 'error', content: data.detail || 'Compare submit failed', _query: text, _mode: 'graph_eval' }])
+        return
+      }
+      const { task_id } = await res.json()
+      if (!task_id) {
+        setMessages(prev => [...prev, { role: 'error', content: 'No task ID returned', _query: text, _mode: 'graph_eval' }])
+        return
+      }
+      for (let i = 0; i < 150; i++) {
+        await new Promise(r => setTimeout(r, 2000))
+        const pollRes = await fetch(`/api/agent/deep/task/${task_id}`)
+        if (!pollRes.ok) continue
+        const task = await pollRes.json()
+        if (task.status === 'done' && task.result) {
+          setCompareResult(task.result)
+          return
+        }
+        if (task.status === 'error') {
+          setMessages(prev => [...prev, { role: 'error', content: task.error || 'Compare failed', _query: text, _mode: 'graph_eval' }])
+          return
+        }
+        if (task.stage) setStage(task.stage)
+      }
+      setMessages(prev => [...prev, { role: 'error', content: 'Comparison timed out.', _query: text, _mode: 'graph_eval' }])
+    } catch (e) {
+      setMessages(prev => [...prev, { role: 'error', content: e.message, _query: text, _mode: 'graph_eval' }])
+    }
+  }
+
   const sendQuick = async (text, useMode) => {
     setStage('routing')
     const history = messages.filter(m => m.role !== 'error').map(m => ({ role: m.role, content: m.content }))
@@ -560,7 +603,9 @@ export default function AgentChat() {
     setLoading(true)
     setError(null)
 
-    if (useMode === 'graphrag' || useMode === 'baseline') {
+    if (useMode === 'graph_eval') {
+      await sendGraphEval(text.trim())
+    } else if (useMode === 'graphrag' || useMode === 'baseline') {
       await sendDeepAnalysis(text.trim(), useMode)
     } else {
       await sendQuick(text.trim(), useMode)
@@ -593,7 +638,7 @@ export default function AgentChat() {
     }
   }
 
-  const clearChat = () => { setMessages([]); setError(null); setChartData({}); setPlotLoading({}) }
+  const clearChat = () => { setMessages([]); setError(null); setChartData({}); setPlotLoading({}); setCompareResult(null) }
   const injectQuery = (q) => send(q)
   const cfg = MODE_CONFIG[mode] || MODE_CONFIG.quick
 
@@ -637,7 +682,108 @@ export default function AgentChat() {
       </div>
 
       {mode === 'governance' ? <GovernanceExplorer embedded /> :
-       mode === 'impact' ? <ImpactAnalysis embedded /> : (
+       mode === 'impact' ? <ImpactAnalysis embedded /> :
+       mode === 'graph_eval' ? (
+      <div className="space-y-4">
+        <ErrorBanner error={error} />
+        {/* Input */}
+        <ChatInputBar value={input} onChange={setInput} onSubmit={() => send(input)}
+          loading={loading}
+          placeholder="Ask a question to compare with and without knowledge graph..."
+          buttonLabel="Compare" buttonColor="bg-emerald-600"
+          onClear={(compareResult || messages.length > 0) ? clearChat : undefined} />
+
+        {/* Loading */}
+        {loading && !compareResult && (
+          <div className="card p-4 flex items-center gap-3">
+            <span className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse" />
+            <span className="text-sm text-slate-600 dark:text-slate-300">
+              {stage === 'comparing' ? 'Generating comparison analysis...' :
+               stage === 'with_graph_running' ? 'Running with-graph agent...' :
+               stage === 'without_graph_running' ? 'Running without-graph agent...' :
+               stage === 'with_graph_done' ? 'With-graph done, waiting for without-graph...' :
+               stage === 'without_graph_done' ? 'Without-graph done, waiting for with-graph...' :
+               'Running both agents in parallel...'}
+            </span>
+            {elapsedSec > 0 && <span className="ml-auto text-xs tabular-nums text-slate-400">{Math.floor(elapsedSec / 60)}:{String(elapsedSec % 60).padStart(2, '0')}</span>}
+          </div>
+        )}
+
+        {/* Error messages */}
+        {messages.filter(m => m.role === 'error').map((m, i) => (
+          <div key={i} className="card p-3 border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20 text-sm text-red-700 dark:text-red-300">{m.content}</div>
+        ))}
+
+        {/* Compare results */}
+        {compareResult && (
+          <>
+            {compareResult.comparison_analysis && (
+              <div className="card p-4 border-emerald-200 dark:border-emerald-800/40 bg-emerald-50/50 dark:bg-emerald-900/10">
+                <h3 className="text-sm font-bold text-emerald-700 dark:text-emerald-400 mb-2">Graph Value Analysis</h3>
+                <div className="text-sm text-slate-700 dark:text-slate-300 prose prose-sm max-w-none"
+                  dangerouslySetInnerHTML={{ __html: simpleMarkdown(compareResult.comparison_analysis) }} />
+              </div>
+            )}
+            <div className="flex gap-4">
+              {/* With Graph */}
+              <div className="flex-1 min-w-0 card p-4 border-violet-200 dark:border-violet-800/40">
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="text-sm font-bold text-violet-700 dark:text-violet-400">With Knowledge Graph</h3>
+                  {compareResult.with_graph?.timing?.total && (
+                    <span className="text-xs text-slate-400">{compareResult.with_graph.timing.total.toFixed(1)}s</span>
+                  )}
+                </div>
+                {compareResult.with_graph?.error ? (
+                  <div className="text-xs text-red-500 bg-red-50 dark:bg-red-900/20 rounded p-2">{compareResult.with_graph.error}</div>
+                ) : (
+                  <>
+                    <div className="text-sm text-slate-700 dark:text-slate-300 prose prose-sm max-w-none overflow-x-auto break-words max-h-[60vh] overflow-y-auto scrollbar-thin"
+                      dangerouslySetInnerHTML={{ __html: simpleMarkdown(compareResult.with_graph?.answer || '') }} />
+                    {compareResult.with_graph?.tool_calls?.length > 0 && (
+                      <div className="mt-3 pt-2 border-t border-slate-200 dark:border-slate-700">
+                        <p className="text-xs font-semibold text-slate-400 mb-1">Tools ({compareResult.with_graph.tool_calls.length}):</p>
+                        <div className="flex flex-wrap gap-1">
+                          {compareResult.with_graph.tool_calls.map((t, i) => (
+                            <span key={i} className="text-xs px-2 py-0.5 rounded-full bg-violet-100 dark:bg-violet-900/30 text-violet-700 dark:text-violet-300">{t}</span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+              {/* Without Graph */}
+              <div className="flex-1 min-w-0 card p-4 border-slate-200 dark:border-slate-700">
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="text-sm font-bold text-slate-600 dark:text-slate-400">Without Knowledge Graph</h3>
+                  {compareResult.without_graph?.timing?.total && (
+                    <span className="text-xs text-slate-400">{compareResult.without_graph.timing.total.toFixed(1)}s</span>
+                  )}
+                </div>
+                {compareResult.without_graph?.error ? (
+                  <div className="text-xs text-red-500 bg-red-50 dark:bg-red-900/20 rounded p-2">{compareResult.without_graph.error}</div>
+                ) : (
+                  <>
+                    <div className="text-sm text-slate-700 dark:text-slate-300 prose prose-sm max-w-none overflow-x-auto break-words max-h-[60vh] overflow-y-auto scrollbar-thin"
+                      dangerouslySetInnerHTML={{ __html: simpleMarkdown(compareResult.without_graph?.answer || '') }} />
+                    {compareResult.without_graph?.tool_calls?.length > 0 && (
+                      <div className="mt-3 pt-2 border-t border-slate-200 dark:border-slate-700">
+                        <p className="text-xs font-semibold text-slate-400 mb-1">Tools ({compareResult.without_graph.tool_calls.length}):</p>
+                        <div className="flex flex-wrap gap-1">
+                          {compareResult.without_graph.tool_calls.map((t, i) => (
+                            <span key={i} className="text-xs px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300">{t}</span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+            </div>
+          </>
+        )}
+      </div>
+      ) : (
       <div className="flex gap-5">
       <ErrorBanner error={error} />
 

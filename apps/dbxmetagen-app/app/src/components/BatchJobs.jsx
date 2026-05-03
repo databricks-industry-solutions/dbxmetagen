@@ -167,6 +167,8 @@ export default function BatchJobs({ onNavigate }) {
   const [lakebaseCatalog, setLakebaseCatalog] = useState('')
   const [lakebaseError, setLakebaseError] = useState(null)
   const [lakebaseConfigured, setLakebaseConfigured] = useState(false)
+  const [mcpDropExisting, setMcpDropExisting] = useState(false)
+  const [mcpError, setMcpError] = useState(null)
   const [importStatus, setImportStatus] = useState(null)
   const [availableModels, setAvailableModels] = useState(['databricks-claude-sonnet-4-6', 'databricks-gpt-oss-120b'])
   const pollRef = useRef(null)
@@ -353,6 +355,19 @@ export default function BatchJobs({ onNavigate }) {
       }, 'lakebase')
     } catch (e) {
       setLakebaseError(e.message || 'Lakebase sync failed')
+    }
+  }
+
+  const setupMcpServers = async () => {
+    setMcpError(null)
+    try {
+      await runJob('setup_mcp_servers', {
+        catalog_name: catalogName,
+        schema_name: schemaName,
+        extra_params: { drop_existing: String(mcpDropExisting) },
+      }, 'mcp_setup')
+    } catch (e) {
+      setMcpError(e.message || 'MCP setup failed')
     }
   }
 
@@ -873,6 +888,37 @@ export default function BatchJobs({ onNavigate }) {
               {lakebaseError && (
                 <div className="text-xs text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 rounded-lg px-3 py-2">
                   {lakebaseError}
+                </div>
+              )}
+            </div>
+
+            {/* MCP servers setup card */}
+            <div className="mt-2 card p-4 border border-dbx-oat-dark/30 dark:border-dbx-navy-400/20 bg-dbx-oat-light/50 dark:bg-dbx-navy/30 space-y-3">
+              <div className="flex items-center gap-2">
+                <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200">Setup MCP Servers</h3>
+                <span className="relative group/tip">
+                  <svg className="w-4 h-4 text-slate-400 cursor-help" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                  <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-72 p-2 text-xs text-slate-200 bg-slate-800 rounded-lg shadow-lg opacity-0 group-hover/tip:opacity-100 pointer-events-none transition-opacity z-10">
+                    Creates UC functions and validates the Vector Search index for MCP server access. Exposes knowledge base, knowledge graph, FK predictions, and ontology entities as MCP tools for Cursor, Claude Code, AI Playground, and custom agents.
+                  </span>
+                </span>
+              </div>
+              <div className="flex items-end gap-3">
+                <label className="flex items-center gap-1.5 text-xs text-slate-600 dark:text-slate-400 cursor-pointer select-none">
+                  <input type="checkbox" checked={mcpDropExisting} onChange={e => setMcpDropExisting(e.target.checked)}
+                    className="rounded border-slate-300 dark:border-slate-600 text-dbx-orange focus:ring-dbx-orange/50" />
+                  Recreate existing functions
+                </label>
+                <button onClick={setupMcpServers} disabled={!!runningAction || !catalogName.trim() || !schemaName.trim()}
+                  className="btn-secondary btn-md whitespace-nowrap">
+                  {runningAction === 'mcp_setup' ? 'Starting...' : 'Setup MCP Servers'}
+                </button>
+              </div>
+              {mcpError && (
+                <div className="text-xs text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 rounded-lg px-3 py-2">
+                  {mcpError}
                 </div>
               )}
             </div>

@@ -1253,7 +1253,7 @@ def _gather_vs_only(query: str, cancel: threading.Event,
 def _gather_vs_expand(query: str, cancel: threading.Event,
                       session_id: Optional[str] = None, intent_type: str = "new_question",
                       intent_domain: Optional[str] = None, num_results: int = 5,
-                      comparison_intent: bool = False):
+                      comparison_intent: bool = False, skip_graph: bool = False):
     """VS + 1-hop expand + FK. No BFS traversal, no _plan_retrieval."""
     parts = []
     tools_used = []
@@ -1288,9 +1288,9 @@ def _gather_vs_expand(query: str, cancel: threading.Event,
     if cancel.is_set():
         return "\n\n".join(parts), graph_data, tools_used, failed_sources, timing, parts
 
-    # 1-hop expand
+    # 1-hop expand (skipped when skip_graph=True)
     with measure_phase("graph_expand", timing):
-        if node_ids:
+        if node_ids and not skip_graph:
             exp_tr = _safe_tool_call(expand_vs_hits,
                                      {"node_ids": node_ids[:5], "edge_types": _DEFAULT_EDGE_TYPES},
                                      TOOL_TIMEOUT, "expand_vs_hits", 2, 5)
@@ -1339,7 +1339,8 @@ def _gather_graphrag(query: str, cancel: threading.Event,
                      session_id: Optional[str] = None, intent_type: str = "new_question",
                      intent_domain: Optional[str] = None,
                      max_hops: int = 3, max_traversal_nodes: int = 3,
-                     num_results: int = 10, comparison_intent: bool = False):
+                     num_results: int = 10, comparison_intent: bool = False,
+                     skip_graph: bool = False):
     """Deterministic GraphRAG data gathering with parallel execution.
 
     Pipeline: plan -> VS -> [expand + traverse] parallel -> SPARQL ontology -> [FK SQL + structured retrieval] parallel
@@ -1367,7 +1368,7 @@ def _gather_graphrag(query: str, cancel: threading.Event,
             failed_sources.append(tr)
 
     # Discovery-domain enumeration: direct SQL against ontology tables first
-    if intent_domain == "discovery":
+    if intent_domain == "discovery" and not skip_graph:
         _emit("gathering", "Querying ontology catalog for entity enumeration...")
         disc_parts, disc_tools, disc_failed, disc_timing = _gather_discovery(query, cancel)
         parts.extend(disc_parts)
@@ -1377,23 +1378,30 @@ def _gather_graphrag(query: str, cancel: threading.Event,
         if cancel.is_set():
             return "\n\n".join(parts), graph_data, tools_used, failed_sources, timing, parts
 
-    ontology_edge_types = _discover_ontology_edge_types()
+    if not skip_graph:
+        ontology_edge_types = _discover_ontology_edge_types()
 
-    with measure_phase("plan_retrieval", timing):
-        _emit("gathering", f"Step 1/{total}: Planning retrieval strategy...")
-        from agent.common import plan_cache_get, plan_cache_put
-        cached_plan = plan_cache_get(session_id or "", intent_domain or "general") if session_id else None
-        if cached_plan:
-            plan = cached_plan
-        else:
-            plan = _plan_retrieval(query, cancel, extra_edge_types=ontology_edge_types)
-            if session_id:
-                plan_cache_put(session_id, intent_domain or "general", plan)
-    planned_edge_types = plan["edge_types"]
-    planned_traverse_et = plan["traverse_edge_type"]
-    planned_direction = plan["direction"]
-    logger.info("[deep_analysis] Plan: expand=%s, traverse=%s, direction=%s",
-                planned_edge_types, planned_traverse_et, planned_direction)
+        with measure_phase("plan_retrieval", timing):
+            _emit("gathering", f"Step 1/{total}: Planning retrieval strategy...")
+            from agent.common import plan_cache_get, plan_cache_put
+            cached_plan = plan_cache_get(session_id or "", intent_domain or "general") if session_id else None
+            if cached_plan:
+                plan = cached_plan
+            else:
+                plan = _plan_retrieval(query, cancel, extra_edge_types=ontology_edge_types)
+                if session_id:
+                    plan_cache_put(session_id, intent_domain or "general", plan)
+        planned_edge_types = plan["edge_types"]
+        planned_traverse_et = plan["traverse_edge_type"]
+        planned_direction = plan["direction"]
+        logger.info("[deep_analysis] Plan: expand=%s, traverse=%s, direction=%s",
+                    planned_edge_types, planned_traverse_et, planned_direction)
+    else:
+        plan = {"edge_types": _DEFAULT_EDGE_TYPES, "traverse_edge_type": "references",
+                "direction": "outgoing", "requires_structured_retrieval": True}
+        planned_edge_types = plan["edge_types"]
+        planned_traverse_et = plan["traverse_edge_type"]
+        planned_direction = plan["direction"]
 
     if cancel.is_set():
         return "\n\n".join(parts), graph_data, tools_used, failed_sources, timing, parts
@@ -1446,57 +1454,58 @@ def _gather_graphrag(query: str, cancel: threading.Event,
         et for et in planned_edge_types if et != planned_traverse_et
     ]
 
-    # Group A (parallel): expand_vs_hits + traverse_graph
-    with measure_phase("graph_expand_traverse", timing):
-        if node_ids:
-            trav_nodes = _pick_traversal_nodes(node_ids, table_names)
-            with ThreadPoolExecutor(max_workers=4) as pool:
-                ctx = contextvars.copy_context()
-                expand_future = pool.submit(
-                    ctx.run, _safe_tool_call, expand_vs_hits,
-                    {"node_ids": node_ids[:5], "edge_types": planned_edge_types},
-                    TOOL_TIMEOUT, "expand_vs_hits", 3, total,
-                )
-                trav_futures = []
-                for i, nid in enumerate(trav_nodes[:max_traversal_nodes]):
+    # Group A (parallel): expand_vs_hits + traverse_graph (skipped when skip_graph=True)
+    if not skip_graph:
+        with measure_phase("graph_expand_traverse", timing):
+            if node_ids:
+                trav_nodes = _pick_traversal_nodes(node_ids, table_names)
+                with ThreadPoolExecutor(max_workers=4) as pool:
                     ctx = contextvars.copy_context()
-                    trav_futures.append(pool.submit(
-                        ctx.run, _safe_tool_call, traverse_graph,
-                        {"start_node": nid, "max_hops": max_hops,
-                         "edge_types": traverse_et_list, "direction": planned_direction},
-                        TOOL_TIMEOUT, f"traverse_graph({nid.split('.')[-1]})", 4 + i, total,
-                    ))
+                    expand_future = pool.submit(
+                        ctx.run, _safe_tool_call, expand_vs_hits,
+                        {"node_ids": node_ids[:5], "edge_types": planned_edge_types},
+                        TOOL_TIMEOUT, "expand_vs_hits", 3, total,
+                    )
+                    trav_futures = []
+                    for i, nid in enumerate(trav_nodes[:max_traversal_nodes]):
+                        ctx = contextvars.copy_context()
+                        trav_futures.append(pool.submit(
+                            ctx.run, _safe_tool_call, traverse_graph,
+                            {"start_node": nid, "max_hops": max_hops,
+                             "edge_types": traverse_et_list, "direction": planned_direction},
+                            TOOL_TIMEOUT, f"traverse_graph({nid.split('.')[-1]})", 4 + i, total,
+                        ))
 
-                exp_tr = expand_future.result()
-                _collect(exp_tr, "expand_vs_hits (graph expansion)", B.GRAPH_EXPANSION)
+                    exp_tr = expand_future.result()
+                    _collect(exp_tr, "expand_vs_hits (graph expansion)", B.GRAPH_EXPANSION)
 
-                for ft in trav_futures:
-                    trav_tr = ft.result()
-                    if trav_tr.success and trav_tr.data:
-                        trav_str = trav_tr.data if isinstance(trav_tr.data, str) else json.dumps(trav_tr.data)
-                        tools_used.append("traverse_graph")
-                        parts.append(f"### Source: traverse_graph\n{_truncate_part(trav_str, B.GRAPH_TRAVERSAL)}")
-                        chunk = _parse_json(trav_str)
-                        if chunk and isinstance(chunk, dict):
-                            graph_data = _merge_graph_data(graph_data, chunk)
-                    elif not trav_tr.success:
-                        failed_sources.append(trav_tr)
-        else:
-            logger.info("[deep_analysis] Group A: SKIP (no node_ids)")
-            _emit("gathering", f"Step 3/{total}: No nodes to expand, skipping...")
+                    for ft in trav_futures:
+                        trav_tr = ft.result()
+                        if trav_tr.success and trav_tr.data:
+                            trav_str = trav_tr.data if isinstance(trav_tr.data, str) else json.dumps(trav_tr.data)
+                            tools_used.append("traverse_graph")
+                            parts.append(f"### Source: traverse_graph\n{_truncate_part(trav_str, B.GRAPH_TRAVERSAL)}")
+                            chunk = _parse_json(trav_str)
+                            if chunk and isinstance(chunk, dict):
+                                graph_data = _merge_graph_data(graph_data, chunk)
+                        elif not trav_tr.success:
+                            failed_sources.append(trav_tr)
+            else:
+                logger.info("[deep_analysis] Group A: SKIP (no node_ids)")
+                _emit("gathering", f"Step 3/{total}: No nodes to expand, skipping...")
 
-    if cancel.is_set():
-        return "\n\n".join(parts), graph_data, tools_used, failed_sources, timing, parts
+        if cancel.is_set():
+            return "\n\n".join(parts), graph_data, tools_used, failed_sources, timing, parts
 
-    if table_names:
-        with measure_phase("sparql_ontology", timing):
-            try:
-                sparql_result = _sparql_ontology_query(table_names)
-                if sparql_result:
-                    tools_used.append("sparql_ontology_query")
-                    parts.append(f"### Source: sparql_ontology_query (formal RDF ontology)\n{_truncate_part(sparql_result, B.GRAPH_TRAVERSAL)}")
-            except Exception as e:
-                logger.debug("SPARQL ontology query failed (non-critical): %s", e)
+        if table_names:
+            with measure_phase("sparql_ontology", timing):
+                try:
+                    sparql_result = _sparql_ontology_query(table_names)
+                    if sparql_result:
+                        tools_used.append("sparql_ontology_query")
+                        parts.append(f"### Source: sparql_ontology_query (formal RDF ontology)\n{_truncate_part(sparql_result, B.GRAPH_TRAVERSAL)}")
+                except Exception as e:
+                    logger.debug("SPARQL ontology query failed (non-critical): %s", e)
 
     if cancel.is_set():
         return "\n\n".join(parts), graph_data, tools_used, failed_sources, timing, parts
@@ -1594,10 +1603,12 @@ def _run_pipeline(query: str, mode: str, cancel: threading.Event,
                    intent_type: str = "new_question",
                    intent_domain: Optional[str] = None,
                    complexity: str = "moderate",
-                   comparison_intent: bool = False) -> Optional[Dict]:
+                   comparison_intent: bool = False,
+                   skip_graph: bool = False) -> Optional[Dict]:
     """Two-phase pipeline: gather context deterministically, then single LLM call."""
     t0 = time.time()
-    logger.info("[deep_analysis] PIPELINE START mode=%s complexity=%s query=%s", mode, complexity, query[:120])
+    logger.info("[deep_analysis] PIPELINE START mode=%s complexity=%s skip_graph=%s query=%s",
+                mode, complexity, skip_graph, query[:120])
     B = EvidenceBudget
 
     num_results = _NUM_RESULTS_BY_COMPLEXITY.get(complexity, 5)
@@ -1611,6 +1622,11 @@ def _run_pipeline(query: str, mode: str, cancel: threading.Event,
         if mode != "graphrag":
             context, tools_used, failed_sources, timing = _gather_baseline(query, cancel)
             graph_data = {}
+        elif skip_graph:
+            context, graph_data, tools_used, failed_sources, timing, raw_parts = _gather_vs_expand(
+                query, cancel, session_id, intent_type=intent_type,
+                intent_domain=intent_domain, num_results=num_results,
+                comparison_intent=comparison_intent, skip_graph=True)
         elif complexity == "simple":
             context, graph_data, tools_used, failed_sources, timing, raw_parts = _gather_vs_only(
                 query, cancel, session_id, intent_type=intent_type,
@@ -1627,7 +1643,7 @@ def _run_pipeline(query: str, mode: str, cancel: threading.Event,
                 query, cancel, session_id, intent_type=intent_type,
                 intent_domain=intent_domain, max_hops=max_hops,
                 max_traversal_nodes=max_trav, num_results=num_results,
-                comparison_intent=comparison_intent)
+                comparison_intent=comparison_intent, skip_graph=skip_graph)
         if gather_span and hasattr(gather_span, "set_attributes"):
             gather_span.set_attributes({
                 "mode": mode, "complexity": complexity,
@@ -1897,3 +1913,118 @@ def run_deep_analysis_streaming(
 
     threading.Thread(target=_run, daemon=True).start()
     return q, cancel
+
+
+# ---------------------------------------------------------------------------
+# Graph Evaluation Compare
+# ---------------------------------------------------------------------------
+
+def _generate_graph_comparison(question: str, with_graph: Dict, without_graph: Dict) -> Optional[str]:
+    """LLM call comparing with-graph vs without-graph results."""
+    try:
+        resp = _llm().invoke([HumanMessage(content=f"""You are an objective evaluator comparing two metadata analysis agents that answered the same question.
+
+Agent A ("With Graph") had full access to: knowledge graph traversal, ontology entities, graph expansion, SPARQL queries, plus vector search, FK predictions, and structured SQL retrieval.
+Agent B ("Without Graph") only had: vector search, FK predictions, column profiling, and structured SQL retrieval. No graph traversal or ontology access.
+
+QUESTION: {question}
+
+WITH GRAPH:
+- Answer: {(with_graph.get('answer', '') or '')[:800]}
+- Tools used: {with_graph.get('tool_calls', [])}
+- Timing: {with_graph.get('timing', {{}})}
+
+WITHOUT GRAPH:
+- Answer: {(without_graph.get('answer', '') or '')[:800]}
+- Tools used: {without_graph.get('tool_calls', [])}
+- Timing: {without_graph.get('timing', {{}})}
+
+Write 3-5 sentences of analysis:
+1. Did the graph add meaningful information that the no-graph agent missed?
+2. What specific relationships, entities, or context did the graph provide?
+3. Was there a quality/completeness difference in the final answer?
+4. Was there a meaningful time difference?
+Be factual and balanced -- if the graph didn't help much for this question, say so honestly.""")])
+        return sanitize_output(resp.content)
+    except Exception as e:
+        logger.warning("Graph comparison LLM failed: %s", e)
+        return None
+
+
+@trace(name="deep_analysis_compare", span_type="CHAIN")
+def run_deep_analysis_compare(
+    message: str,
+    history: Optional[List[Dict]] = None,
+    session_id: Optional[str] = None,
+    progress_queue: Optional[queue.Queue] = None,
+) -> Dict:
+    """Run with-graph and without-graph variants in parallel for graph evaluation."""
+    ensure_mlflow_context()
+    tag_trace(session_id=session_id, agent="deep_analysis", mode="compare")
+
+    intent_result = classify_and_contextualize(message[:500], history)
+    if intent_result.intent_type == "meta" and intent_result.domain in (
+            "discovery", "query", "governance", "relationship"):
+        intent_result.intent_type = "new_question"
+
+    if intent_result.intent_type in ("irrelevant", "meta"):
+        answer = intent_result.meta_answer or "I can help you analyze your data catalog."
+        single = {"answer": answer, "tool_calls": [], "mode": "graphrag",
+                  "intent": intent_result.intent_type}
+        return {"with_graph": single, "without_graph": single, "comparison_analysis": None}
+
+    query = intent_result.context_summary
+    shared_kwargs = dict(
+        session_id=session_id,
+        intent_type=intent_result.intent_type,
+        intent_domain=intent_result.domain,
+        complexity=intent_result.complexity or "moderate",
+        comparison_intent=intent_result.comparison_intent,
+    )
+
+    results: Dict[str, Optional[Dict]] = {"with_graph": None, "without_graph": None}
+    errors: Dict[str, Optional[str]] = {"with_graph": None, "without_graph": None}
+
+    def _run_variant(key: str, skip_graph: bool):
+        try:
+            if progress_queue:
+                progress_queue.put({"stage": f"{key}_running"})
+            cancel = threading.Event()
+            r = _run_pipeline(query, "graphrag", cancel, skip_graph=skip_graph, **shared_kwargs)
+            if r:
+                r["intent"] = intent_result.intent_type
+            results[key] = r or {"answer": "Analysis could not be completed.",
+                                 "tool_calls": [], "mode": "graphrag"}
+            if progress_queue:
+                progress_queue.put({"stage": f"{key}_done"})
+        except Exception as e:
+            logger.exception("Graph eval %s failed", key)
+            errors[key] = str(e)
+            if progress_queue:
+                progress_queue.put({"stage": f"{key}_error", "error": str(e)})
+
+    if progress_queue:
+        progress_queue.put({"stage": "starting"})
+
+    t1 = threading.Thread(target=_run_variant, args=("with_graph", False), daemon=True)
+    t2 = threading.Thread(target=_run_variant, args=("without_graph", True), daemon=True)
+    t1.start()
+    t2.start()
+    t1.join(timeout=150)
+    t2.join(timeout=150)
+
+    with_res = results["with_graph"] or {"error": errors["with_graph"] or "Timeout"}
+    without_res = results["without_graph"] or {"error": errors["without_graph"] or "Timeout"}
+
+    comparison = None
+    if not with_res.get("error") and not without_res.get("error"):
+        if progress_queue:
+            progress_queue.put({"stage": "comparing"})
+        comparison = _generate_graph_comparison(message, with_res, without_res)
+
+    if progress_queue:
+        progress_queue.put({"stage": "done", "with_graph": with_res,
+                            "without_graph": without_res, "comparison_analysis": comparison})
+
+    return {"with_graph": with_res, "without_graph": without_res,
+            "comparison_analysis": comparison}

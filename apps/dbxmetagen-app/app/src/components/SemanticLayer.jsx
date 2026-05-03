@@ -15,6 +15,167 @@ const STAGES = {
   done: 'Complete',
 }
 
+// ---------------------------------------------------------------------------
+// MV Analysis Panel
+// ---------------------------------------------------------------------------
+
+const _issueSevStyles = {
+  high: 'text-red-700 dark:text-red-400 bg-red-100 dark:bg-red-900/30',
+  medium: 'text-amber-700 dark:text-amber-400 bg-amber-100 dark:bg-amber-900/30',
+  low: 'text-slate-700 dark:text-slate-400 bg-slate-100 dark:bg-slate-900/30',
+}
+
+function MvAnalysisPanel({ issues, onClose, onApplyFix }) {
+  if (!issues || issues.length === 0) return (
+    <div className="mt-2 p-3 bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-700 rounded text-xs text-emerald-700 dark:text-emerald-400">
+      No issues found.
+      <button onClick={onClose} className="ml-2 text-slate-400 hover:text-slate-600">Close</button>
+    </div>
+  )
+  return (
+    <div className="mt-2 p-3 border border-cyan-200 dark:border-cyan-700 rounded space-y-2">
+      <div className="flex items-center justify-between">
+        <span className="text-xs font-medium text-slate-700 dark:text-slate-300">Analysis Issues ({issues.length})</span>
+        <button onClick={onClose} className="text-xs text-slate-400 hover:text-slate-600">Close</button>
+      </div>
+      {issues.map((iss, i) => (
+        <div key={i} className="flex items-start gap-2 text-xs py-1">
+          <span className={`px-1.5 py-0.5 rounded font-medium shrink-0 ${_issueSevStyles[iss.severity] || _issueSevStyles.low}`}>{iss.severity}</span>
+          <div className="flex-1 min-w-0">
+            <p className="text-slate-700 dark:text-slate-300">{iss.message}</p>
+            {iss.field && <p className="text-slate-400 text-[10px]">Field: {iss.field}</p>}
+            {iss.suggestion && (
+              <div className="flex items-center gap-2 mt-1">
+                <p className="text-slate-500 dark:text-slate-400 italic flex-1">{iss.suggestion}</p>
+                {iss.field && iss.suggestion && onApplyFix && (
+                  <button onClick={() => onApplyFix(iss.field, iss.suggestion)}
+                    className="shrink-0 px-1.5 py-0.5 text-[10px] bg-cyan-600 text-white rounded hover:bg-cyan-700">Apply</button>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// MV Structured Editor
+// ---------------------------------------------------------------------------
+
+function MvStructuredEditor({ defn, setDefn, onSave, onCancel }) {
+  const update = (path, val) => {
+    const d = JSON.parse(JSON.stringify(defn))
+    const tokens = path.split('.')
+    let cur = d
+    for (let i = 0; i < tokens.length - 1; i++) {
+      const t = tokens[i]
+      const m = t.match(/^(\w+)\[(\d+)\]$/)
+      if (m) { cur = cur[m[1]][parseInt(m[2])] }
+      else { cur = cur[t] }
+    }
+    const last = tokens[tokens.length - 1]
+    const lm = last.match(/^(\w+)\[(\d+)\]$/)
+    if (lm) { cur[lm[1]][parseInt(lm[2])] = val }
+    else { cur[last] = val }
+    setDefn(d)
+  }
+
+  const SmallInput = ({ label, value, onChange, className = '', textarea = false }) => {
+    const Tag = textarea ? 'textarea' : 'input'
+    return (
+      <label className="block text-[10px] text-slate-500 dark:text-slate-400">
+        {label}
+        <Tag value={value || ''} onChange={e => onChange(e.target.value)}
+          className={`mt-0.5 block w-full px-2 py-1 text-xs border rounded dark:bg-gray-900 dark:border-gray-600 dark:text-gray-200 ${textarea ? 'min-h-[48px] resize-y' : ''} ${className}`}
+          rows={textarea ? 2 : undefined} />
+      </label>
+    )
+  }
+
+  const ItemRow = ({ type, idx, item }) => (
+    <div className="flex flex-wrap gap-2 py-1.5 border-b border-slate-100 dark:border-gray-700 last:border-0">
+      <SmallInput label="Name" value={item.name} onChange={v => update(`${type}[${idx}].name`, v)} className="w-28" />
+      <SmallInput label="Expression" value={item.expr} onChange={v => update(`${type}[${idx}].expr`, v)} className="w-48 font-mono" />
+      <SmallInput label="Comment" value={item.comment} onChange={v => update(`${type}[${idx}].comment`, v)} className="flex-1" />
+      <SmallInput label="Synonyms (comma-sep)" value={Array.isArray(item.synonyms) ? item.synonyms.join(', ') : (item.synonyms || '')}
+        onChange={v => update(`${type}[${idx}].synonyms`, v.split(',').map(s => s.trim()).filter(Boolean))} className="w-36" />
+    </div>
+  )
+
+  const addItem = (type) => {
+    const d = JSON.parse(JSON.stringify(defn))
+    if (!d[type]) d[type] = []
+    d[type].push({ name: '', expr: '', comment: '' })
+    setDefn(d)
+  }
+
+  const removeItem = (type, idx) => {
+    const d = JSON.parse(JSON.stringify(defn))
+    d[type].splice(idx, 1)
+    setDefn(d)
+  }
+
+  return (
+    <div className="bg-dbx-oat dark:bg-gray-900 border dark:border-gray-600 rounded p-3 space-y-3 text-xs">
+      <SmallInput label="Source table" value={defn.source} className="font-mono bg-slate-50 dark:bg-gray-800 cursor-default" onChange={() => {}} />
+      <SmallInput label="Comment" value={defn.comment} onChange={v => update('comment', v)} textarea />
+
+      {/* Dimensions */}
+      <div>
+        <div className="flex items-center justify-between mb-1">
+          <span className="font-medium text-slate-700 dark:text-slate-300">Dimensions ({(defn.dimensions || []).length})</span>
+          <button onClick={() => addItem('dimensions')} className="text-[10px] text-blue-600 hover:underline">+ Add</button>
+        </div>
+        {(defn.dimensions || []).map((dim, i) => (
+          <div key={i} className="relative group">
+            <ItemRow type="dimensions" idx={i} item={dim} />
+            <button onClick={() => removeItem('dimensions', i)} className="absolute -right-1 top-0 hidden group-hover:block text-red-400 hover:text-red-600 text-xs">x</button>
+          </div>
+        ))}
+      </div>
+
+      {/* Measures */}
+      <div>
+        <div className="flex items-center justify-between mb-1">
+          <span className="font-medium text-slate-700 dark:text-slate-300">Measures ({(defn.measures || []).length})</span>
+          <button onClick={() => addItem('measures')} className="text-[10px] text-blue-600 hover:underline">+ Add</button>
+        </div>
+        {(defn.measures || []).map((meas, i) => (
+          <div key={i} className="relative group">
+            <ItemRow type="measures" idx={i} item={meas} />
+            <button onClick={() => removeItem('measures', i)} className="absolute -right-1 top-0 hidden group-hover:block text-red-400 hover:text-red-600 text-xs">x</button>
+          </div>
+        ))}
+      </div>
+
+      {/* Joins */}
+      {(defn.joins || []).length > 0 && (
+        <div>
+          <span className="font-medium text-slate-700 dark:text-slate-300">Joins ({defn.joins.length})</span>
+          {defn.joins.map((j, i) => (
+            <div key={i} className="flex flex-wrap gap-2 py-1.5 border-b border-slate-100 dark:border-gray-700">
+              <SmallInput label="Name" value={j.name} onChange={v => update(`joins[${i}].name`, v)} className="w-28" />
+              <SmallInput label="Source" value={j.source} onChange={v => update(`joins[${i}].source`, v)} className="w-48 font-mono" />
+              <SmallInput label="On" value={j.on} onChange={v => update(`joins[${i}].on`, v)} className="flex-1 font-mono" />
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Filter */}
+      <SmallInput label="Filter" value={defn.filter} onChange={v => update('filter', v)} className="font-mono" />
+
+      <div className="flex justify-end gap-2 pt-2">
+        <button onClick={onCancel} className="px-3 py-1 text-xs border rounded text-slate-600 hover:bg-slate-50 dark:text-slate-300 dark:hover:bg-gray-800">Cancel</button>
+        <button onClick={onSave} className="px-3 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700">Save</button>
+      </div>
+    </div>
+  )
+}
+
+
 function kpiMatchesTables(k, selectedTables) {
   const kt = Array.isArray(k.target_tables) ? k.target_tables : []
   if (!kt.length) return true
@@ -58,6 +219,13 @@ export default function SemanticLayer() {
   // Per-definition action state
   const [actionLoading, setActionLoading] = useState({})
   const [globalTargetOverride, setGlobalTargetOverride] = useState('')
+
+  // MV health + analysis per definition
+  const [mvHealth, setMvHealth] = useState({})
+  const [mvAnalysis, setMvAnalysis] = useState({})
+  const [mvAnalysisExpanded, setMvAnalysisExpanded] = useState(null)
+  const [structuredEditing, setStructuredEditing] = useState(null)
+  const [structuredDraft, setStructuredDraft] = useState(null)
   const userEditedTargetRef = useRef(false)
   const [perMvTargets, setPerMvTargets] = useState({})
   const [createError, setCreateError] = useState({})
@@ -437,12 +605,13 @@ export default function SemanticLayer() {
 
   // --- Definitions ---
   const loadDefinitionJson = async (defId) => {
-    if (expandedDef === defId) { setExpandedDef(null); setExpandedJson(null); return }
+    if (expandedDef === defId) { setExpandedDef(null); setExpandedJson(null); setStructuredEditing(null); setStructuredDraft(null); return }
     const { data, error: err } = await cachedFetchObj(`/api/semantic-layer/definitions/${defId}/json`, {}, TTL.CONFIG)
     if (err) { setError(err); return }
     setExpandedDef(defId)
     try { setExpandedJson(JSON.stringify(JSON.parse(data.json_definition), null, 2)) }
     catch { setExpandedJson(data.json_definition) }
+    fetchMvHealth(defId)
   }
 
   const retryDefinition = async (defId) => {
@@ -469,6 +638,45 @@ export default function SemanticLayer() {
       refreshDefinitions()
     } catch (e) { setError(e.message) }
     setActionLoading(prev => ({ ...prev, [defId]: null }))
+  }
+
+  const fetchMvHealth = async (defId) => {
+    try {
+      const res = await fetch(`/api/semantic-layer/definitions/${defId}/health-check`, { method: 'POST' })
+      if (res.ok) {
+        const data = await res.json()
+        setMvHealth(prev => ({ ...prev, [defId]: data }))
+      }
+    } catch {}
+  }
+
+  const analyzeMv = async (defId) => {
+    setActionLoading(prev => ({ ...prev, [defId]: 'analyze' }))
+    setMvAnalysis(prev => ({ ...prev, [defId]: null }))
+    setMvAnalysisExpanded(defId)
+    try {
+      const res = await fetch(`/api/semantic-layer/definitions/${defId}/analyze`, { method: 'POST' })
+      if (res.ok) {
+        const data = await res.json()
+        setMvHealth(prev => ({ ...prev, [defId]: data.health }))
+        setMvAnalysis(prev => ({ ...prev, [defId]: data.issues || [] }))
+      }
+    } catch (e) { setError(e.message) }
+    setActionLoading(prev => ({ ...prev, [defId]: null }))
+  }
+
+  const applyFieldFix = async (defId, path, value) => {
+    try {
+      const res = await fetch(`/api/semantic-layer/definitions/${defId}/field`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path, value }),
+      })
+      if (res.ok) {
+        invalidateCache('/api/semantic-layer/definitions')
+        refreshDefinitions()
+        fetchMvHealth(defId)
+      }
+    } catch (e) { setError(e.message) }
   }
 
   const createDefinition = async (defId) => {
@@ -664,6 +872,25 @@ export default function SemanticLayer() {
       if (!res.ok) setError(data.detail || 'Drop failed')
       invalidateCache('/api/semantic-layer/definitions')
       refreshDefinitions()
+    } catch (e) { setError(e.message) }
+    setActionLoading(prev => ({ ...prev, [defId]: null }))
+  }
+
+  const transferOwnership = async (defId) => {
+    if (!confirm('Transfer ownership of this metric view to you? The app will no longer be able to edit or drop this view.')) return
+    const dd = definitions.find(x => x.definition_id === defId)
+    const dt = getEffectiveTarget(dd || {})
+    const [tCat, tSch] = dt.includes('.') ? dt.split('.') : ['', '']
+    if (!tCat || !tSch) { setError('No target schema resolved'); return }
+    setActionLoading(prev => ({ ...prev, [defId]: 'transfer' }))
+    setError(null)
+    try {
+      const res = await fetch(`/api/semantic-layer/definitions/${defId}/transfer-ownership`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ target_catalog: tCat, target_schema: tSch }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) setError(data.detail || 'Transfer failed')
     } catch (e) { setError(e.message) }
     setActionLoading(prev => ({ ...prev, [defId]: null }))
   }
@@ -1148,6 +1375,7 @@ export default function SemanticLayer() {
 
       <div className="text-xs text-slate-500 dark:text-slate-400 space-y-1">
         <p>Each definition below is a metric view. The lifecycle is: <strong>Generated</strong> &rarr; <strong>Validated</strong> (SQL checked) &rarr; <strong>Applied</strong> (created as a UC view). Use <strong>Improve</strong> to re-generate a definition with AI feedback.</p>
+        <p className="text-amber-700 dark:text-amber-400">Note: Only the owner of a metric view can edit it. Views created by this app are owned by the app service principal. Use <strong>Transfer Ownership</strong> to take ownership &mdash; this is irreversible for the app.</p>
         <div className="flex items-center gap-2">
           <span>Showing definitions for:</span>
           <span className="font-medium text-slate-700 dark:text-slate-200">
@@ -1261,6 +1489,14 @@ export default function SemanticLayer() {
                         </span>
                       )}
                       {statusBadge(d.status)}
+                      {mvHealth[d.definition_id] && (() => {
+                        const h = mvHealth[d.definition_id]
+                        const pct = h.max > 0 ? h.score / h.max : 0
+                        const cls = pct >= 0.8 ? 'text-emerald-700 dark:text-emerald-400 bg-emerald-100 dark:bg-emerald-900/30'
+                          : pct >= 0.5 ? 'text-amber-700 dark:text-amber-400 bg-amber-100 dark:bg-amber-900/30'
+                          : 'text-red-700 dark:text-red-400 bg-red-100 dark:bg-red-900/30'
+                        return <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${cls}`}>{h.score}/{h.max}</span>
+                      })()}
                       {d.complexity_level === 'trivial' && (
                         <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400" title="Only basic COUNT/SUM measures">Trivial</span>
                       )}
@@ -1277,6 +1513,10 @@ export default function SemanticLayer() {
                             {expandedDef === d.definition_id ? 'Hide JSON' : 'View JSON'}
                           </button>
                           <button onClick={() => { openEdit(d.definition_id); setOpenMenuId(null) }} className="w-full text-left px-3 py-1.5 text-xs hover:bg-slate-50 dark:hover:bg-dbx-navy-500">Edit JSON</button>
+                          <button onClick={() => { analyzeMv(d.definition_id); setOpenMenuId(null) }} disabled={!!busy}
+                            className="w-full text-left px-3 py-1.5 text-xs text-cyan-600 hover:bg-cyan-50 dark:hover:bg-cyan-900/20 disabled:opacity-50">
+                            {busy === 'analyze' ? 'Analyzing...' : 'Analyze'}
+                          </button>
                           {d.status === 'failed' && (
                             <button onClick={() => { retryDefinition(d.definition_id); setOpenMenuId(null) }} disabled={!!busy}
                               className="w-full text-left px-3 py-1.5 text-xs text-dbx-lava hover:bg-red-50 dark:hover:bg-red-900/20 disabled:opacity-50">
@@ -1296,10 +1536,16 @@ export default function SemanticLayer() {
                             </>
                           )}
                           {d.status === 'applied' && (
+                            <>
                             <button onClick={() => { dropDefinition(d.definition_id); setOpenMenuId(null) }} disabled={!!busy}
                               className="w-full text-left px-3 py-1.5 text-xs text-amber-600 hover:bg-amber-50 dark:hover:bg-amber-900/20 disabled:opacity-50">
                               {busy === 'drop' ? 'Dropping...' : 'Drop from UC'}
                             </button>
+                            <button onClick={() => { transferOwnership(d.definition_id); setOpenMenuId(null) }} disabled={!!busy}
+                              className="w-full text-left px-3 py-1.5 text-xs text-purple-600 hover:bg-purple-50 dark:hover:bg-purple-900/20 disabled:opacity-50">
+                              {busy === 'transfer' ? 'Transferring...' : 'Transfer Ownership'}
+                            </button>
+                            </>
                           )}
                           <hr className="my-1 dark:border-gray-600" />
                           <button onClick={() => { deleteDefinition(d.definition_id, d.status); setOpenMenuId(null) }} disabled={!!busy}
@@ -1330,7 +1576,48 @@ export default function SemanticLayer() {
                     <p className="text-xs text-emerald-600 dark:text-emerald-400 mt-1">Genie space: {d.genie_space_id}</p>
                   )}
                   {expandedDef === d.definition_id && expandedJson && (
-                    <pre className="mt-2 bg-dbx-oat dark:bg-gray-900 border dark:border-gray-600 rounded p-3 text-xs overflow-x-auto max-h-64 dark:text-gray-200">{expandedJson}</pre>
+                    <div className="mt-2 space-y-2">
+                      {/* Toggle between raw JSON and structured view */}
+                      <div className="flex items-center gap-2">
+                        <label className="flex items-center gap-1 text-xs text-slate-500 cursor-pointer">
+                          <input type="checkbox" checked={structuredEditing === d.definition_id}
+                            onChange={e => {
+                              if (e.target.checked) {
+                                try { setStructuredDraft(JSON.parse(expandedJson)); setStructuredEditing(d.definition_id) }
+                                catch { setStructuredDraft(null) }
+                              } else { setStructuredEditing(null); setStructuredDraft(null) }
+                            }} />
+                          Structured editor
+                        </label>
+                      </div>
+                      {structuredEditing === d.definition_id && structuredDraft ? (
+                        <MvStructuredEditor defn={structuredDraft} setDefn={setStructuredDraft}
+                          onSave={async () => {
+                            try {
+                              const res = await fetch(`/api/semantic-layer/definitions/${d.definition_id}`, {
+                                method: 'PUT', headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ json_definition: JSON.stringify(structuredDraft) }),
+                              })
+                              if (res.ok) {
+                                invalidateCache('/api/semantic-layer/definitions')
+                                refreshDefinitions()
+                                setStructuredEditing(null); setStructuredDraft(null)
+                                setExpandedDef(null); setExpandedJson(null)
+                              }
+                            } catch (e) { setError(e.message) }
+                          }}
+                          onCancel={() => { setStructuredEditing(null); setStructuredDraft(null) }} />
+                      ) : (
+                        <pre className="bg-dbx-oat dark:bg-gray-900 border dark:border-gray-600 rounded p-3 text-xs overflow-x-auto max-h-64 dark:text-gray-200">{expandedJson}</pre>
+                      )}
+                    </div>
+                  )}
+
+                  {/* MV Analysis panel */}
+                  {mvAnalysisExpanded === d.definition_id && mvAnalysis[d.definition_id] && (
+                    <MvAnalysisPanel issues={mvAnalysis[d.definition_id]}
+                      onClose={() => setMvAnalysisExpanded(null)}
+                      onApplyFix={(path, value) => applyFieldFix(d.definition_id, path, value)} />
                   )}
                 </div>
               )
