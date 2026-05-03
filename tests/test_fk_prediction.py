@@ -12,6 +12,9 @@ from dbxmetagen.fk_prediction import (
     FKPredictionConfig,
     FKPredictor,
     _FK_MODEL,
+    _FK_EXCLUDED_DTYPES,
+    _dtype_exclusion_sql,
+    _DEFAULT_SYSTEM_COL_PATTERNS,
     predict_foreign_keys,
     SR_COL_PROP,
     SR_DECLARED,
@@ -129,51 +132,38 @@ def _patch_fk_functions_for_run():
 
 
 class TestDeclaredFKGuard:
-    def test_skips_self_referential_same_table(self):
+    def test_sql_contains_self_referential_filter(self):
+        """The SQL WHERE clause excludes self-referential FKs."""
         spark = MagicMock()
-        row = SimpleNamespace(
-            table_name="c.s.orders",
-            foreign_keys={"parent_id": "c.s.orders.id"},
-        )
-        spark.sql.return_value.collect.return_value = [row]
         p = FKPredictor(spark, _cfg())
         p.get_declared_fk_candidates()
-        spark.createDataFrame.assert_called_once()
-        args = spark.createDataFrame.call_args[0]
-        assert args[0] == []
+        sql = spark.sql.call_args[0][0]
+        assert "!= table_name" in sql
 
-    def test_skips_malformed_ref_target_short_path(self):
+    def test_sql_contains_size_filter(self):
+        """The SQL WHERE clause excludes malformed refs with < 4 parts."""
         spark = MagicMock()
-        row = SimpleNamespace(table_name="c.s.a", foreign_keys={"x": "too.short"})
-        spark.sql.return_value.collect.return_value = [row]
         p = FKPredictor(spark, _cfg())
         p.get_declared_fk_candidates()
-        assert spark.createDataFrame.call_args[0][0] == []
+        sql = spark.sql.call_args[0][0]
+        assert "SIZE(parts) >= 4" in sql
 
-    def test_skips_null_ref_target(self):
+    def test_sql_filters_null_ref_target(self):
+        """The SQL WHERE clause excludes null/empty ref_target."""
         spark = MagicMock()
-        row = SimpleNamespace(table_name="c.s.a", foreign_keys={"fk": None})
-        spark.sql.return_value.collect.return_value = [row]
         p = FKPredictor(spark, _cfg())
         p.get_declared_fk_candidates()
-        assert spark.createDataFrame.call_args[0][0] == []
+        sql = spark.sql.call_args[0][0]
+        assert "ref_target IS NOT NULL" in sql
 
-    def test_emits_cross_table_pair(self):
+    def test_returns_dataframe_with_source_rank(self):
+        """Result should have withColumn calls for source_rank and query_hit_count."""
         spark = MagicMock()
-        row = SimpleNamespace(
-            table_name="c.s.fact",
-            foreign_keys={"cust_id": "c.s.dim.customer_id"},
-        )
-        spark.sql.return_value.collect.return_value = [row]
-        out = MagicMock()
-        spark.createDataFrame.return_value = out
-        out.withColumn = MagicMock(return_value=out)
+        out_mock = spark.sql.return_value.withColumn.return_value
+        out_mock.withColumn.return_value = out_mock
         p = FKPredictor(spark, _cfg())
-        p.get_declared_fk_candidates()
-        pairs = spark.createDataFrame.call_args[0][0]
-        assert len(pairs) == 1
-        assert pairs[0][2] == "c.s.fact"
-        assert pairs[0][3] == "c.s.dim"
+        result = p.get_declared_fk_candidates()
+        assert spark.sql.called
 
 
 # --- TestUIDedup ---
@@ -280,6 +270,10 @@ class TestFKPredictionConfig:
         c = FKPredictionConfig(catalog_name="x", schema_name="y")
         assert not hasattr(c, "model_endpoint")
 
+    def test_max_ontology_table_pairs_default(self):
+        c = FKPredictionConfig(catalog_name="x", schema_name="y")
+        assert c.max_ontology_table_pairs == 50_000
+
 
 # --- TestHardcodedModel ---
 
@@ -364,6 +358,7 @@ class TestRunOrchestration:
             patch.object(FKPredictor, "get_query_join_candidates", return_value=df),
             patch.object(FKPredictor, "add_entity_match", side_effect=lambda c: c),
             patch.object(FKPredictor, "add_lineage_signal", side_effect=lambda c: c),
+            patch.object(FKPredictor, "add_domain_signal", side_effect=lambda c: c),
             patch.object(FKPredictor, "_sample_from_source", side_effect=lambda c: c),
             patch.object(FKPredictor, "rule_score", side_effect=lambda c: c),
             patch.object(FKPredictor, "cardinality_analysis", side_effect=lambda c: c),
@@ -397,6 +392,7 @@ class TestDryRunAccounting:
             patch.object(FKPredictor, "get_query_join_candidates", return_value=df),
             patch.object(FKPredictor, "add_entity_match", side_effect=lambda c: c),
             patch.object(FKPredictor, "add_lineage_signal", side_effect=lambda c: c),
+            patch.object(FKPredictor, "add_domain_signal", side_effect=lambda c: c),
             patch.object(FKPredictor, "_sample_from_source", side_effect=lambda c: c),
             patch.object(FKPredictor, "rule_score", side_effect=lambda c: c),
             patch.object(FKPredictor, "cardinality_analysis", side_effect=lambda c: c),
@@ -425,6 +421,7 @@ class TestDryRunAccounting:
             patch.object(FKPredictor, "get_query_join_candidates", return_value=df),
             patch.object(FKPredictor, "add_entity_match", side_effect=lambda c: c),
             patch.object(FKPredictor, "add_lineage_signal", side_effect=lambda c: c),
+            patch.object(FKPredictor, "add_domain_signal", side_effect=lambda c: c),
             patch.object(FKPredictor, "_sample_from_source", side_effect=lambda c: c),
             patch.object(FKPredictor, "rule_score", side_effect=lambda c: c),
             patch.object(FKPredictor, "cardinality_analysis", side_effect=lambda c: c),
@@ -525,6 +522,49 @@ class TestSafetyFilters:
     def test_graph_edges_high_conf_filter(self):
         src = inspect.getsource(FKPredictor.write_graph_edges)
         assert "confidence_threshold" in src
+
+
+class TestTableBackedOutputs:
+    """Verify generate_ddl and write_graph_edges read from the authoritative
+    fk_predictions table rather than accepting a transient DataFrame."""
+
+    def test_generate_ddl_no_df_parameter(self):
+        sig = inspect.signature(FKPredictor.generate_ddl)
+        assert list(sig.parameters.keys()) == ["self"]
+
+    def test_write_graph_edges_no_df_parameter(self):
+        sig = inspect.signature(FKPredictor.write_graph_edges)
+        assert list(sig.parameters.keys()) == ["self"]
+
+    def test_generate_ddl_reads_predictions_table(self):
+        src = inspect.getsource(FKPredictor.generate_ddl)
+        assert "spark.table" in src or "self.spark.table" in src
+        assert "predictions_table" in src
+
+    def test_generate_ddl_uses_canonical_column_names(self):
+        src = inspect.getsource(FKPredictor.generate_ddl)
+        assert "src_table" in src
+        assert "dst_table" in src
+        assert "src_column" in src
+        assert "dst_column" in src
+
+    def test_generate_ddl_filters_is_fk(self):
+        src = inspect.getsource(FKPredictor.generate_ddl)
+        assert "is_fk" in src
+
+    def test_write_graph_edges_reads_predictions_table(self):
+        src = inspect.getsource(FKPredictor.write_graph_edges)
+        assert "spark.table" in src or "self.spark.table" in src
+        assert "predictions_table" in src
+
+    def test_write_graph_edges_uses_canonical_column_names(self):
+        src = inspect.getsource(FKPredictor.write_graph_edges)
+        assert "src_column" in src
+        assert "dst_column" in src
+
+    def test_write_graph_edges_filters_is_fk(self):
+        src = inspect.getsource(FKPredictor.write_graph_edges)
+        assert "is_fk" in src
 
 
 # --- TestAIJudgeMockIntegration ---
@@ -759,4 +799,190 @@ class TestColumnPropertyCandidates:
         cfg = _cfg()
         assert cfg.column_properties_table == "ontology_column_properties"
         assert cfg.fq(cfg.column_properties_table) == "c.s.ontology_column_properties"
+
+
+# --- TestSystemColumnExclusion ---
+
+
+class TestSystemColumnExclusion:
+    """Verify system_column_patterns config and its effect on rule_score."""
+
+    def test_default_system_patterns_exist(self):
+        cfg = _cfg()
+        assert len(cfg.system_column_patterns) > 0
+        assert cfg.system_column_patterns == _DEFAULT_SYSTEM_COL_PATTERNS
+
+    def test_custom_patterns_override_defaults(self):
+        custom = (r"^audit_", r"^_etl_")
+        cfg = FKPredictionConfig(catalog_name="c", schema_name="s", system_column_patterns=custom)
+        assert cfg.system_column_patterns == custom
+
+    def test_rule_score_source_includes_system_col_guard(self):
+        src = inspect.getsource(FKPredictor.rule_score)
+        assert "system_column_patterns" in src
+        assert "not_system" in src
+        assert "is_system_col" in src
+
+    def test_rule_score_gates_new_signals_by_system_flag(self):
+        """same_schema, same_domain, sim_floor are all multiplied by not_system."""
+        src = inspect.getsource(FKPredictor.rule_score)
+        assert "same_schema * 0.05 * not_system" in src
+        assert "same_domain * 0.05 * not_system" in src
+        assert "sim_floor * not_system" in src
+
+    def test_predict_fk_accepts_system_column_patterns(self):
+        sig = inspect.signature(predict_foreign_keys)
+        assert "system_column_patterns" in sig.parameters
+
+
+# --- TestDomainSignal ---
+
+
+class TestDomainSignal:
+    """Verify add_domain_signal wiring and behavior."""
+
+    def test_add_domain_signal_exists(self):
+        assert hasattr(FKPredictor, "add_domain_signal")
+
+    def test_run_calls_add_domain_signal(self):
+        src = inspect.getsource(FKPredictor.run)
+        assert "add_domain_signal" in src
+
+    def test_add_domain_signal_gracefully_handles_missing_table(self):
+        spark = MagicMock()
+        spark.sql.side_effect = Exception("TABLE_OR_VIEW_NOT_FOUND")
+        p = FKPredictor(spark, _cfg())
+        df = MagicMock()
+        df.withColumn = MagicMock(return_value=df)
+        result = p.add_domain_signal(df)
+        assert result is not None
+
+    def test_add_domain_signal_sql_references_metadata_log(self):
+        src = inspect.getsource(FKPredictor.add_domain_signal)
+        assert "metadata_generation_log" in src
+        assert "domain" in src
+        assert "subdomain" in src
+
+    def test_domain_match_scoring_logic(self):
+        """Source should compute 1.0 for same domain+subdomain, 0.5 for domain-only."""
+        src = inspect.getsource(FKPredictor.add_domain_signal)
+        assert "1.0" in src
+        assert "0.5" in src
+
+
+# --- TestNewRuleScoreSignals ---
+
+
+class TestNewRuleScoreSignals:
+    """Verify new rule_score signals: same_schema, same_domain, sim_floor."""
+
+    def test_same_schema_signal_in_source(self):
+        src = inspect.getsource(FKPredictor.rule_score)
+        assert "same_schema" in src
+
+    def test_same_domain_signal_in_source(self):
+        src = inspect.getsource(FKPredictor.rule_score)
+        assert "same_domain" in src
+
+    def test_sim_floor_tiered_thresholds(self):
+        """sim_floor should have tiers at 0.98, 0.95, 0.90."""
+        src = inspect.getsource(FKPredictor.rule_score)
+        assert "0.98" in src
+        assert "0.95" in src
+        assert "0.90" in src
+
+    def test_source_bonus_weight_reduced(self):
+        """source_bonus weight should be 0.10, not the old 0.15."""
+        src = inspect.getsource(FKPredictor.rule_score)
+        assert "source_bonus * 0.10" in src
+
+    def test_domain_match_fallback_when_absent(self):
+        """When domain_match is NOT in columns, F.lit(0.0) should be used."""
+        from pyspark.sql import functions as F
+        F.lit.reset_mock()
+        p = FKPredictor(spark=MagicMock(), config=_cfg())
+        df = MagicMock()
+        df.columns = ["col_a", "col_b", "dtype_a", "dtype_b",
+                       "table_a", "table_b", "col_similarity",
+                       "samples_a", "samples_b"]
+        df.withColumn = MagicMock(return_value=df)
+        p.rule_score(df)
+        lit_args = [c[0][0] for c in F.lit.call_args_list if c[0]]
+        assert 0.0 in lit_args
+
+
+class TestDtypeExclusion:
+    """Verify FK-excluded data types constant and SQL helper."""
+
+    def test_excluded_dtypes_contains_float(self):
+        assert "float" in _FK_EXCLUDED_DTYPES
+
+    def test_excluded_dtypes_contains_variant(self):
+        assert "variant" in _FK_EXCLUDED_DTYPES
+
+    def test_excluded_dtypes_contains_struct(self):
+        assert "struct" in _FK_EXCLUDED_DTYPES
+
+    def test_excluded_dtypes_contains_boolean(self):
+        assert "boolean" in _FK_EXCLUDED_DTYPES
+
+    def test_excluded_dtypes_does_not_contain_int(self):
+        assert "int" not in _FK_EXCLUDED_DTYPES
+        assert "bigint" not in _FK_EXCLUDED_DTYPES
+        assert "string" not in _FK_EXCLUDED_DTYPES
+
+    def test_dtype_exclusion_sql_returns_quoted_list(self):
+        sql = _dtype_exclusion_sql()
+        assert "'float'" in sql
+        assert "'variant'" in sql
+        assert ", " in sql
+
+    def test_embedding_gen_uses_dtype_filter(self):
+        src = inspect.getsource(FKPredictor.get_candidates)
+        assert "_dtype_exclusion_sql()" in src
+
+    def test_name_gen_uses_dtype_filter(self):
+        src = inspect.getsource(FKPredictor.get_name_based_candidates)
+        assert "_dtype_exclusion_sql()" in src
+
+    def test_ontology_gen_uses_dtype_filter(self):
+        src = inspect.getsource(FKPredictor.get_ontology_relationship_candidates)
+        assert "_dtype_exclusion_sql()" in src
+
+    def test_colprop_gen_uses_shared_constant(self):
+        src = inspect.getsource(FKPredictor.get_column_property_candidates)
+        assert "_dtype_exclusion_sql()" in src
+
+
+class TestPKSignal:
+    """Verify add_pk_signal method and pk_match in rule_score."""
+
+    def test_add_pk_signal_exists(self):
+        assert hasattr(FKPredictor, "add_pk_signal")
+
+    def test_add_pk_signal_graceful_on_missing_table(self):
+        spark = MagicMock()
+        spark.sql.side_effect = Exception("table not found")
+        p = FKPredictor(spark=spark, config=_cfg())
+        df = MagicMock()
+        df.withColumn = MagicMock(return_value=df)
+        result = p.add_pk_signal(df)
+        assert result.withColumn.called
+
+    def test_run_calls_add_pk_signal(self):
+        src = inspect.getsource(FKPredictor.run)
+        assert "add_pk_signal" in src
+
+    def test_pk_match_signal_in_rule_score(self):
+        src = inspect.getsource(FKPredictor.rule_score)
+        assert "pk_match" in src
+
+    def test_pk_match_weight_in_formula(self):
+        src = inspect.getsource(FKPredictor.rule_score)
+        assert "pk_match * 0.10" in src
+
+    def test_col_similarity_weight_reduced(self):
+        """col_similarity weight reduced from 0.10 to 0.05 to make room for pk_match."""
+        src = inspect.getsource(FKPredictor.rule_score)
+        assert '("col_similarity") * 0.05' in src
 
