@@ -64,7 +64,21 @@ databricks bundle run build_vector_index_job -t dev -p <profile>
 
 ### Creating UC Functions
 
-Create the 9 UC SQL functions listed in the [Available Tools](#available-tools) section as `CREATE FUNCTION` statements in your catalog and schema. Each function wraps a `SELECT` query against the corresponding KB, graph, or ontology table. A setup notebook and bundle job for automated creation are planned for a future release.
+There are three ways to create the 9 UC SQL functions:
+
+**Option 1 -- From the dashboard app:**
+
+Navigate to the **Generate Metadata** page and click **Setup MCP Servers** in the infrastructure section. The button triggers the setup job with your configured catalog and schema.
+
+**Option 2 -- Via DAB job:**
+
+```bash
+databricks bundle run setup_mcp_servers_job -t dev -p <profile>
+```
+
+**Option 3 -- Run the notebook directly:**
+
+Open `notebooks/setup_mcp_servers.py` in your Databricks workspace, set the `catalog_name` widget, and Run All. The notebook creates the functions and prints the MCP client configuration.
 
 ## Client Configuration
 

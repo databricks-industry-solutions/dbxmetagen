@@ -196,8 +196,9 @@ tools/
 ROADMAP.md
 CLAUDE.md
 
-# Test data warehouse (local-only, not shipped)
-tests/data/
+# Test data warehouse (generated data not shipped, but .py notebooks are tracked)
+tests/data/*
+!tests/data/*.py
 
 # Ontology source files (large OWL/TTL downloads, cached locally)
 configurations/ontology_bundles/*/source_*.ttl

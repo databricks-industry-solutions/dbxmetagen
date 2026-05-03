@@ -842,7 +842,7 @@ wheels = [
 
 [[package]]
 name = "dbxmetagen"
-version = "0.8.11"
+version = "0.9.0"
 source = { editable = "." }
 dependencies = [
     { name = "cloudpickle" },

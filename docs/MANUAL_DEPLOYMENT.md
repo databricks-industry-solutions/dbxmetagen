@@ -88,6 +88,7 @@ and replace the four `__PLACEHOLDER__` tokens with your values.
 ```bash
 sed -e "s|__CATALOG_NAME__|${catalog_name}|g" \
     -e "s|__SCHEMA_NAME__|${schema_name}|g" \
+    -e "s|__ENABLE_OBO__|${enable_obo:-false}|g" \
     apps/dbxmetagen-app/app/app.yaml.template \
     > apps/dbxmetagen-app/app/app.yaml
 ```

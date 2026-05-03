@@ -56,6 +56,8 @@ env:
     valueFrom: parallel_serverless_job
   - name: KB_ENRICHED_MODES_JOB_ID
     valueFrom: kb_enriched_modes_job
+  - name: SETUP_MCP_SERVERS_JOB_ID
+    valueFrom: setup_mcp_servers_job
   - name: VECTOR_SEARCH_ENDPOINT
     value: "dbxmetagen-vs"
   - name: VECTOR_SEARCH_INDEX

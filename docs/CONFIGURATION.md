@@ -287,6 +287,17 @@ Lakebase accelerates graph queries in the dashboard's deep analysis agent by ser
 
 The sync job uses the Databricks SDK's synced database tables API to replicate Delta tables into Lakebase with automatic change data capture. The app detects Lakebase via the `PGHOST` environment variable and uses OAuth token authentication.
 
+## On-Behalf-Of User Auth (Optional)
+
+When `enable_obo=true` is set in your `.env` file, the app executes SQL queries and catalog operations under the logged-in user's identity instead of the app service principal. This honors per-user Unity Catalog permissions.
+
+**Prerequisites:**
+
+1. A workspace admin must enable the **"Databricks Apps - On-Behalf-Of User Authorization"** preview (Admin Console > Previews)
+2. Set `enable_obo=true` in your `<target>.env` file before running `deploy.sh`
+
+If the preview is not enabled and `enable_obo=true` is set, the deploy will fail with: `Databricks Apps - user token passthrough feature is not enabled for organization`. By default (`enable_obo` unset or `false`), user API scopes are not declared and this preview is not required.
+
 ## Community Summaries
 
 The analytics pipeline generates AI summaries for groups of tables that share the same `(domain, subdomain)` in `table_knowledge_base`. Summaries are stored in the `community_summaries` Delta table and automatically included in the metadata vector index as `community_summary` documents, enabling the deep analysis agent to answer broad questions about data domains.
@@ -315,6 +326,7 @@ databricks api post /api/2.0/vector-search/endpoints --json '{"name": "dbxmetage
 |-------|-------------|---------|----------|----------------|
 | `metadata_vs_index` | `metadata_documents` | Semantic search over all metadata: tables, columns, entities, FKs, metric views, community summaries | `build_vector_index` task | End (after all metadata is ready) |
 | `ontology_vs_index` | `ontology_chunks` | Entity/edge classification via vector retrieval instead of full tier-1 dump. Reduces token cost for large ontologies. | `build_ontology_vector_index` task | Mid-pipeline (after `build_ontology`) |
+| `graph_nodes_vs_index` | `graph_nodes` | ANN-based similarity edge generation (replaces O(n^2) cross-join). Self-managed embeddings (1024-dim). Delta Sync + TRIGGERED pipeline. | `build_similarity_edges` task (when `use_ann_similarity=true`) | After `generate_embeddings` |
 
 **`metadata_vs_index`** is the primary index. It powers the deep analysis agent's `search_metadata` tool, the MCP Vector Search server, and the app's semantic search. It unions documents from `table_knowledge_base`, `column_knowledge_base`, `ontology_entities`, `metric_view_definitions`, `fk_predictions`, and `community_summaries` into a single `metadata_documents` Delta table, then syncs to Vector Search. Built by:
 
@@ -331,6 +343,23 @@ databricks bundle run full_analytics_pipeline_job -t dev -p <profile>
 ```
 
 In the full analytics pipeline, `build_ontology_vector_index` runs after `build_ontology` and before `build_vector_index`. On a first run, `build_ontology_vector_index` creates the endpoint; `build_vector_index` reuses it.
+
+**`graph_nodes_vs_index`** enables O(n log n) ANN similarity edge generation as an alternative to the O(n^2) cross-join. When `use_ann_similarity=true`, the `build_similarity_edges` task creates a Delta Sync VS index on `graph_nodes.embedding` (self-managed, 1024-dim), then queries each node's K-nearest neighbors in parallel.
+
+### ANN Similarity Parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `use_ann_similarity` | `false` | Enable ANN mode. When false, the original cross-join with blocking is used. |
+| `ann_k_multiplier` | `2` | Over-fetch factor: queries `max_edges_per_node * ann_k_multiplier` neighbors per node. Higher values increase recall at the cost of more VS queries. |
+| `embedding_dimension` | `1024` | Must match the model used in `generate_embeddings` (default: databricks-bge-large-en). |
+| `ann_batch_size` | `100` | Nodes per thread batch for parallel VS queries. |
+| `ann_max_workers` | `10` | ThreadPoolExecutor concurrency for VS queries. |
+| `ann_max_nodes` | `100000` | Guard rail. Raises `ValueError` if node count exceeds this, preventing driver OOM. At 1024-dim FLOAT, each node consumes ~4KB in driver memory. |
+
+**Driver memory ceiling:** ANN mode collects all embeddings to the driver (via `.collect()`) for per-node VS queries. The `ann_max_nodes` guard rail protects against OOM. At 100K nodes with 1024-dim embeddings, expect ~400MB driver footprint. For catalogs beyond 100K embedded nodes, a future `mapPartitions`-based approach will be needed.
+
+**First-run latency:** On first run with `use_ann_similarity=true`, the Delta Sync index must be created and synced (5-15 min depending on graph_nodes size). Subsequent runs only trigger a sync for new/updated embeddings.
 
 ## Compatibility
 

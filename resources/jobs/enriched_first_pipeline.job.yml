@@ -31,6 +31,8 @@ resources:
           default: "0.8"
         - name: max_edges_per_node
           default: "10"
+        - name: use_ann_similarity
+          default: "true"
         - name: cluster_min_k
           default: "2"
         - name: cluster_max_k
@@ -281,6 +283,7 @@ resources:
               schema_name: "{{job.parameters.schema_name}}"
               similarity_threshold: "{{job.parameters.similarity_threshold}}"
               max_edges_per_node: "{{job.parameters.max_edges_per_node}}"
+              use_ann_similarity: "{{job.parameters.use_ann_similarity}}"
           libraries:
             - whl: ../../dist/*.whl
 
