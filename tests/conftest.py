@@ -14,12 +14,24 @@ for _mod_name in [
     "pyspark", "pyspark.sql", "pyspark.sql.functions", "pyspark.sql.types",
     "pyspark.sql.window", "pyspark.sql.column", "pyspark.sql.utils",
     "databricks_langchain",
-    "databricks", "databricks.sdk", "databricks.sdk.service",
+    "databricks", "databricks.sdk", "databricks.sdk.errors",
+    "databricks.sdk.service",
     "databricks.sdk.service.sql", "databricks.sdk.service.vectorsearch",
     "databricks.sdk.service.catalog",
 ]:
     if _mod_name not in sys.modules:
         sys.modules[_mod_name] = MagicMock()
+
+# Make SDK error classes real exceptions so except clauses work in tests
+class _NotFound(Exception):
+    pass
+
+class _ResourceDoesNotExist(Exception):
+    pass
+
+_errors_mod = sys.modules["databricks.sdk.errors"]
+_errors_mod.NotFound = _NotFound
+_errors_mod.ResourceDoesNotExist = _ResourceDoesNotExist
 
 # Stub external deps that processing.py and other heavy modules import.
 # These are never installed in the test env, so they must be globally stubbed

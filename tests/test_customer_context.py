@@ -12,6 +12,7 @@ from dbxmetagen.customer_context import (
     MAX_WORDS,
     prefetch_customer_context,
     resolve_customer_context,
+    seed_customer_context_table,
     validate_context_text,
     _scope_id,
 )
@@ -198,6 +199,45 @@ class TestYamlSeeding(unittest.TestCase):
         for entry in data["contexts"]:
             self.assertIn(entry["scope_type"], valid_types)
             self.assertLessEqual(len(entry["context_text"].split()), MAX_WORDS)
+
+
+class TestSeedCustomerContextTable(unittest.TestCase):
+
+    def test_seeds_from_yaml_dir(self):
+        content = {
+            "contexts": [
+                {"scope": "cat.sch", "scope_type": "schema",
+                 "context_text": "Test context.", "priority": 0},
+            ]
+        }
+        tmpdir = tempfile.mkdtemp()
+        with open(os.path.join(tmpdir, "ctx.yaml"), "w") as f:
+            yaml.dump(content, f)
+
+        mock_spark = MagicMock()
+        count = seed_customer_context_table(mock_spark, "cat", "sch", tmpdir)
+        self.assertEqual(count, 1)
+        sql_calls = [str(c) for c in mock_spark.sql.call_args_list]
+        self.assertTrue(any("CREATE TABLE IF NOT EXISTS" in s for s in sql_calls))
+        self.assertTrue(any("MERGE INTO" in s for s in sql_calls))
+
+    def test_returns_zero_for_missing_dir(self):
+        mock_spark = MagicMock()
+        count = seed_customer_context_table(mock_spark, "cat", "sch", "/nonexistent/dir")
+        self.assertEqual(count, 0)
+
+    def test_skips_invalid_scope_type(self):
+        content = {
+            "contexts": [
+                {"scope": "cat", "scope_type": "invalid_type", "context_text": "Bad.", "priority": 0},
+            ]
+        }
+        tmpdir = tempfile.mkdtemp()
+        with open(os.path.join(tmpdir, "bad.yaml"), "w") as f:
+            yaml.dump(content, f)
+        mock_spark = MagicMock()
+        count = seed_customer_context_table(mock_spark, "cat", "sch", tmpdir)
+        self.assertEqual(count, 0)
 
 
 class TestPromptEnrichment(unittest.TestCase):

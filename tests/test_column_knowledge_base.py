@@ -89,6 +89,39 @@ class TestColumnKnowledgeBaseBuilder:
         mock_df.filter.assert_called()
 
 
+class TestColumnMergeSQLGeneration:
+    """Test that column KB MERGE respects review_updated_at."""
+
+    def setup_method(self):
+        self.mock_spark = MagicMock()
+        self.mock_spark.sql.return_value.collect.return_value = [{"cnt": 0}]
+        self.config = ColumnKnowledgeBaseConfig(
+            catalog_name="test_cat", schema_name="test_sch"
+        )
+
+    def _get_merge_sql(self):
+        builder = ColumnKnowledgeBaseBuilder(self.mock_spark, self.config)
+        mock_df = MagicMock()
+        builder.merge_to_target(mock_df)
+        for c in self.mock_spark.sql.call_args_list:
+            sql = c[0][0]
+            if "MERGE INTO" in sql:
+                return sql
+        return None
+
+    def test_merge_preserves_reviewed_comment(self):
+        merge_sql = self._get_merge_sql()
+        assert merge_sql is not None
+        assert "target.review_updated_at IS NOT NULL" in merge_sql
+        assert "target.review_updated_at > source.updated_at" in merge_sql
+        assert "THEN target.comment" in merge_sql
+
+    def test_merge_preserves_reviewed_classification(self):
+        merge_sql = self._get_merge_sql()
+        assert merge_sql is not None
+        assert "THEN target.classification" in merge_sql
+
+
 class TestBuildColumnKnowledgeBase:
     """Tests for build_column_knowledge_base function."""
     

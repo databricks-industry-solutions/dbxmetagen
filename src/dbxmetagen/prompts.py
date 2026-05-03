@@ -86,7 +86,8 @@ class Prompt(ABC):
                 f"FROM {catalog}.{schema}.column_profiling_stats "
                 f"WHERE table_name = '{fqtn}'"
             ).collect()
-        except Exception:
+        except Exception as e:
+            logger.debug("Optional profiling enrichment skipped (%s): %s", fqtn, e)
             return
         if not stats_rows:
             return
@@ -121,7 +122,8 @@ class Prompt(ABC):
                 f"FROM {catalog}.{schema}.extended_table_metadata "
                 f"WHERE table_name = '{fqtn}' LIMIT 1"
             ).collect()
-        except Exception:
+        except Exception as e:
+            logger.debug("Optional constraint enrichment skipped (%s): %s", fqtn, e)
             return
         if not row:
             return
@@ -162,7 +164,8 @@ class Prompt(ABC):
                 f"AND entity_role = 'primary' "
                 f"ORDER BY confidence DESC LIMIT 1"
             ).collect()
-        except Exception:
+        except Exception as e:
+            logger.debug("Optional ontology enrichment skipped (%s): %s", fqtn, e)
             return
         if not rows:
             return
@@ -197,7 +200,8 @@ class Prompt(ABC):
                 f"SELECT comment FROM {catalog}.{schema}.table_knowledge_base "
                 f"WHERE table_name = '{fqtn}' LIMIT 1"
             ).collect()
-        except Exception:
+        except Exception as e:
+            logger.debug("Optional KB table enrichment skipped (%s): %s", fqtn, e)
             tbl_kb = []
 
         if tbl_kb:
@@ -214,7 +218,8 @@ class Prompt(ABC):
                 f"SELECT column_name, comment FROM {catalog}.{schema}.column_knowledge_base "
                 f"WHERE table_name = '{fqtn}'"
             ).collect()
-        except Exception:
+        except Exception as e:
+            logger.debug("Optional KB column enrichment skipped (%s): %s", fqtn, e)
             col_rows = []
 
         if col_rows:

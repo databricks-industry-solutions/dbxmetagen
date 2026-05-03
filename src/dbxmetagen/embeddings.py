@@ -120,7 +120,7 @@ class EmbeddingGenerator:
                 import json
                 try:
                     return json.loads(result)
-                except:
+                except (json.JSONDecodeError, ValueError, TypeError):
                     return None
             return None
         except Exception as e:

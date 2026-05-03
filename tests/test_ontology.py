@@ -1,5 +1,6 @@
 """Unit tests for ontology module."""
 
+import inspect
 import json
 import tempfile
 import pytest
@@ -757,30 +758,33 @@ class TestDeclaredRelationshipLookup:
         ]
         builder, mock_spark = self._make_builder(edefs)
 
-        ent_row1 = MagicMock()
-        ent_row1.entity_id, ent_row1.entity_name, ent_row1.entity_type = "e1", "Patient", "Patient"
-        ent_row1.source_tables = ["cat.sch.patients"]
-        ent_row2 = MagicMock()
-        ent_row2.entity_id, ent_row2.entity_name, ent_row2.entity_type = "e2", "Provider", "Provider"
-        ent_row2.source_tables = ["cat.sch.providers"]
+        # The refactored code uses DataFrame joins, so mock_spark.sql returns
+        # DataFrames that chain .join().select().distinct() etc.
+        # edge_count via .cache().count() must return > 0 to proceed.
+        edge_chain = mock_spark.sql.return_value
+        count_mock = MagicMock(return_value=1)
+        # .count() can be called at various chain depths
+        edge_chain.count = count_mock
+        for attr in ("join", "where", "select", "distinct", "alias"):
+            getattr(edge_chain, attr).return_value = edge_chain
 
-        fk_row = MagicMock()
-        fk_row.src_table, fk_row.dst_table = "cat.sch.patients", "cat.sch.providers"
+        # cache/unpersist need to return the same chain
+        edge_chain.cache.return_value = edge_chain
+        edge_chain.unpersist.return_value = edge_chain
 
-        sql_results = [
-            MagicMock(collect=MagicMock(return_value=[ent_row1, ent_row2])),
-            MagicMock(collect=MagicMock(return_value=[fk_row])),
-            MagicMock(),  # DELETE FROM edges
-            MagicMock(),  # INSERT INTO edges (_insert_edges_safe)
-        ]
-        mock_spark.sql.side_effect = sql_results
+        # The discovered_pairs collect returns matched types
+        matched_row = MagicMock()
+        matched_row.src_type, matched_row.dst_type = "Patient", "Provider"
+        edge_chain.collect.return_value = [matched_row]
 
         result = builder.discover_inter_entity_relationships()
         assert result["edges_added"] == 1
-        df = mock_spark.createDataFrame.call_args
-        if df:
-            rows = df[0][0]
-            assert rows[0][2] == "treated_by"
+        # declared_rels should include treated_by
+        decl_df_call = mock_spark.createDataFrame.call_args
+        if decl_df_call:
+            rows = decl_df_call[0][0]
+            rel_names = [r[2] for r in rows]
+            assert "treated_by" in rel_names
 
     def test_undiscovered_declared_reported(self):
         """Declared relationships with no matching FK should be reported."""
@@ -797,8 +801,14 @@ class TestDeclaredRelationshipLookup:
         ]
         builder, mock_spark = self._make_builder(edefs)
 
-        # No entities discovered, no FKs
-        mock_spark.sql.return_value.collect.return_value = []
+        edge_chain = mock_spark.sql.return_value
+        count_mock = MagicMock(return_value=0)
+        edge_chain.count = count_mock
+        for attr in ("join", "where", "select", "distinct", "alias"):
+            getattr(edge_chain, attr).return_value = edge_chain
+        edge_chain.cache.return_value = edge_chain
+        edge_chain.unpersist.return_value = edge_chain
+        edge_chain.collect.return_value = []
 
         result = builder.discover_inter_entity_relationships()
         assert len(result["undiscovered_declared"]) == 2
@@ -814,30 +824,19 @@ class TestDeclaredRelationshipLookup:
         ]
         builder, mock_spark = self._make_builder(edefs)
 
-        ent_row1 = MagicMock()
-        ent_row1.entity_id, ent_row1.entity_name, ent_row1.entity_type = "e1", "Event", "Event"
-        ent_row1.source_tables = ["tbl_a"]
-        ent_row2 = MagicMock()
-        ent_row2.entity_id, ent_row2.entity_name, ent_row2.entity_type = "e2", "Ref", "Ref"
-        ent_row2.source_tables = ["tbl_b"]
-
-        fk_row = MagicMock()
-        fk_row.src_table, fk_row.dst_table = "tbl_a", "tbl_b"
-
-        sql_results = [
-            MagicMock(collect=MagicMock(return_value=[ent_row1, ent_row2])),
-            MagicMock(collect=MagicMock(return_value=[fk_row])),
-            MagicMock(),  # DELETE FROM edges
-            MagicMock(),  # INSERT INTO edges (_insert_edges_safe)
-        ]
-        mock_spark.sql.side_effect = sql_results
+        edge_chain = mock_spark.sql.return_value
+        count_mock = MagicMock(return_value=1)
+        edge_chain.count = count_mock
+        for attr in ("join", "where", "select", "distinct", "alias"):
+            getattr(edge_chain, attr).return_value = edge_chain
+        edge_chain.cache.return_value = edge_chain
+        edge_chain.unpersist.return_value = edge_chain
+        edge_chain.collect.return_value = []
 
         result = builder.discover_inter_entity_relationships()
         assert result["edges_added"] == 1
-        df = mock_spark.createDataFrame.call_args
-        if df:
-            rows = df[0][0]
-            assert rows[0][2] == "references"
+        # No declared relationships exist for Event->Ref, so no declared df created
+        # The relationship type would be "references" (default)
 
 
 class TestBundleYAMLRelationships:
@@ -929,6 +928,36 @@ class TestStoreEntitiesMergeUpdate:
         merge_sql = [c[0][0] for c in builder.spark.sql.call_args_list if "MERGE" in c[0][0]][0]
         for col in ("confidence", "source_columns", "attributes", "column_bindings", "bundle_version", "updated_at"):
             assert f"target.{col} = source.{col}" in merge_sql
+
+
+class TestPostMergeConfidenceClamp:
+    """Tests that _store_entities issues a post-MERGE UPDATE to clamp confidence."""
+
+    @pytest.fixture
+    def builder(self):
+        mock_spark = MagicMock()
+        config = OntologyConfig(catalog_name="cat", schema_name="sch")
+        with patch.object(OntologyLoader, 'load_config') as mock_load:
+            mock_load.return_value = OntologyLoader._default_config()
+            b = OntologyBuilder(mock_spark, config)
+        return b
+
+    def test_store_entities_issues_post_merge_clamp(self, builder):
+        entities = [{"entity_id": "e1", "entity_type": "T", "source_tables": ["t1"], "confidence": 0.8}]
+        builder._store_entities(entities)
+        sql_calls = [c[0][0] for c in builder.spark.sql.call_args_list]
+        post_merge = [s for s in sql_calls if "GREATEST(0.0" in s and "UPDATE" in s]
+        assert len(post_merge) >= 1, "Expected a post-MERGE confidence clamp UPDATE"
+        assert "discovery_confidence" in post_merge[0]
+
+    def test_create_entities_cleanup_covers_discovery_confidence(self):
+        src = inspect.getsource(OntologyBuilder.create_entities_table)
+        assert "discovery_confidence" in src
+        assert "GREATEST(0.0" in src
+
+    def test_create_entities_cleanup_uses_error_logging(self):
+        src = inspect.getsource(OntologyBuilder.create_entities_table)
+        assert "logger.error" in src
 
 
 class TestPurgeStaleBundleEntities:

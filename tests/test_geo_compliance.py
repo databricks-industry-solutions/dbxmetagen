@@ -198,11 +198,10 @@ class TestAuditTrail:
         col_rows = [ColRow("Geographic", "cat.sch.orders", "country", 0.8, "heuristic")]
 
         spark = MagicMock()
-        call_results = iter([
-            MagicMock(collect=MagicMock(return_value=table_rows)),  # table entities
-            MagicMock(collect=MagicMock(return_value=col_rows)),    # col entities
-            None,  # CREATE TABLE audit
-        ])
+        # table entities uses toLocalIterator(); col entities uses collect()
+        table_mock = MagicMock(toLocalIterator=MagicMock(return_value=iter(table_rows)))
+        col_mock = MagicMock(collect=MagicMock(return_value=col_rows))
+        call_results = iter([table_mock, col_mock, None])
         spark.sql.side_effect = lambda q: next(call_results) if "SELECT" in q or "CREATE" in q else None
 
         builder = _make_builder(spark=spark)

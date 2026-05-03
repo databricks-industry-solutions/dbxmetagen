@@ -2404,18 +2404,12 @@ def review_and_generate_metadata(
         if override_data:
             tokenized_full_table_name = replace_catalog_name(config, full_table_name)
             # Validate against actual source table columns
-            try:
-                spark = SparkSession.builder.getOrCreate()
-                source_cols_lower = {
-                    f.name.lower() for f in spark.table(full_table_name).schema.fields
-                }
-            except Exception:
-                source_cols_lower = None
+            spark = SparkSession.builder.getOrCreate()
+            source_cols_lower = {
+                f.name.lower() for f in spark.table(full_table_name).schema.fields
+            }
             for col_name, values in override_data.items():
-                if (
-                    source_cols_lower is not None
-                    and col_name.lower() not in source_cols_lower
-                ):
+                if col_name.lower() not in source_cols_lower:
                     logger.warning(
                         "Override column '%s' not in source table %s -- skipping synthetic row",
                         col_name,

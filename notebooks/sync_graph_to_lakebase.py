@@ -30,10 +30,11 @@ for tbl in ["graph_nodes", "graph_edges"]:
     spark.sql(f"ALTER TABLE {fqn} SET TBLPROPERTIES (delta.enableChangeDataFeed = true)")
 # COMMAND ----------
 # MAGIC %md
-# MAGIC ## Create synced tables
+# MAGIC ## Ensure Lakebase catalog exists
 # COMMAND ----------
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.service.database import (
+    DatabaseCatalog,
     SyncedDatabaseTable,
     SyncedTableSpec,
     SyncedTableSchedulingPolicy,
@@ -41,6 +42,23 @@ from databricks.sdk.service.database import (
 
 w = WorkspaceClient()
 
+try:
+    w.database.create_database_catalog(
+        catalog=DatabaseCatalog(
+            name=lb_catalog,
+            database_instance_name=lb_instance,
+        )
+    )
+    print(f"Created Lakebase catalog: {lb_catalog}")
+except Exception as e:
+    if "ALREADY_EXISTS" in str(e):
+        print(f"Lakebase catalog already exists: {lb_catalog}")
+    else:
+        raise
+# COMMAND ----------
+# MAGIC %md
+# MAGIC ## Create synced tables
+# COMMAND ----------
 TABLES = [
     {
         "source": f"{source_catalog}.{source_schema}.graph_nodes",

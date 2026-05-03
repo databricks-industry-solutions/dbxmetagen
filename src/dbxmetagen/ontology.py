@@ -833,7 +833,12 @@ class OntologyLoader:
             except Exception as e:
                 logger.debug(f"Could not load from {path}: {e}")
 
-        logger.warning("Could not load ontology config file, using embedded defaults")
+        tried = ", ".join(paths_to_try)
+        logger.warning(
+            "Could not load ontology config from any candidate path "
+            "(config_path='%s'). Tried: %s. Using embedded defaults.",
+            config_path, tried,
+        )
         return OntologyLoader._default_config()
 
     @staticmethod
@@ -1974,24 +1979,35 @@ class EntityDiscoverer:
         table_entity_map: Dict[tuple, Dict[str, Any]] = {}
         unmatched = []
 
-        for row in cols_df.collect():
-            matches = self._match_column_to_entities(row)
-            if matches:
-                for entity_type, conf in matches:
-                    key = (row.table_name, entity_type)
-                    if key not in table_entity_map:
-                        table_entity_map[key] = {
-                            "columns": [],
-                            "conf_sum": 0.0,
-                            "count": 0,
-                            "table_short_name": row.table_short_name,
-                        }
-                    table_entity_map[key]["columns"].append(row.column_name)
-                    table_entity_map[key]["conf_sum"] += conf
-                    table_entity_map[key]["count"] += 1
-                self._stats["column_keyword_matches"] += 1
-            else:
-                unmatched.append(row)
+        # Paginate by table to avoid OOM on large column KBs.
+        # Collect distinct table names (small), then batch-filter cols_df.
+        _TABLE_BATCH = 200
+        all_tables = [r.table_name for r in cols_df.select("table_name").distinct().collect()]
+        logger.info(f"Column discovery: {len(all_tables)} distinct tables, {col_count} columns")
+
+        for batch_start in range(0, len(all_tables), _TABLE_BATCH):
+            table_batch = all_tables[batch_start : batch_start + _TABLE_BATCH]
+            batch_rows = cols_df.filter(F.col("table_name").isin(table_batch)).collect()
+            for row in batch_rows:
+                matches = self._match_column_to_entities(row)
+                if matches:
+                    for entity_type, conf in matches:
+                        key = (row.table_name, entity_type)
+                        if key not in table_entity_map:
+                            table_entity_map[key] = {
+                                "columns": [],
+                                "conf_sum": 0.0,
+                                "count": 0,
+                                "table_short_name": row.table_short_name,
+                            }
+                        table_entity_map[key]["columns"].append(row.column_name)
+                        table_entity_map[key]["conf_sum"] += conf
+                        table_entity_map[key]["count"] += 1
+                    self._stats["column_keyword_matches"] += 1
+                else:
+                    unmatched.append(row)
+            if batch_start + _TABLE_BATCH < len(all_tables):
+                logger.info(f"Column entity classification progress: {batch_start + _TABLE_BATCH}/{len(all_tables)} tables")
 
         if unmatched:
             logger.info(f"Using AI to classify {len(unmatched)} unmatched columns")
@@ -3031,19 +3047,16 @@ class OntologyBuilder:
         tbl_clause = ", ".join(f"'{t}'" for t in all_tables)
         col_meta = {}
         if tbl_clause:
-            try:
-                col_rows = self.spark.sql(
-                    f"SELECT table_name, column_name, data_type FROM {self.config.fully_qualified_column_kb} "
-                    f"WHERE table_name IN ({tbl_clause})"
-                ).collect()
-                for c in col_rows:
-                    col_meta.setdefault(c["table_name"], []).append(
-                        f"{c['column_name']} {c['data_type']}"
-                    )
-            except Exception:
-                pass
+            col_rows = self.spark.sql(
+                f"SELECT table_name, column_name, data_type FROM {self.config.fully_qualified_column_kb} "
+                f"WHERE table_name IN ({tbl_clause})"
+            ).collect()
+            for c in col_rows:
+                col_meta.setdefault(c["table_name"], []).append(
+                    f"{c['column_name']} {c['data_type']}"
+                )
 
-        stored = 0
+        all_metrics = []
         for e in ents:
             tables = e["source_tables"] or []
             cols_context = ""
@@ -3082,30 +3095,65 @@ class OntologyBuilder:
 
             now = datetime.now().isoformat()
             for m in metrics:
-                mid = str(uuid.uuid4())
-                vals = {
+                mname = m.get("metric_name", "")
+                # Deterministic ID: idempotent on re-run (fixes duplicate bug)
+                mid = str(uuid.uuid5(
+                    uuid.NAMESPACE_DNS, f"{e['entity_id']}_{mname}"
+                ))
+                all_metrics.append({
                     "metric_id": mid,
-                    "metric_name": m.get("metric_name", ""),
+                    "metric_name": mname,
                     "description": m.get("description", ""),
                     "entity_id": e["entity_id"],
                     "aggregation_type": m.get("aggregation_type", ""),
                     "source_field": m.get("source_field", ""),
                     "filter_condition": m.get("filter_condition", ""),
                     "created_at": now,
-                }
-                for k in vals:
-                    vals[k] = str(vals[k]).replace("'", "''")
-                self.spark.sql(
-                    f"INSERT INTO {self.config.fully_qualified_metrics} VALUES ("
-                    f"'{vals['metric_id']}', '{vals['metric_name']}', '{vals['description']}', "
-                    f"'{vals['entity_id']}', NULL, NULL, '{vals['aggregation_type']}', "
-                    f"'{vals['source_field']}', '{vals['filter_condition']}', "
-                    f"'{vals['created_at']}', NULL)"
-                )
-                stored += 1
+                })
 
-        logger.info("Populated %d ontology metrics", stored)
-        return stored
+        if not all_metrics:
+            return 0
+
+        # Dedup by metric_id (LLM can return duplicate metric_name for one entity)
+        seen = {}
+        for m in all_metrics:
+            seen[m["metric_id"]] = m
+        all_metrics = list(seen.values())
+
+        # Batch write via MERGE (idempotent on re-run)
+        from pyspark.sql.types import StructType, StructField, StringType
+        schema = StructType([
+            StructField("metric_id", StringType()),
+            StructField("metric_name", StringType()),
+            StructField("description", StringType()),
+            StructField("entity_id", StringType()),
+            StructField("aggregation_type", StringType()),
+            StructField("source_field", StringType()),
+            StructField("filter_condition", StringType()),
+            StructField("created_at", StringType()),
+        ])
+        metrics_df = self.spark.createDataFrame(all_metrics, schema)
+        metrics_df.createOrReplaceTempView("_new_entity_metrics")
+        self.spark.sql(f"""
+            MERGE INTO {self.config.fully_qualified_metrics} AS t
+            USING _new_entity_metrics AS s ON t.metric_id = s.metric_id
+            WHEN MATCHED THEN UPDATE SET
+                metric_name = s.metric_name, description = s.description,
+                aggregation_type = s.aggregation_type, source_field = s.source_field,
+                filter_condition = s.filter_condition, updated_at = s.created_at
+            WHEN NOT MATCHED THEN INSERT (
+                metric_id, metric_name, description, entity_id,
+                sql_definition, uc_view_name, aggregation_type,
+                source_field, filter_condition, created_at, updated_at
+            ) VALUES (
+                s.metric_id, s.metric_name, s.description, s.entity_id,
+                NULL, NULL, s.aggregation_type,
+                s.source_field, s.filter_condition, s.created_at, NULL
+            )
+        """)
+
+        logger.info("Populated %d ontology metrics (MERGE, idempotent)", len(all_metrics))
+        return len(all_metrics)
 
     def compute_ontology_metrics(self) -> int:
         """Compute aggregate ontology health metrics and write to ontology_metrics."""
@@ -3206,7 +3254,7 @@ class OntologyBuilder:
 
         # Table-level tags
         try:
-            table_ents = self.spark.sql(
+            table_ents_df = self.spark.sql(
                 f"""
                 SELECT entity_type, confidence,
                        COALESCE(attributes['discovery_method'], 'unknown') AS discovery_method,
@@ -3215,8 +3263,8 @@ class OntologyBuilder:
                 WHERE COALESCE(attributes['granularity'], 'table') = 'table'
                   AND confidence >= {min_conf}
             """
-            ).collect()
-            for row in table_ents:
+            )
+            for row in table_ents_df.toLocalIterator():
                 action = "failed"
                 try:
                     self.spark.sql(
@@ -3453,76 +3501,98 @@ class OntologyBuilder:
         ent_table = self.config.fully_qualified_entities
         result: Dict[str, Any] = {"edges_added": 0, "undiscovered_declared": []}
 
-        # Build declared relationship lookup: (src_type, dst_type) -> (rel_name, cardinality)
-        declared_rels: Dict[Tuple[str, str], Tuple[str, str]] = {}
-        for edef in self.discoverer.entity_definitions:
-            for rel_name, rel_info in edef.relationships.items():
-                target = rel_info.get("target", "")
-                cardinality = rel_info.get("cardinality", "")
-                if target:
-                    declared_rels[(edef.name, target)] = (rel_name, cardinality)
+        # Build declared relationship lookup as a broadcast DataFrame
+        decl_rows = [
+            (edef.name, rel_info.get("target", ""), rel_name, rel_info.get("cardinality", ""))
+            for edef in self.discoverer.entity_definitions
+            for rel_name, rel_info in edef.relationships.items()
+            if rel_info.get("target")
+        ]
 
-        # Get entity-table mapping
+        from pyspark.sql.types import (
+            StructType, StructField, StringType, DoubleType, TimestampType,
+        )
+        import pyspark.sql.functions as F
+
+        # Compute entity pairs via SQL joins (no driver-side collect + nested loop)
         try:
-            ent_rows = self.spark.sql(
-                f"SELECT entity_id, entity_name, entity_type, source_tables "
+            ent_df = self.spark.sql(
+                f"SELECT entity_id, entity_type, EXPLODE(source_tables) AS tbl "
                 f"FROM {ent_table} WHERE COALESCE(attributes['granularity'], 'table') = 'table' "
                 f"AND confidence >= 0.4"
-            ).collect()
+            )
         except Exception:
             return result
 
-        table_to_entity: Dict[str, List[Dict]] = {}
-        for r in ent_rows:
-            for t in r.source_tables or []:
-                table_to_entity.setdefault(t, []).append(
-                    {"entity_id": r.entity_id, "entity_type": r.entity_type}
-                )
-
-        # Get FK predictions linking tables
-        fk_links: List[Tuple[str, str]] = []
         try:
-            fk_rows = self.spark.sql(
+            fk_df = self.spark.sql(
                 f"SELECT DISTINCT src_table, dst_table FROM {fk_table} WHERE final_confidence >= 0.5"
-            ).collect()
-            fk_links = [(r.src_table, r.dst_table) for r in fk_rows]
+            )
         except Exception:
             logger.debug("No FK predictions available for relationship discovery")
+            return result
 
-        new_edges = []
-        seen = set()
-        discovered_pairs: set = set()
+        src_ent = ent_df.alias("se")
+        dst_ent = ent_df.alias("de")
+        pairs = (
+            fk_df
+            .join(src_ent, fk_df.src_table == F.col("se.tbl"))
+            .join(dst_ent, fk_df.dst_table == F.col("de.tbl"))
+            .where(F.col("se.entity_id") != F.col("de.entity_id"))
+            .select(
+                F.col("se.entity_id").alias("src_eid"),
+                F.col("se.entity_type").alias("src_type"),
+                F.col("de.entity_id").alias("dst_eid"),
+                F.col("de.entity_type").alias("dst_type"),
+            )
+            .distinct()
+        )
 
-        for src_tbl, dst_tbl in fk_links:
-            src_ents = table_to_entity.get(src_tbl, [])
-            dst_ents = table_to_entity.get(dst_tbl, [])
-            for se in src_ents:
-                for de in dst_ents:
-                    if se["entity_id"] == de["entity_id"]:
-                        continue
-                    key = (se["entity_id"], de["entity_id"])
-                    if key in seen:
-                        continue
-                    seen.add(key)
+        if decl_rows:
+            decl_schema = StructType([
+                StructField("d_src", StringType()), StructField("d_dst", StringType()),
+                StructField("rel_name", StringType()), StructField("cardinality", StringType()),
+            ])
+            decl_df = F.broadcast(self.spark.createDataFrame(decl_rows, decl_schema))
+            edges_df = pairs.join(
+                decl_df,
+                (pairs.src_type == decl_df.d_src) & (pairs.dst_type == decl_df.d_dst),
+                "left",
+            ).select(
+                pairs.src_eid.alias("src"),
+                pairs.dst_eid.alias("dst"),
+                F.coalesce(decl_df.rel_name, F.lit("references")).alias("relationship"),
+                F.when(decl_df.rel_name.isNotNull(), F.lit(0.8)).otherwise(F.lit(0.6)).alias("weight"),
+                pairs.src_type, pairs.dst_type,
+                decl_df.rel_name.alias("_matched_rel"),
+            )
+        else:
+            edges_df = pairs.select(
+                pairs.src_eid.alias("src"), pairs.dst_eid.alias("dst"),
+                F.lit("references").alias("relationship"), F.lit(0.6).alias("weight"),
+                pairs.src_type, pairs.dst_type,
+                F.lit(None).cast("string").alias("_matched_rel"),
+            )
 
-                    pair = (se["entity_type"], de["entity_type"])
-                    decl = declared_rels.get(pair)
-                    if decl:
-                        rel_type, cardinality = decl
-                        discovered_pairs.add(pair)
-                    else:
-                        rel_type, cardinality = "references", ""
+        edges_df.cache()
+        edge_count = edges_df.count()
 
-                    new_edges.append(
-                        (se["entity_id"], de["entity_id"], rel_type, 0.8 if decl else 0.6, cardinality)
-                    )
-
-        # Identify declared relationships that were not discovered
-        undiscovered = [
-            {"source": s, "target": t, "relationship": declared_rels[(s, t)][0]}
-            for s, t in declared_rels
-            if (s, t) not in discovered_pairs
-        ]
+        # Identify undiscovered declared relationships
+        if decl_rows:
+            if edge_count > 0:
+                discovered = edges_df.where(F.col("_matched_rel").isNotNull()).select(
+                    "src_type", "dst_type"
+                ).distinct().collect()
+                discovered_pairs = {(r.src_type, r.dst_type) for r in discovered}
+            else:
+                discovered_pairs = set()
+            declared_map = {(s, t): rn for s, t, rn, _ in decl_rows}
+            undiscovered = [
+                {"source": s, "target": t, "relationship": declared_map[(s, t)]}
+                for s, t in declared_map if (s, t) not in discovered_pairs
+            ]
+        else:
+            undiscovered = []
         result["undiscovered_declared"] = undiscovered
         if undiscovered:
             logger.info(
@@ -3530,21 +3600,18 @@ class OntologyBuilder:
                 ", ".join(f"{u['source']}->{u['relationship']}->{u['target']}" for u in undiscovered),
             )
 
-        if not new_edges:
+        if edge_count == 0:
+            edges_df.unpersist()
             logger.info("No inter-entity relationships discovered")
             return result
 
-        # Remove prior inter-entity ontology edges to prevent duplicates
-        try:
-            self.spark.sql(
-                f"DELETE FROM {edges_table} "
-                f"WHERE source_system = 'ontology' AND edge_type IN ('references', 'inter_entity')"
-            )
-        except Exception:
-            pass
+        # Remove prior inter-entity ontology edges to prevent duplicates.
+        # This MUST succeed before inserting new edges -- otherwise we get dupes.
+        self.spark.sql(
+            f"DELETE FROM {edges_table} WHERE source_system = 'ontology'"
+        )
 
         now = datetime.now()
-        from pyspark.sql.types import StructType, StructField, StringType, DoubleType, TimestampType
         edge_schema = StructType([
             StructField("src", StringType()), StructField("dst", StringType()),
             StructField("relationship", StringType()), StructField("weight", DoubleType()),
@@ -3554,19 +3621,23 @@ class OntologyBuilder:
             StructField("source_system", StringType()), StructField("status", StringType()),
             StructField("created_at", TimestampType()), StructField("updated_at", TimestampType()),
         ])
-        edge_df = self.spark.createDataFrame(
-            [
-                (src, dst, rel, float(w),
-                 f"{src}::{dst}::{rel}", rel, "out",
-                 None, None, rel,
-                 "ontology", "candidate", now, now)
-                for src, dst, rel, w, _ in new_edges
-            ],
-            schema=edge_schema,
+        write_df = edges_df.select(
+            "src", "dst", "relationship", "weight",
+            F.concat_ws("::", F.col("src"), F.col("dst"), F.col("relationship")).alias("edge_id"),
+            F.col("relationship").alias("edge_type"),
+            F.lit("out").alias("direction"),
+            F.lit(None).cast("string").alias("join_expression"),
+            F.lit(None).cast("double").alias("join_confidence"),
+            F.col("relationship").alias("ontology_rel"),
+            F.lit("ontology").alias("source_system"),
+            F.lit("candidate").alias("status"),
+            F.lit(now).cast("timestamp").alias("created_at"),
+            F.lit(now).cast("timestamp").alias("updated_at"),
         )
-        self._insert_edges_safe(edge_df, edges_table)
-        logger.info("Added %d inter-entity relationship edges", len(new_edges))
-        result["edges_added"] = len(new_edges)
+        self._insert_edges_safe(write_df, edges_table)
+        edges_df.unpersist()
+        logger.info("Added %d inter-entity relationship edges", edge_count)
+        result["edges_added"] = edge_count
         return result
 
     def add_hierarchy_edges(self) -> int:
@@ -3972,76 +4043,69 @@ class OntologyBuilder:
         column entity to primary.
         """
         ent_table = self.config.fully_qualified_entities
-        try:
-            rows = self.spark.sql(f"""
-                SELECT entity_id, entity_type, source_tables,
-                       COALESCE(attributes['granularity'], 'table') AS granularity,
-                       confidence
-                FROM {ent_table}
-            """).collect()
-        except Exception as e:
-            logger.warning("classify_entity_roles: cannot read entities: %s", e)
-            return 0
-
-        table_entities: Dict[str, List[Dict]] = {}
-        for r in rows:
-            for t in r.source_tables or []:
-                table_entities.setdefault(t, []).append({
-                    "entity_id": r.entity_id,
-                    "granularity": r.granularity,
-                    "confidence": float(r.confidence or 0),
-                })
-
-        primary_ids: set = set()
-        referenced_ids: set = set()
-
-        for tbl, ents in table_entities.items():
-            table_level = [e for e in ents if e["granularity"] == "table"]
-            col_level = [e for e in ents if e["granularity"] == "column"]
-
-            if table_level:
-                best = max(table_level, key=lambda e: e["confidence"])
-                primary_ids.add(best["entity_id"])
-                for e in table_level:
-                    if e["entity_id"] != best["entity_id"]:
-                        referenced_ids.add(e["entity_id"])
-                for e in col_level:
-                    referenced_ids.add(e["entity_id"])
-            elif col_level:
-                best = max(col_level, key=lambda e: e["confidence"])
-                primary_ids.add(best["entity_id"])
-                for e in col_level:
-                    if e["entity_id"] != best["entity_id"]:
-                        referenced_ids.add(e["entity_id"])
-
-        referenced_ids -= primary_ids
-        updated = 0
-
-        if primary_ids:
-            id_list = ",".join(f"'{eid}'" for eid in primary_ids)
-            self.spark.sql(f"""
-                UPDATE {ent_table}
-                SET entity_role = 'primary',
-                    discovery_confidence = COALESCE(discovery_confidence, confidence),
-                    updated_at = CURRENT_TIMESTAMP()
-                WHERE entity_id IN ({id_list})
-            """)
-            updated += len(primary_ids)
-
-        if referenced_ids:
-            id_list = ",".join(f"'{eid}'" for eid in referenced_ids)
-            self.spark.sql(f"""
-                UPDATE {ent_table}
-                SET entity_role = 'referenced',
-                    discovery_confidence = COALESCE(discovery_confidence, confidence),
-                    updated_at = CURRENT_TIMESTAMP()
-                WHERE entity_id IN ({id_list})
-            """)
-            updated += len(referenced_ids)
-
-        logger.info("classify_entity_roles: %d primary, %d referenced",
-                     len(primary_ids), len(referenced_ids))
-        return updated
+        # Compute roles entirely in SQL: explode source_tables, rank per table,
+        # then merge back. Primary = highest-confidence table-granularity entity
+        # per source table (or column-granularity if no table-level exists).
+        # An entity that is primary for ANY table wins globally.
+        self.spark.sql(f"""
+            MERGE INTO {ent_table} AS target
+            USING (
+                WITH exploded AS (
+                    SELECT entity_id,
+                           COALESCE(attributes['granularity'], 'table') AS granularity,
+                           confidence, tbl
+                    FROM {ent_table}
+                    LATERAL VIEW EXPLODE(source_tables) AS tbl
+                ),
+                per_table AS (
+                    SELECT tbl,
+                           BOOL_OR(granularity = 'table') AS has_table_level
+                    FROM exploded GROUP BY tbl
+                ),
+                ranked AS (
+                    SELECT e.entity_id,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY e.tbl
+                               ORDER BY
+                                   CASE WHEN h.has_table_level AND e.granularity = 'table' THEN 0
+                                        WHEN NOT h.has_table_level AND e.granularity = 'column' THEN 0
+                                        ELSE 1 END,
+                                   e.confidence DESC
+                           ) AS rn
+                    FROM exploded e
+                    JOIN per_table h ON e.tbl = h.tbl
+                )
+                SELECT entity_id,
+                       CASE WHEN MAX(CASE WHEN rn = 1 THEN 1 ELSE 0 END) = 1
+                            THEN 'primary' ELSE 'referenced' END AS computed_role
+                FROM ranked
+                GROUP BY entity_id
+            ) AS source
+            ON target.entity_id = source.entity_id
+            WHEN MATCHED THEN UPDATE SET
+                entity_role = source.computed_role,
+                discovery_confidence = COALESCE(target.discovery_confidence, target.confidence),
+                updated_at = CURRENT_TIMESTAMP()
+        """)
+        # Entities with NULL/empty source_tables never appear in EXPLODE;
+        # default them to 'referenced' so they don't retain stale roles.
+        self.spark.sql(f"""
+            UPDATE {ent_table}
+            SET entity_role = 'referenced', updated_at = CURRENT_TIMESTAMP()
+            WHERE (source_tables IS NULL OR SIZE(source_tables) = 0)
+              AND entity_role IS NULL
+        """)
+        counts = self.spark.sql(f"""
+            SELECT entity_role, COUNT(*) AS cnt
+            FROM {ent_table}
+            WHERE entity_role IN ('primary', 'referenced')
+            GROUP BY entity_role
+        """).collect()
+        role_counts = {r.entity_role: r.cnt for r in counts}
+        n_primary = role_counts.get("primary", 0)
+        n_referenced = role_counts.get("referenced", 0)
+        logger.info("classify_entity_roles: %d primary, %d referenced", n_primary, n_referenced)
+        return n_primary + n_referenced
 
     def _build_bundle_property_index(self, entity_type: str) -> Dict[str, Tuple[str, str, Optional[str], Optional[Any]]]:
         """Build column_name_lower -> (role, property_name, edge, target_entity) from bundle properties."""
@@ -4077,6 +4141,8 @@ class OntologyBuilder:
 
         tbl_raw = table_name.rsplit(".", 1)[-1].lower() if table_name else ""
 
+        _TABLE_PREFIXES = ("dim_", "fct_", "fact_", "stg_", "raw_", "ref_")
+
         def _is_table_pk(col: str, tbl: str) -> bool:
             if col == "id":
                 return True
@@ -4084,7 +4150,13 @@ class OntologyBuilder:
             if not m or not tbl:
                 return False
             stem = m.group(1)
-            return tbl.startswith(stem) or stem.startswith(tbl.rstrip("s"))
+            stripped = tbl
+            for pfx in _TABLE_PREFIXES:
+                if tbl.startswith(pfx):
+                    stripped = tbl[len(pfx):]
+                    break
+            return (tbl.startswith(stem) or stem.startswith(tbl.rstrip("s"))
+                    or stripped.startswith(stem) or stem.startswith(stripped.rstrip("s")))
 
         is_self_pk = _is_table_pk(col_lower, tbl_raw)
 
@@ -4212,18 +4284,19 @@ class OntologyBuilder:
         for etype, etype_tables in etype_to_tables.items():
             tbl_list = ",".join(f"'{t}'" for t in etype_tables)
             try:
-                columns = self.spark.sql(f"""
+                columns_df = self.spark.sql(f"""
                     SELECT table_name, column_name, data_type,
                            classification_type
                     FROM {col_kb}
                     WHERE table_name IN ({tbl_list})
-                """).collect()
+                """)
+                columns = list(columns_df.toLocalIterator())
             except Exception as e:
-                logger.warning(
-                    "classify_column_properties: cannot read column KB for entity type %s: %s",
-                    etype, e,
-                )
-                continue
+                raise RuntimeError(
+                    f"classify_column_properties: cannot read column KB for entity type "
+                    f"'{etype}' ({len(etype_tables)} tables). This would silently drop "
+                    f"these tables from ontology_column_properties on overwrite."
+                ) from e
             logger.info(
                 "classify_column_properties: processing %d columns for entity type %s (%d tables)",
                 len(columns), etype, len(etype_tables),
@@ -5135,7 +5208,6 @@ class OntologyBuilder:
 
         _step("sync_entity_nodes_to_graph", self._sync_entity_nodes_to_graph)
         _step("enrich_table_nodes_with_ontology", self._enrich_table_nodes_with_ontology)
-        _step("add_same_entity_type_edges", self._add_same_entity_type_edges)
 
         edges_added = _step("add_entity_relationships_to_graph", self.add_entity_relationships_to_graph)
 
@@ -5144,6 +5216,10 @@ class OntologyBuilder:
 
         rel_result = _step("discover_inter_entity_relationships", self.discover_inter_entity_relationships)
         edges_added += rel_result.get("edges_added", 0)
+
+        # Must run after add_entity_relationships_to_graph (which calls
+        # _clear_ontology_edges), otherwise these edges get wiped.
+        _step("add_same_entity_type_edges", self._add_same_entity_type_edges)
 
         _step("validate_ontology_completeness", self.validate_ontology_completeness)
         _step("compute_ontology_metrics", self.compute_ontology_metrics)
@@ -5207,14 +5283,13 @@ class OntologyBuilder:
         import time as _time
         start = _time.time()
 
-        self._clear_ontology_edges()
         named = self.discover_named_relationships()
         bundle = self.emit_bundle_edges()
         self._sync_entity_nodes_to_graph()
-        self._add_same_entity_type_edges()
         edges = self.add_entity_relationships_to_graph()
         hierarchy = self.add_hierarchy_edges()
         inter = self.discover_inter_entity_relationships()
+        self._add_same_entity_type_edges()
 
         elapsed = _time.time() - start
         logger.info("[timing] refresh_relationships: %.1fs", elapsed)

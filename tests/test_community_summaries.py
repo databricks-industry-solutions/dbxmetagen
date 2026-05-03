@@ -52,8 +52,10 @@ class TestDiscoverCommunities:
         row = MagicMock()
         row.__getitem__ = lambda self, k: {
             "domain": "clinical", "subdomain": "diagnostics",
-            "table_names": ["lab_results", "imaging"],
-            "comments": ["Lab data", "DICOM refs"],
+            "table_entries": [
+                {"table_name": "lab_results", "comment": "Lab data"},
+                {"table_name": "imaging", "comment": "DICOM refs"},
+            ],
             "table_count": 2,
         }[k]
 
@@ -66,6 +68,8 @@ class TestDiscoverCommunities:
         assert len(result) == 1
         assert result[0]["domain"] == "clinical"
         assert result[0]["table_count"] == 2
+        assert result[0]["table_names"] == ["lab_results", "imaging"]
+        assert result[0]["comments"] == ["Lab data", "DICOM refs"]
 
     def test_returns_empty_for_no_communities(self):
         mock_df = MagicMock()

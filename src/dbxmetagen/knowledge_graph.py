@@ -177,6 +177,40 @@ class KnowledgeGraphBuilder:
         col_list = ", ".join(c.strip("`") for c, _ in self._EDGE_SCHEMA)
         self.spark.sql(f"INSERT INTO {target} ({col_list}) SELECT {col_list} FROM {view_name}")
 
+    def _merge_edges(self, df: DataFrame, source_system: str, table: str = None):
+        """MERGE edges by edge_id (upsert), then sweep stale edges for this source_system.
+
+        Mirrors the merge_nodes pattern: idempotent, preserves created_at on updates,
+        and removes edges that no longer exist in the current batch.
+        """
+        target = table or self.config.fully_qualified_edges
+        aligned = self._align_edge_schema(df)
+        row_count = aligned.count()
+        if row_count == 0:
+            logger.info("No edges to merge for source_system=%s", source_system)
+            return
+
+        view_name = f"_staged_merge_{source_system}"
+        aligned.createOrReplaceTempView(view_name)
+        logger.info("Merging %d edges (source_system=%s) into %s", row_count, source_system, target)
+
+        update_cols = [c.strip("`") for c, _ in self._EDGE_SCHEMA
+                       if c.strip("`") not in ("edge_id", "created_at")]
+        update_set = ", ".join(f"target.{c} = source.{c}" for c in update_cols)
+        col_list = ", ".join(c.strip("`") for c, _ in self._EDGE_SCHEMA)
+
+        self.spark.sql(f"""
+            MERGE INTO {target} AS target
+            USING {view_name} AS source
+            ON target.edge_id = source.edge_id
+            WHEN MATCHED THEN UPDATE SET {update_set}
+            WHEN NOT MATCHED THEN INSERT ({col_list})
+                VALUES (source.{', source.'.join(col_list.split(', '))})
+            WHEN NOT MATCHED BY SOURCE
+              AND target.source_system = '{source_system}'
+              THEN DELETE
+        """)
+
     def create_nodes_table(self) -> None:
         """Create the nodes table if it doesn't exist, and add new columns if missing."""
         ddl = f"""
@@ -209,8 +243,18 @@ class KnowledgeGraphBuilder:
             updated_at TIMESTAMP
         )
         COMMENT 'Graph nodes - unified backbone for tables, columns, schemas, and ontology entities'
+        TBLPROPERTIES ('delta.enableChangeDataFeed' = 'true')
         """
         self.spark.sql(ddl)
+
+        # Enable CDF on existing tables (required for Delta Sync VS indexes)
+        try:
+            self.spark.sql(
+                f"ALTER TABLE {self.config.fully_qualified_nodes} "
+                f"SET TBLPROPERTIES ('delta.enableChangeDataFeed' = 'true')"
+            )
+        except Exception as e:
+            logger.debug("CDF property already set or not applicable: %s", e)
 
         for col_name, col_type in self._NODE_MIGRATION_COLUMNS:
             try:
@@ -530,34 +574,33 @@ class KnowledgeGraphBuilder:
         return {"total_nodes": count}
     
     def refresh_edges(self, edges_df: DataFrame, source_system: str = "knowledge_graph") -> Dict[str, int]:
-        """
-        Refresh edges by deleting stale edges and inserting current ones.
-        
-        Only deletes edges matching the given source_system to avoid destroying
-        edges from other producers (ontology, similarity, fk_predictions).
-        
-        Strategy:
-        1. Delete edges involving affected nodes for this source_system only
-        2. Insert all current edges
-        """
-        affected_nodes = edges_df.select("src").union(edges_df.select(F.col("dst").alias("src"))).distinct()
-        affected_ids = [row.src for row in affected_nodes.collect()]
+        """Merge edges by edge_id, grouped by source_system.
 
-        if affected_ids:
-            id_list = ", ".join(f"'{n}'" for n in affected_ids)
-            delete_sql = f"""
-            DELETE FROM {self.config.fully_qualified_edges}
-            WHERE (src IN ({id_list}) OR dst IN ({id_list}))
-              AND (source_system = '{source_system}' OR source_system IS NULL)
-            """
-            self.spark.sql(delete_sql)
-        
-        self._insert_edges(edges_df)
-        
+        Reads the ``source_system`` column from edges_df to determine which
+        groups to merge independently.  Each group is upserted via MERGE and
+        stale edges for that source_system are swept.  The ``source_system``
+        parameter is used as a fallback for rows where the column is NULL.
+        """
+        # Fill NULL source_system with the caller-provided default
+        df = edges_df.withColumn(
+            "source_system",
+            F.coalesce(F.col("source_system"), F.lit(source_system)),
+        )
+
+        systems = [
+            row.source_system
+            for row in df.select("source_system").distinct().collect()
+            if row.source_system
+        ]
+
+        for sys in systems:
+            group = df.filter(F.col("source_system") == sys)
+            self._merge_edges(group, source_system=sys)
+
         count = self.spark.sql(
             f"SELECT COUNT(*) as cnt FROM {self.config.fully_qualified_edges}"
         ).collect()[0]["cnt"]
-        
+
         return {"total_edges": count}
     
     def add_inverse_edges(self, edges_df: DataFrame, edge_catalog: Optional[Dict] = None) -> DataFrame:
@@ -962,12 +1005,12 @@ class ExtendedKnowledgeGraphBuilder(KnowledgeGraphBuilder):
         """Build 'derives_from' edges from lineage data."""
         try:
             df = self.spark.sql(f"""
-                SELECT 
+                SELECT DISTINCT
                     table_name as dst,
                     EXPLODE(upstream_tables) as src
                 FROM {self.ext_config.fully_qualified_extended_metadata}
                 WHERE upstream_tables IS NOT NULL
-            """)
+            """).dropDuplicates(["src", "dst"])
             
             df = df.withColumn("relationship", F.lit("derives_from")).withColumn("weight", F.lit(1.0))
             return self._enrich_edges(df, "derives_from")
@@ -1012,9 +1055,17 @@ class ExtendedKnowledgeGraphBuilder(KnowledgeGraphBuilder):
                     .drop("join_expr", "conf", "src_table", "dst_table", "src_column", "dst_column")
                 )
 
-            table_df = raw.select(
-                F.col("src_table").alias("src"), F.col("dst_table").alias("dst"),
-                "join_expr", "conf",
+            table_df = (
+                raw.groupBy("src_table", "dst_table")
+                .agg(
+                    F.max("conf").alias("conf"),
+                    F.concat_ws("; ", F.collect_set("join_expr")).alias("join_expr"),
+                )
+                .select(
+                    F.col("src_table").alias("src"),
+                    F.col("dst_table").alias("dst"),
+                    "join_expr", "conf",
+                )
             )
             table_edges = _fk_edges(table_df)
 

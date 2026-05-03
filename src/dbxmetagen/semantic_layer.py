@@ -324,13 +324,19 @@ class SemanticLayerGenerator:
                 "table_knowledge_base is empty or missing -- run metadata generation first"
             )
 
-        # Column knowledge base (required)
-        columns = self._safe_collect(
-            f"SELECT table_name, column_name, data_type, comment, classification FROM {fq('column_knowledge_base')}"
-        )
+        # Column knowledge base (required) -- paginated by table batch to avoid OOM
+        _CKB_TABLE_BATCH = 500
+        table_names_list = [t["table_name"] for t in tables]
         col_by_table: dict[str, list] = {}
-        for c in columns:
-            col_by_table.setdefault(c["table_name"], []).append(c)
+        for i in range(0, len(table_names_list), _CKB_TABLE_BATCH):
+            batch_names = table_names_list[i : i + _CKB_TABLE_BATCH]
+            placeholders = ", ".join(f"'{n}'" for n in batch_names)
+            batch_cols = self._safe_collect(
+                f"SELECT table_name, column_name, data_type, comment, classification "
+                f"FROM {fq('column_knowledge_base')} WHERE table_name IN ({placeholders})"
+            )
+            for c in batch_cols:
+                col_by_table.setdefault(c["table_name"], []).append(c)
 
         # FK predictions (optional; filter by confidence only - fk_predictions has no is_fk column)
         fk_rows = self._safe_collect(
