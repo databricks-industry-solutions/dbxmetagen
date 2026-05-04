@@ -91,10 +91,10 @@ or_replace = "OR REPLACE" if drop_existing else ""
 kb_functions = [
     f"""
 CREATE {or_replace} FUNCTION {fq('mcp_get_table_metadata')}(table_name_param STRING)
-RETURNS TABLE(table_name STRING, comment STRING, domain STRING, subdomain STRING, has_pii BOOLEAN, has_phi BOOLEAN, row_count BIGINT)
+RETURNS TABLE(table_name STRING, comment STRING, domain STRING, subdomain STRING, has_pii BOOLEAN, has_phi BOOLEAN)
 COMMENT 'Look up table metadata from the knowledge base. Accepts a full or partial table name.'
 RETURN
-  SELECT table_name, comment, domain, subdomain, has_pii, has_phi, row_count
+  SELECT table_name, comment, domain, subdomain, has_pii, has_phi
   FROM {fq('table_knowledge_base')}
   WHERE table_name LIKE CONCAT('%', table_name_param, '%')
   ORDER BY table_name LIMIT 10
@@ -114,7 +114,7 @@ RETURN
 """,
     f"""
 CREATE {or_replace} FUNCTION {fq('mcp_search_knowledge_base')}(
-  search_term STRING, domain_filter STRING DEFAULT NULL, max_results INT DEFAULT 20
+  search_term STRING, domain_filter STRING DEFAULT NULL
 )
 RETURNS TABLE(source STRING, table_name STRING, column_name STRING, comment STRING, domain STRING)
 COMMENT 'Search across the table and column knowledge bases by keyword. Optionally filter by domain.'
@@ -131,7 +131,7 @@ RETURN
     WHERE (c.comment LIKE CONCAT('%', search_term, '%') OR c.column_name LIKE CONCAT('%', search_term, '%'))
       AND (domain_filter IS NULL OR t.domain = domain_filter)
   )
-  ORDER BY source, table_name LIMIT max_results
+  ORDER BY source, table_name LIMIT 20
 """,
     f"""
 CREATE {or_replace} FUNCTION {fq('mcp_get_fk_predictions')}(
@@ -163,6 +163,7 @@ RETURN
 """,
 ]
 
+errors = []
 for ddl in kb_functions:
     fname = ddl.split("FUNCTION")[1].split("(")[0].strip()
     try:
@@ -172,7 +173,10 @@ for ddl in kb_functions:
         if "already exists" in str(e).lower() and not drop_existing:
             print(f"Exists (skip): {fname} -- set drop_existing=true to recreate")
         else:
-            print(f"ERROR creating {fname}: {e}")
+            print(f"FAILED: {fname}: {e}")
+            errors.append(fname)
+if errors:
+    raise RuntimeError(f"Failed to create KB functions: {errors}")
 
 # COMMAND ----------
 
@@ -186,8 +190,7 @@ graph_functions = [
 CREATE {or_replace} FUNCTION {fq('mcp_query_graph_nodes')}(
   node_type_param STRING DEFAULT NULL,
   domain_param STRING DEFAULT NULL,
-  search_term STRING DEFAULT NULL,
-  max_results INT DEFAULT 20
+  search_term STRING DEFAULT NULL
 )
 RETURNS TABLE(id STRING, node_type STRING, domain STRING, display_name STRING, short_description STRING, security_level STRING, sensitivity STRING, ontology_type STRING)
 COMMENT 'Search the knowledge graph nodes. Filter by node_type (table, column, schema, entity), domain, or keyword in id/comment.'
@@ -197,7 +200,7 @@ RETURN
   WHERE (node_type_param IS NULL OR node_type = node_type_param)
     AND (domain_param IS NULL OR domain = domain_param)
     AND (search_term IS NULL OR id LIKE CONCAT('%', search_term, '%') OR comment LIKE CONCAT('%', search_term, '%'))
-  ORDER BY display_name LIMIT max_results
+  ORDER BY display_name LIMIT 20
 """,
     f"""
 CREATE {or_replace} FUNCTION {fq('mcp_get_node_details')}(node_id_param STRING)
@@ -220,8 +223,7 @@ RETURN
 CREATE {or_replace} FUNCTION {fq('mcp_find_related_nodes')}(
   node_id_param STRING,
   edge_type_param STRING DEFAULT NULL,
-  min_weight DOUBLE DEFAULT 0.0,
-  max_results INT DEFAULT 20
+  min_weight DOUBLE DEFAULT 0.0
 )
 RETURNS TABLE(neighbor_id STRING, relationship STRING, edge_type STRING, weight DOUBLE,
               join_expression STRING, neighbor_type STRING, neighbor_domain STRING,
@@ -247,7 +249,7 @@ RETURN
   WHERE e.dst = node_id_param
     AND (edge_type_param IS NULL OR e.edge_type = edge_type_param)
     AND e.weight >= min_weight
-  ORDER BY weight DESC LIMIT max_results
+  ORDER BY weight DESC LIMIT 20
 """,
     f"""
 CREATE {or_replace} FUNCTION {fq('mcp_traverse_graph')}(
@@ -284,6 +286,7 @@ RETURN
 """,
 ]
 
+errors = []
 for ddl in graph_functions:
     fname = ddl.split("FUNCTION")[1].split("(")[0].strip()
     try:
@@ -293,7 +296,10 @@ for ddl in graph_functions:
         if "already exists" in str(e).lower() and not drop_existing:
             print(f"Exists (skip): {fname} -- set drop_existing=true to recreate")
         else:
-            print(f"ERROR creating {fname}: {e}")
+            print(f"FAILED: {fname}: {e}")
+            errors.append(fname)
+if errors:
+    raise RuntimeError(f"Failed to create graph functions: {errors}")
 
 # COMMAND ----------
 
@@ -374,7 +380,7 @@ display(spark.sql(f"SELECT * FROM {fq('mcp_get_column_metadata')}('', NULL) LIMI
 # COMMAND ----------
 
 print("--- mcp_search_knowledge_base ---")
-display(spark.sql(f"SELECT * FROM {fq('mcp_search_knowledge_base')}('', NULL, 5)"))
+display(spark.sql(f"SELECT * FROM {fq('mcp_search_knowledge_base')}('', NULL)"))
 
 # COMMAND ----------
 
@@ -389,7 +395,7 @@ display(spark.sql(f"SELECT * FROM {fq('mcp_get_ontology_entities')}(NULL) LIMIT 
 # COMMAND ----------
 
 print("--- mcp_query_graph_nodes ---")
-display(spark.sql(f"SELECT * FROM {fq('mcp_query_graph_nodes')}(NULL, NULL, NULL, 5)"))
+display(spark.sql(f"SELECT * FROM {fq('mcp_query_graph_nodes')}(NULL, NULL, NULL)"))
 
 # COMMAND ----------
 
@@ -409,7 +415,7 @@ except Exception as e:
 print("--- mcp_find_related_nodes (first node) ---")
 try:
     if first_node:
-        display(spark.sql(f"SELECT * FROM {fq('mcp_find_related_nodes')}('{nid}', NULL, 0.0, 5)"))
+        display(spark.sql(f"SELECT * FROM {fq('mcp_find_related_nodes')}('{nid}', NULL, 0.0)"))
     else:
         print("No graph nodes found -- skipping")
 except Exception as e:
