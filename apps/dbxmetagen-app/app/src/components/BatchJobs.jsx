@@ -545,7 +545,7 @@ export default function BatchJobs({ onNavigate }) {
               {importStatus && <p className="text-xs text-green-600 dark:text-green-400 mt-1">{importStatus}</p>}
             </div>
             <div>
-              <label className="section-title mb-1.5 block">Business Domain List</label>
+              <label className="section-title mb-1.5 block">Business Domain List (Legacy)</label>
               <select value={domainConfig} onChange={e => setDomainConfig(e.target.value)} className="select-base">
                 <option value="">{ontologyBundle ? '(Use domains from selected ontology)' : '(No domain list selected)'}</option>
                 {domainConfigs.map(d => (
@@ -553,7 +553,7 @@ export default function BatchJobs({ onNavigate }) {
                 ))}
               </select>
               {ontologyBundle && <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">Replaces the default domain list from the selected ontology.</p>}
-              <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">Recommended: select an Industry Ontology above instead of a standalone domain list. Ontology bundles include domain definitions along with entity types, properties, and relationships. Standalone domain lists are provided for legacy compatibility.</p>
+              <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">Do not use unless you know why you are using this. Select an Industry Ontology above instead -- ontology bundles include domain definitions along with entity types, properties, and relationships.</p>
             </div>
           </div>
         </details>
