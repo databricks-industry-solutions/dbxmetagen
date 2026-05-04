@@ -254,6 +254,9 @@ variables:
   max_candidates_per_table_pair:
     description: "Maximum number of candidate column pairs retained per table pair from name/ontology matching. Lower values reduce combinatorial explosion for wide tables."
     default: 5
+  fk_system_column_exclude_patterns:
+    description: "Comma-separated regex patterns identifying system/ETL columns (e.g. _created_at, batch_id) that should not receive FK boosting signals. Empty string uses sensible defaults."
+    default: ""
   use_customer_context:
     description: "When true, enrich prompts with customer-provided context from the customer_context Delta table. Context is scoped hierarchically (catalog > schema > pattern > table). Requires the customer_context table to exist (seed from YAML or create via the app)."
     default: false

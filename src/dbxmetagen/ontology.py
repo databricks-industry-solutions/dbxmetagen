@@ -3606,9 +3606,11 @@ class OntologyBuilder:
             return result
 
         # Remove prior inter-entity ontology edges to prevent duplicates.
-        # This MUST succeed before inserting new edges -- otherwise we get dupes.
+        # Scoped to exclude structural edge types written by other steps
+        # (instance_of, has_property, has_attribute, is_a, same_entity_type).
         self.spark.sql(
-            f"DELETE FROM {edges_table} WHERE source_system = 'ontology'"
+            f"DELETE FROM {edges_table} WHERE source_system = 'ontology' "
+            f"AND relationship NOT IN ('instance_of', 'has_property', 'has_attribute', 'is_a', 'same_entity_type')"
         )
 
         now = datetime.now()
