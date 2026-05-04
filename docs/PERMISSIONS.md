@@ -45,6 +45,15 @@ GRANT MODIFY ON SCHEMA `<catalog>`.`<schema>` TO `<SPN_UUID>`;
 
 `CAN_USE` on the `dbxmetagen-vs` endpoint. This is **not** managed by DAB (VS endpoints are not yet a supported DAB resource type). It must be granted separately -- see the "How each deploy method handles it" section below.
 
+**What happens without this grant:** The app does not crash on startup. Failures are mostly silent:
+
+- `/api/vector/status` returns HTTP 200 with `endpoint_error` / `index_error` fields -- the UI shows VS as unavailable.
+- The deep analysis agent's `search_metadata` tool catches the error and falls back to SQL keyword discovery. Retrieval quality is degraded (no semantic search) but the agent still responds.
+- `/api/vector/search` returns HTTP 500 with `"Vector search failed: ..."` -- this is the first visible hard error a user would see.
+- Semantic layer VS enrichment silently returns empty (no error surfaced).
+
+Because most paths swallow VS errors gracefully, a missing `CAN_USE` grant can go unnoticed until a user tries explicit vector search or notices degraded agent answers. Check `/api/vector/status` to verify VS access after deployment.
+
 ### How each deploy method handles it
 
 | Grant | `deploy.sh` | Notebook deploy (NB02) | Manual deploy |

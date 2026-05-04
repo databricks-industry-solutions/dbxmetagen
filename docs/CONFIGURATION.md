@@ -361,6 +361,8 @@ In the full analytics pipeline, `build_ontology_vector_index` runs after `build_
 
 **First-run latency:** On first run with `use_ann_similarity=true`, the Delta Sync index must be created and synced (5-15 min depending on graph_nodes size). Subsequent runs only trigger a sync for new/updated embeddings.
 
+**Cross-join fallback:** If the ANN path fails for any reason (VS endpoint unavailable, permission error, transient network failure), similarity edges silently fall back to the O(N^2) cross-join. For small catalogs (under `blocking_node_threshold`, default ~500 nodes) this is fine -- cross-join is actually preferred and cheaper than standing up a VS index. For larger catalogs, an unintended fallback can mean hours of runtime or driver OOM instead of minutes. Check the job's return value for `"method": "crossjoin_fallback"` or search logs for `crossjoin_fallback` to detect this. The fallback is a safety net for transient failures, not a long-term operating mode at scale.
+
 ## Compatibility
 
 **Databricks Runtime:**
