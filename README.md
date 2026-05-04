@@ -20,6 +20,10 @@
 - **Metadata review**: Interactive review, edit, and apply workflow for generated metadata
 - **Web dashboard**: FastAPI + React app covering the full metadata lifecycle
 
+
+Although there are many possible modes in which you can run dbxmetagen, the intention is that the app is the full-fledged experience.
+
+
 ## Quickstart
 
 **Prerequisites:** Databricks CLI (>=0.283.0), Python 3.10+, [uv](https://docs.astral.sh/uv/) (for dependency management), Node.js (for frontend build), a Databricks workspace with Unity Catalog enabled, and a Foundation Model endpoint (e.g. `databricks-claude-sonnet-4-6`).
