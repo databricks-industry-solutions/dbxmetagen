@@ -46,13 +46,7 @@
    ./deploy.sh --profile <your-profile> --target dev --no-app
    ```
 
-4. Access the app at **Workspace > Apps > dbxmetagen-app**
-
-5. Run jobs:
-   ```bash
-   databricks bundle run metadata_generator_job -t dev -p <profile> --params table_names='catalog.schema.*',mode=domain
-   databricks bundle run full_analytics_pipeline_job -t dev -p <profile>
-   ```
+4. Access the app at **Workspace > Apps > dbxmetagen-app** and follow the instructions there.
 
 ## Partial Install (Notebook Only)
 
