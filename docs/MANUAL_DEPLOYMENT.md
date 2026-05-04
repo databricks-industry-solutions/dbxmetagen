@@ -280,6 +280,26 @@ databricks api get /api/2.0/vector-search/endpoints/dbxmetagen-vs --profile MYPR
 Wait until `endpoint_status.state` is `ONLINE` before using vector search
 features in the app.
 
+### Grant the app SPN `CAN_USE` on the VS endpoint
+
+`deploy.sh` and the notebook deploy pipeline do this automatically, but
+for manual deploys you must grant it yourself. The Permissions API requires
+the **numeric** endpoint ID (not the name):
+
+```bash
+# Extract the numeric endpoint ID from the GET response
+VS_EP_ID=$(databricks api get /api/2.0/vector-search/endpoints/dbxmetagen-vs \
+    --profile MYPROFILE --output json | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
+
+# Grant CAN_USE to the app SPN (use the UUID from step 6)
+databricks api patch "/api/2.0/permissions/vector-search-endpoints/${VS_EP_ID}" \
+    --profile MYPROFILE \
+    --json "{\"access_control_list\": [{\"service_principal_name\": \"<SPN_UUID>\", \"permission_level\": \"CAN_USE\"}]}"
+```
+
+Without this grant, the app's deep analysis agent and graph explorer will
+not be able to query the vector search index.
+
 ---
 
 ## 9. Start the App
