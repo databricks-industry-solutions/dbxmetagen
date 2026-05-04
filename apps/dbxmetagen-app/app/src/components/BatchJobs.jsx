@@ -406,10 +406,13 @@ export default function BatchJobs({ onNavigate }) {
             <div>
               <label className="section-title mb-1.5 flex items-center gap-2">
                 Industry Ontology
-                <span className="relative group/tip cursor-help" title="Each bundle defines its own entity IDs. Entities from different bundles will not unify — use the same bundle across all data for consistent entity linkage.">
+                <span className="relative group/tip cursor-help">
                   <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5 text-slate-400 group-hover/tip:text-slate-600 dark:group-hover/tip:text-slate-300 transition-colors" viewBox="0 0 20 20" fill="currentColor">
                     <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd"/>
                   </svg>
+                  <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-72 p-2 text-xs text-slate-200 bg-slate-800 rounded-lg shadow-lg opacity-0 group-hover/tip:opacity-100 pointer-events-none transition-opacity z-10">
+                    Each bundle defines its own entity IDs. Entities from different bundles will not unify — use the same bundle across all data for consistent entity linkage.
+                  </span>
                 </span>
                 {bundlesLoading && (
                   <span className="text-[10px] text-dbx-oat-medium dark:text-dbx-navy-300 italic animate-pulse">Loading...</span>
