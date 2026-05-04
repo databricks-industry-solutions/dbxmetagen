@@ -4726,11 +4726,12 @@ def list_catalogs():
     try:
         q = (
             "SELECT catalog_name FROM system.information_schema.catalogs "
-            "WHERE catalog_name NOT IN ('system', '__databricks_internal') "
+            "WHERE catalog_name NOT IN ('system') "
+            "AND LEFT(catalog_name, 2) != '__' "
             "ORDER BY catalog_name"
         )
         rows = execute_sql(q)
-        return [r["catalog_name"] for r in rows]
+        return [r["catalog_name"] for r in rows if not r["catalog_name"].startswith("__")]
     except Exception as e:
         logger.warning("list_catalogs failed (permissions?): %s", e)
         raise HTTPException(status_code=403, detail=f"Cannot list catalogs: {e}")
