@@ -1591,14 +1591,19 @@ OUTPUT (one JSON object only, no array, no explanation):"""
         return examples
 
     def create_genie_space(self, display_name: str, warehouse_id: str) -> Optional[str]:
-        """Assemble a Genie space from applied metric views and deploy via the REST API.
+        """Build a Genie space from applied metric views and deploy via the REST API.
 
-        Gathers applied MV definitions, KB/FK/ontology/graph context via
-        ``GenieContextAssembler``, constructs a v2 ``serialized_space`` (data
-        sources, instructions, join specs, SQL snippets, example SQL, sample
-        questions), POSTs to the Genie spaces endpoint, and writes the resulting
-        ``genie_space_id`` back to the definitions table. Returns the space_id
-        or None on failure.
+        This is the **notebook/job path** -- a simplified builder that reads
+        applied MVs, KB, FK predictions, and ontology entities directly via
+        Spark SQL, assembles a Genie payload dict, and POSTs it to the Genie
+        spaces endpoint.  It does *not* use ``GenieContextAssembler``,
+        ``run_genie_agent``, or ``build_serialized_space`` from ``genie/``.
+
+        For the full-featured Genie builder with 3-phase LLM agent, Pydantic
+        schema normalization, join merging, and deploy retries, use the in-app
+        ``/api/genie/create`` endpoint (backed by ``src/dbxmetagen/genie/*``).
+
+        Returns the ``genie_space_id`` or None on failure.
         """
         fq = self.config.fq
 

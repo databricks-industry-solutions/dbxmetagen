@@ -329,6 +329,19 @@ The app is in `apps/dbxmetagen-app/` and provides a FastAPI backend with a React
 
 dbxmetagen exposes its knowledge base, knowledge graph, and vector index as [Databricks Managed MCP servers](https://docs.databricks.com/aws/en/generative-ai/mcp). Any MCP-compatible client (Cursor, Claude Code, AI Playground) can query your metadata catalog directly. See [docs/MCP_SERVERS.md](docs/MCP_SERVERS.md) for client configuration, the full tool reference, and a walkthrough of how the dashboard's deep analysis agent uses these same data assets.
 
+## Documentation
+
+| Guide | Description |
+|-------|-------------|
+| [Configuration](docs/CONFIGURATION.md) | All runtime parameters, ontology bundles, Vector Search, Lakebase, OBO, and community summaries |
+| [Permissions](docs/PERMISSIONS.md) | Two-identity model (app SPN vs job owner), UC grants, OBO mode, and end-user access |
+| [Manual Deployment](docs/MANUAL_DEPLOYMENT.md) | Step-by-step deployment without `deploy.sh` (CLI-only or CI/CD) |
+| [Domain & Ontology Architecture](docs/DOMAIN_ONTOLOGY_ARCHITECTURE.md) | Formal vs custom ontology bundles, domain YAML, and how they interact |
+| [MCP Servers](docs/MCP_SERVERS.md) | Managed MCP server setup, tool reference, and agent integration |
+| [QA Checklist](docs/QA_CHECKLIST.md) | Pre-release validation checklist |
+| [Roadmap](docs/CONSOLIDATED_ROADMAP.md) | Open work items by theme and priority |
+| [Dependencies](docs/DEPENDENCIES.md) | Third-party dependency inventory |
+
 ## Testing
 
 ```bash
