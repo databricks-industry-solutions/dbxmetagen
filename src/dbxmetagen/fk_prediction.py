@@ -47,6 +47,16 @@ def _dtype_exclusion_sql() -> str:
     return ", ".join(f"'{d}'" for d in _FK_EXCLUDED_DTYPES)
 
 
+def _dtype_excluded(col_expr: str) -> str:
+    """SQL predicate that returns TRUE when *col_expr* is an excluded FK dtype.
+
+    Strips parameterized suffixes (e.g. ``decimal(38,0)`` -> ``decimal``) so
+    that the check works regardless of how Unity Catalog reports the type.
+    """
+    in_list = _dtype_exclusion_sql()
+    return f"ELEMENT_AT(SPLIT(LOWER({col_expr}), '\\\\('), 1) IN ({in_list})"
+
+
 @dataclass
 class FKPredictionConfig:
     catalog_name: str
@@ -227,8 +237,8 @@ class FKPredictor:
             FROM col_sim_raw cs
             JOIN {nodes} n1 ON cs.col_a = n1.id
             JOIN {nodes} n2 ON cs.col_b = n2.id
-            WHERE LOWER(n1.data_type) NOT IN ({_dtype_exclusion_sql()})
-              AND LOWER(n2.data_type) NOT IN ({_dtype_exclusion_sql()})
+            WHERE NOT {_dtype_excluded('n1.data_type')}
+              AND NOT {_dtype_excluded('n2.data_type')}
         ),
         with_blocks AS (
             SELECT wp.*,
@@ -288,7 +298,7 @@ class FKPredictor:
                    LOWER(ELEMENT_AT(SPLIT(parent_id, '\\\\.'), -1)) AS tbl_short
             FROM {nodes}
             WHERE node_type = 'column'
-              AND LOWER(data_type) NOT IN ({_dtype_exclusion_sql()})
+              AND NOT {_dtype_excluded('data_type')}
         ),
         pk_cols AS (
             SELECT * FROM cols WHERE col_short IN ('id', 'pk')
@@ -412,7 +422,7 @@ class FKPredictor:
                    LOWER(ELEMENT_AT(SPLIT(id, '\\.'), -1)) AS col_short
             FROM {nodes}
             WHERE node_type = 'column'
-              AND LOWER(data_type) NOT IN ({_dtype_exclusion_sql()})
+              AND NOT {_dtype_excluded('data_type')}
         ),
         id_like_cols AS (
             SELECT * FROM cols WHERE col_short RLIKE '(_id|_key|_code)$' OR col_short = 'id'
@@ -559,8 +569,8 @@ class FKPredictor:
             JOIN cols da ON da.parent_id = ap.table_b
                          AND da.col_short = LOWER(ap.dst_col)
             WHERE sa.data_type IS NOT NULL AND da.data_type IS NOT NULL
-              AND LOWER(sa.data_type) NOT IN ({_dtype_exclusion_sql()})
-              AND LOWER(da.data_type) NOT IN ({_dtype_exclusion_sql()})
+              AND NOT {_dtype_excluded('sa.data_type')}
+              AND NOT {_dtype_excluded('da.data_type')}
         ),
         capped AS (
             SELECT *, ROW_NUMBER() OVER (

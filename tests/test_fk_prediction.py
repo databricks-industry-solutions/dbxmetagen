@@ -14,6 +14,7 @@ from dbxmetagen.fk_prediction import (
     _FK_MODEL,
     _FK_EXCLUDED_DTYPES,
     _dtype_exclusion_sql,
+    _dtype_excluded,
     _DEFAULT_SYSTEM_COL_PATTERNS,
     predict_foreign_keys,
     SR_COL_PROP,
@@ -939,19 +940,30 @@ class TestDtypeExclusion:
 
     def test_embedding_gen_uses_dtype_filter(self):
         src = inspect.getsource(FKPredictor.get_candidates)
-        assert "_dtype_exclusion_sql()" in src
+        assert "_dtype_excluded(" in src
 
     def test_name_gen_uses_dtype_filter(self):
         src = inspect.getsource(FKPredictor.get_name_based_candidates)
-        assert "_dtype_exclusion_sql()" in src
+        assert "_dtype_excluded(" in src
 
     def test_ontology_gen_uses_dtype_filter(self):
         src = inspect.getsource(FKPredictor.get_ontology_relationship_candidates)
-        assert "_dtype_exclusion_sql()" in src
+        assert "_dtype_excluded(" in src
 
     def test_colprop_gen_uses_shared_constant(self):
         src = inspect.getsource(FKPredictor.get_column_property_candidates)
-        assert "_dtype_exclusion_sql()" in src
+        assert "_dtype_excluded(" in src
+
+    def test_dtype_excluded_predicate_format(self):
+        pred = _dtype_excluded("col.data_type")
+        assert "ELEMENT_AT(SPLIT(LOWER(col.data_type)" in pred
+        assert "'float'" in pred
+        assert "'decimal'" in pred
+
+    def test_dtype_excluded_handles_parameterized_types(self):
+        """Verify the SQL pattern strips parenthesized suffixes like decimal(38,0)."""
+        pred = _dtype_excluded("data_type")
+        assert "SPLIT" in pred and "'\\\\('" in pred
 
 
 class TestPKSignal:
