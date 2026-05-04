@@ -1363,6 +1363,9 @@ export default function SemanticLayer() {
           {taskStatus.status === 'done' && taskStatus.result && (
             <div className="text-sm mt-2 text-gray-700 dark:text-gray-300">
               Generated: {taskStatus.result.generated}, Validated: {taskStatus.result.validated}, Failed: {taskStatus.result.failed}
+              <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                Validated and applied metric views will be added to the vector index on the next full analytics pipeline or standalone vector index build run.
+              </p>
             </div>
           )}
         </section>
