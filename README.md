@@ -323,7 +323,9 @@ The app is in `apps/dbxmetagen-app/` and provides a FastAPI backend with a React
 | `sync_graph_lakebase_job` | Sync graph data to Lakebase for the dashboard |
 | `sync_ddl_job` | Sync reviewed/edited DDL back to Unity Catalog |
 
-## MCP Servers
+## MCP Servers (Coming Soon)
+
+> **Note:** MCP server support is under active development and not yet ready for production use.
 
 dbxmetagen exposes its knowledge base, knowledge graph, and vector index as [Databricks Managed MCP servers](https://docs.databricks.com/aws/en/generative-ai/mcp). Any MCP-compatible client (Cursor, Claude Code, AI Playground) can query your metadata catalog directly. See [docs/MCP_SERVERS.md](docs/MCP_SERVERS.md) for client configuration, the full tool reference, and a walkthrough of how the dashboard's deep analysis agent uses these same data assets.
 

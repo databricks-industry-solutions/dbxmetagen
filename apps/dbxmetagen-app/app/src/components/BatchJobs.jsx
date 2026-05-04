@@ -899,6 +899,7 @@ export default function BatchJobs({ onNavigate }) {
             <div className="mt-2 card p-4 border border-dbx-oat-dark/30 dark:border-dbx-navy-400/20 bg-dbx-oat-light/50 dark:bg-dbx-navy/30 space-y-3">
               <div className="flex items-center gap-2">
                 <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200">Setup MCP Servers</h3>
+                <span className="badge bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300 text-[10px]">Coming Soon</span>
                 <span className="relative group/tip">
                   <svg className="w-4 h-4 text-slate-400 cursor-help" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
