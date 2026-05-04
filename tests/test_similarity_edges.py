@@ -264,6 +264,24 @@ class TestModeSwitch:
         src = inspect.getsource(SimilarityEdgeBuilder.run)
         assert '"method"' in src or "'method'" in src
 
+    def test_run_uses_actual_method_not_config(self):
+        """run() must report self._actual_method, not the config flag."""
+        src = inspect.getsource(SimilarityEdgeBuilder.run)
+        assert "_actual_method" in src
+        assert '"method": self._actual_method' in src
+
+    def test_compute_sets_actual_method_on_crossjoin(self):
+        src = inspect.getsource(SimilarityEdgeBuilder.compute_similarity_edges)
+        assert 'self._actual_method = "crossjoin"' in src
+
+    def test_compute_sets_actual_method_on_ann(self):
+        src = inspect.getsource(SimilarityEdgeBuilder.compute_similarity_edges)
+        assert 'self._actual_method = "ann"' in src
+
+    def test_compute_sets_actual_method_on_fallback(self):
+        src = inspect.getsource(SimilarityEdgeBuilder.compute_similarity_edges)
+        assert 'self._actual_method = "crossjoin_fallback"' in src
+
 
 class TestANNGuardRail:
     """Tests for ann_max_nodes guard rail."""

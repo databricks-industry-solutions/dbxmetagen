@@ -570,11 +570,14 @@ class SimilarityEdgeBuilder:
         cross-join is used instead (cheaper than standing up a VS index for
         a handful of nodes).  ANN failures also fall back to cross-join with
         a warning so the pipeline does not hard-fail on VS issues.
+
+        Sets ``self._actual_method`` to the method that was actually used.
         """
         node_count = self.get_nodes_with_embeddings().count()
 
         if not self.config.use_ann:
             logger.info("Using cross-join path (use_ann=False)")
+            self._actual_method = "crossjoin"
             return self._compute_similarity_crossjoin()
 
         if node_count < self.config.blocking_node_threshold:
@@ -582,12 +585,15 @@ class SimilarityEdgeBuilder:
                 "Node count %d < blocking_node_threshold %d — using cross-join (cheaper for small graphs)",
                 node_count, self.config.blocking_node_threshold,
             )
+            self._actual_method = "crossjoin"
             return self._compute_similarity_crossjoin()
 
         try:
             logger.info("Using ANN path (Vector Search) for %d nodes", node_count)
             self.ensure_graph_nodes_index()
-            return self.compute_similarity_edges_ann()
+            result = self.compute_similarity_edges_ann()
+            self._actual_method = "ann"
+            return result
         except ValueError:
             raise
         except Exception as e:
@@ -595,6 +601,7 @@ class SimilarityEdgeBuilder:
                 "ANN path failed (%s), falling back to cross-join. "
                 "This may be slow for %d nodes.", e, node_count,
             )
+            self._actual_method = "crossjoin_fallback"
             return self._compute_similarity_crossjoin()
 
     # ------------------------------------------------------------------
@@ -633,8 +640,9 @@ class SimilarityEdgeBuilder:
 
     def run(self) -> Dict[str, Any]:
         """Execute the similarity edge generation pipeline."""
-        method = "ann" if self.config.use_ann else "crossjoin"
-        logger.info("Starting similarity edge generation (method=%s)", method)
+        self._actual_method = "crossjoin"
+        logger.info("Starting similarity edge generation (requested=%s)",
+                     "ann" if self.config.use_ann else "crossjoin")
 
         self.remove_existing_similarity_edges()
 
@@ -644,10 +652,10 @@ class SimilarityEdgeBuilder:
 
         inserted = self.insert_similarity_edges(edges_df)
 
-        logger.info(f"Similarity edge generation complete. Edges: {inserted}")
+        logger.info(f"Similarity edge generation complete. Edges: {inserted}, method: {self._actual_method}")
 
         return {
-            "method": method,
+            "method": self._actual_method,
             "edges_created": inserted,
             "threshold": self.config.similarity_threshold,
         }
