@@ -1,4 +1,23 @@
 import React, { useState, useEffect, useRef } from 'react'
+
+// Global fetch interceptor: detect expired Databricks Apps OAuth sessions.
+// When the session cookie expires, the proxy redirects to a login page --
+// fetch follows the redirect and returns 200 + text/html instead of JSON.
+const _originalFetch = window.fetch
+window.fetch = async (...args) => {
+  const res = await _originalFetch(...args)
+  if (res.status === 401 || res.status === 403) {
+    window.dispatchEvent(new Event('session-expired'))
+  } else if (res.ok) {
+    const url = typeof args[0] === 'string' ? args[0] : args[0]?.url || ''
+    const ct = res.headers.get('content-type') || ''
+    if (url.startsWith('/api/') && ct.includes('text/html')) {
+      window.dispatchEvent(new Event('session-expired'))
+    }
+  }
+  return res
+}
+
 import AgentChat from './components/AgentChat'
 import BatchJobs from './components/BatchJobs'
 import MetadataReview from './components/MetadataReview'
@@ -234,7 +253,12 @@ function NavDropdown({ cat, activeTab, onSelect }) {
 class TabErrorBoundary extends React.Component {
   state = { error: null }
   static getDerivedStateFromError(error) { return { error } }
-  componentDidCatch(err, info) { console.error('TabErrorBoundary caught:', err, info) }
+  componentDidCatch(err, info) {
+    console.error('TabErrorBoundary caught:', err, info)
+    if (err?.message?.includes('dynamically imported module') || err?.message?.includes('Loading chunk')) {
+      window.dispatchEvent(new Event('session-expired'))
+    }
+  }
   render() {
     if (this.state.error) {
       return (
@@ -260,6 +284,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState(readHash)
   const [visitedTabs, setVisitedTabs] = useState(new Set([readHash()]))
   const [showInfo, setShowInfo] = useState(false)
+  const [sessionExpired, setSessionExpired] = useState(false)
   const [dark, setDark] = useState(() => {
     if (typeof window !== 'undefined') {
       const saved = localStorage.getItem('dbxmetagen-dark')
@@ -289,6 +314,12 @@ export default function App() {
     document.documentElement.classList.toggle('dark', dark)
     localStorage.setItem('dbxmetagen-dark', String(dark))
   }, [dark])
+
+  useEffect(() => {
+    const h = () => setSessionExpired(true)
+    window.addEventListener('session-expired', h)
+    return () => window.removeEventListener('session-expired', h)
+  }, [])
 
   return (
     <div className="min-h-screen bg-dbx-oat-light dark:bg-dbx-navy transition-colors">
@@ -374,6 +405,17 @@ export default function App() {
           )
         })}
       </main>
+      {sessionExpired && (
+        <div className="fixed inset-0 z-[9999] bg-black/50 flex items-center justify-center backdrop-blur-sm">
+          <div className="card p-8 max-w-md text-center shadow-xl">
+            <h2 className="text-lg font-semibold text-slate-800 dark:text-slate-100 mb-2">Session Expired</h2>
+            <p className="text-sm text-slate-600 dark:text-slate-300 mb-4">
+              Your authentication session has expired. Reload to re-authenticate.
+            </p>
+            <button onClick={() => window.location.reload()} className="btn-primary">Reload</button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
