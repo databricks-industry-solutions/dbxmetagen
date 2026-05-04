@@ -9862,7 +9862,7 @@ async def agent_deep_stream(req: AgentChatRequest, request: Request):
       event: done      -- {"answer": "...", "tool_calls": [...], "graph_data": {...}, ...}
       event: error     -- {"message": "..."}
     """
-    from agent.guardrails import validate_input
+    from agent.guardrails import validate_input, sanitize_output
     ok, err = validate_input(req.message)
     if not ok:
         raise HTTPException(400, detail=err)
@@ -9939,6 +9939,7 @@ async def agent_deep_stream(req: AgentChatRequest, request: Request):
                 elif kind == "on_chain_end" and name == "LangGraph":
                     output = event.get("data", {}).get("output", {})
                     final_answer = "".join(answer_tokens) if answer_tokens else output.get("answer", "")
+                    final_answer = sanitize_output(final_answer)
                     elapsed_ms = int((time.time() - t_start) * 1000)
 
                     timing = output.get("timing") or {}

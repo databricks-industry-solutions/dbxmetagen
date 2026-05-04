@@ -1801,7 +1801,7 @@ def _run_deep_analysis_traced(
 
     if intent_result.intent_type in ("irrelevant", "meta"):
         return {
-            "answer": intent_result.meta_answer or "I can help you analyze your data catalog metadata.",
+            "answer": sanitize_output(intent_result.meta_answer or "I can help you analyze your data catalog metadata."),
             "tool_calls": [], "mode": mode, "intent": intent_result.intent_type,
         }
 
@@ -1861,7 +1861,7 @@ def run_deep_analysis_streaming(
                     if intent_result.intent_type in ("irrelevant", "meta"):
                         q.put({
                             "stage": "done",
-                            "answer": intent_result.meta_answer or "I can help you analyze your data catalog.",
+                            "answer": sanitize_output(intent_result.meta_answer or "I can help you analyze your data catalog."),
                             "tool_calls": [], "mode": mode,
                         })
                         return
@@ -1968,7 +1968,7 @@ def run_deep_analysis_compare(
         intent_result.intent_type = "new_question"
 
     if intent_result.intent_type in ("irrelevant", "meta"):
-        answer = intent_result.meta_answer or "I can help you analyze your data catalog."
+        answer = sanitize_output(intent_result.meta_answer or "I can help you analyze your data catalog.")
         single = {"answer": answer, "tool_calls": [], "mode": "graphrag",
                   "intent": intent_result.intent_type}
         return {"with_graph": single, "without_graph": single, "comparison_analysis": None}

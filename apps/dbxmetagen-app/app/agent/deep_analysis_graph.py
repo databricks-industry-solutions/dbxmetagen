@@ -132,7 +132,7 @@ def quick_answer(state: DeepAnalysisState) -> dict:
         except (json.JSONDecodeError, TypeError):
             pass
     return {
-        "answer": raw,
+        "answer": sanitize_output(raw),
         "tool_calls": [],
         "graph_data": {},
         "timing": {},
