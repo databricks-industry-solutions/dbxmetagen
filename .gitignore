@@ -176,6 +176,10 @@ docs/**
 !docs/MCP_SERVERS.md
 !docs/DEPENDENCIES.md
 !docs/metadata_governance_workflow.md
+!docs/DOMAIN_ONTOLOGY_ARCHITECTURE.md
+!docs/QA_CHECKLIST.md
+!docs/PERMISSIONS.md
+!docs/CONSOLIDATED_ROADMAP.md
 
 .cursor/*
 !.cursor/rules/
