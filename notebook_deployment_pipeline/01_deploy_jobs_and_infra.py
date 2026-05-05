@@ -9,7 +9,7 @@
 
 # COMMAND ----------
 
-# MAGIC %pip install databricks-sdk==0.68.0 hatchling tomli -q
+# MAGIC %pip install databricks-sdk>=0.68.0 hatchling tomli pyyaml -q
 # MAGIC dbutils.library.restartPython()
 
 # COMMAND ----------
@@ -603,7 +603,7 @@ else:
             created_jobs[res_name] = jid
             print(f"  Updated: {name} (id={jid})")
         else:
-            result = w.jobs.create(settings=settings)
+            result = w.jobs.create(**settings.as_dict())
             created_jobs[res_name] = result.job_id
             print(f"  Created: {name} (id={result.job_id})")
 
