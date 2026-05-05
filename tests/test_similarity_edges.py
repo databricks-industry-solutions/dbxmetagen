@@ -42,7 +42,7 @@ class TestSimilarityEdgesConfig:
             catalog_name="cat",
             schema_name="sch"
         )
-        assert config.similarity_threshold == 0.7
+        assert config.similarity_threshold == 0.85
     
     def test_default_max_edges_per_node(self):
         config = SimilarityEdgesConfig(
@@ -93,12 +93,16 @@ class TestSimilarityEdgeBuilder:
         query = mock_spark.sql.call_args[0][0]
         assert "embedding IS NOT NULL" in query
     
-    def test_remove_existing_similarity_edges(self, builder, mock_spark):
-        builder.remove_existing_similarity_edges()
-        mock_spark.sql.assert_called_once()
-        query = mock_spark.sql.call_args[0][0]
-        assert "DELETE FROM" in query
-        assert "similar_embedding" in query
+    def test_merge_similarity_edges_calls_merge(self, builder, mock_spark):
+        mock_df = MagicMock()
+        mock_df.count.return_value = 5
+        with patch("dbxmetagen.knowledge_graph.merge_edges") as mock_merge:
+            builder.merge_similarity_edges(mock_df)
+            mock_merge.assert_called_once()
+            call_kw = mock_merge.call_args.kwargs
+            call_pos = mock_merge.call_args.args
+            source = call_kw.get("source_system") or (call_pos[3] if len(call_pos) > 3 else None)
+            assert source == "embedding_similarity"
     
     def test_compute_similarity_fallback_empty_nodes(self, builder, mock_spark):
         """Fallback should handle empty node list."""

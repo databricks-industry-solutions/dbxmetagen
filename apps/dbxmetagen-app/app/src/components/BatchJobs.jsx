@@ -754,10 +754,12 @@ export default function BatchJobs({ onNavigate }) {
                 title="Comments -> KB build -> PI + Domain with KB enrichment"
                 className="btn-md bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50 transition-all">{runningAction === 'kb_enriched' ? 'Starting...' : 'KB-Enriched Modes'}</button>
             </div>
-            <p className="text-xs text-slate-400">
-              {settings.build_kb_after && <><strong className="text-slate-500">+ KB</strong>: Builds table + column knowledge base after generation so the Review tab is populated. </>}
-              <strong className="text-slate-500">KB-Enriched Modes</strong>: Generates comments, builds the knowledge base, then runs PI + domain classification enriched with KB-generated descriptions. Use this mode if you want comments to inform PI + domain, but don't want to apply your comments to your tables.
-            </p>
+            <div className="text-xs text-slate-400 space-y-1 mt-1">
+              <p><strong className="text-slate-500">Run Selected Mode</strong>: Run a single mode (comment, PI, or domain) on the listed tables. Best for quick, targeted runs.</p>
+              <p><strong className="text-slate-500">All 3 Modes</strong>: Runs comments first, then PI + domain in parallel. Use for initial metadata generation on new tables.</p>
+              <p><strong className="text-slate-500">KB-Enriched Modes</strong>: Comments, then KB build, then PI + domain enriched with KB descriptions. Best when you want the highest quality PI/domain results without applying comments to tables.</p>
+              {settings.build_kb_after && <p><strong className="text-slate-500">+ KB</strong>: Builds the table + column knowledge base after generation so the Review tab is populated.</p>}
+            </div>
 
             <div className="border-t border-slate-200/80 dark:border-dbx-navy-400/20 pt-4 mt-2">
               <button onClick={() => onNavigate?.('context')} className="btn-ghost btn-sm text-slate-600 dark:text-slate-300">
@@ -831,7 +833,7 @@ export default function BatchJobs({ onNavigate }) {
             </div>
 
             <div>
-              <label className="text-xs text-slate-500 dark:text-slate-400 mb-1 block">Table Filter <span className="text-slate-400 dark:text-slate-500">(comma-separated; leave blank to include all tables)</span></label>
+              <label className="text-xs text-slate-500 dark:text-slate-400 mb-1 block">Table Filter <span className="text-slate-400 dark:text-slate-500">(comma-separated; leave blank to include all tables in the knowledge base)</span></label>
               <textarea value={tableNames} onChange={e => setTableNames(e.target.value)}
                 placeholder="catalog.schema.table1, catalog.schema.table2"
                 className="textarea-base h-16 !text-xs" />
@@ -858,6 +860,7 @@ export default function BatchJobs({ onNavigate }) {
             }, 'pipeline')} disabled={!!runningAction || !catalogName.trim() || !schemaName.trim() || !ontologyBundle} title={!ontologyBundle ? 'Select an ontology bundle in the Generate Metadata tab to run the full analytics pipeline' : ''} className="btn-primary btn-md">
               {runningAction === 'pipeline' ? 'Starting...' : (tableNames.trim() ? `Run Pipeline (${tableNames.split(',').filter(t => t.trim()).length} tables)` : 'Run Full Pipeline')}
             </button>
+            <p className="text-xs text-slate-400 mt-1">Runs the full 15-task analytics pipeline: knowledge bases, knowledge graph, embeddings, ontology, profiling, FK prediction, clustering, and vector index. Run after core metadata has been generated.</p>
 
             {/* Lakebase sync card */}
             <div className="mt-2 card p-4 border border-dbx-oat-dark/30 dark:border-dbx-navy-400/20 bg-dbx-oat-light/50 dark:bg-dbx-navy/30 space-y-3">

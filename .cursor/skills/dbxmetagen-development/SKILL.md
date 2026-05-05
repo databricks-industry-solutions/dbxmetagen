@@ -180,6 +180,26 @@ All autofix functions need guards to avoid corrupting:
 - Direction is enforced via AI judge + cardinality fallback (`_enforce_direction`)
 - Reverse-pair cleanup runs before MERGE to prevent duplicates
 - Query history candidates extracted from `system.query.history` JOIN patterns
+- `write_graph_edges()` uses `merge_edges(source_system='fk_predictions')` -- every edge
+  must include `edge_id` and `source_system`
+
+### Graph Edges Write Contract
+
+**All writes to `graph_edges` must use `merge_edges()` from `knowledge_graph.py`.**
+
+```python
+from dbxmetagen.knowledge_graph import merge_edges
+merge_edges(spark, target_table, edges_df, source_system="my_source")
+```
+
+Rules:
+- Never use DELETE+INSERT, `saveAsTable("append")`, or raw SQL INSERT for `graph_edges`
+- Every edge DataFrame must include `edge_id` (`CONCAT_WS('::', src, dst, relationship)`)
+  and `source_system`
+- Four `source_system` values: `knowledge_graph`, `ontology`, `fk_predictions`, `embedding_similarity`
+- MERGE is scoped by `source_system` -- each module only sweeps its own stale edges
+- If a module produces zero edges, `merge_edges` deletes all rows for that `source_system`
+- `align_edge_schema()` pads missing columns as typed NULLs to match the 16-column canonical schema
 
 ## Deployment
 

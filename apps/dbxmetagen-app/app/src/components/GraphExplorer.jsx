@@ -13,22 +13,8 @@ const NODE_TYPES = [
 
 const EDGE_PRESETS = [
   { value: 'references', label: 'References (FK)' },
-  { value: 'semantic', label: 'Semantic (no structural noise)', edgeTypes: 'references,derives_from,instance_of,has_attribute,similar_embedding,has_property' },
+  { value: 'semantic', label: 'Semantic (no structural noise)', edgeTypes: 'references,predicted_fk,derives_from,instance_of,has_property,similar_embedding' },
   { value: '', label: 'All edges' },
-]
-
-const SINGLE_EDGE_TYPES = [
-  { value: 'same_domain', label: 'Same domain' },
-  { value: 'same_subdomain', label: 'Same subdomain' },
-  { value: 'same_schema', label: 'Same schema' },
-  { value: 'same_catalog', label: 'Same catalog' },
-  { value: 'same_security_level', label: 'Same security level' },
-  { value: 'similar_embedding', label: 'Similar (embedding)' },
-  { value: 'derives_from', label: 'Derives from' },
-  { value: 'contains', label: 'Contains' },
-  { value: 'instance_of', label: 'Instance of (ontology)' },
-  { value: 'has_attribute', label: 'Has attribute (ontology)' },
-  { value: 'is_a', label: 'Is-a (ontology)' },
 ]
 
 function getEdgeParams(edgeType) {
@@ -53,6 +39,7 @@ export default function GraphExplorer({ initialNode, initialEdgeType }) {
   const [visibleNodeTypes, setVisibleNodeTypes] = useState(() => new Set(NODE_TYPES.map(t => t.value)))
   const [edgeCatalogOpen, setEdgeCatalogOpen] = useState(false)
   const [edgeFilterPulse, setEdgeFilterPulse] = useState(false)
+  const [dynamicEdgeTypes, setDynamicEdgeTypes] = useState([])
   const autoTraversed = useRef(false)
   const edgeFilterRef = useRef(null)
   const graphAreaRef = useRef(null)
@@ -60,6 +47,13 @@ export default function GraphExplorer({ initialNode, initialEdgeType }) {
   useEffect(() => {
     if (initialEdgeType != null) setEdgeType(initialEdgeType)
   }, [initialEdgeType])
+
+  useEffect(() => {
+    (async () => {
+      const { data } = await safeFetch('/api/graph/edge-types')
+      if (Array.isArray(data) && data.length) setDynamicEdgeTypes(data)
+    })()
+  }, [])
 
   const doTraverse = useCallback(async (nodeId, overrideEdgeType) => {
     const node = nodeId || selectedNode
@@ -220,9 +214,15 @@ export default function GraphExplorer({ initialNode, initialEdgeType }) {
               aria-label="Edge type filter"
             >
               {EDGE_PRESETS.map(et => <option key={`p-${et.value}`} value={et.value}>{et.label}</option>)}
-              <optgroup label="Individual types">
-                {SINGLE_EDGE_TYPES.map(et => <option key={et.value} value={et.value}>{et.label}</option>)}
-              </optgroup>
+              {dynamicEdgeTypes.length > 0 && (
+                <optgroup label="Individual types">
+                  {dynamicEdgeTypes.map(et => (
+                    <option key={et.edge_type} value={et.edge_type}>
+                      {et.edge_type} ({et.cnt})
+                    </option>
+                  ))}
+                </optgroup>
+              )}
             </select>
           </div>
 

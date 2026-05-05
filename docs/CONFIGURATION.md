@@ -363,6 +363,52 @@ In the full analytics pipeline, `build_ontology_vector_index` runs after `build_
 
 **Cross-join fallback:** If the ANN path fails for any reason (VS endpoint unavailable, permission error, transient network failure), similarity edges silently fall back to the O(N^2) cross-join. For small catalogs (under `blocking_node_threshold`, default ~500 nodes) this is fine -- cross-join is actually preferred and cheaper than standing up a VS index. For larger catalogs, an unintended fallback can mean hours of runtime or driver OOM instead of minutes. Check the job's return value for `"method": "crossjoin_fallback"` or search logs for `crossjoin_fallback` to detect this. The fallback is a safety net for transient failures, not a long-term operating mode at scale.
 
+## Cluster Customization
+
+All job clusters are defined in `resources/jobs/*.job.yml` under the `job_clusters` key. To add custom tags, spark config, or change instance types, edit the `new_cluster` block directly.
+
+### Adding Custom Tags
+
+Find the `job_clusters` section in the relevant job YAML and add a `custom_tags` map:
+
+```yaml
+job_clusters:
+  - job_cluster_key: analytics_cluster
+    new_cluster:
+      policy_id: ${var.policy_id}
+      spark_version: 17.3.x-cpu-ml-scala2.13
+      node_type_id: ${var.node_type}
+      data_security_mode: SINGLE_USER
+      custom_tags:
+        project: dbxmetagen
+        team: data-engineering
+        cost_center: "12345"
+      autoscale:
+        min_workers: 2
+        max_workers: 4
+```
+
+### App Job YAML Locations
+
+These are the jobs triggered by UI buttons. Each file has a `job_clusters` block to customize:
+
+| UI Action | YAML File | Cluster Type |
+|-----------|-----------|--------------|
+| Run Selected Mode | `resources/jobs/metagen.job.yml` | Multi-node, ML |
+| All 3 Modes | `resources/jobs/metagen_parallel_modes.job.yml` | Multi-node, ML |
+| KB Enriched | `resources/jobs/metagen_kb_enriched.job.yml` | Multi-node, ML |
+| Run Selected + KB Build | `resources/jobs/metagen_kb_build.job.yml` | Multi-node, ML |
+| All 3 + KB Build | `resources/jobs/metagen_parallel_kb_build.job.yml` | Multi-node, ML |
+| Full Analytics Pipeline | `resources/jobs/full_analytics_pipeline.job.yml` | Multi-node, ML |
+| Sync to Lakebase | `resources/jobs/sync_graph_lakebase.job.yml` | Single-node, standard |
+| Setup MCP Servers | `resources/jobs/setup_mcp_servers.job.yml` | Single-node, ML |
+
+Serverless variants (toggled in the UI) use serverless compute and do not have cluster definitions -- custom tags cannot be applied to those.
+
+### Alternative: Cluster Policies
+
+Instead of editing each YAML, set custom tags via a cluster policy (recommended for enterprise governance). Set `policy_id` in your `.env` file or `variables.yml`, and the policy will enforce tags, instance types, and autoscaling limits across all jobs.
+
 ## Compatibility
 
 **Databricks Runtime:**

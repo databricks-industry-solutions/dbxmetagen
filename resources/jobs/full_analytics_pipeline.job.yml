@@ -17,7 +17,7 @@ resources:
         - name: schema_name
           default: ${var.schema_name}
         - name: similarity_threshold
-          default: "0.8"
+          default: "0.85"
         - name: max_edges_per_node
           default: "10"
         - name: use_ann_similarity

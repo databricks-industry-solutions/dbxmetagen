@@ -177,7 +177,7 @@ class TestEntityDiscoverer:
             name="Customer",
             description="Customer entity",
             keywords=["customer", "user"],
-            typical_attributes=["id", "name"]
+            typical_attributes=["customer_id", "name"]
         )
         
         # New API: name_variations, original_name, comment, entity_def
@@ -185,7 +185,7 @@ class TestEntityDiscoverer:
         confidence = discoverer._calculate_match_confidence(
             name_variations,
             "customer_master",
-            "this table contains customer data with id and name",
+            "this table contains customer data with customer_id and name",
             entity_def
         )
         assert confidence > 0.4
@@ -366,14 +366,14 @@ class TestStoreEntitiesConfidenceClamping:
     def _extract_rows(self, builder):
         return builder.spark.createDataFrame.call_args[0][0]
 
-    def test_negative_confidence_clamped_to_zero(self, builder):
+    def test_negative_confidence_filtered_by_garbage_floor(self, builder):
         entities = [{
             "entity_id": "e1", "entity_type": "Patient",
             "source_tables": ["t1"], "confidence": -0.5,
         }]
-        builder._store_entities(entities)
-        rows = self._extract_rows(builder)
-        assert rows[0][7] == 0.0  # confidence field
+        result = builder._store_entities(entities)
+        assert result == 0  # filtered out by _MIN_STORE_CONFIDENCE
+        builder.spark.createDataFrame.assert_not_called()
 
     def test_confidence_above_one_clamped(self, builder):
         entities = [{
@@ -534,6 +534,38 @@ class TestKeywordPrefilter:
         d = self._make_discoverer()
         result = d._keyword_prefilter("something", "", "unknown", top_n=3)
         assert len(result) == 3
+
+
+class TestKeywordInText:
+    """Tests for EntityDiscoverer._keyword_in_text word-boundary matching."""
+
+    def test_pond_in_corresponding_rejected(self):
+        assert not EntityDiscoverer._keyword_in_text("pond", "the corresponding field")
+
+    def test_pond_in_pond_size_accepted(self):
+        assert EntityDiscoverer._keyword_in_text("pond", "pond_size")
+
+    def test_pond_in_retention_pond_accepted(self):
+        assert EntityDiscoverer._keyword_in_text("pond", "retention_pond")
+
+    def test_pond_standalone_accepted(self):
+        assert EntityDiscoverer._keyword_in_text("pond", "the pond is large")
+
+    def test_short_keyword_rejected(self):
+        assert not EntityDiscoverer._keyword_in_text("day", "trading day flag")
+        assert not EntityDiscoverer._keyword_in_text("spa", "spa treatment")
+
+    def test_exact_short_word_with_custom_min_len(self):
+        assert EntityDiscoverer._keyword_in_text("day", "trading day", min_len=3)
+
+    def test_keyword_at_start_of_string(self):
+        assert EntityDiscoverer._keyword_in_text("pond", "pond management system")
+
+    def test_keyword_at_end_of_string(self):
+        assert EntityDiscoverer._keyword_in_text("pond", "fish pond")
+
+    def test_keyword_with_digits(self):
+        assert EntityDiscoverer._keyword_in_text("pond", "pond123 data")
 
 
 class TestDeduplicateEntities:
@@ -758,21 +790,15 @@ class TestDeclaredRelationshipLookup:
         ]
         builder, mock_spark = self._make_builder(edefs)
 
-        # The refactored code uses DataFrame joins, so mock_spark.sql returns
-        # DataFrames that chain .join().select().distinct() etc.
-        # edge_count via .cache().count() must return > 0 to proceed.
         edge_chain = mock_spark.sql.return_value
         count_mock = MagicMock(return_value=1)
-        # .count() can be called at various chain depths
         edge_chain.count = count_mock
-        for attr in ("join", "where", "select", "distinct", "alias"):
+        for attr in ("join", "where", "select", "distinct", "alias", "dropDuplicates"):
             getattr(edge_chain, attr).return_value = edge_chain
 
-        # cache/unpersist need to return the same chain
         edge_chain.cache.return_value = edge_chain
         edge_chain.unpersist.return_value = edge_chain
 
-        # The discovered_pairs collect returns matched types
         matched_row = MagicMock()
         matched_row.src_type, matched_row.dst_type = "Patient", "Provider"
         edge_chain.collect.return_value = [matched_row]
@@ -827,7 +853,7 @@ class TestDeclaredRelationshipLookup:
         edge_chain = mock_spark.sql.return_value
         count_mock = MagicMock(return_value=1)
         edge_chain.count = count_mock
-        for attr in ("join", "where", "select", "distinct", "alias"):
+        for attr in ("join", "where", "select", "distinct", "alias", "dropDuplicates"):
             getattr(edge_chain, attr).return_value = edge_chain
         edge_chain.cache.return_value = edge_chain
         edge_chain.unpersist.return_value = edge_chain
@@ -1017,6 +1043,77 @@ class TestPurgeStaleBundleEntities:
         sql_calls = [c[0][0] for c in mock_spark.sql.call_args_list]
         delete_sqls = [s for s in sql_calls if "DELETE FROM" in s]
         assert len(delete_sqls) == 0
+
+
+class TestPurgeCurrentBundleStale:
+    """Tests for _purge_current_bundle_stale (non-incremental full rebuild cleanup)."""
+
+    @pytest.fixture
+    def builder_non_incremental(self):
+        mock_spark = MagicMock()
+        config = OntologyConfig(
+            catalog_name="cat", schema_name="sch",
+            ontology_bundle="schema_org", incremental=False,
+        )
+        with patch.object(OntologyLoader, 'load_config') as mock_load:
+            mock_load.return_value = OntologyLoader._default_config()
+            b = OntologyBuilder(mock_spark, config)
+        return b
+
+    def test_emits_delete_for_table_granularity(self, builder_non_incremental):
+        b = builder_non_incremental
+        mock_result = MagicMock()
+        mock_result.first.return_value = [5]
+        b.spark.sql.return_value = mock_result
+        b._purge_current_bundle_stale("table")
+        sql = b.spark.sql.call_args[0][0]
+        assert "DELETE FROM" in sql
+        assert "auto_discovered = TRUE" in sql
+        assert "ontology_bundle = 'schema_org'" in sql
+        assert "'table'" in sql
+        assert "validated" not in sql.lower().replace("auto_discovered", "")
+
+    def test_emits_delete_for_column_granularity(self, builder_non_incremental):
+        b = builder_non_incremental
+        mock_result = MagicMock()
+        mock_result.first.return_value = [3]
+        b.spark.sql.return_value = mock_result
+        b._purge_current_bundle_stale("column")
+        sql = b.spark.sql.call_args[0][0]
+        assert "'column'" in sql
+
+    def test_discover_and_store_calls_purge_when_non_incremental(self, builder_non_incremental):
+        b = builder_non_incremental
+        b.discoverer.discover_entities_from_tables = MagicMock(return_value=[])
+        b.discover_and_store_entities()
+        sql_calls = [c[0][0] for c in b.spark.sql.call_args_list]
+        delete_sqls = [s for s in sql_calls if "DELETE FROM" in s]
+        current_bundle_deletes = [s for s in delete_sqls if "ontology_bundle = 'schema_org'" in s]
+        assert len(current_bundle_deletes) >= 1
+
+    def test_discover_and_store_skips_purge_when_incremental(self):
+        mock_spark = MagicMock()
+        config = OntologyConfig(
+            catalog_name="cat", schema_name="sch",
+            ontology_bundle="schema_org", incremental=True,
+        )
+        with patch.object(OntologyLoader, 'load_config') as mock_load:
+            mock_load.return_value = OntologyLoader._default_config()
+            b = OntologyBuilder(mock_spark, config)
+        b.discoverer.discover_entities_from_tables = MagicMock(return_value=[])
+        b.discover_and_store_entities()
+        sql_calls = [c[0][0] for c in mock_spark.sql.call_args_list]
+        current_bundle_deletes = [
+            s for s in sql_calls
+            if "DELETE FROM" in s and "ontology_bundle = 'schema_org'" in s
+        ]
+        assert len(current_bundle_deletes) == 0
+
+    def test_skips_when_no_bundle(self, builder_non_incremental):
+        b = builder_non_incremental
+        b.config.ontology_bundle = None
+        count = b._purge_current_bundle_stale("table")
+        assert count == 0
 
 
 # ======================================================================
@@ -1874,8 +1971,8 @@ class TestEnrichTableNodesWithOntology:
         assert "cat.sch.ontology_entities" in merge_sql
 
 
-class TestAddSameEntityTypeEdges:
-    """Tests for _add_same_entity_type_edges."""
+class TestBuildSameEntityTypeEdges:
+    """Tests for _build_same_entity_type_edges (returns DataFrame, no INSERT)."""
 
     @pytest.fixture
     def builder(self):
@@ -1886,52 +1983,51 @@ class TestAddSameEntityTypeEdges:
             b = OntologyBuilder(mock_spark, config)
         return b
 
-    def test_no_pairs_returns_zero(self, builder):
+    def test_no_pairs_returns_none(self, builder):
         mock_df = MagicMock()
         mock_df.count.return_value = 0
         builder.spark.sql.return_value = mock_df
-        assert builder._add_same_entity_type_edges() == 0
+        assert builder._build_same_entity_type_edges() is None
 
     def test_self_join_uses_less_than_to_dedupe(self, builder):
         mock_df = MagicMock()
         mock_df.count.return_value = 0
         builder.spark.sql.return_value = mock_df
-        builder._add_same_entity_type_edges()
+        builder._build_same_entity_type_edges()
         join_sql = builder.spark.sql.call_args_list[0][0][0]
         assert "a.table_name < b.table_name" in join_sql
 
-    def test_calls_insert_edges_safe_when_pairs_exist(self, builder):
+    def test_returns_dataframe_when_pairs_exist(self, builder):
         mock_df = MagicMock()
         mock_df.count.return_value = 3
         mock_df.select.return_value = mock_df
         builder.spark.sql.return_value = mock_df
-        with patch.object(builder, '_insert_edges_safe') as mock_insert:
-            builder._add_same_entity_type_edges()
-            mock_insert.assert_called_once()
-            args = mock_insert.call_args[0]
-            assert "graph_edges" in args[1]
+        result = builder._build_same_entity_type_edges()
+        assert result is not None
 
-    def test_returns_zero_on_failure(self, builder):
+    def test_returns_none_on_failure(self, builder):
         builder.spark.sql.side_effect = Exception("boom")
-        assert builder._add_same_entity_type_edges() == 0
+        assert builder._build_same_entity_type_edges() is None
 
 
-class TestClearOntologyEdgesIncludesSameEntityType:
-    """Verify _clear_ontology_edges removes same_entity_type edges."""
+class TestOntologyEdgeDeduplication:
+    """Verify all ontology edge builders deduplicate by edge_id before MERGE."""
 
-    @pytest.fixture
-    def builder(self):
-        mock_spark = MagicMock()
-        config = OntologyConfig(catalog_name="cat", schema_name="sch")
-        with patch.object(OntologyLoader, 'load_config') as mock_load:
-            mock_load.return_value = OntologyLoader._default_config()
-            b = OntologyBuilder(mock_spark, config)
-        return b
+    def test_build_structural_edges_deduplicates(self):
+        source = inspect.getsource(OntologyBuilder._build_structural_edges)
+        assert "dropDuplicates" in source, "_build_structural_edges must deduplicate by edge_id"
 
-    def test_delete_includes_same_entity_type(self, builder):
-        builder._clear_ontology_edges()
-        delete_sql = builder.spark.sql.call_args[0][0]
-        assert "same_entity_type" in delete_sql
+    def test_discover_inter_entity_relationships_deduplicates(self):
+        source = inspect.getsource(OntologyBuilder.discover_inter_entity_relationships)
+        assert "dropDuplicates" in source, "discover_inter_entity_relationships must deduplicate by edge_id"
+
+    def test_run_deduplicates_combined_edges(self):
+        source = inspect.getsource(OntologyBuilder.run)
+        assert "dropDuplicates" in source, "run() must deduplicate combined edges by edge_id"
+
+    def test_refresh_relationships_deduplicates_combined_edges(self):
+        source = inspect.getsource(OntologyBuilder.refresh_relationships)
+        assert "dropDuplicates" in source, "refresh_relationships() must deduplicate combined edges by edge_id"
 
 
 # ======================================================================

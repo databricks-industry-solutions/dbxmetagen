@@ -4693,6 +4693,15 @@ def graph_traverse_endpoint(
     return result
 
 
+@app.get("/api/graph/edge-types")
+def graph_edge_types_endpoint():
+    """Return distinct edge types with counts from graph_edges."""
+    return graph_query(
+        "SELECT edge_type, COUNT(*) as cnt FROM public.graph_edges "
+        "GROUP BY edge_type ORDER BY cnt DESC"
+    )
+
+
 @app.get("/api/graph/nodes")
 def graph_nodes_endpoint(
     node_type: Optional[str] = None,

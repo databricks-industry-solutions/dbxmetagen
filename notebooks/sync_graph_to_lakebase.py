@@ -15,11 +15,13 @@ dbutils.widgets.text("source_catalog", "", "Source Catalog")
 dbutils.widgets.text("source_schema", "", "Source Schema")
 dbutils.widgets.text("lakebase_catalog", "dbxmetagen_graphrag", "Lakebase Catalog")
 dbutils.widgets.text("lakebase_instance_name", "dbxmetagen", "Lakebase Instance Name")
+dbutils.widgets.text("lakebase_database_name", "databricks_postgres", "Lakebase Database Name")
 
 source_catalog = dbutils.widgets.get("source_catalog")
 source_schema = dbutils.widgets.get("source_schema")
 lb_catalog = dbutils.widgets.get("lakebase_catalog")
 lb_instance = dbutils.widgets.get("lakebase_instance_name")
+lb_database = dbutils.widgets.get("lakebase_database_name")
 # COMMAND ----------
 # MAGIC %md
 # MAGIC ## Enable CDF on source tables
@@ -47,6 +49,7 @@ try:
         catalog=DatabaseCatalog(
             name=lb_catalog,
             database_instance_name=lb_instance,
+            database_name=lb_database,
         )
     )
     print(f"Created Lakebase catalog: {lb_catalog}")

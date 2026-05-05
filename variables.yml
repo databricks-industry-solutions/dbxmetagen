@@ -202,7 +202,7 @@ variables:
     default: configurations/ontology_config.yaml
   similarity_threshold:
     description: Cosine similarity threshold for creating similar_embedding edges between nodes (0.0-1.0)
-    default: 0.8
+    default: 0.85
   use_ann_similarity:
     description: Use Vector Search ANN for similarity edges instead of cross-join. Falls back to cross-join for small graphs or on VS failure.
     default: "true"

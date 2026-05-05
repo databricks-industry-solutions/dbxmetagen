@@ -28,7 +28,7 @@ class SimilarityEdgesConfig:
     schema_name: str
     nodes_table: str = "graph_nodes"
     edges_table: str = "graph_edges"
-    similarity_threshold: float = 0.7
+    similarity_threshold: float = 0.85
     max_edges_per_node: int = 15
     blocking_node_threshold: int = 5000
     max_domain_nodes: int = 10000
@@ -608,35 +608,12 @@ class SimilarityEdgeBuilder:
     # Edge I/O
     # ------------------------------------------------------------------
 
-    def remove_existing_similarity_edges(self) -> int:
-        """Remove existing similarity edges before inserting new ones."""
-        delete_sql = f"""
-        DELETE FROM {self.config.fully_qualified_edges}
-        WHERE relationship = '{self.RELATIONSHIP_TYPE}'
-           OR source_system = 'embedding_similarity'
-        """
-        self.spark.sql(delete_sql)
-        return 0
-
-    def insert_similarity_edges(self, edges_df: DataFrame) -> int:
-        """Insert new similarity edges using schema-aligned SQL INSERT."""
-        if edges_df.count() == 0:
-            return 0
-        from dbxmetagen.knowledge_graph import KnowledgeGraphBuilder
-        cols = []
-        for name, dtype in KnowledgeGraphBuilder._EDGE_SCHEMA:
-            if name in edges_df.columns:
-                cols.append(F.col(name).cast(dtype).alias(name))
-            else:
-                cols.append(F.lit(None).cast(dtype).alias(name))
-        aligned = edges_df.select(*cols)
-        aligned.createOrReplaceTempView("_staged_sim_edges")
-        col_list = ", ".join(c for c, _ in KnowledgeGraphBuilder._EDGE_SCHEMA)
-        self.spark.sql(
-            f"INSERT INTO {self.config.fully_qualified_edges} ({col_list}) "
-            f"SELECT {col_list} FROM _staged_sim_edges"
-        )
-        return aligned.count()
+    def merge_similarity_edges(self, edges_df: DataFrame) -> int:
+        """Merge similarity edges into graph_edges via MERGE (upsert + stale sweep)."""
+        from dbxmetagen.knowledge_graph import merge_edges
+        count = edges_df.count()
+        merge_edges(self.spark, self.config.fully_qualified_edges, edges_df, source_system="embedding_similarity")
+        return count
 
     def run(self) -> Dict[str, Any]:
         """Execute the similarity edge generation pipeline."""
@@ -644,13 +621,11 @@ class SimilarityEdgeBuilder:
         logger.info("Starting similarity edge generation (requested=%s)",
                      "ann" if self.config.use_ann else "crossjoin")
 
-        self.remove_existing_similarity_edges()
-
         edges_df = self.compute_similarity_edges()
         edge_count = edges_df.count()
         logger.info(f"Computed {edge_count} similarity edges")
 
-        inserted = self.insert_similarity_edges(edges_df)
+        inserted = self.merge_similarity_edges(edges_df)
 
         logger.info(f"Similarity edge generation complete. Edges: {inserted}, method: {self._actual_method}")
 
@@ -665,7 +640,7 @@ def build_similarity_edges(
     spark: SparkSession,
     catalog_name: str,
     schema_name: str,
-    similarity_threshold: float = 0.7,
+    similarity_threshold: float = 0.85,
     max_edges_per_node: int = 15,
     use_ann: bool = True,
     **kwargs,

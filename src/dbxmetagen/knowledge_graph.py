@@ -29,6 +29,66 @@ from dbxmetagen.table_filter import table_filter_sql, infrastructure_exclude_sql
 
 logger = logging.getLogger(__name__)
 
+# Canonical column order + types for graph_edges (must match CREATE TABLE DDL).
+EDGE_SCHEMA = [
+    ("src", "STRING"), ("dst", "STRING"), ("relationship", "STRING"),
+    ("weight", "DOUBLE"), ("edge_id", "STRING"), ("edge_type", "STRING"),
+    ("direction", "STRING"), ("join_expression", "STRING"),
+    ("join_confidence", "DOUBLE"), ("ontology_rel", "STRING"),
+    ("source_system", "STRING"), ("status", "STRING"),
+    ("edge_label", "STRING"), ("edge_facet", "STRING"),
+    ("created_at", "TIMESTAMP"), ("updated_at", "TIMESTAMP"),
+]
+
+
+def align_edge_schema(df: DataFrame) -> DataFrame:
+    """Pad/cast a DataFrame to match the canonical graph_edges schema."""
+    cols = []
+    for name, dtype in EDGE_SCHEMA:
+        col_ref = name.strip("`")
+        if col_ref in df.columns:
+            cols.append(F.col(f"`{col_ref}`").cast(dtype).alias(col_ref))
+        else:
+            cols.append(F.lit(None).cast(dtype).alias(col_ref))
+    return df.select(*cols)
+
+
+def merge_edges(spark: SparkSession, target_table: str, df: DataFrame, source_system: str):
+    """MERGE edges by edge_id into target_table, sweeping stale rows for source_system.
+
+    When df has zero rows, deletes all rows for source_system (stale cleanup).
+    """
+    aligned = align_edge_schema(df).dropDuplicates(["edge_id"])
+    row_count = aligned.count()
+    if row_count == 0:
+        logger.info("No edges to merge for source_system=%s — sweeping stale rows", source_system)
+        try:
+            spark.sql(f"DELETE FROM {target_table} WHERE source_system = '{source_system}'")
+        except Exception as e:
+            logger.warning("Could not sweep stale edges for %s: %s", source_system, e)
+        return
+
+    view_name = f"_staged_merge_{source_system}"
+    aligned.createOrReplaceTempView(view_name)
+    logger.info("Merging %d edges (source_system=%s) into %s", row_count, source_system, target_table)
+
+    update_cols = [c.strip("`") for c, _ in EDGE_SCHEMA
+                   if c.strip("`") not in ("edge_id", "created_at")]
+    update_set = ", ".join(f"target.{c} = source.{c}" for c in update_cols)
+    col_list = ", ".join(c.strip("`") for c, _ in EDGE_SCHEMA)
+
+    spark.sql(f"""
+        MERGE INTO {target_table} AS target
+        USING {view_name} AS source
+        ON target.edge_id = source.edge_id
+        WHEN MATCHED THEN UPDATE SET {update_set}
+        WHEN NOT MATCHED THEN INSERT ({col_list})
+            VALUES (source.{', source.'.join(col_list.split(', '))})
+        WHEN NOT MATCHED BY SOURCE
+          AND target.source_system = '{source_system}'
+          THEN DELETE
+    """)
+
 
 @dataclass
 class KnowledgeGraphConfig:
@@ -116,16 +176,7 @@ class KnowledgeGraphBuilder:
         ("keywords", "ARRAY<STRING>"),
     ]
 
-    # Canonical column order + types for graph_edges (must match CREATE TABLE DDL).
-    _EDGE_SCHEMA = [
-        ("src", "STRING"), ("dst", "STRING"), ("relationship", "STRING"),
-        ("weight", "DOUBLE"), ("edge_id", "STRING"), ("edge_type", "STRING"),
-        ("direction", "STRING"), ("join_expression", "STRING"),
-        ("join_confidence", "DOUBLE"), ("ontology_rel", "STRING"),
-        ("source_system", "STRING"), ("status", "STRING"),
-        ("edge_label", "STRING"), ("edge_facet", "STRING"),
-        ("created_at", "TIMESTAMP"), ("updated_at", "TIMESTAMP"),
-    ]
+    _EDGE_SCHEMA = EDGE_SCHEMA
 
     # Canonical column order + types for graph_nodes (must match CREATE TABLE DDL).
     _NODE_SCHEMA = [
@@ -146,14 +197,7 @@ class KnowledgeGraphBuilder:
 
     def _align_edge_schema(self, df: DataFrame) -> DataFrame:
         """Select and cast columns to match the canonical edge table schema."""
-        cols = []
-        for name, dtype in self._EDGE_SCHEMA:
-            col_ref = name.strip("`")
-            if col_ref in df.columns:
-                cols.append(F.col(f"`{col_ref}`").cast(dtype).alias(col_ref))
-            else:
-                cols.append(F.lit(None).cast(dtype).alias(col_ref))
-        return df.select(*cols)
+        return align_edge_schema(df)
 
     def _align_node_schema(self, df: DataFrame) -> DataFrame:
         """Select and cast columns to match the canonical node table schema."""
@@ -178,38 +222,9 @@ class KnowledgeGraphBuilder:
         self.spark.sql(f"INSERT INTO {target} ({col_list}) SELECT {col_list} FROM {view_name}")
 
     def _merge_edges(self, df: DataFrame, source_system: str, table: str = None):
-        """MERGE edges by edge_id (upsert), then sweep stale edges for this source_system.
-
-        Mirrors the merge_nodes pattern: idempotent, preserves created_at on updates,
-        and removes edges that no longer exist in the current batch.
-        """
+        """MERGE edges by edge_id (upsert), then sweep stale edges for this source_system."""
         target = table or self.config.fully_qualified_edges
-        aligned = self._align_edge_schema(df)
-        row_count = aligned.count()
-        if row_count == 0:
-            logger.info("No edges to merge for source_system=%s", source_system)
-            return
-
-        view_name = f"_staged_merge_{source_system}"
-        aligned.createOrReplaceTempView(view_name)
-        logger.info("Merging %d edges (source_system=%s) into %s", row_count, source_system, target)
-
-        update_cols = [c.strip("`") for c, _ in self._EDGE_SCHEMA
-                       if c.strip("`") not in ("edge_id", "created_at")]
-        update_set = ", ".join(f"target.{c} = source.{c}" for c in update_cols)
-        col_list = ", ".join(c.strip("`") for c, _ in self._EDGE_SCHEMA)
-
-        self.spark.sql(f"""
-            MERGE INTO {target} AS target
-            USING {view_name} AS source
-            ON target.edge_id = source.edge_id
-            WHEN MATCHED THEN UPDATE SET {update_set}
-            WHEN NOT MATCHED THEN INSERT ({col_list})
-                VALUES (source.{', source.'.join(col_list.split(', '))})
-            WHEN NOT MATCHED BY SOURCE
-              AND target.source_system = '{source_system}'
-              THEN DELETE
-        """)
+        merge_edges(self.spark, target, df, source_system)
 
     def create_nodes_table(self) -> None:
         """Create the nodes table if it doesn't exist, and add new columns if missing."""
@@ -453,17 +468,25 @@ class KnowledgeGraphBuilder:
         cap = self.config.max_edges_group_size
         all_edges = []
         
-        # Same domain edges
-        domain_edges = self.build_edges_for_attribute(
-            nodes_df, "domain", "same_domain", max_group_size=cap
-        )
-        all_edges.append(domain_edges)
+        # Same domain edges (skip if mono-domain -- every pair is vacuous)
+        distinct_domains = nodes_df.select("domain").distinct().count()
+        if distinct_domains > 1:
+            domain_edges = self.build_edges_for_attribute(
+                nodes_df, "domain", "same_domain", max_group_size=cap
+            )
+            all_edges.append(domain_edges)
+        else:
+            logger.info("Single domain detected -- skipping same_domain edges")
         
-        # Same subdomain edges
-        subdomain_edges = self.build_edges_for_attribute(
-            nodes_df, "subdomain", "same_subdomain", max_group_size=cap
-        )
-        all_edges.append(subdomain_edges)
+        # Same subdomain edges (skip if mono-subdomain -- every pair is vacuous)
+        distinct_subdomains = nodes_df.select("subdomain").distinct().count()
+        if distinct_subdomains > 1:
+            subdomain_edges = self.build_edges_for_attribute(
+                nodes_df, "subdomain", "same_subdomain", max_group_size=cap
+            )
+            all_edges.append(subdomain_edges)
+        else:
+            logger.info("Single subdomain detected -- skipping same_subdomain edges")
         
         # Same catalog edges (skip if mono-catalog -- every pair is vacuous)
         distinct_catalogs = nodes_df.select("catalog").distinct().count()
@@ -492,6 +515,10 @@ class KnowledgeGraphBuilder:
         )
         all_edges.append(security_edges)
         
+        if not all_edges:
+            logger.info("No structural edges to build (all attribute types are mono-valued)")
+            return self.spark.createDataFrame([], schema="src STRING, dst STRING, relationship STRING")
+
         from functools import reduce
         combined = reduce(lambda a, b: a.unionByName(b), all_edges)
 

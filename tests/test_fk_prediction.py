@@ -567,6 +567,16 @@ class TestTableBackedOutputs:
         src = inspect.getsource(FKPredictor.write_graph_edges)
         assert "is_fk" in src
 
+    def test_write_graph_edges_uses_merge_edges(self):
+        src = inspect.getsource(FKPredictor.write_graph_edges)
+        assert "merge_edges" in src
+        assert "fk_predictions" in src
+
+    def test_write_graph_edges_sets_edge_id_and_source_system(self):
+        src = inspect.getsource(FKPredictor.write_graph_edges)
+        assert "edge_id" in src
+        assert "source_system" in src
+
 
 # --- TestAIJudgeMockIntegration ---
 

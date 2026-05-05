@@ -263,19 +263,16 @@ RETURN
   WITH RECURSIVE traversal(nid, hop, path) AS (
     SELECT start_node_param, 0, ARRAY(start_node_param)
     UNION ALL
-    SELECT e.dst, t.hop + 1, ARRAY_APPEND(t.path, e.dst)
+    SELECT nb.neighbor, t.hop + 1, ARRAY_APPEND(t.path, nb.neighbor)
     FROM traversal t
-    JOIN {fq('graph_edges')} e ON e.src = t.nid
+    JOIN (
+      SELECT src AS node, dst AS neighbor, edge_type FROM {fq('graph_edges')}
+      UNION ALL
+      SELECT dst AS node, src AS neighbor, edge_type FROM {fq('graph_edges')}
+    ) nb ON nb.node = t.nid
     WHERE t.hop < LEAST(max_hops_param, 4)
-      AND NOT ARRAY_CONTAINS(t.path, e.dst)
-      AND (edge_type_param IS NULL OR e.edge_type = edge_type_param)
-    UNION ALL
-    SELECT e.src, t.hop + 1, ARRAY_APPEND(t.path, e.src)
-    FROM traversal t
-    JOIN {fq('graph_edges')} e ON e.dst = t.nid
-    WHERE t.hop < LEAST(max_hops_param, 4)
-      AND NOT ARRAY_CONTAINS(t.path, e.src)
-      AND (edge_type_param IS NULL OR e.edge_type = edge_type_param)
+      AND NOT ARRAY_CONTAINS(t.path, nb.neighbor)
+      AND (edge_type_param IS NULL OR nb.edge_type = edge_type_param)
   )
   SELECT DISTINCT n.id AS node_id, n.node_type, n.domain, n.display_name, n.short_description, t.hop
   FROM traversal t

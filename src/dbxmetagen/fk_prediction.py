@@ -1686,15 +1686,24 @@ class FKPredictor:
     # Step 6: Graph edges
     # ------------------------------------------------------------------
     def write_graph_edges(self) -> int:
-        """Insert predicted_fk edges into graph_edges.
+        """Merge predicted_fk edges into graph_edges.
 
         Reads from the authoritative fk_predictions table (cumulative via MERGE)
         so that edges reflect all accumulated predictions, not just the current batch.
         """
         edges_table = self.config.fq(self.config.edges_table)
-        self.spark.sql(
-            f"DELETE FROM {edges_table} WHERE relationship = '{self.RELATIONSHIP_TYPE}'"
-        )
+        # Backfill legacy rows missing source_system/edge_id (idempotent)
+        try:
+            self.spark.sql(
+                f"UPDATE {edges_table} "
+                f"SET source_system = 'fk_predictions', "
+                f"    edge_id = CONCAT_WS('::', src, dst, relationship), "
+                f"    edge_type = '{self.RELATIONSHIP_TYPE}' "
+                f"WHERE relationship = '{self.RELATIONSHIP_TYPE}' "
+                f"  AND (source_system IS NULL OR edge_id IS NULL OR edge_type IS NULL)"
+            )
+        except Exception as e:
+            logger.debug("FK edge backfill skipped (table may not exist): %s", e)
 
         preds_table = self.config.fq(self.config.predictions_table)
         high_conf = self.spark.table(preds_table).filter(
@@ -1709,13 +1718,16 @@ class FKPredictor:
             F.col("dst_column").alias("dst"),
             F.lit(self.RELATIONSHIP_TYPE).alias("relationship"),
             F.col("ai_confidence").alias("weight"),
+            F.concat_ws("::", F.col("src_column"), F.col("dst_column"), F.lit(self.RELATIONSHIP_TYPE)).alias("edge_id"),
+            F.lit(self.RELATIONSHIP_TYPE).alias("edge_type"),
+            F.lit("fk_predictions").alias("source_system"),
             F.current_timestamp().alias("created_at"),
             F.current_timestamp().alias("updated_at"),
         )
+        from dbxmetagen.knowledge_graph import merge_edges
         count = edges.count()
-        if count > 0:
-            edges.write.mode("append").saveAsTable(edges_table)
-        logger.info("Inserted %d predicted_fk edges", count)
+        merge_edges(self.spark, edges_table, edges, source_system="fk_predictions")
+        logger.info("Merged %d predicted_fk edges", count)
         return count
 
     # ------------------------------------------------------------------

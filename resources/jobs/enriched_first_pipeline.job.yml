@@ -28,7 +28,7 @@ resources:
         - name: run_id
           default: "{{job.run_id}}"
         - name: similarity_threshold
-          default: "0.8"
+          default: "0.85"
         - name: max_edges_per_node
           default: "10"
         - name: use_ann_similarity
