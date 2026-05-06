@@ -235,10 +235,6 @@ class TestRelationshipTypes:
     def test_all_relationship_types_defined(self):
         """Builder should define all required relationship types."""
         expected_types = [
-            "same_domain",
-            "same_subdomain",
-            "same_catalog",
-            "same_schema",
             "same_security_level"
         ]
         assert KnowledgeGraphBuilder.RELATIONSHIP_TYPES == expected_types

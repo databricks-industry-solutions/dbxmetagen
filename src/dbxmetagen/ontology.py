@@ -2158,16 +2158,16 @@ class EntityDiscoverer:
             max_score += 2.0
             if attr_lower == col_name:
                 score += 2.0
-            elif len(attr_lower) >= 4 and (attr_lower in col_name or col_name in attr_lower):
+            elif self._keyword_in_text(attr_lower, col_name):
                 score += 1.2
-            elif len(attr_lower) >= 4 and any(attr_lower in v for v in col_variations):
+            elif any(self._keyword_in_text(attr_lower, v) for v in col_variations):
                 score += 0.8
         for kw in entity_def.keywords:
             kw_lower = kw.lower()
             max_score += 1.0
-            if len(kw_lower) >= 4 and kw_lower in col_name:
+            if self._keyword_in_text(kw_lower, col_name):
                 score += 1.0
-            elif len(kw_lower) >= 4 and kw_lower in comment:
+            elif self._keyword_in_text(kw_lower, comment):
                 score += 0.5
         entity_lower = entity_def.name.lower()
         if re.match(rf"{entity_lower}[_\s]?id$", col_name):
@@ -5394,6 +5394,7 @@ def build_ontology(
     entity_tag_key: str = "ontology_entity_type",
     model_endpoint: Optional[str] = None,
     table_names: Optional[List[str]] = None,
+    ontology_vs_index: str = "",
 ) -> Dict[str, Any]:
     """Convenience function to build the ontology.
 
@@ -5409,6 +5410,8 @@ def build_ontology(
         incremental: Only classify tables/columns changed since last run
         entity_tag_key: UC tag key used when apply_tags is True
         model_endpoint: LLM endpoint for classification (overrides bundle/default)
+        ontology_vs_index: Fully-qualified VS index name for ontology retrieval.
+            When set, entity/edge classification uses HYBRID vector search.
     """
     config = OntologyConfig(
         catalog_name=catalog_name,
@@ -5418,6 +5421,7 @@ def build_ontology(
         incremental=incremental,
         entity_tag_key=entity_tag_key,
         table_names=table_names,
+        ontology_vs_index=ontology_vs_index,
     )
     builder = OntologyBuilder(spark, config, model_endpoint=model_endpoint)
     return builder.run(apply_tags=apply_tags)

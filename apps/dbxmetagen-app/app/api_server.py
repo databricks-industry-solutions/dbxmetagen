@@ -105,7 +105,40 @@ def _get_effective_client() -> WorkspaceClient:
                 auth_type="pat",
             )
             return WorkspaceClient(config=cfg)
+        logger.debug(
+            "OBO enabled but no x-forwarded-access-token in request context -- "
+            "falling back to app service principal"
+        )
     return get_workspace_client()
+
+
+def _is_obo_active() -> bool:
+    """True if the current request is executing with the user's OBO token."""
+    return _OBO_ENABLED and bool(_obo_token_var.get(None))
+
+
+def _sanitize_sdk_error(exc: Exception) -> str:
+    """Strip credential details from SDK error messages before exposing to users."""
+    msg = str(exc)
+    msg = re.sub(r"Config:\s*[^\n]*", "", msg)
+    msg = re.sub(r"Env:\s*[^\n]*", "", msg)
+    msg = re.sub(r"client_id=[^\s,]+", "", msg)
+    msg = re.sub(r"client_secret=[^\s,]+", "", msg)
+    return msg.strip().rstrip(".").strip()
+
+
+def _obo_permission_hint() -> str:
+    """Return a user-facing hint when OBO is enabled but the token is missing."""
+    if not _OBO_ENABLED:
+        return "Check that the app service principal has USE CATALOG / USE SCHEMA permissions. "
+    if not _obo_token_var.get(None):
+        return (
+            "OBO is enabled but no user token was received -- the app is falling back "
+            "to its service principal. Verify that the 'Apps - On-Behalf-Of User "
+            "Authorization' workspace preview is enabled and the app was deployed "
+            "with enable_obo=true. "
+        )
+    return ""
 
 
 _NOT_FOUND_RE = re.compile(
@@ -136,7 +169,7 @@ def execute_sql(query: str, warehouse_id: Optional[str] = None, timeout: int = 3
         raise
     except Exception as exc:
         logger.error("SDK error executing SQL: %s", exc)
-        raise HTTPException(500, detail=str(exc))
+        raise HTTPException(500, detail=_sanitize_sdk_error(exc))
 
     # Poll if still running (AI_QUERY can exceed the initial wait_timeout)
     deadline = time.time() + timeout
@@ -4741,9 +4774,16 @@ def list_catalogs():
         )
         rows = execute_sql(q)
         return [r["catalog_name"] for r in rows if not r["catalog_name"].startswith("__")]
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.warning("list_catalogs failed (permissions?): %s", e)
-        raise HTTPException(status_code=403, detail=f"Cannot list catalogs: {e}")
+        logger.warning("list_catalogs failed: %s", e)
+        identity = "app service principal" if not _is_obo_active() else "user (OBO)"
+        hint = _obo_permission_hint()
+        raise HTTPException(
+            status_code=403,
+            detail=f"Cannot list catalogs (running as {identity}). {hint}{_sanitize_sdk_error(e)}",
+        )
 
 
 @app.get("/api/schemas")
@@ -4756,9 +4796,16 @@ def list_schemas(catalog: str):
         )
         rows = execute_sql(q)
         return [r["schema_name"] for r in rows]
+    except HTTPException:
+        raise
     except Exception as e:
         logger.warning("list_schemas(%s) failed: %s", catalog, e)
-        raise HTTPException(status_code=403, detail=f"Cannot list schemas in {catalog}: {e}")
+        identity = "app service principal" if not _is_obo_active() else "user (OBO)"
+        hint = _obo_permission_hint()
+        raise HTTPException(
+            status_code=403,
+            detail=f"Cannot list schemas in {catalog} (running as {identity}). {hint}{_sanitize_sdk_error(e)}",
+        )
 
 
 @app.get("/api/tables")
@@ -4773,9 +4820,16 @@ def list_tables(catalog: str, schema: str):
         )
         rows = execute_sql(q)
         return [r["table_name"] for r in rows]
+    except HTTPException:
+        raise
     except Exception as e:
         logger.warning("list_tables(%s.%s) failed: %s", catalog, schema, e)
-        raise HTTPException(status_code=403, detail=f"Cannot list tables in {catalog}.{schema}: {e}")
+        identity = "app service principal" if not _is_obo_active() else "user (OBO)"
+        hint = _obo_permission_hint()
+        raise HTTPException(
+            status_code=403,
+            detail=f"Cannot list tables in {catalog}.{schema} (running as {identity}). {hint}{_sanitize_sdk_error(e)}",
+        )
 
 
 # ---------------------------------------------------------------------------

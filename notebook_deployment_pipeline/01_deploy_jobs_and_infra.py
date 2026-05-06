@@ -342,16 +342,16 @@ def build_analytics_pipeline_job():
         nb_task("run_profiling", "run_profiling.py",
                 {**cat_sch_tbl, "incremental": ref("incremental")},
                 deps=["build_knowledge_base"]),
+        nb_task("build_ontology_vector_index", "build_ontology_vector_index.py",
+                {**cat_sch, "ontology_bundle": ref("ontology_bundle"),
+                 "endpoint_name": "dbxmetagen-vs"},
+                deps=["build_knowledge_base"]),
         nb_task("build_ontology", "build_ontology.py",
                 {**cat_sch_tbl, "ontology_bundle": ref("ontology_bundle"),
                  "domain_config_path": ref("domain_config_path"),
                  "incremental": ref("incremental"), "model": ref("model"),
                  "apply_ddl": ref("apply_ddl")},
-                deps=["build_knowledge_base", "build_column_kb"]),
-        nb_task("build_ontology_vector_index", "build_ontology_vector_index.py",
-                {**cat_sch, "ontology_bundle": ref("ontology_bundle"),
-                 "endpoint_name": "dbxmetagen-vs"},
-                deps=["build_ontology"]),
+                deps=["build_knowledge_base", "build_column_kb", "build_ontology_vector_index"]),
         nb_task("generate_embeddings", "generate_embeddings.py", cat_sch,
                 deps=["build_knowledge_graph", "build_ontology"]),
         nb_task("build_similarity_edges", "build_similarity_edges.py",
@@ -603,9 +603,10 @@ else:
             created_jobs[res_name] = jid
             print(f"  Updated: {name} (id={jid})")
         else:
-            result = w.jobs.create(**settings.as_dict())
-            created_jobs[res_name] = result.job_id
-            print(f"  Created: {name} (id={result.job_id})")
+            resp = w.api_client.do("POST", "/api/2.1/jobs/create", body=settings.as_dict())
+            new_id = resp.get("job_id")
+            created_jobs[res_name] = new_id
+            print(f"  Created: {name} (id={new_id})")
 
     print(f"\n{len(created_jobs)} essential jobs ready")
 

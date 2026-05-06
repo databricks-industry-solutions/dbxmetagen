@@ -268,29 +268,36 @@ def predict_entity(
         )
     if pass0_mode == "vector" and vs_index and vs_bundle:
         table_blob = f"{table_name} {columns} {sample}"
-        vs_results = vs_query_entities(
-            fq_index=vs_index, table_blob=table_blob,
-            bundle=vs_bundle, num_results=vs_num_results,
-            endpoint_name=vs_endpoint,
-        )
-        candidates = [r["name"] for r in vs_results if r.get("name")]
-        if not candidates:
-            return PredictionResult(
-                table_name=table_name, predicted_entity="Unknown",
-                source_ontology="", equivalent_class_uri=None,
-                confidence_score=0.0,
-                rationale="Vector search returned no entity candidates",
-                passes_run=0, needs_human_review=True,
+        try:
+            vs_results = vs_query_entities(
+                fq_index=vs_index, table_blob=table_blob,
+                bundle=vs_bundle, num_results=vs_num_results,
+                endpoint_name=vs_endpoint,
             )
-        logger.info(
-            "Vector retrieval for %s: %d candidates from VS (%s)",
-            table_name, len(candidates), ", ".join(candidates[:5]),
-        )
-        # Skip directly to Pass 2 with VS candidates
-        return _run_pass2_and_pass3(
-            table_name, columns, sample, candidates, loader, llm_fn,
-            passes_offset=0,
-        )
+        except Exception as e:
+            logger.warning(
+                "VS query failed for %s, falling back to keyword/tier-1 path: %s",
+                table_name, e,
+            )
+            vs_results = None
+        if vs_results is not None:
+            candidates = [r["name"] for r in vs_results if r.get("name")]
+            if not candidates:
+                return PredictionResult(
+                    table_name=table_name, predicted_entity="Unknown",
+                    source_ontology="", equivalent_class_uri=None,
+                    confidence_score=0.0,
+                    rationale="Vector search returned no entity candidates",
+                    passes_run=0, needs_human_review=True,
+                )
+            logger.info(
+                "Vector retrieval for %s: %d candidates from VS (%s)",
+                table_name, len(candidates), ", ".join(candidates[:5]),
+            )
+            return _run_pass2_and_pass3(
+                table_name, columns, sample, candidates, loader, llm_fn,
+                passes_offset=0,
+            )
 
     # --- Standard path: Pass 0 + Pass 1: Broad screen ---
     tier1_full = loader.get_entities_tier1()
@@ -542,17 +549,20 @@ def predict_edge(
             f"{from_table}.{from_column} references {to_table}.{to_column}. "
             f"Source entity: {src_entity}. Target entity: {dst_entity}."
         )
-        vs_results = vs_query_edges(
-            fq_index=vs_index, fk_blob=fk_blob,
-            bundle=vs_bundle, src_entity=src_entity, dst_entity=dst_entity,
-            num_results=vs_num_results, endpoint_name=vs_endpoint,
-        )
+        try:
+            vs_results = vs_query_edges(
+                fq_index=vs_index, fk_blob=fk_blob,
+                bundle=vs_bundle, src_entity=src_entity, dst_entity=dst_entity,
+                num_results=vs_num_results, endpoint_name=vs_endpoint,
+            )
+        except Exception as e:
+            logger.warning("VS edge query failed for %s, falling back to tier-1: %s", ctx, e)
+            vs_results = []
         candidates = [r["name"] for r in vs_results if r.get("name")]
         if candidates:
             logger.info(
                 "Vector edge retrieval for %s: %d candidates", ctx, len(candidates),
             )
-            # Skip to Pass 2 with VS candidates
             return _run_edge_pass2_and_pass3(
                 candidates=candidates, loader=loader, llm_fn=llm_fn,
                 from_table=from_table, from_column=from_column,

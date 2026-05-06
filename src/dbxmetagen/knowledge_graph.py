@@ -146,10 +146,6 @@ class KnowledgeGraphBuilder:
     
     # Relationship types we create edges for
     RELATIONSHIP_TYPES = [
-        "same_domain",
-        "same_subdomain", 
-        "same_catalog",
-        "same_schema",
         "same_security_level"
     ]
 
@@ -459,56 +455,15 @@ class KnowledgeGraphBuilder:
         Build all edge types from nodes DataFrame.
         
         Creates edges for:
-        - same_domain: tables in the same domain
-        - same_subdomain: tables in the same subdomain
-        - same_catalog: tables in the same catalog
-        - same_schema: tables in the same schema
         - same_security_level: tables with same PII/PHI status
+        
+        Note: same_domain/subdomain/catalog/schema were removed -- they generate
+        O(N^2) edges per group with no downstream signal (FK prediction computes
+        these inline). Domain/schema info is already on graph nodes.
         """
         cap = self.config.max_edges_group_size
         all_edges = []
-        
-        # Same domain edges (skip if mono-domain -- every pair is vacuous)
-        distinct_domains = nodes_df.select("domain").distinct().count()
-        if distinct_domains > 1:
-            domain_edges = self.build_edges_for_attribute(
-                nodes_df, "domain", "same_domain", max_group_size=cap
-            )
-            all_edges.append(domain_edges)
-        else:
-            logger.info("Single domain detected -- skipping same_domain edges")
-        
-        # Same subdomain edges (skip if mono-subdomain -- every pair is vacuous)
-        distinct_subdomains = nodes_df.select("subdomain").distinct().count()
-        if distinct_subdomains > 1:
-            subdomain_edges = self.build_edges_for_attribute(
-                nodes_df, "subdomain", "same_subdomain", max_group_size=cap
-            )
-            all_edges.append(subdomain_edges)
-        else:
-            logger.info("Single subdomain detected -- skipping same_subdomain edges")
-        
-        # Same catalog edges (skip if mono-catalog -- every pair is vacuous)
-        distinct_catalogs = nodes_df.select("catalog").distinct().count()
-        if distinct_catalogs > 1:
-            catalog_edges = self.build_edges_for_attribute(
-                nodes_df, "catalog", "same_catalog", max_group_size=cap
-            )
-            all_edges.append(catalog_edges)
-        else:
-            logger.info("Single catalog detected -- skipping same_catalog edges")
-        
-        # Same schema edges (skip if mono-schema -- every pair is vacuous)
-        distinct_schemas = nodes_df.select("schema").distinct().count()
-        if distinct_schemas > 1:
-            schema_edges = self.build_edges_for_attribute(
-                nodes_df, "schema", "same_schema", max_group_size=cap
-            )
-            all_edges.append(schema_edges)
-        else:
-            logger.info("Single schema detected -- skipping same_schema edges")
-        
-        # Same security level edges (exclude PUBLIC -- O(N^2) noise)
+
         sensitive_nodes = nodes_df.filter(F.col("security_level").isin("PII", "PHI"))
         security_edges = self.build_edges_for_attribute(
             sensitive_nodes, "security_level", "same_security_level", max_group_size=cap
@@ -1245,51 +1200,21 @@ g = GraphFrame(nodes, edges)
 # BASIC QUERIES
 # -----------------------------------------------------------------------------
 
-# 1. Find all tables in the same domain as a specific table
-target_table = "catalog.schema.my_table"
-same_domain_tables = g.edges.filter(
-    (F.col("relationship") == "same_domain") & 
-    ((F.col("src") == target_table) | (F.col("dst") == target_table))
-).select(
-    F.when(F.col("src") == target_table, F.col("dst"))
-     .otherwise(F.col("src")).alias("related_table")
-)
-
-# 2. Find tables that share both domain AND schema (intersection)
-domain_edges = g.edges.filter(F.col("relationship") == "same_domain")
-schema_edges = g.edges.filter(F.col("relationship") == "same_schema")
-
-closely_related = domain_edges.join(
-    schema_edges,
-    (domain_edges.src == schema_edges.src) & (domain_edges.dst == schema_edges.dst),
-    "inner"
-).select(domain_edges.src, domain_edges.dst)
-
-# 3. Find all PHI tables and their connections
+# 1. Find all PHI tables and their connections
 phi_tables = g.vertices.filter(F.col("security_level") == "PHI")
 phi_edges = g.edges.join(phi_tables, g.edges.src == phi_tables.id, "inner")
 
-# 4. Count relationships by type
+# 2. Count relationships by type
 relationship_counts = g.edges.groupBy("relationship").count().orderBy("count", ascending=False)
 
 # -----------------------------------------------------------------------------
 # MOTIF FINDING - Pattern Matching in Graphs
 # -----------------------------------------------------------------------------
 
-# Motifs use a special syntax: (a)-[e]->(b) where a,b are nodes and e is edge
-
-# 5. Find triangles: three tables all connected to each other
+# 3. Find triangles: three tables all connected to each other
 triangles = g.find("(a)-[e1]->(b); (b)-[e2]->(c); (a)-[e3]->(c)")
 
-# 6. Find tables that bridge two domains (connected to tables in different domains)
-# Tables A and B in same schema, B and C in same domain (but A and C different domains)
-bridging_tables = g.find("(a)-[e1]->(b); (b)-[e2]->(c)").filter(
-    (F.col("e1.relationship") == "same_schema") & 
-    (F.col("e2.relationship") == "same_domain") &
-    (F.col("a.domain") != F.col("c.domain"))
-)
-
-# 7. Find paths between two specific tables
+# 4. Find paths between two specific tables
 start_table = "catalog.schema.table_a"
 end_table = "catalog.schema.table_b"
 
@@ -1304,7 +1229,7 @@ two_hop = g.find("(a)-[e1]->(intermediate); (intermediate)-[e2]->(b)").filter(
     (F.col("a.id") == start_table) & (F.col("b.id") == end_table)
 )
 
-# 8. Find PHI tables connected to PII tables (security boundary analysis)
+# 5. Find PHI tables connected to PII tables (security boundary analysis)
 phi_pii_connections = g.find("(phi_table)-[e]->(pii_table)").filter(
     (F.col("phi_table.security_level") == "PHI") & 
     (F.col("pii_table.security_level") == "PII")
@@ -1314,19 +1239,19 @@ phi_pii_connections = g.find("(phi_table)-[e]->(pii_table)").filter(
 # GRAPH ALGORITHMS
 # -----------------------------------------------------------------------------
 
-# 9. PageRank - find most "important" tables (highly connected)
+# 6. PageRank - find most "important" tables (highly connected)
 pagerank_results = g.pageRank(resetProbability=0.15, maxIter=10)
 top_tables = pagerank_results.vertices.orderBy("pagerank", ascending=False).limit(20)
 
-# 10. Connected Components - find clusters of related tables
+# 7. Connected Components - find clusters of related tables
 components = g.connectedComponents()
 cluster_sizes = components.groupBy("component").count().orderBy("count", ascending=False)
 
-# 11. Label Propagation - community detection
+# 8. Label Propagation - community detection
 communities = g.labelPropagation(maxIter=5)
 community_sizes = communities.groupBy("label").count().orderBy("count", ascending=False)
 
-# 12. Shortest paths to specific tables
+# 9. Shortest paths to specific tables
 landmark_tables = ["catalog.schema.core_customer", "catalog.schema.core_product"]
 shortest_paths = g.shortestPaths(landmarks=landmark_tables)
 
@@ -1334,13 +1259,13 @@ shortest_paths = g.shortestPaths(landmarks=landmark_tables)
 # FILTERING AND SUBGRAPH ANALYSIS
 # -----------------------------------------------------------------------------
 
-# 13. Create subgraph of only PHI-related tables
+# 10. Create subgraph of only PHI-related tables
 phi_subgraph = GraphFrame(
     g.vertices.filter(F.col("security_level") == "PHI"),
     g.edges.filter(F.col("relationship") == "same_security_level")
 )
 
-# 14. Create subgraph of a specific domain
+# 11. Create subgraph of a specific domain
 domain_filter = "Healthcare"
 domain_vertices = g.vertices.filter(F.col("domain") == domain_filter)
 domain_vertex_ids = domain_vertices.select("id").rdd.flatMap(lambda x: x).collect()
@@ -1351,7 +1276,7 @@ domain_edges = g.edges.filter(
 )
 domain_subgraph = GraphFrame(domain_vertices, domain_edges)
 
-# 15. Find isolated tables (no connections)
+# 12. Find isolated tables (no connections)
 connected_nodes = g.edges.select("src").union(g.edges.select("dst")).distinct()
 isolated = g.vertices.join(connected_nodes, g.vertices.id == connected_nodes.src, "left_anti")
 """

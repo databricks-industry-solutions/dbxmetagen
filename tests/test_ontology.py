@@ -568,6 +568,62 @@ class TestKeywordInText:
         assert EntityDiscoverer._keyword_in_text("pond", "pond123 data")
 
 
+class TestColumnMatchScoreBoundary:
+    """Tests for _column_match_score word-boundary matching on keywords/attributes."""
+
+    @pytest.fixture
+    def discoverer(self):
+        return EntityDiscoverer(MagicMock(), MagicMock(), {"entities": {"definitions": {}}})
+
+    def test_pond_not_matched_in_corresponding(self, discoverer):
+        """Keyword 'pond' must NOT match 'corresponding' in column comments."""
+        entity_def = EntityDefinition(
+            name="Pond", description="A pond.",
+            keywords=["pond"], typical_attributes=[],
+        )
+        score = discoverer._column_match_score(
+            ["year"], "year",
+            "integer representation of the calendar year corresponding to the date",
+            "", entity_def,
+        )
+        assert score == 0.0
+
+    def test_pond_matched_as_standalone_word(self, discoverer):
+        entity_def = EntityDefinition(
+            name="Pond", description="A pond.",
+            keywords=["pond"], typical_attributes=[],
+        )
+        score = discoverer._column_match_score(
+            ["pond_depth"], "pond_depth",
+            "depth measurement of the pond", "", entity_def,
+        )
+        assert score > 0.0
+
+    def test_short_keyword_rejected_in_column(self, discoverer):
+        """Keywords shorter than 4 chars must not match at all."""
+        entity_def = EntityDefinition(
+            name="DaySpa", description="A day spa.",
+            keywords=["day", "spa"], typical_attributes=[],
+        )
+        score = discoverer._column_match_score(
+            ["day_of_week"], "day_of_week",
+            "day of the week as integer for spa scheduling", "", entity_def,
+        )
+        assert score == 0.0
+
+    def test_attribute_substring_rejected(self, discoverer):
+        """Typical attribute 'rate' must not match inside 'corporate'."""
+        entity_def = EntityDefinition(
+            name="LoanRate", description="Loan rate.",
+            keywords=[], typical_attributes=["rate"],
+        )
+        score = discoverer._column_match_score(
+            ["corporate_id"], "corporate_id",
+            "corporate identifier", "", entity_def,
+        )
+        assert score == 0.0
+
+
 class TestDeduplicateEntities:
     """Tests for EntityDiscoverer.deduplicate_entities."""
 
