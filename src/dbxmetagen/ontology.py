@@ -3801,10 +3801,16 @@ class OntologyBuilder:
             result = self.spark.sql(f"""
                 MERGE INTO {nodes_table} AS target
                 USING (
-                    SELECT EXPLODE(source_tables) AS table_name, entity_id, entity_type
-                    FROM {ent_table}
-                    WHERE COALESCE(entity_role, 'primary') = 'primary'
-                      AND source_tables IS NOT NULL AND SIZE(source_tables) > 0
+                    SELECT table_name, entity_id, entity_type FROM (
+                        SELECT table_name, entity_id, entity_type,
+                               ROW_NUMBER() OVER (PARTITION BY table_name ORDER BY confidence DESC) AS rn
+                        FROM (
+                            SELECT EXPLODE(source_tables) AS table_name, entity_id, entity_type, confidence
+                            FROM {ent_table}
+                            WHERE COALESCE(entity_role, 'primary') = 'primary'
+                              AND source_tables IS NOT NULL AND SIZE(source_tables) > 0
+                        )
+                    ) WHERE rn = 1
                 ) AS source
                 ON target.id = source.table_name AND target.node_type = 'table'
                 WHEN MATCHED THEN UPDATE SET
@@ -4568,6 +4574,7 @@ class OntologyBuilder:
             StructField("updated_at", TimestampType()),
         ])
         df = self.spark.createDataFrame(rels, schema=_bundle_schema)
+        df = df.dropDuplicates(["src_entity_type", "dst_entity_type", "relationship_name"])
         df.createOrReplaceTempView("_bundle_edges_staging")
         self.spark.sql(f"""
             MERGE INTO {rels_table} AS target
@@ -4700,7 +4707,7 @@ class OntologyBuilder:
         for edef in self.discoverer.entity_definitions:
             parent = edef.parent
             if parent:
-                key = (edef.name, parent)
+                key = (edef.name, parent, "subclass_of")
                 if key not in seen:
                     seen.add(key)
                     rels.append({
@@ -4718,72 +4725,6 @@ class OntologyBuilder:
                         "created_at": now,
                         "updated_at": now,
                     })
-
-        # LLM-predicted edges -- only for entity-type pairs that have FK evidence
-        disc = self.discoverer
-        disc_validation_cfg = getattr(disc, "_validation_cfg", {})
-        max_llm_edge_calls = int(disc_validation_cfg.get("max_llm_edge_calls", 20))
-        enable_llm_edges = disc_validation_cfg.get("enable_llm_edge_prediction", True)
-        loader = disc._get_index_loader() if hasattr(disc, "_get_index_loader") else None
-        if loader and enable_llm_edges:
-            try:
-                from dbxmetagen.ontology_predictor import predict_edge
-
-                def _llm_fn(system_prompt: str, user_prompt: str) -> str:
-                    from databricks_langchain import ChatDatabricks
-                    llm = ChatDatabricks(
-                        endpoint=disc._model_endpoint, temperature=0.0,
-                        max_tokens=2048, max_retries=2,
-                    )
-                    response = llm.invoke([
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt},
-                    ])
-                    return response.content if hasattr(response, "content") else str(response)
-
-                candidate_pairs = set()
-                for fk in fk_rows:
-                    s = table_to_primary.get(fk.src_table)
-                    d = table_to_primary.get(fk.dst_table)
-                    if s and d and s != d and (s, d) not in seen:
-                        candidate_pairs.add((s, d))
-                if len(candidate_pairs) > max_llm_edge_calls:
-                    logger.info("LLM edge prediction: capping %d pairs to %d", len(candidate_pairs), max_llm_edge_calls)
-                    candidate_pairs = set(sorted(candidate_pairs)[:max_llm_edge_calls])
-                vs_index = getattr(self.config, "ontology_vs_index", "") or ""
-                vs_bundle = getattr(self.config, "ontology_bundle", "") or ""
-                llm_fn = _llm_fn
-                for src_t, dst_t in candidate_pairs:
-                    try:
-                        result = predict_edge(
-                            src_entity=src_t, dst_entity=dst_t,
-                            loader=loader, llm_fn=llm_fn,
-                            vs_index=vs_index or None,
-                            vs_bundle=vs_bundle or None,
-                        )
-                        if result and result.predicted_edge and result.confidence_score >= 0.5:
-                            seen.add((src_t, dst_t))
-                            rels.append({
-                                "relationship_id": str(uuid.uuid4()),
-                                "src_entity_type": src_t,
-                                "relationship_name": result.predicted_edge,
-                                "dst_entity_type": dst_t,
-                                "cardinality": "1:N",
-                                "evidence_column": None,
-                                "evidence_table": None,
-                                "source": "llm_predicted",
-                                "confidence": round(result.confidence_score, 3),
-                                "source_ontology": result.source_ontology or None,
-                                "edge_uri": result.edge_uri or None,
-                                "created_at": now,
-                                "updated_at": now,
-                            })
-                    except Exception as e:
-                        logger.warning("predict_edge failed for (%s, %s): %s", src_t, dst_t, e)
-                logger.info("LLM predict_edge added %d edges",
-                            sum(1 for r in rels if r["source"] == "llm_predicted"))
-            except ImportError:
-                pass
 
         # Auto-generate inverse edges from EdgeCatalog metadata
         inverse_rels: List[Dict] = []
@@ -4847,6 +4788,7 @@ class OntologyBuilder:
             StructField("updated_at", TimestampType()),
         ])
         df = self.spark.createDataFrame(rels, schema=_rels_schema)
+        df = df.dropDuplicates(["src_entity_type", "dst_entity_type", "relationship_name"])
         df.createOrReplaceTempView("_new_rels")
         self.spark.sql(f"""
             MERGE INTO {rels_table} AS tgt
