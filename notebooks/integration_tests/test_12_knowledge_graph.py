@@ -33,13 +33,11 @@ catalog_name = dbutils.widgets.get("catalog_name")
 test_schema = dbutils.widgets.get("test_schema")
 skip_cleanup = dbutils.widgets.get("skip_cleanup").strip().lower() == "true"
 
-# Create unique test schemas for isolation (two schemas so same_schema edges fire)
 test_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 graph_test_schema = f"graph_test_{test_timestamp}"
-graph_test_schema_2 = f"graph_test_{test_timestamp}_b"
 
 print(f"Test catalog: {catalog_name}")
-print(f"Test schemas: {graph_test_schema}, {graph_test_schema_2}")
+print(f"Test schema: {graph_test_schema}")
 print(f"Skip cleanup: {skip_cleanup}")
 
 # COMMAND ----------
@@ -48,10 +46,8 @@ print(f"Skip cleanup: {skip_cleanup}")
 
 # COMMAND ----------
 
-# Create test schemas
 spark.sql(f"CREATE SCHEMA IF NOT EXISTS {catalog_name}.{graph_test_schema}")
-spark.sql(f"CREATE SCHEMA IF NOT EXISTS {catalog_name}.{graph_test_schema_2}")
-print(f"[SETUP] Created test schemas: {graph_test_schema}, {graph_test_schema_2}")
+print(f"[SETUP] Created test schema: {graph_test_schema}")
 
 # COMMAND ----------
 
@@ -108,10 +104,10 @@ test_kb_data = [
         has_pii=True, has_phi=True,
         created_at=datetime(2024, 1, 1), updated_at=datetime(2024, 1, 1)
     ),
-    # Public reference table in a SECOND schema so same_schema edges are created
+    # Public reference table (no PII/PHI)
     Row(
-        table_name=f"{catalog_name}.{graph_test_schema_2}.product_catalog",
-        catalog=catalog_name, schema=graph_test_schema_2, table_short_name="product_catalog",
+        table_name=f"{catalog_name}.{graph_test_schema}.product_catalog",
+        catalog=catalog_name, schema=graph_test_schema, table_short_name="product_catalog",
         comment="Product catalog", domain="Product", subdomain="Master",
         has_pii=False, has_phi=False,
         created_at=datetime(2024, 1, 1), updated_at=datetime(2024, 1, 1)
@@ -187,7 +183,7 @@ assert patients_node["security_level"] == "PHI", "Security level should be PHI f
 assert patients_node["has_phi"] == True, "has_phi should be True"
 
 # Check product_catalog node (PUBLIC)
-products_node = nodes[f"{catalog_name}.{graph_test_schema_2}.product_catalog"]
+products_node = nodes[f"{catalog_name}.{graph_test_schema}.product_catalog"]
 assert products_node["security_level"] == "PUBLIC", "Security level should be PUBLIC"
 assert products_node["has_pii"] == False, "has_pii should be False"
 
@@ -199,7 +195,9 @@ print("[TEST 2] PASSED: Node properties are correct")
 
 # COMMAND ----------
 
-# Test 3: Verify edges exist for each relationship type
+# Test 3: Verify same_security_level edges
+# The builder only creates same_security_level edges (same_domain/subdomain/catalog/schema
+# were removed -- FK prediction computes those inline).
 edge_counts = spark.sql(f"""
     SELECT relationship, COUNT(*) as cnt
     FROM {catalog_name}.{graph_test_schema}.graph_edges
@@ -208,49 +206,30 @@ edge_counts = spark.sql(f"""
 
 edge_map = {row["relationship"]: row["cnt"] for row in edge_counts.collect()}
 
-# All 5 tables are in the same catalog -- same_catalog edges are intentionally
-# skipped when there's only one distinct catalog (full mesh adds no signal).
-assert "same_catalog" not in edge_map, "same_catalog edges should be skipped for mono-catalog"
-assert "same_schema" in edge_map, "Should have same_schema edges"
-
-# 2 Customer domain tables -> 1 edge
-assert edge_map.get("same_domain", 0) >= 1, "Should have at least 1 same_domain edge"
-
-# 2 Healthcare tables in same subdomain -> 1 edge  
-assert edge_map.get("same_subdomain", 0) >= 1, "Should have at least 1 same_subdomain edge"
-
-# PII tables: customers, customer_addresses, patients, diagnoses (4 tables)
-# PHI tables: patients, diagnoses (2 tables)
-# PUBLIC tables: product_catalog (1 table, no edges)
+# PII group: customers, customer_addresses -> C(2,2) = 1 edge
+# PHI group: patients, diagnoses -> C(2,2) = 1 edge
+# PUBLIC: product_catalog -> filtered out (only PII/PHI get edges)
 assert "same_security_level" in edge_map, "Should have same_security_level edges"
+assert edge_map["same_security_level"] == 2, f"Expected 2 same_security_level edges (1 PII + 1 PHI), got {edge_map['same_security_level']}"
 
 print(f"[TEST 3] PASSED: Edge relationship types exist")
 print(f"  Edge counts by type: {edge_map}")
 
 # COMMAND ----------
 
-# Test 4: Verify specific edge relationships
-# Check that same_domain edges connect Customer tables
-customer_domain_edges = spark.sql(f"""
+# Test 4: Verify same_security_level edges connect PII tables correctly
+pii_edges = spark.sql(f"""
     SELECT src, dst 
     FROM {catalog_name}.{graph_test_schema}.graph_edges
-    WHERE relationship = 'same_domain'
+    WHERE relationship = 'same_security_level'
     AND (src LIKE '%customers%' OR dst LIKE '%customers%')
 """).collect()
 
-customer_tables_in_edges = set()
-for row in customer_domain_edges:
-    if "customers" in row["src"]:
-        customer_tables_in_edges.add(row["src"])
-    if "customers" in row["dst"]:
-        customer_tables_in_edges.add(row["dst"])
-    if "customer_addresses" in row["src"]:
-        customer_tables_in_edges.add(row["src"])
-    if "customer_addresses" in row["dst"]:
-        customer_tables_in_edges.add(row["dst"])
-
-assert len(customer_tables_in_edges) == 2, f"Expected 2 customer tables in same_domain edges, got {len(customer_tables_in_edges)}"
-print("[TEST 4] PASSED: Domain edges connect correct tables")
+assert len(pii_edges) == 1, f"Expected 1 PII edge connecting customers<->customer_addresses, got {len(pii_edges)}"
+edge = pii_edges[0]
+assert "customers" in edge["src"] or "customers" in edge["dst"], "Edge should involve customers table"
+assert "customer_addresses" in edge["src"] or "customer_addresses" in edge["dst"], "Edge should involve customer_addresses table"
+print("[TEST 4] PASSED: Security level edges connect correct tables")
 
 # COMMAND ----------
 
@@ -270,20 +249,15 @@ print("[TEST 5] PASSED: No duplicate or self-loop edges")
 
 # COMMAND ----------
 
-# Test 6: Simulate domain change and verify edges are refreshed
-# Change product_catalog from "Product" domain to "Customer" domain
+# Test 6: Simulate security_level change and verify edges are refreshed
+# Change product_catalog from PUBLIC to PII (has_pii=True)
 spark.sql(f"""
     UPDATE {catalog_name}.{graph_test_schema}.table_knowledge_base
-    SET domain = 'Customer', subdomain = 'Reference', updated_at = current_timestamp()
-    WHERE table_name = '{catalog_name}.{graph_test_schema_2}.product_catalog'
+    SET has_pii = true, updated_at = current_timestamp()
+    WHERE table_name = '{catalog_name}.{graph_test_schema}.product_catalog'
 """)
 
-# Count same_domain edges before refresh
-domain_edges_before = spark.sql(f"""
-    SELECT COUNT(*) as cnt
-    FROM {catalog_name}.{graph_test_schema}.graph_edges
-    WHERE relationship = 'same_domain'
-""").collect()[0]["cnt"]
+edges_before = edge_map["same_security_level"]
 
 # Re-run graph build
 result2 = build_knowledge_graph(
@@ -292,37 +266,33 @@ result2 = build_knowledge_graph(
     schema_name=graph_test_schema
 )
 
-# Count same_domain edges after refresh
-domain_edges_after = spark.sql(f"""
+edges_after = spark.sql(f"""
     SELECT COUNT(*) as cnt
     FROM {catalog_name}.{graph_test_schema}.graph_edges
-    WHERE relationship = 'same_domain'
+    WHERE relationship = 'same_security_level'
 """).collect()[0]["cnt"]
 
-# Now 3 tables in Customer domain: customers, customer_addresses, product_catalog
-# This creates 3 edges (3 choose 2 = 3)
-# Before: 2 Customer + 2 Healthcare = 1 + 1 = 2 same_domain edges
-# After: 3 Customer + 2 Healthcare = 3 + 1 = 4 same_domain edges
-assert domain_edges_after > domain_edges_before, \
-    f"Domain edges should increase after adding product_catalog to Customer domain (before: {domain_edges_before}, after: {domain_edges_after})"
+# Before: PII(2) -> 1 edge, PHI(2) -> 1 edge = 2
+# After:  PII(3) -> 3 edges, PHI(2) -> 1 edge = 4
+assert edges_after > edges_before, \
+    f"Security edges should increase after making product_catalog PII (before: {edges_before}, after: {edges_after})"
 
-print(f"[TEST 6] PASSED: Edge refresh handled domain change correctly")
-print(f"  same_domain edges before: {domain_edges_before}")
-print(f"  same_domain edges after: {domain_edges_after}")
+print(f"[TEST 6] PASSED: Edge refresh handled security_level change correctly")
+print(f"  same_security_level edges before: {edges_before}")
+print(f"  same_security_level edges after: {edges_after}")
 
 # COMMAND ----------
 
-# Test 7: Verify product_catalog is now connected to customer tables
-product_customer_edges = spark.sql(f"""
+# Test 7: Verify product_catalog is now connected to other PII tables
+product_pii_edges = spark.sql(f"""
     SELECT COUNT(*) as cnt
     FROM {catalog_name}.{graph_test_schema}.graph_edges
-    WHERE relationship = 'same_domain'
+    WHERE relationship = 'same_security_level'
     AND (src LIKE '%product_catalog%' OR dst LIKE '%product_catalog%')
-    AND (src LIKE '%customer%' OR dst LIKE '%customer%')
 """).collect()[0]["cnt"]
 
-assert product_customer_edges >= 1, "product_catalog should now be connected to customer tables"
-print("[TEST 7] PASSED: product_catalog now connected to Customer domain tables")
+assert product_pii_edges >= 1, "product_catalog should now be connected to other PII tables"
+print("[TEST 7] PASSED: product_catalog now connected to PII tables")
 
 # COMMAND ----------
 # MAGIC %md
@@ -331,12 +301,11 @@ print("[TEST 7] PASSED: product_catalog now connected to Customer domain tables"
 # COMMAND ----------
 
 if skip_cleanup:
-    print(f"[CLEANUP] Skipping cleanup -- schemas left for downstream tests")
+    print(f"[CLEANUP] Skipping cleanup -- schema left for downstream tests")
     dbutils.jobs.taskValues.set(key="graph_test_schema", value=graph_test_schema)
 else:
     spark.sql(f"DROP SCHEMA IF EXISTS {catalog_name}.{graph_test_schema} CASCADE")
-    spark.sql(f"DROP SCHEMA IF EXISTS {catalog_name}.{graph_test_schema_2} CASCADE")
-    print(f"[CLEANUP] Dropped test schemas: {graph_test_schema}, {graph_test_schema_2}")
+    print(f"[CLEANUP] Dropped test schema: {graph_test_schema}")
 
 # COMMAND ----------
 
