@@ -374,6 +374,14 @@ class DataQualityScorer:
             rows.append(row)
         
         df = self.spark.createDataFrame(rows, schema=self.SCORES_SCHEMA)
+        # APPEND: Delta append into fully_qualified_scores with mergeSchema=true; adds score_id PK rows plus table_name,
+        # snapshot_id FK to profiling snapshots, per-dimension scores (completeness through metadata), overall_score,
+        # quality_issues array, dimensions_calculated count, created_at timestamp for this batch write.
+        # WHY: Builds a longitudinal quality ledger so dashboards and downstream gates can compare tables and runs
+        # without overwriting prior scoring epochs tied to snapshot_id.
+        # TRADEOFFS: Append-only preserves history and simplifies idempotent re-runs versus MERGE snapshots (avoids
+        # complex keys) but grows storage and requires consumers to pick latest snapshot/time; mergeSchema tolerates
+        # additive schema drift at the cost of weaker compile-time contract enforcement.
         df.write.mode("append").option("mergeSchema", "true").saveAsTable(self.config.fully_qualified_scores)
     
     def run(self) -> Dict[str, Any]:

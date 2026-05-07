@@ -1656,7 +1656,13 @@ class FKPredictor:
         logger.info("Writing %d FK predictions to %s", count, target)
         staging_view = "_fk_predictions_staging"
         out.createOrReplaceTempView(staging_view)
-        # Remove old rows whose direction was reversed (from pre-direction-enforcement runs)
+        # DELETE: Removes rows already in fk_predictions whose (src_column, dst_column) is the reverse
+        # of a pairing we are about to write from `_fk_predictions_staging` (staging row (A,B) vs existing (B,A)).
+        # WHY: Older runs could persist the FK in the opposite direction before direction rules were enforced;
+        # merging on (src_column, dst_column) alone would otherwise leave contradictory duplicate edges.
+        # TRADEOFFS: SQL DELETE EXISTS is concise and leverages the metastore/table scan; correlated subquery
+        # cost depends on staging size vs full table scan. Alternatives include MERGE USING with OR match keys
+        # or versioning the schema with a canonical direction flag—those add complexity or migrations.
         try:
             self.spark.sql(f"""
                 DELETE FROM {target} WHERE EXISTS (
@@ -1667,6 +1673,12 @@ class FKPredictor:
             """)
         except Exception:
             pass
+        # MERGE: Upserts the cumulative FK predictions Delta table keyed on (src_column, dst_column) from `_fk_predictions_staging`.
+        # WHY: Persist cross-run scores/refreshed AI output so downstream graph_edges, DDL, and dashboards always read one
+        # authoritative row per column pair rather than replaying ephemeral batch results.
+        # TRADEOFFS: MERGE avoids append-only duplication and avoids full truncate; MATCHED refreshes scalar fields and timestamps.
+        # Cost is proportional to staged row count; alternatives are DELETE+INSERT (two passes, brief inconsistency) or
+        # partition-by-run append with compaction (heavier dedup queries later).
         self.spark.sql(f"""
             MERGE INTO {target} AS t
             USING {staging_view} AS s
@@ -1694,7 +1706,13 @@ class FKPredictor:
         so that edges reflect all accumulated predictions, not just the current batch.
         """
         edges_table = self.config.fq(self.config.edges_table)
-        # Backfill legacy rows missing source_system/edge_id (idempotent)
+        # UPDATE: Patches existing `graph_edges` rows for this module's relationship type when
+        # source_system, edge_id, or edge_type are NULL—sets source_system='fk_predictions',
+        # edge_id=CONCAT_WS('::', src, dst, relationship), and edge_type to predicted_fk.
+        # WHY: `graph_edges` is shared by four writers; older FK rows may predate the merge contract;
+        # backfilling keeps merge_edges keys and sweeps consistent with knowledge_graph/ontology/embedding edges.
+        # TRADEOFFS: One broad UPDATE is simple and idempotent; it scans rows matching relationship + NULLs.
+        # Alternatives: backfill migration job or view-only compatibility—both defer correctness or complicate readers.
         try:
             self.spark.sql(
                 f"UPDATE {edges_table} "
@@ -1769,6 +1787,14 @@ class FKPredictor:
             F.col("ai_confidence").alias("confidence"),
             F.current_timestamp().alias("created_at"),
         )
+        # WRITE: Overwrites Delta table `fk_ddl_statements` (fully qualified via config) with rows from
+        # high-confidence predictions: src_column, dst_column, ddl_statement, confidence, created_at.
+        # No dedup is applied here; uniqueness relies on the upstream MERGE into fk_predictions.
+        # WHY: Materialized ALTER TABLE ADD CONSTRAINT statements are easy to audit, diff, and optionally apply;
+        # regenerating from the merged predictions table keeps DDL in sync with the cumulative truth, not one batch.
+        # TRADEOFFS: Overwrite is O(result) and drops prior rows (acceptable because source of truth is
+        # fk_predictions). Alternatives: MERGE on (src_column, dst_column) (more code, same outcome) or append+dedup
+        # (requires compaction); overwrite is simplest for a derived artifact.
         ddl_out.write.mode("overwrite").option("overwriteSchema", "true").saveAsTable(
             target
         )
@@ -1822,6 +1848,12 @@ class FKPredictor:
             for label, where in cleanup_rules:
                 n = self.spark.sql(f"SELECT COUNT(*) AS n FROM {preds} WHERE {where}").collect()[0].n
                 if n > 0:
+                    # DELETE: Removes invalid or legacy FK prediction rows from `preds` matching the labeled predicate
+                    # (e.g., self-links or stale rows where is_fk IS NULL with ai_confidence >= 1.0).
+                    # WHY: Keeps the cumulative predictions table trustworthy before each pipeline run; bad rows skew
+                    # graph merges, DDL, and confidence dashboards if left to accumulate across schema/history churn.
+                    # TRADEOFFS: Pre-delete COUNT+log adds an extra scan per rule vs blind DELETE—clearer observability at
+                    # small cost; soft-delete/archive columns were rejected to avoid query-time filtering everywhere.
                     self.spark.sql(f"DELETE FROM {preds} WHERE {where}")
                     logger.warning("FK cleanup: removed %d %s rows from %s", n, label, preds)
         except AnalysisException as e:

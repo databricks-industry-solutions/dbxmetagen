@@ -302,6 +302,12 @@ class SemanticLayerGenerator:
         if not rows:
             return 0
         values = ", ".join(rows)
+        # INSERT: Bulk-append pending semantic-layer questions into the configured questions Delta table with freshly minted
+        # question_id (UUID) PKs; fills question_text (escaped single-quote duplication),
+        # status='pending', created_at (UTC ISO); processed_at left NULL until generation completes.
+        # WHY: Seeds the semantic-layer pipeline queue so downstream LLM generation can pick only unanswered rows.
+        # TRADEOFFS: Bulk INSERT VALUES is fast/low JDBC chatter versus iterative executesSQL—but escapes rely on
+        # deterministic sanitisation alone (risk vs parameterized ROW constructors/MERGE); no UPSERT so callers must dedupe upstream question texts manually if uniqueness matters.
         self.spark.sql(f"INSERT INTO {fq_table} VALUES {values}")
         logger.info("Ingested %d questions", len(rows))
         return len(rows)
@@ -619,6 +625,14 @@ class SemanticLayerGenerator:
                 status = "validated" if not errors else "failed"
                 error_str = "; ".join(errors).replace("'", "''") if errors else ""
 
+                # INSERT: One row per AI-generated metric-view candidate into the configured definitions Delta table keyed by
+                # definition_id (UUID); stores metric_view_name, source_table alias, full json_definition (escaped),
+                # source_questions (comma-joined question_ids for this batch), status (validated vs failed),
+                # validation_errors text, NULL genie_space/applied metadata, created_at for audit.
+                # WHY: Persists every generation attempt for review, re-apply, Genie wiring, and lineage of which
+                # questions spawned which definitions without losing failed attempts.
+                # TRADEOFFS: Append-only rows per definition—simple and auditable versus MERGE UPSERT on name
+                # (which would hide history); large json_definition strings inflate table size versus external object store.
                 self.spark.sql(
                     f"""
                     INSERT INTO {fq(self.config.definitions_table)} VALUES (
@@ -635,6 +649,12 @@ class SemanticLayerGenerator:
             id_list = ", ".join(f"'{qid}'" for qid in q_ids)
             if stats["generated"] > 0:
                 status_val = "processed" if stats["validated"] > 0 else "failed"
+                # UPDATE: Rows in the configured questions table keyed by question_id IN the current batch IDs; sets status
+                # to 'processed' when any definition validated, else 'failed', and stamps processed_at to now.
+                # WHY: Advances the question queue so retries skip already-handled items while recording failure
+                # when nothing passed validation.
+                # TRADEOFFS: Predicate is IN-list (efficient for modest batch sizes) versus temp-table join for
+                # huge batches; overwrites prior status without versioning (simpler lifecycle but no history).
                 self.spark.sql(
                     f"""
                     UPDATE {fq(self.config.questions_table)}
@@ -1414,6 +1434,12 @@ OUTPUT (one JSON object only, no array, no explanation):"""
                     self.spark.sql(sql)
                     cat_esc = deploy_cat.replace("'", "''")
                     sch_esc = deploy_sch.replace("'", "''")
+                    # UPDATE: Single definitions-table row by definition_id after successful CREATE OR REPLACE VIEW;
+                    # transitions status→'applied', sets applied_at, records deployed_catalog/schema where the UC view landed.
+                    # WHY: Gives operators a persisted source of truth for which YAML definitions succeeded and where
+                    # they physically live for governance and Genie onboarding.
+                    # TRADEOFFS: Row-wise UPDATE mirrors sequential apply (clear errors) versus batched MERGE (faster
+                    # writes but coarse failure attribution); catalogs/schemas derived from source triple may diverge from config if mis-specified upstream.
                     self.spark.sql(
                         f"""
                         UPDATE {fq(self.config.definitions_table)}
@@ -1429,6 +1455,12 @@ OUTPUT (one JSON object only, no array, no explanation):"""
                 except Exception as e:
                     logger.error("Failed to apply metric view %s: %s", fq_mv, e)
                     err = str(e).replace("'", "''")
+                    # UPDATE: Same definitions-table row keyed by definition_id after DDL failure; flags status='failed'
+                    # and overwrites validation_errors with the DDL exception text (truncation only by exception length).
+                    # WHY: Keeps persisted definitions aligned with runtime—operators can distinguish pre-store validation failures
+                    # vs deploy-time breakage without scraping logs only.
+                    # TRADEOFFS: Mutates validation_errors (loses earlier static validation messaging) versus append-only audit
+                    # columns; quoting depends on sanitising apostrophes in error strings instead of parameterized SQL paths.
                     self.spark.sql(
                         f"""
                         UPDATE {fq(self.config.definitions_table)}
@@ -1726,6 +1758,12 @@ OUTPUT (one JSON object only, no array, no explanation):"""
             space_id = resp.get("space_id", resp.get("id", ""))
             logger.info("Created Genie space %s (%s)", display_name, space_id)
 
+            # UPDATE: All definitions-table rows with status='applied' receive the same genie_space_id returned
+            # by the Genie REST API (no per-definition WHERE clause).
+            # WHY: After creating one composite Genie space for the batch, every successfully deployed metric view row
+            # must point consumers to that space id for navigation and API follow-up.
+            # TRADEOFFS: Simple broadcast update vs per-definition mapping (cannot represent multiple spaces in one table
+            # without extra columns); any stale 'applied' rows from prior runs get relabeled to the newest space_id.
             self.spark.sql(
                 f"""
                 UPDATE {fq(self.config.definitions_table)}

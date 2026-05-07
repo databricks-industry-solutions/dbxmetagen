@@ -20,7 +20,11 @@ schema_name = dbutils.widgets.get("schema_name")
 
 # COMMAND ----------
 
-# Update graph_nodes with quality scores
+# MERGE: Updates `quality_score` and `updated_at` on `graph_nodes` rows where `node_type='table'` and `id` equals
+#   `table_name`; source scores come from latest `data_quality_scores` snapshot per table (`ORDER BY created_at DESC LIMIT 1` correlated subquery).
+# WHY: Surfaces freshest data-profiling/DQ rollup on table nodes so the graph mirrors operational quality posture for search and UI badges.
+# TRADEOFFS: Correlated subquery-per-row can be heavier than window pre-aggregation; only touches table nodes — entity/other node types untouched;
+#   if multiple snapshots share same `created_at`, choice is nondeterministic without tie-break columns.
 spark.sql(f"""
 MERGE INTO {catalog_name}.{schema_name}.graph_nodes AS target
 USING (

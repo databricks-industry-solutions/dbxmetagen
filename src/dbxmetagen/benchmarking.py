@@ -145,6 +145,11 @@ def log_token_usage(config, experiment_name: str, run_start_time_ms: int = 0):
 
             df = spark.createDataFrame(rows, schema=schema)
             table_name = f"{config.catalog_name}.{config.schema_name}.{config.benchmark_table_name}"
+            # APPEND: Insert token-usage rows into benchmark_table_name keyed implicitly by timestamp+trace_id+span_name;
+            # columns capture prompt/completion/total tokens, job_id/run_id attribution, Timestamp per LLM span observed in MLflow traces.
+            # WHY: Materializes observability into UC for SQL/Lakehouse cost analytics instead of relying solely on MLflow UI exports.
+            # TRADEOFFS: Append-only fact table is straightforward versus updating aggregates; omits mergeSchema so schema
+            # evolution failures surface explicitly; table must pre-exist—no merge dedupe if traces replay with same IDs.
             df.write.mode("append").saveAsTable(table_name)
 
             total_calls = len(rows)

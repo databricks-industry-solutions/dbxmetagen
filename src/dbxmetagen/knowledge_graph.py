@@ -73,6 +73,16 @@ def merge_edges(
         if sweep_stale:
             logger.info("No edges to merge for source_system=%s — sweeping stale rows", source_system)
             try:
+                # DELETE: Remove all edges belonging to this source_system when the
+                # incoming DataFrame is empty -- meaning the upstream module produced
+                # zero edges this run. Without this, stale edges from prior runs would
+                # persist forever once a source_system's output shrinks to zero.
+                # WHY: Each source_system (knowledge_graph, ontology, fk_predictions,
+                # embedding_similarity) owns its slice of graph_edges. An empty result
+                # is a valid signal that all prior edges should be withdrawn.
+                # TRADEOFFS: A targeted DELETE scoped to source_system is safe and
+                # cheap. The alternative -- skipping the delete -- leaves orphaned
+                # edges that pollute downstream graph queries and Genie join_specs.
                 spark.sql(f"DELETE FROM {target_table} WHERE source_system = '{source_system}'")
             except Exception as e:
                 logger.warning("Could not sweep stale edges for %s: %s", source_system, e)
@@ -98,6 +108,24 @@ def merge_edges(
             if sweep_stale else ""
         )
 
+        # MERGE: Upsert edges into graph_edges keyed on edge_id (deterministic
+        # CONCAT_WS('::', src, dst, relationship)). Matched rows get all mutable
+        # fields overwritten; unmatched source rows are inserted. When sweep_stale
+        # is True, an additional WHEN NOT MATCHED BY SOURCE clause deletes target
+        # rows for this source_system that no longer appear in the source -- this
+        # is how stale edges are garbage-collected after tables are removed or
+        # relationships change.
+        # WHY: graph_edges is a shared table written by four independent modules.
+        # Each module's edges are tagged with source_system so the MERGE + sweep
+        # can operate on a per-module slice without disturbing other modules' rows.
+        # The DataFrame is dropDuplicates(["edge_id"]) above to prevent the
+        # DELTA_MULTIPLE_SOURCE_ROW_MATCHING_TARGET_ROW_IN_MERGE error.
+        # TRADEOFFS: MERGE-by-edge_id is idempotent and handles re-runs cleanly.
+        # The sweep clause makes it a full outer join which is expensive on cold
+        # clusters with millions of edges (hence sweep_stale defaults to False).
+        # An alternative would be DELETE-then-INSERT per source_system, but that
+        # loses created_at timestamps and causes downstream caches to fully
+        # invalidate instead of incrementally updating.
         spark.sql(f"""
             MERGE INTO {target_table} AS target
             USING {view_name} AS source
@@ -236,6 +264,14 @@ class KnowledgeGraphBuilder:
                     row_count, target, [f.name for f in aligned.schema.fields])
         aligned.createOrReplaceTempView(view_name)
         col_list = ", ".join(c.strip("`") for c, _ in self._EDGE_SCHEMA)
+        # INSERT: Append-only insert of edges into graph_edges. Unlike merge_edges(),
+        # this does NOT check for existing rows -- duplicates will be created if the
+        # same edge already exists. Used only by legacy code paths that pre-delete
+        # their slice before re-inserting.
+        # WHY: Simpler and faster than MERGE when the caller guarantees the target
+        # is clean (e.g., after a DELETE WHERE source_system = X).
+        # TRADEOFFS: No idempotency -- running twice doubles the rows. Prefer
+        # merge_edges() or refresh_edges() for all new code paths.
         self.spark.sql(f"INSERT INTO {target} ({col_list}) SELECT {col_list} FROM {view_name}")
 
     def _merge_edges(self, df: DataFrame, source_system: str, table: str = None, sweep_stale: bool = False) -> int:
@@ -516,7 +552,27 @@ class KnowledgeGraphBuilder:
         """
         self._align_node_schema(nodes_df).createOrReplaceTempView("staged_nodes")
         
-        # Note: `schema` is a reserved word in SQL, must be escaped with backticks
+        # MERGE: Upsert table/column nodes into graph_nodes keyed on node id
+        # (fully qualified table name for table nodes, table.column for column nodes).
+        # Identity fields (table_name, catalog, schema, table_short_name) are always
+        # overwritten since they don't change. Enrichment fields (domain, subdomain,
+        # comment, node_type, parent_id, data_type, quality_score, embedding,
+        # ontology_id, ontology_type, display_name, short_description, sensitivity,
+        # status, source_system, keywords) use COALESCE so incoming NULLs do NOT
+        # overwrite existing values. security_level is a direct assignment but is
+        # always populated by its source (derived from has_pii/has_phi), so NULL
+        # overwrites are not a practical concern. Boolean fields (has_pii, has_phi)
+        # use OR so a prior detection is never lost.
+        # WHY: graph_nodes is the central node table read by the app dashboard, Genie
+        # context builder, and GraphRAG agent. Multiple pipelines write to it
+        # (KB builder, ontology, embeddings, profiling, quality), so COALESCE prevents
+        # one pipeline from blanking another's contributions.
+        # TRADEOFFS: COALESCE-on-update means a field can never be explicitly set back
+        # to NULL once populated -- you'd need a separate UPDATE with explicit NULL.
+        # This is acceptable because NULL → value is the normal lifecycle direction
+        # for metadata. The alternative (full overwrite) caused data loss when
+        # pipelines ran in different orders. `schema` is a reserved word in SQL and
+        # must be escaped with backticks.
         merge_sql = f"""
         MERGE INTO {self.config.fully_qualified_nodes} AS target
         USING staged_nodes AS source
@@ -672,6 +728,20 @@ class KnowledgeGraphBuilder:
         """
         self._align_edge_schema(edges_df).createOrReplaceTempView("staged_edges")
         
+        # MERGE: Upsert edges into graph_edges keyed on the composite natural key
+        # (src, dst, relationship) rather than edge_id. Matched rows update mutable
+        # fields: weight is directly overwritten (always freshly computed by caller),
+        # while other fields use COALESCE to preserve existing enrichments; unmatched
+        # rows are inserted.
+        # WHY: This is the legacy merge path from before edge_id was introduced.
+        # It's still used by callers that build edges without computing edge_id.
+        # For most use cases, prefer refresh_edges() which uses merge_edges()
+        # keyed on edge_id and properly handles stale-edge sweeping.
+        # TRADEOFFS: The 3-column composite key is wider than edge_id, making the
+        # MERGE join more expensive. It also can't distinguish edges that differ
+        # only in source_system (two modules producing the same src/dst/relationship
+        # triple will collide). No stale-sweep capability -- old edges persist
+        # until manually deleted.
         merge_sql = f"""
         MERGE INTO {self.config.fully_qualified_edges} AS target
         USING staged_edges AS source

@@ -838,6 +838,18 @@ Evaluate each entity independently. Consider whether table purpose, columns, and
         results_df.createOrReplaceTempView("__col_val_results")
 
         try:
+            # MERGE: Batch-update existing entities with validation results from temp view
+            #   `__col_val_results` into `ontology_entities`, matching on `entity_id`.
+            #   MATCHED-only (no INSERT) -- sets `validated`, adds `confidence_adjustment`
+            #   to `confidence` (floored at 0.0), replaces `validation_notes`, and
+            #   refreshes `updated_at`. Entities not in the staging view are left untouched.
+            # WHY: Persist batch LLM/heuristic validation outcomes in one SQL statement so
+            #   the ontology graph and dashboards reflect which entities passed review
+            #   without N separate round-trips per entity. Update-only prevents phantom
+            #   entities from being inserted by the validation pipeline.
+            # TRADEOFFS: Fast and idiomatic for Delta; depends on MERGE support and the
+            #   temp view. On failure the code falls back to per-row UPDATE (slower but
+            #   more granular).
             self.spark.sql(f"""
                 MERGE INTO {self.config.fully_qualified_entities} AS target
                 USING __col_val_results AS source
@@ -903,6 +915,15 @@ Evaluate each entity independently. Consider whether table purpose, columns, and
             reasoning = validation.get('reasoning', '')
             
             try:
+                # UPDATE: Single-row update on `ontology_entities` for `entity_id`, setting
+                #   `validated`, incrementing `confidence` by `confidence_adj` (floored at 0.0),
+                #   `validation_notes`, and `updated_at`.
+                # WHY: Fallback path when batched MERGE fails (permissions, analyzer limits, etc.)
+                #   so validation results still land without losing the whole batch.
+                # TRADEOFFS: One statement per entity — higher latency and warehouse cost than a
+                #   single MERGE; reasoning is inlined with SQL escaping which is brittle for edge
+                #   characters but avoids parameterized-SQL gaps in this call site. Alternative:
+                #   retry MERGE only — simpler but all-or-nothing.
                 self.spark.sql(f"""
                     UPDATE {self.config.fully_qualified_entities}
                     SET 
@@ -1097,6 +1118,13 @@ Evaluate each entity independently. Consider whether table purpose, columns, and
         ent = self.config.fully_qualified_entities
         try:
             before = self.spark.sql(f"SELECT COUNT(*) AS cnt FROM {edges}").collect()[0].cnt
+            # DELETE: Remove rows from `graph_edges` (`fully_qualified_edges`) whose `src` or `dst`
+            #   `entity_id` references an entity in `ontology_entities` with `validated = FALSE`.
+            # WHY: Keep the knowledge graph consistent — invalidated entities should not retain
+            #   structural or semantic edges that imply they are trusted endpoints.
+            # TRADEOFFS: Hard delete loses historical edge provenance; subquery filters may scan
+            #   large edge tables. Alternative: soft-delete columns or use `merge_edges`-style
+            #   keyed merges per `source_system` — heavier but uniform with other graph writers.
             self.spark.sql(f"""
                 DELETE FROM {edges}
                 WHERE src IN (SELECT entity_id FROM {ent} WHERE validated = FALSE)
@@ -1130,6 +1158,14 @@ Evaluate each entity independently. Consider whether table purpose, columns, and
         logger.info("Starting ontology validation")
 
         if force_revalidate:
+            # UPDATE: Bulk-reset `validated` to FALSE and clear `validation_notes` on
+            #   `ontology_entities` rows that are `auto_discovered = TRUE` and currently
+            #   `validated = TRUE` (leaves manually curated rows and already-unvalidated rows alone).
+            # WHY: Lets operators rerun validation from a clean slate after ontology or model
+            #   changes without re-ingesting entities from scratch.
+            # TRADEOFFS: Does not reset `confidence` or other fields — faster and preserves scores
+            #   while forcing re-validation. Alternative: truncate auto-discovered partition or
+            #   delete rows — stricter cleanup but loses entity records and downstream keys.
             reset_df = self.spark.sql(f"""
                 UPDATE {self.config.fully_qualified_entities}
                 SET validated = FALSE, validation_notes = NULL

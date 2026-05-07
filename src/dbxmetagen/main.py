@@ -232,6 +232,11 @@ def cleanup_resources(config, spark):
                 
                 if cleanup_failed:
                     # Delete all entries for this run/mode (completed AND failed)
+                    # DELETE: Control table rows matching _run_id + pipeline mode filter (scope includes NULL _mode via OR).
+                    # WHY: Tear down all claim/lease state after a run when operators want a clean slate including failed
+                    # tables (e.g. dev reset) so the next job does not see stale failed rows.
+                    # TRADEOFFS: Broad predicate is simple versus targeted MERGE; string-interpolated run_id trusts config
+                    # hygiene (no SQL injection from trusted job args); removes retry hints for failed tables.
                     spark.sql(
                         f"DELETE FROM {control_table_full} WHERE _run_id = '{config.run_id}' {mode_filter}"
                     )
@@ -240,6 +245,11 @@ def cleanup_resources(config, spark):
                     )
                 else:
                     # Only delete completed entries, keep failed for potential retry
+                    # DELETE: Subset of control rows for this _run_id where _status='completed', still scoped by mode filter.
+                    # WHY: Default post-run hygiene removes successful claims while retaining failed rows so operators or
+                    # automatic retries can inspect/re-queue failures without losing diagnostic state.
+                    # TRADEOFFS: Leaves failed + in_progress edge cases untouched (only 'completed'); simpler than archive
+                    # tables; same interpolated-id considerations as other DELETE paths.
                     spark.sql(
                         f"DELETE FROM {control_table_full} WHERE _run_id = '{config.run_id}' AND _status = 'completed' {mode_filter}"
                     )
@@ -254,6 +264,11 @@ def cleanup_resources(config, spark):
                         print(f"Note: {failed_count} failed table(s) retained for potential retry")
             elif config.job_id is not None:
                 # Fallback to job_id for backward compatibility
+                # DELETE: Control rows keyed by legacy _job_id instead of run_id, with identical mode scoping filter.
+                # WHY: Supports older deployments/notebooks that never populated run_id but still need deterministic
+                # cleanup after job completion.
+                # TRADEOFFS: job_id may be less unique across reruns than run_id (collision risk if reused); broad delete
+                # clears all modes' rows for that id unless mode_filter narrows—mirrors historical behavior.
                 spark.sql(
                     f"DELETE FROM {control_table_full} WHERE _job_id = '{config.job_id}' {mode_filter}"
                 )

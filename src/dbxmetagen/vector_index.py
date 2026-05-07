@@ -372,6 +372,21 @@ class VectorIndexBuilder:
             WHEN NOT MATCHED THEN INSERT *
         """
 
+        # MERGE: Upserts all vector-ingest rows into the Delta `metadata_documents` table
+        # (`cfg.fq_documents`), keyed on `doc_id`. Source rows are a UNION ALL of curated
+        # subsets from KB tables (table/column knowledge base), optional ontology/metric/FK/
+        # community sources when present, each emitting the same column layout (doc_type,
+        # node_id, content, catalog/schema/table metadata, scores, updated_at). MATCHED
+        # branches refresh every column from the latest upstream snapshot; NOT MATCHED
+        # inserts new docs.
+        # WHY: `metadata_documents` is the Delta Sync source for the Vector Search index -
+        # embeddings and retrieval must track current KB/ontology/FK text without full
+        # table replays, so analysts and Genie/RAG see up-to-date commentary and join hints.
+        # TRADEOFFS: MERGE by `doc_id` is idempotent and cheap vs truncate-and-reload, and
+        # preserves stable primary keys for the VS index; however rows removed upstream are
+        # NOT deleted here (optional `_sweep_stale_documents` handles that separately), and
+        # `UPDATE SET *` overwrites all target columns on match (no partial field-level merge).
+
         self.spark.sql(union_sql)
 
         if self.sweep_stale_docs:
@@ -454,6 +469,22 @@ class VectorIndexBuilder:
             before = self.spark.sql(
                 f"SELECT COUNT(*) AS c FROM {docs} WHERE doc_type = '{doc_type}'"
             ).collect()[0]["c"]
+
+            # DELETE: Removes stale `metadata_documents` rows for the current `doc_type`
+            # when their natural keys no longer appear in the upstream source table (per the
+            # paired `delete_sql`: e.g. strip `table::` prefix vs `table_knowledge_base.table_name`,
+            # `column::`-qualified names vs commented columns, `entity`/`metric_view`/`fk_relationship`
+            # via `node_id` or `doc_id` against ontology/metric/FK predictions with the same
+            # filters as the MERGE union). Only runs when that source was part of the merge
+            # batch and the guard query proves non-empty upstream data.
+            # WHY: MERGE alone cannot drop docs that disappeared from KB/ontology/FK outputs;
+            # without deletes, Vector Search would keep embedding stale text and pollute RAG.
+            # Delta Sync propagates these deletes so the index sheds orphaned vectors.
+            # TRADEOFFS: Per-type `NOT IN`/`NOT IN (subquery)` deletes are simple and aligned
+            # with MERGE filters, but can be heavy on very large tables and behave poorly if
+            # NULLs appear in keys; skipping sweep when upstream is empty avoids wiping docs
+            # during partial pipeline runs but can temporarily retain stale rows until a full run.
+
             self.spark.sql(delete_sql)
             after = self.spark.sql(
                 f"SELECT COUNT(*) AS c FROM {docs} WHERE doc_type = '{doc_type}'"

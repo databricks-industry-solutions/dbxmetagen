@@ -441,6 +441,15 @@ def build_ontology_chunks_table(
     df = spark.createDataFrame(rows)
 
     df.createOrReplaceTempView("_ontology_chunks_src")
+    # MERGE: Upsert into Delta table `fq_table` (`ontology_chunks` in the given catalog/schema)
+    #   `chunk_id` from temp view `_ontology_chunks_src`. Matched rows get all non-key columns
+    #   refreshed (`UPDATE SET *`); new `chunk_id`s are inserted (`INSERT *`).
+    # WHY: Idempotently materialize parsed ontology text (bundle YAML or OWL/TTL) into UC for
+    #   retrieval, embeddings, and agents — reruns update existing chunks instead of duplicating.
+    # TRADEOFFS: `UPDATE SET *` is concise and keeps the table aligned with the latest parse, but
+    #   removes manual edits to matched rows and does not delete chunks removed from the source
+    #   file (orphans can remain). Alternative: `WHEN NOT MATCHED BY SOURCE THEN DELETE` scoped
+    #   by `ontology_bundle` for true sync at the cost of more complex SQL.
     spark.sql(f"""
         MERGE INTO {fq_table} AS tgt
         USING _ontology_chunks_src AS src
