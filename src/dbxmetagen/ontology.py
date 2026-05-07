@@ -3048,15 +3048,13 @@ class OntologyBuilder:
             USING (
                 SELECT entity_name,
                        array_distinct(flatten(collect_list(source_columns))) AS cols,
-                       flatten(collect_list(COALESCE(column_bindings, array()))) AS bindings,
-                       source_tables[0] AS tbl_name
+                       flatten(collect_list(COALESCE(column_bindings, array()))) AS bindings
                 FROM {self.config.fully_qualified_entities}
                 WHERE attributes['granularity'] = 'column'
                   AND SIZE(source_columns) > 0
-                GROUP BY entity_name, source_tables[0]
+                GROUP BY entity_name
             ) AS col_agg
             ON tbl.entity_name = col_agg.entity_name
-               AND array_contains(tbl.source_tables, col_agg.tbl_name)
                AND COALESCE(tbl.attributes['granularity'], 'table') = 'table'
             WHEN MATCHED AND SIZE(tbl.source_columns) = 0 THEN
                 UPDATE SET source_columns = col_agg.cols,

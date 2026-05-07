@@ -649,11 +649,13 @@ class FKPredictor:
             "query_hit_count LONG, source_rank INT"
         )
         try:
+            cat_esc = cat.replace("!", "!!").replace("_", "!_").replace("%", "!%")
+            sch_esc = sch.replace("!", "!!").replace("_", "!_").replace("%", "!%")
             rows = self.spark.sql(f"""
                 SELECT statement FROM system.query.history
                 WHERE start_time >= DATEADD(DAY, -30, CURRENT_TIMESTAMP())
                   AND statement LIKE '%JOIN%'
-                  AND statement LIKE '%{cat}.{sch}%'
+                  AND statement LIKE '%{cat_esc}.{sch_esc}%' ESCAPE '!'
                 ORDER BY start_time DESC
                 LIMIT 2000
             """).collect()

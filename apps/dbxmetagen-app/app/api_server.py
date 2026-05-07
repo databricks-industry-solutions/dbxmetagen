@@ -587,7 +587,11 @@ def get_config():
 
 def _get_mlflow_experiment_id() -> str | None:
     try:
-        from agent.tracing import MLFLOW_EXPERIMENT_ID
+        from agent.tracing import MLFLOW_EXPERIMENT_ID, _init_tracing
+        if MLFLOW_EXPERIMENT_ID is None:
+            _init_tracing()
+            from agent.tracing import MLFLOW_EXPERIMENT_ID as eid
+            return eid
         return MLFLOW_EXPERIMENT_ID
     except Exception:
         return None
