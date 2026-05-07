@@ -336,6 +336,9 @@ class KnowledgeBaseBuilder:
         staged_df.createOrReplaceTempView("staged_updates")
         
         # Note: `schema` is a reserved word in SQL, must be escaped with backticks
+        # MERGE: Upserts KB target from `staged_updates` on `table_name`; MATCH updates catalog/schema/table_short_name with COALESCE, CASE-preserves comment/domain/subdomain when target.review_updated_at is newer than source.updated_at, OR-merges has_pii/has_phi, sets updated_at = GREATEST; NOT MATCHED inserts full row.
+        # WHY: Makes `metadata_generation_log`-derived table semantics the durable, queryable KB for graph/Genie/dashboard while preventing steward-corrected text from being overwritten by a later pipeline run unless review is stale.
+        # TRADEOFFS: MERGE handles concurrency (with retries) and OR flags better than truncate-load, but COALESCE can keep aging non-review fields if upstream stops sending them; review CASE deliberately does not freeze PI booleans so detections remain conservative (OR).
         merge_sql = f"""
         MERGE INTO {self.config.fully_qualified_target} AS target
         USING staged_updates AS source
@@ -465,6 +468,9 @@ class KnowledgeBaseBuilder:
         combined = reduce(DataFrame.union, all_dfs)
         combined.createOrReplaceTempView("_kb_bootstrap_src")
 
+        # MERGE: `WHEN NOT MATCHED THEN INSERT *` into table KB from `_kb_bootstrap_src` on `table_name`, seeding managed/external tables from each catalog's `information_schema.tables` with UC comment, null domain/subdomain, false PI flags, and current timestamps.
+        # WHY: Zero-LLM inventory so graph/dashboard have rows immediately; full `merge_to_target` then layers generated metadata without clobbering existing enriched rows.
+        # TRADEOFFS: Insert-only is safe for mixed maturity but never removes stale keys; `INSERT *` requires source/target column alignment; scope is only tables named in the bootstrap list.
         self.spark.sql(f"""
             MERGE INTO {self.config.fully_qualified_target} AS target
             USING _kb_bootstrap_src AS source

@@ -632,7 +632,11 @@ spark.sql(
 """
 )
 
-# Overwrite with new assignments
+# OVERWRITE: Replaces entire `node_cluster_assignments` Delta table with one row per clustered node: `id`, `node_type`,
+#   `domain`, `security_level`, `cluster` label, constants `k_value` (chosen K), `silhouette_score`, `created_at`.
+# WHY: Downstream analysts and dashboards need the current authoritative partition of nodes — not stale assignments from prior runs or K.
+# TRADEOFFS: Full overwrite is simple and fast to query but loses historical assignment lineage (use clustering_metrics append for audit);
+#   concurrent runs would race — last writer wins unless external locking is added.
 cluster_output.write.mode("overwrite").saveAsTable(cluster_assignments_table)
 print(f"\nSaved cluster assignments to {cluster_assignments_table}")
 
@@ -725,6 +729,10 @@ spark.sql(
 """
 )
 
+# APPEND: Adds rows to `clustering_metrics` for broad/narrow/final phases (k, silhouette/wssse stats, phase label, sample_size, run_timestamp);
+#   `mergeSchema=true` evolves schema if new columns appear.
+# WHY: Preserves exploratory history (elbow scans, finalist seeds) alongside the single current assignment snapshot for trending and reproducibility.
+# TRADEOFFS: Table grows without automatic retention pruning; mergeSchema relaxes enforcement and can widen types implicitly — favors flexibility over strict contracts.
 metrics_df.write.mode("append").option("mergeSchema", "true").saveAsTable(metrics_table)
 print(f"Saved metrics to {metrics_table}")
 

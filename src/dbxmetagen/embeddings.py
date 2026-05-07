@@ -180,7 +180,19 @@ class EmbeddingGenerator:
             target.embedding = source.embedding,
             target.updated_at = current_timestamp()
         """
-        
+
+        # MERGE: Writes freshly computed embedding vectors into `graph_nodes`
+        # (`fully_qualified_nodes`), joining `new_embeddings` on node `id`. Only matched
+        # rows are updated (`embedding` plus `updated_at`); there is no INSERT path for
+        # unseen ids in this statement.
+        # WHY: Downstream graph analytics, similarity joins, and optional vector workflows
+        # consume `graph_nodes.embedding`; batching via SQL keeps Spark as the execution
+        # engine after `AI_QUERY`/`collect`-based generation.
+        # TRADEOFFS: Targeted UPDATE-via-MERGE avoids overwriting unrelated node columns and
+        # skips accidental row creation; nodes without embeddings stay untouched (possibly
+        # stale NULLs). Returning `embeddings_df.count()` reflects input batch size, not
+        # rows actually matched in the target table.
+
         self.spark.sql(update_sql)
         
         # Return count of updated nodes

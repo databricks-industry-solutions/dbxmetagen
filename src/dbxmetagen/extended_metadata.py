@@ -404,6 +404,9 @@ class ExtendedMetadataBuilder:
         """Merge staged updates into target table."""
         staged_df.createOrReplaceTempView("staged_extended_metadata")
         
+        # MERGE: Upserts extended metadata on `table_name` from `staged_extended_metadata`; MATCH applies COALESCE per field then forces `updated_at` from source; NOT MATCHED `INSERT *` for new tables.
+        # WHY: Stores operational enrichments—lineage, keys, clustering/partition layout, size/file counts, policy placeholders—alongside semantic KB for dashboards and agents without repeated system/DESCRIBE queries.
+        # TRADEOFFS: No steward review gate (unlike semantic KB)—bad source snapshots need rebuild or manual fix; COALESCE avoids null wipes on partial runs but can retain stale complex fields if new run omits them; extraction limits (e.g. DESCRIBE batching) can leave gaps in huge scopes.
         merge_sql = f"""
         MERGE INTO {self.config.fully_qualified_target} AS target
         USING staged_extended_metadata AS source

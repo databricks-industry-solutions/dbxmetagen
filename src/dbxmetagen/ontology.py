@@ -2693,6 +2693,17 @@ class OntologyBuilder:
                     logger.info("Added column %s to entities table", col_name)
                 except Exception as e:
                     logger.warning("Could not add column %s: %s", col_name, e)
+        # UPDATE: Clamp confidence and discovery_confidence to [0.0, 1.0] after
+        # schema migration. LLM-generated scores can occasionally exceed the valid
+        # range, and legacy rows from before discovery_confidence was added have NULL.
+        # WHY: Downstream consumers (role classification, conformance scoring, graph
+        # weighting) assume confidence is a valid probability. Out-of-range values
+        # would break ranking ORDER BY and percentage displays.
+        # TRADEOFFS: A post-hoc clamp is simpler than validating at every insertion
+        # point (there are 3+ code paths that write entities). The WHERE filter
+        # limits Delta write amp to only out-of-range rows plus legacy NULLs.
+        # The guard `AND confidence IS NOT NULL` prevents GREATEST/LEAST from
+        # turning a NULL confidence into 1.0 (Spark skips NULLs in GREATEST/LEAST).
         try:
             self.spark.sql(
                 f"UPDATE {self.config.fully_qualified_entities} "
@@ -2700,6 +2711,7 @@ class OntologyBuilder:
                 f"    discovery_confidence = GREATEST(0.0, LEAST(1.0, COALESCE(discovery_confidence, confidence))) "
                 f"WHERE confidence < 0.0 OR confidence > 1.0 "
                 f"   OR discovery_confidence < 0.0 OR discovery_confidence > 1.0"
+                f"   OR (discovery_confidence IS NULL AND confidence IS NOT NULL)"
             )
         except Exception as e:
             logger.error("Confidence cleanup FAILED on %s: %s", self.config.fully_qualified_entities, e)
@@ -2839,6 +2851,17 @@ class OntologyBuilder:
         if not current_bundle:
             return 0
         esc = current_bundle.replace("'", "''")
+        # DELETE: Remove auto-discovered entities that belong to a DIFFERENT ontology
+        # bundle than the one currently being run, but only if they haven't been
+        # validated by a steward (validated = FALSE).
+        # WHY: When switching bundles (e.g., healthcare -> schema_org), the old
+        # bundle's entity types are no longer relevant. Keeping them pollutes the
+        # entity table and graph with stale types. Validated entities are preserved
+        # because a steward explicitly approved them.
+        # TRADEOFFS: Entities from prior bundles are permanently deleted (not soft-
+        # deleted). If the user switches back, they must re-run discovery. An
+        # alternative would be soft-delete with a bundle_active flag, but that adds
+        # complexity to every downstream query for minimal benefit.
         result = self.spark.sql(
             f"""
             DELETE FROM {self.config.fully_qualified_entities}
@@ -2865,6 +2888,17 @@ class OntologyBuilder:
             return 0
         esc = bundle.replace("'", "''")
         try:
+            # DELETE: Wipe auto-discovered entities for the CURRENT bundle at the
+            # specified granularity (table or column) before a full rebuild. Steward
+            # overrides (auto_discovered=false) are preserved.
+            # WHY: In non-incremental mode, discovery runs from scratch. Without
+            # this purge, entities that no longer match any table would persist as
+            # orphans. The subsequent _store_entities MERGE re-inserts fresh ones.
+        # TRADEOFFS: Full-delete + re-insert means entity_id changes between
+        # runs because entity_id uses uuid4() (non-deterministic). Edges
+        # referencing deleted entities become orphaned until the edge-build
+        # step re-runs later in the same pipeline. Incremental mode skips
+        # this entirely, preferring to update in place.
             result = self.spark.sql(f"""
                 DELETE FROM {self.config.fully_qualified_entities}
                 WHERE auto_discovered = TRUE
@@ -2952,6 +2986,23 @@ class OntologyBuilder:
             match_condition = "WHEN MATCHED AND target.auto_discovered = TRUE THEN UPDATE SET"
             extra_sets = ",\n            target.validated = FALSE,\n            target.validation_notes = NULL"
 
+        # MERGE: Upsert discovered entities into ontology_entities. Keyed on the
+        # composite of (entity_name, sorted source_tables, granularity) -- this
+        # means "Patient from [table_a, table_b] at table-level" is a distinct
+        # entity from "Patient from [table_c] at column-level".
+        # In incremental mode: only updates rows that are auto_discovered AND not
+        # yet validated by a steward, preserving manual overrides.
+        # In full mode: updates all auto_discovered rows and resets validated/notes,
+        # allowing the pipeline to overwrite stale steward decisions.
+        # WHY: The entity table is the central registry for all ontology entities.
+        # Multiple pipeline stages (discovery, column properties, role classification)
+        # write to it. MERGE ensures idempotency across re-runs without duplicating.
+        # TRADEOFFS: The array_join(array_sort(...)) ON clause is expensive because
+        # Delta can't use a Z-order index on a derived expression. An alternative
+        # would be a materialized hash column, but that adds schema complexity.
+        # The composite key also means renaming a source table creates a new entity
+        # rather than updating the old one -- acceptable because table renames are
+        # rare and the old entity is cleaned up by the purge step.
         self.spark.sql(
             f"""
         MERGE INTO {self.config.fully_qualified_entities} AS target
@@ -2971,6 +3022,13 @@ class OntologyBuilder:
         WHEN NOT MATCHED THEN INSERT *
         """
         )
+        # UPDATE: Post-MERGE confidence clamp -- same logic as create_entities_table
+        # but runs after each _store_entities call to catch any new out-of-range
+        # values introduced by the LLM confidence scores in this batch.
+        # WHY: LLM-generated confidence values are not guaranteed to be in [0, 1],
+        # and legacy rows may have NULL discovery_confidence that needs backfilling.
+        # TRADEOFFS: Running this after every MERGE adds a small UPDATE overhead,
+        # but the WHERE clause limits it to only out-of-range rows plus legacy NULLs.
         try:
             self.spark.sql(
                 f"UPDATE {self.config.fully_qualified_entities} "
@@ -2978,6 +3036,7 @@ class OntologyBuilder:
                 f"    discovery_confidence = GREATEST(0.0, LEAST(1.0, COALESCE(discovery_confidence, confidence))) "
                 f"WHERE confidence < 0.0 OR confidence > 1.0 "
                 f"   OR discovery_confidence < 0.0 OR discovery_confidence > 1.0"
+                f"   OR (discovery_confidence IS NULL AND confidence IS NOT NULL)"
             )
         except Exception as e:
             logger.error("Post-MERGE confidence clamp failed: %s", e)
@@ -3041,6 +3100,21 @@ class OntologyBuilder:
             )
         except Exception:
             pass
+        # MERGE: Backfill source_columns and column_bindings on table-level
+        # entities from their associated column-level entities. Groups all
+        # column-level entities by entity_name, flattens their source_columns
+        # into a single array, then merges into the matching table-level entity.
+        # Only updates rows where source_columns is currently empty (SIZE = 0),
+        # so manual overrides are preserved.
+        # WHY: Table-level entities are discovered first (from table names/comments),
+        # then column-level entities add finer detail. This backfill propagates
+        # column knowledge upward so the table entity knows which columns it owns.
+        # TRADEOFFS: GROUP BY entity_name alone (not per-table) means if two
+        # tables produce column entities with the same entity_name, their columns
+        # are merged together. This is intentional -- the entity type is the same
+        # regardless of which table the column came from. The alternative (grouping
+        # by entity_name + source_tables[0]) caused a MERGE multi-match error when
+        # multiple source rows matched the same target via array_contains.
         try:
             self.spark.sql(
                 f"""
@@ -3048,15 +3122,13 @@ class OntologyBuilder:
             USING (
                 SELECT entity_name,
                        array_distinct(flatten(collect_list(source_columns))) AS cols,
-                       flatten(collect_list(COALESCE(column_bindings, array()))) AS bindings,
-                       source_tables[0] AS tbl_name
+                       flatten(collect_list(COALESCE(column_bindings, array()))) AS bindings
                 FROM {self.config.fully_qualified_entities}
                 WHERE attributes['granularity'] = 'column'
                   AND SIZE(source_columns) > 0
-                GROUP BY entity_name, source_tables[0]
+                GROUP BY entity_name
             ) AS col_agg
             ON tbl.entity_name = col_agg.entity_name
-               AND array_contains(tbl.source_tables, col_agg.tbl_name)
                AND COALESCE(tbl.attributes['granularity'], 'table') = 'table'
             WHEN MATCHED AND SIZE(tbl.source_columns) = 0 THEN
                 UPDATE SET source_columns = col_agg.cols,
@@ -3181,6 +3253,19 @@ class OntologyBuilder:
         ])
         metrics_df = self.spark.createDataFrame(all_metrics, schema)
         metrics_df.createOrReplaceTempView("_new_entity_metrics")
+        # MERGE: Upsert LLM-generated entity-level metric suggestions into
+        # ontology_metrics. Keyed on metric_id (deterministic uuid5 from entity_id
+        # + metric_name). Existing metrics get their description/aggregation updated;
+        # new metrics are inserted with NULL sql_definition and uc_view_name (to be
+        # filled later by the semantic layer builder).
+        # WHY: The LLM suggests business metrics per entity (e.g., "Average length
+        # of stay" for a Patient entity). These are stored centrally so the semantic
+        # layer can later generate SQL definitions and deploy as UC metric views.
+        # TRADEOFFS: MERGE-by-metric_id is idempotent across re-runs. The LLM may
+        # suggest slightly different names/descriptions each run, which overwrites
+        # the prior version. If a steward has edited a metric, the LLM's update
+        # will overwrite those edits -- a future enhancement could add a
+        # steward_override flag similar to entities.
         self.spark.sql(f"""
             MERGE INTO {self.config.fully_qualified_metrics} AS t
             USING _new_entity_metrics AS s ON t.metric_id = s.metric_id
@@ -3263,6 +3348,16 @@ class OntologyBuilder:
             for name, desc, val in metrics:
                 mid = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"ontology_metric_{name}"))
                 escaped_desc = desc.replace("'", "''")
+                # MERGE: Upsert a single computed aggregate metric (e.g., entity_count,
+                # coverage_pct, low_confidence_count) into ontology_metrics. Executed
+                # once per metric name in a loop. The sql_definition field stores the
+                # computed value as a string (not actual SQL).
+                # WHY: These aggregate health metrics give the dashboard a quick
+                # overview of ontology quality without expensive live queries.
+                # TRADEOFFS: Running one MERGE per metric in a loop is N round-trips
+                # to the Delta table. A batch approach (single MERGE with all metrics)
+                # would be more efficient but harder to read. The metric count is
+                # small (~15) so the overhead is negligible.
                 self.spark.sql(f"""
                     MERGE INTO {metrics_tbl} t
                     USING (SELECT '{mid}' as metric_id) s ON t.metric_id = s.metric_id
@@ -3391,6 +3486,14 @@ class OntologyBuilder:
                         "tag_value", "confidence", "bundle_version",
                         "discovery_method", "action"]
                 audit_df = self.spark.createDataFrame(audit_rows, cols)
+                # APPEND: Write entity tag audit records to entity_tag_audit_log.
+                # Each row records which UC tag was applied or failed, on which table/
+                # column, at what confidence, and by which bundle version.
+                # WHY: Compliance and governance traceability -- if a table gets
+                # tagged as PHI, the audit log proves when and why.
+                # TRADEOFFS: Append-only means the table grows without bound. A
+                # retention policy (DELETE WHERE timestamp < X) could be added but
+                # isn't critical given the low volume (one row per tag operation).
                 audit_df.write.mode("append").saveAsTable(audit_tbl)
                 logger.info("Wrote %d rows to %s", len(audit_rows), audit_tbl)
             except Exception as e:
@@ -3518,6 +3621,16 @@ class OntologyBuilder:
             updated = 0
             for row in fix_rows:
                 try:
+                    # UPDATE: Fix a specific column's property_role to 'geographic'
+                    # when the geo classifier and ontology entity disagree. Applied
+                    # row-by-row for conflicting columns identified by the reconciliation
+                    # query above.
+                    # WHY: The geo classifier and ontology discoverer run independently.
+                    # When an entity marks a column as geographic but the column
+                    # property says otherwise, the entity takes precedence.
+                    # TRADEOFFS: Row-by-row UPDATE in a loop is slow for large conflict
+                    # sets. A batch UPDATE with a JOIN would be faster, but conflicts
+                    # are rare (typically < 10) so the simplicity is worth it.
                     self.spark.sql(f"""
                         UPDATE {cp}
                         SET property_role = 'geographic'
@@ -3745,6 +3858,19 @@ class OntologyBuilder:
         """
         nodes_table = f"{self.config.catalog_name}.{self.config.schema_name}.{self.config.nodes_table}"
         ent_table = self.config.fully_qualified_entities
+        # MERGE: Sync ontology entities into graph_nodes as node_type='entity'.
+        # Keyed on entity_id -> node id. Existing entity nodes get their name,
+        # description, confidence, and role updated; new entities are inserted
+        # with default values for graph-specific fields (has_pii=FALSE, etc.).
+        # WHY: The knowledge graph visualization and GraphRAG agent need entity
+        # nodes to exist in graph_nodes so they can be connected by edges
+        # (instance_of, has_attribute, is_a). Without this sync, ontology
+        # entities would be invisible to graph consumers.
+        # TRADEOFFS: Entity nodes share the graph_nodes table with table/column
+        # nodes, distinguished by node_type. This simplifies graph queries but
+        # means entity-specific fields (entity_role) are stored in generic
+        # columns (status). A separate entity_nodes table would be cleaner but
+        # would require JOINs in every graph query.
         try:
             self.spark.sql(f"""
                 MERGE INTO {nodes_table} AS target
@@ -3797,6 +3923,20 @@ class OntologyBuilder:
         """Backfill ontology_id/ontology_type on table-type graph nodes from primary entities."""
         nodes_table = f"{self.config.catalog_name}.{self.config.schema_name}.{self.config.nodes_table}"
         ent_table = self.config.fully_qualified_entities
+        # MERGE: Set ontology_id and ontology_type on table-type graph nodes from
+        # the highest-confidence primary entity associated with each table. Uses
+        # ROW_NUMBER to pick exactly one entity per table (the most confident),
+        # preventing the DELTA_MULTIPLE_SOURCE_ROW_MATCHING_TARGET_ROW_IN_MERGE
+        # error that would occur if multiple primary entities shared a table.
+        # WHY: Table nodes in the graph need to know which ontology entity they
+        # represent so the dashboard can display "this table is a Patient table"
+        # and the Genie builder can use entity-aware join logic.
+        # TRADEOFFS: ROW_NUMBER picks a single winner -- if two entities have
+        # equal confidence for the same table, the choice is arbitrary (depends
+        # on Spark's sort stability). A future enhancement could store all
+        # associated entities and let the UI disambiguate. The EXPLODE in the
+        # source subquery fans out multi-table entities, which is necessary
+        # because source_tables is an array.
         try:
             result = self.spark.sql(f"""
                 MERGE INTO {nodes_table} AS target
@@ -4049,6 +4189,21 @@ class OntologyBuilder:
         # then merge back. Primary = highest-confidence table-granularity entity
         # per source table (or column-granularity if no table-level exists).
         # An entity that is primary for ANY table wins globally.
+        # MERGE: Compute and assign entity_role (primary vs referenced) for every
+        # entity. For each source table, the highest-confidence table-granularity
+        # entity becomes 'primary'; all others become 'referenced'. If no table-
+        # level entity exists for a table, the highest-confidence column entity is
+        # promoted. An entity that is primary for ANY table wins 'primary' globally.
+        # Also backfills discovery_confidence from confidence if not already set.
+        # WHY: The role distinction drives which entity is displayed as the "main"
+        # entity for a table in the dashboard, and which entities are shown as
+        # related/referenced. It also affects edge generation and Genie context.
+        # TRADEOFFS: The CTE chain (EXPLODE -> GROUP BY -> ROW_NUMBER -> GROUP BY)
+        # is complex but runs entirely in Spark SQL without collecting to the
+        # driver. An alternative would be a Python loop over entities, but that
+        # would require collecting the entire entities table. The global aggregation
+        # (entity is primary if primary for ANY table) means a multi-table entity
+        # can be primary even if it's secondary for most of its tables.
         self.spark.sql(f"""
             MERGE INTO {ent_table} AS target
             USING (
@@ -4089,8 +4244,14 @@ class OntologyBuilder:
                 discovery_confidence = COALESCE(target.discovery_confidence, target.confidence),
                 updated_at = CURRENT_TIMESTAMP()
         """)
-        # Entities with NULL/empty source_tables never appear in EXPLODE;
-        # default them to 'referenced' so they don't retain stale roles.
+        # UPDATE: Default entities with NULL/empty source_tables to 'referenced'.
+        # These entities were never EXPLODEd in the MERGE above (empty arrays
+        # produce zero rows from LATERAL VIEW EXPLODE), so they were never matched.
+        # WHY: Without this, orphaned entities would have entity_role=NULL, which
+        # breaks dashboard filters that expect every entity to have a role.
+        # TRADEOFFS: Setting them to 'referenced' is conservative -- they won't
+        # appear as primary for any table. If source_tables is populated later,
+        # the next classify_entity_roles run will re-evaluate.
         self.spark.sql(f"""
             UPDATE {ent_table}
             SET entity_role = 'referenced', updated_at = CURRENT_TIMESTAMP()
@@ -4377,6 +4538,17 @@ class OntologyBuilder:
             return 0
 
         df = self.spark.createDataFrame(props)
+        # OVERWRITE: Replace the entire ontology_column_properties table with freshly
+        # classified column properties. Every column in scope gets a row with its
+        # property_role (identifier, measure, descriptor, temporal, geographic, etc.),
+        # is_sensitive, is_surrogate_key, and other structural attributes.
+        # WHY: Column properties are derived deterministically from bundle definitions
+        # and heuristics -- there's no incremental delta to merge. A full overwrite
+        # ensures stale properties from dropped columns or changed bundles are removed.
+        # TRADEOFFS: Overwrite loses any manual steward edits. If we need steward
+        # overrides in the future, this should switch to MERGE with a steward_override
+        # flag. For now, the reconcile_geographic_classifications step runs after this
+        # to fix any geo classification conflicts.
         df.write.mode("overwrite").saveAsTable(cp_table)
         logger.info(
             "classify_column_properties: wrote %d properties (%d bundle_match, %d heuristic/fallback)",
@@ -4576,6 +4748,19 @@ class OntologyBuilder:
         df = self.spark.createDataFrame(rels, schema=_bundle_schema)
         df = df.dropDuplicates(["src_entity_type", "dst_entity_type", "relationship_name"])
         df.createOrReplaceTempView("_bundle_edges_staging")
+        # MERGE: Insert bundle-declared relationships into ontology_relationships.
+        # Keyed on (src_entity_type, dst_entity_type, relationship_name). Only
+        # inserts when NOT MATCHED -- existing rows from prior runs or from
+        # discover_named_relationships are never overwritten.
+        # WHY: Bundle YAML files declare the canonical relationships for an ontology
+        # (e.g., Patient -> has_encounter -> Encounter). These need to exist in the
+        # relationships table so the edge builder can emit graph edges. INSERT-only
+        # ensures that evidence/confidence from runtime discovery isn't clobbered.
+        # TRADEOFFS: INSERT-only means bundle changes (e.g., renaming a relationship)
+        # won't update existing rows. A full rebuild (incremental=false) would be
+        # needed to pick up bundle edits. The dropDuplicates above prevents the
+        # DELTA_MULTIPLE_SOURCE_ROW_MATCHING_TARGET_ROW_IN_MERGE error if the
+        # bundle YAML contains duplicate relationship declarations.
         self.spark.sql(f"""
             MERGE INTO {rels_table} AS target
             USING _bundle_edges_staging AS source
@@ -4790,6 +4975,21 @@ class OntologyBuilder:
         df = self.spark.createDataFrame(rels, schema=_rels_schema)
         df = df.dropDuplicates(["src_entity_type", "dst_entity_type", "relationship_name"])
         df.createOrReplaceTempView("_new_rels")
+        # MERGE: Upsert runtime-discovered relationships (from FK predictions, column
+        # name patterns, subclass_of hierarchies, and inverse edges) into
+        # ontology_relationships. Keyed on (src_entity_type, dst_entity_type,
+        # relationship_name). Matched rows get confidence/evidence/source updated;
+        # unmatched rows are inserted.
+        # WHY: Runtime discovery finds relationships that aren't declared in the
+        # bundle YAML -- e.g., FK-based joins or naming conventions like
+        # patient_id -> Patient. These supplement the bundle edges.
+        # TRADEOFFS: The MERGE key is a natural key (not surrogate), so renaming
+        # a relationship creates a new row rather than updating the old one. The
+        # dropDuplicates above is critical -- without it, duplicate (src, dst, rel)
+        # triples from different evidence sources would cause the
+        # DELTA_MULTIPLE_SOURCE_ROW_MATCHING_TARGET_ROW_IN_MERGE error. The
+        # dedup picks an arbitrary winner among duplicates, which is acceptable
+        # because confidence scores are similar for same-name relationships.
         self.spark.sql(f"""
             MERGE INTO {rels_table} AS tgt
             USING _new_rels AS src
@@ -4978,6 +5178,16 @@ class OntologyBuilder:
         diff_json = json.dumps(diff).replace("'", "''")
         esc_bv = (diff.get("bundle_version") or "").replace("'", "''")
         esc_pv = (str(diff.get("previous_version") or "")).replace("'", "''")
+        # INSERT: Append a single discovery diff report row capturing what changed
+        # between the previous and current ontology discovery run. The diff_json
+        # field contains a serialized dict of entity/relationship/column changes.
+        # WHY: Discovery diffs enable the dashboard to show "what changed since
+        # last run" and help stewards audit whether entity additions/removals
+        # were expected. Append-only preserves the full history.
+        # TRADEOFFS: The diff_json is stored as a SQL string literal, so it's
+        # limited by SQL string length and requires quote escaping. A DataFrame
+        # append would be cleaner but the overhead of creating a single-row DF
+        # is not worth it for one row per pipeline run.
         self.spark.sql(f"""
             INSERT INTO {self.config.fully_qualified_discovery_diff}
             (report_id, catalog, schema, bundle_version, previous_version, timestamp, diff_json, created_at)
@@ -5147,7 +5357,16 @@ class OntologyBuilder:
         _step("sync_entity_nodes_to_graph", self._sync_entity_nodes_to_graph)
         _step("enrich_table_nodes_with_ontology", self._enrich_table_nodes_with_ontology)
 
-        # Backfill legacy NULL source_system rows (idempotent, runs once)
+        # UPDATE: Backfill source_system='ontology' on legacy graph_edges rows that
+        # were created before source_system was introduced. Only targets edges with
+        # ontology-specific relationship types. Idempotent -- rows already tagged
+        # are excluded by the WHERE NULL check.
+        # WHY: The merge_edges() contract requires every edge to have a source_system
+        # so the sweep-stale logic can scope deletions. Legacy rows without it would
+        # be invisible to sweeping and could accumulate as orphans.
+        # TRADEOFFS: A one-time migration script would be cleaner, but running this
+        # idempotently on every pipeline execution is simpler to deploy and handles
+        # any edge case where new NULL rows appear from other code paths.
         edges_table = f"{self.config.catalog_name}.{self.config.schema_name}.graph_edges"
         try:
             self.spark.sql(
@@ -5255,6 +5474,9 @@ class OntologyBuilder:
         bundle = self.emit_bundle_edges()
         self._sync_entity_nodes_to_graph()
 
+        # UPDATE: Same legacy source_system backfill as in run() -- see comment there.
+        # Duplicated here because refresh_relationships() is an alternative entry
+        # point that skips the full run() pipeline.
         edges_table = f"{self.config.catalog_name}.{self.config.schema_name}.graph_edges"
         try:
             self.spark.sql(

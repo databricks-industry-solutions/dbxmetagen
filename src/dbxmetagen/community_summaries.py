@@ -143,6 +143,12 @@ def generate_summaries_batch(spark, catalog_name: str, schema_name: str,
     """
     result_df = spark.sql(summary_sql)
 
+    # OVERWRITE: Replace entire community summaries Delta table at fq_table; schema includes community_id through
+    # generated_at with AI_QUERY-produced summary text plus table_count and table_names array; mergeSchema tolerates new columns.
+    # WHY: Each pipeline pass regenerates summaries for the current graph partition—full refresh keeps the table a
+    # single source of truth matching latest communities rather than stacking duplicate community_id versions.
+    # TRADEOFFS: Overwrite drops prior run history (cheap read path) versus append-with-effective-date; depends on upstream
+    # CREATE/ensure; concurrent writers would race—job scheduling must serialize writers to this table.
     result_df.write.format("delta").mode("overwrite").option(
         "mergeSchema", "true"
     ).saveAsTable(fq_table)
