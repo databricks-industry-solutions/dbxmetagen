@@ -167,6 +167,8 @@ export default function BatchJobs({ onNavigate }) {
   const [lakebaseCatalog, setLakebaseCatalog] = useState('')
   const [lakebaseError, setLakebaseError] = useState(null)
   const [lakebaseConfigured, setLakebaseConfigured] = useState(false)
+  const [mcpDropExisting, setMcpDropExisting] = useState(false)
+  const [mcpError, setMcpError] = useState(null)
   const [importStatus, setImportStatus] = useState(null)
   const [availableModels, setAvailableModels] = useState(['databricks-claude-sonnet-4-6', 'databricks-gpt-oss-120b'])
   const pollRef = useRef(null)
@@ -356,6 +358,19 @@ export default function BatchJobs({ onNavigate }) {
     }
   }
 
+  const setupMcpServers = async () => {
+    setMcpError(null)
+    try {
+      await runJob('setup_mcp_servers', {
+        catalog_name: catalogName,
+        schema_name: schemaName,
+        extra_params: { drop_existing: String(mcpDropExisting) },
+      }, 'mcp_setup')
+    } catch (e) {
+      setMcpError(e.message || 'MCP setup failed')
+    }
+  }
+
   const activeRuns = runHistory.filter(r => !TERMINAL_STATES.has(r.state))
   const completedRuns = runHistory.filter(r => TERMINAL_STATES.has(r.state))
 
@@ -391,10 +406,13 @@ export default function BatchJobs({ onNavigate }) {
             <div>
               <label className="section-title mb-1.5 flex items-center gap-2">
                 Industry Ontology
-                <span className="relative group/tip cursor-help" title="Each bundle defines its own entity IDs. Entities from different bundles will not unify — use the same bundle across all data for consistent entity linkage.">
+                <span className="relative group/tip cursor-help">
                   <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5 text-slate-400 group-hover/tip:text-slate-600 dark:group-hover/tip:text-slate-300 transition-colors" viewBox="0 0 20 20" fill="currentColor">
                     <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd"/>
                   </svg>
+                  <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-72 p-2 text-xs text-slate-200 bg-slate-800 rounded-lg shadow-lg opacity-0 group-hover/tip:opacity-100 pointer-events-none transition-opacity z-10">
+                    Each bundle defines its own entity IDs. Entities from different bundles will not unify — use the same bundle across all data for consistent entity linkage.
+                  </span>
                 </span>
                 {bundlesLoading && (
                   <span className="text-[10px] text-dbx-oat-medium dark:text-dbx-navy-300 italic animate-pulse">Loading...</span>
@@ -474,6 +492,31 @@ export default function BatchJobs({ onNavigate }) {
                   </p>
                 )
               })()}
+              <details className="mt-2 rounded-lg border border-slate-200/60 dark:border-slate-700/40 bg-slate-50/50 dark:bg-slate-800/30 px-3 py-2 text-xs text-slate-600 dark:text-slate-300">
+                <summary className="cursor-pointer font-medium">How to choose an ontology bundle</summary>
+                <p className="mt-1.5 leading-relaxed">
+                  An ontology bundle defines the entity types, properties, and relationships that dbxmetagen looks for
+                  when classifying your tables and columns. Choosing the right bundle improves entity discovery accuracy
+                  and produces more meaningful knowledge graph edges.
+                </p>
+                <ul className="mt-1.5 ml-3 list-disc space-y-1 leading-relaxed">
+                  <li><strong>General</strong> &mdash; Good starting point for mixed or unknown data. Covers common patterns (Person, Organization, Location, Event, Product, etc.) across industries.</li>
+                  <li><strong>Healthcare / FHIR R4 / OMOP CDM</strong> &mdash; Use for clinical, EHR, or health data. FHIR R4 and OMOP CDM are formal ontologies with standards-aligned entity URIs; Healthcare is a lighter curated bundle.</li>
+                  <li><strong>Financial Services</strong> &mdash; Banking, insurance, and capital-markets data (accounts, transactions, instruments, risk, compliance).</li>
+                  <li><strong>Retail &amp; CPG</strong> &mdash; Retail, supply chain, and consumer goods data (customers, orders, products, inventory, promotions).</li>
+                  <li><strong>Schema.org</strong> &mdash; Broad formal ontology from schema.org. Best for web-originated or loosely structured data.</li>
+                </ul>
+                <p className="mt-1.5 leading-relaxed">
+                  <strong>Formal ontologies</strong> (labeled &ldquo;Formal OWL&rdquo;) are auto-extracted from published OWL/Turtle files
+                  and carry entity URIs for standards alignment. <strong>Curated bundles</strong> are hand-authored with industry-specific
+                  keywords and tend to classify more aggressively. Bundles marked with a checkmark have pre-built keyword
+                  indexes for faster classification.
+                </p>
+                <p className="mt-1 leading-relaxed">
+                  If you are unsure, start with <strong>General</strong>. You can re-run the ontology step later with a
+                  different bundle without regenerating core metadata.
+                </p>
+              </details>
               {(() => {
                 const sel = bundles.find(b => b.key === ontologyBundle)
                 if (!sel?.tier_indexes_stale) return null
@@ -530,7 +573,7 @@ export default function BatchJobs({ onNavigate }) {
               {importStatus && <p className="text-xs text-green-600 dark:text-green-400 mt-1">{importStatus}</p>}
             </div>
             <div>
-              <label className="section-title mb-1.5 block">Business Domain List</label>
+              <label className="section-title mb-1.5 block">Business Domain List (Legacy)</label>
               <select value={domainConfig} onChange={e => setDomainConfig(e.target.value)} className="select-base">
                 <option value="">{ontologyBundle ? '(Use domains from selected ontology)' : '(No domain list selected)'}</option>
                 {domainConfigs.map(d => (
@@ -538,7 +581,7 @@ export default function BatchJobs({ onNavigate }) {
                 ))}
               </select>
               {ontologyBundle && <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">Replaces the default domain list from the selected ontology.</p>}
-              <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">Recommended: select an Industry Ontology above instead of a standalone domain list. Ontology bundles include domain definitions along with entity types, properties, and relationships. Standalone domain lists are provided for legacy compatibility.</p>
+              <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">Do not use unless you know why you are using this. Select an Industry Ontology above instead -- ontology bundles include domain definitions along with entity types, properties, and relationships.</p>
             </div>
           </div>
         </details>
@@ -736,10 +779,22 @@ export default function BatchJobs({ onNavigate }) {
                 title="Comments -> KB build -> PI + Domain with KB enrichment"
                 className="btn-md bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50 transition-all">{runningAction === 'kb_enriched' ? 'Starting...' : 'KB-Enriched Modes'}</button>
             </div>
-            <p className="text-xs text-slate-400">
-              {settings.build_kb_after && <><strong className="text-slate-500">+ KB</strong>: Builds table + column knowledge base after generation so the Review tab is populated. </>}
-              <strong className="text-slate-500">KB-Enriched Modes</strong>: Generates comments, builds the knowledge base, then runs PI + domain classification enriched with KB-generated descriptions. Use this mode if you want comments to inform PI + domain, but don't want to apply your comments to your tables.
-            </p>
+            <div className="text-xs text-slate-400 space-y-1 mt-1">
+              <p><strong className="text-slate-500">All 3 Modes</strong>: Runs comments first, then PI + domain in parallel. Use this to generate core metadata unless you know why you should do something else.</p>
+              <p><strong className="text-slate-500">Run Selected Mode</strong>: Run a single mode (comment, PI, or domain) on the listed tables. Best for quick, targeted runs.</p>
+              <p><strong className="text-slate-500">KB-Enriched Modes</strong>: Comments, then KB build, then PI + domain enriched with KB descriptions. Best when you want the highest quality PI/domain results without applying comments to tables.</p>
+              {settings.build_kb_after && <p><strong className="text-slate-500">+ KB</strong>: Builds the table + column knowledge base after generation so the Review tab is populated.</p>}
+            </div>
+
+            <div className="border-t border-slate-200/80 dark:border-dbx-navy-400/20 pt-4 mt-2">
+              <button onClick={() => onNavigate?.('context')} className="btn-ghost btn-sm text-slate-600 dark:text-slate-300">
+                <svg className="w-4 h-4 mr-1.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
+                </svg>
+                Customer Context
+                <span className="text-xs text-slate-400 dark:text-slate-500 ml-1.5">Add domain knowledge to enrich LLM prompts</span>
+              </button>
+            </div>
           </div>
         </section>
       )}
@@ -803,7 +858,7 @@ export default function BatchJobs({ onNavigate }) {
             </div>
 
             <div>
-              <label className="text-xs text-slate-500 dark:text-slate-400 mb-1 block">Table Filter <span className="text-slate-400 dark:text-slate-500">(comma-separated; leave blank to include all tables)</span></label>
+              <label className="text-xs text-slate-500 dark:text-slate-400 mb-1 block">Table Filter <span className="text-slate-400 dark:text-slate-500">(comma-separated; leave blank to include all tables in the knowledge base)</span></label>
               <textarea value={tableNames} onChange={e => setTableNames(e.target.value)}
                 placeholder="catalog.schema.table1, catalog.schema.table2"
                 className="textarea-base h-16 !text-xs" />
@@ -830,6 +885,7 @@ export default function BatchJobs({ onNavigate }) {
             }, 'pipeline')} disabled={!!runningAction || !catalogName.trim() || !schemaName.trim() || !ontologyBundle} title={!ontologyBundle ? 'Select an ontology bundle in the Generate Metadata tab to run the full analytics pipeline' : ''} className="btn-primary btn-md">
               {runningAction === 'pipeline' ? 'Starting...' : (tableNames.trim() ? `Run Pipeline (${tableNames.split(',').filter(t => t.trim()).length} tables)` : 'Run Full Pipeline')}
             </button>
+            <p className="text-xs text-slate-400 mt-1">Runs the full 15-task analytics pipeline: knowledge bases, knowledge graph, embeddings, ontology, profiling, FK prediction, clustering, and vector index. Run after core metadata has been generated.</p>
 
             {/* Lakebase sync card */}
             <div className="mt-2 card p-4 border border-dbx-oat-dark/30 dark:border-dbx-navy-400/20 bg-dbx-oat-light/50 dark:bg-dbx-navy/30 space-y-3">
@@ -863,6 +919,38 @@ export default function BatchJobs({ onNavigate }) {
               {lakebaseError && (
                 <div className="text-xs text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 rounded-lg px-3 py-2">
                   {lakebaseError}
+                </div>
+              )}
+            </div>
+
+            {/* MCP servers setup card */}
+            <div className="mt-2 card p-4 border border-dbx-oat-dark/30 dark:border-dbx-navy-400/20 bg-dbx-oat-light/50 dark:bg-dbx-navy/30 space-y-3">
+              <div className="flex items-center gap-2">
+                <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200">Setup MCP Servers</h3>
+                <span className="badge bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300 text-[10px]">Coming Soon</span>
+                <span className="relative group/tip">
+                  <svg className="w-4 h-4 text-slate-400 cursor-help" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                  <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-72 p-2 text-xs text-slate-200 bg-slate-800 rounded-lg shadow-lg opacity-0 group-hover/tip:opacity-100 pointer-events-none transition-opacity z-10">
+                    Creates UC functions and validates the Vector Search index for MCP server access. Exposes knowledge base, knowledge graph, FK predictions, and ontology entities as MCP tools for Cursor, Claude Code, AI Playground, and custom agents.
+                  </span>
+                </span>
+              </div>
+              <div className="flex items-end gap-3">
+                <label className="flex items-center gap-1.5 text-xs text-slate-600 dark:text-slate-400 cursor-pointer select-none">
+                  <input type="checkbox" checked={mcpDropExisting} onChange={e => setMcpDropExisting(e.target.checked)}
+                    className="rounded border-slate-300 dark:border-slate-600 text-dbx-orange focus:ring-dbx-orange/50" />
+                  Recreate existing functions
+                </label>
+                <button onClick={setupMcpServers} disabled={!!runningAction || !catalogName.trim() || !schemaName.trim()}
+                  className="btn-secondary btn-md whitespace-nowrap">
+                  {runningAction === 'mcp_setup' ? 'Starting...' : 'Setup MCP Servers'}
+                </button>
+              </div>
+              {mcpError && (
+                <div className="text-xs text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 rounded-lg px-3 py-2">
+                  {mcpError}
                 </div>
               )}
             </div>

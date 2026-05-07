@@ -719,6 +719,14 @@ def main():
                         help="Re-download source and verify SHA-256 against provenance in existing bundle")
     parser.add_argument("--force", action="store_true",
                         help="Allow auto-extract to overwrite a curated bundle's tier indexes")
+    parser.add_argument("--build-chunks", action="store_true",
+                        help="After building tier files, also generate ontology_chunks for vector retrieval")
+    parser.add_argument("--build-vs-index", action="store_true",
+                        help="Provision/sync the ontology_vs_index after chunk table is populated (requires --build-chunks)")
+    parser.add_argument("--chunks-catalog", default=None,
+                        help="UC catalog for ontology_chunks table (required with --build-chunks)")
+    parser.add_argument("--chunks-schema", default=None,
+                        help="UC schema for ontology_chunks table (required with --build-chunks)")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
@@ -849,6 +857,63 @@ def main():
     print(f"\n{action} tier indexes to {output_dir}/")
     for label, count in counts.items():
         print(f"  {label}: {count}")
+
+    # --build-chunks: generate ontology_chunks Delta table for vector retrieval
+    if args.build_chunks and not args.dry_run:
+        if not args.chunks_catalog or not args.chunks_schema:
+            logger.error("--build-chunks requires --chunks-catalog and --chunks-schema")
+            sys.exit(1)
+        from dbxmetagen.ontology_chunker import chunks_from_bundle as _chunks_from_bundle
+        bundle_source = args.from_bundle or args.bundle_name
+        bundle_yaml_path = repo_root / "configurations" / "ontology_bundles" / f"{bundle_source}.yaml"
+        if bundle_yaml_path.is_file():
+            chunks = _chunks_from_bundle(str(bundle_yaml_path), args.bundle_name)
+            print(f"\nGenerated {len(chunks)} chunks for bundle '{args.bundle_name}'")
+            if chunks:
+                from pyspark.sql import SparkSession, Row
+                spark = SparkSession.builder.getOrCreate()
+                fq_table = f"{args.chunks_catalog}.{args.chunks_schema}.ontology_chunks"
+                spark.sql(f"""
+                    CREATE TABLE IF NOT EXISTS {fq_table} (
+                        chunk_id STRING NOT NULL, chunk_type STRING,
+                        ontology_bundle STRING, source_ontology STRING,
+                        name STRING, content STRING, uri STRING,
+                        domain STRING, range_entity STRING,
+                        parent_entities STRING, keywords STRING,
+                        tier STRING, updated_at TIMESTAMP
+                    ) USING DELTA
+                    TBLPROPERTIES ('delta.enableChangeDataFeed' = 'true')
+                """)
+                rows = [Row(**c) for c in chunks]
+                df = spark.createDataFrame(rows)
+                df.createOrReplaceTempView("_ontology_chunks_src")
+                spark.sql(f"""
+                    MERGE INTO {fq_table} AS tgt USING _ontology_chunks_src AS src
+                    ON tgt.chunk_id = src.chunk_id
+                    WHEN MATCHED THEN UPDATE SET *
+                    WHEN NOT MATCHED THEN INSERT *
+                """)
+                spark.sql("DROP VIEW IF EXISTS _ontology_chunks_src")
+                cnt = spark.sql(
+                    f"SELECT COUNT(*) AS c FROM {fq_table} WHERE ontology_bundle = '{args.bundle_name}'"
+                ).collect()[0]["c"]
+                print(f"  ontology_chunks: {cnt} rows for '{args.bundle_name}'")
+        else:
+            logger.warning("Bundle YAML not found for --build-chunks: %s", bundle_yaml_path)
+
+    # --build-vs-index: provision and sync the ontology VS index
+    if args.build_vs_index and not args.dry_run:
+        if not args.chunks_catalog or not args.chunks_schema:
+            logger.error("--build-vs-index requires --chunks-catalog and --chunks-schema")
+            sys.exit(1)
+        from dbxmetagen.ontology_vector_index import OntologyVectorIndexConfig, OntologyVectorIndexBuilder
+        vs_cfg = OntologyVectorIndexConfig(
+            catalog_name=args.chunks_catalog,
+            schema_name=args.chunks_schema,
+        )
+        builder = OntologyVectorIndexBuilder(vs_cfg)
+        result = builder.run()
+        print(f"\nOntology VS index: endpoint={result['endpoint']}, index={result['index']}")
 
     if args.emit_bundle_yaml and not args.dry_run:
         bundle_label = args.bundle_label or args.bundle_name

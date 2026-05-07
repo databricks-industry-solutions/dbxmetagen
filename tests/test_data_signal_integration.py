@@ -139,8 +139,9 @@ class TestAddProfilingContext:
         assert meta["col_a"]["profiling"]["distinct_count"] == 100
 
     def test_profiling_context_skipped_when_table_missing(self):
+        from pyspark.sql.utils import AnalysisException
         mock_spark = MagicMock()
-        mock_spark.sql.return_value.collect.side_effect = Exception("table not found")
+        mock_spark.sql.return_value.collect.side_effect = AnalysisException("table not found")
 
         prompt = self._make_prompt_instance(mock_spark)
         meta = prompt.prompt_content["column_contents"]["column_metadata"]
@@ -199,8 +200,9 @@ class TestAddConstraintContext:
         assert "FOREIGN KEY" in meta["fk_col"]["role"]
 
     def test_no_crash_when_table_missing(self):
+        from pyspark.sql.utils import AnalysisException
         mock_spark = MagicMock()
-        mock_spark.sql.return_value.collect.side_effect = Exception("nope")
+        mock_spark.sql.return_value.collect.side_effect = AnalysisException("nope")
         prompt = self._make_prompt_instance(mock_spark)
         meta = prompt.prompt_content["column_contents"]["column_metadata"]
         assert "role" not in meta.get("pk_col", {})
@@ -222,17 +224,17 @@ class TestCardinalityAnalysisProfiling:
 
     def test_load_profiling_stats_returns_dict(self, predictor):
         row = MagicMock(table_name="cat.sch.tbl", column_name="id", distinct_count=500)
-        predictor.spark.sql.return_value.collect.return_value = [row]
+        predictor.spark.sql.return_value.toLocalIterator.return_value = iter([row])
         stats = predictor._load_profiling_stats()
         assert stats["cat.sch.tbl.id"] == 500
 
     def test_load_profiling_stats_returns_empty_on_failure(self, predictor):
-        predictor.spark.sql.return_value.collect.side_effect = Exception("no table")
+        predictor.spark.sql.side_effect = Exception("no table")
         assert predictor._load_profiling_stats() == {}
 
     def test_load_profiling_row_counts_returns_dict(self, predictor):
         row = MagicMock(table_name="cat.sch.tbl", row_count=10000)
-        predictor.spark.sql.return_value.collect.return_value = [row]
+        predictor.spark.sql.return_value.toLocalIterator.return_value = iter([row])
         counts = predictor._load_profiling_row_counts()
         assert counts["cat.sch.tbl"] == 10000
 
@@ -252,7 +254,7 @@ class TestAddLineageSignal:
         return p
 
     def test_returns_zero_score_on_no_lineage(self, predictor):
-        predictor.spark.sql.return_value.collect.side_effect = Exception("no table")
+        predictor.spark.sql.side_effect = Exception("no table")
         cands = MagicMock()
         result = predictor.add_lineage_signal(cands)
         cands.withColumn.assert_called_once()
@@ -307,29 +309,22 @@ class TestGetDeclaredFKCandidates:
         return p
 
     def test_returns_empty_on_missing_table(self, predictor):
-        predictor.spark.sql.return_value.collect.side_effect = Exception("no table")
+        predictor.spark.sql.side_effect = Exception("no table")
         result = predictor.get_declared_fk_candidates()
         assert result is not None
 
-    def test_returns_empty_when_no_fk_values(self, predictor):
-        row = MagicMock(table_name="cat.sch.tbl", foreign_keys={"col_a": ""})
-        predictor.spark.sql.return_value.collect.return_value = [row]
+    def test_sql_filters_empty_ref_targets(self, predictor):
+        """The SQL WHERE clause filters empty ref_target values."""
         result = predictor.get_declared_fk_candidates()
-        # empty ref_target "" is skipped
-        predictor.spark.createDataFrame.assert_called()
+        sql = predictor.spark.sql.call_args[0][0]
+        assert "ref_target IS NOT NULL" in sql
+        assert "ref_target != ''" in sql
 
-    def test_emits_candidates_with_col_similarity_1(self, predictor):
-        row = MagicMock(
-            table_name="cat.sch.orders",
-            foreign_keys={"customer_id": "cat.sch.customers.id"},
-        )
-        predictor.spark.sql.return_value.collect.return_value = [row]
+    def test_sql_selects_col_similarity_1(self, predictor):
+        """The SQL emits col_similarity = 1.0 for declared FKs."""
         result = predictor.get_declared_fk_candidates()
-        # createDataFrame called with pairs having col_similarity=1.0
-        call_args = predictor.spark.createDataFrame.call_args
-        pairs = call_args[0][0]
-        assert len(pairs) == 1
-        assert pairs[0][6] == 1.0  # col_similarity
+        sql = predictor.spark.sql.call_args[0][0]
+        assert "1.0 AS col_similarity" in sql
 
 
 # ======================================================================
@@ -466,7 +461,7 @@ class TestValidateOptionalTables:
             catalog_name="cat", schema_name="sch",
             include_lineage=True, include_constraint_context=False,
             include_profiling_context=False, use_ontology_context=False,
-            use_kb_comments=False,
+            use_kb_comments=False, use_customer_context=False,
         )
         defaults.update(overrides)
         cfg = MagicMock()

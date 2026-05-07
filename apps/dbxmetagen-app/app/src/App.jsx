@@ -1,4 +1,25 @@
 import React, { useState, useEffect, useRef } from 'react'
+
+// Global fetch interceptor: detect expired Databricks Apps OAuth sessions.
+// When the session cookie expires, the proxy redirects to a login page --
+// fetch follows the redirect and returns 200 + text/html instead of JSON.
+const _originalFetch = window.fetch
+window.fetch = async (...args) => {
+  const res = await _originalFetch(...args)
+  const ct = res.headers.get('content-type') || ''
+  if (res.status === 401) {
+    window.dispatchEvent(new Event('session-expired'))
+  } else if (res.status === 403 && !ct.includes('application/json')) {
+    window.dispatchEvent(new Event('session-expired'))
+  } else if (res.ok) {
+    const url = typeof args[0] === 'string' ? args[0] : args[0]?.url || ''
+    if (url.startsWith('/api/') && ct.includes('text/html')) {
+      window.dispatchEvent(new Event('session-expired'))
+    }
+  }
+  return res
+}
+
 import AgentChat from './components/AgentChat'
 import BatchJobs from './components/BatchJobs'
 import MetadataReview from './components/MetadataReview'
@@ -7,10 +28,11 @@ import EntityBrowser from './components/EntityBrowser'
 import SemanticLayer from './components/SemanticLayer'
 import GenieBuilder from './components/GenieBuilder'
 import AnalystChat from './components/AnalystChat'
+import CustomerContext from './components/CustomerContext'
 const COMPONENTS = {
   agent: AgentChat, coverage: Coverage, jobs: BatchJobs, metadata: MetadataReview,
   entities: EntityBrowser, semantic: SemanticLayer, genie: GenieBuilder,
-  analyst: AnalystChat,
+  analyst: AnalystChat, context: CustomerContext,
 }
 
 const NAV_CAT_COLORS = {
@@ -20,7 +42,7 @@ const NAV_CAT_COLORS = {
 }
 
 const TAB_ACCENT = {
-  jobs: 'border-t-dbx-lava', semantic: 'border-t-dbx-lava', genie: 'border-t-dbx-lava',
+  jobs: 'border-t-dbx-lava', semantic: 'border-t-dbx-lava', genie: 'border-t-dbx-lava', context: 'border-t-dbx-lava',
   metadata: 'border-t-dbx-sky', coverage: 'border-t-dbx-sky', entities: 'border-t-dbx-sky',
   agent: 'border-t-dbx-teal',
 }
@@ -233,7 +255,12 @@ function NavDropdown({ cat, activeTab, onSelect }) {
 class TabErrorBoundary extends React.Component {
   state = { error: null }
   static getDerivedStateFromError(error) { return { error } }
-  componentDidCatch(err, info) { console.error('TabErrorBoundary caught:', err, info) }
+  componentDidCatch(err, info) {
+    console.error('TabErrorBoundary caught:', err, info)
+    if (err?.message?.includes('dynamically imported module') || err?.message?.includes('Loading chunk')) {
+      window.dispatchEvent(new Event('session-expired'))
+    }
+  }
   render() {
     if (this.state.error) {
       return (
@@ -255,10 +282,51 @@ class TabErrorBoundary extends React.Component {
 const VALID_TABS = new Set(Object.keys(COMPONENTS))
 const readHash = () => { const h = window.location.hash.replace('#', ''); return VALID_TABS.has(h) ? h : 'jobs' }
 
+function AuthStatusBadge() {
+  const [auth, setAuth] = useState(null)
+  const [expanded, setExpanded] = useState(false)
+  useEffect(() => {
+    fetch('/api/auth/check').then(r => r.ok ? r.json() : null).then(setAuth).catch(() => {})
+  }, [])
+  if (!auth) return null
+  const ok = auth.has_catalog_access && auth.has_schema_access
+  const hasWarning = auth.obo_enabled && !auth.obo_token_received
+  const color = hasWarning ? 'bg-amber-500/20 text-amber-300 border-amber-400/30'
+    : ok ? 'bg-emerald-500/15 text-emerald-300 border-emerald-400/30'
+    : 'bg-red-500/20 text-red-300 border-red-400/30'
+  const label = auth.user_identity
+    ? auth.user_identity.split('@')[0]
+    : (auth.obo_enabled ? 'SP fallback' : 'Service principal')
+  return (
+    <div className="relative">
+      <button onClick={() => setExpanded(e => !e)}
+        className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-medium border ${color} transition-all hover:brightness-125`}
+        title={`Running as: ${auth.running_as}`}>
+        <span className={`w-1.5 h-1.5 rounded-full ${hasWarning ? 'bg-amber-400' : ok ? 'bg-emerald-400' : 'bg-red-400'}`} />
+        {label}
+      </button>
+      {expanded && (
+        <div className="absolute right-0 top-full mt-2 w-80 bg-white dark:bg-dbx-navy-600 rounded-xl shadow-elevated border border-slate-200 dark:border-dbx-navy-400/30 p-4 text-xs z-50 space-y-2 animate-slide-up">
+          <div className="flex justify-between"><span className="text-slate-500 dark:text-slate-400">Running as</span><span className="font-medium text-slate-700 dark:text-slate-200">{auth.running_as}</span></div>
+          {auth.user_identity && <div className="flex justify-between"><span className="text-slate-500 dark:text-slate-400">User</span><span className="font-medium text-slate-700 dark:text-slate-200">{auth.user_identity}</span></div>}
+          <div className="flex justify-between"><span className="text-slate-500 dark:text-slate-400">OBO enabled</span><span className={auth.obo_enabled ? 'text-emerald-600 dark:text-emerald-400' : 'text-slate-500'}>{auth.obo_enabled ? 'Yes' : 'No'}</span></div>
+          {auth.obo_enabled && <div className="flex justify-between"><span className="text-slate-500 dark:text-slate-400">OBO token received</span><span className={auth.obo_token_received ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'}>{auth.obo_token_received ? 'Yes' : 'No'}</span></div>}
+          <div className="flex justify-between"><span className="text-slate-500 dark:text-slate-400">Catalog access</span><span className={auth.has_catalog_access ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}>{auth.has_catalog_access ? 'OK' : 'Failed'}</span></div>
+          <div className="flex justify-between"><span className="text-slate-500 dark:text-slate-400">Schema access</span><span className={auth.has_schema_access ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}>{auth.has_schema_access ? 'OK' : 'Failed'}</span></div>
+          {auth.identity_error && <p className="text-amber-600 dark:text-amber-400 leading-relaxed">{auth.identity_error}</p>}
+          {auth.catalog_error && <p className="text-red-600 dark:text-red-400 leading-relaxed">Catalog: {auth.catalog_error}</p>}
+          {auth.schema_error && <p className="text-red-600 dark:text-red-400 leading-relaxed">Schema: {auth.schema_error}</p>}
+        </div>
+      )}
+    </div>
+  )
+}
+
 export default function App() {
   const [activeTab, setActiveTab] = useState(readHash)
   const [visitedTabs, setVisitedTabs] = useState(new Set([readHash()]))
   const [showInfo, setShowInfo] = useState(false)
+  const [sessionExpired, setSessionExpired] = useState(false)
   const [dark, setDark] = useState(() => {
     if (typeof window !== 'undefined') {
       const saved = localStorage.getItem('dbxmetagen-dark')
@@ -289,6 +357,12 @@ export default function App() {
     localStorage.setItem('dbxmetagen-dark', String(dark))
   }, [dark])
 
+  useEffect(() => {
+    const h = () => setSessionExpired(true)
+    window.addEventListener('session-expired', h)
+    return () => window.removeEventListener('session-expired', h)
+  }, [])
+
   return (
     <div className="min-h-screen bg-dbx-oat-light dark:bg-dbx-navy transition-colors">
       {/* Header */}
@@ -305,6 +379,7 @@ export default function App() {
             </div>
           </div>
           <div className="flex items-center gap-1.5">
+            <AuthStatusBadge />
             <button onClick={() => setShowInfo(true)}
               className="w-8 h-8 flex items-center justify-center rounded-lg bg-white/10 backdrop-blur-sm border border-white/10 text-dbx-oat/80 hover:text-white hover:bg-white/20 transition-all text-sm font-bold"
               title="What is dbxmetagen?" aria-label="Show help">?</button>
@@ -373,6 +448,17 @@ export default function App() {
           )
         })}
       </main>
+      {sessionExpired && (
+        <div className="fixed inset-0 z-[9999] bg-black/50 flex items-center justify-center backdrop-blur-sm">
+          <div className="card p-8 max-w-md text-center shadow-xl">
+            <h2 className="text-lg font-semibold text-slate-800 dark:text-slate-100 mb-2">Session Expired</h2>
+            <p className="text-sm text-slate-600 dark:text-slate-300 mb-4">
+              Your authentication session has expired. Reload to re-authenticate.
+            </p>
+            <button onClick={() => window.location.reload()} className="btn-primary">Reload</button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

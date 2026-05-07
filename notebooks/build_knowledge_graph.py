@@ -44,10 +44,12 @@
 dbutils.widgets.text("catalog_name", "", "Catalog Name")
 dbutils.widgets.text("schema_name", "", "Schema Name")
 dbutils.widgets.text("table_names", "", "Table Names (comma-separated, empty=all)")
+dbutils.widgets.text("sweep_stale_edges", "false", "Sweep stale edges")
 
 catalog_name = dbutils.widgets.get("catalog_name")
 schema_name = dbutils.widgets.get("schema_name")
 table_names_raw = dbutils.widgets.get("table_names")
+sweep_stale = dbutils.widgets.get("sweep_stale_edges").strip().lower() in ("true", "1", "yes")
 
 if not catalog_name or not schema_name:
     raise ValueError("Both catalog_name and schema_name are required")
@@ -120,6 +122,7 @@ result = build_extended_knowledge_graph(
     include_columns=(column_kb_count > 0),
     include_schemas=(schema_kb_count > 0),
     table_names=table_names,
+    sweep_stale=sweep_stale,
 )
 
 print(f"Knowledge graph build complete")

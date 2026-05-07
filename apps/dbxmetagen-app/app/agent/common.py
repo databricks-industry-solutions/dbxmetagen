@@ -16,9 +16,12 @@ from typing import Annotated, Dict, List, Optional, TypedDict
 
 from databricks_langchain import ChatDatabricks
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
-from langgraph.graph import StateGraph, START, END
-from langgraph.graph.message import add_messages
-from langgraph.prebuilt import ToolNode
+try:
+    from langgraph.graph import StateGraph, START, END
+    from langgraph.graph.message import add_messages
+    from langgraph.prebuilt import ToolNode
+except ImportError:
+    StateGraph = START = END = add_messages = ToolNode = None
 
 from agent.guardrails import GuardrailConfig
 
@@ -277,6 +280,40 @@ def vs_cache_put(session_id: str, query: str, result: str):
 
 def vs_cache_stats() -> Dict[str, int]:
     return dict(_cache_stats)
+
+
+# ---------------------------------------------------------------------------
+# Plan cache -- avoids repeated _plan_retrieval LLM calls within a session
+# ---------------------------------------------------------------------------
+
+_plan_cache: dict[str, dict] = {}
+_plan_cache_lock = threading.Lock()
+
+
+def plan_cache_get(session_id: str, domain: str) -> Optional[dict]:
+    """Return cached retrieval plan for (session, domain), or None."""
+    if not session_id:
+        return None
+    key = f"{session_id}::{domain}"
+    with _plan_cache_lock:
+        entry = _plan_cache.get(key)
+        if entry and (time.time() - entry["timestamp"]) < VS_CACHE_TTL.total_seconds():
+            logger.info("[plan_cache] HIT session=%s domain=%s", session_id[:12], domain)
+            return entry["plan"]
+        return None
+
+
+def plan_cache_put(session_id: str, domain: str, plan: dict):
+    """Store a retrieval plan in the session cache."""
+    if not session_id:
+        return
+    key = f"{session_id}::{domain}"
+    with _plan_cache_lock:
+        _plan_cache[key] = {"plan": plan, "timestamp": time.time()}
+        cutoff = time.time() - VS_CACHE_TTL.total_seconds()
+        stale = [k for k, v in _plan_cache.items() if v["timestamp"] < cutoff]
+        for k in stale:
+            del _plan_cache[k]
 
 
 # ---------------------------------------------------------------------------

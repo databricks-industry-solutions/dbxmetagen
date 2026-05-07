@@ -136,19 +136,19 @@ class TestDataQualityScorer:
                          "quality_issues", "dimensions_calculated"]:
             assert col_name in ddl, f"Missing column {col_name} in scores DDL"
     
-    def test_safe_avg_returns_default_for_missing_column(self, scorer):
-        """_safe_avg should return default when column is missing."""
-        mock_df = MagicMock()
-        mock_df.columns = ["other_col"]
-        result = scorer._safe_avg(mock_df, "missing_col", 99.0)
+    def test_pd_safe_mean_returns_default_for_missing_column(self, scorer):
+        """_pd_safe_mean should return default when column is missing."""
+        import pandas as pd
+        df = pd.DataFrame({"other_col": [1, 2, 3]})
+        result = scorer._pd_safe_mean(df, "missing_col", 99.0)
         assert result == 99.0
-    
-    def test_safe_count_handles_exceptions(self, scorer):
-        """_safe_count should return 0 on exceptions."""
-        mock_df = MagicMock()
-        mock_df.filter.side_effect = Exception("Test error")
-        result = scorer._safe_count(mock_df, "some_condition")
-        assert result == 0
+
+    def test_pd_safe_mean_computes_average(self, scorer):
+        """_pd_safe_mean should return mean when column exists."""
+        import pandas as pd
+        df = pd.DataFrame({"null_rate": [0.1, 0.3, 0.5]})
+        result = scorer._pd_safe_mean(df, "null_rate", 0.0)
+        assert abs(result - 0.3) < 1e-9
 
 
 class TestComputeDataQuality:

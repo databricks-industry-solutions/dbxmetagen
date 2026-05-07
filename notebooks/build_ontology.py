@@ -65,6 +65,19 @@ if ontology_bundle:
     effective_config = resolve_bundle_path(ontology_bundle)
     print(f"Resolved bundle '{ontology_bundle}' -> {effective_config}")
 
+# Auto-detect ontology VS index if it was built by a prior pipeline stage
+ontology_vs_index = ""
+expected_index = f"{catalog_name}.{schema_name}.ontology_vs_index"
+try:
+    from databricks.vector_search.client import VectorSearchClient
+    vsc = VectorSearchClient(disable_notice=True)
+    idx = vsc.get_index(endpoint_name="dbxmetagen-vs", index_name=expected_index)
+    if idx:
+        ontology_vs_index = expected_index
+        print(f"Ontology VS index detected: {ontology_vs_index}")
+except Exception:
+    print(f"Ontology VS index not available ({expected_index}) -- using keyword/tier-1 path")
+
 result = build_ontology(
     spark=spark,
     catalog_name=catalog_name,
@@ -76,6 +89,7 @@ result = build_ontology(
     entity_tag_key=entity_tag_key,
     model_endpoint=model_endpoint,
     table_names=table_names,
+    ontology_vs_index=ontology_vs_index,
 )
 
 print(f"Ontology build complete:")

@@ -44,10 +44,26 @@ class IntentResult:
     question_clear: bool
     domain: Optional[str] = None
     complexity: Literal["simple", "moderate", "complex"] = "moderate"
+    comparison_intent: bool = False
     clarification_reason: Optional[str] = None
     clarification_options: Optional[List[str]] = None
     meta_answer: Optional[str] = None
 
+
+DOMAIN_DEFINITIONS: dict[str, str] = {
+    "governance": "PII, PHI, compliance, security, sensitive data",
+    "relationship": "foreign keys, joins, how tables connect",
+    "query": "counts, aggregations, listings, data questions",
+    "discovery": "finding tables, understanding schemas, exploring metadata",
+    "general": "anything else",
+}
+
+DOMAIN_KEYWORDS: dict[str, list[str]] = {
+    "governance": ["pii", "phi", "sensitive", "governance", "security", "compliance"],
+    "relationship": ["foreign key", "fk", "join", "relationship", "connected", "related to"],
+    "query": ["how many", "count", "list", "show me", "select", "average", "total", "sum"],
+    "discovery": ["find", "search", "similar", "about", "describe", "what is", "what are"],
+}
 
 KB_TABLE_CONTEXT = f"""Available knowledge base tables in {CATALOG}.{SCHEMA}:
 - table_knowledge_base: table_name, comment, domain, subdomain, has_pii, has_phi, row_count
@@ -68,6 +84,10 @@ def _build_intent_prompt(question: str, history: Optional[List[Dict[str, str]]] 
             f"  {i}. [{m.get('role','user')}] {m.get('content','')[:300]}"
             for i, m in enumerate(turns, 1)
         )
+
+    domain_names = ", ".join(DOMAIN_DEFINITIONS.keys())
+    domain_lines = "\n".join(f"   - {d}: {desc}" for d, desc in DOMAIN_DEFINITIONS.items())
+    domain_choices = " | ".join(f'"{d}"' for d in DOMAIN_DEFINITIONS)
 
     return f"""Analyze the user's query in conversation context. Respond with ONLY a JSON object.
 
@@ -105,25 +125,27 @@ Conversation History:
    incorporating relevant history context. This will be used as the query for downstream tools.
    Must be specific and actionable (good for SQL/vector search).
 
-5. **Domain classification**: One of: governance, relationship, query, discovery, general.
-   - governance: PII, PHI, compliance, security, sensitive data
-   - relationship: foreign keys, joins, how tables connect
-   - query: counts, aggregations, listings, data questions
-   - discovery: finding tables, understanding schemas, exploring metadata
-   - general: anything else
+5. **Domain classification**: One of: {domain_names}.
+{domain_lines}
 
 6. **Clarity check**: Is the query clear enough to proceed? BE LENIENT -- default to true.
    Only mark unclear if critical information is truly missing.
 
 7. **Complexity**: simple, moderate, or complex.
 
+8. **Comparison intent**: Is the user asking to compare two or more groups?
+   Examples: "how does X differ between Y and Z", "compare A vs B",
+   "endpoint selection patterns between sponsors with and without biomarker designs".
+   Set true only when the question explicitly asks for a group comparison.
+
 ## Output (JSON only, no markdown fencing)
 {{
   "intent_type": "new_question" | "refinement" | "continuation" | "meta" | "irrelevant",
   "context_summary": "Self-contained restatement of the question",
   "question_clear": true,
-  "domain": "governance" | "relationship" | "query" | "discovery" | "general",
+  "domain": {domain_choices},
   "complexity": "simple" | "moderate" | "complex",
+  "comparison_intent": true | false,
   "clarification_reason": null,
   "clarification_options": null,
   "meta_answer": null
@@ -197,6 +219,7 @@ def _classify_core(
             question_clear=question_clear,
             domain=data.get("domain", "general"),
             complexity=complexity,
+            comparison_intent=bool(data.get("comparison_intent", False)),
             clarification_reason=data.get("clarification_reason"),
             clarification_options=data.get("clarification_options"),
             meta_answer=data.get("meta_answer"),
@@ -232,14 +255,9 @@ def _fallback_context_summary(question: str, history: Optional[List[Dict[str, st
 
 
 def keyword_domain(message: str) -> str:
-    """Fast keyword fallback for domain classification."""
+    """Fast keyword fallback for domain classification using DOMAIN_KEYWORDS."""
     m = message.lower()
-    if any(kw in m for kw in ["pii", "phi", "sensitive", "governance", "security", "compliance"]):
-        return "governance"
-    if any(kw in m for kw in ["foreign key", "fk", "join", "relationship", "connected", "related to"]):
-        return "relationship"
-    if any(kw in m for kw in ["how many", "count", "list", "show me", "select", "average", "total", "sum"]):
-        return "query"
-    if any(kw in m for kw in ["find", "search", "similar", "about", "describe", "what is", "what are"]):
-        return "discovery"
+    for domain, keywords in DOMAIN_KEYWORDS.items():
+        if any(kw in m for kw in keywords):
+            return domain
     return "general"

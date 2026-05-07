@@ -1,0 +1,24 @@
+# Deployment Context
+
+## Workspace
+
+- **Host**: `fe-vm-vdm-classic-q6xfh3.cloud.databricks.com` (FEVM workspace)
+- **Profile**: `DMVM`
+- **Target**: `demo`
+- **Deploy command**: `./deploy.sh --profile DMVM --target demo --no-app`
+- **Run command**: `databricks bundle run <job> -t demo -p DMVM`
+
+## Available Model Endpoints
+
+Foundation model endpoints on this workspace (pay-per-token, no provisioning needed):
+
+- `databricks-claude-sonnet-4-6` -- primary LLM for metadata generation, domain classification, ontology, analysis agents
+- `databricks-bge-large-en` -- embedding model for graph node embeddings and similarity search
+
+**Not available**: `databricks-claude-sonnet-4-7` does not exist on FEVM workspaces. Always use `databricks-claude-sonnet-4-6` as the default in job YAML and notebook widgets.
+
+## Incremental Behavior
+
+- **Metadata generation** (comment, PI, domain modes): Always re-processes all tables in scope regardless of `incremental` flag. The control table tracks per-run claiming, but each new job run starts fresh. Stale log entries do NOT block re-processing.
+- **Analytics pipeline** (`incremental=true`): KB build, ontology, embeddings, FK prediction, and profiling tasks use incremental logic -- they skip work already done (e.g., `WHERE embedding IS NULL`, `WHERE status = 'pending'`). Knowledge graph and similarity edges do full rebuilds via MERGE/upsert.
+- **Do not drop or truncate metadata schemas** to "fix" incremental issues. The pipeline is designed to layer results correctly across re-runs.

@@ -105,8 +105,10 @@ def traverse_graph(
     edge_type: Optional[str] = None,
     edge_types: Optional[list[str]] = None,
     direction: str = "outgoing",
+    quality_threshold: float = 0.5,
+    fan_out_limit: int = 15,
 ) -> dict:
-    """Multi-hop graph traversal from a starting node.
+    """Multi-hop best-first graph traversal from a starting node.
 
     Walks the graph iteratively, returning all discovered nodes, edges, and
     the paths taken. Use this after identifying a starting node with
@@ -119,9 +121,11 @@ def traverse_graph(
         edge_type: Optional single edge_type filter.
         edge_types: Optional list of edge_type filters (OR). Takes precedence over edge_type.
         direction: 'outgoing' (follow src->dst), 'incoming' (follow dst->src), or 'both'.
+        quality_threshold: Min edge weight and node quality_score (NULL=high). 0 disables.
+        fan_out_limit: Max neighbors per hop (ORDER BY weight DESC). 0 for unlimited.
     """
     t0 = time.time()
-    logger.info("[TOOL] traverse_graph -- start (node=%s, hops=%d)", start_node, max_hops)
+    logger.info("[TOOL] traverse_graph -- start (node=%s, hops=%d, fan_out=%d)", start_node, max_hops, fan_out_limit)
     from api_server import multi_hop_traverse
     try:
         result = multi_hop_traverse(
@@ -131,6 +135,8 @@ def traverse_graph(
             edge_type=edge_type,
             edge_types=edge_types,
             direction=direction,
+            quality_threshold=quality_threshold,
+            fan_out_limit=fan_out_limit,
         )
     except Exception as e:
         logger.warning("[TOOL] traverse_graph -- error in %.2fs: %s", time.time() - t0, e)

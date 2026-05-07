@@ -52,10 +52,14 @@ resources:
           default: "false"
         - name: model
           default: "databricks-claude-sonnet-4-6"
+        - name: spacy_model_names
+          default: ${var.spacy_model_names}
 
       tasks:
         - task_key: generate_metadata
           max_retries: 1
+          min_retry_interval_millis: 600000
+          timeout_seconds: 86400
           environment_key: default
           notebook_task:
             notebook_path: ../../notebooks/generate_metadata.py
@@ -75,9 +79,12 @@ resources:
               sample_size: "{{job.parameters.sample_size}}"
               include_lineage: "{{job.parameters.include_lineage}}"
               model: "{{job.parameters.model}}"
+              spacy_model_names: "{{job.parameters.spacy_model_names}}"
 
         - task_key: build_knowledge_base
           max_retries: 1
+          min_retry_interval_millis: 600000
+          timeout_seconds: 14400
           depends_on:
             - task_key: generate_metadata
           environment_key: default
@@ -89,6 +96,8 @@ resources:
 
         - task_key: build_column_kb
           max_retries: 1
+          min_retry_interval_millis: 600000
+          timeout_seconds: 14400
           depends_on:
             - task_key: generate_metadata
           environment_key: default

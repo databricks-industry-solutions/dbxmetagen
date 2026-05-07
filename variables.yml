@@ -61,7 +61,7 @@ variables:
     default: true
   spacy_model_names:
     description: spacy models to use in presidio. Currently will only handle a single model. Adding support for multiple models is a planned feature.
-    default: en_core_web_lg
+    default: en_core_web_md
   pi_classification_rules:
     description: Rules for PI classification. These rules will be injected into the prompt and provided along with the prompt to the model.
     default: |
@@ -202,7 +202,25 @@ variables:
     default: configurations/ontology_config.yaml
   similarity_threshold:
     description: Cosine similarity threshold for creating similar_embedding edges between nodes (0.0-1.0)
-    default: 0.8
+    default: 0.85
+  use_ann_similarity:
+    description: Use Vector Search ANN for similarity edges instead of cross-join. Falls back to cross-join for small graphs or on VS failure.
+    default: "true"
+  ann_k_multiplier:
+    description: Over-fetch multiplier for ANN queries. K = max_edges_per_node * ann_k_multiplier. Higher values improve recall at cost of more VS queries.
+    default: 2
+  embedding_dimension:
+    description: Dimension of embedding vectors in graph_nodes. Must match the model used in generate_embeddings.
+    default: 1024
+  ann_batch_size:
+    description: Number of nodes per thread batch in ANN mode.
+    default: 100
+  ann_max_workers:
+    description: ThreadPoolExecutor concurrency for ANN VS queries.
+    default: 10
+  ann_max_nodes:
+    description: Guard rail -- maximum nodes for ANN mode before ValueError. At 1024-dim FLOAT, ~4KB/node driver memory.
+    default: 100000
   profiling_max_tables:
     description: Maximum number of tables to profile per run (empty for all)
     default: ""
@@ -236,6 +254,15 @@ variables:
   max_candidates_per_table_pair:
     description: "Maximum number of candidate column pairs retained per table pair from name/ontology matching. Lower values reduce combinatorial explosion for wide tables."
     default: 5
+  fk_system_column_exclude_patterns:
+    description: "Comma-separated regex patterns identifying system/ETL columns (e.g. _created_at, batch_id) that should not receive FK boosting signals. Empty string uses sensible defaults."
+    default: ""
+  use_customer_context:
+    description: "When true, enrich prompts with customer-provided context from the customer_context Delta table. Context is scoped hierarchically (catalog > schema > pattern > table). Requires the customer_context table to exist (seed from YAML or create via the app)."
+    default: false
+  ontology_vs_index:
+    description: "Fully-qualified name of the Databricks Vector Search index for ontology retrieval (e.g. catalog.schema.ontology_vs_index). When set and the index exists, entity/edge classification uses HYBRID vector search instead of the keyword pass0 + full tier-1 LLM dump, dramatically reducing token cost for large ontologies. Leave empty to disable vector retrieval (default)."
+    default: ""
   enable_obo:
     description: "Enable On-Behalf-Of user authentication for the app. When true, catalog browsing and SQL queries run under the logged-in user's identity (requires workspace admin to enable user auth for the app). When false, all operations use the app service principal."
     default: false

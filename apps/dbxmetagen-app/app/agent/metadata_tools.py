@@ -141,7 +141,7 @@ def search_metadata(query: str, doc_type_filter: Optional[str] = None, num_resul
 
     Args:
         query: Natural language search query.
-        doc_type_filter: Optional filter -- one of 'table', 'column', 'entity', 'metric_view', 'fk_relationship'.
+        doc_type_filter: Optional filter -- one of 'table', 'column', 'entity', 'metric_view', 'fk_relationship', 'community_summary'.
         num_results: Number of results (1-20).
     """
     t0 = _log_tool("search_metadata")
@@ -429,6 +429,54 @@ def execute_baseline_sql(query: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Tool: Live data profiling (distinct-value frequency)
+# ---------------------------------------------------------------------------
+
+@tool
+def profile_key_columns(table_fqn: str, columns: list[str], limit: int = 30) -> str:
+    """Return distinct-value frequency for columns in a data table.
+
+    Use to detect single-valued fields, NULL-heavy columns, or degenerate cohorts
+    before running analytical queries. Runs live GROUP BY on actual data.
+
+    Args:
+        table_fqn: Fully qualified table name (catalog.schema.table).
+        columns: Column names to profile (max 5).
+        limit: Max distinct values per column.
+    """
+    t0 = _log_tool("profile_key_columns")
+    from agent.common import check_select_only
+    cols = [c.strip() for c in columns[:5] if c and c.strip()]
+    if not cols:
+        _log_tool_end("profile_key_columns", t0, error="no columns")
+        return json.dumps({"error": "No columns specified."})
+    limit = min(max(limit, 1), 100)
+    subqueries = []
+    for col in cols:
+        safe_col = re.sub(r'[^a-zA-Z0-9_]', '', col)
+        subqueries.append(
+            f"SELECT * FROM ("
+            f"SELECT '{safe_col}' AS col_name, CAST(`{safe_col}` AS STRING) AS val, "
+            f"COUNT(*) AS cnt FROM {table_fqn} GROUP BY `{safe_col}` ORDER BY cnt DESC LIMIT {limit})"
+        )
+    query = " UNION ALL ".join(subqueries)
+    err = check_select_only(query)
+    if err:
+        _log_tool_end("profile_key_columns", t0, error=err)
+        return json.dumps({"error": err})
+    try:
+        result = _execute_query(query)
+        if result["success"]:
+            _log_tool_end("profile_key_columns", t0)
+            return json.dumps({"columns": result["columns"], "rows": result["rows"], "row_count": result["row_count"]})
+        _log_tool_end("profile_key_columns", t0, error=result["error"])
+        return json.dumps({"error": result["error"]})
+    except Exception as e:
+        _log_tool_end("profile_key_columns", t0, error=e)
+        return json.dumps({"error": str(e)})
+
+
+# ---------------------------------------------------------------------------
 # Tool: Arbitrary read-only SQL (for structured retrieval on discovered tables)
 # ---------------------------------------------------------------------------
 
@@ -449,13 +497,15 @@ def execute_data_sql(query: str) -> str:
         _log_tool_end("execute_data_sql", t0, error=err)
         return json.dumps({"error": err})
     q = query.rstrip().rstrip(";")
+    is_aggregate = bool(re.search(r'\bGROUP\s+BY\b', q, re.IGNORECASE))
+    cap = 500 if is_aggregate else 200
     if not re.search(r'\bLIMIT\b', q, re.IGNORECASE):
-        q += " LIMIT 200"
+        q += f" LIMIT {cap}"
     try:
         result = _execute_query(q)
         if result["success"]:
             _log_tool_end("execute_data_sql", t0)
-            return json.dumps({"columns": result["columns"], "rows": result["rows"][:200], "row_count": result["row_count"]})
+            return json.dumps({"columns": result["columns"], "rows": result["rows"][:cap], "row_count": result["row_count"]})
         _log_tool_end("execute_data_sql", t0, error=result["error"])
         return json.dumps({"error": result["error"]})
     except Exception as e:

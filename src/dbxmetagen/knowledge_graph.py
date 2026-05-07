@@ -29,6 +29,87 @@ from dbxmetagen.table_filter import table_filter_sql, infrastructure_exclude_sql
 
 logger = logging.getLogger(__name__)
 
+# Canonical column order + types for graph_edges (must match CREATE TABLE DDL).
+EDGE_SCHEMA = [
+    ("src", "STRING"), ("dst", "STRING"), ("relationship", "STRING"),
+    ("weight", "DOUBLE"), ("edge_id", "STRING"), ("edge_type", "STRING"),
+    ("direction", "STRING"), ("join_expression", "STRING"),
+    ("join_confidence", "DOUBLE"), ("ontology_rel", "STRING"),
+    ("source_system", "STRING"), ("status", "STRING"),
+    ("edge_label", "STRING"), ("edge_facet", "STRING"),
+    ("created_at", "TIMESTAMP"), ("updated_at", "TIMESTAMP"),
+]
+
+
+def align_edge_schema(df: DataFrame) -> DataFrame:
+    """Pad/cast a DataFrame to match the canonical graph_edges schema."""
+    cols = []
+    for name, dtype in EDGE_SCHEMA:
+        col_ref = name.strip("`")
+        if col_ref in df.columns:
+            cols.append(F.col(f"`{col_ref}`").cast(dtype).alias(col_ref))
+        else:
+            cols.append(F.lit(None).cast(dtype).alias(col_ref))
+    return df.select(*cols)
+
+
+def merge_edges(
+    spark: SparkSession,
+    target_table: str,
+    df: DataFrame,
+    source_system: str,
+    sweep_stale: bool = False,
+) -> int:
+    """MERGE edges by edge_id into target_table.
+
+    Returns the number of edges merged.  When *sweep_stale* is True the MERGE
+    includes a ``WHEN NOT MATCHED BY SOURCE … THEN DELETE`` clause that removes
+    stale rows for this *source_system* (full outer join -- expensive on cold
+    clusters).  Default is False (upsert only).
+    """
+    aligned = align_edge_schema(df).dropDuplicates(["edge_id"])
+
+    if not aligned.head(1):
+        if sweep_stale:
+            logger.info("No edges to merge for source_system=%s — sweeping stale rows", source_system)
+            try:
+                spark.sql(f"DELETE FROM {target_table} WHERE source_system = '{source_system}'")
+            except Exception as e:
+                logger.warning("Could not sweep stale edges for %s: %s", source_system, e)
+        return 0
+
+    from pyspark import StorageLevel
+    aligned.persist(StorageLevel.MEMORY_AND_DISK)
+    try:
+        row_count = aligned.count()
+        view_name = f"_staged_merge_{source_system}"
+        aligned.createOrReplaceTempView(view_name)
+        logger.info("Merging %d edges (source_system=%s) into %s", row_count, source_system, target_table)
+
+        update_cols = [c.strip("`") for c, _ in EDGE_SCHEMA
+                       if c.strip("`") not in ("edge_id", "created_at")]
+        update_set = ", ".join(f"target.{c} = source.{c}" for c in update_cols)
+        col_list = ", ".join(c.strip("`") for c, _ in EDGE_SCHEMA)
+
+        sweep_clause = (
+            f"\n        WHEN NOT MATCHED BY SOURCE"
+            f"\n          AND target.source_system = '{source_system}'"
+            f"\n          THEN DELETE"
+            if sweep_stale else ""
+        )
+
+        spark.sql(f"""
+            MERGE INTO {target_table} AS target
+            USING {view_name} AS source
+            ON target.edge_id = source.edge_id
+            WHEN MATCHED THEN UPDATE SET {update_set}
+            WHEN NOT MATCHED THEN INSERT ({col_list})
+                VALUES (source.{', source.'.join(col_list.split(', '))}){sweep_clause}
+        """)
+        return row_count
+    finally:
+        aligned.unpersist()
+
 
 @dataclass
 class KnowledgeGraphConfig:
@@ -86,10 +167,6 @@ class KnowledgeGraphBuilder:
     
     # Relationship types we create edges for
     RELATIONSHIP_TYPES = [
-        "same_domain",
-        "same_subdomain", 
-        "same_catalog",
-        "same_schema",
         "same_security_level"
     ]
 
@@ -116,16 +193,7 @@ class KnowledgeGraphBuilder:
         ("keywords", "ARRAY<STRING>"),
     ]
 
-    # Canonical column order + types for graph_edges (must match CREATE TABLE DDL).
-    _EDGE_SCHEMA = [
-        ("src", "STRING"), ("dst", "STRING"), ("relationship", "STRING"),
-        ("weight", "DOUBLE"), ("edge_id", "STRING"), ("edge_type", "STRING"),
-        ("direction", "STRING"), ("join_expression", "STRING"),
-        ("join_confidence", "DOUBLE"), ("ontology_rel", "STRING"),
-        ("source_system", "STRING"), ("status", "STRING"),
-        ("edge_label", "STRING"), ("edge_facet", "STRING"),
-        ("created_at", "TIMESTAMP"), ("updated_at", "TIMESTAMP"),
-    ]
+    _EDGE_SCHEMA = EDGE_SCHEMA
 
     # Canonical column order + types for graph_nodes (must match CREATE TABLE DDL).
     _NODE_SCHEMA = [
@@ -146,14 +214,7 @@ class KnowledgeGraphBuilder:
 
     def _align_edge_schema(self, df: DataFrame) -> DataFrame:
         """Select and cast columns to match the canonical edge table schema."""
-        cols = []
-        for name, dtype in self._EDGE_SCHEMA:
-            col_ref = name.strip("`")
-            if col_ref in df.columns:
-                cols.append(F.col(f"`{col_ref}`").cast(dtype).alias(col_ref))
-            else:
-                cols.append(F.lit(None).cast(dtype).alias(col_ref))
-        return df.select(*cols)
+        return align_edge_schema(df)
 
     def _align_node_schema(self, df: DataFrame) -> DataFrame:
         """Select and cast columns to match the canonical node table schema."""
@@ -176,6 +237,11 @@ class KnowledgeGraphBuilder:
         aligned.createOrReplaceTempView(view_name)
         col_list = ", ".join(c.strip("`") for c, _ in self._EDGE_SCHEMA)
         self.spark.sql(f"INSERT INTO {target} ({col_list}) SELECT {col_list} FROM {view_name}")
+
+    def _merge_edges(self, df: DataFrame, source_system: str, table: str = None, sweep_stale: bool = False) -> int:
+        """MERGE edges by edge_id (upsert). Optionally sweep stale edges for this source_system."""
+        target = table or self.config.fully_qualified_edges
+        return merge_edges(self.spark, target, df, source_system, sweep_stale=sweep_stale)
 
     def create_nodes_table(self) -> None:
         """Create the nodes table if it doesn't exist, and add new columns if missing."""
@@ -209,8 +275,18 @@ class KnowledgeGraphBuilder:
             updated_at TIMESTAMP
         )
         COMMENT 'Graph nodes - unified backbone for tables, columns, schemas, and ontology entities'
+        TBLPROPERTIES ('delta.enableChangeDataFeed' = 'true')
         """
         self.spark.sql(ddl)
+
+        # Enable CDF on existing tables (required for Delta Sync VS indexes)
+        try:
+            self.spark.sql(
+                f"ALTER TABLE {self.config.fully_qualified_nodes} "
+                f"SET TBLPROPERTIES ('delta.enableChangeDataFeed' = 'true')"
+            )
+        except Exception as e:
+            logger.debug("CDF property already set or not applicable: %s", e)
 
         for col_name, col_type in self._NODE_MIGRATION_COLUMNS:
             try:
@@ -400,54 +476,25 @@ class KnowledgeGraphBuilder:
         Build all edge types from nodes DataFrame.
         
         Creates edges for:
-        - same_domain: tables in the same domain
-        - same_subdomain: tables in the same subdomain
-        - same_catalog: tables in the same catalog
-        - same_schema: tables in the same schema
         - same_security_level: tables with same PII/PHI status
+        
+        Note: same_domain/subdomain/catalog/schema were removed -- they generate
+        O(N^2) edges per group with no downstream signal (FK prediction computes
+        these inline). Domain/schema info is already on graph nodes.
         """
         cap = self.config.max_edges_group_size
         all_edges = []
-        
-        # Same domain edges
-        domain_edges = self.build_edges_for_attribute(
-            nodes_df, "domain", "same_domain", max_group_size=cap
-        )
-        all_edges.append(domain_edges)
-        
-        # Same subdomain edges
-        subdomain_edges = self.build_edges_for_attribute(
-            nodes_df, "subdomain", "same_subdomain", max_group_size=cap
-        )
-        all_edges.append(subdomain_edges)
-        
-        # Same catalog edges (skip if mono-catalog -- every pair is vacuous)
-        distinct_catalogs = nodes_df.select("catalog").distinct().count()
-        if distinct_catalogs > 1:
-            catalog_edges = self.build_edges_for_attribute(
-                nodes_df, "catalog", "same_catalog", max_group_size=cap
-            )
-            all_edges.append(catalog_edges)
-        else:
-            logger.info("Single catalog detected -- skipping same_catalog edges")
-        
-        # Same schema edges (skip if mono-schema -- every pair is vacuous)
-        distinct_schemas = nodes_df.select("schema").distinct().count()
-        if distinct_schemas > 1:
-            schema_edges = self.build_edges_for_attribute(
-                nodes_df, "schema", "same_schema", max_group_size=cap
-            )
-            all_edges.append(schema_edges)
-        else:
-            logger.info("Single schema detected -- skipping same_schema edges")
-        
-        # Same security level edges (exclude PUBLIC -- O(N^2) noise)
+
         sensitive_nodes = nodes_df.filter(F.col("security_level").isin("PII", "PHI"))
         security_edges = self.build_edges_for_attribute(
             sensitive_nodes, "security_level", "same_security_level", max_group_size=cap
         )
         all_edges.append(security_edges)
         
+        if not all_edges:
+            logger.info("No structural edges to build (all attribute types are mono-valued)")
+            return self.spark.createDataFrame([], schema="src STRING, dst STRING, relationship STRING")
+
         from functools import reduce
         combined = reduce(lambda a, b: a.unionByName(b), all_edges)
 
@@ -529,35 +576,39 @@ class KnowledgeGraphBuilder:
         
         return {"total_nodes": count}
     
-    def refresh_edges(self, edges_df: DataFrame, source_system: str = "knowledge_graph") -> Dict[str, int]:
-        """
-        Refresh edges by deleting stale edges and inserting current ones.
-        
-        Only deletes edges matching the given source_system to avoid destroying
-        edges from other producers (ontology, similarity, fk_predictions).
-        
-        Strategy:
-        1. Delete edges involving affected nodes for this source_system only
-        2. Insert all current edges
-        """
-        affected_nodes = edges_df.select("src").union(edges_df.select(F.col("dst").alias("src"))).distinct()
-        affected_ids = [row.src for row in affected_nodes.collect()]
+    def refresh_edges(
+        self,
+        edges_df: DataFrame,
+        source_system: str = "knowledge_graph",
+        sweep_stale: bool = False,
+    ) -> Dict[str, int]:
+        """Merge edges by edge_id, grouped by source_system.
 
-        if affected_ids:
-            id_list = ", ".join(f"'{n}'" for n in affected_ids)
-            delete_sql = f"""
-            DELETE FROM {self.config.fully_qualified_edges}
-            WHERE (src IN ({id_list}) OR dst IN ({id_list}))
-              AND (source_system = '{source_system}' OR source_system IS NULL)
-            """
-            self.spark.sql(delete_sql)
-        
-        self._insert_edges(edges_df)
-        
+        Reads the ``source_system`` column from edges_df to determine which
+        groups to merge independently.  Each group is upserted via MERGE.
+        When *sweep_stale* is True, stale edges for each source_system are
+        deleted.  The ``source_system`` parameter is used as a fallback for
+        rows where the column is NULL.
+        """
+        df = edges_df.withColumn(
+            "source_system",
+            F.coalesce(F.col("source_system"), F.lit(source_system)),
+        )
+
+        systems = [
+            row.source_system
+            for row in df.select("source_system").distinct().collect()
+            if row.source_system
+        ]
+
+        for sys in systems:
+            group = df.filter(F.col("source_system") == sys)
+            self._merge_edges(group, source_system=sys, sweep_stale=sweep_stale)
+
         count = self.spark.sql(
             f"SELECT COUNT(*) as cnt FROM {self.config.fully_qualified_edges}"
         ).collect()[0]["cnt"]
-        
+
         return {"total_edges": count}
     
     def add_inverse_edges(self, edges_df: DataFrame, edge_catalog: Optional[Dict] = None) -> DataFrame:
@@ -962,12 +1013,12 @@ class ExtendedKnowledgeGraphBuilder(KnowledgeGraphBuilder):
         """Build 'derives_from' edges from lineage data."""
         try:
             df = self.spark.sql(f"""
-                SELECT 
+                SELECT DISTINCT
                     table_name as dst,
                     EXPLODE(upstream_tables) as src
                 FROM {self.ext_config.fully_qualified_extended_metadata}
                 WHERE upstream_tables IS NOT NULL
-            """)
+            """).dropDuplicates(["src", "dst"])
             
             df = df.withColumn("relationship", F.lit("derives_from")).withColumn("weight", F.lit(1.0))
             return self._enrich_edges(df, "derives_from")
@@ -1012,9 +1063,17 @@ class ExtendedKnowledgeGraphBuilder(KnowledgeGraphBuilder):
                     .drop("join_expr", "conf", "src_table", "dst_table", "src_column", "dst_column")
                 )
 
-            table_df = raw.select(
-                F.col("src_table").alias("src"), F.col("dst_table").alias("dst"),
-                "join_expr", "conf",
+            table_df = (
+                raw.groupBy("src_table", "dst_table")
+                .agg(
+                    F.max("conf").alias("conf"),
+                    F.concat_ws("; ", F.collect_set("join_expr")).alias("join_expr"),
+                )
+                .select(
+                    F.col("src_table").alias("src"),
+                    F.col("dst_table").alias("dst"),
+                    "join_expr", "conf",
+                )
             )
             table_edges = _fk_edges(table_df)
 
@@ -1056,13 +1115,14 @@ class ExtendedKnowledgeGraphBuilder(KnowledgeGraphBuilder):
         from functools import reduce
         return reduce(lambda a, b: a.unionByName(b), all_edges)
     
-    def run(self, include_columns: bool = True, include_schemas: bool = True) -> Dict[str, Any]:
+    def run(self, include_columns: bool = True, include_schemas: bool = True, sweep_stale: bool = False) -> Dict[str, Any]:
         """
         Execute the extended graph building pipeline.
         
         Args:
             include_columns: Whether to include column nodes
             include_schemas: Whether to include schema nodes
+            sweep_stale: Whether to sweep stale edges during merge
         """
         logger.info("Starting extended knowledge graph build")
         
@@ -1104,7 +1164,7 @@ class ExtendedKnowledgeGraphBuilder(KnowledgeGraphBuilder):
         edge_count = edges_df.count()
         logger.info(f"Built {edge_count} edges")
         
-        edge_stats = self.refresh_edges(edges_df)
+        edge_stats = self.refresh_edges(edges_df, sweep_stale=sweep_stale)
         
         logger.info("Extended knowledge graph build complete")
         
@@ -1123,6 +1183,7 @@ def build_extended_knowledge_graph(
     include_columns: bool = True,
     include_schemas: bool = True,
     table_names: list[str] | None = None,
+    sweep_stale: bool = False,
 ) -> Dict[str, Any]:
     """
     Build extended knowledge graph with column and schema nodes.
@@ -1133,6 +1194,7 @@ def build_extended_knowledge_graph(
         schema_name: Schema name for tables
         include_columns: Include column-level nodes
         include_schemas: Include schema-level nodes
+        sweep_stale: Whether to sweep stale edges during merge
         
     Returns:
         Dict with execution statistics
@@ -1143,7 +1205,7 @@ def build_extended_knowledge_graph(
         table_names=table_names,
     )
     builder = ExtendedKnowledgeGraphBuilder(spark, config)
-    return builder.run(include_columns, include_schemas)
+    return builder.run(include_columns, include_schemas, sweep_stale=sweep_stale)
 
 
 # =============================================================================
@@ -1167,51 +1229,21 @@ g = GraphFrame(nodes, edges)
 # BASIC QUERIES
 # -----------------------------------------------------------------------------
 
-# 1. Find all tables in the same domain as a specific table
-target_table = "catalog.schema.my_table"
-same_domain_tables = g.edges.filter(
-    (F.col("relationship") == "same_domain") & 
-    ((F.col("src") == target_table) | (F.col("dst") == target_table))
-).select(
-    F.when(F.col("src") == target_table, F.col("dst"))
-     .otherwise(F.col("src")).alias("related_table")
-)
-
-# 2. Find tables that share both domain AND schema (intersection)
-domain_edges = g.edges.filter(F.col("relationship") == "same_domain")
-schema_edges = g.edges.filter(F.col("relationship") == "same_schema")
-
-closely_related = domain_edges.join(
-    schema_edges,
-    (domain_edges.src == schema_edges.src) & (domain_edges.dst == schema_edges.dst),
-    "inner"
-).select(domain_edges.src, domain_edges.dst)
-
-# 3. Find all PHI tables and their connections
+# 1. Find all PHI tables and their connections
 phi_tables = g.vertices.filter(F.col("security_level") == "PHI")
 phi_edges = g.edges.join(phi_tables, g.edges.src == phi_tables.id, "inner")
 
-# 4. Count relationships by type
+# 2. Count relationships by type
 relationship_counts = g.edges.groupBy("relationship").count().orderBy("count", ascending=False)
 
 # -----------------------------------------------------------------------------
 # MOTIF FINDING - Pattern Matching in Graphs
 # -----------------------------------------------------------------------------
 
-# Motifs use a special syntax: (a)-[e]->(b) where a,b are nodes and e is edge
-
-# 5. Find triangles: three tables all connected to each other
+# 3. Find triangles: three tables all connected to each other
 triangles = g.find("(a)-[e1]->(b); (b)-[e2]->(c); (a)-[e3]->(c)")
 
-# 6. Find tables that bridge two domains (connected to tables in different domains)
-# Tables A and B in same schema, B and C in same domain (but A and C different domains)
-bridging_tables = g.find("(a)-[e1]->(b); (b)-[e2]->(c)").filter(
-    (F.col("e1.relationship") == "same_schema") & 
-    (F.col("e2.relationship") == "same_domain") &
-    (F.col("a.domain") != F.col("c.domain"))
-)
-
-# 7. Find paths between two specific tables
+# 4. Find paths between two specific tables
 start_table = "catalog.schema.table_a"
 end_table = "catalog.schema.table_b"
 
@@ -1226,7 +1258,7 @@ two_hop = g.find("(a)-[e1]->(intermediate); (intermediate)-[e2]->(b)").filter(
     (F.col("a.id") == start_table) & (F.col("b.id") == end_table)
 )
 
-# 8. Find PHI tables connected to PII tables (security boundary analysis)
+# 5. Find PHI tables connected to PII tables (security boundary analysis)
 phi_pii_connections = g.find("(phi_table)-[e]->(pii_table)").filter(
     (F.col("phi_table.security_level") == "PHI") & 
     (F.col("pii_table.security_level") == "PII")
@@ -1236,19 +1268,19 @@ phi_pii_connections = g.find("(phi_table)-[e]->(pii_table)").filter(
 # GRAPH ALGORITHMS
 # -----------------------------------------------------------------------------
 
-# 9. PageRank - find most "important" tables (highly connected)
+# 6. PageRank - find most "important" tables (highly connected)
 pagerank_results = g.pageRank(resetProbability=0.15, maxIter=10)
 top_tables = pagerank_results.vertices.orderBy("pagerank", ascending=False).limit(20)
 
-# 10. Connected Components - find clusters of related tables
+# 7. Connected Components - find clusters of related tables
 components = g.connectedComponents()
 cluster_sizes = components.groupBy("component").count().orderBy("count", ascending=False)
 
-# 11. Label Propagation - community detection
+# 8. Label Propagation - community detection
 communities = g.labelPropagation(maxIter=5)
 community_sizes = communities.groupBy("label").count().orderBy("count", ascending=False)
 
-# 12. Shortest paths to specific tables
+# 9. Shortest paths to specific tables
 landmark_tables = ["catalog.schema.core_customer", "catalog.schema.core_product"]
 shortest_paths = g.shortestPaths(landmarks=landmark_tables)
 
@@ -1256,13 +1288,13 @@ shortest_paths = g.shortestPaths(landmarks=landmark_tables)
 # FILTERING AND SUBGRAPH ANALYSIS
 # -----------------------------------------------------------------------------
 
-# 13. Create subgraph of only PHI-related tables
+# 10. Create subgraph of only PHI-related tables
 phi_subgraph = GraphFrame(
     g.vertices.filter(F.col("security_level") == "PHI"),
     g.edges.filter(F.col("relationship") == "same_security_level")
 )
 
-# 14. Create subgraph of a specific domain
+# 11. Create subgraph of a specific domain
 domain_filter = "Healthcare"
 domain_vertices = g.vertices.filter(F.col("domain") == domain_filter)
 domain_vertex_ids = domain_vertices.select("id").rdd.flatMap(lambda x: x).collect()
@@ -1273,7 +1305,7 @@ domain_edges = g.edges.filter(
 )
 domain_subgraph = GraphFrame(domain_vertices, domain_edges)
 
-# 15. Find isolated tables (no connections)
+# 12. Find isolated tables (no connections)
 connected_nodes = g.edges.select("src").union(g.edges.select("dst")).distinct()
 isolated = g.vertices.join(connected_nodes, g.vertices.id == connected_nodes.src, "left_anti")
 """

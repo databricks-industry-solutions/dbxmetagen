@@ -86,7 +86,8 @@ class Prompt(ABC):
                 f"FROM {catalog}.{schema}.column_profiling_stats "
                 f"WHERE table_name = '{fqtn}'"
             ).collect()
-        except Exception:
+        except Exception as e:
+            logger.debug("Optional profiling enrichment skipped (%s): %s", fqtn, e)
             return
         if not stats_rows:
             return
@@ -121,7 +122,8 @@ class Prompt(ABC):
                 f"FROM {catalog}.{schema}.extended_table_metadata "
                 f"WHERE table_name = '{fqtn}' LIMIT 1"
             ).collect()
-        except Exception:
+        except Exception as e:
+            logger.debug("Optional constraint enrichment skipped (%s): %s", fqtn, e)
             return
         if not row:
             return
@@ -134,6 +136,13 @@ class Prompt(ABC):
         for cn, ref in fk_map.items():
             if cn in col_meta and ref:
                 col_meta[cn]["role"] = f"FOREIGN KEY -> {ref}"
+
+    def enrich_from_customer_context(self, cache: list) -> None:
+        """Inject matching customer context from the prefetched cache (no SQL)."""
+        from dbxmetagen.customer_context import resolve_customer_context
+        ctx = resolve_customer_context(cache, self.full_table_name)
+        if ctx:
+            self.prompt_content["customer_context"] = ctx
 
     def enrich_from_ontology(self) -> None:
         """Inject entity type context from ontology_entities into prompt_content.
@@ -155,7 +164,8 @@ class Prompt(ABC):
                 f"AND entity_role = 'primary' "
                 f"ORDER BY confidence DESC LIMIT 1"
             ).collect()
-        except Exception:
+        except Exception as e:
+            logger.debug("Optional ontology enrichment skipped (%s): %s", fqtn, e)
             return
         if not rows:
             return
@@ -190,7 +200,8 @@ class Prompt(ABC):
                 f"SELECT comment FROM {catalog}.{schema}.table_knowledge_base "
                 f"WHERE table_name = '{fqtn}' LIMIT 1"
             ).collect()
-        except Exception:
+        except Exception as e:
+            logger.debug("Optional KB table enrichment skipped (%s): %s", fqtn, e)
             tbl_kb = []
 
         if tbl_kb:
@@ -207,7 +218,8 @@ class Prompt(ABC):
                 f"SELECT column_name, comment FROM {catalog}.{schema}.column_knowledge_base "
                 f"WHERE table_name = '{fqtn}'"
             ).collect()
-        except Exception:
+        except Exception as e:
+            logger.debug("Optional KB column enrichment skipped (%s): %s", fqtn, e)
             col_rows = []
 
         if col_rows:
@@ -790,12 +802,15 @@ class CommentPrompt(Prompt):
     @staticmethod
     def _build_user_content(content: dict, acro_content: Any) -> str:
         lineage = content.pop("lineage", None)
+        customer_ctx = content.pop("customer_context", None)
         base = f"Content is here - {content} and abbreviations are here - {acro_content}"
         if lineage:
             base += "\n\n" + _format_lineage_section(lineage)
         ontology_ctx = content.get("ontology_context")
         if ontology_ctx:
             base += f"\n\nOntology context: {ontology_ctx['hint']}"
+        if customer_ctx:
+            base += f"\n\nCustomer-provided context: {customer_ctx}"
         return base
 
 
@@ -932,9 +947,12 @@ class PIPrompt(Prompt):
 
     def _build_pi_user_content(self, content: dict, acro_content: Any) -> str:
         lineage = content.pop("lineage", None)
+        customer_ctx = content.pop("customer_context", None)
         base = f"{content} + {acro_content}. Deterministic results from Presidio or other outside checks to consider to help check your outputs are here: {self.deterministic_results}."
         if lineage:
             base += "\n\n" + _format_lineage_section(lineage)
+        if customer_ctx:
+            base += f"\n\nCustomer-provided context: {customer_ctx}"
         return base
 
 
@@ -1020,7 +1038,10 @@ class CommentNoDataPrompt(Prompt):
     @staticmethod
     def _build_nodata_user_content(content: dict, acro_content: Any) -> str:
         lineage = content.pop("lineage", None)
+        customer_ctx = content.pop("customer_context", None)
         base = f"Content is here - {content} and abbreviations are here - {acro_content}"
+        if customer_ctx:
+            base += f"\n\nCustomer-provided context:\n{customer_ctx}"
         if lineage:
             base += "\n\n" + _format_lineage_section(lineage)
         return base

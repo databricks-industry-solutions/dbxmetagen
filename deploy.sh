@@ -137,6 +137,7 @@ import os, sys
 groups = os.environ.get('permission_groups', 'none')
 users = os.environ.get('permission_users', 'none')
 deployer = os.environ.get('CURRENT_USER', '')
+enable_obo = os.environ.get('enable_obo', 'false').lower() == 'true'
 lines = []
 if groups and groups.strip('\"') not in ('none', ''):
     for g in groups.strip('\"').split(','):
@@ -150,14 +151,17 @@ if users and users.strip('\"') not in ('none', ''):
         if u and u != deployer:
             lines.append('        - user_name: \"{}\"'.format(u))
             lines.append('          level: CAN_USE')
-block = ''
+perm_block = ''
 if lines:
-    block = '      permissions:\n' + '\n'.join(lines)
+    perm_block = '      permissions:\n' + '\n'.join(lines)
+scopes_block = ''
+if enable_obo:
+    scopes_block = '      user_api_scopes:\n        - \"files.files\"\n        - \"sql.statement-execution\"'
 template = open('resources/apps/dbxmetagen_app.yml.template').read()
-result = template.replace('__APP_PERMISSIONS__', block)
+result = template.replace('__USER_API_SCOPES__', scopes_block).replace('__APP_PERMISSIONS__', perm_block)
 open('resources/apps/dbxmetagen_app.yml', 'w').write(result)
 n_entries = len(lines) // 2
-print('App permissions: {} entries'.format(n_entries))
+print('App permissions: {} entries, OBO scopes: {}'.format(n_entries, 'enabled' if enable_obo else 'disabled'))
 " || { echo "ERROR: Failed to generate app resource YAML"; exit 1; }
 
 if [ "$SKIP_APP" = false ]; then

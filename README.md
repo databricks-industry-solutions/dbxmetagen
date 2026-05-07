@@ -16,14 +16,17 @@
 - **Ontology discovery**: Business entity extraction and validation against standard ontologies (FHIR, OMOP, etc.)
 - **FK prediction**: AI-assisted foreign key relationship discovery using column similarity and LLM judgment
 - **Semantic layer**: Auto-generated metric views and Genie space creation from knowledge base
+- **Customer context**: Inject domain-specific knowledge into prompts, scoped by catalog/schema/table/pattern
 - **Metadata review**: Interactive review, edit, and apply workflow for generated metadata
-- **Web dashboard**: FastAPI + React app with 8 tabs covering the full metadata lifecycle
+- **Web dashboard**: FastAPI + React app covering the full metadata lifecycle
 
-> **Note:** This project recently migrated from Poetry to [uv](https://docs.astral.sh/uv/) for dependency management. If you have an existing clone that used Poetry, remove any old `poetry.lock` and virtual environments, then run `uv sync` to set up a fresh environment.
+
+Although there are many possible modes in which you can run dbxmetagen, the intention is that the app is the full-fledged experience.
+
 
 ## Quickstart
 
-**Prerequisites:** Databricks CLI (>=0.283.0), Python 3.10+, [uv](https://docs.astral.sh/uv/) (for dependency management), Node.js (for frontend build), a Databricks workspace with Unity Catalog enabled and a Foundation Model endpoint (e.g. `databricks-claude-sonnet-4-6`). Read the quickstart! Don't just guess at how to use this utility.
+**Prerequisites:** Databricks CLI (>=0.283.0), Python 3.10+, [uv](https://docs.astral.sh/uv/) (for dependency management), Node.js (for frontend build), a Databricks workspace with Unity Catalog enabled, and a Foundation Model endpoint (e.g. `databricks-claude-sonnet-4-6`).
 
 1. Clone the repo and configure:
    ```bash
@@ -47,13 +50,7 @@
    ./deploy.sh --profile <your-profile> --target dev --no-app
    ```
 
-4. Access the app at **Workspace > Apps > dbxmetagen-app**
-
-5. Run jobs:
-   ```bash
-   databricks bundle run metadata_generator_job -t dev -p <profile> --params table_names='catalog.schema.*',mode=domain
-   databricks bundle run full_analytics_pipeline_job -t dev -p <profile>
-   ```
+4. Access the app at **Workspace > Apps > dbxmetagen-app** and follow the instructions there.
 
 ## Partial Install (Notebook Only)
 
@@ -155,15 +152,22 @@ flowchart TB
     end
 
     subgraph ontology [Ontology Layer]
-        ONT_CFG[ontology_config.yaml]
+        ONT_CFG[ontology_bundles]
         ENT[ontology_entities]
-        MET[ontology_metrics stub]
+        OCP[ontology_column_properties]
+        ORL[ontology_relationships]
+        OCH[ontology_chunks]
+    end
+
+    subgraph vector [Vector Index]
+        VSI[metadata_vs_index]
     end
 
     subgraph app [Dashboard App]
         API[FastAPI Backend]
         UI[React Frontend]
         AGT[LangGraph GraphRAG Agent]
+        LB[Lakebase]
     end
 
     SYS --> EXT
@@ -185,10 +189,18 @@ flowchart TB
     NCA --> CM
 
     ONT_CFG --> ENT
+    ONT_CFG --> OCH
     GN --> ENT
+    ENT --> OCP
+    ENT --> ORL
 
-    GN --> API
-    GE --> API
+    GN --> VSI
+    OCH --> VSI
+
+    GN --> LB
+    GE --> LB
+    LB --> AGT
+    VSI --> AGT
     API --> AGT
     API --> UI
 ```
@@ -214,21 +226,11 @@ dbxmetagen has two phases:
 |-------|--------|---------|
 | **Knowledge Base** | `table_knowledge_base`, `column_knowledge_base`, `schema_knowledge_base`, `extended_metadata` | Aggregated metadata from LLM outputs and system tables |
 | **Profiling** | `profiling_snapshots`, `column_profiling_stats`, `data_quality_scores` | Statistical profiling and quality scoring |
-| **Graph** | `graph_nodes`, `graph_edges`, `node_cluster_assignments`, `clustering_metrics` | Graph analytics with embeddings, similarity edges, and K-means clustering |
-| **Ontology** | `ontology_entities`, `ontology_metrics` (stub) | Business entity discovery and validation |
+| **Graph** | `graph_nodes`, `graph_edges`, `node_cluster_assignments`, `clustering_metrics`, `community_summaries` | Graph analytics with embeddings, similarity edges, K-means clustering, and AI-generated community summaries |
+| **Ontology** | `ontology_entities`, `ontology_column_properties`, `ontology_relationships`, `ontology_chunks`, `ontology_metrics` | Business entity discovery, column classification, relationship detection, and vector retrieval |
+| **Vector Index** | `metadata_vs_index`, `ontology_vs_index` | Hybrid semantic search over metadata documents and ontology entities. See [docs/CONFIGURATION.md](docs/CONFIGURATION.md#vector-search) |
 
-### Relationship to semantic web standards
-
-dbxmetagen's ontology and graph system is inspired by — but does not implement — formal semantic web standards. Here's an honest comparison:
-
-| Standard | What it does | How dbxmetagen relates |
-|----------|-------------|----------------------|
-| **RDF** (triples: subject, predicate, object) | Standard data model for knowledge graphs | `graph_nodes` + `graph_edges` stores triples in Delta tables — nodes have types and properties, edges have labels, direction, and confidence. Functionally similar but SQL-queryable, not a triple store. No RDF serialization on the read or write path. |
-| **OWL** (Web Ontology Language) | Formal class hierarchies with automated reasoning | Ontology bundles define entity types with keywords, typed properties, and `parent` (subclass_of) relationships. Discovery uses LLM classification + keyword matching, not a formal OWL reasoner. Bundles are YAML, not OWL — simpler to author but without automated inference or transitive closure. |
-| **SHACL** (Shapes Constraint Language) | Validates graph data against declared shapes | `validate_ontology_completeness()` checks that discovered entity types cover the bundle's defined types. `validate_entity_conformance()` checks whether discovered column properties match the bundle's declared property schema. Similar in purpose to SHACL but implemented as Python/SQL checks, not a constraint language. |
-| **SPARQL** (Semantic query language) | Query language for RDF graphs | All graph queries use SQL against Delta tables. The GraphRAG agent and Graph Explorer traverse `graph_nodes`/`graph_edges` via SQL joins. Vector search is used for semantic metadata retrieval (finding relevant docs/tables), not for graph traversal. |
-
-Industry bundles (`healthcare.yaml`, `financial_services.yaml`) use entity names aligned with domain standards (e.g., FHIR Patient, OMOP CONDITION_OCCURRENCE) but don't import OWL/RDF files. A JSON-LD export endpoint (`/api/ontology/export`) provides basic Schema.org interoperability. The design is pragmatic: all consumers speak SQL natively, so a triple store would add infrastructure without benefiting the primary use case.
+The ontology and graph system is inspired by semantic web standards (RDF, OWL, SHACL) but stores everything in Delta tables queryable via SQL. Industry bundles align with domain standards (FHIR, OMOP, Schema.org). See [docs/formal_semantics.md](docs/formal_semantics.md) for a detailed comparison.
 
 ## API Reference
 
@@ -249,6 +251,10 @@ Core functions exported by the `dbxmetagen` package:
 | `run_profiling(spark, catalog, schema)` | Profile tables and columns |
 | `compute_data_quality(spark, catalog, schema)` | Compute data quality scores |
 | `predict_foreign_keys(spark, catalog, schema)` | Predict FK relationships using AI + heuristics |
+| `build_vector_index(spark, catalog, schema)` | Build or refresh Vector Search index over metadata |
+| `build_genie_space(spark, catalog, schema)` | Create Genie space from knowledge base |
+| `generate_semantic_layer(spark, catalog, schema)` | Generate metric view definitions |
+| `classify_columns_geo(spark, catalog, schema)` | Geographic column classification |
 
 ## Notebooks
 
@@ -273,51 +279,33 @@ Settings are in `variables.yml`. Key options:
 | `apply_ddl` | `false` | Apply generated metadata directly to Unity Catalog |
 | `allow_data` | `true` | Set `false` to prevent data from being sent to LLMs |
 | `node_type` | `i3.2xlarge` | Job cluster node type. Change for Azure (`Standard_DS4_v2`) or GCP (`n2-highmem-8`) |
-| `include_deterministic_pi` | `true` | Enable SpaCy/Presidio for rule-based PI detection (requires `en_core_web_lg` model -- see [Configuration docs](docs/CONFIGURATION.md)) |
+| `include_deterministic_pi` | `true` | Enable SpaCy/Presidio for rule-based PI detection (default model: `en_core_web_md`; set `spacy_model_names=en_core_web_lg` for higher accuracy -- see [Configuration docs](docs/CONFIGURATION.md)) |
 | `federation_mode` | `false` | Enable for federated catalog sources (Redshift, Snowflake) |
 
 For full reference, see [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 
-## Domain Classification
-
-Categorizes tables into business domains using a two-stage LLM pipeline: keyword pre-filter, then domain classification, then subdomain classification. Configured via `configurations/domain_config.yaml`.
-
-**12 default domains** (aligned with DAMA DMBOK, FHIR, OMOP): clinical, diagnostics, payer, pharmaceutical, quality_safety, research, finance, operations, workforce, customer, technology, governance. Each domain includes subdomains with keywords and descriptions -- see the YAML config for details.
-
-Customize domains and subdomains by editing the YAML file or providing your own via `domain_config_path`.
-
-## Federation Mode
-
-When `federation_mode=true`, dbxmetagen adapts for federated catalogs in Unity Catalog:
-
-| Feature | Status | Notes |
-|---------|--------|-------|
-| SELECT / spark.read.table | Works | Standard reads via federation |
-| DESCRIBE TABLE | Works | Basic column info available |
-| SHOW TABLES IN | Works | Schema listing via federation |
-| DESCRIBE DETAIL | Skipped | Delta-specific |
-| DESCRIBE EXTENDED | Skipped | May return limited metadata |
-| ALTER TABLE / COMMENT ON | Skipped | Cannot modify federated tables |
-| SET TAGS / UNSET TAGS | Skipped | Cannot tag federated tables |
-| Output tables | Works | All output tables are Delta |
+Domain classification and federation mode are covered in [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 
 ## Dashboard App
 
-The app is in `apps/dbxmetagen-app/` and provides a FastAPI backend with a React frontend. Deployed via DAB. Batch jobs support model selection between `databricks-claude-sonnet-4-6` and `databricks-gpt-oss-120b`.
+The app is in `apps/dbxmetagen-app/` and provides a FastAPI backend with a React frontend. Deployed via DAB. Navigation is organized into three categories:
 
-**Tabs:**
-1. **Semantic Layer** (landing page) -- Auto-generated metric views with SQL expression autofix, KPI Library grouped by Question Profile, and Genie space creation
-2. **Coverage** -- Schema-wide metadata coverage summary and completeness metrics
-3. **Batch Jobs** -- Trigger and monitor all metadata generation, analytics, and sync jobs with real-time status and model selection
-4. **Metadata Review** -- Browse, edit, approve, and apply generated metadata back to Unity Catalog
-5. **Ontology** -- Entity type summary, discovered entities, validation status
-6. **Graph Explorer** -- Browse graph nodes, filter by type, query the GraphRAG agent
-7. **Foreign Key Generation** -- AI-predicted FK relationships with confidence scores and approval workflow
-8. **Genie Builder** -- Create and configure Genie spaces with auto-generated instructions and ~10 example SQL queries
+**Design:**
+- **Generate Metadata** -- Trigger core (descriptions, sensitivity, domain) and advanced (ontology, FK, knowledge graph) jobs with model selection, Customer Context management
+- **Define Metrics** -- Auto-generated metric views with SQL expression autofix, KPI Library grouped by Question Profile
+- **Build Genie Space** -- Create and configure Genie spaces with auto-generated instructions and example SQL queries
 
-**Permissions model:** The app uses two separate identities. The **app service principal** (SPN) controls what the app UI can *read* -- it needs SELECT on your catalog to browse tables, coverage, metadata, and graph data. The **deployer's identity** (the user who ran `deploy.sh`) controls what jobs can *write* -- jobs run as the deployer and need CREATE TABLE, ALTER TABLE, and SET TAGS on the target catalog. This means a user can see metadata in the app even if they don't have permission to generate or apply it, and conversely, the app SPN doesn't need write access to your tables. Run `deploy.sh --permissions` to grant the app SPN the required read access.
+**Review:**
+- **Review & Apply** -- Browse, edit, approve, and apply generated metadata back to Unity Catalog
+- **Coverage** -- Schema-wide metadata coverage summary and completeness metrics
 
-**GraphRAG:** Natural-language queries against the knowledge graph using a LangGraph agent that traverses graph_nodes and graph_edges via Lakebase.
+**Explore:**
+- **Agent** -- Deep analysis chat with GraphRAG, graph explorer, semantic search, and MLflow trace links
+- **Entity Browser** -- Entity-first navigation with conformance view
+
+**Permissions model:** The app uses two separate identities. The **app service principal** (SPN) controls what the app UI can *read* -- it needs SELECT on your catalog to browse tables, coverage, metadata, and graph data. The **deployer's identity** (the user who ran `deploy.sh`) controls what jobs can *write* -- jobs run as the deployer and need CREATE TABLE, ALTER TABLE, and SET TAGS on the target catalog. This means a user can see metadata in the app even if they don't have permission to generate or apply it, and conversely, the app SPN doesn't need write access to your tables. UC grants for the app SPN are applied automatically on every deploy. See [docs/PERMISSIONS.md](docs/PERMISSIONS.md) for the full permissions reference including OBO mode, Vector Search, and end-user access.
+
+**Deep Analysis Agent:** Natural-language queries using a LangGraph GraphRAG pipeline that combines Vector Search retrieval, multi-hop graph traversal via Lakebase, FK/KB lookups, and LLM-generated data queries. Results include MLflow trace links for observability.
 
 ## Jobs
 
@@ -335,6 +323,25 @@ The app is in `apps/dbxmetagen-app/` and provides a FastAPI backend with a React
 | `sync_graph_lakebase_job` | Sync graph data to Lakebase for the dashboard |
 | `sync_ddl_job` | Sync reviewed/edited DDL back to Unity Catalog |
 
+## MCP Servers (Coming Soon)
+
+> **Note:** MCP server support is under active development and not yet ready for production use.
+
+dbxmetagen exposes its knowledge base, knowledge graph, and vector index as [Databricks Managed MCP servers](https://docs.databricks.com/aws/en/generative-ai/mcp). Any MCP-compatible client (Cursor, Claude Code, AI Playground) can query your metadata catalog directly. See [docs/MCP_SERVERS.md](docs/MCP_SERVERS.md) for client configuration, the full tool reference, and a walkthrough of how the dashboard's deep analysis agent uses these same data assets.
+
+## Documentation
+
+| Guide | Description |
+|-------|-------------|
+| [Configuration](docs/CONFIGURATION.md) | All runtime parameters, ontology bundles, Vector Search, Lakebase, OBO, and community summaries |
+| [Permissions](docs/PERMISSIONS.md) | Two-identity model (app SPN vs job owner), UC grants, OBO mode, and end-user access |
+| [Manual Deployment](docs/MANUAL_DEPLOYMENT.md) | Step-by-step deployment without `deploy.sh` (CLI-only or CI/CD) |
+| [Domain & Ontology Architecture](docs/DOMAIN_ONTOLOGY_ARCHITECTURE.md) | Formal vs custom ontology bundles, domain YAML, and how they interact |
+| [MCP Servers](docs/MCP_SERVERS.md) | Managed MCP server setup, tool reference, and agent integration |
+| [QA Checklist](docs/QA_CHECKLIST.md) | Pre-release validation checklist |
+| [Roadmap](docs/CONSOLIDATED_ROADMAP.md) | Open work items by theme and priority |
+| [Dependencies](docs/DEPENDENCIES.md) | Third-party dependency inventory |
+
 ## Testing
 
 ```bash
@@ -349,9 +356,9 @@ pip install dist/*.whl
 python -c "from dbxmetagen.config import MetadataConfig; print('OK')"
 ```
 
-DDL regenerator and binary/variant tests must run in separate processes due to import conflicts -- `run_tests.sh` handles this automatically. See `CLAUDE.md` for details.
+DDL regenerator and binary/variant tests must run in separate processes due to import conflicts -- `run_tests.sh` handles this automatically.
 
-Requires DBR 17.3+ (ML runtime recommended). Serverless runtimes are supported for most operations.
+Requires DBR 14.3+ (ML runtime recommended for PI detection with spaCy). Serverless runtimes are supported for most operations.
 
 ## Troubleshooting
 
@@ -405,55 +412,9 @@ The default `node_type` in `variables.yml` is `i3.2xlarge`, which is an AWS inst
 
 You may need to try a couple different node types if your organization doesn't have capacity for these in your cloud.
 
-## Analysis of Packages Used
+## Dependencies
 
-### Python (direct dependencies from pyproject.toml)
-
-| Package | Version | License | Source |
-|---------|---------|---------|--------|
-| mlflow | 3.6.0 | Apache 2.0 | https://github.com/mlflow/mlflow |
-| openai | 1.56.1 | Apache 2.0 | https://github.com/openai/openai-python |
-| cloudpickle | 3.1.0 | BSD 3-Clause | https://github.com/cloudpipe/cloudpickle |
-| pydantic | 2.10.3 | MIT | https://github.com/pydantic/pydantic |
-| ydata-profiling | 4.17.0 | MIT | https://github.com/ydataai/ydata-profiling |
-| databricks-sdk | 0.68.0 | Apache 2.0 | https://github.com/databricks/databricks-sdk-py |
-| openpyxl | 3.1.5 | MIT | https://foss.heptapod.net/openpyxl/openpyxl |
-| spacy | 3.8.7 | MIT | https://spacy.io |
-| presidio-analyzer | 2.2.358 | MIT | https://github.com/microsoft/presidio |
-| deprecated | 1.2.13 | MIT | https://github.com/tantale/deprecated |
-| pyyaml | 6.0.1 | MIT | https://pypi.org/project/PyYAML/ |
-| requests | 2.32.5 | Apache 2.0 | https://github.com/psf/requests |
-| nest-asyncio | 1.6.0 | BSD 2-Clause | https://github.com/erdewit/nest_asyncio |
-
-### Python (key transitive dependencies used by the app/agent)
-
-| Package | Version | License | Source |
-|---------|---------|---------|--------|
-| fastapi | 0.135.1 | MIT | https://github.com/tiangolo/fastapi |
-| langgraph | 1.1.3 | MIT | https://github.com/langchain-ai/langgraph |
-| langchain | 1.2.13 | MIT | https://github.com/langchain-ai/langchain |
-| langchain-community | 0.4.1 | MIT | https://github.com/langchain-ai/langchain |
-| grpcio | 1.78.0 | Apache 2.0 | https://github.com/grpc/grpc |
-| uvicorn | 0.42.0 | BSD 3-Clause | https://github.com/encode/uvicorn |
-| tiktoken | 0.12.0 | MIT | https://github.com/openai/tiktoken |
-| scikit-learn | 1.8.0 | BSD 3-Clause | https://github.com/scikit-learn/scikit-learn |
-| numpy | 2.1.3 | BSD 3-Clause | https://github.com/numpy/numpy |
-| pandas | 2.3.3 | BSD 3-Clause | https://github.com/pandas-dev/pandas |
-| scipy | 1.15.3 | BSD 3-Clause | https://github.com/scipy/scipy |
-| matplotlib | 3.10.0 | PSF | https://github.com/matplotlib/matplotlib |
-
-### JavaScript (frontend)
-
-| Package | Version | License | Source |
-|---------|---------|---------|--------|
-| react | ^19.0.0 | MIT | https://github.com/facebook/react |
-| react-dom | ^19.0.0 | MIT | https://github.com/facebook/react |
-| react-force-graph-2d | ^1.26.0 | MIT | https://github.com/vasturiano/react-force-graph |
-| recharts | ^2.15.0 | MIT | https://github.com/recharts/recharts |
-| tailwindcss | ^3.4.0 | MIT | https://github.com/tailwindlabs/tailwindcss |
-| vite | ^6.0.0 | MIT | https://github.com/vitejs/vite |
-
-All packages use permissive licenses (Apache 2.0, MIT, BSD, PSF).
+All packages use permissive licenses (Apache 2.0, MIT, BSD, PSF). See [docs/DEPENDENCIES.md](docs/DEPENDENCIES.md) for the full package analysis.
 
 ## License
 

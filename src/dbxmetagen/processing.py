@@ -1959,6 +1959,8 @@ _lineage_cache: Dict[str, Optional[Dict[str, Any]]] = {}
 
 _column_types_cache: Dict[str, Dict[str, str]] = {}
 
+_customer_context_cache: List[Dict[str, Any]] = []
+
 
 def _mark_lineage_unavailable(exc: Exception) -> None:
     """Log once and suppress further system.access.table_lineage attempts."""
@@ -2166,6 +2168,8 @@ def get_domain_classification(
         prompt.enrich_from_knowledge_base()
     if getattr(config, "use_ontology_context", False):
         prompt.enrich_from_ontology()
+    if getattr(config, "use_customer_context", False) and _customer_context_cache:
+        prompt.enrich_from_customer_context(_customer_context_cache)
     prompt_messages = prompt.create_prompt_template()
 
     # Check prompt length to avoid excessive token usage
@@ -2191,6 +2195,9 @@ def get_domain_classification(
 
     if getattr(config, "include_lineage", False):
         table_metadata["lineage"] = prompt.prompt_content.get("lineage")
+
+    if getattr(config, "use_customer_context", False):
+        table_metadata["customer_context"] = prompt.prompt_content.get("customer_context")
 
     # Classify the table
     classification_result = classify_table_domain(
@@ -2317,6 +2324,8 @@ def get_generated_metadata_data_aware(
             prompt.enrich_from_knowledge_base()
         if getattr(config, "use_ontology_context", False):
             prompt.enrich_from_ontology()
+        if getattr(config, "use_customer_context", False) and _customer_context_cache:
+            prompt.enrich_from_customer_context(_customer_context_cache)
         prompt_messages = prompt.create_prompt_template()
         check_token_length_against_num_words(prompt_messages, config)
         if config.registered_model_name != "default":
@@ -2395,18 +2404,12 @@ def review_and_generate_metadata(
         if override_data:
             tokenized_full_table_name = replace_catalog_name(config, full_table_name)
             # Validate against actual source table columns
-            try:
-                spark = SparkSession.builder.getOrCreate()
-                source_cols_lower = {
-                    f.name.lower() for f in spark.table(full_table_name).schema.fields
-                }
-            except Exception:
-                source_cols_lower = None
+            spark = SparkSession.builder.getOrCreate()
+            source_cols_lower = {
+                f.name.lower() for f in spark.table(full_table_name).schema.fields
+            }
             for col_name, values in override_data.items():
-                if (
-                    source_cols_lower is not None
-                    and col_name.lower() not in source_cols_lower
-                ):
+                if col_name.lower() not in source_cols_lower:
                     logger.warning(
                         "Override column '%s' not in source table %s -- skipping synthetic row",
                         col_name,
@@ -3278,6 +3281,11 @@ _OPTIONAL_TABLE_DEPS = {
         "warn_flags": [],
         "created_by": "Build Knowledge Base step",
     },
+    "customer_context": {
+        "disable_flags": ["use_customer_context"],
+        "warn_flags": [],
+        "created_by": "Build Customer Context step or App UI",
+    },
 }
 
 
@@ -3347,6 +3355,15 @@ def generate_and_persist_metadata(config: Any) -> None:
     global _column_types_cache
     if config.table_names and len(config.table_names) > 1:
         _column_types_cache = prefetch_column_types(spark, config.table_names)
+
+    global _customer_context_cache
+    if getattr(config, "use_customer_context", False):
+        from dbxmetagen.customer_context import prefetch_customer_context
+        _customer_context_cache = prefetch_customer_context(
+            spark, config.catalog_name, config.schema_name
+        )
+    else:
+        _customer_context_cache = []
 
     skipped_tables = []
 

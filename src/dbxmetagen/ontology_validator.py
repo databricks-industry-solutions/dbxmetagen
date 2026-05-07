@@ -844,7 +844,7 @@ Evaluate each entity independently. Consider whether table purpose, columns, and
                 ON target.entity_id = source.entity_id
                 WHEN MATCHED THEN UPDATE SET
                     target.validated = CAST(source.validated AS BOOLEAN),
-                    target.confidence = target.confidence + CAST(source.confidence_adjustment AS DOUBLE),
+                    target.confidence = GREATEST(0.0, target.confidence + CAST(source.confidence_adjustment AS DOUBLE)),
                     target.validation_notes = source.validation_notes,
                     target.updated_at = current_timestamp()
             """)
@@ -907,7 +907,7 @@ Evaluate each entity independently. Consider whether table purpose, columns, and
                     UPDATE {self.config.fully_qualified_entities}
                     SET 
                         validated = {is_valid},
-                        confidence = confidence + {confidence_adj},
+                        confidence = GREATEST(0.0, confidence + {confidence_adj}),
                         validation_notes = '{reasoning.replace("'", "''")}',
                         updated_at = current_timestamp()
                     WHERE entity_id = '{entity_id}'

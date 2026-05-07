@@ -28,6 +28,7 @@ dbutils.widgets.text("warehouse_id", "", "SQL Warehouse ID")
 dbutils.widgets.text("repo_path", "", "Repo root (e.g. /Workspace/Repos/<user>/dbxmetagen)")
 dbutils.widgets.text("volume_path", "", "Volume for wheel (e.g. /Volumes/cat/sch/vol)")
 dbutils.widgets.text("app_name", "dbxmetagen-app", "App Name")
+dbutils.widgets.dropdown("enable_obo", "false", ["false", "true"], "Enable OBO")
 dbutils.widgets.dropdown("mode", "deploy", ["deploy", "destroy"], "Mode")
 
 catalog_name = dbutils.widgets.get("catalog_name")
@@ -36,6 +37,7 @@ warehouse_id = dbutils.widgets.get("warehouse_id")
 repo_path = dbutils.widgets.get("repo_path").rstrip("/")
 volume_path = dbutils.widgets.get("volume_path").rstrip("/")
 app_name = dbutils.widgets.get("app_name")
+enable_obo = dbutils.widgets.get("enable_obo")
 mode = dbutils.widgets.get("mode")
 
 assert catalog_name, "catalog_name is required"
@@ -90,9 +92,10 @@ JOB_ENV_MAP = {
     "METADATA_SERVERLESS_JOB_ID": "metadata_serverless_job",
     "METADATA_PARALLEL_SERVERLESS_JOB_ID": "parallel_serverless_job",
     "KB_ENRICHED_MODES_JOB_ID": "kb_enriched_modes_job",
+    "SETUP_MCP_SERVERS_JOB_ID": "setup_mcp_servers_job",
 }
 
-def generate_app_yaml(catalog, schema, bound_resource_names):
+def generate_app_yaml(catalog, schema, bound_resource_names, obo="false"):
     """Generate app.yaml, using valueFrom only for resources that are bound."""
     lines = [
         "command:",
@@ -119,11 +122,18 @@ def generate_app_yaml(catalog, schema, bound_resource_names):
         '  - name: VECTOR_SEARCH_ENDPOINT\n    value: "dbxmetagen-vs"',
         '  - name: VECTOR_SEARCH_INDEX\n    value: "metadata_vs_index"',
         '  - name: LLM_MODEL\n    value: "databricks-claude-sonnet-4-6"',
+        f'  - name: ENABLE_OBO\n    value: "{obo}"',
         '  - name: MLFLOW_TRACE_TIMEOUT_SECONDS\n    value: "120"',
     ]
     return "\n".join(lines) + "\n"
 
-REQUIREMENTS_TEMPLATE = """\
+_req_template_path = f"{repo_path}/apps/dbxmetagen-app/app/requirements.txt.template"
+if os.path.exists(_req_template_path):
+    with open(_req_template_path) as _f:
+        REQUIREMENTS_TEMPLATE = _f.read()
+    print(f"Loaded requirements template from repo: {_req_template_path}")
+else:
+    REQUIREMENTS_TEMPLATE = """\
 fastapi>=0.115.0
 uvicorn>=0.32.0
 databricks-sdk==0.68.0
@@ -141,6 +151,7 @@ databricks-vectorsearch>=0.40
 sqlparse>=0.5.0
 ./__WHL_NAME__
 """
+    print("WARNING: requirements.txt.template not found in repo, using embedded fallback")
 
 USER_API_SCOPES = [
     "files.files",
@@ -165,6 +176,7 @@ RESOURCE_TO_JOB_SUFFIX = {
     "metadata_serverless_job": "metadata_serverless_job",
     "parallel_serverless_job": "parallel_serverless_job",
     "kb_enriched_modes_job": "kb_enriched_modes_job",
+    "setup_mcp_servers_job": "setup_mcp_servers",
 }
 
 # COMMAND ----------
@@ -329,7 +341,7 @@ wh_resource = AppResource(
 all_resources = [wh_resource] + job_resources
 bound_names = {r.name for r in all_resources}
 
-app_yaml = generate_app_yaml(catalog_name, schema_name, bound_names)
+app_yaml = generate_app_yaml(catalog_name, schema_name, bound_names, obo=enable_obo)
 with open(f"{deploy_dir}/app.yaml", "w") as f:
     f.write(app_yaml)
 print(f"Generated app.yaml ({len(bound_names)} bound resources)")
@@ -437,6 +449,36 @@ if app_spn_uuid:
 else:
     print("WARNING: Could not resolve app SPN -- skipping UC grants")
     print("  Grant manually after the app SPN is available.")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### Grant CAN_USE on Vector Search endpoint
+
+# COMMAND ----------
+
+if app_spn_uuid:
+    vs_endpoint_name = "dbxmetagen-vs"
+    try:
+        from databricks.sdk.service.iam import AccessControlRequest, Permission
+        vs_ep = w.vector_search_endpoints.get_endpoint(vs_endpoint_name)
+        ep_id = vs_ep.id
+        if ep_id:
+            w.permissions.update(
+                request_object_type="vector-search-endpoints",
+                request_object_id=ep_id,
+                access_control_list=[AccessControlRequest(
+                    service_principal_name=app_spn_uuid,
+                    permission_level=Permission.CAN_USE)])
+            print(f"  Granted CAN_USE on VS endpoint '{vs_endpoint_name}' to app SPN")
+        else:
+            print(f"  WARNING: VS endpoint '{vs_endpoint_name}' has no numeric ID -- grant CAN_USE manually")
+    except NotFound:
+        print(f"  VS endpoint '{vs_endpoint_name}' not found -- skipping grant")
+    except Exception as e:
+        print(f"  WARNING: Could not grant VS endpoint permissions: {e}")
+else:
+    print("Skipping VS endpoint grant (no app SPN resolved)")
 
 # COMMAND ----------
 

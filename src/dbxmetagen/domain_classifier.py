@@ -488,6 +488,8 @@ def _build_user_message(table_name: str, table_metadata: Dict[str, Any]) -> str:
         msg += f"\nTable Constraints:\n{table_metadata['table_constraints']}\n"
     if table_metadata.get("column_metadata"):
         msg += f"\nColumn Metadata:\n{json.dumps(table_metadata['column_metadata'], indent=2)}\n"
+    if table_metadata.get("customer_context"):
+        msg += f"\nCustomer Context:\n{table_metadata['customer_context']}\n"
     return msg
 
 
@@ -874,6 +876,11 @@ def classify_table_domain(
                 max_tokens=max_tokens,
             )
     except Exception as e:
+        err_str = str(e)
+        # Non-recoverable errors: misconfiguration that will fail for every table
+        if any(code in err_str for code in ("401", "403", "404")) and \
+           any(kw in err_str.lower() for kw in ("endpoint", "not found", "unauthorized", "forbidden", "permission")):
+            raise RuntimeError(f"Model endpoint error for {table_name}: {e}") from e
         logger.error("Error classifying table %s: %s", table_name, e)
         return _error_result(table_name, e)
 

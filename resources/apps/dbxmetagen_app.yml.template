@@ -80,7 +80,9 @@ resources:
           job:
             id: ${resources.jobs.metadata_parallel_serverless_job.id}
             permission: CAN_MANAGE_RUN
-      user_api_scopes:
-        - "files.files"
-        - "sql.statement-execution"
+        - name: setup_mcp_servers_job
+          job:
+            id: ${resources.jobs.setup_mcp_servers_job.id}
+            permission: CAN_MANAGE_RUN
+__USER_API_SCOPES__
 __APP_PERMISSIONS__

@@ -324,13 +324,19 @@ class SemanticLayerGenerator:
                 "table_knowledge_base is empty or missing -- run metadata generation first"
             )
 
-        # Column knowledge base (required)
-        columns = self._safe_collect(
-            f"SELECT table_name, column_name, data_type, comment, classification FROM {fq('column_knowledge_base')}"
-        )
+        # Column knowledge base (required) -- paginated by table batch to avoid OOM
+        _CKB_TABLE_BATCH = 500
+        table_names_list = [t["table_name"] for t in tables]
         col_by_table: dict[str, list] = {}
-        for c in columns:
-            col_by_table.setdefault(c["table_name"], []).append(c)
+        for i in range(0, len(table_names_list), _CKB_TABLE_BATCH):
+            batch_names = table_names_list[i : i + _CKB_TABLE_BATCH]
+            placeholders = ", ".join(f"'{n}'" for n in batch_names)
+            batch_cols = self._safe_collect(
+                f"SELECT table_name, column_name, data_type, comment, classification "
+                f"FROM {fq('column_knowledge_base')} WHERE table_name IN ({placeholders})"
+            )
+            for c in batch_cols:
+                col_by_table.setdefault(c["table_name"], []).append(c)
 
         # FK predictions (optional; filter by confidence only - fk_predictions has no is_fk column)
         fk_rows = self._safe_collect(
@@ -1585,14 +1591,19 @@ OUTPUT (one JSON object only, no array, no explanation):"""
         return examples
 
     def create_genie_space(self, display_name: str, warehouse_id: str) -> Optional[str]:
-        """Assemble a Genie space from applied metric views and deploy via the REST API.
+        """Build a Genie space from applied metric views and deploy via the REST API.
 
-        Gathers applied MV definitions, KB/FK/ontology/graph context via
-        ``GenieContextAssembler``, constructs a v2 ``serialized_space`` (data
-        sources, instructions, join specs, SQL snippets, example SQL, sample
-        questions), POSTs to the Genie spaces endpoint, and writes the resulting
-        ``genie_space_id`` back to the definitions table. Returns the space_id
-        or None on failure.
+        This is the **notebook/job path** -- a simplified builder that reads
+        applied MVs, KB, FK predictions, and ontology entities directly via
+        Spark SQL, assembles a Genie payload dict, and POSTs it to the Genie
+        spaces endpoint.  It does *not* use ``GenieContextAssembler``,
+        ``run_genie_agent``, or ``build_serialized_space`` from ``genie/``.
+
+        For the full-featured Genie builder with 3-phase LLM agent, Pydantic
+        schema normalization, join merging, and deploy retries, use the in-app
+        ``/api/genie/create`` endpoint (backed by ``src/dbxmetagen/genie/*``).
+
+        Returns the ``genie_space_id`` or None on failure.
         """
         fq = self.config.fq
 

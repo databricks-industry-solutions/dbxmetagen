@@ -305,6 +305,20 @@ class TestMergeSQLGeneration:
         assert "has_phi" in merge_sql
         assert "created_at" in merge_sql
 
+    def test_merge_preserves_reviewed_comment(self):
+        merge_sql = self._get_merge_sql()
+        assert "target.review_updated_at IS NOT NULL" in merge_sql
+        assert "target.review_updated_at > source.updated_at" in merge_sql
+        assert "THEN target.comment" in merge_sql
+
+    def test_merge_preserves_reviewed_domain(self):
+        merge_sql = self._get_merge_sql()
+        assert "THEN target.domain" in merge_sql
+
+    def test_merge_preserves_reviewed_subdomain(self):
+        merge_sql = self._get_merge_sql()
+        assert "THEN target.subdomain" in merge_sql
+
 
 class TestReadSourceDataQuery:
     """Test that source data query is correct."""

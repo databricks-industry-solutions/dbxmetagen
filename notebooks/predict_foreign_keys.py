@@ -31,6 +31,8 @@ dbutils.widgets.text("incremental", "true", "Incremental embedding path only (tr
 dbutils.widgets.text("max_ai_candidates", "200", "Max rows sent to AI_QUERY")
 dbutils.widgets.text("rule_score_min_for_ai", "0.50", "Min rule score to qualify for AI judge")
 dbutils.widgets.text("max_candidates_per_table_pair", "5", "Max candidates per table pair (name/ontology)")
+dbutils.widgets.text("system_column_exclude_patterns", "", "Regex patterns to exclude system columns from FK boosting (comma-separated, empty=defaults)")
+dbutils.widgets.text("sweep_stale_edges", "false", "Sweep stale edges")
 
 catalog_name = dbutils.widgets.get("catalog_name")
 schema_name = dbutils.widgets.get("schema_name")
@@ -50,6 +52,9 @@ incremental = dbutils.widgets.get("incremental").lower() == "true"
 max_ai_candidates = int(dbutils.widgets.get("max_ai_candidates"))
 rule_score_min_for_ai = float(dbutils.widgets.get("rule_score_min_for_ai"))
 max_candidates_per_table_pair = int(dbutils.widgets.get("max_candidates_per_table_pair"))
+_sys_col_raw = dbutils.widgets.get("system_column_exclude_patterns").strip()
+system_column_patterns = tuple(p.strip() for p in _sys_col_raw.split(",") if p.strip()) if _sys_col_raw else None
+sweep_stale = dbutils.widgets.get("sweep_stale_edges").strip().lower() in ("true", "1", "yes")
 
 if not catalog_name or not schema_name:
     raise ValueError("Both catalog_name and schema_name are required")
@@ -73,7 +78,7 @@ sys.path.append("../src")
 
 from dbxmetagen.fk_prediction import predict_foreign_keys
 
-result = predict_foreign_keys(
+_fk_kwargs = dict(
     spark=spark,
     catalog_name=catalog_name,
     schema_name=schema_name,
@@ -94,6 +99,10 @@ result = predict_foreign_keys(
     rule_score_min_for_ai=rule_score_min_for_ai,
     max_candidates_per_table_pair=max_candidates_per_table_pair,
 )
+if system_column_patterns is not None:
+    _fk_kwargs["system_column_patterns"] = system_column_patterns
+_fk_kwargs["sweep_stale"] = sweep_stale
+result = predict_foreign_keys(**_fk_kwargs)
 
 print("FK prediction complete")
 if result.get("dry_run"):

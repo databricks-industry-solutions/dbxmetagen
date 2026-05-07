@@ -10,8 +10,8 @@ as a tie-breaker, with optional skip-AI for high-trust declared/query pairs.
 
 import logging
 import warnings
-from dataclasses import dataclass
-from typing import Any, Dict
+from dataclasses import dataclass, field
+from typing import Any, Dict, Tuple
 
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
@@ -29,6 +29,33 @@ SR_NAME = 3
 SR_ONTOLOGY = 4
 SR_EMBEDDING = 5
 
+_DEFAULT_SYSTEM_COL_PATTERNS: Tuple[str, ...] = (
+    r"^_",
+    r"(batch|load|etl|pipeline|ingestion|run)_(id|key)$",
+    r"(created|updated|modified|inserted)_(at|by|on|date|time)$",
+    r"(source_file|partition|shard|task)_(id|key|name)$",
+    r"^(row_number|row_id|row_hash|checksum|hash_key)$",
+)
+
+_FK_EXCLUDED_DTYPES = (
+    "float", "double", "decimal", "boolean", "date", "timestamp",
+    "timestamp_ntz", "binary", "variant", "struct", "array", "map",
+)
+
+def _dtype_exclusion_sql() -> str:
+    """SQL IN-list for data types that can never be foreign keys."""
+    return ", ".join(f"'{d}'" for d in _FK_EXCLUDED_DTYPES)
+
+
+def _dtype_excluded(col_expr: str) -> str:
+    """SQL predicate that returns TRUE when *col_expr* is an excluded FK dtype.
+
+    Strips parameterized suffixes (e.g. ``decimal(38,0)`` -> ``decimal``) so
+    that the check works regardless of how Unity Catalog reports the type.
+    """
+    in_list = _dtype_exclusion_sql()
+    return f"ELEMENT_AT(SPLIT(LOWER({col_expr}), '\\\\('), 1) IN ({in_list})"
+
 
 @dataclass
 class FKPredictionConfig:
@@ -41,7 +68,7 @@ class FKPredictionConfig:
     ontology_relationships_table: str = "ontology_relationships"
     column_properties_table: str = "ontology_column_properties"
     predictions_table: str = "fk_predictions"
-    column_similarity_threshold: float = 0.85
+    column_similarity_threshold: float = 0.80
     table_similarity_threshold: float = 0.9
     duplicate_table_similarity_threshold: float = 0.97
     cross_block_column_similarity_min: float = 0.92
@@ -57,8 +84,10 @@ class FKPredictionConfig:
     rule_score_min_for_ai: float = 0.50
     incremental: bool = True
     max_candidates_per_table_pair: int = 5
+    max_ontology_table_pairs: int = 50_000
     cardinality_sample_rows: int = 100000
     max_ai_candidates: int = 200
+    system_column_patterns: Tuple[str, ...] = field(default_factory=lambda: _DEFAULT_SYSTEM_COL_PATTERNS)
 
     def fq(self, table: str) -> str:
         return f"{self.catalog_name}.{self.schema_name}.{table}"
@@ -208,6 +237,8 @@ class FKPredictor:
             FROM col_sim_raw cs
             JOIN {nodes} n1 ON cs.col_a = n1.id
             JOIN {nodes} n2 ON cs.col_b = n2.id
+            WHERE NOT {_dtype_excluded('n1.data_type')}
+              AND NOT {_dtype_excluded('n2.data_type')}
         ),
         with_blocks AS (
             SELECT wp.*,
@@ -251,8 +282,15 @@ class FKPredictor:
     # Step 1a: Name-based FK candidates (no embedding required)
     # ------------------------------------------------------------------
     def get_name_based_candidates(self) -> DataFrame:
-        """Generate FK candidates from column naming conventions like <table>_id -> id."""
+        """Generate FK candidates from column naming conventions.
+
+        Three matching strategies:
+        1. Classic: fk_col (e.g. user_id) -> pk col named 'id'/'pk' on matching table
+        2. Same-name: columns ending in _id/_key/_code with identical names across tables
+        3. Prefix-stripped: fk_col stem matches target table after stripping dim_/fct_ prefixes
+        """
         nodes = self.config.fq(self.config.nodes_table)
+        k = self.config.max_candidates_per_table_pair
         sql = f"""
         WITH cols AS (
             SELECT id, parent_id, data_type,
@@ -260,15 +298,17 @@ class FKPredictor:
                    LOWER(ELEMENT_AT(SPLIT(parent_id, '\\\\.'), -1)) AS tbl_short
             FROM {nodes}
             WHERE node_type = 'column'
+              AND NOT {_dtype_excluded('data_type')}
         ),
         pk_cols AS (
             SELECT * FROM cols WHERE col_short IN ('id', 'pk')
         ),
         fk_cols AS (
             SELECT * FROM cols
-            WHERE col_short RLIKE '(_id|_key)$' AND col_short NOT IN ('id', 'pk')
+            WHERE col_short RLIKE '(_id|_key|_code)$' AND col_short NOT IN ('id', 'pk')
         ),
-        matches AS (
+        -- Strategy 1: classic fk_col -> id/pk on matching table
+        classic_matches AS (
             SELECT
                 fk.id AS col_a, pk.id AS col_b,
                 fk.parent_id AS table_a, pk.parent_id AS table_b,
@@ -278,15 +318,39 @@ class FKPredictor:
             JOIN pk_cols pk
               ON fk.parent_id != pk.parent_id
               AND (
-                  REPLACE(REPLACE(fk.col_short, '_id', ''), '_key', '')
+                  REPLACE(REPLACE(REPLACE(fk.col_short, '_id', ''), '_key', ''), '_code', '')
                   = REGEXP_REPLACE(pk.tbl_short, 's$', '')
-                  OR REPLACE(REPLACE(fk.col_short, '_id', ''), '_key', '')
+                  OR REPLACE(REPLACE(REPLACE(fk.col_short, '_id', ''), '_key', ''), '_code', '')
                   = pk.tbl_short
               )
+        ),
+        -- Strategy 2: same-name _id/_key/_code columns across different tables
+        same_name_matches AS (
+            SELECT
+                c1.id AS col_a, c2.id AS col_b,
+                c1.parent_id AS table_a, c2.parent_id AS table_b,
+                c1.data_type AS dtype_a, c2.data_type AS dtype_b,
+                0.0 AS col_similarity, 0.0 AS table_similarity
+            FROM fk_cols c1
+            JOIN fk_cols c2
+              ON c1.col_short = c2.col_short
+              AND c1.parent_id != c2.parent_id
+              AND c1.id < c2.id
+        ),
+        all_matches AS (
+            SELECT * FROM classic_matches
+            UNION
+            SELECT * FROM same_name_matches
+        ),
+        capped AS (
+            SELECT *, ROW_NUMBER() OVER (
+                PARTITION BY table_a, table_b ORDER BY col_similarity DESC
+            ) AS _rn
+            FROM all_matches
         )
         SELECT LEAST(col_a, col_b) AS col_a, GREATEST(col_a, col_b) AS col_b,
                col_similarity, table_a, table_b, dtype_a, dtype_b, table_similarity
-        FROM matches
+        FROM capped WHERE _rn <= {k}
         """
         try:
             df = self.spark.sql(sql)
@@ -331,6 +395,7 @@ class FKPredictor:
                   = CONCAT_WS('.', ELEMENT_AT(SPLIT(dt.table_name, '\\.'), 1),
                     ELEMENT_AT(SPLIT(dt.table_name, '\\.'), 2))"""
 
+        max_tp = self.config.max_ontology_table_pairs
         sql = f"""
         WITH rels AS (
             SELECT DISTINCT src_entity_type, dst_entity_type
@@ -341,17 +406,23 @@ class FKPredictor:
             SELECT entity_type, EXPLODE(source_tables) AS table_name FROM {ont_ent}
         ),
         table_pairs AS (
-            SELECT st.table_name AS table_a, dt.table_name AS table_b
-            FROM rels r
-            JOIN src_tables st ON r.src_entity_type = st.entity_type
-            JOIN src_tables dt ON r.dst_entity_type = dt.entity_type
-            WHERE st.table_name != dt.table_name
-            {block_filter}
+            SELECT table_a, table_b FROM (
+                SELECT st.table_name AS table_a, dt.table_name AS table_b
+                FROM rels r
+                JOIN src_tables st ON r.src_entity_type = st.entity_type
+                JOIN src_tables dt ON r.dst_entity_type = dt.entity_type
+                WHERE st.table_name != dt.table_name
+                {block_filter}
+                ORDER BY st.table_name, dt.table_name
+            ) _tp
+            LIMIT {max_tp}
         ),
         cols AS (
             SELECT id, parent_id, data_type,
                    LOWER(ELEMENT_AT(SPLIT(id, '\\.'), -1)) AS col_short
-            FROM {nodes} WHERE node_type = 'column'
+            FROM {nodes}
+            WHERE node_type = 'column'
+              AND NOT {_dtype_excluded('data_type')}
         ),
         id_like_cols AS (
             SELECT * FROM cols WHERE col_short RLIKE '(_id|_key|_code)$' OR col_short = 'id'
@@ -498,10 +569,8 @@ class FKPredictor:
             JOIN cols da ON da.parent_id = ap.table_b
                          AND da.col_short = LOWER(ap.dst_col)
             WHERE sa.data_type IS NOT NULL AND da.data_type IS NOT NULL
-              AND NOT (
-                sa.data_type IN ('timestamp', 'date', 'boolean', 'float', 'double', 'binary')
-                OR da.data_type IN ('timestamp', 'date', 'boolean', 'float', 'double', 'binary')
-              )
+              AND NOT {_dtype_excluded('sa.data_type')}
+              AND NOT {_dtype_excluded('da.data_type')}
         ),
         capped AS (
             SELECT *, ROW_NUMBER() OVER (
@@ -531,51 +600,41 @@ class FKPredictor:
     def get_declared_fk_candidates(self) -> DataFrame:
         """Emit candidates from declared FKs in extended_table_metadata.foreign_keys."""
         ext = self.config.fq("extended_table_metadata")
-        nodes = self.config.fq(self.config.nodes_table)
-        try:
-            rows = self.spark.sql(
-                f"SELECT table_name, foreign_keys FROM {ext} "
-                f"WHERE foreign_keys IS NOT NULL AND SIZE(foreign_keys) > 0"
-            ).collect()
-        except Exception:
-            return self.spark.createDataFrame(
-                [], "col_a STRING, col_b STRING, table_a STRING, table_b STRING, "
-                "dtype_a STRING, dtype_b STRING, col_similarity DOUBLE, table_similarity DOUBLE, "
-                "source_rank INT, query_hit_count INT"
-            )
-        pairs = []
-        for r in rows:
-            src_table = r.table_name
-            for fk_col, ref_target in (r.foreign_keys or {}).items():
-                if not ref_target:
-                    continue
-                parts = ref_target.split(".")
-                if len(parts) < 4:
-                    continue
-                ref_table = ".".join(parts[:3])
-                ref_col = parts[3]
-                if src_table == ref_table:
-                    continue
-                col_a = f"{src_table}.{fk_col}"
-                col_b = f"{ref_table}.{ref_col}"
-                pairs.append((col_a, col_b, src_table, ref_table, "", "", 1.0, 0.0))
-        if not pairs:
-            return self.spark.createDataFrame(
-                [], "col_a STRING, col_b STRING, table_a STRING, table_b STRING, "
-                "dtype_a STRING, dtype_b STRING, col_similarity DOUBLE, table_similarity DOUBLE, "
-                "source_rank INT, query_hit_count INT"
-            )
-        from pyspark.sql.types import StructType, StructField, StringType, DoubleType
-        schema = StructType([
-            StructField("col_a", StringType()), StructField("col_b", StringType()),
-            StructField("table_a", StringType()), StructField("table_b", StringType()),
-            StructField("dtype_a", StringType()), StructField("dtype_b", StringType()),
-            StructField("col_similarity", DoubleType()), StructField("table_similarity", DoubleType()),
-        ])
-        df = self.spark.createDataFrame(pairs, schema)
-        return df.withColumn("source_rank", F.lit(SR_DECLARED)).withColumn(
-            "query_hit_count", F.lit(0)
+        empty_schema = (
+            "col_a STRING, col_b STRING, table_a STRING, table_b STRING, "
+            "dtype_a STRING, dtype_b STRING, col_similarity DOUBLE, table_similarity DOUBLE, "
+            "source_rank INT, query_hit_count INT"
         )
+        try:
+            df = self.spark.sql(f"""
+                WITH fk_exploded AS (
+                    SELECT table_name, fk_col, ref_target
+                    FROM {ext}
+                    LATERAL VIEW EXPLODE(foreign_keys) AS fk_col, ref_target
+                    WHERE foreign_keys IS NOT NULL AND SIZE(foreign_keys) > 0
+                ),
+                parsed AS (
+                    SELECT table_name, fk_col,
+                           SPLIT(ref_target, '\\\\.') AS parts
+                    FROM fk_exploded
+                    WHERE ref_target IS NOT NULL AND ref_target != ''
+                )
+                SELECT
+                    CONCAT(table_name, '.', fk_col) AS col_a,
+                    CONCAT(parts[0], '.', parts[1], '.', parts[2], '.', parts[3]) AS col_b,
+                    table_name AS table_a,
+                    CONCAT(parts[0], '.', parts[1], '.', parts[2]) AS table_b,
+                    '' AS dtype_a, '' AS dtype_b,
+                    1.0 AS col_similarity, 0.0 AS table_similarity
+                FROM parsed
+                WHERE SIZE(parts) >= 4
+                  AND CONCAT(parts[0], '.', parts[1], '.', parts[2]) != table_name
+            """)
+            return df.withColumn("source_rank", F.lit(SR_DECLARED)).withColumn(
+                "query_hit_count", F.lit(0)
+            )
+        except Exception:
+            return self.spark.createDataFrame([], empty_schema)
 
     # ------------------------------------------------------------------
     # Step 1c-post: Query history join candidates
@@ -716,47 +775,142 @@ class FKPredictor:
     # Step 1d: Lineage-based candidate boosting
     # ------------------------------------------------------------------
     def add_lineage_signal(self, candidates: DataFrame) -> DataFrame:
-        """Score candidates based on table lineage overlap from extended_table_metadata."""
+        """Score candidates based on table lineage overlap from extended_table_metadata.
+
+        Scoring rules (order matters):
+        - Direct neighbor (either direction in upstream/downstream): 1.0
+        - Shared upstream tables (intersection non-empty): 0.6
+        - Otherwise: 0.0
+        """
         ext = self.config.fq("extended_table_metadata")
         try:
-            lineage_rows = self.spark.sql(
+            lineage_df = self.spark.sql(
                 f"SELECT table_name, upstream_tables, downstream_tables FROM {ext}"
-            ).collect()
+            )
+            lineage_df.cache()
+            lineage_df.count()
         except Exception:
             return candidates.withColumn("lineage_score", F.lit(0.0))
 
-        upstream_map: dict = {}
-        downstream_map: dict = {}
-        for r in lineage_rows:
-            upstream_map[r.table_name] = set(r.upstream_tables or [])
-            downstream_map[r.table_name] = set(r.downstream_tables or [])
+        pairs = candidates.select("table_a", "table_b").distinct()
+        lin_a = lineage_df.alias("la")
+        lin_b = lineage_df.alias("lb")
 
-        def _score(tbl_a: str, tbl_b: str) -> float:
-            up_a, up_b = upstream_map.get(tbl_a, set()), upstream_map.get(tbl_b, set())
-            dn_a, dn_b = downstream_map.get(tbl_a, set()), downstream_map.get(tbl_b, set())
-            if tbl_b in up_a or tbl_b in dn_a or tbl_a in up_b or tbl_a in dn_b:
-                return 1.0
-            if up_a & up_b:
-                return 0.6
-            return 0.0
+        scored = (
+            pairs
+            .join(lin_a, pairs.table_a == F.col("la.table_name"), "left")
+            .join(lin_b, pairs.table_b == F.col("lb.table_name"), "left")
+            .select(
+                pairs.table_a.alias("_la"),
+                pairs.table_b.alias("_lb"),
+                F.when(
+                    F.array_contains(F.coalesce(F.col("la.upstream_tables"), F.array()), pairs.table_b)
+                    | F.array_contains(F.coalesce(F.col("la.downstream_tables"), F.array()), pairs.table_b)
+                    | F.array_contains(F.coalesce(F.col("lb.upstream_tables"), F.array()), pairs.table_a)
+                    | F.array_contains(F.coalesce(F.col("lb.downstream_tables"), F.array()), pairs.table_a),
+                    F.lit(1.0),
+                ).when(
+                    F.size(F.array_intersect(
+                        F.coalesce(F.col("la.upstream_tables"), F.array()),
+                        F.coalesce(F.col("lb.upstream_tables"), F.array()),
+                    )) > 0,
+                    F.lit(0.6),
+                ).otherwise(F.lit(0.0)).alias("lineage_score"),
+            )
+        )
 
-        pairs = candidates.select("table_a", "table_b").distinct().collect()
-        scores = [(r.table_a, r.table_b, _score(r.table_a, r.table_b)) for r in pairs]
-        if not scores:
-            return candidates.withColumn("lineage_score", F.lit(0.0))
-
-        from pyspark.sql.types import StructType, StructField, StringType, DoubleType
-        schema = StructType([
-            StructField("_la", StringType()), StructField("_lb", StringType()),
-            StructField("lineage_score", DoubleType()),
-        ])
-        lin_df = self.spark.createDataFrame(scores, schema)
         result = candidates.join(
-            lin_df,
-            (candidates.table_a == lin_df._la) & (candidates.table_b == lin_df._lb),
+            scored,
+            (candidates.table_a == scored._la) & (candidates.table_b == scored._lb),
             "left",
         ).drop("_la", "_lb")
+        lineage_df.unpersist()
         return result.withColumn("lineage_score", F.coalesce(F.col("lineage_score"), F.lit(0.0)))
+
+    # ------------------------------------------------------------------
+    # Step 1e: Domain-based candidate boosting
+    # ------------------------------------------------------------------
+    def add_domain_signal(self, candidates: DataFrame) -> DataFrame:
+        """Score candidates based on shared domain/subdomain from metadata_generation_log."""
+        log_table = self.config.fq("metadata_generation_log")
+        try:
+            dom_df = self.spark.sql(f"""
+                SELECT table_name, domain, subdomain FROM (
+                    SELECT table_name, domain, subdomain,
+                           ROW_NUMBER() OVER (PARTITION BY table_name ORDER BY _created_at DESC) AS rn
+                    FROM {log_table}
+                    WHERE metadata_type = 'domain'
+                      AND domain IS NOT NULL AND domain != 'unknown'
+                      AND (column_name IS NULL OR column_name = 'None')
+                ) WHERE rn = 1
+            """)
+            dom_df = dom_df.select(
+                F.col("table_name").alias("_dom_tbl"),
+                F.col("domain").alias("_dom"),
+                F.col("subdomain").alias("_sub"),
+            )
+        except Exception:
+            return (
+                candidates.withColumn("domain_match", F.lit(0.0))
+                .withColumn("domain_a", F.lit(None).cast("string"))
+                .withColumn("domain_b", F.lit(None).cast("string"))
+            )
+
+        da = dom_df.alias("da")
+        db = dom_df.alias("db")
+        result = (
+            candidates
+            .join(da, candidates.table_a == F.col("da._dom_tbl"), "left")
+            .withColumnRenamed("_dom", "domain_a")
+            .withColumnRenamed("_sub", "subdomain_a")
+            .drop("_dom_tbl")
+            .join(db, candidates.table_b == F.col("db._dom_tbl"), "left")
+            .withColumnRenamed("_dom", "domain_b")
+            .withColumnRenamed("_sub", "subdomain_b")
+            .drop("_dom_tbl")
+        )
+        result = result.withColumn(
+            "domain_match",
+            F.when(
+                F.col("domain_a").isNotNull()
+                & F.col("domain_b").isNotNull()
+                & (F.col("domain_a") == F.col("domain_b"))
+                & (F.col("subdomain_a") == F.col("subdomain_b")),
+                1.0,
+            ).when(
+                F.col("domain_a").isNotNull()
+                & F.col("domain_b").isNotNull()
+                & (F.col("domain_a") == F.col("domain_b")),
+                0.5,
+            ).otherwise(0.0),
+        )
+        return result
+
+    def add_pk_signal(self, candidates: DataFrame) -> DataFrame:
+        """Add is_pk_a / is_pk_b flags from ontology_column_properties primary_key classification."""
+        cp = self.config.fq(self.config.column_properties_table)
+        _default = candidates.withColumn("is_pk_a", F.lit(False)).withColumn("is_pk_b", F.lit(False))
+        try:
+            pk_fqns = [
+                r.pk_fqn for r in self.spark.sql(f"""
+                    SELECT CONCAT(table_name, '.', LOWER(column_name)) AS pk_fqn
+                    FROM {cp}
+                    WHERE property_role = 'primary_key' AND confidence >= 0.5
+                """).collect()
+            ]
+        except Exception:
+            return _default
+        if not pk_fqns:
+            return _default
+        col_a_fqn = F.concat(F.col("table_a"), F.lit("."),
+                             F.lower(F.element_at(F.split(F.col("col_a"), r"\\."), -1)))
+        col_b_fqn = F.concat(F.col("table_b"), F.lit("."),
+                             F.lower(F.element_at(F.split(F.col("col_b"), r"\\."), -1)))
+        return (
+            candidates
+            .withColumn("is_pk_a", col_a_fqn.isin(pk_fqns))
+            .withColumn("is_pk_b", col_b_fqn.isin(pk_fqns))
+        )
 
     # ------------------------------------------------------------------
     # Step 2: Sample values
@@ -824,7 +978,7 @@ class FKPredictor:
         """Try to load pre-computed column stats keyed by FQN col_id (latest snapshot only)."""
         stats: dict = {}
         try:
-            rows = self.spark.sql(
+            df = self.spark.sql(
                 f"SELECT cs.table_name, cs.column_name, cs.distinct_count "
                 f"FROM {self.config.fq('column_profiling_stats')} cs "
                 f"INNER JOIN ("
@@ -835,8 +989,8 @@ class FKPredictor:
                 f"  ) WHERE rn = 1"
                 f") latest ON cs.snapshot_id = latest.snapshot_id "
                 f"  AND cs.table_name = latest.table_name"
-            ).collect()
-            for r in rows:
+            )
+            for r in df.toLocalIterator():
                 stats[f"{r.table_name}.{r.column_name}"] = r.distinct_count
         except Exception:
             pass
@@ -846,14 +1000,14 @@ class FKPredictor:
         """Try to load per-table row counts from profiling_snapshots."""
         counts: dict = {}
         try:
-            rows = self.spark.sql(
+            df = self.spark.sql(
                 f"SELECT table_name, row_count FROM ("
                 f"  SELECT table_name, row_count, ROW_NUMBER() OVER "
                 f"    (PARTITION BY table_name ORDER BY snapshot_time DESC) rn "
                 f"  FROM {self.config.fq('profiling_snapshots')}"
                 f") WHERE rn = 1"
-            ).collect()
-            for r in rows:
+            )
+            for r in df.toLocalIterator():
                 counts[r.table_name] = r.row_count
         except Exception:
             pass
@@ -868,7 +1022,7 @@ class FKPredictor:
         col_b_rows = candidates.select(
             F.col("col_b").alias("col_id"), F.col("table_b").alias("tbl_id")
         ).distinct()
-        all_cols = col_a_rows.unionByName(col_b_rows).distinct().collect()
+        all_cols = list(col_a_rows.unionByName(col_b_rows).distinct().toLocalIterator())
 
         # Try pre-computed profiling stats first
         profiled_distinct = self._load_profiling_stats()
@@ -904,25 +1058,31 @@ class FKPredictor:
                 for ci, _ in cols_list:
                     col_stats[ci] = 0.5
 
-        stats = []
-        for r in candidates.select("col_a", "col_b").distinct().collect():
-            a_ratio = col_stats.get(r.col_a, 0.5)
-            b_ratio = col_stats.get(r.col_b, 0.5)
-            stats.append((r.col_a, r.col_b, max(a_ratio, b_ratio), a_ratio, b_ratio))
-
-        if not stats:
+        if not col_stats:
             return candidates.withColumn("pk_uniqueness", F.lit(0.5)) \
                 .withColumn("_card_ratio_a", F.lit(0.5)) \
                 .withColumn("_card_ratio_b", F.lit(0.5))
 
-        card_df = self.spark.createDataFrame(
-            stats, ["_ca", "_cb", "pk_uniqueness", "_card_ratio_a", "_card_ratio_b"]
+        # Build stats lookup as a broadcast DataFrame -- avoids collecting all pairs
+        from pyspark.sql.types import StructType, StructField, StringType, DoubleType
+        stat_rows = [(k, v) for k, v in col_stats.items()]
+        stat_schema = StructType([
+            StructField("_col_id", StringType()),
+            StructField("_card_ratio", DoubleType()),
+        ])
+        stat_df = F.broadcast(self.spark.createDataFrame(stat_rows, stat_schema))
+        stat_a = stat_df.alias("sa")
+        stat_b = stat_df.alias("sb")
+        result = (
+            candidates
+            .join(stat_a, candidates.col_a == F.col("sa._col_id"), "left")
+            .withColumn("_card_ratio_a", F.coalesce(F.col("sa._card_ratio"), F.lit(0.5)))
+            .drop(F.col("sa._col_id"), F.col("sa._card_ratio"))
+            .join(stat_b, candidates.col_b == F.col("sb._col_id"), "left")
+            .withColumn("_card_ratio_b", F.coalesce(F.col("sb._card_ratio"), F.lit(0.5)))
+            .drop(F.col("sb._col_id"), F.col("sb._card_ratio"))
+            .withColumn("pk_uniqueness", F.greatest(F.col("_card_ratio_a"), F.col("_card_ratio_b")))
         )
-        result = candidates.join(
-            card_df,
-            (candidates.col_a == card_df._ca) & (candidates.col_b == card_df._cb),
-            "left",
-        ).drop("_ca", "_cb")
         return (
             result
             .withColumn("pk_uniqueness", F.coalesce(F.col("pk_uniqueness"), F.lit(0.5)))
@@ -1099,6 +1259,7 @@ class FKPredictor:
 
         entity_match = F.col("entity_match") if "entity_match" in candidates.columns else F.lit(0.0)
         lineage_sig = F.col("lineage_score") if "lineage_score" in candidates.columns else F.lit(0.0)
+        domain_sig = F.col("domain_match") if "domain_match" in candidates.columns else F.lit(0.0)
         bonus = self.config.ontology_match_bonus_weight
 
         source_bonus = (
@@ -1110,10 +1271,38 @@ class FKPredictor:
             .otherwise(0.0)
         )
 
+        # New signals gated by system-column exclusion
+        sys_pattern = "|".join(f"({p})" for p in self.config.system_column_patterns)
+        is_system_col = F.when(
+            col_a_short.rlike(sys_pattern) | col_b_short.rlike(sys_pattern), 1.0
+        ).otherwise(0.0) if sys_pattern else F.lit(0.0)
+        not_system = F.lit(1.0) - is_system_col
+
+        schema_a = F.element_at(F.split(F.col("table_a"), "\\."), 2)
+        schema_b = F.element_at(F.split(F.col("table_b"), "\\."), 2)
+        same_schema = F.when(schema_a == schema_b, 1.0).otherwise(0.0)
+
+        same_domain = domain_sig
+
+        # Nonlinear similarity floor: tiered boost for very high col_similarity
+        sim_floor = F.expr(
+            "CASE WHEN col_similarity >= 0.98 THEN 0.15 "
+            "WHEN col_similarity >= 0.95 THEN 0.10 "
+            "WHEN col_similarity >= 0.90 THEN 0.05 "
+            "ELSE 0.0 END"
+        )
+
+        # PK signal: boost when one side is a known primary key
+        pk_match = F.when(
+            F.coalesce(F.col("is_pk_a"), F.lit(False))
+            | F.coalesce(F.col("is_pk_b"), F.lit(False)),
+            1.0,
+        ).otherwise(0.0)
+
         return candidates.withColumn(
             "rule_score",
             F.round(
-                F.col("col_similarity") * 0.10
+                F.col("col_similarity") * 0.05
                 + dtype_score * 0.15
                 + id_pattern * 0.1
                 + table_name_match * 0.15
@@ -1121,7 +1310,11 @@ class FKPredictor:
                 + overlap * 0.1
                 + entity_match * bonus
                 + lineage_sig * 0.1
-                + source_bonus * 0.15,
+                + source_bonus * 0.10
+                + same_schema * 0.05 * not_system
+                + same_domain * 0.05 * not_system
+                + sim_floor * not_system
+                + pk_match * 0.10 * not_system,
                 4,
             ),
         )
@@ -1492,66 +1685,85 @@ class FKPredictor:
     # ------------------------------------------------------------------
     # Step 6: Graph edges
     # ------------------------------------------------------------------
-    def write_graph_edges(self, df: DataFrame) -> int:
-        """Insert predicted_fk edges into graph_edges."""
-        edges_table = self.config.fq(self.config.edges_table)
-        # Remove old predicted_fk edges
-        self.spark.sql(
-            f"DELETE FROM {edges_table} WHERE relationship = '{self.RELATIONSHIP_TYPE}'"
-        )
+    def write_graph_edges(self, sweep_stale: bool = False) -> int:
+        """Merge predicted_fk edges into graph_edges.
 
-        high_conf = df.filter(
-            F.col("ai_confidence") >= self.config.confidence_threshold
+        Reads from the authoritative fk_predictions table (cumulative via MERGE)
+        so that edges reflect all accumulated predictions, not just the current batch.
+        """
+        edges_table = self.config.fq(self.config.edges_table)
+        # Backfill legacy rows missing source_system/edge_id (idempotent)
+        try:
+            self.spark.sql(
+                f"UPDATE {edges_table} "
+                f"SET source_system = 'fk_predictions', "
+                f"    edge_id = CONCAT_WS('::', src, dst, relationship), "
+                f"    edge_type = '{self.RELATIONSHIP_TYPE}' "
+                f"WHERE relationship = '{self.RELATIONSHIP_TYPE}' "
+                f"  AND (source_system IS NULL OR edge_id IS NULL OR edge_type IS NULL)"
+            )
+        except Exception as e:
+            logger.debug("FK edge backfill skipped (table may not exist): %s", e)
+
+        preds_table = self.config.fq(self.config.predictions_table)
+        high_conf = self.spark.table(preds_table).filter(
+            (F.col("ai_confidence") >= self.config.confidence_threshold)
+            & (F.col("is_fk") == True)
         )
-        # Dedup by (col_a, col_b) keeping highest confidence
-        w = Window.partitionBy("col_a", "col_b").orderBy(F.col("ai_confidence").desc())
+        w = Window.partitionBy("src_column", "dst_column").orderBy(F.col("ai_confidence").desc())
         high_conf = high_conf.withColumn("_rn", F.row_number().over(w)) \
             .filter(F.col("_rn") == 1).drop("_rn")
         edges = high_conf.select(
-            F.col("col_a").alias("src"),
-            F.col("col_b").alias("dst"),
+            F.col("src_column").alias("src"),
+            F.col("dst_column").alias("dst"),
             F.lit(self.RELATIONSHIP_TYPE).alias("relationship"),
             F.col("ai_confidence").alias("weight"),
+            F.concat_ws("::", F.col("src_column"), F.col("dst_column"), F.lit(self.RELATIONSHIP_TYPE)).alias("edge_id"),
+            F.lit(self.RELATIONSHIP_TYPE).alias("edge_type"),
+            F.lit("fk_predictions").alias("source_system"),
             F.current_timestamp().alias("created_at"),
             F.current_timestamp().alias("updated_at"),
         )
-        count = edges.count()
-        if count > 0:
-            edges.write.mode("append").saveAsTable(edges_table)
-        logger.info("Inserted %d predicted_fk edges", count)
+        from dbxmetagen.knowledge_graph import merge_edges
+        count = merge_edges(self.spark, edges_table, edges, source_system="fk_predictions", sweep_stale=sweep_stale)
+        logger.info("Merged %d predicted_fk edges", count)
         return count
 
     # ------------------------------------------------------------------
     # Step 7: DDL generation
     # ------------------------------------------------------------------
-    def generate_ddl(self, df: DataFrame) -> DataFrame:
-        """Generate ALTER TABLE ADD CONSTRAINT FK statements."""
-        high_conf = df.filter(
-            F.col("ai_confidence") >= self.config.confidence_threshold
+    def generate_ddl(self) -> DataFrame:
+        """Generate ALTER TABLE ADD CONSTRAINT FK statements.
+
+        Reads from the authoritative fk_predictions table (cumulative via MERGE)
+        so that DDL reflects all accumulated predictions, not just the current batch.
+        """
+        preds_table = self.config.fq(self.config.predictions_table)
+        high_conf = self.spark.table(preds_table).filter(
+            (F.col("ai_confidence") >= self.config.confidence_threshold)
+            & (F.col("is_fk") == True)
         )
         ddl = high_conf.withColumn(
             "ddl_statement",
             F.concat(
                 F.lit("ALTER TABLE "),
-                F.col("table_a"),
+                F.col("src_table"),
                 F.lit(" ADD CONSTRAINT fk_"),
-                F.regexp_replace(F.col("col_a"), "[^a-zA-Z0-9]", "_"),
+                F.regexp_replace(F.col("src_column"), "[^a-zA-Z0-9]", "_"),
                 F.lit("_"),
-                F.regexp_replace(F.col("col_b"), "[^a-zA-Z0-9]", "_"),
+                F.regexp_replace(F.col("dst_column"), "[^a-zA-Z0-9]", "_"),
                 F.lit(" FOREIGN KEY (`"),
-                F.element_at(F.split(F.col("col_a"), "\\."), -1),
+                F.element_at(F.split(F.col("src_column"), "\\."), -1),
                 F.lit("`) REFERENCES "),
-                F.col("table_b"),
+                F.col("dst_table"),
                 F.lit(" (`"),
-                F.element_at(F.split(F.col("col_b"), "\\."), -1),
+                F.element_at(F.split(F.col("dst_column"), "\\."), -1),
                 F.lit("`);"),
             ),
         )
         target = self.config.fq("fk_ddl_statements")
         ddl_out = ddl.select(
-            F.col("col_a").alias("src_column"),
-            F.col("col_b").alias("dst_column"),
-            "ddl_statement",
+            "src_column", "dst_column", "ddl_statement",
             F.col("ai_confidence").alias("confidence"),
             F.current_timestamp().alias("created_at"),
         )
@@ -1562,15 +1774,15 @@ class FKPredictor:
 
     def apply_ddl(self, ddl_df: DataFrame) -> int:
         """Execute the generated DDL statements."""
-        stmts = ddl_df.select("ddl_statement").collect()
+        total = ddl_df.count()
         applied = 0
-        for row in stmts:
+        for row in ddl_df.select("ddl_statement").toLocalIterator():
             try:
                 self.spark.sql(row.ddl_statement)
                 applied += 1
             except Exception as e:
                 logger.warning("Failed to apply DDL: %s -- %s", row.ddl_statement, e)
-        logger.info("Applied %d/%d FK constraints", applied, len(stmts))
+        logger.info("Applied %d/%d FK constraints", applied, total)
         return applied
 
     # ------------------------------------------------------------------
@@ -1626,7 +1838,7 @@ class FKPredictor:
             ) COMMENT 'Generated FK DDL statements'
         """)
 
-    def run(self) -> Dict[str, Any]:
+    def run(self, sweep_stale: bool = False) -> Dict[str, Any]:
         """Execute the full FK prediction pipeline."""
         logger.info("Starting FK prediction pipeline")
         self._ensure_output_tables()
@@ -1677,6 +1889,8 @@ class FKPredictor:
 
         candidates = self.add_entity_match(candidates)
         candidates = self.add_lineage_signal(candidates)
+        candidates = self.add_domain_signal(candidates)
+        candidates = self.add_pk_signal(candidates)
         candidates = self.rule_score(candidates)
 
         try:
@@ -1754,8 +1968,8 @@ class FKPredictor:
         judged = self._enforce_direction(judged)
 
         n_preds = self.write_predictions(judged)
-        n_edges = self.write_graph_edges(judged)
-        ddl_df = self.generate_ddl(judged)
+        n_edges = self.write_graph_edges(sweep_stale=sweep_stale)
+        ddl_df = self.generate_ddl()
         n_ddl = 0
         if self.config.apply_ddl:
             n_ddl = self.apply_ddl(ddl_df)
@@ -1775,7 +1989,7 @@ def predict_foreign_keys(
     spark: SparkSession,
     catalog_name: str,
     schema_name: str,
-    column_similarity_threshold: float = 0.85,
+    column_similarity_threshold: float = 0.80,
     table_similarity_threshold: float = 0.9,
     duplicate_table_similarity_threshold: float = 0.97,
     cross_block_column_similarity_min: float = 0.92,
@@ -1791,6 +2005,8 @@ def predict_foreign_keys(
     max_ai_candidates: int = 200,
     rule_score_min_for_ai: float = 0.50,
     max_candidates_per_table_pair: int = 5,
+    system_column_patterns: Tuple[str, ...] = _DEFAULT_SYSTEM_COL_PATTERNS,
+    sweep_stale: bool = False,
 ) -> Dict[str, Any]:
     """Convenience function to run FK prediction."""
     config = FKPredictionConfig(
@@ -1812,7 +2028,8 @@ def predict_foreign_keys(
         max_ai_candidates=max_ai_candidates,
         rule_score_min_for_ai=rule_score_min_for_ai,
         max_candidates_per_table_pair=max_candidates_per_table_pair,
+        system_column_patterns=system_column_patterns,
     )
     predictor = FKPredictor(spark, config)
-    return predictor.run()
+    return predictor.run(sweep_stale=sweep_stale)
 
