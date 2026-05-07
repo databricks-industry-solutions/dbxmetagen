@@ -205,6 +205,7 @@ resources:
               catalog_name: "{{job.parameters.catalog_name}}"
               schema_name: "{{job.parameters.schema_name}}"
               endpoint_name: "dbxmetagen-vs"
+              sweep_stale_docs: "false"
           libraries:
             - whl: ${var.dbxmetagen_wheel}
 

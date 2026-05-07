@@ -27,6 +27,8 @@ resources:
         # Stage 1: Build knowledge bases (parallel)
         - task_key: build_knowledge_base
           max_retries: 1
+          min_retry_interval_millis: 600000
+          timeout_seconds: 14400
           job_cluster_key: ontology_cluster
           notebook_task:
             notebook_path: ../../notebooks/build_knowledge_base.py
@@ -38,6 +40,8 @@ resources:
 
         - task_key: build_column_kb
           max_retries: 1
+          min_retry_interval_millis: 600000
+          timeout_seconds: 14400
           job_cluster_key: ontology_cluster
           notebook_task:
             notebook_path: ../../notebooks/build_column_kb.py
@@ -50,6 +54,8 @@ resources:
         # Stage 2: Build ontology (table + column level)
         - task_key: build_ontology
           max_retries: 1
+          min_retry_interval_millis: 600000
+          timeout_seconds: 86400
           depends_on:
             - task_key: build_knowledge_base
             - task_key: build_column_kb
@@ -68,6 +74,8 @@ resources:
         # Stage 3: Validate ontology
         - task_key: validate_ontology
           max_retries: 1
+          min_retry_interval_millis: 600000
+          timeout_seconds: 14400
           depends_on:
             - task_key: build_ontology
           job_cluster_key: ontology_cluster

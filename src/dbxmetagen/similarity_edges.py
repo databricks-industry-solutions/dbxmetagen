@@ -229,10 +229,11 @@ class SimilarityEdgeBuilder:
     # Cross-join compute (original path, renamed)
     # ------------------------------------------------------------------
 
-    def _compute_similarity_crossjoin(self) -> DataFrame:
+    def _compute_similarity_crossjoin(self, node_count: int | None = None) -> DataFrame:
         """Compute similarity edges via exhaustive cross-join with blocking."""
         nodes_df = self.get_nodes_with_embeddings()
-        node_count = nodes_df.count()
+        if node_count is None:
+            node_count = nodes_df.count()
 
         if node_count < 2:
             logger.info("Not enough nodes with embeddings for similarity comparison")
@@ -578,7 +579,7 @@ class SimilarityEdgeBuilder:
         if not self.config.use_ann:
             logger.info("Using cross-join path (use_ann=False)")
             self._actual_method = "crossjoin"
-            return self._compute_similarity_crossjoin()
+            return self._compute_similarity_crossjoin(node_count)
 
         if node_count < self.config.blocking_node_threshold:
             logger.info(
@@ -586,7 +587,7 @@ class SimilarityEdgeBuilder:
                 node_count, self.config.blocking_node_threshold,
             )
             self._actual_method = "crossjoin"
-            return self._compute_similarity_crossjoin()
+            return self._compute_similarity_crossjoin(node_count)
 
         try:
             logger.info("Using ANN path (Vector Search) for %d nodes", node_count)
@@ -602,36 +603,34 @@ class SimilarityEdgeBuilder:
                 "This may be slow for %d nodes.", e, node_count,
             )
             self._actual_method = "crossjoin_fallback"
-            return self._compute_similarity_crossjoin()
+            return self._compute_similarity_crossjoin(node_count)
 
     # ------------------------------------------------------------------
     # Edge I/O
     # ------------------------------------------------------------------
 
-    def merge_similarity_edges(self, edges_df: DataFrame) -> int:
-        """Merge similarity edges into graph_edges via MERGE (upsert + stale sweep)."""
-        from dbxmetagen.knowledge_graph import merge_edges
-        count = edges_df.count()
-        merge_edges(self.spark, self.config.fully_qualified_edges, edges_df, source_system="embedding_similarity")
-        return count
-
-    def run(self) -> Dict[str, Any]:
+    def run(self, sweep_stale: bool = False) -> Dict[str, Any]:
         """Execute the similarity edge generation pipeline."""
+        from dbxmetagen.knowledge_graph import merge_edges
+
         self._actual_method = "crossjoin"
         logger.info("Starting similarity edge generation (requested=%s)",
                      "ann" if self.config.use_ann else "crossjoin")
 
         edges_df = self.compute_similarity_edges()
-        edge_count = edges_df.count()
-        logger.info(f"Computed {edge_count} similarity edges")
+        edge_count = merge_edges(
+            self.spark,
+            self.config.fully_qualified_edges,
+            edges_df,
+            source_system="embedding_similarity",
+            sweep_stale=sweep_stale,
+        )
 
-        inserted = self.merge_similarity_edges(edges_df)
-
-        logger.info(f"Similarity edge generation complete. Edges: {inserted}, method: {self._actual_method}")
+        logger.info(f"Similarity edge generation complete. Edges: {edge_count}, method: {self._actual_method}")
 
         return {
             "method": self._actual_method,
-            "edges_created": inserted,
+            "edges_created": edge_count,
             "threshold": self.config.similarity_threshold,
         }
 
@@ -643,6 +642,7 @@ def build_similarity_edges(
     similarity_threshold: float = 0.85,
     max_edges_per_node: int = 15,
     use_ann: bool = True,
+    sweep_stale: bool = False,
     **kwargs,
 ) -> Dict[str, Any]:
     """
@@ -655,6 +655,7 @@ def build_similarity_edges(
         similarity_threshold: Minimum similarity for edge creation
         max_edges_per_node: Maximum edges per node
         use_ann: If True, use Vector Search ANN instead of cross-join
+        sweep_stale: If True, delete stale edges not in the current batch
 
     Returns:
         Dict with execution statistics including 'method' key
@@ -668,4 +669,4 @@ def build_similarity_edges(
         **{k: v for k, v in kwargs.items() if hasattr(SimilarityEdgesConfig, k)},
     )
     builder = SimilarityEdgeBuilder(spark, config)
-    return builder.run()
+    return builder.run(sweep_stale=sweep_stale)

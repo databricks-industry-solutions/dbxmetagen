@@ -571,18 +571,37 @@ const _sevStyles = {
   low: 'text-slate-700 dark:text-slate-400 bg-slate-100 dark:bg-slate-900/30',
 }
 
-function SuggestionsPanel({ suggestions, onClose }) {
+function SuggestionsPanel({ suggestions, onClose, onImproveSelected, improving }) {
+  const [checked, setChecked] = useState(() =>
+    new Set((suggestions || []).map((s, i) => s.severity !== 'low' ? i : null).filter(v => v !== null))
+  )
+  useEffect(() => {
+    setChecked(new Set((suggestions || []).map((s, i) => s.severity !== 'low' ? i : null).filter(v => v !== null)))
+  }, [suggestions])
   if (!suggestions || suggestions.length === 0) return null
+  const toggle = i => setChecked(prev => { const n = new Set(prev); n.has(i) ? n.delete(i) : n.add(i); return n })
+  const toggleAll = () => setChecked(prev => prev.size === suggestions.length ? new Set() : new Set(suggestions.map((_, i) => i)))
   return (
     <div className="card p-4 space-y-2 border-l-4 border-violet-400">
       <div className="flex items-center justify-between">
         <span className="text-sm font-medium text-slate-700 dark:text-slate-300">Analysis Suggestions ({suggestions.length})</span>
-        <button onClick={onClose} className="text-xs text-slate-400 hover:text-slate-600">Close</button>
+        <div className="flex items-center gap-2">
+          {onImproveSelected && checked.size > 0 && (
+            <button onClick={() => onImproveSelected([...checked])} disabled={improving}
+              className="text-xs px-2 py-1 rounded bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50 flex items-center gap-1">
+              {improving && <span className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" />}
+              {improving ? 'Improving...' : `Improve Selected (${checked.size})`}
+            </button>
+          )}
+          <button onClick={toggleAll} className="text-xs text-violet-500 hover:text-violet-700">{checked.size === suggestions.length ? 'Deselect all' : 'Select all'}</button>
+          <button onClick={onClose} className="text-xs text-slate-400 hover:text-slate-600">Close</button>
+        </div>
       </div>
       {suggestions.map((s, i) => (
         <div key={i} className="flex items-start gap-2 text-xs py-1.5">
+          <input type="checkbox" checked={checked.has(i)} onChange={() => toggle(i)} className="mt-0.5 rounded border-slate-300" />
           <span className={`px-1.5 py-0.5 rounded font-medium uppercase ${_sevStyles[s.severity] || _sevStyles.low}`}>{s.severity}</span>
-          <div>
+          <div className="flex-1">
             <p className="text-slate-700 dark:text-slate-300">{s.message}</p>
             {s.action && <p className="text-slate-400 mt-0.5">{s.action}</p>}
           </div>
@@ -668,6 +687,13 @@ export default function GenieUpdater({ spaceId, onBack }) {
   const [analysisSuggestions, setAnalysisSuggestions] = useState(null)
   const [analyzing, setAnalyzing] = useState(false)
   const [questionVerdicts, setQuestionVerdicts] = useState(null)
+
+  // Improve (analyze + regenerate)
+  const [improving, setImproving] = useState(false)
+  const [improveStage, setImproveStage] = useState('')
+  const [improveRound, setImproveRound] = useState(0)
+  const [preHealth, setPreHealth] = useState(null)
+  const improvePollRef = useRef(null)
 
   // Version history
   const [showHistory, setShowHistory] = useState(false)
@@ -911,6 +937,48 @@ export default function GenieUpdater({ spaceId, onBack }) {
   }
 
   // ---------------------------------------------------------------------------
+  // Improve (analyze then regenerate)
+  // ---------------------------------------------------------------------------
+
+  const runImprove = async (selectedIndices) => {
+    if (improvePollRef.current) clearInterval(improvePollRef.current)
+    setImproving(true); setImproveStage('starting'); setError(null); setPreHealth(null)
+    try {
+      const body = { serialized_space: assemble(), table_identifiers: tableIds }
+      if (Array.isArray(selectedIndices)) body.selected_suggestions = selectedIndices
+      const res = await fetch('/api/genie/improve', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      if (!res.ok) { const b = await res.json().catch(() => ({})); setError(b.detail || `Error ${res.status}`); setImproving(false); return }
+      const { task_id } = await res.json()
+      let missCount = 0
+      improvePollRef.current = setInterval(async () => {
+        try {
+          const pr = await fetch(`/api/genie/tasks/${task_id}`)
+          if (!pr.ok) { missCount++; if (missCount >= 3) { clearInterval(improvePollRef.current); setError('Task lost'); setImproving(false) }; return }
+          missCount = 0
+          const data = await pr.json()
+          setImproveStage(data.stage || 'running')
+          if (data.status === 'done') {
+            clearInterval(improvePollRef.current)
+            if (data.pre_health) setPreHealth(data.pre_health)
+            if (data.result) loadSpaceIntoState(data.result)
+            setImproveRound(prev => prev + 1)
+            setImproving(false)
+            // Auto-reanalyze to show post-improvement state
+            setTimeout(() => runAnalysis(), 300)
+          } else if (data.status === 'error') {
+            clearInterval(improvePollRef.current)
+            setError(data.error || 'Improve failed')
+            setImproving(false)
+          }
+        } catch { missCount++; if (missCount >= 3) { clearInterval(improvePollRef.current); setError('Poll failed'); setImproving(false) } }
+      }, 3000)
+    } catch (e) { setError(e.message); setImproving(false) }
+  }
+
+  // ---------------------------------------------------------------------------
   // Deploy
   // ---------------------------------------------------------------------------
 
@@ -994,10 +1062,16 @@ export default function GenieUpdater({ spaceId, onBack }) {
               className="text-xs px-3 py-1.5 rounded border border-indigo-300 dark:border-indigo-700 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-900/30 transition-colors">
               History
             </button>
-            <button onClick={runAnalysis} disabled={analyzing}
+            <button onClick={runAnalysis} disabled={analyzing || improving}
               className="text-xs px-3 py-1.5 rounded border border-violet-300 dark:border-violet-700 text-violet-600 dark:text-violet-400 hover:bg-violet-50 dark:hover:bg-violet-900/30 transition-colors disabled:opacity-50 flex items-center gap-1">
               {analyzing && <span className="w-3 h-3 border-2 border-violet-400 border-t-transparent rounded-full animate-spin" />}
               {analyzing ? 'Analyzing...' : 'Analyze Space'}
+            </button>
+            <button onClick={() => runImprove()} disabled={improving || analyzing}
+              className="text-xs px-3 py-1.5 rounded border border-emerald-300 dark:border-emerald-700 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-900/30 transition-colors disabled:opacity-50 flex items-center gap-1"
+              title={improveRound >= 3 ? 'Multiple rounds run -- consider manual edits for remaining issues' : undefined}>
+              {improving && <span className="w-3 h-3 border-2 border-emerald-400 border-t-transparent rounded-full animate-spin" />}
+              {improving ? `Improving (${improveStage})...` : `Improve Space${improveRound > 0 ? ` (round ${improveRound + 1})` : ''}`}
             </button>
             <button onClick={onBack} className="text-xs px-3 py-1.5 rounded border border-slate-300 dark:border-slate-600 text-slate-600 dark:text-slate-300 hover:bg-dbx-oat dark:hover:bg-slate-700">Back to Builder</button>
           </div>
@@ -1011,8 +1085,26 @@ export default function GenieUpdater({ spaceId, onBack }) {
       {/* Health details */}
       {showHealth && <HealthDetails health={health} onClose={() => setShowHealth(false)} />}
 
+      {/* Health delta banner */}
+      {preHealth && health && preHealth.score !== health.score && (
+        <div className="card p-3 border-l-4 border-emerald-400 flex items-center gap-2 text-sm">
+          <span className="font-medium text-slate-700 dark:text-slate-300">Health:</span>
+          <span className="text-slate-500">{preHealth.score}/{preHealth.max}</span>
+          <span className="text-slate-400">-&gt;</span>
+          <span className="font-semibold text-emerald-600 dark:text-emerald-400">{health.score}/{health.max}</span>
+          <span className={`text-xs font-medium ${health.score > preHealth.score ? 'text-emerald-600' : 'text-red-500'}`}>
+            ({health.score > preHealth.score ? '+' : ''}{health.score - preHealth.score})
+          </span>
+          {improveRound >= 3 && <span className="ml-auto text-xs text-amber-600 dark:text-amber-400">Round {improveRound} -- consider manual edits for remaining gaps</span>}
+          <button onClick={() => setPreHealth(null)} className="ml-auto text-xs text-slate-400 hover:text-slate-600">Dismiss</button>
+        </div>
+      )}
+
       {/* Analysis suggestions */}
-      {analysisSuggestions && <SuggestionsPanel suggestions={analysisSuggestions} onClose={() => setAnalysisSuggestions(null)} />}
+      {analysisSuggestions && (
+        <SuggestionsPanel suggestions={analysisSuggestions} onClose={() => setAnalysisSuggestions(null)}
+          onImproveSelected={indices => runImprove(indices)} improving={improving} />
+      )}
 
       {/* Question answerability verdicts (from semantic gap analysis) */}
       {questionVerdicts && <QuestionVerdicts verdicts={questionVerdicts} onClose={() => setQuestionVerdicts(null)} />}

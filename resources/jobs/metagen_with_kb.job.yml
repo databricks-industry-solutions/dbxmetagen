@@ -32,10 +32,14 @@ resources:
           default: "{{job.run_id}}"
         - name: include_previously_failed_tables
           default: "false"
+        - name: spacy_model_names
+          default: ${var.spacy_model_names}
 
       tasks:
         - task_key: generate_metadata
           max_retries: 1
+          min_retry_interval_millis: 600000
+          timeout_seconds: 86400
           job_cluster_key: metadata_cluster
 
           notebook_task:
@@ -49,12 +53,15 @@ resources:
               permission_users: "{{job.parameters.permission_users}}"
               run_id: "{{job.parameters.run_id}}"
               include_previously_failed_tables: "{{job.parameters.include_previously_failed_tables}}"
+              spacy_model_names: "{{job.parameters.spacy_model_names}}"
 
           libraries:
             - whl: ../../dist/*.whl
 
         - task_key: build_knowledge_base
           max_retries: 1
+          min_retry_interval_millis: 600000
+          timeout_seconds: 14400
           depends_on:
             - task_key: generate_metadata
           job_cluster_key: metadata_cluster
@@ -70,6 +77,8 @@ resources:
 
         - task_key: build_knowledge_graph
           max_retries: 1
+          min_retry_interval_millis: 600000
+          timeout_seconds: 14400
           depends_on:
             - task_key: build_knowledge_base
           # ML cluster required - GraphFrames needs JVM dependencies not available on serverless

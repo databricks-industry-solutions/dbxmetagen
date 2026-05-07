@@ -382,17 +382,30 @@ class TestStandaloneMergeEdges:
         for required in ("src", "dst", "relationship", "edge_id", "source_system"):
             assert required in col_names
 
-    def test_merge_edges_zero_rows_deletes_stale(self):
+    def test_merge_edges_zero_rows_sweep_false_no_delete(self):
         spark = MagicMock()
         df = MagicMock()
         df.columns = ["src", "dst", "relationship"]
         aligned_mock = MagicMock()
         deduped_mock = MagicMock()
-        deduped_mock.count.return_value = 0
+        deduped_mock.head.return_value = []
         aligned_mock.dropDuplicates.return_value = deduped_mock
         with patch("dbxmetagen.knowledge_graph.align_edge_schema", return_value=aligned_mock):
-            merge_edges(spark, "cat.sch.graph_edges", df, "test_source")
-        aligned_mock.dropDuplicates.assert_called_once_with(["edge_id"])
+            result = merge_edges(spark, "cat.sch.graph_edges", df, "test_source")
+        assert result == 0
+        spark.sql.assert_not_called()
+
+    def test_merge_edges_zero_rows_sweep_true_deletes_stale(self):
+        spark = MagicMock()
+        df = MagicMock()
+        df.columns = ["src", "dst", "relationship"]
+        aligned_mock = MagicMock()
+        deduped_mock = MagicMock()
+        deduped_mock.head.return_value = []
+        aligned_mock.dropDuplicates.return_value = deduped_mock
+        with patch("dbxmetagen.knowledge_graph.align_edge_schema", return_value=aligned_mock):
+            result = merge_edges(spark, "cat.sch.graph_edges", df, "test_source", sweep_stale=True)
+        assert result == 0
         delete_call = spark.sql.call_args[0][0]
         assert "DELETE FROM" in delete_call
         assert "test_source" in delete_call
@@ -403,14 +416,17 @@ class TestStandaloneMergeEdges:
         df.columns = ["src", "dst", "relationship"]
         aligned_mock = MagicMock()
         deduped_mock = MagicMock()
+        deduped_mock.head.return_value = [MagicMock()]
         deduped_mock.count.return_value = 5
         aligned_mock.dropDuplicates.return_value = deduped_mock
         with patch("dbxmetagen.knowledge_graph.align_edge_schema", return_value=aligned_mock):
-            merge_edges(spark, "cat.sch.graph_edges", df, "test_source")
+            result = merge_edges(spark, "cat.sch.graph_edges", df, "test_source")
+        assert result == 5
         aligned_mock.dropDuplicates.assert_called_once_with(["edge_id"])
         merge_call = spark.sql.call_args[0][0]
         assert "MERGE INTO" in merge_call
         assert "test_source" in merge_call
+        assert "WHEN NOT MATCHED BY SOURCE" not in merge_call
 
     def test_merge_edges_deduplicates_before_merge(self):
         """Verify dropDuplicates is called on edge_id to prevent MERGE conflicts."""

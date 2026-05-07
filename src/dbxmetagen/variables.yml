@@ -61,7 +61,7 @@ variables:
     default: true
   spacy_model_names:
     description: spacy models to use in presidio. Currently will only handle a single model. Adding support for multiple models is a planned feature.
-    default: en_core_web_lg
+    default: en_core_web_md
   pi_classification_rules:
     description: Rules for PI classification. These rules will be injected into the prompt and provided along with the prompt to the model.
     default: |

@@ -24,9 +24,13 @@ dependencies = [
 ]
 
 # To install the spaCy model for PI mode:
-#   uv sync --extra pi
+#   uv sync --extra pi          (default: en_core_web_md)
+#   uv sync --extra pi-lg       (larger model: en_core_web_lg)
 [project.optional-dependencies]
 pi = [
+    "en-core-web-md @ https://github.com/explosion/spacy-models/releases/download/en_core_web_md-3.8.0/en_core_web_md-3.8.0-py3-none-any.whl",
+]
+pi-lg = [
     "en-core-web-lg @ https://github.com/explosion/spacy-models/releases/download/en_core_web_lg-3.8.0/en_core_web_lg-3.8.0-py3-none-any.whl",
 ]
 ontology = ["rdflib>=6.3.0", "pyoxigraph>=0.3.0"]

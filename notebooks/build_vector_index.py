@@ -17,16 +17,19 @@
 dbutils.widgets.text("catalog_name", "", "Catalog Name")
 dbutils.widgets.text("schema_name", "", "Schema Name")
 dbutils.widgets.text("endpoint_name", "dbxmetagen-vs", "VS Endpoint Name")
+dbutils.widgets.text("sweep_stale_docs", "false", "Sweep Stale Docs")
 
 catalog_name = dbutils.widgets.get("catalog_name")
 schema_name = dbutils.widgets.get("schema_name")
 endpoint_name = dbutils.widgets.get("endpoint_name")
+sweep_stale_docs = dbutils.widgets.get("sweep_stale_docs").strip().lower() == "true"
 
 if not catalog_name or not schema_name:
     raise ValueError("Both catalog_name and schema_name are required")
 
 print(f"Building vector index for {catalog_name}.{schema_name}")
 print(f"VS endpoint: {endpoint_name}")
+print(f"Sweep stale docs: {sweep_stale_docs}")
 
 # COMMAND ----------
 
@@ -40,6 +43,7 @@ result = build_vector_index(
     catalog_name=catalog_name,
     schema_name=schema_name,
     endpoint_name=endpoint_name,
+    sweep_stale_docs=sweep_stale_docs,
 )
 
 print(f"Vector index build complete")

@@ -492,6 +492,31 @@ export default function BatchJobs({ onNavigate }) {
                   </p>
                 )
               })()}
+              <details className="mt-2 rounded-lg border border-slate-200/60 dark:border-slate-700/40 bg-slate-50/50 dark:bg-slate-800/30 px-3 py-2 text-xs text-slate-600 dark:text-slate-300">
+                <summary className="cursor-pointer font-medium">How to choose an ontology bundle</summary>
+                <p className="mt-1.5 leading-relaxed">
+                  An ontology bundle defines the entity types, properties, and relationships that dbxmetagen looks for
+                  when classifying your tables and columns. Choosing the right bundle improves entity discovery accuracy
+                  and produces more meaningful knowledge graph edges.
+                </p>
+                <ul className="mt-1.5 ml-3 list-disc space-y-1 leading-relaxed">
+                  <li><strong>General</strong> &mdash; Good starting point for mixed or unknown data. Covers common patterns (Person, Organization, Location, Event, Product, etc.) across industries.</li>
+                  <li><strong>Healthcare / FHIR R4 / OMOP CDM</strong> &mdash; Use for clinical, EHR, or health data. FHIR R4 and OMOP CDM are formal ontologies with standards-aligned entity URIs; Healthcare is a lighter curated bundle.</li>
+                  <li><strong>Financial Services</strong> &mdash; Banking, insurance, and capital-markets data (accounts, transactions, instruments, risk, compliance).</li>
+                  <li><strong>Retail &amp; CPG</strong> &mdash; Retail, supply chain, and consumer goods data (customers, orders, products, inventory, promotions).</li>
+                  <li><strong>Schema.org</strong> &mdash; Broad formal ontology from schema.org. Best for web-originated or loosely structured data.</li>
+                </ul>
+                <p className="mt-1.5 leading-relaxed">
+                  <strong>Formal ontologies</strong> (labeled &ldquo;Formal OWL&rdquo;) are auto-extracted from published OWL/Turtle files
+                  and carry entity URIs for standards alignment. <strong>Curated bundles</strong> are hand-authored with industry-specific
+                  keywords and tend to classify more aggressively. Bundles marked with a checkmark have pre-built keyword
+                  indexes for faster classification.
+                </p>
+                <p className="mt-1 leading-relaxed">
+                  If you are unsure, start with <strong>General</strong>. You can re-run the ontology step later with a
+                  different bundle without regenerating core metadata.
+                </p>
+              </details>
               {(() => {
                 const sel = bundles.find(b => b.key === ontologyBundle)
                 if (!sel?.tier_indexes_stale) return null
@@ -755,8 +780,8 @@ export default function BatchJobs({ onNavigate }) {
                 className="btn-md bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50 transition-all">{runningAction === 'kb_enriched' ? 'Starting...' : 'KB-Enriched Modes'}</button>
             </div>
             <div className="text-xs text-slate-400 space-y-1 mt-1">
+              <p><strong className="text-slate-500">All 3 Modes</strong>: Runs comments first, then PI + domain in parallel. Use this to generate core metadata unless you know why you should do something else.</p>
               <p><strong className="text-slate-500">Run Selected Mode</strong>: Run a single mode (comment, PI, or domain) on the listed tables. Best for quick, targeted runs.</p>
-              <p><strong className="text-slate-500">All 3 Modes</strong>: Runs comments first, then PI + domain in parallel. Use for initial metadata generation on new tables.</p>
               <p><strong className="text-slate-500">KB-Enriched Modes</strong>: Comments, then KB build, then PI + domain enriched with KB descriptions. Best when you want the highest quality PI/domain results without applying comments to tables.</p>
               {settings.build_kb_after && <p><strong className="text-slate-500">+ KB</strong>: Builds the table + column knowledge base after generation so the Review tab is populated.</p>}
             </div>

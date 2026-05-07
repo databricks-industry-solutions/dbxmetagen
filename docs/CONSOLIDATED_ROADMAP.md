@@ -368,7 +368,7 @@ All open work items from every roadmap and plan document, organized by theme. Ea
 |----|------|--------|----------|--------|--------|
 | PK-1 | Fix import structure (`from dbxmetagen...`) | DONE | -- | -- | PI Ph1 |
 | PK-2 | Dual-mode notebooks (pip + DAB) | DONE | -- | -- | PI Ph2 |
-| PK-3 | SpaCy model optional extras | OPEN | P2 | S | PI Ph3 |
+| PK-3 | SpaCy model optional extras | DONE | -- | -- | PI Ph3 |
 | PK-4 | Package metadata in `pyproject.toml` | OPEN | P3 | S | PI Ph4 |
 | PK-5 | Distribution strategy (PyPI / private / git) | OPEN | P3 | S | PI Ph5 |
 | PK-6 | CI/CD wheel build + test | OPEN | P3 | M | PI Ph6 |

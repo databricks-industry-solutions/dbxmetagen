@@ -23,6 +23,8 @@ resources:
       tasks:
         - task_key: sync_reviewed_ddl
           max_retries: 1
+          min_retry_interval_millis: 600000
+          timeout_seconds: 14400
           job_cluster_key: sync_cluster
 
           notebook_task:

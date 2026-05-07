@@ -54,7 +54,7 @@ Most important settings in `variables.yml`:
 | review_output_file_type | Review output format | excel |
 | review_apply_ddl | Apply reviewed DDL | false |
 | include_deterministic_pi | Use Presidio detection | true |
-| spacy_model_names | SpaCy model for Presidio | en_core_web_lg |
+| spacy_model_names | SpaCy model for Presidio | en_core_web_md |
 | tag_none_fields | Tag non-sensitive columns | true |
 | allow_manual_override | Enable CSV overrides | true |
 | override_csv_path | Override CSV path | metadata_overrides.csv |

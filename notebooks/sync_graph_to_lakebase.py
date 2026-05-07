@@ -54,7 +54,7 @@ try:
     )
     print(f"Created Lakebase catalog: {lb_catalog}")
 except Exception as e:
-    if "ALREADY_EXISTS" in str(e):
+    if "ALREADY_EXISTS" in str(e) or "already exists" in str(e):
         print(f"Lakebase catalog already exists: {lb_catalog}")
     else:
         raise

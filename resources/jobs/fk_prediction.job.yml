@@ -46,6 +46,8 @@ resources:
       tasks:
         - task_key: predict_foreign_keys
           max_retries: 1
+          min_retry_interval_millis: 600000
+          timeout_seconds: 86400
           job_cluster_key: fk_cluster
           notebook_task:
             notebook_path: ../../notebooks/predict_foreign_keys.py

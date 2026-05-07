@@ -1,4 +1,6 @@
 # spaCy model for deterministic PI detection (PII/PHI/PCI).
+# Default: en_core_web_md (smaller, faster). For higher accuracy, use en_core_web_lg
+# and set spacy_model_names=en_core_web_lg in variables.yml.
 # Install with: pip install -r requirements-pi.txt
-# Air-gapped alternative: pip install /Volumes/<catalog>/<schema>/<volume>/en_core_web_lg-3.8.0-py3-none-any.whl
-https://github.com/explosion/spacy-models/releases/download/en_core_web_lg-3.8.0/en_core_web_lg-3.8.0-py3-none-any.whl
+# Air-gapped alternative: pip install /Volumes/<catalog>/<schema>/<volume>/en_core_web_md-3.8.0-py3-none-any.whl
+https://github.com/explosion/spacy-models/releases/download/en_core_web_md-3.8.0/en_core_web_md-3.8.0-py3-none-any.whl

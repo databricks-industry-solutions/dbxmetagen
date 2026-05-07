@@ -26,6 +26,8 @@ resources:
       tasks:
         - task_key: generate_semantic_layer
           max_retries: 1
+          min_retry_interval_millis: 600000
+          timeout_seconds: 86400
           job_cluster_key: semantic_layer_cluster
           notebook_task:
             notebook_path: ../../notebooks/generate_semantic_layer.py
@@ -38,6 +40,8 @@ resources:
 
         - task_key: apply_metric_views
           max_retries: 1
+          min_retry_interval_millis: 600000
+          timeout_seconds: 14400
           depends_on:
             - task_key: generate_semantic_layer
           job_cluster_key: semantic_layer_cluster

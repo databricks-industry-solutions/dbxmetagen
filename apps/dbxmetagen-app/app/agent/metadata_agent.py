@@ -294,7 +294,16 @@ def create_plot_spec(content: str, history: Optional[List[Dict]] = None) -> Dict
                 if text.startswith("```"):
                     text = text.split("\n", 1)[1] if "\n" in text else text[3:]
                     text = text.rsplit("```", 1)[0].strip()
-                return _json.loads(text)
+                if not text:
+                    continue
+                try:
+                    return _json.loads(text)
+                except _json.JSONDecodeError:
+                    start = text.find("{")
+                    end = text.rfind("}") + 1
+                    if start >= 0 and end > start:
+                        return _json.loads(text[start:end])
+                    continue
         return {"no_data": True, "reason": "Agent did not produce a chart specification."}
     except Exception as e:
         logger.error(f"Plot agent error: {e}", exc_info=True)

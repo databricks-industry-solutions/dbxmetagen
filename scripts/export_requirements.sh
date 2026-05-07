@@ -20,10 +20,10 @@ uv export -q --no-dev --no-hashes --no-emit-project \
 
 cat >> "$REPO_ROOT/requirements.txt" <<'EOF'
 # --- PI mode: spaCy model (only needed for deterministic PI detection) ---
-# Comment this line out if you do NOT use PI mode, or if you are in an
-# air-gapped environment. For air-gapped PI, install the model from a
-# Databricks Volume instead:
-#   pip install /Volumes/<catalog>/<schema>/<volume>/en_core_web_lg-3.8.0-py3-none-any.whl
-https://github.com/explosion/spacy-models/releases/download/en_core_web_lg-3.8.0/en_core_web_lg-3.8.0-py3-none-any.whl
+# The spaCy model is installed conditionally by the generate_metadata notebook
+# based on the spacy_model_names widget (default: en_core_web_md).
+# For manual installation, use: pip install -r requirements-pi.txt
+# Air-gapped alternative:
+#   pip install /Volumes/<catalog>/<schema>/<volume>/en_core_web_md-3.8.0-py3-none-any.whl
 EOF
 

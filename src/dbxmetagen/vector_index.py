@@ -64,9 +64,10 @@ _COLUMNS_TO_SYNC = [
 
 
 class VectorIndexBuilder:
-    def __init__(self, spark: SparkSession, config: VectorIndexConfig):
+    def __init__(self, spark: SparkSession, config: VectorIndexConfig, *, sweep_stale_docs: bool = False):
         self.spark = spark
         self.config = config
+        self.sweep_stale_docs = sweep_stale_docs
 
     def build_documents_table(self) -> int:
         cfg = self.config
@@ -346,6 +347,7 @@ class VectorIndexBuilder:
         """
 
         parts = [table_docs, column_docs]
+        included_sources = {"table_knowledge_base", "column_knowledge_base"}
         for tbl, sql in [
             ("ontology_entities", entity_docs),
             ("metric_view_definitions", metric_docs),
@@ -354,6 +356,7 @@ class VectorIndexBuilder:
         ]:
             if self.spark.catalog.tableExists(cfg.fq(tbl)):
                 parts.append(sql)
+                included_sources.add(tbl)
             else:
                 logger.info("Skipping %s (table does not exist)", tbl)
 
@@ -370,9 +373,96 @@ class VectorIndexBuilder:
         """
 
         self.spark.sql(union_sql)
+
+        if self.sweep_stale_docs:
+            self._sweep_stale_documents(included_sources)
+
         count = self.spark.sql(f"SELECT COUNT(*) AS cnt FROM {cfg.fq_documents}").collect()[0]["cnt"]
         logger.info("metadata_documents now has %d rows", count)
         return count
+
+    def _sweep_stale_documents(self, included_sources: set) -> None:
+        """Delete orphaned docs whose source rows no longer exist.
+
+        Only sweeps doc_types whose source table was included in the MERGE
+        AND has qualifying rows (same WHERE clauses as the MERGE source queries).
+        CDF propagates these deletes to the Delta Sync VS index automatically.
+        """
+        cfg = self.config
+        docs = cfg.fq_documents
+
+        sweep_specs = [
+            ("table", "table_knowledge_base",
+             f"SELECT table_name AS key FROM {cfg.fq('table_knowledge_base')}",
+             f"DELETE FROM {docs} WHERE doc_type = 'table'"
+             f" AND REPLACE(doc_id, 'table::', '')"
+             f" NOT IN (SELECT table_name FROM {cfg.fq('table_knowledge_base')})"),
+            ("column", "column_knowledge_base",
+             f"SELECT 1 FROM {cfg.fq('column_knowledge_base')}"
+             f" WHERE comment IS NOT NULL AND LENGTH(comment) > 5 LIMIT 1",
+             f"DELETE FROM {docs} WHERE doc_type = 'column'"
+             f" AND REPLACE(doc_id, 'column::', '')"
+             f" NOT IN (SELECT CONCAT(table_name, '.', column_name)"
+             f" FROM {cfg.fq('column_knowledge_base')}"
+             f" WHERE comment IS NOT NULL AND LENGTH(comment) > 5)"),
+            ("entity", "ontology_entities",
+             f"SELECT 1 FROM {cfg.fq('ontology_entities')}"
+             f" WHERE confidence >= 0.4 LIMIT 1",
+             f"DELETE FROM {docs} WHERE doc_type = 'entity'"
+             f" AND node_id NOT IN"
+             f" (SELECT entity_id FROM {cfg.fq('ontology_entities')}"
+             f" WHERE confidence >= 0.4)"),
+            ("metric_view", "metric_view_definitions",
+             f"SELECT 1 FROM {cfg.fq('metric_view_definitions')}"
+             f" WHERE status IN ('validated', 'applied') LIMIT 1",
+             f"DELETE FROM {docs} WHERE doc_type = 'metric_view'"
+             f" AND node_id NOT IN"
+             f" (SELECT definition_id FROM {cfg.fq('metric_view_definitions')}"
+             f" WHERE status IN ('validated', 'applied'))"),
+            ("fk_relationship", "fk_predictions",
+             f"SELECT 1 FROM {cfg.fq('fk_predictions')}"
+             f" WHERE final_confidence >= 0.5 LIMIT 1",
+             f"DELETE FROM {docs} WHERE doc_type = 'fk_relationship'"
+             f" AND doc_id NOT IN"
+             f" (SELECT CONCAT('fk::', src_table, '.', src_column,"
+             f" '->', dst_table, '.', dst_column)"
+             f" FROM {cfg.fq('fk_predictions')}"
+             f" WHERE final_confidence >= 0.5)"),
+            ("community_summary", "community_summaries",
+             f"SELECT 1 FROM {cfg.fq('community_summaries')}"
+             f" WHERE summary IS NOT NULL LIMIT 1",
+             f"DELETE FROM {docs} WHERE doc_type = 'community_summary'"
+             f" AND node_id NOT IN"
+             f" (SELECT community_id FROM {cfg.fq('community_summaries')}"
+             f" WHERE summary IS NOT NULL)"),
+        ]
+
+        for doc_type, source_table, guard_sql, delete_sql in sweep_specs:
+            if source_table not in included_sources:
+                continue
+            try:
+                has_rows = bool(self.spark.sql(guard_sql).head(1))
+            except Exception:
+                has_rows = False
+            if not has_rows:
+                logger.warning(
+                    "Skipping sweep for doc_type=%s: source query returned 0 rows "
+                    "(upstream may not have run yet)", doc_type,
+                )
+                continue
+
+            before = self.spark.sql(
+                f"SELECT COUNT(*) AS c FROM {docs} WHERE doc_type = '{doc_type}'"
+            ).collect()[0]["c"]
+            self.spark.sql(delete_sql)
+            after = self.spark.sql(
+                f"SELECT COUNT(*) AS c FROM {docs} WHERE doc_type = '{doc_type}'"
+            ).collect()[0]["c"]
+            removed = before - after
+            if removed > 0:
+                logger.info("Swept %d stale '%s' docs (%d -> %d)", removed, doc_type, before, after)
+            else:
+                logger.info("No stale '%s' docs to sweep", doc_type)
 
     def ensure_endpoint(self) -> str:
         w = WorkspaceClient()
@@ -512,6 +602,7 @@ def build_vector_index(
     catalog_name: str,
     schema_name: str,
     endpoint_name: str = "dbxmetagen-vs",
+    sweep_stale_docs: bool = False,
 ) -> Dict[str, Any]:
     """Convenience entry point for the notebook."""
     config = VectorIndexConfig(
@@ -519,5 +610,5 @@ def build_vector_index(
         schema_name=schema_name,
         endpoint_name=endpoint_name,
     )
-    builder = VectorIndexBuilder(spark, config)
+    builder = VectorIndexBuilder(spark, config, sweep_stale_docs=sweep_stale_docs)
     return builder.run()

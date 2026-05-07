@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime, timedelta
 import uuid
+
+import pandas as pd
 from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql import functions as F
 from pyspark.sql.types import (
@@ -138,270 +140,144 @@ class DataQualityScorer:
             WHERE snapshot_id = '{snapshot_id}'
         """)
     
-    def _safe_avg(self, df: DataFrame, col: str, default: float = 0.0) -> float:
-        """Safely compute average, returning default if column missing or all nulls."""
-        try:
-            if col not in df.columns:
-                return default
-            result = df.select(F.avg(col)).collect()[0][0]
-            return float(result) if result is not None else default
-        except Exception:
+    # ------------------------------------------------------------------
+    # Pandas-based scoring (one toPandas() per table, zero extra Spark actions)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _pd_safe_mean(df: pd.DataFrame, col: str, default: float = 0.0) -> float:
+        if col not in df.columns:
             return default
-    
-    def _safe_count(self, df: DataFrame, condition) -> int:
-        """Safely count rows matching condition."""
-        try:
-            return df.filter(condition).count()
-        except Exception:
-            return 0
-    
-    def compute_completeness_score(self, column_stats: DataFrame, row_count: int) -> Tuple[float, List[str], bool]:
-        """
-        Compute completeness score based on null rates.
-        Returns (score, issues, was_calculable).
-        """
-        issues = []
-        
-        if column_stats.count() == 0:
+        vals = df[col].dropna()
+        return float(vals.mean()) if len(vals) > 0 else default
+
+    def compute_completeness_score(self, cs: pd.DataFrame, row_count: int) -> Tuple[float, List[str], bool]:
+        issues: List[str] = []
+        if cs.empty:
             return 80.0, ["No column stats available"], False
-        
-        avg_null_rate = self._safe_avg(column_stats, "null_rate", 0.0)
-        max_null_rate = self._safe_avg(column_stats, "null_rate", 0.0)  # Will compute max below
-        
-        try:
-            max_result = column_stats.select(F.max("null_rate")).collect()[0][0]
-            max_null_rate = float(max_result) if max_result is not None else 0.0
-        except Exception:
-            pass
-        
-        score = max(0.0, 100.0 - (avg_null_rate * 100.0))
-        
-        # Identify columns with high null rates
-        if max_null_rate > self.config.null_rate_threshold:
-            try:
-                high_null_cols = column_stats.filter(
-                    F.col("null_rate") > self.config.null_rate_threshold
-                ).select("column_name", "null_rate").collect()
-                
-                for col in high_null_cols[:5]:
-                    rate = col.null_rate if col.null_rate else 0
-                    issues.append(f"High null rate in {col.column_name}: {rate:.1%}")
-            except Exception:
-                pass
-        
+
+        avg_null = self._pd_safe_mean(cs, "null_rate")
+        score = max(0.0, 100.0 - avg_null * 100.0)
+
+        if "null_rate" in cs.columns:
+            high = cs[cs["null_rate"] > self.config.null_rate_threshold]
+            for _, r in high.head(5).iterrows():
+                rate = r.get("null_rate", 0) or 0
+                issues.append(f"High null rate in {r.get('column_name', '?')}: {rate:.1%}")
+
         return float(score), issues, True
-    
-    def compute_uniqueness_score(self, column_stats: DataFrame, row_count: int) -> Tuple[float, List[str], bool]:
-        """
-        Compute uniqueness score with graceful handling of missing metrics.
-        """
-        issues = []
-        
-        if column_stats.count() == 0 or row_count == 0:
+
+    def compute_uniqueness_score(self, cs: pd.DataFrame, row_count: int) -> Tuple[float, List[str], bool]:
+        issues: List[str] = []
+        if cs.empty or row_count == 0:
             return 70.0, ["No column stats or empty table"], False
-        
-        # Try cardinality_ratio first
-        avg_cardinality = self._safe_avg(column_stats, "cardinality_ratio", -1)
-        
-        if avg_cardinality < 0:
-            # Fall back to computing from distinct_count
-            try:
-                non_null_with_distinct = column_stats.filter(F.col("distinct_count").isNotNull())
-                if non_null_with_distinct.count() == 0:
-                    return 70.0, ["No distinct count data available"], False
-                
-                stats = non_null_with_distinct.withColumn(
-                    "uniqueness_ratio",
-                    F.col("distinct_count") / F.lit(row_count)
-                ).select(F.avg("uniqueness_ratio")).collect()[0]
-                avg_cardinality = float(stats[0]) if stats[0] is not None else 0.3
-            except Exception:
-                avg_cardinality = 0.3  # Reasonable default
-        
-        # Score: higher cardinality is generally good
-        score = min(100.0, avg_cardinality * 150.0 + 30.0)
-        
-        # Check for potential unique key columns (good)
-        try:
-            high_cardinality_cols = self._safe_count(
-                column_stats,
-                F.col("cardinality_ratio") > 0.95
-            )
-            if high_cardinality_cols > 0:
-                score = min(100.0, score + 10.0)
-        except Exception:
-            pass
-        
-        # Check for constant columns (bad)
-        try:
-            constant_cols = self._safe_count(column_stats, F.col("distinct_count") == 1)
-            total_cols = column_stats.count()
-            if constant_cols > total_cols * 0.3:
-                penalty = min(20.0, float(constant_cols) * 2.0)
-                score = max(0.0, score - penalty)
-                issues.append(f"{constant_cols} columns have constant values")
-        except Exception:
-            pass
-        
+
+        avg_card = self._pd_safe_mean(cs, "cardinality_ratio", -1)
+        if avg_card < 0:
+            dc = cs["distinct_count"].dropna() if "distinct_count" in cs.columns else pd.Series(dtype=float)
+            if dc.empty:
+                return 70.0, ["No distinct count data available"], False
+            avg_card = float((dc / row_count).mean())
+
+        score = min(100.0, avg_card * 150.0 + 30.0)
+
+        if "cardinality_ratio" in cs.columns and (cs["cardinality_ratio"] > 0.95).any():
+            score = min(100.0, score + 10.0)
+
+        if "distinct_count" in cs.columns:
+            constant = int((cs["distinct_count"] == 1).sum())
+            if constant > len(cs) * 0.3:
+                score = max(0.0, score - min(20.0, float(constant) * 2.0))
+                issues.append(f"{constant} columns have constant values")
+
         return float(score), issues, True
-    
+
     def compute_freshness_score(self, last_modified: Optional[datetime]) -> Tuple[float, List[str], bool]:
-        """
-        Compute freshness score based on last modified time.
-        """
-        issues = []
-        
+        issues: List[str] = []
         if last_modified is None:
             return 60.0, ["Could not determine last modification time"], False
-        
         try:
-            now = datetime.utcnow()
-            age_days = (now - last_modified).days
-            
+            age_days = (datetime.utcnow() - last_modified).days
             if age_days < 0:
-                # Future date - probably timezone issue, assume fresh
                 return 100.0, [], True
-            
             if age_days <= self.config.freshness_threshold_days:
-                score = 100.0
-            else:
-                # Gentler decay
-                decay = min(80.0, float(age_days - self.config.freshness_threshold_days) * 3.0)
-                score = max(20.0, 100.0 - decay)
-                issues.append(f"Data is {age_days} days old (threshold: {self.config.freshness_threshold_days})")
-            
+                return 100.0, [], True
+            decay = min(80.0, float(age_days - self.config.freshness_threshold_days) * 3.0)
+            score = max(20.0, 100.0 - decay)
+            issues.append(f"Data is {age_days} days old (threshold: {self.config.freshness_threshold_days})")
             return float(score), issues, True
         except Exception as e:
             return 60.0, [f"Error computing freshness: {str(e)[:50]}"], False
-    
-    def compute_consistency_score(self, column_stats: DataFrame) -> Tuple[float, List[str], bool]:
-        """
-        Compute consistency score based on data patterns with graceful fallbacks.
-        """
-        issues = []
+
+    def compute_consistency_score(self, cs: pd.DataFrame) -> Tuple[float, List[str], bool]:
+        issues: List[str] = []
         score = 100.0
         calculated = False
-        
-        if column_stats.count() == 0:
+        if cs.empty:
             return 80.0, ["No column stats for consistency check"], False
-        
-        # Check for drift (if available)
-        try:
-            if "distinct_count_change_pct" in column_stats.columns:
-                drift_cols = column_stats.filter(
-                    (F.col("distinct_count_change_pct").isNotNull()) &
-                    (F.abs(F.col("distinct_count_change_pct")) > 50)
-                ).select("column_name", "distinct_count_change_pct").collect()
-                
-                if drift_cols:
-                    drift_penalty = min(25.0, float(len(drift_cols)) * 8.0)
-                    score -= drift_penalty
-                    calculated = True
-                    for col in drift_cols[:3]:
-                        issues.append(f"Drift in {col.column_name}: {col.distinct_count_change_pct:.1f}%")
-        except Exception:
-            pass
-        
-        # Check for empty strings (if available)
-        try:
-            if "empty_string_rate" in column_stats.columns:
-                high_empty = column_stats.filter(
-                    (F.col("empty_string_rate").isNotNull()) &
-                    (F.col("empty_string_rate") > 0.3)
-                ).count()
-                
-                if high_empty > 0:
-                    empty_penalty = min(15.0, float(high_empty) * 4.0)
-                    score -= empty_penalty
-                    calculated = True
-                    issues.append(f"{high_empty} columns have high empty string rates")
-        except Exception:
-            pass
-        
-        # Check entropy (low entropy = low information)
-        try:
-            if "entropy" in column_stats.columns:
-                low_entropy = column_stats.filter(
-                    (F.col("entropy").isNotNull()) &
-                    (F.col("entropy") < 0.5) &
-                    (F.col("distinct_count") > 1)
-                ).count()
-                
-                if low_entropy > column_stats.count() * 0.3:
-                    score -= 10.0
-                    calculated = True
-                    issues.append(f"{low_entropy} columns have very low entropy")
-        except Exception:
-            pass
-        
-        # Check for extreme length variations
-        try:
-            if "min_length" in column_stats.columns and "max_length" in column_stats.columns:
-                extreme = column_stats.filter(
-                    (F.col("min_length").isNotNull()) &
-                    (F.col("max_length").isNotNull()) &
-                    (F.col("min_length") > 0) &
-                    (F.col("max_length") > F.col("min_length") * 100)
-                ).count()
-                
-                if extreme > 0:
-                    score -= min(10.0, float(extreme) * 3.0)
-                    calculated = True
-                    issues.append(f"{extreme} columns have extreme length variation")
-        except Exception:
-            pass
-        
+
+        if "distinct_count_change_pct" in cs.columns:
+            drift = cs[cs["distinct_count_change_pct"].notna() & (cs["distinct_count_change_pct"].abs() > 50)]
+            if not drift.empty:
+                score -= min(25.0, float(len(drift)) * 8.0)
+                calculated = True
+                for _, r in drift.head(3).iterrows():
+                    issues.append(f"Drift in {r.get('column_name', '?')}: {r['distinct_count_change_pct']:.1f}%")
+
+        if "empty_string_rate" in cs.columns:
+            high_empty = int((cs["empty_string_rate"].fillna(0) > 0.3).sum())
+            if high_empty > 0:
+                score -= min(15.0, float(high_empty) * 4.0)
+                calculated = True
+                issues.append(f"{high_empty} columns have high empty string rates")
+
+        if "entropy" in cs.columns and "distinct_count" in cs.columns:
+            low_ent = cs[cs["entropy"].notna() & (cs["entropy"] < 0.5) & (cs["distinct_count"] > 1)]
+            if len(low_ent) > len(cs) * 0.3:
+                score -= 10.0
+                calculated = True
+                issues.append(f"{len(low_ent)} columns have very low entropy")
+
+        if "min_length" in cs.columns and "max_length" in cs.columns:
+            extreme = cs[
+                cs["min_length"].notna() & cs["max_length"].notna()
+                & (cs["min_length"] > 0) & (cs["max_length"] > cs["min_length"] * 100)
+            ]
+            if not extreme.empty:
+                score -= min(10.0, float(len(extreme)) * 3.0)
+                calculated = True
+                issues.append(f"{len(extreme)} columns have extreme length variation")
+
         return max(0.0, float(score)), issues, calculated or True
-    
+
     def compute_metadata_score(self, table_name: str) -> Tuple[float, List[str], bool]:
-        """
-        Compute metadata quality score based on presence of comments and classifications.
-        """
-        issues = []
+        issues: List[str] = []
         score = 0.0
-        
         try:
             kb_data = self.spark.sql(f"""
-                SELECT 
-                    comment,
-                    domain,
-                    subdomain,
-                    has_pii,
-                    has_phi
+                SELECT comment, domain, subdomain, has_pii, has_phi
                 FROM {self.config.fully_qualified_kb}
                 WHERE table_name = '{table_name}'
             """).collect()
-            
             if not kb_data:
                 return 50.0, ["Table not in knowledge base"], False
-            
             row = kb_data[0]
-            
-            # Has comment (40 points)
             if row.comment and len(str(row.comment)) > 10:
                 score += 40.0
             else:
                 issues.append("Missing or short comment")
-            
-            # Has domain (30 points)
             if row.domain and str(row.domain).lower() not in ['unknown', 'none', '']:
                 score += 30.0
             else:
                 issues.append("Missing domain classification")
-            
-            # Has subdomain (15 points)
             if row.subdomain and str(row.subdomain).lower() not in ['unknown', 'none', '']:
                 score += 15.0
-            
-            # Has PII/PHI classification (15 points)
             if row.has_pii is not None or row.has_phi is not None:
                 score += 15.0
-            
             return float(score), issues, True
-            
         except Exception as e:
             return 50.0, [f"Could not check metadata: {str(e)[:50]}"], False
-    
+
     def score_table(self, snapshot_row) -> Dict[str, Any]:
         """Compute all quality scores for a table snapshot with sparse metrics handling."""
         score_id = str(uuid.uuid4())
@@ -409,39 +285,37 @@ class DataQualityScorer:
         snapshot_id = snapshot_row.snapshot_id
         row_count = int(snapshot_row.row_count or 0)
         last_modified = snapshot_row.last_modified
-        
-        # Get column stats
-        column_stats = self.get_column_stats_for_snapshot(snapshot_id)
-        
-        all_issues = []
+
+        cs = self.get_column_stats_for_snapshot(snapshot_id).toPandas()
+
+        all_issues: List[str] = []
         dimensions_calculated = 0
-        scores = {}
-        
-        # Compute each dimension
-        completeness, comp_issues, comp_calc = self.compute_completeness_score(column_stats, row_count)
+        scores: Dict[str, float] = {}
+
+        completeness, comp_issues, comp_calc = self.compute_completeness_score(cs, row_count)
         scores["completeness"] = completeness
         all_issues.extend(comp_issues)
         if comp_calc:
             dimensions_calculated += 1
-        
-        uniqueness, uniq_issues, uniq_calc = self.compute_uniqueness_score(column_stats, row_count)
+
+        uniqueness, uniq_issues, uniq_calc = self.compute_uniqueness_score(cs, row_count)
         scores["uniqueness"] = uniqueness
         all_issues.extend(uniq_issues)
         if uniq_calc:
             dimensions_calculated += 1
-        
+
         freshness, fresh_issues, fresh_calc = self.compute_freshness_score(last_modified)
         scores["freshness"] = freshness
         all_issues.extend(fresh_issues)
         if fresh_calc:
             dimensions_calculated += 1
-        
-        consistency, cons_issues, cons_calc = self.compute_consistency_score(column_stats)
+
+        consistency, cons_issues, cons_calc = self.compute_consistency_score(cs)
         scores["consistency"] = consistency
         all_issues.extend(cons_issues)
         if cons_calc:
             dimensions_calculated += 1
-        
+
         metadata, meta_issues, meta_calc = self.compute_metadata_score(table_name)
         scores["metadata"] = metadata
         all_issues.extend(meta_issues)
