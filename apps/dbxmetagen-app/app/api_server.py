@@ -660,6 +660,7 @@ class JobRunRequest(BaseModel):
     schema_name: Optional[str] = None
     ontology_bundle: Optional[str] = None
     domain_config: Optional[str] = None
+    sweep_stale_docs: bool = False
     extra_params: dict = {}
 
 
@@ -936,6 +937,8 @@ def run_job(req: JobRunRequest):
         params["use_kb_comments"] = "true"
     if req.include_lineage:
         params["include_lineage"] = "true"
+    if req.sweep_stale_docs:
+        params["sweep_stale_docs"] = "true"
     if req.catalog_name:
         params["catalog_name"] = req.catalog_name
     if req.schema_name:
