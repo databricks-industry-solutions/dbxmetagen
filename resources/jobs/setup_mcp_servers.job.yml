@@ -24,6 +24,8 @@ resources:
       tasks:
         - task_key: setup_mcp
           max_retries: 1
+          min_retry_interval_millis: 600000
+          timeout_seconds: 14400
           job_cluster_key: mcp_cluster
 
           notebook_task:

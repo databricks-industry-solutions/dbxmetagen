@@ -47,8 +47,8 @@ function MvAnalysisPanel({ issues, onClose, onApplyFix }) {
             {iss.suggestion && (
               <div className="flex items-center gap-2 mt-1">
                 <p className="text-slate-500 dark:text-slate-400 italic flex-1">{iss.suggestion}</p>
-                {iss.field && iss.suggestion && onApplyFix && (
-                  <button onClick={() => onApplyFix(iss.field, iss.suggestion)}
+                {iss.field && iss.fix_value && onApplyFix && (
+                  <button onClick={() => onApplyFix(iss.field, iss.fix_value)}
                     className="shrink-0 px-1.5 py-0.5 text-[10px] bg-cyan-600 text-white rounded hover:bg-cyan-700">Apply</button>
                 )}
               </div>

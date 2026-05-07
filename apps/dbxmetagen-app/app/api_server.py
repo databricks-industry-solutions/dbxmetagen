@@ -127,6 +127,15 @@ def _sanitize_sdk_error(exc: Exception) -> str:
     return msg.strip().rstrip(".").strip()
 
 
+def _auth_identity_label() -> str:
+    """Human-readable label for who is running the current request."""
+    if not _OBO_ENABLED:
+        return "app service principal (OBO disabled)"
+    if _obo_token_var.get(None):
+        return "user via OBO"
+    return "app service principal (OBO enabled but no user token received)"
+
+
 def _obo_permission_hint() -> str:
     """Return a user-facing hint when OBO is enabled but the token is missing."""
     if not _OBO_ENABLED:
@@ -149,6 +158,13 @@ _NOT_FOUND_RE = re.compile(
 )
 
 
+_PERMISSION_DENIED_RE = re.compile(
+    r"PERMISSION_DENIED|ACCESS_DENIED|INSUFFICIENT_PRIVILEGES|does not have .+ privilege"
+    r"|User does not have",
+    re.IGNORECASE,
+)
+
+
 def execute_sql(query: str, warehouse_id: Optional[str] = None, timeout: int = 30):
     """Execute SQL via Statement Execution API and return rows as list[dict].
 
@@ -159,6 +175,7 @@ def execute_sql(query: str, warehouse_id: Optional[str] = None, timeout: int = 3
     wh = warehouse_id or os.environ.get("WAREHOUSE_ID", "")
     if not wh:
         raise HTTPException(500, detail="WAREHOUSE_ID not configured")
+    identity = _auth_identity_label()
     try:
         ws = _get_effective_client()
         wait_s = min(timeout, 50)
@@ -168,10 +185,15 @@ def execute_sql(query: str, warehouse_id: Optional[str] = None, timeout: int = 3
     except HTTPException:
         raise
     except Exception as exc:
-        logger.error("SDK error executing SQL: %s", exc)
-        raise HTTPException(500, detail=_sanitize_sdk_error(exc))
+        logger.error("SDK error executing SQL (running as %s): %s", identity, exc)
+        sanitized = _sanitize_sdk_error(exc)
+        if _PERMISSION_DENIED_RE.search(str(exc)):
+            raise HTTPException(
+                403,
+                detail=f"Permission denied (running as {identity}). {_obo_permission_hint()}{sanitized}",
+            )
+        raise HTTPException(500, detail=f"SQL execution error (running as {identity}): {sanitized}")
 
-    # Poll if still running (AI_QUERY can exceed the initial wait_timeout)
     deadline = time.time() + timeout
     while (
         resp.status
@@ -179,20 +201,26 @@ def execute_sql(query: str, warehouse_id: Optional[str] = None, timeout: int = 3
         and resp.status.state.value in ("PENDING", "RUNNING")
     ):
         if time.time() > deadline:
-            raise HTTPException(504, detail=f"Query timed out after {timeout}s")
+            raise HTTPException(504, detail=f"Query timed out after {timeout}s (running as {identity})")
         time.sleep(3)
         try:
             resp = ws.statement_execution.get_statement(resp.statement_id)
         except Exception as exc:
             logger.error("Error polling statement %s: %s", resp.statement_id, exc)
-            raise HTTPException(500, detail=str(exc))
+            raise HTTPException(500, detail=f"Error polling query (running as {identity}): {str(exc)}")
 
     if resp.status and resp.status.state and resp.status.state.value == "FAILED":
         msg = resp.status.error.message if resp.status.error else "SQL failed"
         if _NOT_FOUND_RE.search(msg):
-            logger.warning("Table/schema not found: %s", msg)
+            logger.warning("Table/schema not found (running as %s): %s", identity, msg)
             raise HTTPException(404, detail=msg)
-        raise HTTPException(500, detail=msg)
+        if _PERMISSION_DENIED_RE.search(msg):
+            logger.warning("Permission denied (running as %s): %s", identity, msg)
+            raise HTTPException(
+                403,
+                detail=f"Permission denied (running as {identity}). {_obo_permission_hint()}{msg}",
+            )
+        raise HTTPException(500, detail=f"SQL error (running as {identity}): {msg}")
     cols = [c.name for c in resp.manifest.schema.columns] if resp.manifest else []
     rows = []
     if resp.result and resp.result.data_array:
@@ -477,8 +505,17 @@ class OBOMiddleware(BaseHTTPMiddleware):
     """Set the OBO user token ContextVar for the duration of each request."""
     async def dispatch(self, request: Request, call_next):
         if _OBO_ENABLED:
-            _obo_token_var.set(request.headers.get("x-forwarded-access-token"))
-        return await call_next(request)
+            token = request.headers.get("x-forwarded-access-token")
+            _obo_token_var.set(token)
+            if request.url.path.startswith("/api/") and not token:
+                logger.warning(
+                    "OBO enabled but x-forwarded-access-token missing for %s %s -- "
+                    "SQL will run as app service principal",
+                    request.method, request.url.path,
+                )
+        response: Response = await call_next(request)
+        response.headers["X-Auth-Identity"] = _auth_identity_label()
+        return response
 
 
 class DebugRoutingMiddleware(BaseHTTPMiddleware):
@@ -486,11 +523,10 @@ class DebugRoutingMiddleware(BaseHTTPMiddleware):
         path = request.url.path
         method = request.method
         if path.startswith("/api/"):
-            logger.info(">> %s %s (matched routes: %d)", method, path,
-                        len([r for r in app.routes if hasattr(r, "methods")]))
+            logger.info(">> %s %s [%s]", method, path, _auth_identity_label())
         response: Response = await call_next(request)
         if path.startswith("/api/") and response.status_code >= 400:
-            logger.warning("<< %s %s -> %d", method, path, response.status_code)
+            logger.warning("<< %s %s -> %d [%s]", method, path, response.status_code, _auth_identity_label())
         return response
 
 
@@ -512,14 +548,17 @@ def health():
     }
 
 
-def _resolve_user_identity() -> Optional[str]:
-    """Return the OBO user's email when available, else None."""
+def _resolve_user_identity() -> tuple[Optional[str], Optional[str]]:
+    """Return (user_email, error_reason) for the current request's identity."""
     if not _OBO_ENABLED:
-        return None
+        return None, "OBO is disabled"
+    token = _obo_token_var.get(None)
+    if not token:
+        return None, "OBO is enabled but no x-forwarded-access-token header was received"
     try:
-        return _get_effective_client().current_user.me().user_name
-    except Exception:
-        return None
+        return _get_effective_client().current_user.me().user_name, None
+    except Exception as e:
+        return None, f"OBO token present but identity lookup failed: {_sanitize_sdk_error(e)}"
 
 
 @app.get("/api/config")
@@ -556,21 +595,45 @@ def _get_mlflow_experiment_id() -> str | None:
 
 @app.get("/api/auth/check")
 def auth_check():
-    """Verify the current caller's UC access to the configured catalog/schema."""
+    """Verify the current caller's UC access to the configured catalog/schema.
+
+    Returns detailed diagnostics so customers can tell exactly whether OBO
+    is firing, who the query runs as, and what went wrong.
+    """
+    identity_label = _auth_identity_label()
+    identity_email, identity_error = _resolve_user_identity()
+    has_obo_token = _OBO_ENABLED and bool(_obo_token_var.get(None))
+
+    result = {
+        "obo_enabled": _OBO_ENABLED,
+        "obo_token_received": has_obo_token,
+        "running_as": identity_label,
+        "user_identity": identity_email,
+        "identity_error": identity_error,
+        "has_catalog_access": False,
+        "catalog_error": None,
+        "has_schema_access": False,
+        "schema_error": None,
+        "catalog": CATALOG,
+        "schema": SCHEMA,
+    }
+
     if not _OBO_ENABLED:
-        return {"obo_enabled": False, "message": "OBO is disabled; all operations use the app service principal"}
-    identity = _resolve_user_identity()
-    result = {"obo_enabled": True, "user_identity": identity, "has_catalog_access": False, "has_schema_access": False}
+        result["message"] = "OBO is disabled; all operations use the app service principal."
+
     try:
         execute_sql(f"USE CATALOG `{CATALOG}`")
         result["has_catalog_access"] = True
-    except Exception:
+    except Exception as e:
+        result["catalog_error"] = str(getattr(e, "detail", e))
         return result
     try:
         rows = execute_sql(f"SHOW SCHEMAS IN `{CATALOG}` LIKE '{SCHEMA}'")
         result["has_schema_access"] = len(rows) > 0
-    except Exception:
-        pass
+        if not result["has_schema_access"]:
+            result["schema_error"] = f"Schema '{SCHEMA}' not found in catalog '{CATALOG}'"
+    except Exception as e:
+        result["schema_error"] = str(getattr(e, "detail", e))
     return result
 
 
@@ -7454,7 +7517,7 @@ def transfer_metric_view_ownership(definition_id: str, req: TransferOwnershipReq
         raise HTTPException(400, detail="Definition has no metric view name")
     if row.get("status") != "applied":
         raise HTTPException(400, detail="Only applied metric views can have ownership transferred")
-    owner = req.new_owner or _resolve_user_identity()
+    owner = req.new_owner or _resolve_user_identity()[0]
     if not owner:
         raise HTTPException(400, detail="Cannot determine current user. Enable OBO or provide new_owner explicitly.")
     fq_mv = f"`{req.target_catalog}`.`{req.target_schema}`.`{mv_name}`"
@@ -7724,10 +7787,11 @@ Health score: {health['score']}/{health['max']}
 Known issues: {json.dumps(health['issues'])}
 
 For each issue found, provide:
-- field: the specific JSON path (e.g. "measures[0].comment", "dimensions", "filter")
+- field: the specific JSON path (e.g. "measures[0].expr", "measures[0].comment", "dimensions", "filter")
 - severity: high, medium, or low
 - message: what's wrong
-- suggestion: specific fix text or value
+- suggestion: human-readable explanation of the recommended fix
+- fix_value: (optional) the exact replacement value for the field -- a raw SQL expression, string, or JSON fragment that can be directly substituted into the definition. Omit this key if the fix requires structural changes (adding/removing array items) or if the correct value depends on columns that may not exist.
 
 Output JSON in ```json``` fences: {{"issues": [...]}}"""
 
@@ -9149,6 +9213,155 @@ def genie_analyze(req: GenieAnalyzeRequest):
             logger.warning("LLM analysis failed: %s", e)
 
     return {"health": health, "suggestions": suggestions + llm_suggestions, "question_verdicts": question_verdicts}
+
+
+class GenieImproveRequest(BaseModel):
+    serialized_space: dict
+    table_identifiers: list[str] = []
+    model_endpoint: str = _LLM_MODEL
+    selected_suggestions: Optional[list[int]] = None
+
+
+# Map analysis section names to keywords that _classify_feedback recognizes
+_SECTION_TO_ROUTING_KEYWORDS: dict[str, list[str]] = {
+    "joins": ["join"],
+    "example_sql": ["example", "sql", "query"],
+    "measures": ["measure", "metric", "kpi"],
+    "filters": ["filter"],
+    "expressions": ["expression"],
+    "instructions": ["instruction", "description"],
+    "sample_questions": ["sample", "question"],
+    "space_configuration": ["join", "measure", "instruction"],
+    "analytical_tables": ["join", "example", "measure"],
+    "document_tables": ["instruction"],
+}
+
+
+@app.post("/api/genie/improve")
+def genie_improve(req: GenieImproveRequest):
+    """Analyze a Genie space, then feed the analysis back through the agent to produce an improved version."""
+    wh = os.environ.get("WAREHOUSE_ID", "")
+    if not wh:
+        raise HTTPException(500, detail="WAREHOUSE_ID not configured")
+
+    task_id = str(_uuid.uuid4())[:12]
+    started_at = time.time()
+    _genie_tasks[task_id] = {"status": "running", "stage": "analyzing", "created": started_at, "started_at": started_at, "round": 0}
+
+    _MONITOR_WALL_TIMEOUT = 900
+
+    def _run():
+        try:
+            _genie_tasks[task_id]["stage"] = "analyzing"
+            analysis = genie_analyze(GenieAnalyzeRequest(
+                serialized_space=req.serialized_space,
+                table_identifiers=req.table_identifiers,
+                model_endpoint=req.model_endpoint,
+            ))
+            all_suggestions = analysis.get("suggestions", [])
+            verdicts = analysis.get("question_verdicts", [])
+            pre_health = analysis.get("health")
+
+            # Filter to selected suggestions if provided
+            if req.selected_suggestions is not None:
+                sel = set(req.selected_suggestions)
+                suggestions = [s for i, s in enumerate(all_suggestions) if i in sel]
+            else:
+                suggestions = all_suggestions
+
+            if not suggestions and all(v.get("score", 0) == 2 for v in verdicts):
+                _genie_tasks[task_id].update({
+                    "status": "done", "stage": "done",
+                    "result": req.serialized_space,
+                    "warnings": ["No issues found -- space is already healthy."],
+                    "elapsed_seconds": round(time.time() - started_at),
+                    "rounds_completed": 0, "analysis": analysis, "pre_health": pre_health,
+                })
+                return
+
+            # Build refinement feedback from suggestions
+            feedback_lines = []
+            routing_keywords: set[str] = set()
+            for s in suggestions:
+                sev = s.get("severity", "medium")
+                feedback_lines.append(f"[{sev.upper()}] {s.get('message', '')} -- Action: {s.get('action', '')}")
+                section = s.get("section", "")
+                for kw in _SECTION_TO_ROUTING_KEYWORDS.get(section, []):
+                    routing_keywords.add(kw)
+
+            partial_qs = [v for v in verdicts if v.get("score", 0) < 2]
+            for v in partial_qs[:5]:
+                feedback_lines.append(f"[QUESTION GAP] \"{v.get('question', '')}\" -- {v.get('reason', '')}")
+                routing_keywords.update(["join", "example", "measure"])
+
+            # Append routing hint so _classify_feedback triggers the right phases
+            if routing_keywords:
+                feedback_lines.append(f"Sections to improve: {', '.join(sorted(routing_keywords))}")
+
+            refinement_feedback = "\n".join(feedback_lines)
+
+            _genie_tasks[task_id]["stage"] = "improving"
+            from dbxmetagen.genie.context import GenieContextAssembler
+            from dbxmetagen.genie.agent import run_genie_agent
+
+            ws = get_workspace_client()
+            progress_q: queue.Queue = queue.Queue()
+
+            assembler = GenieContextAssembler(ws, wh, CATALOG, SCHEMA)
+            ctx = assembler.assemble(req.table_identifiers or [t.get("identifier", "") for t in req.serialized_space.get("data_sources", {}).get("tables", [])])
+
+            def _monitor():
+                while True:
+                    remaining = _MONITOR_WALL_TIMEOUT - (time.time() - started_at)
+                    if remaining <= 0:
+                        _genie_tasks[task_id].update({
+                            "status": "error", "error": f"Improve timed out after {round(time.time() - started_at)}s.",
+                            "elapsed_seconds": round(time.time() - started_at), "rounds_completed": 0,
+                        })
+                        return
+                    try:
+                        event = progress_q.get(timeout=min(remaining, 30))
+                    except queue.Empty:
+                        continue
+                    stage = event.get("stage", "running")
+                    if stage == "done":
+                        _genie_tasks[task_id].update({
+                            "status": "done", "stage": "done",
+                            "result": event.get("result"),
+                            "warnings": event.get("warnings"),
+                            "elapsed_seconds": event.get("elapsed_seconds"),
+                            "rounds_completed": event.get("rounds_completed"),
+                            "analysis": analysis, "pre_health": pre_health,
+                        })
+                        return
+                    if stage == "error":
+                        _genie_tasks[task_id].update({
+                            "status": "error", "error": event.get("message", "Unknown error"),
+                            "elapsed_seconds": event.get("elapsed_seconds"),
+                            "rounds_completed": event.get("rounds_completed"),
+                        })
+                        return
+                    _genie_tasks[task_id]["stage"] = f"improving: {stage}"
+                    if "round" in event:
+                        _genie_tasks[task_id]["round"] = event["round"]
+
+            monitor = threading.Thread(target=_monitor, daemon=True)
+            monitor.start()
+
+            run_genie_agent(
+                ws, wh, ctx, progress_q,
+                model_endpoint=req.model_endpoint,
+                refinement_feedback=refinement_feedback,
+                prior_result=req.serialized_space,
+            )
+        except Exception as e:
+            logger.error("Genie improve error: %s", e, exc_info=True)
+            task = _genie_tasks.get(task_id)
+            if task and task.get("status") != "error":
+                task.update({"status": "error", "error": str(e), "elapsed_seconds": round(time.time() - started_at), "rounds_completed": 0})
+
+    threading.Thread(target=_run, daemon=True).start()
+    return {"task_id": task_id}
 
 
 # ---------------------------------------------------------------------------

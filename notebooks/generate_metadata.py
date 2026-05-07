@@ -15,16 +15,28 @@
 # COMMAND ----------
 # MAGIC %md
 # MAGIC # Library installs
+
 # COMMAND ----------
 # MAGIC %pip install -q -r ../requirements.txt
-# MAGIC dbutils.library.restartPython()
+# COMMAND ----------
+dbutils.widgets.text("spacy_model_names", "en_core_web_md", "spaCy model (en_core_web_md or en_core_web_lg)")
+_spacy_model = dbutils.widgets.get("spacy_model_names").strip()
+if _spacy_model == "en_core_web_lg":
+    %pip install -q https://github.com/explosion/spacy-models/releases/download/en_core_web_lg-3.8.0/en_core_web_lg-3.8.0-py3-none-any.whl
+elif _spacy_model == "en_core_web_md":
+    %pip install -q https://github.com/explosion/spacy-models/releases/download/en_core_web_md-3.8.0/en_core_web_md-3.8.0-py3-none-any.whl
+else:
+    raise ValueError(f"Invalid spaCy model: {_spacy_model}")
+dbutils.library.restartPython()
 # COMMAND ----------
 # MAGIC %md
 # MAGIC # Library imports, widgets, and environment
 # COMMAND ----------
 import sys
 
-sys.path.append("../src")  # For git-clone or DAB deployment; pip-installed package works without this
+sys.path.append(
+    "../src"
+)  # For git-clone or DAB deployment; pip-installed package works without this
 from dbxmetagen.main import main
 from dbxmetagen.databricks_utils import (
     setup_widgets,

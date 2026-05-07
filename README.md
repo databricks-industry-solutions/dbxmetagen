@@ -279,7 +279,7 @@ Settings are in `variables.yml`. Key options:
 | `apply_ddl` | `false` | Apply generated metadata directly to Unity Catalog |
 | `allow_data` | `true` | Set `false` to prevent data from being sent to LLMs |
 | `node_type` | `i3.2xlarge` | Job cluster node type. Change for Azure (`Standard_DS4_v2`) or GCP (`n2-highmem-8`) |
-| `include_deterministic_pi` | `true` | Enable SpaCy/Presidio for rule-based PI detection (requires `en_core_web_lg` model -- see [Configuration docs](docs/CONFIGURATION.md)) |
+| `include_deterministic_pi` | `true` | Enable SpaCy/Presidio for rule-based PI detection (default model: `en_core_web_md`; set `spacy_model_names=en_core_web_lg` for higher accuracy -- see [Configuration docs](docs/CONFIGURATION.md)) |
 | `federation_mode` | `false` | Enable for federated catalog sources (Redshift, Snowflake) |
 
 For full reference, see [docs/CONFIGURATION.md](docs/CONFIGURATION.md).

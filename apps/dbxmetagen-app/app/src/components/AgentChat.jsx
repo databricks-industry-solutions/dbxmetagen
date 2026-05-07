@@ -68,8 +68,8 @@ function stripLeadingJson(text) {
 }
 
 // Only these modes are shown in the UI; the rest are hidden but retained in MODE_CONFIG.
-// Hidden modes: baseline, governance, impact
-const VISIBLE_MODES = new Set(['graphrag', 'graph_eval'])
+// Hidden modes: baseline, governance, impact, graph_eval
+const VISIBLE_MODES = new Set(['graphrag'])
 
 const STAGE_LABELS = {
   starting: 'Starting...',

@@ -18,10 +18,14 @@ resources:
           default: ${var.schema_name}
         - name: endpoint_name
           default: "dbxmetagen-vs"
+        - name: sweep_stale_docs
+          default: "false"
 
       tasks:
         - task_key: build_vector_index
           max_retries: 1
+          min_retry_interval_millis: 600000
+          timeout_seconds: 14400
           job_cluster_key: vector_index_cluster
           notebook_task:
             notebook_path: ../../notebooks/build_vector_index.py
@@ -29,6 +33,7 @@ resources:
               catalog_name: "{{job.parameters.catalog_name}}"
               schema_name: "{{job.parameters.schema_name}}"
               endpoint_name: "{{job.parameters.endpoint_name}}"
+              sweep_stale_docs: "{{job.parameters.sweep_stale_docs}}"
           libraries:
             - whl: ../../dist/*.whl
 

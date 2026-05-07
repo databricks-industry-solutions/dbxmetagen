@@ -3965,7 +3965,6 @@ class OntologyBuilder:
         from functools import reduce
         combined = reduce(lambda a, b: a.unionByName(b, allowMissingColumns=True), dfs)
         combined = combined.dropDuplicates(["edge_id"])
-        logger.info("Built %d structural ontology edges", combined.count())
         return combined
 
     def validate_ontology_completeness(self) -> Dict[str, Any]:
@@ -5241,11 +5240,9 @@ class OntologyBuilder:
 
         if edge_dfs:
             combined = reduce(DataFrame.unionByName, edge_dfs).dropDuplicates(["edge_id"])
-            edges_added = combined.count()
-            merge_edges(self.spark, edges_table, combined, source_system="ontology")
+            edges_added = merge_edges(self.spark, edges_table, combined, source_system="ontology")
         else:
             edges_added = 0
-            merge_edges(self.spark, edges_table, self.spark.createDataFrame([], "src STRING"), source_system="ontology")
 
         _step("validate_ontology_completeness", self.validate_ontology_completeness)
         _step("compute_ontology_metrics", self.compute_ontology_metrics)
@@ -5299,7 +5296,7 @@ class OntologyBuilder:
             "turtle_path": turtle_path,
         }
 
-    def refresh_relationships(self) -> Dict[str, Any]:
+    def refresh_relationships(self, sweep_stale: bool = False) -> Dict[str, Any]:
         """Re-run only edge-building steps after FK predictions are available.
 
         Intended to be called as a post-FK-prediction task so that FK-evidence-
@@ -5345,11 +5342,9 @@ class OntologyBuilder:
 
         if edge_dfs:
             combined = reduce(DataFrame.unionByName, edge_dfs).dropDuplicates(["edge_id"])
-            total_edges = combined.count()
-            merge_edges(self.spark, edges_table, combined, source_system="ontology")
+            total_edges = merge_edges(self.spark, edges_table, combined, source_system="ontology", sweep_stale=sweep_stale)
         else:
             total_edges = 0
-            merge_edges(self.spark, edges_table, self.spark.createDataFrame([], "src STRING"), source_system="ontology")
 
         elapsed = _time.time() - start
         logger.info("[timing] refresh_relationships: %.1fs", elapsed)
@@ -5369,6 +5364,7 @@ def refresh_ontology_relationships(
     ontology_bundle: str = "",
     model_endpoint: Optional[str] = None,
     table_names: Optional[List[str]] = None,
+    sweep_stale: bool = False,
 ) -> Dict[str, Any]:
     """Convenience function to refresh ontology edges after FK prediction."""
     config = OntologyConfig(
@@ -5380,7 +5376,7 @@ def refresh_ontology_relationships(
         table_names=table_names,
     )
     builder = OntologyBuilder(spark, config, model_endpoint=model_endpoint)
-    return builder.refresh_relationships()
+    return builder.refresh_relationships(sweep_stale=sweep_stale)
 
 
 def build_ontology(

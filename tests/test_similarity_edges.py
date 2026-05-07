@@ -93,16 +93,14 @@ class TestSimilarityEdgeBuilder:
         query = mock_spark.sql.call_args[0][0]
         assert "embedding IS NOT NULL" in query
     
-    def test_merge_similarity_edges_calls_merge(self, builder, mock_spark):
-        mock_df = MagicMock()
-        mock_df.count.return_value = 5
-        with patch("dbxmetagen.knowledge_graph.merge_edges") as mock_merge:
-            builder.merge_similarity_edges(mock_df)
+    def test_run_calls_merge_edges(self, builder, mock_spark):
+        with patch.object(builder, "compute_similarity_edges") as mock_compute, \
+             patch("dbxmetagen.knowledge_graph.merge_edges", return_value=5) as mock_merge:
+            mock_compute.return_value = MagicMock()
+            result = builder.run()
             mock_merge.assert_called_once()
-            call_kw = mock_merge.call_args.kwargs
-            call_pos = mock_merge.call_args.args
-            source = call_kw.get("source_system") or (call_pos[3] if len(call_pos) > 3 else None)
-            assert source == "embedding_similarity"
+            assert mock_merge.call_args.kwargs.get("source_system") == "embedding_similarity"
+            assert result["edges_created"] == 5
     
     def test_compute_similarity_fallback_empty_nodes(self, builder, mock_spark):
         """Fallback should handle empty node list."""

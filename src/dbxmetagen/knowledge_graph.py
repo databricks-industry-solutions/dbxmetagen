@@ -53,41 +53,62 @@ def align_edge_schema(df: DataFrame) -> DataFrame:
     return df.select(*cols)
 
 
-def merge_edges(spark: SparkSession, target_table: str, df: DataFrame, source_system: str):
-    """MERGE edges by edge_id into target_table, sweeping stale rows for source_system.
+def merge_edges(
+    spark: SparkSession,
+    target_table: str,
+    df: DataFrame,
+    source_system: str,
+    sweep_stale: bool = False,
+) -> int:
+    """MERGE edges by edge_id into target_table.
 
-    When df has zero rows, deletes all rows for source_system (stale cleanup).
+    Returns the number of edges merged.  When *sweep_stale* is True the MERGE
+    includes a ``WHEN NOT MATCHED BY SOURCE … THEN DELETE`` clause that removes
+    stale rows for this *source_system* (full outer join -- expensive on cold
+    clusters).  Default is False (upsert only).
     """
     aligned = align_edge_schema(df).dropDuplicates(["edge_id"])
-    row_count = aligned.count()
-    if row_count == 0:
-        logger.info("No edges to merge for source_system=%s — sweeping stale rows", source_system)
-        try:
-            spark.sql(f"DELETE FROM {target_table} WHERE source_system = '{source_system}'")
-        except Exception as e:
-            logger.warning("Could not sweep stale edges for %s: %s", source_system, e)
-        return
 
-    view_name = f"_staged_merge_{source_system}"
-    aligned.createOrReplaceTempView(view_name)
-    logger.info("Merging %d edges (source_system=%s) into %s", row_count, source_system, target_table)
+    if not aligned.head(1):
+        if sweep_stale:
+            logger.info("No edges to merge for source_system=%s — sweeping stale rows", source_system)
+            try:
+                spark.sql(f"DELETE FROM {target_table} WHERE source_system = '{source_system}'")
+            except Exception as e:
+                logger.warning("Could not sweep stale edges for %s: %s", source_system, e)
+        return 0
 
-    update_cols = [c.strip("`") for c, _ in EDGE_SCHEMA
-                   if c.strip("`") not in ("edge_id", "created_at")]
-    update_set = ", ".join(f"target.{c} = source.{c}" for c in update_cols)
-    col_list = ", ".join(c.strip("`") for c, _ in EDGE_SCHEMA)
+    from pyspark import StorageLevel
+    aligned.persist(StorageLevel.MEMORY_AND_DISK)
+    try:
+        row_count = aligned.count()
+        view_name = f"_staged_merge_{source_system}"
+        aligned.createOrReplaceTempView(view_name)
+        logger.info("Merging %d edges (source_system=%s) into %s", row_count, source_system, target_table)
 
-    spark.sql(f"""
-        MERGE INTO {target_table} AS target
-        USING {view_name} AS source
-        ON target.edge_id = source.edge_id
-        WHEN MATCHED THEN UPDATE SET {update_set}
-        WHEN NOT MATCHED THEN INSERT ({col_list})
-            VALUES (source.{', source.'.join(col_list.split(', '))})
-        WHEN NOT MATCHED BY SOURCE
-          AND target.source_system = '{source_system}'
-          THEN DELETE
-    """)
+        update_cols = [c.strip("`") for c, _ in EDGE_SCHEMA
+                       if c.strip("`") not in ("edge_id", "created_at")]
+        update_set = ", ".join(f"target.{c} = source.{c}" for c in update_cols)
+        col_list = ", ".join(c.strip("`") for c, _ in EDGE_SCHEMA)
+
+        sweep_clause = (
+            f"\n        WHEN NOT MATCHED BY SOURCE"
+            f"\n          AND target.source_system = '{source_system}'"
+            f"\n          THEN DELETE"
+            if sweep_stale else ""
+        )
+
+        spark.sql(f"""
+            MERGE INTO {target_table} AS target
+            USING {view_name} AS source
+            ON target.edge_id = source.edge_id
+            WHEN MATCHED THEN UPDATE SET {update_set}
+            WHEN NOT MATCHED THEN INSERT ({col_list})
+                VALUES (source.{', source.'.join(col_list.split(', '))}){sweep_clause}
+        """)
+        return row_count
+    finally:
+        aligned.unpersist()
 
 
 @dataclass
@@ -217,10 +238,10 @@ class KnowledgeGraphBuilder:
         col_list = ", ".join(c.strip("`") for c, _ in self._EDGE_SCHEMA)
         self.spark.sql(f"INSERT INTO {target} ({col_list}) SELECT {col_list} FROM {view_name}")
 
-    def _merge_edges(self, df: DataFrame, source_system: str, table: str = None):
-        """MERGE edges by edge_id (upsert), then sweep stale edges for this source_system."""
+    def _merge_edges(self, df: DataFrame, source_system: str, table: str = None, sweep_stale: bool = False) -> int:
+        """MERGE edges by edge_id (upsert). Optionally sweep stale edges for this source_system."""
         target = table or self.config.fully_qualified_edges
-        merge_edges(self.spark, target, df, source_system)
+        return merge_edges(self.spark, target, df, source_system, sweep_stale=sweep_stale)
 
     def create_nodes_table(self) -> None:
         """Create the nodes table if it doesn't exist, and add new columns if missing."""
@@ -555,15 +576,20 @@ class KnowledgeGraphBuilder:
         
         return {"total_nodes": count}
     
-    def refresh_edges(self, edges_df: DataFrame, source_system: str = "knowledge_graph") -> Dict[str, int]:
+    def refresh_edges(
+        self,
+        edges_df: DataFrame,
+        source_system: str = "knowledge_graph",
+        sweep_stale: bool = False,
+    ) -> Dict[str, int]:
         """Merge edges by edge_id, grouped by source_system.
 
         Reads the ``source_system`` column from edges_df to determine which
-        groups to merge independently.  Each group is upserted via MERGE and
-        stale edges for that source_system are swept.  The ``source_system``
-        parameter is used as a fallback for rows where the column is NULL.
+        groups to merge independently.  Each group is upserted via MERGE.
+        When *sweep_stale* is True, stale edges for each source_system are
+        deleted.  The ``source_system`` parameter is used as a fallback for
+        rows where the column is NULL.
         """
-        # Fill NULL source_system with the caller-provided default
         df = edges_df.withColumn(
             "source_system",
             F.coalesce(F.col("source_system"), F.lit(source_system)),
@@ -577,7 +603,7 @@ class KnowledgeGraphBuilder:
 
         for sys in systems:
             group = df.filter(F.col("source_system") == sys)
-            self._merge_edges(group, source_system=sys)
+            self._merge_edges(group, source_system=sys, sweep_stale=sweep_stale)
 
         count = self.spark.sql(
             f"SELECT COUNT(*) as cnt FROM {self.config.fully_qualified_edges}"
@@ -1089,13 +1115,14 @@ class ExtendedKnowledgeGraphBuilder(KnowledgeGraphBuilder):
         from functools import reduce
         return reduce(lambda a, b: a.unionByName(b), all_edges)
     
-    def run(self, include_columns: bool = True, include_schemas: bool = True) -> Dict[str, Any]:
+    def run(self, include_columns: bool = True, include_schemas: bool = True, sweep_stale: bool = False) -> Dict[str, Any]:
         """
         Execute the extended graph building pipeline.
         
         Args:
             include_columns: Whether to include column nodes
             include_schemas: Whether to include schema nodes
+            sweep_stale: Whether to sweep stale edges during merge
         """
         logger.info("Starting extended knowledge graph build")
         
@@ -1137,7 +1164,7 @@ class ExtendedKnowledgeGraphBuilder(KnowledgeGraphBuilder):
         edge_count = edges_df.count()
         logger.info(f"Built {edge_count} edges")
         
-        edge_stats = self.refresh_edges(edges_df)
+        edge_stats = self.refresh_edges(edges_df, sweep_stale=sweep_stale)
         
         logger.info("Extended knowledge graph build complete")
         
@@ -1156,6 +1183,7 @@ def build_extended_knowledge_graph(
     include_columns: bool = True,
     include_schemas: bool = True,
     table_names: list[str] | None = None,
+    sweep_stale: bool = False,
 ) -> Dict[str, Any]:
     """
     Build extended knowledge graph with column and schema nodes.
@@ -1166,6 +1194,7 @@ def build_extended_knowledge_graph(
         schema_name: Schema name for tables
         include_columns: Include column-level nodes
         include_schemas: Include schema-level nodes
+        sweep_stale: Whether to sweep stale edges during merge
         
     Returns:
         Dict with execution statistics
@@ -1176,7 +1205,7 @@ def build_extended_knowledge_graph(
         table_names=table_names,
     )
     builder = ExtendedKnowledgeGraphBuilder(spark, config)
-    return builder.run(include_columns, include_schemas)
+    return builder.run(include_columns, include_schemas, sweep_stale=sweep_stale)
 
 
 # =============================================================================

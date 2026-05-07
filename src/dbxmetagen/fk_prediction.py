@@ -1685,7 +1685,7 @@ class FKPredictor:
     # ------------------------------------------------------------------
     # Step 6: Graph edges
     # ------------------------------------------------------------------
-    def write_graph_edges(self) -> int:
+    def write_graph_edges(self, sweep_stale: bool = False) -> int:
         """Merge predicted_fk edges into graph_edges.
 
         Reads from the authoritative fk_predictions table (cumulative via MERGE)
@@ -1725,8 +1725,7 @@ class FKPredictor:
             F.current_timestamp().alias("updated_at"),
         )
         from dbxmetagen.knowledge_graph import merge_edges
-        count = edges.count()
-        merge_edges(self.spark, edges_table, edges, source_system="fk_predictions")
+        count = merge_edges(self.spark, edges_table, edges, source_system="fk_predictions", sweep_stale=sweep_stale)
         logger.info("Merged %d predicted_fk edges", count)
         return count
 
@@ -1839,7 +1838,7 @@ class FKPredictor:
             ) COMMENT 'Generated FK DDL statements'
         """)
 
-    def run(self) -> Dict[str, Any]:
+    def run(self, sweep_stale: bool = False) -> Dict[str, Any]:
         """Execute the full FK prediction pipeline."""
         logger.info("Starting FK prediction pipeline")
         self._ensure_output_tables()
@@ -1969,7 +1968,7 @@ class FKPredictor:
         judged = self._enforce_direction(judged)
 
         n_preds = self.write_predictions(judged)
-        n_edges = self.write_graph_edges()
+        n_edges = self.write_graph_edges(sweep_stale=sweep_stale)
         ddl_df = self.generate_ddl()
         n_ddl = 0
         if self.config.apply_ddl:
@@ -2007,6 +2006,7 @@ def predict_foreign_keys(
     rule_score_min_for_ai: float = 0.50,
     max_candidates_per_table_pair: int = 5,
     system_column_patterns: Tuple[str, ...] = _DEFAULT_SYSTEM_COL_PATTERNS,
+    sweep_stale: bool = False,
 ) -> Dict[str, Any]:
     """Convenience function to run FK prediction."""
     config = FKPredictionConfig(
@@ -2031,5 +2031,5 @@ def predict_foreign_keys(
         system_column_patterns=system_column_patterns,
     )
     predictor = FKPredictor(spark, config)
-    return predictor.run()
+    return predictor.run(sweep_stale=sweep_stale)
 

@@ -30,16 +30,25 @@ def luhn_checksum(card_number):
     return sum_ % 10 == 0
 
 
-def get_analyzer_engine(add_pci: bool = True, add_phi: bool = True) -> AnalyzerEngine:
+def get_analyzer_engine(
+    model_name: str = "en_core_web_md",
+    add_pci: bool = True,
+    add_phi: bool = True,
+) -> AnalyzerEngine:
     """Initialize Presidio AnalyzerEngine with PCI/PHI recognizers."""
     try:
         from presidio_analyzer import AnalyzerEngine, PatternRecognizer, Pattern
+        from presidio_analyzer.nlp_engine import NlpEngineProvider
     except ImportError as exc:
         raise ImportError(
             "presidio_analyzer is required for deterministic PI detection. "
             "Install it with: pip install presidio_analyzer"
         ) from exc
-    analyzer = AnalyzerEngine()
+    nlp_engine = NlpEngineProvider(nlp_configuration={
+        "nlp_engine_name": "spacy",
+        "models": [{"lang_code": "en", "model_name": model_name}],
+    }).create_engine()
+    analyzer = AnalyzerEngine(nlp_engine=nlp_engine)
 
     if add_pci:
         pci_patterns = [
@@ -285,7 +294,8 @@ def process_table(
     # Create directory for UC volumes (they don't auto-create)
     os.makedirs(output_dir, exist_ok=True)
 
-    analyzer = get_analyzer_engine()
+    model_name = getattr(config, "spacy_model_names", "en_core_web_md")
+    analyzer = get_analyzer_engine(model_name=model_name)
     column_contents = data.get("column_contents", {})
     columns = column_contents.get("columns", [])
     data_rows = column_contents.get("data", [])
@@ -324,7 +334,7 @@ def process_table(
     return results
 
 
-def ensure_spacy_model(model_name: str = "en_core_web_lg"):
+def ensure_spacy_model(model_name: str = "en_core_web_md"):
     """
     Load pre-installed spaCy model. Model should be installed via
     requirements-pi.txt, a Volume path, or ``pip install "dbxmetagen[pi]"``.

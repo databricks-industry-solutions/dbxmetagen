@@ -535,7 +535,10 @@ class TestTableBackedOutputs:
 
     def test_write_graph_edges_no_df_parameter(self):
         sig = inspect.signature(FKPredictor.write_graph_edges)
-        assert list(sig.parameters.keys()) == ["self"]
+        assert "self" in sig.parameters
+        for p in sig.parameters.values():
+            if p.name != "self":
+                assert p.default is not inspect.Parameter.empty, f"{p.name} should have a default"
 
     def test_generate_ddl_reads_predictions_table(self):
         src = inspect.getsource(FKPredictor.generate_ddl)

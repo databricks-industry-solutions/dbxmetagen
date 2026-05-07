@@ -22,6 +22,8 @@ resources:
       tasks:
         - task_key: run_profiling
           max_retries: 1
+          min_retry_interval_millis: 600000
+          timeout_seconds: 14400
           job_cluster_key: profiling_cluster
 
           notebook_task:
@@ -36,6 +38,8 @@ resources:
 
         - task_key: compute_quality_scores
           max_retries: 1
+          min_retry_interval_millis: 600000
+          timeout_seconds: 14400
           depends_on:
             - task_key: run_profiling
           job_cluster_key: profiling_cluster
@@ -51,6 +55,8 @@ resources:
 
         - task_key: update_graph_quality
           max_retries: 1
+          min_retry_interval_millis: 600000
+          timeout_seconds: 14400
           depends_on:
             - task_key: compute_quality_scores
           job_cluster_key: profiling_cluster

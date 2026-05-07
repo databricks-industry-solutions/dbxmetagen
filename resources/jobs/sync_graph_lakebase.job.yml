@@ -39,6 +39,8 @@ resources:
         - task_key: sync_to_lakebase
           job_cluster_key: lakebase_cluster
           max_retries: 1
+          min_retry_interval_millis: 600000
+          timeout_seconds: 14400
           notebook_task:
             notebook_path: ../../notebooks/sync_graph_to_lakebase.py
             base_parameters:

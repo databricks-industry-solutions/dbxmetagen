@@ -28,6 +28,12 @@ artifacts:
     dynamic_version: true
     path: .
 
+# --- spaCy model for PI detection ---
+# The default spaCy model is en_core_web_md (~40 MB). If you need higher
+# NER accuracy for PII/PHI detection, set spacy_model_names to en_core_web_lg
+# (~400 MB) in variables.yml or via job parameter override. The generate_metadata
+# notebook installs the selected model at runtime via a widget.
+
 # --- Optional: Cluster policy / serverless budget policy ---
 # By default, no policies are applied (policy_id and budget_policy_id
 # default to empty in variables.yml). To set a policy:
@@ -58,6 +64,20 @@ targets:
     permissions:
       - user_name: ${var.deploying_user}
         level: CAN_MANAGE
+    # --- Optional: run_as ---
+    # Controls which identity runs jobs and owns created resources.
+    # By default (no run_as), the deploying user's identity is used.
+    #
+    # Option A - Run as yourself (explicit, same as default):
+    #   run_as:
+    #     user_name: ${var.current_user}
+    #
+    # Option B - Run as a service principal (recommended for prod/shared):
+    #   The SPN needs: USE CATALOG, USE SCHEMA, CREATE TABLE on the target
+    #   catalog/schema, plus CAN_ATTACH_TO on clusters and CAN_USE on warehouses.
+    #   The deploying user still runs `databricks bundle deploy`.
+    #   run_as:
+    #     service_principal_name: "00000000-0000-0000-0000-000000000000"
 
   demo:
     mode: development
@@ -70,8 +90,9 @@ targets:
     permissions:
       - user_name: ${var.deploying_user}
         level: CAN_MANAGE
-    
-  
+    # run_as:  # See dev target above for full documentation
+    #   service_principal_name: "00000000-0000-0000-0000-000000000000"
+
   prod:
     mode: production
     workspace:
@@ -84,5 +105,7 @@ targets:
     permissions:
       - user_name: ${var.current_user}
         level: CAN_MANAGE
-    run_as:
-      user_name: ${var.current_user}
+    # For production, running as an SPN is strongly recommended so that
+    # jobs, tables, and metadata are owned by the SPN rather than a person.
+    # run_as:  # See dev target above for full documentation
+    #   service_principal_name: "00000000-0000-0000-0000-000000000000"

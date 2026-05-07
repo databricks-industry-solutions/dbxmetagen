@@ -21,6 +21,8 @@ resources:
       tasks:
         - task_key: build_knowledge_base
           max_retries: 1
+          min_retry_interval_millis: 600000
+          timeout_seconds: 14400
           job_cluster_key: kb_cluster
 
           notebook_task:
@@ -34,6 +36,8 @@ resources:
 
         - task_key: build_knowledge_graph
           max_retries: 1
+          min_retry_interval_millis: 600000
+          timeout_seconds: 14400
           depends_on:
             - task_key: build_knowledge_base
           # ML cluster required - GraphFrames needs JVM dependencies not available on serverless

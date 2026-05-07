@@ -22,12 +22,14 @@ dbutils.widgets.text("schema_name", "", "Schema Name")
 dbutils.widgets.text("similarity_threshold", "0.8", "Similarity Threshold")
 dbutils.widgets.text("max_edges_per_node", "10", "Max Edges Per Node")
 dbutils.widgets.text("use_ann_similarity", "true", "Use ANN (Vector Search)")
+dbutils.widgets.text("sweep_stale_edges", "false", "Sweep stale edges")
 
 catalog_name = dbutils.widgets.get("catalog_name")
 schema_name = dbutils.widgets.get("schema_name")
 similarity_threshold = float(dbutils.widgets.get("similarity_threshold"))
 max_edges_per_node = int(dbutils.widgets.get("max_edges_per_node"))
 use_ann = dbutils.widgets.get("use_ann_similarity").strip().lower() in ("true", "1", "yes")
+sweep_stale = dbutils.widgets.get("sweep_stale_edges").strip().lower() in ("true", "1", "yes")
 
 if not catalog_name or not schema_name:
     raise ValueError("Both catalog_name and schema_name are required")
@@ -51,6 +53,7 @@ result = build_similarity_edges(
     similarity_threshold=similarity_threshold,
     max_edges_per_node=max_edges_per_node,
     use_ann=use_ann,
+    sweep_stale=sweep_stale,
 )
 
 print(f"Similarity edge creation complete")
