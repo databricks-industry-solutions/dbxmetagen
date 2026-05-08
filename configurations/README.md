@@ -28,6 +28,13 @@ ontology_bundles/
   schema_org.yaml          # Schema.org formal ontology (general/web)
 ```
 
+Bundles come in two flavors:
+
+- **Hand-curated** (`general`, `healthcare`, `financial_services`, `retail_cpg`) -- Lightweight, easy to understand, and easy to extend. Entity definitions and domains are written by hand with practical keywords. Good starting point for most deployments.
+- **Formal ontology** (`fhir_r4`, `omop_cdm`, `schema_org`) -- Machine-generated from published standards (FHIR R4, OMOP CDM, Schema.org). These contain hundreds or thousands of entity types with precise hierarchical relationships. They offer richer classification and stronger interoperability with external systems, but are harder to customize and can be slower to process due to their size. Best used when your data must align to a specific standard or when you need fine-grained entity resolution.
+
+When in doubt, start with a hand-curated bundle and switch to a formal one only if you need the additional entity coverage or standards alignment.
+
 A bundle has three sections:
 
 | Section | Purpose |
