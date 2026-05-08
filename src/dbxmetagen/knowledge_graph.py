@@ -53,6 +53,15 @@ def align_edge_schema(df: DataFrame) -> DataFrame:
     return df.select(*cols)
 
 
+def _ensure_edges_table(spark: SparkSession, target_table: str) -> None:
+    """Create graph_edges table if it doesn't exist."""
+    col_defs = ", ".join(
+        f"{name.strip('`')} {dtype}" + (" NOT NULL" if name.strip("`") in ("src", "dst", "relationship") else "")
+        for name, dtype in EDGE_SCHEMA
+    )
+    spark.sql(f"CREATE TABLE IF NOT EXISTS {target_table} ({col_defs})")
+
+
 def merge_edges(
     spark: SparkSession,
     target_table: str,
@@ -67,6 +76,7 @@ def merge_edges(
     stale rows for this *source_system* (full outer join -- expensive on cold
     clusters).  Default is False (upsert only).
     """
+    _ensure_edges_table(spark, target_table)
     aligned = align_edge_schema(df).dropDuplicates(["edge_id"])
 
     if not aligned.head(1):
