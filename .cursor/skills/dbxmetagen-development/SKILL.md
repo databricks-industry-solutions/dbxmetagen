@@ -173,9 +173,10 @@ All autofix functions need guards to avoid corrupting:
 
 ### FK Prediction
 
-- FK prediction does NOT take a `table_names` param -- it reads from `graph_nodes`/`graph_edges`
-  which contain all previously processed tables. Running the pipeline for a subset of tables
-  still produces FK candidates against the full knowledge graph.
+- FK prediction accepts `table_names`. When set, candidate pairs are filtered post-union to
+  include only pairs where at least one of `table_a`/`table_b` matches. It still reads from
+  `graph_nodes`/`graph_edges` (the full knowledge graph) for cross-table discovery, but limits
+  expensive AI_QUERY calls to relevant pairs only.
 - Self-referential FKs (`src_table == dst_table AND src_column == dst_column`) are filtered
 - Direction is enforced via AI judge + cardinality fallback (`_enforce_direction`)
 - Reverse-pair cleanup runs before MERGE to prevent duplicates
@@ -276,6 +277,30 @@ The `full_analytics_pipeline_job` YAML has `ontology_bundle` defaulting to `"hea
 (hardcoded, not `${var.ontology_bundle}`). When triggered from the app, the app overrides this
 with whatever you select. When running from CLI, you **must** pass `--param ontology_bundle=fhir_r4`
 or it will use the wrong bundle.
+
+## Investment Ops E2E Eval (Built-In)
+
+The repo includes a self-contained e2e eval that builds a star schema from public market
+data and scores pipeline outputs. Unlike the FHIR eval (which lives in a separate worktree),
+this runs entirely from the main repo.
+
+```bash
+# Full run (downloads data + generates + evaluates)
+databricks bundle run eval_e2e_job -t demo -p DMVM
+
+# Skip data download, reuse existing tables
+databricks bundle run eval_e2e_job -t demo -p DMVM --params="skip_generation=true"
+
+# Test incrementality by excluding tables (use -- syntax for comma values)
+databricks bundle run eval_e2e_job -t demo -p DMVM \
+  -- --skip_generation true --exclude_tables "dim_index,fct_index_membership"
+```
+
+**Key parameters:** `skip_generation` (skip yfinance download), `skip_pipeline` (skip everything),
+`skip_idempotency` (skip re-run), `exclude_tables` (comma-separated short table names).
+
+**Caution:** `skip_generation` only skips data table creation. Metadata generation (comment/PI/domain)
+still runs unless `skip_pipeline=true`. See `docs/E2E_EVAL_AND_INCREMENTALITY.md` for full details.
 
 ## Common Tasks
 
