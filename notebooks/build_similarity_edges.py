@@ -23,6 +23,8 @@ dbutils.widgets.text("similarity_threshold", "0.8", "Similarity Threshold")
 dbutils.widgets.text("max_edges_per_node", "10", "Max Edges Per Node")
 dbutils.widgets.text("use_ann_similarity", "true", "Use ANN (Vector Search)")
 dbutils.widgets.text("sweep_stale_edges", "false", "Sweep stale edges")
+dbutils.widgets.text("table_names", "", "Table Names (comma-separated, empty for all)")
+dbutils.widgets.text("incremental", "true", "Incremental")
 
 catalog_name = dbutils.widgets.get("catalog_name")
 schema_name = dbutils.widgets.get("schema_name")
@@ -30,6 +32,7 @@ similarity_threshold = float(dbutils.widgets.get("similarity_threshold"))
 max_edges_per_node = int(dbutils.widgets.get("max_edges_per_node"))
 use_ann = dbutils.widgets.get("use_ann_similarity").strip().lower() in ("true", "1", "yes")
 sweep_stale = dbutils.widgets.get("sweep_stale_edges").strip().lower() in ("true", "1", "yes")
+incremental = dbutils.widgets.get("incremental").strip().lower() in ("true", "1", "yes")
 
 if not catalog_name or not schema_name:
     raise ValueError("Both catalog_name and schema_name are required")
@@ -45,6 +48,8 @@ import sys
 sys.path.append("../src")  # For git-clone or DAB deployment; pip-installed package works without this
 
 from dbxmetagen.similarity_edges import build_similarity_edges
+from dbxmetagen.table_filter import parse_table_names
+table_names = parse_table_names(dbutils.widgets.get("table_names").strip()) or None
 
 result = build_similarity_edges(
     spark=spark,
@@ -54,6 +59,8 @@ result = build_similarity_edges(
     max_edges_per_node=max_edges_per_node,
     use_ann=use_ann,
     sweep_stale=sweep_stale,
+    table_names=table_names,
+    incremental=incremental,
 )
 
 print(f"Similarity edge creation complete")

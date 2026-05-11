@@ -17,6 +17,7 @@ dbutils.widgets.text("catalog_name", "", "Catalog Name")
 dbutils.widgets.text("schema_name", "", "Schema Name")
 dbutils.widgets.text("generate_comments", "true", "Generate AI Comments")
 dbutils.widgets.text("table_names", "", "Table Names (comma-separated, empty=all)")
+dbutils.widgets.text("incremental", "true", "Incremental")
 
 catalog_name = dbutils.widgets.get("catalog_name")
 schema_name = dbutils.widgets.get("schema_name")
@@ -41,12 +42,15 @@ from dbxmetagen.table_filter import parse_table_names
 
 table_names = parse_table_names(table_names_raw) or None
 
+incremental = dbutils.widgets.get("incremental").strip().lower() in ("true", "1", "yes")
+
 result = build_schema_knowledge_base(
     spark=spark,
     catalog_name=catalog_name,
     schema_name=schema_name,
     generate_comments=generate_comments,
     table_names=table_names,
+    incremental=incremental,
 )
 
 print(f"Schema knowledge base build complete")

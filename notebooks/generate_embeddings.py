@@ -16,6 +16,7 @@
 dbutils.widgets.text("catalog_name", "", "Catalog Name")
 dbutils.widgets.text("schema_name", "", "Schema Name")
 dbutils.widgets.text("max_nodes", "", "Max Nodes (empty for all)")
+dbutils.widgets.text("table_names", "", "Table Names (comma-separated, empty for all)")
 
 catalog_name = dbutils.widgets.get("catalog_name")
 schema_name = dbutils.widgets.get("schema_name")
@@ -34,12 +35,15 @@ import sys
 sys.path.append("../src")  # For git-clone or DAB deployment; pip-installed package works without this
 
 from dbxmetagen.embeddings import generate_embeddings
+from dbxmetagen.table_filter import parse_table_names
+table_names = parse_table_names(dbutils.widgets.get("table_names").strip()) or None
 
 result = generate_embeddings(
     spark=spark,
     catalog_name=catalog_name,
     schema_name=schema_name,
-    max_nodes=max_nodes
+    max_nodes=max_nodes,
+    table_names=table_names,
 )
 
 print(f"Embedding generation complete")

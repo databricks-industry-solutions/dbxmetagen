@@ -33,6 +33,8 @@ resources:
           default: "false"
         - name: skip_idempotency
           default: "false"
+        - name: exclude_tables
+          default: ""
         - name: min_overall_score
           default: "0.40"
         - name: metagen_job_id
@@ -58,6 +60,7 @@ resources:
               skip_generation: "{{job.parameters.skip_generation}}"
               skip_pipeline: "{{job.parameters.skip_pipeline}}"
               skip_idempotency: "{{job.parameters.skip_idempotency}}"
+              exclude_tables: "{{job.parameters.exclude_tables}}"
               min_overall_score: "{{job.parameters.min_overall_score}}"
               metagen_job_id: "{{job.parameters.metagen_job_id}}"
               pipeline_job_id: "{{job.parameters.pipeline_job_id}}"
@@ -75,13 +78,11 @@ resources:
       job_clusters:
         - job_cluster_key: e2e_cluster
           new_cluster:
+            apply_policy_default_values: true
             policy_id: ${var.policy_id}
             spark_version: 17.3.x-cpu-ml-scala2.13
             node_type_id: ${var.node_type}
             data_security_mode: SINGLE_USER
-            num_workers: 0
-            spark_conf:
-              spark.databricks.cluster.profile: singleNode
-              spark.master: "local[*]"
+            num_workers: 1
             custom_tags:
-              ResourceClass: SingleNode
+              project: dbxmetagen

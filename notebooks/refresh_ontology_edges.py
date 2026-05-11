@@ -20,6 +20,7 @@ dbutils.widgets.text("ontology_bundle", "", "Ontology Bundle")
 dbutils.widgets.text("model", "", "Model Endpoint")
 dbutils.widgets.text("table_names", "", "Table Names (comma-separated, empty=all)")
 dbutils.widgets.text("sweep_stale_edges", "false", "Sweep stale edges")
+dbutils.widgets.text("incremental", "true", "Incremental")
 
 catalog_name = dbutils.widgets.get("catalog_name")
 schema_name = dbutils.widgets.get("schema_name")
@@ -28,6 +29,7 @@ ontology_bundle = _raw_bundle.strip()
 model_endpoint = dbutils.widgets.get("model").strip() or None
 table_names_raw = dbutils.widgets.get("table_names")
 sweep_stale = dbutils.widgets.get("sweep_stale_edges").strip().lower() in ("true", "1", "yes")
+incremental = dbutils.widgets.get("incremental").strip().lower() in ("true", "1", "yes")
 
 print(f"Catalog: {catalog_name}")
 print(f"Schema: {schema_name}")
@@ -59,6 +61,7 @@ result = refresh_ontology_relationships(
     model_endpoint=model_endpoint,
     table_names=table_names,
     sweep_stale=sweep_stale,
+    incremental=incremental,
 )
 
 print(f"Ontology edge refresh complete:")

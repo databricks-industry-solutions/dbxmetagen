@@ -33,6 +33,7 @@ dbutils.widgets.text("rule_score_min_for_ai", "0.50", "Min rule score to qualify
 dbutils.widgets.text("max_candidates_per_table_pair", "5", "Max candidates per table pair (name/ontology)")
 dbutils.widgets.text("system_column_exclude_patterns", "", "Regex patterns to exclude system columns from FK boosting (comma-separated, empty=defaults)")
 dbutils.widgets.text("sweep_stale_edges", "false", "Sweep stale edges")
+dbutils.widgets.text("table_names", "", "Table Names")
 
 catalog_name = dbutils.widgets.get("catalog_name")
 schema_name = dbutils.widgets.get("schema_name")
@@ -76,7 +77,10 @@ print(f"Max candidates per table pair: {max_candidates_per_table_pair}")
 import sys
 sys.path.append("../src")
 
+from dbxmetagen.table_filter import parse_table_names
 from dbxmetagen.fk_prediction import predict_foreign_keys
+
+table_names = parse_table_names(dbutils.widgets.get("table_names").strip()) or None
 
 _fk_kwargs = dict(
     spark=spark,
@@ -102,6 +106,9 @@ _fk_kwargs = dict(
 if system_column_patterns is not None:
     _fk_kwargs["system_column_patterns"] = system_column_patterns
 _fk_kwargs["sweep_stale"] = sweep_stale
+if table_names:
+    _fk_kwargs["table_names"] = table_names
+    print(f"Table names filter: {table_names}")
 result = predict_foreign_keys(**_fk_kwargs)
 
 print("FK prediction complete")
