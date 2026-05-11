@@ -12,6 +12,8 @@ dbutils.widgets.text("catalog_name", "", "Catalog Name")
 dbutils.widgets.text("schema_name", "", "Schema Name")
 dbutils.widgets.text("model", "databricks-claude-sonnet-4", "LLM Model")
 dbutils.widgets.text("min_tables", "2", "Min Tables per Community")
+dbutils.widgets.text("table_names", "", "Table Names (comma-separated, empty for all)")
+dbutils.widgets.text("incremental", "true", "Incremental")
 
 catalog_name = dbutils.widgets.get("catalog_name")
 schema_name = dbutils.widgets.get("schema_name")
@@ -22,11 +24,20 @@ print(f"Catalog: {catalog_name}, Schema: {schema_name}, Model: {model}, Min tabl
 
 # COMMAND ----------
 
+import sys
+sys.path.append("../src")  # For git-clone or DAB deployment; pip-installed package works without this
+
 from dbxmetagen.community_summaries import generate_summaries_batch
+from dbxmetagen.table_filter import parse_table_names
+table_names = parse_table_names(dbutils.widgets.get("table_names").strip()) or None
+
+incremental = dbutils.widgets.get("incremental").strip().lower() in ("true", "1", "yes")
 
 count = generate_summaries_batch(
     spark, catalog_name, schema_name,
     model=model, min_tables=min_tables,
+    table_names=table_names,
+    incremental=incremental,
 )
 print(f"Generated {count} community summaries")
 

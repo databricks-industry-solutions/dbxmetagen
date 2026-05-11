@@ -14,6 +14,8 @@
 
 dbutils.widgets.text("catalog_name", "", "Catalog Name")
 dbutils.widgets.text("schema_name", "", "Schema Name")
+dbutils.widgets.text("table_names", "", "Table Names (comma-separated, empty for all)")
+dbutils.widgets.text("incremental", "true", "Incremental")
 
 catalog_name = dbutils.widgets.get("catalog_name")
 schema_name = dbutils.widgets.get("schema_name")
@@ -27,11 +29,17 @@ import sys
 sys.path.append("../src")  # For git-clone or DAB deployment; pip-installed package works without this
 
 from dbxmetagen.data_quality import compute_data_quality
+from dbxmetagen.table_filter import parse_table_names
+table_names = parse_table_names(dbutils.widgets.get("table_names").strip()) or None
+
+incremental = dbutils.widgets.get("incremental").strip().lower() in ("true", "1", "yes")
 
 result = compute_data_quality(
     spark=spark,
     catalog_name=catalog_name,
-    schema_name=schema_name
+    schema_name=schema_name,
+    table_names=table_names,
+    incremental=incremental,
 )
 
 print(f"Quality scoring complete:")

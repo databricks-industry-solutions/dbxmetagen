@@ -441,20 +441,30 @@ def build_ontology_chunks_table(
     df = spark.createDataFrame(rows)
 
     df.createOrReplaceTempView("_ontology_chunks_src")
-    # MERGE: Upsert into Delta table `fq_table` (`ontology_chunks` in the given catalog/schema)
-    #   `chunk_id` from temp view `_ontology_chunks_src`. Matched rows get all non-key columns
-    #   refreshed (`UPDATE SET *`); new `chunk_id`s are inserted (`INSERT *`).
-    # WHY: Idempotently materialize parsed ontology text (bundle YAML or OWL/TTL) into UC for
-    #   retrieval, embeddings, and agents — reruns update existing chunks instead of duplicating.
-    # TRADEOFFS: `UPDATE SET *` is concise and keeps the table aligned with the latest parse, but
-    #   removes manual edits to matched rows and does not delete chunks removed from the source
-    #   file (orphans can remain). Alternative: `WHEN NOT MATCHED BY SOURCE THEN DELETE` scoped
-    #   by `ontology_bundle` for true sync at the cost of more complex SQL.
+    # MERGE with content-change guard: only update when content/keywords/name
+    # actually changed. Prevents unnecessary updated_at bumps and CDF noise
+    # when the bundle YAML hasn't changed between runs.
     spark.sql(f"""
         MERGE INTO {fq_table} AS tgt
         USING _ontology_chunks_src AS src
         ON tgt.chunk_id = src.chunk_id
-        WHEN MATCHED THEN UPDATE SET *
+        WHEN MATCHED AND (
+            COALESCE(tgt.content, '') != COALESCE(src.content, '')
+            OR COALESCE(tgt.keywords, '') != COALESCE(src.keywords, '')
+            OR COALESCE(tgt.name, '') != COALESCE(src.name, '')
+        ) THEN UPDATE SET
+            tgt.chunk_type = src.chunk_type,
+            tgt.ontology_bundle = src.ontology_bundle,
+            tgt.source_ontology = src.source_ontology,
+            tgt.name = src.name,
+            tgt.content = src.content,
+            tgt.uri = src.uri,
+            tgt.domain = src.domain,
+            tgt.range_entity = src.range_entity,
+            tgt.parent_entities = src.parent_entities,
+            tgt.keywords = src.keywords,
+            tgt.tier = src.tier,
+            tgt.updated_at = src.updated_at
         WHEN NOT MATCHED THEN INSERT *
     """)
     spark.sql("DROP VIEW IF EXISTS _ontology_chunks_src")

@@ -9,6 +9,7 @@ value enforcement, domain-aware scoring, and deduplication.
 """
 
 import difflib
+import hashlib
 import logging
 import yaml
 import os
@@ -3882,7 +3883,12 @@ class OntologyBuilder:
                 ) AS source
                 ON target.id = source.entity_id
 
-                WHEN MATCHED THEN UPDATE SET
+                WHEN MATCHED AND (
+                    target.quality_score != source.confidence
+                    OR target.ontology_type != source.entity_type
+                    OR target.status != source.entity_role
+                    OR COALESCE(target.comment, '') != COALESCE(source.description, '')
+                ) THEN UPDATE SET
                     target.table_short_name = source.entity_name,
                     target.comment = COALESCE(source.description, target.comment),
                     target.quality_score = source.confidence,
@@ -4204,6 +4210,7 @@ class OntologyBuilder:
         # would require collecting the entire entities table. The global aggregation
         # (entity is primary if primary for ANY table) means a multi-table entity
         # can be primary even if it's secondary for most of its tables.
+        # WHEN MATCHED guard: skip no-op rows (role unchanged and discovery_confidence already backfilled).
         self.spark.sql(f"""
             MERGE INTO {ent_table} AS target
             USING (
@@ -4239,7 +4246,10 @@ class OntologyBuilder:
                 GROUP BY entity_id
             ) AS source
             ON target.entity_id = source.entity_id
-            WHEN MATCHED THEN UPDATE SET
+            WHEN MATCHED AND (
+                COALESCE(target.entity_role, '') != source.computed_role
+                OR target.discovery_confidence IS NULL
+            ) THEN UPDATE SET
                 entity_role = source.computed_role,
                 discovery_confidence = COALESCE(target.discovery_confidence, target.confidence),
                 updated_at = CURRENT_TIMESTAMP()
@@ -4382,11 +4392,13 @@ class OntologyBuilder:
 
         self.create_column_properties_table()
 
+        tn_clause = table_filter_sql(self.config.table_names or [], column="source_tables[0]")
         try:
             primary_ents = self.spark.sql(f"""
                 SELECT entity_id, entity_type, source_tables, source_columns
                 FROM {ent_table}
                 WHERE entity_role = 'primary'
+                {tn_clause}
             """).collect()
         except Exception as e:
             logger.warning("classify_column_properties: cannot read primary entities: %s", e)
@@ -4406,6 +4418,7 @@ class OntologyBuilder:
                 SELECT entity_type, source_tables, source_columns, confidence
                 FROM {ent_table}
                 WHERE entity_role = 'referenced' AND source_columns IS NOT NULL AND SIZE(source_columns) > 0
+                {tn_clause}
             """).collect()
         except Exception:
             ref_ents = []
@@ -4457,8 +4470,8 @@ class OntologyBuilder:
             except Exception as e:
                 raise RuntimeError(
                     f"classify_column_properties: cannot read column KB for entity type "
-                    f"'{etype}' ({len(etype_tables)} tables). This would silently drop "
-                    f"these tables from ontology_column_properties on overwrite."
+                    f"'{etype}' ({len(etype_tables)} tables). This would silently omit "
+                    f"those tables from ontology_column_properties."
                 ) from e
             logger.info(
                 "classify_column_properties: processing %d columns for entity type %s (%d tables)",
@@ -4513,8 +4526,9 @@ class OntologyBuilder:
                     )
                     prop_name = col
 
+                # Stable property_id (md5 of table::column) so reruns do not churn row ids keyed on property_id.
                 props.append({
-                    "property_id": str(uuid.uuid4()),
+                    "property_id": hashlib.md5(f"{tbl}::{col}".encode()).hexdigest(),
                     "table_name": tbl,
                     "column_name": col,
                     "property_name": prop_name,
@@ -4538,18 +4552,30 @@ class OntologyBuilder:
             return 0
 
         df = self.spark.createDataFrame(props)
-        # OVERWRITE: Replace the entire ontology_column_properties table with freshly
-        # classified column properties. Every column in scope gets a row with its
-        # property_role (identifier, measure, descriptor, temporal, geographic, etc.),
-        # is_sensitive, is_surrogate_key, and other structural attributes.
-        # WHY: Column properties are derived deterministically from bundle definitions
-        # and heuristics -- there's no incremental delta to merge. A full overwrite
-        # ensures stale properties from dropped columns or changed bundles are removed.
-        # TRADEOFFS: Overwrite loses any manual steward edits. If we need steward
-        # overrides in the future, this should switch to MERGE with a steward_override
-        # flag. For now, the reconcile_geographic_classifications step runs after this
-        # to fix any geo classification conflicts.
-        df.write.mode("overwrite").saveAsTable(cp_table)
+        df.createOrReplaceTempView("_staged_col_props")
+        # Scoped MERGE (replaces overwrite): upsert in-scope columns; preserve manual/non-auto rows via WHEN MATCHED predicate.
+        self.spark.sql(f"""
+            MERGE INTO {cp_table} AS target
+            USING _staged_col_props AS source
+            ON target.table_name = source.table_name
+               AND target.column_name = source.column_name
+            WHEN MATCHED AND target.auto_discovered = TRUE THEN UPDATE SET
+                target.property_id = source.property_id,
+                target.property_name = source.property_name,
+                target.property_role = source.property_role,
+                target.owning_entity_id = source.owning_entity_id,
+                target.owning_entity_type = source.owning_entity_type,
+                target.linked_entity_type = source.linked_entity_type,
+                target.confidence = source.confidence,
+                target.discovery_method = source.discovery_method,
+                target.is_sensitive = source.is_sensitive,
+                target.is_surrogate_key = source.is_surrogate_key,
+                target.is_semi_structured = source.is_semi_structured,
+                target.bundle_version = source.bundle_version,
+                target.discovery_timestamp = source.discovery_timestamp,
+                target.updated_at = source.updated_at
+            WHEN NOT MATCHED THEN INSERT *
+        """)
         logger.info(
             "classify_column_properties: wrote %d properties (%d bundle_match, %d heuristic/fallback)",
             len(props), bundle_match_count, len(props) - bundle_match_count,
@@ -4996,7 +5022,11 @@ class OntologyBuilder:
             ON tgt.src_entity_type = src.src_entity_type
                AND tgt.dst_entity_type = src.dst_entity_type
                AND tgt.relationship_name = src.relationship_name
-            WHEN MATCHED THEN UPDATE SET
+            WHEN MATCHED AND (
+                tgt.confidence != src.confidence
+                OR COALESCE(tgt.evidence_column, '') != COALESCE(src.evidence_column, '')
+                OR COALESCE(tgt.source, '') != COALESCE(src.source, '')
+            ) THEN UPDATE SET
                 tgt.confidence = src.confidence,
                 tgt.evidence_column = src.evidence_column,
                 tgt.evidence_table = src.evidence_table,
@@ -5284,6 +5314,9 @@ class OntologyBuilder:
 
         Args:
             apply_tags: If True, write entity_type tags to UC tables/columns via ALTER TABLE SET TAGS.
+
+        With incremental enabled, skips role/column-property/edge work when discovery finds zero new entities
+        (classification only runs when table or column entities changed).
         """
         import time as _time
 
@@ -5336,6 +5369,29 @@ class OntologyBuilder:
 
         column_discovered = _step("discover_column_entities", self.discover_and_store_column_entities)
         logger.info(f"Discovered {column_discovered} column-level entities")
+
+        if self.config.incremental and table_discovered == 0 and column_discovered == 0:
+            logger.info("Incremental mode: no new entities discovered, skipping classification and edge rebuild")
+            total_elapsed = _time.time() - pipeline_start
+            logger.info(f"[timing] ontology_build_total: {total_elapsed:.1f}s (early exit)")
+            try:
+                summary = self.get_entity_summary()
+                entity_types = summary.count()
+            except Exception:
+                entity_types = 0
+            return {
+                "entities_discovered": 0,
+                "column_entities_discovered": 0,
+                "entity_types": entity_types,
+                "edges_added": 0,
+                "tags_applied": 0,
+                "roles_classified": 0,
+                "column_properties": 0,
+                "named_relationships": 0,
+                "bundle_edges": 0,
+                "discovery_diff": {},
+                "turtle_path": None,
+            }
 
         if column_discovered > 0:
             _step("backfill_source_columns", self.backfill_source_columns)
@@ -5457,18 +5513,41 @@ class OntologyBuilder:
             "turtle_path": turtle_path,
         }
 
-    def refresh_relationships(self, sweep_stale: bool = False) -> Dict[str, Any]:
+    def refresh_relationships(self, sweep_stale: bool = False, incremental: bool = True) -> Dict[str, Any]:
         """Re-run only edge-building steps after FK predictions are available.
 
         Intended to be called as a post-FK-prediction task so that FK-evidence-
         backed relationships land in the ontology within a single pipeline run,
         without repeating entity discovery or column property classification.
+
+        When incremental=True, returns early unless fk_predictions.updated_at exceeds
+        the latest ontology_relationships.updated_at for source='fk_inferred'.
         """
         import time as _time
         from dbxmetagen.knowledge_graph import merge_edges, align_edge_schema
         from functools import reduce
 
         start = _time.time()
+
+        if incremental:
+            fk_table = f"{self.config.catalog_name}.{self.config.schema_name}.fk_predictions"
+            rels_table = self.config.fully_qualified_relationships
+            try:
+                max_fk = self.spark.sql(
+                    f"SELECT COALESCE(MAX(updated_at), TIMESTAMP '1970-01-01') AS mu FROM {fk_table}"
+                ).collect()[0].mu
+                max_rel = self.spark.sql(
+                    f"SELECT COALESCE(MAX(updated_at), TIMESTAMP '1970-01-01') AS mu "
+                    f"FROM {rels_table} WHERE source = 'fk_inferred'"
+                ).collect()[0].mu
+                if max_fk <= max_rel:
+                    logger.info(
+                        "Incremental: no new FK predictions since last relationship refresh "
+                        "(%s >= %s), skipping", max_rel, max_fk,
+                    )
+                    return {"named_relationships": 0, "bundle_edges": 0, "graph_edges": 0}
+            except Exception as e:
+                logger.debug("Incremental watermark check failed (%s), running full", e)
 
         named = self.discover_named_relationships()
         bundle = self.emit_bundle_edges()
@@ -5529,6 +5608,7 @@ def refresh_ontology_relationships(
     model_endpoint: Optional[str] = None,
     table_names: Optional[List[str]] = None,
     sweep_stale: bool = False,
+    incremental: bool = True,
 ) -> Dict[str, Any]:
     """Convenience function to refresh ontology edges after FK prediction."""
     config = OntologyConfig(
@@ -5536,11 +5616,11 @@ def refresh_ontology_relationships(
         schema_name=schema_name,
         config_path=config_path,
         ontology_bundle=ontology_bundle,
-        incremental=True,
+        incremental=incremental,
         table_names=table_names,
     )
     builder = OntologyBuilder(spark, config, model_endpoint=model_endpoint)
-    return builder.refresh_relationships(sweep_stale=sweep_stale)
+    return builder.refresh_relationships(sweep_stale=sweep_stale, incremental=incremental)
 
 
 def build_ontology(

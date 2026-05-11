@@ -122,13 +122,16 @@ class DataQualityScorer:
         
         logger.info(f"Quality scores table {self.config.fully_qualified_scores} ready")
     
-    def get_latest_snapshots(self) -> DataFrame:
+    def get_latest_snapshots(self, table_names=None) -> DataFrame:
         """Get most recent snapshot per table."""
+        from dbxmetagen.table_filter import table_filter_sql
+        tn_clause = table_filter_sql(table_names or [])
         return self.spark.sql(f"""
             WITH ranked AS (
                 SELECT *,
                     ROW_NUMBER() OVER (PARTITION BY table_name ORDER BY snapshot_time DESC) as rn
                 FROM {self.config.fully_qualified_profiling}
+                WHERE 1=1 {tn_clause}
             )
             SELECT * FROM ranked WHERE rn = 1
         """)
@@ -382,16 +385,55 @@ class DataQualityScorer:
         # TRADEOFFS: Append-only preserves history and simplifies idempotent re-runs versus MERGE snapshots (avoids
         # complex keys) but grows storage and requires consumers to pick latest snapshot/time; mergeSchema tolerates
         # additive schema drift at the cost of weaker compile-time contract enforcement.
+        # Dedup guard: delete existing scores for the same (table_name, snapshot_id)
+        # before appending, preventing unbounded growth on re-runs.
+        if rows:
+            dedup_pairs = set()
+            for r in rows:
+                dedup_pairs.add((r[1], r[2]))
+            pair_clauses = " OR ".join(
+                f"(table_name = '{tn}' AND snapshot_id = '{sid}')"
+                for tn, sid in dedup_pairs
+            )
+            try:
+                self.spark.sql(f"DELETE FROM {self.config.fully_qualified_scores} WHERE {pair_clauses}")
+            except Exception as e:
+                logger.warning("Dedup DELETE failed for data_quality_scores, proceeding with append: %s", e)
         df.write.mode("append").option("mergeSchema", "true").saveAsTable(self.config.fully_qualified_scores)
     
-    def run(self) -> Dict[str, Any]:
-        """Execute the data quality scoring pipeline."""
+    def run(self, table_names=None, incremental: bool = True) -> Dict[str, Any]:
+        """Execute the data quality scoring pipeline.
+
+        When incremental=True, skips when max(profiling.snapshot_time) is not after
+        max(data_quality_scores.created_at) (scores side uses created_at batch timestamp).
+        """
         logger.info("Starting data quality scoring")
         
         self.create_scores_table()
-        
+
+        if incremental:
+            try:
+                max_prof = self.spark.sql(
+                    f"SELECT COALESCE(MAX(snapshot_time), TIMESTAMP '1970-01-01') AS mu "
+                    f"FROM {self.config.fully_qualified_profiling}"
+                ).collect()[0].mu
+                # created_at reflects this writer's batches (not alternate column names like scored_at).
+                max_scored = self.spark.sql(
+                    f"SELECT COALESCE(MAX(created_at), TIMESTAMP '1970-01-01') AS mu "
+                    f"FROM {self.config.fully_qualified_scores}"
+                ).collect()[0].mu
+                if max_prof <= max_scored:
+                    logger.info(
+                        "Incremental: no new profiling snapshots since last scoring "
+                        "(%s >= %s), skipping", max_scored, max_prof,
+                    )
+                    return {"tables_scored": 0, "average_score": 0, "low_quality_tables": 0,
+                            "average_dimensions_calculated": 0}
+            except Exception as e:
+                logger.debug("Incremental watermark check failed (%s), running full", e)
+
         try:
-            snapshots = self.get_latest_snapshots()
+            snapshots = self.get_latest_snapshots(table_names=table_names)
             snapshot_list = snapshots.collect()
         except Exception as e:
             logger.error(f"Could not get snapshots: {e}")
@@ -436,22 +478,14 @@ class DataQualityScorer:
 def compute_data_quality(
     spark: SparkSession,
     catalog_name: str,
-    schema_name: str
+    schema_name: str,
+    table_names=None,
+    incremental: bool = True,
 ) -> Dict[str, Any]:
-    """
-    Convenience function to compute data quality scores.
-    
-    Args:
-        spark: SparkSession instance
-        catalog_name: Catalog name for tables
-        schema_name: Schema name for tables
-        
-    Returns:
-        Dict with execution statistics
-    """
+    """Convenience function to compute data quality scores."""
     config = DataQualityConfig(
         catalog_name=catalog_name,
         schema_name=schema_name
     )
     scorer = DataQualityScorer(spark, config)
-    return scorer.run()
+    return scorer.run(table_names=table_names, incremental=incremental)

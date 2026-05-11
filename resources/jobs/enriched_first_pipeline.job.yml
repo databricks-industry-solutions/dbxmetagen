@@ -90,6 +90,7 @@ resources:
               catalog_name: "{{job.parameters.catalog_name}}"
               schema_name: "{{job.parameters.schema_name}}"
               incremental: "{{job.parameters.incremental}}"
+              table_names: "{{job.parameters.table_names}}"
           libraries:
             - whl: ../../dist/*.whl
 
@@ -106,6 +107,7 @@ resources:
               catalog_name: "{{job.parameters.catalog_name}}"
               schema_name: "{{job.parameters.schema_name}}"
               incremental: "{{job.parameters.incremental}}"
+              table_names: "{{job.parameters.table_names}}"
           libraries:
             - whl: ../../dist/*.whl
 
@@ -125,6 +127,7 @@ resources:
               domain_config_path: "{{job.parameters.domain_config_path}}"
               incremental: "{{job.parameters.incremental}}"
               model: "{{job.parameters.model}}"
+              table_names: "{{job.parameters.table_names}}"
           libraries:
             - whl: ../../dist/*.whl
 
@@ -224,6 +227,7 @@ resources:
             base_parameters:
               catalog_name: "{{job.parameters.catalog_name}}"
               schema_name: "{{job.parameters.schema_name}}"
+              table_names: "{{job.parameters.table_names}}"
           libraries:
             - whl: ../../dist/*.whl
 
@@ -240,6 +244,7 @@ resources:
             base_parameters:
               catalog_name: "{{job.parameters.catalog_name}}"
               schema_name: "{{job.parameters.schema_name}}"
+              table_names: "{{job.parameters.table_names}}"
           libraries:
             - whl: ../../dist/*.whl
 
@@ -256,6 +261,8 @@ resources:
               catalog_name: "{{job.parameters.catalog_name}}"
               schema_name: "{{job.parameters.schema_name}}"
               generate_comments: "true"
+              table_names: "{{job.parameters.table_names}}"
+              incremental: "{{job.parameters.incremental}}"
           libraries:
             - whl: ../../dist/*.whl
 
@@ -276,6 +283,8 @@ resources:
             base_parameters:
               catalog_name: "{{job.parameters.catalog_name}}"
               schema_name: "{{job.parameters.schema_name}}"
+              table_names: "{{job.parameters.table_names}}"
+              incremental: "{{job.parameters.incremental}}"
           libraries:
             - whl: ../../dist/*.whl
             - pypi:
@@ -294,6 +303,7 @@ resources:
             base_parameters:
               catalog_name: "{{job.parameters.catalog_name}}"
               schema_name: "{{job.parameters.schema_name}}"
+              table_names: "{{job.parameters.table_names}}"
           libraries:
             - whl: ../../dist/*.whl
 
@@ -315,6 +325,8 @@ resources:
               similarity_threshold: "{{job.parameters.similarity_threshold}}"
               max_edges_per_node: "{{job.parameters.max_edges_per_node}}"
               use_ann_similarity: "{{job.parameters.use_ann_similarity}}"
+              table_names: "{{job.parameters.table_names}}"
+              incremental: "{{job.parameters.incremental}}"
           libraries:
             - whl: ../../dist/*.whl
 
@@ -333,6 +345,7 @@ resources:
               min_k: "{{job.parameters.cluster_min_k}}"
               max_k: "{{job.parameters.cluster_max_k}}"
               node_types: "{{job.parameters.cluster_node_types}}"
+              table_names: "{{job.parameters.table_names}}"
           libraries:
             - whl: ../../dist/*.whl
 
@@ -348,6 +361,7 @@ resources:
             base_parameters:
               catalog_name: "{{job.parameters.catalog_name}}"
               schema_name: "{{job.parameters.schema_name}}"
+              table_names: "{{job.parameters.table_names}}"
           libraries:
             - whl: ../../dist/*.whl
 
@@ -363,6 +377,7 @@ resources:
             base_parameters:
               catalog_name: "{{job.parameters.catalog_name}}"
               schema_name: "{{job.parameters.schema_name}}"
+              table_names: "{{job.parameters.table_names}}"
           libraries:
             - whl: ../../dist/*.whl
 
@@ -387,6 +402,7 @@ resources:
               apply_ddl: "false"
               dry_run: "false"
               incremental: "{{job.parameters.incremental}}"
+              table_names: "{{job.parameters.table_names}}"
           libraries:
             - whl: ../../dist/*.whl
 
@@ -425,12 +441,14 @@ resources:
               schema_name: "{{job.parameters.schema_name}}"
               endpoint_name: "dbxmetagen-vs"
               sweep_stale_docs: "false"
+              table_names: "{{job.parameters.table_names}}"
           libraries:
             - whl: ../../dist/*.whl
 
       job_clusters:
         - job_cluster_key: analytics_cluster
           new_cluster:
+            apply_policy_default_values: true
             policy_id: ${var.policy_id}
             spark_version: 17.3.x-cpu-ml-scala2.13
             node_type_id: ${var.node_type}
@@ -438,12 +456,5 @@ resources:
             autoscale:
               min_workers: 1
               max_workers: 4
-            # --- Uncomment for AWS ---
-            # aws_attributes:
-            #   first_on_demand: 1
-            #   availability: SPOT_WITH_FALLBACK
-            # --- Uncomment for Azure ---
-            # azure_attributes:
-            #   first_on_demand: 1
-            #   availability: SPOT_WITH_FALLBACK_AZURE
-
+            custom_tags:
+              project: dbxmetagen

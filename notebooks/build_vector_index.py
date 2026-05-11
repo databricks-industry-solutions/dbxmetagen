@@ -18,6 +18,8 @@ dbutils.widgets.text("catalog_name", "", "Catalog Name")
 dbutils.widgets.text("schema_name", "", "Schema Name")
 dbutils.widgets.text("endpoint_name", "dbxmetagen-vs", "VS Endpoint Name")
 dbutils.widgets.text("sweep_stale_docs", "false", "Sweep Stale Docs")
+dbutils.widgets.text("table_names", "", "Table Names (comma-separated, empty for all)")
+dbutils.widgets.text("incremental", "true", "Incremental")
 
 catalog_name = dbutils.widgets.get("catalog_name")
 schema_name = dbutils.widgets.get("schema_name")
@@ -37,6 +39,10 @@ import sys
 sys.path.append("../src")  # For git-clone or DAB deployment; pip-installed package works without this
 
 from dbxmetagen.vector_index import build_vector_index
+from dbxmetagen.table_filter import parse_table_names
+table_names = parse_table_names(dbutils.widgets.get("table_names").strip()) or None
+
+incremental = dbutils.widgets.get("incremental").strip().lower() in ("true", "1", "yes")
 
 result = build_vector_index(
     spark=spark,
@@ -44,6 +50,8 @@ result = build_vector_index(
     schema_name=schema_name,
     endpoint_name=endpoint_name,
     sweep_stale_docs=sweep_stale_docs,
+    table_names=table_names,
+    incremental=incremental,
 )
 
 print(f"Vector index build complete")

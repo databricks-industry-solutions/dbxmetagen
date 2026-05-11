@@ -41,6 +41,10 @@ class SimilarityEdgesConfig:
     ann_max_nodes: int = 100_000
     endpoint_name: str = "dbxmetagen-vs"
     vs_index_suffix: str = "graph_nodes_vs_index"
+    table_names: list = None
+    # When True, run() skips if embedded table/column nodes are not newer than
+    # existing embedding_similarity edges (see _has_upstream_changes).
+    incremental: bool = True
     # Index readiness
     index_ready_timeout_s: int = 900
     index_ready_initial_delay_s: int = 30
@@ -127,6 +131,14 @@ class SimilarityEdgeBuilder:
             WHERE embedding IS NOT NULL
         """)
 
+    def _get_scoped_nodes(self) -> DataFrame:
+        """Get nodes filtered by table_names. Falls back to all nodes if unset."""
+        all_nodes = self.get_nodes_with_embeddings()
+        if not self.config.table_names:
+            return all_nodes
+        from dbxmetagen.table_filter import table_names_col_filter
+        return all_nodes.filter(table_names_col_filter(F.col("parent_id"), self.config.table_names))
+
     def _has_large_domains(self) -> bool:
         """Check if any domain exceeds max_domain_nodes."""
         try:
@@ -147,6 +159,11 @@ class SimilarityEdgeBuilder:
         2. Medium catalog: intra-domain cross-join + cross-domain key-column bridge
         3. Large domain (any domain > max_domain_nodes): intra-table cross-join +
            intra-domain key-column bridge + cross-domain key-column bridge
+
+        When table_names is set, side ``a`` reads from ``scoped_nodes`` (only the
+        requested tables) while ``b`` reads from ``nodes_emb`` (all nodes).  The
+        ``a.id < b.id`` deduplicate guard is replaced with ``a.id != b.id`` so we
+        don't accidentally drop half the scoped edges.
         """
         _KEY_COL_FILTER = (
             "(LOWER(ELEMENT_AT(SPLIT(a.id, '\\\\.'), -1)) RLIKE '(_id|_key|_code)$'"
@@ -154,13 +171,18 @@ class SimilarityEdgeBuilder:
         )
         _NO_ENTITY_PAIR = "NOT (a.node_type = 'entity' AND b.node_type = 'entity')"
 
+        if self.config.table_names:
+            tbl_a, dedup = "scoped_nodes", "a.id != b.id"
+        else:
+            tbl_a, dedup = "nodes_emb", "a.id < b.id"
+
         if node_count < self.config.blocking_node_threshold:
             return f"""
             SELECT a.id as src, a.node_type as src_type, a.domain as src_domain,
                    b.id as dst, b.node_type as dst_type, b.domain as dst_domain,
                    a.embedding as emb_a, b.embedding as emb_b
-            FROM nodes_emb a CROSS JOIN nodes_emb b
-            WHERE a.id < b.id AND {_NO_ENTITY_PAIR}
+            FROM {tbl_a} a CROSS JOIN nodes_emb b
+            WHERE {dedup} AND {_NO_ENTITY_PAIR}
             """
 
         if not self._has_large_domains():
@@ -172,16 +194,16 @@ class SimilarityEdgeBuilder:
             SELECT a.id as src, a.node_type as src_type, a.domain as src_domain,
                    b.id as dst, b.node_type as dst_type, b.domain as dst_domain,
                    a.embedding as emb_a, b.embedding as emb_b
-            FROM nodes_emb a CROSS JOIN nodes_emb b
-            WHERE a.id < b.id AND a.domain = b.domain AND {_NO_ENTITY_PAIR}
+            FROM {tbl_a} a CROSS JOIN nodes_emb b
+            WHERE {dedup} AND a.domain = b.domain AND {_NO_ENTITY_PAIR}
 
             UNION ALL
 
             SELECT a.id as src, a.node_type as src_type, a.domain as src_domain,
                    b.id as dst, b.node_type as dst_type, b.domain as dst_domain,
                    a.embedding as emb_a, b.embedding as emb_b
-            FROM nodes_emb a CROSS JOIN nodes_emb b
-            WHERE a.id < b.id AND a.domain != b.domain
+            FROM {tbl_a} a CROSS JOIN nodes_emb b
+            WHERE {dedup} AND a.domain != b.domain
               AND a.node_type = 'column' AND b.node_type = 'column'
               AND {_KEY_COL_FILTER}
             """
@@ -195,8 +217,8 @@ class SimilarityEdgeBuilder:
         SELECT a.id as src, a.node_type as src_type, a.domain as src_domain,
                b.id as dst, b.node_type as dst_type, b.domain as dst_domain,
                a.embedding as emb_a, b.embedding as emb_b
-        FROM nodes_emb a CROSS JOIN nodes_emb b
-        WHERE a.id < b.id
+        FROM {tbl_a} a CROSS JOIN nodes_emb b
+        WHERE {dedup}
           AND a.parent_id IS NOT NULL AND a.parent_id = b.parent_id
           AND {_NO_ENTITY_PAIR}
 
@@ -206,8 +228,8 @@ class SimilarityEdgeBuilder:
         SELECT a.id as src, a.node_type as src_type, a.domain as src_domain,
                b.id as dst, b.node_type as dst_type, b.domain as dst_domain,
                a.embedding as emb_a, b.embedding as emb_b
-        FROM nodes_emb a CROSS JOIN nodes_emb b
-        WHERE a.id < b.id
+        FROM {tbl_a} a CROSS JOIN nodes_emb b
+        WHERE {dedup}
           AND a.domain = b.domain
           AND COALESCE(a.parent_id, '') != COALESCE(b.parent_id, '')
           AND a.node_type = 'column' AND b.node_type = 'column'
@@ -219,8 +241,8 @@ class SimilarityEdgeBuilder:
         SELECT a.id as src, a.node_type as src_type, a.domain as src_domain,
                b.id as dst, b.node_type as dst_type, b.domain as dst_domain,
                a.embedding as emb_a, b.embedding as emb_b
-        FROM nodes_emb a CROSS JOIN nodes_emb b
-        WHERE a.id < b.id AND a.domain != b.domain
+        FROM {tbl_a} a CROSS JOIN nodes_emb b
+        WHERE {dedup} AND a.domain != b.domain
           AND a.node_type = 'column' AND b.node_type = 'column'
           AND {_KEY_COL_FILTER}
         """
@@ -231,17 +253,26 @@ class SimilarityEdgeBuilder:
 
     def _compute_similarity_crossjoin(self, node_count: int | None = None) -> DataFrame:
         """Compute similarity edges via exhaustive cross-join with blocking."""
-        nodes_df = self.get_nodes_with_embeddings()
+        all_nodes_df = self.get_nodes_with_embeddings()
         if node_count is None:
-            node_count = nodes_df.count()
+            node_count = all_nodes_df.count()
 
         if node_count < 2:
             logger.info("Not enough nodes with embeddings for similarity comparison")
             return self.spark.createDataFrame([], _EDGE_SCHEMA)
 
-        logger.info(f"Computing similarity between {node_count} nodes (cross-join)")
-
-        nodes_df.createOrReplaceTempView("nodes_emb")
+        if self.config.table_names:
+            scoped_df = self._get_scoped_nodes()
+            scoped_count = scoped_df.count()
+            logger.info(
+                "Computing similarity: %d scoped nodes x %d total nodes (cross-join)",
+                scoped_count, node_count,
+            )
+            scoped_df.createOrReplaceTempView("scoped_nodes")
+            all_nodes_df.createOrReplaceTempView("nodes_emb")
+        else:
+            logger.info(f"Computing similarity between {node_count} nodes (cross-join)")
+            all_nodes_df.createOrReplaceTempView("nodes_emb")
 
         if self._cosine_impl is None:
             self._cosine_impl = self._detect_cosine_impl()
@@ -251,17 +282,29 @@ class SimilarityEdgeBuilder:
         pairs_sql = self._build_pairs_sql(node_count)
         cosine_expr = self._cosine_sql_expr()
 
+        # When table_names is set, a.id != b.id produces both (A,B) and (B,A)
+        # for pairs where both nodes are scoped. Normalize to LEAST/GREATEST
+        # so edge_id is canonical and we don't create duplicate edges.
+        if self.config.table_names:
+            sim_select = f"""
+            SELECT LEAST(src, dst) as src, GREATEST(src, dst) as dst,
+                   MAX({cosine_expr}) as similarity
+            FROM node_pairs
+            GROUP BY LEAST(src, dst), GREATEST(src, dst)"""
+        else:
+            sim_select = f"""
+            SELECT src, dst, {cosine_expr} as similarity
+            FROM node_pairs"""
+
         similarity_sql = f"""
         WITH node_pairs AS (
             {pairs_sql}
         ),
         similarities AS (
-            SELECT src, src_type, src_domain, dst, dst_type, dst_domain,
-                   {cosine_expr} as similarity
-            FROM node_pairs
+            {sim_select}
         ),
         ranked AS (
-            SELECT src, dst, src_type, dst_type, src_domain, dst_domain, similarity,
+            SELECT src, dst, similarity,
                 ROW_NUMBER() OVER (PARTITION BY src ORDER BY similarity DESC) as rn_src,
                 ROW_NUMBER() OVER (PARTITION BY dst ORDER BY similarity DESC) as rn_dst
             FROM similarities
@@ -290,7 +333,7 @@ class SimilarityEdgeBuilder:
             return self.spark.sql(similarity_sql)
         except Exception as e:
             logger.warning(f"SQL-based similarity failed: {e}")
-            return self._compute_similarity_fallback(nodes_df)
+            return self._compute_similarity_fallback(all_nodes_df)
 
     def _compute_similarity_fallback(self, nodes_df: DataFrame) -> DataFrame:
         """Fallback Python-based similarity computation."""
@@ -436,9 +479,14 @@ class SimilarityEdgeBuilder:
         return idx_name
 
     def compute_similarity_edges_ann(self) -> DataFrame:
-        """Compute similarity edges via Vector Search ANN queries."""
-        nodes_df = self.get_nodes_with_embeddings()
-        node_count = nodes_df.count()
+        """Compute similarity edges via Vector Search ANN queries.
+
+        When table_names is set, only scoped nodes are collected and queried
+        against the full VS index.  The index covers all nodes so cross-table
+        neighbors are still returned.
+        """
+        query_df = self._get_scoped_nodes()
+        node_count = query_df.count()
 
         if node_count < 2:
             logger.info("Not enough nodes with embeddings for ANN similarity")
@@ -452,7 +500,7 @@ class SimilarityEdgeBuilder:
             )
 
         logger.info("Collecting %d nodes for ANN queries", node_count)
-        nodes = nodes_df.collect()
+        nodes = query_df.collect()
         K = self.config.max_edges_per_node * self.config.ann_k_multiplier
 
         from databricks.vector_search.client import VectorSearchClient
@@ -567,6 +615,10 @@ class SimilarityEdgeBuilder:
     def compute_similarity_edges(self) -> DataFrame:
         """Dispatch to ANN or cross-join based on config and node count.
 
+        ``table_names`` uses the same scoping in both paths: ANN collects only
+        scoped nodes then queries the full index; cross-join uses scoped nodes
+        as the left cross-join leg against ``nodes_emb`` (see _build_pairs_sql).
+
         When use_ann=True but the node count is below blocking_node_threshold,
         cross-join is used instead (cheaper than standing up a VS index for
         a handful of nodes).  ANN failures also fall back to cross-join with
@@ -609,6 +661,51 @@ class SimilarityEdgeBuilder:
     # Edge I/O
     # ------------------------------------------------------------------
 
+    def _has_upstream_changes(self) -> bool:
+        """Return True unless incremental skip is safe.
+
+        Compares ``MAX(updated_at)`` over embedded ``table``/``column`` nodes in
+        ``graph_nodes`` to ``MAX(updated_at)`` over ``graph_edges`` rows with
+        ``source_system='embedding_similarity'``. If the node side is not newer,
+        embeddings (and downstream similarity edges) are already current.
+
+        When ``table_names`` is set, only nodes whose ``id`` or ``parent_id``
+        matches the scope contribute to the node-side watermark (aligned with how
+        a scoped run recomputes edges).
+        """
+        try:
+            from dbxmetagen.table_filter import table_filter_sql
+            scope = ""
+            if self.config.table_names:
+                tn_filter = table_filter_sql(self.config.table_names, column="id")
+                tn_parent = table_filter_sql(self.config.table_names, column="parent_id")
+                scope = f" AND ({tn_filter} OR {tn_parent})"
+
+            max_node_ts = self.spark.sql(f"""
+                SELECT COALESCE(MAX(updated_at), TIMESTAMP '1970-01-01') AS ts
+                FROM {self.config.fully_qualified_nodes}
+                WHERE embedding IS NOT NULL AND node_type IN ('table', 'column'){scope}
+            """).collect()[0].ts
+
+            max_edge_ts = self.spark.sql(f"""
+                SELECT COALESCE(MAX(updated_at), TIMESTAMP '1970-01-01') AS ts
+                FROM {self.config.fully_qualified_edges}
+                WHERE source_system = 'embedding_similarity'
+            """).collect()[0].ts
+
+            if max_node_ts <= max_edge_ts:
+                logger.info(
+                    "Incremental: no embedding changes since last similarity run "
+                    "(node_ts=%s <= edge_ts=%s), skipping", max_node_ts, max_edge_ts,
+                )
+                return False
+            logger.info("Incremental: upstream changes detected (node_ts=%s > edge_ts=%s)",
+                        max_node_ts, max_edge_ts)
+            return True
+        except Exception as e:
+            logger.warning("Watermark check failed (%s), running full", e)
+            return True
+
     def run(self, sweep_stale: bool = False) -> Dict[str, Any]:
         """Execute the similarity edge generation pipeline."""
         from dbxmetagen.knowledge_graph import merge_edges
@@ -616,6 +713,9 @@ class SimilarityEdgeBuilder:
         self._actual_method = "crossjoin"
         logger.info("Starting similarity edge generation (requested=%s)",
                      "ann" if self.config.use_ann else "crossjoin")
+
+        if self.config.incremental and not self._has_upstream_changes():
+            return {"method": "skipped", "edges_created": 0, "threshold": self.config.similarity_threshold}
 
         edges_df = self.compute_similarity_edges()
         edge_count = merge_edges(
@@ -643,6 +743,8 @@ def build_similarity_edges(
     max_edges_per_node: int = 15,
     use_ann: bool = True,
     sweep_stale: bool = False,
+    table_names=None,
+    incremental: bool = True,
     **kwargs,
 ) -> Dict[str, Any]:
     """
@@ -656,6 +758,9 @@ def build_similarity_edges(
         max_edges_per_node: Maximum edges per node
         use_ann: If True, use Vector Search ANN instead of cross-join
         sweep_stale: If True, delete stale edges not in the current batch
+        table_names: When set, only compute similarity for nodes belonging
+            to these tables (against the full node set).
+        incremental: When True, skip if no upstream embedding changes detected.
 
     Returns:
         Dict with execution statistics including 'method' key
@@ -666,6 +771,8 @@ def build_similarity_edges(
         similarity_threshold=similarity_threshold,
         max_edges_per_node=max_edges_per_node,
         use_ann=use_ann,
+        table_names=table_names or [],
+        incremental=incremental,
         **{k: v for k, v in kwargs.items() if hasattr(SimilarityEdgesConfig, k)},
     )
     builder = SimilarityEdgeBuilder(spark, config)

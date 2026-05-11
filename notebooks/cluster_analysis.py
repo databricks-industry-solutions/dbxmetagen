@@ -53,6 +53,8 @@ dbutils.widgets.text("schema_name", "", "Schema Name")
 dbutils.widgets.text("min_k", "2", "Minimum K")
 dbutils.widgets.text("max_k", "20", "Maximum K")
 dbutils.widgets.text("node_types", "table", "Node types to cluster (comma-separated)")
+dbutils.widgets.text("table_names", "", "Table Names (comma-separated, empty for all)")
+dbutils.widgets.text("incremental", "true", "Incremental")
 
 catalog_name = dbutils.widgets.get("catalog_name")
 schema_name = dbutils.widgets.get("schema_name")
@@ -72,6 +74,34 @@ print(f"Node types: {node_types}")
 # MAGIC ## Setup and Data Loading
 
 # COMMAND ----------
+
+import sys
+sys.path.append("../src")  # For git-clone or DAB deployment; pip-installed package works without this
+
+from dbxmetagen.table_filter import parse_table_names
+table_names = parse_table_names(dbutils.widgets.get("table_names").strip()) or None
+
+if table_names:
+    print("Skipping clustering -- table_names scoping active, run full refresh to re-cluster")
+    dbutils.notebook.exit("skipped")
+
+incremental = dbutils.widgets.get("incremental").strip().lower() in ("true", "1", "yes")
+if incremental:
+    nodes_table = f"{catalog_name}.{schema_name}.graph_nodes"
+    assign_table = f"{catalog_name}.{schema_name}.node_cluster_assignments"
+    try:
+        max_emb = spark.sql(
+            f"SELECT COALESCE(MAX(updated_at), TIMESTAMP '1970-01-01') AS mu "
+            f"FROM {nodes_table} WHERE embedding IS NOT NULL"
+        ).collect()[0].mu
+        max_assign = spark.sql(
+            f"SELECT COALESCE(MAX(created_at), TIMESTAMP '1970-01-01') AS mu FROM {assign_table}"
+        ).collect()[0].mu
+        if max_emb <= max_assign:
+            print(f"Incremental: no new embeddings since last cluster run ({max_assign} >= {max_emb}), skipping")
+            dbutils.notebook.exit("skipped_incremental")
+    except Exception as e:
+        print(f"Watermark check failed ({e}), running full cluster analysis")
 
 import mlflow
 mlflow.autolog(disable=True)
@@ -733,6 +763,16 @@ spark.sql(
 #   `mergeSchema=true` evolves schema if new columns appear.
 # WHY: Preserves exploratory history (elbow scans, finalist seeds) alongside the single current assignment snapshot for trending and reproducibility.
 # TRADEOFFS: Table grows without automatic retention pruning; mergeSchema relaxes enforcement and can widen types implicitly — favors flexibility over strict contracts.
+# Dedup guard: delete metrics from prior runs for the same (k, phase) combos
+dedup_pairs = set()
+for row in all_metrics:
+    dedup_pairs.add((row[0], row[6]))  # (k, phase)
+if dedup_pairs:
+    pair_clauses = " OR ".join(f"(k = {k} AND phase = '{p}')" for k, p in dedup_pairs)
+    try:
+        spark.sql(f"DELETE FROM {metrics_table} WHERE {pair_clauses}")
+    except Exception as e:
+        print(f"Dedup DELETE failed for clustering_metrics, proceeding with append: {e}")
 metrics_df.write.mode("append").option("mergeSchema", "true").saveAsTable(metrics_table)
 print(f"Saved metrics to {metrics_table}")
 
