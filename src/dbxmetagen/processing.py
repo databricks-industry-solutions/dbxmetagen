@@ -174,6 +174,16 @@ def write_to_log_table(log_data: Dict[str, Any], log_table_name: str) -> None:
 
     log_df = spark.createDataFrame([log_data])
 
+    # APPEND: Write caller-provided log rows to the specified Delta log table.
+    # This is a generic append used by multiple callers (metadata generation,
+    # domain classification, etc.). mergeSchema=true handles schema evolution
+    # as new fields are added over time.
+    # WHY: Append-only preserves the full history of all runs. Downstream
+    # consumers (KB builder, ontology, etc.) use a latest-per-table window
+    # query to read only the most recent entry.
+    # TRADEOFFS: Append-only means the table grows with every re-run. Old
+    # entries remain for auditability. A MERGE-by-table_name would reduce size
+    # but would lose the ability to compare generations across runs.
     log_df.write.format("delta").option("mergeSchema", "true").mode(
         "append"
     ).saveAsTable(log_table_name)
@@ -405,15 +415,20 @@ def sample_df(df: DataFrame, nrows: int, sample_size: int = 5) -> DataFrame:
     larger_sample = sample_size * 100
     sampling_ratio = determine_sampling_ratio(nrows, larger_sample)
     sampled_df = df.sample(withReplacement=False, fraction=sampling_ratio)
-    null_counts_per_row = sampled_df.withColumn(
-        "null_count",
-        sum(when(col(c).isNull(), 1).otherwise(0) for c in sampled_df.columns),
-    )
-    threshold = max(1, len(sampled_df.columns) // 2)
-    filtered_df = null_counts_per_row.filter(col("null_count") < threshold).drop(
-        "null_count"
-    )
-    result_rows = filtered_df.count()
+    try:
+        null_counts_per_row = sampled_df.withColumn(
+            "null_count",
+            sum(when(col(c).isNull(), 1).otherwise(0) for c in sampled_df.columns),
+        )
+        threshold = max(1, len(sampled_df.columns) // 2)
+        filtered_df = null_counts_per_row.filter(col("null_count") < threshold).drop(
+            "null_count"
+        )
+        result_rows = filtered_df.count()
+    except Exception as e:
+        logger.warning("Null-filter failed (%s), falling back to unfiltered sample", e)
+        return sampled_df.limit(sample_size)
+
     if result_rows < sample_size:
         logger.warning(
             "Not enough non-NULL rows, returning available rows, despite large proportion of NULLs. Result rows: %s vs sample size: %s",
@@ -1059,6 +1074,19 @@ def mark_as_deleted(table_name: str, config: MetadataConfig) -> None:
         f"{config.catalog_name}.{config.schema_name}.{formatted_control_table}"
     )
     mode = config.mode or "comment"
+    # UPDATE: Mark a table as soft-deleted in the control table by setting
+    # _deleted_at and transitioning status to 'completed'. Releases the claim
+    # by NULLing _claimed_by. Called after successful metadata generation to
+    # signal that this table's processing is done for this run.
+    # WHY: Soft-delete (vs. hard DELETE) preserves the audit trail. The
+    # _deleted_at timestamp lets setup_queue filter out processed tables when
+    # building the next work queue.
+    # TRADEOFFS: Soft-deleted rows accumulate in the control table. A periodic
+    # cleanup (DELETE WHERE _deleted_at < X) could be added but isn't critical
+    # given low volume (one row per table per mode). NOTE: unlike
+    # mark_table_completed/mark_table_failed, this intentionally omits _run_id
+    # filtering -- setup_queue may reclaim tables from prior runs whose _run_id
+    # was never updated by claim_table, so a _run_id filter would miss them.
     update_query = f"""
     UPDATE {control_table}
     SET _deleted_at = current_timestamp(),
@@ -1126,6 +1154,19 @@ def claim_table(table_name: str, config: MetadataConfig, max_retries: int = 3) -
       )
       AND (_status IS NULL OR _status IN ('queued', 'failed', 'completed'))"""
 
+    # UPDATE: Atomically claim a table for processing by setting _claimed_by to
+    # this task's ID and status to 'in_progress'. The WHERE clause implements
+    # optimistic concurrency: only succeeds if the table is unclaimed, already
+    # owned by this task (self-reclaim), or the prior claim has timed out. A
+    # follow-up SELECT verifies this task actually won the race.
+    # WHY: In parallel mode, multiple Databricks tasks process tables concurrently.
+    # Without claiming, two tasks could process the same table simultaneously,
+    # producing duplicate or conflicting DDL. The claim acts as a distributed lock.
+    # TRADEOFFS: This is an optimistic lock (UPDATE + verify), not a pessimistic
+    # one (SELECT FOR UPDATE). Under high contention, two tasks can both UPDATE
+    # successfully if they target different rows, but the verify step catches
+    # conflicts for the SAME row. Retry logic with jitter handles transient
+    # Delta commit conflicts.
     claim_query = f"""
     UPDATE {control_table}
     SET _claimed_by = '{task_id}',
@@ -1198,6 +1239,15 @@ def mark_table_completed(table_name: str, config: MetadataConfig) -> None:
     )
     mode = config.mode or "comment"
 
+    # UPDATE: Transition a table's control row to 'completed' and release the
+    # claim (_claimed_by = NULL). Scoped to this run_id to avoid accidentally
+    # completing a row from a different concurrent run.
+    # WHY: Marks the table as done so other pipeline stages (KB build, analytics)
+    # know generation finished. Releasing the claim allows timeout-based recovery
+    # to skip this table rather than re-claiming it.
+    # TRADEOFFS: The run_id filter means if a task dies and is retried with a new
+    # run_id, the old row stays in_progress until timeout. This is intentional --
+    # the timeout-based recovery in claim_table handles this case.
     update_query = f"""
     UPDATE {control_table}
     SET _status = 'completed',
@@ -1233,6 +1283,15 @@ def mark_table_failed(
     safe_error = error_message.replace("'", "''") if error_message else None
     error_clause = f", _error_message = '{safe_error}'" if safe_error else ""
 
+    # UPDATE: Transition a table's control row to 'failed' and optionally record
+    # the error message. Does NOT release the claim -- the table remains claimed
+    # so it won't be re-processed in this run. A subsequent run with a new run_id
+    # (or timeout expiry) will allow re-claiming.
+    # WHY: Failed tables need to be distinguishable from completed and in-progress
+    # ones so the pipeline can report accurate success/failure counts.
+    # TRADEOFFS: Keeping the claim on failure prevents immediate retry within the
+    # same run, which is desired (the same LLM error would likely repeat). A future
+    # enhancement could add retry_count and auto-retry logic.
     update_query = f"""
     UPDATE {control_table}
     SET _status = 'failed',
@@ -1359,6 +1418,13 @@ def _export_table_to_tsv(df, config):
 
         print(f"Writing to TSV file: {output_file}")
 
+        # APPEND: Write the metadata export DataFrame to a temp Delta table before
+        # converting to TSV and uploading to a volume. The temp table acts as a
+        # staging area so the TSV export can read via Spark SQL.
+        # WHY: Direct DataFrame-to-TSV requires pandas, which can OOM on large
+        # tables. Staging through Delta lets us use Spark's distributed write.
+        # TRADEOFFS: Creates a transient Delta table that must be cleaned up.
+        # A direct .toPandas().to_csv() would be simpler for small datasets.
         try:
             df.write.mode("append").saveAsTable(table_name)
         except Exception as e:
@@ -1546,6 +1612,14 @@ def log_metadata_generation(
 
     print(f"[log_metadata_generation] DataFrame columns: {df.columns}")
 
+    # APPEND: Write the unified metadata generation results (comments, PI, domain)
+    # to metadata_generation_log with mergeSchema=true. The DataFrame may contain
+    # multiple rows per table (one per column chunk, DDL statement, etc.). After
+    # logging, marks the table as completed in the control table via mark_as_deleted.
+    # WHY: This is the primary output of the metadata generation pipeline. The KB
+    # builder, ontology discoverer, and FK predictor all read from this log table.
+    # TRADEOFFS: Same as write_to_log_table -- append-only with latest-per-table
+    # reads. mergeSchema handles column additions between versions.
     df.write.mode("append").option("mergeSchema", "true").saveAsTable(
         f"{config.catalog_name}.{config.schema_name}.metadata_generation_log"
     )
@@ -3654,6 +3728,19 @@ def upsert_table_names_to_control_table(
     job_id = config.job_id.replace("'", "''") if config.job_id else ""
     run_id = str(config.run_id).replace("'", "''") if config.run_id else ""
 
+    # MERGE: Seed the control table with new table+mode combinations as 'queued'
+    # rows. Only inserts when NOT MATCHED -- tables that already exist in the
+    # control table (from a prior run or another task) are left untouched. This
+    # is how the pipeline discovers its work queue at the start of a run.
+    # WHY: The control table is the distributed work queue for concurrent metadata
+    # generation. Each table+mode pair gets one row. New tables added to the scope
+    # (e.g., via wildcard expansion) need to appear as 'queued' so tasks can claim
+    # them. Existing rows (any status) are not modified by this MERGE.
+    # TRADEOFFS: INSERT-only means this MERGE never modifies existing rows. However,
+    # re-processing of completed tables IS still possible via claim_table (which
+    # checks status+timeout). To force a completely fresh queue, the user can set
+    # cleanup_control_table=true (which DELETEs all rows first). The retry loop
+    # with random stagger handles concurrent tasks all trying to MERGE at startup.
     merge_sql = f"""
         MERGE INTO {control_table} target
         USING {temp_view_name} source

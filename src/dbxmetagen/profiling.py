@@ -598,6 +598,14 @@ class ProfilingBuilder:
             now
         )
         snapshot_df = self.spark.createDataFrame([snapshot_row], schema=self.SNAPSHOT_SCHEMA)
+        # Dedup guard: delete any prior snapshot with the same snapshot_id (retry protection)
+        sid = snapshot_data["snapshot_id"]
+        try:
+            self.spark.sql(
+                f"DELETE FROM {self.config.fully_qualified_snapshots} WHERE snapshot_id = '{sid}'"
+            )
+        except Exception as e:
+            logger.warning("Dedup DELETE failed for snapshots, proceeding with append: %s", e)
         snapshot_df.write.mode("append").option("mergeSchema", "true").saveAsTable(self.config.fully_qualified_snapshots)
         
         # Write column stats with explicit schema
@@ -643,6 +651,13 @@ class ProfilingBuilder:
                 stats_rows.append(stats_row)
             
             stats_df = self.spark.createDataFrame(stats_rows, schema=self.COLUMN_STATS_SCHEMA)
+            # Dedup guard: delete any prior column stats with the same snapshot_id
+            try:
+                self.spark.sql(
+                    f"DELETE FROM {self.config.fully_qualified_column_stats} WHERE snapshot_id = '{sid}'"
+                )
+            except Exception as e:
+                logger.warning("Dedup DELETE failed for column_stats, proceeding with append: %s", e)
             stats_df.write.mode("append").option("mergeSchema", "true").saveAsTable(self.config.fully_qualified_column_stats)
     
     def run(self, max_tables: int = None) -> Dict[str, Any]:

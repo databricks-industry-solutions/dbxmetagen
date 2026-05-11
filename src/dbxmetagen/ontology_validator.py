@@ -506,6 +506,10 @@ Evaluate each entity independently. Consider whether table purpose, columns, and
         kb_table = self.config.fully_qualified_kb
         col_kb_table = self.config.fully_qualified_column_kb
 
+        tn_scope = ""
+        if getattr(self, "_table_names", None):
+            from dbxmetagen.table_filter import table_filter_sql
+            tn_scope = table_filter_sql(self._table_names, column="e.source_tables[0]")
         entities_df = self.spark.sql(f"""
             SELECT e.entity_id, e.entity_name, e.entity_type, e.description,
                    e.source_tables, e.source_columns, e.confidence,
@@ -514,6 +518,7 @@ Evaluate each entity independently. Consider whether table purpose, columns, and
             LEFT JOIN {kb_table} kb ON e.source_tables[0] = kb.table_name
             WHERE COALESCE(e.attributes['granularity'], 'table') = 'table'
               AND (e.validated = FALSE OR e.validated IS NULL)
+              {tn_scope}
         """)
         entity_rows = entities_df.collect()
 
@@ -838,11 +843,17 @@ Evaluate each entity independently. Consider whether table purpose, columns, and
         results_df.createOrReplaceTempView("__col_val_results")
 
         try:
+            # MERGE with content guard: only update when validated state or
+            # validation_notes actually changed, preventing unnecessary updated_at
+            # bumps on re-validation with identical results.
             self.spark.sql(f"""
                 MERGE INTO {self.config.fully_qualified_entities} AS target
                 USING __col_val_results AS source
                 ON target.entity_id = source.entity_id
-                WHEN MATCHED THEN UPDATE SET
+                WHEN MATCHED AND (
+                    target.validated != CAST(source.validated AS BOOLEAN)
+                    OR COALESCE(target.validation_notes, '') != COALESCE(source.validation_notes, '')
+                ) THEN UPDATE SET
                     target.validated = CAST(source.validated AS BOOLEAN),
                     target.confidence = GREATEST(0.0, target.confidence + CAST(source.confidence_adjustment AS DOUBLE)),
                     target.validation_notes = source.validation_notes,
@@ -903,6 +914,15 @@ Evaluate each entity independently. Consider whether table purpose, columns, and
             reasoning = validation.get('reasoning', '')
             
             try:
+                # UPDATE: Single-row update on `ontology_entities` for `entity_id`, setting
+                #   `validated`, incrementing `confidence` by `confidence_adj` (floored at 0.0),
+                #   `validation_notes`, and `updated_at`.
+                # WHY: Fallback path when batched MERGE fails (permissions, analyzer limits, etc.)
+                #   so validation results still land without losing the whole batch.
+                # TRADEOFFS: One statement per entity — higher latency and warehouse cost than a
+                #   single MERGE; reasoning is inlined with SQL escaping which is brittle for edge
+                #   characters but avoids parameterized-SQL gaps in this call site. Alternative:
+                #   retry MERGE only — simpler but all-or-nothing.
                 self.spark.sql(f"""
                     UPDATE {self.config.fully_qualified_entities}
                     SET 
@@ -1097,6 +1117,13 @@ Evaluate each entity independently. Consider whether table purpose, columns, and
         ent = self.config.fully_qualified_entities
         try:
             before = self.spark.sql(f"SELECT COUNT(*) AS cnt FROM {edges}").collect()[0].cnt
+            # DELETE: Remove rows from `graph_edges` (`fully_qualified_edges`) whose `src` or `dst`
+            #   `entity_id` references an entity in `ontology_entities` with `validated = FALSE`.
+            # WHY: Keep the knowledge graph consistent — invalidated entities should not retain
+            #   structural or semantic edges that imply they are trusted endpoints.
+            # TRADEOFFS: Hard delete loses historical edge provenance; subquery filters may scan
+            #   large edge tables. Alternative: soft-delete columns or use `merge_edges`-style
+            #   keyed merges per `source_system` — heavier but uniform with other graph writers.
             self.spark.sql(f"""
                 DELETE FROM {edges}
                 WHERE src IN (SELECT entity_id FROM {ent} WHERE validated = FALSE)
@@ -1116,6 +1143,7 @@ Evaluate each entity independently. Consider whether table purpose, columns, and
         ontology_config: Optional[Dict] = None,
         validate_columns: bool = False,
         force_revalidate: bool = False,
+        table_names=None,
     ) -> Dict[str, Any]:
         """Execute the validation pipeline.
 
@@ -1127,9 +1155,18 @@ Evaluate each entity independently. Consider whether table purpose, columns, and
             force_revalidate: If True, reset all previously-validated auto-discovered
                 entities so they are re-validated from scratch.
         """
+        self._table_names = table_names
         logger.info("Starting ontology validation")
 
         if force_revalidate:
+            # UPDATE: Bulk-reset `validated` to FALSE and clear `validation_notes` on
+            #   `ontology_entities` rows that are `auto_discovered = TRUE` and currently
+            #   `validated = TRUE` (leaves manually curated rows and already-unvalidated rows alone).
+            # WHY: Lets operators rerun validation from a clean slate after ontology or model
+            #   changes without re-ingesting entities from scratch.
+            # TRADEOFFS: Does not reset `confidence` or other fields — faster and preserves scores
+            #   while forcing re-validation. Alternative: truncate auto-discovered partition or
+            #   delete rows — stricter cleanup but loses entity records and downstream keys.
             reset_df = self.spark.sql(f"""
                 UPDATE {self.config.fully_qualified_entities}
                 SET validated = FALSE, validation_notes = NULL
@@ -1140,6 +1177,21 @@ Evaluate each entity independently. Consider whether table purpose, columns, and
             except Exception:
                 reset_count = 0
             logger.info("Force revalidate: reset %s previously-validated entities", reset_count)
+
+        # Early exit: if nothing to validate, skip all LLM work
+        unvalidated_count = self.spark.sql(f"""
+            SELECT COUNT(*) AS cnt FROM {self.config.fully_qualified_entities}
+            WHERE validated = FALSE OR validated IS NULL
+        """).collect()[0]["cnt"]
+        if unvalidated_count == 0:
+            logger.info("No unvalidated entities, skipping validation (0 LLM calls)")
+            return {
+                "entities_validated": 0, "table_entities_validated": 0,
+                "column_entities_validated": 0, "ai_parse_failures": 0,
+                "consistency_issues": 0, "coverage_gaps": 0,
+                "relationship_issues": 0, "pruned_edges": 0,
+                "recommendations": {},
+            }
 
         # Validate table-level entities via batched AI_QUERY
         table_updated = 0
@@ -1223,6 +1275,7 @@ def validate_ontology(
     schema_name: str,
     validate_columns: bool = False,
     force_revalidate: bool = False,
+    table_names=None,
 ) -> Dict[str, Any]:
     """Convenience function to validate the ontology.
 
@@ -1234,6 +1287,8 @@ def validate_ontology(
             batched AI_QUERY. Default False (opt-in).
         force_revalidate: If True, reset all previously-validated entities and
             re-validate from scratch.
+        table_names: Optional list of table names to scope validation to.
+            When set, only entities whose source_tables overlap are validated.
 
     Returns:
         Dict with validation results and recommendations
@@ -1243,7 +1298,8 @@ def validate_ontology(
         schema_name=schema_name
     )
     validator = OntologyValidator(spark, config)
-    return validator.run(validate_columns=validate_columns, force_revalidate=force_revalidate)
+    return validator.run(validate_columns=validate_columns, force_revalidate=force_revalidate,
+                         table_names=table_names)
 
 
 def export_ontology_yaml(

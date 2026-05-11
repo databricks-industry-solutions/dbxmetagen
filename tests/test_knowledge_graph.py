@@ -393,7 +393,9 @@ class TestStandaloneMergeEdges:
         with patch("dbxmetagen.knowledge_graph.align_edge_schema", return_value=aligned_mock):
             result = merge_edges(spark, "cat.sch.graph_edges", df, "test_source")
         assert result == 0
-        spark.sql.assert_not_called()
+        # _ensure_edges_table issues a CREATE TABLE IF NOT EXISTS; no MERGE or DELETE should follow
+        calls = [str(c) for c in spark.sql.call_args_list]
+        assert not any("MERGE" in c or "DELETE" in c for c in calls)
 
     def test_merge_edges_zero_rows_sweep_true_deletes_stale(self):
         spark = MagicMock()

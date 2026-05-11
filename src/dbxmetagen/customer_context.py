@@ -156,6 +156,19 @@ def seed_customer_context_table(
     rows = [Row(**r) for r in all_rows]
     df = spark.createDataFrame(rows)
     df.createOrReplaceTempView("_customer_context_seed")
+
+    # MERGE: Upserts YAML-derived rows into `{catalog}.{schema}.customer_context`, matching
+    # on deterministic `context_id` (`_scope_id(scope)`). `WHEN MATCHED UPDATE SET *`/`INSERT *`
+    # reconcile every seeded column—including priority, labels, activation flags, provenance
+    # timestamps—for scopes declared in `_customer_context_seed`.
+    # WHY: Operators manage curated prompts/snippets (catalog/schema/table/pattern scoped)
+    # in Git-controlled YAML; merging into Delta lets runtime enrichment (`resolve_*`) read
+    # consistent UC state without manual deletes when files change.
+    # TRADEOFFS: Full-row upsert keeps the table mirrored to YAML for tracked keys but does
+    # not retire rows removed from YAML (inactive rows linger unless separately cleaned);
+    # using `*` means any extra columns added later to the DataFrame/table must stay schema-
+    # compatible across environments.
+
     spark.sql(f"""
         MERGE INTO {fq} AS tgt
         USING _customer_context_seed AS src

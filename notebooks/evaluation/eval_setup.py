@@ -44,10 +44,18 @@ from dbxmetagen.evaluation.ground_truth import (
 )
 
 summary = []
+
+# OVERWRITE (synthetic FHIR eval tables — one table per iteration of `EVAL_TABLE_NAMES`): Fully replaces `{catalog}.{schema}.{table_name}`
+#   (patients, providers, encounters, diagnosis, medications, lab_results, insurance_claims); primary key surrogate is synthetic row identities
+#   implied by regenerated data — all typed columns rebuilt from `TABLE_SCHEMAS` / `GENERATORS`.
+# WHY: Supplies controlled ground-truth relational fixtures so metadata, PI, domain, ontology, and FK pipelines can be scored objectively in `eval_compare`.
+# TRADEOFFS: `overwrite` + `overwriteSchema=true` resets schema to generator output (drops ad-hoc columns); fast idempotent setups vs MERGE/SCD —
+#   not suitable if eval tables accumulate manual annotations you need to preserve.
 for table_name in EVAL_TABLE_NAMES:
     rows = GENERATORS[table_name]()
     schema = TABLE_SCHEMAS[table_name]
     df = spark.createDataFrame(rows, schema=schema)
+    # OVERWRITE: Same pattern as above — see eval ground-truth synthetic table comment.
     df.write.mode("overwrite").option("overwriteSchema", "true").saveAsTable(fq(table_name))
     count = df.count()
     summary.append((table_name, count, len(schema.fields)))
@@ -79,6 +87,12 @@ pi_rows = [
     }
     for (tbl, col), (exp_type, alts) in EXPECTED_PI.items()
 ]
+
+# OVERWRITE (eval_expected_* — first of series): Fully replaces `{catalog}.{schema}.eval_expected_pi`; rows keyed by `(table_name, column_name)` with PI
+#   expected_type plus comma-separated acceptable_alternatives derived from frozen `EXPECTED_PI` constants in `ground_truth.py`.
+# WHY: Gives eval_compare deterministic labels for precision/recall on PI classifications without scraping external benchmarks.
+# TRADEOFFS: Full overwrite aligns truth to code edits instantly; brittle if notebooks hand-edit UC rows — versioning lives in repo not table history;
+#   `overwriteSchema` infers/avoids stale columns but can drop manual extensions same as synthetic table pattern.
 spark.createDataFrame(pi_rows).write.mode("overwrite").option("overwriteSchema", "true").saveAsTable(
     fq("eval_expected_pi")
 )
@@ -95,6 +109,7 @@ domain_rows = [
     }
     for tbl, (dom, sub, dom_alts, sub_alts) in EXPECTED_DOMAINS.items()
 ]
+# OVERWRITE: Same pattern as above — see eval ground-truth table comment.
 spark.createDataFrame(domain_rows).write.mode("overwrite").option("overwriteSchema", "true").saveAsTable(
     fq("eval_expected_domains")
 )
@@ -105,6 +120,7 @@ entity_rows = [
     {"table_name": tbl, "expected_entity_type": etype, "confidence_tier": tier, "acceptable_alternatives": alts}
     for tbl, (etype, tier, alts) in EXPECTED_ENTITIES.items()
 ]
+# OVERWRITE: Same pattern as above — see eval ground-truth table comment.
 spark.createDataFrame(entity_rows).write.mode("overwrite").option("overwriteSchema", "true").saveAsTable(
     fq("eval_expected_entities")
 )
@@ -121,6 +137,7 @@ prop_rows = [
     }
     for (tbl, col), prop in EXPECTED_COLUMN_PROPERTIES.items()
 ]
+# OVERWRITE: Same pattern as above — see eval ground-truth table comment.
 spark.createDataFrame(prop_rows).write.mode("overwrite").option("overwriteSchema", "true").saveAsTable(
     fq("eval_expected_column_properties")
 )
@@ -136,6 +153,7 @@ rel_rows = [
     }
     for src, dst, name, alts in EXPECTED_RELATIONSHIPS
 ]
+# OVERWRITE: Same pattern as above — see eval ground-truth table comment.
 spark.createDataFrame(rel_rows).write.mode("overwrite").option("overwriteSchema", "true").saveAsTable(
     fq("eval_expected_relationships")
 )
@@ -151,6 +169,7 @@ fk_rows = [
     }
     for src_t, src_c, dst_t, dst_c in EXPECTED_FK
 ]
+# OVERWRITE: Same pattern as above — see eval ground-truth table comment.
 spark.createDataFrame(fk_rows).write.mode("overwrite").option("overwriteSchema", "true").saveAsTable(
     fq("eval_expected_fk")
 )
@@ -165,6 +184,7 @@ comment_rows = [
     }
     for (tbl, col), keywords in EXPECTED_COMMENTS.items()
 ]
+# OVERWRITE: Same pattern as above — see eval ground-truth table comment.
 spark.createDataFrame(comment_rows).write.mode("overwrite").option("overwriteSchema", "true").saveAsTable(
     fq("eval_expected_comments")
 )

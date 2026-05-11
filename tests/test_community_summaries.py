@@ -89,16 +89,19 @@ class TestGenerateSummariesBatch:
         assert result == 0
         mock_spark.sql.assert_not_called()
 
+    @patch("dbxmetagen.community_summaries._get_stale_communities")
     @patch("dbxmetagen.community_summaries.discover_communities")
-    def test_writes_table_for_one_community(self, mock_discover):
-        mock_discover.return_value = [{
+    def test_writes_table_for_one_community(self, mock_discover, mock_stale):
+        community = {
             "community_id": "abc123",
             "domain": "finance",
             "subdomain": "accounting",
             "table_names": ["ledger", "journal"],
             "comments": ["General ledger", "Journal entries"],
             "table_count": 2,
-        }]
+        }
+        mock_discover.return_value = [community]
+        mock_stale.return_value = [community]
         mock_result_df = MagicMock()
         mock_spark = MagicMock()
         mock_spark.sql.return_value = mock_result_df
@@ -110,4 +113,4 @@ class TestGenerateSummariesBatch:
         sql_calls = [str(c) for c in mock_spark.sql.call_args_list]
         assert any("CREATE TABLE" in s for s in sql_calls)
         assert any("AI_QUERY" in s for s in sql_calls)
-        mock_result_df.write.format().mode().option().saveAsTable.assert_called_once()
+        assert any("MERGE INTO" in s for s in sql_calls)

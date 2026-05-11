@@ -64,10 +64,50 @@ _COLUMNS_TO_SYNC = [
 
 
 class VectorIndexBuilder:
-    def __init__(self, spark: SparkSession, config: VectorIndexConfig, *, sweep_stale_docs: bool = False):
+    def __init__(self, spark: SparkSession, config: VectorIndexConfig, *,
+                 sweep_stale_docs: bool = False, incremental: bool = True):
         self.spark = spark
         self.config = config
         self.sweep_stale_docs = sweep_stale_docs
+        self.incremental = incremental
+
+    def _check_incremental_watermark(self) -> bool:
+        """Return True if any tracked upstream watermark is newer than metadata_documents.updated_at.
+
+        Compares the global max timestamp across these sources (skipped if table missing/errors):
+        table_knowledge_base.updated_at, column_knowledge_base.updated_at,
+        ontology_entities.updated_at, metric_view_definitions.created_at,
+        fk_predictions.updated_at, community_summaries.generated_at.
+        """
+        cfg = self.config
+        upstream_tables = [
+            ("table_knowledge_base", "updated_at"),
+            ("column_knowledge_base", "updated_at"),
+            ("ontology_entities", "updated_at"),
+            ("metric_view_definitions", "created_at"),
+            ("fk_predictions", "updated_at"),
+            ("community_summaries", "generated_at"),
+        ]
+        max_upstream = None
+        for tbl, col in upstream_tables:
+            fq = cfg.fq(tbl)
+            try:
+                val = self.spark.sql(
+                    f"SELECT MAX({col}) AS mu FROM {fq}"
+                ).collect()[0].mu
+                if val and (max_upstream is None or val > max_upstream):
+                    max_upstream = val
+            except Exception:
+                pass
+        if max_upstream is None:
+            return True
+        try:
+            max_docs = self.spark.sql(
+                f"SELECT COALESCE(MAX(updated_at), TIMESTAMP '1970-01-01') AS mu FROM {cfg.fq_documents}"
+            ).collect()[0].mu
+        except Exception:
+            return True
+        return max_upstream > max_docs
 
     def build_documents_table(self) -> int:
         cfg = self.config
@@ -101,6 +141,13 @@ class VectorIndexBuilder:
                 pass
             else:
                 logger.debug("Could not add node_id column: %s", e)
+
+        if self.incremental and not self._check_incremental_watermark():
+            count = self.spark.sql(
+                f"SELECT COUNT(*) AS cnt FROM {cfg.fq_documents}"
+            ).collect()[0]["cnt"]
+            logger.info("Incremental: no upstream changes, metadata_documents unchanged (%d rows)", count)
+            return count
 
         table_docs = f"""
             SELECT
@@ -362,13 +409,18 @@ class VectorIndexBuilder:
 
         union_body = "\nUNION ALL\n".join(parts)
 
+        # Content-change guard: only update when doc body or doc_type differs (covers same doc_id
+        # repurposed across types without no-op rewriting), avoiding updated_at churn and VS re-embedding.
         union_sql = f"""
             MERGE INTO {cfg.fq_documents} AS tgt
             USING (
                 {union_body}
             ) AS src
             ON tgt.doc_id = src.doc_id
-            WHEN MATCHED THEN UPDATE SET *
+            WHEN MATCHED AND (
+                COALESCE(tgt.content, '') != COALESCE(src.content, '')
+                OR COALESCE(tgt.doc_type, '') != COALESCE(src.doc_type, '')
+            ) THEN UPDATE SET *
             WHEN NOT MATCHED THEN INSERT *
         """
 
@@ -454,6 +506,22 @@ class VectorIndexBuilder:
             before = self.spark.sql(
                 f"SELECT COUNT(*) AS c FROM {docs} WHERE doc_type = '{doc_type}'"
             ).collect()[0]["c"]
+
+            # DELETE: Removes stale `metadata_documents` rows for the current `doc_type`
+            # when their natural keys no longer appear in the upstream source table (per the
+            # paired `delete_sql`: e.g. strip `table::` prefix vs `table_knowledge_base.table_name`,
+            # `column::`-qualified names vs commented columns, `entity`/`metric_view`/`fk_relationship`
+            # via `node_id` or `doc_id` against ontology/metric/FK predictions with the same
+            # filters as the MERGE union). Only runs when that source was part of the merge
+            # batch and the guard query proves non-empty upstream data.
+            # WHY: MERGE alone cannot drop docs that disappeared from KB/ontology/FK outputs;
+            # without deletes, Vector Search would keep embedding stale text and pollute RAG.
+            # Delta Sync propagates these deletes so the index sheds orphaned vectors.
+            # TRADEOFFS: Per-type `NOT IN`/`NOT IN (subquery)` deletes are simple and aligned
+            # with MERGE filters, but can be heavy on very large tables and behave poorly if
+            # NULLs appear in keys; skipping sweep when upstream is empty avoids wiping docs
+            # during partial pipeline runs but can temporarily retain stale rows until a full run.
+
             self.spark.sql(delete_sql)
             after = self.spark.sql(
                 f"SELECT COUNT(*) AS c FROM {docs} WHERE doc_type = '{doc_type}'"
@@ -603,6 +671,8 @@ def build_vector_index(
     schema_name: str,
     endpoint_name: str = "dbxmetagen-vs",
     sweep_stale_docs: bool = False,
+    table_names=None,
+    incremental: bool = True,
 ) -> Dict[str, Any]:
     """Convenience entry point for the notebook."""
     config = VectorIndexConfig(
@@ -610,5 +680,6 @@ def build_vector_index(
         schema_name=schema_name,
         endpoint_name=endpoint_name,
     )
-    builder = VectorIndexBuilder(spark, config, sweep_stale_docs=sweep_stale_docs)
+    builder = VectorIndexBuilder(spark, config, sweep_stale_docs=sweep_stale_docs,
+                                  incremental=incremental)
     return builder.run()

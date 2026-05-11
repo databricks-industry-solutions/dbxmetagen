@@ -669,6 +669,12 @@ except Exception as e:
 
 if result_rows:
     results_df = spark.createDataFrame(result_rows)
+
+    # APPEND: Adds one row per compared artifact to `{catalog}.{eval_schema}.eval_results` keyed logically by `(run_id, dimension, result_type, table_name, column_name)`
+    #   with fields expected_value, actual_value, match flag, fractional score, JSON details blob, run_timestamp/run_label lineage.
+    # WHY: Accumulates longitudinal eval history across pipeline/config runs for trending SQL (see notebook tail) without losing prior scorecards.
+    # TRADEOFFS: Append-only simplifies auditing and reproducibility vs upsert snapshots; tables grow needing VACUUM/retention policies; duplicate run_ids prevented only by UUID generation,
+    #   retries could double-insert if rerun blindly without new run_id semantics upstream.
     results_df.write.mode("append").saveAsTable(eval_fq("eval_results"))
     print(f"\nAppended {len(result_rows)} rows to {eval_fq('eval_results')}")
 

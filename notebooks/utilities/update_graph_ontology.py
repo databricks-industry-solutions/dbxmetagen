@@ -27,7 +27,14 @@ print(f"Schema: {schema_name}")
 
 # COMMAND ----------
 
-# MERGE entity nodes into the graph (upsert: insert new, update existing)
+# MERGE: Upserts ontology entity rows into `graph_nodes`; match key `target.id = source.entity_id`.
+#   On match updates table_short_name, comment, quality_score (from confidence), ontology_type,
+#   display_name, short_description, status (entity_role), updated_at; on insert creates `node_type='entity'`,
+#   `source_system='ontology'`, fills identity/display fields from `ontology_entities` (table/column FK fields nullable).
+# WHY: Mirrors discovered ontology entities as first-class graph nodes so dashboards, traversal, and Genie/context
+#   consumers see the same entity catalog the ontology pipeline emitted.
+# TRADEOFFS: MERGE is idempotent and correct for notebooks, but skips library helpers that dedupe/maintain columns
+#   parity; DELETE+reload or deprecated drift vs `OntologyBuilder` sync is possible — prefer library paths for prod.
 spark.sql(f"""
 MERGE INTO {catalog_name}.{schema_name}.graph_nodes AS target
 USING (
@@ -71,13 +78,23 @@ print("Merged entity nodes into graph")
 
 # COMMAND ----------
 
-# Clear prior ontology instance_of edges, then re-insert
+# DELETE: Removes rows from `graph_edges` where `relationship = 'instance_of'` and source is ontology
+#   (`source_system IS NULL OR source_system = 'ontology'`) so stale links do not coexist with the next INSERT.
+# WHY: Instance links are rebuilt fully from current `ontology_entities.source_tables`; partial MERGE-by-edge_id is not used here.
+# TRADEOFFS: Brief window/table scan cost on delete-then-insert vs single MERGE sweep; clears legacy NULL source_system edges
+#   but treats any non-ontology `instance_of` as out of scope — may orphan if edges were stamped with another system.
 spark.sql(f"""
 DELETE FROM {catalog_name}.{schema_name}.graph_edges
 WHERE relationship = 'instance_of'
   AND (source_system IS NULL OR source_system = 'ontology')
 """)
 
+# INSERT: Appends new `instance_of` edges: `src` = physical table id (`graph_nodes.id`), `dst` = `entity_id`,
+#   deterministic `edge_id = CONCAT(src,'::',dst,'::instance_of')`, weight from entity confidence,
+#   `source_system='ontology'`, status `candidate`, timestamps `current_timestamp`.
+# WHY: Materializes table→ontology-entity containment for graph queries and lineage-style navigation after node sync.
+# TRADEOFFS: Requires matching `graph_nodes` rows keyed by exploded `source_tables` names JOIN `t.id = table_name`
+#   (misses entities whose table names lack node rows); LATERAL EXPLODE duplicates if arrays repeat — normalization is caller's duty.
 spark.sql(f"""
 INSERT INTO {catalog_name}.{schema_name}.graph_edges
     (src, dst, relationship, weight, edge_id, edge_type, direction,

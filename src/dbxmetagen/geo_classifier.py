@@ -244,6 +244,15 @@ class GeoClassifier:
             schema = "table_name STRING, column_name STRING, classification STRING, confidence DOUBLE, method STRING, created_at TIMESTAMP, updated_at TIMESTAMP"
             df = self.spark.createDataFrame(results, schema=schema)
             df.createOrReplaceTempView("_geo_new")
+            # MERGE: Upsert into the geo results Delta table (`config.fq_results`) on natural key
+            #   (`table_name`, `column_name`). Updates `classification`, `confidence`, `method`,
+            #   `tag_key`, and `updated_at` when present; inserts new rows with `tag_key`, timestamps,
+            #   and classification fields for first-time columns.
+            # WHY: Persist keyword/LLM geographic relevance labels so `apply_tags` and DDL export
+            #   can run deterministically from UC without re-scoring every time.
+            # TRADEOFFS: Composite key tracks one row per table/column — table or column renames
+            #   leave stale rows unless cleaned. MERGE is simpler than SCD2 history. Alternative:
+            #   append-only log with latest view — better audit trail, more storage and queries.
             self.spark.sql(f"""
                 MERGE INTO {self.config.fq_results} AS t
                 USING _geo_new AS s

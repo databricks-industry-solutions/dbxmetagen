@@ -234,6 +234,9 @@ class ColumnKnowledgeBaseBuilder:
         """Merge staged updates into the target table."""
         staged_df.createOrReplaceTempView("staged_column_updates")
         
+        # MERGE: Upserts column KB from `staged_column_updates` on `column_id`; MATCH COALESCEs identity/type fields, CASE-preserves comment and classification when target.review_updated_at beats source.updated_at, GREATEST on updated_at; NOT MATCHED inserts full row.
+        # WHY: Durable per-column KB (log + information_schema) for ontology/graph/UI with the same steward-win pattern as table KB on re-run.
+        # TRADEOFFS: Retrying MERGE helps concurrent writers vs overwrite; review CASE omits classification_type/confidence so those can still shift while steward-locked text stays—simpler than row-level freeze but asymmetric.
         merge_sql = f"""
         MERGE INTO {self.config.fully_qualified_target} AS target
         USING staged_column_updates AS source
@@ -357,6 +360,9 @@ class ColumnKnowledgeBaseBuilder:
         combined = reduce(DataFrame.union, all_dfs)
         combined.createOrReplaceTempView("_ckb_bootstrap_src")
 
+        # MERGE: `WHEN NOT MATCHED THEN INSERT *` into column KB from `_ckb_bootstrap_src` on `column_id`, filling from `information_schema.columns` plus UC comments, types, nullable, null AI fields.
+        # WHY: Fast column skeleton for KB consumers before LLM passes; complements `merge_to_target` without resetting enriched rows for keys that already exist.
+        # TRADEOFFS: No upsert on bootstrap (insert-only); `INSERT *` needs matching schemas; orphaned column_ids remain until separately cleaned.
         self.spark.sql(f"""
             MERGE INTO {self.config.fully_qualified_target} AS target
             USING _ckb_bootstrap_src AS source

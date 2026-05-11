@@ -71,6 +71,27 @@ def parse_table_names(raw: str) -> list[str]:
     return [t.strip() for t in raw.split(",") if t.strip()]
 
 
+def table_names_col_filter(col, table_names: list[str]):
+    """PySpark Column filter matching table_names (exact or ``catalog.schema.*`` wildcard).
+
+    Returns a Column boolean expression that is True when *col* matches any
+    entry in *table_names*.  Useful when SQL string manipulation is awkward
+    (e.g. OR-ing across two different columns).
+    """
+    from functools import reduce
+
+    from pyspark.sql import functions as F
+
+    exact = [t for t in table_names if not t.endswith(".*")]
+    wildcards = [t[:-2] + "." for t in table_names if t.endswith(".*")]
+    parts = []
+    if exact:
+        parts.append(col.isin(exact))
+    for pfx in wildcards:
+        parts.append(col.startswith(pfx))
+    return reduce(lambda a, b: a | b, parts) if parts else F.lit(False)
+
+
 def table_filter_sql(table_names: list[str], column: str = "table_name") -> str:
     """Return a SQL ``AND ...`` clause filtering *column* to the given names.
 

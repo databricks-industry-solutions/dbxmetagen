@@ -38,13 +38,11 @@ resources:
       job_clusters:
         - job_cluster_key: eval_cluster
           new_cluster:
+            apply_policy_default_values: true
             policy_id: ${var.policy_id}
             spark_version: 17.3.x-cpu-ml-scala2.13
             node_type_id: ${var.node_type}
             data_security_mode: SINGLE_USER
-            num_workers: 0
-            spark_conf:
-              spark.databricks.cluster.profile: singleNode
-              spark.master: "local[*]"
+            num_workers: 1
             custom_tags:
-              ResourceClass: SingleNode
+              project: dbxmetagen

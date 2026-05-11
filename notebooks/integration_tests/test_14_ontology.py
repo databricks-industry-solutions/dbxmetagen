@@ -63,6 +63,29 @@ print("[SETUP] Created table_knowledge_base")
 
 # COMMAND ----------
 
+# Create empty column_knowledge_base (required by classify_column_properties step)
+spark.sql(f"""
+CREATE OR REPLACE TABLE {catalog_name}.{ontology_test_schema}.column_knowledge_base (
+    column_id STRING,
+    table_name STRING,
+    catalog STRING,
+    `schema` STRING,
+    table_short_name STRING,
+    column_name STRING,
+    comment STRING,
+    data_type STRING,
+    classification STRING,
+    classification_type STRING,
+    confidence FLOAT,
+    nullable BOOLEAN,
+    created_at TIMESTAMP,
+    updated_at TIMESTAMP
+)
+""")
+print("[SETUP] Created empty column_knowledge_base")
+
+# COMMAND ----------
+
 # Insert test data - tables designed to match specific entity keywords
 test_kb_data = [
     # Should match "Customer" entity (keywords: customer, user, client)

@@ -587,7 +587,11 @@ def get_config():
 
 def _get_mlflow_experiment_id() -> str | None:
     try:
-        from agent.tracing import MLFLOW_EXPERIMENT_ID
+        from agent.tracing import MLFLOW_EXPERIMENT_ID, _init_tracing
+        if MLFLOW_EXPERIMENT_ID is None:
+            _init_tracing()
+            from agent.tracing import MLFLOW_EXPERIMENT_ID as eid
+            return eid
         return MLFLOW_EXPERIMENT_ID
     except Exception:
         return None
@@ -656,6 +660,7 @@ class JobRunRequest(BaseModel):
     schema_name: Optional[str] = None
     ontology_bundle: Optional[str] = None
     domain_config: Optional[str] = None
+    sweep_stale_docs: bool = False
     extra_params: dict = {}
 
 
@@ -932,6 +937,8 @@ def run_job(req: JobRunRequest):
         params["use_kb_comments"] = "true"
     if req.include_lineage:
         params["include_lineage"] = "true"
+    if req.sweep_stale_docs:
+        params["sweep_stale_docs"] = "true"
     if req.catalog_name:
         params["catalog_name"] = req.catalog_name
     if req.schema_name:

@@ -16,6 +16,7 @@ dbutils.widgets.text("catalog_name", "", "Catalog Name")
 dbutils.widgets.text("schema_name", "", "Schema Name")
 dbutils.widgets.text("validate_columns", "false", "Validate Column Entities (true/false)")
 dbutils.widgets.text("force_revalidate", "false", "Force Re-validate All (true/false)")
+dbutils.widgets.text("table_names", "", "Table Names (comma-separated, empty for all)")
 
 catalog_name = dbutils.widgets.get("catalog_name")
 schema_name = dbutils.widgets.get("schema_name")
@@ -33,6 +34,8 @@ import sys
 sys.path.append("../src")  # For git-clone or DAB deployment; pip-installed package works without this
 
 from dbxmetagen.ontology_validator import validate_ontology
+from dbxmetagen.table_filter import parse_table_names
+table_names = parse_table_names(dbutils.widgets.get("table_names").strip()) or None
 
 result = validate_ontology(
     spark=spark,
@@ -40,6 +43,7 @@ result = validate_ontology(
     schema_name=schema_name,
     validate_columns=validate_columns,
     force_revalidate=force_revalidate,
+    table_names=table_names,
 )
 
 print(f"Validation complete:")

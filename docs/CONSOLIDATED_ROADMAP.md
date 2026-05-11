@@ -16,7 +16,7 @@ All open work items from every roadmap and plan document, organized by theme. Ea
 - `ai_query_scaling.md` (abbreviated AQ)
 - `PIP_INSTALLABLE_PLAN.md` (abbreviated PI)
 
-**Last reconciled against codebase:** 2026-05-03
+**Last reconciled against codebase:** 2026-05-10
 
 ---
 
@@ -35,6 +35,11 @@ All open work items from every roadmap and plan document, organized by theme. Ea
 | MG-9 | Audit trail for metadata state transitions | OPEN | P2 | M | RC 2.5 |
 | MG-10 | `enrich_from_knowledge_base()` should override stale UC comments | OPEN | P2 | S | apply_ddl analysis |
 | MG-11 | `MetadataConfig` schema validation (Pydantic model with field validators) | OPEN | P2 | M | code audit |
+| MG-12 | PI prompt: add negative examples for clinical vocabulary | OPEN | P1 | S | PI precision analysis |
+| MG-13 | PI prompt: tighten Presidio deference rule (#10) | OPEN | P1 | S | PI precision analysis |
+| MG-14 | Presidio `diagnosis_code` regex too broad -- raise threshold or gate | OPEN | P2 | S | PI precision analysis |
+| MG-15 | Preserve `type` field downstream instead of collapsing to `protected` | OPEN | P2 | S | PI precision analysis |
+| MG-16 | PI confidence threshold gating (discard low-confidence classifications) | OPEN | P2 | S | PI precision analysis |
 
 ### MG-1: Chat client garbage fallback on JSON parse failure
 
@@ -125,7 +130,47 @@ All open work items from every roadmap and plan document, organized by theme. Ea
 
 **Files:** `apps/.../api_server.py`, `src/dbxmetagen/processing.py`
 
-### MG-10: `enrich_from_knowledge_base()` should override stale UC comments
+### MG-12: PI prompt -- add negative examples for clinical vocabulary
+
+**Status: OPEN** -- The PI prompt's few-shot examples cover clear PII (names, SSNs, emails) and healthcare with embedded identifiers (physician notes mentioning patient names). No example shows the LLM correctly classifying standardized medical vocabulary (diagnosis codes, medication names, lab test names, units) as `medical_information` rather than `phi` when Presidio falsely flags them.
+
+**Work:** Add one few-shot user/assistant pair showing a clinical table where Presidio flags columns like `diagnosis_code`, `medication_name`, `lab_test`, `unit` as PHI, and the correct answer classifies them as `medical_information` with moderate confidence.
+
+**Files:** `src/dbxmetagen/prompts.py` (PIPrompt.create_prompt_template)
+
+### MG-13: PI prompt -- tighten Presidio deference rule (#10)
+
+**Status: OPEN** -- Rule #10 says: "If Presidio finds PII, but you recognize that there is also medical information present, classify as phi with high confidence." This causes any Presidio hit in a medical context to escalate to PHI. Standardized vocabulary (ICD codes, drug names, lab test names) should remain `medical_information` at the column level even when Presidio fires, because these are not identifiers.
+
+**Work:** Reword rule #10 bullet 3 to: "If Presidio finds PII and the column contains actual identifying data embedded in medical text (e.g., patient names in physician notes), classify as phi. Standardized medical vocabulary (diagnosis codes, medication names, lab test names, units, reference ranges) should remain medical_information even if Presidio flags them."
+
+**Files:** `src/dbxmetagen/prompts.py` (PIPrompt.create_prompt_template, rule #10)
+
+### MG-14: Presidio `diagnosis_code` regex too broad
+
+**Status: OPEN** -- The `diagnosis_code` pattern in `deterministic_pi.py` is `\b[A-Z]\d{2}\.?\d{1,2}\b` at score 0.6. This matches any single uppercase letter followed by 2-3 digits (version strings, grade values, dosage shorthand). All PHI patterns feed into a single `MEDICAL_RECORD_NUMBER` entity type, so any hit classifies the column as PHI.
+
+**Work:** Either raise the pattern score to 0.8 (requiring context words to reach the 0.6 threshold), tighten the regex to require the ICD-10 format more specifically (e.g., `\b[A-Z][0-9]{2}\.[0-9]{1,2}\b` -- require the dot), or add `diagnosis_code` to `entities_to_ignore` in `classify_column`.
+
+**Files:** `src/dbxmetagen/deterministic_pi.py`
+
+### MG-15: Preserve `type` field downstream instead of collapsing to `protected`
+
+**Status: OPEN** -- `hardcode_classification()` in `processing.py` replaces the LLM's classification with `"protected"` for any non-None type. This destroys the distinction between actual PII/PHI and medical vocabulary. Downstream consumers (KB, dashboard, tags) can't tell "this column has SSNs" from "this column has medication names."
+
+**Work:** Preserve the original `type` value (`pii`, `phi`, `pci`, `medical_information`) through to the knowledge base. The `protected` label can remain as a convenience boolean/tag but should not replace the granular classification.
+
+**Files:** `src/dbxmetagen/processing.py` (hardcode_classification), `src/dbxmetagen/knowledge_base.py`
+
+### MG-16: PI confidence threshold gating
+
+**Status: OPEN** -- The LLM can output confidence as low as 0.3 and the result still becomes `protected`. No threshold filters low-confidence classifications.
+
+**Work:** Add a `pi_confidence_threshold` config parameter (default 0.5). Classifications below this threshold are downgraded to `None`. Applied post-LLM, pre-hardcode.
+
+**Files:** `src/dbxmetagen/processing.py`, `src/dbxmetagen/config.py`, `variables.yml`
+
+
 
 **Status: OPEN** -- When `use_kb_comments=true`, `enrich_from_knowledge_base()` in `prompts.py` (L171-217) only fills `table_comments` and column `comment` slots when empty. If UC has a stale comment from a prior `apply_ddl=true` run and the KB has a newer description, KB does not win.
 
@@ -360,6 +405,27 @@ All open work items from every roadmap and plan document, organized by theme. Ea
 | DE-9 | God-module decomposition (`api_server.py` 9.8K lines, `ontology.py` 5.3K, `processing.py` 4K) | OPEN | P2 | L | code audit |
 | DE-10 | Dependency injection for testability (7+ internal module stubs required to test `processing.py`) | OPEN | P2 | L | code audit |
 
+### 5g. Pipeline Incrementality (May 2026)
+
+All items below were completed in a single sprint. Every analytics pipeline task now follows a
+watermark-based incremental pattern with content-change guards and stable timestamp propagation.
+
+| ID | Item | Status | Priority | Effort | Source |
+|----|------|--------|----------|--------|--------|
+| INC-1 | Watermark-based early exit for all analytics tasks | DONE | -- | L | incrementality audit |
+| INC-2 | Content-change guards on all MERGE statements | DONE | -- | M | incrementality audit |
+| INC-3 | Stable `updated_at` propagation (upstream timestamps, not `current_timestamp()`) | DONE | -- | M | incrementality audit |
+| INC-4 | Knowledge graph embedding nullification on comment change | DONE | -- | S | incrementality audit |
+| INC-5 | FK prediction incremental scoping (`_changed_tables` OR filtering) | DONE | -- | M | incrementality audit |
+| INC-6 | Similarity edges incremental watermark + `table_names` scoping | DONE | -- | M | incrementality audit |
+| INC-7 | Ontology column properties: overwrite -> MERGE with deterministic `property_id` | DONE | -- | S | incrementality audit |
+| INC-8 | Community summaries: per-community freshness check + MERGE | DONE | -- | S | incrementality audit |
+| INC-9 | Vector index: 6-source upstream watermark check | DONE | -- | S | incrementality audit |
+| INC-10 | Data quality: watermark on `profiling_snapshots.snapshot_time` | DONE | -- | S | incrementality audit |
+| INC-11 | Ontology validator: early exit on 0 unvalidated entities | DONE | -- | S | incrementality audit |
+| INC-12 | Schema KB: gate AI calls on `incremental` flag | DONE | -- | S | incrementality audit |
+| INC-13 | E2E eval `exclude_tables` parameter for incrementality testing | DONE | -- | S | incrementality audit |
+
 ---
 
 ## 6. Packaging & Distribution
@@ -405,9 +471,9 @@ The `for table in config.table_names` loop is sequential within a single task, b
 
 | Status | Count |
 |--------|-------|
-| DONE | 23 |
+| DONE | 36 |
 | PARTIAL | 2 |
-| OPEN | 41 |
+| OPEN | 46 |
 | DEFERRED | 10 |
 | KILLED | 2 |
 
@@ -425,8 +491,10 @@ The `for table in config.table_names` loop is sequential within a single task, b
 7. ~~ON-6: Bundle version check for incremental~~ -- DONE
 8. ~~ON-8: Conformance validation~~ -- DONE
 9. ~~MG-1: Chat client hard-fail path~~ -- DONE
-10. MG-2: PII column-to-table rollup (M)
-11. MG-5: Day-2 re-run lifecycle (M)
+10. MG-13: Tighten PI prompt Presidio deference rule (S) -- highest-impact, lowest-risk PI precision fix
+11. MG-12: Add negative few-shot example for clinical vocabulary (S) -- reinforces MG-13
+12. MG-2: PII column-to-table rollup (M)
+13. MG-5: Day-2 re-run lifecycle (M)
 12. DE-2: Parallelize DDL execution (M)
 13. DE-3: Remove redundant materializations (S)
 14. DE-4: FK prediction parallelization (L)
@@ -434,7 +502,10 @@ The `for table in config.table_names` loop is sequential within a single task, b
 16. AQ-1, AQ-2: Batch column + table classification (M+M)
 
 **Wave 3 -- P2 (planned):**
-17. MG-3, MG-4, MG-6-MG-10: Remaining metadata robustness items
+17. MG-14: Tighten Presidio diagnosis_code regex (S) -- reduces false positive inputs to LLM
+18. MG-15: Preserve `type` field instead of collapsing to `protected` (S) -- enables downstream filtering
+19. MG-16: PI confidence threshold gating (S) -- discards low-confidence noise
+20. MG-3, MG-4, MG-6-MG-10: Remaining metadata robustness items
 18. ON-11 (complete JSON-LD), ON-12 (bundle version UC tags): Ontology polish
 19. ON-10: Subdomain entity affinity (gated on verifying subdomain data)
 20. UI-6 through UI-11: Ontology UI Phase 2-3

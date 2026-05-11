@@ -175,7 +175,12 @@ class PayloadLogger:
         
         df = self.spark.createDataFrame(payloads, schema)
         
-        # Append to table
+        # APPEND: Buffered rows into payload audit Delta table (fully_qualified_target) with payload_id PK surrogate,
+        # table_name + column_names context, metadata_type discriminator, serialized prompt_content, sample_data_hash (no raw data),
+        # model endpoint label, created_at ingest time.
+        # WHY: Captures sanitized evidence of LLM inputs for reproducibility/compliance batches without storing sensitive samples verbatim.
+        # TRADEOFFS: Batched append amortizes writes versus per-call INSERT but delays durability until flush thresholds; append-only grows
+        # quickly without retention; no mergeSchema option—table schema changes require explicit migrations.
         df.write.mode("append").saveAsTable(self.config.fully_qualified_target)
         
         logger.debug(f"Wrote {len(payloads)} payloads to {self.config.fully_qualified_target}")

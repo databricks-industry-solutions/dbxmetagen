@@ -82,12 +82,14 @@ class FKPredictionConfig:
     dry_run: bool = False
     ontology_match_bonus_weight: float = 0.15
     rule_score_min_for_ai: float = 0.50
+    # When True, skip or narrow expensive steps via _compute_incremental_state / _changed_tables.
     incremental: bool = True
     max_candidates_per_table_pair: int = 5
     max_ontology_table_pairs: int = 50_000
     cardinality_sample_rows: int = 100000
     max_ai_candidates: int = 200
     system_column_patterns: Tuple[str, ...] = field(default_factory=lambda: _DEFAULT_SYSTEM_COL_PATTERNS)
+    table_names: list = field(default_factory=list)
 
     def fq(self, table: str) -> str:
         return f"{self.catalog_name}.{self.schema_name}.{table}"
@@ -100,6 +102,7 @@ class FKPredictor:
         self.spark = spark
         self.config = config
         self._table_samples: dict = {}
+        self._changed_tables: set | None = None
         if self.config.table_similarity_threshold != 0.9:
             warnings.warn(
                 "FKPredictionConfig.table_similarity_threshold is deprecated and ignored; "
@@ -107,6 +110,79 @@ class FKPredictor:
                 DeprecationWarning,
                 stacklevel=2,
             )
+
+    def _compute_incremental_state(self) -> bool:
+        """Determine whether FK work should run and which tables narrowed.
+
+        Watermark ``last_run`` is ``MAX(fk_predictions.updated_at)`` — not
+        ``created_at`` — so merges that refresh scores still advance ``last_run``
+        even when no new pairs appear. Compared against
+        ``MAX(graph_nodes.updated_at)`` restricted to ``node_type IN ('table','column')``.
+        Proceed when upstream is strictly newer; otherwise skip the whole predictor.
+
+        When proceeding, ``_changed_tables`` is ``parent_id`` values for rows with
+        ``updated_at > last_run`` (table/column rows only): downstream SQL filters keep
+        pair generation where ``table_a`` or ``table_b`` hits that set, so unchanged
+        neighbors remain in play for pairs involving a changed table.
+
+        Entity nodes are excluded from the watermark (``parent_id IS NULL``) because
+        ontology sync bumps their timestamps every run.
+        """
+        if not self.config.incremental:
+            return True
+
+        preds = self.config.fq(self.config.predictions_table)
+        nodes = self.config.fq(self.config.nodes_table)
+
+        try:
+            last_run = self.spark.sql(
+                f"SELECT COALESCE(MAX(updated_at), TIMESTAMP '1970-01-01') AS lr FROM {preds}"
+            ).collect()[0].lr
+
+            max_upstream = self.spark.sql(
+                f"SELECT COALESCE(MAX(updated_at), TIMESTAMP '1970-01-01') AS mu "
+                f"FROM {nodes} WHERE node_type IN ('table', 'column')"
+            ).collect()[0].mu
+
+            if max_upstream <= last_run:
+                logger.info(
+                    "Incremental: no upstream changes since last run (%s >= %s), skipping",
+                    last_run, max_upstream,
+                )
+                return False
+
+            rows = self.spark.sql(f"""
+                SELECT DISTINCT parent_id FROM {nodes}
+                WHERE updated_at > TIMESTAMP '{last_run}'
+                  AND parent_id IS NOT NULL
+                  AND node_type IN ('table', 'column')
+            """).collect()
+            self._changed_tables = {r.parent_id for r in rows}
+            if not self._changed_tables:
+                logger.info("Incremental: upstream timestamps advanced but no table/column changes, skipping")
+                return False
+            logger.info(
+                "Incremental: %d tables changed since %s",
+                len(self._changed_tables), last_run,
+            )
+            return True
+        except Exception as e:
+            logger.warning("Incremental watermark check failed (%s), running full", e)
+            return True
+
+    def _incremental_table_filter_sql(self, table_col: str) -> str:
+        """SQL AND clause restricting *table_col* to changed tables (incremental)."""
+        if not self._changed_tables:
+            return ""
+        escaped = ", ".join(f"'{t}'" for t in self._changed_tables)
+        return f" AND {table_col} IN ({escaped})"
+
+    def _incremental_pair_filter_sql(self) -> str:
+        """SQL AND clause keeping pairs where ``table_a`` or ``table_b`` is in ``_changed_tables``."""
+        if not self._changed_tables:
+            return ""
+        escaped = ", ".join(f"'{t}'" for t in self._changed_tables)
+        return f" AND (table_a IN ({escaped}) OR table_b IN ({escaped}))"
 
     def _cap_candidates(self, df: DataFrame) -> DataFrame:
         """Limit candidates to top-K per table pair by name match quality."""
@@ -179,13 +255,9 @@ class FKPredictor:
     # Step 1: Candidate selection
     # ------------------------------------------------------------------
     def get_candidates(self) -> DataFrame:
-        """Embedding column pairs with block-aware duplicate suppression and cross-block floors.
-
-        Incremental mode applies only here; declared/query/name/ontology paths run fully each job.
-        """
+        """Embedding column pairs with block-aware duplicate suppression and cross-block floors."""
         nodes = self.config.fq(self.config.nodes_table)
         edges = self.config.fq(self.config.edges_table)
-        preds = self.config.fq(self.config.predictions_table)
         col_thresh = self.config.column_similarity_threshold
         dup_t = self.config.duplicate_table_similarity_threshold
         xb_min = self.config.cross_block_column_similarity_min
@@ -195,28 +267,13 @@ class FKPredictor:
             cross_block_sql = f"""
           AND (j.block_a = j.block_b OR j.col_similarity >= {xb_min})"""
 
-        changed_tables_cte = ""
         changed_tables_filter = ""
-        if self.config.incremental:
-            try:
-                last_run = self.spark.sql(
-                    f"SELECT COALESCE(MAX(created_at), TIMESTAMP '1970-01-01') AS lr FROM {preds}"
-                ).collect()[0].lr
-                changed_tables_cte = f""",
-        changed_tables AS (
-            SELECT DISTINCT parent_id
-            FROM {nodes}
-            WHERE updated_at > TIMESTAMP '{last_run}'
-        )"""
-                changed_tables_filter = """
-          AND (j.table_a IN (SELECT parent_id FROM changed_tables)
-               OR j.table_b IN (SELECT parent_id FROM changed_tables))"""
-                logger.info(
-                    "Incremental mode: embedding candidates limited to tables changed since %s",
-                    last_run,
-                )
-            except Exception as e:
-                logger.warning("Incremental filtering failed (%s), using full candidate set", e)
+        if self._changed_tables is not None:
+            escaped = ", ".join(f"'{t}'" for t in self._changed_tables)
+            # OR: include pairs touching any changed parent_id so the other endpoint
+            # (neighbor table/column metadata) stays discoverable without requiring both sides bumped.
+            changed_tables_filter = f"""
+          AND (j.table_a IN ({escaped}) OR j.table_b IN ({escaped}))"""
 
         sql = f"""
         WITH col_sim_raw AS (
@@ -260,7 +317,7 @@ class FKPredictor:
             LEFT JOIN tbl_sim ts
               ON (wb.table_a = ts.src AND wb.table_b = ts.dst)
               OR (wb.table_a = ts.dst AND wb.table_b = ts.src)
-        ){changed_tables_cte}
+        )
         SELECT j.col_a, j.col_b, j.col_similarity,
                j.table_a, j.table_b, j.dtype_a, j.dtype_b, j.table_similarity
         FROM joined j
@@ -351,6 +408,7 @@ class FKPredictor:
         SELECT LEAST(col_a, col_b) AS col_a, GREATEST(col_a, col_b) AS col_b,
                col_similarity, table_a, table_b, dtype_a, dtype_b, table_similarity
         FROM capped WHERE _rn <= {k}
+        {self._incremental_pair_filter_sql()}
         """
         try:
             df = self.spark.sql(sql)
@@ -463,6 +521,7 @@ class FKPredictor:
         SELECT LEAST(col_a, col_b) AS col_a, GREATEST(col_a, col_b) AS col_b,
                col_similarity, table_a, table_b, dtype_a, dtype_b, table_similarity
         FROM capped
+        WHERE 1=1 {self._incremental_pair_filter_sql()}
         """
         try:
             df = self.spark.sql(sql)
@@ -581,6 +640,7 @@ class FKPredictor:
         SELECT LEAST(col_a, col_b) AS col_a, GREATEST(col_a, col_b) AS col_b,
                col_similarity, table_a, table_b, dtype_a, dtype_b, table_similarity
         FROM capped WHERE _rn <= {k}
+        {self._incremental_pair_filter_sql()}
         """
         try:
             df = self.spark.sql(sql)
@@ -630,9 +690,17 @@ class FKPredictor:
                 WHERE SIZE(parts) >= 4
                   AND CONCAT(parts[0], '.', parts[1], '.', parts[2]) != table_name
             """)
-            return df.withColumn("source_rank", F.lit(SR_DECLARED)).withColumn(
+            df = df.withColumn("source_rank", F.lit(SR_DECLARED)).withColumn(
                 "query_hit_count", F.lit(0)
             )
+            if self._changed_tables:
+                from dbxmetagen.table_filter import table_names_col_filter
+                ct_list = list(self._changed_tables)
+                df = df.filter(
+                    table_names_col_filter(F.col("table_a"), ct_list)
+                    | table_names_col_filter(F.col("table_b"), ct_list)
+                )
+            return df
         except Exception:
             return self.spark.createDataFrame([], empty_schema)
 
@@ -649,11 +717,13 @@ class FKPredictor:
             "query_hit_count LONG, source_rank INT"
         )
         try:
+            cat_esc = cat.replace("!", "!!").replace("_", "!_").replace("%", "!%")
+            sch_esc = sch.replace("!", "!!").replace("_", "!_").replace("%", "!%")
             rows = self.spark.sql(f"""
                 SELECT statement FROM system.query.history
                 WHERE start_time >= DATEADD(DAY, -30, CURRENT_TIMESTAMP())
                   AND statement LIKE '%JOIN%'
-                  AND statement LIKE '%{cat}.{sch}%'
+                  AND statement LIKE '%{cat_esc}.{sch_esc}%' ESCAPE '!'
                 ORDER BY start_time DESC
                 LIMIT 2000
             """).collect()
@@ -706,6 +776,13 @@ class FKPredictor:
         ])
         df = self.spark.createDataFrame(pairs, schema)
         df = df.withColumn("source_rank", F.lit(SR_QUERY))
+        if self._changed_tables:
+            from dbxmetagen.table_filter import table_names_col_filter
+            ct_list = list(self._changed_tables)
+            df = df.filter(
+                table_names_col_filter(F.col("table_a"), ct_list)
+                | table_names_col_filter(F.col("table_b"), ct_list)
+            )
         logger.info("Query-history FK candidates: %d", df.count())
         return df
 
@@ -1654,7 +1731,13 @@ class FKPredictor:
         logger.info("Writing %d FK predictions to %s", count, target)
         staging_view = "_fk_predictions_staging"
         out.createOrReplaceTempView(staging_view)
-        # Remove old rows whose direction was reversed (from pre-direction-enforcement runs)
+        # DELETE: Removes rows already in fk_predictions whose (src_column, dst_column) is the reverse
+        # of a pairing we are about to write from `_fk_predictions_staging` (staging row (A,B) vs existing (B,A)).
+        # WHY: Older runs could persist the FK in the opposite direction before direction rules were enforced;
+        # merging on (src_column, dst_column) alone would otherwise leave contradictory duplicate edges.
+        # TRADEOFFS: SQL DELETE EXISTS is concise and leverages the metastore/table scan; correlated subquery
+        # cost depends on staging size vs full table scan. Alternatives include MERGE USING with OR match keys
+        # or versioning the schema with a canonical direction flag—those add complexity or migrations.
         try:
             self.spark.sql(f"""
                 DELETE FROM {target} WHERE EXISTS (
@@ -1665,6 +1748,12 @@ class FKPredictor:
             """)
         except Exception:
             pass
+        # MERGE: Upserts the cumulative FK predictions Delta table keyed on (src_column, dst_column) from `_fk_predictions_staging`.
+        # WHY: Persist cross-run scores/refreshed AI output so downstream graph_edges, DDL, and dashboards always read one
+        # authoritative row per column pair rather than replaying ephemeral batch results.
+        # TRADEOFFS: MERGE avoids append-only duplication and avoids full truncate; MATCHED refreshes scalar fields and timestamps.
+        # Cost is proportional to staged row count; alternatives are DELETE+INSERT (two passes, brief inconsistency) or
+        # partition-by-run append with compaction (heavier dedup queries later).
         self.spark.sql(f"""
             MERGE INTO {target} AS t
             USING {staging_view} AS s
@@ -1692,7 +1781,13 @@ class FKPredictor:
         so that edges reflect all accumulated predictions, not just the current batch.
         """
         edges_table = self.config.fq(self.config.edges_table)
-        # Backfill legacy rows missing source_system/edge_id (idempotent)
+        # UPDATE: Patches existing `graph_edges` rows for this module's relationship type when
+        # source_system, edge_id, or edge_type are NULL—sets source_system='fk_predictions',
+        # edge_id=CONCAT_WS('::', src, dst, relationship), and edge_type to predicted_fk.
+        # WHY: `graph_edges` is shared by four writers; older FK rows may predate the merge contract;
+        # backfilling keeps merge_edges keys and sweeps consistent with knowledge_graph/ontology/embedding edges.
+        # TRADEOFFS: One broad UPDATE is simple and idempotent; it scans rows matching relationship + NULLs.
+        # Alternatives: backfill migration job or view-only compatibility—both defer correctness or complicate readers.
         try:
             self.spark.sql(
                 f"UPDATE {edges_table} "
@@ -1713,6 +1808,8 @@ class FKPredictor:
         w = Window.partitionBy("src_column", "dst_column").orderBy(F.col("ai_confidence").desc())
         high_conf = high_conf.withColumn("_rn", F.row_number().over(w)) \
             .filter(F.col("_rn") == 1).drop("_rn")
+        # Predictions row timestamps (especially updated_at via MERGE), not a fresh
+        # current_timestamp() for every edge write — keeps graph_edges aligned with fk_predictions.
         edges = high_conf.select(
             F.col("src_column").alias("src"),
             F.col("dst_column").alias("dst"),
@@ -1721,8 +1818,8 @@ class FKPredictor:
             F.concat_ws("::", F.col("src_column"), F.col("dst_column"), F.lit(self.RELATIONSHIP_TYPE)).alias("edge_id"),
             F.lit(self.RELATIONSHIP_TYPE).alias("edge_type"),
             F.lit("fk_predictions").alias("source_system"),
-            F.current_timestamp().alias("created_at"),
-            F.current_timestamp().alias("updated_at"),
+            F.coalesce(F.col("created_at"), F.current_timestamp()).alias("created_at"),
+            F.col("updated_at"),
         )
         from dbxmetagen.knowledge_graph import merge_edges
         count = merge_edges(self.spark, edges_table, edges, source_system="fk_predictions", sweep_stale=sweep_stale)
@@ -1767,6 +1864,14 @@ class FKPredictor:
             F.col("ai_confidence").alias("confidence"),
             F.current_timestamp().alias("created_at"),
         )
+        # WRITE: Overwrites Delta table `fk_ddl_statements` (fully qualified via config) with rows from
+        # high-confidence predictions: src_column, dst_column, ddl_statement, confidence, created_at.
+        # No dedup is applied here; uniqueness relies on the upstream MERGE into fk_predictions.
+        # WHY: Materialized ALTER TABLE ADD CONSTRAINT statements are easy to audit, diff, and optionally apply;
+        # regenerating from the merged predictions table keeps DDL in sync with the cumulative truth, not one batch.
+        # TRADEOFFS: Overwrite is O(result) and drops prior rows (acceptable because source of truth is
+        # fk_predictions). Alternatives: MERGE on (src_column, dst_column) (more code, same outcome) or append+dedup
+        # (requires compaction); overwrite is simplest for a derived artifact.
         ddl_out.write.mode("overwrite").option("overwriteSchema", "true").saveAsTable(
             target
         )
@@ -1820,6 +1925,12 @@ class FKPredictor:
             for label, where in cleanup_rules:
                 n = self.spark.sql(f"SELECT COUNT(*) AS n FROM {preds} WHERE {where}").collect()[0].n
                 if n > 0:
+                    # DELETE: Removes invalid or legacy FK prediction rows from `preds` matching the labeled predicate
+                    # (e.g., self-links or stale rows where is_fk IS NULL with ai_confidence >= 1.0).
+                    # WHY: Keeps the cumulative predictions table trustworthy before each pipeline run; bad rows skew
+                    # graph merges, DDL, and confidence dashboards if left to accumulate across schema/history churn.
+                    # TRADEOFFS: Pre-delete COUNT+log adds an extra scan per rule vs blind DELETE—clearer observability at
+                    # small cost; soft-delete/archive columns were rejected to avoid query-time filtering everywhere.
                     self.spark.sql(f"DELETE FROM {preds} WHERE {where}")
                     logger.warning("FK cleanup: removed %d %s rows from %s", n, label, preds)
         except AnalysisException as e:
@@ -1842,6 +1953,9 @@ class FKPredictor:
         """Execute the full FK prediction pipeline."""
         logger.info("Starting FK prediction pipeline")
         self._ensure_output_tables()
+
+        if not self._compute_incremental_state():
+            return {"candidates": 0, "ai_query_rows": 0, "predictions": 0, "edges": 0, "ddl_applied": 0}
 
         embedding_cands = self.get_candidates()
         name_cands = self.get_name_based_candidates()
@@ -1875,6 +1989,16 @@ class FKPredictor:
         candidates = candidates.fillna(
             0.0, subset=["col_similarity", "table_similarity", "query_hit_count"]
         )
+
+        if self.config.table_names:
+            from dbxmetagen.table_filter import table_names_col_filter
+
+            tn_cond = (
+                table_names_col_filter(F.col("table_a"), self.config.table_names)
+                | table_names_col_filter(F.col("table_b"), self.config.table_names)
+            )
+            candidates = candidates.filter(tn_cond)
+            logger.info("FK candidates scoped to table_names: %s", self.config.table_names)
 
         total_cand = candidates.count()
         if total_cand == 0:
@@ -2007,6 +2131,7 @@ def predict_foreign_keys(
     max_candidates_per_table_pair: int = 5,
     system_column_patterns: Tuple[str, ...] = _DEFAULT_SYSTEM_COL_PATTERNS,
     sweep_stale: bool = False,
+    table_names: list = None,
 ) -> Dict[str, Any]:
     """Convenience function to run FK prediction."""
     config = FKPredictionConfig(
@@ -2029,6 +2154,7 @@ def predict_foreign_keys(
         rule_score_min_for_ai=rule_score_min_for_ai,
         max_candidates_per_table_pair=max_candidates_per_table_pair,
         system_column_patterns=system_column_patterns,
+        table_names=table_names or [],
     )
     predictor = FKPredictor(spark, config)
     return predictor.run(sweep_stale=sweep_stale)

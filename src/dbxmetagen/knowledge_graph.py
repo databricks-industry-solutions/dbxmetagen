@@ -53,6 +53,15 @@ def align_edge_schema(df: DataFrame) -> DataFrame:
     return df.select(*cols)
 
 
+def _ensure_edges_table(spark: SparkSession, target_table: str) -> None:
+    """Create graph_edges table if it doesn't exist."""
+    col_defs = ", ".join(
+        f"{name.strip('`')} {dtype}" + (" NOT NULL" if name.strip("`") in ("src", "dst", "relationship") else "")
+        for name, dtype in EDGE_SCHEMA
+    )
+    spark.sql(f"CREATE TABLE IF NOT EXISTS {target_table} ({col_defs})")
+
+
 def merge_edges(
     spark: SparkSession,
     target_table: str,
@@ -67,12 +76,23 @@ def merge_edges(
     stale rows for this *source_system* (full outer join -- expensive on cold
     clusters).  Default is False (upsert only).
     """
+    _ensure_edges_table(spark, target_table)
     aligned = align_edge_schema(df).dropDuplicates(["edge_id"])
 
     if not aligned.head(1):
         if sweep_stale:
             logger.info("No edges to merge for source_system=%s — sweeping stale rows", source_system)
             try:
+                # DELETE: Remove all edges belonging to this source_system when the
+                # incoming DataFrame is empty -- meaning the upstream module produced
+                # zero edges this run. Without this, stale edges from prior runs would
+                # persist forever once a source_system's output shrinks to zero.
+                # WHY: Each source_system (knowledge_graph, ontology, fk_predictions,
+                # embedding_similarity) owns its slice of graph_edges. An empty result
+                # is a valid signal that all prior edges should be withdrawn.
+                # TRADEOFFS: A targeted DELETE scoped to source_system is safe and
+                # cheap. The alternative -- skipping the delete -- leaves orphaned
+                # edges that pollute downstream graph queries and Genie join_specs.
                 spark.sql(f"DELETE FROM {target_table} WHERE source_system = '{source_system}'")
             except Exception as e:
                 logger.warning("Could not sweep stale edges for %s: %s", source_system, e)
@@ -98,6 +118,24 @@ def merge_edges(
             if sweep_stale else ""
         )
 
+        # MERGE: Upsert edges into graph_edges keyed on edge_id (deterministic
+        # CONCAT_WS('::', src, dst, relationship)). Matched rows get all mutable
+        # fields overwritten; unmatched source rows are inserted. When sweep_stale
+        # is True, an additional WHEN NOT MATCHED BY SOURCE clause deletes target
+        # rows for this source_system that no longer appear in the source -- this
+        # is how stale edges are garbage-collected after tables are removed or
+        # relationships change.
+        # WHY: graph_edges is a shared table written by four independent modules.
+        # Each module's edges are tagged with source_system so the MERGE + sweep
+        # can operate on a per-module slice without disturbing other modules' rows.
+        # The DataFrame is dropDuplicates(["edge_id"]) above to prevent the
+        # DELTA_MULTIPLE_SOURCE_ROW_MATCHING_TARGET_ROW_IN_MERGE error.
+        # TRADEOFFS: MERGE-by-edge_id is idempotent and handles re-runs cleanly.
+        # The sweep clause makes it a full outer join which is expensive on cold
+        # clusters with millions of edges (hence sweep_stale defaults to False).
+        # An alternative would be DELETE-then-INSERT per source_system, but that
+        # loses created_at timestamps and causes downstream caches to fully
+        # invalidate instead of incrementally updating.
         spark.sql(f"""
             MERGE INTO {target_table} AS target
             USING {view_name} AS source
@@ -236,6 +274,14 @@ class KnowledgeGraphBuilder:
                     row_count, target, [f.name for f in aligned.schema.fields])
         aligned.createOrReplaceTempView(view_name)
         col_list = ", ".join(c.strip("`") for c, _ in self._EDGE_SCHEMA)
+        # INSERT: Append-only insert of edges into graph_edges. Unlike merge_edges(),
+        # this does NOT check for existing rows -- duplicates will be created if the
+        # same edge already exists. Used only by legacy code paths that pre-delete
+        # their slice before re-inserting.
+        # WHY: Simpler and faster than MERGE when the caller guarantees the target
+        # is clean (e.g., after a DELETE WHERE source_system = X).
+        # TRADEOFFS: No idempotency -- running twice doubles the rows. Prefer
+        # merge_edges() or refresh_edges() for all new code paths.
         self.spark.sql(f"INSERT INTO {target} ({col_list}) SELECT {col_list} FROM {view_name}")
 
     def _merge_edges(self, df: DataFrame, source_system: str, table: str = None, sweep_stale: bool = False) -> int:
@@ -426,6 +472,9 @@ class KnowledgeGraphBuilder:
         Only creates edges where src < dst to avoid duplicates.
         Groups larger than max_group_size are randomly sampled down to
         prevent O(n^2) edge explosion at scale.
+        ``_edge_ts`` is ``greatest`` of the two endpoints' ``updated_at`` so
+        edge ``created_at``/``updated_at`` reflect the latest upstream KB
+        change affecting that pair (aligns MERGE updates with incrementality).
         
         Args:
             source_df: DataFrame with id and attribute columns
@@ -449,18 +498,21 @@ class KnowledgeGraphBuilder:
         
         df_a = df_with_attr.select(
             F.col("id").alias("src"),
-            F.col(attribute).alias("attr_a")
+            F.col(attribute).alias("attr_a"),
+            F.col("updated_at").alias("src_ts"),
         )
         df_b = df_with_attr.select(
             F.col("id").alias("dst"),
-            F.col(attribute).alias("attr_b")
+            F.col(attribute).alias("attr_b"),
+            F.col("updated_at").alias("dst_ts"),
         )
-        
+
         edges = (
             df_a
             .join(df_b, df_a.attr_a == df_b.attr_b)
             .filter(F.col("src") < F.col("dst"))
-            .select("src", "dst")
+            .withColumn("_edge_ts", F.greatest(F.col("src_ts"), F.col("dst_ts")))
+            .select("src", "dst", "_edge_ts")
             .withColumn("relationship", F.lit(relationship))
             .withColumn("weight", F.lit(1.0))
             .withColumn("edge_type", F.lit(relationship))
@@ -477,10 +529,14 @@ class KnowledgeGraphBuilder:
         
         Creates edges for:
         - same_security_level: tables with same PII/PHI status
+        - same_schema: tables in the same schema
         
-        Note: same_domain/subdomain/catalog/schema were removed -- they generate
-        O(N^2) edges per group with no downstream signal (FK prediction computes
-        these inline). Domain/schema info is already on graph nodes.
+        Both use ``KnowledgeGraphConfig.max_edges_group_size`` to cap rows per
+        attribute value before the self-join (trade-off: complete graph vs.
+        bounded cost).
+        
+        Note: same_domain/subdomain/catalog edges are intentionally omitted --
+        they produce O(N^2) edges per group with no downstream signal.
         """
         cap = self.config.max_edges_group_size
         all_edges = []
@@ -490,7 +546,12 @@ class KnowledgeGraphBuilder:
             sensitive_nodes, "security_level", "same_security_level", max_group_size=cap
         )
         all_edges.append(security_edges)
-        
+
+        schema_edges = self.build_edges_for_attribute(
+            nodes_df, "schema", "same_schema", max_group_size=cap
+        )
+        all_edges.append(schema_edges)
+
         if not all_edges:
             logger.info("No structural edges to build (all attribute types are mono-valued)")
             return self.spark.createDataFrame([], schema="src STRING, dst STRING, relationship STRING")
@@ -504,19 +565,44 @@ class KnowledgeGraphBuilder:
             .withColumn("join_expression", F.lit(None).cast("string"))
             .withColumn("join_confidence", F.lit(None).cast("double"))
             .withColumn("ontology_rel", F.lit(None).cast("string"))
-            .withColumn("created_at", F.current_timestamp())
-            .withColumn("updated_at", F.current_timestamp())
+            .withColumn("created_at", F.coalesce(F.col("_edge_ts"), F.current_timestamp()))
+            .withColumn("updated_at", F.coalesce(F.col("_edge_ts"), F.current_timestamp()))
         )
 
         return self._align_edge_schema(combined)
     
     def merge_nodes(self, nodes_df: DataFrame) -> Dict[str, int]:
         """
-        Incrementally merge nodes into the nodes table.
+        MERGE staged nodes into ``graph_nodes`` (upsert by ``id``).
+
+        COALESCE/OR semantics preserve enrichments written by other pipelines.
+        When an incoming row's ``comment`` replaces the stored text, embeddings
+        are cleared so downstream embedding jobs do not serve vectors computed
+        for obsolete descriptions.
         """
         self._align_node_schema(nodes_df).createOrReplaceTempView("staged_nodes")
         
-        # Note: `schema` is a reserved word in SQL, must be escaped with backticks
+        # MERGE: Upsert table/column nodes into graph_nodes keyed on node id
+        # (fully qualified table name for table nodes, table.column for column nodes).
+        # Identity fields (table_name, catalog, schema, table_short_name) are always
+        # overwritten since they don't change. Enrichment fields (domain, subdomain,
+        # comment, node_type, parent_id, data_type, quality_score, embedding,
+        # ontology_id, ontology_type, display_name, short_description, sensitivity,
+        # status, source_system, keywords) use COALESCE so incoming NULLs do NOT
+        # overwrite existing values. security_level is a direct assignment but is
+        # always populated by its source (derived from has_pii/has_phi), so NULL
+        # overwrites are not a practical concern. Boolean fields (has_pii, has_phi)
+        # use OR so a prior detection is never lost.
+        # WHY: graph_nodes is the central node table read by the app dashboard, Genie
+        # context builder, and GraphRAG agent. Multiple pipelines write to it
+        # (KB builder, ontology, embeddings, profiling, quality), so COALESCE prevents
+        # one pipeline from blanking another's contributions.
+        # TRADEOFFS: COALESCE-on-update means a field can never be explicitly set back
+        # to NULL once populated -- you'd need a separate UPDATE with explicit NULL.
+        # This is acceptable because NULL → value is the normal lifecycle direction
+        # for metadata. The alternative (full overwrite) caused data loss when
+        # pipelines ran in different orders. `schema` is a reserved word in SQL and
+        # must be escaped with backticks.
         merge_sql = f"""
         MERGE INTO {self.config.fully_qualified_nodes} AS target
         USING staged_nodes AS source
@@ -537,7 +623,13 @@ class KnowledgeGraphBuilder:
             target.parent_id = COALESCE(source.parent_id, target.parent_id),
             target.data_type = COALESCE(source.data_type, target.data_type),
             target.quality_score = COALESCE(source.quality_score, target.quality_score),
-            target.embedding = COALESCE(source.embedding, target.embedding),
+            target.embedding = CASE
+                -- Comment text changed: clear embedding so retrieval does not use vectors tied to superseded descriptions.
+                WHEN source.comment IS NOT NULL
+                     AND source.comment != COALESCE(target.comment, '')
+                THEN NULL
+                ELSE target.embedding
+            END,
             target.ontology_id = COALESCE(source.ontology_id, target.ontology_id),
             target.ontology_type = COALESCE(source.ontology_type, target.ontology_type),
             target.display_name = COALESCE(source.display_name, target.display_name),
@@ -672,6 +764,20 @@ class KnowledgeGraphBuilder:
         """
         self._align_edge_schema(edges_df).createOrReplaceTempView("staged_edges")
         
+        # MERGE: Upsert edges into graph_edges keyed on the composite natural key
+        # (src, dst, relationship) rather than edge_id. Matched rows update mutable
+        # fields: weight is directly overwritten (always freshly computed by caller),
+        # while other fields use COALESCE to preserve existing enrichments; unmatched
+        # rows are inserted.
+        # WHY: This is the legacy merge path from before edge_id was introduced.
+        # It's still used by callers that build edges without computing edge_id.
+        # For most use cases, prefer refresh_edges() which uses merge_edges()
+        # keyed on edge_id and properly handles stale-edge sweeping.
+        # TRADEOFFS: The 3-column composite key is wider than edge_id, making the
+        # MERGE join more expensive. It also can't distinguish edges that differ
+        # only in source_system (two modules producing the same src/dst/relationship
+        # triple will collide). No stale-sweep capability -- old edges persist
+        # until manually deleted.
         merge_sql = f"""
         MERGE INTO {self.config.fully_qualified_edges} AS target
         USING staged_edges AS source
@@ -787,6 +893,7 @@ class ExtendedKnowledgeGraphConfig(KnowledgeGraphConfig):
     schema_kb_table: str = "schema_knowledge_base"
     extended_metadata_table: str = "extended_table_metadata"
     fk_confidence_threshold: float = 0.7
+    incremental: bool = True
     
     @property
     def fully_qualified_column_kb(self) -> str:
@@ -826,7 +933,31 @@ class ExtendedKnowledgeGraphBuilder(KnowledgeGraphBuilder):
     def __init__(self, spark: SparkSession, config: ExtendedKnowledgeGraphConfig):
         super().__init__(spark, config)
         self.ext_config = config
-    
+
+    def _get_changed_nodes(self, staged_df: DataFrame) -> DataFrame:
+        """Filter staged nodes to only those new or changed since the last graph build.
+
+        Compares ``staged_df.updated_at`` against the existing ``graph_nodes.updated_at``
+        for each ``id``.  Returns only rows where the target is missing (new node) or the
+        source timestamp is strictly greater (upstream KB changed).
+
+        Used so incremental runs avoid MERGE and edge rebuild work when nothing
+        advanced in the knowledge bases; edge builds still use the full staged
+        node set when any node changes (see ``run``) so new/changed rows get
+        correct cross-links to untouched neighbors.
+        """
+        staged_df.createOrReplaceTempView("_staged_nodes_all")
+        try:
+            return self.spark.sql(f"""
+                SELECT s.*
+                FROM _staged_nodes_all s
+                LEFT JOIN {self.config.fully_qualified_nodes} t ON s.id = t.id
+                WHERE t.id IS NULL OR s.updated_at > t.updated_at
+            """)
+        except Exception:
+            logger.warning("Changed-node filter failed, falling back to full set")
+            return staged_df
+
     def build_column_nodes_df(self) -> DataFrame:
         """Build nodes DataFrame from column knowledge base."""
         try:
@@ -962,7 +1093,14 @@ class ExtendedKnowledgeGraphBuilder(KnowledgeGraphBuilder):
     )
 
     def _enrich_edges(self, df: DataFrame, edge_type: str, source_sys: str = "knowledge_graph") -> DataFrame:
-        """Add standard new-schema columns to an edge DataFrame."""
+        """Add standard new-schema columns to an edge DataFrame.
+
+        If the incoming DataFrame contains a ``_edge_ts`` column it is used
+        as ``created_at`` / ``updated_at``; otherwise ``current_timestamp()``
+        is used as a fallback.
+        """
+        has_ts = "_edge_ts" in df.columns
+        ts_expr = F.col("_edge_ts") if has_ts else F.current_timestamp()
         enriched = (
             df
             .withColumn("edge_id", F.concat_ws("::", F.col("src"), F.col("dst"), F.col("relationship")))
@@ -973,8 +1111,8 @@ class ExtendedKnowledgeGraphBuilder(KnowledgeGraphBuilder):
             .withColumn("ontology_rel", F.lit(None).cast("string"))
             .withColumn("source_system", F.lit(source_sys))
             .withColumn("status", F.lit("candidate"))
-            .withColumn("created_at", F.current_timestamp())
-            .withColumn("updated_at", F.current_timestamp())
+            .withColumn("created_at", ts_expr)
+            .withColumn("updated_at", ts_expr)
         )
         return self._align_edge_schema(enriched)
 
@@ -985,7 +1123,11 @@ class ExtendedKnowledgeGraphBuilder(KnowledgeGraphBuilder):
         schema_table_edges = (
             nodes_df
             .filter(F.col("node_type") == "table")
-            .select(F.col("parent_id").alias("src"), F.col("id").alias("dst"))
+            .select(
+                F.col("parent_id").alias("src"),
+                F.col("id").alias("dst"),
+                F.col("updated_at").alias("_edge_ts"),
+            )
             .filter(F.col("src").isNotNull())
             .withColumn("relationship", F.lit("contains"))
             .withColumn("weight", F.lit(1.0))
@@ -995,7 +1137,11 @@ class ExtendedKnowledgeGraphBuilder(KnowledgeGraphBuilder):
         table_column_edges = (
             nodes_df
             .filter(F.col("node_type") == "column")
-            .select(F.col("parent_id").alias("src"), F.col("id").alias("dst"))
+            .select(
+                F.col("parent_id").alias("src"),
+                F.col("id").alias("dst"),
+                F.col("updated_at").alias("_edge_ts"),
+            )
             .filter(F.col("src").isNotNull())
             .withColumn("relationship", F.lit("contains"))
             .withColumn("weight", F.lit(1.0))
@@ -1090,7 +1236,12 @@ class ExtendedKnowledgeGraphBuilder(KnowledgeGraphBuilder):
             return self.spark.createDataFrame([], self._EMPTY_EDGE_SCHEMA)
 
     def build_all_extended_edges(self, all_nodes_df: DataFrame) -> DataFrame:
-        """Build all edges including extended relationship types."""
+        """Union structural and extended edges.
+
+        Table-node structural edges come from ``build_all_edges_df`` (``same_security_level``,
+        ``same_schema``; both capped by ``max_edges_group_size``). Appends containment,
+        lineage, and FK reference edges. Similarity edges are added elsewhere.
+        """
         all_edges = []
         
         # Original edges (only for table nodes)
@@ -1115,6 +1266,18 @@ class ExtendedKnowledgeGraphBuilder(KnowledgeGraphBuilder):
         from functools import reduce
         return reduce(lambda a, b: a.unionByName(b), all_edges)
     
+    def _existing_counts(self) -> Dict[str, int]:
+        """Read current row counts from graph_nodes and graph_edges."""
+        try:
+            n = self.spark.sql(f"SELECT COUNT(*) AS c FROM {self.config.fully_qualified_nodes}").collect()[0].c
+        except Exception:
+            n = 0
+        try:
+            e = self.spark.sql(f"SELECT COUNT(*) AS c FROM {self.config.fully_qualified_edges}").collect()[0].c
+        except Exception:
+            e = 0
+        return {"total_nodes": n, "total_edges": e}
+
     def run(self, include_columns: bool = True, include_schemas: bool = True, sweep_stale: bool = False) -> Dict[str, Any]:
         """
         Execute the extended graph building pipeline.
@@ -1124,55 +1287,78 @@ class ExtendedKnowledgeGraphBuilder(KnowledgeGraphBuilder):
             include_schemas: Whether to include schema nodes
             sweep_stale: Whether to sweep stale edges during merge
         """
-        logger.info("Starting extended knowledge graph build")
-        
+        logger.info("Starting extended knowledge graph build (incremental=%s)", self.ext_config.incremental)
+
         self.create_nodes_table()
         self.create_edges_table()
-        
-        # Build all node types
+
+        # -- Stage all node types from upstream KBs --
         all_nodes = []
-        
-        # Table nodes (always included)
         table_nodes = self.build_nodes_df()
         all_nodes.append(table_nodes)
-        
-        # Column nodes
+
         if include_columns:
             column_nodes = self.build_column_nodes_df()
             if column_nodes is not None:
                 all_nodes.append(column_nodes)
-                logger.info(f"Built {column_nodes.count()} column nodes")
-        
-        # Schema nodes
+
         if include_schemas:
             schema_nodes = self.build_schema_nodes_df()
             if schema_nodes is not None:
                 all_nodes.append(schema_nodes)
-                logger.info(f"Built {schema_nodes.count()} schema nodes")
-        
-        # Union all nodes
+
         from functools import reduce
         all_nodes_df = reduce(lambda a, b: a.unionByName(b), all_nodes)
+
+        # -- Incremental gate: filter to only changed nodes --
+        if self.ext_config.incremental:
+            changed_nodes_df = self._get_changed_nodes(all_nodes_df)
+            changed_count = changed_nodes_df.count()
+            logger.info("Incremental: %d nodes changed", changed_count)
+
+            if changed_count == 0:
+                logger.info("No upstream changes -- skipping KG rebuild")
+                counts = self._existing_counts()
+                return {
+                    "staged_nodes": 0,
+                    "staged_edges": 0,
+                    "total_nodes": counts["total_nodes"],
+                    "total_edges": counts["total_edges"],
+                }
+
+            # MERGE only the changed nodes
+            node_stats = self.merge_nodes(changed_nodes_df)
+
+            # Rebuild edges from the full node set so cross-edges between
+            # existing and changed nodes are created (changed x all).
+            edges_df = self.build_all_extended_edges(all_nodes_df)
+            edge_count = edges_df.count()
+            logger.info("Built %d edges (full node set, %d nodes changed)", edge_count, changed_count)
+            edge_stats = self.refresh_edges(edges_df, sweep_stale=sweep_stale)
+
+            return {
+                "staged_nodes": changed_count,
+                "staged_edges": edge_count,
+                "total_nodes": node_stats["total_nodes"],
+                "total_edges": edge_stats["total_edges"],
+            }
+
+        # -- Full refresh path --
         total_nodes = all_nodes_df.count()
-        logger.info(f"Built {total_nodes} total nodes")
-        
-        # Merge nodes
+        logger.info("Full refresh: %d total nodes", total_nodes)
+
         node_stats = self.merge_nodes(all_nodes_df)
-        
-        # Build and refresh edges
+
         edges_df = self.build_all_extended_edges(all_nodes_df)
         edge_count = edges_df.count()
-        logger.info(f"Built {edge_count} edges")
-        
+        logger.info("Built %d edges", edge_count)
         edge_stats = self.refresh_edges(edges_df, sweep_stale=sweep_stale)
-        
-        logger.info("Extended knowledge graph build complete")
-        
+
         return {
             "staged_nodes": total_nodes,
             "staged_edges": edge_count,
             "total_nodes": node_stats["total_nodes"],
-            "total_edges": edge_stats["total_edges"]
+            "total_edges": edge_stats["total_edges"],
         }
 
 
@@ -1184,6 +1370,7 @@ def build_extended_knowledge_graph(
     include_schemas: bool = True,
     table_names: list[str] | None = None,
     sweep_stale: bool = False,
+    incremental: bool = True,
 ) -> Dict[str, Any]:
     """
     Build extended knowledge graph with column and schema nodes.
@@ -1195,6 +1382,8 @@ def build_extended_knowledge_graph(
         include_columns: Include column-level nodes
         include_schemas: Include schema-level nodes
         sweep_stale: Whether to sweep stale edges during merge
+        incremental: When True, only MERGE nodes whose upstream KB
+            ``updated_at`` advanced since the last graph build
         
     Returns:
         Dict with execution statistics
@@ -1203,6 +1392,7 @@ def build_extended_knowledge_graph(
         catalog_name=catalog_name,
         schema_name=schema_name,
         table_names=table_names,
+        incremental=incremental,
     )
     builder = ExtendedKnowledgeGraphBuilder(spark, config)
     return builder.run(include_columns, include_schemas, sweep_stale=sweep_stale)

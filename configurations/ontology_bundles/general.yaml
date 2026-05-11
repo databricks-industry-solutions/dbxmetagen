@@ -1207,3 +1207,136 @@ domains:
         - data_governance
         - data_steward
         - retention_policy
+  healthcare:
+    name: Healthcare
+    description: Patient care, clinical encounters, diagnoses, procedures, medications, and medical records
+    keywords:
+    - patient
+    - diagnosis
+    - clinical
+    - encounter
+    - medication
+    - procedure
+    - medical
+    - provider
+    - treatment
+    subdomains:
+      clinical_care:
+        name: Clinical Care
+        description: Patient encounters, admissions, diagnoses, conditions, and care plans
+        keywords:
+        - patient
+        - encounter
+        - admission
+        - diagnosis
+        - condition
+        - care_plan
+      pharmacy:
+        name: Pharmacy & Medications
+        description: Prescriptions, medication administration, drug interactions, and formularies
+        keywords:
+        - medication
+        - prescription
+        - drug
+        - pharmacy
+        - formulary
+      diagnostics:
+        name: Diagnostics & Lab
+        description: Laboratory results, imaging, specimens, vitals, and observations
+        keywords:
+        - lab
+        - result
+        - specimen
+        - imaging
+        - observation
+        - vital
+  product:
+    name: Product
+    description: Product development, catalog management, features, pricing, and product analytics
+    keywords:
+    - product
+    - catalog
+    - feature
+    - sku
+    - pricing
+    - specification
+    subdomains:
+      catalog:
+        name: Product Catalog
+        description: Products, SKUs, categories, attributes, and pricing
+        keywords:
+        - product
+        - sku
+        - catalog
+        - category
+        - price
+      development:
+        name: Product Development
+        description: Feature design, roadmap, requirements, releases, and testing
+        keywords:
+        - feature
+        - release
+        - requirement
+        - roadmap
+        - sprint
+  research:
+    name: Research
+    description: Scientific research, experiments, clinical trials, studies, and publications
+    keywords:
+    - research
+    - experiment
+    - trial
+    - study
+    - protocol
+    - hypothesis
+    - publication
+    subdomains:
+      clinical_trials:
+        name: Clinical Trials
+        description: Trial protocols, subjects, arms, adverse events, and regulatory submissions
+        keywords:
+        - trial
+        - protocol
+        - adverse_event
+        - subject
+        - arm
+        - enrollment
+      data_science:
+        name: Data Science & Analytics
+        description: Experiments, models, datasets, features, and evaluation metrics
+        keywords:
+        - experiment
+        - model
+        - dataset
+        - feature
+        - metric
+  manufacturing:
+    name: Manufacturing
+    description: Production, quality control, batch processing, assembly, and plant operations
+    keywords:
+    - production
+    - batch
+    - assembly
+    - quality
+    - manufacturing
+    - plant
+    - defect
+    subdomains:
+      production:
+        name: Production
+        description: Work orders, assembly lines, scheduling, output, and capacity planning
+        keywords:
+        - work_order
+        - assembly
+        - production
+        - schedule
+        - capacity
+      quality_control:
+        name: Quality Control
+        description: Inspections, defects, testing, certifications, and non-conformance
+        keywords:
+        - inspection
+        - defect
+        - testing
+        - certification
+        - non_conformance

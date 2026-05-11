@@ -2702,7 +2702,7 @@ class TestForceRevalidate:
                 force_revalidate=True,
             )
             mock_instance.run.assert_called_once_with(
-                validate_columns=False, force_revalidate=True
+                validate_columns=False, force_revalidate=True, table_names=None
             )
 
 

@@ -45,16 +45,19 @@ dbutils.widgets.text("catalog_name", "", "Catalog Name")
 dbutils.widgets.text("schema_name", "", "Schema Name")
 dbutils.widgets.text("table_names", "", "Table Names (comma-separated, empty=all)")
 dbutils.widgets.text("sweep_stale_edges", "false", "Sweep stale edges")
+dbutils.widgets.text("incremental", "true", "Incremental (true/false)")
 
 catalog_name = dbutils.widgets.get("catalog_name")
 schema_name = dbutils.widgets.get("schema_name")
 table_names_raw = dbutils.widgets.get("table_names")
 sweep_stale = dbutils.widgets.get("sweep_stale_edges").strip().lower() in ("true", "1", "yes")
+incremental = dbutils.widgets.get("incremental").strip().lower() == "true"
 
 if not catalog_name or not schema_name:
     raise ValueError("Both catalog_name and schema_name are required")
 
 print(f"Building knowledge graph in {catalog_name}.{schema_name}")
+print(f"Incremental: {incremental}")
 if table_names_raw:
     print(f"Table filter: {table_names_raw}")
 
@@ -123,6 +126,7 @@ result = build_extended_knowledge_graph(
     include_schemas=(schema_kb_count > 0),
     table_names=table_names,
     sweep_stale=sweep_stale,
+    incremental=incremental,
 )
 
 print(f"Knowledge graph build complete")
