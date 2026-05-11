@@ -598,13 +598,14 @@ class ProfilingBuilder:
             now
         )
         snapshot_df = self.spark.createDataFrame([snapshot_row], schema=self.SNAPSHOT_SCHEMA)
-        # APPEND: Delta append into snapshots table (fully_qualified_snapshots) keyed conceptually by snapshot_id;
-        # stores table_name, snapshot_time, aggregates (row_count, column_count, table_size_bytes, num_files),
-        # serialized column_stats map, last_modified from source, created_at for lineage.
-        # WHY: Captures time-series table health so data quality and freshness modules can join on snapshot_id rather
-        # than mutating a single row per table.
-        # TRADEOFFS: Historical append model is ideal for trend analysis but grows unbounded without retention policy;
-        # mergeSchema eases column adds vs strict tables; one snapshot row per profiling call (not idempotent MERGE on table_name).
+        # Dedup guard: delete any prior snapshot with the same snapshot_id (retry protection)
+        sid = snapshot_data["snapshot_id"]
+        try:
+            self.spark.sql(
+                f"DELETE FROM {self.config.fully_qualified_snapshots} WHERE snapshot_id = '{sid}'"
+            )
+        except Exception as e:
+            logger.warning("Dedup DELETE failed for snapshots, proceeding with append: %s", e)
         snapshot_df.write.mode("append").option("mergeSchema", "true").saveAsTable(self.config.fully_qualified_snapshots)
         
         # Write column stats with explicit schema
@@ -650,13 +651,13 @@ class ProfilingBuilder:
                 stats_rows.append(stats_row)
             
             stats_df = self.spark.createDataFrame(stats_rows, schema=self.COLUMN_STATS_SCHEMA)
-            # APPEND: Delta append into column stats table (fully_qualified_column_stats) with stat_id per column row;
-            # carries snapshot_id/table_name/column_name FK context, null rates, distinct counts, distribution stats,
-            # percentiles map, string/numeric aggregates, drift fields, computed_at snapshot.
-            # WHY: Persists fine-grained profiling for each snapshot so quality scoring and exploratory tools can drill
-            # from table-level facts to per-column distributions without re-scanning live data.
-            # TRADEOFFS: Many rows per snapshot (wide schema) versus storing JSON blobs only (richer typing but heavier
-            # storage); mergeSchema allows evolving metrics; append-only duplicates if the same snapshot_id were replayed accidentally.
+            # Dedup guard: delete any prior column stats with the same snapshot_id
+            try:
+                self.spark.sql(
+                    f"DELETE FROM {self.config.fully_qualified_column_stats} WHERE snapshot_id = '{sid}'"
+                )
+            except Exception as e:
+                logger.warning("Dedup DELETE failed for column_stats, proceeding with append: %s", e)
             stats_df.write.mode("append").option("mergeSchema", "true").saveAsTable(self.config.fully_qualified_column_stats)
     
     def run(self, max_tables: int = None) -> Dict[str, Any]:

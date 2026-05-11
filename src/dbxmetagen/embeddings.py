@@ -48,10 +48,17 @@ class EmbeddingGenerator:
         self.spark = spark
         self.config = config
     
-    def get_nodes_needing_embeddings(self) -> DataFrame:
+    def get_nodes_needing_embeddings(self, table_names=None) -> DataFrame:
         """Get nodes that have comments but no embeddings. Enriches with domain and ontology entity when available."""
+        from dbxmetagen.table_filter import table_filter_sql
         nodes = self.config.fully_qualified_nodes
         ont = self.config.fully_qualified_ontology_entities
+        tn_filter_id = table_filter_sql(table_names or [], column="n.id")
+        tn_filter_parent = table_filter_sql(table_names or [], column="n.parent_id")
+        if table_names:
+            scope_clause = f"AND ({tn_filter_id[4:]} OR {tn_filter_parent[4:]})"
+        else:
+            scope_clause = ""
         try:
             return self.spark.sql(f"""
                 WITH table_entity AS (
@@ -69,6 +76,7 @@ class EmbeddingGenerator:
                     LEFT JOIN table_entity te
                       ON te.table_name = CASE WHEN n.node_type = 'table' THEN n.id ELSE n.parent_id END
                     WHERE n.comment IS NOT NULL AND LENGTH(n.comment) > 10 AND n.embedding IS NULL
+                    {scope_clause}
                     GROUP BY n.id, n.comment, n.node_type, n.domain
                 )
                 SELECT id, node_type,
@@ -84,11 +92,18 @@ class EmbeddingGenerator:
         except Exception as e:
             if "TABLE_OR_VIEW_NOT_FOUND" in str(e) or "cannot find" in str(e).lower():
                 logger.info("ontology_entities not found, using comment and domain only: %s", e)
+                tn_fallback = table_filter_sql(table_names or [], column="id")
+                tn_parent_fb = table_filter_sql(table_names or [], column="parent_id")
+                if table_names:
+                    fb_scope = f"AND ({tn_fallback[4:]} OR {tn_parent_fb[4:]})"
+                else:
+                    fb_scope = ""
                 return self.spark.sql(f"""
                     SELECT id, node_type,
                         SUBSTRING(CONCAT(COALESCE(comment, ''), ' Domain: ', COALESCE(domain, '')), 1, 2000) AS text_to_embed
                     FROM {nodes}
                     WHERE comment IS NOT NULL AND LENGTH(comment) > 10 AND embedding IS NULL
+                    {fb_scope}
                     """)
             raise
     
@@ -287,17 +302,18 @@ class EmbeddingGenerator:
             return self.spark.createDataFrame(pairs, ["src", "dst", "similarity"])
         return self.spark.createDataFrame([], "src STRING, dst STRING, similarity DOUBLE")
     
-    def run(self, max_nodes: int = None) -> Dict[str, Any]:
+    def run(self, max_nodes: int = None, table_names=None) -> Dict[str, Any]:
         """
         Execute the embedding generation pipeline.
         
         Args:
             max_nodes: Maximum nodes to process (None = all)
+            table_names: Optional list of table names to scope embedding to
         """
         logger.info("Starting embedding generation")
         
         # Get nodes needing embeddings
-        nodes_to_embed = self.get_nodes_needing_embeddings()
+        nodes_to_embed = self.get_nodes_needing_embeddings(table_names=table_names)
         
         if max_nodes:
             nodes_to_embed = nodes_to_embed.limit(max_nodes)
@@ -325,7 +341,8 @@ def generate_embeddings(
     spark: SparkSession,
     catalog_name: str,
     schema_name: str,
-    max_nodes: int = None
+    max_nodes: int = None,
+    table_names=None,
 ) -> Dict[str, Any]:
     """
     Convenience function to generate embeddings.
@@ -335,6 +352,7 @@ def generate_embeddings(
         catalog_name: Catalog name for tables
         schema_name: Schema name for tables
         max_nodes: Maximum nodes to process
+        table_names: Optional list of table names to scope embedding to
         
     Returns:
         Dict with execution statistics
@@ -344,7 +362,7 @@ def generate_embeddings(
         schema_name=schema_name
     )
     generator = EmbeddingGenerator(spark, config)
-    return generator.run(max_nodes)
+    return generator.run(max_nodes, table_names=table_names)
 
 
 def find_similar_nodes(

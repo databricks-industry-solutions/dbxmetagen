@@ -415,15 +415,20 @@ def sample_df(df: DataFrame, nrows: int, sample_size: int = 5) -> DataFrame:
     larger_sample = sample_size * 100
     sampling_ratio = determine_sampling_ratio(nrows, larger_sample)
     sampled_df = df.sample(withReplacement=False, fraction=sampling_ratio)
-    null_counts_per_row = sampled_df.withColumn(
-        "null_count",
-        sum(when(col(c).isNull(), 1).otherwise(0) for c in sampled_df.columns),
-    )
-    threshold = max(1, len(sampled_df.columns) // 2)
-    filtered_df = null_counts_per_row.filter(col("null_count") < threshold).drop(
-        "null_count"
-    )
-    result_rows = filtered_df.count()
+    try:
+        null_counts_per_row = sampled_df.withColumn(
+            "null_count",
+            sum(when(col(c).isNull(), 1).otherwise(0) for c in sampled_df.columns),
+        )
+        threshold = max(1, len(sampled_df.columns) // 2)
+        filtered_df = null_counts_per_row.filter(col("null_count") < threshold).drop(
+            "null_count"
+        )
+        result_rows = filtered_df.count()
+    except Exception as e:
+        logger.warning("Null-filter failed (%s), falling back to unfiltered sample", e)
+        return sampled_df.limit(sample_size)
+
     if result_rows < sample_size:
         logger.warning(
             "Not enough non-NULL rows, returning available rows, despite large proportion of NULLs. Result rows: %s vs sample size: %s",

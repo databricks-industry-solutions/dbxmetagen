@@ -506,6 +506,10 @@ Evaluate each entity independently. Consider whether table purpose, columns, and
         kb_table = self.config.fully_qualified_kb
         col_kb_table = self.config.fully_qualified_column_kb
 
+        tn_scope = ""
+        if getattr(self, "_table_names", None):
+            from dbxmetagen.table_filter import table_filter_sql
+            tn_scope = table_filter_sql(self._table_names, column="e.source_tables[0]")
         entities_df = self.spark.sql(f"""
             SELECT e.entity_id, e.entity_name, e.entity_type, e.description,
                    e.source_tables, e.source_columns, e.confidence,
@@ -514,6 +518,7 @@ Evaluate each entity independently. Consider whether table purpose, columns, and
             LEFT JOIN {kb_table} kb ON e.source_tables[0] = kb.table_name
             WHERE COALESCE(e.attributes['granularity'], 'table') = 'table'
               AND (e.validated = FALSE OR e.validated IS NULL)
+              {tn_scope}
         """)
         entity_rows = entities_df.collect()
 
@@ -838,23 +843,17 @@ Evaluate each entity independently. Consider whether table purpose, columns, and
         results_df.createOrReplaceTempView("__col_val_results")
 
         try:
-            # MERGE: Batch-update existing entities with validation results from temp view
-            #   `__col_val_results` into `ontology_entities`, matching on `entity_id`.
-            #   MATCHED-only (no INSERT) -- sets `validated`, adds `confidence_adjustment`
-            #   to `confidence` (floored at 0.0), replaces `validation_notes`, and
-            #   refreshes `updated_at`. Entities not in the staging view are left untouched.
-            # WHY: Persist batch LLM/heuristic validation outcomes in one SQL statement so
-            #   the ontology graph and dashboards reflect which entities passed review
-            #   without N separate round-trips per entity. Update-only prevents phantom
-            #   entities from being inserted by the validation pipeline.
-            # TRADEOFFS: Fast and idiomatic for Delta; depends on MERGE support and the
-            #   temp view. On failure the code falls back to per-row UPDATE (slower but
-            #   more granular).
+            # MERGE with content guard: only update when validated state or
+            # validation_notes actually changed, preventing unnecessary updated_at
+            # bumps on re-validation with identical results.
             self.spark.sql(f"""
                 MERGE INTO {self.config.fully_qualified_entities} AS target
                 USING __col_val_results AS source
                 ON target.entity_id = source.entity_id
-                WHEN MATCHED THEN UPDATE SET
+                WHEN MATCHED AND (
+                    target.validated != CAST(source.validated AS BOOLEAN)
+                    OR COALESCE(target.validation_notes, '') != COALESCE(source.validation_notes, '')
+                ) THEN UPDATE SET
                     target.validated = CAST(source.validated AS BOOLEAN),
                     target.confidence = GREATEST(0.0, target.confidence + CAST(source.confidence_adjustment AS DOUBLE)),
                     target.validation_notes = source.validation_notes,
@@ -1144,6 +1143,7 @@ Evaluate each entity independently. Consider whether table purpose, columns, and
         ontology_config: Optional[Dict] = None,
         validate_columns: bool = False,
         force_revalidate: bool = False,
+        table_names=None,
     ) -> Dict[str, Any]:
         """Execute the validation pipeline.
 
@@ -1155,6 +1155,7 @@ Evaluate each entity independently. Consider whether table purpose, columns, and
             force_revalidate: If True, reset all previously-validated auto-discovered
                 entities so they are re-validated from scratch.
         """
+        self._table_names = table_names
         logger.info("Starting ontology validation")
 
         if force_revalidate:
@@ -1176,6 +1177,21 @@ Evaluate each entity independently. Consider whether table purpose, columns, and
             except Exception:
                 reset_count = 0
             logger.info("Force revalidate: reset %s previously-validated entities", reset_count)
+
+        # Early exit: if nothing to validate, skip all LLM work
+        unvalidated_count = self.spark.sql(f"""
+            SELECT COUNT(*) AS cnt FROM {self.config.fully_qualified_entities}
+            WHERE validated = FALSE OR validated IS NULL
+        """).collect()[0]["cnt"]
+        if unvalidated_count == 0:
+            logger.info("No unvalidated entities, skipping validation (0 LLM calls)")
+            return {
+                "entities_validated": 0, "table_entities_validated": 0,
+                "column_entities_validated": 0, "ai_parse_failures": 0,
+                "consistency_issues": 0, "coverage_gaps": 0,
+                "relationship_issues": 0, "pruned_edges": 0,
+                "recommendations": {},
+            }
 
         # Validate table-level entities via batched AI_QUERY
         table_updated = 0
@@ -1259,6 +1275,7 @@ def validate_ontology(
     schema_name: str,
     validate_columns: bool = False,
     force_revalidate: bool = False,
+    table_names=None,
 ) -> Dict[str, Any]:
     """Convenience function to validate the ontology.
 
@@ -1270,6 +1287,8 @@ def validate_ontology(
             batched AI_QUERY. Default False (opt-in).
         force_revalidate: If True, reset all previously-validated entities and
             re-validate from scratch.
+        table_names: Optional list of table names to scope validation to.
+            When set, only entities whose source_tables overlap are validated.
 
     Returns:
         Dict with validation results and recommendations
@@ -1279,7 +1298,8 @@ def validate_ontology(
         schema_name=schema_name
     )
     validator = OntologyValidator(spark, config)
-    return validator.run(validate_columns=validate_columns, force_revalidate=force_revalidate)
+    return validator.run(validate_columns=validate_columns, force_revalidate=force_revalidate,
+                         table_names=table_names)
 
 
 def export_ontology_yaml(

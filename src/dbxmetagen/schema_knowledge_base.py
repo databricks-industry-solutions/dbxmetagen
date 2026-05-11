@@ -25,6 +25,7 @@ class SchemaKnowledgeBaseConfig:
     target_table: str = "schema_knowledge_base"
     model: str = "databricks-gpt-oss-120b"
     table_names: list[str] | None = None
+    incremental: bool = True
 
     @property
     def fully_qualified_source(self) -> str:
@@ -178,21 +179,48 @@ class SchemaKnowledgeBaseBuilder:
         )
     
     def generate_schema_comments(self, aggregated_df: DataFrame, source_df: DataFrame) -> DataFrame:
-        """Generate AI comments for each schema."""
-        schemas = aggregated_df.select("schema_id", "catalog", "schema_name").collect()
+        """Generate AI comments for schemas whose tables have changed.
+
+        When incremental, compares each schema's MAX(table_kb.updated_at) against
+        the existing schema_knowledge_base.updated_at. Only calls AI_QUERY for
+        schemas where at least one table has been updated. Unchanged schemas get a
+        NULL comment so the MERGE's COALESCE preserves the existing comment.
+
+        When not incremental (full refresh), generates comments for ALL schemas.
+        """
+        schemas = aggregated_df.select("schema_id", "catalog", "schema_name", "updated_at").collect()
 
         if not schemas:
             logger.warning("No schemas found in aggregated data -- skipping comment generation")
             return aggregated_df.withColumn("comment", F.lit(None).cast("string"))
 
+        existing: dict = {}
+        if self.config.incremental:
+            try:
+                rows = self.spark.sql(
+                    f"SELECT schema_id, updated_at FROM {self.config.fully_qualified_target}"
+                ).collect()
+                existing = {r.schema_id: r.updated_at for r in rows}
+            except Exception:
+                pass
+
         comments_data = []
+        skipped = 0
         for schema in schemas:
+            existing_ts = existing.get(schema.schema_id)
+            if existing_ts is not None and schema.updated_at <= existing_ts:
+                comments_data.append((schema.schema_id, None))
+                skipped += 1
+                continue
             tables_df = source_df.filter(
                 (F.col("catalog") == schema.catalog) &
                 (F.col("schema") == schema.schema_name)
             )
             comment = self.summarizer.summarize_schema(schema.schema_id, tables_df)
             comments_data.append((schema.schema_id, comment))
+
+        generated = len(comments_data) - skipped
+        logger.info("Schema comments: %d generated, %d skipped (unchanged)", generated, skipped)
 
         from pyspark.sql.types import StructType, StructField, StringType
         schema_type = StructType([
@@ -285,23 +313,14 @@ def build_schema_knowledge_base(
     schema_name: str,
     generate_comments: bool = True,
     table_names: list[str] | None = None,
+    incremental: bool = True,
 ) -> Dict[str, Any]:
-    """
-    Convenience function to build the schema knowledge base.
-    
-    Args:
-        spark: SparkSession instance
-        catalog_name: Catalog name for source and target tables
-        schema_name: Schema name for source and target tables
-        generate_comments: Whether to generate AI comments for schemas
-        
-    Returns:
-        Dict with execution statistics
-    """
+    """Convenience function to build the schema knowledge base."""
     config = SchemaKnowledgeBaseConfig(
         catalog_name=catalog_name,
         schema_name=schema_name,
         table_names=table_names,
+        incremental=incremental,
     )
     builder = SchemaKnowledgeBaseBuilder(spark, config)
     return builder.run(generate_comments)
