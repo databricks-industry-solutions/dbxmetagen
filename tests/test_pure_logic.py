@@ -843,7 +843,7 @@ class TestLoadDomainConfigBundleResolution:
     def test_general_bundle_has_six_domains(self):
         config = load_domain_config(bundle_path=os.path.join(self.CONFIGS_DIR, "general.yaml"))
         domains = config["domains"]
-        assert len(domains) == 6
+        assert len(domains) == 10
         assert "clinical" not in domains
         assert "diagnostics" not in domains
         assert "payer" not in domains

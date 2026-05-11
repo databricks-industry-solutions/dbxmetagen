@@ -44,6 +44,7 @@ dbutils.widgets.text("fred_secret_scope", "", "FRED API Secret Scope (leave empt
 dbutils.widgets.dropdown("skip_generation", "false", ["true", "false"], "Skip Data Generation")
 dbutils.widgets.dropdown("skip_pipeline", "false", ["true", "false"], "Skip Pipeline Run")
 dbutils.widgets.dropdown("skip_idempotency", "false", ["true", "false"], "Skip Idempotency Re-Run")
+dbutils.widgets.text("exclude_tables", "", "Exclude Tables (comma-sep short names, e.g. dim_index,fct_index_membership)")
 dbutils.widgets.text("min_overall_score", "0.40", "Min Overall Score to Pass")
 dbutils.widgets.text("metagen_job_id", "", "Metadata Generator Job ID (from DAB)")
 dbutils.widgets.text("pipeline_job_id", "", "Full Analytics Pipeline Job ID (from DAB)")
@@ -58,6 +59,8 @@ fred_scope = dbutils.widgets.get("fred_secret_scope").strip()
 skip_generation = dbutils.widgets.get("skip_generation").lower() == "true"
 skip_pipeline = dbutils.widgets.get("skip_pipeline").lower() == "true"
 skip_idempotency = dbutils.widgets.get("skip_idempotency").lower() == "true"
+exclude_tables_raw = dbutils.widgets.get("exclude_tables").strip()
+exclude_tables = {t.strip() for t in exclude_tables_raw.replace("|", ",").split(",") if t.strip()} if exclude_tables_raw else set()
 metagen_job_id = int(dbutils.widgets.get("metagen_job_id").strip())
 pipeline_job_id = int(dbutils.widgets.get("pipeline_job_id").strip())
 
@@ -75,6 +78,8 @@ print(f"Metadata: {catalog_name}.{metadata_schema}")
 print(f"Eval:     {catalog_name}.{eval_schema}")
 print(f"Model:    {model_endpoint}")
 print(f"FRED:     {'configured (' + fred_scope + ')' if fred_scope else 'skipped (no secret scope)'}")
+if exclude_tables:
+    print(f"Exclude:  {', '.join(sorted(exclude_tables))}")
 
 # COMMAND ----------
 
@@ -754,7 +759,12 @@ if not skip_pipeline:
             run_url = f"{w.config.host}#job/{job_id}/run/{run_id}"
             raise RuntimeError(f"{label} failed: {result_state}. See {run_url}")
 
-    table_glob = f"{catalog_name}.{schema_name}.*"
+    if exclude_tables:
+        run_tables = [t for t in TABLES if t not in exclude_tables]
+        table_names_param = ",".join(f"{catalog_name}.{schema_name}.{t}" for t in run_tables)
+        print(f"Running {len(run_tables)}/{len(TABLES)} tables (excluded: {', '.join(sorted(exclude_tables))})")
+    else:
+        table_names_param = f"{catalog_name}.{schema_name}.*"
 
 # COMMAND ----------
 
@@ -767,7 +777,7 @@ if not skip_pipeline:
     _run_job_and_wait(metagen_job_id, {
         "catalog_name": catalog_name,
         "schema_name": metadata_schema,
-        "table_names": table_glob,
+        "table_names": table_names_param,
         "mode": "comment",
         "model": model_endpoint,
         "apply_ddl": "false",
@@ -780,7 +790,7 @@ if not skip_pipeline:
     _run_job_and_wait(metagen_job_id, {
         "catalog_name": catalog_name,
         "schema_name": metadata_schema,
-        "table_names": table_glob,
+        "table_names": table_names_param,
         "mode": "pi",
         "model": model_endpoint,
         "apply_ddl": "false",
@@ -792,7 +802,7 @@ if not skip_pipeline:
     _run_job_and_wait(metagen_job_id, {
         "catalog_name": catalog_name,
         "schema_name": metadata_schema,
-        "table_names": table_glob,
+        "table_names": table_names_param,
         "mode": "domain",
         "model": model_endpoint,
         "apply_ddl": "false",
@@ -813,7 +823,7 @@ if not skip_pipeline:
     _run_job_and_wait(pipeline_job_id, {
         "catalog_name": catalog_name,
         "schema_name": metadata_schema,
-        "table_names": table_glob,
+        "table_names": table_names_param,
         "ontology_bundle": ontology_bundle,
         "model": model_endpoint,
         "incremental": "true",
@@ -1333,7 +1343,7 @@ if not skip_pipeline and not skip_idempotency:
     _run_job_and_wait(metagen_job_id, {
         "catalog_name": catalog_name,
         "schema_name": metadata_schema,
-        "table_names": table_glob,
+        "table_names": table_names_param,
         "mode": "comment",
         "model": model_endpoint,
         "apply_ddl": "false",
@@ -1344,7 +1354,7 @@ if not skip_pipeline and not skip_idempotency:
     _run_job_and_wait(metagen_job_id, {
         "catalog_name": catalog_name,
         "schema_name": metadata_schema,
-        "table_names": table_glob,
+        "table_names": table_names_param,
         "mode": "pi",
         "model": model_endpoint,
         "apply_ddl": "false",
@@ -1354,7 +1364,7 @@ if not skip_pipeline and not skip_idempotency:
     _run_job_and_wait(metagen_job_id, {
         "catalog_name": catalog_name,
         "schema_name": metadata_schema,
-        "table_names": table_glob,
+        "table_names": table_names_param,
         "mode": "domain",
         "model": model_endpoint,
         "apply_ddl": "false",
@@ -1364,7 +1374,7 @@ if not skip_pipeline and not skip_idempotency:
     _run_job_and_wait(pipeline_job_id, {
         "catalog_name": catalog_name,
         "schema_name": metadata_schema,
-        "table_names": table_glob,
+        "table_names": table_names_param,
         "ontology_bundle": ontology_bundle,
         "model": model_endpoint,
         "incremental": "true",
