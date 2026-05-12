@@ -1974,6 +1974,18 @@ class FKPredictor:
 
         candidates = candidates.filter(F.col("table_a") != F.col("table_b"))
 
+        # Propagate max embedding similarities before source-rank dedup.
+        # Name-based and other non-embedding sources hardcode col_similarity=0.0;
+        # without this, the embedding signal is lost when they win the dedup.
+        sim_w = Window.partitionBy("col_a", "col_b")
+        candidates = candidates.withColumn(
+            "col_similarity",
+            F.coalesce(F.max("col_similarity").over(sim_w), F.lit(0.0)),
+        ).withColumn(
+            "table_similarity",
+            F.coalesce(F.max("table_similarity").over(sim_w), F.lit(0.0)),
+        )
+
         dedup_w = Window.partitionBy("col_a", "col_b").orderBy(
             F.col("source_rank").asc(),
             F.col("col_similarity").desc(),

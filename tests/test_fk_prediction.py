@@ -194,6 +194,32 @@ class TestUIDedup:
         rows.sort(key=lambda r: (r[2], -r[3], -r[4]))
         assert rows[0][4] == 9
 
+    def test_similarity_propagation_preserves_embedding_signal(self):
+        """Name-based wins source_rank dedup, but must keep embedding col_similarity."""
+        # (col_a, col_b, source_rank, col_similarity, table_similarity, query_hit_count)
+        embedding_row = ("x", "y", SR_EMBEDDING, 0.92, 0.85, 0)
+        name_row = ("x", "y", SR_NAME, 0.0, 0.0, 0)
+        rows = [embedding_row, name_row]
+
+        # Step 1: propagate max similarity across all sources per (col_a, col_b)
+        by_pair: dict[tuple, list] = {}
+        for r in rows:
+            by_pair.setdefault((r[0], r[1]), []).append(r)
+        propagated = []
+        for _key, group in by_pair.items():
+            max_col_sim = max(r[3] for r in group)
+            max_tbl_sim = max(r[4] for r in group)
+            for r in group:
+                propagated.append((r[0], r[1], r[2], max_col_sim, max_tbl_sim, r[5]))
+
+        # Step 2: dedup by source_rank (name=3 wins over embedding=5)
+        propagated.sort(key=lambda r: (r[2], -r[3], -r[5]))
+        winner = propagated[0]
+
+        assert winner[2] == SR_NAME, "name-based should win the dedup"
+        assert winner[3] == 0.92, "col_similarity from embedding must be preserved"
+        assert winner[4] == 0.85, "table_similarity from embedding must be preserved"
+
 
 # --- TestEnforceDirection ---
 
