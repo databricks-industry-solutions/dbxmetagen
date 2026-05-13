@@ -221,6 +221,55 @@ class TestUIDedup:
         assert winner[4] == 0.85, "table_similarity from embedding must be preserved"
 
 
+# --- TestTableNameMatchStem ---
+
+
+class TestTableNameMatchStem:
+    """Verify that table_name_match strips dim_/fct_ prefixes before matching."""
+
+    @staticmethod
+    def _stem(table_short: str) -> str:
+        """Mirror the SQL: strip dim_/fct_/fact_/stg_ prefix, then trailing 's'."""
+        import re
+        s = re.sub(r"^(dim_|fct_|fact_|stg_)", "", table_short)
+        return re.sub(r"s$", "", s)
+
+    @staticmethod
+    def _matches(col_short: str, stem: str) -> bool:
+        import re
+        return bool(re.search(rf"(^|_){re.escape(stem)}(_|$)", col_short))
+
+    def test_index_code_matches_dim_index(self):
+        stem = self._stem("dim_index")
+        assert stem == "index"
+        assert self._matches("index_code", stem)
+
+    def test_security_id_matches_dim_security(self):
+        stem = self._stem("dim_security")
+        assert stem == "security"
+        assert self._matches("security_id", stem)
+
+    def test_account_id_matches_fct_accounts(self):
+        stem = self._stem("fct_accounts")
+        assert stem == "account"
+        assert self._matches("account_id", stem)
+
+    def test_status_does_not_match_dim_customer(self):
+        stem = self._stem("dim_customer")
+        assert stem == "customer"
+        assert not self._matches("status", stem)
+
+    def test_no_prefix_still_works(self):
+        stem = self._stem("orders")
+        assert stem == "order"
+        assert self._matches("order_id", stem)
+
+    def test_unrelated_col_no_match(self):
+        stem = self._stem("dim_product")
+        assert stem == "product"
+        assert not self._matches("customer_id", stem)
+
+
 # --- TestEnforceDirection ---
 
 

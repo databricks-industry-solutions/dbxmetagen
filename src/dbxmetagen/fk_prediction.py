@@ -1308,16 +1308,20 @@ class FKPredictor:
         col_b_short = F.lower(F.element_at(F.split(F.col("col_b"), "\\."), -1))
         tbl_a_short = F.lower(F.element_at(F.split(F.col("table_a"), "\\."), -1))
         tbl_b_short = F.lower(F.element_at(F.split(F.col("table_b"), "\\."), -1))
-        # Token-boundary match: col must start with table stem or have it after '_'
-        tbl_b_stem = F.regexp_replace(tbl_b_short, "s$", "")
-        tbl_a_stem = F.regexp_replace(tbl_a_short, "s$", "")
+        # Token-boundary match: col must start with table stem or have it after '_'.
+        # Strip common dim_/fct_/fact_/stg_ prefixes and trailing plural 's' from table
+        # names so that e.g. index_code matches dim_index via stem 'index'.
+        _prefix_re = "^(dim_|fct_|fact_|stg_)"
+        tbl_b_stem = F.regexp_replace(F.regexp_replace(tbl_b_short, _prefix_re, ""), "s$", "")
+        tbl_a_stem = F.regexp_replace(F.regexp_replace(tbl_a_short, _prefix_re, ""), "s$", "")
+        _stem_sql = "regexp_replace(regexp_replace(lower(element_at(split({tbl}, '\\\\.'), -1)), '^(dim_|fct_|fact_|stg_)', ''), 's$', '')"
         _a_matches_b = F.expr(
-            "rlike(lower(element_at(split(col_a, '\\\\.'), -1)), "
-            "concat('(^|_)', regexp_replace(lower(element_at(split(table_b, '\\\\.'), -1)), 's$', ''), '(_|$)'))"
+            f"rlike(lower(element_at(split(col_a, '\\\\.'), -1)), "
+            f"concat('(^|_)', {_stem_sql.format(tbl='table_b')}, '(_|$)'))"
         )
         _b_matches_a = F.expr(
-            "rlike(lower(element_at(split(col_b, '\\\\.'), -1)), "
-            "concat('(^|_)', regexp_replace(lower(element_at(split(table_a, '\\\\.'), -1)), 's$', ''), '(_|$)'))"
+            f"rlike(lower(element_at(split(col_b, '\\\\.'), -1)), "
+            f"concat('(^|_)', {_stem_sql.format(tbl='table_a')}, '(_|$)'))"
         )
         table_name_match = F.when(_a_matches_b | _b_matches_a, 1.0).otherwise(0.0)
 
