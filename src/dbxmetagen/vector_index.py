@@ -14,6 +14,7 @@ from databricks.sdk import WorkspaceClient
 from databricks.sdk.service.vectorsearch import (
     DeltaSyncVectorIndexSpecRequest,
     EmbeddingSourceColumn,
+    EndpointType,
     PipelineType,
     VectorIndexType,
 )
@@ -543,7 +544,7 @@ class VectorIndexBuilder:
             )
         except Exception:
             logger.info("Creating VS endpoint '%s'", name)
-            w.vector_search_endpoints.create_endpoint(name=name, endpoint_type="STANDARD")
+            w.vector_search_endpoints.create_endpoint(name=name, endpoint_type=EndpointType.STANDARD)
 
         ep = w.vector_search_endpoints.wait_get_endpoint_vector_search_endpoint_online(name)
         logger.info("VS endpoint '%s' confirmed ONLINE (num_indexes=%s)", name, ep.num_indexes)

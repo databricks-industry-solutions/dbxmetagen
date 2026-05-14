@@ -391,6 +391,7 @@ class SimilarityEdgeBuilder:
         """Ensure the VS endpoint exists and is ONLINE."""
         from databricks.sdk import WorkspaceClient
         from databricks.sdk.errors import NotFound, ResourceDoesNotExist
+        from databricks.sdk.service.vectorsearch import EndpointType
         w = WorkspaceClient()
         name = self.config.endpoint_name
         try:
@@ -398,7 +399,7 @@ class SimilarityEdgeBuilder:
             logger.info("VS endpoint '%s' exists (state=%s)", name, ep.endpoint_status.state)
         except (NotFound, ResourceDoesNotExist):
             logger.info("Creating VS endpoint '%s'", name)
-            w.vector_search_endpoints.create_endpoint(name=name, endpoint_type="STANDARD")
+            w.vector_search_endpoints.create_endpoint(name=name, endpoint_type=EndpointType.STANDARD)
         ep = w.vector_search_endpoints.wait_get_endpoint_vector_search_endpoint_online(name)
         logger.info("VS endpoint '%s' confirmed ONLINE", name)
         return name

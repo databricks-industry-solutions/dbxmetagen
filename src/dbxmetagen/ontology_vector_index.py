@@ -16,6 +16,7 @@ from databricks.sdk import WorkspaceClient
 from databricks.sdk.service.vectorsearch import (
     DeltaSyncVectorIndexSpecRequest,
     EmbeddingSourceColumn,
+    EndpointType,
     PipelineType,
     VectorIndexType,
 )
@@ -70,7 +71,7 @@ class OntologyVectorIndexBuilder:
             logger.info("VS endpoint '%s' already exists", name)
         except Exception:
             logger.info("Creating VS endpoint '%s'", name)
-            w.vector_search_endpoints.create_endpoint(name=name, endpoint_type="STANDARD")
+            w.vector_search_endpoints.create_endpoint(name=name, endpoint_type=EndpointType.STANDARD)
         w.vector_search_endpoints.wait_get_endpoint_vector_search_endpoint_online(name)
         return name
 
