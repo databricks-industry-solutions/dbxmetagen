@@ -73,6 +73,16 @@ resources:
           libraries:
             - whl: ../../dist/*.whl
 
+        # VS endpoint lifecycle -- standalone, no deps, no LLM.
+        # Run individually: databricks bundle run integration_tests -t dev --task test_vs_endpoint_lifecycle
+        - task_key: test_vs_endpoint_lifecycle
+          max_retries: 0
+          job_cluster_key: fast_test_cluster
+          notebook_task:
+            notebook_path: ../../notebooks/integration_tests/test_vs_endpoint_lifecycle.py
+          libraries:
+            - whl: ../../dist/*.whl
+
         # ----------------------------------------------------------------
         # Wave B: Core metadata generation tests (LLM calls, parallel clusters)
         # All self-contained -- each creates/drops its own test table.
