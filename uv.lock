@@ -842,7 +842,7 @@ wheels = [
 
 [[package]]
 name = "dbxmetagen"
-version = "0.9.1"
+version = "0.9.1+1778621340"
 source = { editable = "." }
 dependencies = [
     { name = "cloudpickle" },
@@ -853,11 +853,9 @@ dependencies = [
     { name = "nest-asyncio" },
     { name = "openai" },
     { name = "openpyxl" },
-    { name = "presidio-analyzer" },
     { name = "pydantic" },
     { name = "pyyaml" },
     { name = "requests" },
-    { name = "spacy" },
     { name = "ydata-profiling" },
 ]
 
@@ -868,9 +866,13 @@ ontology = [
 ]
 pi = [
     { name = "en-core-web-md" },
+    { name = "presidio-analyzer" },
+    { name = "spacy" },
 ]
 pi-lg = [
     { name = "en-core-web-lg" },
+    { name = "presidio-analyzer" },
+    { name = "spacy" },
 ]
 
 [package.dev-dependencies]
@@ -893,13 +895,15 @@ requires-dist = [
     { name = "nest-asyncio", specifier = ">=1.6.0,<2" },
     { name = "openai", specifier = "==1.56.1" },
     { name = "openpyxl", specifier = "==3.1.5" },
-    { name = "presidio-analyzer", specifier = "==2.2.358" },
+    { name = "presidio-analyzer", marker = "extra == 'pi'", specifier = "==2.2.358" },
+    { name = "presidio-analyzer", marker = "extra == 'pi-lg'", specifier = "==2.2.358" },
     { name = "pydantic", specifier = "==2.10.3" },
     { name = "pyoxigraph", marker = "extra == 'ontology'", specifier = ">=0.3.0" },
     { name = "pyyaml", specifier = "==6.0.1" },
     { name = "rdflib", marker = "extra == 'ontology'", specifier = ">=6.3.0" },
     { name = "requests", specifier = "==2.32.5" },
-    { name = "spacy", specifier = "==3.8.7" },
+    { name = "spacy", marker = "extra == 'pi'", specifier = "==3.8.7" },
+    { name = "spacy", marker = "extra == 'pi-lg'", specifier = "==3.8.7" },
     { name = "ydata-profiling", specifier = ">=4.12.1,<5" },
 ]
 provides-extras = ["pi", "pi-lg", "ontology"]
