@@ -52,6 +52,8 @@ resources:
           default: "false"
         - name: sweep_stale_docs
           default: "false"
+        - name: endpoint_name
+          default: "dbxmetagen-vs"
 
       tasks:
         # Stage 1: Build knowledge bases (table, column, schema in parallel after table KB)
@@ -189,7 +191,7 @@ resources:
               catalog_name: "{{job.parameters.catalog_name}}"
               schema_name: "{{job.parameters.schema_name}}"
               ontology_bundle: "{{job.parameters.ontology_bundle}}"
-              endpoint_name: "dbxmetagen-vs"
+              endpoint_name: "{{job.parameters.endpoint_name}}"
           libraries:
             - whl: ../../dist/*.whl
 
@@ -392,7 +394,7 @@ resources:
             base_parameters:
               catalog_name: "{{job.parameters.catalog_name}}"
               schema_name: "{{job.parameters.schema_name}}"
-              endpoint_name: "dbxmetagen-vs"
+              endpoint_name: "{{job.parameters.endpoint_name}}"
               sweep_stale_docs: "{{job.parameters.sweep_stale_docs}}"
               table_names: "{{job.parameters.table_names}}"
               incremental: "{{job.parameters.incremental}}"
