@@ -14,9 +14,7 @@ aiosignal==1.4.0
 alembic==1.18.4
     # via mlflow
 annotated-doc==0.0.4
-    # via
-    #   fastapi
-    #   typer
+    # via fastapi
 annotated-types==0.7.0
     # via pydantic
 anyio==4.12.1
@@ -34,17 +32,10 @@ attrs==26.1.0
     #   visions
 blinker==1.9.0
     # via flask
-blis==1.3.3
-    # via thinc
 cachetools==6.2.6
     # via
     #   mlflow-skinny
     #   mlflow-tracing
-catalogue==2.0.10
-    # via
-    #   spacy
-    #   srsly
-    #   thinc
 certifi==2026.2.25
     # via
     #   httpcore
@@ -58,10 +49,7 @@ click==8.3.1
     # via
     #   flask
     #   mlflow-skinny
-    #   typer
     #   uvicorn
-cloudpathlib==0.23.0
-    # via weasel
 cloudpickle==3.1.0
     # via
     #   dbxmetagen
@@ -71,11 +59,6 @@ colorama==0.4.6 ; sys_platform == 'win32'
     # via
     #   click
     #   tqdm
-    #   wasabi
-confection==0.1.5
-    # via
-    #   thinc
-    #   weasel
 contourpy==1.3.2 ; python_full_version < '3.11'
     # via matplotlib
 contourpy==1.3.3 ; python_full_version >= '3.11'
@@ -86,11 +69,6 @@ cryptography==46.0.5
     #   mlflow
 cycler==0.12.1
     # via matplotlib
-cymem==2.0.13
-    # via
-    #   preshed
-    #   spacy
-    #   thinc
 dacite==1.9.2
     # via ydata-profiling
 databricks-ai-bridge==0.17.0
@@ -125,8 +103,6 @@ exceptiongroup==1.3.1 ; python_full_version < '3.11'
     # via anyio
 fastapi==0.135.1
     # via mlflow-skinny
-filelock==3.25.2
-    # via tldextract
 filetype==1.2.0
     # via ydata-profiling
 flask==3.1.3
@@ -189,7 +165,6 @@ idna==3.11
     #   anyio
     #   httpx
     #   requests
-    #   tldextract
     #   yarl
 imagehash==4.3.1
     # via
@@ -204,7 +179,6 @@ itsdangerous==2.2.0
 jinja2==3.1.6
     # via
     #   flask
-    #   spacy
     #   ydata-profiling
 jiter==0.13.0
     # via openai
@@ -237,8 +211,6 @@ langchain-core==1.2.20
     #   langgraph-prebuilt
 langchain-text-splitters==1.1.1
     # via langchain-classic
-langcodes==3.5.1
-    # via spacy
 langgraph==1.1.3
     # via langchain
 langgraph-checkpoint==4.0.1
@@ -258,8 +230,6 @@ llvmlite==0.44.0
     # via numba
 mako==1.3.10
     # via alembic
-markdown-it-py==4.0.0
-    # via rich
 markupsafe==3.0.3
     # via
     #   flask
@@ -275,8 +245,6 @@ matplotlib==3.10.0
     #   seaborn
     #   wordcloud
     #   ydata-profiling
-mdurl==0.1.2
-    # via markdown-it-py
 minify-html==0.18.1
     # via ydata-profiling
 mlflow==3.6.0
@@ -298,11 +266,6 @@ multimethod==1.12
     # via
     #   visions
     #   ydata-profiling
-murmurhash==1.0.15
-    # via
-    #   preshed
-    #   spacy
-    #   thinc
 mypy-extensions==1.1.0
     # via typing-inspect
 nest-asyncio==1.6.0
@@ -317,7 +280,6 @@ numba==0.61.0
     # via ydata-profiling
 numpy==1.26.4 ; python_full_version < '3.12'
     # via
-    #   blis
     #   contourpy
     #   databricks-connect
     #   imagehash
@@ -332,15 +294,12 @@ numpy==1.26.4 ; python_full_version < '3.12'
     #   scikit-learn
     #   scipy
     #   seaborn
-    #   spacy
     #   statsmodels
-    #   thinc
     #   visions
     #   wordcloud
     #   ydata-profiling
 numpy==2.1.3 ; python_full_version >= '3.12'
     # via
-    #   blis
     #   contourpy
     #   databricks-connect
     #   imagehash
@@ -355,9 +314,7 @@ numpy==2.1.3 ; python_full_version >= '3.12'
     #   scikit-learn
     #   scipy
     #   seaborn
-    #   spacy
     #   statsmodels
-    #   thinc
     #   visions
     #   wordcloud
     #   ydata-profiling
@@ -398,10 +355,7 @@ packaging==25.0
     #   matplotlib
     #   mlflow-skinny
     #   mlflow-tracing
-    #   spacy
     #   statsmodels
-    #   thinc
-    #   weasel
 pandas==2.3.3
     # via
     #   databricks-ai-bridge
@@ -417,20 +371,12 @@ patsy==1.0.2
     # via statsmodels
 phik==0.12.5
     # via ydata-profiling
-phonenumbers==8.13.55
-    # via presidio-analyzer
 pillow==12.1.1
     # via
     #   imagehash
     #   matplotlib
     #   visions
     #   wordcloud
-preshed==3.0.12
-    # via
-    #   spacy
-    #   thinc
-presidio-analyzer==2.2.358
-    # via dbxmetagen
 propcache==0.4.1
     # via
     #   aiohttp
@@ -460,7 +406,6 @@ pycparser==3.0 ; implementation_name != 'PyPy' and platform_python_implementatio
     # via cffi
 pydantic==2.10.3
     # via
-    #   confection
     #   databricks-ai-bridge
     #   databricks-langchain
     #   dbxmetagen
@@ -474,18 +419,13 @@ pydantic==2.10.3
     #   mlflow-tracing
     #   openai
     #   pydantic-settings
-    #   spacy
-    #   thinc
     #   unitycatalog-ai
     #   unitycatalog-client
-    #   weasel
     #   ydata-profiling
 pydantic-core==2.27.1
     # via pydantic
 pydantic-settings==2.13.1
     # via langchain-community
-pygments==2.19.2
-    # via rich
 pyparsing==3.3.2
     # via matplotlib
 python-dateutil==2.9.0.post0
@@ -513,12 +453,9 @@ pyyaml==6.0.1
     #   langchain-community
     #   langchain-core
     #   mlflow-skinny
-    #   presidio-analyzer
     #   ydata-profiling
 regex==2026.2.28
-    # via
-    #   presidio-analyzer
-    #   tiktoken
+    # via tiktoken
 requests==2.32.5
     # via
     #   databricks-sdk
@@ -529,19 +466,11 @@ requests==2.32.5
     #   langchain-community
     #   langsmith
     #   mlflow-skinny
-    #   requests-file
     #   requests-toolbelt
-    #   spacy
     #   tiktoken
-    #   tldextract
-    #   weasel
     #   ydata-profiling
-requests-file==3.0.1
-    # via tldextract
 requests-toolbelt==1.0.0
     # via langsmith
-rich==14.3.3
-    # via typer
 scikit-learn==1.7.2 ; python_full_version < '3.11'
     # via mlflow
 scikit-learn==1.8.0 ; python_full_version >= '3.11'
@@ -556,26 +485,14 @@ scipy==1.15.3
     #   ydata-profiling
 seaborn==0.13.2
     # via ydata-profiling
-shellingham==1.5.4
-    # via typer
 six==1.17.0
     # via
     #   databricks-connect
     #   python-dateutil
-smart-open==7.5.1
-    # via weasel
 smmap==5.0.3
     # via gitdb
 sniffio==1.3.1
     # via openai
-spacy==3.8.7
-    # via
-    #   dbxmetagen
-    #   presidio-analyzer
-spacy-legacy==3.0.12
-    # via spacy
-spacy-loggers==1.0.5
-    # via spacy
 sqlalchemy==2.0.48
     # via
     #   alembic
@@ -584,12 +501,6 @@ sqlalchemy==2.0.48
     #   mlflow
 sqlparse==0.5.5
     # via mlflow-skinny
-srsly==2.5.2
-    # via
-    #   confection
-    #   spacy
-    #   thinc
-    #   weasel
 starlette==1.0.0
     # via fastapi
 statsmodels==0.14.6
@@ -600,35 +511,23 @@ tenacity==9.1.4
     # via
     #   langchain-community
     #   langchain-core
-thinc==8.3.11
-    # via spacy
 threadpoolctl==3.6.0
     # via scikit-learn
 tiktoken==0.12.0
     # via databricks-ai-bridge
-tldextract==5.3.1
-    # via presidio-analyzer
 tomli==2.4.0 ; python_full_version < '3.11'
     # via alembic
 tqdm==4.67.3
     # via
     #   openai
-    #   spacy
     #   ydata-profiling
 typeguard==4.5.1
     # via ydata-profiling
-typer==0.24.1
-    # via
-    #   spacy
-    #   typer-slim
-typer-slim==0.24.0
-    # via weasel
 typing-extensions==4.15.0
     # via
     #   aiosignal
     #   alembic
     #   anyio
-    #   cloudpathlib
     #   cryptography
     #   databricks-ai-bridge
     #   exceptiongroup
@@ -681,13 +580,6 @@ visions==0.8.1
     # via ydata-profiling
 waitress==3.0.2 ; sys_platform == 'win32'
     # via mlflow
-wasabi==1.1.3
-    # via
-    #   spacy
-    #   thinc
-    #   weasel
-weasel==0.4.3
-    # via spacy
 werkzeug==3.1.6
     # via
     #   flask
@@ -695,9 +587,7 @@ werkzeug==3.1.6
 wordcloud==1.9.6
     # via ydata-profiling
 wrapt==1.17.3
-    # via
-    #   deprecated
-    #   smart-open
+    # via deprecated
 xxhash==3.6.0
     # via
     #   langgraph
