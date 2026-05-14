@@ -1,5 +1,5 @@
 # Databricks notebook source
-# MAGIC %pip install -r ../requirements.txt
+# MAGIC %pip install -r ../minimal_requirements.txt
 # MAGIC dbutils.library.restartPython()
 
 # COMMAND ----------

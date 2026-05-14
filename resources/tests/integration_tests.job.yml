@@ -50,6 +50,16 @@ resources:
               test_schema: "{{job.parameters.test_schema}}"
           libraries:
             - whl: ../../dist/*.whl
+            - pypi:
+                package: databricks-langchain==0.4.0
+            - pypi:
+                package: openai==1.56.1
+            - pypi:
+                package: openpyxl==3.1.5
+            - pypi:
+                package: deprecated==1.2.13
+            - pypi:
+                package: "nest-asyncio>=1.6.0,<2"
 
         - task_key: test_17_federation_mode
           max_retries: 1
@@ -61,6 +71,16 @@ resources:
               test_schema: "{{job.parameters.test_schema}}"
           libraries:
             - whl: ../../dist/*.whl
+            - pypi:
+                package: databricks-langchain==0.4.0
+            - pypi:
+                package: openai==1.56.1
+            - pypi:
+                package: openpyxl==3.1.5
+            - pypi:
+                package: deprecated==1.2.13
+            - pypi:
+                package: "nest-asyncio>=1.6.0,<2"
 
         - task_key: test_18_comment_overrides
           max_retries: 1
@@ -72,6 +92,16 @@ resources:
               test_schema: "{{job.parameters.test_schema}}"
           libraries:
             - whl: ../../dist/*.whl
+            - pypi:
+                package: databricks-langchain==0.4.0
+            - pypi:
+                package: openai==1.56.1
+            - pypi:
+                package: openpyxl==3.1.5
+            - pypi:
+                package: deprecated==1.2.13
+            - pypi:
+                package: "nest-asyncio>=1.6.0,<2"
 
         # VS endpoint lifecycle -- standalone, no deps, no LLM.
         # Run individually: databricks bundle run integration_tests -t dev --task test_vs_endpoint_lifecycle
@@ -82,6 +112,16 @@ resources:
             notebook_path: ../../notebooks/integration_tests/test_vs_endpoint_lifecycle.py
           libraries:
             - whl: ../../dist/*.whl
+            - pypi:
+                package: databricks-langchain==0.4.0
+            - pypi:
+                package: openai==1.56.1
+            - pypi:
+                package: openpyxl==3.1.5
+            - pypi:
+                package: deprecated==1.2.13
+            - pypi:
+                package: "nest-asyncio>=1.6.0,<2"
 
         # ----------------------------------------------------------------
         # Wave B: Core metadata generation tests (LLM calls, parallel clusters)
@@ -103,6 +143,16 @@ resources:
               test_schema: "{{job.parameters.test_schema}}"
           libraries:
             - whl: ../../dist/*.whl
+            - pypi:
+                package: databricks-langchain==0.4.0
+            - pypi:
+                package: openai==1.56.1
+            - pypi:
+                package: openpyxl==3.1.5
+            - pypi:
+                package: deprecated==1.2.13
+            - pypi:
+                package: "nest-asyncio>=1.6.0,<2"
 
         - task_key: test_03_apply_ddl_true
           max_retries: 1
@@ -116,6 +166,16 @@ resources:
               test_schema: "{{job.parameters.test_schema}}"
           libraries:
             - whl: ../../dist/*.whl
+            - pypi:
+                package: databricks-langchain==0.4.0
+            - pypi:
+                package: openai==1.56.1
+            - pypi:
+                package: openpyxl==3.1.5
+            - pypi:
+                package: deprecated==1.2.13
+            - pypi:
+                package: "nest-asyncio>=1.6.0,<2"
 
         - task_key: test_09_pi_classification_none
           max_retries: 1
@@ -129,6 +189,16 @@ resources:
               test_schema: "{{job.parameters.test_schema}}"
           libraries:
             - whl: ../../dist/*.whl
+            - pypi:
+                package: databricks-langchain==0.4.0
+            - pypi:
+                package: openai==1.56.1
+            - pypi:
+                package: openpyxl==3.1.5
+            - pypi:
+                package: deprecated==1.2.13
+            - pypi:
+                package: "nest-asyncio>=1.6.0,<2"
 
         - task_key: test_20_summarizer_bleedthrough
           max_retries: 1
@@ -142,6 +212,16 @@ resources:
               test_schema: "{{job.parameters.test_schema}}"
           libraries:
             - whl: ../../dist/*.whl
+            - pypi:
+                package: databricks-langchain==0.4.0
+            - pypi:
+                package: openai==1.56.1
+            - pypi:
+                package: openpyxl==3.1.5
+            - pypi:
+                package: deprecated==1.2.13
+            - pypi:
+                package: "nest-asyncio>=1.6.0,<2"
 
         # --- core_cluster_b: test_04, test_05, test_08 ---
 
@@ -157,6 +237,16 @@ resources:
               test_schema: "{{job.parameters.test_schema}}"
           libraries:
             - whl: ../../dist/*.whl
+            - pypi:
+                package: databricks-langchain==0.4.0
+            - pypi:
+                package: openai==1.56.1
+            - pypi:
+                package: openpyxl==3.1.5
+            - pypi:
+                package: deprecated==1.2.13
+            - pypi:
+                package: "nest-asyncio>=1.6.0,<2"
 
         - task_key: test_05_temp_table_cleanup
           max_retries: 1
@@ -170,6 +260,16 @@ resources:
               test_schema: "{{job.parameters.test_schema}}"
           libraries:
             - whl: ../../dist/*.whl
+            - pypi:
+                package: databricks-langchain==0.4.0
+            - pypi:
+                package: openai==1.56.1
+            - pypi:
+                package: openpyxl==3.1.5
+            - pypi:
+                package: deprecated==1.2.13
+            - pypi:
+                package: "nest-asyncio>=1.6.0,<2"
 
         - task_key: test_08_reviewed_ddl
           max_retries: 1
@@ -183,6 +283,16 @@ resources:
               test_schema: "{{job.parameters.test_schema}}"
           libraries:
             - whl: ../../dist/*.whl
+            - pypi:
+                package: databricks-langchain==0.4.0
+            - pypi:
+                package: openai==1.56.1
+            - pypi:
+                package: openpyxl==3.1.5
+            - pypi:
+                package: deprecated==1.2.13
+            - pypi:
+                package: "nest-asyncio>=1.6.0,<2"
 
         # --- integration_test_cluster: test_06, test_07 ---
 
@@ -198,6 +308,16 @@ resources:
               test_schema: "{{job.parameters.test_schema}}"
           libraries:
             - whl: ../../dist/*.whl
+            - pypi:
+                package: databricks-langchain==0.4.0
+            - pypi:
+                package: openai==1.56.1
+            - pypi:
+                package: openpyxl==3.1.5
+            - pypi:
+                package: deprecated==1.2.13
+            - pypi:
+                package: "nest-asyncio>=1.6.0,<2"
 
         - task_key: test_07_permissions
           max_retries: 1
@@ -211,6 +331,16 @@ resources:
               test_schema: "{{job.parameters.test_schema}}"
           libraries:
             - whl: ../../dist/*.whl
+            - pypi:
+                package: databricks-langchain==0.4.0
+            - pypi:
+                package: openai==1.56.1
+            - pypi:
+                package: openpyxl==3.1.5
+            - pypi:
+                package: deprecated==1.2.13
+            - pypi:
+                package: "nest-asyncio>=1.6.0,<2"
 
         # ----------------------------------------------------------------
         # Wave C: Concurrent task claiming test
@@ -228,6 +358,16 @@ resources:
               test_schema: "{{job.parameters.test_schema}}"
           libraries:
             - whl: ../../dist/*.whl
+            - pypi:
+                package: databricks-langchain==0.4.0
+            - pypi:
+                package: openai==1.56.1
+            - pypi:
+                package: openpyxl==3.1.5
+            - pypi:
+                package: deprecated==1.2.13
+            - pypi:
+                package: "nest-asyncio>=1.6.0,<2"
 
         - task_key: concurrent_task_1
           max_retries: 1
@@ -246,6 +386,16 @@ resources:
               grant_permissions_after_creation: "false"
           libraries:
             - whl: ../../dist/*.whl
+            - pypi:
+                package: databricks-langchain==0.4.0
+            - pypi:
+                package: openai==1.56.1
+            - pypi:
+                package: openpyxl==3.1.5
+            - pypi:
+                package: deprecated==1.2.13
+            - pypi:
+                package: "nest-asyncio>=1.6.0,<2"
 
         - task_key: concurrent_task_2
           max_retries: 1
@@ -264,6 +414,16 @@ resources:
               grant_permissions_after_creation: "false"
           libraries:
             - whl: ../../dist/*.whl
+            - pypi:
+                package: databricks-langchain==0.4.0
+            - pypi:
+                package: openai==1.56.1
+            - pypi:
+                package: openpyxl==3.1.5
+            - pypi:
+                package: deprecated==1.2.13
+            - pypi:
+                package: "nest-asyncio>=1.6.0,<2"
 
         - task_key: test_10_concurrent_validate
           max_retries: 1
@@ -279,6 +439,16 @@ resources:
               run_id: "{{job.parameters.run_id}}"
           libraries:
             - whl: ../../dist/*.whl
+            - pypi:
+                package: databricks-langchain==0.4.0
+            - pypi:
+                package: openai==1.56.1
+            - pypi:
+                package: openpyxl==3.1.5
+            - pypi:
+                package: deprecated==1.2.13
+            - pypi:
+                package: "nest-asyncio>=1.6.0,<2"
 
         # ----------------------------------------------------------------
         # Wave D: ETL pipeline tests (ML cluster, isolated schemas)
@@ -299,6 +469,16 @@ resources:
               test_schema: "{{job.parameters.test_schema}}"
           libraries:
             - whl: ../../dist/*.whl
+            - pypi:
+                package: databricks-langchain==0.4.0
+            - pypi:
+                package: openai==1.56.1
+            - pypi:
+                package: openpyxl==3.1.5
+            - pypi:
+                package: deprecated==1.2.13
+            - pypi:
+                package: "nest-asyncio>=1.6.0,<2"
 
         - task_key: test_12_knowledge_graph
           max_retries: 1
@@ -313,6 +493,16 @@ resources:
               skip_cleanup: "true"
           libraries:
             - whl: ../../dist/*.whl
+            - pypi:
+                package: databricks-langchain==0.4.0
+            - pypi:
+                package: openai==1.56.1
+            - pypi:
+                package: openpyxl==3.1.5
+            - pypi:
+                package: deprecated==1.2.13
+            - pypi:
+                package: "nest-asyncio>=1.6.0,<2"
 
         - task_key: test_16_analytics_pipeline
           max_retries: 1
@@ -327,6 +517,16 @@ resources:
               graph_test_schema: "{{tasks.test_12_knowledge_graph.values.graph_test_schema}}"
           libraries:
             - whl: ../../dist/*.whl
+            - pypi:
+                package: databricks-langchain==0.4.0
+            - pypi:
+                package: openai==1.56.1
+            - pypi:
+                package: openpyxl==3.1.5
+            - pypi:
+                package: deprecated==1.2.13
+            - pypi:
+                package: "nest-asyncio>=1.6.0,<2"
 
         - task_key: test_13_profiling
           max_retries: 1
@@ -340,6 +540,16 @@ resources:
               test_schema: "{{job.parameters.test_schema}}"
           libraries:
             - whl: ../../dist/*.whl
+            - pypi:
+                package: databricks-langchain==0.4.0
+            - pypi:
+                package: openai==1.56.1
+            - pypi:
+                package: openpyxl==3.1.5
+            - pypi:
+                package: deprecated==1.2.13
+            - pypi:
+                package: "nest-asyncio>=1.6.0,<2"
 
         - task_key: test_14_ontology
           max_retries: 1
@@ -353,6 +563,16 @@ resources:
               test_schema: "{{job.parameters.test_schema}}"
           libraries:
             - whl: ../../dist/*.whl
+            - pypi:
+                package: databricks-langchain==0.4.0
+            - pypi:
+                package: openai==1.56.1
+            - pypi:
+                package: openpyxl==3.1.5
+            - pypi:
+                package: deprecated==1.2.13
+            - pypi:
+                package: "nest-asyncio>=1.6.0,<2"
 
         # test_15_graph_validation skipped -- same_domain edge generation
         # changed; assertions need rewrite. Tracked as ON-7.
@@ -369,6 +589,16 @@ resources:
               test_schema: "{{job.parameters.test_schema}}"
           libraries:
             - whl: ../../dist/*.whl
+            - pypi:
+                package: databricks-langchain==0.4.0
+            - pypi:
+                package: openai==1.56.1
+            - pypi:
+                package: openpyxl==3.1.5
+            - pypi:
+                package: deprecated==1.2.13
+            - pypi:
+                package: "nest-asyncio>=1.6.0,<2"
 
         # ----------------------------------------------------------------
         # Wave E: E2E cluster compatibility tests (no deps, fully parallel)
@@ -385,6 +615,16 @@ resources:
               test_schema: "{{job.parameters.test_schema}}"
           libraries:
             - whl: ../../dist/*.whl
+            - pypi:
+                package: databricks-langchain==0.4.0
+            - pypi:
+                package: openai==1.56.1
+            - pypi:
+                package: openpyxl==3.1.5
+            - pypi:
+                package: deprecated==1.2.13
+            - pypi:
+                package: "nest-asyncio>=1.6.0,<2"
 
         - task_key: test_e2e_ml_cluster
           max_retries: 1
@@ -396,6 +636,16 @@ resources:
               test_schema: "{{job.parameters.test_schema}}"
           libraries:
             - whl: ../../dist/*.whl
+            - pypi:
+                package: databricks-langchain==0.4.0
+            - pypi:
+                package: openai==1.56.1
+            - pypi:
+                package: openpyxl==3.1.5
+            - pypi:
+                package: deprecated==1.2.13
+            - pypi:
+                package: "nest-asyncio>=1.6.0,<2"
 
         - task_key: test_e2e_standard_cluster
           max_retries: 1
@@ -407,6 +657,16 @@ resources:
               test_schema: "{{job.parameters.test_schema}}"
           libraries:
             - whl: ../../dist/*.whl
+            - pypi:
+                package: databricks-langchain==0.4.0
+            - pypi:
+                package: openai==1.56.1
+            - pypi:
+                package: openpyxl==3.1.5
+            - pypi:
+                package: deprecated==1.2.13
+            - pypi:
+                package: "nest-asyncio>=1.6.0,<2"
 
       # ------------------------------------------------------------------
       # Cluster definitions

@@ -1,12 +1,20 @@
 [project]
 name = "dbxmetagen"
-version = "0.9.2"
+version = "0.9.3+1778800617"
 description = "Generates comments and identifies and classifies other metadata for Delta tables in Databricks."
 readme = "README.md"
 authors = [{ name = "Eli Swanson", email = "eli.swanson@databricks.com" }]
 license = { text = "DB License" }
 requires-python = ">=3.10.12,<3.14.0"
-dependencies = [
+dependencies = []
+
+# All runtime deps are optional -- the wheel installs with zero dep resolution.
+# DBR ML Runtime provides the heavy packages (mlflow, ydata-profiling, etc.).
+# Non-DBR deps are added as pypi entries in job YAML libraries blocks.
+#   Local dev:  uv sync --extra all
+#   PI mode:    uv sync --extra all --extra pi
+[project.optional-dependencies]
+all = [
     "mlflow==3.6.0",
     "openai==1.56.1",
     "cloudpickle==3.1.0",
@@ -20,11 +28,6 @@ dependencies = [
     "requests==2.32.5",
     "nest-asyncio>=1.6.0,<2",
 ]
-
-# To install spaCy + Presidio for PI mode:
-#   uv sync --extra pi          (default: en_core_web_md)
-#   uv sync --extra pi-lg       (larger model: en_core_web_lg)
-[project.optional-dependencies]
 pi = [
     "spacy==3.8.7",
     "presidio-analyzer==2.2.358",

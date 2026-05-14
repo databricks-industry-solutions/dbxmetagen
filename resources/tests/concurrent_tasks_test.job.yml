@@ -37,6 +37,16 @@ resources:
               test_schema: "{{job.parameters.test_schema}}"
           libraries:
             - whl: ../../dist/*.whl
+            - pypi:
+                package: databricks-langchain==0.4.0
+            - pypi:
+                package: openai==1.56.1
+            - pypi:
+                package: openpyxl==3.1.5
+            - pypi:
+                package: deprecated==1.2.13
+            - pypi:
+                package: "nest-asyncio>=1.6.0,<2"
 
         # Step 2a: Concurrent task 1 - processes tables 1, 2, 3 (overlaps with task 2 on table 2)
         - task_key: concurrent_task_1
@@ -56,6 +66,16 @@ resources:
               grant_permissions_after_creation: "false"
           libraries:
             - whl: ../../dist/*.whl
+            - pypi:
+                package: databricks-langchain==0.4.0
+            - pypi:
+                package: openai==1.56.1
+            - pypi:
+                package: openpyxl==3.1.5
+            - pypi:
+                package: deprecated==1.2.13
+            - pypi:
+                package: "nest-asyncio>=1.6.0,<2"
 
         # Step 2b: Concurrent task 2 - processes tables 2, 3, 4 (overlaps with task 1 on table 2)
         - task_key: concurrent_task_2
@@ -75,6 +95,16 @@ resources:
               grant_permissions_after_creation: "false"
           libraries:
             - whl: ../../dist/*.whl
+            - pypi:
+                package: databricks-langchain==0.4.0
+            - pypi:
+                package: openai==1.56.1
+            - pypi:
+                package: openpyxl==3.1.5
+            - pypi:
+                package: deprecated==1.2.13
+            - pypi:
+                package: "nest-asyncio>=1.6.0,<2"
 
         # Step 3: Validate - check control table and logs
         - task_key: validate_results
@@ -91,6 +121,16 @@ resources:
               run_id: "{{job.parameters.run_id}}"
           libraries:
             - whl: ../../dist/*.whl
+            - pypi:
+                package: databricks-langchain==0.4.0
+            - pypi:
+                package: openai==1.56.1
+            - pypi:
+                package: openpyxl==3.1.5
+            - pypi:
+                package: deprecated==1.2.13
+            - pypi:
+                package: "nest-asyncio>=1.6.0,<2"
 
       job_clusters:
         - job_cluster_key: test_cluster

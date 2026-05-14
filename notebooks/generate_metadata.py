@@ -17,7 +17,7 @@
 # MAGIC # Library installs
 
 # COMMAND ----------
-# MAGIC %pip install -q -r ../requirements.txt
+# MAGIC %pip install -q -r ../minimal_requirements.txt
 # COMMAND ----------
 dbutils.widgets.text("mode", "comment", "Mode (comment, pi, domain)")
 dbutils.widgets.text("include_deterministic_pi", "true", "Run Presidio deterministic PI detection")

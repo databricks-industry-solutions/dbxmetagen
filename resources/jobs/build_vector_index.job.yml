@@ -36,6 +36,16 @@ resources:
               sweep_stale_docs: "{{job.parameters.sweep_stale_docs}}"
           libraries:
             - whl: ../../dist/*.whl
+            - pypi:
+                package: databricks-langchain==0.4.0
+            - pypi:
+                package: openai==1.56.1
+            - pypi:
+                package: openpyxl==3.1.5
+            - pypi:
+                package: deprecated==1.2.13
+            - pypi:
+                package: "nest-asyncio>=1.6.0,<2"
 
       job_clusters:
         - job_cluster_key: vector_index_cluster

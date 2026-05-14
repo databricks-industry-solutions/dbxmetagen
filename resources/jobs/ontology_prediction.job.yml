@@ -37,6 +37,16 @@ resources:
               schema_name: "{{job.parameters.schema_name}}"
           libraries:
             - whl: ../../dist/*.whl
+            - pypi:
+                package: databricks-langchain==0.4.0
+            - pypi:
+                package: openai==1.56.1
+            - pypi:
+                package: openpyxl==3.1.5
+            - pypi:
+                package: deprecated==1.2.13
+            - pypi:
+                package: "nest-asyncio>=1.6.0,<2"
 
         - task_key: build_column_kb
           max_retries: 1
@@ -50,6 +60,16 @@ resources:
               schema_name: "{{job.parameters.schema_name}}"
           libraries:
             - whl: ../../dist/*.whl
+            - pypi:
+                package: databricks-langchain==0.4.0
+            - pypi:
+                package: openai==1.56.1
+            - pypi:
+                package: openpyxl==3.1.5
+            - pypi:
+                package: deprecated==1.2.13
+            - pypi:
+                package: "nest-asyncio>=1.6.0,<2"
 
         # Stage 2: Build ontology (table + column level)
         - task_key: build_ontology
@@ -70,6 +90,16 @@ resources:
               apply_ddl: "{{job.parameters.apply_ddl}}"
           libraries:
             - whl: ../../dist/*.whl
+            - pypi:
+                package: databricks-langchain==0.4.0
+            - pypi:
+                package: openai==1.56.1
+            - pypi:
+                package: openpyxl==3.1.5
+            - pypi:
+                package: deprecated==1.2.13
+            - pypi:
+                package: "nest-asyncio>=1.6.0,<2"
 
         # Stage 3: Validate ontology
         - task_key: validate_ontology
@@ -86,6 +116,16 @@ resources:
               schema_name: "{{job.parameters.schema_name}}"
           libraries:
             - whl: ../../dist/*.whl
+            - pypi:
+                package: databricks-langchain==0.4.0
+            - pypi:
+                package: openai==1.56.1
+            - pypi:
+                package: openpyxl==3.1.5
+            - pypi:
+                package: deprecated==1.2.13
+            - pypi:
+                package: "nest-asyncio>=1.6.0,<2"
 
       job_clusters:
         - job_cluster_key: ontology_cluster

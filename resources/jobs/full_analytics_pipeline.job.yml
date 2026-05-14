@@ -70,6 +70,16 @@ resources:
               table_names: "{{job.parameters.table_names}}"
           libraries:
             - whl: ../../dist/*.whl
+            - pypi:
+                package: databricks-langchain==0.4.0
+            - pypi:
+                package: openai==1.56.1
+            - pypi:
+                package: openpyxl==3.1.5
+            - pypi:
+                package: deprecated==1.2.13
+            - pypi:
+                package: "nest-asyncio>=1.6.0,<2"
 
         - task_key: build_column_kb
           max_retries: 1
@@ -84,6 +94,16 @@ resources:
               table_names: "{{job.parameters.table_names}}"
           libraries:
             - whl: ../../dist/*.whl
+            - pypi:
+                package: databricks-langchain==0.4.0
+            - pypi:
+                package: openai==1.56.1
+            - pypi:
+                package: openpyxl==3.1.5
+            - pypi:
+                package: deprecated==1.2.13
+            - pypi:
+                package: "nest-asyncio>=1.6.0,<2"
 
         - task_key: build_schema_kb
           max_retries: 1
@@ -102,6 +122,16 @@ resources:
               incremental: "{{job.parameters.incremental}}"
           libraries:
             - whl: ../../dist/*.whl
+            - pypi:
+                package: databricks-langchain==0.4.0
+            - pypi:
+                package: openai==1.56.1
+            - pypi:
+                package: openpyxl==3.1.5
+            - pypi:
+                package: deprecated==1.2.13
+            - pypi:
+                package: "nest-asyncio>=1.6.0,<2"
 
         - task_key: extract_extended_metadata
           max_retries: 1
@@ -119,6 +149,16 @@ resources:
               table_names: "{{job.parameters.table_names}}"
           libraries:
             - whl: ../../dist/*.whl
+            - pypi:
+                package: databricks-langchain==0.4.0
+            - pypi:
+                package: openai==1.56.1
+            - pypi:
+                package: openpyxl==3.1.5
+            - pypi:
+                package: deprecated==1.2.13
+            - pypi:
+                package: "nest-asyncio>=1.6.0,<2"
 
         # Stage 2: Build knowledge graph (depends on all KB tasks)
         - task_key: build_knowledge_graph
@@ -141,6 +181,16 @@ resources:
           libraries:
             - whl: ../../dist/*.whl
             - pypi:
+                package: databricks-langchain==0.4.0
+            - pypi:
+                package: openai==1.56.1
+            - pypi:
+                package: openpyxl==3.1.5
+            - pypi:
+                package: deprecated==1.2.13
+            - pypi:
+                package: "nest-asyncio>=1.6.0,<2"
+            - pypi:
                 package: graphframes
 
         # Stage 3: Parallel branches - embeddings, profiling, ontology
@@ -160,6 +210,16 @@ resources:
               table_names: "{{job.parameters.table_names}}"
           libraries:
             - whl: ../../dist/*.whl
+            - pypi:
+                package: databricks-langchain==0.4.0
+            - pypi:
+                package: openai==1.56.1
+            - pypi:
+                package: openpyxl==3.1.5
+            - pypi:
+                package: deprecated==1.2.13
+            - pypi:
+                package: "nest-asyncio>=1.6.0,<2"
 
         - task_key: run_profiling
           max_retries: 1
@@ -177,6 +237,16 @@ resources:
               table_names: "{{job.parameters.table_names}}"
           libraries:
             - whl: ../../dist/*.whl
+            - pypi:
+                package: databricks-langchain==0.4.0
+            - pypi:
+                package: openai==1.56.1
+            - pypi:
+                package: openpyxl==3.1.5
+            - pypi:
+                package: deprecated==1.2.13
+            - pypi:
+                package: "nest-asyncio>=1.6.0,<2"
 
         - task_key: build_ontology_vector_index
           max_retries: 1
@@ -194,6 +264,16 @@ resources:
               endpoint_name: "{{job.parameters.endpoint_name}}"
           libraries:
             - whl: ../../dist/*.whl
+            - pypi:
+                package: databricks-langchain==0.4.0
+            - pypi:
+                package: openai==1.56.1
+            - pypi:
+                package: openpyxl==3.1.5
+            - pypi:
+                package: deprecated==1.2.13
+            - pypi:
+                package: "nest-asyncio>=1.6.0,<2"
 
         - task_key: build_ontology
           max_retries: 1
@@ -217,6 +297,16 @@ resources:
               apply_ddl: "{{job.parameters.apply_ddl}}"
           libraries:
             - whl: ../../dist/*.whl
+            - pypi:
+                package: databricks-langchain==0.4.0
+            - pypi:
+                package: openai==1.56.1
+            - pypi:
+                package: openpyxl==3.1.5
+            - pypi:
+                package: deprecated==1.2.13
+            - pypi:
+                package: "nest-asyncio>=1.6.0,<2"
 
         # Stage 4: Secondary tasks
         - task_key: build_similarity_edges
@@ -239,6 +329,16 @@ resources:
               incremental: "{{job.parameters.incremental}}"
           libraries:
             - whl: ../../dist/*.whl
+            - pypi:
+                package: databricks-langchain==0.4.0
+            - pypi:
+                package: openai==1.56.1
+            - pypi:
+                package: openpyxl==3.1.5
+            - pypi:
+                package: deprecated==1.2.13
+            - pypi:
+                package: "nest-asyncio>=1.6.0,<2"
 
         - task_key: cluster_analysis
           max_retries: 1
@@ -259,6 +359,16 @@ resources:
               incremental: "{{job.parameters.incremental}}"
           libraries:
             - whl: ../../dist/*.whl
+            - pypi:
+                package: databricks-langchain==0.4.0
+            - pypi:
+                package: openai==1.56.1
+            - pypi:
+                package: openpyxl==3.1.5
+            - pypi:
+                package: deprecated==1.2.13
+            - pypi:
+                package: "nest-asyncio>=1.6.0,<2"
 
         - task_key: compute_data_quality
           max_retries: 1
@@ -276,6 +386,16 @@ resources:
               incremental: "{{job.parameters.incremental}}"
           libraries:
             - whl: ../../dist/*.whl
+            - pypi:
+                package: databricks-langchain==0.4.0
+            - pypi:
+                package: openai==1.56.1
+            - pypi:
+                package: openpyxl==3.1.5
+            - pypi:
+                package: deprecated==1.2.13
+            - pypi:
+                package: "nest-asyncio>=1.6.0,<2"
 
         - task_key: validate_ontology
           max_retries: 1
@@ -292,6 +412,16 @@ resources:
               table_names: "{{job.parameters.table_names}}"
           libraries:
             - whl: ../../dist/*.whl
+            - pypi:
+                package: databricks-langchain==0.4.0
+            - pypi:
+                package: openai==1.56.1
+            - pypi:
+                package: openpyxl==3.1.5
+            - pypi:
+                package: deprecated==1.2.13
+            - pypi:
+                package: "nest-asyncio>=1.6.0,<2"
 
         # Stage 5: FK prediction (depends on similarity edges only)
         - task_key: predict_foreign_keys
@@ -319,6 +449,16 @@ resources:
               table_names: "{{job.parameters.table_names}}"
           libraries:
             - whl: ../../dist/*.whl
+            - pypi:
+                package: databricks-langchain==0.4.0
+            - pypi:
+                package: openai==1.56.1
+            - pypi:
+                package: openpyxl==3.1.5
+            - pypi:
+                package: deprecated==1.2.13
+            - pypi:
+                package: "nest-asyncio>=1.6.0,<2"
 
         # Stage 5b: Refresh ontology edges with FK evidence
         - task_key: refresh_ontology_edges
@@ -341,6 +481,16 @@ resources:
               incremental: "{{job.parameters.incremental}}"
           libraries:
             - whl: ../../dist/*.whl
+            - pypi:
+                package: databricks-langchain==0.4.0
+            - pypi:
+                package: openai==1.56.1
+            - pypi:
+                package: openpyxl==3.1.5
+            - pypi:
+                package: deprecated==1.2.13
+            - pypi:
+                package: "nest-asyncio>=1.6.0,<2"
 
         # Stage 6: Final analysis (depends on all previous tasks)
         - task_key: final_analysis
@@ -360,6 +510,16 @@ resources:
               schema_name: "{{job.parameters.schema_name}}"
           libraries:
             - whl: ../../dist/*.whl
+            - pypi:
+                package: databricks-langchain==0.4.0
+            - pypi:
+                package: openai==1.56.1
+            - pypi:
+                package: openpyxl==3.1.5
+            - pypi:
+                package: deprecated==1.2.13
+            - pypi:
+                package: "nest-asyncio>=1.6.0,<2"
 
         # Stage 6b: Community summaries (after final analysis, before VS index)
         - task_key: build_community_summaries
@@ -379,6 +539,16 @@ resources:
               incremental: "{{job.parameters.incremental}}"
           libraries:
             - whl: ../../dist/*.whl
+            - pypi:
+                package: databricks-langchain==0.4.0
+            - pypi:
+                package: openai==1.56.1
+            - pypi:
+                package: openpyxl==3.1.5
+            - pypi:
+                package: deprecated==1.2.13
+            - pypi:
+                package: "nest-asyncio>=1.6.0,<2"
 
         # Stage 7: Build vector search index (after all metadata is ready)
         - task_key: build_vector_index
@@ -400,6 +570,16 @@ resources:
               incremental: "{{job.parameters.incremental}}"
           libraries:
             - whl: ../../dist/*.whl
+            - pypi:
+                package: databricks-langchain==0.4.0
+            - pypi:
+                package: openai==1.56.1
+            - pypi:
+                package: openpyxl==3.1.5
+            - pypi:
+                package: deprecated==1.2.13
+            - pypi:
+                package: "nest-asyncio>=1.6.0,<2"
 
       job_clusters:
         - job_cluster_key: analytics_cluster
