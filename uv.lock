@@ -842,7 +842,7 @@ wheels = [
 
 [[package]]
 name = "dbxmetagen"
-version = "0.9.3"
+version = "0.9.3+1778800617"
 source = { editable = "." }
 
 [package.optional-dependencies]
