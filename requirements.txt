@@ -200,7 +200,7 @@ langchain-classic==1.0.3
     # via langchain-community
 langchain-community==0.4.1
     # via unitycatalog-langchain
-langchain-core==1.2.20
+langchain-core==1.3.3
     # via
     #   langchain
     #   langchain-classic
