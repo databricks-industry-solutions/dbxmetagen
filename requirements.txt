@@ -196,7 +196,7 @@ langchain==1.2.13
     # via
     #   databricks-langchain
     #   unitycatalog-langchain
-langchain-classic==1.0.3
+langchain-classic==1.0.7
     # via langchain-community
 langchain-community==0.4.1
     # via unitycatalog-langchain
