@@ -209,7 +209,7 @@ langchain-core==1.2.20
     #   langgraph
     #   langgraph-checkpoint
     #   langgraph-prebuilt
-langchain-text-splitters==1.1.1
+langchain-text-splitters==1.1.2
     # via langchain-classic
 langgraph==1.1.3
     # via langchain
