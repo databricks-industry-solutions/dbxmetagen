@@ -565,7 +565,7 @@ unitycatalog-client==0.4.0
     # via unitycatalog-ai
 unitycatalog-langchain==0.3.0
     # via databricks-langchain
-urllib3==2.6.3
+urllib3==2.7.0
     # via
     #   docker
     #   requests
