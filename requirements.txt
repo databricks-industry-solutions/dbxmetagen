@@ -371,7 +371,7 @@ patsy==1.0.2
     # via statsmodels
 phik==0.12.5
     # via ydata-profiling
-pillow==12.1.1
+pillow==12.2.0
     # via
     #   imagehash
     #   matplotlib
