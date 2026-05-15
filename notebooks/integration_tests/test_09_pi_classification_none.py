@@ -15,9 +15,9 @@ _include_det_pi = dbutils.widgets.get("include_deterministic_pi").strip().lower(
 if _include_det_pi:
     _spacy_model = dbutils.widgets.get("spacy_model_names").strip()
     if _spacy_model == "en_core_web_lg":
-        %pip install -q https://github.com/explosion/spacy-models/releases/download/en_core_web_lg-3.8.0/en_core_web_lg-3.8.0-py3-none-any.whl
+        %pip install -q spacy==3.8.7 presidio-analyzer==2.2.358 https://github.com/explosion/spacy-models/releases/download/en_core_web_lg-3.8.0/en_core_web_lg-3.8.0-py3-none-any.whl
     elif _spacy_model == "en_core_web_md":
-        %pip install -q https://github.com/explosion/spacy-models/releases/download/en_core_web_md-3.8.0/en_core_web_md-3.8.0-py3-none-any.whl
+        %pip install -q spacy==3.8.7 presidio-analyzer==2.2.358 https://github.com/explosion/spacy-models/releases/download/en_core_web_md-3.8.0/en_core_web_md-3.8.0-py3-none-any.whl
     else:
         raise ValueError(f"Invalid spaCy model: {_spacy_model}")
 dbutils.library.restartPython()

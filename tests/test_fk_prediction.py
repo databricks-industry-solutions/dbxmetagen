@@ -194,6 +194,81 @@ class TestUIDedup:
         rows.sort(key=lambda r: (r[2], -r[3], -r[4]))
         assert rows[0][4] == 9
 
+    def test_similarity_propagation_preserves_embedding_signal(self):
+        """Name-based wins source_rank dedup, but must keep embedding col_similarity."""
+        # (col_a, col_b, source_rank, col_similarity, table_similarity, query_hit_count)
+        embedding_row = ("x", "y", SR_EMBEDDING, 0.92, 0.85, 0)
+        name_row = ("x", "y", SR_NAME, 0.0, 0.0, 0)
+        rows = [embedding_row, name_row]
+
+        # Step 1: propagate max similarity across all sources per (col_a, col_b)
+        by_pair: dict[tuple, list] = {}
+        for r in rows:
+            by_pair.setdefault((r[0], r[1]), []).append(r)
+        propagated = []
+        for _key, group in by_pair.items():
+            max_col_sim = max(r[3] for r in group)
+            max_tbl_sim = max(r[4] for r in group)
+            for r in group:
+                propagated.append((r[0], r[1], r[2], max_col_sim, max_tbl_sim, r[5]))
+
+        # Step 2: dedup by source_rank (name=3 wins over embedding=5)
+        propagated.sort(key=lambda r: (r[2], -r[3], -r[5]))
+        winner = propagated[0]
+
+        assert winner[2] == SR_NAME, "name-based should win the dedup"
+        assert winner[3] == 0.92, "col_similarity from embedding must be preserved"
+        assert winner[4] == 0.85, "table_similarity from embedding must be preserved"
+
+
+# --- TestTableNameMatchStem ---
+
+
+class TestTableNameMatchStem:
+    """Verify that table_name_match strips dim_/fct_ prefixes before matching."""
+
+    @staticmethod
+    def _stem(table_short: str) -> str:
+        """Mirror the SQL: strip dim_/fct_/fact_/stg_ prefix, then trailing 's'."""
+        import re
+        s = re.sub(r"^(dim_|fct_|fact_|stg_)", "", table_short)
+        return re.sub(r"s$", "", s)
+
+    @staticmethod
+    def _matches(col_short: str, stem: str) -> bool:
+        import re
+        return bool(re.search(rf"(^|_){re.escape(stem)}(_|$)", col_short))
+
+    def test_index_code_matches_dim_index(self):
+        stem = self._stem("dim_index")
+        assert stem == "index"
+        assert self._matches("index_code", stem)
+
+    def test_security_id_matches_dim_security(self):
+        stem = self._stem("dim_security")
+        assert stem == "security"
+        assert self._matches("security_id", stem)
+
+    def test_account_id_matches_fct_accounts(self):
+        stem = self._stem("fct_accounts")
+        assert stem == "account"
+        assert self._matches("account_id", stem)
+
+    def test_status_does_not_match_dim_customer(self):
+        stem = self._stem("dim_customer")
+        assert stem == "customer"
+        assert not self._matches("status", stem)
+
+    def test_no_prefix_still_works(self):
+        stem = self._stem("orders")
+        assert stem == "order"
+        assert self._matches("order_id", stem)
+
+    def test_unrelated_col_no_match(self):
+        stem = self._stem("dim_product")
+        assert stem == "product"
+        assert not self._matches("customer_id", stem)
+
 
 # --- TestEnforceDirection ---
 

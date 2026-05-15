@@ -1,6 +1,6 @@
 [project]
 name = "dbxmetagen"
-version = "0.9.1"
+version = "0.9.2"
 description = "Generates comments and identifies and classifies other metadata for Delta tables in Databricks."
 readme = "README.md"
 authors = [{ name = "Eli Swanson", email = "eli.swanson@databricks.com" }]
@@ -15,22 +15,24 @@ dependencies = [
     "databricks-langchain==0.4.0",
     "databricks-sdk==0.68.0",
     "openpyxl==3.1.5",
-    "spacy==3.8.7",
-    "presidio-analyzer==2.2.358",
     "deprecated==1.2.13",
     "pyyaml==6.0.1",
     "requests==2.32.5",
     "nest-asyncio>=1.6.0,<2",
 ]
 
-# To install the spaCy model for PI mode:
+# To install spaCy + Presidio for PI mode:
 #   uv sync --extra pi          (default: en_core_web_md)
 #   uv sync --extra pi-lg       (larger model: en_core_web_lg)
 [project.optional-dependencies]
 pi = [
+    "spacy==3.8.7",
+    "presidio-analyzer==2.2.358",
     "en-core-web-md @ https://github.com/explosion/spacy-models/releases/download/en_core_web_md-3.8.0/en_core_web_md-3.8.0-py3-none-any.whl",
 ]
 pi-lg = [
+    "spacy==3.8.7",
+    "presidio-analyzer==2.2.358",
     "en-core-web-lg @ https://github.com/explosion/spacy-models/releases/download/en_core_web_lg-3.8.0/en_core_web_lg-3.8.0-py3-none-any.whl",
 ]
 ontology = ["rdflib>=6.3.0", "pyoxigraph>=0.3.0"]
