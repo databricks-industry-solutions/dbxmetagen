@@ -842,11 +842,9 @@ wheels = [
 
 [[package]]
 name = "dbxmetagen"
-version = "0.9.3+1778800617"
+version = "0.9.4"
 source = { editable = "." }
-
-[package.optional-dependencies]
-all = [
+dependencies = [
     { name = "cloudpickle" },
     { name = "databricks-langchain" },
     { name = "databricks-sdk" },
@@ -860,6 +858,8 @@ all = [
     { name = "requests" },
     { name = "ydata-profiling" },
 ]
+
+[package.optional-dependencies]
 ontology = [
     { name = "pyoxigraph" },
     { name = "rdflib" },
@@ -885,28 +885,28 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "cloudpickle", marker = "extra == 'all'", specifier = "==3.1.0" },
-    { name = "databricks-langchain", marker = "extra == 'all'", specifier = "==0.4.0" },
-    { name = "databricks-sdk", marker = "extra == 'all'", specifier = "==0.68.0" },
-    { name = "deprecated", marker = "extra == 'all'", specifier = "==1.2.13" },
+    { name = "cloudpickle", specifier = "==3.1.0" },
+    { name = "databricks-langchain", specifier = "==0.4.0" },
+    { name = "databricks-sdk", specifier = "==0.68.0" },
+    { name = "deprecated", specifier = "==1.2.13" },
     { name = "en-core-web-lg", marker = "extra == 'pi-lg'", url = "https://github.com/explosion/spacy-models/releases/download/en_core_web_lg-3.8.0/en_core_web_lg-3.8.0-py3-none-any.whl" },
     { name = "en-core-web-md", marker = "extra == 'pi'", url = "https://github.com/explosion/spacy-models/releases/download/en_core_web_md-3.8.0/en_core_web_md-3.8.0-py3-none-any.whl" },
-    { name = "mlflow", marker = "extra == 'all'", specifier = "==3.6.0" },
-    { name = "nest-asyncio", marker = "extra == 'all'", specifier = ">=1.6.0,<2" },
-    { name = "openai", marker = "extra == 'all'", specifier = "==1.56.1" },
-    { name = "openpyxl", marker = "extra == 'all'", specifier = "==3.1.5" },
+    { name = "mlflow", specifier = "==3.6.0" },
+    { name = "nest-asyncio", specifier = ">=1.6.0,<2" },
+    { name = "openai", specifier = "==1.56.1" },
+    { name = "openpyxl", specifier = "==3.1.5" },
     { name = "presidio-analyzer", marker = "extra == 'pi'", specifier = "==2.2.358" },
     { name = "presidio-analyzer", marker = "extra == 'pi-lg'", specifier = "==2.2.358" },
-    { name = "pydantic", marker = "extra == 'all'", specifier = "==2.10.3" },
+    { name = "pydantic", specifier = "==2.10.3" },
     { name = "pyoxigraph", marker = "extra == 'ontology'", specifier = ">=0.3.0" },
-    { name = "pyyaml", marker = "extra == 'all'", specifier = "==6.0.1" },
+    { name = "pyyaml", specifier = "==6.0.1" },
     { name = "rdflib", marker = "extra == 'ontology'", specifier = ">=6.3.0" },
-    { name = "requests", marker = "extra == 'all'", specifier = "==2.32.5" },
+    { name = "requests", specifier = "==2.32.5" },
     { name = "spacy", marker = "extra == 'pi'", specifier = "==3.8.7" },
     { name = "spacy", marker = "extra == 'pi-lg'", specifier = "==3.8.7" },
-    { name = "ydata-profiling", marker = "extra == 'all'", specifier = ">=4.12.1,<5" },
+    { name = "ydata-profiling", specifier = ">=4.12.1,<5" },
 ]
-provides-extras = ["all", "pi", "pi-lg", "ontology"]
+provides-extras = ["pi", "pi-lg", "ontology"]
 
 [package.metadata.requires-dev]
 dev = [

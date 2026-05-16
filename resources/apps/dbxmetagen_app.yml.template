@@ -32,7 +32,7 @@ resources:
           job:
             id: ${resources.jobs.full_analytics_pipeline_job.id}
             permission: CAN_MANAGE_RUN
-        - name: full_analytics_pipeline_serverless_job
+        - name: analytics_serverless_job
           job:
             id: ${resources.jobs.full_analytics_pipeline_serverless_job.id}
             permission: CAN_MANAGE_RUN
