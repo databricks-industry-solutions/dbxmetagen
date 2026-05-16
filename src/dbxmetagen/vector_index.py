@@ -315,31 +315,59 @@ class VectorIndexBuilder:
             WHERE o.confidence >= 0.4
         """
 
+        # Single CTE for all three metric view document tiers (parsed once)
+        _kb = cfg.fq('table_knowledge_base')
+        _defs = cfg.fq('metric_view_definitions')
+        _null_cols = (
+            "CAST(NULL AS STRING) AS catalog_name, CAST(NULL AS STRING) AS schema_name, "
+            "p.source_table AS table_name, kb.domain AS domain, kb.subdomain AS subdomain, "
+            "CAST(NULL AS STRING) AS entity_type, CAST(NULL AS BOOLEAN) AS has_pii, "
+            "CAST(NULL AS BOOLEAN) AS has_phi, CAST(NULL AS STRING) AS security_level, "
+            "CAST(NULL AS STRING) AS data_type, CAST(NULL AS FLOAT) AS confidence_score, "
+            "current_timestamp() AS updated_at"
+        )
+        _join = f"FROM mv_base p LEFT JOIN {_kb} kb ON p.source_table = kb.table_name"
+
         metric_docs = f"""
-            SELECT
-                CONCAT('metric_view::', m.definition_id) AS doc_id,
-                'metric_view' AS doc_type,
-                m.definition_id AS node_id,
-                CONCAT(
-                    COALESCE(m.metric_view_name, ''), '\\n',
-                    'Source: ', COALESCE(m.source_table, ''), '\\n',
-                    'Questions: ', COALESCE(m.source_questions, ''), '\\n',
-                    'Measures/Dimensions: ', SUBSTRING(COALESCE(m.json_definition, ''), 1, 2000)
-                ) AS content,
-                CAST(NULL AS STRING) AS catalog_name,
-                CAST(NULL AS STRING) AS schema_name,
-                m.source_table AS table_name,
-                CAST(NULL AS STRING) AS domain,
-                CAST(NULL AS STRING) AS subdomain,
-                CAST(NULL AS STRING) AS entity_type,
-                CAST(NULL AS BOOLEAN) AS has_pii,
-                CAST(NULL AS BOOLEAN) AS has_phi,
-                CAST(NULL AS STRING) AS security_level,
-                CAST(NULL AS STRING) AS data_type,
-                CAST(NULL AS FLOAT) AS confidence_score,
-                current_timestamp() AS updated_at
-            FROM {cfg.fq('metric_view_definitions')} m
-            WHERE m.status IN ('validated', 'applied')
+            WITH mv_base AS (
+                SELECT
+                    m.definition_id, m.metric_view_name, m.source_table, m.source_questions,
+                    CONCAT(COALESCE(m.deployed_catalog, '{cfg.catalog_name}'), '.', COALESCE(m.deployed_schema, '{cfg.schema_name}'), '.', m.metric_view_name) AS mv_fqn,
+                    FROM_JSON(m.json_definition, 'STRUCT<comment:STRING>').comment AS mv_comment,
+                    FROM_JSON(m.json_definition, 'STRUCT<filter:STRING>').filter AS mv_filter,
+                    CONCAT_WS('\\n', TRANSFORM(
+                        FROM_JSON(m.json_definition, 'STRUCT<measures:ARRAY<STRUCT<name:STRING,expr:STRING,comment:STRING,synonyms:ARRAY<STRING>,format:STRUCT<type:STRING,currency_code:STRING>>>>').measures,
+                        x -> CONCAT('- ', x.name, ': ', COALESCE(x.comment, ''), ' [', COALESCE(x.expr, ''), ']',
+                                    CASE WHEN x.format IS NOT NULL THEN CONCAT(' (', x.format.type, COALESCE(CONCAT(' ', x.format.currency_code), ''), ')') ELSE '' END,
+                                    CASE WHEN x.synonyms IS NOT NULL THEN CONCAT(' (aka: ', ARRAY_JOIN(x.synonyms, ', '), ')') ELSE '' END)
+                    )) AS measure_lines,
+                    CONCAT_WS('\\n', TRANSFORM(
+                        FROM_JSON(m.json_definition, 'STRUCT<dimensions:ARRAY<STRUCT<name:STRING,expr:STRING,comment:STRING,synonyms:ARRAY<STRING>>>>').dimensions,
+                        x -> CONCAT('- ', x.name, ': ', COALESCE(x.comment, ''), ' [', COALESCE(x.expr, ''), ']',
+                                    CASE WHEN x.synonyms IS NOT NULL THEN CONCAT(' (aka: ', ARRAY_JOIN(x.synonyms, ', '), ')') ELSE '' END)
+                    )) AS dimension_lines,
+                    CONCAT_WS('\\n', TRANSFORM(
+                        FROM_JSON(m.json_definition, 'STRUCT<joins:ARRAY<STRUCT<name:STRING,source:STRING,on:STRING>>>').joins,
+                        x -> CONCAT('- ', x.name, ': ', COALESCE(x.source, ''), ' ON ', COALESCE(x.on, ''))
+                    )) AS join_lines,
+                    COALESCE(CONCAT('Keywords: ', ARRAY_JOIN(ARRAY_UNION(
+                        FLATTEN(TRANSFORM(FROM_JSON(m.json_definition, 'STRUCT<measures:ARRAY<STRUCT<synonyms:ARRAY<STRING>>>>').measures, x -> COALESCE(x.synonyms, ARRAY()))),
+                        FLATTEN(TRANSFORM(FROM_JSON(m.json_definition, 'STRUCT<dimensions:ARRAY<STRUCT<synonyms:ARRAY<STRING>>>>').dimensions, x -> COALESCE(x.synonyms, ARRAY())))
+                    ), ', ')), '') AS all_synonyms_line
+                FROM {_defs} m WHERE m.status IN ('validated', 'applied')
+            )
+            SELECT CONCAT('metric_view_summary::', p.definition_id) AS doc_id, 'metric_view_summary' AS doc_type, p.definition_id AS node_id,
+                CONCAT(p.mv_fqn, '\\n', COALESCE(p.mv_comment, ''), '\\n', 'Domain: ', COALESCE(kb.domain, ''), ' / ', COALESCE(kb.subdomain, ''), '\\n',
+                       'Source: ', COALESCE(p.source_table, ''), '\\n', 'Questions: ', COALESCE(p.source_questions, ''), '\\n', COALESCE(p.all_synonyms_line, '')) AS content,
+                {_null_cols} {_join}
+            UNION ALL
+            SELECT CONCAT('metric_view_measures::', p.definition_id) AS doc_id, 'metric_view_measures' AS doc_type, p.definition_id AS node_id,
+                CONCAT(p.mv_fqn, '\\nMeasures:\\n', COALESCE(p.measure_lines, '(none)'), '\\n', COALESCE(p.all_synonyms_line, '')) AS content,
+                {_null_cols} {_join}
+            UNION ALL
+            SELECT CONCAT('metric_view_schema::', p.definition_id) AS doc_id, 'metric_view_schema' AS doc_type, p.definition_id AS node_id,
+                CONCAT(p.mv_fqn, '\\nDimensions:\\n', COALESCE(p.dimension_lines, '(none)'), '\\nJoins:\\n', COALESCE(p.join_lines, '(none)'), '\\nFilter: ', COALESCE(p.mv_filter, '(none)')) AS content,
+                {_null_cols} {_join}
         """
 
         fk_docs = f"""
@@ -465,10 +493,28 @@ class VectorIndexBuilder:
              f" AND node_id NOT IN"
              f" (SELECT entity_id FROM {cfg.fq('ontology_entities')}"
              f" WHERE confidence >= 0.4)"),
+            # One-time migration: remove legacy single-doc metric_view entries
             ("metric_view", "metric_view_definitions",
+             f"SELECT 1 FROM {docs} WHERE doc_type = 'metric_view' LIMIT 1",
+             f"DELETE FROM {docs} WHERE doc_type = 'metric_view'"),
+            ("metric_view_summary", "metric_view_definitions",
              f"SELECT 1 FROM {cfg.fq('metric_view_definitions')}"
              f" WHERE status IN ('validated', 'applied') LIMIT 1",
-             f"DELETE FROM {docs} WHERE doc_type = 'metric_view'"
+             f"DELETE FROM {docs} WHERE doc_type = 'metric_view_summary'"
+             f" AND node_id NOT IN"
+             f" (SELECT definition_id FROM {cfg.fq('metric_view_definitions')}"
+             f" WHERE status IN ('validated', 'applied'))"),
+            ("metric_view_measures", "metric_view_definitions",
+             f"SELECT 1 FROM {cfg.fq('metric_view_definitions')}"
+             f" WHERE status IN ('validated', 'applied') LIMIT 1",
+             f"DELETE FROM {docs} WHERE doc_type = 'metric_view_measures'"
+             f" AND node_id NOT IN"
+             f" (SELECT definition_id FROM {cfg.fq('metric_view_definitions')}"
+             f" WHERE status IN ('validated', 'applied'))"),
+            ("metric_view_schema", "metric_view_definitions",
+             f"SELECT 1 FROM {cfg.fq('metric_view_definitions')}"
+             f" WHERE status IN ('validated', 'applied') LIMIT 1",
+             f"DELETE FROM {docs} WHERE doc_type = 'metric_view_schema'"
              f" AND node_id NOT IN"
              f" (SELECT definition_id FROM {cfg.fq('metric_view_definitions')}"
              f" WHERE status IN ('validated', 'applied'))"),
