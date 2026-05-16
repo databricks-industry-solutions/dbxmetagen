@@ -5,6 +5,9 @@ variables:
   schema_name:
     description: Primary schema where data, models, and files are written to for this project. This is not the source schema, which is specified elsewhere with the source table name.
     default: metadata_results
+  vs_endpoint_name:
+    description: Vector Search endpoint name for ontology and metadata indexes. The endpoint is auto-created if it does not exist. Override per environment via vs_endpoint_name in your .env file.
+    default: dbxmetagen-vs
   allow_data:
     description: Set this to false if you do not want data sent to LLMs, do not want any metadata stored in comments, and do not want metadata used that could leak data into metadata. Reduces quality of outputs. Internally sets sample_size to 0, allow_data_in_comments to false, and include_possible_data_fields_in_metadata to false.
     default: True

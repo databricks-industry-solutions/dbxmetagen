@@ -53,7 +53,7 @@ resources:
         - name: sweep_stale_docs
           default: "false"
         - name: endpoint_name
-          default: "dbxmetagen-vs"
+          default: ${var.vs_endpoint_name}
 
       tasks:
         # Stage 1: Build knowledge bases (table, column, schema in parallel after table KB)
@@ -69,7 +69,7 @@ resources:
               schema_name: "{{job.parameters.schema_name}}"
               table_names: "{{job.parameters.table_names}}"
           libraries:
-            - whl: ../../dist/*.whl
+            # - whl: ../../dist/*.whl  # installed via %pip in notebook
             - pypi:
                 package: databricks-langchain==0.4.0
             - pypi:
@@ -80,6 +80,20 @@ resources:
                 package: deprecated==1.2.13
             - pypi:
                 package: "nest-asyncio>=1.6.0,<2"
+            - pypi:
+                package: mlflow==3.6.0
+            - pypi:
+                package: cloudpickle==3.1.0
+            - pypi:
+                package: pydantic==2.10.3
+            - pypi:
+                package: "ydata-profiling>=4.12.1,<5"
+            - pypi:
+                package: databricks-sdk==0.68.0
+            - pypi:
+                package: pyyaml==6.0.1
+            - pypi:
+                package: requests==2.32.5
 
         - task_key: build_column_kb
           max_retries: 1
@@ -93,7 +107,7 @@ resources:
               schema_name: "{{job.parameters.schema_name}}"
               table_names: "{{job.parameters.table_names}}"
           libraries:
-            - whl: ../../dist/*.whl
+            # - whl: ../../dist/*.whl  # installed via %pip in notebook
             - pypi:
                 package: databricks-langchain==0.4.0
             - pypi:
@@ -104,6 +118,20 @@ resources:
                 package: deprecated==1.2.13
             - pypi:
                 package: "nest-asyncio>=1.6.0,<2"
+            - pypi:
+                package: mlflow==3.6.0
+            - pypi:
+                package: cloudpickle==3.1.0
+            - pypi:
+                package: pydantic==2.10.3
+            - pypi:
+                package: "ydata-profiling>=4.12.1,<5"
+            - pypi:
+                package: databricks-sdk==0.68.0
+            - pypi:
+                package: pyyaml==6.0.1
+            - pypi:
+                package: requests==2.32.5
 
         - task_key: build_schema_kb
           max_retries: 1
@@ -121,7 +149,7 @@ resources:
               table_names: "{{job.parameters.table_names}}"
               incremental: "{{job.parameters.incremental}}"
           libraries:
-            - whl: ../../dist/*.whl
+            # - whl: ../../dist/*.whl  # installed via %pip in notebook
             - pypi:
                 package: databricks-langchain==0.4.0
             - pypi:
@@ -132,6 +160,20 @@ resources:
                 package: deprecated==1.2.13
             - pypi:
                 package: "nest-asyncio>=1.6.0,<2"
+            - pypi:
+                package: mlflow==3.6.0
+            - pypi:
+                package: cloudpickle==3.1.0
+            - pypi:
+                package: pydantic==2.10.3
+            - pypi:
+                package: "ydata-profiling>=4.12.1,<5"
+            - pypi:
+                package: databricks-sdk==0.68.0
+            - pypi:
+                package: pyyaml==6.0.1
+            - pypi:
+                package: requests==2.32.5
 
         - task_key: extract_extended_metadata
           max_retries: 1
@@ -148,7 +190,7 @@ resources:
               incremental: "{{job.parameters.incremental}}"
               table_names: "{{job.parameters.table_names}}"
           libraries:
-            - whl: ../../dist/*.whl
+            # - whl: ../../dist/*.whl  # installed via %pip in notebook
             - pypi:
                 package: databricks-langchain==0.4.0
             - pypi:
@@ -159,6 +201,20 @@ resources:
                 package: deprecated==1.2.13
             - pypi:
                 package: "nest-asyncio>=1.6.0,<2"
+            - pypi:
+                package: mlflow==3.6.0
+            - pypi:
+                package: cloudpickle==3.1.0
+            - pypi:
+                package: pydantic==2.10.3
+            - pypi:
+                package: "ydata-profiling>=4.12.1,<5"
+            - pypi:
+                package: databricks-sdk==0.68.0
+            - pypi:
+                package: pyyaml==6.0.1
+            - pypi:
+                package: requests==2.32.5
 
         # Stage 2: Build knowledge graph (depends on all KB tasks)
         - task_key: build_knowledge_graph
@@ -179,7 +235,7 @@ resources:
               sweep_stale_edges: "{{job.parameters.sweep_stale_edges}}"
               incremental: "{{job.parameters.incremental}}"
           libraries:
-            - whl: ../../dist/*.whl
+            # - whl: ../../dist/*.whl  # installed via %pip in notebook
             - pypi:
                 package: databricks-langchain==0.4.0
             - pypi:
@@ -190,6 +246,20 @@ resources:
                 package: deprecated==1.2.13
             - pypi:
                 package: "nest-asyncio>=1.6.0,<2"
+            - pypi:
+                package: mlflow==3.6.0
+            - pypi:
+                package: cloudpickle==3.1.0
+            - pypi:
+                package: pydantic==2.10.3
+            - pypi:
+                package: "ydata-profiling>=4.12.1,<5"
+            - pypi:
+                package: databricks-sdk==0.68.0
+            - pypi:
+                package: pyyaml==6.0.1
+            - pypi:
+                package: requests==2.32.5
             - pypi:
                 package: graphframes
 
@@ -209,7 +279,7 @@ resources:
               schema_name: "{{job.parameters.schema_name}}"
               table_names: "{{job.parameters.table_names}}"
           libraries:
-            - whl: ../../dist/*.whl
+            # - whl: ../../dist/*.whl  # installed via %pip in notebook
             - pypi:
                 package: databricks-langchain==0.4.0
             - pypi:
@@ -220,6 +290,20 @@ resources:
                 package: deprecated==1.2.13
             - pypi:
                 package: "nest-asyncio>=1.6.0,<2"
+            - pypi:
+                package: mlflow==3.6.0
+            - pypi:
+                package: cloudpickle==3.1.0
+            - pypi:
+                package: pydantic==2.10.3
+            - pypi:
+                package: "ydata-profiling>=4.12.1,<5"
+            - pypi:
+                package: databricks-sdk==0.68.0
+            - pypi:
+                package: pyyaml==6.0.1
+            - pypi:
+                package: requests==2.32.5
 
         - task_key: run_profiling
           max_retries: 1
@@ -236,7 +320,7 @@ resources:
               incremental: "{{job.parameters.incremental}}"
               table_names: "{{job.parameters.table_names}}"
           libraries:
-            - whl: ../../dist/*.whl
+            # - whl: ../../dist/*.whl  # installed via %pip in notebook
             - pypi:
                 package: databricks-langchain==0.4.0
             - pypi:
@@ -247,6 +331,20 @@ resources:
                 package: deprecated==1.2.13
             - pypi:
                 package: "nest-asyncio>=1.6.0,<2"
+            - pypi:
+                package: mlflow==3.6.0
+            - pypi:
+                package: cloudpickle==3.1.0
+            - pypi:
+                package: pydantic==2.10.3
+            - pypi:
+                package: "ydata-profiling>=4.12.1,<5"
+            - pypi:
+                package: databricks-sdk==0.68.0
+            - pypi:
+                package: pyyaml==6.0.1
+            - pypi:
+                package: requests==2.32.5
 
         - task_key: build_ontology_vector_index
           max_retries: 1
@@ -263,7 +361,7 @@ resources:
               ontology_bundle: "{{job.parameters.ontology_bundle}}"
               endpoint_name: "{{job.parameters.endpoint_name}}"
           libraries:
-            - whl: ../../dist/*.whl
+            # - whl: ../../dist/*.whl  # installed via %pip in notebook
             - pypi:
                 package: databricks-langchain==0.4.0
             - pypi:
@@ -274,6 +372,20 @@ resources:
                 package: deprecated==1.2.13
             - pypi:
                 package: "nest-asyncio>=1.6.0,<2"
+            - pypi:
+                package: mlflow==3.6.0
+            - pypi:
+                package: cloudpickle==3.1.0
+            - pypi:
+                package: pydantic==2.10.3
+            - pypi:
+                package: "ydata-profiling>=4.12.1,<5"
+            - pypi:
+                package: databricks-sdk==0.68.0
+            - pypi:
+                package: pyyaml==6.0.1
+            - pypi:
+                package: requests==2.32.5
 
         - task_key: build_ontology
           max_retries: 1
@@ -296,7 +408,7 @@ resources:
               table_names: "{{job.parameters.table_names}}"
               apply_ddl: "{{job.parameters.apply_ddl}}"
           libraries:
-            - whl: ../../dist/*.whl
+            # - whl: ../../dist/*.whl  # installed via %pip in notebook
             - pypi:
                 package: databricks-langchain==0.4.0
             - pypi:
@@ -307,6 +419,20 @@ resources:
                 package: deprecated==1.2.13
             - pypi:
                 package: "nest-asyncio>=1.6.0,<2"
+            - pypi:
+                package: mlflow==3.6.0
+            - pypi:
+                package: cloudpickle==3.1.0
+            - pypi:
+                package: pydantic==2.10.3
+            - pypi:
+                package: "ydata-profiling>=4.12.1,<5"
+            - pypi:
+                package: databricks-sdk==0.68.0
+            - pypi:
+                package: pyyaml==6.0.1
+            - pypi:
+                package: requests==2.32.5
 
         # Stage 4: Secondary tasks
         - task_key: build_similarity_edges
@@ -328,7 +454,7 @@ resources:
               table_names: "{{job.parameters.table_names}}"
               incremental: "{{job.parameters.incremental}}"
           libraries:
-            - whl: ../../dist/*.whl
+            # - whl: ../../dist/*.whl  # installed via %pip in notebook
             - pypi:
                 package: databricks-langchain==0.4.0
             - pypi:
@@ -339,6 +465,20 @@ resources:
                 package: deprecated==1.2.13
             - pypi:
                 package: "nest-asyncio>=1.6.0,<2"
+            - pypi:
+                package: mlflow==3.6.0
+            - pypi:
+                package: cloudpickle==3.1.0
+            - pypi:
+                package: pydantic==2.10.3
+            - pypi:
+                package: "ydata-profiling>=4.12.1,<5"
+            - pypi:
+                package: databricks-sdk==0.68.0
+            - pypi:
+                package: pyyaml==6.0.1
+            - pypi:
+                package: requests==2.32.5
 
         - task_key: cluster_analysis
           max_retries: 1
@@ -358,7 +498,7 @@ resources:
               table_names: "{{job.parameters.table_names}}"
               incremental: "{{job.parameters.incremental}}"
           libraries:
-            - whl: ../../dist/*.whl
+            # - whl: ../../dist/*.whl  # installed via %pip in notebook
             - pypi:
                 package: databricks-langchain==0.4.0
             - pypi:
@@ -369,6 +509,20 @@ resources:
                 package: deprecated==1.2.13
             - pypi:
                 package: "nest-asyncio>=1.6.0,<2"
+            - pypi:
+                package: mlflow==3.6.0
+            - pypi:
+                package: cloudpickle==3.1.0
+            - pypi:
+                package: pydantic==2.10.3
+            - pypi:
+                package: "ydata-profiling>=4.12.1,<5"
+            - pypi:
+                package: databricks-sdk==0.68.0
+            - pypi:
+                package: pyyaml==6.0.1
+            - pypi:
+                package: requests==2.32.5
 
         - task_key: compute_data_quality
           max_retries: 1
@@ -385,7 +539,7 @@ resources:
               table_names: "{{job.parameters.table_names}}"
               incremental: "{{job.parameters.incremental}}"
           libraries:
-            - whl: ../../dist/*.whl
+            # - whl: ../../dist/*.whl  # installed via %pip in notebook
             - pypi:
                 package: databricks-langchain==0.4.0
             - pypi:
@@ -396,6 +550,20 @@ resources:
                 package: deprecated==1.2.13
             - pypi:
                 package: "nest-asyncio>=1.6.0,<2"
+            - pypi:
+                package: mlflow==3.6.0
+            - pypi:
+                package: cloudpickle==3.1.0
+            - pypi:
+                package: pydantic==2.10.3
+            - pypi:
+                package: "ydata-profiling>=4.12.1,<5"
+            - pypi:
+                package: databricks-sdk==0.68.0
+            - pypi:
+                package: pyyaml==6.0.1
+            - pypi:
+                package: requests==2.32.5
 
         - task_key: validate_ontology
           max_retries: 1
@@ -411,7 +579,7 @@ resources:
               schema_name: "{{job.parameters.schema_name}}"
               table_names: "{{job.parameters.table_names}}"
           libraries:
-            - whl: ../../dist/*.whl
+            # - whl: ../../dist/*.whl  # installed via %pip in notebook
             - pypi:
                 package: databricks-langchain==0.4.0
             - pypi:
@@ -422,6 +590,20 @@ resources:
                 package: deprecated==1.2.13
             - pypi:
                 package: "nest-asyncio>=1.6.0,<2"
+            - pypi:
+                package: mlflow==3.6.0
+            - pypi:
+                package: cloudpickle==3.1.0
+            - pypi:
+                package: pydantic==2.10.3
+            - pypi:
+                package: "ydata-profiling>=4.12.1,<5"
+            - pypi:
+                package: databricks-sdk==0.68.0
+            - pypi:
+                package: pyyaml==6.0.1
+            - pypi:
+                package: requests==2.32.5
 
         # Stage 5: FK prediction (depends on similarity edges only)
         - task_key: predict_foreign_keys
@@ -448,7 +630,7 @@ resources:
               sweep_stale_edges: "{{job.parameters.sweep_stale_edges}}"
               table_names: "{{job.parameters.table_names}}"
           libraries:
-            - whl: ../../dist/*.whl
+            # - whl: ../../dist/*.whl  # installed via %pip in notebook
             - pypi:
                 package: databricks-langchain==0.4.0
             - pypi:
@@ -459,6 +641,20 @@ resources:
                 package: deprecated==1.2.13
             - pypi:
                 package: "nest-asyncio>=1.6.0,<2"
+            - pypi:
+                package: mlflow==3.6.0
+            - pypi:
+                package: cloudpickle==3.1.0
+            - pypi:
+                package: pydantic==2.10.3
+            - pypi:
+                package: "ydata-profiling>=4.12.1,<5"
+            - pypi:
+                package: databricks-sdk==0.68.0
+            - pypi:
+                package: pyyaml==6.0.1
+            - pypi:
+                package: requests==2.32.5
 
         # Stage 5b: Refresh ontology edges with FK evidence
         - task_key: refresh_ontology_edges
@@ -480,7 +676,7 @@ resources:
               sweep_stale_edges: "{{job.parameters.sweep_stale_edges}}"
               incremental: "{{job.parameters.incremental}}"
           libraries:
-            - whl: ../../dist/*.whl
+            # - whl: ../../dist/*.whl  # installed via %pip in notebook
             - pypi:
                 package: databricks-langchain==0.4.0
             - pypi:
@@ -491,6 +687,20 @@ resources:
                 package: deprecated==1.2.13
             - pypi:
                 package: "nest-asyncio>=1.6.0,<2"
+            - pypi:
+                package: mlflow==3.6.0
+            - pypi:
+                package: cloudpickle==3.1.0
+            - pypi:
+                package: pydantic==2.10.3
+            - pypi:
+                package: "ydata-profiling>=4.12.1,<5"
+            - pypi:
+                package: databricks-sdk==0.68.0
+            - pypi:
+                package: pyyaml==6.0.1
+            - pypi:
+                package: requests==2.32.5
 
         # Stage 6: Final analysis (depends on all previous tasks)
         - task_key: final_analysis
@@ -509,7 +719,7 @@ resources:
               catalog_name: "{{job.parameters.catalog_name}}"
               schema_name: "{{job.parameters.schema_name}}"
           libraries:
-            - whl: ../../dist/*.whl
+            # - whl: ../../dist/*.whl  # installed via %pip in notebook
             - pypi:
                 package: databricks-langchain==0.4.0
             - pypi:
@@ -520,6 +730,20 @@ resources:
                 package: deprecated==1.2.13
             - pypi:
                 package: "nest-asyncio>=1.6.0,<2"
+            - pypi:
+                package: mlflow==3.6.0
+            - pypi:
+                package: cloudpickle==3.1.0
+            - pypi:
+                package: pydantic==2.10.3
+            - pypi:
+                package: "ydata-profiling>=4.12.1,<5"
+            - pypi:
+                package: databricks-sdk==0.68.0
+            - pypi:
+                package: pyyaml==6.0.1
+            - pypi:
+                package: requests==2.32.5
 
         # Stage 6b: Community summaries (after final analysis, before VS index)
         - task_key: build_community_summaries
@@ -538,7 +762,7 @@ resources:
               table_names: "{{job.parameters.table_names}}"
               incremental: "{{job.parameters.incremental}}"
           libraries:
-            - whl: ../../dist/*.whl
+            # - whl: ../../dist/*.whl  # installed via %pip in notebook
             - pypi:
                 package: databricks-langchain==0.4.0
             - pypi:
@@ -549,6 +773,20 @@ resources:
                 package: deprecated==1.2.13
             - pypi:
                 package: "nest-asyncio>=1.6.0,<2"
+            - pypi:
+                package: mlflow==3.6.0
+            - pypi:
+                package: cloudpickle==3.1.0
+            - pypi:
+                package: pydantic==2.10.3
+            - pypi:
+                package: "ydata-profiling>=4.12.1,<5"
+            - pypi:
+                package: databricks-sdk==0.68.0
+            - pypi:
+                package: pyyaml==6.0.1
+            - pypi:
+                package: requests==2.32.5
 
         # Stage 7: Build vector search index (after all metadata is ready)
         - task_key: build_vector_index
@@ -569,7 +807,7 @@ resources:
               table_names: "{{job.parameters.table_names}}"
               incremental: "{{job.parameters.incremental}}"
           libraries:
-            - whl: ../../dist/*.whl
+            # - whl: ../../dist/*.whl  # installed via %pip in notebook
             - pypi:
                 package: databricks-langchain==0.4.0
             - pypi:
@@ -580,6 +818,20 @@ resources:
                 package: deprecated==1.2.13
             - pypi:
                 package: "nest-asyncio>=1.6.0,<2"
+            - pypi:
+                package: mlflow==3.6.0
+            - pypi:
+                package: cloudpickle==3.1.0
+            - pypi:
+                package: pydantic==2.10.3
+            - pypi:
+                package: "ydata-profiling>=4.12.1,<5"
+            - pypi:
+                package: databricks-sdk==0.68.0
+            - pypi:
+                package: pyyaml==6.0.1
+            - pypi:
+                package: requests==2.32.5
 
       job_clusters:
         - job_cluster_key: analytics_cluster

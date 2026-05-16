@@ -18,6 +18,8 @@
 
 # COMMAND ----------
 # MAGIC %pip install -q -r ../minimal_requirements.txt
+# MAGIC %pip install /Workspace/Users/<your_username>/.bundle/dbxmetagen/dev/artifacts/.internal/dbxmetagen-*.whl
+# MAGIC dbutils.library.restartPython()
 # COMMAND ----------
 dbutils.widgets.text("mode", "comment", "Mode (comment, pi, domain)")
 dbutils.widgets.text("include_deterministic_pi", "true", "Run Presidio deterministic PI detection")
