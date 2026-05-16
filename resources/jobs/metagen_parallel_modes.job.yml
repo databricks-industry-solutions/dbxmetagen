@@ -9,6 +9,7 @@ resources:
   jobs:
     metadata_parallel_modes_job:
       name: "${var.app_name}_parallel_modes_job"
+      budget_policy_id: ${var.budget_policy_id}
       max_concurrent_runs: 5
 
       permissions:
@@ -59,7 +60,7 @@ resources:
           max_retries: 1
           min_retry_interval_millis: 600000
           timeout_seconds: 86400
-          job_cluster_key: metadata_cluster
+          environment_key: default
           notebook_task:
             notebook_path: ../../notebooks/generate_metadata.py
             base_parameters:
@@ -80,18 +81,6 @@ resources:
               include_lineage: "{{job.parameters.include_lineage}}"
               model: "{{job.parameters.model}}"
               spacy_model_names: "{{job.parameters.spacy_model_names}}"
-          libraries:
-            - whl: ../../dist/*.whl
-            - pypi:
-                package: databricks-langchain==0.4.0
-            - pypi:
-                package: openai==1.56.1
-            - pypi:
-                package: openpyxl==3.1.5
-            - pypi:
-                package: deprecated==1.2.13
-            - pypi:
-                package: "nest-asyncio>=1.6.0,<2"
 
         - task_key: generate_pi
           max_retries: 1
@@ -99,7 +88,7 @@ resources:
           timeout_seconds: 86400
           depends_on:
             - task_key: generate_comments
-          job_cluster_key: metadata_cluster
+          environment_key: default
           notebook_task:
             notebook_path: ../../notebooks/generate_metadata.py
             base_parameters:
@@ -122,18 +111,6 @@ resources:
               include_lineage: "{{job.parameters.include_lineage}}"
               model: "{{job.parameters.model}}"
               spacy_model_names: "{{job.parameters.spacy_model_names}}"
-          libraries:
-            - whl: ../../dist/*.whl
-            - pypi:
-                package: databricks-langchain==0.4.0
-            - pypi:
-                package: openai==1.56.1
-            - pypi:
-                package: openpyxl==3.1.5
-            - pypi:
-                package: deprecated==1.2.13
-            - pypi:
-                package: "nest-asyncio>=1.6.0,<2"
 
         - task_key: generate_domain
           max_retries: 1
@@ -141,7 +118,7 @@ resources:
           timeout_seconds: 86400
           depends_on:
             - task_key: generate_comments
-          job_cluster_key: metadata_cluster
+          environment_key: default
           notebook_task:
             notebook_path: ../../notebooks/generate_metadata.py
             base_parameters:
@@ -164,29 +141,10 @@ resources:
               include_lineage: "{{job.parameters.include_lineage}}"
               model: "{{job.parameters.model}}"
               spacy_model_names: "{{job.parameters.spacy_model_names}}"
-          libraries:
-            - whl: ../../dist/*.whl
-            - pypi:
-                package: databricks-langchain==0.4.0
-            - pypi:
-                package: openai==1.56.1
-            - pypi:
-                package: openpyxl==3.1.5
-            - pypi:
-                package: deprecated==1.2.13
-            - pypi:
-                package: "nest-asyncio>=1.6.0,<2"
 
-      job_clusters:
-        - job_cluster_key: metadata_cluster
-          new_cluster:
-            apply_policy_default_values: true
-            policy_id: ${var.policy_id}
-            spark_version: 17.3.x-cpu-ml-scala2.13
-            node_type_id: ${var.node_type}
-            data_security_mode: SINGLE_USER
-            autoscale:
-              min_workers: 2
-              max_workers: 4
-            custom_tags:
-              project: dbxmetagen
+      environments:
+        - environment_key: default
+          spec:
+            environment_version: "2"
+            dependencies:
+              - ../../dist/*.whl

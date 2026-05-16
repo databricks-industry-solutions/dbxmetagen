@@ -1,5 +1,5 @@
 # Databricks notebook source
-# MAGIC %pip install -r ../minimal_requirements.txt
+# MAGIC %pip install -qqqq ../dist/dbxmetagen-*.whl
 # MAGIC dbutils.library.restartPython()
 
 # COMMAND ----------

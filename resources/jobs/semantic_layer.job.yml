@@ -2,6 +2,7 @@ resources:
   jobs:
     semantic_layer_job:
       name: "${var.app_name}_semantic_layer"
+      budget_policy_id: ${var.budget_policy_id}
 
       permissions:
         - service_principal_name: ${resources.apps.dbxmetagen_app.service_principal_client_id}
@@ -28,25 +29,13 @@ resources:
           max_retries: 1
           min_retry_interval_millis: 600000
           timeout_seconds: 86400
-          job_cluster_key: semantic_layer_cluster
+          environment_key: default
           notebook_task:
             notebook_path: ../../notebooks/generate_semantic_layer.py
             base_parameters:
               catalog_name: "{{job.parameters.catalog_name}}"
               schema_name: "{{job.parameters.schema_name}}"
               model_endpoint: "{{job.parameters.model_endpoint}}"
-          libraries:
-            - whl: ../../dist/*.whl
-            - pypi:
-                package: databricks-langchain==0.4.0
-            - pypi:
-                package: openai==1.56.1
-            - pypi:
-                package: openpyxl==3.1.5
-            - pypi:
-                package: deprecated==1.2.13
-            - pypi:
-                package: "nest-asyncio>=1.6.0,<2"
 
         - task_key: apply_metric_views
           max_retries: 1
@@ -54,7 +43,7 @@ resources:
           timeout_seconds: 14400
           depends_on:
             - task_key: generate_semantic_layer
-          job_cluster_key: semantic_layer_cluster
+          environment_key: default
           notebook_task:
             notebook_path: ../../notebooks/apply_metric_views.py
             base_parameters:
@@ -62,27 +51,10 @@ resources:
               schema_name: "{{job.parameters.schema_name}}"
               warehouse_id: "{{job.parameters.warehouse_id}}"
               genie_space_name: "{{job.parameters.genie_space_name}}"
-          libraries:
-            - whl: ../../dist/*.whl
-            - pypi:
-                package: databricks-langchain==0.4.0
-            - pypi:
-                package: openai==1.56.1
-            - pypi:
-                package: openpyxl==3.1.5
-            - pypi:
-                package: deprecated==1.2.13
-            - pypi:
-                package: "nest-asyncio>=1.6.0,<2"
 
-      job_clusters:
-        - job_cluster_key: semantic_layer_cluster
-          new_cluster:
-            apply_policy_default_values: true
-            policy_id: ${var.policy_id}
-            spark_version: 17.3.x-cpu-ml-scala2.13
-            node_type_id: ${var.node_type}
-            data_security_mode: SINGLE_USER
-            num_workers: 1
-            custom_tags:
-              project: dbxmetagen
+      environments:
+        - environment_key: default
+          spec:
+            environment_version: "2"
+            dependencies:
+              - ../../dist/*.whl

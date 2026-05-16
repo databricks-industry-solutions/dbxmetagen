@@ -1,8 +1,0 @@
-# Deps not pre-installed on Databricks ML Runtime (17.x).
-# Used by notebooks that %pip install at runtime.
-# The wheel is installed separately via the DAB libraries block (--no-deps).
-databricks-langchain==0.4.0
-openai==1.56.1
-openpyxl==3.1.5
-deprecated==1.2.13
-nest-asyncio>=1.6.0,<2

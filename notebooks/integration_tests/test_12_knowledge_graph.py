@@ -2,11 +2,10 @@
 # MAGIC %md
 # MAGIC # Integration Test: Knowledge Graph ETL
 # MAGIC 
-# MAGIC Tests the knowledge graph ETL pipeline that builds GraphFrames-compatible
-# MAGIC node and edge tables from the table_knowledge_base.
+# MAGIC Tests the knowledge graph ETL pipeline that builds
+# MAGIC node and edge Delta tables from the table_knowledge_base.
 # MAGIC
-# MAGIC Note: GraphFrames queries are NOT tested here as they require JVM dependencies
-# MAGIC not available in all runtime configurations. This test validates:
+# MAGIC This test validates:
 # MAGIC - Node table creation and population
 # MAGIC - Edge table creation and population  
 # MAGIC - Incremental merge behavior

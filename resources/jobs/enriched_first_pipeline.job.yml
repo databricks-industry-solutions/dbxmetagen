@@ -2,6 +2,7 @@ resources:
   jobs:
     enriched_first_pipeline_job:
       name: "${var.app_name}_enriched_first_pipeline"
+      budget_policy_id: ${var.budget_policy_id}
       max_concurrent_runs: 5
 
       permissions:
@@ -64,25 +65,13 @@ resources:
           max_retries: 1
           min_retry_interval_millis: 600000
           timeout_seconds: 14400
-          job_cluster_key: analytics_cluster
+          environment_key: default
           notebook_task:
             notebook_path: ../../notebooks/bootstrap_knowledge_bases.py
             base_parameters:
               table_names: "{{job.parameters.table_names}}"
               catalog_name: "{{job.parameters.catalog_name}}"
               schema_name: "{{job.parameters.schema_name}}"
-          libraries:
-            - whl: ../../dist/*.whl
-            - pypi:
-                package: databricks-langchain==0.4.0
-            - pypi:
-                package: openai==1.56.1
-            - pypi:
-                package: openpyxl==3.1.5
-            - pypi:
-                package: deprecated==1.2.13
-            - pypi:
-                package: "nest-asyncio>=1.6.0,<2"
 
         # ------------------------------------------------------------------
         # Stage 1: Profiling, extended metadata, ontology (parallel, after bootstrap)
@@ -93,7 +82,7 @@ resources:
           timeout_seconds: 14400
           depends_on:
             - task_key: bootstrap_knowledge_bases
-          job_cluster_key: analytics_cluster
+          environment_key: default
           notebook_task:
             notebook_path: ../../notebooks/run_profiling.py
             base_parameters:
@@ -101,18 +90,6 @@ resources:
               schema_name: "{{job.parameters.schema_name}}"
               incremental: "{{job.parameters.incremental}}"
               table_names: "{{job.parameters.table_names}}"
-          libraries:
-            - whl: ../../dist/*.whl
-            - pypi:
-                package: databricks-langchain==0.4.0
-            - pypi:
-                package: openai==1.56.1
-            - pypi:
-                package: openpyxl==3.1.5
-            - pypi:
-                package: deprecated==1.2.13
-            - pypi:
-                package: "nest-asyncio>=1.6.0,<2"
 
         - task_key: extract_extended_metadata
           max_retries: 1
@@ -120,7 +97,7 @@ resources:
           timeout_seconds: 14400
           depends_on:
             - task_key: bootstrap_knowledge_bases
-          job_cluster_key: analytics_cluster
+          environment_key: default
           notebook_task:
             notebook_path: ../../notebooks/extract_extended_metadata.py
             base_parameters:
@@ -128,18 +105,6 @@ resources:
               schema_name: "{{job.parameters.schema_name}}"
               incremental: "{{job.parameters.incremental}}"
               table_names: "{{job.parameters.table_names}}"
-          libraries:
-            - whl: ../../dist/*.whl
-            - pypi:
-                package: databricks-langchain==0.4.0
-            - pypi:
-                package: openai==1.56.1
-            - pypi:
-                package: openpyxl==3.1.5
-            - pypi:
-                package: deprecated==1.2.13
-            - pypi:
-                package: "nest-asyncio>=1.6.0,<2"
 
         - task_key: build_ontology
           max_retries: 1
@@ -147,7 +112,7 @@ resources:
           timeout_seconds: 86400
           depends_on:
             - task_key: bootstrap_knowledge_bases
-          job_cluster_key: analytics_cluster
+          environment_key: default
           notebook_task:
             notebook_path: ../../notebooks/build_ontology.py
             base_parameters:
@@ -158,18 +123,6 @@ resources:
               incremental: "{{job.parameters.incremental}}"
               model: "{{job.parameters.model}}"
               table_names: "{{job.parameters.table_names}}"
-          libraries:
-            - whl: ../../dist/*.whl
-            - pypi:
-                package: databricks-langchain==0.4.0
-            - pypi:
-                package: openai==1.56.1
-            - pypi:
-                package: openpyxl==3.1.5
-            - pypi:
-                package: deprecated==1.2.13
-            - pypi:
-                package: "nest-asyncio>=1.6.0,<2"
 
         # ------------------------------------------------------------------
         # Stage 2: Generate comments/PI/domain (enriched by profiling + constraints)
@@ -181,7 +134,7 @@ resources:
           depends_on:
             - task_key: run_profiling
             - task_key: extract_extended_metadata
-          job_cluster_key: analytics_cluster
+          environment_key: default
           notebook_task:
             notebook_path: ../../notebooks/generate_metadata.py
             base_parameters:
@@ -199,18 +152,6 @@ resources:
               domain_config_path: "{{job.parameters.domain_config_path}}"
               model: "{{job.parameters.model}}"
               spacy_model_names: "{{job.parameters.spacy_model_names}}"
-          libraries:
-            - whl: ../../dist/*.whl
-            - pypi:
-                package: databricks-langchain==0.4.0
-            - pypi:
-                package: openai==1.56.1
-            - pypi:
-                package: openpyxl==3.1.5
-            - pypi:
-                package: deprecated==1.2.13
-            - pypi:
-                package: "nest-asyncio>=1.6.0,<2"
 
         - task_key: generate_pi
           max_retries: 1
@@ -218,7 +159,7 @@ resources:
           timeout_seconds: 86400
           depends_on:
             - task_key: generate_comments
-          job_cluster_key: analytics_cluster
+          environment_key: default
           notebook_task:
             notebook_path: ../../notebooks/generate_metadata.py
             base_parameters:
@@ -233,18 +174,6 @@ resources:
               domain_config_path: "{{job.parameters.domain_config_path}}"
               model: "{{job.parameters.model}}"
               spacy_model_names: "{{job.parameters.spacy_model_names}}"
-          libraries:
-            - whl: ../../dist/*.whl
-            - pypi:
-                package: databricks-langchain==0.4.0
-            - pypi:
-                package: openai==1.56.1
-            - pypi:
-                package: openpyxl==3.1.5
-            - pypi:
-                package: deprecated==1.2.13
-            - pypi:
-                package: "nest-asyncio>=1.6.0,<2"
 
         - task_key: generate_domain
           max_retries: 1
@@ -252,7 +181,7 @@ resources:
           timeout_seconds: 86400
           depends_on:
             - task_key: generate_comments
-          job_cluster_key: analytics_cluster
+          environment_key: default
           notebook_task:
             notebook_path: ../../notebooks/generate_metadata.py
             base_parameters:
@@ -267,18 +196,6 @@ resources:
               domain_config_path: "{{job.parameters.domain_config_path}}"
               model: "{{job.parameters.model}}"
               spacy_model_names: "{{job.parameters.spacy_model_names}}"
-          libraries:
-            - whl: ../../dist/*.whl
-            - pypi:
-                package: databricks-langchain==0.4.0
-            - pypi:
-                package: openai==1.56.1
-            - pypi:
-                package: openpyxl==3.1.5
-            - pypi:
-                package: deprecated==1.2.13
-            - pypi:
-                package: "nest-asyncio>=1.6.0,<2"
 
         # ------------------------------------------------------------------
         # Stage 3: Build KBs (update with enriched LLM output)
@@ -291,25 +208,13 @@ resources:
             - task_key: generate_comments
             - task_key: generate_pi
             - task_key: generate_domain
-          job_cluster_key: analytics_cluster
+          environment_key: default
           notebook_task:
             notebook_path: ../../notebooks/build_knowledge_base.py
             base_parameters:
               catalog_name: "{{job.parameters.catalog_name}}"
               schema_name: "{{job.parameters.schema_name}}"
               table_names: "{{job.parameters.table_names}}"
-          libraries:
-            - whl: ../../dist/*.whl
-            - pypi:
-                package: databricks-langchain==0.4.0
-            - pypi:
-                package: openai==1.56.1
-            - pypi:
-                package: openpyxl==3.1.5
-            - pypi:
-                package: deprecated==1.2.13
-            - pypi:
-                package: "nest-asyncio>=1.6.0,<2"
 
         - task_key: build_column_kb
           max_retries: 1
@@ -318,25 +223,13 @@ resources:
           depends_on:
             - task_key: generate_comments
             - task_key: generate_pi
-          job_cluster_key: analytics_cluster
+          environment_key: default
           notebook_task:
             notebook_path: ../../notebooks/build_column_kb.py
             base_parameters:
               catalog_name: "{{job.parameters.catalog_name}}"
               schema_name: "{{job.parameters.schema_name}}"
               table_names: "{{job.parameters.table_names}}"
-          libraries:
-            - whl: ../../dist/*.whl
-            - pypi:
-                package: databricks-langchain==0.4.0
-            - pypi:
-                package: openai==1.56.1
-            - pypi:
-                package: openpyxl==3.1.5
-            - pypi:
-                package: deprecated==1.2.13
-            - pypi:
-                package: "nest-asyncio>=1.6.0,<2"
 
         - task_key: build_schema_kb
           max_retries: 1
@@ -344,7 +237,7 @@ resources:
           timeout_seconds: 14400
           depends_on:
             - task_key: build_knowledge_base
-          job_cluster_key: analytics_cluster
+          environment_key: default
           notebook_task:
             notebook_path: ../../notebooks/build_schema_kb.py
             base_parameters:
@@ -353,18 +246,6 @@ resources:
               generate_comments: "true"
               table_names: "{{job.parameters.table_names}}"
               incremental: "{{job.parameters.incremental}}"
-          libraries:
-            - whl: ../../dist/*.whl
-            - pypi:
-                package: databricks-langchain==0.4.0
-            - pypi:
-                package: openai==1.56.1
-            - pypi:
-                package: openpyxl==3.1.5
-            - pypi:
-                package: deprecated==1.2.13
-            - pypi:
-                package: "nest-asyncio>=1.6.0,<2"
 
         # ------------------------------------------------------------------
         # Stage 4: Knowledge graph + embeddings
@@ -377,7 +258,7 @@ resources:
             - task_key: build_column_kb
             - task_key: build_schema_kb
             - task_key: extract_extended_metadata
-          job_cluster_key: analytics_cluster
+          environment_key: default
           notebook_task:
             notebook_path: ../../notebooks/build_knowledge_graph.py
             base_parameters:
@@ -385,20 +266,6 @@ resources:
               schema_name: "{{job.parameters.schema_name}}"
               table_names: "{{job.parameters.table_names}}"
               incremental: "{{job.parameters.incremental}}"
-          libraries:
-            - whl: ../../dist/*.whl
-            - pypi:
-                package: databricks-langchain==0.4.0
-            - pypi:
-                package: openai==1.56.1
-            - pypi:
-                package: openpyxl==3.1.5
-            - pypi:
-                package: deprecated==1.2.13
-            - pypi:
-                package: "nest-asyncio>=1.6.0,<2"
-            - pypi:
-                package: graphframes
 
         - task_key: generate_embeddings
           max_retries: 1
@@ -407,25 +274,13 @@ resources:
           depends_on:
             - task_key: build_knowledge_graph
             - task_key: build_ontology
-          job_cluster_key: analytics_cluster
+          environment_key: default
           notebook_task:
             notebook_path: ../../notebooks/generate_embeddings.py
             base_parameters:
               catalog_name: "{{job.parameters.catalog_name}}"
               schema_name: "{{job.parameters.schema_name}}"
               table_names: "{{job.parameters.table_names}}"
-          libraries:
-            - whl: ../../dist/*.whl
-            - pypi:
-                package: databricks-langchain==0.4.0
-            - pypi:
-                package: openai==1.56.1
-            - pypi:
-                package: openpyxl==3.1.5
-            - pypi:
-                package: deprecated==1.2.13
-            - pypi:
-                package: "nest-asyncio>=1.6.0,<2"
 
         # ------------------------------------------------------------------
         # Stage 5: Similarity, clustering, data quality, ontology validation
@@ -436,7 +291,7 @@ resources:
           timeout_seconds: 14400
           depends_on:
             - task_key: generate_embeddings
-          job_cluster_key: analytics_cluster
+          environment_key: default
           notebook_task:
             notebook_path: ../../notebooks/build_similarity_edges.py
             base_parameters:
@@ -447,18 +302,6 @@ resources:
               use_ann_similarity: "{{job.parameters.use_ann_similarity}}"
               table_names: "{{job.parameters.table_names}}"
               incremental: "{{job.parameters.incremental}}"
-          libraries:
-            - whl: ../../dist/*.whl
-            - pypi:
-                package: databricks-langchain==0.4.0
-            - pypi:
-                package: openai==1.56.1
-            - pypi:
-                package: openpyxl==3.1.5
-            - pypi:
-                package: deprecated==1.2.13
-            - pypi:
-                package: "nest-asyncio>=1.6.0,<2"
 
         - task_key: cluster_analysis
           max_retries: 1
@@ -466,7 +309,7 @@ resources:
           timeout_seconds: 14400
           depends_on:
             - task_key: generate_embeddings
-          job_cluster_key: analytics_cluster
+          environment_key: default
           notebook_task:
             notebook_path: ../../notebooks/cluster_analysis.py
             base_parameters:
@@ -476,18 +319,6 @@ resources:
               max_k: "{{job.parameters.cluster_max_k}}"
               node_types: "{{job.parameters.cluster_node_types}}"
               table_names: "{{job.parameters.table_names}}"
-          libraries:
-            - whl: ../../dist/*.whl
-            - pypi:
-                package: databricks-langchain==0.4.0
-            - pypi:
-                package: openai==1.56.1
-            - pypi:
-                package: openpyxl==3.1.5
-            - pypi:
-                package: deprecated==1.2.13
-            - pypi:
-                package: "nest-asyncio>=1.6.0,<2"
 
         - task_key: compute_data_quality
           max_retries: 1
@@ -495,25 +326,13 @@ resources:
           timeout_seconds: 14400
           depends_on:
             - task_key: run_profiling
-          job_cluster_key: analytics_cluster
+          environment_key: default
           notebook_task:
             notebook_path: ../../notebooks/compute_data_quality.py
             base_parameters:
               catalog_name: "{{job.parameters.catalog_name}}"
               schema_name: "{{job.parameters.schema_name}}"
               table_names: "{{job.parameters.table_names}}"
-          libraries:
-            - whl: ../../dist/*.whl
-            - pypi:
-                package: databricks-langchain==0.4.0
-            - pypi:
-                package: openai==1.56.1
-            - pypi:
-                package: openpyxl==3.1.5
-            - pypi:
-                package: deprecated==1.2.13
-            - pypi:
-                package: "nest-asyncio>=1.6.0,<2"
 
         - task_key: validate_ontology
           max_retries: 1
@@ -521,25 +340,13 @@ resources:
           timeout_seconds: 14400
           depends_on:
             - task_key: build_ontology
-          job_cluster_key: analytics_cluster
+          environment_key: default
           notebook_task:
             notebook_path: ../../notebooks/validate_ontology.py
             base_parameters:
               catalog_name: "{{job.parameters.catalog_name}}"
               schema_name: "{{job.parameters.schema_name}}"
               table_names: "{{job.parameters.table_names}}"
-          libraries:
-            - whl: ../../dist/*.whl
-            - pypi:
-                package: databricks-langchain==0.4.0
-            - pypi:
-                package: openai==1.56.1
-            - pypi:
-                package: openpyxl==3.1.5
-            - pypi:
-                package: deprecated==1.2.13
-            - pypi:
-                package: "nest-asyncio>=1.6.0,<2"
 
         # ------------------------------------------------------------------
         # Stage 6: FK prediction + final analysis
@@ -550,7 +357,7 @@ resources:
           timeout_seconds: 86400
           depends_on:
             - task_key: build_similarity_edges
-          job_cluster_key: analytics_cluster
+          environment_key: default
           notebook_task:
             notebook_path: ../../notebooks/predict_foreign_keys.py
             base_parameters:
@@ -563,18 +370,6 @@ resources:
               dry_run: "false"
               incremental: "{{job.parameters.incremental}}"
               table_names: "{{job.parameters.table_names}}"
-          libraries:
-            - whl: ../../dist/*.whl
-            - pypi:
-                package: databricks-langchain==0.4.0
-            - pypi:
-                package: openai==1.56.1
-            - pypi:
-                package: openpyxl==3.1.5
-            - pypi:
-                package: deprecated==1.2.13
-            - pypi:
-                package: "nest-asyncio>=1.6.0,<2"
 
         - task_key: final_analysis
           max_retries: 1
@@ -585,24 +380,12 @@ resources:
             - task_key: cluster_analysis
             - task_key: compute_data_quality
             - task_key: validate_ontology
-          job_cluster_key: analytics_cluster
+          environment_key: default
           notebook_task:
             notebook_path: ../../notebooks/final_analysis.py
             base_parameters:
               catalog_name: "{{job.parameters.catalog_name}}"
               schema_name: "{{job.parameters.schema_name}}"
-          libraries:
-            - whl: ../../dist/*.whl
-            - pypi:
-                package: databricks-langchain==0.4.0
-            - pypi:
-                package: openai==1.56.1
-            - pypi:
-                package: openpyxl==3.1.5
-            - pypi:
-                package: deprecated==1.2.13
-            - pypi:
-                package: "nest-asyncio>=1.6.0,<2"
 
         # ------------------------------------------------------------------
         # Stage 7: Vector index
@@ -613,7 +396,7 @@ resources:
           timeout_seconds: 14400
           depends_on:
             - task_key: final_analysis
-          job_cluster_key: analytics_cluster
+          environment_key: default
           notebook_task:
             notebook_path: ../../notebooks/build_vector_index.py
             base_parameters:
@@ -622,29 +405,10 @@ resources:
               endpoint_name: "dbxmetagen-vs"
               sweep_stale_docs: "false"
               table_names: "{{job.parameters.table_names}}"
-          libraries:
-            - whl: ../../dist/*.whl
-            - pypi:
-                package: databricks-langchain==0.4.0
-            - pypi:
-                package: openai==1.56.1
-            - pypi:
-                package: openpyxl==3.1.5
-            - pypi:
-                package: deprecated==1.2.13
-            - pypi:
-                package: "nest-asyncio>=1.6.0,<2"
 
-      job_clusters:
-        - job_cluster_key: analytics_cluster
-          new_cluster:
-            apply_policy_default_values: true
-            policy_id: ${var.policy_id}
-            spark_version: 17.3.x-cpu-ml-scala2.13
-            node_type_id: ${var.node_type}
-            data_security_mode: SINGLE_USER
-            autoscale:
-              min_workers: 1
-              max_workers: 4
-            custom_tags:
-              project: dbxmetagen
+      environments:
+        - environment_key: default
+          spec:
+            environment_version: "2"
+            dependencies:
+              - ../../dist/*.whl

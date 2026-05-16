@@ -2,7 +2,7 @@
 #
 # Runs comments first, then PI and domain in parallel, then builds the table
 # and column knowledge bases in parallel -- all on serverless compute.
-# No GraphFrames / JVM dependencies; build_knowledge_base uses only Spark SQL.
+# All tasks use Spark SQL on serverless compute.
 
 resources:
   jobs:
@@ -171,11 +171,6 @@ resources:
       environments:
         - environment_key: default
           spec:
-            client: "1"
+            environment_version: "2"
             dependencies:
               - ../../dist/*.whl
-              - databricks-langchain==0.4.0
-              - openai==1.56.1
-              - openpyxl==3.1.5
-              - deprecated==1.2.13
-              - "nest-asyncio>=1.6.0,<2"

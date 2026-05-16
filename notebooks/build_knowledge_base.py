@@ -16,7 +16,7 @@
 # MAGIC ## Setup
 
 # COMMAND ----------
-# MAGIC %pip install -qqqq -r ../minimal_requirements.txt
+# MAGIC %pip install -qqqq ../dist/dbxmetagen-*.whl
 # MAGIC dbutils.library.restartPython()
 
 # COMMAND ----------

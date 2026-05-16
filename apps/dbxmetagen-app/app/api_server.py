@@ -117,6 +117,18 @@ def _is_obo_active() -> bool:
     return _OBO_ENABLED and bool(_obo_token_var.get(None))
 
 
+def _spawn_with_obo(target, args=(), kwargs=None):
+    """Spawn a daemon thread that inherits the current request's OBO token."""
+    token = _obo_token_var.get(None)
+    def _wrapper(*a, **kw):
+        if token:
+            _obo_token_var.set(token)
+        target(*a, **kw)
+    t = threading.Thread(target=_wrapper, args=args, kwargs=kwargs or {}, daemon=True)
+    t.start()
+    return t
+
+
 def _sanitize_sdk_error(exc: Exception) -> str:
     """Strip credential details from SDK error messages before exposing to users."""
     msg = str(exc)
@@ -566,7 +578,7 @@ def get_config():
     """Return current catalog/schema defaults and processing settings for frontend."""
     host = ""
     try:
-        host = get_workspace_client().config.host or ""
+        host = _get_effective_client().config.host or ""
     except Exception:
         host = os.environ.get("DATABRICKS_HOST", "")
     return {
@@ -830,6 +842,7 @@ _JOB_ENV_MAP = {
     "metadata_parallel_modes": "METADATA_PARALLEL_MODES_JOB_ID",
     "sync_ddl": "SYNC_DDL_JOB_ID",
     "full_analytics_pipeline": "FULL_ANALYTICS_PIPELINE_JOB_ID",
+    "full_analytics_pipeline_serverless": "FULL_ANALYTICS_PIPELINE_SERVERLESS_JOB_ID",
     "fk_prediction": "FK_PREDICTION_JOB_ID",
     "sync_graph_lakebase": "SYNC_GRAPH_LAKEBASE_JOB_ID",
     "ontology_prediction": "ONTOLOGY_PREDICTION_JOB_ID",
@@ -1938,10 +1951,7 @@ def apply_ddl_bundle(body: DDLBundleBody):
         "status": "running", "current_section": None,
         "total_applied": 0, "total_errors": 0,
     }
-    threading.Thread(
-        target=_run_bundle_apply, args=(task_id, sections, out.get("volume_path")),
-        daemon=True,
-    ).start()
+    _spawn_with_obo(_run_bundle_apply, args=(task_id, sections, out.get("volume_path")))
     return {"task_id": task_id}
 
 
@@ -1959,10 +1969,7 @@ def apply_ddl_bundle_sql(body: ApplyBundleSqlBody):
         "status": "running", "current_section": None,
         "total_applied": 0, "total_errors": 0,
     }
-    threading.Thread(
-        target=_run_bundle_apply, args=(task_id, body.sections),
-        daemon=True,
-    ).start()
+    _spawn_with_obo(_run_bundle_apply, args=(task_id, body.sections))
     return {"task_id": task_id}
 
 
@@ -4305,6 +4312,363 @@ def get_ontology_metrics():
 
 
 # ---------------------------------------------------------------------------
+# Ontology Builder
+# ---------------------------------------------------------------------------
+
+
+class _OntologyBuilderSuggestReq(BaseModel):
+    tables: list[str] = []
+    domain: str = ""
+    existing_entities: list[str] = []
+    model_endpoint: str = _LLM_MODEL
+
+
+class _OntologyBuilderSuggestRelsReq(BaseModel):
+    entities: list[str] = []
+    tables: list[str] = []
+    domain: str = ""
+    model_endpoint: str = _LLM_MODEL
+
+
+class _OntologyBuilderSuggestPropsReq(BaseModel):
+    entity_name: str
+    entity_description: str = ""
+    tables: list[str] = []
+    existing_properties: list[str] = []
+    model_endpoint: str = _LLM_MODEL
+
+
+def _strip_llm_fences(text: str) -> str:
+    text = text.strip()
+    if text.startswith("```"):
+        text = text.split("\n", 1)[1] if "\n" in text else text[3:]
+        text = text.rsplit("```", 1)[0]
+    return text.strip()
+
+
+def _builder_yaml_to_state(raw: dict) -> dict:
+    """Convert a parsed bundle YAML dict into the builder's JSON state format."""
+    meta_raw = raw.get("metadata", {})
+    ont = raw.get("ontology", {})
+    state = {
+        "metadata": {
+            "name": meta_raw.get("name", ""),
+            "version": str(meta_raw.get("version", "1.0")),
+            "format_version": str(meta_raw.get("format_version", "2.0")),
+            "industry": meta_raw.get("industry", ""),
+            "description": meta_raw.get("description", ""),
+        },
+        "entities": {},
+        "edge_catalog": {},
+        "property_roles": ont.get("property_roles", {}),
+        "domains": [],
+        "domain_entity_affinity": ont.get("domain_entity_affinity", {}),
+    }
+    for ename, edef in (ont.get("entities", {}).get("definitions", {}) or {}).items():
+        if not isinstance(edef, dict):
+            continue
+        props = {}
+        for pn, pv in (edef.get("properties") or {}).items():
+            if not isinstance(pv, dict):
+                continue
+            props[pn] = {
+                "kind": pv.get("kind", "data_property"),
+                "role": pv.get("role", "dimension"),
+                "typical_attributes": pv.get("typical_attributes", []),
+            }
+            if pv.get("edge"):
+                props[pn]["edge"] = pv["edge"]
+            if pv.get("target_entity"):
+                props[pn]["target_entity"] = pv["target_entity"]
+        rels = {}
+        for rn, rv in (edef.get("relationships") or {}).items():
+            if isinstance(rv, dict):
+                rels[rn] = {"target": rv.get("target", ""), "cardinality": rv.get("cardinality", "")}
+        state["entities"][ename] = {
+            "description": edef.get("description", ""),
+            "uri": edef.get("uri", ""),
+            "source_ontology": edef.get("source_ontology", ""),
+            "keywords": edef.get("keywords", []),
+            "typical_attributes": edef.get("typical_attributes", []),
+            "properties": props,
+            "relationships": rels,
+        }
+    for en, ev in (ont.get("edge_catalog") or {}).items():
+        if not isinstance(ev, dict):
+            continue
+        state["edge_catalog"][en] = {
+            "inverse": ev.get("inverse", ""),
+            "symmetric": bool(ev.get("symmetric", False)),
+            "category": ev.get("category", "business"),
+            "domain": ev.get("domain", ""),
+            "range": ev.get("range", ""),
+        }
+    for dk, dv in (raw.get("domains") or {}).items():
+        if isinstance(dv, dict):
+            state["domains"].append({
+                "name": dv.get("name", dk),
+                "description": dv.get("description", ""),
+                "keywords": dv.get("keywords", []),
+            })
+    return state
+
+
+def _state_to_yaml_dict(state: dict) -> dict:
+    """Convert builder state JSON to a dict suitable for yaml.dump as a bundle YAML."""
+    meta = state.get("metadata", {})
+    out = {
+        "metadata": {
+            "name": meta.get("name", "Custom Ontology"),
+            "version": str(meta.get("version", "1.0")),
+            "format_version": "2.0",
+            "industry": meta.get("industry", "general"),
+            "description": meta.get("description", ""),
+        },
+        "ontology": {
+            "version": str(meta.get("version", "1.0")),
+            "name": meta.get("name", "Custom Ontology"),
+            "description": meta.get("description", ""),
+        },
+    }
+    if state.get("property_roles"):
+        out["ontology"]["property_roles"] = state["property_roles"]
+    if state.get("edge_catalog"):
+        ec = {}
+        for en, ev in state["edge_catalog"].items():
+            entry = {"symmetric": bool(ev.get("symmetric", False)), "category": ev.get("category", "business")}
+            if ev.get("inverse"):
+                entry["inverse"] = ev["inverse"]
+            if ev.get("domain"):
+                entry["domain"] = ev["domain"]
+            if ev.get("range"):
+                entry["range"] = ev["range"]
+            ec[en] = entry
+        out["ontology"]["edge_catalog"] = ec
+    entities_block = {"auto_discover": True, "discovery_confidence_threshold": 0.4, "definitions": {}}
+    for ename, edef in (state.get("entities") or {}).items():
+        ed = {}
+        if edef.get("description"):
+            ed["description"] = edef["description"]
+        if edef.get("uri"):
+            ed["uri"] = edef["uri"]
+        if edef.get("source_ontology"):
+            ed["source_ontology"] = edef["source_ontology"]
+        if edef.get("keywords"):
+            ed["keywords"] = edef["keywords"]
+        if edef.get("typical_attributes"):
+            ed["typical_attributes"] = edef["typical_attributes"]
+        if edef.get("properties"):
+            props = {}
+            for pn, pv in edef["properties"].items():
+                p = {"kind": pv.get("kind", "data_property"), "role": pv.get("role", "dimension")}
+                if pv.get("typical_attributes"):
+                    p["typical_attributes"] = pv["typical_attributes"]
+                if pv.get("edge"):
+                    p["edge"] = pv["edge"]
+                if pv.get("target_entity"):
+                    p["target_entity"] = pv["target_entity"]
+                props[pn] = p
+            ed["properties"] = props
+        if edef.get("relationships"):
+            ed["relationships"] = edef["relationships"]
+        entities_block["definitions"][ename] = ed
+    out["ontology"]["entities"] = entities_block
+    if state.get("domain_entity_affinity"):
+        out["ontology"]["domain_entity_affinity"] = state["domain_entity_affinity"]
+    if state.get("domains"):
+        doms = {}
+        for d in state["domains"]:
+            key = (d.get("name") or "unnamed").lower().replace(" ", "_")
+            entry = {"name": d.get("name", "")}
+            if d.get("description"):
+                entry["description"] = d["description"]
+            if d.get("keywords"):
+                entry["keywords"] = d["keywords"]
+            doms[key] = entry
+        out["domains"] = doms
+    return out
+
+
+@app.get("/api/ontology/builder/load/{bundle_key}")
+def ontology_builder_load(bundle_key: str):
+    """Load an existing bundle YAML into builder state JSON."""
+    bd = _find_bundle_dir()
+    if not bd:
+        raise HTTPException(404, detail="No bundle directory found")
+    path = _safe_bundle_path(bd, f"{bundle_key}.yaml")
+    if not path or not os.path.isfile(path):
+        raise HTTPException(404, detail=f"Bundle '{bundle_key}' not found")
+    with open(path, "r") as f:
+        raw = yaml.safe_load(f)
+    return _builder_yaml_to_state(raw or {})
+
+
+@app.post("/api/ontology/builder/save")
+def ontology_builder_save(state: dict = Body(...)):
+    """Save builder state as a bundle YAML file."""
+    bd = _find_bundle_dir()
+    if not bd:
+        raise HTTPException(500, detail="No bundle directory found")
+    name = (state.get("metadata", {}).get("name") or "").strip()
+    if not name:
+        raise HTTPException(400, detail="Bundle name is required")
+    bundle_key = re.sub(r"[^a-z0-9_]+", "_", name.lower()).strip("_")
+    if not bundle_key:
+        raise HTTPException(400, detail="Invalid bundle name")
+    path = _safe_bundle_path(bd, f"{bundle_key}.yaml")
+    if not path:
+        raise HTTPException(400, detail="Invalid bundle name")
+    out = _state_to_yaml_dict(state)
+    with open(path, "w") as f:
+        yaml.dump(out, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+    _yaml_cache.clear()
+    logger.info("Ontology builder saved bundle: %s -> %s", bundle_key, path)
+    return {"bundle_key": bundle_key, "path": path}
+
+
+@app.post("/api/ontology/builder/validate")
+def ontology_builder_validate(state: dict = Body(...)):
+    """Validate builder state for referential integrity."""
+    warnings = []
+    errors = []
+    entities = state.get("entities", {})
+    edge_catalog = state.get("edge_catalog", {})
+    entity_names = set(entities.keys())
+
+    if not entity_names:
+        errors.append("No entities defined")
+
+    for en, ev in edge_catalog.items():
+        if ev.get("domain") and ev["domain"] not in entity_names:
+            errors.append(f"Edge '{en}' domain '{ev['domain']}' is not a defined entity")
+        if ev.get("range") and ev["range"] not in entity_names:
+            errors.append(f"Edge '{en}' range '{ev['range']}' is not a defined entity")
+        if not ev.get("inverse"):
+            warnings.append(f"Edge '{en}' has no inverse defined")
+
+    valid_roles = {"primary_key", "business_key", "object_property", "measure", "dimension",
+                   "temporal", "geographic", "label", "audit", "derived", "composite_component"}
+    for ename, edef in entities.items():
+        for pn, pv in (edef.get("properties") or {}).items():
+            if pv.get("role") and pv["role"] not in valid_roles:
+                warnings.append(f"Entity '{ename}' property '{pn}' has unknown role '{pv['role']}'")
+            if pv.get("target_entity") and pv["target_entity"] not in entity_names:
+                errors.append(f"Entity '{ename}' property '{pn}' target_entity '{pv['target_entity']}' is not defined")
+        if not edef.get("keywords"):
+            warnings.append(f"Entity '{ename}' has no keywords (discovery will rely on LLM only)")
+
+    return {"valid": len(errors) == 0, "errors": errors, "warnings": warnings}
+
+
+@app.post("/api/ontology/builder/suggest")
+def ontology_builder_suggest(req: _OntologyBuilderSuggestReq):
+    """Use LLM to suggest entity types given tables and a domain."""
+    from langchain_community.chat_models import ChatDatabricks
+
+    table_context = ", ".join(req.tables[:20]) if req.tables else "no specific tables"
+    existing = ", ".join(req.existing_entities) if req.existing_entities else "none"
+
+    prompt = f"""You are an ontology designer. Given the following context, suggest entity types for a data ontology.
+
+Domain: {req.domain or 'general'}
+Tables available: {table_context}
+Already defined entities (do not duplicate): {existing}
+
+For each entity, provide:
+- name: PascalCase entity type name (e.g. Patient, Transaction, Organization)
+- description: One sentence describing what this entity represents
+- keywords: 3-5 lowercase keywords for discovery
+- typical_attributes: 3-5 column name patterns that commonly represent this entity
+
+Return ONLY a JSON array of objects with these fields. Suggest 5-8 entities."""
+
+    llm = ChatDatabricks(endpoint=req.model_endpoint, temperature=0.7, max_tokens=2048)
+    response = llm.invoke(prompt)
+    parsed = json.loads(_strip_llm_fences(response.content))
+    if not isinstance(parsed, list):
+        parsed = [parsed]
+    existing_set = set(req.existing_entities)
+    suggestions = [s for s in parsed if isinstance(s, dict) and s.get("name") and s["name"] not in existing_set]
+    return {"suggestions": suggestions}
+
+
+@app.post("/api/ontology/builder/suggest-relationships")
+def ontology_builder_suggest_relationships(req: _OntologyBuilderSuggestRelsReq):
+    """Use LLM to suggest relationships between existing entity types."""
+    from langchain_community.chat_models import ChatDatabricks
+
+    entity_list = ", ".join(req.entities)
+    table_context = ", ".join(req.tables[:20]) if req.tables else "no specific tables"
+
+    prompt = f"""You are an ontology designer. Given these entity types, suggest relationships between them.
+
+Domain: {req.domain or 'general'}
+Entity types: {entity_list}
+Tables available: {table_context}
+
+For each relationship, provide:
+- name: snake_case relationship name (verb-based, e.g. placed_by, works_at, contains)
+- inverse: the inverse relationship name
+- source_entity: the source entity type
+- target_entity: the target entity type
+- category: one of structural, business, lineage, semantic
+- symmetric: true or false
+- reasoning: one sentence explaining why this relationship exists
+
+Return ONLY a JSON array of objects. Suggest 4-8 relationships."""
+
+    llm = ChatDatabricks(endpoint=req.model_endpoint, temperature=0.7, max_tokens=2048)
+    response = llm.invoke(prompt)
+    parsed = json.loads(_strip_llm_fences(response.content))
+    if not isinstance(parsed, list):
+        parsed = [parsed]
+    entity_set = set(req.entities)
+    suggestions = [s for s in parsed if isinstance(s, dict) and s.get("name")
+                   and s.get("source_entity") in entity_set and s.get("target_entity") in entity_set]
+    return {"suggestions": suggestions}
+
+
+@app.post("/api/ontology/builder/suggest-properties")
+def ontology_builder_suggest_properties(req: _OntologyBuilderSuggestPropsReq):
+    """Use LLM to suggest properties for a specific entity type."""
+    from langchain_community.chat_models import ChatDatabricks
+
+    table_context = ", ".join(req.tables[:20]) if req.tables else "no specific tables"
+    existing = ", ".join(req.existing_properties) if req.existing_properties else "none"
+
+    prompt = f"""You are an ontology designer. Suggest properties for an entity type in a data ontology.
+
+Entity: {req.entity_name}
+Description: {req.entity_description or 'not specified'}
+Tables available: {table_context}
+Already defined properties (do not duplicate): {existing}
+
+Valid roles: primary_key, business_key, object_property, measure, dimension, temporal, geographic, label, audit, derived, composite_component
+
+For each property, provide:
+- name: snake_case property name
+- kind: data_property or object_property
+- role: one of the valid roles above
+- typical_attributes: 2-4 column name patterns
+- reasoning: one sentence explanation
+
+If kind is object_property, also include:
+- edge: relationship name (snake_case)
+- target_entity: the target entity type name
+
+Return ONLY a JSON array of objects. Suggest 5-8 properties."""
+
+    llm = ChatDatabricks(endpoint=req.model_endpoint, temperature=0.7, max_tokens=2048)
+    response = llm.invoke(prompt)
+    parsed = json.loads(_strip_llm_fences(response.content))
+    if not isinstance(parsed, list):
+        parsed = [parsed]
+    existing_set = set(req.existing_properties)
+    suggestions = [s for s in parsed if isinstance(s, dict) and s.get("name") and s["name"] not in existing_set]
+    return {"suggestions": suggestions}
+
+
+# ---------------------------------------------------------------------------
 # Analytics endpoints
 # ---------------------------------------------------------------------------
 
@@ -4900,6 +5264,22 @@ def list_tables(catalog: str, schema: str):
             status_code=403,
             detail=f"Cannot list tables in {catalog}.{schema} (running as {identity}). {hint}{_sanitize_sdk_error(e)}",
         )
+
+
+@app.get("/api/tables/kb")
+def list_kb_tables(catalog: str, schema: str):
+    """Return table names that exist in the knowledge base for a given catalog.schema."""
+    try:
+        prefix = f"{catalog}.{schema}."
+        q = (
+            f"SELECT DISTINCT table_name FROM {fq('table_knowledge_base')} "
+            f"WHERE table_name LIKE '{prefix}%' ORDER BY table_name"
+        )
+        rows = execute_sql(q)
+        return [r["table_name"].replace(prefix, "", 1) for r in rows]
+    except Exception as e:
+        logger.debug("list_kb_tables(%s.%s) failed (KB may not exist yet): %s", catalog, schema, e)
+        return []
 
 
 # ---------------------------------------------------------------------------
@@ -6047,6 +6427,36 @@ def _autofix_dimension_columns(defn: dict, table_cols: dict[str, set[str]]) -> d
     return defn
 
 
+def _resolve_table_columns(full_table_name: str) -> set[str]:
+    """Get column names for a table, trying KB first then information_schema.
+
+    The KB is always accessible to the app SP (it's in the output schema).
+    information_schema requires the SP to have SELECT on the source table,
+    which may not be granted when source tables are in a different schema.
+    """
+    esc = full_table_name.replace("'", "''")
+    try:
+        kb_rows = execute_sql(
+            f"SELECT DISTINCT column_name FROM {fq('column_knowledge_base')} "
+            f"WHERE table_name = '{esc}'"
+        )
+        if kb_rows:
+            return {r["column_name"].lower() for r in kb_rows}
+    except Exception:
+        pass
+    parts = full_table_name.split(".")
+    if len(parts) == 3:
+        try:
+            rows = execute_sql(
+                f"SELECT column_name FROM `{parts[0]}`.information_schema.columns "
+                f"WHERE table_catalog = '{parts[0]}' AND table_schema = '{parts[1]}' AND table_name = '{parts[2]}'"
+            )
+            return {r["column_name"].lower() for r in rows}
+        except Exception:
+            pass
+    return set()
+
+
 def _validate_definition_structure(defn: dict) -> list[str]:
     """Structural validation: check source table exists and columns are valid."""
     errors = []
@@ -6062,19 +6472,13 @@ def _validate_definition_structure(defn: dict) -> list[str]:
         return errors
 
     cat, sch, tbl = parts
-    source_cols: set[str] = set()
-    try:
-        rows = execute_sql(
-            f"SELECT column_name FROM `{cat}`.information_schema.columns "
-            f"WHERE table_catalog = '{cat}' AND table_schema = '{sch}' AND table_name = '{tbl}'"
-        )
-        source_cols = {r["column_name"].lower() for r in rows}
-    except Exception:
-        errors.append(f"Could not verify table {source}")
-        return errors
+    source_cols = _resolve_table_columns(source)
 
     if not source_cols:
-        errors.append(f"Table {source} not found in information_schema")
+        errors.append(
+            f"Table {source} not found in knowledge base or information_schema "
+            f"(the app service principal may lack permissions on this table)"
+        )
         return errors
 
     alias_cols: dict[str, set[str]] = {"source": source_cols, tbl: source_cols}
@@ -6086,16 +6490,10 @@ def _validate_definition_structure(defn: dict) -> list[str]:
         known_aliases.add(j_alias)
         if len(j_parts) == 3:
             known_aliases.add(j_parts[2])
-            try:
-                j_rows = execute_sql(
-                    f"SELECT column_name FROM `{j_parts[0]}`.information_schema.columns "
-                    f"WHERE table_catalog = '{j_parts[0]}' AND table_schema = '{j_parts[1]}' AND table_name = '{j_parts[2]}'"
-                )
-                j_cols = {r["column_name"].lower() for r in j_rows}
+            j_cols = _resolve_table_columns(j_source)
+            if j_cols:
                 alias_cols[j_alias] = j_cols
                 alias_cols[j_parts[2]] = j_cols
-            except Exception:
-                pass
 
     all_cols = set()
     for cs in alias_cols.values():
@@ -6894,33 +7292,17 @@ def _run_sl_generation(
             # Fuzzy-match hallucinated column names to actual columns
             src = defn.get("source", "")
             if src:
-                src_parts = src.split(".")
-                if len(src_parts) == 3:
-                    try:
-                        _cols_rows = execute_sql(
-                            f"SELECT column_name FROM `{src_parts[0]}`.information_schema.columns "
-                            f"WHERE table_catalog = '{src_parts[0]}' AND table_schema = '{src_parts[1]}' AND table_name = '{src_parts[2]}'"
-                        )
-                        _tbl_cols: dict[str, set[str]] = {
-                            "source": {r["column_name"].lower() for r in _cols_rows}
-                        }
-                        # Also fetch columns for join alias tables
-                        for j in defn.get("joins", []):
-                            j_src = j.get("source", "")
-                            j_name = j.get("name", "")
-                            j_parts = j_src.split(".")
-                            if j_name and len(j_parts) == 3:
-                                try:
-                                    j_rows = execute_sql(
-                                        f"SELECT column_name FROM `{j_parts[0]}`.information_schema.columns "
-                                        f"WHERE table_catalog = '{j_parts[0]}' AND table_schema = '{j_parts[1]}' AND table_name = '{j_parts[2]}'"
-                                    )
-                                    _tbl_cols[j_name.lower()] = {r["column_name"].lower() for r in j_rows}
-                                except Exception:
-                                    pass
-                        defn = _autofix_dimension_columns(defn, _tbl_cols)
-                    except Exception:
-                        pass
+                src_cols = _resolve_table_columns(src)
+                if src_cols:
+                    _tbl_cols: dict[str, set[str]] = {"source": src_cols}
+                    for j in defn.get("joins", []):
+                        j_src = j.get("source", "")
+                        j_name = j.get("name", "")
+                        if j_name and j_src:
+                            j_cols = _resolve_table_columns(j_src)
+                            if j_cols:
+                                _tbl_cols[j_name.lower()] = j_cols
+                    defn = _autofix_dimension_columns(defn, _tbl_cols)
 
             json_str = json.dumps(defn).replace("'", "''")
 
@@ -7072,8 +7454,8 @@ def start_sl_generation(req: SemanticGenerateRequest):
         "created": time.time(),
     }
 
-    threading.Thread(
-        target=_run_sl_generation,
+    _spawn_with_obo(
+        _run_sl_generation,
         args=(
             task_id,
             req.tables,
@@ -7086,8 +7468,7 @@ def start_sl_generation(req: SemanticGenerateRequest):
             req.business_context,
             req.profile_id,
         ),
-        daemon=True,
-    ).start()
+    )
 
     cutoff = time.time() - 1800
     for tid in list(_sl_tasks):
@@ -7965,7 +8346,7 @@ def genie_generate(req: GenieGenerateRequest):
             from dbxmetagen.genie.context import GenieContextAssembler
             from dbxmetagen.genie.agent import run_genie_agent
 
-            ws = get_workspace_client()
+            ws = _get_effective_client()
             progress_q: queue.Queue = queue.Queue()
 
             _genie_tasks[task_id]["stage"] = "gathering_context"
@@ -8057,8 +8438,7 @@ def genie_generate(req: GenieGenerateRequest):
                     if "round" in event:
                         _genie_tasks[task_id]["round"] = event["round"]
 
-            monitor = threading.Thread(target=_monitor_progress, daemon=True)
-            monitor.start()
+            _spawn_with_obo(_monitor_progress)
 
             run_genie_agent(
                 ws, wh, ctx, progress_q,
@@ -8080,7 +8460,7 @@ def genie_generate(req: GenieGenerateRequest):
                 "rounds_completed": rnd,
             })
 
-    threading.Thread(target=_run, daemon=True).start()
+    _spawn_with_obo(_run)
 
     # Clean up old tasks (> 30 min)
     cutoff = time.time() - 1800
@@ -8351,7 +8731,7 @@ def genie_create(req: GenieCreateRequest):
             400, detail=f"Invalid serialized_space: {'; '.join(validation_errors)}"
         )
 
-    ws = get_workspace_client()
+    ws = _get_effective_client()
     wh = req.warehouse_id or os.environ.get("WAREHOUSE_ID", "")
     if not wh:
         raise HTTPException(500, detail="WAREHOUSE_ID not configured")
@@ -9311,7 +9691,7 @@ def genie_improve(req: GenieImproveRequest):
             from dbxmetagen.genie.context import GenieContextAssembler
             from dbxmetagen.genie.agent import run_genie_agent
 
-            ws = get_workspace_client()
+            ws = _get_effective_client()
             progress_q: queue.Queue = queue.Queue()
 
             assembler = GenieContextAssembler(ws, wh, CATALOG, SCHEMA)
@@ -9352,8 +9732,7 @@ def genie_improve(req: GenieImproveRequest):
                     if "round" in event:
                         _genie_tasks[task_id]["round"] = event["round"]
 
-            monitor = threading.Thread(target=_monitor, daemon=True)
-            monitor.start()
+            _spawn_with_obo(_monitor)
 
             run_genie_agent(
                 ws, wh, ctx, progress_q,
@@ -9367,7 +9746,7 @@ def genie_improve(req: GenieImproveRequest):
             if task and task.get("status") != "error":
                 task.update({"status": "error", "error": str(e), "elapsed_seconds": round(time.time() - started_at), "rounds_completed": 0})
 
-    threading.Thread(target=_run, daemon=True).start()
+    _spawn_with_obo(_run)
     return {"task_id": task_id}
 
 
@@ -9429,7 +9808,7 @@ def get_genie_space_version(space_id: str, version: int):
 def get_genie_space_live(space_id: str):
     """Fetch the current live definition directly from Databricks Genie API."""
     try:
-        ws = get_workspace_client()
+        ws = _get_effective_client()
         resp = ws.api_client.do("GET", f"/api/2.0/genie/spaces/{space_id}", query={"include_serialized_space": "true"})
         ss = _parse_serialized_space(resp.get("serialized_space", "{}"))
         return {
@@ -9556,7 +9935,7 @@ def get_genie_space_definition(space_id: str):
 
     # Tracked config_json was missing/empty/corrupt -- fetch live from Genie API
     try:
-        ws = get_workspace_client()
+        ws = _get_effective_client()
         resp = ws.api_client.do("GET", f"/api/2.0/genie/spaces/{space_id}?include_serialized_space=true")
         ss_raw = resp.get("serialized_space", "{}")
         ss = _parse_serialized_space(ss_raw)
@@ -9593,7 +9972,7 @@ def get_genie_space_definition(space_id: str):
 def delete_genie_space(space_id: str):
     _ensure_genie_tracking_table()
     try:
-        ws = get_workspace_client()
+        ws = _get_effective_client()
         ws.api_client.do("DELETE", f"/api/2.0/genie/spaces/{space_id}")
     except Exception as e:
         logger.warning("Could not delete Genie space %s from Databricks: %s", space_id, e)
@@ -10061,7 +10440,7 @@ def agent_deep_submit(req: AgentChatRequest):
                 "error": str(e),
             }
 
-    threading.Thread(target=_monitor, daemon=True).start()
+    _spawn_with_obo(_monitor)
 
     cutoff = time.time() - 600
     for tid in list(_deep_tasks):
@@ -10110,8 +10489,8 @@ def agent_deep_compare(req: AgentChatRequest):
             except Exception:
                 break
 
-    threading.Thread(target=_run, daemon=True).start()
-    threading.Thread(target=_monitor, daemon=True).start()
+    _spawn_with_obo(_run)
+    _spawn_with_obo(_monitor)
     return {"task_id": task_id}
 
 
@@ -10472,7 +10851,7 @@ def analyst_chat(req: dict):
             logger.exception("Analyst single-mode failed")
             _analyst_tasks[task_id] = {"status": "error", "error": str(exc), "created": _analyst_tasks[task_id]["created"]}
 
-    threading.Thread(target=_run, daemon=True).start()
+    _spawn_with_obo(_run)
     return {"task_id": task_id}
 
 
@@ -10508,8 +10887,8 @@ def analyst_compare(req: dict):
             if _analyst_tasks[task_id]["status"] in ("done", "error"):
                 break
 
-    threading.Thread(target=_run, daemon=True).start()
-    threading.Thread(target=_monitor, daemon=True).start()
+    _spawn_with_obo(_run)
+    _spawn_with_obo(_monitor)
     return {"task_id": task_id}
 
 
@@ -10581,11 +10960,11 @@ def analyst_stream(req: dict):
                 errors[m] = str(exc)
             done_q.put(m)
 
-        threading.Thread(target=_run_mode, args=("enriched",), daemon=True).start()
+        _spawn_with_obo(_run_mode, args=("enriched",))
         yield _sse("stage", {"stage": "enriched_running"})
 
         time.sleep(4)
-        threading.Thread(target=_run_mode, args=("blind",), daemon=True).start()
+        _spawn_with_obo(_run_mode, args=("blind",))
         yield _sse("stage", {"stage": "blind_running"})
 
         for _ in range(2):
@@ -10743,7 +11122,7 @@ def impact_analyze(req: dict):
             logger.exception("Impact analysis failed")
             _impact_tasks[task_id] = {"status": "error", "error": str(exc), "created": _impact_tasks[task_id]["created"]}
 
-    threading.Thread(target=_run, daemon=True).start()
+    _spawn_with_obo(_run)
     return {"task_id": task_id}
 
 

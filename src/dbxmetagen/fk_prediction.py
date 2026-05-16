@@ -1042,11 +1042,24 @@ class FKPredictor:
             for f in as_completed(futures):
                 sample_map.update(f.result())
 
-        bc = self.spark.sparkContext.broadcast(sample_map)
-        get_samples = F.udf(lambda cid: bc.value.get(cid, []), "array<string>")
-        return candidates.withColumn(
-            "samples_a", get_samples(F.col("col_a"))
-        ).withColumn("samples_b", get_samples(F.col("col_b")))
+        from pyspark.sql.types import StructType, StructField, StringType, ArrayType
+        sample_rows = [(k, v) for k, v in sample_map.items()]
+        sample_schema = StructType([
+            StructField("_col_id", StringType()),
+            StructField("_samples", ArrayType(StringType())),
+        ])
+        sample_df = F.broadcast(self.spark.createDataFrame(sample_rows, sample_schema))
+        sa = sample_df.alias("sa")
+        sb = sample_df.alias("sb")
+        return (
+            candidates
+            .join(sa, F.col("col_a") == F.col("sa._col_id"), "left")
+            .withColumn("samples_a", F.coalesce(F.col("sa._samples"), F.array()))
+            .drop(F.col("sa._col_id"), F.col("sa._samples"))
+            .join(sb, F.col("col_b") == F.col("sb._col_id"), "left")
+            .withColumn("samples_b", F.coalesce(F.col("sb._samples"), F.array()))
+            .drop(F.col("sb._col_id"), F.col("sb._samples"))
+        )
 
     # ------------------------------------------------------------------
     # Step 2b: Cardinality analysis

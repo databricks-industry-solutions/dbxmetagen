@@ -2,6 +2,7 @@ resources:
   jobs:
     build_vector_index_job:
       name: "${var.app_name}_build_vector_index"
+      budget_policy_id: ${var.budget_policy_id}
 
       permissions:
         - service_principal_name: ${resources.apps.dbxmetagen_app.service_principal_client_id}
@@ -26,7 +27,7 @@ resources:
           max_retries: 1
           min_retry_interval_millis: 600000
           timeout_seconds: 14400
-          job_cluster_key: vector_index_cluster
+          environment_key: default
           notebook_task:
             notebook_path: ../../notebooks/build_vector_index.py
             base_parameters:
@@ -34,27 +35,10 @@ resources:
               schema_name: "{{job.parameters.schema_name}}"
               endpoint_name: "{{job.parameters.endpoint_name}}"
               sweep_stale_docs: "{{job.parameters.sweep_stale_docs}}"
-          libraries:
-            - whl: ../../dist/*.whl
-            - pypi:
-                package: databricks-langchain==0.4.0
-            - pypi:
-                package: openai==1.56.1
-            - pypi:
-                package: openpyxl==3.1.5
-            - pypi:
-                package: deprecated==1.2.13
-            - pypi:
-                package: "nest-asyncio>=1.6.0,<2"
 
-      job_clusters:
-        - job_cluster_key: vector_index_cluster
-          new_cluster:
-            apply_policy_default_values: true
-            policy_id: ${var.policy_id}
-            spark_version: 17.3.x-cpu-ml-scala2.13
-            node_type_id: ${var.node_type}
-            data_security_mode: SINGLE_USER
-            num_workers: 1
-            custom_tags:
-              project: dbxmetagen
+      environments:
+        - environment_key: default
+          spec:
+            environment_version: "2"
+            dependencies:
+              - ../../dist/*.whl

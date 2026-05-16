@@ -193,9 +193,9 @@ export default function SemanticLayer() {
   const [newProjectName, setNewProjectName] = useState('')
   const [showNewProject, setShowNewProject] = useState(false)
 
-  // Table selection (shared cascade hook)
-  const cst = useCatalogSchemaTables()
-  const { catalogs, schemas, filtered: filteredTables, catalog: selectedCatalog, schema: selectedSchema, filter: tableFilter, setCatalog: setSelectedCatalog, setSchema: setSelectedSchema, setFilter: setTableFilter } = cst
+  // Table selection (shared cascade hook -- kbOnly filters to knowledge-base tables)
+  const cst = useCatalogSchemaTables('', '', { kbOnly: true })
+  const { catalogs, schemas, filtered: filteredTables, allSchemaTableCount, catalog: selectedCatalog, schema: selectedSchema, filter: tableFilter, setCatalog: setSelectedCatalog, setSchema: setSelectedSchema, setFilter: setTableFilter } = cst
   const allTables = cst.tables
   const [selectedTables, setSelectedTables] = useState([])
 
@@ -1056,8 +1056,18 @@ export default function SemanticLayer() {
             </div>
           </>
         )}
-        {selectedCatalog && selectedSchema && allTables.length === 0 && (
+        {selectedCatalog && selectedSchema && allTables.length === 0 && allSchemaTableCount === 0 && (
           <p className="text-sm text-gray-500 dark:text-gray-400 italic">No managed tables found in {selectedCatalog}.{selectedSchema}</p>
+        )}
+        {selectedCatalog && selectedSchema && allTables.length === 0 && allSchemaTableCount > 0 && (
+          <p className="text-sm text-amber-600 dark:text-amber-400 italic">
+            {allSchemaTableCount} table{allSchemaTableCount !== 1 ? 's' : ''} found in {selectedCatalog}.{selectedSchema}, but none have core metadata yet. Run <strong>Generate Core Metadata</strong> first, then return here to select tables.
+          </p>
+        )}
+        {allTables.length > 0 && allSchemaTableCount > allTables.length && (
+          <p className="text-xs text-slate-500 dark:text-slate-400 mt-1.5">
+            Showing {allTables.length} of {allSchemaTableCount} tables &mdash; {allSchemaTableCount - allTables.length} table{allSchemaTableCount - allTables.length !== 1 ? 's' : ''} not shown because core metadata has not been generated for them yet.
+          </p>
         )}
         {selectedTables.length > 0 && (
           <div className="mt-4">

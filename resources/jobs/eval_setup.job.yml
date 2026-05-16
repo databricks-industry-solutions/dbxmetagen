@@ -2,6 +2,7 @@ resources:
   jobs:
     eval_setup_job:
       name: "${var.app_name}_eval_setup"
+      budget_policy_id: ${var.budget_policy_id}
 
       permissions:
         - service_principal_name: ${resources.apps.dbxmetagen_app.service_principal_client_id}
@@ -20,35 +21,17 @@ resources:
       tasks:
         - task_key: create_eval_tables
           max_retries: 0
-          job_cluster_key: eval_cluster
+          environment_key: default
           notebook_task:
             notebook_path: ../../notebooks/evaluation/eval_setup.py
             base_parameters:
               catalog_name: "{{job.parameters.catalog_name}}"
               schema_name: "{{job.parameters.schema_name}}"
-          libraries:
-            - whl: ../../dist/*.whl
-            - pypi:
-                package: databricks-langchain==0.4.0
-            - pypi:
-                package: openai==1.56.1
-            - pypi:
-                package: openpyxl==3.1.5
-            - pypi:
-                package: deprecated==1.2.13
-            - pypi:
-                package: "nest-asyncio>=1.6.0,<2"
-            - pypi:
-                package: faker
 
-      job_clusters:
-        - job_cluster_key: eval_cluster
-          new_cluster:
-            apply_policy_default_values: true
-            policy_id: ${var.policy_id}
-            spark_version: 17.3.x-cpu-ml-scala2.13
-            node_type_id: ${var.node_type}
-            data_security_mode: SINGLE_USER
-            num_workers: 1
-            custom_tags:
-              project: dbxmetagen
+      environments:
+        - environment_key: default
+          spec:
+            environment_version: "2"
+            dependencies:
+              - ../../dist/*.whl
+              - faker

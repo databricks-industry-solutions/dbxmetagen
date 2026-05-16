@@ -163,6 +163,7 @@ export default function BatchJobs({ onNavigate }) {
   const [similarityThreshold, setSimilarityThreshold] = useState(0.8)
   const [incremental, setIncremental] = useState(true)
   const [sweepStaleDocs, setSweepStaleDocs] = useState(false)
+  const [serverless, setServerless] = useState(true)
   const [clusterMinK, setClusterMinK] = useState(2)
   const [clusterMaxK, setClusterMaxK] = useState(15)
   const [lakebaseCatalog, setLakebaseCatalog] = useState('')
@@ -477,6 +478,10 @@ export default function BatchJobs({ onNavigate }) {
                   </>)
                 })()}
               </select>
+              <button type="button" onClick={() => onNavigate?.('ontologyBuilder')}
+                className="text-xs text-dbx-teal hover:underline mt-1 inline-block">
+                Or build a custom ontology &rarr;
+              </button>
               {bundlesLoadError && (
                 <p className="text-xs text-amber-700 dark:text-amber-300 mt-1.5">
                   Could not load ontology bundles: {bundlesLoadError}.{' '}
@@ -709,6 +714,7 @@ export default function BatchJobs({ onNavigate }) {
                   <input type="checkbox" checked={applyDdl} onChange={e => setApplyDdl(e.target.checked)} />
                   Apply to tables immediately
                 </label>
+                {applyDdl && <p className="text-[10px] text-amber-600 dark:text-amber-400 ml-6 -mt-1">This will write SQL COMMENT ON statements directly to your Unity Catalog tables and columns. Existing comments will be overwritten.</p>}
               </div>
             </div>
 
@@ -804,6 +810,10 @@ export default function BatchJobs({ onNavigate }) {
       {activeTab === 'advanced' && (
         <section className="card border-l-4 border-l-dbx-amber overflow-hidden">
           <div className="p-6 space-y-5">
+            <div className="flex items-start gap-2 px-3 py-2 rounded-md bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 text-xs text-amber-700 dark:text-amber-300">
+              <svg className="w-4 h-4 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+              <span>Run <strong>Generate Core Metadata</strong> for all target tables before running this pipeline. The advanced pipeline reads from the knowledge base tables produced by core metadata &mdash; tables without core metadata will be skipped or produce incomplete results.</span>
+            </div>
             <details className="group">
               <summary className="text-sm font-medium text-slate-600 dark:text-slate-300 cursor-pointer select-none flex items-center gap-1.5">
                 <svg className="w-3 h-3 transition-transform group-open:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -855,12 +865,20 @@ export default function BatchJobs({ onNavigate }) {
                   <input type="checkbox" checked={applyDdl} onChange={e => setApplyDdl(e.target.checked)} />
                   Apply DDL (tags &amp; FK constraints)
                 </label>
+                {applyDdl && <p className="text-[10px] text-amber-600 dark:text-amber-400 mt-0.5 ml-5">This will write ontology tags (entity_type, property_role) and FK constraints directly to your Unity Catalog tables. Existing tags will be updated.</p>}
               </div>
               <div className="pb-1">
                 <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer"
                   title="Remove orphaned documents from the vector index that no longer have a backing entity or table. Recommended after switching ontology bundles.">
                   <input type="checkbox" checked={sweepStaleDocs} onChange={e => setSweepStaleDocs(e.target.checked)} />
                   Sweep stale docs (clean up orphaned vector index entries)
+                </label>
+              </div>
+              <div className="pb-1">
+                <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer"
+                  title="Run the pipeline on serverless compute instead of classic ML clusters. Faster cold-start, no cluster management.">
+                  <input type="checkbox" checked={serverless} onChange={e => setServerless(e.target.checked)} />
+                  Serverless compute
                 </label>
               </div>
             </div>
@@ -873,7 +891,7 @@ export default function BatchJobs({ onNavigate }) {
             </div>
 
             {!ontologyBundle && <p className="text-xs text-amber-600 dark:text-amber-400">An ontology bundle must be selected in the Generate Metadata section to run the full analytics pipeline.</p>}
-            <button onClick={() => runJob('_full_analytics_pipeline', {
+            <button onClick={() => runJob(serverless ? '_full_analytics_pipeline_serverless' : '_full_analytics_pipeline', {
               catalog_name: catalogName, schema_name: schemaName,
               ontology_bundle: ontologyBundle,
               apply_ddl: applyDdl,

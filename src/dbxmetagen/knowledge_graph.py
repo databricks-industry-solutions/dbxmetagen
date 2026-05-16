@@ -1,5 +1,5 @@
 """
-Knowledge Graph module for building GraphFrames-compatible node and edge tables.
+Knowledge Graph module for building node and edge Delta tables.
 
 Creates relationship edges between tables based on:
 - Same domain
@@ -13,8 +13,6 @@ Extended to support:
 - Schema nodes (from schema_knowledge_base)
 - Hierarchical relationships (contains, references, derives_from)
 - Embedding-based similarity edges
-
-Requires ML cluster (serverless doesn't support GraphFrames JVM dependencies).
 """
 
 import logging
@@ -197,7 +195,7 @@ def compute_security_level(has_pii: bool, has_phi: bool) -> str:
 
 class KnowledgeGraphBuilder:
     """
-    Builder for creating GraphFrames-compatible node and edge tables.
+    Builder for creating node and edge Delta tables.
     
     Node table: One row per table with properties
     Edge table: Relationships between tables (same domain, schema, etc.)
@@ -728,7 +726,7 @@ class KnowledgeGraphBuilder:
         directed_edges = edges_df.filter(
             F.col("relationship").isin(list(inverse_map.keys()))
         )
-        if directed_edges.rdd.isEmpty():
+        if not directed_edges.head(1):
             return edges_df
 
         inv_edges = (
@@ -1399,12 +1397,14 @@ def build_extended_knowledge_graph(
 
 
 # =============================================================================
-# Example GraphFrames Queries
+# Example GraphFrames Queries (optional -- requires `pip install graphframes`
+# on a classic ML-runtime cluster; not used by the core pipeline)
 # =============================================================================
 
 GRAPHFRAMES_EXAMPLES = """
 # =============================================================================
 # GraphFrames Query Examples for Knowledge Graph
+# (requires: pip install graphframes on a classic ML-runtime cluster)
 # =============================================================================
 
 # First, create the GraphFrame from node and edge tables:

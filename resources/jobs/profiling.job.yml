@@ -2,6 +2,7 @@ resources:
   jobs:
     profiling_job:
       name: "${var.app_name}_profiling_job"
+      budget_policy_id: ${var.budget_policy_id}
 
       permissions:
         - service_principal_name: ${resources.apps.dbxmetagen_app.service_principal_client_id}
@@ -24,7 +25,7 @@ resources:
           max_retries: 1
           min_retry_interval_millis: 600000
           timeout_seconds: 14400
-          job_cluster_key: profiling_cluster
+          environment_key: default
 
           notebook_task:
             notebook_path: ../../notebooks/run_profiling.py
@@ -33,26 +34,13 @@ resources:
               schema_name: "{{job.parameters.schema_name}}"
               max_tables: "{{job.parameters.max_tables}}"
 
-          libraries:
-            - whl: ../../dist/*.whl
-            - pypi:
-                package: databricks-langchain==0.4.0
-            - pypi:
-                package: openai==1.56.1
-            - pypi:
-                package: openpyxl==3.1.5
-            - pypi:
-                package: deprecated==1.2.13
-            - pypi:
-                package: "nest-asyncio>=1.6.0,<2"
-
         - task_key: compute_quality_scores
           max_retries: 1
           min_retry_interval_millis: 600000
           timeout_seconds: 14400
           depends_on:
             - task_key: run_profiling
-          job_cluster_key: profiling_cluster
+          environment_key: default
 
           notebook_task:
             notebook_path: ../../notebooks/compute_data_quality.py
@@ -60,26 +48,13 @@ resources:
               catalog_name: "{{job.parameters.catalog_name}}"
               schema_name: "{{job.parameters.schema_name}}"
 
-          libraries:
-            - whl: ../../dist/*.whl
-            - pypi:
-                package: databricks-langchain==0.4.0
-            - pypi:
-                package: openai==1.56.1
-            - pypi:
-                package: openpyxl==3.1.5
-            - pypi:
-                package: deprecated==1.2.13
-            - pypi:
-                package: "nest-asyncio>=1.6.0,<2"
-
         - task_key: update_graph_quality
           max_retries: 1
           min_retry_interval_millis: 600000
           timeout_seconds: 14400
           depends_on:
             - task_key: compute_quality_scores
-          job_cluster_key: profiling_cluster
+          environment_key: default
 
           notebook_task:
             notebook_path: ../../notebooks/update_graph_quality.py
@@ -87,27 +62,9 @@ resources:
               catalog_name: "{{job.parameters.catalog_name}}"
               schema_name: "{{job.parameters.schema_name}}"
 
-          libraries:
-            - whl: ../../dist/*.whl
-            - pypi:
-                package: databricks-langchain==0.4.0
-            - pypi:
-                package: openai==1.56.1
-            - pypi:
-                package: openpyxl==3.1.5
-            - pypi:
-                package: deprecated==1.2.13
-            - pypi:
-                package: "nest-asyncio>=1.6.0,<2"
-
-      job_clusters:
-        - job_cluster_key: profiling_cluster
-          new_cluster:
-            apply_policy_default_values: true
-            policy_id: ${var.policy_id}
-            spark_version: 17.3.x-cpu-ml-scala2.13
-            node_type_id: ${var.node_type}
-            data_security_mode: SINGLE_USER
-            num_workers: 1
-            custom_tags:
-              project: dbxmetagen
+      environments:
+        - environment_key: default
+          spec:
+            environment_version: "2"
+            dependencies:
+              - ../../dist/*.whl
