@@ -33,7 +33,7 @@ env:
   - name: FULL_ANALYTICS_PIPELINE_JOB_ID
     valueFrom: full_analytics_pipeline_job
   - name: FULL_ANALYTICS_PIPELINE_SERVERLESS_JOB_ID
-    valueFrom: full_analytics_pipeline_serverless_job
+    valueFrom: analytics_serverless_job
   - name: FK_PREDICTION_JOB_ID
     valueFrom: fk_prediction_job
   - name: SYNC_GRAPH_LAKEBASE_JOB_ID
