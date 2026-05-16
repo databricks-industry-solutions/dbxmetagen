@@ -25,37 +25,54 @@ const _issueSevStyles = {
   low: 'text-slate-700 dark:text-slate-400 bg-slate-100 dark:bg-slate-900/30',
 }
 
-function MvAnalysisPanel({ issues, onClose, onApplyFix }) {
+function MvAnalysisPanel({ issues, onClose, onApplyFix, appliedFields }) {
+  const applied = appliedFields || new Set()
   if (!issues || issues.length === 0) return (
     <div className="mt-2 p-3 bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-700 rounded text-xs text-emerald-700 dark:text-emerald-400">
       No issues found.
       <button onClick={onClose} className="ml-2 text-slate-400 hover:text-slate-600">Close</button>
     </div>
   )
+  const fixable = issues.filter(iss => iss.field && iss.fix_value && !applied.has(iss.field))
   return (
     <div className="mt-2 p-3 border border-cyan-200 dark:border-cyan-700 rounded space-y-2">
       <div className="flex items-center justify-between">
         <span className="text-xs font-medium text-slate-700 dark:text-slate-300">Analysis Issues ({issues.length})</span>
-        <button onClick={onClose} className="text-xs text-slate-400 hover:text-slate-600">Close</button>
-      </div>
-      {issues.map((iss, i) => (
-        <div key={i} className="flex items-start gap-2 text-xs py-1">
-          <span className={`px-1.5 py-0.5 rounded font-medium shrink-0 ${_issueSevStyles[iss.severity] || _issueSevStyles.low}`}>{iss.severity}</span>
-          <div className="flex-1 min-w-0">
-            <p className="text-slate-700 dark:text-slate-300">{iss.message}</p>
-            {iss.field && <p className="text-slate-400 text-[10px]">Field: {iss.field}</p>}
-            {iss.suggestion && (
-              <div className="flex items-center gap-2 mt-1">
-                <p className="text-slate-500 dark:text-slate-400 italic flex-1">{iss.suggestion}</p>
-                {iss.field && iss.fix_value && onApplyFix && (
-                  <button onClick={() => onApplyFix(iss.field, iss.fix_value)}
-                    className="shrink-0 px-1.5 py-0.5 text-[10px] bg-cyan-600 text-white rounded hover:bg-cyan-700">Apply</button>
-                )}
-              </div>
-            )}
-          </div>
+        <div className="flex items-center gap-2">
+          {fixable.length > 0 && onApplyFix && (
+            <button onClick={() => onApplyFix('__all__')}
+              className="px-2 py-0.5 text-[10px] bg-cyan-600 text-white rounded hover:bg-cyan-700">
+              Apply All ({fixable.length})
+            </button>
+          )}
+          <button onClick={onClose} className="text-xs text-slate-400 hover:text-slate-600">Close</button>
         </div>
-      ))}
+      </div>
+      {issues.map((iss, i) => {
+        const isApplied = iss.field && applied.has(iss.field)
+        return (
+          <div key={i} className={`flex items-start gap-2 text-xs py-1 ${isApplied ? 'opacity-50' : ''}`}>
+            {isApplied ? (
+              <span className="px-1.5 py-0.5 rounded font-medium shrink-0 text-emerald-700 dark:text-emerald-400 bg-emerald-100 dark:bg-emerald-900/30">fixed</span>
+            ) : (
+              <span className={`px-1.5 py-0.5 rounded font-medium shrink-0 ${_issueSevStyles[iss.severity] || _issueSevStyles.low}`}>{iss.severity}</span>
+            )}
+            <div className="flex-1 min-w-0">
+              <p className={`text-slate-700 dark:text-slate-300 ${isApplied ? 'line-through' : ''}`}>{iss.message}</p>
+              {iss.field && <p className="text-slate-400 text-[10px]">Field: {iss.field}</p>}
+              {iss.suggestion && !isApplied && (
+                <div className="flex items-center gap-2 mt-1">
+                  <p className="text-slate-500 dark:text-slate-400 italic flex-1">{iss.suggestion}</p>
+                  {iss.field && iss.fix_value && onApplyFix && (
+                    <button onClick={() => onApplyFix(iss.field, iss.fix_value)}
+                      className="shrink-0 px-1.5 py-0.5 text-[10px] bg-cyan-600 text-white rounded hover:bg-cyan-700">Apply</button>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        )
+      })}
     </div>
   )
 }
@@ -224,6 +241,7 @@ export default function SemanticLayer() {
   const [mvHealth, setMvHealth] = useState({})
   const [mvAnalysis, setMvAnalysis] = useState({})
   const [mvAnalysisExpanded, setMvAnalysisExpanded] = useState(null)
+  const [mvAppliedFields, setMvAppliedFields] = useState({})
   const [structuredEditing, setStructuredEditing] = useState(null)
   const [structuredDraft, setStructuredDraft] = useState(null)
   const userEditedTargetRef = useRef(false)
@@ -235,6 +253,13 @@ export default function SemanticLayer() {
   const [suggestQLoading, setSuggestQLoading] = useState(false)
   const [bulkCreating, setBulkCreating] = useState(false)
   const [bulkDeleting, setBulkDeleting] = useState(null)
+  const [vectorSyncing, setVectorSyncing] = useState(false)
+  const [chatMessages, setChatMessages] = useState([])
+  const [chatInput, setChatInput] = useState('')
+  const [chatLoading, setChatLoading] = useState(false)
+  const [chatSessionId] = useState(() => crypto.randomUUID())
+  const chatEndRef = useRef(null)
+  const [kpiCoverage, setKpiCoverage] = useState(null)
   const [tableSaveStatus, setTableSaveStatus] = useState(null)
   const [openMenuId, setOpenMenuId] = useState(null)
   const menuRef = useRef(null)
@@ -399,6 +424,13 @@ export default function SemanticLayer() {
     cachedFetch(url, {}, TTL.CONFIG).then(({ data }) => {
       if (data) setDefinitions(data)
     })
+    const covUrl = selectedProjectId
+      ? `/api/semantic-layer/kpi-coverage?project_id=${selectedProjectId}`
+      : '/api/semantic-layer/kpi-coverage'
+    cachedFetchObj(covUrl, {}, TTL.CONFIG).then(({ data }) => {
+      if (data?.kpi_coverage?.total) setKpiCoverage(data.kpi_coverage)
+      else setKpiCoverage(null)
+    })
   }
 
   const createNewProject = async () => {
@@ -508,6 +540,77 @@ export default function SemanticLayer() {
         setTimeout(() => setTableSaveStatus(null), 2000)
       }
     } catch { setTableSaveStatus(null) }
+  }
+
+  const sendChatMessage = async () => {
+    const q = chatInput.trim()
+    if (!q || chatLoading) return
+    setChatInput('')
+    setChatMessages(prev => [...prev, { role: 'user', content: q }])
+    setChatLoading(true)
+    try {
+      const history = chatMessages.map(m => ({ role: m.role, content: m.content }))
+      const res = await fetch('/api/metric-view-agent/stream', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ question: q, history, session_id: chatSessionId }),
+      })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        setChatMessages(prev => [...prev, { role: 'assistant', content: err.detail || 'Request failed' }])
+        setChatLoading(false)
+        return
+      }
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder()
+      let buf = ''
+      let assistantContent = ''
+      let hasPlaceholder = false
+      const ensurePlaceholder = () => {
+        if (!hasPlaceholder) {
+          setChatMessages(prev => [...prev, { role: 'assistant', content: '' }])
+          hasPlaceholder = true
+        }
+      }
+      const updateLast = (msg) => setChatMessages(prev => {
+        const next = [...prev]
+        next[next.length - 1] = msg
+        return next
+      })
+      ensurePlaceholder()
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buf += decoder.decode(value, { stream: true })
+        const lines = buf.split('\n')
+        buf = lines.pop() || ''
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            try {
+              const evt = JSON.parse(line.slice(6))
+              if (evt.event === 'stage') {
+                updateLast({ role: 'assistant', content: evt.stage === 'processing' ? 'Thinking...' : 'Searching metric views...' })
+              } else if (evt.event === 'done') {
+                assistantContent = evt.result?.answer || 'No answer returned'
+                updateLast({ role: 'assistant', content: assistantContent, data: { tool_calls: evt.result?.tool_calls } })
+              } else if (evt.event === 'error') {
+                updateLast({ role: 'assistant', content: evt.error || 'An error occurred' })
+              }
+            } catch {}
+          }
+        }
+      }
+    } catch (e) {
+      setChatMessages(prev => {
+        if (prev.length && prev[prev.length - 1].role === 'assistant' && !prev[prev.length - 1].content) {
+          const next = [...prev]
+          next[next.length - 1] = { role: 'assistant', content: `Error: ${e.message}` }
+          return next
+        }
+        return [...prev, { role: 'assistant', content: `Error: ${e.message}` }]
+      })
+    }
+    setChatLoading(false)
+    setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 100)
   }
 
   const suggestQuestions = async () => {
@@ -631,7 +734,12 @@ export default function SemanticLayer() {
     setActionLoading(prev => ({ ...prev, [defId]: 'improve' }))
     setError(null)
     try {
-      const res = await fetch(`/api/semantic-layer/definitions/${defId}/improve`, { method: 'POST' })
+      const analysisIssues = mvAnalysis[defId] || null
+      const res = await fetch(`/api/semantic-layer/definitions/${defId}/improve`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ analysis_issues: analysisIssues }),
+      })
       const data = await res.json()
       if (!res.ok) setError(data.detail || 'Improve failed')
       invalidateCache('/api/semantic-layer/definitions')
@@ -653,6 +761,7 @@ export default function SemanticLayer() {
   const analyzeMv = async (defId) => {
     setActionLoading(prev => ({ ...prev, [defId]: 'analyze' }))
     setMvAnalysis(prev => ({ ...prev, [defId]: null }))
+    setMvAppliedFields(prev => ({ ...prev, [defId]: new Set() }))
     setMvAnalysisExpanded(defId)
     try {
       const res = await fetch(`/api/semantic-layer/definitions/${defId}/analyze`, { method: 'POST' })
@@ -665,13 +774,42 @@ export default function SemanticLayer() {
     setActionLoading(prev => ({ ...prev, [defId]: null }))
   }
 
-  const applyFieldFix = async (defId, path, value) => {
+  const applyFieldFix = async (defId, pathOrAll, value) => {
+    if (pathOrAll === '__all__') {
+      const issues = mvAnalysis[defId] || []
+      const existing = mvAppliedFields[defId] || new Set()
+      const fixable = issues.filter(iss => iss.field && iss.fix_value && !existing.has(iss.field))
+      for (const iss of fixable) {
+        try {
+          const res = await fetch(`/api/semantic-layer/definitions/${defId}/field`, {
+            method: 'PUT', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: iss.field, value: iss.fix_value }),
+          })
+          if (res.ok) {
+            setMvAppliedFields(prev => {
+              const s = new Set(prev[defId] || [])
+              s.add(iss.field)
+              return { ...prev, [defId]: s }
+            })
+          }
+        } catch {}
+      }
+      invalidateCache('/api/semantic-layer/definitions')
+      refreshDefinitions()
+      fetchMvHealth(defId)
+      return
+    }
     try {
       const res = await fetch(`/api/semantic-layer/definitions/${defId}/field`, {
         method: 'PUT', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path, value }),
+        body: JSON.stringify({ path: pathOrAll, value }),
       })
       if (res.ok) {
+        setMvAppliedFields(prev => {
+          const s = new Set(prev[defId] || [])
+          s.add(pathOrAll)
+          return { ...prev, [defId]: s }
+        })
         invalidateCache('/api/semantic-layer/definitions')
         refreshDefinitions()
         fetchMvHealth(defId)
@@ -764,6 +902,29 @@ export default function SemanticLayer() {
     invalidateCache('/api/semantic-layer/definitions')
     refreshDefinitions()
     setBulkDeleting(null)
+  }
+
+  const syncToVectorStore = async () => {
+    setVectorSyncing(true)
+    try {
+      const res = await fetch('/api/vector/sync-metric-views', { method: 'POST' })
+      const { task_id } = await res.json()
+      const poll = async () => {
+        const r = await fetch(`/api/vector/sync-metric-views/${task_id}`)
+        const data = await r.json()
+        if (data.status === 'running') { setTimeout(poll, 2000); return }
+        setVectorSyncing(false)
+        if (data.status === 'done') {
+          alert(`Synced ${data.docs_total || 0} metric view docs to vector store`)
+        } else {
+          alert(`Sync failed: ${data.error || 'unknown error'}`)
+        }
+      }
+      poll()
+    } catch (e) {
+      setVectorSyncing(false)
+      alert(`Sync failed: ${e.message}`)
+    }
   }
 
   const deleteAllNonApplied = async () => {
@@ -947,10 +1108,11 @@ export default function SemanticLayer() {
 
       {/* Tab Bar */}
       <div className="inline-flex bg-dbx-oat/60 dark:bg-dbx-navy-600 rounded-xl p-1 shadow-inner-soft">
-        {[['setup', 'Setup'], ['questions', 'Questions & KPIs'], ['generate', 'Generate'], ['definitions', 'Definitions']].map(([k, l]) => {
+        {[['setup', 'Setup'], ['questions', 'Questions & KPIs'], ['generate', 'Generate'], ['definitions', 'Definitions'], ['agent', 'Agent']].map(([k, l]) => {
           const count = k === 'setup' && selectedTables.length ? `${selectedTables.length} tables`
             : k === 'questions' ? [questionLines.length && `${questionLines.length}q`, kpis.length && `${kpis.length} KPIs`].filter(Boolean).join(', ') || ''
-            : k === 'definitions' && definitions.length ? `${definitions.length}` : ''
+            : k === 'definitions' && definitions.length ? `${definitions.length}`
+            : k === 'agent' && chatMessages.length ? `${chatMessages.length}` : ''
           const genReady = k === 'generate' && selectedTables.length > 0 && questionLines.length > 0
           const genNotReady = k === 'generate' && (!selectedTables.length || !questionLines.length)
           return (
@@ -970,7 +1132,8 @@ export default function SemanticLayer() {
         <span className={activeTab === 'setup' ? 'font-semibold text-dbx-lava' : ''}>1. Setup</span> &mdash; pick a project and select tables &rarr;{' '}
         <span className={activeTab === 'questions' ? 'font-semibold text-dbx-lava' : ''}>2. Questions</span> &mdash; define business questions and KPIs &rarr;{' '}
         <span className={activeTab === 'generate' ? 'font-semibold text-dbx-lava' : ''}>3. Generate</span> &mdash; AI creates metric view definitions &rarr;{' '}
-        <span className={activeTab === 'definitions' ? 'font-semibold text-dbx-lava' : ''}>4. Definitions</span> &mdash; review, validate, and deploy as UC views
+        <span className={activeTab === 'definitions' ? 'font-semibold text-dbx-lava' : ''}>4. Definitions</span> &mdash; review, validate, and deploy as UC views &rarr;{' '}
+        <span className={activeTab === 'agent' ? 'font-semibold text-dbx-lava' : ''}>5. Agent</span> &mdash; ask business questions answered by your metric views
       </div>
 
       {/* === Setup Tab === */}
@@ -1446,6 +1609,10 @@ export default function SemanticLayer() {
                   {bulkDeleting === 'applied' ? 'Dropping & Deleting...' : `Drop & Delete All Applied (${definitions.filter(d => d.status === 'applied').length})`}
                 </button>
               )}
+              <button onClick={syncToVectorStore} disabled={vectorSyncing}
+                className="px-2.5 py-1 text-xs text-blue-600 dark:text-blue-400 border border-blue-300 dark:border-blue-700 rounded hover:bg-blue-50 dark:hover:bg-blue-900/20 disabled:opacity-50 whitespace-nowrap">
+                {vectorSyncing ? 'Syncing...' : 'Sync to Vector Store'}
+              </button>
             </div>
           )}
 
@@ -1463,6 +1630,18 @@ export default function SemanticLayer() {
             </div>
             {(defFilter || defStatusFilter !== 'all') && <span className="text-xs text-slate-400">{filtered.length} of {definitions.length}</span>}
           </div>
+
+          {kpiCoverage && kpiCoverage.total > 0 && (
+            <div className="flex items-center gap-2 mb-3 px-2.5 py-1.5 rounded-md bg-slate-50 dark:bg-dbx-navy-600 text-xs">
+              <span className="font-medium text-slate-600 dark:text-slate-300">KPI Coverage:</span>
+              <span className="text-emerald-600 dark:text-emerald-400">{(kpiCoverage.implemented || []).length}/{kpiCoverage.total} implemented</span>
+              {(kpiCoverage.missing || []).length > 0 && (
+                <span className="text-amber-600 dark:text-amber-400" title={`Missing: ${kpiCoverage.missing.join(', ')}`}>
+                  {kpiCoverage.missing.length} missing
+                </span>
+              )}
+            </div>
+          )}
 
           <div className="divide-y dark:divide-gray-700">
             {filtered.map(d => {
@@ -1510,11 +1689,20 @@ export default function SemanticLayer() {
                           : 'text-red-700 dark:text-red-400 bg-red-100 dark:bg-red-900/30'
                         return <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${cls}`}>{h.score}/{h.max}</span>
                       })()}
-                      {d.complexity_level === 'trivial' && (
-                        <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400" title="Only basic COUNT/SUM measures">Trivial</span>
+                      {d.complexity_level === 'basic' && (
+                        <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400" title="No joins -- single-table only">Basic</span>
+                      )}
+                      {d.complexity_level === 'standard' && (
+                        <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-sky-100 text-sky-700 dark:bg-sky-900/30 dark:text-sky-400" title="Single join">Standard</span>
                       )}
                       {d.complexity_level === 'rich' && (
-                        <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400" title="Includes ratios, rates, or filtered aggregates">Rich</span>
+                        <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400" title="Multi-join star/hierarchical schema">Rich</span>
+                      )}
+                      {d.quality_level && d.quality_level !== 'ready' && (
+                        <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${
+                          d.quality_level === 'production' ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400'
+                          : 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400'
+                        }`} title={`Quality: ${d.quality_score ?? '?'}/7 - ${d.quality_level === 'production' ? 'Full metadata, synonyms, format' : 'Missing metadata (synonyms, format, or display_name)'}`}>{d.quality_level === 'production' ? 'Production' : 'Draft'}</span>
                       )}
                       {/* Compact action menu */}
                       <div className="relative" ref={openMenuId === d.definition_id ? menuRef : undefined}>
@@ -1630,6 +1818,7 @@ export default function SemanticLayer() {
                   {mvAnalysisExpanded === d.definition_id && mvAnalysis[d.definition_id] && (
                     <MvAnalysisPanel issues={mvAnalysis[d.definition_id]}
                       onClose={() => setMvAnalysisExpanded(null)}
+                      appliedFields={mvAppliedFields[d.definition_id]}
                       onApplyFix={(path, value) => applyFieldFix(d.definition_id, path, value)} />
                   )}
                 </div>
@@ -1640,6 +1829,67 @@ export default function SemanticLayer() {
         </section>
       )})()}
 
+      </>}
+
+      {/* === Agent Tab === */}
+      {activeTab === 'agent' && <>
+        <section className={section}>
+          <h2 className="text-lg font-semibold mb-2 dark:text-gray-100">Metric View Agent</h2>
+          <p className="text-xs text-slate-500 dark:text-slate-400 mb-3">Ask business questions and get answers from your deployed metric views. The agent searches, queries, and interprets metric view data.</p>
+
+          <div className="border dark:border-gray-700 rounded-xl overflow-hidden flex flex-col" style={{ height: '500px' }}>
+            <div className="flex-1 overflow-y-auto p-4 space-y-3 bg-slate-50 dark:bg-gray-900">
+              {chatMessages.length === 0 && (
+                <div className="text-center text-slate-400 dark:text-slate-500 py-12">
+                  <p className="text-sm mb-2">No messages yet</p>
+                  <p className="text-xs">Try: "What is total revenue by region?" or "Show me top KPIs for clinical trials"</p>
+                </div>
+              )}
+              {chatMessages.map((msg, i) => (
+                <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                  <div className={`max-w-[80%] rounded-xl px-3 py-2 text-sm ${
+                    msg.role === 'user'
+                      ? 'bg-dbx-lava text-white'
+                      : 'bg-white dark:bg-gray-800 border dark:border-gray-700 text-slate-700 dark:text-slate-200'
+                  }`}>
+                    <div className="whitespace-pre-wrap break-words">{msg.content || (chatLoading && i === chatMessages.length - 1 ? 'Thinking...' : '')}</div>
+                    {msg.data?.sql && (
+                      <details className="mt-2 text-xs">
+                        <summary className="cursor-pointer text-slate-400 hover:text-slate-600">SQL Query</summary>
+                        <pre className="mt-1 p-2 bg-slate-100 dark:bg-gray-900 rounded text-[10px] overflow-x-auto">{msg.data.sql}</pre>
+                      </details>
+                    )}
+                    {msg.data?.results && (
+                      <details className="mt-1 text-xs">
+                        <summary className="cursor-pointer text-slate-400 hover:text-slate-600">Results ({msg.data.results.length} rows)</summary>
+                        <pre className="mt-1 p-2 bg-slate-100 dark:bg-gray-900 rounded text-[10px] overflow-x-auto max-h-[200px]">{JSON.stringify(msg.data.results.slice(0, 20), null, 2)}</pre>
+                      </details>
+                    )}
+                  </div>
+                </div>
+              ))}
+              <div ref={chatEndRef} />
+            </div>
+            <div className="border-t dark:border-gray-700 p-3 bg-white dark:bg-gray-800 flex gap-2">
+              <input
+                value={chatInput}
+                onChange={e => setChatInput(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && !e.shiftKey && sendChatMessage()}
+                placeholder="Ask a business question..."
+                className="flex-1 px-3 py-2 text-sm border dark:border-gray-600 rounded-lg bg-white dark:bg-gray-900 dark:text-gray-200 focus:outline-none focus:ring-2 focus:ring-dbx-lava"
+                disabled={chatLoading}
+              />
+              <button onClick={sendChatMessage} disabled={chatLoading || !chatInput.trim()}
+                className="px-4 py-2 bg-dbx-lava text-white rounded-lg text-sm hover:bg-red-700 disabled:opacity-50 shrink-0">
+                {chatLoading ? 'Sending...' : 'Send'}
+              </button>
+            </div>
+          </div>
+
+          {chatMessages.length > 0 && (
+            <button onClick={() => setChatMessages([])} className="mt-2 text-xs text-slate-400 hover:text-slate-600">Clear conversation</button>
+          )}
+        </section>
       </>}
 
       {editDefId && (
