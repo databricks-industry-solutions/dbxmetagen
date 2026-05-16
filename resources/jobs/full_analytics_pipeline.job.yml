@@ -139,8 +139,6 @@ resources:
               incremental: "{{job.parameters.incremental}}"
           libraries:
             - whl: ../../dist/*.whl
-            - pypi:
-                package: graphframes
 
         - task_key: generate_embeddings
           max_retries: 1

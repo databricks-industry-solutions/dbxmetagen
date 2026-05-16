@@ -12,7 +12,6 @@ fi
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 uv export -q --no-dev --no-hashes --no-emit-project \
-  --extra all \
   --no-emit-package databricks-connect \
   --no-emit-package pyspark \
   --no-emit-package py4j \
