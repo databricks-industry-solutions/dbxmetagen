@@ -81,7 +81,7 @@ resources:
               model: "{{job.parameters.model}}"
               spacy_model_names: "{{job.parameters.spacy_model_names}}"
           libraries:
-            - whl: ../../dist/*.whl
+            # - whl: ../../dist/*.whl  # installed via %pip in notebook
             - pypi:
                 package: databricks-langchain==0.4.0
             - pypi:
@@ -92,6 +92,20 @@ resources:
                 package: deprecated==1.2.13
             - pypi:
                 package: "nest-asyncio>=1.6.0,<2"
+            - pypi:
+                package: mlflow==3.6.0
+            - pypi:
+                package: cloudpickle==3.1.0
+            - pypi:
+                package: pydantic==2.10.3
+            - pypi:
+                package: "ydata-profiling>=4.12.1,<5"
+            - pypi:
+                package: databricks-sdk==0.68.0
+            - pypi:
+                package: pyyaml==6.0.1
+            - pypi:
+                package: requests==2.32.5
 
         - task_key: generate_pi
           max_retries: 1
@@ -123,7 +137,7 @@ resources:
               model: "{{job.parameters.model}}"
               spacy_model_names: "{{job.parameters.spacy_model_names}}"
           libraries:
-            - whl: ../../dist/*.whl
+            # - whl: ../../dist/*.whl  # installed via %pip in notebook
             - pypi:
                 package: databricks-langchain==0.4.0
             - pypi:
@@ -134,6 +148,20 @@ resources:
                 package: deprecated==1.2.13
             - pypi:
                 package: "nest-asyncio>=1.6.0,<2"
+            - pypi:
+                package: mlflow==3.6.0
+            - pypi:
+                package: cloudpickle==3.1.0
+            - pypi:
+                package: pydantic==2.10.3
+            - pypi:
+                package: "ydata-profiling>=4.12.1,<5"
+            - pypi:
+                package: databricks-sdk==0.68.0
+            - pypi:
+                package: pyyaml==6.0.1
+            - pypi:
+                package: requests==2.32.5
 
         - task_key: generate_domain
           max_retries: 1
@@ -165,7 +193,7 @@ resources:
               model: "{{job.parameters.model}}"
               spacy_model_names: "{{job.parameters.spacy_model_names}}"
           libraries:
-            - whl: ../../dist/*.whl
+            # - whl: ../../dist/*.whl  # installed via %pip in notebook
             - pypi:
                 package: databricks-langchain==0.4.0
             - pypi:
@@ -176,6 +204,20 @@ resources:
                 package: deprecated==1.2.13
             - pypi:
                 package: "nest-asyncio>=1.6.0,<2"
+            - pypi:
+                package: mlflow==3.6.0
+            - pypi:
+                package: cloudpickle==3.1.0
+            - pypi:
+                package: pydantic==2.10.3
+            - pypi:
+                package: "ydata-profiling>=4.12.1,<5"
+            - pypi:
+                package: databricks-sdk==0.68.0
+            - pypi:
+                package: pyyaml==6.0.1
+            - pypi:
+                package: requests==2.32.5
 
       job_clusters:
         - job_cluster_key: metadata_cluster

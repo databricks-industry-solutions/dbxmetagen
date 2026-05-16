@@ -12,6 +12,7 @@
 # MAGIC Then run `eval_compare.py` to score the results.
 # COMMAND ----------
 # MAGIC %pip install -q faker
+# MAGIC %pip install /Workspace/Users/<your_username>/.bundle/dbxmetagen/dev/artifacts/.internal/dbxmetagen-*.whl
 # MAGIC dbutils.library.restartPython()
 # COMMAND ----------
 

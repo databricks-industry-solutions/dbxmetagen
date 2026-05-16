@@ -1,5 +1,6 @@
 # Databricks notebook source
 # MAGIC %pip install -r ../minimal_requirements.txt
+# MAGIC %pip install /Workspace/Users/<your_username>/.bundle/dbxmetagen/dev/artifacts/.internal/dbxmetagen-*.whl
 # MAGIC dbutils.library.restartPython()
 
 # COMMAND ----------

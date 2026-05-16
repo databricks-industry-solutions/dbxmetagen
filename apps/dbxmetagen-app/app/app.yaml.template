@@ -59,7 +59,7 @@ env:
   - name: SETUP_MCP_SERVERS_JOB_ID
     valueFrom: setup_mcp_servers_job
   - name: VECTOR_SEARCH_ENDPOINT
-    value: "dbxmetagen-vs"
+    value: "__VS_ENDPOINT_NAME__"
   - name: VECTOR_SEARCH_INDEX
     value: "metadata_vs_index"
   - name: LLM_MODEL
@@ -68,6 +68,11 @@ env:
     value: "__ENABLE_OBO__"
   - name: MLFLOW_TRACE_TIMEOUT_SECONDS
     value: "120"
+  # Required for MLflow to authenticate via OAuth when running inside a Databricks App.
+  # Without this, ChatDatabricks / mlflow.deployments.predict() raises:
+  #   "To use OAuth authentication, set environmental variable 'MLFLOW_ENABLE_DB_SDK' to true"
+  - name: MLFLOW_ENABLE_DB_SDK
+    value: "true"
   # MLFLOW_EXPERIMENT: optional override for trace experiment path.
   # Default (unset): auto-resolves to /Users/{app_spn}/experiments/dbxmetagen_app_traces
   # which is only visible to the app service principal and workspace admins.

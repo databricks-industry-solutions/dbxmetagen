@@ -7,6 +7,10 @@
 # MAGIC traversing many individual table nodes.
 
 # COMMAND ----------
+# MAGIC %pip install /Workspace/Users/<your_username>/.bundle/dbxmetagen/dev/artifacts/.internal/dbxmetagen-*.whl
+# MAGIC dbutils.library.restartPython()
+
+# COMMAND ----------
 
 dbutils.widgets.text("catalog_name", "", "Catalog Name")
 dbutils.widgets.text("schema_name", "", "Schema Name")

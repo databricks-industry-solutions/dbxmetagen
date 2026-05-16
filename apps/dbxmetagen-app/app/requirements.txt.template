@@ -1,5 +1,11 @@
 fastapi>=0.115.0
 uvicorn>=0.32.0
+# Pin MLflow to match the internal env. 3.12.0 (default in some Apps base images)
+# enforces an OAuth gate (MLFLOW_ENABLE_DB_SDK) that doesn't work in restricted
+# customer workspaces; 3.6.0 doesn't have the gate.
+mlflow==3.6.0
+mlflow-skinny==3.6.0
+mlflow-tracing==3.6.0
 databricks-sdk==0.68.0
 databricks-langchain>=0.2.0
 langchain-core>=0.3.0

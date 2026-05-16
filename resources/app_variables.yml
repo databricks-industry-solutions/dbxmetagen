@@ -9,16 +9,16 @@ variables:
       when deploying multiple instances to the same workspace outside
       of DAB development mode. In development mode, DAB already
       prefixes with the deploying user's name.
-    default: "dbxmetagen-app"
+    default: "lilly-emmployer-dbxmetagen-app"
   app_service_principal_application_id:
     description: Application ID of the service principal used for the Databricks app. This service principal will be granted CAN_MANAGE permissions on the bundle resources. If not set, the app will use the current user context.
     default: "None"
   lakebase_catalog:
     description: "Lakebase catalog name for GraphRAG graph data"
-    default: "dbxmetagen_graphrag"
+    default: "lilly-emmployer-dbxmetagen_graphrag"
   lakebase_instance_name:
     description: "Lakebase instance name"
-    default: "dbxmetagen"
+    default: "lilly-emmployer-dbxmetagen"
   lakebase_database_name:
     description: "PG-level database name within the Lakebase instance"
-    default: "knowledge_base"
+    default: "lilly-emmployer-knowledge_base"

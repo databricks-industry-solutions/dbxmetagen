@@ -125,10 +125,12 @@ sed -e "s|__DATABRICKS_HOST__|${DATABRICKS_HOST}|g" \
     -e "s|__WAREHOUSE_ID__|${warehouse_id}|g" \
     databricks.yml.template > databricks.yml
 
+
 echo "=== Generating app.yaml from template ==="
 sed -e "s|__CATALOG_NAME__|${catalog_name}|g" \
     -e "s|__SCHEMA_NAME__|${schema_name}|g" \
     -e "s|__ENABLE_OBO__|${enable_obo:-false}|g" \
+    -e "s|__VS_ENDPOINT_NAME__|${vs_endpoint_name:-dbxmetagen-vs}|g" \
     apps/dbxmetagen-app/app/app.yaml.template > apps/dbxmetagen-app/app/app.yaml
 
 echo "=== Generating app resource YAML with permissions ==="
@@ -241,6 +243,12 @@ fi
 
 cleanup() {
     [ -f pyproject.toml.deploy_bak ] && mv pyproject.toml.deploy_bak pyproject.toml
+    for bak in notebooks/*.py.deploy_bak; do
+        [ -f "${bak}" ] && mv "${bak}" "${bak%.deploy_bak}"
+    done
+    for bak in resources/jobs/*.yml.deploy_bak; do
+        [ -f "${bak}" ] && mv "${bak}" "${bak%.deploy_bak}"
+    done
     rm -rf apps/dbxmetagen-app/app/configurations
     rm -f apps/dbxmetagen-app/app/dbxmetagen-*.whl
     rm -f apps/dbxmetagen-app/app/requirements.txt
@@ -273,6 +281,55 @@ sed "s|__WHL_NAME__|${WHL_NAME}|" \
     > apps/dbxmetagen-app/app/requirements.txt
 echo "Wheel: ${WHL_NAME}"
 
+# --- Inject run_as into job YAMLs (only if job_run_as_spn is set) ---
+# Bundle-level run_as breaks apps (apps must run as the deployer). Scoping
+# run_as to individual job resources lets us target jobs only and leave apps
+# alone. Originals are backed up to *.deploy_bak and restored by cleanup().
+if [ -n "${job_run_as_spn:-}" ]; then
+    echo ""
+    echo "=== Injecting run_as service_principal into job YAMLs: ${job_run_as_spn} ==="
+    python3 -c "
+import os, re, glob
+spn = os.environ['job_run_as_spn'].strip()
+inject = '\n      run_as:\n        service_principal_name: \"{}\"'.format(spn)
+patched = 0
+for f in sorted(glob.glob('resources/jobs/*.yml')):
+    with open(f) as fh:
+        content = fh.read()
+    new_content, n = re.subn(
+        r'^(    [A-Za-z_][A-Za-z0-9_]*:\s*)$',
+        lambda m: m.group(1) + inject,
+        content,
+        flags=re.MULTILINE,
+    )
+    if n > 0 and new_content != content:
+        with open(f + '.deploy_bak', 'w') as bak:
+            bak.write(content)
+        with open(f, 'w') as fh:
+            fh.write(new_content)
+        patched += 1
+print('Patched {} job YAML files'.format(patched))
+"
+else
+    echo ""
+    echo "=== Jobs will run as deploying user (job_run_as_spn not set) ==="
+fi
+
+# --- Patch notebook wheel paths with deploying user ---
+echo ""
+echo "=== Patching notebook wheel paths for ${CURRENT_USER} ==="
+NOTEBOOKS_TO_PATCH=$(grep -lE "<your_username>" notebooks/*.py 2>/dev/null || true)
+if [ -n "${NOTEBOOKS_TO_PATCH}" ]; then
+    for nb in ${NOTEBOOKS_TO_PATCH}; do
+        cp "${nb}" "${nb}.deploy_bak"
+        sed -i.tmp "s|<your_username>|${CURRENT_USER}|g" "${nb}"
+        rm -f "${nb}.tmp"
+    done
+    echo "Patched $(echo "${NOTEBOOKS_TO_PATCH}" | wc -w | tr -d ' ') notebooks"
+else
+    echo "No notebooks contained the <your_username> placeholder"
+fi
+
 # --- Validate and deploy ---
 echo ""
 echo "=== Validating bundle ==="
@@ -285,6 +342,9 @@ if [ -n "${policy_id:-}" ]; then
 fi
 if [ -n "${budget_policy_id:-}" ]; then
     DEPLOY_VARS+=(--var "budget_policy_id=${budget_policy_id}")
+fi
+if [ -n "${vs_endpoint_name:-}" ]; then
+    DEPLOY_VARS+=(--var "vs_endpoint_name=${vs_endpoint_name}")
 fi
 if [ -n "${APP_SP_ID}" ]; then
     DEPLOY_VARS+=(--var "app_service_principal_application_id=${APP_SP_ID}")
