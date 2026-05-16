@@ -139,12 +139,12 @@ OUTPUT:
      {"name": "Region", "expr": "region", "comment": "Sales region"},
      {"name": "Segment", "expr": "customers.segment", "comment": "Customer segment from joined customers table"}],
    "measures": [
-     {"name": "Total Revenue", "expr": "SUM(total_amount)", "comment": "Sum of all order values"},
-     {"name": "Avg Order Value", "expr": "AVG(total_amount)", "comment": "Average order amount"},
-     {"name": "Revenue per Customer", "expr": "SUM(total_amount) / NULLIF(COUNT(DISTINCT customer_id), 0)", "comment": "Average revenue per unique customer"},
-     {"name": "Fulfillment Rate", "expr": "SUM(CASE WHEN status = 'fulfilled' THEN 1 ELSE 0 END) * 1.0 / NULLIF(COUNT(*), 0)", "comment": "Fraction of orders fulfilled"},
-     {"name": "Fulfilled Revenue", "expr": "SUM(total_amount) FILTER (WHERE status = 'fulfilled')", "comment": "Revenue from fulfilled orders only"},
-     {"name": "30-Day Rolling Avg Revenue", "expr": "AVG(SUM(total_amount))", "window": {"order_by": "order_date", "range": "INTERVAL 30 DAYS PRECEDING"}, "comment": "Rolling 30-day average of daily revenue"}],
+     {"name": "Total Revenue", "expr": "SUM(total_amount)", "comment": "Sum of all order values", "display_name": "Total Revenue", "synonyms": ["revenue", "total sales", "gross revenue"], "format": {"type": "currency"}},
+     {"name": "Avg Order Value", "expr": "AVG(total_amount)", "comment": "Average order amount", "display_name": "Avg Order Value", "synonyms": ["AOV", "average order size"], "format": {"type": "currency"}},
+     {"name": "Revenue per Customer", "expr": "SUM(total_amount) / NULLIF(COUNT(DISTINCT customer_id), 0)", "comment": "Average revenue per unique customer", "display_name": "Revenue per Customer", "synonyms": ["ARPC", "per-customer revenue"], "format": {"type": "currency"}},
+     {"name": "Fulfillment Rate", "expr": "SUM(CASE WHEN status = 'fulfilled' THEN 1 ELSE 0 END) * 1.0 / NULLIF(COUNT(*), 0)", "comment": "Fraction of orders fulfilled", "display_name": "Fulfillment Rate", "synonyms": ["fill rate", "completion rate"], "format": {"type": "percentage"}},
+     {"name": "Fulfilled Revenue", "expr": "SUM(total_amount) FILTER (WHERE status = 'fulfilled')", "comment": "Revenue from fulfilled orders only", "display_name": "Fulfilled Revenue", "synonyms": ["completed revenue"], "format": {"type": "currency"}},
+     {"name": "30-Day Rolling Avg Revenue", "expr": "AVG(SUM(total_amount))", "window": [{"order": "order_date", "range": "trailing 30 day", "semiadditive": "last"}], "comment": "Rolling 30-day average of daily revenue", "format": {"type": "currency", "currency_code": "USD"}}],
    "joins": [{"name": "customers", "source": "sales.customers", "on": "source.customer_id = customers.id"}]}
 ]""",
     "healthcare": """\
@@ -164,11 +164,11 @@ OUTPUT:
      {"name": "Department", "expr": "department", "comment": "Clinical department"},
      {"name": "Insurance Type", "expr": "insurance_type", "comment": "Patient insurance from joined patients table"}],
    "measures": [
-     {"name": "Encounter Count", "expr": "COUNT(*)", "comment": "Total encounters"},
-     {"name": "Unique Patients", "expr": "COUNT(DISTINCT patient_id)", "comment": "Distinct patient count"},
-     {"name": "Avg Length of Stay", "expr": "AVG(DATEDIFF(discharge_date, admit_date))", "comment": "Average days from admit to discharge"},
-     {"name": "Encounters per Patient", "expr": "COUNT(*) * 1.0 / NULLIF(COUNT(DISTINCT patient_id), 0)", "comment": "Average visits per patient"},
-     {"name": "Charge per Encounter", "expr": "SUM(total_charges) / NULLIF(COUNT(*), 0)", "comment": "Average charge per encounter"}],
+     {"name": "Encounter Count", "expr": "COUNT(*)", "comment": "Total encounters", "display_name": "Encounter Count", "synonyms": ["visits", "admissions"], "format": {"type": "number"}},
+     {"name": "Unique Patients", "expr": "COUNT(DISTINCT patient_id)", "comment": "Distinct patient count", "display_name": "Unique Patients", "synonyms": ["patient count", "distinct patients"], "format": {"type": "number"}},
+     {"name": "Avg Length of Stay", "expr": "AVG(DATEDIFF(discharge_date, admit_date))", "comment": "Average days from admit to discharge", "display_name": "Avg Length of Stay", "synonyms": ["ALOS", "average LOS"], "format": {"type": "number"}},
+     {"name": "Encounters per Patient", "expr": "COUNT(*) * 1.0 / NULLIF(COUNT(DISTINCT patient_id), 0)", "comment": "Average visits per patient", "display_name": "Encounters per Patient", "synonyms": ["visits per patient"], "format": {"type": "number"}},
+     {"name": "Charge per Encounter", "expr": "SUM(total_charges) / NULLIF(COUNT(*), 0)", "comment": "Average charge per encounter", "display_name": "Charge per Encounter", "synonyms": ["cost per visit", "avg charge"], "format": {"type": "currency"}}],
    "joins": [{"name": "patients", "source": "clinical.patients", "on": "source.patient_id = patients.patient_id"}]}
 ]""",
     "finance": """\
@@ -187,10 +187,10 @@ OUTPUT:
      {"name": "Category", "expr": "category", "comment": "Transaction category"},
      {"name": "Account Type", "expr": "account_type", "comment": "Account classification from joined accounts"}],
    "measures": [
-     {"name": "Transaction Count", "expr": "COUNT(*)", "comment": "Total transactions"},
-     {"name": "Total Amount", "expr": "SUM(amount)", "comment": "Sum of transaction amounts"},
-     {"name": "Fraud Rate", "expr": "SUM(CASE WHEN is_fraud = TRUE THEN 1 ELSE 0 END) * 1.0 / NULLIF(COUNT(*), 0)", "comment": "Fraction of flagged transactions"},
-     {"name": "Deposit Volume", "expr": "SUM(amount) FILTER (WHERE txn_type = 'deposit')", "comment": "Total deposit inflows"}],
+     {"name": "Transaction Count", "expr": "COUNT(*)", "comment": "Total transactions", "display_name": "Transaction Count", "synonyms": ["txn count", "number of transactions"], "format": {"type": "number"}},
+     {"name": "Total Amount", "expr": "SUM(amount)", "comment": "Sum of transaction amounts", "display_name": "Total Transaction Amount", "synonyms": ["total value", "transaction volume"], "format": {"type": "currency"}},
+     {"name": "Fraud Rate", "expr": "SUM(CASE WHEN is_fraud = TRUE THEN 1 ELSE 0 END) * 1.0 / NULLIF(COUNT(*), 0)", "comment": "Fraction of flagged transactions", "display_name": "Fraud Rate", "synonyms": ["fraud percentage", "suspicious rate"], "format": {"type": "percentage"}},
+     {"name": "Deposit Volume", "expr": "SUM(amount) FILTER (WHERE txn_type = 'deposit')", "comment": "Total deposit inflows", "display_name": "Deposit Volume", "synonyms": ["deposit total", "inflows"], "format": {"type": "currency"}}],
    "joins": [{"name": "accounts", "source": "finance.accounts", "on": "source.account_id = accounts.account_id"}]}
 ]""",
 }
@@ -207,6 +207,102 @@ def _select_few_shot(context: str) -> str:
     scores = {d: sum(1 for kw in kws if kw in ctx_lower) for d, kws in domain_keywords.items()}
     best = max(scores, key=scores.get) if max(scores.values()) > 0 else "sales"
     return _FEW_SHOT_BY_DOMAIN[best]
+
+
+_CURRENCY_PATTERNS = re.compile(
+    r"SUM\s*\(\s*(total_amount|amount|revenue|cost|price|charge|fee|salary|budget|payment|balance)",
+    re.IGNORECASE,
+)
+_PERCENTAGE_PATTERNS = re.compile(
+    r"(\*\s*1\.0\s*/\s*NULLIF|\*\s*100\.0\s*/\s*NULLIF|THEN\s+1\s+ELSE\s+0\s+END\)\s*\*\s*1\.0)",
+    re.IGNORECASE,
+)
+_PERCENTAGE_NAME_PATTERNS = re.compile(r"\brate\b|\bpct\b|\bpercentage\b|\bratio\b", re.IGNORECASE)
+
+
+def _infer_format_specs(defn: dict) -> None:
+    """Infer and backfill format specs on measures that lack them."""
+    for m in defn.get("measures", []):
+        if m.get("format"):
+            continue
+        expr = m.get("expr", "")
+        name = m.get("name", "")
+        if _PERCENTAGE_PATTERNS.search(expr) or _PERCENTAGE_NAME_PATTERNS.search(name):
+            m["format"] = {"type": "percentage"}
+        elif _CURRENCY_PATTERNS.search(expr):
+            m["format"] = {"type": "currency", "currency_code": "USD"}
+        else:
+            m["format"] = {"type": "number"}
+
+
+def _infer_display_name(name: str) -> str:
+    """Convert snake_case/kebab-case measure/dimension names to Title Case."""
+    return name.replace("_", " ").replace("-", " ").title()
+
+
+def _infer_synonyms(name: str, comment: str | None) -> list[str]:
+    """Extract 2-3 keyword synonyms from the name and comment."""
+    synonyms = set()
+    clean = name.replace("_", " ").lower()
+    words = clean.split()
+    _STOP = {"the", "a", "an", "of", "for", "by", "in", "to", "and", "or", "is", "as", "per", "with", "from"}
+    # Abbreviation from initials
+    if len(words) >= 2:
+        abbr = "".join(w[0] for w in words if w not in _STOP).upper()
+        if len(abbr) >= 2:
+            synonyms.add(abbr)
+    # Keywords from comment
+    if comment:
+        for w in comment.lower().split():
+            w = w.strip(".,;:()")
+            if len(w) > 3 and w not in _STOP and w not in clean:
+                synonyms.add(w)
+                if len(synonyms) >= 3:
+                    break
+    return list(synonyms)[:5]
+
+
+def _backfill_agent_metadata(defn: dict) -> None:
+    """Backfill display_name and synonyms on measures/dimensions that lack them."""
+    for item in defn.get("measures", []) + defn.get("dimensions", []):
+        if not item.get("display_name"):
+            item["display_name"] = _infer_display_name(item.get("name", ""))
+        if not item.get("synonyms"):
+            item["synonyms"] = _infer_synonyms(item.get("name", ""), item.get("comment"))
+
+
+def _normalize_window_specs(w) -> list[dict]:
+    """Normalize window field to YAML 1.1 spec: array of {order, range/rows, semiadditive}."""
+    if w is None:
+        return []
+    if isinstance(w, dict):
+        w = [w]
+    if not isinstance(w, list):
+        return []
+    result = []
+    for spec in w:
+        if not isinstance(spec, dict):
+            continue
+        order = spec.get("order") or spec.get("order_by")
+        if not order:
+            continue
+        rng = spec.get("range", "")
+        if isinstance(rng, str) and "INTERVAL" in rng.upper():
+            m = re.search(r"INTERVAL\s+(\d+)\s+(\w+)", rng, re.IGNORECASE)
+            if m:
+                rng = f"trailing {m.group(1)} {m.group(2).lower().rstrip('s')}"
+        rows = spec.get("rows", "")
+        if isinstance(rows, str) and "UNBOUNDED" in rows.upper():
+            rng = "unbounded"
+            rows = ""
+        entry = {"order": order}
+        if rng:
+            entry["range"] = rng
+        if rows:
+            entry["rows"] = rows
+        entry["semiadditive"] = spec.get("semiadditive", "last")
+        result.append(entry)
+    return result
 
 
 class SemanticLayerGenerator:
@@ -386,9 +482,20 @@ class SemanticLayerGenerator:
                 rel_by_entity.setdefault(src, []).append(f"{rn} -> {dst} ({card})" if card else f"{rn} -> {dst}")
 
         # Entity-specific measure suggestions (dynamic based on column metadata)
+        _TEMPORAL_KW = {"date", "time", "timestamp", "created", "updated", "modified", "dt"}
+        _TEMPORAL_SUFFIXES = {"_at", "_date", "_time", "_ts", "_dt"}
+
+        def _is_temporal_col(col_name: str) -> bool:
+            lc = col_name.lower()
+            return any(kw in lc for kw in _TEMPORAL_KW) or any(lc.endswith(s) for s in _TEMPORAL_SUFFIXES)
+
         def _entity_suggestion(ent_type: str, ent_tables: list[str]) -> str:
             has_temporal = any(
-                any(col_props_by_table.get(t, {}).get(c, {}).get("is_temporal") for c in [cc["column_name"] for cc in col_by_table.get(t, [])])
+                any(
+                    _is_temporal_col(c["column_name"]) or
+                    (c.get("data_type") or "").upper() in ("DATE", "TIMESTAMP", "TIMESTAMP_NTZ")
+                    for c in col_by_table.get(t, [])
+                )
                 for t in ent_tables
             )
             has_status = any(
@@ -597,6 +704,8 @@ class SemanticLayerGenerator:
             for defn in definitions:
                 # Auto-enrich joins from FK predictions
                 self._enrich_joins_from_fk(defn)
+                _infer_format_specs(defn)
+                _backfill_agent_metadata(defn)
 
                 defn_id = str(uuid.uuid4())
                 mv_name = defn.get("name", f"metric_view_{defn_id[:8]}")
@@ -685,14 +794,14 @@ TASK: Generate metric view definitions (as a JSON array) that enable answering t
 RULES:
 1. Create measures that directly support answering the business questions. Do NOT add a generic "row count" or "Record Count" measure unless a question explicitly asks for "how many records" or "count of X". Prefer ratios (e.g. rate, per capita), conditional aggregates (FILTER), and entity-specific KPIs (e.g. readmission rate, avg length of stay) over raw COUNT(*) when the question implies a more specific metric.
 2. Create metric views organized around analytical themes from the questions, not just one-to-one with tables. Multiple metric views from the same table are fine if they address different analytical angles
-4. Only reference columns that exist in the metadata below (Columns in the metadata). Do not invent column names
-5. Use standard SQL aggregate functions: SUM, COUNT, AVG, MIN, MAX, COUNT(DISTINCT ...)
-6. Date/time function rules (Databricks/Spark SQL):
+3. Only reference columns that exist in the metadata below (Columns in the metadata). Do not invent column names
+4. Use standard SQL aggregate functions: SUM, COUNT, AVG, MIN, MAX, COUNT(DISTINCT ...)
+5. Date/time function rules (Databricks/Spark SQL):
    a. DATE_TRUNC: quote the interval -- DATE_TRUNC('MONTH', col). NEVER use bare DATE_TRUNC(MONTH, col)
    b. EXTRACT: use EXTRACT(HOUR FROM col) for extracting date parts. Do NOT use DATE_PART(HOUR, col)
    c. DATEDIFF only returns days with 2 args: DATEDIFF(end, start). For other units use TIMESTAMPDIFF(MINUTE, start, end) with a bare unquoted keyword unit
    d. TIMESTAMPADD: bare unquoted singular unit -- TIMESTAMPADD(MONTH, 1, col), NOT TIMESTAMPADD('MONTHS', 1, col)
-7. ALWAYS single-quote ALL string literal values everywhere in expressions:
+6. ALWAYS single-quote ALL string literal values everywhere in expressions:
    - Comparisons: status = 'fulfilled', NOT status = fulfilled
    - THEN/ELSE results: CASE WHEN x = 'A' THEN 'Category A' ELSE 'Other' END, NOT THEN Category A
    - IN lists: department IN ('Surgery', 'Pediatrics'), NOT IN (Surgery, Pediatrics)
@@ -700,24 +809,24 @@ RULES:
    - CASE results with parens/hyphens: THEN '0-15 min (Excellent)', NOT THEN 0-15 min (Excellent)
    The ONLY unquoted tokens should be column names, SQL keywords, and numbers
    WRONG: status = fulfilled, region IN (North, South). CORRECT: status = 'fulfilled', region IN ('North', 'South')
-8. Join format (Unity Catalog): For each join use: name: <short_alias>, source: catalog.schema.table, on: source.<fk_column> = <join_name>.<pk_column>. The root table is always "source"; the joined table is referenced by its "name" (short alias). Example: on: source.customer_id = customers.id
-9. Include joins when RECOMMENDED JOINS exist; when questions ask for breakdowns by attributes in another table (e.g. by customer segment, department), you MUST add a join. Prefer at least one metric view with joins when FKs exist
-10. Every metric view MUST have at least one measure and one dimension
-11. Add a top-level "comment" (1-2 sentences) describing what the metric view measures, its analytical purpose, and which source tables it draws from. Do NOT reference question numbers, KPI numbers, or list which questions are/aren't answerable. Focus on content and lineage (e.g. "Analyzes order revenue by product family and sales representative, joining line items to the product catalog and parent order for discount tracking.")
-12. Add a "comment" to each dimension and measure explaining what it represents. Optionally add "display_name" (human-readable label, max 255 chars) and "synonyms" (array of 2-5 alternative names for Genie discoverability, e.g. ["revenue", "total sales"] for Total Revenue).
-13. Use "filter" (optional) for persistent WHERE clauses (e.g. excluding null/test rows)
-14. Use measure-level FILTER for conditional aggregation: SUM(col) FILTER (WHERE condition)
-15. If some questions are not answerable with metrics (e.g. document search, free-text lookups, SOP retrieval), generate metric views for the ones that ARE quantitative/analytical and silently ignore the rest. Do NOT mention skipped or unanswerable questions in the comment field
-16. Each metric view "name" must be unique and descriptive (e.g. staffing_efficiency_metrics, ed_throughput_analysis). Vary names based on the analytical theme, not just the table name
-17. Output ONLY a valid JSON array, no explanation
-18. Use domain and subdomain from table metadata to choose which dimensions (e.g. department, region, product category) are relevant to the questions.
-19. When Entity types are annotated on tables, use the ENTITY MEASURE SUGGESTIONS in the metadata and generate entity-specific analytical metrics:
+7. Join format (Unity Catalog): For each join use: name: <short_alias>, source: catalog.schema.table, on: source.<fk_column> = <join_name>.<pk_column>. The root table is always "source"; the joined table is referenced by its "name" (short alias). Example: on: source.customer_id = customers.id
+8. Include joins when RECOMMENDED JOINS exist; when questions ask for breakdowns by attributes in another table (e.g. by customer segment, department), you MUST add a join. Prefer at least one metric view with joins when FKs exist
+9. Every metric view MUST have at least one measure and one dimension
+10. Add a top-level "comment" (1-2 sentences) describing what the metric view measures, its analytical purpose, and which source tables it draws from. Do NOT reference question numbers, KPI numbers, or list which questions are/aren't answerable. Focus on content and lineage (e.g. "Analyzes order revenue by product family and sales representative, joining line items to the product catalog and parent order for discount tracking.")
+11. Every dimension and measure MUST have: "comment" (what it represents), "display_name" (human-readable label, max 255 chars), and "synonyms" (array of 2-5 alternative names for Genie discoverability, e.g. ["revenue", "total sales"] for Total Revenue). Every measure MUST have a "format" object: {{"type": "currency"}} for monetary values, {{"type": "percentage"}} for rates/ratios that are fractions, or {{"type": "number"}} for counts/averages/scores.
+12. Use "filter" (optional) for persistent WHERE clauses (e.g. excluding null/test rows)
+13. Use measure-level FILTER for conditional aggregation: SUM(col) FILTER (WHERE condition)
+14. If some questions are not answerable with metrics (e.g. document search, free-text lookups, SOP retrieval), generate metric views for the ones that ARE quantitative/analytical and silently ignore the rest. Do NOT mention skipped or unanswerable questions in the comment field
+15. Each metric view "name" must be unique and descriptive (e.g. staffing_efficiency_metrics, ed_throughput_analysis). Vary names based on the analytical theme, not just the table name
+16. Output ONLY a valid JSON array, no explanation
+17. Use domain and subdomain from table metadata to choose which dimensions (e.g. department, region, product category) are relevant to the questions.
+18. When Entity types are annotated on tables, use the ENTITY MEASURE SUGGESTIONS in the metadata and generate entity-specific analytical metrics:
     - People/patients/users: include counts, return/readmission rates, segmentation dimensions, and per-entity averages
     - Transactions/events/encounters: include volume counts, value sums, time-based rates, and categorical breakdowns
     - Resources/staff/inventory: include utilization rates (active/total), efficiency ratios, and capacity measures
     Always include at least one RATIO measure (x / NULLIF(y, 0)) and one RATE measure (conditional_count * 1.0 / NULLIF(total, 0)) per metric view
-20. When RECOMMENDED JOINS / FOREIGN KEY RELATIONSHIPS exist, generate cross-table metrics that join fact tables to dimension tables. Use dimension table columns as grouping dimensions and fact table columns as measures
-21. Dimension and measure names should be colloquial and business-friendly:
+19. When RECOMMENDED JOINS / FOREIGN KEY RELATIONSHIPS exist, generate cross-table metrics that join fact tables to dimension tables. Use dimension table columns as grouping dimensions and fact table columns as measures
+20. Dimension and measure names should be colloquial and business-friendly:
     - For simple column references, use the column's natural name (e.g. "Industry" not "Account Industry", "Status" not "Order Status")
     - Only add a qualifier when two dimensions would otherwise be ambiguous (e.g. "Billing State" vs "Shipping State")
     - For date truncations, use "{{Column}} Month" or "{{Column}} Quarter" style (e.g. "Order Month")
@@ -790,8 +899,8 @@ PLANNED VIEW (names only; you must add "expr" for each dimension and measure):
 RULES:
 - Output a single object with keys: name, source, comment, filter (optional), dimensions, measures, joins.
 - comment: 1-2 sentences on what the view measures and its source lineage. Do NOT reference question numbers, KPI numbers, or list which questions are/aren't answerable.
-- dimensions: array of {{ "name", "expr", "comment" }}; optionally "display_name" and "synonyms" (array of strings) for semantic metadata. expr must be valid Databricks/Spark SQL using ONLY columns from the metadata below. Use DATE_TRUNC('MONTH', col) etc.; single-quote all string literals.
-- measures: array of {{ "name", "expr", "comment" }}; optionally "display_name" and "synonyms". Use SUM, COUNT, AVG, FILTER, etc. String literals single-quoted (e.g. status = 'fulfilled').
+- dimensions: array of {{ "name", "expr", "comment", "display_name", "synonyms" }}. "display_name" and "synonyms" (array of 2-5 alternative names) are REQUIRED. expr must be valid Databricks/Spark SQL using ONLY columns from the metadata below.
+- measures: array of {{ "name", "expr", "comment", "display_name", "synonyms", "format" }}. "display_name", "synonyms", and "format" are REQUIRED. format is {{"type": "currency"}}, {{"type": "percentage"}}, or {{"type": "number"}}. Use SUM, COUNT, AVG, FILTER, etc. String literals single-quoted.
 - joins: use exactly: on: source.<fk_column> = <join_name>.<pk_column>. Keep the same join names and sources as in the plan.
 - Only use column names that appear in the metadata.
 
@@ -1078,7 +1187,8 @@ OUTPUT (one JSON object only, no array, no explanation):"""
                 return m.group(0)
             if "." in value and " " not in value:
                 return m.group(0)
-            if "(" in value:
+            # Skip function calls but allow parenthesized string literals
+            if "(" in value and re.match(r"^[A-Za-z_]\w*\(", value):
                 return m.group(0)
             if value.upper() in cls._SQL_RESERVED or value.upper() in cls._DATE_TRUNC_INTERVALS:
                 return m.group(0)
@@ -1125,7 +1235,6 @@ OUTPUT (one JSON object only, no array, no explanation):"""
     @classmethod
     def _fix_then_else_literals(cls, expr: str) -> str:
         """Quote bare text after THEN/ELSE that isn't already quoted or a number/column/keyword."""
-        _BOUNDARY_KW = re.compile(r"\b(WHEN|ELSE|END|AND|OR|THEN)\b", re.IGNORECASE)
 
         def _replacer(m):
             kw = m.group(1)
@@ -1138,7 +1247,9 @@ OUTPUT (one JSON object only, no array, no explanation):"""
                 return m.group(0)
             if "." in body and " " not in body:
                 return m.group(0)
-            if "(" in body:
+            # Allow parenthesized string literals like "Mild (Grade 1)"
+            # Only skip if the value looks like a function call: word(args)
+            if "(" in body and re.match(r"^[A-Za-z_]\w*\(", body):
                 return m.group(0)
             tokens = body.split()
             if len(tokens) == 1 and tokens[0].upper() in cls._SQL_RESERVED:
@@ -1147,7 +1258,9 @@ OUTPUT (one JSON object only, no array, no explanation):"""
                 if tokens[0].upper() not in cls._SQL_RESERVED:
                     return f"{kw} '{body}'"
                 return m.group(0)
-            return f"{kw} '{body}'"
+            if len(tokens) > 1:
+                return f"{kw} '{body}'"
+            return m.group(0)
 
         return re.sub(
             r"\b(THEN|ELSE)\s+(.*?)(?=\s+(?:WHEN|ELSE|END)\b)",
@@ -1520,8 +1633,12 @@ OUTPUT (one JSON object only, no array, no explanation):"""
                 }.items()
                 if v
             }
+            if m.get("format"):
+                entry["format"] = m["format"]
             if m.get("window"):
-                entry["window"] = m["window"]
+                specs = _normalize_window_specs(m["window"])
+                if specs:
+                    entry["window"] = specs
             measures_out.append(entry)
         mv["measures"] = measures_out
         if defn.get("joins"):

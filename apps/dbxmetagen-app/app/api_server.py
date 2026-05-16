@@ -5328,6 +5328,7 @@ def _ensure_semantic_layer_tables():
         "project_id STRING",
         "complexity_score INT, complexity_level STRING",
         "deployed_catalog STRING, deployed_schema STRING",
+        "quality_score INT, quality_level STRING",
     ]:
         try:
             execute_sql(f"ALTER TABLE {fq('metric_view_definitions')} ADD COLUMNS ({col_ddl})")
@@ -5394,7 +5395,8 @@ def list_semantic_definitions(project_id: Optional[str] = None):
         f"SELECT definition_id, metric_view_name, source_table, status, "
         f"validation_errors, genie_space_id, created_at, applied_at, "
         f"COALESCE(version, 1) as version, parent_definition_id, project_id, "
-        f"complexity_score, complexity_level, deployed_catalog, deployed_schema "
+        f"complexity_score, complexity_level, deployed_catalog, deployed_schema, "
+        f"quality_score, quality_level "
         f"FROM ("
         f"  SELECT *, ROW_NUMBER() OVER ("
         f"    PARTITION BY metric_view_name, source_table "
@@ -5426,6 +5428,34 @@ def get_semantic_definition_json(definition_id: str):
     if not rows:
         raise HTTPException(404, detail="Definition not found")
     return {"json_definition": rows[0].get("json_definition", "")}
+
+
+@app.get("/api/semantic-layer/kpi-coverage")
+def get_kpi_coverage(project_id: Optional[str] = None, profile_id: Optional[str] = None):
+    """Compute KPI coverage across all validated definitions."""
+    _ensure_semantic_layer_tables()
+    pid = profile_id or project_id
+    proj_filter = f" AND project_id = '{project_id}'" if project_id else ""
+    rows = execute_sql(
+        f"SELECT json_definition, source_table FROM {fq('metric_view_definitions')} "
+        f"WHERE status IN ('validated', 'applied'){proj_filter}"
+    )
+    if not rows:
+        return {"kpi_coverage": {}}
+    definitions = []
+    tables = set()
+    for r in rows:
+        jd = r.get("json_definition", "{}")
+        if isinstance(jd, str):
+            try:
+                jd = json.loads(jd)
+            except Exception:
+                jd = {}
+        definitions.append(jd)
+        if r.get("source_table"):
+            tables.add(r["source_table"])
+    cov = _compute_kpi_coverage(definitions, list(tables), pid)
+    return {"kpi_coverage": cov}
 
 
 @app.delete("/api/semantic-layer/definitions/{definition_id}")
@@ -6029,12 +6059,12 @@ OUTPUT:
      {"name": "Customer Segment", "expr": "segment", "comment": "Customer segment from joined customers table"},
      {"name": "Customer Tier", "expr": "CASE WHEN segment IN ('Enterprise', 'Strategic') THEN 'Top Tier' WHEN segment = 'Mid-Market' THEN 'Growth' ELSE 'Standard' END", "comment": "Customer tier grouping"}],
    "measures": [
-     {"name": "Total Revenue", "expr": "SUM(total_amount)", "comment": "Sum of all order values", "display_name": "Total Revenue", "synonyms": ["revenue", "total sales", "gross revenue"]},
-     {"name": "Avg Order Value", "expr": "AVG(total_amount)", "comment": "Average order amount"},
-     {"name": "Revenue per Customer", "expr": "SUM(total_amount) / NULLIF(COUNT(DISTINCT customer_id), 0)", "comment": "Average revenue per unique customer"},
-     {"name": "Fulfillment Rate", "expr": "SUM(CASE WHEN status = 'fulfilled' THEN 1 ELSE 0 END) * 1.0 / NULLIF(COUNT(*), 0)", "comment": "Fraction of orders fulfilled", "synonyms": ["fill rate", "completion rate"]},
-     {"name": "Fulfilled Revenue", "expr": "SUM(total_amount) FILTER (WHERE status = 'fulfilled')", "comment": "Revenue from fulfilled orders only"},
-     {"name": "30-Day Rolling Avg Revenue", "expr": "AVG(SUM(total_amount))", "window": {"order_by": "order_date", "range": "INTERVAL 30 DAYS PRECEDING"}, "comment": "Rolling 30-day average of daily revenue"}],
+     {"name": "Total Revenue", "expr": "SUM(total_amount)", "comment": "Sum of all order values", "display_name": "Total Revenue", "synonyms": ["revenue", "total sales", "gross revenue"], "format": {"type": "currency"}},
+     {"name": "Avg Order Value", "expr": "AVG(total_amount)", "comment": "Average order amount", "display_name": "Avg Order Value", "synonyms": ["AOV", "average order size"], "format": {"type": "currency"}},
+     {"name": "Revenue per Customer", "expr": "SUM(total_amount) / NULLIF(COUNT(DISTINCT customer_id), 0)", "comment": "Average revenue per unique customer", "display_name": "Revenue per Customer", "synonyms": ["ARPC", "per-customer revenue"], "format": {"type": "currency"}},
+     {"name": "Fulfillment Rate", "expr": "SUM(CASE WHEN status = 'fulfilled' THEN 1 ELSE 0 END) * 1.0 / NULLIF(COUNT(*), 0)", "comment": "Fraction of orders fulfilled", "display_name": "Fulfillment Rate", "synonyms": ["fill rate", "completion rate"], "format": {"type": "percentage"}},
+     {"name": "Fulfilled Revenue", "expr": "SUM(total_amount) FILTER (WHERE status = 'fulfilled')", "comment": "Revenue from fulfilled orders only", "display_name": "Fulfilled Revenue", "synonyms": ["completed revenue"], "format": {"type": "currency"}},
+     {"name": "30-Day Rolling Avg Revenue", "expr": "AVG(SUM(total_amount))", "window": [{"order": "order_date", "range": "trailing 30 day", "semiadditive": "last"}], "comment": "Rolling 30-day average of daily revenue", "display_name": "30-Day Rolling Avg Revenue", "format": {"type": "currency", "currency_code": "USD"}}],
    "joins": [{"name": "customers", "source": "sales.customers", "on": "source.customer_id = customers.id"}]}
 ]""",
     "healthcare": """\
@@ -6055,12 +6085,12 @@ OUTPUT:
      {"name": "Encounter Type", "expr": "encounter_type", "comment": "Inpatient, outpatient, ED, etc."},
      {"name": "Insurance Type", "expr": "insurance_type", "comment": "Patient insurance from joined patients table"}],
    "measures": [
-     {"name": "Encounter Count", "expr": "COUNT(*)", "comment": "Total encounters", "display_name": "Encounter Count", "synonyms": ["visits", "admissions", "total encounters"]},
-     {"name": "Unique Patients", "expr": "COUNT(DISTINCT patient_id)", "comment": "Distinct patient count"},
-     {"name": "Avg Length of Stay", "expr": "AVG(DATEDIFF(discharge_date, admit_date))", "comment": "Average days from admit to discharge", "synonyms": ["ALOS", "average LOS", "mean stay duration"]},
-     {"name": "Encounters per Patient", "expr": "COUNT(*) * 1.0 / NULLIF(COUNT(DISTINCT patient_id), 0)", "comment": "Average visits per patient"},
-     {"name": "Total Charges", "expr": "SUM(total_charges)", "comment": "Sum of encounter charges"},
-     {"name": "Charge per Encounter", "expr": "SUM(total_charges) / NULLIF(COUNT(*), 0)", "comment": "Average charge per encounter"}],
+     {"name": "Encounter Count", "expr": "COUNT(*)", "comment": "Total encounters", "display_name": "Encounter Count", "synonyms": ["visits", "admissions", "total encounters"], "format": {"type": "number"}},
+     {"name": "Unique Patients", "expr": "COUNT(DISTINCT patient_id)", "comment": "Distinct patient count", "display_name": "Unique Patients", "synonyms": ["patient count", "distinct patients"], "format": {"type": "number"}},
+     {"name": "Avg Length of Stay", "expr": "AVG(DATEDIFF(discharge_date, admit_date))", "comment": "Average days from admit to discharge", "display_name": "Avg Length of Stay", "synonyms": ["ALOS", "average LOS", "mean stay duration"], "format": {"type": "number"}},
+     {"name": "Encounters per Patient", "expr": "COUNT(*) * 1.0 / NULLIF(COUNT(DISTINCT patient_id), 0)", "comment": "Average visits per patient", "display_name": "Encounters per Patient", "synonyms": ["visits per patient"], "format": {"type": "number"}},
+     {"name": "Total Charges", "expr": "SUM(total_charges)", "comment": "Sum of encounter charges", "display_name": "Total Charges", "synonyms": ["total cost", "charges"], "format": {"type": "currency"}},
+     {"name": "Charge per Encounter", "expr": "SUM(total_charges) / NULLIF(COUNT(*), 0)", "comment": "Average charge per encounter", "display_name": "Charge per Encounter", "synonyms": ["cost per visit", "avg charge"], "format": {"type": "currency"}}],
    "joins": [{"name": "patients", "source": "clinical.patients", "on": "source.patient_id = patients.patient_id"}]}
 ]""",
     "finance": """\
@@ -6079,11 +6109,11 @@ OUTPUT:
      {"name": "Category", "expr": "category", "comment": "Transaction category", "display_name": "Transaction Category", "synonyms": ["type", "txn category", "classification"]},
      {"name": "Account Type", "expr": "account_type", "comment": "Account classification from joined accounts"}],
    "measures": [
-     {"name": "Transaction Count", "expr": "COUNT(*)", "comment": "Total transactions"},
-     {"name": "Total Amount", "expr": "SUM(amount)", "comment": "Sum of transaction amounts", "display_name": "Total Transaction Amount", "synonyms": ["total value", "transaction volume", "sum of amounts"]},
-     {"name": "Avg Transaction Size", "expr": "AVG(amount)", "comment": "Average transaction amount"},
-     {"name": "Fraud Rate", "expr": "SUM(CASE WHEN is_fraud = TRUE THEN 1 ELSE 0 END) * 1.0 / NULLIF(COUNT(*), 0)", "comment": "Fraction of flagged transactions", "synonyms": ["fraud percentage", "suspicious rate", "fraud ratio"]},
-     {"name": "Deposit Volume", "expr": "SUM(amount) FILTER (WHERE txn_type = 'deposit')", "comment": "Total deposit inflows"}],
+     {"name": "Transaction Count", "expr": "COUNT(*)", "comment": "Total transactions", "display_name": "Transaction Count", "synonyms": ["txn count", "number of transactions"], "format": {"type": "number"}},
+     {"name": "Total Amount", "expr": "SUM(amount)", "comment": "Sum of transaction amounts", "display_name": "Total Transaction Amount", "synonyms": ["total value", "transaction volume", "sum of amounts"], "format": {"type": "currency"}},
+     {"name": "Avg Transaction Size", "expr": "AVG(amount)", "comment": "Average transaction amount", "display_name": "Avg Transaction Size", "synonyms": ["average txn amount"], "format": {"type": "currency"}},
+     {"name": "Fraud Rate", "expr": "SUM(CASE WHEN is_fraud = TRUE THEN 1 ELSE 0 END) * 1.0 / NULLIF(COUNT(*), 0)", "comment": "Fraction of flagged transactions", "display_name": "Fraud Rate", "synonyms": ["fraud percentage", "suspicious rate", "fraud ratio"], "format": {"type": "percentage"}},
+     {"name": "Deposit Volume", "expr": "SUM(amount) FILTER (WHERE txn_type = 'deposit')", "comment": "Total deposit inflows", "display_name": "Deposit Volume", "synonyms": ["deposit total", "inflows"], "format": {"type": "currency"}}],
    "joins": [{"name": "accounts", "source": "finance.accounts", "on": "source.account_id = accounts.account_id"}]}
 ]""",
     "project_management": """\
@@ -6104,12 +6134,12 @@ OUTPUT:
      {"name": "Project Name", "expr": "name", "comment": "Project name from joined projects table"},
      {"name": "Department", "expr": "department", "comment": "Department from joined projects table"}],
    "measures": [
-     {"name": "Task Count", "expr": "COUNT(*)", "comment": "Total tasks", "display_name": "Task Count", "synonyms": ["number of tasks", "total items", "ticket count"]},
-     {"name": "Completed Tasks", "expr": "SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END)", "comment": "Number of completed tasks"},
-     {"name": "On-Time Rate", "expr": "SUM(CASE WHEN completed_date <= due_date THEN 1 ELSE 0 END) * 1.0 / NULLIF(SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END), 0)", "comment": "Fraction of tasks completed by due date", "synonyms": ["on-time delivery rate", "punctuality rate", "SLA compliance"]},
-     {"name": "Avg Cycle Time Days", "expr": "AVG(DATEDIFF(completed_date, created_date))", "comment": "Average days from creation to completion"},
-     {"name": "Effort Accuracy", "expr": "AVG(actual_hours / NULLIF(estimated_hours, 0))", "comment": "Ratio of actual to estimated hours (1.0 = perfect)"},
-     {"name": "Overdue Tasks", "expr": "SUM(CASE WHEN due_date < CURRENT_DATE() AND status != 'done' THEN 1 ELSE 0 END)", "comment": "Tasks past due date still open"}],
+     {"name": "Task Count", "expr": "COUNT(*)", "comment": "Total tasks", "display_name": "Task Count", "synonyms": ["number of tasks", "total items", "ticket count"], "format": {"type": "number"}},
+     {"name": "Completed Tasks", "expr": "SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END)", "comment": "Number of completed tasks", "display_name": "Completed Tasks", "synonyms": ["done tasks", "finished tasks"], "format": {"type": "number"}},
+     {"name": "On-Time Rate", "expr": "SUM(CASE WHEN completed_date <= due_date THEN 1 ELSE 0 END) * 1.0 / NULLIF(SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END), 0)", "comment": "Fraction of tasks completed by due date", "display_name": "On-Time Rate", "synonyms": ["on-time delivery rate", "punctuality rate", "SLA compliance"], "format": {"type": "percentage"}},
+     {"name": "Avg Cycle Time Days", "expr": "AVG(DATEDIFF(completed_date, created_date))", "comment": "Average days from creation to completion", "display_name": "Avg Cycle Time", "synonyms": ["lead time", "turnaround time"], "format": {"type": "number"}},
+     {"name": "Effort Accuracy", "expr": "AVG(actual_hours / NULLIF(estimated_hours, 0))", "comment": "Ratio of actual to estimated hours (1.0 = perfect)", "display_name": "Effort Accuracy", "synonyms": ["estimation accuracy", "effort ratio"], "format": {"type": "number"}},
+     {"name": "Overdue Tasks", "expr": "SUM(CASE WHEN due_date < CURRENT_DATE() AND status != 'done' THEN 1 ELSE 0 END)", "comment": "Tasks past due date still open", "display_name": "Overdue Tasks", "synonyms": ["late tasks", "past-due items"], "format": {"type": "number"}}],
    "joins": [{"name": "projects", "source": "pm.projects", "on": "source.project_id = projects.project_id"}]}
 ]""",
 }
@@ -6183,7 +6213,8 @@ JOIN AND RELATIONSHIP RULES:
 
 STRUCTURE:
 - Every view needs at least one measure, one dimension, a top-level "comment", and comments on each dimension/measure
-- Add "display_name" (human-readable label) and "synonyms" (array of 2-5 alternative names for Genie discoverability) to each dimension and measure
+- Every dimension and measure MUST have "display_name" (human-readable label) and "synonyms" (array of 2-5 alternative names for Genie discoverability)
+- Every measure MUST have a "format" object: {{"type": "currency"}} for monetary values, {{"type": "percentage"}} for rates/ratios, or {{"type": "number"}} for counts/averages/scores
 - Names must be unique and descriptive (e.g. staffing_efficiency_metrics, ed_throughput_analysis)
 - Use "filter" for persistent WHERE clauses; use measure-level FILTER for conditional aggregation
 - Output ONLY a valid JSON array, no explanation
@@ -6193,9 +6224,9 @@ SQL SYNTAX REMINDERS:
 - Single-quote ALL string literals in comparisons, CASE results, IN lists, CONCAT separators
 - Standard aggregates: SUM, COUNT, AVG, MIN, MAX, COUNT(DISTINCT ...)
 - FILTER syntax: SUM(col) FILTER (WHERE condition)
-- WINDOW MEASURES for rolling/cumulative KPIs: put aggregate in "expr" and add a "window" object:
-  {{"name": "30-Day Rolling Revenue", "expr": "AVG(SUM(amount))", "window": {{"order_by": "date_col", "range": "INTERVAL 30 DAYS PRECEDING"}}}}
-  Use range for time-based windows, rows for row-count windows (e.g. "UNBOUNDED PRECEDING" for cumulative)
+- WINDOW MEASURES for rolling/cumulative KPIs: put aggregate in "expr" and add a "window" array:
+  {{"name": "30-Day Rolling Revenue", "expr": "AVG(SUM(amount))", "window": [{{"order": "date_col", "range": "trailing 30 day", "semiadditive": "last"}}]}}
+  Use "trailing N day" for time-based windows, "unbounded" for cumulative. Always include "semiadditive": "first" or "last"
 - For MoM/YoY growth, use FILTER on date ranges rather than window functions
 
 AGGREGATION CORRECTNESS:
@@ -6600,7 +6631,8 @@ def _fix_unquoted_literals(expr: str) -> str:
             return m.group(0)
         if "." in value and " " not in value:
             return m.group(0)
-        if "(" in value:
+        # Skip function calls but allow parenthesized string literals
+        if "(" in value and re.match(r"^[A-Za-z_]\w*\(", value):
             return m.group(0)
         if value.upper() in _SQL_RESERVED or value.upper() in _DATE_TRUNC_INTERVALS:
             return m.group(0)
@@ -6627,7 +6659,9 @@ def _fix_then_else_literals(expr: str) -> str:
             return m.group(0)
         if "." in body and " " not in body:
             return m.group(0)
-        if "(" in body:
+        # Allow parenthesized string literals like "Mild (Grade 1)"
+        # Only skip if the value looks like a function call: word(args)
+        if "(" in body and re.match(r"^[A-Za-z_]\w*\(", body):
             return m.group(0)
         tokens = body.split()
         if len(tokens) == 1 and tokens[0].upper() in _SQL_RESERVED:
@@ -6636,7 +6670,9 @@ def _fix_then_else_literals(expr: str) -> str:
             if tokens[0].upper() not in _SQL_RESERVED:
                 return f"{kw} '{body}'"
             return m.group(0)
-        return f"{kw} '{body}'"
+        if len(tokens) > 1:
+            return f"{kw} '{body}'"
+        return m.group(0)
 
     return re.sub(
         r"\b(THEN|ELSE)\s+(.*?)(?=\s+(?:WHEN|ELSE|END)\b)",
@@ -6809,33 +6845,169 @@ def _validate_expr(expr: str, source_table: str, joins: list[dict] | None = None
         return err_str, expr
 
 
-def _score_definition_complexity(defn: dict) -> dict:
-    """Score a metric view definition's analytical richness.
+_CURRENCY_PATTERNS = re.compile(
+    r"SUM\s*\(\s*(total_amount|amount|revenue|cost|price|charge|fee|salary|budget|payment|balance)",
+    re.IGNORECASE,
+)
+_PERCENTAGE_PATTERNS = re.compile(
+    r"(\*\s*1\.0\s*/\s*NULLIF|\*\s*100\.0\s*/\s*NULLIF|THEN\s+1\s+ELSE\s+0\s+END\)\s*\*\s*1\.0)",
+    re.IGNORECASE,
+)
+_PERCENTAGE_NAME_PATTERNS = re.compile(r"\brate\b|\bpct\b|\bpercentage\b|\bratio\b", re.IGNORECASE)
 
-    Returns {"complexity_score": int, "complexity_level": str}.
+
+def _compute_kpi_coverage(definitions: list[dict], tables: list[str], profile_id: str | None = None) -> dict:
+    """Fuzzy-match KPIs from kpi_definitions against generated measure names/comments.
+
+    Returns {"implemented": [...], "missing": [...], "total": int}.
     """
-    score = 0
+    try:
+        kpi_where = f" WHERE profile_id = '{profile_id.replace(chr(39), chr(39)*2)}'" if profile_id else ""
+        kpi_rows = execute_sql(
+            f"SELECT name, description, formula, target_tables FROM {fq('kpi_definitions')}{kpi_where}"
+        )
+    except Exception:
+        return {}
+    if not kpi_rows:
+        return {}
+
+    fq_tables_lower = {t.lower() for t in tables} | {t.split(".")[-1].lower() for t in tables}
+    relevant_kpis = []
+    for k in kpi_rows:
+        kt = k.get("target_tables") or []
+        if isinstance(kt, str):
+            try:
+                kt = json.loads(kt)
+            except Exception:
+                kt = [kt]
+        kt_set = {t.lower() for t in kt} | {t.split(".")[-1].lower() for t in kt}
+        if not kt or kt_set & fq_tables_lower:
+            relevant_kpis.append(k["name"])
+
+    if not relevant_kpis:
+        return {}
+
+    all_measures = []
+    for defn in definitions:
+        for m in defn.get("measures", []):
+            all_measures.append({
+                "name": (m.get("name") or "").lower(),
+                "comment": (m.get("comment") or "").lower(),
+            })
+
+    implemented = []
+    missing = []
+    for kpi_name in relevant_kpis:
+        kn = kpi_name.lower()
+        kn_words = set(kn.split())
+        found = False
+        for m in all_measures:
+            if kn in m["name"] or kn in m["comment"]:
+                found = True
+                break
+            m_words = set(m["name"].split()) | set(m["comment"].split())
+            overlap = kn_words & m_words
+            if len(overlap) >= max(1, len(kn_words) * 0.5):
+                found = True
+                break
+        if found:
+            implemented.append(kpi_name)
+        else:
+            missing.append(kpi_name)
+
+    return {
+        "implemented": implemented,
+        "missing": missing,
+        "total": len(relevant_kpis),
+    }
+
+
+def _infer_format_specs(defn: dict) -> None:
+    """Infer and backfill format specs on measures that lack them."""
+    for m in defn.get("measures", []):
+        if m.get("format"):
+            continue
+        expr = m.get("expr", "")
+        name = m.get("name", "")
+        if _PERCENTAGE_PATTERNS.search(expr) or _PERCENTAGE_NAME_PATTERNS.search(name):
+            m["format"] = {"type": "percentage"}
+        elif _CURRENCY_PATTERNS.search(expr):
+            m["format"] = {"type": "currency", "currency_code": "USD"}
+        else:
+            m["format"] = {"type": "number"}
+
+
+def _score_definition_complexity(defn: dict) -> dict:
+    """Score a metric view definition's analytical richness and agent readiness.
+
+    Returns complexity_score/level (SQL richness) plus quality_score/level
+    (metadata completeness + agent readiness).
+    """
+    # --- Complexity: join structure + measure sophistication ---
+    n_joins = len(defn.get("joins") or [])
+    measure_score = 0
     _COMPUTED_DIM_PATTERNS = re.compile(r"CASE\b|DATE_TRUNC\b|CONCAT\b", re.IGNORECASE)
     for dim in defn.get("dimensions", []):
         if _COMPUTED_DIM_PATTERNS.search(dim.get("expr", "")):
-            score += 1
+            measure_score += 1
     for meas in defn.get("measures", []):
         expr = meas.get("expr", "")
         if re.search(r"/\s*NULLIF\b", expr, re.IGNORECASE):
-            score += 2
+            measure_score += 2
         elif re.search(r"FILTER\b|DISTINCT\b|CASE\b", expr, re.IGNORECASE):
-            score += 1
-    if defn.get("joins"):
-        score += 2
+            measure_score += 1
     if defn.get("filter"):
-        score += 1
-    if score < 3:
-        level = "trivial"
-    elif score <= 5:
-        level = "moderate"
+        measure_score += 1
+    cx_score = measure_score + n_joins * 3
+    if n_joins == 0:
+        cx_level = "basic"
+    elif n_joins == 1:
+        cx_level = "standard"
     else:
-        level = "rich"
-    return {"complexity_score": score, "complexity_level": level}
+        cx_level = "rich"
+
+    # --- Quality score (metadata completeness + agent readiness, 0-7) ---
+    all_items = list(defn.get("measures", [])) + list(defn.get("dimensions", []))
+    q_score = 0
+    if all_items:
+        has_comment = sum(1 for i in all_items if i.get("comment"))
+        has_display = sum(1 for i in all_items if i.get("display_name"))
+        has_syns = sum(1 for i in all_items if i.get("synonyms") and len(i["synonyms"]) > 0)
+        has_fmt = sum(1 for m in defn.get("measures", []) if m.get("format"))
+        n = len(all_items)
+        nm = len(defn.get("measures", []))
+        if has_comment == n:
+            q_score += 1
+        if has_display >= n * 0.8:
+            q_score += 1
+        if has_syns >= n * 0.5:
+            q_score += 1
+        if nm and has_fmt >= nm * 0.8:
+            q_score += 1
+        if has_syns == n:
+            q_score += 1
+    # Agent readiness: joins present, synonyms for Genie
+    if defn.get("joins"):
+        q_score += 1
+    any_syns = any(
+        i.get("synonyms") for i in all_items
+    ) if all_items else False
+    if any_syns and defn.get("comment"):
+        q_score += 1
+
+    if q_score <= 2:
+        q_level = "draft"
+    elif q_score <= 4:
+        q_level = "ready"
+    else:
+        q_level = "production"
+
+    return {
+        "complexity_score": cx_score,
+        "complexity_level": cx_level,
+        "quality_score": q_score,
+        "quality_level": q_level,
+    }
 
 
 def _sl_self_repair(defn: dict, errors: list[str], model: str) -> dict | None:
@@ -7039,9 +7211,9 @@ PLANNED VIEW (names only; you must add "expr" for each dimension and measure):
 
 RULES:
 - Output a single object with keys: name, source, comment, filter (optional), dimensions, measures, joins.
-- dimensions: array of {{ "name", "expr", "comment" }}; optionally "display_name" and "synonyms" (array of 2-5 alternative names for Genie discoverability). expr must be valid Databricks SQL using ONLY columns from the metadata below.
-- measures: array of {{ "name", "expr", "comment" }}; optionally "display_name" and "synonyms". Use SUM, COUNT, AVG, FILTER, etc. String literals single-quoted.
-- For window measures (rolling averages, cumulative): use "window" sub-object: {{"order_by": "col", "range": "INTERVAL N DAYS PRECEDING"}}.
+- dimensions: array of {{ "name", "expr", "comment", "display_name", "synonyms" }}. "display_name" and "synonyms" (array of 2-5 alternative names) are REQUIRED. expr must be valid Databricks SQL using ONLY columns from the metadata below.
+- measures: array of {{ "name", "expr", "comment", "display_name", "synonyms", "format" }}. "display_name", "synonyms", and "format" are REQUIRED. format is {{"type": "currency"}}, {{"type": "percentage"}}, or {{"type": "number"}}. Use SUM, COUNT, AVG, FILTER, etc. String literals single-quoted.
+- For window measures (rolling averages, cumulative): use "window" array: [{{"order": "date_col", "range": "trailing 30 day", "semiadditive": "last"}}]. Use "trailing N day" for rolling, "unbounded" for cumulative.
 - joins: You MUST implement ALL joins from the plan exactly. Use: on: source.<fk_column> = <join_name>.<pk_column>. Keep same join names as plan. If the plan includes joins, they are REQUIRED in your output. Add dimensions/measures that reference joined table columns.
 - COLUMN REFERENCING: Use "source.col" for source table columns, "join_alias.col" for joined table columns. Example: "expr": "source.order_date" or "expr": "account.industry". NEVER use bare column names when joins are present -- always qualify with the alias.
 - Ratios must use NULLIF in denominator. AVG of pre-aggregated values is usually wrong.
@@ -7139,7 +7311,9 @@ def _defn_to_yaml(defn: dict) -> str:
     for m in defn.get("measures", []):
         entry = {k: v for k, v in {"name": m["name"], "expr": m["expr"], "comment": m.get("comment"), "display_name": m.get("display_name"), "synonyms": m.get("synonyms")}.items() if v}
         if m.get("window"):
-            entry["window"] = m["window"]
+            specs = _normalize_window_specs(m["window"])
+            if specs:
+                entry["window"] = specs
         measures_out.append(entry)
     mv["measures"] = measures_out
     if defn.get("joins"):
@@ -7370,6 +7544,8 @@ def _run_sl_generation(
                 else:
                     break
 
+            _infer_format_specs(defn)
+            _backfill_agent_metadata(defn)
             cx = _score_definition_complexity(defn)
 
             if source and source.count('.') < 2:
@@ -7385,7 +7561,8 @@ def _run_sl_generation(
                 f"INSERT INTO {fq('metric_view_definitions')} VALUES "
                 f"('{defn_id}', '{mv_name}', '{source}', '{json_str}', '', "
                 f"'{status}', '{error_str}', NULL, '{now}', NULL, 1, NULL, {proj_val}, "
-                f"{cx['complexity_score']}, '{cx['complexity_level']}', NULL, NULL)"
+                f"{cx['complexity_score']}, '{cx['complexity_level']}', NULL, NULL, "
+                f"{cx['quality_score']}, '{cx['quality_level']}')"
             )
             stats[status] += 1
             stats["generated"] += 1
@@ -7395,6 +7572,7 @@ def _run_sl_generation(
                 "status": status,
                 "validation_errors": errors if errors else None,
                 "complexity": cx.get("complexity_level"),
+                "quality": cx.get("quality_level"),
             })
 
         # Post-generation: LLM coverage check
@@ -7425,6 +7603,16 @@ Return ONLY a JSON object: {{"covered": [<1-based question indices>], "not_cover
                     stats["coverage"] = coverage
             except Exception as exc:
                 logger.warning("Coverage check failed: %s", exc)
+
+        # Post-generation: programmatic KPI coverage check
+        kpi_cov = None
+        if stats["validated"] > 0 and definitions:
+            try:
+                kpi_cov = _compute_kpi_coverage(definitions, tables, project_id)
+                if kpi_cov:
+                    stats["kpi_coverage"] = kpi_cov
+            except Exception as exc:
+                logger.warning("KPI coverage check failed: %s", exc)
 
         stats["definitions"] = per_definition_results
         task.update({"status": "done", "stage": "done", "result": stats})
@@ -7575,12 +7763,15 @@ def _update_definition_row(definition_id: str, defn: dict, status: str, errors: 
     new_version = old_version + 1
     now = _dt.utcnow().isoformat()
     proj_val = f"'{proj_id}'" if proj_id else "NULL"
+    _infer_format_specs(defn)
+    _backfill_agent_metadata(defn)
     cx = _score_definition_complexity(defn)
     execute_sql(
         f"INSERT INTO {fq('metric_view_definitions')} VALUES ("
         f"'{new_id}', '{mv_name}', '{source_table}', '{json_str}', '{source_qs}', "
         f"'{status}', '{error_esc}', NULL, '{now}', NULL, {new_version}, '{definition_id}', {proj_val}, "
-        f"{cx['complexity_score']}, '{cx['complexity_level']}', NULL, NULL)"
+        f"{cx['complexity_score']}, '{cx['complexity_level']}', NULL, NULL, "
+        f"{cx['quality_score']}, '{cx['quality_level']}')"
     )
     return new_id
 
@@ -7588,6 +7779,75 @@ def _update_definition_row(definition_id: str, defn: dict, status: str, errors: 
 def _yaml_esc(s: str) -> str:
     """Escape a string for embedding inside YAML double-quotes."""
     return s.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _infer_display_name(name: str) -> str:
+    """Convert snake_case/kebab-case measure/dimension names to Title Case."""
+    return name.replace("_", " ").replace("-", " ").title()
+
+
+def _infer_synonyms(name: str, comment: str | None) -> list[str]:
+    """Extract 2-3 keyword synonyms from the name and comment."""
+    synonyms = set()
+    clean = name.replace("_", " ").lower()
+    words = clean.split()
+    _STOP = {"the", "a", "an", "of", "for", "by", "in", "to", "and", "or", "is", "as", "per", "with", "from"}
+    if len(words) >= 2:
+        abbr = "".join(w[0] for w in words if w not in _STOP).upper()
+        if len(abbr) >= 2:
+            synonyms.add(abbr)
+    if comment:
+        for w in comment.lower().split():
+            w = w.strip(".,;:()")
+            if len(w) > 3 and w not in _STOP and w not in clean:
+                synonyms.add(w)
+                if len(synonyms) >= 3:
+                    break
+    return list(synonyms)[:5]
+
+
+def _backfill_agent_metadata(defn: dict) -> None:
+    """Backfill display_name and synonyms on measures/dimensions that lack them."""
+    for item in defn.get("measures", []) + defn.get("dimensions", []):
+        if not item.get("display_name"):
+            item["display_name"] = _infer_display_name(item.get("name", ""))
+        if not item.get("synonyms"):
+            item["synonyms"] = _infer_synonyms(item.get("name", ""), item.get("comment"))
+
+
+def _normalize_window_specs(w) -> list[dict]:
+    """Normalize window field to YAML 1.1 spec: array of {order, range/rows, semiadditive}."""
+    if w is None:
+        return []
+    if isinstance(w, dict):
+        w = [w]
+    if not isinstance(w, list):
+        return []
+    result = []
+    for spec in w:
+        if not isinstance(spec, dict):
+            continue
+        order = spec.get("order") or spec.get("order_by")
+        if not order:
+            continue
+        rng = spec.get("range", "")
+        if isinstance(rng, str) and "INTERVAL" in rng.upper():
+            import re as _re
+            m = _re.search(r"INTERVAL\s+(\d+)\s+(\w+)", rng, _re.IGNORECASE)
+            if m:
+                rng = f"trailing {m.group(1)} {m.group(2).lower().rstrip('s')}"
+        rows = spec.get("rows", "")
+        if isinstance(rows, str) and "UNBOUNDED" in rows.upper():
+            rng = "unbounded"
+            rows = ""
+        entry = {"order": order}
+        if rng:
+            entry["range"] = rng
+        if rows:
+            entry["rows"] = rows
+        entry["semiadditive"] = spec.get("semiadditive", "last")
+        result.append(entry)
+    return result
 
 
 def _definition_to_yaml(defn: dict) -> str:
@@ -7632,6 +7892,13 @@ def _definition_to_yaml(defn: dict) -> str:
             lines.append(f'    display_name: "{_yaml_esc(m["display_name"])}"')
         if m.get("synonyms"):
             lines.append(_fmt_synonyms(m["synonyms"]))
+        if m.get("format") and isinstance(m["format"], dict):
+            fmt = m["format"]
+            lines.append("    format:")
+            if fmt.get("type"):
+                lines.append(f'      type: "{_yaml_esc(fmt["type"])}"')
+            if fmt.get("currency_code"):
+                lines.append(f'      currency_code: "{_yaml_esc(fmt["currency_code"])}"')
         if m.get("window"):
             w = m["window"]
             if isinstance(w, str):
@@ -7639,14 +7906,17 @@ def _definition_to_yaml(defn: dict) -> str:
                     w = json.loads(w)
                 except (json.JSONDecodeError, TypeError):
                     w = None
-            if isinstance(w, dict) and (w.get("order_by") or w.get("range") or w.get("rows")):
+            specs = _normalize_window_specs(w)
+            if specs:
                 lines.append("    window:")
-                if w.get("order_by"):
-                    lines.append(f'      order_by: "{_yaml_esc(w["order_by"])}"')
-                if w.get("range"):
-                    lines.append(f'      range: "{_yaml_esc(w["range"])}"')
-                if w.get("rows"):
-                    lines.append(f'      rows: "{_yaml_esc(w["rows"])}"')
+                for ws in specs:
+                    lines.append(f'      - order: "{_yaml_esc(ws["order"])}"')
+                    if ws.get("range"):
+                        lines.append(f'        range: "{_yaml_esc(ws["range"])}"')
+                    if ws.get("rows"):
+                        lines.append(f'        rows: "{_yaml_esc(ws["rows"])}"')
+                    if ws.get("semiadditive"):
+                        lines.append(f'        semiadditive: "{_yaml_esc(ws["semiadditive"])}"')
     if defn.get("joins"):
         lines.append("joins:")
         for j in defn["joins"]:
@@ -7949,8 +8219,12 @@ def export_metric_views_sql(catalog: Optional[str] = None, schema: Optional[str]
     )
 
 
+class ImproveRequest(BaseModel):
+    analysis_issues: list | None = None
+
+
 @app.post("/api/semantic-layer/definitions/{definition_id}/improve")
-def improve_definition(definition_id: str):
+def improve_definition(definition_id: str, req: ImproveRequest | None = None):
     """Ask AI to improve an existing validated/applied metric view definition."""
     _ensure_semantic_layer_tables()
     row = _fetch_definition(definition_id)
@@ -7959,6 +8233,17 @@ def improve_definition(definition_id: str):
     src_cat, src_sch = _cat_sch_from_source(source) if source else (CATALOG, SCHEMA)
     context = _build_sl_context([source], src_cat, src_sch) if source else ""
     ref_rules = _load_agent_reference("metric_view_reference.json", ["measure_patterns", "yaml_syntax_rules"])
+
+    issues_block = ""
+    if req and req.analysis_issues:
+        issues_summary = "\n".join(
+            f"- [{iss.get('severity', 'medium')}] {iss.get('field', '?')}: {iss.get('message', '')}"
+            for iss in req.analysis_issues[:30]
+        )
+        issues_block = f"""
+KNOWN ISSUES -- you MUST fix ALL of these:
+{issues_summary}
+"""
 
     prompt = f"""You are improving a metric view definition. Make it more comprehensive and useful.
 
@@ -7970,14 +8255,16 @@ TABLE METADATA:
 
 REFERENCE: BEST PRACTICES
 {ref_rules}
-
+{issues_block}
 Improvements to make:
+- Fix any known issues listed above FIRST
 - Add missing measures that would be useful (ratios, rates, conditional aggregates)
 - Improve dimension coverage (time-based truncations, categorizations)
 - Ensure measure/dimension names are business-friendly
 - Add FILTER-based conditional measures where relevant
 - Keep existing measures/dimensions unless they are wrong
 - Every metric view must have at least one measure and one dimension
+- ALL string literals MUST be single-quoted (comparisons, CASE results, IN lists)
 
 OUTPUT: Return ONLY the improved JSON definition (single object, not array)."""
 
@@ -8126,6 +8413,54 @@ def _compute_mv_health(defn: dict) -> dict:
         score_total += 1
     else:
         dimensions_map["expression_validity"] = {"score": 0, "max": 2, "detail": "All expressions empty or missing"}
+
+    # Unquoted string literal detection (deterministic)
+    _THEN_ELSE_UNQUOTED = re.compile(
+        r"\b(THEN|ELSE)\s+([A-Z][A-Za-z0-9_ ()\-/+]+?)(?=\s+(?:WHEN|ELSE|END)\b)",
+        re.IGNORECASE,
+    )
+    _IN_UNQUOTED = re.compile(r"\bIN\s*\(([^)]+)\)", re.IGNORECASE)
+    for item_type in ("dimensions", "measures"):
+        for idx, item in enumerate(defn.get(item_type, [])):
+            expr = item.get("expr", "")
+            # Check THEN/ELSE
+            for m_match in _THEN_ELSE_UNQUOTED.finditer(expr):
+                val = m_match.group(2).strip()
+                if val.startswith("'") or val.startswith('"'):
+                    continue
+                if re.match(r"^-?\d+(\.\d+)?$", val):
+                    continue
+                if re.match(r"^[A-Za-z_]\w*\(", val):
+                    continue
+                if " " in val or "(" in val:
+                    fixed_expr = expr.replace(val, f"'{val}'")
+                    issues.append({
+                        "field": f"{item_type}[{idx}].expr",
+                        "severity": "high",
+                        "message": f"Unquoted string literal '{val}' will cause a SQL syntax error",
+                        "suggestion": f"Wrap in single quotes: '{val}'",
+                        "fix_value": fixed_expr,
+                    })
+            # Check IN clauses
+            for m_match in _IN_UNQUOTED.finditer(expr):
+                body = m_match.group(1)
+                for tok in body.split(","):
+                    tok = tok.strip()
+                    if not tok or tok.startswith("'") or tok.startswith('"'):
+                        continue
+                    if re.match(r"^-?\d+(\.\d+)?$", tok):
+                        continue
+                    if re.match(r"^[A-Za-z_]\w*$", tok) and tok.upper() in _SQL_RESERVED:
+                        continue
+                    if " " in tok:
+                        fixed_expr = expr.replace(tok, f"'{tok}'")
+                        issues.append({
+                            "field": f"{item_type}[{idx}].expr",
+                            "severity": "high",
+                            "message": f"Unquoted string '{tok}' in IN clause will cause a SQL syntax error",
+                            "suggestion": f"Wrap in single quotes: '{tok}'",
+                            "fix_value": fixed_expr,
+                        })
 
     # Richness (2 pts): +1 for advanced patterns; +1 for synonyms
     richness_score = 0
@@ -10821,6 +11156,136 @@ def vector_sync():
 
 
 # ---------------------------------------------------------------------------
+# Metric View -> Vector Store sync
+# ---------------------------------------------------------------------------
+
+_mv_sync_tasks: dict[str, dict] = {}
+
+def _mv_sync_worker(task_id: str):
+    """MERGE 3-tier metric view docs, sweep stale, trigger VS sync."""
+    docs = fq("metadata_documents")
+    defs = fq("metric_view_definitions")
+    kb = fq("table_knowledge_base")
+
+    null_cols = (
+        "CAST(NULL AS STRING) AS catalog_name, CAST(NULL AS STRING) AS schema_name, "
+        "p.source_table AS table_name, kb.domain AS domain, kb.subdomain AS subdomain, "
+        "CAST(NULL AS STRING) AS entity_type, CAST(NULL AS BOOLEAN) AS has_pii, "
+        "CAST(NULL AS BOOLEAN) AS has_phi, CAST(NULL AS STRING) AS security_level, "
+        "CAST(NULL AS STRING) AS data_type, CAST(NULL AS FLOAT) AS confidence_score, "
+        "current_timestamp() AS updated_at"
+    )
+    join_clause = f"FROM mv_base p LEFT JOIN {kb} kb ON p.source_table = kb.table_name"
+
+    union_src = (
+        f"WITH mv_base AS ("
+        f"  SELECT m.definition_id, m.metric_view_name, m.source_table, m.source_questions,"
+        f"    CONCAT(COALESCE(m.deployed_catalog, '{CATALOG}'), '.', COALESCE(m.deployed_schema, '{SCHEMA}'), '.', m.metric_view_name) AS mv_fqn,"
+        f"    FROM_JSON(m.json_definition, 'STRUCT<comment:STRING>').comment AS mv_comment,"
+        f"    FROM_JSON(m.json_definition, 'STRUCT<filter:STRING>').filter AS mv_filter,"
+        f"    CONCAT_WS('\\n', TRANSFORM("
+        f"      FROM_JSON(m.json_definition, 'STRUCT<measures:ARRAY<STRUCT<name:STRING,expr:STRING,comment:STRING,synonyms:ARRAY<STRING>,format:STRUCT<type:STRING,currency_code:STRING>>>>').measures,"
+        f"      x -> CONCAT('- ', x.name, ': ', COALESCE(x.comment, ''), ' [', COALESCE(x.expr, ''), ']',"
+        f"        CASE WHEN x.format IS NOT NULL THEN CONCAT(' (', x.format.type, COALESCE(CONCAT(' ', x.format.currency_code), ''), ')') ELSE '' END,"
+        f"        CASE WHEN x.synonyms IS NOT NULL THEN CONCAT(' (aka: ', ARRAY_JOIN(x.synonyms, ', '), ')') ELSE '' END)"
+        f"    )) AS measure_lines,"
+        f"    CONCAT_WS('\\n', TRANSFORM("
+        f"      FROM_JSON(m.json_definition, 'STRUCT<dimensions:ARRAY<STRUCT<name:STRING,expr:STRING,comment:STRING,synonyms:ARRAY<STRING>>>>').dimensions,"
+        f"      x -> CONCAT('- ', x.name, ': ', COALESCE(x.comment, ''), ' [', COALESCE(x.expr, ''), ']',"
+        f"        CASE WHEN x.synonyms IS NOT NULL THEN CONCAT(' (aka: ', ARRAY_JOIN(x.synonyms, ', '), ')') ELSE '' END)"
+        f"    )) AS dimension_lines,"
+        f"    CONCAT_WS('\\n', TRANSFORM("
+        f"      FROM_JSON(m.json_definition, 'STRUCT<joins:ARRAY<STRUCT<name:STRING,source:STRING,on:STRING>>>').joins,"
+        f"      x -> CONCAT('- ', x.name, ': ', COALESCE(x.source, ''), ' ON ', COALESCE(x.on, ''))"
+        f"    )) AS join_lines,"
+        f"    COALESCE(CONCAT('Keywords: ', ARRAY_JOIN(ARRAY_UNION("
+        f"      FLATTEN(TRANSFORM(FROM_JSON(m.json_definition, 'STRUCT<measures:ARRAY<STRUCT<synonyms:ARRAY<STRING>>>>').measures, x -> COALESCE(x.synonyms, ARRAY()))),"
+        f"      FLATTEN(TRANSFORM(FROM_JSON(m.json_definition, 'STRUCT<dimensions:ARRAY<STRUCT<synonyms:ARRAY<STRING>>>>').dimensions, x -> COALESCE(x.synonyms, ARRAY())))"
+        f"    ), ', ')), '') AS all_synonyms_line"
+        f"  FROM {defs} m WHERE m.status IN ('validated', 'applied')"
+        f") "
+        f"SELECT CONCAT('metric_view_summary::', p.definition_id) AS doc_id, 'metric_view_summary' AS doc_type, p.definition_id AS node_id, "
+        f"  CONCAT(p.mv_fqn, '\\n', COALESCE(p.mv_comment, ''), '\\n', 'Domain: ', COALESCE(kb.domain, ''), ' / ', COALESCE(kb.subdomain, ''), '\\n', "
+        f"  'Source: ', COALESCE(p.source_table, ''), '\\n', 'Questions: ', COALESCE(p.source_questions, ''), '\\n', COALESCE(p.all_synonyms_line, '')) AS content, "
+        f"  {null_cols} {join_clause} "
+        f"UNION ALL "
+        f"SELECT CONCAT('metric_view_measures::', p.definition_id) AS doc_id, 'metric_view_measures' AS doc_type, p.definition_id AS node_id, "
+        f"  CONCAT(p.mv_fqn, '\\nMeasures:\\n', COALESCE(p.measure_lines, '(none)'), '\\n', COALESCE(p.all_synonyms_line, '')) AS content, "
+        f"  {null_cols} {join_clause} "
+        f"UNION ALL "
+        f"SELECT CONCAT('metric_view_schema::', p.definition_id) AS doc_id, 'metric_view_schema' AS doc_type, p.definition_id AS node_id, "
+        f"  CONCAT(p.mv_fqn, '\\nDimensions:\\n', COALESCE(p.dimension_lines, '(none)'), '\\nJoins:\\n', COALESCE(p.join_lines, '(none)'), "
+        f"  '\\nFilter: ', COALESCE(p.mv_filter, '(none)')) AS content, "
+        f"  {null_cols} {join_clause}"
+    )
+
+    merge_sql = (
+        f"MERGE INTO {docs} AS tgt USING ({union_src}) AS src "
+        f"ON tgt.doc_id = src.doc_id "
+        f"WHEN MATCHED AND (COALESCE(tgt.content, '') != COALESCE(src.content, '') "
+        f"OR COALESCE(tgt.doc_type, '') != COALESCE(src.doc_type, '')) THEN UPDATE SET * "
+        f"WHEN NOT MATCHED THEN INSERT *"
+    )
+
+    try:
+        execute_sql(merge_sql, timeout=120)
+
+        # Sweep legacy single-doc entries
+        execute_sql(f"DELETE FROM {docs} WHERE doc_type = 'metric_view'", timeout=30)
+
+        # Sweep orphaned tier docs
+        valid_ids = f"SELECT definition_id FROM {defs} WHERE status IN ('validated', 'applied')"
+        for dt in ("metric_view_summary", "metric_view_measures", "metric_view_schema"):
+            execute_sql(
+                f"DELETE FROM {docs} WHERE doc_type = '{dt}' AND node_id NOT IN ({valid_ids})",
+                timeout=30,
+            )
+
+        # Count what we wrote
+        rows = execute_sql(
+            f"SELECT doc_type, COUNT(*) AS cnt FROM {docs} "
+            f"WHERE doc_type IN ('metric_view_summary', 'metric_view_measures', 'metric_view_schema') "
+            f"GROUP BY doc_type",
+            timeout=15,
+        )
+        counts = {r["doc_type"]: int(r["cnt"]) for r in rows} if rows else {}
+
+        # Trigger VS index sync
+        vs_index_name = f"{CATALOG}.{SCHEMA}.{VS_INDEX_SUFFIX}"
+        try:
+            ws = get_workspace_client()
+            ws.vector_search_indexes.sync_index(index_name=vs_index_name)
+        except Exception as sync_err:
+            logger.warning("VS sync after MV merge failed: %s", sync_err)
+
+        _mv_sync_tasks[task_id] = {
+            "status": "done",
+            "docs_by_type": counts,
+            "docs_total": sum(counts.values()),
+        }
+    except Exception as exc:
+        logger.exception("Metric view vector sync failed")
+        _mv_sync_tasks[task_id] = {"status": "error", "error": str(exc)}
+
+
+@app.post("/api/vector/sync-metric-views")
+def sync_metric_views():
+    """MERGE metric view docs into metadata_documents and trigger VS sync."""
+    task_id = str(_uuid.uuid4())[:12]
+    _mv_sync_tasks[task_id] = {"status": "running"}
+    threading.Thread(target=_mv_sync_worker, args=(task_id,), daemon=True).start()
+    return {"task_id": task_id}
+
+
+@app.get("/api/vector/sync-metric-views/{task_id}")
+def sync_metric_views_status(task_id: str):
+    task = _mv_sync_tasks.get(task_id)
+    if not task:
+        raise HTTPException(404, detail="Task not found")
+    return task
+
+
+# ---------------------------------------------------------------------------
 # SQL Analyst Agent (Blind vs Enriched)
 # ---------------------------------------------------------------------------
 
@@ -11329,6 +11794,43 @@ def _matches_scope(row: dict, full_table_name: str) -> bool:
         or (st == "schema" and scope == schema_scope)
         or (st == "table" and scope == full_table_name)
         or (st == "pattern" and fnmatch(full_table_name, scope))
+    )
+
+
+# ---------------------------------------------------------------------------
+# Metric View Agent
+# ---------------------------------------------------------------------------
+
+
+@app.post("/api/metric-view-agent/chat")
+async def metric_view_agent_chat(req: dict):
+    """Conversational metric view agent -- answers questions using metric views as semantic layer."""
+    question = req.get("question", "")
+    history = req.get("history", [])
+    session_id = req.get("session_id")
+    from agent.guardrails import validate_input
+    ok, err = validate_input(question)
+    if not ok:
+        raise HTTPException(400, detail=err)
+    from agent.metric_view_agent import run_metric_view_agent
+    result = await run_metric_view_agent(question, history, session_id)
+    return result
+
+
+@app.post("/api/metric-view-agent/stream")
+def metric_view_agent_stream(req: dict):
+    """SSE streaming endpoint for the metric view agent."""
+    question = req.get("question", "")
+    history = req.get("history", [])
+    session_id = req.get("session_id")
+    from agent.guardrails import validate_input
+    ok, err = validate_input(question)
+    if not ok:
+        raise HTTPException(400, detail=err)
+    from agent.metric_view_agent import stream_metric_view_agent
+    return StreamingResponse(
+        stream_metric_view_agent(question, history, session_id),
+        media_type="text/event-stream",
     )
 
 
