@@ -96,55 +96,32 @@ def merge_edges(
                 logger.warning("Could not sweep stale edges for %s: %s", source_system, e)
         return 0
 
-    from pyspark import StorageLevel
-    aligned.persist(StorageLevel.MEMORY_AND_DISK)
-    try:
-        row_count = aligned.count()
-        view_name = f"_staged_merge_{source_system}"
-        aligned.createOrReplaceTempView(view_name)
-        logger.info("Merging %d edges (source_system=%s) into %s", row_count, source_system, target_table)
+    row_count = aligned.count()
+    view_name = f"_staged_merge_{source_system}"
+    aligned.createOrReplaceTempView(view_name)
+    logger.info("Merging %d edges (source_system=%s) into %s", row_count, source_system, target_table)
 
-        update_cols = [c.strip("`") for c, _ in EDGE_SCHEMA
-                       if c.strip("`") not in ("edge_id", "created_at")]
-        update_set = ", ".join(f"target.{c} = source.{c}" for c in update_cols)
-        col_list = ", ".join(c.strip("`") for c, _ in EDGE_SCHEMA)
+    update_cols = [c.strip("`") for c, _ in EDGE_SCHEMA
+                   if c.strip("`") not in ("edge_id", "created_at")]
+    update_set = ", ".join(f"target.{c} = source.{c}" for c in update_cols)
+    col_list = ", ".join(c.strip("`") for c, _ in EDGE_SCHEMA)
 
-        sweep_clause = (
-            f"\n        WHEN NOT MATCHED BY SOURCE"
-            f"\n          AND target.source_system = '{source_system}'"
-            f"\n          THEN DELETE"
-            if sweep_stale else ""
-        )
+    sweep_clause = (
+        f"\n        WHEN NOT MATCHED BY SOURCE"
+        f"\n          AND target.source_system = '{source_system}'"
+        f"\n          THEN DELETE"
+        if sweep_stale else ""
+    )
 
-        # MERGE: Upsert edges into graph_edges keyed on edge_id (deterministic
-        # CONCAT_WS('::', src, dst, relationship)). Matched rows get all mutable
-        # fields overwritten; unmatched source rows are inserted. When sweep_stale
-        # is True, an additional WHEN NOT MATCHED BY SOURCE clause deletes target
-        # rows for this source_system that no longer appear in the source -- this
-        # is how stale edges are garbage-collected after tables are removed or
-        # relationships change.
-        # WHY: graph_edges is a shared table written by four independent modules.
-        # Each module's edges are tagged with source_system so the MERGE + sweep
-        # can operate on a per-module slice without disturbing other modules' rows.
-        # The DataFrame is dropDuplicates(["edge_id"]) above to prevent the
-        # DELTA_MULTIPLE_SOURCE_ROW_MATCHING_TARGET_ROW_IN_MERGE error.
-        # TRADEOFFS: MERGE-by-edge_id is idempotent and handles re-runs cleanly.
-        # The sweep clause makes it a full outer join which is expensive on cold
-        # clusters with millions of edges (hence sweep_stale defaults to False).
-        # An alternative would be DELETE-then-INSERT per source_system, but that
-        # loses created_at timestamps and causes downstream caches to fully
-        # invalidate instead of incrementally updating.
-        spark.sql(f"""
-            MERGE INTO {target_table} AS target
-            USING {view_name} AS source
-            ON target.edge_id = source.edge_id
-            WHEN MATCHED THEN UPDATE SET {update_set}
-            WHEN NOT MATCHED THEN INSERT ({col_list})
-                VALUES (source.{', source.'.join(col_list.split(', '))}){sweep_clause}
-        """)
-        return row_count
-    finally:
-        aligned.unpersist()
+    spark.sql(f"""
+        MERGE INTO {target_table} AS target
+        USING {view_name} AS source
+        ON target.edge_id = source.edge_id
+        WHEN MATCHED THEN UPDATE SET {update_set}
+        WHEN NOT MATCHED THEN INSERT ({col_list})
+            VALUES (source.{', source.'.join(col_list.split(', '))}){sweep_clause}
+    """)
+    return row_count
 
 
 @dataclass

@@ -864,7 +864,6 @@ class FKPredictor:
             lineage_df = self.spark.sql(
                 f"SELECT table_name, upstream_tables, downstream_tables FROM {ext}"
             )
-            lineage_df.cache()
             lineage_df.count()
         except Exception:
             return candidates.withColumn("lineage_score", F.lit(0.0))
@@ -901,7 +900,7 @@ class FKPredictor:
             (candidates.table_a == scored._la) & (candidates.table_b == scored._lb),
             "left",
         ).drop("_la", "_lb")
-        lineage_df.unpersist()
+        lineage_df = None
         return result.withColumn("lineage_score", F.coalesce(F.col("lineage_score"), F.lit(0.0)))
 
     # ------------------------------------------------------------------

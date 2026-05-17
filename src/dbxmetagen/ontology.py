@@ -3734,7 +3734,6 @@ class OntologyBuilder:
                 F.lit(None).cast("string").alias("_matched_rel"),
             )
 
-        edges_df.cache()
         edge_count = edges_df.count()
 
         # Identify undiscovered declared relationships
@@ -3761,7 +3760,6 @@ class OntologyBuilder:
             )
 
         if edge_count == 0:
-            edges_df.unpersist()
             logger.info("No inter-entity relationships discovered")
             return result
 
@@ -3776,7 +3774,6 @@ class OntologyBuilder:
             F.current_timestamp().alias("created_at"),
             F.current_timestamp().alias("updated_at"),
         ).dropDuplicates(["edge_id"])
-        edges_df.unpersist()
         edge_count = write_df.count()
         logger.info("Built %d inter-entity relationship edges", edge_count)
         result["edges_added"] = edge_count
