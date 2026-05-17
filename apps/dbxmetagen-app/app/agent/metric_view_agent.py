@@ -112,7 +112,11 @@ def stream_metric_view_agent(
     threading.Thread(target=_run, daemon=True).start()
 
     yield _sse("stage", {"stage": "processing"})
-    done.get(timeout=300)
+    try:
+        done.get(timeout=300)
+    except queue.Empty:
+        yield _sse("error", {"error": "Agent timed out after 300 seconds"})
+        return
 
     if error_holder:
         yield _sse("error", {"error": error_holder["error"]})

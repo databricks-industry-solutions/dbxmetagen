@@ -1,6 +1,8 @@
 # Databricks notebook source
-# MAGIC %pip install -qqqq ../dist/dbxmetagen-*.whl
-# MAGIC dbutils.library.restartPython()
+
+# MAGIC # Uncomment below when running outside of a DAB-deployed job
+# MAGIC # %pip install /Workspace/Users/<your_username>/.bundle/dbxmetagen/dev/artifacts/.internal/dbxmetagen-*.whl
+# MAGIC # dbutils.library.restartPython()
 
 # COMMAND ----------
 

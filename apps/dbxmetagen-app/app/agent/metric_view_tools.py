@@ -4,6 +4,7 @@ Provides semantic search over metric view documents, listing/describing
 metric view definitions, and structured query execution using MEASURE() syntax.
 """
 
+import concurrent.futures
 import json
 import logging
 import os
@@ -83,13 +84,15 @@ def search_metric_views(question: str) -> str:
         return json.dumps({"error": f"Vector search unavailable: {e}"})
 
     try:
-        results = index.similarity_search(
+        kwargs = dict(
             query_text=question,
             columns=["doc_type", "content", "table_name", "node_id"],
             filters={"doc_type": ("metric_view_summary", "metric_view_measures", "metric_view_schema")},
             num_results=10,
             query_type="HYBRID",
         )
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            results = pool.submit(index.similarity_search, **kwargs).result(timeout=30)
         cols = results.get("manifest", {}).get("columns", [])
         col_names = [c.get("name", f"col{i}") for i, c in enumerate(cols)]
         candidates = []
