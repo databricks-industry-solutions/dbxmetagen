@@ -5453,7 +5453,7 @@ class OntologyBuilder:
             edge_dfs.append(align_edge_schema(same_df))
 
         if edge_dfs:
-            combined = reduce(DataFrame.unionByName, edge_dfs).dropDuplicates(["edge_id"])
+            combined = reduce(lambda a, b: a.unionByName(b), edge_dfs).dropDuplicates(["edge_id"])
             edges_added = merge_edges(self.spark, edges_table, combined, source_system="ontology")
         else:
             edges_added = 0
@@ -5581,7 +5581,7 @@ class OntologyBuilder:
             edge_dfs.append(align_edge_schema(same_df))
 
         if edge_dfs:
-            combined = reduce(DataFrame.unionByName, edge_dfs).dropDuplicates(["edge_id"])
+            combined = reduce(lambda a, b: a.unionByName(b), edge_dfs).dropDuplicates(["edge_id"])
             total_edges = merge_edges(self.spark, edges_table, combined, source_system="ontology", sweep_stale=sweep_stale)
         else:
             total_edges = 0

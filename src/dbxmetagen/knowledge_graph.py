@@ -1125,7 +1125,7 @@ class ExtendedKnowledgeGraphBuilder(KnowledgeGraphBuilder):
 
         if edges:
             from functools import reduce
-            combined = reduce(DataFrame.union, edges)
+            combined = reduce(lambda a, b: a.union(b), edges)
             return self._enrich_edges(combined, "contains")
 
         return self.spark.createDataFrame([], self._EMPTY_EDGE_SCHEMA)

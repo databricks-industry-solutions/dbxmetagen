@@ -465,7 +465,7 @@ class KnowledgeBaseBuilder:
             return 0
 
         from functools import reduce
-        combined = reduce(DataFrame.union, all_dfs)
+        combined = reduce(lambda a, b: a.union(b), all_dfs)
         combined.createOrReplaceTempView("_kb_bootstrap_src")
 
         # MERGE: `WHEN NOT MATCHED THEN INSERT *` into table KB from `_kb_bootstrap_src` on `table_name`, seeding managed/external tables from each catalog's `information_schema.tables` with UC comment, null domain/subdomain, false PI flags, and current timestamps.

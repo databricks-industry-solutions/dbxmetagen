@@ -175,7 +175,7 @@ class ColumnKnowledgeBaseBuilder:
             
             if dfs:
                 from functools import reduce
-                return reduce(DataFrame.union, dfs)
+                return reduce(lambda a, b: a.union(b), dfs)
             else:
                 return self.spark.createDataFrame([], "table_name STRING, column_name STRING, data_type STRING, nullable BOOLEAN")
         except Exception as e:
@@ -357,7 +357,7 @@ class ColumnKnowledgeBaseBuilder:
             return 0
 
         from functools import reduce
-        combined = reduce(DataFrame.union, all_dfs)
+        combined = reduce(lambda a, b: a.union(b), all_dfs)
         combined.createOrReplaceTempView("_ckb_bootstrap_src")
 
         # MERGE: `WHEN NOT MATCHED THEN INSERT *` into column KB from `_ckb_bootstrap_src` on `column_id`, filling from `information_schema.columns` plus UC comments, types, nullable, null AI fields.
