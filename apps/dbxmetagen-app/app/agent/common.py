@@ -94,7 +94,9 @@ class ReactState(TypedDict):
 MAX_SAME_TOOL_CALLS = 3
 
 _CONFAB_PHRASES = re.compile(
-    r"(?:let me (?:query|check|verify|look up|run)|I(?:'ll| will) (?:query|check|verify|run|look))",
+    r"(?:let me (?:query|check|verify|look up|run|explore|search|examine|investigate|fetch|retrieve)"
+    r"|I(?:'ll| will| should| need to) (?:query|check|verify|run|look|search|examine|explore|investigate|fetch|retrieve)"
+    r"|(?:now |next )(?:I'll |let me ))",
     re.IGNORECASE,
 )
 
