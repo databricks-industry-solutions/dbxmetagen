@@ -124,6 +124,17 @@ sed -e "s|__DATABRICKS_HOST__|${DATABRICKS_HOST}|g" \
     -e "s|__SCHEMA_NAME__|${schema_name}|g" \
     -e "s|__WAREHOUSE_ID__|${warehouse_id}|g" \
     databricks.yml.template > databricks.yml
+python3 -c "
+import os, re
+spn = os.environ.get('spn_id', '').strip()
+text = open('databricks.yml').read()
+if spn:
+    text = text.replace('__RUN_AS__', '    run_as:\n      service_principal_name: \"{}\"'.format(spn))
+    print('run_as: service principal {}'.format(spn))
+else:
+    text = re.sub(r'^__RUN_AS__\n?', '', text, flags=re.MULTILINE)
+open('databricks.yml', 'w').write(text)
+"
 
 echo "=== Generating app.yaml from template ==="
 sed -e "s|__CATALOG_NAME__|${catalog_name}|g" \
