@@ -22,7 +22,7 @@ from fastapi import Body, FastAPI, HTTPException, Query, Request, UploadFile, Fi
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from databricks.sdk import WorkspaceClient
 from db import pg_execute, get_engine, pg_configured
 from dbxmetagen.ddl_bundle_utils import rewrite_ddl_catalog_schema as _rewrite_ddl_catalog_schema, dq_grade as _dq_grade
@@ -588,7 +588,7 @@ def get_config():
         "sample_size": int(os.environ.get("SAMPLE_SIZE", "5")),
         "apply_ddl": os.environ.get("APPLY_DDL", "false").lower() == "true",
         "use_kb_comments": os.environ.get("USE_KB_COMMENTS", "false").lower() == "true",
-        "include_lineage": os.environ.get("INCLUDE_LINEAGE", "false").lower() == "true",
+        "include_lineage": os.environ.get("INCLUDE_LINEAGE", "true").lower() == "true",
         "workspace_host": host.rstrip("/"),
         "available_models": _AVAILABLE_MODELS,
         "lakebase_configured": pg_configured(),
@@ -1328,6 +1328,34 @@ def patch_schema_kb(body: list[SchemaKBRow]):
             f"UPDATE {tbl} SET {', '.join(updates)} WHERE schema_id = {_safe_sql_str(row.schema_id)}"
         )
     return {"updated": len(body)}
+
+
+class ResetReviewBody(BaseModel):
+    table_name: str | None = None
+    column_id: str | None = None
+    schema_id: str | None = None
+    level: str = "table"
+
+
+@app.post("/api/metadata/reset-review")
+def reset_review(body: ResetReviewBody):
+    """NULL out review_updated_at so the next KB rebuild picks up pipeline values."""
+    if body.level == "table" and body.table_name:
+        _ensure_review_updated_at("table_knowledge_base")
+        tbl = fq("table_knowledge_base")
+        execute_sql(f"UPDATE {tbl} SET review_updated_at = NULL WHERE table_name = {_safe_sql_str(body.table_name)}")
+    elif body.level == "column" and body.column_id:
+        _ensure_review_updated_at("column_knowledge_base")
+        tbl = fq("column_knowledge_base")
+        execute_sql(f"UPDATE {tbl} SET review_updated_at = NULL WHERE column_id = {_safe_sql_str(body.column_id)}")
+    elif body.level == "schema" and body.schema_id:
+        _ensure_review_updated_at("schema_knowledge_base")
+        tbl = fq("schema_knowledge_base")
+        execute_sql(f"UPDATE {tbl} SET review_updated_at = NULL WHERE schema_id = {_safe_sql_str(body.schema_id)}")
+    else:
+        raise HTTPException(400, "Provide table_name (level=table), column_id (level=column), or schema_id (level=schema)")
+    invalidate_query_caches()
+    return {"ok": True, "level": body.level}
 
 
 # --- Generate / Apply DDL from KB ---
@@ -4320,6 +4348,7 @@ class _OntologyBuilderSuggestReq(BaseModel):
     tables: list[str] = []
     domain: str = ""
     existing_entities: list[str] = []
+    include_column_metadata: bool = False
     model_endpoint: str = _LLM_MODEL
 
 
@@ -4327,6 +4356,7 @@ class _OntologyBuilderSuggestRelsReq(BaseModel):
     entities: list[str] = []
     tables: list[str] = []
     domain: str = ""
+    include_column_metadata: bool = False
     model_endpoint: str = _LLM_MODEL
 
 
@@ -4335,7 +4365,43 @@ class _OntologyBuilderSuggestPropsReq(BaseModel):
     entity_description: str = ""
     tables: list[str] = []
     existing_properties: list[str] = []
+    include_column_metadata: bool = False
     model_endpoint: str = _LLM_MODEL
+
+
+def _fetch_column_context(tables: list[str], max_tables: int = 20, max_cols: int = 30) -> str:
+    """Fetch column names/types/comments from column_knowledge_base for LLM context."""
+    if not tables:
+        return ""
+    try:
+        safe_tables = [t for t in tables[:max_tables] if _SAFE_IDENT_RE.match(t.replace(".", "x"))]
+        if not safe_tables:
+            return ""
+        in_clause = ", ".join(f"'{t}'" for t in safe_tables)
+        q = (
+            f"SELECT table_name, column_name, data_type, comment "
+            f"FROM {fq('column_knowledge_base')} "
+            f"WHERE table_name IN ({in_clause}) "
+            f"ORDER BY table_name, ordinal_position "
+            f"LIMIT {max_tables * max_cols}"
+        )
+        rows = execute_sql(q)
+        if not rows:
+            return ""
+        lines = []
+        cur_table = None
+        for r in rows:
+            tn = r.get("table_name", "")
+            if tn != cur_table:
+                cur_table = tn
+                lines.append(f"\nTable: {tn}")
+            col = r.get("column_name", "")
+            dt = r.get("data_type", "")
+            cmt = r.get("comment", "") or ""
+            lines.append(f"  - {col} ({dt}){': ' + cmt if cmt else ''}")
+        return "\n".join(lines)
+    except Exception:
+        return ""
 
 
 def _strip_llm_fences(text: str) -> str:
@@ -4405,10 +4471,19 @@ def _builder_yaml_to_state(raw: dict) -> dict:
         }
     for dk, dv in (raw.get("domains") or {}).items():
         if isinstance(dv, dict):
+            subs = []
+            for sk, sv in (dv.get("subdomains") or {}).items():
+                if isinstance(sv, dict):
+                    subs.append({
+                        "name": sv.get("name", sk),
+                        "description": sv.get("description", ""),
+                        "keywords": sv.get("keywords", []),
+                    })
             state["domains"].append({
                 "name": dv.get("name", dk),
                 "description": dv.get("description", ""),
                 "keywords": dv.get("keywords", []),
+                "subdomains": subs,
             })
     return state
 
@@ -4484,6 +4559,17 @@ def _state_to_yaml_dict(state: dict) -> dict:
                 entry["description"] = d["description"]
             if d.get("keywords"):
                 entry["keywords"] = d["keywords"]
+            if d.get("subdomains"):
+                subs = {}
+                for sd in d["subdomains"]:
+                    sk = (sd.get("name") or "unnamed").lower().replace(" ", "_")
+                    se = {"name": sd.get("name", "")}
+                    if sd.get("description"):
+                        se["description"] = sd["description"]
+                    if sd.get("keywords"):
+                        se["keywords"] = sd["keywords"]
+                    subs[sk] = se
+                entry["subdomains"] = subs
             doms[key] = entry
         out["domains"] = doms
     return out
@@ -4567,11 +4653,13 @@ def ontology_builder_suggest(req: _OntologyBuilderSuggestReq):
 
     table_context = ", ".join(req.tables[:20]) if req.tables else "no specific tables"
     existing = ", ".join(req.existing_entities) if req.existing_entities else "none"
+    col_ctx = _fetch_column_context(req.tables) if req.include_column_metadata else ""
+    col_section = f"\n\nColumn metadata from these tables:{col_ctx}" if col_ctx else ""
 
     prompt = f"""You are an ontology designer. Given the following context, suggest entity types for a data ontology.
 
 Domain: {req.domain or 'general'}
-Tables available: {table_context}
+Tables available: {table_context}{col_section}
 Already defined entities (do not duplicate): {existing}
 
 For each entity, provide:
@@ -4599,12 +4687,14 @@ def ontology_builder_suggest_relationships(req: _OntologyBuilderSuggestRelsReq):
 
     entity_list = ", ".join(req.entities)
     table_context = ", ".join(req.tables[:20]) if req.tables else "no specific tables"
+    col_ctx = _fetch_column_context(req.tables) if req.include_column_metadata else ""
+    col_section = f"\n\nColumn metadata from these tables:{col_ctx}" if col_ctx else ""
 
     prompt = f"""You are an ontology designer. Given these entity types, suggest relationships between them.
 
 Domain: {req.domain or 'general'}
 Entity types: {entity_list}
-Tables available: {table_context}
+Tables available: {table_context}{col_section}
 
 For each relationship, provide:
 - name: snake_case relationship name (verb-based, e.g. placed_by, works_at, contains)
@@ -4635,12 +4725,14 @@ def ontology_builder_suggest_properties(req: _OntologyBuilderSuggestPropsReq):
 
     table_context = ", ".join(req.tables[:20]) if req.tables else "no specific tables"
     existing = ", ".join(req.existing_properties) if req.existing_properties else "none"
+    col_ctx = _fetch_column_context(req.tables) if req.include_column_metadata else ""
+    col_section = f"\n\nColumn metadata from these tables:{col_ctx}" if col_ctx else ""
 
     prompt = f"""You are an ontology designer. Suggest properties for an entity type in a data ontology.
 
 Entity: {req.entity_name}
 Description: {req.entity_description or 'not specified'}
-Tables available: {table_context}
+Tables available: {table_context}{col_section}
 Already defined properties (do not duplicate): {existing}
 
 Valid roles: primary_key, business_key, object_property, measure, dimension, temporal, geographic, label, audit, derived, composite_component
@@ -4778,6 +4870,46 @@ def delete_fk_predictions(body: FKDeleteBody):
             pass
     invalidate_query_caches()
     return {"deleted": deleted, "errors": errors}
+
+
+class FKReviewBody(BaseModel):
+    src_column: str
+    dst_column: str
+    is_fk: bool | None = None
+    final_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    ai_reasoning: str | None = None
+
+
+@app.patch("/api/analytics/fk-predictions")
+def patch_fk_prediction(body: FKReviewBody):
+    """Mark an FK prediction as reviewed (approve, negate, or modify).
+
+    Sets review_updated_at so the pipeline MERGE skips this row on future runs.
+    Re-running FK prediction (fresh updated_at) naturally overrides stale reviews.
+    """
+    preds_tbl = fq("fk_predictions")
+    src = _esc_sql(body.src_column.strip())
+    dst = _esc_sql(body.dst_column.strip())
+    if not src or not dst:
+        raise HTTPException(400, "src_column and dst_column required")
+    try:
+        execute_sql(f"ALTER TABLE {preds_tbl} ADD COLUMNS (review_updated_at TIMESTAMP)")
+    except Exception as e:
+        if "already exists" not in str(e).lower():
+            logger.warning("FK review_updated_at migration: %s", e)
+    sets = ["review_updated_at = current_timestamp()"]
+    if body.is_fk is not None:
+        sets.append(f"is_fk = {str(body.is_fk).lower()}")
+    if body.final_confidence is not None:
+        sets.append(f"final_confidence = {body.final_confidence}")
+    if body.ai_reasoning is not None:
+        sets.append(f"ai_reasoning = {_safe_sql_str(body.ai_reasoning)}")
+    execute_sql(
+        f"UPDATE {preds_tbl} SET {', '.join(sets)} "
+        f"WHERE src_column = '{src}' AND dst_column = '{dst}'"
+    )
+    invalidate_query_caches()
+    return {"ok": True, "src_column": body.src_column, "dst_column": body.dst_column}
 
 
 # ---------------------------------------------------------------------------
@@ -6959,12 +7091,12 @@ def _score_definition_complexity(defn: dict) -> dict:
     if defn.get("filter"):
         measure_score += 1
     cx_score = measure_score + n_joins * 3
-    if n_joins == 0:
-        cx_level = "basic"
-    elif n_joins == 1:
+    if n_joins >= 2 or cx_score >= 8:
+        cx_level = "rich"
+    elif n_joins >= 1 or cx_score >= 3:
         cx_level = "standard"
     else:
-        cx_level = "rich"
+        cx_level = "basic"
 
     # --- Quality score (metadata completeness + agent readiness, 0-7) ---
     all_items = list(defn.get("measures", [])) + list(defn.get("dimensions", []))
@@ -7310,6 +7442,8 @@ def _defn_to_yaml(defn: dict) -> str:
     measures_out = []
     for m in defn.get("measures", []):
         entry = {k: v for k, v in {"name": m["name"], "expr": m["expr"], "comment": m.get("comment"), "display_name": m.get("display_name"), "synonyms": m.get("synonyms")}.items() if v}
+        if m.get("format"):
+            entry["format"] = m["format"]
         if m.get("window"):
             specs = _normalize_window_specs(m["window"])
             if specs:
@@ -11273,7 +11407,7 @@ def sync_metric_views():
     """MERGE metric view docs into metadata_documents and trigger VS sync."""
     task_id = str(_uuid.uuid4())[:12]
     _mv_sync_tasks[task_id] = {"status": "running"}
-    threading.Thread(target=_mv_sync_worker, args=(task_id,), daemon=True).start()
+    _spawn_with_obo(_mv_sync_worker, args=(task_id,))
     return {"task_id": task_id}
 
 
