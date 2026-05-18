@@ -239,6 +239,26 @@ class TestAutofixFixesBadExprs:
         result = SemanticLayerGenerator._autofix_expr(bad)
         assert "= 'Closed' THEN" in result
 
+    def test_fixes_closed_won_in_case(self):
+        bad = "SUM(CASE WHEN source.stage = Closed Won THEN source.amount_usd ELSE 0 END)"
+        result = SemanticLayerGenerator._autofix_expr(bad)
+        assert "= 'Closed Won' THEN" in result
+
+    def test_fixes_in_clause_with_closed_won_lost(self):
+        bad = "SUM(CASE WHEN source.stage IN (Closed Won, Closed Lost) THEN 1 ELSE 0 END)"
+        result = SemanticLayerGenerator._autofix_expr(bad)
+        assert "'Closed Won'" in result
+        assert "'Closed Lost'" in result
+
+    def test_fixes_win_rate_composite_expression(self):
+        bad = (
+            "SUM(CASE WHEN source.stage = Closed Won THEN 1 ELSE 0 END) * 100.0 "
+            "/ NULLIF(SUM(CASE WHEN source.stage IN (Closed Won, Closed Lost) THEN 1 ELSE 0 END), 0)"
+        )
+        result = SemanticLayerGenerator._autofix_expr(bad)
+        assert "= 'Closed Won' THEN" in result
+        assert "'Closed Lost'" in result
+
 
 class TestFixConcatSeparators:
 

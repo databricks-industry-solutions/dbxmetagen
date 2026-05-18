@@ -714,7 +714,6 @@ class SemanticLayerGenerator:
                 defn_id = str(uuid.uuid4())
                 mv_name = defn.get("name", f"metric_view_{defn_id[:8]}")
                 source = defn.get("source", "")
-                json_str = json.dumps(defn).replace("'", "''")
 
                 with _trace_span("validate_definition") as val_span:
                     errors = self._validate_definition(defn)
@@ -737,15 +736,8 @@ class SemanticLayerGenerator:
 
                 status = "validated" if not errors else "failed"
                 error_str = "; ".join(errors).replace("'", "''") if errors else ""
+                json_str = json.dumps(defn).replace("'", "''")
 
-                # INSERT: One row per AI-generated metric-view candidate into the configured definitions Delta table keyed by
-                # definition_id (UUID); stores metric_view_name, source_table alias, full json_definition (escaped),
-                # source_questions (comma-joined question_ids for this batch), status (validated vs failed),
-                # validation_errors text, NULL genie_space/applied metadata, created_at for audit.
-                # WHY: Persists every generation attempt for review, re-apply, Genie wiring, and lineage of which
-                # questions spawned which definitions without losing failed attempts.
-                # TRADEOFFS: Append-only rows per definition—simple and auditable versus MERGE UPSERT on name
-                # (which would hide history); large json_definition strings inflate table size versus external object store.
                 self.spark.sql(
                     f"""
                     INSERT INTO {fq(self.config.definitions_table)} VALUES (
@@ -799,7 +791,7 @@ RULES:
 1. Create measures that directly support answering the business questions. Do NOT add a generic "row count" or "Record Count" measure unless a question explicitly asks for "how many records" or "count of X". Prefer ratios (e.g. rate, per capita), conditional aggregates (FILTER), and entity-specific KPIs (e.g. readmission rate, avg length of stay) over raw COUNT(*) when the question implies a more specific metric.
 2. Create metric views organized around analytical themes from the questions, not just one-to-one with tables. Multiple metric views from the same table are fine if they address different analytical angles
 3. Only reference columns that exist in the metadata below (Columns in the metadata). Do not invent column names
-4. Use standard SQL aggregate functions: SUM, COUNT, AVG, MIN, MAX, COUNT(DISTINCT ...)
+4. Use standard SQL aggregate functions: SUM, COUNT, AVG, MIN, MAX, COUNT(DISTINCT ...). NEVER use SQL window functions (OVER, PARTITION BY, ROW_NUMBER, LAG, LEAD) in measure expressions -- they are not supported in metric views. For rolling/trailing calculations, use the "window" property on the measure instead
 5. Date/time function rules (Databricks/Spark SQL):
    a. DATE_TRUNC: quote the interval -- DATE_TRUNC('MONTH', col). NEVER use bare DATE_TRUNC(MONTH, col)
    b. EXTRACT: use EXTRACT(HOUR FROM col) for extracting date parts. Do NOT use DATE_PART(HOUR, col)
