@@ -139,6 +139,60 @@ print(f"Dimensions: {[d.get('name') for d in defn.get('dimensions', [])]}")
 # COMMAND ----------
 
 # MAGIC %md
+# MAGIC ## Test: graph-traversed join discovery (3-table chain)
+
+# COMMAND ----------
+
+# Seed a 3-table FK chain: orders -> customers -> regions
+spark.createDataFrame([
+    (1, "US"), (2, "UK"),
+], ["region_id", "region_name"]).write.mode("overwrite").saveAsTable(fq("regions"))
+
+# Add customers -> regions FK to fk_predictions
+spark.sql(f"""
+    INSERT INTO {fq('fk_predictions')} VALUES
+    ('country', 'region_name', '{fq("customers")}', '{fq("regions")}',
+     0.90, CURRENT_TIMESTAMP())
+""")
+
+from dbxmetagen.semantic_layer import SemanticLayerConfig, SemanticLayerGenerator
+
+cfg = SemanticLayerConfig(
+    catalog_name=catalog_name,
+    schema_name=sl_test_schema,
+    max_join_hops=2,
+)
+gen = SemanticLayerGenerator(spark, cfg)
+
+# Test _discover_join_paths from orders: should find customers (hop 1) and regions (hop 2)
+paths = gen._discover_join_paths(fq("orders"))
+print(f"Join paths from orders: {json.dumps(paths, indent=2)}")
+
+assert len(paths) >= 1, f"Expected at least 1 join path from orders, got {len(paths)}"
+# Find the customers join
+cust_join = next((p for p in paths if "customers" in p.get("name", "")), None)
+assert cust_join is not None, f"Expected a customers join in paths: {paths}"
+
+# Verify nested join to regions exists inside the customers join
+nested = cust_join.get("joins", [])
+assert len(nested) >= 1, f"Expected nested joins under customers, got: {cust_join}"
+region_join = next((j for j in nested if "regions" in j.get("name", "")), None)
+assert region_join is not None, f"Expected a regions nested join under customers: {nested}"
+assert "customers." in region_join["on"], f"Nested join 'on' should reference customers alias: {region_join['on']}"
+
+# Test _enrich_joins_from_fk uses the graph-traversed paths
+test_defn = {"name": "test_mv", "source": fq("orders"), "measures": [], "dimensions": []}
+gen._enrich_joins_from_fk(test_defn)
+assert "joins" in test_defn, f"_enrich_joins_from_fk should have added joins: {test_defn}"
+enriched_cust = next((j for j in test_defn["joins"] if "customers" in j.get("name", "")), None)
+assert enriched_cust is not None, "Enriched joins should include customers"
+assert enriched_cust.get("joins"), "Enriched customers join should have nested regions join"
+
+print("PASS: graph-traversed join discovery produces nested joins")
+
+# COMMAND ----------
+
+# MAGIC %md
 # MAGIC ## Cleanup
 
 # COMMAND ----------

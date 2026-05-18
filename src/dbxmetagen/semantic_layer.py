@@ -58,6 +58,7 @@ class SemanticLayerConfig:
     use_two_phase: bool = True
     validate_before_store: bool = True
     max_context_cols_per_table: int = 100
+    max_join_hops: int = 2
 
     def fq(self, table: str) -> str:
         return f"{self.catalog_name}.{self.schema_name}.{table}"
@@ -602,6 +603,27 @@ class SemanticLayerGenerator:
                     f"  {fk['src_table']} + {fk['dst_table']}: src_column={fk['src_column']}, dst_column={fk['dst_column']}"
                 )
 
+        # Graph-traversed join paths (multi-hop, nested snowflake joins)
+        if fk_rows and self.config.max_join_hops > 0:
+            path_sections: list[str] = []
+            for tname in table_names_list:
+                paths = self._discover_join_paths(tname)
+                if paths:
+                    def _render(joins: list[dict], indent: int = 4) -> list[str]:
+                        lines: list[str] = []
+                        for j in joins:
+                            lines.append(" " * indent + f"JOIN {j['source']} AS {j['name']} ON {j['on']}")
+                            if j.get("joins"):
+                                lines.extend(_render(j["joins"], indent + 4))
+                        return lines
+                    path_sections.append(f"  FROM {tname}:")
+                    path_sections.extend(_render(paths))
+            if path_sections:
+                parts.append(
+                    "\nJOIN PATHS (graph-traversed, use nested joins for multi-hop):"
+                )
+                parts.extend(path_sections)
+
         # Inject metric view best-practices reference (loaded from JSON)
         ref = _load_reference("metric_view_reference.json")
         if ref:
@@ -993,45 +1015,71 @@ OUTPUT (one JSON object only, no array, no explanation):"""
     # Validation
     # ------------------------------------------------------------------
 
+    def _discover_join_paths(self, source_table: str, max_hops: int | None = None) -> list[dict]:
+        """Walk FK edges from *source_table* up to *max_hops*, returning nested join specs.
+
+        Returns a list of join dicts compatible with the UC metric view ``joins``
+        schema.  Each dict has ``name``, ``source``, ``on``, and optionally a
+        nested ``joins`` list for multi-hop snowflake patterns.
+        """
+        if max_hops is None:
+            max_hops = self.config.max_join_hops
+        fq = self.config.fq
+        fk_rows = self._safe_collect(
+            f"SELECT src_table, dst_table, src_column, dst_column, final_confidence "
+            f"FROM {fq('fk_predictions')} "
+            f"WHERE final_confidence >= {self.config.fk_confidence_threshold}"
+        )
+        if not fk_rows:
+            return []
+
+        # Build undirected adjacency: table -> [(neighbor, fk_col, pk_col)]
+        adj: dict[str, list[tuple[str, str, str]]] = {}
+        for fk in fk_rows:
+            src_t, dst_t = fk["src_table"], fk["dst_table"]
+            src_c = fk["src_column"].split(".")[-1]
+            dst_c = fk["dst_column"].split(".")[-1]
+            adj.setdefault(src_t, []).append((dst_t, src_c, dst_c))
+            adj.setdefault(dst_t, []).append((src_t, dst_c, src_c))
+
+        def _walk(table: str, depth: int, visited: set) -> list[dict]:
+            if depth >= max_hops:
+                return []
+            joins: list[dict] = []
+            for neighbor, fk_col, pk_col in adj.get(table, []):
+                if neighbor in visited:
+                    continue
+                visited.add(neighbor)
+                alias = neighbor.split(".")[-1]
+                parent_alias = "source" if depth == 0 else table.split(".")[-1]
+                child_joins = _walk(neighbor, depth + 1, visited)
+                entry: dict = {
+                    "name": alias,
+                    "source": neighbor,
+                    "on": f"{parent_alias}.{fk_col} = {alias}.{pk_col}",
+                }
+                if child_joins:
+                    entry["joins"] = child_joins
+                joins.append(entry)
+            return joins
+
+        return _walk(source_table, 0, {source_table})
+
     def _enrich_joins_from_fk(self, defn: dict) -> None:
-        """Auto-add joins block from FK predictions when the definition has none."""
+        """Auto-add joins block from FK predictions when the definition has none.
+
+        Uses graph-traversed join discovery to produce nested (snowflake) joins
+        up to ``max_join_hops`` deep.
+        """
         if defn.get("joins"):
             return
         source = defn.get("source", "")
         if not source:
             return
-        fq = self.config.fq
-        fk_rows = self._safe_collect(
-            f"SELECT src_table, dst_table, src_column, dst_column, final_confidence "
-            f"FROM {fq('fk_predictions')} "
-            f"WHERE final_confidence >= {self.config.fk_confidence_threshold} "
-            f"AND (src_table = '{source}' OR dst_table = '{source}')"
-        )
-        if not fk_rows:
-            return
-        joins = []
-        seen_tables = set()
-        for fk in fk_rows:
-            if fk["src_table"] == source:
-                join_table = fk["dst_table"]
-                fk_col = fk["src_column"].split(".")[-1]
-                pk_col = fk["dst_column"].split(".")[-1]
-            else:
-                join_table = fk["src_table"]
-                fk_col = fk["dst_column"].split(".")[-1]
-                pk_col = fk["src_column"].split(".")[-1]
-            if join_table in seen_tables:
-                continue
-            seen_tables.add(join_table)
-            alias = join_table.split(".")[-1]
-            joins.append({
-                "name": alias,
-                "source": join_table,
-                "on": f"source.{fk_col} = {alias}.{pk_col}",
-            })
+        joins = self._discover_join_paths(source)
         if joins:
             defn["joins"] = joins
-            logger.info("Auto-added %d joins to %s from FK predictions", len(joins), defn.get("name", ""))
+            logger.info("Auto-added %d joins to %s from FK predictions (graph-traversed)", len(joins), defn.get("name", ""))
 
     def _validate_definition(self, defn: dict) -> list[str]:
         """Tier 1: structural validation against information_schema."""
