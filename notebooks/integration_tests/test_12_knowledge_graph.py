@@ -308,7 +308,9 @@ else:
 
 # COMMAND ----------
 
+import json
 print("=" * 60)
 print("ALL KNOWLEDGE GRAPH INTEGRATION TESTS PASSED")
 print("=" * 60)
+dbutils.notebook.exit(json.dumps({"passed": True, "error": None}))
 

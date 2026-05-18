@@ -1,9 +1,9 @@
 # KB-Enriched Parallel Modes: Comments -> KB build -> PI + Domain (with KB comments)
 #
-# Generates comments first, then builds the knowledge base, then runs PI and
-# domain classification in parallel with use_kb_comments=true so that the
-# AI-generated descriptions from the KB enrich the PI/domain prompts even when
-# UC DDL comments haven't been applied.
+# Generates comments first, then builds the table and column knowledge bases
+# in parallel, then runs PI and domain classification in parallel with
+# use_kb_comments=true so that the AI-generated descriptions from the KB
+# enrich the PI/domain prompts even when UC DDL comments haven't been applied.
 
 resources:
   jobs:
@@ -92,12 +92,26 @@ resources:
               catalog_name: "{{job.parameters.catalog_name}}"
               schema_name: "{{job.parameters.schema_name}}"
 
+        - task_key: build_column_kb
+          max_retries: 1
+          min_retry_interval_millis: 600000
+          timeout_seconds: 14400
+          depends_on:
+            - task_key: generate_comments
+          environment_key: default
+          notebook_task:
+            notebook_path: ../../notebooks/build_column_kb.py
+            base_parameters:
+              catalog_name: "{{job.parameters.catalog_name}}"
+              schema_name: "{{job.parameters.schema_name}}"
+
         - task_key: generate_pi
           max_retries: 1
           min_retry_interval_millis: 600000
           timeout_seconds: 86400
           depends_on:
             - task_key: build_knowledge_base
+            - task_key: build_column_kb
           environment_key: default
           notebook_task:
             notebook_path: ../../notebooks/generate_metadata.py
@@ -128,6 +142,7 @@ resources:
           timeout_seconds: 86400
           depends_on:
             - task_key: build_knowledge_base
+            - task_key: build_column_kb
           environment_key: default
           notebook_task:
             notebook_path: ../../notebooks/generate_metadata.py

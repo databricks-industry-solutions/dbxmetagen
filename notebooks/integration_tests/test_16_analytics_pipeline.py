@@ -133,6 +133,8 @@ print(f"[CLEANUP] Dropped test schema: {catalog_name}.{graph_test_schema}")
 
 # COMMAND ----------
 
+import json
 print("=" * 60)
 print("ALL ANALYTICS PIPELINE INTEGRATION TESTS PASSED")
 print("=" * 60)
+dbutils.notebook.exit(json.dumps({"passed": True, "error": None}))

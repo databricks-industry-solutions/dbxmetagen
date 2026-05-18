@@ -271,16 +271,20 @@ class TestMergeSQLGeneration:
         assert "COALESCE(source.domain, target.domain)" in merge_sql
         assert "COALESCE(source.subdomain, target.subdomain)" in merge_sql
 
-    def test_merge_uses_or_for_boolean_flags(self):
-        """Boolean PII/PHI flags should use OR logic.
-        
-        Once a table is marked as having PII, it should stay marked even if
-        a later run doesn't detect PII (could be different columns processed).
-        """
+    def test_merge_uses_review_guarded_or_for_boolean_flags(self):
+        """PII/PHI flags use OR-merge when no review, but freeze when reviewed."""
         merge_sql = self._get_merge_sql()
-        
-        assert "source.has_pii OR target.has_pii" in merge_sql
-        assert "source.has_phi OR target.has_phi" in merge_sql
+
+        assert "(source.has_pii OR target.has_pii)" in merge_sql
+        assert "(source.has_phi OR target.has_phi)" in merge_sql
+
+    def test_merge_preserves_reviewed_has_pii(self):
+        merge_sql = self._get_merge_sql()
+        assert "THEN target.has_pii" in merge_sql
+
+    def test_merge_preserves_reviewed_has_phi(self):
+        merge_sql = self._get_merge_sql()
+        assert "THEN target.has_phi" in merge_sql
 
     def test_merge_uses_greatest_for_updated_at(self):
         """updated_at should use GREATEST to keep the most recent timestamp."""

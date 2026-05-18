@@ -100,6 +100,8 @@ print(f"ensure_endpoint created new endpoint '{TEST_EP_NAME_2}' successfully")
 
 # COMMAND ----------
 
+import json
 w.vector_search_endpoints.delete_endpoint(TEST_EP_NAME_2)
 print(f"Deleted endpoint '{TEST_EP_NAME_2}'")
 print("ALL PASSED")
+dbutils.notebook.exit(json.dumps({"passed": True, "error": None}))

@@ -121,6 +121,16 @@ class TestColumnMergeSQLGeneration:
         assert merge_sql is not None
         assert "THEN target.classification" in merge_sql
 
+    def test_merge_preserves_reviewed_classification_type(self):
+        merge_sql = self._get_merge_sql()
+        assert merge_sql is not None
+        assert "THEN target.classification_type" in merge_sql
+
+    def test_merge_preserves_reviewed_confidence(self):
+        merge_sql = self._get_merge_sql()
+        assert merge_sql is not None
+        assert "THEN target.confidence" in merge_sql
+
 
 class TestBuildColumnKnowledgeBase:
     """Tests for build_column_knowledge_base function."""

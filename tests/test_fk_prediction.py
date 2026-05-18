@@ -595,6 +595,20 @@ class TestSafetyFilters:
         src = inspect.getsource(FKPredictor.write_predictions)
         assert "DELETE FROM" in src or "dst_column" in src
 
+    def test_merge_skips_reviewed_rows(self):
+        """MERGE should not update rows where review_updated_at is set."""
+        src = inspect.getsource(FKPredictor.write_predictions)
+        assert "review_updated_at IS NULL THEN UPDATE" in src
+
+    def test_reverse_delete_protects_reviewed_rows(self):
+        """Reverse-pair DELETE must not remove reviewed FK predictions."""
+        src = inspect.getsource(FKPredictor.write_predictions)
+        assert "review_updated_at IS NULL" in src
+
+    def test_ensure_output_tables_adds_review_updated_at(self):
+        src = inspect.getsource(FKPredictor._ensure_output_tables)
+        assert "review_updated_at" in src
+
     def test_graph_edges_high_conf_filter(self):
         src = inspect.getsource(FKPredictor.write_graph_edges)
         assert "confidence_threshold" in src

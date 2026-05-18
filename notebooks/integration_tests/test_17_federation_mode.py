@@ -80,4 +80,6 @@ print("PASS: Normal mode preserves apply_ddl=True")
 
 # COMMAND ----------
 
+import json
 print("\nAll federation mode integration tests passed!")
+dbutils.notebook.exit(json.dumps({"passed": True, "error": None}))

@@ -601,6 +601,123 @@ resources:
                 package: "nest-asyncio>=1.6.0,<2"
 
         # ----------------------------------------------------------------
+        # Wave F: Analytics pipeline component tests
+        # ----------------------------------------------------------------
+
+        - task_key: test_23_fk_prediction
+          max_retries: 1
+          depends_on:
+            - task_key: test_14_ontology
+          job_cluster_key: integration_test_cluster
+          notebook_task:
+            notebook_path: ../../notebooks/integration_tests/test_23_fk_prediction.py
+            base_parameters:
+              catalog_name: "{{job.parameters.test_catalog}}"
+              test_schema: "{{job.parameters.test_schema}}"
+          libraries:
+            - whl: ../../dist/*.whl
+            - pypi:
+                package: databricks-langchain==0.4.0
+            - pypi:
+                package: openai==1.56.1
+            - pypi:
+                package: openpyxl==3.1.5
+            - pypi:
+                package: deprecated==1.2.13
+            - pypi:
+                package: "nest-asyncio>=1.6.0,<2"
+
+        - task_key: test_24_semantic_layer
+          max_retries: 1
+          depends_on:
+            - task_key: test_14_ontology
+          job_cluster_key: e2e_ml_cluster
+          notebook_task:
+            notebook_path: ../../notebooks/integration_tests/test_24_semantic_layer.py
+            base_parameters:
+              catalog_name: "{{job.parameters.test_catalog}}"
+              test_schema: "{{job.parameters.test_schema}}"
+          libraries:
+            - whl: ../../dist/*.whl
+            - pypi:
+                package: databricks-langchain==0.4.0
+            - pypi:
+                package: openai==1.56.1
+            - pypi:
+                package: openpyxl==3.1.5
+            - pypi:
+                package: deprecated==1.2.13
+            - pypi:
+                package: "nest-asyncio>=1.6.0,<2"
+
+        - task_key: test_25_vector_index_build
+          max_retries: 1
+          depends_on:
+            - task_key: test_14_ontology
+          job_cluster_key: integration_test_cluster
+          notebook_task:
+            notebook_path: ../../notebooks/integration_tests/test_25_vector_index_build.py
+            base_parameters:
+              catalog_name: "{{job.parameters.test_catalog}}"
+              test_schema: "{{job.parameters.test_schema}}"
+          libraries:
+            - whl: ../../dist/*.whl
+            - pypi:
+                package: databricks-langchain==0.4.0
+            - pypi:
+                package: openai==1.56.1
+            - pypi:
+                package: openpyxl==3.1.5
+            - pypi:
+                package: deprecated==1.2.13
+            - pypi:
+                package: "nest-asyncio>=1.6.0,<2"
+
+        - task_key: test_26_data_quality
+          max_retries: 1
+          depends_on:
+            - task_key: test_13_profiling
+          job_cluster_key: integration_test_cluster
+          notebook_task:
+            notebook_path: ../../notebooks/integration_tests/test_26_data_quality.py
+            base_parameters:
+              catalog_name: "{{job.parameters.test_catalog}}"
+              test_schema: "{{job.parameters.test_schema}}"
+          libraries:
+            - whl: ../../dist/*.whl
+            - pypi:
+                package: databricks-langchain==0.4.0
+            - pypi:
+                package: openai==1.56.1
+            - pypi:
+                package: openpyxl==3.1.5
+            - pypi:
+                package: deprecated==1.2.13
+            - pypi:
+                package: "nest-asyncio>=1.6.0,<2"
+
+        - task_key: test_27_serverless_smoke
+          max_retries: 1
+          job_cluster_key: e2e_serverless_cluster
+          notebook_task:
+            notebook_path: ../../notebooks/integration_tests/test_27_serverless_smoke.py
+            base_parameters:
+              catalog_name: "{{job.parameters.test_catalog}}"
+              test_schema: "{{job.parameters.test_schema}}"
+          libraries:
+            - whl: ../../dist/*.whl
+            - pypi:
+                package: databricks-langchain==0.4.0
+            - pypi:
+                package: openai==1.56.1
+            - pypi:
+                package: openpyxl==3.1.5
+            - pypi:
+                package: deprecated==1.2.13
+            - pypi:
+                package: "nest-asyncio>=1.6.0,<2"
+
+        # ----------------------------------------------------------------
         # Wave E: E2E cluster compatibility tests (no deps, fully parallel)
         # Each runs the full pipeline on a different Spark runtime.
         # ----------------------------------------------------------------
