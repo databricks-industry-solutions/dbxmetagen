@@ -22,23 +22,17 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-pi = [
-    "spacy==3.8.7",
-    "presidio-analyzer==2.2.358",
-    "en-core-web-md @ https://github.com/explosion/spacy-models/releases/download/en_core_web_md-3.8.0/en_core_web_md-3.8.0-py3-none-any.whl",
-]
-pi-lg = [
-    "spacy==3.8.7",
-    "presidio-analyzer==2.2.358",
-    "en-core-web-lg @ https://github.com/explosion/spacy-models/releases/download/en_core_web_lg-3.8.0/en_core_web_lg-3.8.0-py3-none-any.whl",
-]
+pi = ["spacy==3.8.7", "presidio-analyzer==2.2.358"]
+pi-lg = ["spacy==3.8.7", "presidio-analyzer==2.2.358"]
 ontology = ["rdflib>=6.3.0", "pyoxigraph>=0.3.0"]
 
-[project.scripts]
-main = "dbxmetagen.main:main"
-
 [dependency-groups]
-dev = ["pre-commit>=4.0.1,<5", "pytest>=8.3.4", "rdflib>=6.3.0", "hypothesis>=6.100.0"]
+dev = [
+    "pre-commit>=4.0.1,<5",
+    "pytest>=8.3.4",
+    "rdflib>=6.3.0",
+    "hypothesis>=6.100.0",
+]
 
 [build-system]
 requires = ["hatchling"]
