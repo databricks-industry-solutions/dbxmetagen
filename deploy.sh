@@ -140,6 +140,7 @@ echo "=== Generating app.yaml from template ==="
 sed -e "s|__CATALOG_NAME__|${catalog_name}|g" \
     -e "s|__SCHEMA_NAME__|${schema_name}|g" \
     -e "s|__ENABLE_OBO__|${enable_obo:-false}|g" \
+    -e "s|__VS_ENDPOINT_NAME__|${vs_endpoint_name:-dbxmetagen-vs}|g" \
     apps/dbxmetagen-app/app/app.yaml.template > apps/dbxmetagen-app/app/app.yaml
 
 echo "=== Generating app resource YAML with permissions ==="
@@ -202,8 +203,12 @@ if [ "$SKIP_APP" = false ]; then
     fi
 
     # --- Check for existing app SP ---
-    APP_NAME=$(grep -m1 'default:.*dbxmetagen' resources/app_variables.yml | awk '{print $2}' | tr -d '"')
-    APP_NAME="${APP_NAME:-dbxmetagen-app}"
+    if [ -n "${app_name:-}" ]; then
+        APP_NAME="${app_name}"
+    else
+        APP_NAME=$(grep -m1 'default:.*dbxmetagen' resources/app_variables.yml | awk '{print $2}' | tr -d '"')
+        APP_NAME="${APP_NAME:-dbxmetagen-app}"
+    fi
     APP_SP_ID=""
 
     echo ""
@@ -266,7 +271,7 @@ rm -rf dist/
 # Stamp version with deploy timestamp so the app platform always reinstalls.
 # DAB does this for job artifacts via dynamic_version; the app gets a direct
 # file copy whose version must differ each deploy to avoid pip skipping it.
-BASE_VERSION=$(python3 -c "import tomllib; v=tomllib.load(open('pyproject.toml','rb'))['project']['version']; print(v.split('+')[0])")
+BASE_VERSION=$(uv run python3 -c "import tomllib; v=tomllib.load(open('pyproject.toml','rb'))['project']['version']; print(v.split('+')[0])")
 DEPLOY_VERSION="${BASE_VERSION}+$(date +%s)"
 sed -i.deploy_bak "s/^version = \"${BASE_VERSION}[^\"]*\"/version = \"${DEPLOY_VERSION}\"/" pyproject.toml
 uv build -q
@@ -299,6 +304,9 @@ if [ -n "${budget_policy_id:-}" ]; then
 fi
 if [ -n "${APP_SP_ID}" ]; then
     DEPLOY_VARS+=(--var "app_service_principal_application_id=${APP_SP_ID}")
+fi
+if [ -n "${app_name:-}" ]; then
+    DEPLOY_VARS+=(--var "app_name=${app_name}")
 fi
 
 databricks bundle validate -t "$TARGET" --profile "$PROFILE"

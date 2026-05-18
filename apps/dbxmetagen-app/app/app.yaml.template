@@ -61,7 +61,7 @@ env:
   - name: SETUP_MCP_SERVERS_JOB_ID
     valueFrom: setup_mcp_servers_job
   - name: VECTOR_SEARCH_ENDPOINT
-    value: "dbxmetagen-vs"
+    value: "__VS_ENDPOINT_NAME__"
   - name: VECTOR_SEARCH_INDEX
     value: "metadata_vs_index"
   - name: LLM_MODEL
