@@ -214,7 +214,7 @@ _CURRENCY_PATTERNS = re.compile(
     re.IGNORECASE,
 )
 _PERCENTAGE_PATTERNS = re.compile(
-    r"(\*\s*1\.0\s*/\s*NULLIF|\*\s*100\.0\s*/\s*NULLIF|THEN\s+1\s+ELSE\s+0\s+END\)\s*\*\s*1\.0)",
+    r"(\*\s*1\.0\s*/\s*NULLIF|100(?:\.0)?\s*\*\s*.*?/\s*NULLIF|THEN\s+1\s+ELSE\s+0\s+END\)\s*\*\s*1\.0)",
     re.IGNORECASE,
 )
 _PERCENTAGE_NAME_PATTERNS = re.compile(r"\brate\b|\bpct\b|\bpercentage\b|\bratio\b", re.IGNORECASE)
@@ -233,6 +233,33 @@ def _infer_format_specs(defn: dict) -> None:
             m["format"] = {"type": "currency", "currency_code": "USD"}
         else:
             m["format"] = {"type": "number"}
+
+
+_PERCENTAGE_PREMULTIPLY = re.compile(
+    r"(?:ROUND\s*\(\s*)?100(?:\.0)?\s*\*\s*", re.IGNORECASE
+)
+
+
+def _fix_percentage_scaling(defn: dict) -> None:
+    """Strip ``100 *`` from percentage-formatted measures to avoid double-multiply.
+
+    Metric view percentage format expects a 0-1 fraction; the rendering layer
+    multiplies by 100. If the expression already does ``100.0 * ratio``, the
+    displayed value is 100x too large (e.g. 1667% instead of 16.7%).
+    """
+    for m in defn.get("measures", []):
+        fmt = m.get("format", {})
+        if fmt.get("type") != "percentage":
+            continue
+        expr = m.get("expr", "")
+        match = _PERCENTAGE_PREMULTIPLY.search(expr)
+        if not match:
+            continue
+        new_expr = expr[:match.start()] + expr[match.end():]
+        if new_expr.rstrip().endswith(")") and "ROUND" in match.group(0).upper():
+            new_expr = re.sub(r",\s*\d+\s*\)\s*$", "", new_expr)
+        m["expr"] = new_expr.strip()
+        logger.info("Stripped 100x multiplier from percentage measure '%s'", m.get("name", "?"))
 
 
 def _infer_display_name(name: str) -> str:
@@ -709,6 +736,7 @@ class SemanticLayerGenerator:
                 # Auto-enrich joins from FK predictions
                 self._enrich_joins_from_fk(defn)
                 _infer_format_specs(defn)
+                _fix_percentage_scaling(defn)
                 _backfill_agent_metadata(defn)
 
                 defn_id = str(uuid.uuid4())
@@ -809,7 +837,7 @@ RULES:
 8. Include joins when RECOMMENDED JOINS exist; when questions ask for breakdowns by attributes in another table (e.g. by customer segment, department), you MUST add a join. Prefer at least one metric view with joins when FKs exist
 9. Every metric view MUST have at least one measure and one dimension
 10. Add a top-level "comment" (1-2 sentences) describing what the metric view measures, its analytical purpose, and which source tables it draws from. Do NOT reference question numbers, KPI numbers, or list which questions are/aren't answerable. Focus on content and lineage (e.g. "Analyzes order revenue by product family and sales representative, joining line items to the product catalog and parent order for discount tracking.")
-11. Every dimension and measure MUST have: "comment" (what it represents), "display_name" (human-readable label, max 255 chars), and "synonyms" (array of 2-5 alternative names for Genie discoverability, e.g. ["revenue", "total sales"] for Total Revenue). Every measure MUST have a "format" object: {{"type": "currency"}} for monetary values, {{"type": "percentage"}} for rates/ratios that are fractions, or {{"type": "number"}} for counts/averages/scores.
+11. Every dimension and measure MUST have: "comment" (what it represents), "display_name" (human-readable label, max 255 chars), and "synonyms" (array of 2-5 alternative names for Genie discoverability, e.g. ["revenue", "total sales"] for Total Revenue). Every measure MUST have a "format" object: {{"type": "currency"}} for monetary values, {{"type": "percentage"}} for rates/ratios that return a 0-to-1 FRACTION (e.g. 0.167 for 16.7%), or {{"type": "number"}} for counts/averages/scores. CRITICAL: percentage-format expressions must NOT multiply by 100 -- the rendering layer does that automatically. Write `SUM(won)/NULLIF(COUNT(*),0)` (returns 0.167), NOT `100.0 * SUM(won)/NULLIF(COUNT(*),0)` (returns 16.7). Also do NOT wrap percentage expressions in ROUND(); the format handles decimal precision.
 12. Use "filter" (optional) for persistent WHERE clauses (e.g. excluding null/test rows)
 13. Use measure-level FILTER for conditional aggregation: SUM(col) FILTER (WHERE condition)
 14. If some questions are not answerable with metrics (e.g. document search, free-text lookups, SOP retrieval), generate metric views for the ones that ARE quantitative/analytical and silently ignore the rest. Do NOT mention skipped or unanswerable questions in the comment field
@@ -896,7 +924,7 @@ RULES:
 - Output a single object with keys: name, source, comment, filter (optional), dimensions, measures, joins.
 - comment: 1-2 sentences on what the view measures and its source lineage. Do NOT reference question numbers, KPI numbers, or list which questions are/aren't answerable.
 - dimensions: array of {{ "name", "expr", "comment", "display_name", "synonyms" }}. "display_name" and "synonyms" (array of 2-5 alternative names) are REQUIRED. expr must be valid Databricks/Spark SQL using ONLY columns from the metadata below.
-- measures: array of {{ "name", "expr", "comment", "display_name", "synonyms", "format" }}. "display_name", "synonyms", and "format" are REQUIRED. format is {{"type": "currency"}}, {{"type": "percentage"}}, or {{"type": "number"}}. Use SUM, COUNT, AVG, FILTER, etc. String literals single-quoted.
+- measures: array of {{ "name", "expr", "comment", "display_name", "synonyms", "format" }}. "display_name", "synonyms", and "format" are REQUIRED. format is {{"type": "currency"}}, {{"type": "percentage"}} (expr must return a 0-to-1 fraction, NOT multiplied by 100), or {{"type": "number"}}. Use SUM, COUNT, AVG, FILTER, etc. String literals single-quoted.
 - joins: use exactly: on: source.<fk_column> = <join_name>.<pk_column>. Keep the same join names and sources as in the plan.
 - Only use column names that appear in the metadata.
 
