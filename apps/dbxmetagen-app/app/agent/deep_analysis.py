@@ -1835,7 +1835,12 @@ def run_deep_analysis_streaming(
     q: queue.Queue = queue.Queue()
     cancel = threading.Event()
 
+    from api_server import _obo_token_var
+    _obo_token = _obo_token_var.get(None)
+
     def _run():
+        if _obo_token:
+            _obo_token_var.set(_obo_token)
         _local.progress_queue = q
         _local.routing_trace = []
         _local.cancel_event = cancel
@@ -1985,7 +1990,12 @@ def run_deep_analysis_compare(
     results: Dict[str, Optional[Dict]] = {"with_graph": None, "without_graph": None}
     errors: Dict[str, Optional[str]] = {"with_graph": None, "without_graph": None}
 
+    from api_server import _obo_token_var
+    _obo_token = _obo_token_var.get(None)
+
     def _run_variant(key: str, skip_graph: bool):
+        if _obo_token:
+            _obo_token_var.set(_obo_token)
         try:
             if progress_queue:
                 progress_queue.put({"stage": f"{key}_running"})

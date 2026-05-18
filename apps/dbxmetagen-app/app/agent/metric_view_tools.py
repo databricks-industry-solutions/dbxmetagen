@@ -66,12 +66,48 @@ def _get_deployed_fqn(row: dict) -> str:
 # Tool: Semantic search over metric view documents
 # ---------------------------------------------------------------------------
 
+def _enrich_candidates_with_definitions(candidates: list[dict]) -> list[dict]:
+    """Batch-fetch metric view definitions for VS candidates and attach measure/dimension names."""
+    mv_names = list({c.get("metric_view_name") for c in candidates if c.get("metric_view_name")})
+    if not mv_names:
+        return candidates
+
+    names_sql = ", ".join(f"'{n.replace(chr(39), chr(39)*2)}'" for n in mv_names[:10])
+    try:
+        result = _run_sql(f"""
+            SELECT metric_view_name, json_definition, deployed_catalog, deployed_schema
+            FROM {_fq('metric_view_definitions')}
+            WHERE metric_view_name IN ({names_sql})
+              AND status IN ('applied', 'validated')
+        """)
+        if not result["success"]:
+            return candidates
+        defn_map = {}
+        for row in result["rows"]:
+            name = row.get("metric_view_name")
+            parsed = _parse_definition(row.get("json_definition", "{}"))
+            parsed["fqn"] = _get_deployed_fqn(row)
+            defn_map[name] = parsed
+    except Exception:
+        return candidates
+
+    for c in candidates:
+        mv = c.get("metric_view_name")
+        if mv and mv in defn_map:
+            d = defn_map[mv]
+            c["measures"] = [m["name"] for m in d.get("measures", [])]
+            c["dimensions"] = [dim["name"] for dim in d.get("dimensions", [])]
+            c["fqn"] = d.get("fqn", "")
+    return candidates
+
+
 @tool
 def search_metric_views(question: str) -> str:
     """Search for metric views relevant to a business question using semantic similarity.
 
     Embeds the question and queries the vector index for metric view documents.
-    Returns candidate metric views with names, source tables, and content summaries.
+    Returns candidate metric views with names, source tables, content summaries,
+    and the measure/dimension names available in each view.
 
     Args:
         question: The business question to find relevant metric views for.
@@ -96,14 +132,24 @@ def search_metric_views(question: str) -> str:
         cols = results.get("manifest", {}).get("columns", [])
         col_names = [c.get("name", f"col{i}") for i, c in enumerate(cols)]
         candidates = []
+        seen_mv_names: set[str] = set()
         for row in results.get("result", {}).get("data_array", []):
             match = dict(zip(col_names, row)) if col_names else {}
+            content = (match.get("content") or "")[:800]
+            # Extract metric view name from node_id (format: "mv::<name>::...")
+            node_id = match.get("node_id", "")
+            mv_name = node_id.split("::")[1] if "::" in str(node_id) else ""
+            if mv_name:
+                seen_mv_names.add(mv_name)
             candidates.append({
                 "doc_type": match.get("doc_type", ""),
-                "content": (match.get("content") or "")[:500],
+                "content": content,
                 "source_table": match.get("table_name", ""),
-                "definition_id": match.get("node_id", ""),
+                "definition_id": node_id,
+                "metric_view_name": mv_name,
             })
+
+        candidates = _enrich_candidates_with_definitions(candidates)
         return json.dumps({"candidates": candidates, "count": len(candidates)})
     except Exception as e:
         return json.dumps({"error": str(e)})
@@ -356,9 +402,111 @@ def _fallback_raw_query(
         return json.dumps({"error": str(e), "sql": sql})
 
 
+# ---------------------------------------------------------------------------
+# Tool: Dimension-only queries (COUNT DISTINCT, unique values, listings)
+# ---------------------------------------------------------------------------
+
+def _fetch_definition_and_source(metric_view_name: str) -> tuple[Optional[dict], Optional[str], Optional[str]]:
+    """Fetch parsed definition, FQN, and source for a metric view. Returns (defn, fqn, error)."""
+    name_esc = metric_view_name.replace("'", "''")
+    result = _run_sql(f"""
+        SELECT metric_view_name, json_definition, deployed_catalog, deployed_schema
+        FROM {_fq('metric_view_definitions')}
+        WHERE metric_view_name = '{name_esc}'
+          AND status IN ('applied', 'validated')
+        ORDER BY created_at DESC LIMIT 1
+    """)
+    if not result["success"] or not result["rows"]:
+        return None, None, f"No applied metric view '{metric_view_name}' found."
+    row = result["rows"][0]
+    return _parse_definition(row.get("json_definition", "{}")), _get_deployed_fqn(row), None
+
+
+@tool
+def metric_view_dimension_query(
+    metric_view_name: str,
+    dimensions: list[str],
+    aggregation: str = "list",
+    filters: Optional[str] = None,
+    limit: int = 100,
+) -> str:
+    """Query dimension values from a metric view WITHOUT aggregating measures.
+
+    Use this for: counting distinct dimension values, listing unique values,
+    or exploring what a dimension contains before writing a full measure query.
+
+    Args:
+        metric_view_name: Name of the metric view to query.
+        dimensions: Dimension names to query (must exist in the definition).
+        aggregation: One of 'list' (distinct values), 'count_distinct' (count per dimension),
+                     or 'unique_values' (distinct values with counts). Default 'list'.
+        filters: Optional SQL WHERE clause.
+        limit: Max rows to return (default 100, max 1000).
+    """
+    if not dimensions:
+        return json.dumps({"error": "At least one dimension is required."})
+    limit = min(max(limit, 1), 1000)
+
+    try:
+        defn, fqn, err = _fetch_definition_and_source(metric_view_name)
+        if err:
+            return json.dumps({"error": err})
+
+        valid_dims = {d["name"] for d in defn.get("dimensions", [])}
+        bad_dims = [d for d in dimensions if d not in valid_dims]
+        if bad_dims:
+            return json.dumps({"error": f"Invalid dimensions: {bad_dims}. Valid: {sorted(valid_dims)}"})
+
+        dim_map = {d["name"]: d["expr"] for d in defn.get("dimensions", [])}
+        source = defn.get("source", fqn)
+        join_clause = ""
+        for j in defn.get("joins", []):
+            join_clause += f" LEFT JOIN {j['source']} AS {j['name']} ON {j['on']}"
+
+        where = ""
+        if defn.get("filter"):
+            where = f" WHERE {defn['filter']}"
+            if filters:
+                where += f" AND ({filters})"
+        elif filters:
+            where = f" WHERE {filters}"
+
+        base_from = f"{source} AS source{join_clause}{where}"
+
+        if aggregation == "count_distinct":
+            select_parts = [f"COUNT(DISTINCT {dim_map.get(d, d)}) AS `{d}_count`" for d in dimensions]
+            sql = f"SELECT {', '.join(select_parts)} FROM {base_from}"
+        elif aggregation == "unique_values":
+            dim_exprs = [f"{dim_map.get(d, d)} AS `{d}`" for d in dimensions]
+            select_parts = dim_exprs + ["COUNT(*) AS `row_count`"]
+            group_refs = [dim_map.get(d, d) for d in dimensions]
+            sql = f"SELECT {', '.join(select_parts)} FROM {base_from} GROUP BY {', '.join(group_refs)} ORDER BY `row_count` DESC LIMIT {limit}"
+        else:  # "list"
+            dim_exprs = [f"DISTINCT {dim_map.get(d, d)} AS `{d}`" for d in dimensions]
+            sql = f"SELECT {', '.join(dim_exprs)} FROM {base_from} LIMIT {limit}"
+
+        err = _validate_sql(sql)
+        if err:
+            return json.dumps({"error": err, "sql": sql})
+
+        query_result = _run_sql(sql)
+        if query_result["success"]:
+            return json.dumps({
+                "sql": sql,
+                "columns": query_result["columns"],
+                "rows": query_result["rows"][:limit],
+                "row_count": query_result["row_count"],
+                "aggregation": aggregation,
+            })
+        return json.dumps({"error": query_result.get("error"), "sql": sql})
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
 METRIC_VIEW_TOOLS = [
     search_metric_views,
     list_metric_views,
     describe_metric_view,
     metric_view_query,
+    metric_view_dimension_query,
 ]

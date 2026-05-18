@@ -91,7 +91,23 @@ class ReactState(TypedDict):
     messages: Annotated[list, add_messages]
 
 
-MAX_SAME_TOOL_CALLS = 2
+MAX_SAME_TOOL_CALLS = 3
+
+_CONFAB_PHRASES = re.compile(
+    r"(?:let me (?:query|check|verify|look up|run)|I(?:'ll| will) (?:query|check|verify|run|look))",
+    re.IGNORECASE,
+)
+
+
+def _current_turn_messages(messages: list) -> list:
+    """Return only messages from the current turn (after the last HumanMessage)."""
+    last_human_idx = -1
+    for i, m in enumerate(messages):
+        if isinstance(m, HumanMessage):
+            last_human_idx = i
+    if last_human_idx < 0:
+        return messages
+    return messages[last_human_idx + 1:]
 
 
 def build_react_graph(
@@ -102,19 +118,24 @@ def build_react_graph(
     """Build a generic ReAct agent graph with tool-round limiting.
 
     Uses dynamic tool rebinding: once a tool has been called MAX_SAME_TOOL_CALLS
-    times, it is removed from the LLM's available tool list so it physically
-    cannot be called again.
+    times *in the current turn*, it is removed from the LLM's available tool list
+    so it physically cannot be called again.
+
+    Includes a confabulation guard: if the agent says it will query/check/verify
+    but produces no tool call, it gets one more chance with an explicit nudge.
     """
     llm = get_llm()
     tools_by_name = {t.name: t for t in tools}
     tool_node = ToolNode(tools)
 
     def _count_tool_rounds(messages) -> int:
-        return sum(1 for m in messages if hasattr(m, "tool_calls") and m.tool_calls)
+        turn = _current_turn_messages(messages)
+        return sum(1 for m in turn if hasattr(m, "tool_calls") and m.tool_calls)
 
     def _tool_call_counts(messages) -> dict:
+        turn = _current_turn_messages(messages)
         counts: dict = {}
-        for m in messages:
+        for m in turn:
             if hasattr(m, "tool_calls") and m.tool_calls:
                 for tc in m.tool_calls:
                     counts[tc["name"]] = counts.get(tc["name"], 0) + 1
@@ -129,7 +150,7 @@ def build_react_graph(
         overused = {n for n, c in tool_counts.items() if c >= MAX_SAME_TOOL_CALLS}
         if overused:
             budget_note += (
-                f"\n\nYou have already called these tools {MAX_SAME_TOOL_CALLS}+ times: "
+                f"\n\nYou have already called these tools {MAX_SAME_TOOL_CALLS}+ times this turn: "
                 f"{', '.join(overused)}. Do NOT call them again -- use what you have."
             )
 
@@ -155,13 +176,33 @@ def build_react_graph(
         last = state["messages"][-1]
         if hasattr(last, "tool_calls") and last.tool_calls:
             return "tools"
+
+        # Confabulation guard: if the agent promised a query but didn't call one,
+        # nudge it once. Track via a sentinel message to avoid infinite loops.
+        content = getattr(last, "content", "") or ""
+        turn_msgs = _current_turn_messages(state["messages"])
+        already_nudged = any(
+            isinstance(m, SystemMessage) and "[CONFAB_GUARD]" in (getattr(m, "content", "") or "")
+            for m in turn_msgs
+        )
+        if not already_nudged and _CONFAB_PHRASES.search(content):
+            logger.info("[confab_guard] Agent promised a query but produced no tool call -- nudging")
+            state["messages"].append(SystemMessage(
+                content=(
+                    "[CONFAB_GUARD] You said you would query or verify something but did not "
+                    "call any tool. Either call the appropriate tool NOW, or explicitly state "
+                    "why you cannot answer with a query."
+                )
+            ))
+            return "agent"
+
         return END
 
     graph = StateGraph(ReactState)
     graph.add_node("agent", agent_node)
     graph.add_node("tools", tool_node)
     graph.add_edge(START, "agent")
-    graph.add_conditional_edges("agent", should_continue, {"tools": "tools", END: END})
+    graph.add_conditional_edges("agent", should_continue, {"tools": "tools", "agent": "agent", END: END})
     graph.add_edge("tools", "agent")
     return graph.compile()
 

@@ -9,7 +9,7 @@ import re
 class GuardrailConfig:
     MAX_INPUT_LENGTH = 10_000
     MAX_AGENT_ITERATIONS = 8
-    MAX_RECURSION_LIMIT = 15
+    MAX_RECURSION_LIMIT = 2 * MAX_AGENT_ITERATIONS + 7  # node steps: 2 per tool round + headroom for confab guard
     MAX_DEEP_ITERATIONS = 3
     MAX_BATCH_RETRIES = 3
     AGENT_TIMEOUT_SECONDS = 90

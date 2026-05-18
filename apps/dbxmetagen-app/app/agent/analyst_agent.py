@@ -232,7 +232,12 @@ def run_analyst_compare(
     results = {"blind": None, "enriched": None}
     errors = {"blind": None, "enriched": None}
 
+    from api_server import _obo_token_var
+    _obo_token = _obo_token_var.get(None)
+
     def _run_mode(mode):
+        if _obo_token:
+            _obo_token_var.set(_obo_token)
         try:
             ensure_mlflow_context()
             progress_queue.put({"stage": f"{mode}_running"})
