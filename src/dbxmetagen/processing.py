@@ -2087,12 +2087,12 @@ def fetch_lineage(
                 f"WHERE table_name = '{table_name}' LIMIT 1"
             ).collect()
             if row:
-                up = row[0]["upstream_tables"] or []
-                down = row[0]["downstream_tables"] or []
+                up = list(row[0]["upstream_tables"] or [])[:limit]
+                down = list(row[0]["downstream_tables"] or [])[:limit]
                 if up or down:
                     result = {
-                        "upstream_tables": list(up),
-                        "downstream_tables": list(down),
+                        "upstream_tables": up,
+                        "downstream_tables": down,
                     }
                     _lineage_cache[table_name] = result
                     return result

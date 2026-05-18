@@ -1685,7 +1685,7 @@ class FKPredictor:
                     LEAST(1.0, GREATEST(0.0, ai_confidence)) as ai_confidence,
                     ai_reasoning, join_rate, join_matched, pk_uniqueness, ri_score,
                     LEAST(1.0, GREATEST(0.0, final_confidence)) as final_confidence,
-                    created_at, updated_at, is_fk
+                    created_at, updated_at, is_fk, review_updated_at
                 FROM (
                     SELECT *, ROW_NUMBER() OVER (
                         PARTITION BY src_column, dst_column
@@ -1760,21 +1760,25 @@ class FKPredictor:
                     SELECT 1 FROM {staging_view} s
                     WHERE s.src_column = {target}.dst_column
                       AND s.dst_column = {target}.src_column
-                )
+                ) AND {target}.review_updated_at IS NULL
             """)
         except Exception:
             pass
-        # MERGE: Upserts the cumulative FK predictions Delta table keyed on (src_column, dst_column) from `_fk_predictions_staging`.
-        # WHY: Persist cross-run scores/refreshed AI output so downstream graph_edges, DDL, and dashboards always read one
-        # authoritative row per column pair rather than replaying ephemeral batch results.
-        # TRADEOFFS: MERGE avoids append-only duplication and avoids full truncate; MATCHED refreshes scalar fields and timestamps.
-        # Cost is proportional to staged row count; alternatives are DELETE+INSERT (two passes, brief inconsistency) or
-        # partition-by-run append with compaction (heavier dedup queries later).
+        # MERGE: Upserts the cumulative FK predictions Delta table keyed on (src_column, dst_column).
+        # Rows with review_updated_at newer than staged updated_at are skipped (steward-reviewed).
+        # Re-running FK prediction produces fresh updated_at that naturally overrides stale reviews.
+        insert_cols = (
+            "src_column, dst_column, src_table, dst_table, "
+            "col_similarity, table_similarity, rule_score, ai_confidence, "
+            "ai_reasoning, join_rate, join_matched, pk_uniqueness, ri_score, "
+            "final_confidence, created_at, updated_at, is_fk"
+        )
+        insert_vals = ", ".join(f"s.{c.strip()}" for c in insert_cols.split(","))
         self.spark.sql(f"""
             MERGE INTO {target} AS t
             USING {staging_view} AS s
             ON t.src_column = s.src_column AND t.dst_column = s.dst_column
-            WHEN MATCHED THEN UPDATE SET
+            WHEN MATCHED AND t.review_updated_at IS NULL THEN UPDATE SET
                 src_table = s.src_table, dst_table = s.dst_table,
                 col_similarity = s.col_similarity, table_similarity = s.table_similarity,
                 rule_score = s.rule_score, ai_confidence = s.ai_confidence,
@@ -1782,7 +1786,8 @@ class FKPredictor:
                 join_matched = s.join_matched, pk_uniqueness = s.pk_uniqueness,
                 ri_score = s.ri_score, final_confidence = s.final_confidence,
                 updated_at = s.updated_at, is_fk = s.is_fk
-            WHEN NOT MATCHED THEN INSERT *
+            WHEN NOT MATCHED THEN INSERT ({insert_cols})
+                VALUES ({insert_vals})
         """)
         logger.info("Merged %d FK predictions", count)
         return count
@@ -1924,7 +1929,7 @@ class FKPredictor:
                 updated_at TIMESTAMP, is_fk BOOLEAN
             ) COMMENT 'Predicted foreign key relationships'
         """)
-        for col_def in ["updated_at TIMESTAMP", "is_fk BOOLEAN"]:
+        for col_def in ["updated_at TIMESTAMP", "is_fk BOOLEAN", "review_updated_at TIMESTAMP"]:
             try:
                 self.spark.sql(f"ALTER TABLE {preds} ADD COLUMNS ({col_def})")
                 logger.info("Added column %s to %s", col_def, preds)

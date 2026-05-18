@@ -329,6 +329,7 @@ class VectorIndexBuilder:
         _join = f"FROM mv_base p LEFT JOIN {_kb} kb ON p.source_table = kb.table_name"
 
         metric_docs = f"""
+            SELECT * FROM (
             WITH mv_base AS (
                 SELECT
                     m.definition_id, m.metric_view_name, m.source_table, m.source_questions,
@@ -336,14 +337,14 @@ class VectorIndexBuilder:
                     FROM_JSON(m.json_definition, 'STRUCT<comment:STRING>').comment AS mv_comment,
                     FROM_JSON(m.json_definition, 'STRUCT<filter:STRING>').filter AS mv_filter,
                     CONCAT_WS('\\n', TRANSFORM(
-                        FROM_JSON(m.json_definition, 'STRUCT<measures:ARRAY<STRUCT<name:STRING,expr:STRING,comment:STRING,synonyms:ARRAY<STRING>,format:STRUCT<type:STRING,currency_code:STRING>>>>').measures,
-                        x -> CONCAT('- ', x.name, ': ', COALESCE(x.comment, ''), ' [', COALESCE(x.expr, ''), ']',
+                        FROM_JSON(m.json_definition, 'STRUCT<measures:ARRAY<STRUCT<name:STRING,display_name:STRING,expr:STRING,comment:STRING,synonyms:ARRAY<STRING>,format:STRUCT<type:STRING,currency_code:STRING>>>>').measures,
+                        x -> CONCAT('- ', x.name, COALESCE(CONCAT(' (', x.display_name, ')'), ''), ': ', COALESCE(x.comment, ''), ' [', COALESCE(x.expr, ''), ']',
                                     CASE WHEN x.format IS NOT NULL THEN CONCAT(' (', x.format.type, COALESCE(CONCAT(' ', x.format.currency_code), ''), ')') ELSE '' END,
                                     CASE WHEN x.synonyms IS NOT NULL THEN CONCAT(' (aka: ', ARRAY_JOIN(x.synonyms, ', '), ')') ELSE '' END)
                     )) AS measure_lines,
                     CONCAT_WS('\\n', TRANSFORM(
-                        FROM_JSON(m.json_definition, 'STRUCT<dimensions:ARRAY<STRUCT<name:STRING,expr:STRING,comment:STRING,synonyms:ARRAY<STRING>>>>').dimensions,
-                        x -> CONCAT('- ', x.name, ': ', COALESCE(x.comment, ''), ' [', COALESCE(x.expr, ''), ']',
+                        FROM_JSON(m.json_definition, 'STRUCT<dimensions:ARRAY<STRUCT<name:STRING,display_name:STRING,expr:STRING,comment:STRING,synonyms:ARRAY<STRING>>>>').dimensions,
+                        x -> CONCAT('- ', x.name, COALESCE(CONCAT(' (', x.display_name, ')'), ''), ': ', COALESCE(x.comment, ''), ' [', COALESCE(x.expr, ''), ']',
                                     CASE WHEN x.synonyms IS NOT NULL THEN CONCAT(' (aka: ', ARRAY_JOIN(x.synonyms, ', '), ')') ELSE '' END)
                     )) AS dimension_lines,
                     CONCAT_WS('\\n', TRANSFORM(
@@ -368,6 +369,7 @@ class VectorIndexBuilder:
             SELECT CONCAT('metric_view_schema::', p.definition_id) AS doc_id, 'metric_view_schema' AS doc_type, p.definition_id AS node_id,
                 CONCAT(p.mv_fqn, '\\nDimensions:\\n', COALESCE(p.dimension_lines, '(none)'), '\\nJoins:\\n', COALESCE(p.join_lines, '(none)'), '\\nFilter: ', COALESCE(p.mv_filter, '(none)')) AS content,
                 {_null_cols} {_join}
+            )
         """
 
         fk_docs = f"""

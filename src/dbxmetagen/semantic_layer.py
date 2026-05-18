@@ -482,12 +482,12 @@ class SemanticLayerGenerator:
                 rel_by_entity.setdefault(src, []).append(f"{rn} -> {dst} ({card})" if card else f"{rn} -> {dst}")
 
         # Entity-specific measure suggestions (dynamic based on column metadata)
-        _TEMPORAL_KW = {"date", "time", "timestamp", "created", "updated", "modified", "dt"}
-        _TEMPORAL_SUFFIXES = {"_at", "_date", "_time", "_ts", "_dt"}
+        _TEMPORAL_KW = {"date", "timestamp", "created", "updated", "modified"}
+        _TEMPORAL_SUFFIXES = {"_at", "_date", "_time", "_ts", "_dt", "_time_ms"}
 
         def _is_temporal_col(col_name: str) -> bool:
             lc = col_name.lower()
-            return any(kw in lc for kw in _TEMPORAL_KW) or any(lc.endswith(s) for s in _TEMPORAL_SUFFIXES)
+            return lc in _TEMPORAL_KW or any(lc.endswith(s) for s in _TEMPORAL_SUFFIXES)
 
         def _entity_suggestion(ent_type: str, ent_tables: list[str]) -> str:
             has_temporal = any(
@@ -586,12 +586,16 @@ class SemanticLayerGenerator:
         return "\n".join(parts)
 
     def _safe_collect(self, sql: str) -> list[dict]:
-        """Run SQL and return list of dicts; returns [] if table doesn't exist."""
+        """Run SQL and return list of dicts; returns [] if table/column doesn't exist."""
         try:
             return [row.asDict() for row in self.spark.sql(sql).collect()]
         except Exception as e:
-            if "TABLE_OR_VIEW_NOT_FOUND" in str(e) or "AnalysisException" in str(e):
-                logger.info("Skipping unavailable table: %s", e)
+            err = str(e)
+            if any(k in err for k in ("TABLE_OR_VIEW_NOT_FOUND", "UNRESOLVED_COLUMN")):
+                logger.info("Skipping unavailable table/column: %s", e)
+                return []
+            if type(e).__name__ == "AnalysisException":
+                logger.info("Skipping SQL analysis error: %s", e)
                 return []
             raise
 

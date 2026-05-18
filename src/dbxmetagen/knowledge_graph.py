@@ -135,6 +135,7 @@ class KnowledgeGraphConfig:
     max_edges_group_size: int = 500
     table_names: list[str] | None = None
     exclude_infrastructure: bool = True
+    incremental: bool = True
 
     @property
     def fully_qualified_source(self) -> str:
@@ -794,35 +795,68 @@ class KnowledgeGraphBuilder:
         
         return {"total_edges": count}
     
+    def _get_changed_nodes(self, staged_df: DataFrame) -> DataFrame:
+        """Filter staged nodes to only those new or changed since last build."""
+        staged_df.createOrReplaceTempView("_staged_nodes_all")
+        try:
+            return self.spark.sql(f"""
+                SELECT s.*
+                FROM _staged_nodes_all s
+                LEFT JOIN {self.config.fully_qualified_nodes} t ON s.id = t.id
+                WHERE t.id IS NULL OR s.updated_at > t.updated_at
+            """)
+        except Exception:
+            logger.warning("Changed-node filter failed, falling back to full set")
+            return staged_df
+
     def run(self) -> Dict[str, Any]:
         """
         Execute the full graph building pipeline.
         
         Uses refresh strategy for edges to properly handle relationship changes.
+        When incremental=True, skips MERGE and edge rebuild if no upstream
+        nodes have changed since the last build.
         
         Returns:
             Dict with execution statistics
         """
-        logger.info("Starting knowledge graph build")
+        logger.info("Starting knowledge graph build (incremental=%s)", self.config.incremental)
         
-        # Create tables
         self.create_nodes_table()
         self.create_edges_table()
         
-        # Build nodes
         nodes_df = self.build_nodes_df()
         node_count = nodes_df.count()
         logger.info(f"Built {node_count} nodes")
+
+        if self.config.incremental:
+            changed = self._get_changed_nodes(nodes_df)
+            changed_count = changed.count()
+            logger.info("Incremental: %d of %d nodes changed", changed_count, node_count)
+            if changed_count == 0:
+                logger.info("No upstream changes — skipping MERGE and edge rebuild")
+                try:
+                    n = self.spark.sql(f"SELECT COUNT(*) AS c FROM {self.config.fully_qualified_nodes}").collect()[0].c
+                except Exception:
+                    n = 0
+                try:
+                    e = self.spark.sql(f"SELECT COUNT(*) AS c FROM {self.config.fully_qualified_edges}").collect()[0].c
+                except Exception:
+                    e = 0
+                return {
+                    "staged_nodes": node_count,
+                    "staged_edges": 0,
+                    "total_nodes": n,
+                    "total_edges": e,
+                    "skipped": True,
+                }
         
-        # Merge nodes (incremental)
         node_stats = self.merge_nodes(nodes_df)
         
-        # Build and refresh edges (delete stale + insert current)
         edges_df = self.build_all_edges_df(nodes_df)
         edge_count = edges_df.count()
         logger.info(f"Built {edge_count} edges")
         
-        # Use refresh_edges to handle relationship changes properly
         edge_stats = self.refresh_edges(edges_df)
         
         logger.info(f"Knowledge graph build complete")
@@ -840,6 +874,7 @@ def build_knowledge_graph(
     catalog_name: str,
     schema_name: str,
     table_names: list[str] | None = None,
+    incremental: bool = True,
 ) -> Dict[str, Any]:
     """
     Convenience function to build the knowledge graph.
@@ -848,6 +883,8 @@ def build_knowledge_graph(
         spark: SparkSession instance
         catalog_name: Catalog name for tables
         schema_name: Schema name for tables
+        incremental: When True, skip MERGE and edge rebuild if no
+            upstream KB rows have changed since the last build
         
     Returns:
         Dict with execution statistics
@@ -856,6 +893,7 @@ def build_knowledge_graph(
         catalog_name=catalog_name,
         schema_name=schema_name,
         table_names=table_names,
+        incremental=incremental,
     )
     builder = KnowledgeGraphBuilder(spark, config)
     return builder.run()
