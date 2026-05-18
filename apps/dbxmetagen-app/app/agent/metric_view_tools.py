@@ -62,6 +62,26 @@ def _get_deployed_fqn(row: dict) -> str:
     return f"{cat}.{sch}.{row.get('metric_view_name', '')}"
 
 
+def _parse_str_list(val) -> list[str]:
+    """Normalize an LLM tool-call argument into a list of strings.
+
+    Handles: list[str], JSON array string, comma-separated string, single value.
+    """
+    if isinstance(val, list):
+        return [str(v).strip() for v in val if str(v).strip()]
+    if not isinstance(val, str):
+        return [str(val)] if val else []
+    val = val.strip()
+    if val.startswith("["):
+        try:
+            parsed = json.loads(val)
+            if isinstance(parsed, list):
+                return [str(v).strip() for v in parsed if str(v).strip()]
+        except (json.JSONDecodeError, TypeError):
+            pass
+    return [v.strip() for v in val.split(",") if v.strip()]
+
+
 # ---------------------------------------------------------------------------
 # Tool: Semantic search over metric view documents
 # ---------------------------------------------------------------------------
@@ -265,8 +285,8 @@ def _validate_sql(query: str) -> Optional[str]:
 @tool
 def metric_view_query(
     metric_view_name: str,
-    measures: list[str],
-    dimensions: list[str],
+    measures: str,
+    dimensions: str = "",
     filters: Optional[str] = None,
     order_by: Optional[str] = None,
     limit: int = 100,
@@ -278,12 +298,14 @@ def metric_view_query(
 
     Args:
         metric_view_name: Name of the metric view to query.
-        measures: List of measure names to aggregate (must exist in the definition).
-        dimensions: List of dimension names to group by (must exist in the definition).
+        measures: Comma-separated measure names to aggregate (e.g. "total_revenue, order_count").
+        dimensions: Comma-separated dimension names to group by (e.g. "region, quarter"). Empty string for no grouping.
         filters: Optional SQL WHERE clause (e.g. "region = 'West' AND year >= 2023").
         order_by: Optional ORDER BY clause (e.g. "total_revenue DESC").
         limit: Max rows to return (default 100, max 1000).
     """
+    measures = _parse_str_list(measures)
+    dimensions = _parse_str_list(dimensions)
     if not measures:
         return json.dumps({"error": "At least one measure is required."})
     limit = min(max(limit, 1), 1000)
@@ -425,7 +447,7 @@ def _fetch_definition_and_source(metric_view_name: str) -> tuple[Optional[dict],
 @tool
 def metric_view_dimension_query(
     metric_view_name: str,
-    dimensions: list[str],
+    dimensions: str,
     aggregation: str = "list",
     filters: Optional[str] = None,
     limit: int = 100,
@@ -437,12 +459,13 @@ def metric_view_dimension_query(
 
     Args:
         metric_view_name: Name of the metric view to query.
-        dimensions: Dimension names to query (must exist in the definition).
+        dimensions: Comma-separated dimension names to query (e.g. "region, quarter").
         aggregation: One of 'list' (distinct values), 'count_distinct' (count per dimension),
                      or 'unique_values' (distinct values with counts). Default 'list'.
         filters: Optional SQL WHERE clause.
         limit: Max rows to return (default 100, max 1000).
     """
+    dimensions = _parse_str_list(dimensions)
     if not dimensions:
         return json.dumps({"error": "At least one dimension is required."})
     limit = min(max(limit, 1), 1000)
