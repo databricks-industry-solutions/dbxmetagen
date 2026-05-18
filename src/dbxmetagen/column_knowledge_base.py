@@ -175,7 +175,7 @@ class ColumnKnowledgeBaseBuilder:
             
             if dfs:
                 from functools import reduce
-                return reduce(DataFrame.union, dfs)
+                return reduce(lambda a, b: a.union(b), dfs)
             else:
                 return self.spark.createDataFrame([], "table_name STRING, column_name STRING, data_type STRING, nullable BOOLEAN")
         except Exception as e:
@@ -234,9 +234,9 @@ class ColumnKnowledgeBaseBuilder:
         """Merge staged updates into the target table."""
         staged_df.createOrReplaceTempView("staged_column_updates")
         
-        # MERGE: Upserts column KB from `staged_column_updates` on `column_id`; MATCH COALESCEs identity/type fields, CASE-preserves comment and classification when target.review_updated_at beats source.updated_at, GREATEST on updated_at; NOT MATCHED inserts full row.
+        # MERGE: Upserts column KB from `staged_column_updates` on `column_id`; MATCH COALESCEs identity/type fields, CASE-preserves comment, classification, classification_type, and confidence when target.review_updated_at beats source.updated_at, GREATEST on updated_at; NOT MATCHED inserts full row.
         # WHY: Durable per-column KB (log + information_schema) for ontology/graph/UI with the same steward-win pattern as table KB on re-run.
-        # TRADEOFFS: Retrying MERGE helps concurrent writers vs overwrite; review CASE omits classification_type/confidence so those can still shift while steward-locked text stays—simpler than row-level freeze but asymmetric.
+        # TRADEOFFS: Retrying MERGE helps concurrent writers vs overwrite; all steward-editable fields are now frozen together when review is newer.
         merge_sql = f"""
         MERGE INTO {self.config.fully_qualified_target} AS target
         USING staged_column_updates AS source
@@ -255,8 +255,12 @@ class ColumnKnowledgeBaseBuilder:
             target.classification = CASE
                 WHEN target.review_updated_at IS NOT NULL AND target.review_updated_at > source.updated_at
                 THEN target.classification ELSE COALESCE(source.classification, target.classification) END,
-            target.classification_type = COALESCE(source.classification_type, target.classification_type),
-            target.confidence = COALESCE(source.confidence, target.confidence),
+            target.classification_type = CASE
+                WHEN target.review_updated_at IS NOT NULL AND target.review_updated_at > source.updated_at
+                THEN target.classification_type ELSE COALESCE(source.classification_type, target.classification_type) END,
+            target.confidence = CASE
+                WHEN target.review_updated_at IS NOT NULL AND target.review_updated_at > source.updated_at
+                THEN target.confidence ELSE COALESCE(source.confidence, target.confidence) END,
             target.nullable = COALESCE(source.nullable, target.nullable),
             target.updated_at = GREATEST(source.updated_at, target.updated_at)
 
@@ -357,7 +361,7 @@ class ColumnKnowledgeBaseBuilder:
             return 0
 
         from functools import reduce
-        combined = reduce(DataFrame.union, all_dfs)
+        combined = reduce(lambda a, b: a.union(b), all_dfs)
         combined.createOrReplaceTempView("_ckb_bootstrap_src")
 
         # MERGE: `WHEN NOT MATCHED THEN INSERT *` into column KB from `_ckb_bootstrap_src` on `column_id`, filling from `information_schema.columns` plus UC comments, types, nullable, null AI fields.

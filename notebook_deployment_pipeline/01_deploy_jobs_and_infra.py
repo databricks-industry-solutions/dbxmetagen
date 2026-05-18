@@ -27,7 +27,7 @@ dbutils.widgets.text("repo_path", "", "Repo root (e.g. /Workspace/Repos/<user>/d
 dbutils.widgets.text("volume_path", "", "Volume for wheel (e.g. /Volumes/cat/sch/vol)")
 dbutils.widgets.text("app_name", "dbxmetagen-app", "App Name")
 dbutils.widgets.text("node_type", "i3.2xlarge", "Node Type")
-dbutils.widgets.text("spark_version", "17.3.x-cpu-ml-scala2.13", "Spark Version")
+dbutils.widgets.text("spark_version", "17.3.x-scala2.13", "Spark Version (unused, kept for compat)")
 dbutils.widgets.text("vs_endpoint_name", "dbxmetagen-vs", "Vector Search Endpoint")
 dbutils.widgets.text("policy_id", "", "Cluster Policy ID (optional)")
 dbutils.widgets.text("budget_policy_id", "", "Serverless Budget Policy ID (optional)")
@@ -162,7 +162,6 @@ if mode == "setup":
     print(f"Wheel for jobs: {whl_volume_path}")
 
 whl_lib = compute.Library(whl=whl_volume_path) if whl_volume_path else None
-graphframes_lib = compute.Library(pypi=compute.PythonPyPiLibrary(package="graphframes"))
 
 def make_cluster(key, min_w=2, max_w=4, num_w=None, single_node=False):
     spec = compute.ClusterSpec(
@@ -236,9 +235,9 @@ def build_metadata_generator_job():
         jp("model", var("model", "databricks-claude-sonnet-4-6")),
     ]
     base = {p.name: f"{{{{job.parameters.{p.name}}}}}" for p in params}
-    tasks = [nb_task("generate_metadata", "generate_metadata.py", base)]
+    tasks = [serverless_task("generate_metadata", "generate_metadata.py", base)]
     return (f"{app_name}_metadata_job", tasks, params,
-            [make_cluster("cluster")], "metadata_generator_job", 5)
+            None, "metadata_generator_job", 5)
 
 # COMMAND ----------
 
@@ -282,19 +281,19 @@ def build_parallel_modes_job():
         "model": ref("model"),
     }
     tasks = [
-        nb_task("generate_comments", "generate_metadata.py",
+        serverless_task("generate_comments", "generate_metadata.py",
                 {**common, "mode": "comment"}),
-        nb_task("generate_pi", "generate_metadata.py",
+        serverless_task("generate_pi", "generate_metadata.py",
                 {**common, "mode": "pi", "include_existing_table_comment": "true",
                  "use_kb_comments": ref("use_kb_comments")},
                 deps=["generate_comments"]),
-        nb_task("generate_domain", "generate_metadata.py",
+        serverless_task("generate_domain", "generate_metadata.py",
                 {**common, "mode": "domain", "include_existing_table_comment": "true",
                  "use_kb_comments": ref("use_kb_comments")},
                 deps=["generate_comments"]),
     ]
     return (f"{app_name}_parallel_modes_job", tasks, params,
-            [make_cluster("cluster")], "metadata_parallel_modes_job", 5)
+            None, "metadata_parallel_modes_job", 5)
 
 # COMMAND ----------
 
@@ -328,47 +327,46 @@ def build_analytics_pipeline_job():
     cat_sch_tbl = {**cat_sch, "table_names": ref("table_names")}
 
     tasks = [
-        nb_task("build_knowledge_base", "build_knowledge_base.py", cat_sch_tbl),
-        nb_task("build_column_kb", "build_column_kb.py", cat_sch_tbl),
-        nb_task("build_schema_kb", "build_schema_kb.py",
+        serverless_task("build_knowledge_base", "build_knowledge_base.py", cat_sch_tbl),
+        serverless_task("build_column_kb", "build_column_kb.py", cat_sch_tbl),
+        serverless_task("build_schema_kb", "build_schema_kb.py",
                 {**cat_sch_tbl, "generate_comments": ref("generate_comments")},
                 deps=["build_knowledge_base"]),
-        nb_task("extract_extended_metadata", "extract_extended_metadata.py",
+        serverless_task("extract_extended_metadata", "extract_extended_metadata.py",
                 {**cat_sch_tbl, "incremental": ref("incremental")},
                 deps=["build_knowledge_base"]),
-        nb_task("build_knowledge_graph", "build_knowledge_graph.py", cat_sch_tbl,
-                deps=["build_column_kb", "build_schema_kb", "extract_extended_metadata"],
-                extra_libs=[graphframes_lib]),
-        nb_task("run_profiling", "run_profiling.py",
+        serverless_task("build_knowledge_graph", "build_knowledge_graph.py", cat_sch_tbl,
+                deps=["build_column_kb", "build_schema_kb", "extract_extended_metadata"]),
+        serverless_task("run_profiling", "run_profiling.py",
                 {**cat_sch_tbl, "incremental": ref("incremental")},
                 deps=["build_knowledge_base"]),
-        nb_task("build_ontology_vector_index", "build_ontology_vector_index.py",
+        serverless_task("build_ontology_vector_index", "build_ontology_vector_index.py",
                 {**cat_sch, "ontology_bundle": ref("ontology_bundle"),
                  "endpoint_name": "dbxmetagen-vs"},
                 deps=["build_knowledge_base"]),
-        nb_task("build_ontology", "build_ontology.py",
+        serverless_task("build_ontology", "build_ontology.py",
                 {**cat_sch_tbl, "ontology_bundle": ref("ontology_bundle"),
                  "domain_config_path": ref("domain_config_path"),
                  "incremental": ref("incremental"), "model": ref("model"),
                  "apply_ddl": ref("apply_ddl")},
                 deps=["build_knowledge_base", "build_column_kb", "build_ontology_vector_index"]),
-        nb_task("generate_embeddings", "generate_embeddings.py", cat_sch,
+        serverless_task("generate_embeddings", "generate_embeddings.py", cat_sch,
                 deps=["build_knowledge_graph", "build_ontology"]),
-        nb_task("build_similarity_edges", "build_similarity_edges.py",
+        serverless_task("build_similarity_edges", "build_similarity_edges.py",
                 {**cat_sch, "similarity_threshold": ref("similarity_threshold"),
                  "max_edges_per_node": ref("max_edges_per_node"),
                  "use_ann_similarity": ref("use_ann_similarity")},
                 deps=["generate_embeddings"]),
-        nb_task("cluster_analysis", "cluster_analysis.py",
+        serverless_task("cluster_analysis", "cluster_analysis.py",
                 {**cat_sch, "min_k": ref("cluster_min_k"),
                  "max_k": ref("cluster_max_k"),
                  "node_types": ref("cluster_node_types")},
                 deps=["generate_embeddings"]),
-        nb_task("compute_data_quality", "compute_data_quality.py", cat_sch,
+        serverless_task("compute_data_quality", "compute_data_quality.py", cat_sch,
                 deps=["run_profiling"]),
-        nb_task("validate_ontology", "validate_ontology.py", cat_sch,
+        serverless_task("validate_ontology", "validate_ontology.py", cat_sch,
                 deps=["build_ontology"]),
-        nb_task("predict_foreign_keys", "predict_foreign_keys.py",
+        serverless_task("predict_foreign_keys", "predict_foreign_keys.py",
                 {**cat_sch, "column_similarity_threshold": "0.75",
                  "table_similarity_threshold": "0.7", "confidence_threshold": "0.7",
                  "apply_ddl": ref("apply_ddl"), "dry_run": "false",
@@ -377,22 +375,22 @@ def build_analytics_pipeline_job():
                  "rule_score_min_for_ai": ref("rule_score_min_for_ai"),
                  "max_candidates_per_table_pair": ref("max_candidates_per_table_pair")},
                 deps=["build_similarity_edges"]),
-        nb_task("refresh_ontology_edges", "refresh_ontology_edges.py",
+        serverless_task("refresh_ontology_edges", "refresh_ontology_edges.py",
                 {**cat_sch_tbl, "ontology_bundle": ref("ontology_bundle"),
                  "model": ref("model")},
                 deps=["predict_foreign_keys", "build_ontology"]),
-        nb_task("final_analysis", "final_analysis.py", cat_sch,
+        serverless_task("final_analysis", "final_analysis.py", cat_sch,
                 deps=["refresh_ontology_edges", "cluster_analysis",
                       "compute_data_quality", "validate_ontology"]),
-        nb_task("build_community_summaries", "build_community_summaries.py",
+        serverless_task("build_community_summaries", "build_community_summaries.py",
                 {**cat_sch, "model": ref("model")},
                 deps=["final_analysis"]),
-        nb_task("build_vector_index", "build_vector_index.py",
+        serverless_task("build_vector_index", "build_vector_index.py",
                 {**cat_sch, "endpoint_name": "dbxmetagen-vs"},
                 deps=["final_analysis", "build_community_summaries"]),
     ]
     return (f"{app_name}_full_analytics_pipeline", tasks, params,
-            [make_cluster("cluster")], "full_analytics_pipeline_job", 1)
+            None, "full_analytics_pipeline_job", 1)
 
 # COMMAND ----------
 
@@ -406,12 +404,12 @@ def build_kb_job():
     ref = lambda n: f"{{{{job.parameters.{n}}}}}"
     cat_sch = {"catalog_name": ref("catalog_name"), "schema_name": ref("schema_name")}
     tasks = [
-        nb_task("build_knowledge_base", "build_knowledge_base.py", cat_sch),
-        nb_task("build_knowledge_graph", "build_knowledge_graph.py", cat_sch,
-                deps=["build_knowledge_base"], extra_libs=[graphframes_lib]),
+        serverless_task("build_knowledge_base", "build_knowledge_base.py", cat_sch),
+        serverless_task("build_knowledge_graph", "build_knowledge_graph.py", cat_sch,
+                deps=["build_knowledge_base"]),
     ]
     return (f"{app_name}_knowledge_base_job", tasks, params,
-            [make_cluster("cluster", num_w=1)], "knowledge_base_builder_job", 1)
+            None, "knowledge_base_builder_job", 1)
 
 # COMMAND ----------
 
@@ -428,14 +426,14 @@ def build_sync_ddl_job():
     ]
     ref = lambda n: f"{{{{job.parameters.{n}}}}}"
     tasks = [
-        nb_task("sync_reviewed_ddl", "sync_reviewed_ddl.py", {
+        serverless_task("sync_reviewed_ddl", "sync_reviewed_ddl.py", {
             "reviewed_file_name": ref("reviewed_file_name"),
             "mode": ref("mode"),
             "current_user_override": ref("current_user_override"),
         }),
     ]
     return (f"{app_name}_sync_ddl_job", tasks, params,
-            [make_cluster("cluster", min_w=1, max_w=2)], "sync_ddl_job", 1)
+            None, "sync_ddl_job", 1)
 
 # COMMAND ----------
 
@@ -546,10 +544,10 @@ def build_setup_mcp_servers_job():
         jp("vs_index_name", "metadata_vs_index"), jp("drop_existing", "false"),
     ]
     ref = lambda n: f"{{{{job.parameters.{n}}}}}"
-    tasks = [nb_task("setup_mcp", "setup_mcp_servers.py",
+    tasks = [serverless_task("setup_mcp", "setup_mcp_servers.py",
                      {p.name: ref(p.name) for p in params})]
     return (f"{app_name}_setup_mcp_servers", tasks, params,
-            [make_cluster("cluster", single_node=True)], "setup_mcp_servers_job", 1)
+            None, "setup_mcp_servers_job", 1)
 
 # COMMAND ----------
 
@@ -587,16 +585,12 @@ else:
 
     for builder in ESSENTIAL_JOBS:
         name, tasks, params, clusters, res_name, max_concurrent = builder()
-        is_serverless = clusters is None
         settings = jobs.JobSettings(
             name=name, tasks=tasks, parameters=params,
-            max_concurrent_runs=max_concurrent)
-        if is_serverless:
-            settings.environments = serverless_env
-            if budget_policy_id:
-                settings.budget_policy_id = budget_policy_id
-        else:
-            settings.job_clusters = clusters
+            max_concurrent_runs=max_concurrent,
+            environments=serverless_env)
+        if budget_policy_id:
+            settings.budget_policy_id = budget_policy_id
         if name in existing_jobs:
             jid = existing_jobs[name].job_id
             w.jobs.reset(job_id=jid, new_settings=settings)

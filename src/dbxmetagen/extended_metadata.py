@@ -129,7 +129,7 @@ class ExtendedMetadataBuilder:
         
         if all_dfs:
             from functools import reduce
-            combined = reduce(DataFrame.union, all_dfs)
+            combined = reduce(lambda a, b: a.union(b), all_dfs)
             # Filter to only tables in our list
             tables_df = self.spark.createDataFrame([(t,) for t in tables], ["filter_table"])
             return combined.join(tables_df, combined.table_name == tables_df.filter_table, "inner").drop("filter_table")
@@ -162,7 +162,7 @@ class ExtendedMetadataBuilder:
         
         if all_dfs:
             from functools import reduce
-            combined = reduce(DataFrame.union, all_dfs)
+            combined = reduce(lambda a, b: a.union(b), all_dfs)
             tables_df = self.spark.createDataFrame([(t,) for t in tables], ["filter_table"])
             return combined.join(tables_df, combined.table_name == tables_df.filter_table, "inner").drop("filter_table")
         
@@ -276,7 +276,7 @@ class ExtendedMetadataBuilder:
 
         if all_dfs:
             from functools import reduce
-            combined = reduce(DataFrame.union, all_dfs)
+            combined = reduce(lambda a, b: a.union(b), all_dfs)
 
             pk_df = (
                 combined

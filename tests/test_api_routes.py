@@ -144,3 +144,101 @@ class TestJobParamMerge:
         original = dict(params)
         params.update({})
         assert params == original
+
+
+# ---------------------------------------------------------------------------
+# _compute_mv_health -- metric view quality scoring
+# ---------------------------------------------------------------------------
+class TestComputeMvHealth:
+    """Tests for the metric view health scoring function."""
+
+    def _minimal_defn(self, **overrides):
+        base = {
+            "source": "cat.sch.t",
+            "comment": "A metric view",
+            "dimensions": [
+                {"name": "d1", "expr": "col1", "comment": "dim 1"},
+                {"name": "d2", "expr": "col2", "comment": "dim 2"},
+                {"name": "d3", "expr": "col3", "comment": "dim 3"},
+            ],
+            "measures": [
+                {"name": "m1", "expr": "SUM(x)", "comment": "measure 1"},
+                {"name": "m2", "expr": "COUNT(*)", "comment": "measure 2"},
+                {"name": "m3", "expr": "AVG(y)", "comment": "measure 3"},
+            ],
+        }
+        base.update(overrides)
+        return base
+
+    def test_perfect_score(self):
+        defn = self._minimal_defn()
+        defn["measures"][0]["synonyms"] = ["total x"]
+        defn["measures"][0]["expr"] = "SUM(x) FILTER(WHERE active)"
+        result = api_server._compute_mv_health(defn)
+        assert result["score"] == result["max"] == 10
+
+    def test_no_measures_scores_zero_for_measures(self):
+        defn = self._minimal_defn(measures=[])
+        result = api_server._compute_mv_health(defn)
+        assert result["dimensions"]["measures"]["score"] == 0
+        high_issues = [i for i in result["issues"] if i["severity"] == "high"]
+        assert any("No measures" in i["message"] for i in high_issues)
+
+    def test_no_dimensions_scores_zero_for_dims(self):
+        defn = self._minimal_defn(dimensions=[])
+        result = api_server._compute_mv_health(defn)
+        assert result["dimensions"]["dimensions"]["score"] == 0
+
+    def test_no_comment_penalized(self):
+        defn = self._minimal_defn(comment="")
+        result = api_server._compute_mv_health(defn)
+        assert result["dimensions"]["metadata"]["score"] < 2
+        assert any("No top-level comment" in i["message"] for i in result["issues"])
+
+    def test_uncommented_measures_flagged(self):
+        defn = self._minimal_defn()
+        defn["measures"][0]["comment"] = ""
+        result = api_server._compute_mv_health(defn)
+        assert result["dimensions"]["measures"]["score"] == 1
+
+    def test_synonyms_boost_richness(self):
+        defn = self._minimal_defn()
+        result_no_syn = api_server._compute_mv_health(defn)
+        defn["dimensions"][0]["synonyms"] = ["alt name"]
+        result_syn = api_server._compute_mv_health(defn)
+        assert result_syn["dimensions"]["richness"]["score"] > result_no_syn["dimensions"]["richness"]["score"]
+
+    def test_unquoted_literal_detected(self):
+        defn = self._minimal_defn()
+        defn["measures"][0]["expr"] = "CASE WHEN status = Active THEN Active Status ELSE Inactive END"
+        result = api_server._compute_mv_health(defn)
+        lit_issues = [i for i in result["issues"] if "Unquoted" in i.get("message", "")]
+        assert len(lit_issues) >= 1
+
+    def test_score_within_range(self):
+        defn = self._minimal_defn()
+        result = api_server._compute_mv_health(defn)
+        assert 0 <= result["score"] <= result["max"]
+
+
+# ---------------------------------------------------------------------------
+# HITL review endpoints exist
+# ---------------------------------------------------------------------------
+class TestHITLEndpointsExist:
+    """Verify that HITL review endpoints are defined on the api_server module."""
+
+    def test_patch_fk_predictions_exists(self):
+        assert hasattr(api_server, "patch_fk_prediction")
+
+    def test_reset_review_exists(self):
+        assert hasattr(api_server, "reset_review")
+
+    def test_fk_review_body_has_is_fk(self):
+        body_cls = api_server.FKReviewBody
+        assert "is_fk" in body_cls.__annotations__
+        assert "src_column" in body_cls.__annotations__
+
+    def test_reset_review_body_has_level(self):
+        body_cls = api_server.ResetReviewBody
+        assert "level" in body_cls.__annotations__
+        assert "table_name" in body_cls.__annotations__

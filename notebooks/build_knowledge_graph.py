@@ -2,11 +2,10 @@
 # MAGIC %md
 # MAGIC # Build Knowledge Graph
 # MAGIC 
-# MAGIC Transforms knowledge bases into GraphFrames-compatible node and edge tables
+# MAGIC Transforms knowledge bases into node and edge Delta tables
 # MAGIC for relationship analysis between tables, columns, and schemas.
 # MAGIC
 # MAGIC ## Requirements
-# MAGIC - **ML Runtime Required**: GraphFrames requires JVM dependencies not available on serverless
 # MAGIC - Depends on `table_knowledge_base`, `column_knowledge_base`, and `schema_knowledge_base`
 # MAGIC
 # MAGIC ## Node Types Created
@@ -33,7 +32,7 @@
 # MAGIC %md
 # MAGIC ## Setup
 # MAGIC 
-# MAGIC Libraries (graphframes, dbxmetagen wheel) are installed via job cluster configuration.
+# MAGIC The dbxmetagen wheel is installed via the serverless environment configuration.
 
 # COMMAND ----------
 # MAGIC %md
@@ -207,136 +206,4 @@ containment_stats = spark.sql(f"""
 """)
 containment_stats.display()
 
-# COMMAND ----------
-# MAGIC %md
-# MAGIC ## Example GraphFrames Queries
-# MAGIC 
-# MAGIC Below are example queries you can run once the graph is built.
-
-# COMMAND ----------
-
-# Create GraphFrame
-from graphframes import GraphFrame
-
-nodes = spark.table(f"{catalog_name}.{schema_name}.graph_nodes")
-edges = spark.table(f"{catalog_name}.{schema_name}.graph_edges")
-
-g = GraphFrame(nodes, edges)
-
-print(f"GraphFrame created with {g.vertices.count()} vertices and {g.edges.count()} edges")
-
-# COMMAND ----------
-# MAGIC %md
-# MAGIC ### Query 1: Find tables in the same domain
-
-# COMMAND ----------
-
-# Find all domain relationships
-same_domain = g.edges.filter(F.col("relationship") == "same_domain")
-print(f"Found {same_domain.count()} same-domain relationships")
-
-# Show sample
-same_domain.limit(10).display()
-
-# COMMAND ----------
-# MAGIC %md
-# MAGIC ### Query 2: Find tables connected by security level
-
-# COMMAND ----------
-
-# PHI nodes connected to other PHI nodes
-phi_connections = g.find("(a)-[e]->(b)").filter(
-    (F.col("a.security_level") == "PHI") & 
-    (F.col("b.security_level") == "PHI") &
-    (F.col("e.relationship") == "same_security_level")
-)
-
-print(f"Found {phi_connections.count()} PHI-to-PHI connections")
-phi_connections.select("a.id", "a.node_type", "b.id", "b.node_type", "e.relationship").limit(10).display()
-
-# COMMAND ----------
-# MAGIC %md
-# MAGIC ### Query 3: Motif Finding - Tables bridging domains
-
-# COMMAND ----------
-
-# Find tables that connect different domains through schema relationships
-# Pattern: A and B in same schema, B and C in same domain
-bridging = g.find("(a)-[e1]->(b); (b)-[e2]->(c)").filter(
-    (F.col("e1.relationship") == "same_schema") & 
-    (F.col("e2.relationship") == "same_domain")
-).select(
-    F.col("a.table_name").alias("table_a"),
-    F.col("b.table_name").alias("bridge_table"),
-    F.col("c.table_name").alias("table_c"),
-    F.col("a.domain").alias("domain_a"),
-    F.col("c.domain").alias("domain_c")
-).filter(
-    F.col("domain_a") != F.col("domain_c")  # Different domains
-)
-
-if bridging.count() > 0:
-    print("Tables that bridge different domains:")
-    bridging.limit(10).display()
-else:
-    print("No cross-domain bridges found (tables may all be in same domain)")
-
-# COMMAND ----------
-# MAGIC %md
-# MAGIC ### Query 4: Most Connected Tables (Degree Centrality)
-
-# COMMAND ----------
-
-# Count connections per table
-degrees = g.degrees.orderBy("degree", ascending=False)
-print("Most connected tables:")
-degrees.limit(20).display()
-
-# COMMAND ----------
-# MAGIC %md
-# MAGIC ### Query 5: Connected Components (Table Clusters)
-
-# COMMAND ----------
-
-# Set checkpoint directory (required for connected components algorithm)
-# Note: setCheckpointDir requires DBFS paths, not UC Volume paths
-# Using DBFS with unique path per catalog/schema to avoid conflicts
-checkpoint_dir = f"dbfs:/tmp/graphframes_checkpoints/{catalog_name}/{schema_name}"
-spark.sparkContext.setCheckpointDir(checkpoint_dir)
-print(f"Checkpoint directory set to: {checkpoint_dir}")
-
-# Find clusters of related tables
-components = g.connectedComponents()
-
-# Count tables per component
-cluster_sizes = components.groupBy("component").count().orderBy("count", ascending=False)
-print(f"Found {cluster_sizes.count()} connected components")
-cluster_sizes.limit(10).display()
-
-# COMMAND ----------
-# MAGIC %md
-# MAGIC ### Query 6: PageRank - Most Important Tables
-
-# COMMAND ----------
-
-# Run PageRank to find most "important" nodes
-pagerank = g.pageRank(resetProbability=0.15, maxIter=10)
-
-top_nodes = pagerank.vertices.select(
-    "id", "node_type", "domain", "security_level", "pagerank"
-).orderBy("pagerank", ascending=False)
-
-print("Top nodes by PageRank:")
-top_nodes.limit(20).display()
-
-# COMMAND ----------
-# MAGIC %md
-# MAGIC ## Additional Query Examples
-# MAGIC 
-# MAGIC See the `GRAPHFRAMES_EXAMPLES` string in `src/dbxmetagen/knowledge_graph.py` for more examples including:
-# MAGIC - Finding paths between specific tables
-# MAGIC - Security boundary analysis (PHI to PII connections)
-# MAGIC - Label propagation for community detection
-# MAGIC - Subgraph analysis for specific domains
-# MAGIC - Finding isolated tables
 

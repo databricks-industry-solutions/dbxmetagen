@@ -1,6 +1,6 @@
 [project]
 name = "dbxmetagen"
-version = "0.9.2"
+version = "0.9.4"
 description = "Generates comments and identifies and classifies other metadata for Delta tables in Databricks."
 readme = "README.md"
 authors = [{ name = "Eli Swanson", email = "eli.swanson@databricks.com" }]
@@ -21,9 +21,6 @@ dependencies = [
     "nest-asyncio>=1.6.0,<2",
 ]
 
-# To install spaCy + Presidio for PI mode:
-#   uv sync --extra pi          (default: en_core_web_md)
-#   uv sync --extra pi-lg       (larger model: en_core_web_lg)
 [project.optional-dependencies]
 pi = [
     "spacy==3.8.7",

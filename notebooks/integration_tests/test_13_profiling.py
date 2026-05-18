@@ -496,4 +496,5 @@ print(f"[CLEANUP] Dropped test schema: {catalog_name}.{profiling_test_schema}")
 print("=" * 60)
 print("ALL PROFILING INTEGRATION TESTS PASSED")
 print("=" * 60)
+dbutils.notebook.exit(json.dumps({"passed": True, "error": None}))
 

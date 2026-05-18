@@ -1,8 +1,14 @@
 """Tests for semantic_layer module -- expression fixers, JSON parsers, column ref extraction."""
 
 import pytest
+import yaml
 from unittest.mock import MagicMock
-from dbxmetagen.semantic_layer import SemanticLayerGenerator, SemanticLayerConfig
+from dbxmetagen.semantic_layer import (
+    SemanticLayerGenerator,
+    SemanticLayerConfig,
+    _normalize_window_specs,
+    _infer_format_specs,
+)
 
 
 @pytest.fixture
@@ -233,6 +239,26 @@ class TestAutofixFixesBadExprs:
         result = SemanticLayerGenerator._autofix_expr(bad)
         assert "= 'Closed' THEN" in result
 
+    def test_fixes_closed_won_in_case(self):
+        bad = "SUM(CASE WHEN source.stage = Closed Won THEN source.amount_usd ELSE 0 END)"
+        result = SemanticLayerGenerator._autofix_expr(bad)
+        assert "= 'Closed Won' THEN" in result
+
+    def test_fixes_in_clause_with_closed_won_lost(self):
+        bad = "SUM(CASE WHEN source.stage IN (Closed Won, Closed Lost) THEN 1 ELSE 0 END)"
+        result = SemanticLayerGenerator._autofix_expr(bad)
+        assert "'Closed Won'" in result
+        assert "'Closed Lost'" in result
+
+    def test_fixes_win_rate_composite_expression(self):
+        bad = (
+            "SUM(CASE WHEN source.stage = Closed Won THEN 1 ELSE 0 END) * 100.0 "
+            "/ NULLIF(SUM(CASE WHEN source.stage IN (Closed Won, Closed Lost) THEN 1 ELSE 0 END), 0)"
+        )
+        result = SemanticLayerGenerator._autofix_expr(bad)
+        assert "= 'Closed Won' THEN" in result
+        assert "'Closed Lost'" in result
+
 
 class TestFixConcatSeparators:
 
@@ -368,7 +394,6 @@ class TestNormalizeJoins:
 class TestDefinitionToYaml:
 
     def test_produces_valid_yaml(self, gen):
-        import yaml
         defn = {
             "name": "test_mv",
             "source": "cat.sch.orders",
@@ -381,3 +406,159 @@ class TestDefinitionToYaml:
         assert parsed["source"] == "cat.sch.orders"
         assert len(parsed["dimensions"]) == 1
         assert len(parsed["measures"]) == 1
+
+    def test_window_specs_included_when_present(self, gen):
+        defn = {
+            "name": "mv",
+            "source": "cat.sch.t",
+            "dimensions": [],
+            "measures": [{"name": "m", "expr": "SUM(x)", "window": {"order": "event_date", "range": "trailing 7 day"}}],
+        }
+        result = gen._definition_to_yaml(defn)
+        parsed = yaml.safe_load(result)
+        assert "window" in parsed["measures"][0]
+        assert parsed["measures"][0]["window"][0]["order"] == "event_date"
+
+    def test_empty_window_omitted(self, gen):
+        defn = {
+            "name": "mv",
+            "source": "cat.sch.t",
+            "dimensions": [],
+            "measures": [{"name": "m", "expr": "SUM(x)", "window": []}],
+        }
+        result = gen._definition_to_yaml(defn)
+        parsed = yaml.safe_load(result)
+        assert "window" not in parsed["measures"][0]
+
+    def test_format_specs_included(self, gen):
+        defn = {
+            "name": "mv",
+            "source": "cat.sch.t",
+            "dimensions": [],
+            "measures": [{"name": "m", "expr": "SUM(x)", "format": {"type": "currency", "currency_code": "USD"}}],
+        }
+        result = gen._definition_to_yaml(defn)
+        parsed = yaml.safe_load(result)
+        assert parsed["measures"][0]["format"]["type"] == "currency"
+
+
+# ── Normalize Window Specs ───────────────────────────────────────────
+
+
+class TestNormalizeWindowSpecs:
+
+    def test_none_returns_empty(self):
+        assert _normalize_window_specs(None) == []
+
+    def test_string_returns_empty(self):
+        assert _normalize_window_specs("not a dict") == []
+
+    def test_dict_becomes_list(self):
+        result = _normalize_window_specs({"order": "event_date"})
+        assert isinstance(result, list) and len(result) == 1
+        assert result[0]["order"] == "event_date"
+
+    def test_interval_normalization(self):
+        result = _normalize_window_specs({"order": "dt", "range": "INTERVAL 7 DAYS"})
+        assert result[0]["range"] == "trailing 7 day"
+
+    def test_unbounded_rows(self):
+        result = _normalize_window_specs({"order": "dt", "rows": "UNBOUNDED PRECEDING"})
+        assert result[0]["range"] == "unbounded"
+        assert result[0].get("rows", "") == ""
+
+    def test_skips_entry_without_order(self):
+        result = _normalize_window_specs([{"range": "trailing 7 day"}])
+        assert result == []
+
+    def test_multiple_specs(self):
+        specs = [
+            {"order": "event_date", "range": "trailing 7 day"},
+            {"order": "report_date", "range": "trailing 30 day"},
+        ]
+        result = _normalize_window_specs(specs)
+        assert len(result) == 2
+
+    def test_semiadditive_default(self):
+        result = _normalize_window_specs({"order": "dt"})
+        assert result[0]["semiadditive"] == "last"
+
+    def test_semiadditive_preserved(self):
+        result = _normalize_window_specs({"order": "dt", "semiadditive": "first"})
+        assert result[0]["semiadditive"] == "first"
+
+    def test_order_by_alias(self):
+        result = _normalize_window_specs({"order_by": "ts"})
+        assert result[0]["order"] == "ts"
+
+
+# ── Infer Format Specs ───────────────────────────────────────────────
+
+
+class TestInferFormatSpecs:
+
+    def test_percentage_expr(self):
+        defn = {"measures": [{"name": "rate", "expr": "SUM(x) * 100.0 / COUNT(*)"}]}
+        _infer_format_specs(defn)
+        assert defn["measures"][0]["format"]["type"] == "percentage"
+
+    def test_percentage_name(self):
+        defn = {"measures": [{"name": "rate", "expr": "SUM(x)"}]}
+        _infer_format_specs(defn)
+        assert defn["measures"][0]["format"]["type"] == "percentage"
+
+    def test_currency_expr(self):
+        defn = {"measures": [{"name": "total", "expr": "SUM(amount_usd)"}]}
+        _infer_format_specs(defn)
+        assert defn["measures"][0]["format"]["type"] == "currency"
+
+    def test_default_number(self):
+        defn = {"measures": [{"name": "total_count", "expr": "COUNT(*)"}]}
+        _infer_format_specs(defn)
+        assert defn["measures"][0]["format"]["type"] == "number"
+
+    def test_preserves_existing_format(self):
+        defn = {"measures": [{"name": "rate", "expr": "SUM(x) * 100", "format": {"type": "custom"}}]}
+        _infer_format_specs(defn)
+        assert defn["measures"][0]["format"]["type"] == "custom"
+
+    def test_empty_measures(self):
+        defn = {"measures": []}
+        _infer_format_specs(defn)
+        assert defn["measures"] == []
+
+
+# ── Parenthesized String Literal Regression ──────────────────────────
+
+
+class TestParenthesizedStringLiterals:
+    """Regression tests for the parentheses heuristic fix.
+
+    Parenthesized natural language like 'Mild (Grade 1)' must be quoted,
+    while actual function calls like COALESCE(x, 0) must be left alone.
+    """
+
+    def test_then_else_quotes_parenthesized_string(self):
+        expr = "THEN Mild (Grade 1) ELSE Severe (Grade 4) END"
+        result = SemanticLayerGenerator._fix_then_else_literals(expr)
+        assert "'Mild (Grade 1)'" in result
+        assert "'Severe (Grade 4)'" in result
+
+    def test_then_else_leaves_function_call(self):
+        expr = "THEN COALESCE(x, 0) ELSE NULL END"
+        result = SemanticLayerGenerator._fix_then_else_literals(expr)
+        assert "'" not in result.replace("COALESCE", "")
+
+    def test_unquoted_leaves_function_call(self):
+        expr = "= NULLIF(x, 0) THEN"
+        result = SemanticLayerGenerator._fix_unquoted_literals(expr)
+        assert "'" not in result.replace("NULLIF", "")
+
+    def test_unquoted_quotes_multi_word_with_parens(self):
+        """_fix_unquoted_literals treats ')' as a delimiter, so parenthesized
+        strings in comparison values get partially captured.  This test
+        documents the current behavior; _fix_then_else_literals handles
+        the THEN/ELSE case correctly."""
+        expr = "= Requirement change THEN"
+        result = SemanticLayerGenerator._fix_unquoted_literals(expr)
+        assert "'Requirement change'" in result

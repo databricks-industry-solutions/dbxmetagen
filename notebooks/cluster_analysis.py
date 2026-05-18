@@ -22,10 +22,28 @@
 # MAGIC ## Scaling to Large Datasets
 # MAGIC
 # MAGIC This notebook handles 1M+ nodes without code changes:
-# MAGIC - K-means training is distributed via Spark MLlib.
+# MAGIC - K-means training is distributed via Spark MLlib (classic) or sklearn (serverless).
 # MAGIC - Silhouette is always computed on a fixed-size sample (default 10K).
-# MAGIC - DataFrame checkpointing auto-enables above 50K nodes to truncate lineage.
+# MAGIC - DataFrame checkpointing auto-enables above 50K nodes to truncate lineage (classic only).
 # MAGIC - Broad/narrow phases use percentage-based sampling, not full scans.
+# MAGIC
+# MAGIC ### Serverless Compute
+# MAGIC
+# MAGIC On serverless, Spark MLlib is unavailable. The notebook auto-detects this and
+# MAGIC uses scikit-learn on the driver instead. All embeddings are collected to a numpy
+# MAGIC array, so driver memory is the constraint:
+# MAGIC
+# MAGIC | Nodes | Memory (768-dim) | Status |
+# MAGIC |---|---|---|
+# MAGIC | 10K | ~30 MB | Safe |
+# MAGIC | 100K | ~300 MB | Safe |
+# MAGIC | 200K (default limit) | ~600 MB | Safe |
+# MAGIC | 500K | ~1.5 GB | Tight -- raise limit only with sufficient driver memory |
+# MAGIC | 1M+ | ~3 GB+ | Use classic compute with MLlib |
+# MAGIC
+# MAGIC The limit is controlled by `_SERVERLESS_NODE_LIMIT` in the setup cell.
+# MAGIC "Nodes" means graph_nodes matching the `node_types` filter (default: tables only).
+# MAGIC Clustering results are directionally equivalent between MLlib and sklearn.
 # MAGIC
 # MAGIC For tuning at extreme scale, see `docs/KMEANS_CLUSTERING.md`.
 # MAGIC
@@ -108,32 +126,36 @@ mlflow.autolog(disable=True)
 
 import numpy as np
 from pyspark.sql import functions as F
-from pyspark.sql.window import Window
-from pyspark.sql.types import DoubleType
-from pyspark.ml.feature import VectorAssembler
-from pyspark.ml.clustering import KMeans, KMeansModel
-from pyspark.ml.evaluation import ClusteringEvaluator
-from pyspark.ml.linalg import Vectors, VectorUDT, DenseVector
 from pyspark.sql.types import (
-    ArrayType,
-    FloatType,
     StructType,
     StructField,
     StringType,
     IntegerType,
+    DoubleType,
 )
 from datetime import datetime
 import json
 
-# Performance thresholds -- these are the main knobs for scaling.
-# SILHOUETTE_SAMPLE_THRESHOLD: Silhouette is O(n^2). Above this count, we
-#   compute it on a random sample instead of the full dataset. 10K is a good
-#   default; increase to 50-100K for tighter estimates if cluster resources allow.
-# CHECKPOINT_THRESHOLD: Spark's DAG grows with each transformation. Above this
-#   count, we checkpoint the DataFrame to disk to truncate lineage and prevent
-#   stack overflows or excessive planning time in the Catalyst optimizer.
 SILHOUETTE_SAMPLE_THRESHOLD = 10000
 CHECKPOINT_THRESHOLD = 50000
+
+# Serverless (Spark Connect) doesn't support MLlib or .cache()/.persist().
+# Detect once and route to sklearn (serverless) or MLlib (classic).
+try:
+    spark.sparkContext
+    _SERVERLESS = False
+except Exception:
+    _SERVERLESS = True
+
+if _SERVERLESS:
+    from sklearn.cluster import KMeans as SKLearnKMeans
+    from sklearn.metrics import silhouette_score as sklearn_silhouette_score
+else:
+    from pyspark.ml.clustering import KMeans as SparkKMeans
+    from pyspark.ml.evaluation import ClusteringEvaluator
+    from pyspark.ml.linalg import VectorUDT, DenseVector
+
+print(f"Compute mode: {'serverless (sklearn)' if _SERVERLESS else 'classic (MLlib)'}")
 
 # COMMAND ----------
 
@@ -162,9 +184,30 @@ nodes_df = spark.sql(
 total_nodes = nodes_df.count()
 print(f"Found {total_nodes} nodes with embeddings")
 
+# Serverless clustering collects all embeddings to the driver as a numpy array.
+# Memory cost: total_nodes * embedding_dim * 4 bytes (float32).
+#   - 200K nodes * 768 dims = ~600 MB (safe for 8-16 GB serverless driver)
+#   - 500K nodes * 768 dims = ~1.5 GB (tight; may OOM with other driver overhead)
+# "Nodes" here means graph_nodes matching the node_types filter -- typically
+# tables only (default), but includes columns if node_types=table,column.
+# To raise the limit: increase _SERVERLESS_NODE_LIMIT below and ensure the
+# serverless cluster type has sufficient driver memory. Above ~500K, consider
+# using classic compute with MLlib (distributed) instead.
+_SERVERLESS_NODE_LIMIT = 200_000
+
 if total_nodes < min_k:
     raise ValueError(
         f"Not enough nodes ({total_nodes}) for clustering. Need at least {min_k}."
+    )
+
+if _SERVERLESS and total_nodes > _SERVERLESS_NODE_LIMIT:
+    raise ValueError(
+        f"Too many nodes ({total_nodes:,}) for serverless clustering "
+        f"(limit: {_SERVERLESS_NODE_LIMIT:,}). On serverless, all embeddings are "
+        f"collected to the driver (~{total_nodes * 768 * 4 / 1e9:.1f} GB for 768-dim). "
+        f"Options: (1) raise _SERVERLESS_NODE_LIMIT if driver memory allows, "
+        f"(2) filter node_types to reduce scope, or "
+        f"(3) use classic compute with MLlib for distributed clustering."
     )
 
 # Adjust max_k if we have fewer nodes
@@ -173,42 +216,47 @@ print(f"Effective K range: {min_k} to {effective_max_k}")
 
 # COMMAND ----------
 # MAGIC %md
-# MAGIC ## Convert Embeddings to MLlib Vectors
+# MAGIC ## Prepare Embeddings
 
 # COMMAND ----------
 
+if _SERVERLESS:
+    # Collect to driver for sklearn clustering
+    _pdf = nodes_df.select(
+        "id", "node_type", "domain", "security_level", "comment", "embedding"
+    ).toPandas()
+    _embeddings = np.array(_pdf["embedding"].tolist(), dtype=np.float32)
+    _node_meta = _pdf.drop(columns=["embedding"])
+    vector_count = len(_embeddings)
+    embedding_dim = _embeddings.shape[1]
+    _full_data = _embeddings
+    print(f"Prepared {vector_count} nodes (collected to driver for sklearn)")
+    print(f"Embedding dimension: {embedding_dim}")
+else:
+    @F.udf(returnType=VectorUDT())
+    def array_to_vector(arr):
+        if arr is None or len(arr) == 0:
+            return None
+        return DenseVector([float(x) for x in arr])
 
-# Spark MLlib expects DenseVector, but graph_nodes stores embeddings as
-# array<float>. This UDF bridges the two. It runs once per node and is cached.
-@F.udf(returnType=VectorUDT())
-def array_to_vector(arr):
-    if arr is None or len(arr) == 0:
-        return None
-    return DenseVector([float(x) for x in arr])
+    nodes_with_vectors = (
+        nodes_df.withColumn("features", array_to_vector(F.col("embedding")))
+        .filter(F.col("features").isNotNull())
+        .cache()
+    )
+    vector_count = nodes_with_vectors.count()
+    print(f"Prepared {vector_count} nodes with valid vectors")
 
+    if vector_count > CHECKPOINT_THRESHOLD:
+        print(f"Large dataset ({vector_count} > {CHECKPOINT_THRESHOLD}), checkpointing...")
+        spark.sparkContext.setCheckpointDir("/tmp/clustering_checkpoint")
+        nodes_with_vectors = nodes_with_vectors.checkpoint()
+        print("Checkpoint complete -- lineage truncated")
 
-# Materialize vectors and cache -- everything downstream reads from this.
-nodes_with_vectors = (
-    nodes_df.withColumn("features", array_to_vector(F.col("embedding")))
-    .filter(F.col("features").isNotNull())
-    .cache()
-)
-
-vector_count = nodes_with_vectors.count()
-print(f"Prepared {vector_count} nodes with valid vectors")
-
-# For large datasets, checkpoint to disk so that Spark doesn't carry the full
-# DAG (read -> UDF -> filter) through every downstream K-means fit. Without
-# this, the Catalyst optimizer can choke on plan complexity at ~100K+ nodes.
-if vector_count > CHECKPOINT_THRESHOLD:
-    print(f"Large dataset ({vector_count} > {CHECKPOINT_THRESHOLD}), checkpointing...")
-    spark.sparkContext.setCheckpointDir("/tmp/clustering_checkpoint")
-    nodes_with_vectors = nodes_with_vectors.checkpoint()
-    print("Checkpoint complete -- lineage truncated")
-
-sample_embedding = nodes_with_vectors.select("features").first()
-embedding_dim = len(sample_embedding.features)
-print(f"Embedding dimension: {embedding_dim}")
+    sample_embedding = nodes_with_vectors.select("features").first()
+    embedding_dim = len(sample_embedding.features)
+    _full_data = nodes_with_vectors
+    print(f"Embedding dimension: {embedding_dim}")
 
 # COMMAND ----------
 # MAGIC %md
@@ -217,178 +265,119 @@ print(f"Embedding dimension: {embedding_dim}")
 # COMMAND ----------
 
 
-def compute_silhouette_scaled(
-    predictions_df, sample_threshold=SILHOUETTE_SAMPLE_THRESHOLD
-):
-    """Compute silhouette score, sampling for large datasets.
-
-    Silhouette measures cluster quality on [-1, 1]:
-      +1 = point is well-matched to its cluster and poorly-matched to neighbors
-       0 = point is on the border between clusters
-      -1 = point is likely in the wrong cluster
-
-    Because silhouette requires pairwise distances (O(n^2)), we sample down to
-    `sample_threshold` rows for datasets that exceed it. The sample is drawn
-    uniformly at random so all clusters are represented proportionally.
-    """
-    evaluator = ClusteringEvaluator(
-        featuresCol="features",
-        predictionCol="cluster",
-        metricName="silhouette",
-        distanceMeasure="squaredEuclidean",
-    )
-
-    count = predictions_df.count()
-    if count > sample_threshold:
-        sample_fraction = sample_threshold / count
-        sample_df = predictions_df.sample(fraction=sample_fraction, seed=42).cache()
-        silhouette = evaluator.evaluate(sample_df)
-        sample_df.unpersist()
-        return silhouette
+def _compute_silhouette(data, labels, sample_threshold=SILHOUETTE_SAMPLE_THRESHOLD):
+    """Compute silhouette score, sampling for large datasets."""
+    if _SERVERLESS:
+        n = len(labels)
+        if n <= 1 or len(set(labels)) <= 1:
+            return 0.0
+        if n > sample_threshold:
+            idx = np.random.RandomState(42).choice(n, sample_threshold, replace=False)
+            return float(sklearn_silhouette_score(data[idx], labels[idx]))
+        return float(sklearn_silhouette_score(data, labels))
     else:
-        return evaluator.evaluate(predictions_df)
+        evaluator = ClusteringEvaluator(
+            featuresCol="features", predictionCol="cluster",
+            metricName="silhouette", distanceMeasure="squaredEuclidean",
+        )
+        count = data.count()
+        if count > sample_threshold:
+            return evaluator.evaluate(data.sample(fraction=sample_threshold / count, seed=42))
+        return evaluator.evaluate(data)
 
 
-def run_kmeans_wssse_only(data_df, k, seed=42, max_iter=30):
-    """Run K-means returning only WSSSE (Within-Cluster Sum of Squared Errors).
-
-    WSSSE is the sum of squared distances from each point to its assigned cluster
-    center. It always decreases as K grows (more clusters = tighter fit), so we
-    look for the "elbow" where the rate of decrease slows sharply.
-
-    Used in Phase 1 because WSSSE is O(n) -- it only needs each point's distance
-    to its own center, not pairwise distances like silhouette.
-    """
-    kmeans = KMeans(
-        k=k,
-        seed=seed,
-        maxIter=max_iter,
-        initMode="k-means||",
-        featuresCol="features",
-        predictionCol="cluster",
-    )
-    model = kmeans.fit(data_df)
-    wssse = model.summary.trainingCost
-    return model, wssse
-
-
-def run_kmeans_with_evaluation(
-    data_df, k, seed=42, max_iter=50, compute_silhouette=True
-):
-    """
-    Run K-means and return model with metrics.
-
-    Args:
-        data_df: DataFrame with 'features' column
-        k: Number of clusters
-        seed: Random seed
-        max_iter: Maximum iterations
-        compute_silhouette: Whether to compute silhouette (expensive)
-
-    Returns:
-        Tuple of (model, silhouette_score, wssse)
-    """
-    kmeans = KMeans(
-        k=k,
-        seed=seed,
-        maxIter=max_iter,
-        initMode="k-means||",
-        featuresCol="features",
-        predictionCol="cluster",
-    )
-
-    model = kmeans.fit(data_df)
-    wssse = model.summary.trainingCost
-
-    if compute_silhouette:
-        predictions = model.transform(data_df)
-        silhouette = compute_silhouette_scaled(predictions)
+def _run_kmeans_wssse(data, k, seed=42, max_iter=30):
+    """Run KMeans, return (model, wssse)."""
+    if _SERVERLESS:
+        km = SKLearnKMeans(n_clusters=k, random_state=seed, max_iter=max_iter, n_init=1)
+        km.fit(data)
+        return km, float(km.inertia_)
     else:
-        silhouette = None
+        kmeans = SparkKMeans(
+            k=k, seed=seed, maxIter=max_iter, initMode="k-means||",
+            featuresCol="features", predictionCol="cluster",
+        )
+        model = kmeans.fit(data)
+        return model, float(model.summary.trainingCost)
 
-    return model, silhouette, wssse
+
+def _run_kmeans_full(data, k, seed=42, max_iter=50):
+    """Run KMeans, return (model, predictions_or_labels, silhouette, wssse)."""
+    if _SERVERLESS:
+        km = SKLearnKMeans(n_clusters=k, random_state=seed, max_iter=max_iter, n_init=1)
+        labels = km.fit_predict(data)
+        wssse = float(km.inertia_)
+        sil = _compute_silhouette(data, labels)
+        return km, labels, sil, wssse
+    else:
+        kmeans = SparkKMeans(
+            k=k, seed=seed, maxIter=max_iter, initMode="k-means||",
+            featuresCol="features", predictionCol="cluster",
+        )
+        model = kmeans.fit(data)
+        wssse = float(model.summary.trainingCost)
+        predictions = model.transform(data)
+        sil = _compute_silhouette(predictions, None)
+        return model, predictions, sil, wssse
 
 
-def evaluate_k_range_wssse_only(data_df, k_range, n_seeds=2, max_iter=20):
-    """Evaluate multiple K values using WSSSE only (Phase 1 broad search).
+def _sample_data(data, fraction, seed):
+    """Sample: numpy slice on serverless, DF.sample on classic."""
+    if _SERVERLESS:
+        n = max(1, int(len(data) * fraction))
+        idx = np.random.RandomState(seed).choice(len(data), n, replace=False)
+        return data[idx]
+    return data.sample(fraction=fraction, seed=seed)
 
-    Runs each K with `n_seeds` random initializations and reports mean/std.
-    Multiple seeds guard against poor initialization -- K-means is sensitive to
-    starting centroids and can converge to local minima.
-    """
+
+def _data_count(data):
+    return len(data) if _SERVERLESS else data.count()
+
+
+def evaluate_k_range_wssse_only(data, k_range, n_seeds=2, max_iter=20):
+    """Phase 1: evaluate K values using WSSSE only."""
     results = []
-
     for k in k_range:
         wssses = []
-
-        for seed in range(n_seeds):
+        for seed_i in range(n_seeds):
             try:
-                _, wssse = run_kmeans_wssse_only(
-                    data_df, k, seed=seed * 42, max_iter=max_iter
-                )
+                _, wssse = _run_kmeans_wssse(data, k, seed=seed_i * 42, max_iter=max_iter)
                 wssses.append(wssse)
             except Exception as e:
-                print(f"  K={k}, seed={seed}: Error - {e}")
-                continue
-
+                print(f"  K={k}, seed={seed_i}: Error - {e}")
         if wssses:
-            results.append(
-                {
-                    "k": k,
-                    "wssse_mean": float(np.mean(wssses)),
-                    "wssse_std": float(np.std(wssses)),
-                    "n_runs": len(wssses),
-                }
-            )
+            results.append({
+                "k": k, "wssse_mean": float(np.mean(wssses)),
+                "wssse_std": float(np.std(wssses)), "n_runs": len(wssses),
+            })
             print(f"  K={k}: WSSSE={np.mean(wssses):.2f} (+-{np.std(wssses):.2f})")
-
     return results
 
 
-def evaluate_k_range_with_silhouette(data_df, k_range, n_seeds=3, max_iter=30):
-    """Evaluate K values with both WSSSE and silhouette (Phase 2 narrow search).
-
-    More expensive than WSSSE-only but gives a direct measure of cluster
-    separation. Silhouette is auto-sampled for large datasets via
-    `compute_silhouette_scaled`. Uses more seeds (default 3) and iterations
-    (default 30) than the broad phase for higher accuracy.
-    """
+def evaluate_k_range_with_silhouette(data, k_range, n_seeds=3, max_iter=30):
+    """Phase 2: evaluate K values with WSSSE and silhouette."""
     results = []
-
     for k in k_range:
-        silhouettes = []
-        wssses = []
-
-        for seed in range(n_seeds):
+        silhouettes, wssses = [], []
+        for seed_i in range(n_seeds):
             try:
-                _, sil, wssse = run_kmeans_with_evaluation(
-                    data_df,
-                    k,
-                    seed=seed * 42,
-                    max_iter=max_iter,
-                    compute_silhouette=True,
+                _, _, sil, wssse = _run_kmeans_full(
+                    data, k, seed=seed_i * 42, max_iter=max_iter,
                 )
                 silhouettes.append(sil)
                 wssses.append(wssse)
             except Exception as e:
-                print(f"  K={k}, seed={seed}: Error - {e}")
-                continue
-
+                print(f"  K={k}, seed={seed_i}: Error - {e}")
         if silhouettes:
-            results.append(
-                {
-                    "k": k,
-                    "silhouette_mean": float(np.mean(silhouettes)),
-                    "silhouette_std": float(np.std(silhouettes)),
-                    "wssse_mean": float(np.mean(wssses)),
-                    "wssse_std": float(np.std(wssses)),
-                    "n_runs": len(silhouettes),
-                }
-            )
+            results.append({
+                "k": k, "silhouette_mean": float(np.mean(silhouettes)),
+                "silhouette_std": float(np.std(silhouettes)),
+                "wssse_mean": float(np.mean(wssses)),
+                "wssse_std": float(np.std(wssses)), "n_runs": len(silhouettes),
+            })
             print(
                 f"  K={k}: silhouette={np.mean(silhouettes):.4f} (+-{np.std(silhouettes):.4f})"
             )
-
     return results
 
 
@@ -413,18 +402,19 @@ print("=" * 60)
 
 # Sample for broad search (25% or at least 500 nodes)
 sample_fraction_broad = min(0.25, max(500 / vector_count, 0.1))
-broad_sample = nodes_with_vectors.sample(
-    fraction=sample_fraction_broad, seed=42
-).cache()
-broad_sample_count = broad_sample.count()
+broad_sample = _sample_data(_full_data, sample_fraction_broad, seed=42)
+broad_sample_count = _data_count(broad_sample)
+if not _SERVERLESS:
+    broad_sample = broad_sample.cache()
 print(
     f"Broad search sample: {broad_sample_count} nodes ({sample_fraction_broad*100:.1f}%)"
 )
 
 if broad_sample_count < min_k:
     print(f"Sample too small ({broad_sample_count} < {min_k}), using full dataset")
-    broad_sample.unpersist()
-    broad_sample = nodes_with_vectors
+    if not _SERVERLESS:
+        broad_sample.unpersist()
+    broad_sample = _full_data
     broad_sample_count = vector_count
 
 # Test K values in steps
@@ -463,7 +453,8 @@ else:
 
 print(f"\nBest K from broad search (elbow): {best_broad_k}")
 
-broad_sample.unpersist()
+if not _SERVERLESS:
+    broad_sample.unpersist()
 
 # COMMAND ----------
 # MAGIC %md
@@ -496,18 +487,19 @@ print(f"Narrow search range: {narrow_k_range}")
 
 # Larger sample for narrow search (60% or at least 1000 nodes)
 sample_fraction_narrow = min(0.6, max(1000 / vector_count, 0.3))
-narrow_sample = nodes_with_vectors.sample(
-    fraction=sample_fraction_narrow, seed=123
-).cache()
-narrow_sample_count = narrow_sample.count()
+narrow_sample = _sample_data(_full_data, sample_fraction_narrow, seed=123)
+narrow_sample_count = _data_count(narrow_sample)
+if not _SERVERLESS:
+    narrow_sample = narrow_sample.cache()
 print(
     f"Narrow search sample: {narrow_sample_count} nodes ({sample_fraction_narrow*100:.1f}%)"
 )
 
 if narrow_sample_count < min_k:
     print(f"Narrow sample too small ({narrow_sample_count} < {min_k}), using full dataset")
-    narrow_sample.unpersist()
-    narrow_sample = nodes_with_vectors
+    if not _SERVERLESS:
+        narrow_sample.unpersist()
+    narrow_sample = _full_data
     narrow_sample_count = vector_count
 
 narrow_k_range = [k for k in narrow_k_range if k < narrow_sample_count]
@@ -530,7 +522,8 @@ print(
 )
 print(f"  Stability score: {best_narrow['stability_score']:.4f}")
 
-narrow_sample.unpersist()
+if not _SERVERLESS:
+    narrow_sample.unpersist()
 
 # COMMAND ----------
 # MAGIC %md
@@ -555,18 +548,15 @@ print(f"Final clustering with K={optimal_k} on {vector_count} nodes")
 # Run multiple initializations and keep best
 best_model = None
 best_final_silhouette = -1
+best_preds = None
 final_results = []
 
 n_final_runs = 5
 print(f"Running {n_final_runs} initializations...")
 
 for i in range(n_final_runs):
-    model, sil, wssse = run_kmeans_with_evaluation(
-        nodes_with_vectors,
-        optimal_k,
-        seed=i * 100 + 42,
-        max_iter=100,
-        compute_silhouette=True,
+    model, preds, sil, wssse = _run_kmeans_full(
+        _full_data, optimal_k, seed=i * 100 + 42, max_iter=100,
     )
     final_results.append({"run": i, "silhouette": sil, "wssse": wssse})
     print(f"  Run {i+1}: silhouette={sil:.4f}, WSSSE={wssse:.2f}")
@@ -574,11 +564,17 @@ for i in range(n_final_runs):
     if sil > best_final_silhouette:
         best_final_silhouette = sil
         best_model = model
+        best_preds = preds
 
 print(f"\nBest final model: silhouette={best_final_silhouette:.4f}")
 
-# Get cluster assignments
-final_predictions = best_model.transform(nodes_with_vectors)
+# Build final_predictions Spark DF
+if _SERVERLESS:
+    result_pdf = _node_meta.copy()
+    result_pdf["cluster"] = best_preds.astype(int)
+    final_predictions = spark.createDataFrame(result_pdf)
+else:
+    final_predictions = best_preds
 
 # COMMAND ----------
 # MAGIC %md
@@ -623,7 +619,7 @@ domain_per_cluster.display()
 # COMMAND ----------
 
 # Cluster centroids (for interpretation)
-centroids = best_model.clusterCenters()
+centroids = best_model.cluster_centers_ if _SERVERLESS else best_model.clusterCenters()
 print(
     f"\nCluster centroids shape: {len(centroids)} clusters x {len(centroids[0])} dimensions"
 )
@@ -640,6 +636,7 @@ cluster_assignments_table = f"{catalog_name}.{schema_name}.node_cluster_assignme
 # Prepare output
 cluster_output = (
     final_predictions.select("id", "node_type", "domain", "security_level", "cluster")
+    .withColumn("cluster", F.col("cluster").cast("int"))
     .withColumn("k_value", F.lit(optimal_k))
     .withColumn("silhouette_score", F.lit(best_final_silhouette))
     .withColumn("created_at", F.current_timestamp())
@@ -843,7 +840,8 @@ print(f"  - {cluster_assignments_table}")
 print(f"  - {metrics_table}")
 
 # Clean up
-nodes_with_vectors.unpersist()
+if not _SERVERLESS:
+    nodes_with_vectors.unpersist()
 
 # COMMAND ----------
 # MAGIC %md
@@ -901,8 +899,8 @@ for row in cluster_samples.collect():
 # MAGIC %md
 # MAGIC ## Scaling Notes
 # MAGIC
-# MAGIC This notebook handles **1M+ nodes without code changes**. All expensive
-# MAGIC operations are already guarded:
+# MAGIC **Classic compute (MLlib):** Handles **1M+ nodes without code changes**. All
+# MAGIC expensive operations are guarded:
 # MAGIC
 # MAGIC | Concern | How it's handled |
 # MAGIC |---|---|
@@ -910,6 +908,11 @@ for row in cluster_samples.collect():
 # MAGIC | Silhouette (O(n^2)) | Sampled to 10K via `SILHOUETTE_SAMPLE_THRESHOLD` |
 # MAGIC | DAG lineage growth | Checkpointed above `CHECKPOINT_THRESHOLD` (50K) |
 # MAGIC | Broad/narrow search | Percentage-based sampling, not full scans |
+# MAGIC
+# MAGIC **Serverless compute (sklearn):** Handles up to **200K nodes** by default
+# MAGIC (configurable via `_SERVERLESS_NODE_LIMIT`). All data is collected to the driver
+# MAGIC as a numpy array. Silhouette sampling still applies. For larger datasets, use
+# MAGIC classic compute.
 # MAGIC
 # MAGIC **You do NOT need to resample the input data.** The same code works for 1K
 # MAGIC and 1M nodes. For tuning suggestions at extreme scale (adjusting thresholds,

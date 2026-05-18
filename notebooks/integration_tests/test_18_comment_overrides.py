@@ -391,4 +391,6 @@ print("PASSED")
 
 # COMMAND ----------
 
+import json
 print("\n=== All comment override integration tests PASSED ===")
+dbutils.notebook.exit(json.dumps({"passed": True, "error": None}))

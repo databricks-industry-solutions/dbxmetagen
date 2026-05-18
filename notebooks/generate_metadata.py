@@ -13,11 +13,11 @@
 # MAGIC ###Disclaimer
 # MAGIC AI generated comments are not always accurate and comment DDLs should be reviewed prior to modifying your tables. Databricks strongly recommends human review of AI-generated comments to check for inaccuracies. While the model has been guided to avoids generating harmful or inappropriate descriptions, you can mitigate this risk by setting up [AI Guardrails](https://docs.databricks.com/en/ai-gateway/index.html#ai-guardrails) in the AI Gateway where you connect your LLM.
 # COMMAND ----------
-# MAGIC %md
-# MAGIC # Library installs
 
-# COMMAND ----------
-# MAGIC %pip install -q -r ../requirements.txt
+# MAGIC # Uncomment below when running outside of a DAB-deployed job
+# MAGIC # %pip install /Workspace/Users/<your_username>/.bundle/dbxmetagen/dev/artifacts/.internal/dbxmetagen-*.whl
+# MAGIC # dbutils.library.restartPython()
+
 # COMMAND ----------
 dbutils.widgets.text("mode", "comment", "Mode (comment, pi, domain)")
 dbutils.widgets.text("include_deterministic_pi", "true", "Run Presidio deterministic PI detection")

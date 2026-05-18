@@ -253,9 +253,9 @@ class SchemaKnowledgeBaseBuilder:
         """Merge staged updates into target table."""
         staged_df.createOrReplaceTempView("staged_schema_updates")
         
-        # MERGE: Upserts schema KB from `staged_schema_updates` on `schema_id`; MATCH COALESCEs catalog/schema_name/comment/domain, OR-merges PI flags, refreshes `table_count`, updated_at = GREATEST; NOT MATCHED inserts rollup row.
+        # MERGE: Upserts schema KB from `staged_schema_updates` on `schema_id`; MATCH CASE-preserves comment/domain when review_updated_at is newer, COALESCEs catalog/schema_name, OR-merges PI flags, refreshes `table_count`, updated_at = GREATEST; NOT MATCHED inserts rollup row.
         # WHY: Serves aggregated schema summaries (counts, PI presence, coarse domain, optional AI blurb) over the denormalized table KB for faster browsing and downstream summaries.
-        # TRADEOFFS: No review-aware CASE unlike table/column KB—fresh non-null AI comments overwrite prior text; upstream `domain` is `first()`, not statistical mode—cheap but imprecise vs heavier aggregation or steward workflow.
+        # TRADEOFFS: PI flags remain OR-merge (derived rollup from table KB); upstream `domain` is `first()`, not statistical mode—cheap but imprecise.
         merge_sql = f"""
         MERGE INTO {self.config.fully_qualified_target} AS target
         USING staged_schema_updates AS source
@@ -264,8 +264,12 @@ class SchemaKnowledgeBaseBuilder:
         WHEN MATCHED THEN UPDATE SET
             target.catalog = COALESCE(source.catalog, target.catalog),
             target.schema_name = COALESCE(source.schema_name, target.schema_name),
-            target.comment = COALESCE(source.comment, target.comment),
-            target.domain = COALESCE(source.domain, target.domain),
+            target.comment = CASE
+                WHEN target.review_updated_at IS NOT NULL AND target.review_updated_at > source.updated_at
+                THEN target.comment ELSE COALESCE(source.comment, target.comment) END,
+            target.domain = CASE
+                WHEN target.review_updated_at IS NOT NULL AND target.review_updated_at > source.updated_at
+                THEN target.domain ELSE COALESCE(source.domain, target.domain) END,
             target.has_pii = source.has_pii OR target.has_pii,
             target.has_phi = source.has_phi OR target.has_phi,
             target.table_count = source.table_count,

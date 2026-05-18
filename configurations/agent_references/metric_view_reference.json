@@ -71,10 +71,10 @@
       "note": "Any non-column, non-function argument in CONCAT must be a quoted string. -Q is parsed as 'subtract column Q' without quotes."
     },
     {
-      "rule": "Window measures use a nested 'window' object with order_by and range/rows",
-      "correct": "{\"name\": \"30-Day Rolling Avg Revenue\", \"expr\": \"AVG(SUM(total_amount))\", \"window\": {\"order_by\": \"order_date\", \"range\": \"INTERVAL 30 DAYS PRECEDING\"}}",
-      "wrong": "{\"name\": \"30-Day Rolling Avg Revenue\", \"expr\": \"AVG(SUM(total_amount)) OVER (ORDER BY order_date RANGE INTERVAL 30 DAYS PRECEDING)\"}",
-      "note": "Window logic goes in the 'window' sub-object, NOT in the expr string. The expr contains the aggregate function only."
+      "rule": "Window measures use a 'window' array with 'order', 'range'/'rows', and 'semiadditive'",
+      "correct": "{\"name\": \"30-Day Rolling Avg Revenue\", \"expr\": \"AVG(SUM(total_amount))\", \"window\": [{\"order\": \"order_date\", \"range\": \"trailing 30 day\", \"semiadditive\": \"last\"}]}",
+      "wrong": "{\"name\": \"30-Day Rolling Avg Revenue\", \"expr\": \"AVG(SUM(total_amount))\", \"window\": {\"order_by\": \"order_date\", \"range\": \"INTERVAL 30 DAYS PRECEDING\"}}",
+      "note": "Window is an ARRAY of specs. Use 'order' (not 'order_by'). Range uses 'trailing N day' syntax (not INTERVAL). Include 'semiadditive: first|last'."
     }
   ],
 
@@ -127,16 +127,16 @@
       ]
     },
     "window_rolling": {
-      "template": "AVG(SUM({col})) with window: {order_by: date_col, range: INTERVAL N DAYS PRECEDING}",
+      "template": "AVG(SUM({col})) with window: [{order: date_col, range: trailing N day, semiadditive: last}]",
       "examples": [
-        {"name": "30-Day Rolling Avg Revenue", "expr": "AVG(SUM(total_amount))", "window": {"order_by": "order_date", "range": "INTERVAL 30 DAYS PRECEDING"}, "comment": "Rolling 30-day average of daily revenue"},
-        {"name": "7-Day Rolling Order Count", "expr": "AVG(COUNT(*))", "window": {"order_by": "order_date", "range": "INTERVAL 7 DAYS PRECEDING"}, "comment": "Rolling 7-day average of daily order counts"}
+        {"name": "30-Day Rolling Avg Revenue", "expr": "AVG(SUM(total_amount))", "window": [{"order": "order_date", "range": "trailing 30 day", "semiadditive": "last"}], "comment": "Rolling 30-day average of daily revenue"},
+        {"name": "7-Day Rolling Order Count", "expr": "AVG(COUNT(*))", "window": [{"order": "order_date", "range": "trailing 7 day", "semiadditive": "last"}], "comment": "Rolling 7-day average of daily order counts"}
       ]
     },
     "window_cumulative": {
-      "template": "SUM(SUM({col})) with window: {order_by: date_col, rows: UNBOUNDED PRECEDING}",
+      "template": "SUM(SUM({col})) with window: [{order: date_col, range: unbounded, semiadditive: last}]",
       "examples": [
-        {"name": "Cumulative YTD Revenue", "expr": "SUM(SUM(total_amount))", "window": {"order_by": "order_date", "rows": "UNBOUNDED PRECEDING"}, "comment": "Running total revenue year-to-date"}
+        {"name": "Cumulative YTD Revenue", "expr": "SUM(SUM(total_amount))", "window": [{"order": "order_date", "range": "unbounded", "semiadditive": "last"}], "comment": "Running total revenue year-to-date"}
       ]
     }
   },
@@ -177,6 +177,25 @@
     ]
   },
 
+  "format_patterns": {
+    "description": "Format specs propagate to AI/BI dashboards and Genie responses. Infer format from measure semantics.",
+    "currency": {
+      "signals": ["SUM(amount)", "SUM(total_amount)", "SUM(revenue)", "SUM(cost)", "SUM(price)", "SUM(charge)", "SUM(fee)"],
+      "format": {"type": "currency", "currency_code": "USD"},
+      "note": "Any monetary aggregate. currency_code (ISO-4217) is REQUIRED when type is currency."
+    },
+    "percentage": {
+      "signals": ["* 100.0 / NULLIF", "* 1.0 / NULLIF", "THEN 1 ELSE 0 END) * 1.0", "Rate", "Pct", "Percentage"],
+      "format": {"type": "percentage"},
+      "note": "Rates and ratios that represent fractions. For expressions that already multiply by 100, use type: number instead."
+    },
+    "number": {
+      "signals": ["COUNT(*)", "COUNT(DISTINCT", "AVG(", "SUM(CASE"],
+      "format": {"type": "number"},
+      "note": "Counts, averages, and numeric scores. Default when no other format applies."
+    }
+  },
+
   "anti_patterns": [
     "NEVER produce a metric view whose only measure is COUNT(*) or COUNT(1). Always add at least one ratio, rate, or filtered aggregate.",
     "NEVER use unquoted string literals in any SQL expression. Every string value must be single-quoted.",
@@ -188,7 +207,7 @@
     "NEVER prefix dimension names with the join alias in the display name. Use 'Industry' not 'account.Industry'.",
     "NEVER use DATE_PART -- use EXTRACT(unit FROM col) instead.",
     "NEVER return a metric view with zero dimensions or zero measures.",
-    "ALL string literals in expr fields MUST be single-quoted, including multi-word values. Examples: source.State = 'Active', source.Risk IN ('1 - High', '2 - Medium'), source.Reason = 'Requirement change'."
+    "ALL string literals in expr fields MUST be single-quoted, including multi-word values and values with parentheses. Examples: source.State = 'Active', source.Risk IN ('1 - High', '2 - Medium'), THEN 'Mild (Grade 1)', THEN 'Serious (Grade 3+)', status IN ('Related', 'Possibly Related')."
   ],
 
   "validation_checklist": [
@@ -203,6 +222,8 @@
     "Every measure and dimension has a descriptive 'comment' field",
     "Metric view 'name' is unique and theme-based (not just the table name)",
     "The 'source' field is a fully qualified three-part name (catalog.schema.table)",
-    "FILTER clauses use the (WHERE ...) syntax with parentheses"
+    "FILTER clauses use the (WHERE ...) syntax with parentheses",
+    "Every measure has a 'format' object: {\"type\": \"currency\"}, {\"type\": \"percentage\"}, or {\"type\": \"number\"}",
+    "Every measure and dimension has 'display_name' (human-readable label) and 'synonyms' (array of 2-5 alternative names)"
   ]
 }

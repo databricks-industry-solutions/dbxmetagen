@@ -1,14 +1,15 @@
 # KB-Enriched Parallel Modes: Comments -> KB build -> PI + Domain (with KB comments)
 #
-# Generates comments first, then builds the knowledge base, then runs PI and
-# domain classification in parallel with use_kb_comments=true so that the
-# AI-generated descriptions from the KB enrich the PI/domain prompts even when
-# UC DDL comments haven't been applied.
+# Generates comments first, then builds the table and column knowledge bases
+# in parallel, then runs PI and domain classification in parallel with
+# use_kb_comments=true so that the AI-generated descriptions from the KB
+# enrich the PI/domain prompts even when UC DDL comments haven't been applied.
 
 resources:
   jobs:
     metadata_kb_enriched_modes_job:
       name: "${var.app_name}_kb_enriched_modes_job"
+      budget_policy_id: ${var.budget_policy_id}
       max_concurrent_runs: 5
 
       permissions:
@@ -56,7 +57,7 @@ resources:
           max_retries: 1
           min_retry_interval_millis: 600000
           timeout_seconds: 86400
-          job_cluster_key: metadata_cluster
+          environment_key: default
           notebook_task:
             notebook_path: ../../notebooks/generate_metadata.py
             base_parameters:
@@ -77,8 +78,6 @@ resources:
               include_lineage: "{{job.parameters.include_lineage}}"
               model: "{{job.parameters.model}}"
               spacy_model_names: "{{job.parameters.spacy_model_names}}"
-          libraries:
-            - whl: ../../dist/*.whl
 
         - task_key: build_knowledge_base
           max_retries: 1
@@ -86,14 +85,25 @@ resources:
           timeout_seconds: 14400
           depends_on:
             - task_key: generate_comments
-          job_cluster_key: metadata_cluster
+          environment_key: default
           notebook_task:
             notebook_path: ../../notebooks/build_knowledge_base.py
             base_parameters:
               catalog_name: "{{job.parameters.catalog_name}}"
               schema_name: "{{job.parameters.schema_name}}"
-          libraries:
-            - whl: ../../dist/*.whl
+
+        - task_key: build_column_kb
+          max_retries: 1
+          min_retry_interval_millis: 600000
+          timeout_seconds: 14400
+          depends_on:
+            - task_key: generate_comments
+          environment_key: default
+          notebook_task:
+            notebook_path: ../../notebooks/build_column_kb.py
+            base_parameters:
+              catalog_name: "{{job.parameters.catalog_name}}"
+              schema_name: "{{job.parameters.schema_name}}"
 
         - task_key: generate_pi
           max_retries: 1
@@ -101,7 +111,8 @@ resources:
           timeout_seconds: 86400
           depends_on:
             - task_key: build_knowledge_base
-          job_cluster_key: metadata_cluster
+            - task_key: build_column_kb
+          environment_key: default
           notebook_task:
             notebook_path: ../../notebooks/generate_metadata.py
             base_parameters:
@@ -124,8 +135,6 @@ resources:
               include_lineage: "{{job.parameters.include_lineage}}"
               model: "{{job.parameters.model}}"
               spacy_model_names: "{{job.parameters.spacy_model_names}}"
-          libraries:
-            - whl: ../../dist/*.whl
 
         - task_key: generate_domain
           max_retries: 1
@@ -133,7 +142,8 @@ resources:
           timeout_seconds: 86400
           depends_on:
             - task_key: build_knowledge_base
-          job_cluster_key: metadata_cluster
+            - task_key: build_column_kb
+          environment_key: default
           notebook_task:
             notebook_path: ../../notebooks/generate_metadata.py
             base_parameters:
@@ -156,19 +166,10 @@ resources:
               include_lineage: "{{job.parameters.include_lineage}}"
               model: "{{job.parameters.model}}"
               spacy_model_names: "{{job.parameters.spacy_model_names}}"
-          libraries:
-            - whl: ../../dist/*.whl
 
-      job_clusters:
-        - job_cluster_key: metadata_cluster
-          new_cluster:
-            apply_policy_default_values: true
-            policy_id: ${var.policy_id}
-            spark_version: 17.3.x-cpu-ml-scala2.13
-            node_type_id: ${var.node_type}
-            data_security_mode: SINGLE_USER
-            autoscale:
-              min_workers: 1
-              max_workers: 4
-            custom_tags:
-              project: dbxmetagen
+      environments:
+        - environment_key: default
+          spec:
+            environment_version: "2"
+            dependencies:
+              - ../../dist/*.whl

@@ -1004,6 +1004,19 @@ class TestStoreEntitiesMergeUpdate:
         merge_sql = [c[0][0] for c in builder.spark.sql.call_args_list if "MERGE" in c[0][0]][0]
         assert "validated = FALSE" in merge_sql
 
+    def test_full_mode_does_not_reset_validated(self):
+        """Full mode should NOT reset validated=FALSE in the UPDATE SET clause."""
+        mock_spark = MagicMock()
+        config = OntologyConfig(catalog_name="cat", schema_name="sch", incremental=False)
+        with patch.object(OntologyLoader, 'load_config') as mock_load:
+            mock_load.return_value = OntologyLoader._default_config()
+            builder = OntologyBuilder(mock_spark, config)
+        entities = [{"entity_id": "e1", "entity_type": "T", "source_tables": ["t1"], "confidence": 0.8}]
+        builder._store_entities(entities)
+        merge_sql = [c[0][0] for c in mock_spark.sql.call_args_list if "MERGE" in c[0][0]][0]
+        assert "AND target.validated = FALSE THEN UPDATE SET" in merge_sql
+        assert "target.validation_notes = NULL" not in merge_sql
+
     def test_merge_updates_expected_columns(self, builder):
         entities = [{"entity_id": "e1", "entity_type": "T", "source_tables": ["t1"], "confidence": 0.5}]
         builder._store_entities(entities)
@@ -1125,9 +1138,9 @@ class TestPurgeCurrentBundleStale:
         sql = b.spark.sql.call_args[0][0]
         assert "DELETE FROM" in sql
         assert "auto_discovered = TRUE" in sql
+        assert "validated = FALSE" in sql
         assert "ontology_bundle = 'schema_org'" in sql
         assert "'table'" in sql
-        assert "validated" not in sql.lower().replace("auto_discovered", "")
 
     def test_emits_delete_for_column_granularity(self, builder_non_incremental):
         b = builder_non_incremental
@@ -2644,15 +2657,15 @@ class TestStoreEntitiesNonIncremental:
         assert "target.validated = FALSE THEN UPDATE" in sql
         assert "target.validated = FALSE," not in sql.split("THEN UPDATE")[1]
 
-    def test_non_incremental_merge_drops_validated_guard(self, builder_non_incremental):
+    def test_non_incremental_merge_still_respects_validated(self, builder_non_incremental):
+        """Full mode now preserves validated entities (steward edits survive)."""
         sql = self._get_merge_sql(builder_non_incremental)
-        assert "AND target.validated = FALSE THEN UPDATE" not in sql
+        assert "AND target.validated = FALSE THEN UPDATE" in sql
 
-    def test_non_incremental_merge_resets_validated(self, builder_non_incremental):
+    def test_non_incremental_merge_does_not_reset_validated(self, builder_non_incremental):
+        """Full mode should NOT reset validated=FALSE in the UPDATE SET clause."""
         sql = self._get_merge_sql(builder_non_incremental)
-        after_update = sql.split("THEN UPDATE SET")[1]
-        assert "target.validated = FALSE" in after_update
-        assert "target.validation_notes = NULL" in after_update
+        assert "target.validation_notes = NULL" not in sql
 
 
 class TestForceRevalidate:

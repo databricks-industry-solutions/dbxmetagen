@@ -417,7 +417,9 @@ print(f"[CLEANUP] Dropped test schema: {catalog_name}.{ontology_test_schema}")
 
 # COMMAND ----------
 
+import json
 print("=" * 60)
 print("ALL ONTOLOGY INTEGRATION TESTS PASSED")
 print("=" * 60)
+dbutils.notebook.exit(json.dumps({"passed": True, "error": None}))
 

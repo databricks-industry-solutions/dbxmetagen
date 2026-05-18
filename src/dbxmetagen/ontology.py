@@ -2903,6 +2903,7 @@ class OntologyBuilder:
             result = self.spark.sql(f"""
                 DELETE FROM {self.config.fully_qualified_entities}
                 WHERE auto_discovered = TRUE
+                  AND validated = FALSE
                   AND ontology_bundle = '{esc}'
                   AND COALESCE(attributes['granularity'], 'table') = '{granularity}'
             """)
@@ -2980,21 +2981,16 @@ class OntologyBuilder:
         df = self.spark.createDataFrame(rows, schema=self.ENTITIES_SCHEMA)
         df.createOrReplaceTempView(view_name)
 
-        if self.config.incremental:
-            match_condition = "WHEN MATCHED AND target.auto_discovered = TRUE AND target.validated = FALSE THEN UPDATE SET"
-            extra_sets = ""
-        else:
-            match_condition = "WHEN MATCHED AND target.auto_discovered = TRUE THEN UPDATE SET"
-            extra_sets = ",\n            target.validated = FALSE,\n            target.validation_notes = NULL"
+        match_condition = "WHEN MATCHED AND target.auto_discovered = TRUE AND target.validated = FALSE THEN UPDATE SET"
+        extra_sets = ""
 
         # MERGE: Upsert discovered entities into ontology_entities. Keyed on the
         # composite of (entity_name, sorted source_tables, granularity) -- this
         # means "Patient from [table_a, table_b] at table-level" is a distinct
         # entity from "Patient from [table_c] at column-level".
-        # In incremental mode: only updates rows that are auto_discovered AND not
-        # yet validated by a steward, preserving manual overrides.
-        # In full mode: updates all auto_discovered rows and resets validated/notes,
-        # allowing the pipeline to overwrite stale steward decisions.
+        # Only updates rows that are auto_discovered AND not yet validated by a
+        # steward, preserving manual overrides in both incremental and full modes.
+        # To re-classify a validated entity, un-check validated via entity-review.
         # WHY: The entity table is the central registry for all ontology entities.
         # Multiple pipeline stages (discovery, column properties, role classification)
         # write to it. MERGE ensures idempotency across re-runs without duplicating.
@@ -3734,7 +3730,6 @@ class OntologyBuilder:
                 F.lit(None).cast("string").alias("_matched_rel"),
             )
 
-        edges_df.cache()
         edge_count = edges_df.count()
 
         # Identify undiscovered declared relationships
@@ -3761,7 +3756,6 @@ class OntologyBuilder:
             )
 
         if edge_count == 0:
-            edges_df.unpersist()
             logger.info("No inter-entity relationships discovered")
             return result
 
@@ -3776,7 +3770,6 @@ class OntologyBuilder:
             F.current_timestamp().alias("created_at"),
             F.current_timestamp().alias("updated_at"),
         ).dropDuplicates(["edge_id"])
-        edges_df.unpersist()
         edge_count = write_df.count()
         logger.info("Built %d inter-entity relationship edges", edge_count)
         result["edges_added"] = edge_count
@@ -5456,7 +5449,7 @@ class OntologyBuilder:
             edge_dfs.append(align_edge_schema(same_df))
 
         if edge_dfs:
-            combined = reduce(DataFrame.unionByName, edge_dfs).dropDuplicates(["edge_id"])
+            combined = reduce(lambda a, b: a.unionByName(b), edge_dfs).dropDuplicates(["edge_id"])
             edges_added = merge_edges(self.spark, edges_table, combined, source_system="ontology")
         else:
             edges_added = 0
@@ -5584,7 +5577,7 @@ class OntologyBuilder:
             edge_dfs.append(align_edge_schema(same_df))
 
         if edge_dfs:
-            combined = reduce(DataFrame.unionByName, edge_dfs).dropDuplicates(["edge_id"])
+            combined = reduce(lambda a, b: a.unionByName(b), edge_dfs).dropDuplicates(["edge_id"])
             total_edges = merge_edges(self.spark, edges_table, combined, source_system="ontology", sweep_stale=sweep_stale)
         else:
             total_edges = 0

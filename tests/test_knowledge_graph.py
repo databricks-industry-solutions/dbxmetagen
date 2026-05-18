@@ -94,7 +94,7 @@ class TestCreateNodesDDL:
         )
 
     def test_nodes_ddl_includes_required_columns(self):
-        """Nodes DDL must include all required columns for GraphFrames."""
+        """Nodes DDL must include all required columns."""
         builder = KnowledgeGraphBuilder(self.mock_spark, self.config)
         builder.create_nodes_table()
         
@@ -129,8 +129,8 @@ class TestCreateEdgesDDL:
             schema_name="test_sch"
         )
 
-    def test_edges_ddl_includes_graphframes_columns(self):
-        """Edges DDL must include src, dst columns required by GraphFrames."""
+    def test_edges_ddl_includes_graph_columns(self):
+        """Edges DDL must include src, dst columns."""
         builder = KnowledgeGraphBuilder(self.mock_spark, self.config)
         builder.create_edges_table()
         
@@ -174,7 +174,7 @@ class TestNodesMergeSQL:
         return None
 
     def test_nodes_merge_matches_on_id(self):
-        """Nodes MERGE should match on id (the GraphFrames key)."""
+        """Nodes MERGE should match on id (the primary key)."""
         merge_sql = self._get_merge_sql()
         assert "ON target.id = source.id" in merge_sql
 

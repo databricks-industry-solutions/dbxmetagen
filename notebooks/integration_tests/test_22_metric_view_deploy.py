@@ -193,3 +193,4 @@ spark.sql(
 )
 spark.sql(f"DROP SCHEMA IF EXISTS {catalog_name}.{test_schema}_bronze")
 print("Cleanup complete")
+dbutils.notebook.exit(json.dumps({"passed": True, "error": None}))

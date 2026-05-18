@@ -864,7 +864,6 @@ class FKPredictor:
             lineage_df = self.spark.sql(
                 f"SELECT table_name, upstream_tables, downstream_tables FROM {ext}"
             )
-            lineage_df.cache()
             lineage_df.count()
         except Exception:
             return candidates.withColumn("lineage_score", F.lit(0.0))
@@ -901,7 +900,7 @@ class FKPredictor:
             (candidates.table_a == scored._la) & (candidates.table_b == scored._lb),
             "left",
         ).drop("_la", "_lb")
-        lineage_df.unpersist()
+        lineage_df = None
         return result.withColumn("lineage_score", F.coalesce(F.col("lineage_score"), F.lit(0.0)))
 
     # ------------------------------------------------------------------
@@ -1042,11 +1041,24 @@ class FKPredictor:
             for f in as_completed(futures):
                 sample_map.update(f.result())
 
-        bc = self.spark.sparkContext.broadcast(sample_map)
-        get_samples = F.udf(lambda cid: bc.value.get(cid, []), "array<string>")
-        return candidates.withColumn(
-            "samples_a", get_samples(F.col("col_a"))
-        ).withColumn("samples_b", get_samples(F.col("col_b")))
+        from pyspark.sql.types import StructType, StructField, StringType, ArrayType
+        sample_rows = [(k, v) for k, v in sample_map.items()]
+        sample_schema = StructType([
+            StructField("_col_id", StringType()),
+            StructField("_samples", ArrayType(StringType())),
+        ])
+        sample_df = F.broadcast(self.spark.createDataFrame(sample_rows, sample_schema))
+        sa = sample_df.alias("sa")
+        sb = sample_df.alias("sb")
+        return (
+            candidates
+            .join(sa, F.col("col_a") == F.col("sa._col_id"), "left")
+            .withColumn("samples_a", F.coalesce(F.col("sa._samples"), F.array()))
+            .drop(F.col("sa._col_id"), F.col("sa._samples"))
+            .join(sb, F.col("col_b") == F.col("sb._col_id"), "left")
+            .withColumn("samples_b", F.coalesce(F.col("sb._samples"), F.array()))
+            .drop(F.col("sb._col_id"), F.col("sb._samples"))
+        )
 
     # ------------------------------------------------------------------
     # Step 2b: Cardinality analysis
@@ -1673,7 +1685,7 @@ class FKPredictor:
                     LEAST(1.0, GREATEST(0.0, ai_confidence)) as ai_confidence,
                     ai_reasoning, join_rate, join_matched, pk_uniqueness, ri_score,
                     LEAST(1.0, GREATEST(0.0, final_confidence)) as final_confidence,
-                    created_at, updated_at, is_fk
+                    created_at, updated_at, is_fk, review_updated_at
                 FROM (
                     SELECT *, ROW_NUMBER() OVER (
                         PARTITION BY src_column, dst_column
@@ -1748,21 +1760,25 @@ class FKPredictor:
                     SELECT 1 FROM {staging_view} s
                     WHERE s.src_column = {target}.dst_column
                       AND s.dst_column = {target}.src_column
-                )
+                ) AND {target}.review_updated_at IS NULL
             """)
         except Exception:
             pass
-        # MERGE: Upserts the cumulative FK predictions Delta table keyed on (src_column, dst_column) from `_fk_predictions_staging`.
-        # WHY: Persist cross-run scores/refreshed AI output so downstream graph_edges, DDL, and dashboards always read one
-        # authoritative row per column pair rather than replaying ephemeral batch results.
-        # TRADEOFFS: MERGE avoids append-only duplication and avoids full truncate; MATCHED refreshes scalar fields and timestamps.
-        # Cost is proportional to staged row count; alternatives are DELETE+INSERT (two passes, brief inconsistency) or
-        # partition-by-run append with compaction (heavier dedup queries later).
+        # MERGE: Upserts the cumulative FK predictions Delta table keyed on (src_column, dst_column).
+        # Rows with review_updated_at newer than staged updated_at are skipped (steward-reviewed).
+        # Re-running FK prediction produces fresh updated_at that naturally overrides stale reviews.
+        insert_cols = (
+            "src_column, dst_column, src_table, dst_table, "
+            "col_similarity, table_similarity, rule_score, ai_confidence, "
+            "ai_reasoning, join_rate, join_matched, pk_uniqueness, ri_score, "
+            "final_confidence, created_at, updated_at, is_fk"
+        )
+        insert_vals = ", ".join(f"s.{c.strip()}" for c in insert_cols.split(","))
         self.spark.sql(f"""
             MERGE INTO {target} AS t
             USING {staging_view} AS s
             ON t.src_column = s.src_column AND t.dst_column = s.dst_column
-            WHEN MATCHED THEN UPDATE SET
+            WHEN MATCHED AND t.review_updated_at IS NULL THEN UPDATE SET
                 src_table = s.src_table, dst_table = s.dst_table,
                 col_similarity = s.col_similarity, table_similarity = s.table_similarity,
                 rule_score = s.rule_score, ai_confidence = s.ai_confidence,
@@ -1770,7 +1786,8 @@ class FKPredictor:
                 join_matched = s.join_matched, pk_uniqueness = s.pk_uniqueness,
                 ri_score = s.ri_score, final_confidence = s.final_confidence,
                 updated_at = s.updated_at, is_fk = s.is_fk
-            WHEN NOT MATCHED THEN INSERT *
+            WHEN NOT MATCHED THEN INSERT ({insert_cols})
+                VALUES ({insert_vals})
         """)
         logger.info("Merged %d FK predictions", count)
         return count
@@ -1912,7 +1929,7 @@ class FKPredictor:
                 updated_at TIMESTAMP, is_fk BOOLEAN
             ) COMMENT 'Predicted foreign key relationships'
         """)
-        for col_def in ["updated_at TIMESTAMP", "is_fk BOOLEAN"]:
+        for col_def in ["updated_at TIMESTAMP", "is_fk BOOLEAN", "review_updated_at TIMESTAMP"]:
             try:
                 self.spark.sql(f"ALTER TABLE {preds} ADD COLUMNS ({col_def})")
                 logger.info("Added column %s to %s", col_def, preds)

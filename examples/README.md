@@ -47,7 +47,7 @@ All notebooks share configuration via `helpers/common.py` (loaded with `%run`). 
 
 ## Compute Requirements
 
-These notebooks run on **serverless compute** or classic clusters with DBR 14+. Step 03 (`build_analytics`) builds a knowledge graph using GraphFrames -- this requires an ML runtime cluster (e.g. `17.3.x-cpu-ml-scala2.13`), not serverless.
+These notebooks run on **serverless compute** or classic clusters with DBR 14+.
 
 ## Customizing Business Questions
 
