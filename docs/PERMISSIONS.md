@@ -129,10 +129,10 @@ When OBO is enabled, the app declares `user_api_scopes` that control which Datab
 
 | Deploy method | Scopes declared |
 |--------------|----------------|
-| `deploy.sh` | `files.files`, `sql.statement-execution` |
-| Notebook deploy (NB02) | `files.files`, `serving.serving-endpoints`, `sql.statement-execution` |
+| `deploy.sh` | `files.files`, `sql.statement-execution`, `dashboards.genie` |
+| Notebook deploy (NB02) | `files.files`, `serving.serving-endpoints`, `sql.statement-execution`, `dashboards.genie` |
 
-NB02 includes `serving.serving-endpoints` because it always sets `user_api_scopes` unconditionally. `deploy.sh` omits it. In practice the serving scope is only needed if you want OBO-authenticated users to call model serving endpoints directly from the app UI (not currently used).
+Both paths include `dashboards.genie` for Genie Space creation/update via the OBO token. NB02 additionally includes `serving.serving-endpoints` because it always sets `user_api_scopes` unconditionally. `deploy.sh` omits the serving scope since it's only needed if OBO-authenticated users call model serving endpoints directly from the app UI (not currently used).
 
 ---
 

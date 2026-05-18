@@ -167,7 +167,7 @@ if lines:
     perm_block = '      permissions:\n' + '\n'.join(lines)
 scopes_block = ''
 if enable_obo:
-    scopes_block = '      user_api_scopes:\n        - \"files.files\"\n        - \"sql.statement-execution\"'
+    scopes_block = '      user_api_scopes:\n        - \"files.files\"\n        - \"sql.statement-execution\"\n        - \"dashboards.genie\"'
 template = open('resources/apps/dbxmetagen_app.yml.template').read()
 result = template.replace('__USER_API_SCOPES__', scopes_block).replace('__APP_PERMISSIONS__', perm_block)
 open('resources/apps/dbxmetagen_app.yml', 'w').write(result)

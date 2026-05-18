@@ -158,6 +158,7 @@ USER_API_SCOPES = [
     "files.files",
     "serving.serving-endpoints",
     "sql.statement-execution",
+    "dashboards.genie",
 ]
 
 RESOURCE_TO_JOB_SUFFIX = {
