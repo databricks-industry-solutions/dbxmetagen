@@ -34,7 +34,7 @@ export function useCatalogSchemaTables(initialCatalog = '', initialSchema = '', 
 
   useEffect(() => {
     safeArrayFetch('/api/catalogs')
-      .then(({ data, error: err }) => { setCatalogs(data); if (err) setError(err) })
+      .then(({ data, error: err }) => { setCatalogs(data); setError(err) })
       .catch(() => setCatalogs([]))
   }, [])
 
@@ -42,7 +42,7 @@ export function useCatalogSchemaTables(initialCatalog = '', initialSchema = '', 
     setSchemas([]); setTables([]); setError(null); setAllSchemaTableCount(0)
     if (!catalog) return
     safeArrayFetch(`/api/schemas?catalog=${encodeURIComponent(catalog)}`)
-      .then(({ data, error: err }) => { setSchemas(data); if (err) setError(err) })
+      .then(({ data, error: err }) => { setSchemas(data); setError(err) })
       .catch(() => setSchemas([]))
   }, [catalog])
 
@@ -56,13 +56,13 @@ export function useCatalogSchemaTables(initialCatalog = '', initialSchema = '', 
         safeArrayFetch(`/api/tables/kb?catalog=${catEnc}&schema=${schEnc}`),
         safeArrayFetch(`/api/tables?catalog=${catEnc}&schema=${schEnc}`),
       ]).then(([kb, all]) => {
-        if (kb.error) setError(kb.error)
+        setError(kb.error)
         setTables(kb.data)
         setAllSchemaTableCount(all.data.length)
       }).catch(() => setTables([]))
     } else {
       safeArrayFetch(`/api/tables?catalog=${catEnc}&schema=${schEnc}`)
-        .then(({ data, error: err }) => { setTables(data); setAllSchemaTableCount(data.length); if (err) setError(err) })
+        .then(({ data, error: err }) => { setTables(data); setAllSchemaTableCount(data.length); setError(err) })
         .catch(() => setTables([]))
     }
   }, [catalog, schema, kbOnly])

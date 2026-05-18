@@ -20,6 +20,7 @@ window.fetch = async (...args) => {
   return res
 }
 
+import { cachedFetchObj, TTL } from './apiCache'
 import AgentChat from './components/AgentChat'
 import BatchJobs from './components/BatchJobs'
 import MetadataReview from './components/MetadataReview'
@@ -102,6 +103,21 @@ export async function safeFetchObj(url, options) {
   } catch (e) { return { data: null, error: e.message } }
 }
 
+export function PrereqBanner({ show, message, actionLabel, onAction }) {
+  if (!show) return null
+  return (
+    <div className="rounded-xl border border-amber-200 dark:border-amber-700/40 bg-amber-50/80 dark:bg-amber-900/15 px-4 py-3 text-sm flex items-center gap-3 animate-slide-up mb-4">
+      <svg className="w-4 h-4 text-amber-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+      </svg>
+      <span className="text-slate-600 dark:text-slate-300">{message}</span>
+      {actionLabel && onAction && (
+        <button onClick={onAction} className="shrink-0 text-xs font-semibold text-dbx-lava hover:underline">{actionLabel}</button>
+      )}
+    </div>
+  )
+}
+
 export function ErrorBanner({ error, onDismiss }) {
   if (!error) return null
   return (
@@ -138,18 +154,18 @@ const SLIDES = [
     ],
   },
   {
-    title: 'Workflow',
+    title: 'Workflow — 5 Steps',
     body: [
-      'Design -- Generate Metadata (core jobs, advanced analytics, metric assets) and Define Metrics.',
-      'Review & Apply -- Edit and apply descriptions, tags, entity types, and foreign keys. Check coverage and ontology health.',
-      'Explore -- Chat with the metadata agent, graph explorer, and semantic search.',
+      'Follow the numbered steps in the workflow bar at the top of every page:',
+      '1. Generate Metadata — Run core jobs (descriptions, sensitivity, domain) then advanced (ontology, FK, graph). Start with a small set of tables.\n2. Review & Apply — Inspect AI-generated results, edit where needed, then apply metadata to Unity Catalog.\n3. Define Metrics — Create reusable KPI metric views from business questions.\n4. Build Genie Space — Assemble a natural-language SQL space for end users.\n5. Explore — Chat with the agent, browse the knowledge graph, and run semantic search.',
     ],
   },
   {
     title: 'Getting Started',
     body: [
-      'Tip: start with a small set of tables to see results quickly, then expand.',
-      '1. Design > Generate Metadata -- run core and advanced jobs on your target tables\n2. Review > Review & Apply -- inspect, edit, and apply the generated metadata\n3. Review > Coverage -- check completeness and health across your catalog\n4. Design > Define Metrics -- create reusable KPI definitions\n5. Design > Build Genie Space -- enable natural-language SQL for end users',
+      'Tip: start with 5-10 tables to see results quickly, then expand scope.',
+      'The workflow bar shows your progress. Green checkmarks mean that step has data. Click any step to jump there.',
+      'On the Generate Metadata page, run "Generate Core Metadata" first — advanced analytics build on top of core results. The "All Three" button is the fastest way to generate descriptions, sensitivity labels, and domain classification in one pass.',
     ],
   },
 ]
@@ -200,6 +216,118 @@ function InfoSlides({ open, onClose }) {
             <button onClick={onClose} className="btn-primary btn-sm">Done</button>
           )}
         </div>
+      </div>
+    </div>
+  )
+}
+
+const PIPELINE_STEPS = [
+  { id: 'jobs', label: 'Generate Metadata', short: 'Generate',
+    desc: 'Run core (descriptions, sensitivity, domain) and advanced (ontology, FK, graph) jobs',
+    countKey: 'profiled', totalKey: 'total_tables', unit: 'tables described' },
+  { id: 'metadata', label: 'Review & Apply', short: 'Review',
+    desc: 'Inspect AI-generated metadata, edit, and apply to Unity Catalog',
+    countKey: 'with_comments', totalKey: 'total_tables', unit: 'with comments' },
+  { id: 'semantic', label: 'Define Metrics', short: 'Metrics',
+    desc: 'Create reusable KPI definitions as metric views',
+    countKey: 'metric_views', unit: 'metric views' },
+  { id: 'genie', label: 'Build Genie Space', short: 'Genie',
+    desc: 'Create natural-language SQL spaces for end users',
+    countKey: null, unit: null },
+  { id: 'agent', label: 'Explore', short: 'Explore',
+    desc: 'Chat with the metadata agent, graph explorer, and semantic search',
+    countKey: 'vs_documents', unit: 'indexed docs' },
+]
+
+function PipelineStepper({ activeTab, onSelect, stats }) {
+  const [dismissed, setDismissed] = useState(() => {
+    try { return localStorage.getItem('dbxmetagen_stepperDismissed') === 'true' } catch { return false }
+  })
+
+  const dismiss = () => {
+    setDismissed(true)
+    try { localStorage.setItem('dbxmetagen_stepperDismissed', 'true') } catch {}
+  }
+  const show = () => {
+    setDismissed(false)
+    try { localStorage.removeItem('dbxmetagen_stepperDismissed') } catch {}
+  }
+
+  if (dismissed) {
+    return (
+      <button onClick={show} className="text-xs text-slate-400 dark:text-slate-500 hover:text-dbx-lava dark:hover:text-dbx-lava transition-colors flex items-center gap-1 mb-2">
+        <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
+        Show workflow guide
+      </button>
+    )
+  }
+
+  const activeIdx = PIPELINE_STEPS.findIndex(s => s.id === activeTab)
+
+  return (
+    <div className="mb-4 animate-slide-up">
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Workflow</span>
+        <button onClick={dismiss} className="text-xs text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 transition-colors">Hide</button>
+      </div>
+      <div className="flex items-stretch gap-0">
+        {PIPELINE_STEPS.map((step, i) => {
+          const count = step.countKey && stats ? (stats[step.countKey] || 0) : null
+          const total = step.totalKey && stats ? (stats[step.totalKey] || 0) : null
+          const isActive = step.id === activeTab
+          const isDone = count !== null && count > 0
+          const isReachable = i === 0 || (stats && (stats.profiled || 0) > 0)
+
+          let ringColor = 'border-slate-300 dark:border-slate-600 text-slate-400 dark:text-slate-500'
+          let bgColor = 'bg-white dark:bg-dbx-navy-600'
+          if (isActive) {
+            ringColor = 'border-dbx-lava text-dbx-lava'
+            bgColor = 'bg-red-50/50 dark:bg-dbx-lava/10'
+          } else if (isDone) {
+            ringColor = 'border-emerald-400 text-emerald-500'
+            bgColor = 'bg-emerald-50/50 dark:bg-emerald-900/10'
+          }
+
+          return (
+            <React.Fragment key={step.id}>
+              {i > 0 && (
+                <div className="flex items-center px-0.5 shrink-0">
+                  <div className={`w-6 h-0.5 ${isDone || isActive ? 'bg-emerald-300 dark:bg-emerald-600' : 'bg-slate-200 dark:bg-slate-700'}`} />
+                </div>
+              )}
+              <button
+                onClick={() => onSelect(step.id)}
+                title={step.desc}
+                className={`flex-1 min-w-0 rounded-xl border-2 ${ringColor} ${bgColor} px-3 py-2.5 text-left transition-all hover:shadow-sm group ${
+                  !isReachable && !isActive ? 'opacity-50' : ''
+                }`}
+              >
+                <div className="flex items-center gap-2 mb-0.5">
+                  <span className={`flex items-center justify-center w-5 h-5 rounded-full text-[10px] font-bold shrink-0 ${
+                    isActive ? 'bg-dbx-lava text-white'
+                    : isDone ? 'bg-emerald-500 text-white'
+                    : 'bg-slate-200 dark:bg-slate-700 text-slate-500 dark:text-slate-400'
+                  }`}>
+                    {isDone && !isActive ? (
+                      <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" /></svg>
+                    ) : (i + 1)}
+                  </span>
+                  <span className={`text-xs font-semibold truncate ${isActive ? 'text-dbx-lava' : 'text-slate-700 dark:text-slate-200'}`}>
+                    {step.short}
+                  </span>
+                </div>
+                {count !== null && (
+                  <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5 truncate pl-7">
+                    {total !== null ? `${count}/${total}` : count} {step.unit}
+                  </p>
+                )}
+                {count === null && step.unit === null && stats && (stats.profiled || 0) > 0 && (
+                  <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5 truncate pl-7">Ready</p>
+                )}
+              </button>
+            </React.Fragment>
+          )
+        })}
       </div>
     </div>
   )
@@ -329,6 +457,7 @@ export default function App() {
   const [visitedTabs, setVisitedTabs] = useState(new Set([readHash()]))
   const [showInfo, setShowInfo] = useState(false)
   const [sessionExpired, setSessionExpired] = useState(false)
+  const [pipelineStats, setPipelineStats] = useState(null)
   const [dark, setDark] = useState(() => {
     if (typeof window !== 'undefined') {
       const saved = localStorage.getItem('dbxmetagen-dark')
@@ -358,6 +487,11 @@ export default function App() {
     document.documentElement.classList.toggle('dark', dark)
     localStorage.setItem('dbxmetagen-dark', String(dark))
   }, [dark])
+
+  useEffect(() => {
+    cachedFetchObj('/api/coverage/holistic', {}, TTL.DASHBOARD)
+      .then(({ data }) => { if (data) setPipelineStats(data) })
+  }, [activeTab])
 
   useEffect(() => {
     const h = () => setSessionExpired(true)
@@ -420,22 +554,7 @@ export default function App() {
       </nav>
 
       <main className="p-6 max-w-[90rem] mx-auto">
-        <details className="mb-4 group">
-          <summary className="inline-flex items-center gap-1.5 text-sm font-medium text-slate-500 dark:text-slate-400 cursor-pointer select-none hover:text-dbx-lava dark:hover:text-dbx-lava transition-colors">
-            <svg className="w-3.5 h-3.5 transition-transform group-open:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-            </svg>
-            Not sure where to start?
-          </summary>
-          <ol className="mt-3 ml-1 space-y-2 text-sm text-slate-600 dark:text-slate-300 list-decimal list-inside bg-white/60 dark:bg-dbx-navy-600/50 rounded-xl p-5 border border-slate-200/80 dark:border-dbx-navy-400/20 animate-slide-up">
-            <li>Choose an <strong>ontology</strong> or <strong>domain bundle</strong> on the Generate Metadata page.</li>
-            <li>Run <strong>Generate Core Metadata</strong> on a few tables. Optionally check "Apply to tables" to write descriptions and tags directly.</li>
-            <li>Run <strong>Generate Advanced Metadata</strong> -- incremental mode will process only the tables you just generated.</li>
-            <li>Head to <strong>Review</strong> to inspect results, then either update the knowledge base tables or apply metadata to your tables.</li>
-            <li>Go to <strong>Define Metrics</strong> and generate metric views for your key tables.</li>
-            <li>That's it -- you have a semantic layer! Keep adding tables and it grows from here.</li>
-          </ol>
-        </details>
+        <PipelineStepper activeTab={activeTab} onSelect={setActiveTab} stats={pipelineStats} />
         {Object.entries(COMPONENTS).map(([tabId, Comp]) => {
           if (!visitedTabs.has(tabId)) return null
           const isActive = tabId === activeTab
@@ -444,7 +563,7 @@ export default function App() {
               className={`border-t-2 ${TAB_ACCENT[tabId] || 'border-t-transparent'} pt-4 ${isActive ? 'animate-slide-up' : ''}`}
               style={{ display: isActive ? 'block' : 'none' }}>
               <TabErrorBoundary>
-                <Comp onNavigate={setActiveTab} />
+                <Comp onNavigate={setActiveTab} pipelineStats={pipelineStats} />
               </TabErrorBoundary>
             </div>
           )

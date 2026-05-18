@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react'
-import { safeFetch, ErrorBanner } from '../App'
+import { safeFetch, ErrorBanner, PrereqBanner } from '../App'
 import { FKApplyPanel } from './ForeignKeyGeneration'
 import { PageHeader, EmptyState, SkeletonTable } from './ui'
 import { useCatalogSchemaTables } from '../hooks/useCatalogSchemaTables'
@@ -483,6 +483,20 @@ function ReviewEditor() {
             <span className="text-slate-600 dark:text-slate-300">{info}</span>
           </div>
           <button onClick={() => setInfo(null)} className="text-slate-400 hover:text-slate-600 ml-2">&times;</button>
+        </div>
+      )}
+
+      {/* Workflow guide -- shown when no data is loaded yet */}
+      {reviewData.length === 0 && !loading && (
+        <div className="card p-5 border-l-4 border-l-dbx-teal space-y-3">
+          <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200">How to use this page</h3>
+          <ol className="text-xs text-slate-600 dark:text-slate-300 space-y-2 list-decimal list-inside">
+            <li><strong>Select scope</strong> -- pick a catalog and schema below, then click <strong>Load</strong> to pull in generated metadata.</li>
+            <li><strong>Review</strong> -- switch between <em>Comments</em>, <em>PII/PHI</em>, <em>Domain</em>, <em>Ontology</em>, and <em>Foreign Keys</em> tabs to inspect and edit each metadata type. Set review status per table.</li>
+            <li><strong>Save changes</strong> -- edits to comments and classifications are saved back to the knowledge base tables when you click <em>Save Changes</em>. Review status and property roles save instantly.</li>
+            <li><strong>Apply to catalog</strong> -- scroll to <em>DDL Bundle</em> to generate and execute SQL that writes comments, tags, and constraints to your Unity Catalog tables.</li>
+          </ol>
+          <p className="text-[10px] text-slate-400 dark:text-slate-500">You can also <strong>Export</strong> metadata as TSV/Excel for offline review, then <strong>Import</strong> the edited file back.</p>
         </div>
       )}
 
@@ -1769,7 +1783,7 @@ function EntityTagsPanel() {
   )
 }
 
-export default function MetadataReview() {
+export default function MetadataReview({ onNavigate, pipelineStats }) {
   const [tab, setTab] = useState('editor')
   const [data, setData] = useState([])
   const [original, setOriginal] = useState([])
@@ -1908,8 +1922,14 @@ export default function MetadataReview() {
 
   return (
     <div className="space-y-4">
-      <PageHeader title="Review & Apply" subtitle="Review, edit, and apply metadata changes" />
+      <PageHeader title="Review & Apply" subtitle="Inspect AI-generated metadata, make corrections, then apply approved changes to Unity Catalog" />
       <ErrorBanner error={error} />
+      <PrereqBanner
+        show={pipelineStats && pipelineStats.profiled === 0}
+        message="No metadata generated yet. Run Generate Metadata (Step 1) first to produce results you can review here."
+        actionLabel="Go to Generate Metadata"
+        onAction={() => onNavigate?.('jobs')}
+      />
       <div className="flex flex-wrap items-center gap-4">
         <div className="inline-flex bg-dbx-oat/60 dark:bg-dbx-navy-650 rounded-xl p-1 shadow-inner-soft">
           {[['editor', 'Review Editor'], ['fk_apply', 'FK Apply'], ['entity_tags', 'Entity Tags'], ['kb', 'Table KB'], ['columns', 'Column KB'], ['schemas', 'Schema KB'], ['log', 'Generation Log']]
@@ -1922,6 +1942,10 @@ export default function MetadataReview() {
               className={`px-3.5 py-1.5 text-sm rounded-lg transition-all duration-200 ${tab === k ? 'bg-white dark:bg-dbx-navy-500 shadow-sm font-semibold text-dbx-lava' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'}`}>{l}</button>
           ))}
         </div>
+        <span className="text-[10px] text-slate-400 dark:text-slate-500">
+          {tab === 'editor' && 'Edit comments, PII flags, domains, ontology, and FK metadata per table. Use DDL Bundle below to apply.'}
+          {tab === 'log' && 'Raw generation log showing every LLM call result -- useful for debugging or auditing.'}
+        </span>
         {!['editor', 'fk_apply', 'entity_tags'].includes(tab) && <>
           {tab === 'schemas' && (
             <input value={filterExtra} onChange={e => setFilterExtra(e.target.value)} placeholder="Filter by schema name..."

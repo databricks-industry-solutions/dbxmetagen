@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react'
-import { safeFetchObj, ErrorBanner } from '../App'
+import { safeFetchObj, ErrorBanner, PrereqBanner } from '../App'
 import { cachedFetch, TTL } from '../apiCache'
 import { PageHeader, EmptyState, SkeletonTable } from './ui'
 import GenieUpdater from './GenieUpdater'
@@ -25,7 +25,7 @@ function formatElapsed(seconds) {
   return m > 0 ? `${m}m ${s}s` : `${s}s`
 }
 
-export default function GenieBuilder({ onNavigate }) {
+export default function GenieBuilder({ onNavigate, pipelineStats }) {
   const [editingSpaceId, setEditingSpaceId] = useState(null)
   const [loadByIdValue, setLoadByIdValue] = useState('')
   const [tables, setTables] = useState([])
@@ -302,6 +302,12 @@ export default function GenieBuilder({ onNavigate }) {
       <PageHeader title="Genie Space Builder" subtitle="Create a Databricks Genie space from your tables, metric views, and business questions" />
 
       <ErrorBanner error={error} />
+      <PrereqBanner
+        show={pipelineStats && pipelineStats.with_comments === 0}
+        message="Genie spaces work best with described tables. Generate metadata first so the AI can build accurate join specs and instructions."
+        actionLabel="Go to Generate Metadata"
+        onAction={() => onNavigate?.('jobs')}
+      />
 
       {/* Step-by-step workflow guide */}
       <div className="card p-4 text-xs text-slate-600 dark:text-slate-300 leading-relaxed space-y-1">

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react'
-import { ErrorBanner } from '../App'
+import { ErrorBanner, PrereqBanner } from '../App'
 import { cachedFetch, cachedFetchObj, invalidateCache, TTL } from '../apiCache'
 import { PageHeader, EmptyState, Skeleton, Section } from './ui'
 import { useCatalogSchemaTables } from '../hooks/useCatalogSchemaTables'
@@ -203,7 +203,7 @@ function kpiMatchesTables(k, selectedTables) {
   })
 }
 
-export default function SemanticLayer() {
+export default function SemanticLayer({ onNavigate, pipelineStats }) {
   // Projects
   const [projects, setProjects] = useState([])
   const [selectedProjectId, setSelectedProjectId] = useState('')
@@ -366,7 +366,7 @@ export default function SemanticLayer() {
         setTaskStatus(data)
         if (data.status === 'done' || data.status === 'error') {
           clearInterval(pollRef.current)
-          if (data.status === 'done') { refreshDefinitions(); loadProjects(); setActiveTab('definitions') }
+          if (data.status === 'done') { refreshDefinitions(); loadProjects(); setDefStatusFilter('all'); setActiveTab('definitions') }
         }
       } catch { clearInterval(pollRef.current); setTaskStatus(prev => prev?.status === 'done' || prev?.status === 'error' ? prev : { status: 'error', error: 'Lost connection to server. Try generating again.' }) }
     }, 2000)
@@ -591,7 +591,7 @@ export default function SemanticLayer() {
                 updateLast({ role: 'assistant', content: evt.stage === 'processing' ? 'Thinking...' : 'Searching metric views...' })
               } else if (evt.event === 'done') {
                 assistantContent = evt.result?.answer || 'No answer returned'
-                updateLast({ role: 'assistant', content: assistantContent, data: { tool_calls: evt.result?.tool_calls } })
+                updateLast({ role: 'assistant', content: assistantContent, data: evt.result || {} })
               } else if (evt.event === 'error') {
                 updateLast({ role: 'assistant', content: evt.error || 'An error occurred' })
               }
@@ -769,6 +769,10 @@ export default function SemanticLayer() {
         const data = await res.json()
         setMvHealth(prev => ({ ...prev, [defId]: data.health }))
         setMvAnalysis(prev => ({ ...prev, [defId]: data.issues || [] }))
+      } else {
+        const data = await res.json().catch(() => ({}))
+        setMvAnalysis(prev => ({ ...prev, [defId]: [] }))
+        setError(data.detail || 'Analysis failed')
       }
     } catch (e) { setError(e.message) }
     setActionLoading(prev => ({ ...prev, [defId]: null }))
@@ -1089,6 +1093,12 @@ export default function SemanticLayer() {
           Export SQL
         </button>
       </div>
+      <PrereqBanner
+        show={pipelineStats && pipelineStats.profiled === 0}
+        message="Generate metadata first so metric views can reference table and column descriptions. This page works best after Step 1 (Generate) and Step 2 (Review)."
+        actionLabel="Go to Generate Metadata"
+        onAction={() => onNavigate?.('jobs')}
+      />
       {cst.error && (
         <div className="rounded-lg border border-red-200 dark:border-red-800/40 bg-red-50 dark:bg-red-900/20 px-4 py-3 text-sm text-red-700 dark:text-red-300">
           Could not load catalogs or tables. Check that the SQL warehouse is running and the app service principal has USE permissions on the target catalog. <span className="font-mono text-red-500 dark:text-red-400">{cst.error}</span>
@@ -1864,6 +1874,11 @@ export default function SemanticLayer() {
                         <summary className="cursor-pointer text-slate-400 hover:text-slate-600">Results ({msg.data.results.length} rows)</summary>
                         <pre className="mt-1 p-2 bg-slate-100 dark:bg-gray-900 rounded text-[10px] overflow-x-auto max-h-[200px]">{JSON.stringify(msg.data.results.slice(0, 20), null, 2)}</pre>
                       </details>
+                    )}
+                    {msg.data?.tool_calls?.length > 0 && (
+                      <div className="mt-1 text-[10px] text-slate-400 dark:text-slate-500">
+                        Tools: {msg.data.tool_calls.join(', ')}
+                      </div>
                     )}
                   </div>
                 </div>
