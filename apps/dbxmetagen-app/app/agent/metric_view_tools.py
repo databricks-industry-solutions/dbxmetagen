@@ -340,8 +340,8 @@ def metric_view_query(
                 "error": f"Invalid dimensions: {bad_dims}. Valid: {sorted(valid_dims)}"
             })
 
-        dim_clause = ", ".join(dimensions) if dimensions else ""
-        measure_clause = ", ".join(f"MEASURE({m}) AS `{m}`" for m in measures)
+        dim_clause = ", ".join(f"`{d}`" for d in dimensions) if dimensions else ""
+        measure_clause = ", ".join(f"MEASURE(`{m}`) AS `{m}`" for m in measures)
         select_parts = [p for p in [dim_clause, measure_clause] if p]
         sql = f"SELECT {', '.join(select_parts)} FROM {fqn}"
         if filters:
@@ -365,63 +365,10 @@ def metric_view_query(
                 "row_count": query_result["row_count"],
             })
 
-        # Fallback: try raw-expression SQL if MEASURE() isn't supported
-        logger.warning("MEASURE() query failed, attempting expression fallback: %s", query_result.get("error"))
-        return _fallback_raw_query(defn, fqn, measures, dimensions, filters, order_by, limit)
+        return json.dumps({"error": query_result.get("error"), "sql": sql})
 
     except Exception as e:
         return json.dumps({"error": str(e)})
-
-
-def _fallback_raw_query(
-    defn: dict, fqn: str,
-    measures: list[str], dimensions: list[str],
-    filters: Optional[str], order_by: Optional[str], limit: int,
-) -> str:
-    """Build conventional SQL from the metric view's raw expressions."""
-    measure_map = {m["name"]: m["expr"] for m in defn.get("measures", [])}
-    dim_map = {d["name"]: d["expr"] for d in defn.get("dimensions", [])}
-    source = defn.get("source", fqn)
-
-    dim_exprs = [f"{dim_map.get(d, d)} AS `{d}`" for d in dimensions]
-    measure_exprs = [f"{measure_map.get(m, m)} AS `{m}`" for m in measures]
-    select_parts = dim_exprs + measure_exprs
-
-    join_clause = ""
-    for j in defn.get("joins", []):
-        join_clause += f" LEFT JOIN {j['source']} AS {j['name']} ON {j['on']}"
-
-    sql = f"SELECT {', '.join(select_parts)} FROM {source} AS source{join_clause}"
-    if defn.get("filter"):
-        sql += f" WHERE {defn['filter']}"
-        if filters:
-            sql += f" AND ({filters})"
-    elif filters:
-        sql += f" WHERE {filters}"
-    if dimensions:
-        dim_refs = [dim_map.get(d, d) for d in dimensions]
-        sql += f" GROUP BY {', '.join(dim_refs)}"
-    if order_by:
-        sql += f" ORDER BY {order_by}"
-    sql += f" LIMIT {limit}"
-
-    err = _validate_sql(sql)
-    if err:
-        return json.dumps({"error": err, "sql": sql})
-
-    try:
-        result = _run_sql(sql)
-        if result["success"]:
-            return json.dumps({
-                "sql": sql,
-                "columns": result["columns"],
-                "rows": result["rows"][:limit],
-                "row_count": result["row_count"],
-                "note": "Executed using raw expressions (MEASURE() fallback).",
-            })
-        return json.dumps({"error": result.get("error"), "sql": sql})
-    except Exception as e:
-        return json.dumps({"error": str(e), "sql": sql})
 
 
 # ---------------------------------------------------------------------------
@@ -480,33 +427,20 @@ def metric_view_dimension_query(
         if bad_dims:
             return json.dumps({"error": f"Invalid dimensions: {bad_dims}. Valid: {sorted(valid_dims)}"})
 
-        dim_map = {d["name"]: d["expr"] for d in defn.get("dimensions", [])}
-        source = defn.get("source", fqn)
-        join_clause = ""
-        for j in defn.get("joins", []):
-            join_clause += f" LEFT JOIN {j['source']} AS {j['name']} ON {j['on']}"
-
-        where = ""
-        if defn.get("filter"):
-            where = f" WHERE {defn['filter']}"
-            if filters:
-                where += f" AND ({filters})"
-        elif filters:
-            where = f" WHERE {filters}"
-
-        base_from = f"{source} AS source{join_clause}{where}"
+        quoted = [f"`{d}`" for d in dimensions]
 
         if aggregation == "count_distinct":
-            select_parts = [f"COUNT(DISTINCT {dim_map.get(d, d)}) AS `{d}_count`" for d in dimensions]
-            sql = f"SELECT {', '.join(select_parts)} FROM {base_from}"
+            select_parts = [f"COUNT(DISTINCT {q}) AS `{d}_count`" for q, d in zip(quoted, dimensions)]
+            sql = f"SELECT {', '.join(select_parts)} FROM {fqn}"
         elif aggregation == "unique_values":
-            dim_exprs = [f"{dim_map.get(d, d)} AS `{d}`" for d in dimensions]
-            select_parts = dim_exprs + ["COUNT(*) AS `row_count`"]
-            group_refs = [dim_map.get(d, d) for d in dimensions]
-            sql = f"SELECT {', '.join(select_parts)} FROM {base_from} GROUP BY {', '.join(group_refs)} ORDER BY `row_count` DESC LIMIT {limit}"
+            select_parts = quoted + ["COUNT(*) AS `row_count`"]
+            sql = f"SELECT {', '.join(select_parts)} FROM {fqn} GROUP BY ALL ORDER BY `row_count` DESC"
         else:  # "list"
-            dim_exprs = [f"DISTINCT {dim_map.get(d, d)} AS `{d}`" for d in dimensions]
-            sql = f"SELECT {', '.join(dim_exprs)} FROM {base_from} LIMIT {limit}"
+            sql = f"SELECT DISTINCT {', '.join(quoted)} FROM {fqn}"
+
+        if filters:
+            sql += f" WHERE {filters}" if "WHERE" not in sql.upper() else f" AND ({filters})"
+        sql += f" LIMIT {limit}"
 
         err = _validate_sql(sql)
         if err:
