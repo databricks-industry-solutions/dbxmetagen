@@ -49,6 +49,8 @@ resources:
           default: ${var.max_candidates_per_table_pair}
         - name: apply_ddl
           default: "false"
+        - name: federation_mode
+          default: "false"
         - name: sweep_stale_edges
           default: "false"
         - name: sweep_stale_docs

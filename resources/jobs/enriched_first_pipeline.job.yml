@@ -48,6 +48,8 @@ resources:
           default: ${var.incremental}
         - name: include_previously_failed_tables
           default: "false"
+        - name: federation_mode
+          default: "false"
         - name: include_profiling_context
           default: "true"
         - name: include_constraint_context
@@ -146,6 +148,7 @@ resources:
               permission_users: "{{job.parameters.permission_users}}"
               run_id: "{{job.parameters.run_id}}"
               include_previously_failed_tables: "{{job.parameters.include_previously_failed_tables}}"
+              federation_mode: "{{job.parameters.federation_mode}}"
               include_profiling_context: "{{job.parameters.include_profiling_context}}"
               include_constraint_context: "{{job.parameters.include_constraint_context}}"
               ontology_bundle: "{{job.parameters.ontology_bundle}}"
@@ -170,6 +173,7 @@ resources:
               permission_groups: "{{job.parameters.permission_groups}}"
               permission_users: "{{job.parameters.permission_users}}"
               run_id: "{{job.parameters.run_id}}"
+              federation_mode: "{{job.parameters.federation_mode}}"
               ontology_bundle: "{{job.parameters.ontology_bundle}}"
               domain_config_path: "{{job.parameters.domain_config_path}}"
               model: "{{job.parameters.model}}"
@@ -192,6 +196,7 @@ resources:
               permission_groups: "{{job.parameters.permission_groups}}"
               permission_users: "{{job.parameters.permission_users}}"
               run_id: "{{job.parameters.run_id}}"
+              federation_mode: "{{job.parameters.federation_mode}}"
               ontology_bundle: "{{job.parameters.ontology_bundle}}"
               domain_config_path: "{{job.parameters.domain_config_path}}"
               model: "{{job.parameters.model}}"

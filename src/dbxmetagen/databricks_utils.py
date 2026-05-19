@@ -123,6 +123,9 @@ def setup_widgets(dbutils):
     dbutils.widgets.text("table_names", "", "Table Names - comma-separated (required)")
     dbutils.widgets.text("current_user", "", "Current User")
     dbutils.widgets.dropdown("apply_ddl", "false", ["true", "false"], "Apply DDL")
+    dbutils.widgets.dropdown(
+        "federation_mode", "false", ["true", "false"], "Federation Mode"
+    )
     dbutils.widgets.text("columns_per_call", "")
     dbutils.widgets.text("sample_size", "")
     dbutils.widgets.text("job_id", "")
@@ -152,6 +155,7 @@ def get_widgets(dbutils):
     table_names = dbutils.widgets.get("table_names")
     current_user = dbutils.widgets.get("current_user")
     apply_ddl = dbutils.widgets.get("apply_ddl")
+    federation_mode = dbutils.widgets.get("federation_mode")
     columns_per_call = dbutils.widgets.get("columns_per_call")
     sample_size = dbutils.widgets.get("sample_size")
     run_id = dbutils.widgets.get("run_id")
@@ -172,6 +176,7 @@ def get_widgets(dbutils):
         "table_names": table_names,
         "current_user": current_user,
         "apply_ddl": apply_ddl,
+        "federation_mode": federation_mode,
         "columns_per_call": columns_per_call,
         "sample_size": sample_size,
         "run_id": run_id,
