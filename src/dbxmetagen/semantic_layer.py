@@ -624,6 +624,48 @@ class SemanticLayerGenerator:
                 )
                 parts.extend(path_sections)
 
+        # Name-matched column hints (safety net for FK gaps)
+        _GENERIC_COLS = {
+            "id", "name", "type", "status", "code", "description",
+            "created_at", "updated_at", "created_by", "updated_by",
+            "modified_at", "modified_by", "is_active", "is_deleted", "version",
+        }
+        fk_pairs = {(fk["src_table"], fk["dst_table"]) for fk in fk_rows} | {
+            (fk["dst_table"], fk["src_table"]) for fk in fk_rows
+        } if fk_rows else set()
+        id_cols: dict[str, list[tuple[str, str]]] = {}  # col_short -> [(table, col_fqn)]
+        for tname, cols in col_by_table.items():
+            for c in cols:
+                cn = c["column_name"].lower()
+                if cn in _GENERIC_COLS:
+                    continue
+                if cn.endswith(("_id", "_key", "_code")):
+                    id_cols.setdefault(cn, []).append((tname, cn))
+        import re as _re
+        possible_hints: list[str] = []
+        table_shorts = {t.split(".")[-1].lower(): t for t in table_names_list}
+        for col_short, locations in id_cols.items():
+            stem = _re.sub(r"(_id|_key|_code)$", "", col_short)
+            if not stem or stem in _GENERIC_COLS:
+                continue
+            target_names = [stem, stem + "s", stem + "es"]
+            for tgt_short in target_names:
+                if tgt_short in table_shorts:
+                    target_fq = table_shorts[tgt_short]
+                    for src_tbl, _ in locations:
+                        if src_tbl == target_fq:
+                            continue
+                        if (src_tbl, target_fq) in fk_pairs:
+                            continue
+                        possible_hints.append(
+                            f"  {src_tbl}.{col_short} -> {target_fq}.{col_short} (name match)"
+                        )
+        if possible_hints:
+            parts.append(
+                "\nPOSSIBLE JOINS (name-matched, not confirmed by FK prediction -- use when questions need these tables):"
+            )
+            parts.extend(possible_hints)
+
         # Inject metric view best-practices reference (loaded from JSON)
         ref = _load_reference("metric_view_reference.json")
         if ref:
@@ -889,6 +931,8 @@ RULES:
     - For measures, use what a business user would say: "Total Sales", "Avg Order Value", "Fulfillment Rate"
     - NEVER prefix dimension names with the join alias (use "Industry" not "account.Industry")
     - LIKE patterns MUST be quoted: product_code LIKE 'HW%', NOT product_code LIKE HW%
+21. GRAIN INTEGRITY with joins: When joining a fact table to a dimension table, only use dimension columns as GROUP BY dimensions or in FILTER clauses. NEVER aggregate a dimension-table numeric attribute (e.g. SUM(dim.bed_count), AVG(dim.capacity)) from a fact-grain view -- the value fans out by the number of fact rows per dimension row, producing inflated results. If you need to analyze dimension attributes directly, create a SEPARATE metric view sourced from the dimension table
+22. NEVER create share-of-total or percent-of-total measures (e.g. SUM(x)/SUM(total_x), COUNT(*)/COUNT(*)). These require window functions (OVER()) for the denominator, which are not supported. The denominator collapses to the same group as the numerator, always producing 1.0. Instead use: conditional ratios with FILTER, within-grain rates, or describe the share concept in the view comment for downstream Genie SQL
 
 EXAMPLE:
 {few_shot}
@@ -1091,6 +1135,27 @@ OUTPUT (one JSON object only, no array, no explanation):"""
             defn["joins"] = joins
             logger.info("Auto-added %d joins to %s from FK predictions (graph-traversed)", len(joins), defn.get("name", ""))
 
+    def _register_join_aliases(self, joins: list[dict], alias_cols: dict[str, set[str]], existing_cols: set[str]) -> None:
+        """Recursively register column sets for each join alias (including nested joins)."""
+        for j in joins:
+            j_source = j.get("source", "")
+            j_name = j.get("name", j_source.split(".")[-1] if j_source else "")
+            j_parts = j_source.split(".")
+            try:
+                if len(j_parts) == 3:
+                    j_rows = self.spark.sql(
+                        f"SELECT column_name FROM system.information_schema.columns "
+                        f"WHERE table_catalog = '{j_parts[0]}' AND table_schema = '{j_parts[1]}' "
+                        f"AND table_name = '{j_parts[2]}'"
+                    ).collect()
+                    jcols = {r["column_name"].lower() for r in j_rows}
+                    alias_cols[j_name.lower()] = jcols
+                    existing_cols.update(jcols)
+            except Exception:
+                pass
+            if j.get("joins"):
+                self._register_join_aliases(j["joins"], alias_cols, existing_cols)
+
     def _validate_definition(self, defn: dict) -> list[str]:
         """Tier 1: structural validation against information_schema."""
         errors = []
@@ -1126,23 +1191,7 @@ OUTPUT (one JSON object only, no array, no explanation):"""
 
         # Build per-alias column sets so dotted refs (alias.col) are validated correctly
         alias_cols: dict[str, set[str]] = {"source": set(existing_cols)}
-        for j in defn.get("joins", []):
-            j_source = j.get("source", "")
-            j_name = j.get("name", j_source.split(".")[-1] if j_source else "")
-            j_parts = j_source.split(".")
-            try:
-                if len(j_parts) == 3:
-                    j_rows = self.spark.sql(
-                        f"""
-                        SELECT column_name FROM system.information_schema.columns
-                        WHERE table_catalog = '{j_parts[0]}' AND table_schema = '{j_parts[1]}' AND table_name = '{j_parts[2]}'
-                    """
-                    ).collect()
-                    jcols = {r["column_name"].lower() for r in j_rows}
-                    alias_cols[j_name.lower()] = jcols
-                    existing_cols.update(jcols)
-            except Exception:
-                pass
+        self._register_join_aliases(defn.get("joins", []), alias_cols, existing_cols)
 
         for item_type in ("dimensions", "measures"):
             for item in defn.get(item_type, []):
@@ -1570,24 +1619,30 @@ OUTPUT (one JSON object only, no array, no explanation):"""
         joins = defn.get("joins", [])
         if not joins:
             return source
-        parts = [f"{source} AS source"]
-        for j in joins:
-            j_source = j.get("source", "")
-            if not j_source:
-                continue
-            alias = j.get("name", j_source.split(".")[-1])
-            join_type = j.get("type", "LEFT").upper()
-            on_clause = j.get("on", "")
-            if on_clause:
-                parts.append(f"{join_type} JOIN {j_source} AS {alias} ON {on_clause}")
-            else:
-                using = j.get("using", [])
-                if using:
-                    cols = ", ".join(using)
-                    parts.append(f"{join_type} JOIN {j_source} AS {alias} USING ({cols})")
+
+        def _render_joins(jlist: list[dict]) -> list[str]:
+            parts: list[str] = []
+            for j in jlist:
+                j_source = j.get("source", "")
+                if not j_source:
+                    continue
+                alias = j.get("name", j_source.split(".")[-1])
+                join_type = j.get("type", "LEFT").upper()
+                on_clause = j.get("on", "")
+                if on_clause:
+                    parts.append(f"{join_type} JOIN {j_source} AS {alias} ON {on_clause}")
                 else:
-                    parts.append(f"CROSS JOIN {j_source} AS {alias}")
-        return " ".join(parts)
+                    using = j.get("using", [])
+                    if using:
+                        cols = ", ".join(using)
+                        parts.append(f"{join_type} JOIN {j_source} AS {alias} USING ({cols})")
+                    else:
+                        parts.append(f"CROSS JOIN {j_source} AS {alias}")
+                if j.get("joins"):
+                    parts.extend(_render_joins(j["joins"]))
+            return parts
+
+        return " ".join([f"{source} AS source"] + _render_joins(joins))
 
     # ------------------------------------------------------------------
     # Apply metric views
@@ -1667,6 +1722,13 @@ OUTPUT (one JSON object only, no array, no explanation):"""
                     if apply_span is not None:
                         apply_span.set_outputs({"success": False, "error": str(e)[:500]})
 
+        if applied > 0:
+            try:
+                from dbxmetagen.semantic_graph import build_semantic_graph
+                build_semantic_graph(self.spark, self.config)
+            except Exception as e:
+                logger.warning("Semantic graph sync after apply failed: %s", e)
+
         return {"applied": applied, "failed": failed}
 
     def _normalize_joins(self, defn: dict) -> None:
@@ -1675,10 +1737,19 @@ OUTPUT (one JSON object only, no array, no explanation):"""
         if not source or not defn.get("joins"):
             return
         source_short = source.split(".")[-1]
-        for j in defn["joins"]:
-            on = j.get("on", "")
-            if on and f"{source_short}." in on:
-                j["on"] = on.replace(f"{source_short}.", "source.")
+
+        def _norm(jlist: list[dict], parent_short: str, parent_alias: str) -> None:
+            for j in jlist:
+                on = j.get("on", "")
+                if on and f"{parent_short}." in on:
+                    j["on"] = on.replace(f"{parent_short}.", f"{parent_alias}.")
+                if j.get("joins"):
+                    j_source = j.get("source", "")
+                    j_alias = j.get("name", j_source.split(".")[-1] if j_source else "")
+                    j_short = j_source.split(".")[-1] if j_source else ""
+                    _norm(j["joins"], j_short, j_alias)
+
+        _norm(defn["joins"], source_short, "source")
 
     def _definition_to_yaml(self, defn: dict) -> str:
         """Convert a JSON definition to the YAML body for CREATE VIEW WITH METRICS."""
