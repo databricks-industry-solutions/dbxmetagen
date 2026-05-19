@@ -93,6 +93,14 @@ def _extract_mv_name(node_id: str, content: str) -> str:
     return ""
 
 
+def _quote_order_by(order_by: str, known_names: set[str]) -> str:
+    """Backtick-quote known measure/dimension names in an ORDER BY clause."""
+    for name in sorted(known_names, key=len, reverse=True):
+        if name in order_by and f"`{name}`" not in order_by:
+            order_by = order_by.replace(name, f"`{name}`")
+    return order_by
+
+
 def _parse_str_list(val) -> list[str]:
     """Normalize an LLM tool-call argument into a list of strings.
 
@@ -379,7 +387,7 @@ def metric_view_query(
         if dimensions:
             sql += " GROUP BY ALL"
         if order_by:
-            sql += f" ORDER BY {order_by}"
+            sql += f" ORDER BY {_quote_order_by(order_by, valid_measures | valid_dims)}"
         sql += f" LIMIT {limit}"
 
         err = _validate_sql(sql)
@@ -626,7 +634,7 @@ def execute_measure_query(
     if dimensions:
         sql += " GROUP BY ALL"
     if order_by:
-        sql += f" ORDER BY {order_by}"
+        sql += f" ORDER BY {_quote_order_by(order_by, valid_measures | valid_dims)}"
     sql += f" LIMIT {limit}"
 
     err = _validate_sql(sql)
