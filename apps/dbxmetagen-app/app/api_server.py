@@ -11655,7 +11655,7 @@ def vector_sync():
     """Trigger a sync of the metadata VS index."""
     vs_index_name = f"{CATALOG}.{SCHEMA}.{VS_INDEX_SUFFIX}"
     try:
-        ws = get_workspace_client()
+        ws = _get_effective_client()
         ws.vector_search_indexes.sync_index(index_name=vs_index_name)
         return {"status": "sync_triggered", "index": vs_index_name}
     except Exception as e:
@@ -11757,10 +11757,10 @@ def _mv_sync_worker(task_id: str):
         )
         counts = {r["doc_type"]: int(r["cnt"]) for r in rows} if rows else {}
 
-        # Trigger VS index sync
+        # Trigger VS index sync (needs user's OBO token for permission)
         vs_index_name = f"{CATALOG}.{SCHEMA}.{VS_INDEX_SUFFIX}"
         try:
-            ws = get_workspace_client()
+            ws = _get_effective_client()
             ws.vector_search_indexes.sync_index(index_name=vs_index_name)
         except Exception as sync_err:
             logger.warning("VS sync after MV merge failed: %s", sync_err)
