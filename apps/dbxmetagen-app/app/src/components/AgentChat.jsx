@@ -11,7 +11,8 @@ const GraphExplorer = lazy(() => import('./GraphExplorer'))
 const VectorSearch = lazy(() => import('./VectorSearch'))
 
 const SUB_TABS = [
-  { id: 'chat',   label: 'Chat' },
+  { id: 'chat',   label: 'Metadata Agent' },
+  { id: 'mv',     label: 'Metric View Agent', badge: 'Under Development' },
   { id: 'graph',  label: 'Graph Explorer' },
   { id: 'search', label: 'Search' },
 ]
@@ -382,6 +383,12 @@ export default function AgentChat() {
   const [traceConfig, setTraceConfig] = useState({ host: '', experimentId: null })
   const chatEndRef = useRef(null)
 
+  const [mvMessages, setMvMessages] = useState([])
+  const [mvInput, setMvInput] = useState('')
+  const [mvLoading, setMvLoading] = useState(false)
+  const [mvSessionId] = useState(() => crypto.randomUUID())
+  const mvEndRef = useRef(null)
+
   useEffect(() => {
     fetch('/api/agent/stats').then(r => r.ok ? r.json() : null).then(setStats).catch(() => {})
     fetch('/api/agent/suggestions').then(r => r.ok ? r.json() : []).then(setSuggestions).catch(() => {})
@@ -638,6 +645,59 @@ export default function AgentChat() {
     }
   }
 
+  const sendMvMessage = async (directQ) => {
+    const q = (directQ || mvInput).trim()
+    if (!q || mvLoading) return
+    setMvInput('')
+    setMvMessages(prev => [...prev, { role: 'user', content: q }])
+    setMvLoading(true)
+    try {
+      const history = mvMessages.map(m => ({ role: m.role, content: m.content }))
+      const res = await fetch('/api/metric-view-agent/stream', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ question: q, history, session_id: mvSessionId }),
+      })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        setMvMessages(prev => [...prev, { role: 'assistant', content: err.detail || 'Request failed' }])
+        setMvLoading(false)
+        return
+      }
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder()
+      let buf = ''
+      let hasPlaceholder = false
+      const updateLast = (msg) => setMvMessages(prev => { const next = [...prev]; next[next.length - 1] = msg; return next })
+      if (!hasPlaceholder) { setMvMessages(prev => [...prev, { role: 'assistant', content: '' }]); hasPlaceholder = true }
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buf += decoder.decode(value, { stream: true })
+        const lines = buf.split('\n')
+        buf = lines.pop() || ''
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            try {
+              const evt = JSON.parse(line.slice(6))
+              if (evt.event === 'stage') updateLast({ role: 'assistant', content: evt.stage === 'processing' ? 'Thinking...' : 'Searching metric views...' })
+              else if (evt.event === 'done') updateLast({ role: 'assistant', content: evt.result?.answer || 'No answer returned', data: evt.result || {} })
+              else if (evt.event === 'error') updateLast({ role: 'assistant', content: evt.error || 'An error occurred' })
+            } catch {}
+          }
+        }
+      }
+    } catch (e) {
+      setMvMessages(prev => {
+        if (prev.length && prev[prev.length - 1].role === 'assistant' && !prev[prev.length - 1].content) {
+          const next = [...prev]; next[next.length - 1] = { role: 'assistant', content: `Error: ${e.message}` }; return next
+        }
+        return [...prev, { role: 'assistant', content: `Error: ${e.message}` }]
+      })
+    }
+    setMvLoading(false)
+    setTimeout(() => mvEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 100)
+  }
+
   const clearChat = () => { setMessages([]); setError(null); setChartData({}); setPlotLoading({}); setCompareResult(null) }
   const injectQuery = (q) => send(q)
   const cfg = MODE_CONFIG[mode] || MODE_CONFIG.quick
@@ -647,17 +707,29 @@ export default function AgentChat() {
       <p className="text-xs text-slate-500 dark:text-slate-400 mb-3 max-w-3xl leading-relaxed">
         Graph Explorer and Search expect prior pipeline outputs (metadata jobs, graph, vector index). Chat is most useful after core metadata exists for your tables.
       </p>
-      {/* Sub-tab bar: Chat | Graph Explorer | Search */}
+      {/* Sub-tab bar */}
       <div className="flex items-center gap-1 mb-3 border-b border-slate-200 dark:border-dbx-navy-400/40">
         {SUB_TABS.map(t => (
           <button key={t.id} onClick={() => setSubTab(t.id)}
-            className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px ${
+            className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px flex items-center gap-1.5 ${
               subTab === t.id
                 ? 'border-dbx-teal text-dbx-teal dark:text-teal-300'
                 : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'
-            }`}>{t.label}</button>
+            }`}>
+            {t.label}
+            {t.badge && <span className="px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300 rounded">{t.badge}</span>}
+          </button>
         ))}
       </div>
+
+      {/* Agent explanation when on chat or mv tabs */}
+      {(subTab === 'chat' || subTab === 'mv') && (
+        <div className="rounded-xl border border-slate-200/80 dark:border-dbx-navy-400/30 bg-slate-50/80 dark:bg-dbx-navy-600/40 px-4 py-3 mb-3 text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+          <span className="font-semibold text-slate-600 dark:text-slate-300">Two agents, different purposes: </span>
+          The <span className="font-medium text-violet-600 dark:text-violet-400">Metadata Agent</span> explores your knowledge graph, metadata, relationships, and data quality using vector search, graph traversal, and SQL.
+          {' '}The <span className="font-medium text-amber-600 dark:text-amber-400">Metric View Agent</span> answers business questions by querying deployed Unity Catalog metric views for KPIs and measures.
+        </div>
+      )}
 
       {subTab === 'graph' ? (
         <Suspense fallback={<div className="text-sm text-slate-400 p-8">Loading Graph Explorer...</div>}>
@@ -667,6 +739,84 @@ export default function AgentChat() {
         <Suspense fallback={<div className="text-sm text-slate-400 p-8">Loading Search...</div>}>
           <VectorSearch />
         </Suspense>
+      ) : subTab === 'mv' ? (
+        <div className="space-y-3">
+          <div className="border dark:border-dbx-navy-400/30 rounded-xl overflow-hidden flex flex-col" style={{ height: '520px' }}>
+            <div className="flex-1 overflow-y-auto p-4 space-y-3 bg-gradient-to-b from-white to-dbx-oat-light/50 dark:from-dbx-navy-650 dark:to-dbx-navy/50">
+              {mvMessages.length === 0 && (
+                <div className="flex flex-col items-center justify-center h-full text-center py-12">
+                  <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-amber-500 to-amber-600 flex items-center justify-center mb-4 shadow-card">
+                    <svg className="w-7 h-7 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+                    </svg>
+                  </div>
+                  <h2 className="text-lg font-bold text-slate-800 dark:text-slate-100 mb-1">Metric View Agent</h2>
+                  <p className="text-sm text-slate-500 dark:text-slate-400 mb-6 max-w-md">Ask business questions and get answers from your deployed metric views. The agent searches, queries, and interprets KPI data.</p>
+                  <div className="flex flex-wrap gap-2.5 justify-center max-w-lg">
+                    {[
+                      { label: 'Total revenue by region', query: 'What is total revenue by region?' },
+                      { label: 'Top KPIs for this quarter', query: 'Show me the top KPIs and their current values' },
+                      { label: 'Month-over-month trend', query: 'Show month-over-month revenue trend' },
+                      { label: 'Available metric views', query: 'What metric views are available?' },
+                    ].map((s, i) => (
+                      <button key={i} onClick={() => sendMvMessage(s.query)}
+                        className="group flex items-center gap-2 px-4 py-2 card-interactive text-xs text-slate-600 dark:text-slate-300 hover:text-dbx-navy dark:hover:text-white">
+                        <span className="w-1.5 h-1.5 rounded-full bg-amber-400/60 group-hover:bg-amber-500 transition-colors flex-shrink-0" />
+                        {s.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {mvMessages.map((msg, i) => (
+                <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                  <div className={`max-w-[80%] rounded-xl px-4 py-3 text-sm ${
+                    msg.role === 'user'
+                      ? 'bg-gradient-to-br from-amber-500 to-amber-600 text-white shadow-card'
+                      : 'card text-slate-700 dark:text-slate-200'
+                  }`}>
+                    <div className="whitespace-pre-wrap break-words"
+                      dangerouslySetInnerHTML={{ __html: simpleMarkdown(msg.content || (mvLoading && i === mvMessages.length - 1 ? 'Thinking...' : '')) }} />
+                    {msg.data?.sql && (
+                      <details className="mt-2 text-xs">
+                        <summary className="cursor-pointer text-slate-400 hover:text-slate-600">SQL Query</summary>
+                        <pre className="mt-1 p-2 bg-slate-100 dark:bg-dbx-navy-600 rounded text-[10px] overflow-x-auto">{msg.data.sql}</pre>
+                      </details>
+                    )}
+                    {msg.data?.results && (
+                      <details className="mt-1 text-xs">
+                        <summary className="cursor-pointer text-slate-400 hover:text-slate-600">Results ({msg.data.results.length} rows)</summary>
+                        <pre className="mt-1 p-2 bg-slate-100 dark:bg-dbx-navy-600 rounded text-[10px] overflow-x-auto max-h-[200px]">{JSON.stringify(msg.data.results.slice(0, 20), null, 2)}</pre>
+                      </details>
+                    )}
+                    {msg.data?.tool_calls?.length > 0 && (
+                      <div className="mt-1.5 flex flex-wrap gap-1">
+                        {msg.data.tool_calls.map((tool, ti) => (
+                          <span key={ti} className="text-[10px] px-2 py-0.5 rounded-full bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300">{tool}</span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ))}
+              <div ref={mvEndRef} />
+            </div>
+            <div className="border-t border-slate-200 dark:border-dbx-navy-400/30 p-3 bg-white dark:bg-dbx-navy-650 flex gap-2">
+              <input value={mvInput} onChange={e => setMvInput(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && !e.shiftKey && sendMvMessage()}
+                placeholder="Ask a business question about your metrics..."
+                className="flex-1 px-3 py-2 text-sm border border-slate-200 dark:border-dbx-navy-400/40 rounded-lg bg-white dark:bg-dbx-navy-600 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-amber-500"
+                disabled={mvLoading} />
+              <button onClick={sendMvMessage} disabled={mvLoading || !mvInput.trim()}
+                className="px-4 py-2 bg-amber-500 hover:bg-amber-600 text-white rounded-lg text-sm disabled:opacity-50 shrink-0 transition-colors">
+                {mvLoading ? 'Sending...' : 'Send'}
+              </button>
+            </div>
+          </div>
+          {mvMessages.length > 0 && (
+            <button onClick={() => setMvMessages([])} className="text-xs text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 transition-colors">Clear conversation</button>
+          )}
+        </div>
       ) : (<>
       {/* Mode selector -- segmented control */}
       <div className="flex flex-wrap bg-dbx-oat dark:bg-dbx-navy-650 rounded-xl p-1 mb-3 shadow-inner-soft">

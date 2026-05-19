@@ -254,11 +254,6 @@ export default function SemanticLayer({ onNavigate, pipelineStats }) {
   const [bulkCreating, setBulkCreating] = useState(false)
   const [bulkDeleting, setBulkDeleting] = useState(null)
   const [vectorSyncing, setVectorSyncing] = useState(false)
-  const [chatMessages, setChatMessages] = useState([])
-  const [chatInput, setChatInput] = useState('')
-  const [chatLoading, setChatLoading] = useState(false)
-  const [chatSessionId] = useState(() => crypto.randomUUID())
-  const chatEndRef = useRef(null)
   const [kpiCoverage, setKpiCoverage] = useState(null)
   const [tableSaveStatus, setTableSaveStatus] = useState(null)
   const [openMenuId, setOpenMenuId] = useState(null)
@@ -545,76 +540,7 @@ export default function SemanticLayer({ onNavigate, pipelineStats }) {
     } catch { setTableSaveStatus(null) }
   }
 
-  const sendChatMessage = async () => {
-    const q = chatInput.trim()
-    if (!q || chatLoading) return
-    setChatInput('')
-    setChatMessages(prev => [...prev, { role: 'user', content: q }])
-    setChatLoading(true)
-    try {
-      const history = chatMessages.map(m => ({ role: m.role, content: m.content }))
-      const res = await fetch('/api/metric-view-agent/stream', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ question: q, history, session_id: chatSessionId }),
-      })
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}))
-        setChatMessages(prev => [...prev, { role: 'assistant', content: err.detail || 'Request failed' }])
-        setChatLoading(false)
-        return
-      }
-      const reader = res.body.getReader()
-      const decoder = new TextDecoder()
-      let buf = ''
-      let assistantContent = ''
-      let hasPlaceholder = false
-      const ensurePlaceholder = () => {
-        if (!hasPlaceholder) {
-          setChatMessages(prev => [...prev, { role: 'assistant', content: '' }])
-          hasPlaceholder = true
-        }
-      }
-      const updateLast = (msg) => setChatMessages(prev => {
-        const next = [...prev]
-        next[next.length - 1] = msg
-        return next
-      })
-      ensurePlaceholder()
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        buf += decoder.decode(value, { stream: true })
-        const lines = buf.split('\n')
-        buf = lines.pop() || ''
-        for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            try {
-              const evt = JSON.parse(line.slice(6))
-              if (evt.event === 'stage') {
-                updateLast({ role: 'assistant', content: evt.stage === 'processing' ? 'Thinking...' : 'Searching metric views...' })
-              } else if (evt.event === 'done') {
-                assistantContent = evt.result?.answer || 'No answer returned'
-                updateLast({ role: 'assistant', content: assistantContent, data: evt.result || {} })
-              } else if (evt.event === 'error') {
-                updateLast({ role: 'assistant', content: evt.error || 'An error occurred' })
-              }
-            } catch {}
-          }
-        }
-      }
-    } catch (e) {
-      setChatMessages(prev => {
-        if (prev.length && prev[prev.length - 1].role === 'assistant' && !prev[prev.length - 1].content) {
-          const next = [...prev]
-          next[next.length - 1] = { role: 'assistant', content: `Error: ${e.message}` }
-          return next
-        }
-        return [...prev, { role: 'assistant', content: `Error: ${e.message}` }]
-      })
-    }
-    setChatLoading(false)
-    setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 100)
-  }
+
 
   const suggestQuestions = async () => {
     if (!selectedTables.length) { setError('Select tables first'); return }
@@ -1121,11 +1047,10 @@ export default function SemanticLayer({ onNavigate, pipelineStats }) {
 
       {/* Tab Bar */}
       <div className="inline-flex bg-dbx-oat/60 dark:bg-dbx-navy-600 rounded-xl p-1 shadow-inner-soft">
-        {[['setup', 'Setup'], ['questions', 'Questions & KPIs'], ['generate', 'Generate'], ['definitions', 'Definitions'], ['agent', 'Agent']].map(([k, l]) => {
+        {[['setup', 'Setup'], ['questions', 'Questions & KPIs'], ['generate', 'Generate'], ['definitions', 'Definitions']].map(([k, l]) => {
           const count = k === 'setup' && selectedTables.length ? `${selectedTables.length} tables`
             : k === 'questions' ? [questionLines.length && `${questionLines.length}q`, kpis.length && `${kpis.length} KPIs`].filter(Boolean).join(', ') || ''
-            : k === 'definitions' && definitions.length ? `${definitions.length}`
-            : k === 'agent' && chatMessages.length ? `${chatMessages.length}` : ''
+            : k === 'definitions' && definitions.length ? `${definitions.length}` : ''
           const genReady = k === 'generate' && selectedTables.length > 0 && questionLines.length > 0
           const genNotReady = k === 'generate' && (!selectedTables.length || !questionLines.length)
           return (
@@ -1145,8 +1070,8 @@ export default function SemanticLayer({ onNavigate, pipelineStats }) {
         <span className={activeTab === 'setup' ? 'font-semibold text-dbx-lava' : ''}>1. Setup</span> &mdash; pick a project and select tables &rarr;{' '}
         <span className={activeTab === 'questions' ? 'font-semibold text-dbx-lava' : ''}>2. Questions</span> &mdash; define business questions and KPIs &rarr;{' '}
         <span className={activeTab === 'generate' ? 'font-semibold text-dbx-lava' : ''}>3. Generate</span> &mdash; AI creates metric view definitions &rarr;{' '}
-        <span className={activeTab === 'definitions' ? 'font-semibold text-dbx-lava' : ''}>4. Definitions</span> &mdash; review, validate, and deploy as UC views &rarr;{' '}
-        <span className={activeTab === 'agent' ? 'font-semibold text-dbx-lava' : ''}>5. Agent</span> &mdash; ask business questions answered by your metric views
+        <span className={activeTab === 'definitions' ? 'font-semibold text-dbx-lava' : ''}>4. Definitions</span> &mdash; review, validate, and deploy as UC views.
+        Then query them in <span className="font-medium text-amber-600 dark:text-amber-400">Explore &rarr; Metric View Agent</span>
       </div>
 
       {/* === Setup Tab === */}
@@ -1842,72 +1767,6 @@ export default function SemanticLayer({ onNavigate, pipelineStats }) {
         </section>
       )})()}
 
-      </>}
-
-      {/* === Agent Tab === */}
-      {activeTab === 'agent' && <>
-        <section className={section}>
-          <h2 className="text-lg font-semibold mb-2 dark:text-gray-100">Metric View Agent</h2>
-          <p className="text-xs text-slate-500 dark:text-slate-400 mb-3">Ask business questions and get answers from your deployed metric views. The agent searches, queries, and interprets metric view data.</p>
-
-          <div className="border dark:border-gray-700 rounded-xl overflow-hidden flex flex-col" style={{ height: '500px' }}>
-            <div className="flex-1 overflow-y-auto p-4 space-y-3 bg-slate-50 dark:bg-gray-900">
-              {chatMessages.length === 0 && (
-                <div className="text-center text-slate-400 dark:text-slate-500 py-12">
-                  <p className="text-sm mb-2">No messages yet</p>
-                  <p className="text-xs">Try: "What is total revenue by region?" or "Show me top KPIs for clinical trials"</p>
-                </div>
-              )}
-              {chatMessages.map((msg, i) => (
-                <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                  <div className={`max-w-[80%] rounded-xl px-3 py-2 text-sm ${
-                    msg.role === 'user'
-                      ? 'bg-dbx-lava text-white'
-                      : 'bg-white dark:bg-gray-800 border dark:border-gray-700 text-slate-700 dark:text-slate-200'
-                  }`}>
-                    <div className="whitespace-pre-wrap break-words">{msg.content || (chatLoading && i === chatMessages.length - 1 ? 'Thinking...' : '')}</div>
-                    {msg.data?.sql && (
-                      <details className="mt-2 text-xs">
-                        <summary className="cursor-pointer text-slate-400 hover:text-slate-600">SQL Query</summary>
-                        <pre className="mt-1 p-2 bg-slate-100 dark:bg-gray-900 rounded text-[10px] overflow-x-auto">{msg.data.sql}</pre>
-                      </details>
-                    )}
-                    {msg.data?.results && (
-                      <details className="mt-1 text-xs">
-                        <summary className="cursor-pointer text-slate-400 hover:text-slate-600">Results ({msg.data.results.length} rows)</summary>
-                        <pre className="mt-1 p-2 bg-slate-100 dark:bg-gray-900 rounded text-[10px] overflow-x-auto max-h-[200px]">{JSON.stringify(msg.data.results.slice(0, 20), null, 2)}</pre>
-                      </details>
-                    )}
-                    {msg.data?.tool_calls?.length > 0 && (
-                      <div className="mt-1 text-[10px] text-slate-400 dark:text-slate-500">
-                        Tools: {msg.data.tool_calls.join(', ')}
-                      </div>
-                    )}
-                  </div>
-                </div>
-              ))}
-              <div ref={chatEndRef} />
-            </div>
-            <div className="border-t dark:border-gray-700 p-3 bg-white dark:bg-gray-800 flex gap-2">
-              <input
-                value={chatInput}
-                onChange={e => setChatInput(e.target.value)}
-                onKeyDown={e => e.key === 'Enter' && !e.shiftKey && sendChatMessage()}
-                placeholder="Ask a business question..."
-                className="flex-1 px-3 py-2 text-sm border dark:border-gray-600 rounded-lg bg-white dark:bg-gray-900 dark:text-gray-200 focus:outline-none focus:ring-2 focus:ring-dbx-lava"
-                disabled={chatLoading}
-              />
-              <button onClick={sendChatMessage} disabled={chatLoading || !chatInput.trim()}
-                className="px-4 py-2 bg-dbx-lava text-white rounded-lg text-sm hover:bg-red-700 disabled:opacity-50 shrink-0">
-                {chatLoading ? 'Sending...' : 'Send'}
-              </button>
-            </div>
-          </div>
-
-          {chatMessages.length > 0 && (
-            <button onClick={() => setChatMessages([])} className="mt-2 text-xs text-slate-400 hover:text-slate-600">Clear conversation</button>
-          )}
-        </section>
       </>}
 
       {editDefId && (
