@@ -989,6 +989,51 @@ class FKPredictor:
         )
 
     # ------------------------------------------------------------------
+    # Backfill embedding similarity for candidates missing graph edges
+    # ------------------------------------------------------------------
+    def _backfill_embedding_similarity(self, candidates: DataFrame) -> DataFrame:
+        """Compute cosine similarity from graph_nodes embeddings for candidates with col_similarity=0.
+
+        Name-based and ontology candidates start with col_similarity=0.0.  If the
+        similarity_edges threshold (0.85) excluded a valid pair, the propagation
+        step finds nothing to propagate.  This backfill joins against the raw
+        embeddings in graph_nodes and computes the dot product directly.
+        """
+        nodes = self.config.fq(self.config.nodes_table)
+        try:
+            zero_count = candidates.filter(F.col("col_similarity") == 0.0).count()
+            if zero_count == 0:
+                return candidates
+            emb_a = self.spark.sql(
+                f"SELECT id AS _emb_a_id, embedding AS _emb_a FROM {nodes} WHERE embedding IS NOT NULL"
+            )
+            emb_b = self.spark.sql(
+                f"SELECT id AS _emb_b_id, embedding AS _emb_b FROM {nodes} WHERE embedding IS NOT NULL"
+            )
+            cands_zero = (
+                candidates.filter(F.col("col_similarity") == 0.0)
+                .join(emb_a, F.col("col_a") == F.col("_emb_a_id"), "inner")
+                .join(emb_b, F.col("col_b") == F.col("_emb_b_id"), "inner")
+                .withColumn(
+                    "_cosine",
+                    F.aggregate(
+                        F.zip_with(F.col("_emb_a"), F.col("_emb_b"), lambda a, b: a * b),
+                        F.lit(0.0).cast("double"),
+                        lambda acc, x: acc + x,
+                    ),
+                )
+                .withColumn("col_similarity", F.greatest(F.col("col_similarity"), F.col("_cosine")))
+                .drop("_cosine", "_emb_a_id", "_emb_a", "_emb_b_id", "_emb_b")
+            )
+            cands_nonzero = candidates.filter(F.col("col_similarity") != 0.0)
+            result = cands_nonzero.unionByName(cands_zero, allowMissingColumns=True)
+            logger.info("Backfilled embedding similarity for %d candidates with col_similarity=0", zero_count)
+            return result
+        except Exception as e:
+            logger.warning("Embedding similarity backfill failed, skipping: %s", e)
+            return candidates
+
+    # ------------------------------------------------------------------
     # Step 2: Sample values
     # ------------------------------------------------------------------
     def sample_values(self, candidates: DataFrame) -> DataFrame:
@@ -2022,6 +2067,8 @@ class FKPredictor:
         candidates = candidates.fillna(
             0.0, subset=["col_similarity", "table_similarity", "query_hit_count"]
         )
+
+        candidates = self._backfill_embedding_similarity(candidates)
 
         if self.config.table_names:
             from dbxmetagen.table_filter import table_names_col_filter
