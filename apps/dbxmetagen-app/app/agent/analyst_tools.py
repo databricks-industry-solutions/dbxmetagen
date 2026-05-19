@@ -277,18 +277,18 @@ def query_information_schema(catalog: str, schema_name: str, query_type: str = "
     valid_types = {
         "columns": (
             f"SELECT table_name, column_name, data_type, is_nullable, column_default, comment "
-            f"FROM {catalog}.information_schema.columns "
-            f"WHERE table_schema = '{schema_name}'{table_filter} ORDER BY table_name, ordinal_position"
+            f"FROM system.information_schema.columns "
+            f"WHERE table_catalog = '{catalog}' AND table_schema = '{schema_name}'{table_filter} ORDER BY table_name, ordinal_position"
         ),
         "tables": (
             f"SELECT table_name, table_type, comment "
-            f"FROM {catalog}.information_schema.tables "
-            f"WHERE table_schema = '{schema_name}'{table_filter} ORDER BY table_name"
+            f"FROM system.information_schema.tables "
+            f"WHERE table_catalog = '{catalog}' AND table_schema = '{schema_name}'{table_filter} ORDER BY table_name"
         ),
         "constraints": (
             f"SELECT constraint_name, table_name, constraint_type "
-            f"FROM {catalog}.information_schema.table_constraints "
-            f"WHERE table_schema = '{schema_name}'{table_filter} ORDER BY table_name"
+            f"FROM system.information_schema.table_constraints "
+            f"WHERE table_catalog = '{catalog}' AND table_schema = '{schema_name}'{table_filter} ORDER BY table_name"
         ),
     }
     if query_type not in valid_types:

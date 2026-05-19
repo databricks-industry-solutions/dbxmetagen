@@ -429,7 +429,7 @@ class Prompt(ABC):
         quoted = ", ".join(f"'{c.replace(chr(39), chr(39)*2)}'" for c in columns)
         df = self.spark.sql(
             f"SELECT column_name, data_type, comment "
-            f"FROM {catalog}.information_schema.columns "
+            f"FROM system.information_schema.columns "
             f"WHERE table_catalog = '{catalog}' AND table_schema = '{schema}' "
             f"AND table_name = '{table}' AND column_name IN ({quoted})"
         )

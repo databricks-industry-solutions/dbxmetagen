@@ -705,8 +705,8 @@ def diagnose_catalog(catalog: str, schema: str = ""):
     if schema:
         def check_list_tables():
             rows = execute_sql(
-                f"SELECT table_name, table_type FROM `{catalog}`.information_schema.tables "
-                f"WHERE table_schema = '{schema}' LIMIT 25"
+                f"SELECT table_name, table_type FROM system.information_schema.tables "
+                f"WHERE table_catalog = '{catalog}' AND table_schema = '{schema}' LIMIT 25"
             )
             return {"count": len(rows), "tables": rows}
 
@@ -715,8 +715,8 @@ def diagnose_catalog(catalog: str, schema: str = ""):
         # 5. Can we SELECT from the first table? (tests actual connectivity)
         def check_select_one():
             tbl_rows = execute_sql(
-                f"SELECT table_name FROM `{catalog}`.information_schema.tables "
-                f"WHERE table_schema = '{schema}' LIMIT 1"
+                f"SELECT table_name FROM system.information_schema.tables "
+                f"WHERE table_catalog = '{catalog}' AND table_schema = '{schema}' LIMIT 1"
             )
             if not tbl_rows:
                 return "no tables found to test"
@@ -5544,8 +5544,9 @@ def list_catalogs():
 def list_schemas(catalog: str):
     try:
         q = (
-            f"SELECT schema_name FROM `{catalog}`.information_schema.schemata "
-            f"WHERE schema_name NOT IN ('information_schema', '__internal') "
+            f"SELECT schema_name FROM system.information_schema.schemata "
+            f"WHERE catalog_name = '{catalog}' "
+            f"AND schema_name NOT IN ('information_schema', '__internal') "
             f"ORDER BY schema_name"
         )
         rows = execute_sql(q)
@@ -5566,8 +5567,8 @@ def list_schemas(catalog: str):
 def list_tables(catalog: str, schema: str):
     try:
         q = (
-            f"SELECT table_name FROM `{catalog}`.information_schema.tables "
-            f"WHERE table_schema = '{schema}' "
+            f"SELECT table_name FROM system.information_schema.tables "
+            f"WHERE table_catalog = '{catalog}' AND table_schema = '{schema}' "
             f"AND table_type IN ('MANAGED','EXTERNAL','VIEW','STREAMING_TABLE','MATERIALIZED_VIEW','FOREIGN') "
             f"AND NOT table_name RLIKE '^(__|event_log_[0-9a-f]{{8}}_)' "
             f"ORDER BY table_name"
@@ -6292,8 +6293,8 @@ def _build_sl_context(
             short_clause = ", ".join(f"'{t}'" for t in t_names)
             info_cols = execute_sql(
                 f"SELECT table_name, column_name, data_type "
-                f"FROM `{t_cat}`.information_schema.columns "
-                f"WHERE table_schema = '{t_sch}' AND table_name IN ({short_clause})"
+                f"FROM system.information_schema.columns "
+                f"WHERE table_catalog = '{t_cat}' AND table_schema = '{t_sch}' AND table_name IN ({short_clause})"
             )
             col_by_tbl: dict[str, list] = {}
             for c in info_cols:
@@ -6807,7 +6808,7 @@ def _resolve_table_columns(full_table_name: str) -> set[str]:
     if len(parts) == 3:
         try:
             rows = execute_sql(
-                f"SELECT column_name FROM `{parts[0]}`.information_schema.columns "
+                f"SELECT column_name FROM system.information_schema.columns "
                 f"WHERE table_catalog = '{parts[0]}' AND table_schema = '{parts[1]}' AND table_name = '{parts[2]}'"
             )
             return {r["column_name"].lower() for r in rows}
@@ -8498,7 +8499,7 @@ def retry_definition(definition_id: str):
     if len(parts) == 3:
         try:
             col_rows = execute_sql(
-                f"SELECT column_name, data_type FROM `{parts[0]}`.information_schema.columns "
+                f"SELECT column_name, data_type FROM system.information_schema.columns "
                 f"WHERE table_catalog = '{parts[0]}' AND table_schema = '{parts[1]}' AND table_name = '{parts[2]}'"
             )
             available_cols = ", ".join(
@@ -9906,8 +9907,8 @@ def genie_uc_comment(table_identifier: str):
     for p in (cat, sch, tbl):
         _validate_filter(p, "identifier_part")
     rows = execute_sql(
-        f"SELECT comment FROM {cat}.information_schema.tables "
-        f"WHERE table_schema = {_safe_sql_str(sch)} AND table_name = {_safe_sql_str(tbl)} LIMIT 1"
+        f"SELECT comment FROM system.information_schema.tables "
+        f"WHERE table_catalog = '{cat}' AND table_schema = {_safe_sql_str(sch)} AND table_name = {_safe_sql_str(tbl)} LIMIT 1"
     )
     comment = rows[0].get("comment") if rows else None
     return {"comment": comment}

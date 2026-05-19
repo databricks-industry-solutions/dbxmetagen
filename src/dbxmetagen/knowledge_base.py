@@ -456,8 +456,8 @@ class KnowledgeBaseBuilder:
                         current_timestamp() AS created_at,
                         current_timestamp() AS updated_at,
                         CAST(NULL AS TIMESTAMP) AS review_updated_at
-                    FROM {cat}.information_schema.tables
-                    WHERE table_schema = '{sch}'
+                    FROM system.information_schema.tables
+                    WHERE table_catalog = '{cat}' AND table_schema = '{sch}'
                       AND table_name IN ({in_clause})
                       AND table_type IN ('MANAGED', 'EXTERNAL')
                 """)

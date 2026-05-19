@@ -1111,7 +1111,7 @@ OUTPUT (one JSON object only, no array, no explanation):"""
         try:
             rows = self.spark.sql(
                 f"""
-                SELECT column_name FROM {cat}.information_schema.columns
+                SELECT column_name FROM system.information_schema.columns
                 WHERE table_catalog = '{cat}' AND table_schema = '{sch}' AND table_name = '{tbl}'
             """
             ).collect()
@@ -1134,7 +1134,7 @@ OUTPUT (one JSON object only, no array, no explanation):"""
                 if len(j_parts) == 3:
                     j_rows = self.spark.sql(
                         f"""
-                        SELECT column_name FROM {j_parts[0]}.information_schema.columns
+                        SELECT column_name FROM system.information_schema.columns
                         WHERE table_catalog = '{j_parts[0]}' AND table_schema = '{j_parts[1]}' AND table_name = '{j_parts[2]}'
                     """
                     ).collect()
