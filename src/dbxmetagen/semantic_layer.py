@@ -666,6 +666,23 @@ class SemanticLayerGenerator:
             )
             parts.extend(possible_hints)
 
+        # Existing metric views -- avoid duplicates
+        existing_mvs = self._safe_collect(
+            f"SELECT metric_view_name, source_table, json_definition "
+            f"FROM {fq(self.config.definitions_table)} "
+            f"WHERE status IN ('validated', 'applied') AND metric_view_name IS NOT NULL"
+        )
+        if existing_mvs:
+            parts.append("\nEXISTING METRIC VIEWS (do NOT duplicate -- create complementary views):")
+            for emv in existing_mvs:
+                comment = ""
+                try:
+                    edefn = json.loads(emv["json_definition"]) if isinstance(emv["json_definition"], str) else emv["json_definition"]
+                    comment = edefn.get("comment", "")
+                except Exception:
+                    pass
+                parts.append(f"  - {emv['metric_view_name']} (source: {emv.get('source_table', '?')}){': ' + comment if comment else ''}")
+
         # Inject metric view best-practices reference (loaded from JSON)
         ref = _load_reference("metric_view_reference.json")
         if ref:
@@ -933,6 +950,8 @@ RULES:
     - LIKE patterns MUST be quoted: product_code LIKE 'HW%', NOT product_code LIKE HW%
 21. GRAIN INTEGRITY with joins: When joining a fact table to a dimension table, only use dimension columns as GROUP BY dimensions or in FILTER clauses. NEVER aggregate a dimension-table numeric attribute (e.g. SUM(dim.bed_count), AVG(dim.capacity)) from a fact-grain view -- the value fans out by the number of fact rows per dimension row, producing inflated results. If you need to analyze dimension attributes directly, create a SEPARATE metric view sourced from the dimension table
 22. NEVER create share-of-total or percent-of-total measures (e.g. SUM(x)/SUM(total_x), COUNT(*)/COUNT(*)). These require window functions (OVER()) for the denominator, which are not supported. The denominator collapses to the same group as the numerator, always producing 1.0. Instead use: conditional ratios with FILTER, within-grain rates, or describe the share concept in the view comment for downstream Genie SQL
+23. NEVER nest aggregate functions inside other aggregate functions (e.g. SUM(COUNT(*)), AVG(SUM(x))). Databricks SQL does not allow nested aggregates. If you need a two-stage aggregation, use a conditional aggregate with CASE/WHEN or create a separate metric view for the inner aggregation
+24. If EXISTING METRIC VIEWS are listed in the metadata, do NOT recreate views with the same name or identical measures/dimensions. Instead create complementary views that cover different analytical angles, grains, or join paths. Reference existing views when planning to ensure coverage without overlap
 
 EXAMPLE:
 {few_shot}
@@ -1574,6 +1593,17 @@ OUTPUT (one JSON object only, no array, no explanation):"""
 
         expr = re.sub(
             r"DATE_TRUNC\(\s*([A-Za-z]+)(,)", _fix_date_trunc, expr, flags=re.IGNORECASE
+        )
+
+        def _fix_date_format(m):
+            col_part = m.group(1)
+            fmt = m.group(2).strip()
+            if not (fmt.startswith("'") or fmt.startswith('"')):
+                return f"DATE_FORMAT({col_part}, '{fmt}')"
+            return m.group(0)
+
+        expr = re.sub(
+            r"DATE_FORMAT\(([^,]+),\s*([^)]+)\)", _fix_date_format, expr, flags=re.IGNORECASE
         )
         expr = cls._fix_date_part(expr)
         expr = cls._fix_datediff(expr)

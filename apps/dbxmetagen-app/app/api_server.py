@@ -7141,6 +7141,18 @@ def _autofix_expr(expr: str) -> str:
         if match and expr.strip().upper().startswith(iv.upper()):
             expr = pat.sub(rf"DATE_TRUNC('{iv}', \1)", expr)
 
+    # Fix DATE_FORMAT with unquoted format strings: DATE_FORMAT(col, yyyy) -> DATE_FORMAT(col, 'yyyy')
+    def _fix_date_format(m):
+        col_part = m.group(1)
+        fmt = m.group(2).strip()
+        if not (fmt.startswith("'") or fmt.startswith('"')):
+            return f"DATE_FORMAT({col_part}, '{fmt}')"
+        return m.group(0)
+
+    expr = re.sub(
+        r"DATE_FORMAT\(([^,]+),\s*([^)]+)\)", _fix_date_format, expr, flags=re.IGNORECASE
+    )
+
     expr = _fix_none_literal(expr)
     expr = _fix_double_commas(expr)
     expr = _fix_position_bare_char(expr)
@@ -7166,10 +7178,19 @@ def _build_from_clause(source_table: str, joins: list[dict] | None = None) -> st
     return clause
 
 
+_NESTED_AGG_RE = re.compile(
+    r"\b(SUM|COUNT|AVG|MIN|MAX|STDDEV|VARIANCE|PERCENTILE)\s*\(\s*"
+    r"(SUM|COUNT|AVG|MIN|MAX|STDDEV|VARIANCE|PERCENTILE)\s*\(",
+    re.IGNORECASE,
+)
+
+
 def _validate_expr(expr: str, source_table: str, joins: list[dict] | None = None) -> tuple:
     """Test a SQL expression with optional joins. Returns (error_or_None, possibly_fixed_expr)."""
     if re.search(r'\bOVER\s*\(', expr, re.IGNORECASE):
         return "Window functions (OVER) are not supported in metric view expressions. Use the 'window' property instead.", expr
+    if _NESTED_AGG_RE.search(expr):
+        return "Nested aggregate functions are not supported. Use a conditional aggregate (CASE/WHEN) or create a separate metric view for the inner aggregation.", expr
     from_clause = _build_from_clause(source_table, joins)
     try:
         execute_sql(f"SELECT {expr} FROM {from_clause} LIMIT 0")
@@ -8621,6 +8642,12 @@ def create_metric_view(definition_id: str, req: CreateDefinitionRequest):
     try:
         execute_sql(sql, timeout=60)
     except Exception as e:
+        err_msg = str(e).replace("'", "''")
+        execute_sql(
+            f"UPDATE {fq('metric_view_definitions')} "
+            f"SET status = 'failed', validation_errors = '{err_msg}' "
+            f"WHERE definition_id = '{definition_id}'"
+        )
         raise HTTPException(400, detail=str(e))
     # Tag as draft for governance
     try:
@@ -12000,16 +12027,19 @@ def _sg_sync_worker(task_id: str):
                     vals.append("'" + str(v).replace("'", "''") + "'")
             n_values.append(f"({', '.join(vals)}, {now_str}, {now_str})")
         if n_values:
-            n_cols = ("node_id, node_type, definition_id, name, display_name, expr, comment, "
-                      "source_table, status, deployed_fqn, filter_expr, synonyms, format_spec, "
-                      "window_spec, domain, subdomain, graph_node_id, created_at, updated_at")
-            # Batch VALUES into chunks to avoid SQL size limits
+            n_col_list = [
+                "node_id", "node_type", "definition_id", "name", "display_name", "expr", "comment",
+                "source_table", "status", "deployed_fqn", "filter_expr", "synonyms", "format_spec",
+                "window_spec", "domain", "subdomain", "graph_node_id", "created_at", "updated_at",
+            ]
+            n_cols_str = ", ".join(n_col_list)
+            n_select_tpl = ", ".join(f"col{i+1} AS {c}" for i, c in enumerate(n_col_list))
             batch_sz = 200
             for idx in range(0, len(n_values), batch_sz):
                 batch = n_values[idx:idx + batch_sz]
                 execute_sql(
                     f"MERGE INTO {cfg_nodes} AS t "
-                    f"USING (VALUES {', '.join(batch)}) AS s({n_cols}) "
+                    f"USING (SELECT {n_select_tpl} FROM VALUES {', '.join(batch)}) AS s "
                     f"ON t.node_id = s.node_id "
                     f"WHEN MATCHED AND ("
                     f"  COALESCE(t.expr, '') != COALESCE(s.expr, '') "
@@ -12035,12 +12065,13 @@ def _sg_sync_worker(task_id: str):
                     vals.append("'" + str(v).replace("'", "''") + "'")
             e_values.append(f"({', '.join(vals)}, {now_str}, {now_str})")
         if e_values:
-            e_cols = "edge_id, src, dst, relationship, direction, weight, properties, created_at, updated_at"
+            e_col_list = ["edge_id", "src", "dst", "relationship", "direction", "weight", "properties", "created_at", "updated_at"]
+            e_select_tpl = ", ".join(f"col{i+1} AS {c}" for i, c in enumerate(e_col_list))
             for idx in range(0, len(e_values), batch_sz):
                 batch = e_values[idx:idx + batch_sz]
                 execute_sql(
                     f"MERGE INTO {cfg_edges} AS t "
-                    f"USING (VALUES {', '.join(batch)}) AS s({e_cols}) "
+                    f"USING (SELECT {e_select_tpl} FROM VALUES {', '.join(batch)}) AS s "
                     f"ON t.edge_id = s.edge_id "
                     f"WHEN MATCHED THEN UPDATE SET * "
                     f"WHEN NOT MATCHED THEN INSERT *",
