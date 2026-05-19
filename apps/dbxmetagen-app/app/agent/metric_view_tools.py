@@ -82,6 +82,17 @@ def _get_deployed_fqn(row: dict) -> str:
     return f"{cat}.{sch}.{row.get('metric_view_name', '')}"
 
 
+def _extract_mv_name(node_id: str, content: str) -> str:
+    """Extract metric_view_name from node_id (legacy 'mv::name::...' format) or content FQN."""
+    if "::" in str(node_id):
+        return node_id.split("::")[1]
+    if content:
+        first_line = content.split("\n")[0].strip()
+        if "." in first_line:
+            return first_line.rsplit(".", 1)[-1]
+    return ""
+
+
 def _parse_str_list(val) -> list[str]:
     """Normalize an LLM tool-call argument into a list of strings.
 
@@ -176,9 +187,8 @@ def search_metric_views(question: str) -> str:
         for row in results.get("result", {}).get("data_array", []):
             match = dict(zip(col_names, row)) if col_names else {}
             content = (match.get("content") or "")[:800]
-            # Extract metric view name from node_id (format: "mv::<name>::...")
             node_id = match.get("node_id", "")
-            mv_name = node_id.split("::")[1] if "::" in str(node_id) else ""
+            mv_name = _extract_mv_name(node_id, content)
             if mv_name:
                 seen_mv_names.add(mv_name)
             candidates.append({
@@ -520,7 +530,7 @@ def search_metric_views_direct(question: str) -> list[dict]:
             match = dict(zip(col_names, row)) if col_names else {}
             content = (match.get("content") or "")[:800]
             node_id = match.get("node_id", "")
-            mv_name = node_id.split("::")[1] if "::" in str(node_id) else ""
+            mv_name = _extract_mv_name(node_id, content)
             candidates.append({
                 "doc_type": match.get("doc_type", ""),
                 "content": content,

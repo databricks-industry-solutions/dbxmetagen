@@ -13,6 +13,7 @@ Never touches raw tables -- metric views are the bounded query contract.
 import json
 import logging
 import queue
+import re
 import threading
 from typing import Annotated, Any, Dict, List, Optional, TypedDict
 
@@ -32,6 +33,17 @@ logger = logging.getLogger(__name__)
 
 MAX_QUERY_ATTEMPTS = 3
 MAX_VIEW_ITERATIONS = 3
+
+
+def _parse_json(text: str) -> dict:
+    """Extract a JSON object from LLM output, stripping markdown fences and preamble."""
+    text = re.sub(r"^```(?:json)?\s*", "", text.strip())
+    text = re.sub(r"\s*```$", "", text)
+    start = text.find("{")
+    end = text.rfind("}")
+    if start == -1 or end == -1:
+        raise ValueError(f"No JSON object found: {text[:200]}")
+    return json.loads(text[start : end + 1])
 
 
 # ---------------------------------------------------------------------------
@@ -203,9 +215,9 @@ def search_node(state: MetricViewState) -> dict:
 
     selected_name = None
     try:
-        parsed = json.loads(content)
+        parsed = _parse_json(content)
         selected_name = parsed.get("metric_view_name")
-    except (json.JSONDecodeError, TypeError):
+    except (json.JSONDecodeError, TypeError, ValueError):
         for c in unique:
             if c.get("measures"):
                 selected_name = c["metric_view_name"]
@@ -258,9 +270,9 @@ def list_fallback_node(state: MetricViewState) -> dict:
 
     selected_name = None
     try:
-        parsed = json.loads(content)
+        parsed = _parse_json(content)
         selected_name = parsed.get("metric_view_name")
-    except (json.JSONDecodeError, TypeError):
+    except (json.JSONDecodeError, TypeError, ValueError):
         pass
 
     if selected_name and selected_name in queried:
@@ -314,10 +326,10 @@ def query_node(state: MetricViewState) -> dict:
     response = llm.invoke([HumanMessage(content=query_content)])
     content = (response.content or "").strip()
 
-    # Parse LLM's query specification
+    # Parse LLM's query specification (strip markdown fences / preamble)
     try:
-        spec = json.loads(content)
-    except (json.JSONDecodeError, TypeError):
+        spec = _parse_json(content)
+    except (json.JSONDecodeError, TypeError, ValueError):
         return {
             "query_attempts": attempts + 1,
             "error": f"Failed to parse query spec from LLM: {content[:200]}",
@@ -434,8 +446,8 @@ def assess_node(state: MetricViewState) -> dict:
     raw = (response.content or "").strip()
 
     try:
-        decision = json.loads(raw)
-    except (json.JSONDecodeError, TypeError):
+        decision = _parse_json(raw)
+    except (json.JSONDecodeError, TypeError, ValueError):
         logger.warning("[mv_agent] assess parse failed, defaulting to summarize: %s", raw[:200])
         return {**base_update, "_assess_decision": "summarize"}
 
