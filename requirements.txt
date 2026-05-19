@@ -160,7 +160,7 @@ httpx-sse==0.4.3
     # via langchain-community
 huey==2.6.0
     # via mlflow
-idna==3.11
+idna==3.15
     # via
     #   anyio
     #   httpx
