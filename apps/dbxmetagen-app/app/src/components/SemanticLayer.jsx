@@ -254,6 +254,7 @@ export default function SemanticLayer({ onNavigate, pipelineStats }) {
   const [bulkCreating, setBulkCreating] = useState(false)
   const [bulkDeleting, setBulkDeleting] = useState(null)
   const [vectorSyncing, setVectorSyncing] = useState(false)
+  const [sgSyncing, setSgSyncing] = useState(false)
   const [kpiCoverage, setKpiCoverage] = useState(null)
   const [tableSaveStatus, setTableSaveStatus] = useState(null)
   const [openMenuId, setOpenMenuId] = useState(null)
@@ -856,6 +857,29 @@ export default function SemanticLayer({ onNavigate, pipelineStats }) {
       poll()
     } catch (e) {
       setVectorSyncing(false)
+      alert(`Sync failed: ${e.message}`)
+    }
+  }
+
+  const syncToSemanticGraph = async () => {
+    setSgSyncing(true)
+    try {
+      const res = await fetch('/api/semantic-graph/sync', { method: 'POST' })
+      const { task_id } = await res.json()
+      const poll = async () => {
+        const r = await fetch(`/api/semantic-graph/sync/${task_id}`)
+        const data = await r.json()
+        if (data.status === 'running') { setTimeout(poll, 2000); return }
+        setSgSyncing(false)
+        if (data.status === 'done') {
+          alert(`Semantic graph synced: ${data.nodes || 0} nodes, ${data.edges || 0} edges`)
+        } else {
+          alert(`Sync failed: ${data.error || 'unknown error'}`)
+        }
+      }
+      poll()
+    } catch (e) {
+      setSgSyncing(false)
       alert(`Sync failed: ${e.message}`)
     }
   }
@@ -1550,6 +1574,10 @@ export default function SemanticLayer({ onNavigate, pipelineStats }) {
               <button onClick={syncToVectorStore} disabled={vectorSyncing}
                 className="px-2.5 py-1 text-xs text-blue-600 dark:text-blue-400 border border-blue-300 dark:border-blue-700 rounded hover:bg-blue-50 dark:hover:bg-blue-900/20 disabled:opacity-50 whitespace-nowrap">
                 {vectorSyncing ? 'Syncing...' : 'Sync to Vector Store'}
+              </button>
+              <button onClick={syncToSemanticGraph} disabled={sgSyncing}
+                className="px-2.5 py-1 text-xs text-purple-600 dark:text-purple-400 border border-purple-300 dark:border-purple-700 rounded hover:bg-purple-50 dark:hover:bg-purple-900/20 disabled:opacity-50 whitespace-nowrap">
+                {sgSyncing ? 'Syncing...' : 'Sync to Semantic Graph'}
               </button>
             </div>
           )}

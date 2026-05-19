@@ -8633,6 +8633,10 @@ def create_metric_view(definition_id: str, req: CreateDefinitionRequest):
         f"deployed_catalog = '{req.target_catalog}', deployed_schema = '{req.target_schema}' "
         f"WHERE definition_id = '{definition_id}'"
     )
+    try:
+        _trigger_sg_sync_if_idle()
+    except Exception:
+        pass
     return {"definition_id": definition_id, "status": "applied", "metric_view": fq_mv}
 
 
@@ -11788,6 +11792,307 @@ def sync_metric_views():
 @app.get("/api/vector/sync-metric-views/{task_id}")
 def sync_metric_views_status(task_id: str):
     task = _mv_sync_tasks.get(task_id)
+    if not task:
+        raise HTTPException(404, detail="Task not found")
+    return task
+
+
+# ---------------------------------------------------------------------------
+# Semantic Graph sync
+# ---------------------------------------------------------------------------
+
+_sg_sync_tasks: dict[str, dict] = {}
+
+def _sg_sync_worker(task_id: str):
+    """Build/refresh the semantic knowledge graph from metric view definitions."""
+    cfg_nodes = fq("semantic_nodes")
+    cfg_edges = fq("semantic_edges")
+    cfg_defs = fq("metric_view_definitions")
+    cfg_kb = fq("table_knowledge_base")
+    cfg_gn = fq("graph_nodes")
+
+    try:
+        # Create tables
+        execute_sql(f"""
+            CREATE TABLE IF NOT EXISTS {cfg_nodes} (
+                node_id STRING NOT NULL, node_type STRING, definition_id STRING,
+                name STRING, display_name STRING, expr STRING, comment STRING,
+                source_table STRING, status STRING, deployed_fqn STRING,
+                filter_expr STRING, synonyms STRING, format_spec STRING,
+                window_spec STRING, domain STRING, subdomain STRING,
+                graph_node_id STRING, created_at TIMESTAMP, updated_at TIMESTAMP
+            ) USING DELTA TBLPROPERTIES ('delta.enableChangeDataFeed' = 'true')
+        """, timeout=30)
+        execute_sql(f"""
+            CREATE TABLE IF NOT EXISTS {cfg_edges} (
+                edge_id STRING NOT NULL, src STRING, dst STRING,
+                relationship STRING, direction STRING, weight DOUBLE,
+                properties STRING, created_at TIMESTAMP, updated_at TIMESTAMP
+            ) USING DELTA TBLPROPERTIES ('delta.enableChangeDataFeed' = 'true')
+        """, timeout=30)
+
+        # Read definitions
+        rows = execute_sql(
+            f"SELECT definition_id, metric_view_name, source_table, json_definition, "
+            f"status, deployed_catalog, deployed_schema "
+            f"FROM {cfg_defs} WHERE status IN ('validated', 'applied')",
+            timeout=30,
+        )
+        if not rows:
+            _sg_sync_tasks[task_id] = {"status": "done", "nodes": 0, "edges": 0}
+            return
+
+        # Load domain info
+        try:
+            kb_rows = execute_sql(f"SELECT table_name, domain, subdomain FROM {cfg_kb}", timeout=15)
+            domains = {r["table_name"]: (r["domain"], r["subdomain"]) for r in kb_rows} if kb_rows else {}
+        except Exception:
+            domains = {}
+
+        # Load graph_nodes for cross-reference
+        try:
+            gn_rows = execute_sql(f"SELECT id, table_name FROM {cfg_gn} WHERE node_type = 'table'", timeout=15)
+            gn_map = {r["table_name"]: r["id"] for r in gn_rows} if gn_rows else {}
+        except Exception:
+            gn_map = {}
+
+        import re as _re
+        _alias_re = _re.compile(r"(?<![.\w])(\w+)\.(\w+)(?!\w)")
+        now_str = "current_timestamp()"
+        all_nodes = []
+        all_edges = []
+        valid_def_ids = set()
+
+        for r in rows:
+            defn = json.loads(r["json_definition"]) if isinstance(r["json_definition"], str) else r["json_definition"]
+            did = r["definition_id"]
+            valid_def_ids.add(did)
+            mv_name = defn.get("name", "") or r.get("metric_view_name", "")
+            source = defn.get("source", "")
+            dom, subdom = domains.get(source, (None, None))
+            deployed_fqn = None
+            if r.get("deployed_catalog") and r.get("deployed_schema"):
+                deployed_fqn = f"{r['deployed_catalog']}.{r['deployed_schema']}.{mv_name}"
+
+            mv_nid = f"metric_view::{did}::{mv_name}"
+            all_nodes.append((mv_nid, "metric_view", did, mv_name, None, None,
+                              defn.get("comment"), source, r["status"], deployed_fqn,
+                              defn.get("filter"), None, None, None, dom, subdom, None))
+
+            src_nid = f"source_table::{source}"
+            all_nodes.append((src_nid, "source_table", None, source, None, None,
+                              None, None, None, None, None, None, None, None,
+                              dom, subdom, gn_map.get(source)))
+
+            all_edges.append((f"{mv_nid}::{src_nid}::sourced_from", mv_nid, src_nid,
+                              "sourced_from", "directed", None, None))
+
+            alias_map = {"source": source}
+
+            def walk_joins(joins, parent_fqn, parent_alias):
+                for j in joins:
+                    j_source = j.get("source", "")
+                    j_alias = j.get("name", j_source.split(".")[-1] if j_source else "")
+                    alias_map[j_alias] = j_source
+                    j_nid = f"source_table::{j_source}"
+                    j_dom, j_subdom = domains.get(j_source, (None, None))
+                    all_nodes.append((j_nid, "source_table", None, j_source, None, None,
+                                      None, None, None, None, None, None, None, None,
+                                      j_dom, j_subdom, gn_map.get(j_source)))
+                    p_nid = f"source_table::{parent_fqn}"
+                    props = json.dumps({"join_expression": j.get("on", ""), "join_type": j.get("type", "LEFT")})
+                    all_edges.append((f"{p_nid}::{j_nid}::joins_to", p_nid, j_nid,
+                                      "joins_to", "directed", None, props))
+                    if j.get("joins"):
+                        walk_joins(j["joins"], j_source, j_alias)
+
+            walk_joins(defn.get("joins", []), source, "source")
+
+            def resolve_provides(expr, target_nid):
+                if not expr:
+                    return
+                resolved = set()
+                for alias, col in _alias_re.findall(expr):
+                    t = alias_map.get(alias)
+                    if t:
+                        resolved.add(t)
+                if resolved:
+                    for t in resolved:
+                        eid = f"source_table::{t}::{target_nid}::provides"
+                        all_edges.append((eid, f"source_table::{t}", target_nid,
+                                          "provides", "directed", 1.0, None))
+                else:
+                    eid = f"source_table::{source}::{target_nid}::provides"
+                    all_edges.append((eid, f"source_table::{source}", target_nid,
+                                      "provides", "directed", 0.7, None))
+
+            for m in defn.get("measures", []):
+                m_nid = f"measure::{did}::{m['name']}"
+                syns = json.dumps(m["synonyms"]) if m.get("synonyms") else None
+                fmt = json.dumps(m["format"]) if m.get("format") else None
+                win = json.dumps(m["window"]) if m.get("window") else None
+                all_nodes.append((m_nid, "measure", did, m["name"], m.get("display_name"),
+                                  m.get("expr"), m.get("comment"), None, None, None, None,
+                                  syns, fmt, win, None, None, None))
+                all_edges.append((f"{mv_nid}::{m_nid}::has_measure", mv_nid, m_nid,
+                                  "has_measure", "directed", None, None))
+                resolve_provides(m.get("expr", ""), m_nid)
+
+            for d in defn.get("dimensions", []):
+                d_nid = f"dimension::{did}::{d['name']}"
+                syns = json.dumps(d["synonyms"]) if d.get("synonyms") else None
+                all_nodes.append((d_nid, "dimension", did, d["name"], d.get("display_name"),
+                                  d.get("expr"), d.get("comment"), None, None, None, None,
+                                  syns, None, None, None, None, None))
+                all_edges.append((f"{mv_nid}::{d_nid}::has_dimension", mv_nid, d_nid,
+                                  "has_dimension", "directed", None, None))
+                resolve_provides(d.get("expr", ""), d_nid)
+
+        # Inter-view: shared_source
+        mv_table_map = {}
+        for e in all_edges:
+            if e[3] in ("sourced_from", "joins_to"):
+                for n in all_nodes:
+                    if n[0] == e[1] and n[1] == "metric_view":
+                        mv_table_map.setdefault(n[0], set()).add(e[2])
+        mv_list = list(mv_table_map.keys())
+        for i, a in enumerate(mv_list):
+            for b in mv_list[i + 1:]:
+                if mv_table_map[a] & mv_table_map[b]:
+                    all_edges.append((f"{a}::{b}::shared_source", a, b,
+                                      "shared_source", "undirected", None, None))
+
+        # Inter-view: co_dimension
+        dim_sigs = {}
+        for n in all_nodes:
+            if n[1] == "dimension":
+                raw_expr = n[5] or ""
+                norm = _alias_re.sub(lambda m: m.group(2), raw_expr).strip()
+                sig = f"{n[3]}||{norm}"
+                dim_sigs.setdefault(sig, []).append(n[0])
+        for sig, nids in dim_sigs.items():
+            if len(nids) < 2:
+                continue
+            for i, a in enumerate(nids):
+                for b in nids[i + 1:]:
+                    all_edges.append((f"{a}::{b}::co_dimension", a, b,
+                                      "co_dimension", "undirected", None, None))
+
+        # Dedup nodes and edges
+        seen_n = {}
+        for n in all_nodes:
+            if n[0] not in seen_n or (n[2] and not seen_n[n[0]][2]):
+                seen_n[n[0]] = n
+        seen_e = {}
+        for e in all_edges:
+            seen_e[e[0]] = e
+
+        # MERGE nodes via temp view SQL
+        n_values = []
+        for n in seen_n.values():
+            vals = []
+            for v in n:
+                if v is None:
+                    vals.append("NULL")
+                elif isinstance(v, (int, float)):
+                    vals.append(str(v))
+                else:
+                    vals.append("'" + str(v).replace("'", "''") + "'")
+            n_values.append(f"({', '.join(vals)}, {now_str}, {now_str})")
+        if n_values:
+            n_cols = ("node_id, node_type, definition_id, name, display_name, expr, comment, "
+                      "source_table, status, deployed_fqn, filter_expr, synonyms, format_spec, "
+                      "window_spec, domain, subdomain, graph_node_id, created_at, updated_at")
+            # Batch VALUES into chunks to avoid SQL size limits
+            batch_sz = 200
+            for idx in range(0, len(n_values), batch_sz):
+                batch = n_values[idx:idx + batch_sz]
+                execute_sql(
+                    f"MERGE INTO {cfg_nodes} AS t "
+                    f"USING (VALUES {', '.join(batch)}) AS s({n_cols}) "
+                    f"ON t.node_id = s.node_id "
+                    f"WHEN MATCHED AND ("
+                    f"  COALESCE(t.expr, '') != COALESCE(s.expr, '') "
+                    f"  OR COALESCE(t.comment, '') != COALESCE(s.comment, '') "
+                    f"  OR COALESCE(t.source_table, '') != COALESCE(s.source_table, '') "
+                    f"  OR COALESCE(t.status, '') != COALESCE(s.status, '') "
+                    f"  OR COALESCE(t.deployed_fqn, '') != COALESCE(s.deployed_fqn, '') "
+                    f") THEN UPDATE SET * "
+                    f"WHEN NOT MATCHED THEN INSERT *",
+                    timeout=60,
+                )
+
+        # MERGE edges
+        e_values = []
+        for e in seen_e.values():
+            vals = []
+            for v in e:
+                if v is None:
+                    vals.append("NULL")
+                elif isinstance(v, (int, float)):
+                    vals.append(str(v))
+                else:
+                    vals.append("'" + str(v).replace("'", "''") + "'")
+            e_values.append(f"({', '.join(vals)}, {now_str}, {now_str})")
+        if e_values:
+            e_cols = "edge_id, src, dst, relationship, direction, weight, properties, created_at, updated_at"
+            for idx in range(0, len(e_values), batch_sz):
+                batch = e_values[idx:idx + batch_sz]
+                execute_sql(
+                    f"MERGE INTO {cfg_edges} AS t "
+                    f"USING (VALUES {', '.join(batch)}) AS s({e_cols}) "
+                    f"ON t.edge_id = s.edge_id "
+                    f"WHEN MATCHED THEN UPDATE SET * "
+                    f"WHEN NOT MATCHED THEN INSERT *",
+                    timeout=60,
+                )
+
+        # Sweep stale
+        if valid_def_ids:
+            id_list = ", ".join(f"'{d}'" for d in valid_def_ids)
+            execute_sql(
+                f"DELETE FROM {cfg_nodes} WHERE definition_id IS NOT NULL "
+                f"AND definition_id NOT IN ({id_list})",
+                timeout=30,
+            )
+            execute_sql(
+                f"DELETE FROM {cfg_edges} WHERE src NOT IN (SELECT node_id FROM {cfg_nodes}) "
+                f"OR dst NOT IN (SELECT node_id FROM {cfg_nodes})",
+                timeout=30,
+            )
+
+        _sg_sync_tasks[task_id] = {
+            "status": "done",
+            "nodes": len(seen_n),
+            "edges": len(seen_e),
+        }
+    except Exception as exc:
+        logger.exception("Semantic graph sync failed")
+        _sg_sync_tasks[task_id] = {"status": "error", "error": str(exc)}
+
+
+def _trigger_sg_sync_if_idle():
+    """Fire-and-forget semantic graph sync if none is currently running."""
+    for t in _sg_sync_tasks.values():
+        if t.get("status") == "running":
+            return
+    task_id = str(_uuid.uuid4())[:12]
+    _sg_sync_tasks[task_id] = {"status": "running"}
+    _spawn_with_obo(_sg_sync_worker, args=(task_id,))
+
+
+@app.post("/api/semantic-graph/sync")
+def sync_semantic_graph():
+    """Build/refresh the semantic knowledge graph from metric view definitions."""
+    task_id = str(_uuid.uuid4())[:12]
+    _sg_sync_tasks[task_id] = {"status": "running"}
+    _spawn_with_obo(_sg_sync_worker, args=(task_id,))
+    return {"task_id": task_id}
+
+
+@app.get("/api/semantic-graph/sync/{task_id}")
+def sync_semantic_graph_status(task_id: str):
+    task = _sg_sync_tasks.get(task_id)
     if not task:
         raise HTTPException(404, detail="Task not found")
     return task
