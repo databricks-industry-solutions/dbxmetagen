@@ -196,8 +196,15 @@
     }
   },
 
+  "guiding_principles": [
+    "GRAIN FIRST, THEME SECOND: Each metric view declares its grain via its source table (one row = one encounter, one order line, one prescription fill). All measures must be valid at that grain. Do NOT mix measures implying different grains in one view. Within a single grain, create separate views for different analytical themes.",
+    "STAR + SNOWFLAKE: Star-schema joins are the default (source -> dim). For dimension hierarchies (customer -> nation -> region), use nested joins with the child 'on' referencing the parent alias. Limit nesting to 2 levels.",
+    "ANALYTICAL RICHNESS: Every view should have at least one ratio measure, one computed dimension, and one filtered or conditional aggregate. Simple COUNT(*)-only views are insufficient."
+  ],
+
   "anti_patterns": [
     "NEVER produce a metric view whose only measure is COUNT(*) or COUNT(1). Always add at least one ratio, rate, or filtered aggregate.",
+    "NEVER mix measures implying different grains in the same view (e.g. patient-level counts + encounter-level rates from an encounters-sourced view).",
     "NEVER use unquoted string literals in any SQL expression. Every string value must be single-quoted.",
     "NEVER invent column names. Only reference columns that exist in the metadata context provided.",
     "NEVER create duplicate metric views for the same analytical theme. Consolidate related measures into one view.",
@@ -207,20 +214,23 @@
     "NEVER prefix dimension names with the join alias in the display name. Use 'Industry' not 'account.Industry'.",
     "NEVER use DATE_PART -- use EXTRACT(unit FROM col) instead.",
     "NEVER return a metric view with zero dimensions or zero measures.",
-    "ALL string literals in expr fields MUST be single-quoted, including multi-word values and values with parentheses. Examples: source.State = 'Active', source.Risk IN ('1 - High', '2 - Medium'), THEN 'Mild (Grade 1)', THEN 'Serious (Grade 3+)', status IN ('Related', 'Possibly Related')."
+    "ALL string literals in expr fields MUST be single-quoted, including multi-word values and values with parentheses. Examples: source.State = 'Active', source.Risk IN ('1 - High', '2 - Medium'), THEN 'Mild (Grade 1)', THEN 'Serious (Grade 3+)', status IN ('Related', 'Possibly Related').",
+    "NEVER use SQL window functions (OVER, PARTITION BY, ROW_NUMBER, LAG, LEAD) in measure expressions. Metric views do not support window functions in SQL. For rolling/trailing calculations, use the 'window' property on the measure definition instead.",
+    "NEVER place chained joins as flat siblings (e.g. customer and nation both at root level with nation.on referencing customer). Use nested joins instead."
   ],
 
   "validation_checklist": [
+    "All measures are valid at the declared grain of the source table",
     "Every string literal in every expression is single-quoted (comparisons, CASE results, IN lists, LIKE patterns, CONCAT separators)",
     "Every column reference exists in the provided metadata (source table or joined table)",
     "DATE_TRUNC uses quoted interval: DATE_TRUNC('MONTH', col)",
     "TIMESTAMPADD/TIMESTAMPDIFF use bare singular unit: TIMESTAMPADD(MONTH, 1, col)",
     "At least one non-trivial measure exists (ratio, rate, filtered aggregate, or conditional count -- not just COUNT(*) and SUM)",
     "Joins are included when FK relationships exist AND questions reference attributes from related tables",
-    "Join 'on' clauses use source.col = alias.col format (not fully qualified names)",
-    "Dimensions from joined tables use alias.col format in their expr",
+    "Root join 'on' clauses use source.col = alias.col format; nested join 'on' clauses use parent_alias.col = child_alias.col",
+    "Dimensions from joined tables use alias.col format in their expr (including nested aliases like nation.name)",
     "Every measure and dimension has a descriptive 'comment' field",
-    "Metric view 'name' is unique and theme-based (not just the table name)",
+    "Metric view 'name' is unique, reflects grain and analytical theme (not just the table name)",
     "The 'source' field is a fully qualified three-part name (catalog.schema.table)",
     "FILTER clauses use the (WHERE ...) syntax with parentheses",
     "Every measure has a 'format' object: {\"type\": \"currency\"}, {\"type\": \"percentage\"}, or {\"type\": \"number\"}",

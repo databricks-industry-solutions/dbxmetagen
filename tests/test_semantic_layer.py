@@ -8,6 +8,7 @@ from dbxmetagen.semantic_layer import (
     SemanticLayerConfig,
     _normalize_window_specs,
     _infer_format_specs,
+    _fix_percentage_scaling,
 )
 
 
@@ -526,6 +527,47 @@ class TestInferFormatSpecs:
         defn = {"measures": []}
         _infer_format_specs(defn)
         assert defn["measures"] == []
+
+
+class TestFixPercentageScaling:
+
+    def test_strips_100_multiply(self):
+        defn = {"measures": [{
+            "name": "Win Rate",
+            "expr": "100.0 * COUNT(DISTINCT CASE WHEN stage = 'Won' THEN id END) / NULLIF(COUNT(*), 0)",
+            "format": {"type": "percentage"},
+        }]}
+        _fix_percentage_scaling(defn)
+        assert "100" not in defn["measures"][0]["expr"]
+        assert defn["measures"][0]["expr"].startswith("COUNT(DISTINCT")
+
+    def test_strips_round_100_multiply(self):
+        defn = {"measures": [{
+            "name": "Coverage Pct",
+            "expr": "ROUND(100.0 * COUNT(x) / NULLIF(COUNT(y), 0), 2)",
+            "format": {"type": "percentage"},
+        }]}
+        _fix_percentage_scaling(defn)
+        assert "100" not in defn["measures"][0]["expr"]
+        assert "ROUND" not in defn["measures"][0]["expr"]
+
+    def test_leaves_fraction_alone(self):
+        defn = {"measures": [{
+            "name": "Rate",
+            "expr": "SUM(x) * 1.0 / NULLIF(COUNT(*), 0)",
+            "format": {"type": "percentage"},
+        }]}
+        _fix_percentage_scaling(defn)
+        assert defn["measures"][0]["expr"] == "SUM(x) * 1.0 / NULLIF(COUNT(*), 0)"
+
+    def test_leaves_non_percentage_alone(self):
+        defn = {"measures": [{
+            "name": "Score",
+            "expr": "100.0 * SUM(x) / NULLIF(COUNT(*), 0)",
+            "format": {"type": "number"},
+        }]}
+        _fix_percentage_scaling(defn)
+        assert "100.0" in defn["measures"][0]["expr"]
 
 
 # ── Parenthesized String Literal Regression ──────────────────────────

@@ -58,6 +58,7 @@ class SemanticLayerConfig:
     use_two_phase: bool = True
     validate_before_store: bool = True
     max_context_cols_per_table: int = 100
+    max_join_hops: int = 2
 
     def fq(self, table: str) -> str:
         return f"{self.catalog_name}.{self.schema_name}.{table}"
@@ -214,7 +215,7 @@ _CURRENCY_PATTERNS = re.compile(
     re.IGNORECASE,
 )
 _PERCENTAGE_PATTERNS = re.compile(
-    r"(\*\s*1\.0\s*/\s*NULLIF|\*\s*100\.0\s*/\s*NULLIF|THEN\s+1\s+ELSE\s+0\s+END\)\s*\*\s*1\.0)",
+    r"(\*\s*1\.0\s*/\s*NULLIF|100(?:\.0)?\s*\*\s*.*?/\s*NULLIF|THEN\s+1\s+ELSE\s+0\s+END\)\s*\*\s*1\.0)",
     re.IGNORECASE,
 )
 _PERCENTAGE_NAME_PATTERNS = re.compile(r"\brate\b|\bpct\b|\bpercentage\b|\bratio\b", re.IGNORECASE)
@@ -233,6 +234,33 @@ def _infer_format_specs(defn: dict) -> None:
             m["format"] = {"type": "currency", "currency_code": "USD"}
         else:
             m["format"] = {"type": "number"}
+
+
+_PERCENTAGE_PREMULTIPLY = re.compile(
+    r"(?:ROUND\s*\(\s*)?100(?:\.0)?\s*\*\s*", re.IGNORECASE
+)
+
+
+def _fix_percentage_scaling(defn: dict) -> None:
+    """Strip ``100 *`` from percentage-formatted measures to avoid double-multiply.
+
+    Metric view percentage format expects a 0-1 fraction; the rendering layer
+    multiplies by 100. If the expression already does ``100.0 * ratio``, the
+    displayed value is 100x too large (e.g. 1667% instead of 16.7%).
+    """
+    for m in defn.get("measures", []):
+        fmt = m.get("format", {})
+        if fmt.get("type") != "percentage":
+            continue
+        expr = m.get("expr", "")
+        match = _PERCENTAGE_PREMULTIPLY.search(expr)
+        if not match:
+            continue
+        new_expr = expr[:match.start()] + expr[match.end():]
+        if new_expr.rstrip().endswith(")") and "ROUND" in match.group(0).upper():
+            new_expr = re.sub(r",\s*\d+\s*\)\s*$", "", new_expr)
+        m["expr"] = new_expr.strip()
+        logger.info("Stripped 100x multiplier from percentage measure '%s'", m.get("name", "?"))
 
 
 def _infer_display_name(name: str) -> str:
@@ -575,6 +603,27 @@ class SemanticLayerGenerator:
                     f"  {fk['src_table']} + {fk['dst_table']}: src_column={fk['src_column']}, dst_column={fk['dst_column']}"
                 )
 
+        # Graph-traversed join paths (multi-hop, nested snowflake joins)
+        if fk_rows and self.config.max_join_hops > 0:
+            path_sections: list[str] = []
+            for tname in table_names_list:
+                paths = self._discover_join_paths(tname)
+                if paths:
+                    def _render(joins: list[dict], indent: int = 4) -> list[str]:
+                        lines: list[str] = []
+                        for j in joins:
+                            lines.append(" " * indent + f"JOIN {j['source']} AS {j['name']} ON {j['on']}")
+                            if j.get("joins"):
+                                lines.extend(_render(j["joins"], indent + 4))
+                        return lines
+                    path_sections.append(f"  FROM {tname}:")
+                    path_sections.extend(_render(paths))
+            if path_sections:
+                parts.append(
+                    "\nJOIN PATHS (graph-traversed, use nested joins for multi-hop):"
+                )
+                parts.extend(path_sections)
+
         # Inject metric view best-practices reference (loaded from JSON)
         ref = _load_reference("metric_view_reference.json")
         if ref:
@@ -709,6 +758,7 @@ class SemanticLayerGenerator:
                 # Auto-enrich joins from FK predictions
                 self._enrich_joins_from_fk(defn)
                 _infer_format_specs(defn)
+                _fix_percentage_scaling(defn)
                 _backfill_agent_metadata(defn)
 
                 defn_id = str(uuid.uuid4())
@@ -787,6 +837,12 @@ class SemanticLayerGenerator:
 
 TASK: Generate metric view definitions (as a JSON array) that enable answering the business questions below.
 
+ORGANIZING PRINCIPLE -- grain first, theme second:
+- Each metric view declares its grain via its source table (one row = one encounter, one order line, one prescription fill, etc.)
+- All measures must be valid at that grain. Do NOT mix measures implying different grains in one view
+- Within a single grain, create SEPARATE views for different analytical themes
+- Name views to reflect both grain and theme: encounter_throughput_metrics, prescription_fill_channel_analysis
+
 RULES:
 1. Create measures that directly support answering the business questions. Do NOT add a generic "row count" or "Record Count" measure unless a question explicitly asks for "how many records" or "count of X". Prefer ratios (e.g. rate, per capita), conditional aggregates (FILTER), and entity-specific KPIs (e.g. readmission rate, avg length of stay) over raw COUNT(*) when the question implies a more specific metric.
 2. Create metric views organized around analytical themes from the questions, not just one-to-one with tables. Multiple metric views from the same table are fine if they address different analytical angles
@@ -805,11 +861,15 @@ RULES:
    - CASE results with parens/hyphens: THEN '0-15 min (Excellent)', NOT THEN 0-15 min (Excellent)
    The ONLY unquoted tokens should be column names, SQL keywords, and numbers
    WRONG: status = fulfilled, region IN (North, South). CORRECT: status = 'fulfilled', region IN ('North', 'South')
-7. Join format (Unity Catalog): For each join use: name: <short_alias>, source: catalog.schema.table, on: source.<fk_column> = <join_name>.<pk_column>. The root table is always "source"; the joined table is referenced by its "name" (short alias). Example: on: source.customer_id = customers.id
+7. Join format (Unity Catalog):
+   STAR SCHEMA (default): name: <alias>, source: catalog.schema.table, on: source.<fk> = <alias>.<pk>. The root table is always "source".
+   NESTED / SNOWFLAKE JOINS: for dimension hierarchies (e.g. customer -> nation -> region), nest child joins inside the parent's "joins" array. Child "on" references the PARENT alias, not "source":
+   {{"name": "customer", "source": "...", "on": "source.customer_id = customer.id", "joins": [{{"name": "nation", "source": "...", "on": "customer.nation_id = nation.id"}}]}}
+   Limit nesting to 2 levels. Use nested joins when JOIN PATHS in the metadata show multi-hop FK chains.
 8. Include joins when RECOMMENDED JOINS exist; when questions ask for breakdowns by attributes in another table (e.g. by customer segment, department), you MUST add a join. Prefer at least one metric view with joins when FKs exist
 9. Every metric view MUST have at least one measure and one dimension
 10. Add a top-level "comment" (1-2 sentences) describing what the metric view measures, its analytical purpose, and which source tables it draws from. Do NOT reference question numbers, KPI numbers, or list which questions are/aren't answerable. Focus on content and lineage (e.g. "Analyzes order revenue by product family and sales representative, joining line items to the product catalog and parent order for discount tracking.")
-11. Every dimension and measure MUST have: "comment" (what it represents), "display_name" (human-readable label, max 255 chars), and "synonyms" (array of 2-5 alternative names for Genie discoverability, e.g. ["revenue", "total sales"] for Total Revenue). Every measure MUST have a "format" object: {{"type": "currency"}} for monetary values, {{"type": "percentage"}} for rates/ratios that are fractions, or {{"type": "number"}} for counts/averages/scores.
+11. Every dimension and measure MUST have: "comment" (what it represents), "display_name" (human-readable label, max 255 chars), and "synonyms" (array of 2-5 alternative names for Genie discoverability, e.g. ["revenue", "total sales"] for Total Revenue). Every measure MUST have a "format" object: {{"type": "currency"}} for monetary values, {{"type": "percentage"}} for rates/ratios that return a 0-to-1 FRACTION (e.g. 0.167 for 16.7%), or {{"type": "number"}} for counts/averages/scores. CRITICAL: percentage-format expressions must NOT multiply by 100 -- the rendering layer does that automatically. Write `SUM(won)/NULLIF(COUNT(*),0)` (returns 0.167), NOT `100.0 * SUM(won)/NULLIF(COUNT(*),0)` (returns 16.7). Also do NOT wrap percentage expressions in ROUND(); the format handles decimal precision.
 12. Use "filter" (optional) for persistent WHERE clauses (e.g. excluding null/test rows)
 13. Use measure-level FILTER for conditional aggregation: SUM(col) FILTER (WHERE condition)
 14. If some questions are not answerable with metrics (e.g. document search, free-text lookups, SOP retrieval), generate metric views for the ones that ARE quantitative/analytical and silently ignore the rest. Do NOT mention skipped or unanswerable questions in the comment field
@@ -896,7 +956,7 @@ RULES:
 - Output a single object with keys: name, source, comment, filter (optional), dimensions, measures, joins.
 - comment: 1-2 sentences on what the view measures and its source lineage. Do NOT reference question numbers, KPI numbers, or list which questions are/aren't answerable.
 - dimensions: array of {{ "name", "expr", "comment", "display_name", "synonyms" }}. "display_name" and "synonyms" (array of 2-5 alternative names) are REQUIRED. expr must be valid Databricks/Spark SQL using ONLY columns from the metadata below.
-- measures: array of {{ "name", "expr", "comment", "display_name", "synonyms", "format" }}. "display_name", "synonyms", and "format" are REQUIRED. format is {{"type": "currency"}}, {{"type": "percentage"}}, or {{"type": "number"}}. Use SUM, COUNT, AVG, FILTER, etc. String literals single-quoted.
+- measures: array of {{ "name", "expr", "comment", "display_name", "synonyms", "format" }}. "display_name", "synonyms", and "format" are REQUIRED. format is {{"type": "currency"}}, {{"type": "percentage"}} (expr must return a 0-to-1 fraction, NOT multiplied by 100), or {{"type": "number"}}. Use SUM, COUNT, AVG, FILTER, etc. String literals single-quoted.
 - joins: use exactly: on: source.<fk_column> = <join_name>.<pk_column>. Keep the same join names and sources as in the plan.
 - Only use column names that appear in the metadata.
 
@@ -965,45 +1025,71 @@ OUTPUT (one JSON object only, no array, no explanation):"""
     # Validation
     # ------------------------------------------------------------------
 
+    def _discover_join_paths(self, source_table: str, max_hops: int | None = None) -> list[dict]:
+        """Walk FK edges from *source_table* up to *max_hops*, returning nested join specs.
+
+        Returns a list of join dicts compatible with the UC metric view ``joins``
+        schema.  Each dict has ``name``, ``source``, ``on``, and optionally a
+        nested ``joins`` list for multi-hop snowflake patterns.
+        """
+        if max_hops is None:
+            max_hops = self.config.max_join_hops
+        fq = self.config.fq
+        fk_rows = self._safe_collect(
+            f"SELECT src_table, dst_table, src_column, dst_column, final_confidence "
+            f"FROM {fq('fk_predictions')} "
+            f"WHERE final_confidence >= {self.config.fk_confidence_threshold}"
+        )
+        if not fk_rows:
+            return []
+
+        # Build undirected adjacency: table -> [(neighbor, fk_col, pk_col)]
+        adj: dict[str, list[tuple[str, str, str]]] = {}
+        for fk in fk_rows:
+            src_t, dst_t = fk["src_table"], fk["dst_table"]
+            src_c = fk["src_column"].split(".")[-1]
+            dst_c = fk["dst_column"].split(".")[-1]
+            adj.setdefault(src_t, []).append((dst_t, src_c, dst_c))
+            adj.setdefault(dst_t, []).append((src_t, dst_c, src_c))
+
+        def _walk(table: str, depth: int, visited: set) -> list[dict]:
+            if depth >= max_hops:
+                return []
+            joins: list[dict] = []
+            for neighbor, fk_col, pk_col in adj.get(table, []):
+                if neighbor in visited:
+                    continue
+                visited.add(neighbor)
+                alias = neighbor.split(".")[-1]
+                parent_alias = "source" if depth == 0 else table.split(".")[-1]
+                child_joins = _walk(neighbor, depth + 1, visited)
+                entry: dict = {
+                    "name": alias,
+                    "source": neighbor,
+                    "on": f"{parent_alias}.{fk_col} = {alias}.{pk_col}",
+                }
+                if child_joins:
+                    entry["joins"] = child_joins
+                joins.append(entry)
+            return joins
+
+        return _walk(source_table, 0, {source_table})
+
     def _enrich_joins_from_fk(self, defn: dict) -> None:
-        """Auto-add joins block from FK predictions when the definition has none."""
+        """Auto-add joins block from FK predictions when the definition has none.
+
+        Uses graph-traversed join discovery to produce nested (snowflake) joins
+        up to ``max_join_hops`` deep.
+        """
         if defn.get("joins"):
             return
         source = defn.get("source", "")
         if not source:
             return
-        fq = self.config.fq
-        fk_rows = self._safe_collect(
-            f"SELECT src_table, dst_table, src_column, dst_column, final_confidence "
-            f"FROM {fq('fk_predictions')} "
-            f"WHERE final_confidence >= {self.config.fk_confidence_threshold} "
-            f"AND (src_table = '{source}' OR dst_table = '{source}')"
-        )
-        if not fk_rows:
-            return
-        joins = []
-        seen_tables = set()
-        for fk in fk_rows:
-            if fk["src_table"] == source:
-                join_table = fk["dst_table"]
-                fk_col = fk["src_column"].split(".")[-1]
-                pk_col = fk["dst_column"].split(".")[-1]
-            else:
-                join_table = fk["src_table"]
-                fk_col = fk["dst_column"].split(".")[-1]
-                pk_col = fk["src_column"].split(".")[-1]
-            if join_table in seen_tables:
-                continue
-            seen_tables.add(join_table)
-            alias = join_table.split(".")[-1]
-            joins.append({
-                "name": alias,
-                "source": join_table,
-                "on": f"source.{fk_col} = {alias}.{pk_col}",
-            })
+        joins = self._discover_join_paths(source)
         if joins:
             defn["joins"] = joins
-            logger.info("Auto-added %d joins to %s from FK predictions", len(joins), defn.get("name", ""))
+            logger.info("Auto-added %d joins to %s from FK predictions (graph-traversed)", len(joins), defn.get("name", ""))
 
     def _validate_definition(self, defn: dict) -> list[str]:
         """Tier 1: structural validation against information_schema."""

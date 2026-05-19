@@ -589,6 +589,7 @@ def get_config():
         "apply_ddl": os.environ.get("APPLY_DDL", "false").lower() == "true",
         "use_kb_comments": os.environ.get("USE_KB_COMMENTS", "false").lower() == "true",
         "include_lineage": os.environ.get("INCLUDE_LINEAGE", "true").lower() == "true",
+        "federation_mode": os.environ.get("FEDERATION_MODE", "false").lower() == "true",
         "workspace_host": host.rstrip("/"),
         "available_models": _AVAILABLE_MODELS,
         "lakebase_configured": pg_configured(),
@@ -653,6 +654,81 @@ def auth_check():
     return result
 
 
+@app.get("/api/catalog/diagnose")
+def diagnose_catalog(catalog: str, schema: str = ""):
+    """Run diagnostic checks against a catalog (including foreign catalogs).
+
+    Returns partial-success JSON so each check runs independently.
+    """
+    identity_label = _auth_identity_label()
+    has_obo = _OBO_ENABLED and bool(_obo_token_var.get(None))
+    result = {
+        "catalog": catalog,
+        "schema": schema or None,
+        "running_as": identity_label,
+        "obo_token_received": has_obo,
+        "checks": {},
+    }
+
+    def _check(name, fn):
+        try:
+            data = fn()
+            result["checks"][name] = {"status": "ok", "data": data}
+        except HTTPException as he:
+            result["checks"][name] = {"status": "error", "detail": he.detail}
+        except Exception as e:
+            result["checks"][name] = {"status": "error", "detail": str(e)}
+
+    # 1. Is the catalog visible in system.information_schema?
+    def check_catalog_visible():
+        rows = execute_sql(
+            f"SELECT catalog_name, catalog_type FROM system.information_schema.catalogs "
+            f"WHERE catalog_name = '{catalog}'"
+        )
+        if not rows:
+            raise ValueError(f"Catalog '{catalog}' not found in system.information_schema.catalogs")
+        return rows[0]
+
+    _check("catalog_visible", check_catalog_visible)
+
+    # 2. Can we USE CATALOG?
+    _check("use_catalog", lambda: (execute_sql(f"USE CATALOG `{catalog}`"), "ok")[1])
+
+    # 3. Can we list schemas?
+    def check_list_schemas():
+        rows = execute_sql(f"SHOW SCHEMAS IN `{catalog}`")
+        return {"count": len(rows), "schemas": [r.get("databaseName", r.get("namespace", "")) for r in rows[:20]]}
+
+    _check("list_schemas", check_list_schemas)
+
+    # 4-5. Schema-specific checks
+    if schema:
+        def check_list_tables():
+            rows = execute_sql(
+                f"SELECT table_name, table_type FROM `{catalog}`.information_schema.tables "
+                f"WHERE table_schema = '{schema}' LIMIT 25"
+            )
+            return {"count": len(rows), "tables": rows}
+
+        _check("list_tables", check_list_tables)
+
+        # 5. Can we SELECT from the first table? (tests actual connectivity)
+        def check_select_one():
+            tbl_rows = execute_sql(
+                f"SELECT table_name FROM `{catalog}`.information_schema.tables "
+                f"WHERE table_schema = '{schema}' LIMIT 1"
+            )
+            if not tbl_rows:
+                return "no tables found to test"
+            tbl = tbl_rows[0]["table_name"]
+            execute_sql(f"SELECT 1 FROM `{catalog}`.`{schema}`.`{tbl}` LIMIT 1")
+            return f"SELECT from `{catalog}`.`{schema}`.`{tbl}` succeeded"
+
+        _check("select_connectivity", check_select_one)
+
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Request / response models
 # ---------------------------------------------------------------------------
@@ -667,6 +743,7 @@ class JobRunRequest(BaseModel):
     apply_ddl: bool = False
     use_kb_comments: bool = False
     include_lineage: bool = False
+    federation_mode: bool = False
     # Analytics pipeline params
     catalog_name: Optional[str] = None
     schema_name: Optional[str] = None
@@ -952,12 +1029,19 @@ def run_job(req: JobRunRequest):
         params["include_lineage"] = "true"
     if req.sweep_stale_docs:
         params["sweep_stale_docs"] = "true"
+    if req.federation_mode:
+        params["federation_mode"] = "true"
     if req.catalog_name:
         params["catalog_name"] = req.catalog_name
     if req.schema_name:
         params["schema_name"] = req.schema_name
     if req.ontology_bundle:
-        params["ontology_bundle"] = req.ontology_bundle
+        vol_path = f"{_volume_bundle_prefix()}/{req.ontology_bundle}.yaml"
+        if _load_bundle_from_volume(req.ontology_bundle) is not None:
+            params["ontology_bundle"] = vol_path
+            params["ontology_config_path"] = vol_path
+        else:
+            params["ontology_bundle"] = req.ontology_bundle
     if req.domain_config:
         params["domain_config_path"] = _resolve_domain_config_path(req.domain_config)
     params.update(req.extra_params)
@@ -2951,6 +3035,84 @@ def _safe_bundle_path(bundle_dir: str, bundle_name: str) -> Optional[str]:
     return joined
 
 
+def _volume_bundle_prefix() -> str:
+    """Return the Volume path prefix for custom ontology bundles."""
+    volume_name = os.environ.get("VOLUME_NAME", "generated_metadata")
+    return f"/Volumes/{CATALOG}/{SCHEMA}/{volume_name}/ontology_bundles"
+
+
+def _save_bundle_to_volume(bundle_key: str, yaml_content: str) -> Optional[str]:
+    """Persist a bundle YAML to a UC Volume. Returns the Volume path or None."""
+    vol_path = f"{_volume_bundle_prefix()}/{bundle_key}.yaml"
+    try:
+        ws = _get_effective_client()
+        ws.files.upload(vol_path, io.BytesIO(yaml_content.encode("utf-8")), overwrite=True)
+        logger.info("Custom bundle saved to volume: %s", vol_path)
+        return vol_path
+    except Exception as e:
+        logger.warning("Failed to save bundle to volume: %s", e)
+        return None
+
+
+def _list_volume_bundles() -> list[dict]:
+    """List custom ontology bundles stored in the UC Volume."""
+    prefix = _volume_bundle_prefix()
+    bundles = []
+    try:
+        ws = _get_effective_client()
+        for entry in ws.files.list_directory_contents(prefix):
+            ep = entry.path if hasattr(entry, "path") else str(entry)
+            name = ep.rsplit("/", 1)[-1] if "/" in ep else ep
+            if not name.endswith(".yaml"):
+                continue
+            bundle_key = name.replace(".yaml", "")
+            try:
+                resp = ws.files.download(ep)
+                raw = yaml.safe_load(resp.contents.read())
+                meta = (raw or {}).get("metadata", {})
+                entity_count = len((raw or {}).get("ontology", {}).get("entities", {}).get("definitions", {}))
+                domain_count = len((raw or {}).get("domains", {}))
+                bundles.append({
+                    "key": bundle_key,
+                    "name": meta.get("name", bundle_key),
+                    "industry": meta.get("industry", "general"),
+                    "description": meta.get("description", ""),
+                    "entity_count": entity_count,
+                    "domain_count": domain_count,
+                    "format_version": meta.get("format_version", "2.0"),
+                    "bundle_type": meta.get("bundle_type", "ontology"),
+                    "custom": True,
+                    "volume_path": ep,
+                })
+            except Exception as e:
+                logger.debug("Could not parse volume bundle %s: %s", name, e)
+    except Exception as e:
+        logger.debug("Could not list volume bundles: %s", e)
+    return bundles
+
+
+def _load_bundle_from_volume(bundle_key: str) -> Optional[dict]:
+    """Load a custom bundle YAML from the UC Volume. Returns parsed dict or None."""
+    vol_path = f"{_volume_bundle_prefix()}/{bundle_key}.yaml"
+    try:
+        ws = _get_effective_client()
+        resp = ws.files.download(vol_path)
+        return yaml.safe_load(resp.contents.read())
+    except Exception:
+        return None
+
+
+def _delete_bundle_from_volume(bundle_key: str) -> bool:
+    """Delete a custom bundle from the UC Volume."""
+    vol_path = f"{_volume_bundle_prefix()}/{bundle_key}.yaml"
+    try:
+        ws = _get_effective_client()
+        ws.files.delete(vol_path)
+        return True
+    except Exception:
+        return False
+
+
 def _read_bundle_metadata_fast(filepath: str) -> dict | None:
     """Read only the metadata block from a bundle YAML without parsing the full file.
 
@@ -3123,8 +3285,20 @@ def _resolve_bundle_path_local(bundle_name: str) -> str:
 
 @app.get("/api/ontology/bundles")
 def get_ontology_bundles():
-    """List available ontology bundles with metadata."""
-    return _list_bundles_local()
+    """List available ontology bundles: built-in (from filesystem) + custom (from UC Volume)."""
+    builtin = _list_bundles_local()
+    custom = _list_volume_bundles()
+    builtin_keys = {b["key"] for b in builtin}
+    merged = list(builtin)
+    for cb in custom:
+        if cb["key"] not in builtin_keys:
+            merged.append(cb)
+        else:
+            for i, b in enumerate(merged):
+                if b["key"] == cb["key"]:
+                    merged[i] = {**b, "custom": True, "volume_path": cb["volume_path"]}
+                    break
+    return merged
 
 
 @app.post("/api/ontology/bundles/{bundle_key}/rebuild-indexes")
@@ -4577,44 +4751,58 @@ def _state_to_yaml_dict(state: dict) -> dict:
 
 @app.get("/api/ontology/builder/load/{bundle_key}")
 def ontology_builder_load(bundle_key: str):
-    """Load an existing bundle YAML into builder state JSON."""
+    """Load an existing bundle YAML into builder state JSON (Volume first, then local)."""
+    raw = _load_bundle_from_volume(bundle_key)
+    if raw is not None:
+        state = _builder_yaml_to_state(raw)
+        state["custom"] = True
+        return state
     bd = _find_bundle_dir()
-    if not bd:
-        raise HTTPException(404, detail="No bundle directory found")
-    path = _safe_bundle_path(bd, f"{bundle_key}.yaml")
-    if not path or not os.path.isfile(path):
-        raise HTTPException(404, detail=f"Bundle '{bundle_key}' not found")
-    with open(path, "r") as f:
-        raw = yaml.safe_load(f)
-    return _builder_yaml_to_state(raw or {})
+    if bd:
+        path = _safe_bundle_path(bd, f"{bundle_key}.yaml")
+        if path and os.path.isfile(path):
+            with open(path, "r") as f:
+                raw = yaml.safe_load(f)
+            return _builder_yaml_to_state(raw or {})
+    raise HTTPException(404, detail=f"Bundle '{bundle_key}' not found")
 
 
 @app.post("/api/ontology/builder/save")
-def ontology_builder_save(state: dict = Body(...)):
-    """Save builder state as a bundle YAML file."""
-    bd = _find_bundle_dir()
-    if not bd:
-        raise HTTPException(500, detail="No bundle directory found")
+async def ontology_builder_save(request: Request):
+    """Save builder state as a bundle YAML to UC Volume (persistent) and local cache."""
+    state = await request.json()
     name = (state.get("metadata", {}).get("name") or "").strip()
     if not name:
         raise HTTPException(400, detail="Bundle name is required")
     bundle_key = re.sub(r"[^a-z0-9_]+", "_", name.lower()).strip("_")
     if not bundle_key:
         raise HTTPException(400, detail="Invalid bundle name")
-    path = _safe_bundle_path(bd, f"{bundle_key}.yaml")
-    if not path:
-        raise HTTPException(400, detail="Invalid bundle name")
     out = _state_to_yaml_dict(state)
-    with open(path, "w") as f:
-        yaml.dump(out, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+    yaml_content = yaml.dump(out, default_flow_style=False, sort_keys=False, allow_unicode=True)
+
+    vol_path = _save_bundle_to_volume(bundle_key, yaml_content)
+    if not vol_path:
+        raise HTTPException(500, detail="Failed to save bundle to UC Volume. Check that the volume exists and the app has write permissions.")
+
+    bd = _find_bundle_dir()
+    if bd:
+        local_path = _safe_bundle_path(bd, f"{bundle_key}.yaml")
+        if local_path:
+            try:
+                with open(local_path, "w") as f:
+                    f.write(yaml_content)
+            except Exception:
+                pass
+
     _yaml_cache.clear()
-    logger.info("Ontology builder saved bundle: %s -> %s", bundle_key, path)
-    return {"bundle_key": bundle_key, "path": path}
+    logger.info("Ontology builder saved bundle: %s -> %s", bundle_key, vol_path)
+    return {"bundle_key": bundle_key, "path": vol_path, "custom": True}
 
 
 @app.post("/api/ontology/builder/validate")
-def ontology_builder_validate(state: dict = Body(...)):
+async def ontology_builder_validate(request: Request):
     """Validate builder state for referential integrity."""
+    state = await request.json()
     warnings = []
     errors = []
     entities = state.get("entities", {})
@@ -6323,11 +6511,16 @@ def _build_prompt(questions: list[str], context: str) -> str:
 
 TASK: Generate metric view definitions (as a JSON array) that enable answering the business questions below.
 
+ORGANIZING PRINCIPLE -- grain first, theme second:
+- Each metric view declares its grain via its source table (one row = one encounter, one order line, one prescription fill, etc.)
+- All measures in a view must be valid at that grain. Do NOT mix measures that imply different grains (e.g. patient-level counts alongside encounter-level rates in a single encounters-sourced view)
+- Within a single grain, create SEPARATE views for different analytical themes (e.g. from the same encounters table: one view for throughput analysis, another for staffing efficiency, another for readmission patterns)
+- Name views to reflect both grain and theme: encounter_throughput_metrics, prescription_fill_channel_analysis
+
 ANALYTICAL QUALITY (HIGHEST PRIORITY):
 - Every metric view MUST include at least one RATIO measure (x / NULLIF(y, 0)) and one computed dimension (CASE, DATE_TRUNC)
 - Include RATE measures (conditional_count * 1.0 / NULLIF(total, 0)) for any entity with status/outcome columns
-- Every KPI listed in the REQUIRED KPIs section MUST appear as a measure in at least one metric view. Map KPI formulas directly to measure expressions. If a KPI cannot be implemented, note why in the view comment
-- Organize views around analytical themes, not just one-per-table. Multiple views from the same source are encouraged if they address different analytical angles
+- Every KPI listed in the REQUIRED KPIs section MUST appear as a measure in at least one metric view. Adapt KPI formulas into valid measure expressions (rewrite any window functions like OVER() into the metric view "window" property or FILTER syntax -- raw SQL OVER() is not supported). If a KPI cannot be implemented, note why in the view comment
 - When Entity types are annotated: People -> counts, rates, segmentation; Transactions -> volumes, values, time-based rates; Resources -> utilization, efficiency ratios
 - Use COLUMN PROPERTY ANNOTATIONS: is_temporal -> date dimensions; is_categorical -> grouping dims; is_identifier -> count-distinct measures
 - Use PROFILING SUMMARIES: low-cardinality (< 50 distinct) -> dimensions; high-cardinality -> measure inputs or filters
@@ -6336,9 +6529,11 @@ ANALYTICAL QUALITY (HIGHEST PRIORITY):
 JOIN AND RELATIONSHIP RULES:
 - Include joins for FK relationships where the join is relevant to the metric being computed and confidence is high.
 - Not all FKs need to be used -- join only where the FK supports meaningful cross-table measures or dimensions.
-- In join "on" clauses, always reference the source table as "source": "on": "source.fk_col = joined_alias.pk_col"
-- CRITICAL: Each join's "on" clause must ONLY reference "source" on one side. Do NOT chain joins (e.g., "alias_a.col = alias_b.col"). If you need data from a table that only connects through another join, skip it. Star-schema only.
-- COLUMN REFERENCING: Use "source.col" for source table columns, "join_alias.col" for joined table columns.
+- STAR SCHEMA (default): root joins reference "source" on one side: {{"name": "dim", "source": "catalog.schema.dim", "on": "source.fk = dim.pk"}}
+- SNOWFLAKE / NESTED JOINS: for dimension hierarchies (e.g. customer -> nation -> region), nest child joins inside the parent join's "joins" array. Child "on" references the PARENT alias, not "source":
+  {{"name": "customer", "source": "...", "on": "source.customer_id = customer.id", "joins": [{{"name": "nation", "source": "...", "on": "customer.nation_id = nation.id"}}]}}
+  Limit nesting to 2 levels (source -> dim -> sub-dim). Use nested joins when JOIN PATHS in the metadata show multi-hop FK chains.
+- COLUMN REFERENCING: Use "source.col" for source table columns, "join_alias.col" for joined table columns (including nested aliases like "nation.name").
 - Include joins when FK relationships OR GRAPH RELATIONSHIPS show a valid path
 - Cross-table metrics are encouraged when FKs exist: join fact tables to dimension tables for breakdowns and ratios
 - EXISTING METRIC VIEWS: do NOT duplicate -- build on existing coverage
@@ -6355,6 +6550,7 @@ SQL SYNTAX REMINDERS:
 - DATE_TRUNC('MONTH', col) -- always single-quote the interval
 - Single-quote ALL string literals in comparisons, CASE results, IN lists, CONCAT separators
 - Standard aggregates: SUM, COUNT, AVG, MIN, MAX, COUNT(DISTINCT ...)
+- NEVER use SQL window functions (OVER, PARTITION BY, ROW_NUMBER, LAG, LEAD) in measure expressions -- they are not supported in metric views. For rolling/trailing calculations, use the "window" property on the measure instead
 - FILTER syntax: SUM(col) FILTER (WHERE condition)
 - WINDOW MEASURES for rolling/cumulative KPIs: put aggregate in "expr" and add a "window" array:
   {{"name": "30-Day Rolling Revenue", "expr": "AVG(SUM(amount))", "window": [{{"order": "date_col", "range": "trailing 30 day", "semiadditive": "last"}}]}}
@@ -6646,17 +6842,23 @@ def _validate_definition_structure(defn: dict) -> list[str]:
 
     alias_cols: dict[str, set[str]] = {"source": source_cols, tbl: source_cols}
     known_aliases = {"source", tbl}
-    for j in defn.get("joins", []):
-        j_source = j.get("source", "")
-        j_alias = j.get("name", j_source.split(".")[-1])
-        j_parts = j_source.split(".")
-        known_aliases.add(j_alias)
-        if len(j_parts) == 3:
-            known_aliases.add(j_parts[2])
-            j_cols = _resolve_table_columns(j_source)
-            if j_cols:
-                alias_cols[j_alias] = j_cols
-                alias_cols[j_parts[2]] = j_cols
+
+    def _register_joins(jlist: list[dict]) -> None:
+        for j in jlist:
+            j_source = j.get("source", "")
+            j_alias = j.get("name", j_source.split(".")[-1])
+            j_parts = j_source.split(".")
+            known_aliases.add(j_alias)
+            if len(j_parts) == 3:
+                known_aliases.add(j_parts[2])
+                j_cols = _resolve_table_columns(j_source)
+                if j_cols:
+                    alias_cols[j_alias] = j_cols
+                    alias_cols[j_parts[2]] = j_cols
+            if j.get("joins"):
+                _register_joins(j["joins"])
+
+    _register_joins(defn.get("joins", []))
 
     all_cols = set()
     for cs in alias_cols.values():
@@ -6682,19 +6884,29 @@ def _validate_definition_structure(defn: dict) -> list[str]:
                             f"{item_type} {item.get('name', '')}: column {col} not found in {source}"
                         )
 
-    # Detect chained joins (on clause references another join alias instead of source)
-    join_aliases = {j.get("name", "").lower() for j in defn.get("joins", []) if j.get("name")}
+    # Validate join on-clause references (recursive for nested/snowflake joins)
     ref_pat = re.compile(r"\b([A-Za-z_]\w*)\.\w+")
-    for j in defn.get("joins", []):
-        on = j.get("on", "")
-        own_alias = j.get("name", "").lower()
-        refs_in_on = {m.group(1).lower() for m in ref_pat.finditer(on)}
-        refs_in_on.discard("source")
-        chained = refs_in_on & join_aliases - {own_alias}
-        if chained:
-            errors.append(
-                f"Join '{j.get('name', '?')}' references another join alias {chained} -- only 'source' references are supported"
-            )
+
+    def _validate_joins(jlist: list[dict], parent_alias: str = "source", sibling_aliases: set[str] | None = None) -> None:
+        if sibling_aliases is None:
+            sibling_aliases = {j.get("name", "").lower() for j in jlist if j.get("name")}
+        for j in jlist:
+            on = j.get("on", "")
+            own_alias = j.get("name", "").lower()
+            refs_in_on = {m.group(1).lower() for m in ref_pat.finditer(on)}
+            refs_in_on.discard(parent_alias.lower())
+            refs_in_on.discard(own_alias)
+            # Flat sibling references are invalid (should be nested instead)
+            bad_refs = refs_in_on & sibling_aliases - {own_alias}
+            if bad_refs:
+                errors.append(
+                    f"Join '{j.get('name', '?')}' references sibling alias {bad_refs} -- use nested joins for snowflake patterns"
+                )
+            if j.get("joins"):
+                child_siblings = {c.get("name", "").lower() for c in j["joins"] if c.get("name")}
+                _validate_joins(j["joins"], parent_alias=j.get("name", ""), sibling_aliases=child_siblings)
+
+    _validate_joins(defn.get("joins", []))
 
     return errors
 
@@ -6937,6 +7149,7 @@ def _autofix_expr(expr: str) -> str:
     expr = _fix_in_clause_literals(expr)
     expr = _fix_concat_separators(expr)
     expr = _fix_like_patterns(expr)
+    expr = re.sub(r'\bOVER\s*\(\s*\)', '', expr, flags=re.IGNORECASE)
     return expr
 
 
@@ -6954,6 +7167,8 @@ def _build_from_clause(source_table: str, joins: list[dict] | None = None) -> st
 
 def _validate_expr(expr: str, source_table: str, joins: list[dict] | None = None) -> tuple:
     """Test a SQL expression with optional joins. Returns (error_or_None, possibly_fixed_expr)."""
+    if re.search(r'\bOVER\s*\(', expr, re.IGNORECASE):
+        return "Window functions (OVER) are not supported in metric view expressions. Use the 'window' property instead.", expr
     from_clause = _build_from_clause(source_table, joins)
     try:
         execute_sql(f"SELECT {expr} FROM {from_clause} LIMIT 0")
@@ -7057,7 +7272,10 @@ def _compute_kpi_coverage(definitions: list[dict], tables: list[str], profile_id
 def _infer_format_specs(defn: dict) -> None:
     """Infer and backfill format specs on measures that lack them."""
     for m in defn.get("measures", []):
-        if m.get("format"):
+        fmt = m.get("format")
+        if fmt:
+            if isinstance(fmt, dict) and fmt.get("type") == "currency" and not fmt.get("currency_code"):
+                fmt["currency_code"] = "USD"
             continue
         expr = m.get("expr", "")
         name = m.get("name", "")
@@ -7069,70 +7287,154 @@ def _infer_format_specs(defn: dict) -> None:
             m["format"] = {"type": "number"}
 
 
+def _count_joins(joins: list[dict] | None) -> tuple[int, int]:
+    """Count (flat, nested) joins recursively."""
+    if not joins:
+        return 0, 0
+    flat = 0
+    nested = 0
+    for j in joins:
+        flat += 1
+        children = j.get("joins")
+        if children:
+            _, child_n = _count_joins(children)
+            nested += len(children) + child_n
+    return flat, nested
+
+
+def _collect_join_aliases(joins: list[dict] | None) -> set[str]:
+    """Collect all join alias names recursively."""
+    aliases: set[str] = set()
+    if not joins:
+        return aliases
+    for j in joins:
+        if j.get("name"):
+            aliases.add(j["name"])
+        aliases |= _collect_join_aliases(j.get("joins"))
+    return aliases
+
+
+_COMPUTED_DIM_RE = re.compile(r"CASE\b|DATE_TRUNC\b|CONCAT\b|EXTRACT\b", re.IGNORECASE)
+_ALIAS_REF_RE = re.compile(r"\b([A-Za-z_]\w*)\.\w+")
+
+
 def _score_definition_complexity(defn: dict) -> dict:
     """Score a metric view definition's analytical richness and agent readiness.
 
-    Returns complexity_score/level (SQL richness) plus quality_score/level
-    (metadata completeness + agent readiness).
+    Returns complexity_score (0-30) / complexity_level and
+    quality_score (0-20) / quality_level.  Combined max = 50.
     """
-    # --- Complexity: join structure + measure sophistication ---
-    n_joins = len(defn.get("joins") or [])
-    measure_score = 0
-    _COMPUTED_DIM_PATTERNS = re.compile(r"CASE\b|DATE_TRUNC\b|CONCAT\b", re.IGNORECASE)
-    for dim in defn.get("dimensions", []):
-        if _COMPUTED_DIM_PATTERNS.search(dim.get("expr", "")):
-            measure_score += 1
-    for meas in defn.get("measures", []):
+    # --- Complexity sub-score (0-30) ---
+
+    # Joins (0-10)
+    flat_joins, nested_joins = _count_joins(defn.get("joins"))
+    join_score = min(10, flat_joins * 3 + nested_joins * 4)
+
+    # Measure sophistication (0-12)
+    meas_score = 0
+    measures = defn.get("measures", [])
+    simple_agg_count = 0
+    for meas in measures:
         expr = meas.get("expr", "")
         if re.search(r"/\s*NULLIF\b", expr, re.IGNORECASE):
-            measure_score += 2
-        elif re.search(r"FILTER\b|DISTINCT\b|CASE\b", expr, re.IGNORECASE):
-            measure_score += 1
+            meas_score += 2
+        if re.search(r"\bFILTER\b", expr, re.IGNORECASE):
+            meas_score += 2
+        if meas.get("window"):
+            meas_score += 2
+        if re.search(r"\bCASE\b", expr, re.IGNORECASE):
+            meas_score += 1
+        if re.search(r"COUNT\s*\(\s*DISTINCT\b", expr, re.IGNORECASE):
+            meas_score += 1
+        if re.search(r"\b(SUM|COUNT|AVG|MIN|MAX)\b", expr, re.IGNORECASE):
+            simple_agg_count += 1
+    if simple_agg_count > 1:
+        meas_score += simple_agg_count - 1
+    meas_score = min(12, meas_score)
+
+    # Dimension richness (0-5)
+    dim_score = 0
+    all_aliases = _collect_join_aliases(defn.get("joins"))
+    for dim in defn.get("dimensions", []):
+        expr = dim.get("expr", "")
+        if _COMPUTED_DIM_RE.search(expr):
+            dim_score += 1
+        refs = {m.group(1) for m in _ALIAS_REF_RE.finditer(expr)}
+        refs.discard("source")
+        if refs & all_aliases:
+            dim_score += 1
+    dim_score = min(5, dim_score)
+
+    # Structural (0-3)
+    struct_score = 0
     if defn.get("filter"):
-        measure_score += 1
-    cx_score = measure_score + n_joins * 3
-    if n_joins >= 2 or cx_score >= 8:
+        struct_score += 1
+    if len(measures) >= 5:
+        struct_score += 1
+    if len(defn.get("dimensions", [])) >= 4:
+        struct_score += 1
+
+    cx_score = join_score + meas_score + dim_score + struct_score
+    if cx_score >= 20:
         cx_level = "rich"
-    elif n_joins >= 1 or cx_score >= 3:
+    elif cx_score >= 10:
         cx_level = "standard"
     else:
         cx_level = "basic"
 
-    # --- Quality score (metadata completeness + agent readiness, 0-7) ---
-    all_items = list(defn.get("measures", [])) + list(defn.get("dimensions", []))
-    q_score = 0
-    if all_items:
-        has_comment = sum(1 for i in all_items if i.get("comment"))
-        has_display = sum(1 for i in all_items if i.get("display_name"))
-        has_syns = sum(1 for i in all_items if i.get("synonyms") and len(i["synonyms"]) > 0)
-        has_fmt = sum(1 for m in defn.get("measures", []) if m.get("format"))
-        n = len(all_items)
-        nm = len(defn.get("measures", []))
-        if has_comment == n:
-            q_score += 1
-        if has_display >= n * 0.8:
-            q_score += 1
-        if has_syns >= n * 0.5:
-            q_score += 1
-        if nm and has_fmt >= nm * 0.8:
-            q_score += 1
-        if has_syns == n:
-            q_score += 1
-    # Agent readiness: joins present, synonyms for Genie
-    if defn.get("joins"):
-        q_score += 1
-    any_syns = any(
-        i.get("synonyms") for i in all_items
-    ) if all_items else False
-    if any_syns and defn.get("comment"):
-        q_score += 1
+    # --- Quality sub-score (0-20) ---
+    all_items = list(measures) + list(defn.get("dimensions", []))
+    n = len(all_items)
+    nm = len(measures)
 
-    if q_score <= 2:
-        q_level = "draft"
-    elif q_score <= 4:
+    # Metadata completeness (0-10)
+    q_meta = 0
+    if n:
+        if sum(1 for i in all_items if i.get("comment")) == n:
+            q_meta += 2
+        if sum(1 for i in all_items if i.get("display_name")) >= n * 0.8:
+            q_meta += 2
+        syns_with_2 = sum(1 for i in all_items if i.get("synonyms") and len(i["synonyms"]) >= 2)
+        if syns_with_2 >= n * 0.8:
+            q_meta += 2
+        if nm and sum(1 for m in measures if m.get("format")) >= nm * 0.8:
+            q_meta += 2
+    comment = defn.get("comment", "") or ""
+    if len(comment) >= 20:
+        q_meta += 2
+
+    # Agent readiness (0-10)
+    q_agent = 0
+    if defn.get("joins"):
+        q_agent += 2
+    if n:
+        avg_syn = sum(len(i.get("synonyms") or []) for i in all_items) / n
+        if avg_syn >= 3:
+            q_agent += 2
+        dn_differs = sum(
+            1 for i in all_items
+            if i.get("display_name") and i["display_name"] != i.get("name")
+        )
+        if dn_differs >= n * 0.8:
+            q_agent += 2
+    has_ratio = any(re.search(r"/\s*NULLIF\b", m.get("expr", ""), re.IGNORECASE) for m in measures)
+    has_filter = any(re.search(r"\bFILTER\b", m.get("expr", ""), re.IGNORECASE) for m in measures)
+    if has_ratio and has_filter:
+        q_agent += 2
+    has_joined_dim = any(
+        ({m.group(1) for m in _ALIAS_REF_RE.finditer(d.get("expr", ""))} - {"source"}) & all_aliases
+        for d in defn.get("dimensions", [])
+    ) if all_aliases else False
+    if has_joined_dim:
+        q_agent += 2
+
+    q_score = q_meta + q_agent
+    if q_score >= 14:
+        q_level = "production"
+    elif q_score >= 7:
         q_level = "ready"
     else:
-        q_level = "production"
+        q_level = "draft"
 
     return {
         "complexity_score": cx_score,
@@ -7197,12 +7499,19 @@ def _normalize_joins(defn: dict) -> dict:
     source_short = (defn.get("source") or "").split(".")[-1]
     if not source_short:
         return defn
-    for join in defn.get("joins", []):
-        on = join.get("on", "")
-        if source_short + "." in on:
-            join["on"] = re.sub(
-                rf"\b{re.escape(source_short)}\.", "source.", on
-            )
+
+    def _rewrite(joins: list[dict], parent_alias: str = "source") -> None:
+        parent_short = parent_alias if parent_alias == "source" else parent_alias
+        for join in joins:
+            on = join.get("on", "")
+            if source_short + "." in on and parent_alias == "source":
+                join["on"] = re.sub(
+                    rf"\b{re.escape(source_short)}\.", "source.", on
+                )
+            if join.get("joins"):
+                _rewrite(join["joins"], join.get("name", ""))
+
+    _rewrite(defn.get("joins", []))
     return defn
 
 
@@ -7214,13 +7523,19 @@ def _fix_join_alias_refs(defn: dict) -> dict:
     alias_from_table: dict[str, str] = {}
     if source_short:
         alias_from_table[source_short.lower()] = "source"
-    for j in joins:
-        alias = j.get("name", "")
-        if alias:
-            valid_aliases.add(alias)
-            j_short = (j.get("source") or "").split(".")[-1]
-            if j_short:
-                alias_from_table[j_short.lower()] = alias
+
+    def _collect(jlist: list[dict]) -> None:
+        for j in jlist:
+            alias = j.get("name", "")
+            if alias:
+                valid_aliases.add(alias)
+                j_short = (j.get("source") or "").split(".")[-1]
+                if j_short:
+                    alias_from_table[j_short.lower()] = alias
+            if j.get("joins"):
+                _collect(j["joins"])
+
+    _collect(joins)
 
     if not joins:
         return defn
@@ -7251,56 +7566,96 @@ def _fix_join_alias_refs(defn: dict) -> dict:
     return defn
 
 
-def _flatten_chained_joins(defn: dict) -> dict:
-    """Drop joins whose 'on' clause references another join alias instead of 'source'.
+def _restructure_chained_to_nested(defn: dict) -> dict:
+    """Convert flat chained joins into proper nested (snowflake) structure.
 
-    Also removes dimensions/measures that depend on the dropped alias.
+    Three-tier strategy:
+    1. Joins already nested (have a ``joins`` key) pass through unchanged.
+    2. Flat joins whose ``on`` references a sibling alias get moved inside
+       that parent as nested children.
+    3. If restructuring fails (cycles / unresolvable refs), drop the
+       problematic joins and their dependent dims/measures.
     """
     joins = defn.get("joins", [])
     if not joins:
         return defn
 
-    join_aliases = {j.get("name", "").lower() for j in joins if j.get("name")}
+    # If all joins already have proper structure (on refs source or are nested), skip
     ref_pat = re.compile(r"\b([A-Za-z_]\w*)\.\w+")
+    join_aliases = {j.get("name", "").lower() for j in joins if j.get("name")}
 
-    dropped_aliases: set[str] = set()
-    kept_joins: list[dict] = []
+    # Separate root joins (on references "source") from chained ones
+    root_joins: list[dict] = []
+    chained: list[dict] = []
     for j in joins:
+        if j.get("joins"):
+            root_joins.append(j)
+            continue
         on = j.get("on", "")
-        refs_in_on = {m.group(1).lower() for m in ref_pat.finditer(on)}
-        refs_in_on.discard("source")
-        # If 'on' references another join alias (not source, not self), it's chained
-        own_alias = j.get("name", "").lower()
-        chained_refs = refs_in_on & join_aliases - {own_alias}
-        if chained_refs:
-            logger.warning(
-                "Dropping chained join '%s': on clause references other join alias(es) %s",
-                j.get("name", "?"), chained_refs,
-            )
-            dropped_aliases.add(own_alias)
+        refs = {m.group(1).lower() for m in ref_pat.finditer(on)}
+        refs.discard("source")
+        own = j.get("name", "").lower()
+        parent_refs = refs & join_aliases - {own}
+        if parent_refs:
+            chained.append(j)
         else:
-            kept_joins.append(j)
+            root_joins.append(j)
 
-    if not dropped_aliases:
+    if not chained:
         return defn
 
-    defn["joins"] = kept_joins
+    # Build alias -> join dict for root joins to nest children into
+    alias_to_join: dict[str, dict] = {}
+    def _index(jlist: list[dict]) -> None:
+        for j in jlist:
+            alias = j.get("name", "").lower()
+            if alias:
+                alias_to_join[alias] = j
+            if j.get("joins"):
+                _index(j["joins"])
+    _index(root_joins)
 
-    # Remove dimensions/measures that reference dropped aliases
-    for section in ("dimensions", "measures"):
-        items = defn.get(section, [])
-        cleaned = []
-        for item in items:
-            expr = item.get("expr", "")
-            expr_refs = {m.group(1).lower() for m in ref_pat.finditer(expr)}
-            if expr_refs & dropped_aliases:
-                logger.warning(
-                    "Dropping %s '%s': references dropped join alias",
-                    section[:-1], item.get("name", "?"),
-                )
-            else:
-                cleaned.append(item)
-        defn[section] = cleaned
+    dropped_aliases: set[str] = set()
+    # Try to nest each chained join under its parent
+    for j in chained:
+        on = j.get("on", "")
+        refs = {m.group(1).lower() for m in ref_pat.finditer(on)}
+        refs.discard("source")
+        own = j.get("name", "").lower()
+        parent_refs = refs & set(alias_to_join.keys()) - {own}
+        if parent_refs:
+            parent_alias = next(iter(parent_refs))
+            parent = alias_to_join[parent_alias]
+            parent.setdefault("joins", []).append(j)
+            alias_to_join[own] = j
+            logger.info(
+                "Nested join '%s' under parent '%s'",
+                j.get("name", "?"), parent_alias,
+            )
+        else:
+            logger.warning(
+                "Dropping unchainable join '%s': parent alias not found among root joins",
+                j.get("name", "?"),
+            )
+            dropped_aliases.add(own)
+
+    defn["joins"] = root_joins
+
+    if dropped_aliases:
+        for section in ("dimensions", "measures"):
+            items = defn.get(section, [])
+            cleaned = []
+            for item in items:
+                expr = item.get("expr", "")
+                expr_refs = {m.group(1).lower() for m in ref_pat.finditer(expr)}
+                if expr_refs & dropped_aliases:
+                    logger.warning(
+                        "Dropping %s '%s': references dropped join alias",
+                        section[:-1], item.get("name", "?"),
+                    )
+                else:
+                    cleaned.append(item)
+            defn[section] = cleaned
 
     return defn
 
@@ -7311,12 +7666,18 @@ def _build_plan_prompt(questions: list[str], context: str) -> str:
 
 TASK: Output a PLAN only (no SQL). Reply with a single JSON object: {{ "views": [ ... ] }}.
 
+ORGANIZING PRINCIPLE -- grain first, theme second:
+- Each view declares its grain via the source table. All measures must be valid at that grain.
+- Within a single grain, create separate views for different analytical themes.
+- Name views to reflect grain + theme: encounter_throughput_metrics, prescription_fill_channel_analysis.
+
 For each metric view in "views", include:
-- "name": unique snake_case name (e.g. order_performance_metrics)
+- "name": unique snake_case name reflecting grain and theme
 - "source": fully qualified source table (catalog.schema.table)
 - "comment": one sentence purpose
 - "joins": array of {{ "name": "<alias>", "source": "catalog.schema.table", "on": "source.<fk_col> = <alias>.<pk_col>" }}
   Include joins where FK relationships have high confidence and are relevant to the business questions. Prefer simpler views with fewer joins over complex views that may fail. A view with 0-2 well-chosen joins is better than one with 5 forced joins.
+  For dimension hierarchies use nested joins: {{ "name": "customer", ..., "joins": [{{ "name": "nation", ..., "on": "customer.nation_id = nation.id" }}] }}
 - "dimensions": array of {{ "name": "Display Name", "comment": "what it is" }} (no expr)
 - "measures": array of {{ "name": "Display Name", "comment": "what it measures" }} (no expr)
 - "question_indices": array of 0-based question indices this view answers
@@ -7346,8 +7707,12 @@ RULES:
 - dimensions: array of {{ "name", "expr", "comment", "display_name", "synonyms" }}. "display_name" and "synonyms" (array of 2-5 alternative names) are REQUIRED. expr must be valid Databricks SQL using ONLY columns from the metadata below.
 - measures: array of {{ "name", "expr", "comment", "display_name", "synonyms", "format" }}. "display_name", "synonyms", and "format" are REQUIRED. format is {{"type": "currency"}}, {{"type": "percentage"}}, or {{"type": "number"}}. Use SUM, COUNT, AVG, FILTER, etc. String literals single-quoted.
 - For window measures (rolling averages, cumulative): use "window" array: [{{"order": "date_col", "range": "trailing 30 day", "semiadditive": "last"}}]. Use "trailing N day" for rolling, "unbounded" for cumulative.
-- joins: You MUST implement ALL joins from the plan exactly. Use: on: source.<fk_column> = <join_name>.<pk_column>. Keep same join names as plan. If the plan includes joins, they are REQUIRED in your output. Add dimensions/measures that reference joined table columns.
-- COLUMN REFERENCING: Use "source.col" for source table columns, "join_alias.col" for joined table columns. Example: "expr": "source.order_date" or "expr": "account.industry". NEVER use bare column names when joins are present -- always qualify with the alias.
+- NEVER use SQL window functions (OVER, PARTITION BY, ROW_NUMBER, LAG, LEAD) in measure "expr" fields. They are not supported. Use the "window" property or FILTER syntax instead.
+- joins: You MUST implement ALL joins from the plan exactly. Keep same join names as plan. If the plan includes joins, they are REQUIRED in your output. Add dimensions/measures that reference joined table columns.
+  STAR SCHEMA joins: "on": "source.<fk> = <alias>.<pk>"
+  NESTED JOINS for hierarchies: nest child joins inside the parent's "joins" array with child "on" referencing the parent alias:
+  {{"name": "customer", "source": "...", "on": "source.customer_id = customer.id", "joins": [{{"name": "nation", "source": "...", "on": "customer.nation_id = nation.id"}}]}}
+- COLUMN REFERENCING: Use "source.col" for source table columns, "join_alias.col" for joined table columns (including nested aliases like "nation.name"). NEVER use bare column names when joins are present -- always qualify with the alias.
 - Ratios must use NULLIF in denominator. AVG of pre-aggregated values is usually wrong.
 - Only use column names that appear in the metadata.
 
@@ -7595,7 +7960,7 @@ def _run_sl_generation(
                 defn["filter"] = _autofix_expr(defn["filter"])
             defn = _normalize_joins(defn)
             defn = _fix_join_alias_refs(defn)
-            defn = _flatten_chained_joins(defn)
+            defn = _restructure_chained_to_nested(defn)
 
             # Fuzzy-match hallucinated column names to actual columns
             src = defn.get("source", "")
@@ -7855,6 +8220,7 @@ def _validate_definition(defn: dict, source: str) -> tuple[str, str]:
         defn["filter"] = _autofix_expr(defn["filter"])
     defn = _normalize_joins(defn)
     defn = _fix_join_alias_refs(defn)
+    defn = _restructure_chained_to_nested(defn)
     errors = _validate_definition_structure(defn)
     if not errors:
         defn_joins = defn.get("joins", [])
@@ -8051,13 +8417,20 @@ def _definition_to_yaml(defn: dict) -> str:
                         lines.append(f'        rows: "{_yaml_esc(ws["rows"])}"')
                     if ws.get("semiadditive"):
                         lines.append(f'        semiadditive: "{_yaml_esc(ws["semiadditive"])}"')
+    def _emit_joins(jlist: list[dict], indent: int = 2) -> None:
+        pfx = " " * indent
+        for j in jlist:
+            lines.append(f'{pfx}- name: "{_yaml_esc(j.get("name", ""))}"')
+            lines.append(f'{pfx}  source: {j.get("source", "")}')
+            if j.get("on"):
+                lines.append(f'{pfx}  on: "{_yaml_esc(j["on"])}"')
+            if j.get("joins"):
+                lines.append(f'{pfx}  joins:')
+                _emit_joins(j["joins"], indent + 4)
+
     if defn.get("joins"):
         lines.append("joins:")
-        for j in defn["joins"]:
-            lines.append(f'  - name: "{_yaml_esc(j.get("name", ""))}"')
-            lines.append(f'    source: {j.get("source", "")}')
-            if j.get("on"):
-                lines.append(f'    on: "{_yaml_esc(j["on"])}"')
+        _emit_joins(defn["joins"])
     return "\n".join(lines) + "\n"
 
 
@@ -10703,7 +11076,7 @@ Rules:
 For each KPI provide:
 - name: concise business name (e.g. "Monthly Revenue Growth Rate")
 - description: 1-2 sentences explaining what it measures and why it matters
-- formula: SQL expression using bare column names only -- NO catalog, schema, or table prefixes (e.g. SUM(total_amount), not SUM(schema.table.total_amount)). The source table is specified separately.
+- formula: SQL expression using bare column names only -- NO catalog, schema, or table prefixes (e.g. SUM(total_amount), not SUM(schema.table.total_amount)). The source table is specified separately. Avoid SQL window functions (OVER, PARTITION BY) -- use simple aggregates instead (SUM, COUNT, AVG). If a share-of-total is needed, describe it conceptually and let the metric view layer handle the windowing.
 - domain: business domain it belongs to (e.g. sales, finance, operations)
 
 Return ONLY a JSON array of objects with keys: name, description, formula, domain. No other text."""
@@ -11282,7 +11655,7 @@ def vector_sync():
     """Trigger a sync of the metadata VS index."""
     vs_index_name = f"{CATALOG}.{SCHEMA}.{VS_INDEX_SUFFIX}"
     try:
-        ws = get_workspace_client()
+        ws = _get_effective_client()
         ws.vector_search_indexes.sync_index(index_name=vs_index_name)
         return {"status": "sync_triggered", "index": vs_index_name}
     except Exception as e:
@@ -11384,10 +11757,10 @@ def _mv_sync_worker(task_id: str):
         )
         counts = {r["doc_type"]: int(r["cnt"]) for r in rows} if rows else {}
 
-        # Trigger VS index sync
+        # Trigger VS index sync (needs user's OBO token for permission)
         vs_index_name = f"{CATALOG}.{SCHEMA}.{VS_INDEX_SUFFIX}"
         try:
-            ws = get_workspace_client()
+            ws = _get_effective_client()
             ws.vector_search_indexes.sync_index(index_name=vs_index_name)
         except Exception as sync_err:
             logger.warning("VS sync after MV merge failed: %s", sync_err)

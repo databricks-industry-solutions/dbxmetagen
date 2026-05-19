@@ -424,8 +424,11 @@ export default function SemanticLayer({ onNavigate, pipelineStats }) {
     cachedFetch(url, {}, TTL.CONFIG).then(({ data }) => {
       if (data) setDefinitions(data)
     })
-    const covUrl = selectedProjectId
-      ? `/api/semantic-layer/kpi-coverage?project_id=${selectedProjectId}`
+    const covParams = new URLSearchParams()
+    if (selectedProjectId) covParams.set('project_id', selectedProjectId)
+    if (activeProfileId) covParams.set('profile_id', activeProfileId)
+    const covUrl = covParams.toString()
+      ? `/api/semantic-layer/kpi-coverage?${covParams}`
       : '/api/semantic-layer/kpi-coverage'
     cachedFetchObj(covUrl, {}, TTL.CONFIG).then(({ data }) => {
       if (data?.kpi_coverage?.total) setKpiCoverage(data.kpi_coverage)
@@ -1691,28 +1694,28 @@ export default function SemanticLayer({ onNavigate, pipelineStats }) {
                         </span>
                       )}
                       {statusBadge(d.status)}
-                      {mvHealth[d.definition_id] && (() => {
-                        const h = mvHealth[d.definition_id]
-                        const pct = h.max > 0 ? h.score / h.max : 0
-                        const cls = pct >= 0.8 ? 'text-emerald-700 dark:text-emerald-400 bg-emerald-100 dark:bg-emerald-900/30'
-                          : pct >= 0.5 ? 'text-amber-700 dark:text-amber-400 bg-amber-100 dark:bg-amber-900/30'
+                      {(d.complexity_score != null || d.quality_score != null) && (() => {
+                        const combined = (Number(d.complexity_score) || 0) + (Number(d.quality_score) || 0)
+                        const pct = combined / 50
+                        const cls = pct >= 0.6 ? 'text-emerald-700 dark:text-emerald-400 bg-emerald-100 dark:bg-emerald-900/30'
+                          : pct >= 0.3 ? 'text-amber-700 dark:text-amber-400 bg-amber-100 dark:bg-amber-900/30'
                           : 'text-red-700 dark:text-red-400 bg-red-100 dark:bg-red-900/30'
-                        return <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${cls}`}>{h.score}/{h.max}</span>
+                        return <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${cls}`} title={`Complexity: ${d.complexity_score ?? '?'}/30, Quality: ${d.quality_score ?? '?'}/20`}>{combined}/50</span>
                       })()}
                       {d.complexity_level === 'basic' && (
-                        <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400" title="No joins -- single-table only">Basic</span>
+                        <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400" title={`Complexity: ${d.complexity_score ?? '?'}/30 -- few measures, no joins`}>Basic</span>
                       )}
                       {d.complexity_level === 'standard' && (
-                        <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-sky-100 text-sky-700 dark:bg-sky-900/30 dark:text-sky-400" title="Single join">Standard</span>
+                        <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-sky-100 text-sky-700 dark:bg-sky-900/30 dark:text-sky-400" title={`Complexity: ${d.complexity_score ?? '?'}/30 -- joins or ratios present`}>Standard</span>
                       )}
                       {d.complexity_level === 'rich' && (
-                        <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400" title="Multi-join star/hierarchical schema">Rich</span>
+                        <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400" title={`Complexity: ${d.complexity_score ?? '?'}/30 -- multi-join, ratios, filters`}>Rich</span>
                       )}
                       {d.quality_level && d.quality_level !== 'ready' && (
                         <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${
                           d.quality_level === 'production' ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400'
                           : 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400'
-                        }`} title={`Quality: ${d.quality_score ?? '?'}/7 - ${d.quality_level === 'production' ? 'Full metadata, synonyms, format' : 'Missing metadata (synonyms, format, or display_name)'}`}>{d.quality_level === 'production' ? 'Production' : 'Draft'}</span>
+                        }`} title={`Quality: ${d.quality_score ?? '?'}/20 - ${d.quality_level === 'production' ? 'Full metadata, synonyms, format, agent-ready' : 'Missing metadata (synonyms, format, or display_name)'}`}>{d.quality_level === 'production' ? 'Production' : 'Draft'}</span>
                       )}
                       {/* Compact action menu */}
                       <div className="relative" ref={openMenuId === d.definition_id ? menuRef : undefined}>

@@ -3875,6 +3875,7 @@ class OntologyBuilder:
                     FROM {ent_table}
                 ) AS source
                 ON target.id = source.entity_id
+                    AND target.node_type = 'entity'
 
                 WHEN MATCHED AND (
                     target.quality_score != source.confidence

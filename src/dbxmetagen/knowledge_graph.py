@@ -583,6 +583,7 @@ class KnowledgeGraphBuilder:
         MERGE INTO {self.config.fully_qualified_nodes} AS target
         USING staged_nodes AS source
         ON target.id = source.id
+            AND target.node_type IN ('table', 'column', 'schema')
 
         WHEN MATCHED THEN UPDATE SET
             target.table_name = source.table_name,

@@ -39,6 +39,8 @@ resources:
           default: "50"
         - name: apply_ddl
           default: "false"
+        - name: federation_mode
+          default: "false"
         - name: dry_run
           default: "false"
         - name: incremental

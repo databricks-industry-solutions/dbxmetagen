@@ -29,6 +29,8 @@ resources:
           default: ${var.schema_name}
         - name: apply_ddl
           default: "false"
+        - name: federation_mode
+          default: "false"
         - name: current_user
           default: ${var.current_user}
         - name: permission_groups
@@ -66,6 +68,7 @@ resources:
               catalog_name: "{{job.parameters.catalog_name}}"
               schema_name: "{{job.parameters.schema_name}}"
               apply_ddl: "{{job.parameters.apply_ddl}}"
+              federation_mode: "{{job.parameters.federation_mode}}"
               current_user: "{{job.parameters.current_user}}"
               permission_groups: "{{job.parameters.permission_groups}}"
               permission_users: "{{job.parameters.permission_users}}"
@@ -121,6 +124,7 @@ resources:
               catalog_name: "{{job.parameters.catalog_name}}"
               schema_name: "{{job.parameters.schema_name}}"
               apply_ddl: "{{job.parameters.apply_ddl}}"
+              federation_mode: "{{job.parameters.federation_mode}}"
               current_user: "{{job.parameters.current_user}}"
               permission_groups: "{{job.parameters.permission_groups}}"
               permission_users: "{{job.parameters.permission_users}}"
@@ -152,6 +156,7 @@ resources:
               catalog_name: "{{job.parameters.catalog_name}}"
               schema_name: "{{job.parameters.schema_name}}"
               apply_ddl: "{{job.parameters.apply_ddl}}"
+              federation_mode: "{{job.parameters.federation_mode}}"
               current_user: "{{job.parameters.current_user}}"
               permission_groups: "{{job.parameters.permission_groups}}"
               permission_users: "{{job.parameters.permission_users}}"

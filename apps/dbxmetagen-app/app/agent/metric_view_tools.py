@@ -2,6 +2,10 @@
 
 Provides semantic search over metric view documents, listing/describing
 metric view definitions, and structured query execution using MEASURE() syntax.
+
+Two API layers:
+- @tool functions: LangChain tool-decorated, return JSON strings (for ReAct agents)
+- *_direct / fetch_* / execute_* functions: return native dicts (for the purpose-built graph)
 """
 
 import concurrent.futures
@@ -9,6 +13,7 @@ import json
 import logging
 import os
 import re
+import time
 from typing import Optional
 
 from langchain_core.tools import tool
@@ -19,6 +24,8 @@ CATALOG = os.environ.get("CATALOG_NAME", "")
 SCHEMA = os.environ.get("SCHEMA_NAME", "")
 VS_INDEX_SUFFIX = os.environ.get("VECTOR_SEARCH_INDEX", "metadata_vs_index")
 
+_TRANSIENT_ERRORS = ("TEMPORARILY_UNAVAILABLE", "RESOURCE_EXHAUSTED", "DEADLINE_EXCEEDED")
+
 
 def _fq(table: str) -> str:
     return f"{CATALOG}.{SCHEMA}.{table}"
@@ -27,6 +34,19 @@ def _fq(table: str) -> str:
 def _run_sql(query: str) -> dict:
     from agent.metadata_tools import _execute_query
     return _execute_query(query)
+
+
+def _run_sql_with_retry(query: str, max_retries: int = 2) -> dict:
+    """Execute SQL with automatic retry on transient warehouse errors."""
+    for attempt in range(max_retries + 1):
+        result = _run_sql(query)
+        if result.get("success") or attempt == max_retries:
+            return result
+        err = result.get("error", "")
+        if not any(t in err for t in _TRANSIENT_ERRORS):
+            return result
+        time.sleep(1 * (attempt + 1))
+    return result
 
 
 def _parse_definition(json_str: str) -> dict:
@@ -60,6 +80,25 @@ def _get_deployed_fqn(row: dict) -> str:
     cat = row.get("deployed_catalog") or CATALOG
     sch = row.get("deployed_schema") or SCHEMA
     return f"{cat}.{sch}.{row.get('metric_view_name', '')}"
+
+
+def _extract_mv_name(node_id: str, content: str) -> str:
+    """Extract metric_view_name from node_id (legacy 'mv::name::...' format) or content FQN."""
+    if "::" in str(node_id):
+        return node_id.split("::")[1]
+    if content:
+        first_line = content.split("\n")[0].strip()
+        if "." in first_line:
+            return first_line.rsplit(".", 1)[-1]
+    return ""
+
+
+def _quote_order_by(order_by: str, known_names: set[str]) -> str:
+    """Backtick-quote known measure/dimension names in an ORDER BY clause."""
+    for name in sorted(known_names, key=len, reverse=True):
+        if name in order_by and f"`{name}`" not in order_by:
+            order_by = order_by.replace(name, f"`{name}`")
+    return order_by
 
 
 def _parse_str_list(val) -> list[str]:
@@ -156,9 +195,8 @@ def search_metric_views(question: str) -> str:
         for row in results.get("result", {}).get("data_array", []):
             match = dict(zip(col_names, row)) if col_names else {}
             content = (match.get("content") or "")[:800]
-            # Extract metric view name from node_id (format: "mv::<name>::...")
             node_id = match.get("node_id", "")
-            mv_name = node_id.split("::")[1] if "::" in str(node_id) else ""
+            mv_name = _extract_mv_name(node_id, content)
             if mv_name:
                 seen_mv_names.add(mv_name)
             candidates.append({
@@ -349,7 +387,7 @@ def metric_view_query(
         if dimensions:
             sql += " GROUP BY ALL"
         if order_by:
-            sql += f" ORDER BY {order_by}"
+            sql += f" ORDER BY {_quote_order_by(order_by, valid_measures | valid_dims)}"
         sql += f" LIMIT {limit}"
 
         err = _validate_sql(sql)
@@ -467,3 +505,200 @@ METRIC_VIEW_TOOLS = [
     metric_view_query,
     metric_view_dimension_query,
 ]
+
+
+# ---------------------------------------------------------------------------
+# Direct-call API for the purpose-built graph (returns native dicts, not JSON strings)
+# ---------------------------------------------------------------------------
+
+def search_metric_views_direct(question: str) -> list[dict]:
+    """Run vector search + definition enrichment, return list of candidate dicts."""
+    try:
+        from agent.metadata_tools import _get_vs_index
+        index_name = f"{CATALOG}.{SCHEMA}.{VS_INDEX_SUFFIX}"
+        index = _get_vs_index(index_name)
+    except Exception as e:
+        logger.warning("Vector search unavailable: %s", e)
+        return []
+
+    try:
+        kwargs = dict(
+            query_text=question,
+            columns=["doc_type", "content", "table_name", "node_id"],
+            filters={"doc_type": ("metric_view_summary", "metric_view_measures", "metric_view_schema")},
+            num_results=10,
+            query_type="HYBRID",
+        )
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            results = pool.submit(index.similarity_search, **kwargs).result(timeout=30)
+        cols = results.get("manifest", {}).get("columns", [])
+        col_names = [c.get("name", f"col{i}") for i, c in enumerate(cols)]
+        candidates = []
+        for row in results.get("result", {}).get("data_array", []):
+            match = dict(zip(col_names, row)) if col_names else {}
+            content = (match.get("content") or "")[:800]
+            node_id = match.get("node_id", "")
+            mv_name = _extract_mv_name(node_id, content)
+            candidates.append({
+                "doc_type": match.get("doc_type", ""),
+                "content": content,
+                "source_table": match.get("table_name", ""),
+                "definition_id": node_id,
+                "metric_view_name": mv_name,
+            })
+        return _enrich_candidates_with_definitions(candidates)
+    except Exception as e:
+        logger.warning("search_metric_views_direct failed: %s", e)
+        return []
+
+
+def list_metric_views_direct(domain: Optional[str] = None) -> list[dict]:
+    """List all deployed metric views, return list of dicts."""
+    domain_join = f"LEFT JOIN {_fq('table_knowledge_base')} kb ON m.source_table = kb.table_name"
+    domain_filter = f"AND LOWER(kb.domain) LIKE '%{domain.lower()}%'" if domain else ""
+    try:
+        result = _run_sql(f"""
+            SELECT m.metric_view_name, m.source_table, m.status,
+                   m.deployed_catalog, m.deployed_schema,
+                   kb.domain, kb.subdomain, m.json_definition
+            FROM {_fq('metric_view_definitions')} m
+            {domain_join}
+            WHERE m.status IN ('applied', 'validated')
+              AND m.metric_view_name IS NOT NULL
+              {domain_filter}
+            ORDER BY m.metric_view_name
+        """)
+        if not result["success"]:
+            return []
+        views = []
+        for row in result["rows"]:
+            defn = {}
+            if row.get("json_definition"):
+                try:
+                    defn = json.loads(row["json_definition"])
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            views.append({
+                "metric_view_name": row["metric_view_name"],
+                "source_table": row.get("source_table", ""),
+                "domain": row.get("domain", ""),
+                "fqn": _get_deployed_fqn(row),
+                "measures": [m.get("name", "") for m in defn.get("measures", [])],
+                "dimensions": [d.get("name", "") for d in defn.get("dimensions", [])],
+            })
+        return views
+    except Exception as e:
+        logger.warning("list_metric_views_direct failed: %s", e)
+        return []
+
+
+def fetch_definition(metric_view_name: str) -> tuple[Optional[dict], Optional[str], Optional[str]]:
+    """Fetch parsed definition and FQN for a metric view. Returns (defn, fqn, error)."""
+    return _fetch_definition_and_source(metric_view_name)
+
+
+def execute_measure_query(
+    metric_view_name: str,
+    measures: list[str],
+    dimensions: list[str] = None,
+    filters: Optional[str] = None,
+    order_by: Optional[str] = None,
+    limit: int = 100,
+) -> dict:
+    """Build and run a MEASURE() query, returning result dict with 'sql', 'rows', 'error' keys."""
+    dimensions = dimensions or []
+    if not measures:
+        return {"error": "At least one measure is required."}
+    limit = min(max(limit, 1), 1000)
+
+    defn, fqn, err = _fetch_definition_and_source(metric_view_name)
+    if err:
+        return {"error": err}
+
+    valid_measures = {m["name"] for m in defn.get("measures", [])}
+    valid_dims = {d["name"] for d in defn.get("dimensions", [])}
+
+    bad_measures = [m for m in measures if m not in valid_measures]
+    if bad_measures:
+        return {"error": f"Invalid measures: {bad_measures}. Valid: {sorted(valid_measures)}"}
+    bad_dims = [d for d in dimensions if d not in valid_dims]
+    if bad_dims:
+        return {"error": f"Invalid dimensions: {bad_dims}. Valid: {sorted(valid_dims)}"}
+
+    dim_clause = ", ".join(f"`{d}`" for d in dimensions) if dimensions else ""
+    measure_clause = ", ".join(f"MEASURE(`{m}`) AS `{m}`" for m in measures)
+    select_parts = [p for p in [dim_clause, measure_clause] if p]
+    sql = f"SELECT {', '.join(select_parts)} FROM {fqn}"
+    if filters:
+        sql += f" WHERE {filters}"
+    if dimensions:
+        sql += " GROUP BY ALL"
+    if order_by:
+        sql += f" ORDER BY {_quote_order_by(order_by, valid_measures | valid_dims)}"
+    sql += f" LIMIT {limit}"
+
+    err = _validate_sql(sql)
+    if err:
+        return {"error": err, "sql": sql}
+
+    result = _run_sql_with_retry(sql)
+    if result["success"]:
+        return {
+            "sql": sql,
+            "columns": result["columns"],
+            "rows": result["rows"][:limit],
+            "row_count": result["row_count"],
+        }
+    return {"error": result.get("error"), "sql": sql}
+
+
+def execute_dimension_query(
+    metric_view_name: str,
+    dimensions: list[str],
+    aggregation: str = "list",
+    filters: Optional[str] = None,
+    limit: int = 100,
+) -> dict:
+    """Build and run a dimension-only query, returning result dict."""
+    if not dimensions:
+        return {"error": "At least one dimension is required."}
+    limit = min(max(limit, 1), 1000)
+
+    defn, fqn, err = _fetch_definition_and_source(metric_view_name)
+    if err:
+        return {"error": err}
+
+    valid_dims = {d["name"] for d in defn.get("dimensions", [])}
+    bad_dims = [d for d in dimensions if d not in valid_dims]
+    if bad_dims:
+        return {"error": f"Invalid dimensions: {bad_dims}. Valid: {sorted(valid_dims)}"}
+
+    quoted = [f"`{d}`" for d in dimensions]
+
+    if aggregation == "count_distinct":
+        select_parts = [f"COUNT(DISTINCT {q}) AS `{d}_count`" for q, d in zip(quoted, dimensions)]
+        sql = f"SELECT {', '.join(select_parts)} FROM {fqn}"
+    elif aggregation == "unique_values":
+        select_parts = quoted + ["COUNT(*) AS `row_count`"]
+        sql = f"SELECT {', '.join(select_parts)} FROM {fqn} GROUP BY ALL ORDER BY `row_count` DESC"
+    else:
+        sql = f"SELECT DISTINCT {', '.join(quoted)} FROM {fqn}"
+
+    if filters:
+        sql += f" WHERE {filters}" if "WHERE" not in sql.upper() else f" AND ({filters})"
+    sql += f" LIMIT {limit}"
+
+    err = _validate_sql(sql)
+    if err:
+        return {"error": err, "sql": sql}
+
+    result = _run_sql_with_retry(sql)
+    if result["success"]:
+        return {
+            "sql": sql,
+            "columns": result["columns"],
+            "rows": result["rows"][:limit],
+            "row_count": result["row_count"],
+            "aggregation": aggregation,
+        }
+    return {"error": result.get("error"), "sql": sql}

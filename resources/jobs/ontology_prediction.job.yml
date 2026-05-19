@@ -23,6 +23,8 @@ resources:
           default: "healthcare"
         - name: apply_ddl
           default: "false"
+        - name: federation_mode
+          default: "false"
 
       tasks:
         # Stage 1: Build knowledge bases (parallel)
