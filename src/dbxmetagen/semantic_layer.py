@@ -837,6 +837,12 @@ class SemanticLayerGenerator:
 
 TASK: Generate metric view definitions (as a JSON array) that enable answering the business questions below.
 
+ORGANIZING PRINCIPLE -- grain first, theme second:
+- Each metric view declares its grain via its source table (one row = one encounter, one order line, one prescription fill, etc.)
+- All measures must be valid at that grain. Do NOT mix measures implying different grains in one view
+- Within a single grain, create SEPARATE views for different analytical themes
+- Name views to reflect both grain and theme: encounter_throughput_metrics, prescription_fill_channel_analysis
+
 RULES:
 1. Create measures that directly support answering the business questions. Do NOT add a generic "row count" or "Record Count" measure unless a question explicitly asks for "how many records" or "count of X". Prefer ratios (e.g. rate, per capita), conditional aggregates (FILTER), and entity-specific KPIs (e.g. readmission rate, avg length of stay) over raw COUNT(*) when the question implies a more specific metric.
 2. Create metric views organized around analytical themes from the questions, not just one-to-one with tables. Multiple metric views from the same table are fine if they address different analytical angles
@@ -855,7 +861,11 @@ RULES:
    - CASE results with parens/hyphens: THEN '0-15 min (Excellent)', NOT THEN 0-15 min (Excellent)
    The ONLY unquoted tokens should be column names, SQL keywords, and numbers
    WRONG: status = fulfilled, region IN (North, South). CORRECT: status = 'fulfilled', region IN ('North', 'South')
-7. Join format (Unity Catalog): For each join use: name: <short_alias>, source: catalog.schema.table, on: source.<fk_column> = <join_name>.<pk_column>. The root table is always "source"; the joined table is referenced by its "name" (short alias). Example: on: source.customer_id = customers.id
+7. Join format (Unity Catalog):
+   STAR SCHEMA (default): name: <alias>, source: catalog.schema.table, on: source.<fk> = <alias>.<pk>. The root table is always "source".
+   NESTED / SNOWFLAKE JOINS: for dimension hierarchies (e.g. customer -> nation -> region), nest child joins inside the parent's "joins" array. Child "on" references the PARENT alias, not "source":
+   {{"name": "customer", "source": "...", "on": "source.customer_id = customer.id", "joins": [{{"name": "nation", "source": "...", "on": "customer.nation_id = nation.id"}}]}}
+   Limit nesting to 2 levels. Use nested joins when JOIN PATHS in the metadata show multi-hop FK chains.
 8. Include joins when RECOMMENDED JOINS exist; when questions ask for breakdowns by attributes in another table (e.g. by customer segment, department), you MUST add a join. Prefer at least one metric view with joins when FKs exist
 9. Every metric view MUST have at least one measure and one dimension
 10. Add a top-level "comment" (1-2 sentences) describing what the metric view measures, its analytical purpose, and which source tables it draws from. Do NOT reference question numbers, KPI numbers, or list which questions are/aren't answerable. Focus on content and lineage (e.g. "Analyzes order revenue by product family and sales representative, joining line items to the product catalog and parent order for discount tracking.")

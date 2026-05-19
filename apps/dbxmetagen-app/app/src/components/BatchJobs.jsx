@@ -454,8 +454,9 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
               }} className="select-base">
                 <option value="">(None — use domain list only)</option>
                 {bundles.length > 0 && (() => {
-                  const formal = bundles.filter(b => b.bundle_type === 'formal_ontology')
-                  const curated = bundles.filter(b => b.bundle_type !== 'formal_ontology')
+                  const custom = bundles.filter(b => b.custom)
+                  const formal = bundles.filter(b => !b.custom && b.bundle_type === 'formal_ontology')
+                  const curated = bundles.filter(b => !b.custom && b.bundle_type !== 'formal_ontology')
                   const counts = (b) => {
                     const parts = [`${b.entity_count} entities`]
                     if (b.edge_count) parts.push(`${b.edge_count} edges`)
@@ -463,6 +464,13 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
                   }
                   const suffix = (b) => (b.standards_alignment && b.standards_alignment !== b.name) ? ` -- ${b.standards_alignment}` : ''
                   return (<>
+                    {custom.length > 0 && <optgroup label="Custom (built in Ontology Builder)">
+                      {custom.map(b => (
+                        <option key={b.key} value={b.key}>
+                          {b.name} ({counts(b)})
+                        </option>
+                      ))}
+                    </optgroup>}
                     {formal.length > 0 && <optgroup label="Formal Ontologies (from OWL or Turtle files)">
                       {formal.map(b => (
                         <option key={b.key} value={b.key}>

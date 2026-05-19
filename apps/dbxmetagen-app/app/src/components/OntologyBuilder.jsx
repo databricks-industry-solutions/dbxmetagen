@@ -872,7 +872,7 @@ export default function OntologyBuilder({ onNavigate }) {
     })
     setSaving(false)
     if (err) { setError(err); return }
-    setSaveMsg(`Saved as ${data?.bundle_key || 'bundle'}`)
+    setSaveMsg(`Saved "${data?.bundle_key || 'bundle'}" to UC Volume -- now available in the Generate Metadata ontology dropdown`)
     setDirty(false)
     localStorage.removeItem(LS_KEY)
     invalidateCache('/api/ontology/bundles')
