@@ -589,6 +589,7 @@ def get_config():
         "apply_ddl": os.environ.get("APPLY_DDL", "false").lower() == "true",
         "use_kb_comments": os.environ.get("USE_KB_COMMENTS", "false").lower() == "true",
         "include_lineage": os.environ.get("INCLUDE_LINEAGE", "true").lower() == "true",
+        "federation_mode": os.environ.get("FEDERATION_MODE", "false").lower() == "true",
         "workspace_host": host.rstrip("/"),
         "available_models": _AVAILABLE_MODELS,
         "lakebase_configured": pg_configured(),
@@ -653,6 +654,81 @@ def auth_check():
     return result
 
 
+@app.get("/api/catalog/diagnose")
+def diagnose_catalog(catalog: str, schema: str = ""):
+    """Run diagnostic checks against a catalog (including foreign catalogs).
+
+    Returns partial-success JSON so each check runs independently.
+    """
+    identity_label = _auth_identity_label()
+    has_obo = _OBO_ENABLED and bool(_obo_token_var.get(None))
+    result = {
+        "catalog": catalog,
+        "schema": schema or None,
+        "running_as": identity_label,
+        "obo_token_received": has_obo,
+        "checks": {},
+    }
+
+    def _check(name, fn):
+        try:
+            data = fn()
+            result["checks"][name] = {"status": "ok", "data": data}
+        except HTTPException as he:
+            result["checks"][name] = {"status": "error", "detail": he.detail}
+        except Exception as e:
+            result["checks"][name] = {"status": "error", "detail": str(e)}
+
+    # 1. Is the catalog visible in system.information_schema?
+    def check_catalog_visible():
+        rows = execute_sql(
+            f"SELECT catalog_name, catalog_type FROM system.information_schema.catalogs "
+            f"WHERE catalog_name = '{catalog}'"
+        )
+        if not rows:
+            raise ValueError(f"Catalog '{catalog}' not found in system.information_schema.catalogs")
+        return rows[0]
+
+    _check("catalog_visible", check_catalog_visible)
+
+    # 2. Can we USE CATALOG?
+    _check("use_catalog", lambda: (execute_sql(f"USE CATALOG `{catalog}`"), "ok")[1])
+
+    # 3. Can we list schemas?
+    def check_list_schemas():
+        rows = execute_sql(f"SHOW SCHEMAS IN `{catalog}`")
+        return {"count": len(rows), "schemas": [r.get("databaseName", r.get("namespace", "")) for r in rows[:20]]}
+
+    _check("list_schemas", check_list_schemas)
+
+    # 4-5. Schema-specific checks
+    if schema:
+        def check_list_tables():
+            rows = execute_sql(
+                f"SELECT table_name, table_type FROM `{catalog}`.information_schema.tables "
+                f"WHERE table_schema = '{schema}' LIMIT 25"
+            )
+            return {"count": len(rows), "tables": rows}
+
+        _check("list_tables", check_list_tables)
+
+        # 5. Can we SELECT from the first table? (tests actual connectivity)
+        def check_select_one():
+            tbl_rows = execute_sql(
+                f"SELECT table_name FROM `{catalog}`.information_schema.tables "
+                f"WHERE table_schema = '{schema}' LIMIT 1"
+            )
+            if not tbl_rows:
+                return "no tables found to test"
+            tbl = tbl_rows[0]["table_name"]
+            execute_sql(f"SELECT 1 FROM `{catalog}`.`{schema}`.`{tbl}` LIMIT 1")
+            return f"SELECT from `{catalog}`.`{schema}`.`{tbl}` succeeded"
+
+        _check("select_connectivity", check_select_one)
+
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Request / response models
 # ---------------------------------------------------------------------------
@@ -667,6 +743,7 @@ class JobRunRequest(BaseModel):
     apply_ddl: bool = False
     use_kb_comments: bool = False
     include_lineage: bool = False
+    federation_mode: bool = False
     # Analytics pipeline params
     catalog_name: Optional[str] = None
     schema_name: Optional[str] = None
@@ -952,6 +1029,8 @@ def run_job(req: JobRunRequest):
         params["include_lineage"] = "true"
     if req.sweep_stale_docs:
         params["sweep_stale_docs"] = "true"
+    if req.federation_mode:
+        params["federation_mode"] = "true"
     if req.catalog_name:
         params["catalog_name"] = req.catalog_name
     if req.schema_name:

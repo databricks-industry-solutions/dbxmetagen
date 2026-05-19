@@ -424,8 +424,11 @@ export default function SemanticLayer({ onNavigate, pipelineStats }) {
     cachedFetch(url, {}, TTL.CONFIG).then(({ data }) => {
       if (data) setDefinitions(data)
     })
-    const covUrl = selectedProjectId
-      ? `/api/semantic-layer/kpi-coverage?project_id=${selectedProjectId}`
+    const covParams = new URLSearchParams()
+    if (selectedProjectId) covParams.set('project_id', selectedProjectId)
+    if (activeProfileId) covParams.set('profile_id', activeProfileId)
+    const covUrl = covParams.toString()
+      ? `/api/semantic-layer/kpi-coverage?${covParams}`
       : '/api/semantic-layer/kpi-coverage'
     cachedFetchObj(covUrl, {}, TTL.CONFIG).then(({ data }) => {
       if (data?.kpi_coverage?.total) setKpiCoverage(data.kpi_coverage)

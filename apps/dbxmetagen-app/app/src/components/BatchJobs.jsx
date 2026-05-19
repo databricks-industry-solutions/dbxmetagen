@@ -143,6 +143,7 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
   const [tableNames, setTableNames] = useState('')
   const [mode, setMode] = useState('comment')
   const [applyDdl, setApplyDdl] = useState(false)
+  const [federationMode, setFederationMode] = useState(false)
   const [catalogName, setCatalogName] = useState('')
   const [schemaName, setSchemaName] = useState('')
   const [runningAction, setRunningAction] = useState(null)
@@ -253,6 +254,7 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
           include_lineage: cfg.include_lineage ?? prev.include_lineage,
         }))
         setApplyDdl(cfg.apply_ddl ?? false)
+        setFederationMode(cfg.federation_mode ?? false)
         if (Array.isArray(cfg.available_models) && cfg.available_models.length) setAvailableModels(cfg.available_models)
         setLakebaseConfigured(!!cfg.lakebase_configured)
       }
@@ -711,10 +713,19 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
                 </div>
                 <label className="flex items-center gap-2.5 text-sm text-slate-600 dark:text-slate-300 cursor-pointer"
                   title="Applies SQL comments directly to your tables. Disable this to review results first in the Review tab.">
-                  <input type="checkbox" checked={applyDdl} onChange={e => setApplyDdl(e.target.checked)} />
+                  <input type="checkbox" checked={applyDdl} disabled={federationMode} onChange={e => setApplyDdl(e.target.checked)} />
                   Apply to tables immediately
                 </label>
-                {applyDdl && <p className="text-[10px] text-amber-600 dark:text-amber-400 ml-6 -mt-1">This will write SQL COMMENT ON statements directly to your Unity Catalog tables and columns. Existing comments will be overwritten.</p>}
+                {applyDdl && !federationMode && <p className="text-[10px] text-amber-600 dark:text-amber-400 ml-6 -mt-1">This will write SQL COMMENT ON statements directly to your Unity Catalog tables and columns. Existing comments will be overwritten.</p>}
+                <label className="flex items-center gap-2.5 text-sm text-slate-600 dark:text-slate-300 cursor-pointer"
+                  title="Enable for external/federated catalogs (Redshift, Snowflake, etc.). Disables DDL apply and skips DESCRIBE EXTENDED.">
+                  <input type="checkbox" checked={federationMode} onChange={e => {
+                    setFederationMode(e.target.checked)
+                    if (e.target.checked) setApplyDdl(false)
+                  }} />
+                  Federation mode (external catalogs)
+                </label>
+                {federationMode && <p className="text-[10px] text-blue-600 dark:text-blue-400 ml-6 -mt-1">DDL apply is disabled. DESCRIBE EXTENDED will be skipped for federated tables.</p>}
               </div>
             </div>
 
@@ -773,15 +784,15 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
               {' | '}Domains: {domainConfig ? domainConfigs.find(d => d.key === domainConfig)?.name || domainConfig : (ontologyBundle ? 'from selected ontology' : <em>none</em>)}
             </p>
             <div className="flex flex-wrap gap-3 mt-2">
-              <button onClick={() => runJob('_kb_enriched_modes_job', { table_names: tableNames, apply_ddl: applyDdl, ontology_bundle: ontologyBundle, include_lineage: settings.include_lineage, ...(domainConfig ? { domain_config: domainConfig } : {}), extra_params: buildExtraParams() }, 'kb_enriched')}
+              <button onClick={() => runJob('_kb_enriched_modes_job', { table_names: tableNames, apply_ddl: applyDdl, federation_mode: federationMode, ontology_bundle: ontologyBundle, include_lineage: settings.include_lineage, ...(domainConfig ? { domain_config: domainConfig } : {}), extra_params: buildExtraParams() }, 'kb_enriched')}
                 disabled={!!runningAction || !tableNames.trim()}
                 title="Recommended. Generates comments first, builds table + column knowledge bases, then runs PI and domain classification with KB enrichment. PI/domain prompts see the generated descriptions even if DDL hasn't been applied to the tables yet."
                 className="btn-primary btn-md">{runningAction === 'kb_enriched' ? 'Starting...' : 'All 3 Modes (KB-Enriched)'}</button>
-              <button onClick={() => runJob(getJobSuffix(true), { table_names: tableNames, apply_ddl: applyDdl, ontology_bundle: ontologyBundle, use_kb_comments: settings.use_kb_comments, include_lineage: settings.include_lineage, ...(domainConfig ? { domain_config: domainConfig } : {}), extra_params: buildExtraParams() }, 'all3')}
+              <button onClick={() => runJob(getJobSuffix(true), { table_names: tableNames, apply_ddl: applyDdl, federation_mode: federationMode, ontology_bundle: ontologyBundle, use_kb_comments: settings.use_kb_comments, include_lineage: settings.include_lineage, ...(domainConfig ? { domain_config: domainConfig } : {}), extra_params: buildExtraParams() }, 'all3')}
                 disabled={!!runningAction || !tableNames.trim()}
                 title="Faster but lower quality. Runs comments first, then PI + domain in parallel without building the knowledge base in between. PI/domain prompts will only see table descriptions if DDL was already applied. Best option when tables already have good comments -- set Apply DDL to off."
                 className="btn-secondary btn-md">{runningAction === 'all3' ? 'Starting...' : `All 3 Modes (Fast)${settings.use_serverless ? ' (Serverless)' : ''}`}</button>
-              <button onClick={() => runJob(getJobSuffix(false), { table_names: tableNames, mode, apply_ddl: applyDdl, ontology_bundle: ontologyBundle, use_kb_comments: settings.use_kb_comments, include_lineage: settings.include_lineage, ...(domainConfig ? { domain_config: domainConfig } : {}), extra_params: buildExtraParams() }, 'single')}
+              <button onClick={() => runJob(getJobSuffix(false), { table_names: tableNames, mode, apply_ddl: applyDdl, federation_mode: federationMode, ontology_bundle: ontologyBundle, use_kb_comments: settings.use_kb_comments, include_lineage: settings.include_lineage, ...(domainConfig ? { domain_config: domainConfig } : {}), extra_params: buildExtraParams() }, 'single')}
                 disabled={!!runningAction || !tableNames.trim() || (needsDomain && !hasDomainSource)}
                 title={(needsDomain && !hasDomainSource) ? 'Select an ontology bundle or domain list to run domain classification' : 'Run only the selected mode (comment, PI, or domain) as a single generation pass. Use for targeted re-runs on specific tables or when you only need one metadata type.'}
                 className="btn-md bg-slate-100 text-slate-700 rounded-lg hover:bg-slate-200 dark:bg-dbx-navy-400/30 dark:text-slate-300 dark:hover:bg-dbx-navy-400/50 disabled:opacity-50 transition-all">{runningAction === 'single' ? 'Starting...' : `Run Selected Mode${settings.build_kb_after ? ' + KB' : ''}${settings.use_serverless ? ' (Serverless)' : ''}`}</button>
@@ -870,10 +881,20 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
               <div className="pb-1">
                 <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer"
                   title="Apply ontology tags and FK constraints directly to Unity Catalog tables. Disable to review results first.">
-                  <input type="checkbox" checked={applyDdl} onChange={e => setApplyDdl(e.target.checked)} />
+                  <input type="checkbox" checked={applyDdl} disabled={federationMode} onChange={e => setApplyDdl(e.target.checked)} />
                   Apply DDL (tags &amp; FK constraints)
                 </label>
-                {applyDdl && <p className="text-[10px] text-amber-600 dark:text-amber-400 mt-0.5 ml-5">This will write ontology tags (entity_type, property_role) and FK constraints directly to your Unity Catalog tables. Existing tags will be updated.</p>}
+                {applyDdl && !federationMode && <p className="text-[10px] text-amber-600 dark:text-amber-400 mt-0.5 ml-5">This will write ontology tags (entity_type, property_role) and FK constraints directly to your Unity Catalog tables. Existing tags will be updated.</p>}
+              </div>
+              <div className="pb-1">
+                <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer"
+                  title="Enable for external/federated catalogs. Disables DDL apply and skips DESCRIBE EXTENDED.">
+                  <input type="checkbox" checked={federationMode} onChange={e => {
+                    setFederationMode(e.target.checked)
+                    if (e.target.checked) setApplyDdl(false)
+                  }} />
+                  Federation mode (external catalogs)
+                </label>
               </div>
               <div className="pb-1">
                 <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 cursor-pointer"
@@ -903,6 +924,7 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
               catalog_name: catalogName, schema_name: schemaName,
               ontology_bundle: ontologyBundle,
               apply_ddl: applyDdl,
+              federation_mode: federationMode,
               sweep_stale_docs: sweepStaleDocs,
               use_kb_comments: settings.use_kb_comments,
               include_lineage: settings.include_lineage,
