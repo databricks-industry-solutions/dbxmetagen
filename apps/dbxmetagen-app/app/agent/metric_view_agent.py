@@ -26,6 +26,7 @@ from agent.guardrails import SAFETY_PROMPT_BLOCK, sanitize_output
 from agent.metric_view_tools import (
     search_metric_views_direct, list_metric_views_direct,
     fetch_definition, execute_measure_query, execute_dimension_query,
+    get_semantic_graph_context, get_related_views, get_view_lineage,
 )
 from agent.tracing import trace, tag_trace
 
@@ -67,6 +68,7 @@ class MetricViewState(TypedDict):
     queried_views: list[str]
     iteration: int
     _assess_decision: Optional[str]
+    graph_context: Optional[str]
 
 
 # ---------------------------------------------------------------------------
@@ -90,6 +92,9 @@ QUESTION: {question}
 {exclusion_block}
 SEARCH RESULTS:
 {candidates_json}
+{graph_context_block}
+Consider related views from the semantic graph when making your selection.
+If the graph context shows a related view that better matches the question, prefer it.
 
 Respond with ONLY a JSON object: {{"metric_view_name": "<name>", "reasoning": "<1 sentence>"}}
 If none match, respond: {{"metric_view_name": null, "reasoning": "<why>"}}"""
@@ -125,9 +130,10 @@ _SUMMARIZE_PROMPT = f"""Present the query results to the user clearly and concis
 QUESTION: {{question}}
 PLAN: {{plan}}
 {{queries_block}}
-
+{{graph_context_block}}
 Lead with the key insight, then show supporting data. Reference each metric view by name.
 If multiple metric views were queried, synthesize the findings into a unified answer.
+If the semantic graph context shows related metric views, briefly mention them as options for follow-up analysis.
 If any query errored, explain what went wrong and suggest alternatives.
 Keep it concise.
 {SAFETY_PROMPT_BLOCK}"""
@@ -142,10 +148,11 @@ DATA GATHERED SO FAR:
 
 AVAILABLE METRIC VIEWS NOT YET QUERIED:
 {available_json}
-
+{graph_context_block}
 Rules:
 - If the gathered data fully answers the question, respond sufficient.
 - If the question clearly needs data from a different metric view AND one of the available views looks relevant, respond need_more with a focused plan for what to query next.
+- Use the semantic graph relationships above to identify related views that might complement the gathered data (e.g. views sharing the same source tables or dimensions).
 - Do NOT request another view just to add minor context -- only if the answer is materially incomplete.
 
 Respond with ONLY a JSON object:
@@ -157,8 +164,10 @@ _NO_DATA_PROMPT = """No metric views matched the user's question.
 
 QUESTION: {question}
 AVAILABLE VIEWS: {available_json}
-
-Explain that no matching metric view was found. List what IS available so the user can refine their question."""
+{graph_context_block}
+Explain that no matching metric view was found.
+If the semantic graph shows views connected to tables mentioned in the question, suggest those.
+Otherwise list what IS available so the user can refine their question."""
 
 
 # ---------------------------------------------------------------------------
@@ -183,16 +192,20 @@ def _exclusion_block(queried_views: list[str]) -> str:
 
 
 def search_node(state: MetricViewState) -> dict:
-    """Call vector search directly (no LLM decision needed), then LLM picks the best candidate."""
+    """Call vector search directly (no LLM decision needed), then LLM picks the best candidate.
+
+    Also queries the semantic knowledge graph for related views and table-level
+    connections to enrich the selection context.
+    """
     question = state["question"]
     plan = state.get("plan") or question
     queried = state.get("queried_views") or []
 
     candidates = search_metric_views_direct(question)
     if not candidates:
-        return {"candidates": [], "stage": "searching"}
+        sg_ctx = get_semantic_graph_context(question)
+        return {"candidates": [], "stage": "searching", "graph_context": sg_ctx or None}
 
-    # Deduplicate by metric_view_name and exclude already-queried views
     seen = set(queried)
     unique = []
     for c in candidates:
@@ -202,13 +215,18 @@ def search_node(state: MetricViewState) -> dict:
             unique.append(c)
 
     if not unique:
-        return {"candidates": [], "stage": "searching"}
+        sg_ctx = get_semantic_graph_context(question)
+        return {"candidates": [], "stage": "searching", "graph_context": sg_ctx or None}
+
+    sg_ctx = get_semantic_graph_context(question, selected_view=unique[0].get("metric_view_name"))
+    graph_block = f"\nSEMANTIC GRAPH CONTEXT:\n{sg_ctx}\n" if sg_ctx else ""
 
     llm = get_llm()
     select_content = _SELECT_PROMPT.format(
         plan=plan, question=question,
         exclusion_block=_exclusion_block(queried),
         candidates_json=json.dumps(unique[:8], indent=2),
+        graph_context_block=graph_block,
     )
     response = llm.invoke([HumanMessage(content=select_content)])
     content = (response.content or "").strip()
@@ -225,6 +243,9 @@ def search_node(state: MetricViewState) -> dict:
 
     if selected_name and selected_name in queried:
         selected_name = None
+
+    if selected_name:
+        sg_ctx = get_semantic_graph_context(question, selected_view=selected_name)
 
     selected_fqn = None
     view_definition = None
@@ -245,6 +266,7 @@ def search_node(state: MetricViewState) -> dict:
         "selected_fqn": selected_fqn,
         "view_definition": view_definition,
         "stage": "searching",
+        "graph_context": sg_ctx or None,
     }
 
 
@@ -259,11 +281,15 @@ def list_fallback_node(state: MetricViewState) -> dict:
     if not views:
         return {"candidates": [], "stage": "listing"}
 
+    sg_ctx = state.get("graph_context") or get_semantic_graph_context(question)
+    graph_block = f"\nSEMANTIC GRAPH CONTEXT:\n{sg_ctx}\n" if sg_ctx else ""
+
     llm = get_llm()
     select_content = _SELECT_PROMPT.format(
         plan=plan, question=question,
         exclusion_block=_exclusion_block(queried),
         candidates_json=json.dumps(views[:15], indent=2),
+        graph_context_block=graph_block,
     )
     response = llm.invoke([HumanMessage(content=select_content)])
     content = (response.content or "").strip()
@@ -292,6 +318,7 @@ def list_fallback_node(state: MetricViewState) -> dict:
         "selected_fqn": selected_fqn,
         "view_definition": view_definition,
         "stage": "listing",
+        "graph_context": sg_ctx or None,
     }
 
 
@@ -437,10 +464,19 @@ def assess_node(state: MetricViewState) -> dict:
         indent=2,
     )
 
+    sg_ctx = state.get("graph_context") or ""
+    if view_name:
+        related = get_related_views(view_name)
+        if related:
+            lines = [f"  - {r['related_view']} ({r['relationship']})" for r in related[:6]]
+            sg_ctx = (sg_ctx + "\n" if sg_ctx else "") + f"RELATED VIEWS to {view_name}:\n" + "\n".join(lines)
+    graph_block = f"\nSEMANTIC GRAPH RELATIONSHIPS:\n{sg_ctx}\n" if sg_ctx else ""
+
     llm = get_llm()
     content = _ASSESS_PROMPT.format(
         question=question, plan=plan,
         gathered_json=gathered_json, available_json=available_summary,
+        graph_context_block=graph_block,
     )
     response = llm.invoke([HumanMessage(content=content)])
     raw = (response.content or "").strip()
@@ -485,8 +521,22 @@ def summarize_node(state: MetricViewState) -> dict:
         )
     queries_block = "\n\n".join(queries_parts)
 
+    sg_ctx = state.get("graph_context") or ""
+    last_view = completed[-1]["view_name"] if completed else None
+    if last_view:
+        lineage = get_view_lineage(last_view)
+        if lineage and lineage.get("source_tables"):
+            sg_ctx = (sg_ctx + "\n" if sg_ctx else "") + \
+                f"Source tables for {last_view}: {', '.join(lineage['source_tables'])}"
+        related = get_related_views(last_view)
+        if related:
+            lines = [f"  - {r['related_view']} ({r['relationship']})" for r in related[:5]]
+            sg_ctx = (sg_ctx + "\n" if sg_ctx else "") + "Related views for follow-up:\n" + "\n".join(lines)
+    graph_block = f"\nSEMANTIC GRAPH CONTEXT:\n{sg_ctx}\n" if sg_ctx else ""
+
     summarize_content = _SUMMARIZE_PROMPT.format(
         question=question, plan=plan, queries_block=queries_block,
+        graph_context_block=graph_block,
     )
     llm = get_llm()
     response = llm.invoke([HumanMessage(content=summarize_content)])
@@ -501,7 +551,12 @@ def answer_no_data_node(state: MetricViewState) -> dict:
     available = list_metric_views_direct()
     available_json = json.dumps(available[:20], indent=2) if available else "[]"
 
-    no_data_content = _NO_DATA_PROMPT.format(question=question, available_json=available_json)
+    sg_ctx = state.get("graph_context") or get_semantic_graph_context(question)
+    graph_block = f"\nSEMANTIC GRAPH CONTEXT:\n{sg_ctx}\n" if sg_ctx else ""
+    no_data_content = _NO_DATA_PROMPT.format(
+        question=question, available_json=available_json,
+        graph_context_block=graph_block,
+    )
     llm = get_llm()
     response = llm.invoke([HumanMessage(content=no_data_content)])
     answer = sanitize_output((response.content or "").strip())
@@ -623,6 +678,7 @@ async def run_metric_view_agent(
             "queried_views": [],
             "iteration": 0,
             "_assess_decision": None,
+            "graph_context": None,
         },
         config={"recursion_limit": 30},
     )
