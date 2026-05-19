@@ -1,8 +1,11 @@
 """Metric view agent -- answers business questions using metric views as its semantic layer.
 
-Purpose-built LangGraph with explicit phases: plan -> search -> query -> summarize.
-Each node does one thing and routes deterministically to the next based on state
-fields, eliminating the "I'll check this now" confabulation problem from ReAct loops.
+Purpose-built LangGraph with explicit phases:
+  plan -> search -> query -> assess -> (summarize | search again)
+
+The assess node enables multi-view queries: after each query, the agent evaluates
+whether the gathered data is sufficient. If not (and more views are available), it
+loops back to search for another view, up to MAX_VIEW_ITERATIONS times.
 
 Never touches raw tables -- metric views are the bounded query contract.
 """
@@ -13,7 +16,7 @@ import queue
 import threading
 from typing import Annotated, Any, Dict, List, Optional, TypedDict
 
-from langchain_core.messages import AIMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
 
@@ -28,6 +31,7 @@ from agent.tracing import trace, tag_trace
 logger = logging.getLogger(__name__)
 
 MAX_QUERY_ATTEMPTS = 3
+MAX_VIEW_ITERATIONS = 3
 
 
 # ---------------------------------------------------------------------------
@@ -47,6 +51,10 @@ class MetricViewState(TypedDict):
     query_attempts: int
     error: Optional[str]
     stage: Optional[str]
+    completed_queries: list[dict]
+    queried_views: list[str]
+    iteration: int
+    _assess_decision: Optional[str]
 
 
 # ---------------------------------------------------------------------------
@@ -67,7 +75,7 @@ _SELECT_PROMPT = """Given these metric view search results and the user's plan, 
 
 PLAN: {plan}
 QUESTION: {question}
-
+{exclusion_block}
 SEARCH RESULTS:
 {candidates_json}
 
@@ -104,14 +112,34 @@ _SUMMARIZE_PROMPT = f"""Present the query results to the user clearly and concis
 
 QUESTION: {{question}}
 PLAN: {{plan}}
-METRIC VIEW: {{view_name}}
-SQL: {{sql}}
-RESULT: {{result_json}}
+{{queries_block}}
 
-Lead with the key insight, then show supporting data. Include the metric view name.
-If the query errored, explain what went wrong and suggest alternatives.
+Lead with the key insight, then show supporting data. Reference each metric view by name.
+If multiple metric views were queried, synthesize the findings into a unified answer.
+If any query errored, explain what went wrong and suggest alternatives.
 Keep it concise.
 {SAFETY_PROMPT_BLOCK}"""
+
+_ASSESS_PROMPT = """You have queried metric view(s) to answer a user's question. Decide if the data gathered so far is SUFFICIENT or if another metric view is needed.
+
+QUESTION: {question}
+PLAN: {plan}
+
+DATA GATHERED SO FAR:
+{gathered_json}
+
+AVAILABLE METRIC VIEWS NOT YET QUERIED:
+{available_json}
+
+Rules:
+- If the gathered data fully answers the question, respond sufficient.
+- If the question clearly needs data from a different metric view AND one of the available views looks relevant, respond need_more with a focused plan for what to query next.
+- Do NOT request another view just to add minor context -- only if the answer is materially incomplete.
+
+Respond with ONLY a JSON object:
+{{"sufficient": true, "reasoning": "<1 sentence>"}}
+or
+{{"sufficient": false, "next_plan": "<1-2 sentence plan for the next query>", "reasoning": "<1 sentence>"}}"""
 
 _NO_DATA_PROMPT = """No metric views matched the user's question.
 
@@ -136,17 +164,24 @@ def plan_node(state: MetricViewState) -> dict:
     return {"plan": plan, "stage": "planning"}
 
 
+def _exclusion_block(queried_views: list[str]) -> str:
+    if not queried_views:
+        return ""
+    return f"\nALREADY QUERIED (do NOT pick these): {json.dumps(queried_views)}\n"
+
+
 def search_node(state: MetricViewState) -> dict:
     """Call vector search directly (no LLM decision needed), then LLM picks the best candidate."""
     question = state["question"]
     plan = state.get("plan") or question
+    queried = state.get("queried_views") or []
 
     candidates = search_metric_views_direct(question)
     if not candidates:
         return {"candidates": [], "stage": "searching"}
 
-    # Deduplicate by metric_view_name, keep first occurrence
-    seen = set()
+    # Deduplicate by metric_view_name and exclude already-queried views
+    seen = set(queried)
     unique = []
     for c in candidates:
         name = c.get("metric_view_name", "")
@@ -154,13 +189,16 @@ def search_node(state: MetricViewState) -> dict:
             seen.add(name)
             unique.append(c)
 
-    # LLM picks the best candidate
+    if not unique:
+        return {"candidates": [], "stage": "searching"}
+
     llm = get_llm()
-    select_msg = _SELECT_PROMPT.format(
+    select_content = _SELECT_PROMPT.format(
         plan=plan, question=question,
+        exclusion_block=_exclusion_block(queried),
         candidates_json=json.dumps(unique[:8], indent=2),
     )
-    response = llm.invoke([SystemMessage(content=select_msg)])
+    response = llm.invoke([HumanMessage(content=select_content)])
     content = (response.content or "").strip()
 
     selected_name = None
@@ -168,11 +206,13 @@ def search_node(state: MetricViewState) -> dict:
         parsed = json.loads(content)
         selected_name = parsed.get("metric_view_name")
     except (json.JSONDecodeError, TypeError):
-        # Fallback: pick the first candidate with measures
         for c in unique:
             if c.get("measures"):
                 selected_name = c["metric_view_name"]
                 break
+
+    if selected_name and selected_name in queried:
+        selected_name = None
 
     selected_fqn = None
     view_definition = None
@@ -200,17 +240,20 @@ def list_fallback_node(state: MetricViewState) -> dict:
     """Fallback when search returns nothing -- list all views and LLM picks."""
     question = state["question"]
     plan = state.get("plan") or question
+    queried = state.get("queried_views") or []
 
     views = list_metric_views_direct()
+    views = [v for v in views if v.get("metric_view_name") not in queried]
     if not views:
         return {"candidates": [], "stage": "listing"}
 
     llm = get_llm()
-    select_msg = _SELECT_PROMPT.format(
+    select_content = _SELECT_PROMPT.format(
         plan=plan, question=question,
+        exclusion_block=_exclusion_block(queried),
         candidates_json=json.dumps(views[:15], indent=2),
     )
-    response = llm.invoke([SystemMessage(content=select_msg)])
+    response = llm.invoke([HumanMessage(content=select_content)])
     content = (response.content or "").strip()
 
     selected_name = None
@@ -219,6 +262,9 @@ def list_fallback_node(state: MetricViewState) -> dict:
         selected_name = parsed.get("metric_view_name")
     except (json.JSONDecodeError, TypeError):
         pass
+
+    if selected_name and selected_name in queried:
+        selected_name = None
 
     selected_fqn = None
     view_definition = None
@@ -256,7 +302,7 @@ def query_node(state: MetricViewState) -> dict:
     joins_str = json.dumps([j.get("name", "") for j in defn.get("joins", [])])
     filter_str = defn.get("filter", "none")
 
-    query_msg = _QUERY_PROMPT.format(
+    query_content = _QUERY_PROMPT.format(
         view_name=view_name, fqn=fqn,
         measures=measures_str, dimensions=dims_str,
         joins=joins_str, filter=filter_str,
@@ -265,7 +311,7 @@ def query_node(state: MetricViewState) -> dict:
     )
 
     llm = get_llm()
-    response = llm.invoke([SystemMessage(content=query_msg)])
+    response = llm.invoke([HumanMessage(content=query_content)])
     content = (response.content or "").strip()
 
     # Parse LLM's query specification
@@ -317,33 +363,121 @@ def query_node(state: MetricViewState) -> dict:
     }
 
 
-def summarize_node(state: MetricViewState) -> dict:
-    """LLM synthesizes the final user-facing answer from query results."""
-    question = state["question"]
-    plan = state.get("plan", "")
-    view_name = state.get("selected_view", "unknown")
-    sql = state.get("query_sql", "")
-    result = state.get("query_result")
-    error = state.get("error")
-
+def _truncate_result(result: Optional[dict], error: Optional[str] = None) -> dict:
+    """Build a JSON-safe truncated result dict for LLM context."""
     if error and not result:
-        result_json = json.dumps({"error": error})
-    elif result:
-        # Truncate large results for the LLM context
+        return {"error": error}
+    if result:
         rows = result.get("rows", [])
         truncated = {**result, "rows": rows[:50]}
         if len(rows) > 50:
             truncated["note"] = f"Showing 50 of {len(rows)} rows"
-        result_json = json.dumps(truncated, default=str)
-    else:
-        result_json = json.dumps({"error": "No query was executed"})
+        return truncated
+    return {"error": "No query was executed"}
 
-    prompt = _SUMMARIZE_PROMPT.format(
-        question=question, plan=plan, view_name=view_name,
-        sql=sql, result_json=result_json,
+
+def assess_node(state: MetricViewState) -> dict:
+    """Decide if gathered data is sufficient or another metric view is needed."""
+    question = state["question"]
+    plan = state.get("plan") or question
+    view_name = state.get("selected_view", "unknown")
+    iteration = state.get("iteration", 0) + 1
+
+    current_query = {
+        "view_name": view_name,
+        "fqn": state.get("selected_fqn", ""),
+        "sql": state.get("query_sql", ""),
+        "result": _truncate_result(state.get("query_result"), state.get("error")),
+    }
+    completed = list(state.get("completed_queries") or []) + [current_query]
+    queried = list(state.get("queried_views") or []) + [view_name]
+
+    base_update = {
+        "completed_queries": completed,
+        "queried_views": queried,
+        "iteration": iteration,
+        "selected_view": None,
+        "selected_fqn": None,
+        "view_definition": None,
+        "query_result": None,
+        "query_sql": None,
+        "query_attempts": 0,
+        "error": None,
+        "stage": "assessing",
+    }
+
+    if iteration >= MAX_VIEW_ITERATIONS:
+        logger.info("[mv_agent] max iterations (%d) reached, proceeding to summarize", iteration)
+        return {**base_update, "_assess_decision": "summarize"}
+
+    available = list_metric_views_direct()
+    available = [v for v in available if v.get("metric_view_name") not in queried]
+    if not available:
+        logger.info("[mv_agent] no more views available, proceeding to summarize")
+        return {**base_update, "_assess_decision": "summarize"}
+
+    gathered_json = json.dumps(
+        [{"view_name": q["view_name"], "sql": q["sql"], "result_preview": q["result"]} for q in completed],
+        default=str,
+    )
+    available_summary = json.dumps(
+        [{"metric_view_name": v["metric_view_name"], "measures": v.get("measures", []), "dimensions": v.get("dimensions", [])} for v in available[:15]],
+        indent=2,
+    )
+
+    llm = get_llm()
+    content = _ASSESS_PROMPT.format(
+        question=question, plan=plan,
+        gathered_json=gathered_json, available_json=available_summary,
+    )
+    response = llm.invoke([HumanMessage(content=content)])
+    raw = (response.content or "").strip()
+
+    try:
+        decision = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        logger.warning("[mv_agent] assess parse failed, defaulting to summarize: %s", raw[:200])
+        return {**base_update, "_assess_decision": "summarize"}
+
+    if decision.get("sufficient", True):
+        logger.info("[mv_agent] assess: sufficient (%s)", decision.get("reasoning", ""))
+        return {**base_update, "_assess_decision": "summarize"}
+
+    next_plan = decision.get("next_plan", plan)
+    logger.info("[mv_agent] assess: need_more, next_plan=%s", next_plan[:200])
+    return {**base_update, "plan": next_plan, "_assess_decision": "search"}
+
+
+def summarize_node(state: MetricViewState) -> dict:
+    """LLM synthesizes the final user-facing answer from all query results."""
+    question = state["question"]
+    plan = state.get("plan", "")
+    completed = state.get("completed_queries") or []
+
+    if not completed:
+        result = state.get("query_result")
+        error = state.get("error")
+        completed = [{
+            "view_name": state.get("selected_view", "unknown"),
+            "fqn": state.get("selected_fqn", ""),
+            "sql": state.get("query_sql", ""),
+            "result": _truncate_result(result, error),
+        }]
+
+    queries_parts = []
+    for i, q in enumerate(completed, 1):
+        queries_parts.append(
+            f"--- Query {i}: {q['view_name']} ---\n"
+            f"SQL: {q.get('sql', 'N/A')}\n"
+            f"RESULT: {json.dumps(q.get('result', {}), default=str)}"
+        )
+    queries_block = "\n\n".join(queries_parts)
+
+    summarize_content = _SUMMARIZE_PROMPT.format(
+        question=question, plan=plan, queries_block=queries_block,
     )
     llm = get_llm()
-    response = llm.invoke([SystemMessage(content=prompt)])
+    response = llm.invoke([HumanMessage(content=summarize_content)])
     answer = sanitize_output((response.content or "").strip())
     return {"messages": [AIMessage(content=answer)], "stage": "summarizing"}
 
@@ -355,9 +489,9 @@ def answer_no_data_node(state: MetricViewState) -> dict:
     available = list_metric_views_direct()
     available_json = json.dumps(available[:20], indent=2) if available else "[]"
 
-    prompt = _NO_DATA_PROMPT.format(question=question, available_json=available_json)
+    no_data_content = _NO_DATA_PROMPT.format(question=question, available_json=available_json)
     llm = get_llm()
-    response = llm.invoke([SystemMessage(content=prompt)])
+    response = llm.invoke([HumanMessage(content=no_data_content)])
     answer = sanitize_output((response.content or "").strip())
     return {"messages": [AIMessage(content=answer)], "stage": "no_data"}
 
@@ -384,10 +518,14 @@ def _route_after_list(state: MetricViewState) -> str:
 def _route_after_query(state: MetricViewState) -> str:
     result = state.get("query_result")
     if result and not result.get("error"):
-        return "summarize"
+        return "assess"
     if state.get("query_attempts", 0) < MAX_QUERY_ATTEMPTS:
         return "query"
-    return "summarize"
+    return "assess"
+
+
+def _route_after_assess(state: MetricViewState) -> str:
+    return state.get("_assess_decision", "summarize")
 
 
 # ---------------------------------------------------------------------------
@@ -401,6 +539,7 @@ def _build_metric_view_graph():
     graph.add_node("search", search_node)
     graph.add_node("list_fallback", list_fallback_node)
     graph.add_node("query", query_node)
+    graph.add_node("assess", assess_node)
     graph.add_node("summarize", summarize_node)
     graph.add_node("no_data", answer_no_data_node)
 
@@ -415,8 +554,12 @@ def _build_metric_view_graph():
         "no_data": "no_data",
     })
     graph.add_conditional_edges("query", _route_after_query, {
-        "summarize": "summarize",
+        "assess": "assess",
         "query": "query",
+    })
+    graph.add_conditional_edges("assess", _route_after_assess, {
+        "summarize": "summarize",
+        "search": "search",
     })
     graph.add_edge("summarize", END)
     graph.add_edge("no_data", END)
@@ -464,17 +607,25 @@ async def run_metric_view_agent(
             "query_attempts": 0,
             "error": None,
             "stage": None,
+            "completed_queries": [],
+            "queried_views": [],
+            "iteration": 0,
+            "_assess_decision": None,
         },
-        config={"recursion_limit": 20},
+        config={"recursion_limit": 30},
     )
 
+    completed = result.get("completed_queries") or []
     final_msg = result["messages"][-1]
+    last_view = completed[-1]["view_name"] if completed else result.get("selected_view")
+    last_sql = completed[-1].get("sql") if completed else result.get("query_sql")
     return {
         "answer": sanitize_output(final_msg.content if hasattr(final_msg, "content") else str(final_msg)),
         "tool_calls": [],
-        "steps": result.get("query_attempts", 0),
-        "metric_view": result.get("selected_view"),
-        "sql": result.get("query_sql"),
+        "steps": result.get("iteration", 1),
+        "metric_view": last_view,
+        "sql": last_sql,
+        "queries": [{"metric_view": q["view_name"], "sql": q.get("sql", "")} for q in completed],
     }
 
 
@@ -515,7 +666,7 @@ def stream_metric_view_agent(
     yield _sse("stage", {"stage": "planning"})
 
     # Poll for completion, emitting stage updates
-    stage_sequence = ["planning", "searching", "querying", "summarizing"]
+    stage_sequence = ["planning", "searching", "querying", "assessing", "summarizing"]
     stage_idx = 0
     while True:
         try:
