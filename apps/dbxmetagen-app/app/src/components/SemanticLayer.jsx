@@ -251,6 +251,7 @@ export default function SemanticLayer({ onNavigate, pipelineStats }) {
   const [editJson, setEditJson] = useState('')
   const [suggestLoading, setSuggestLoading] = useState(false)
   const [suggestQLoading, setSuggestQLoading] = useState(false)
+  const [userIdentity, setUserIdentity] = useState(null)
   const [bulkCreating, setBulkCreating] = useState(false)
   const [bulkDeleting, setBulkDeleting] = useState(null)
   const [vectorSyncing, setVectorSyncing] = useState(false)
@@ -318,6 +319,9 @@ export default function SemanticLayer({ onNavigate, pipelineStats }) {
         setSelectedCatalog(cfg.catalog_name || '')
         setSelectedSchema(cfg.schema_name || '')
       }
+    })
+    cachedFetchObj('/api/auth/check', {}, TTL.CONFIG).then(({ data }) => {
+      if (data?.user_identity) setUserIdentity(data.user_identity)
     })
     loadProjects()
     loadProfiles()
@@ -1513,7 +1517,10 @@ export default function SemanticLayer({ onNavigate, pipelineStats }) {
 
       <div className="text-xs text-slate-500 dark:text-slate-400 space-y-1">
         <p>Each definition below is a metric view. The lifecycle is: <strong>Generated</strong> &rarr; <strong>Validated</strong> (SQL checked) &rarr; <strong>Applied</strong> (created as a UC view). Use <strong>Improve</strong> to re-generate a definition with AI feedback.</p>
-        <p className="text-amber-700 dark:text-amber-400">Note: Only the owner of a metric view can edit it. Views created by this app are owned by the app service principal. Use <strong>Transfer Ownership</strong> to take ownership &mdash; this is irreversible for the app.</p>
+        <p className="text-amber-700 dark:text-amber-400">Note: Only the owner of a metric view can edit it. {userIdentity
+          ? <>Views created by this app are owned by you (<strong>{userIdentity}</strong>) via on-behalf-of authentication.</>
+          : <>Views created by this app are owned by the app service principal. Use <strong>Transfer Ownership</strong> to take ownership &mdash; this is irreversible for the app.</>
+        }</p>
         <div className="flex items-center gap-2">
           <span>Showing definitions for:</span>
           <span className="font-medium text-slate-700 dark:text-slate-200">
