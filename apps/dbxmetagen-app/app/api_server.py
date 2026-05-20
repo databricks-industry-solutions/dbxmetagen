@@ -7856,33 +7856,6 @@ def _inject_fk_joins(plan_views: list[dict], tables: list[str], cat: str, sch: s
     return plan_views
 
 
-def _defn_to_yaml(defn: dict) -> str:
-    """Convert a metric view JSON definition to YAML body for CREATE VIEW WITH METRICS."""
-    mv: dict = {"version": "1.1", "source": defn["source"]}
-    if defn.get("comment"):
-        mv["comment"] = defn["comment"]
-    if defn.get("filter"):
-        mv["filter"] = defn["filter"]
-    mv["dimensions"] = [
-        {k: v for k, v in {"name": d["name"], "expr": d["expr"], "comment": d.get("comment"), "display_name": d.get("display_name"), "synonyms": d.get("synonyms")}.items() if v}
-        for d in defn.get("dimensions", [])
-    ]
-    measures_out = []
-    for m in defn.get("measures", []):
-        entry = {k: v for k, v in {"name": m["name"], "expr": m["expr"], "comment": m.get("comment"), "display_name": m.get("display_name"), "synonyms": m.get("synonyms")}.items() if v}
-        if m.get("format"):
-            entry["format"] = m["format"]
-        if m.get("window"):
-            specs = _normalize_window_specs(m["window"])
-            if specs:
-                entry["window"] = specs
-        measures_out.append(entry)
-    mv["measures"] = measures_out
-    if defn.get("joins"):
-        mv["joins"] = defn["joins"]
-    return yaml.dump(mv, default_flow_style=False, sort_keys=False)
-
-
 def _yaml_dry_run(defn: dict, cat: str, sch: str) -> Optional[str]:
     """Attempt CREATE VIEW WITH METRICS LANGUAGE YAML; return error string or None."""
     try:
@@ -8535,53 +8508,30 @@ def _normalize_window_specs(w) -> list[dict]:
 def _definition_to_yaml(defn: dict) -> str:
     """Convert a JSON definition to the YAML body for CREATE VIEW WITH METRICS.
 
-    Uses manual construction instead of yaml.dump to guarantee SQL single
-    quotes inside CASE/FILTER expressions survive the round-trip.
+    Uses yaml.dump for serialisation (Databricks' metric-view parser is
+    sensitive to the exact YAML dialect) with pre-processing to backfill
+    currency_code and normalise window specs.
     """
     source = defn.get("source", "")
     if not source:
         raise ValueError("Metric view definition missing 'source' table")
-    lines = ['version: "1.1"', f'source: {source}']
+    mv: dict = {"version": "1.1", "source": source}
     if defn.get("comment"):
-        lines.append(f'comment: "{_yaml_esc(defn["comment"])}"')
+        mv["comment"] = defn["comment"]
     if defn.get("filter"):
-        lines.append(f'filter: "{_yaml_esc(defn["filter"])}"')
-    def _fmt_synonyms(syns: list, indent: str = "    ") -> str:
-        items = ", ".join(f'"{_yaml_esc(s)}"' for s in syns)
-        return f"{indent}synonyms: [{items}]"
-
-    lines.append("dimensions:")
-    for i, d in enumerate(defn.get("dimensions", [])):
-        name = d.get("name", f"dim_{i}")
-        expr = d.get("expr", name)
-        lines.append(f'  - name: "{_yaml_esc(name)}"')
-        lines.append(f'    expr: "{_yaml_esc(expr)}"')
-        if d.get("comment"):
-            lines.append(f'    comment: "{_yaml_esc(d["comment"])}"')
-        if d.get("display_name"):
-            lines.append(f'    display_name: "{_yaml_esc(d["display_name"])}"')
-        if d.get("synonyms"):
-            lines.append(_fmt_synonyms(d["synonyms"]))
-    lines.append("measures:")
-    for i, m in enumerate(defn.get("measures", [])):
-        name = m.get("name", f"measure_{i}")
-        expr = m.get("expr", "COUNT(*)")
-        lines.append(f'  - name: "{_yaml_esc(name)}"')
-        lines.append(f'    expr: "{_yaml_esc(expr)}"')
-        if m.get("comment"):
-            lines.append(f'    comment: "{_yaml_esc(m["comment"])}"')
-        if m.get("display_name"):
-            lines.append(f'    display_name: "{_yaml_esc(m["display_name"])}"')
-        if m.get("synonyms"):
-            lines.append(_fmt_synonyms(m["synonyms"]))
+        mv["filter"] = defn["filter"]
+    mv["dimensions"] = [
+        {k: v for k, v in ((k, d.get(k)) for k in ("name", "expr", "comment", "display_name", "synonyms")) if v}
+        for d in defn.get("dimensions", [])
+    ]
+    measures_out = []
+    for m in defn.get("measures", []):
+        entry = {k: v for k, v in ((k, m.get(k)) for k in ("name", "expr", "comment", "display_name", "synonyms")) if v}
         if m.get("format") and isinstance(m["format"], dict):
-            fmt = m["format"]
-            lines.append("    format:")
-            if fmt.get("type"):
-                lines.append(f'      type: "{_yaml_esc(fmt["type"])}"')
-            if fmt.get("type") == "currency":
-                cc = fmt.get("currency_code") or "USD"
-                lines.append(f'      currency_code: "{_yaml_esc(cc)}"')
+            fmt = dict(m["format"])
+            if fmt.get("type") == "currency" and not fmt.get("currency_code"):
+                fmt["currency_code"] = "USD"
+            entry["format"] = fmt
         if m.get("window"):
             w = m["window"]
             if isinstance(w, str):
@@ -8591,30 +8541,12 @@ def _definition_to_yaml(defn: dict) -> str:
                     w = None
             specs = _normalize_window_specs(w)
             if specs:
-                lines.append("    window:")
-                for ws in specs:
-                    lines.append(f'      - order: "{_yaml_esc(ws["order"])}"')
-                    if ws.get("range"):
-                        lines.append(f'        range: "{_yaml_esc(ws["range"])}"')
-                    if ws.get("rows"):
-                        lines.append(f'        rows: "{_yaml_esc(ws["rows"])}"')
-                    if ws.get("semiadditive"):
-                        lines.append(f'        semiadditive: "{_yaml_esc(ws["semiadditive"])}"')
-    def _emit_joins(jlist: list[dict], indent: int = 2) -> None:
-        pfx = " " * indent
-        for j in jlist:
-            lines.append(f'{pfx}- name: "{_yaml_esc(j.get("name", ""))}"')
-            lines.append(f'{pfx}  source: {j.get("source", "")}')
-            if j.get("on"):
-                lines.append(f'{pfx}  on: "{_yaml_esc(j["on"])}"')
-            if j.get("joins"):
-                lines.append(f'{pfx}  joins:')
-                _emit_joins(j["joins"], indent + 4)
-
+                entry["window"] = specs
+        measures_out.append(entry)
+    mv["measures"] = measures_out
     if defn.get("joins"):
-        lines.append("joins:")
-        _emit_joins(defn["joins"])
-    return "\n".join(lines) + "\n"
+        mv["joins"] = defn["joins"]
+    return yaml.dump(mv, default_flow_style=False, sort_keys=False)
 
 
 _agent_ref_cache: dict[str, dict] = {}
