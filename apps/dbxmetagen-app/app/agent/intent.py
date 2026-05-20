@@ -131,7 +131,10 @@ Conversation History:
 6. **Clarity check**: Is the query clear enough to proceed? BE LENIENT -- default to true.
    Only mark unclear if critical information is truly missing.
 
-7. **Complexity**: simple, moderate, or complex.
+7. **Complexity**:
+   - simple: factual lookup about a specific, named table or column (e.g., "describe the patients table")
+   - moderate: comparisons, multi-table questions, relationship exploration
+   - complex: ANY question requiring enumeration, aggregation, counting, or comprehensive catalog scans (e.g., "what entity types exist?", "how many tables have PII?", "average confidence of FK predictions", "list all domains"). These need SQL GROUP BY, not similarity search.
 
 8. **Comparison intent**: Is the user asking to compare two or more groups?
    Examples: "how does X differ between Y and Z", "compare A vs B",
