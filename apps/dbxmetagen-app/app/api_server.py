@@ -795,6 +795,7 @@ class SemanticGenerateRequest(BaseModel):
         "replace"  # "replace" (supersede matching), "additive" (skip supersede), "replace_all" (supersede ALL in project)
     )
     business_context: Optional[str] = None
+    generation_style: str = "comprehensive"  # "comprehensive" (one broad view per grain) or "targeted" (themed views)
 
 
 class SemanticProjectRequest(BaseModel):
@@ -6522,18 +6523,35 @@ def _load_reference_rules() -> str:
 _REFERENCE_RULES_BLOCK = _load_reference_rules()
 
 
-def _build_prompt(questions: list[str], context: str) -> str:
+def _build_prompt(questions: list[str], context: str, generation_style: str = "comprehensive") -> str:
     q_block = "\n".join(f"  {i+1}. {q}" for i, q in enumerate(questions))
     few_shot = _select_few_shot(context)
+    if generation_style == "targeted":
+        org_block = (
+            "ORGANIZING PRINCIPLE -- grain first, theme second:\n"
+            "- Each metric view declares its grain via its source table "
+            "(one row = one encounter, one order line, one prescription fill, etc.)\n"
+            "- All measures in a view must be valid at that grain. Do NOT mix measures that imply "
+            "different grains (e.g. patient-level counts alongside encounter-level rates in a single encounters-sourced view)\n"
+            "- Within a single grain, create SEPARATE views for different analytical themes "
+            "(e.g. from the same encounters table: one view for throughput analysis, another for staffing efficiency, "
+            "another for readmission patterns)\n"
+            "- Name views to reflect both grain and theme: encounter_throughput_metrics, prescription_fill_channel_analysis"
+        )
+    else:
+        org_block = (
+            "ORGANIZING PRINCIPLE -- one comprehensive view per fact-table grain:\n"
+            "- Each metric view declares its grain via its source table. All measures must be valid at that grain.\n"
+            "- Prefer ONE broad view per grain with all relevant measures and dimensions. "
+            "The consumer (Genie, agent, SQL) selects dimensions/measures per query.\n"
+            "- Split into multiple views from the same source ONLY when the persistent filter, "
+            "join path, or grain changes -- NOT because of different \"themes\"."
+        )
     return f"""You are a data modeler building a semantic layer for Databricks Unity Catalog.
 
 TASK: Generate metric view definitions (as a JSON array) that enable answering the business questions below.
 
-ORGANIZING PRINCIPLE -- grain first, theme second:
-- Each metric view declares its grain via its source table (one row = one encounter, one order line, one prescription fill, etc.)
-- All measures in a view must be valid at that grain. Do NOT mix measures that imply different grains (e.g. patient-level counts alongside encounter-level rates in a single encounters-sourced view)
-- Within a single grain, create SEPARATE views for different analytical themes (e.g. from the same encounters table: one view for throughput analysis, another for staffing efficiency, another for readmission patterns)
-- Name views to reflect both grain and theme: encounter_throughput_metrics, prescription_fill_channel_analysis
+{org_block}
 
 ANALYTICAL QUALITY (HIGHEST PRIORITY):
 - Every metric view MUST include at least one RATIO measure (x / NULLIF(y, 0)) and one computed dimension (CASE, DATE_TRUNC)
@@ -7822,16 +7840,31 @@ def _qualify_nested_refs(defn: dict) -> dict:
     return defn
 
 
-def _build_plan_prompt(questions: list[str], context: str) -> str:
+def _build_plan_prompt(questions: list[str], context: str, generation_style: str = "comprehensive") -> str:
     q_block = "\n".join(f"  {i+1}. {q}" for i, q in enumerate(questions))
+    if generation_style == "targeted":
+        org_block = (
+            "ORGANIZING PRINCIPLE -- grain first, theme second:\n"
+            "- Each view declares its grain via the source table. All measures must be valid at that grain.\n"
+            "- Within a single grain, create SEPARATE views for different analytical themes "
+            "(e.g. from the same orders table: one view for revenue analysis, another for fulfillment tracking).\n"
+            "- Name views to reflect both grain and theme: order_revenue_metrics, order_fulfillment_analysis.\n"
+            "- Multiple views from the same source table are encouraged when they serve different analytical audiences or drill paths."
+        )
+    else:
+        org_block = (
+            "ORGANIZING PRINCIPLE -- one comprehensive view per fact-table grain:\n"
+            "- Each view declares its grain via the source table. All measures must be valid at that grain.\n"
+            "- Prefer ONE broad view per grain with all relevant measures and dimensions. "
+            "The consumer (Genie, agent, SQL) selects dimensions/measures per query.\n"
+            "- Split into multiple views from the same source ONLY when the persistent filter, "
+            "join path, or grain changes -- NOT because of different \"themes\"."
+        )
     return f"""You are a data modeler planning a semantic layer for Databricks Unity Catalog.
 
 TASK: Output a PLAN only (no SQL). Reply with a single JSON object: {{ "views": [ ... ] }}.
 
-ORGANIZING PRINCIPLE -- one comprehensive view per fact-table grain:
-- Each view declares its grain via the source table. All measures must be valid at that grain.
-- Prefer ONE broad view per grain with all relevant measures and dimensions. The consumer (Genie, agent, SQL) selects dimensions/measures per query.
-- Split into multiple views from the same source ONLY when the persistent filter, join path, or grain changes -- NOT because of different "themes".
+{org_block}
 
 For each metric view in "views", include:
 - "name": unique snake_case name reflecting the grain (e.g. prescription_metrics, order_line_metrics)
@@ -7991,6 +8024,7 @@ def _run_sl_generation(
     mode: str = "replace",
     business_context: str = None,
     profile_id: str = None,
+    generation_style: str = "comprehensive",
 ):
     """Background thread for in-app metric view generation (two-phase)."""
     from datetime import datetime as _dt
@@ -8082,7 +8116,7 @@ def _run_sl_generation(
 
         # Phase 1: Plan
         task["stage"] = "planning"
-        plan_prompt = _build_plan_prompt(questions, context)
+        plan_prompt = _build_plan_prompt(questions, context, generation_style=generation_style)
         escaped = plan_prompt.replace("'", "''")
         rows = execute_sql(f"SELECT AI_QUERY('{model}', '{escaped}') as response", timeout=180)
         plan_response = rows[0]["response"] if rows else ""
@@ -8119,7 +8153,7 @@ def _run_sl_generation(
         else:
             # Fallback to single-shot
             task["stage"] = "calling_ai"
-            prompt = _build_prompt(questions, context)
+            prompt = _build_prompt(questions, context, generation_style=generation_style)
             escaped = prompt.replace("'", "''")
             rows = execute_sql(f"SELECT AI_QUERY('{model}', '{escaped}') as response", timeout=180)
             response = rows[0]["response"] if rows else ""
@@ -8401,6 +8435,7 @@ def start_sl_generation(req: SemanticGenerateRequest):
             req.mode,
             req.business_context,
             req.profile_id,
+            req.generation_style,
         ),
     )
 

@@ -223,6 +223,7 @@ export default function SemanticLayer({ onNavigate, pipelineStats }) {
   const [profileName, setProfileName] = useState('')
   const [questionsText, setQuestionsText] = useState('')
   const [businessContext, setBusinessContext] = useState('')
+  const [generationStyle, setGenerationStyle] = useState('comprehensive')
 
   // Generation
   const [taskId, setTaskId] = useState(null)
@@ -627,6 +628,7 @@ export default function SemanticLayer({ onNavigate, pipelineStats }) {
         catalog_name: selectedCatalog, schema_name: selectedSchema,
         business_context: businessContext || undefined,
         profile_id: activeProfileId || undefined,
+        generation_style: generationStyle,
       }
       if (selectedProjectId) body.project_id = selectedProjectId
       const res = await fetch('/api/semantic-layer/generate', {
@@ -1463,9 +1465,20 @@ export default function SemanticLayer({ onNavigate, pipelineStats }) {
       {/* Generate actions */}
       <section className={section}>
         <h2 className="text-lg font-semibold mb-2 dark:text-gray-100">Generate Metric Views</h2>
-        <p className="text-sm text-gray-500 dark:text-gray-400 mb-4">
+        <p className="text-sm text-gray-500 dark:text-gray-400 mb-3">
           Uses AI to analyze your questions against the catalog metadata for the selected tables and generate metric view definitions.
         </p>
+        <label className="flex items-center gap-2 mb-4 cursor-pointer select-none">
+          <input type="checkbox" checked={generationStyle === 'targeted'}
+            onChange={e => setGenerationStyle(e.target.checked ? 'targeted' : 'comprehensive')}
+            className="accent-dbx-lava w-4 h-4" />
+          <span className="text-sm font-medium text-slate-700 dark:text-slate-200">Targeted (theme-based)</span>
+          <span className="text-xs text-slate-400 dark:text-slate-500 ml-1">
+            {generationStyle === 'targeted'
+              ? 'Creates smaller views organized by analytical theme'
+              : 'Best practice: one comprehensive view per fact-table grain'}
+          </span>
+        </label>
         <div className="flex gap-3 flex-wrap">
           <button onClick={() => startGeneration('replace')}
             disabled={loading || isGenerating || !selectedTables.length || !questionLines.length}
