@@ -57,6 +57,38 @@ def _dtype_excluded(col_expr: str) -> str:
     return f"ELEMENT_AT(SPLIT(LOWER({col_expr}), '\\\\('), 1) IN ({in_list})"
 
 
+_PLURAL_RULES = [
+    (r"ies$", "y"),       # territories -> territory, categories -> category
+    (r"sses$", "ss"),     # processes -> process, addresses -> address
+    (r"shes$", "sh"),     # crashes -> crash, bushes -> bush
+    (r"ches$", "ch"),     # batches -> batch, matches -> match
+    (r"xes$", "x"),       # boxes -> box, indexes -> index
+    (r"zes$", "z"),       # buzzes -> buzz
+    (r"ses$", "se"),      # databases -> database, responses -> response
+    (r"s$", ""),          # orders -> order (default fallback)
+]
+
+
+def _singularize_col(col: "F.Column") -> "F.Column":
+    """Singularize a PySpark string column using ordered English plural rules."""
+    expr = col
+    for i, (pattern, repl) in enumerate(_PLURAL_RULES):
+        if i == 0:
+            result = F.when(col.rlike(pattern), F.regexp_replace(col, pattern, repl))
+        else:
+            result = result.when(col.rlike(pattern), F.regexp_replace(col, pattern, repl))
+    return result.otherwise(col)
+
+
+def _singularize_sql(col_expr: str) -> str:
+    """Return a SQL CASE expression that singularizes *col_expr* using English plural rules."""
+    clauses = " ".join(
+        f"WHEN {col_expr} RLIKE '{pat}' THEN REGEXP_REPLACE({col_expr}, '{pat}', '{repl}')"
+        for pat, repl in _PLURAL_RULES
+    )
+    return f"CASE {clauses} ELSE {col_expr} END"
+
+
 @dataclass
 class FKPredictionConfig:
     catalog_name: str
@@ -348,6 +380,7 @@ class FKPredictor:
         """
         nodes = self.config.fq(self.config.nodes_table)
         k = self.config.max_candidates_per_table_pair
+        _sing_tbl = _singularize_sql("pk.tbl_short")
         sql = f"""
         WITH cols AS (
             SELECT id, parent_id, data_type,
@@ -376,7 +409,7 @@ class FKPredictor:
               ON fk.parent_id != pk.parent_id
               AND (
                   REPLACE(REPLACE(REPLACE(fk.col_short, '_id', ''), '_key', ''), '_code', '')
-                  = REGEXP_REPLACE(pk.tbl_short, 's$', '')
+                  = {_sing_tbl}
                   OR REPLACE(REPLACE(REPLACE(fk.col_short, '_id', ''), '_key', ''), '_code', '')
                   = pk.tbl_short
               )
@@ -1366,19 +1399,19 @@ class FKPredictor:
         tbl_a_short = F.lower(F.element_at(F.split(F.col("table_a"), "\\."), -1))
         tbl_b_short = F.lower(F.element_at(F.split(F.col("table_b"), "\\."), -1))
         # Token-boundary match: col must start with table stem or have it after '_'.
-        # Strip common dim_/fct_/fact_/stg_ prefixes and trailing plural 's' from table
-        # names so that e.g. index_code matches dim_index via stem 'index'.
         _prefix_re = "^(dim_|fct_|fact_|stg_)"
-        tbl_b_stem = F.regexp_replace(F.regexp_replace(tbl_b_short, _prefix_re, ""), "s$", "")
-        tbl_a_stem = F.regexp_replace(F.regexp_replace(tbl_a_short, _prefix_re, ""), "s$", "")
-        _stem_sql = "regexp_replace(regexp_replace(lower(element_at(split({tbl}, '\\\\.'), -1)), '^(dim_|fct_|fact_|stg_)', ''), 's$', '')"
+        tbl_b_stem = _singularize_col(F.regexp_replace(tbl_b_short, _prefix_re, ""))
+        tbl_a_stem = _singularize_col(F.regexp_replace(tbl_a_short, _prefix_re, ""))
+        _stripped = "regexp_replace(lower(element_at(split({tbl}, '\\\\.'), -1)), '^(dim_|fct_|fact_|stg_)', '')"
+        _stem_sql_a = _singularize_sql(_stripped.format(tbl='table_a'))
+        _stem_sql_b = _singularize_sql(_stripped.format(tbl='table_b'))
         _a_matches_b = F.expr(
             f"rlike(lower(element_at(split(col_a, '\\\\.'), -1)), "
-            f"concat('(^|_)', {_stem_sql.format(tbl='table_b')}, '(_|$)'))"
+            f"concat('(^|_)', {_stem_sql_b}, '(_|$)'))"
         )
         _b_matches_a = F.expr(
             f"rlike(lower(element_at(split(col_b, '\\\\.'), -1)), "
-            f"concat('(^|_)', {_stem_sql.format(tbl='table_a')}, '(_|$)'))"
+            f"concat('(^|_)', {_stem_sql_a}, '(_|$)'))"
         )
         table_name_match = F.when(_a_matches_b | _b_matches_a, 1.0).otherwise(0.0)
 
