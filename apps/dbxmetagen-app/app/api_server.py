@@ -8020,13 +8020,17 @@ def _run_sl_generation(
                 src_cols = _resolve_table_columns(src)
                 if src_cols:
                     _tbl_cols: dict[str, set[str]] = {"source": src_cols}
-                    for j in defn.get("joins", []):
-                        j_src = j.get("source", "")
-                        j_name = j.get("name", "")
-                        if j_name and j_src:
-                            j_cols = _resolve_table_columns(j_src)
-                            if j_cols:
-                                _tbl_cols[j_name.lower()] = j_cols
+                    def _resolve_join_cols(jlist):
+                        for j in jlist:
+                            j_src = j.get("source", "")
+                            j_name = j.get("name", "")
+                            if j_name and j_src:
+                                j_cols = _resolve_table_columns(j_src)
+                                if j_cols:
+                                    _tbl_cols[j_name.lower()] = j_cols
+                            if j.get("joins"):
+                                _resolve_join_cols(j["joins"])
+                    _resolve_join_cols(defn.get("joins", []))
                     defn = _autofix_dimension_columns(defn, _tbl_cols)
 
             json_str = json.dumps(defn).replace("'", "''")
@@ -8095,6 +8099,9 @@ def _run_sl_generation(
                 else:
                     break
 
+            defn = _normalize_joins(defn)
+            defn = _fix_join_alias_refs(defn)
+            defn = _restructure_chained_to_nested(defn)
             _infer_format_specs(defn)
             _backfill_agent_metadata(defn)
             _strip_kpi_references(defn)
