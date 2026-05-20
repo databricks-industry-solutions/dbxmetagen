@@ -8505,12 +8505,25 @@ def _normalize_window_specs(w) -> list[dict]:
     return result
 
 
+class _IndentYamlDumper(yaml.Dumper):
+    """Dumper that always indents list items under their parent key.
+
+    Default yaml.Dumper uses compact style where list items sit at the same
+    indent as the parent mapping key.  Databricks' metric-view YAML parser
+    requires the indented style where list items are nested one level deeper
+    (matching the format shown in the official documentation).
+    """
+    def increase_indent(self, flow=False, indentless=False):
+        return super().increase_indent(flow, False)
+
+
 def _definition_to_yaml(defn: dict) -> str:
     """Convert a JSON definition to the YAML body for CREATE VIEW WITH METRICS.
 
-    Uses yaml.dump for serialisation (Databricks' metric-view parser is
-    sensitive to the exact YAML dialect) with pre-processing to backfill
-    currency_code and normalise window specs.
+    Uses yaml.dump with an indenting Dumper so nested join lists are
+    properly indented (Databricks' parser rejects the compact style for
+    nested joins).  Pre-processing backfills currency_code and normalises
+    window specs.
     """
     source = defn.get("source", "")
     if not source:
@@ -8546,7 +8559,7 @@ def _definition_to_yaml(defn: dict) -> str:
     mv["measures"] = measures_out
     if defn.get("joins"):
         mv["joins"] = defn["joins"]
-    return yaml.dump(mv, default_flow_style=False, sort_keys=False)
+    return yaml.dump(mv, Dumper=_IndentYamlDumper, default_flow_style=False, sort_keys=False)
 
 
 _agent_ref_cache: dict[str, dict] = {}

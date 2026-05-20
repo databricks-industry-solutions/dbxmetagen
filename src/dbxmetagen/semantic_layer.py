@@ -1972,6 +1972,11 @@ OUTPUT (one JSON object only, no array, no explanation):"""
                 ]
         return defn
 
+    class _IndentYamlDumper(yaml.Dumper):
+        """Dumper that always indents list items under their parent key."""
+        def increase_indent(self, flow=False, indentless=False):
+            return super().increase_indent(flow, False)
+
     def _definition_to_yaml(self, defn: dict) -> str:
         """Convert a JSON definition to the YAML body for CREATE VIEW WITH METRICS."""
         self._normalize_joins(defn)
@@ -1982,32 +1987,18 @@ OUTPUT (one JSON object only, no array, no explanation):"""
         if defn.get("filter"):
             mv["filter"] = defn["filter"]
         mv["dimensions"] = [
-            {
-                k: v
-                for k, v in {
-                    "name": d["name"],
-                    "expr": d["expr"],
-                    "comment": d.get("comment"),
-                    "display_name": d.get("display_name"),
-                    "synonyms": d.get("synonyms"),
-                }.items()
-                if v
-            }
+            {k: v for k, v in {
+                "name": d["name"], "expr": d["expr"], "comment": d.get("comment"),
+                "display_name": d.get("display_name"), "synonyms": d.get("synonyms"),
+            }.items() if v}
             for d in defn.get("dimensions", [])
         ]
         measures_out = []
         for m in defn.get("measures", []):
-            entry = {
-                k: v
-                for k, v in {
-                    "name": m["name"],
-                    "expr": m["expr"],
-                    "comment": m.get("comment"),
-                    "display_name": m.get("display_name"),
-                    "synonyms": m.get("synonyms"),
-                }.items()
-                if v
-            }
+            entry = {k: v for k, v in {
+                "name": m["name"], "expr": m["expr"], "comment": m.get("comment"),
+                "display_name": m.get("display_name"), "synonyms": m.get("synonyms"),
+            }.items() if v}
             if m.get("format"):
                 fmt = dict(m["format"]) if isinstance(m["format"], dict) else m["format"]
                 if isinstance(fmt, dict) and fmt.get("type") == "currency" and not fmt.get("currency_code"):
@@ -2021,7 +2012,7 @@ OUTPUT (one JSON object only, no array, no explanation):"""
         mv["measures"] = measures_out
         if defn.get("joins"):
             mv["joins"] = defn["joins"]
-        return yaml.dump(mv, default_flow_style=False, sort_keys=False)
+        return yaml.dump(mv, Dumper=self._IndentYamlDumper, default_flow_style=False, sort_keys=False)
 
     # ------------------------------------------------------------------
     # Genie space creation
