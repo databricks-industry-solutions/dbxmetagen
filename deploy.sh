@@ -141,6 +141,7 @@ sed -e "s|__CATALOG_NAME__|${catalog_name}|g" \
     -e "s|__SCHEMA_NAME__|${schema_name}|g" \
     -e "s|__ENABLE_OBO__|${enable_obo:-false}|g" \
     -e "s|__VS_ENDPOINT_NAME__|${vs_endpoint_name:-dbxmetagen-vs}|g" \
+    -e "s|__APP_DISPLAY_NAME__|${app_display_name:-}|g" \
     apps/dbxmetagen-app/app/app.yaml.template > apps/dbxmetagen-app/app/app.yaml
 
 echo "=== Generating app resource YAML with permissions ==="

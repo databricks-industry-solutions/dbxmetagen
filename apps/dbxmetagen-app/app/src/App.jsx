@@ -458,6 +458,7 @@ export default function App() {
   const [showInfo, setShowInfo] = useState(false)
   const [sessionExpired, setSessionExpired] = useState(false)
   const [pipelineStats, setPipelineStats] = useState(null)
+  const [appMeta, setAppMeta] = useState({ displayName: '', version: '' })
   const [dark, setDark] = useState(() => {
     if (typeof window !== 'undefined') {
       const saved = localStorage.getItem('dbxmetagen-dark')
@@ -489,6 +490,12 @@ export default function App() {
   }, [dark])
 
   useEffect(() => {
+    cachedFetchObj('/api/config', {}, TTL.CONFIG).then(({ data }) => {
+      if (data) setAppMeta({ displayName: data.app_display_name || '', version: data.version || '' })
+    })
+  }, [])
+
+  useEffect(() => {
     cachedFetchObj('/api/coverage/holistic', {}, TTL.DASHBOARD)
       .then(({ data }) => { if (data) setPipelineStats(data) })
   }, [activeTab])
@@ -510,7 +517,10 @@ export default function App() {
               <div className="absolute -bottom-0.5 left-0 right-0 h-0.5 bg-dbx-lava rounded-full" />
             </div>
             <div>
-              <h1 className="text-xl font-bold text-white tracking-tight">dbxmetagen</h1>
+              <h1 className="text-xl font-bold text-white tracking-tight">
+                dbxmetagen{appMeta.displayName && <><span className="text-dbx-oat/50 font-normal mx-1.5">:</span><span className="text-dbx-lava font-semibold">{appMeta.displayName}</span></>}
+                {appMeta.version && <span className="ml-2 text-xs font-normal text-dbx-oat/40">v{appMeta.version}</span>}
+              </h1>
               <p className="text-dbx-oat/60 text-xs mt-0.5">Automated metadata, knowledge graph, and semantic layer for Unity Catalog</p>
             </div>
           </div>

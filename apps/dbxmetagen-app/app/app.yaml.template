@@ -68,6 +68,8 @@ env:
     value: "databricks-claude-sonnet-4-6"
   - name: ENABLE_OBO
     value: "__ENABLE_OBO__"
+  - name: APP_DISPLAY_NAME
+    value: "__APP_DISPLAY_NAME__"
   - name: MLFLOW_TRACE_TIMEOUT_SECONDS
     value: "120"
   # MLFLOW_EXPERIMENT: optional override for trace experiment path.
