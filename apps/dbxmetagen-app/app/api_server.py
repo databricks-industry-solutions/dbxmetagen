@@ -584,7 +584,7 @@ def get_config():
     pkg_version = ""
     try:
         from importlib.metadata import version as _pkg_ver
-        pkg_version = _pkg_ver("dbxmetagen")
+        pkg_version = _pkg_ver("dbxmetagen").split("+")[0]
     except Exception:
         pass
     return {

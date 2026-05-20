@@ -1571,13 +1571,23 @@ export default function SemanticLayer({ onNavigate, pipelineStats }) {
           </div>
 
           {/* Deploy target override */}
-          <div className="flex items-center gap-3 mb-4 p-3 bg-dbx-oat dark:bg-gray-900 rounded-md border dark:border-gray-700">
+          <div className="flex items-center gap-3 mb-4 p-3 bg-dbx-oat dark:bg-gray-900 rounded-md border dark:border-gray-700 flex-wrap">
             <span className="text-xs font-medium text-gray-600 dark:text-gray-400 whitespace-nowrap" title="Override deploys all metric views to this schema instead of each view's source table schema">Deploy target override:</span>
-            <select value={globalTargetOverride} onChange={e => { userEditedTargetRef.current = true; setGlobalTargetOverride(e.target.value) }}
-              className="input-base !text-xs w-64">
+            <select value={schemaOptions.includes(globalTargetOverride) ? globalTargetOverride : (globalTargetOverride ? '__custom__' : '')}
+              onChange={e => { userEditedTargetRef.current = true; setGlobalTargetOverride(e.target.value === '__custom__' ? '' : e.target.value) }}
+              className="input-base !text-xs w-56">
               <option value="">(None - use each view's source schema)</option>
               {schemaOptions.map(s => <option key={s} value={s}>{s}</option>)}
+              <option value="__custom__">Custom catalog.schema...</option>
             </select>
+            <input type="text" placeholder="catalog.schema"
+              value={!schemaOptions.includes(globalTargetOverride) ? globalTargetOverride : ''}
+              onChange={e => { userEditedTargetRef.current = true; setGlobalTargetOverride(e.target.value) }}
+              className={`input-base !text-xs w-48 ${schemaOptions.includes(globalTargetOverride) && globalTargetOverride ? 'opacity-40 pointer-events-none' : ''}`}
+              title="Type a custom catalog.schema for federated or cross-catalog deploys" />
+            {globalTargetOverride && !schemaOptions.includes(globalTargetOverride) && !globalTargetOverride.match(/^[^.]+\.[^.]+$/) && (
+              <span className="text-[10px] text-red-500">Format: catalog.schema</span>
+            )}
             {definitions.filter(d => d.status === 'validated').length > 0 && (
               <button onClick={createAllValidated} disabled={bulkCreating}
                 className="ml-auto px-3 py-1.5 bg-green-600 text-white rounded text-xs hover:bg-green-700 disabled:opacity-50 whitespace-nowrap">
