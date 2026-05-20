@@ -915,6 +915,7 @@ class SemanticLayerGenerator:
                 _drop_broken_measures(defn)
                 _drop_placeholder_dimensions(defn)
                 defn = self._restructure_chained_to_nested(defn)
+                defn = self._qualify_nested_refs(defn)
 
                 defn_id = str(uuid.uuid4())
                 mv_name = defn.get("name", f"metric_view_{defn_id[:8]}")
@@ -1972,6 +1973,52 @@ OUTPUT (one JSON object only, no array, no explanation):"""
                 ]
         return defn
 
+    @staticmethod
+    def _qualify_nested_refs(defn: dict) -> dict:
+        """Rewrite dimension/measure expressions so nested join aliases use full dot-paths.
+
+        Databricks metric views require ``parent.child.column`` not ``child.column``.
+        """
+        joins = defn.get("joins", [])
+        if not joins:
+            return defn
+        top_aliases: set[str] = set()
+        alias_path: dict[str, str] = {}
+
+        def _walk(jlist, prefix=""):
+            for j in jlist:
+                name = j.get("name", "")
+                if not name:
+                    continue
+                path = f"{prefix}.{name}" if prefix else name
+                alias_path[name.lower()] = path
+                if not prefix:
+                    top_aliases.add(name.lower())
+                if j.get("joins"):
+                    _walk(j["joins"], path)
+
+        _walk(joins)
+        nested = {a: p for a, p in alias_path.items() if a not in top_aliases}
+        if not nested:
+            return defn
+        ref_pat = re.compile(r"\b([A-Za-z_]\w*)\.(\w+)")
+
+        def _rewrite(expr):
+            def _sub(m):
+                al = m.group(1).lower()
+                if al in nested:
+                    return f"{nested[al]}.{m.group(2)}"
+                return m.group(0)
+            return ref_pat.sub(_sub, expr)
+
+        for section in ("dimensions", "measures"):
+            for item in defn.get(section, []):
+                if item.get("expr"):
+                    item["expr"] = _rewrite(item["expr"])
+        if defn.get("filter"):
+            defn["filter"] = _rewrite(defn["filter"])
+        return defn
+
     class _IndentYamlDumper(yaml.Dumper):
         """Dumper that always indents list items under their parent key."""
         def increase_indent(self, flow=False, indentless=False):
@@ -1981,6 +2028,7 @@ OUTPUT (one JSON object only, no array, no explanation):"""
         """Convert a JSON definition to the YAML body for CREATE VIEW WITH METRICS."""
         self._normalize_joins(defn)
         defn = self._restructure_chained_to_nested(defn)
+        defn = self._qualify_nested_refs(defn)
         mv: dict = {"version": "1.1", "source": defn["source"]}
         if defn.get("comment"):
             mv["comment"] = defn["comment"]

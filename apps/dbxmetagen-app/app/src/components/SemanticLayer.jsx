@@ -25,7 +25,7 @@ const _issueSevStyles = {
   low: 'text-slate-700 dark:text-slate-400 bg-slate-100 dark:bg-slate-900/30',
 }
 
-function MvAnalysisPanel({ issues, onClose, onApplyFix, appliedFields }) {
+function MvAnalysisPanel({ issues, onClose, onApplyFix, appliedFields, busy }) {
   const applied = appliedFields || new Set()
   if (!issues || issues.length === 0) return (
     <div className="mt-2 p-3 bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-700 rounded text-xs text-emerald-700 dark:text-emerald-400">
@@ -40,9 +40,9 @@ function MvAnalysisPanel({ issues, onClose, onApplyFix, appliedFields }) {
         <span className="text-xs font-medium text-slate-700 dark:text-slate-300">Analysis Issues ({issues.length})</span>
         <div className="flex items-center gap-2">
           {fixable.length > 0 && onApplyFix && (
-            <button onClick={() => onApplyFix('__all__')}
-              className="px-2 py-0.5 text-[10px] bg-cyan-600 text-white rounded hover:bg-cyan-700">
-              Apply All ({fixable.length})
+            <button onClick={() => onApplyFix('__all__')} disabled={busy}
+              className="px-2 py-0.5 text-[10px] bg-cyan-600 text-white rounded hover:bg-cyan-700 disabled:opacity-50">
+              {busy ? 'Applying...' : `Apply All (${fixable.length})`}
             </button>
           )}
           <button onClick={onClose} className="text-xs text-slate-400 hover:text-slate-600">Close</button>
@@ -64,8 +64,9 @@ function MvAnalysisPanel({ issues, onClose, onApplyFix, appliedFields }) {
                 <div className="flex items-center gap-2 mt-1">
                   <p className="text-slate-500 dark:text-slate-400 italic flex-1">{iss.suggestion}</p>
                   {iss.field && iss.fix_value && onApplyFix && (
-                    <button onClick={() => onApplyFix(iss.field, iss.fix_value)}
-                      className="shrink-0 px-1.5 py-0.5 text-[10px] bg-cyan-600 text-white rounded hover:bg-cyan-700">Apply</button>
+                    <button onClick={() => onApplyFix(iss.field, iss.fix_value)} disabled={busy}
+                      className="shrink-0 px-1.5 py-0.5 text-[10px] bg-cyan-600 text-white rounded hover:bg-cyan-700 disabled:opacity-50">
+                      {busy ? '...' : 'Apply'}</button>
                   )}
                 </div>
               )}
@@ -713,10 +714,12 @@ export default function SemanticLayer({ onNavigate, pipelineStats }) {
   }
 
   const applyFieldFix = async (defId, pathOrAll, value) => {
+    setActionLoading(prev => ({ ...prev, [defId]: 'apply-fix' }))
     if (pathOrAll === '__all__') {
       const issues = mvAnalysis[defId] || []
       const existing = mvAppliedFields[defId] || new Set()
       const fixable = issues.filter(iss => iss.field && iss.fix_value && !existing.has(iss.field))
+      let failures = 0
       for (const iss of fixable) {
         try {
           const res = await fetch(`/api/semantic-layer/definitions/${defId}/field`, {
@@ -729,12 +732,14 @@ export default function SemanticLayer({ onNavigate, pipelineStats }) {
               s.add(iss.field)
               return { ...prev, [defId]: s }
             })
-          }
-        } catch {}
+          } else { failures++ }
+        } catch { failures++ }
       }
+      if (failures) setError(`${failures} of ${fixable.length} fixes failed to apply`)
       invalidateCache('/api/semantic-layer/definitions')
       refreshDefinitions()
       fetchMvHealth(defId)
+      setActionLoading(prev => ({ ...prev, [defId]: null }))
       return
     }
     try {
@@ -751,8 +756,12 @@ export default function SemanticLayer({ onNavigate, pipelineStats }) {
         invalidateCache('/api/semantic-layer/definitions')
         refreshDefinitions()
         fetchMvHealth(defId)
+      } else {
+        const data = await res.json().catch(() => ({}))
+        setError(data.detail || `Failed to apply fix for ${pathOrAll}`)
       }
     } catch (e) { setError(e.message) }
+    setActionLoading(prev => ({ ...prev, [defId]: null }))
   }
 
   const createDefinition = async (defId) => {
@@ -1792,6 +1801,7 @@ export default function SemanticLayer({ onNavigate, pipelineStats }) {
                     <MvAnalysisPanel issues={mvAnalysis[d.definition_id]}
                       onClose={() => setMvAnalysisExpanded(null)}
                       appliedFields={mvAppliedFields[d.definition_id]}
+                      busy={actionLoading[d.definition_id] === 'apply-fix'}
                       onApplyFix={(path, value) => applyFieldFix(d.definition_id, path, value)} />
                   )}
                 </div>

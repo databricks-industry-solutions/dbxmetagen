@@ -6534,7 +6534,7 @@ JOIN AND RELATIONSHIP RULES:
 - SNOWFLAKE / NESTED JOINS: for dimension hierarchies (e.g. customer -> nation -> region), nest child joins inside the parent join's "joins" array. Child "on" references the PARENT alias, not "source":
   {{"name": "customer", "source": "...", "on": "source.customer_id = customer.id", "joins": [{{"name": "nation", "source": "...", "on": "customer.nation_id = nation.id"}}]}}
   Limit nesting to 2 levels (source -> dim -> sub-dim). Use nested joins when JOIN PATHS in the metadata show multi-hop FK chains.
-- COLUMN REFERENCING: Use "source.col" for source table columns, "join_alias.col" for joined table columns (including nested aliases like "nation.name").
+- COLUMN REFERENCING: Use "source.col" for source columns, "alias.col" for flat joins. For NESTED joins use the full dot-path: "customer.nation.name" not "nation.name".
 - Include joins when FK relationships OR GRAPH RELATIONSHIPS show a valid path
 - Cross-table metrics are encouraged when FKs exist: join fact tables to dimension tables for breakdowns and ratios
 - EXISTING METRIC VIEWS: do NOT duplicate -- build on existing coverage
@@ -7205,6 +7205,36 @@ _NESTED_AGG_RE = re.compile(
 )
 
 
+def _dotpath_to_leaf(expr: str, joins: list[dict] | None = None) -> str:
+    """Convert metric-view dot-path refs to SQL-friendly leaf-alias refs for dry-runs.
+
+    ``physician.account.territory.region`` -> ``territory.region``
+    Only rewrites segments whose prefix matches the nested join tree.
+    """
+    if not joins:
+        return expr
+    # Build set of leaf aliases that are nested (have a parent)
+    nested_aliases: set[str] = set()
+    def _collect(jlist, is_nested=False):
+        for j in jlist:
+            name = j.get("name", "").lower()
+            if name and is_nested:
+                nested_aliases.add(name)
+            if j.get("joins"):
+                _collect(j["joins"], True)
+    _collect(joins)
+    if not nested_aliases:
+        return expr
+
+    def _sub(m):
+        parts = m.group(0).split(".")
+        if len(parts) >= 3 and parts[-2].lower() in nested_aliases:
+            return f"{parts[-2]}.{parts[-1]}"
+        return m.group(0)
+
+    return re.sub(r"\b[A-Za-z_]\w*(?:\.[A-Za-z_]\w*){2,}", _sub, expr)
+
+
 def _validate_expr(expr: str, source_table: str, joins: list[dict] | None = None) -> tuple:
     """Test a SQL expression with optional joins. Returns (error_or_None, possibly_fixed_expr)."""
     if re.search(r'\bOVER\s*\(', expr, re.IGNORECASE):
@@ -7212,8 +7242,9 @@ def _validate_expr(expr: str, source_table: str, joins: list[dict] | None = None
     if _NESTED_AGG_RE.search(expr):
         return "Nested aggregate functions are not supported. Use a conditional aggregate (CASE/WHEN) or create a separate metric view for the inner aggregation.", expr
     from_clause = _build_from_clause(source_table, joins)
+    sql_expr = _dotpath_to_leaf(expr, joins)
     try:
-        execute_sql(f"SELECT {expr} FROM {from_clause} LIMIT 0")
+        execute_sql(f"SELECT {sql_expr} FROM {from_clause} LIMIT 0")
         return None, expr
     except Exception as e:
         err_str = str(e)
@@ -7227,7 +7258,7 @@ def _validate_expr(expr: str, source_table: str, joins: list[dict] | None = None
             )
             if fixed != expr:
                 try:
-                    execute_sql(f"SELECT {fixed} FROM {from_clause} LIMIT 0")
+                    execute_sql(f"SELECT {_dotpath_to_leaf(fixed, joins)} FROM {from_clause} LIMIT 0")
                     return None, fixed
                 except Exception:
                     pass
@@ -7717,6 +7748,59 @@ def _restructure_chained_to_nested(defn: dict) -> dict:
     return defn
 
 
+def _qualify_nested_refs(defn: dict) -> dict:
+    """Rewrite dimension/measure expressions so nested join aliases use full dot-paths.
+
+    Databricks metric views require nested aliases to be referenced through
+    their parent chain: ``parent.child.column`` not ``child.column``.
+    Flat (top-level) joins can be referenced directly: ``alias.column``.
+    """
+    joins = defn.get("joins", [])
+    if not joins:
+        return defn
+
+    # Build alias -> dot-path and set of top-level aliases
+    top_aliases: set[str] = set()
+    alias_path: dict[str, str] = {}  # lowered alias -> dot-path prefix
+
+    def _walk(jlist: list[dict], prefix: str = "") -> None:
+        for j in jlist:
+            name = j.get("name", "")
+            if not name:
+                continue
+            path = f"{prefix}.{name}" if prefix else name
+            alias_path[name.lower()] = path
+            if not prefix:
+                top_aliases.add(name.lower())
+            if j.get("joins"):
+                _walk(j["joins"], path)
+
+    _walk(joins)
+
+    # Only rewrite aliases that are nested (not top-level)
+    nested = {a: p for a, p in alias_path.items() if a not in top_aliases}
+    if not nested:
+        return defn
+
+    ref_pat = re.compile(r"\b([A-Za-z_]\w*)\.(\w+)")
+
+    def _rewrite(expr: str) -> str:
+        def _sub(m):
+            alias_low = m.group(1).lower()
+            if alias_low in nested:
+                return f"{nested[alias_low]}.{m.group(2)}"
+            return m.group(0)
+        return ref_pat.sub(_sub, expr)
+
+    for section in ("dimensions", "measures"):
+        for item in defn.get(section, []):
+            if item.get("expr"):
+                item["expr"] = _rewrite(item["expr"])
+    if defn.get("filter"):
+        defn["filter"] = _rewrite(defn["filter"])
+    return defn
+
+
 def _build_plan_prompt(questions: list[str], context: str) -> str:
     q_block = "\n".join(f"  {i+1}. {q}" for i, q in enumerate(questions))
     return f"""You are a data modeler planning a semantic layer for Databricks Unity Catalog.
@@ -7769,7 +7853,7 @@ RULES:
   STAR SCHEMA joins: "on": "source.<fk> = <alias>.<pk>"
   NESTED JOINS for hierarchies: nest child joins inside the parent's "joins" array with child "on" referencing the parent alias:
   {{"name": "customer", "source": "...", "on": "source.customer_id = customer.id", "joins": [{{"name": "nation", "source": "...", "on": "customer.nation_id = nation.id"}}]}}
-- COLUMN REFERENCING: Use "source.col" for source table columns, "join_alias.col" for joined table columns. Nested join aliases are FULLY REACHABLE -- if you nest physician -> account -> territory, use "account.bed_count" and "territory.region" directly. NEVER use bare column names when joins are present.
+- COLUMN REFERENCING: Use "source.col" for source columns, "alias.col" for flat (top-level) join columns. For NESTED joins, use the full dot-path through parents: if physician -> account -> territory, use "physician.account.account_name" and "physician.account.territory.region". NEVER use bare "account.col" for a nested alias. NEVER use bare column names when joins are present.
 - NEVER substitute a placeholder column from an unrelated table or alias. If a dimension is called "Region", its expr MUST reference the actual region column from the correct alias (e.g. "territory.region"), NOT an unrelated column like "source.channel". If a column is unreachable through the join path, DROP the dimension entirely rather than using a fake placeholder.
 - Share/mix measures (X as % of total) CANNOT be computed in metric views because window functions are banned. Do NOT create measures like SUM(x)/NULLIF(SUM(x),0) -- this always equals 1.0. Instead, provide the raw numerator; the consumer computes shares at query time.
 - Ratios must use NULLIF in denominator. AVG of pre-aggregated values is usually wrong.
@@ -7997,6 +8081,7 @@ def _run_sl_generation(
             defn = _normalize_joins(defn)
             defn = _fix_join_alias_refs(defn)
             defn = _restructure_chained_to_nested(defn)
+            defn = _qualify_nested_refs(defn)
 
             # Fuzzy-match hallucinated column names to actual columns
             src = defn.get("source", "")
@@ -8088,6 +8173,7 @@ def _run_sl_generation(
             defn = _normalize_joins(defn)
             defn = _fix_join_alias_refs(defn)
             defn = _restructure_chained_to_nested(defn)
+            defn = _qualify_nested_refs(defn)
             _infer_format_specs(defn)
             _backfill_agent_metadata(defn)
             _strip_kpi_references(defn)
@@ -8284,6 +8370,7 @@ def _validate_definition(defn: dict, source: str) -> tuple[str, str]:
     defn = _normalize_joins(defn)
     defn = _fix_join_alias_refs(defn)
     defn = _restructure_chained_to_nested(defn)
+    defn = _qualify_nested_refs(defn)
     errors = _validate_definition_structure(defn)
     if not errors:
         defn_joins = defn.get("joins", [])
