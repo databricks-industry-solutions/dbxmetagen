@@ -7886,7 +7886,7 @@ def _defn_to_yaml(defn: dict) -> str:
 def _yaml_dry_run(defn: dict, cat: str, sch: str) -> Optional[str]:
     """Attempt CREATE VIEW WITH METRICS LANGUAGE YAML; return error string or None."""
     try:
-        yaml_body = _defn_to_yaml(defn)
+        yaml_body = _definition_to_yaml(defn)
         mv_name = defn.get("name", "dry_run_test")
         dry_name = f"`{cat}`.`{sch}`.`_mv_dryrun_{mv_name}`"
         execute_sql(
