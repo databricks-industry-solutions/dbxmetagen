@@ -7177,14 +7177,24 @@ def _autofix_expr(expr: str) -> str:
 
 
 def _build_from_clause(source_table: str, joins: list[dict] | None = None) -> str:
-    """Build ``FROM source AS source [JOIN ...]`` clause for expression dry-runs."""
+    """Build ``FROM source AS source [JOIN ...]`` clause for expression dry-runs.
+
+    Recurses into nested joins so aliases at any depth are available.
+    """
     clause = f"{source_table} AS source"
-    for j in (joins or []):
-        j_alias = j.get("name", j.get("source", "").split(".")[-1])
-        j_src = j.get("source", "")
-        on = j.get("on", "1=1")
-        if j_src:
-            clause += f" LEFT JOIN {j_src} AS {j_alias} ON {on}"
+
+    def _append_joins(jlist: list[dict]) -> None:
+        nonlocal clause
+        for j in jlist:
+            j_alias = j.get("name", j.get("source", "").split(".")[-1])
+            j_src = j.get("source", "")
+            on = j.get("on", "1=1")
+            if j_src:
+                clause += f" LEFT JOIN {j_src} AS {j_alias} ON {on}"
+            if j.get("joins"):
+                _append_joins(j["joins"])
+
+    _append_joins(joins or [])
     return clause
 
 
@@ -7763,6 +7773,7 @@ RULES:
 - NEVER substitute a placeholder column from an unrelated table or alias. If a dimension is called "Region", its expr MUST reference the actual region column from the correct alias (e.g. "territory.region"), NOT an unrelated column like "source.channel". If a column is unreachable through the join path, DROP the dimension entirely rather than using a fake placeholder.
 - Share/mix measures (X as % of total) CANNOT be computed in metric views because window functions are banned. Do NOT create measures like SUM(x)/NULLIF(SUM(x),0) -- this always equals 1.0. Instead, provide the raw numerator; the consumer computes shares at query time.
 - Ratios must use NULLIF in denominator. AVG of pre-aggregated values is usually wrong.
+- REVERSE STAR: When sourcing from a dimension table and joining to a fact table, SUM and COUNT of fact columns are valid. But AVG of a source dimension attribute inflates because each row is duplicated by the fan-out. Prefer COUNT(DISTINCT fact.pk) and SUM(fact.amount); avoid AVG(source.attribute) when a fact join is present.
 - Do NOT create duplicate measures with identical expressions but different names. Each measure expr must be semantically distinct.
 - Only use column names that appear in the metadata.
 - comment fields: describe content and lineage only. Do NOT reference KPI numbers, question numbers, or implementation details (e.g. "Implements KPIs 1, 10" is WRONG).
@@ -8136,6 +8147,20 @@ def _run_sl_generation(
                 "quality": cx.get("quality_level"),
             })
 
+        # Flag duplicate-source views (same grain generated more than once)
+        source_seen: dict[str, list[str]] = {}
+        for r in per_definition_results:
+            src = r.get("source", "")
+            if src:
+                source_seen.setdefault(src, []).append(r["name"])
+        for src, names in source_seen.items():
+            if len(names) > 1:
+                logger.warning("Duplicate source grain '%s' across views: %s", src, names)
+                stats.setdefault("warnings", []).append(
+                    f"Multiple views share source {src.split('.')[-1]}: {', '.join(names)}. "
+                    "Consider merging into one comprehensive grain view."
+                )
+
         # Post-generation: LLM coverage check
         coverage = None
         if stats["validated"] > 0 and questions:
@@ -8382,7 +8407,8 @@ def _backfill_agent_metadata(defn: dict) -> None:
 
 _KPI_REF_RE = re.compile(
     r"\.?\s*(?:Implements|Supports|Addresses|Answers|Covers|Partially implements)"
-    r"\s+(?:KPI|question|Q)s?\s*[\d,\s\-and]+\.?",
+    r"\s+(?:KPI|question|Q)s?\s*[\d,\s\-and]+\.?"
+    r"|\s*\(KPI:\s*[^)]+\)",
     re.IGNORECASE,
 )
 
@@ -8436,7 +8462,7 @@ def _drop_placeholder_dimensions(defn: dict) -> None:
                 implied_alias = alias
                 break
 
-        if implied_alias and implied_alias not in refs and "source" in refs:
+        if implied_alias and implied_alias not in refs:
             continue
         cleaned.append(d)
     defn["dimensions"] = cleaned

@@ -301,7 +301,8 @@ def _backfill_agent_metadata(defn: dict) -> None:
 
 _KPI_REF_RE = re.compile(
     r"\.?\s*(?:Implements|Supports|Addresses|Answers|Covers|Partially implements)"
-    r"\s+(?:KPI|question|Q)s?\s*[\d,\s\-and]+\.?",
+    r"\s+(?:KPI|question|Q)s?\s*[\d,\s\-and]+\.?"
+    r"|\s*\(KPI:\s*[^)]+\)",
     re.IGNORECASE,
 )
 
@@ -358,7 +359,7 @@ def _drop_placeholder_dimensions(defn: dict) -> None:
                 implied_alias = alias
                 break
 
-        if implied_alias and implied_alias not in refs and "source" in refs:
+        if implied_alias and implied_alias not in refs:
             continue
         cleaned.append(d)
     defn["dimensions"] = cleaned
@@ -954,6 +955,17 @@ class SemanticLayerGenerator:
                 stats[status] += 1
                 stats["generated"] += 1
 
+            # Flag duplicate-source views (same grain generated more than once)
+            source_seen: dict[str, list[str]] = {}
+            for d in definitions:
+                src = d.get("source", "")
+                name = d.get("name", "")
+                if src:
+                    source_seen.setdefault(src, []).append(name)
+            for src, names in source_seen.items():
+                if len(names) > 1:
+                    logger.warning("Duplicate source grain '%s' across views: %s", src, names)
+
             # Mark questions: processed if at least one definition stored, failed if all definitions failed validation
             id_list = ", ".join(f"'{qid}'" for qid in q_ids)
             if stats["generated"] > 0:
@@ -1047,6 +1059,7 @@ RULES:
     - NEVER prefix dimension names with the join alias (use "Industry" not "account.Industry")
     - LIKE patterns MUST be quoted: product_code LIKE 'HW%', NOT product_code LIKE HW%
 21. GRAIN INTEGRITY with joins: When joining a fact table to a dimension table, only use dimension columns as GROUP BY dimensions or in FILTER clauses. NEVER aggregate a dimension-table numeric attribute (e.g. SUM(dim.bed_count), AVG(dim.capacity)) from a fact-grain view -- the value fans out by the number of fact rows per dimension row, producing inflated results. If you need to analyze dimension attributes directly, create a SEPARATE metric view sourced from the dimension table
+    REVERSE STAR (dimension as source): When a metric view is sourced from a dimension table and joins to a fact table, the join fans out (one physician -> many prescriptions). SUM and COUNT of fact columns are valid (they aggregate the fan-out). But AVG of a pre-aggregated dimension attribute (e.g. AVG(dim.score)) becomes wrong because each row is duplicated by the fan-out. Use COUNT(DISTINCT fact.pk) and SUM(fact.amount) but avoid AVG(source.attribute) when a fact join is present
 22. NEVER create share-of-total or percent-of-total measures (e.g. SUM(x)/SUM(total_x), COUNT(*)/COUNT(*)). These require window functions (OVER()) for the denominator, which are not supported. The denominator collapses to the same group as the numerator, always producing 1.0. Instead use: conditional ratios with FILTER, within-grain rates, or describe the share concept in the view comment for downstream Genie SQL
 23. NEVER nest aggregate functions inside other aggregate functions (e.g. SUM(COUNT(*)), AVG(SUM(x))). Databricks SQL does not allow nested aggregates. If you need a two-stage aggregation, use a conditional aggregate with CASE/WHEN or create a separate metric view for the inner aggregation
 24. If EXISTING METRIC VIEWS are listed in the metadata, do NOT recreate views with the same name or identical measures/dimensions. Instead create complementary views that cover different analytical angles, grains, or join paths. Reference existing views when planning to ensure coverage without overlap
@@ -1070,8 +1083,14 @@ OUTPUT (JSON array only):"""
 
 TASK: Output a PLAN only (no SQL). Reply with a single JSON object: {{ "views": [ ... ] }}.
 
+ORGANIZING PRINCIPLE -- one comprehensive view per fact-table grain:
+- Each metric view declares its grain via its source table (one row = one prescription, one order, etc.)
+- Prefer ONE broad view per grain with all relevant measures/dimensions, rather than splitting by theme
+- Split into multiple views from the same source ONLY when the filter, join path, or grain differs
+- Use nested joins to maximize dimension reach through FK chains
+
 For each metric view in "views", include:
-- "name": unique snake_case name (e.g. order_performance_metrics)
+- "name": unique snake_case name reflecting the grain (e.g. prescription_metrics, order_line_metrics)
 - "source": fully qualified source table (catalog.schema.table)
 - "comment": one sentence describing what the view measures and its source lineage. Do NOT reference question numbers or KPI numbers
 - "joins": array of {{ "name": "<alias>", "source": "catalog.schema.table", "on": "source.<fk_col> = <alias>.<pk_col>" }} when RECOMMENDED JOINS exist and questions need breakdowns by another table
