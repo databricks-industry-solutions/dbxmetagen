@@ -581,6 +581,12 @@ def get_config():
         host = _get_effective_client().config.host or ""
     except Exception:
         host = os.environ.get("DATABRICKS_HOST", "")
+    pkg_version = ""
+    try:
+        from importlib.metadata import version as _pkg_ver
+        pkg_version = _pkg_ver("dbxmetagen").split("+")[0]
+    except Exception:
+        pass
     return {
         "catalog_name": CATALOG,
         "schema_name": SCHEMA,
@@ -595,6 +601,8 @@ def get_config():
         "lakebase_configured": pg_configured(),
         "obo_enabled": _OBO_ENABLED,
         "mlflow_experiment_id": _get_mlflow_experiment_id(),
+        "app_display_name": os.environ.get("APP_DISPLAY_NAME", ""),
+        "version": pkg_version,
     }
 
 
@@ -705,8 +713,8 @@ def diagnose_catalog(catalog: str, schema: str = ""):
     if schema:
         def check_list_tables():
             rows = execute_sql(
-                f"SELECT table_name, table_type FROM `{catalog}`.information_schema.tables "
-                f"WHERE table_schema = '{schema}' LIMIT 25"
+                f"SELECT table_name, table_type FROM system.information_schema.tables "
+                f"WHERE table_catalog = '{catalog}' AND table_schema = '{schema}' LIMIT 25"
             )
             return {"count": len(rows), "tables": rows}
 
@@ -715,8 +723,8 @@ def diagnose_catalog(catalog: str, schema: str = ""):
         # 5. Can we SELECT from the first table? (tests actual connectivity)
         def check_select_one():
             tbl_rows = execute_sql(
-                f"SELECT table_name FROM `{catalog}`.information_schema.tables "
-                f"WHERE table_schema = '{schema}' LIMIT 1"
+                f"SELECT table_name FROM system.information_schema.tables "
+                f"WHERE table_catalog = '{catalog}' AND table_schema = '{schema}' LIMIT 1"
             )
             if not tbl_rows:
                 return "no tables found to test"
@@ -787,6 +795,7 @@ class SemanticGenerateRequest(BaseModel):
         "replace"  # "replace" (supersede matching), "additive" (skip supersede), "replace_all" (supersede ALL in project)
     )
     business_context: Optional[str] = None
+    generation_style: str = "comprehensive"  # "comprehensive" (one broad view per grain) or "targeted" (themed views)
 
 
 class SemanticProjectRequest(BaseModel):
@@ -5544,8 +5553,9 @@ def list_catalogs():
 def list_schemas(catalog: str):
     try:
         q = (
-            f"SELECT schema_name FROM `{catalog}`.information_schema.schemata "
-            f"WHERE schema_name NOT IN ('information_schema', '__internal') "
+            f"SELECT schema_name FROM system.information_schema.schemata "
+            f"WHERE catalog_name = '{catalog}' "
+            f"AND schema_name NOT IN ('information_schema', '__internal') "
             f"ORDER BY schema_name"
         )
         rows = execute_sql(q)
@@ -5566,8 +5576,8 @@ def list_schemas(catalog: str):
 def list_tables(catalog: str, schema: str):
     try:
         q = (
-            f"SELECT table_name FROM `{catalog}`.information_schema.tables "
-            f"WHERE table_schema = '{schema}' "
+            f"SELECT table_name FROM system.information_schema.tables "
+            f"WHERE table_catalog = '{catalog}' AND table_schema = '{schema}' "
             f"AND table_type IN ('MANAGED','EXTERNAL','VIEW','STREAMING_TABLE','MATERIALIZED_VIEW','FOREIGN') "
             f"AND NOT table_name RLIKE '^(__|event_log_[0-9a-f]{{8}}_)' "
             f"ORDER BY table_name"
@@ -5717,17 +5727,8 @@ def list_semantic_definitions(project_id: Optional[str] = None):
         f"COALESCE(version, 1) as version, parent_definition_id, project_id, "
         f"complexity_score, complexity_level, deployed_catalog, deployed_schema, "
         f"quality_score, quality_level "
-        f"FROM ("
-        f"  SELECT *, ROW_NUMBER() OVER ("
-        f"    PARTITION BY metric_view_name, source_table "
-        f"    ORDER BY CASE status "
-        f"      WHEN 'applied' THEN 0 WHEN 'validated' THEN 1 "
-        f"      WHEN 'created' THEN 2 ELSE 3 END, "
-        f"    created_at DESC"
-        f"  ) AS _rn "
-        f"  FROM {fq('metric_view_definitions')} "
-        f"  {where}"
-        f") WHERE _rn = 1 "
+        f"FROM {fq('metric_view_definitions')} "
+        f"{where} "
         f"ORDER BY created_at DESC"
     )
     try:
@@ -5804,6 +5805,33 @@ def delete_semantic_definition(
     execute_sql(
         f"DELETE FROM {fq('metric_view_definitions')} WHERE definition_id = '{definition_id}'"
     )
+    # Eagerly remove vector docs and semantic graph entries for this definition
+    try:
+        for dt in ("metric_view_summary", "metric_view_measures", "metric_view_schema"):
+            execute_sql(
+                f"DELETE FROM {fq('metadata_documents')} "
+                f"WHERE doc_type = '{dt}' AND node_id = '{definition_id}'"
+            )
+    except Exception:
+        pass
+    try:
+        execute_sql(
+            f"DELETE FROM {fq('semantic_nodes')} WHERE definition_id = '{definition_id}'"
+        )
+        execute_sql(
+            f"DELETE FROM {fq('semantic_edges')} WHERE "
+            f"src NOT IN (SELECT node_id FROM {fq('semantic_nodes')}) "
+            f"OR dst NOT IN (SELECT node_id FROM {fq('semantic_nodes')})"
+        )
+    except Exception:
+        pass
+    # Trigger VS index sync so deletions propagate via CDF
+    try:
+        vs_index_name = f"{CATALOG}.{SCHEMA}.{VS_INDEX_SUFFIX}"
+        ws = _get_effective_client()
+        ws.vector_search_indexes.sync_index(index_name=vs_index_name)
+    except Exception:
+        pass
     return {"deleted": True, "definition_id": definition_id}
 
 
@@ -5900,17 +5928,8 @@ def list_metric_views(status: Optional[str] = None):
     q = (
         f"SELECT definition_id, metric_view_name, source_table, status, "
         f"genie_space_id, created_at, deployed_catalog, deployed_schema "
-        f"FROM ("
-        f"  SELECT *, ROW_NUMBER() OVER ("
-        f"    PARTITION BY metric_view_name, source_table "
-        f"    ORDER BY CASE status "
-        f"      WHEN 'applied' THEN 0 WHEN 'validated' THEN 1 "
-        f"      WHEN 'created' THEN 2 ELSE 3 END, "
-        f"    created_at DESC"
-        f"  ) AS _rn "
-        f"  FROM {fq('metric_view_definitions')} "
-        f"  WHERE {status_filter}"
-        f") WHERE _rn = 1 "
+        f"FROM {fq('metric_view_definitions')} "
+        f"WHERE {status_filter} AND status != 'superseded' "
         f"ORDER BY source_table, metric_view_name"
     )
     try:
@@ -6292,8 +6311,8 @@ def _build_sl_context(
             short_clause = ", ".join(f"'{t}'" for t in t_names)
             info_cols = execute_sql(
                 f"SELECT table_name, column_name, data_type "
-                f"FROM `{t_cat}`.information_schema.columns "
-                f"WHERE table_schema = '{t_sch}' AND table_name IN ({short_clause})"
+                f"FROM system.information_schema.columns "
+                f"WHERE table_catalog = '{t_cat}' AND table_schema = '{t_sch}' AND table_name IN ({short_clause})"
             )
             col_by_tbl: dict[str, list] = {}
             for c in info_cols:
@@ -6504,18 +6523,35 @@ def _load_reference_rules() -> str:
 _REFERENCE_RULES_BLOCK = _load_reference_rules()
 
 
-def _build_prompt(questions: list[str], context: str) -> str:
+def _build_prompt(questions: list[str], context: str, generation_style: str = "comprehensive") -> str:
     q_block = "\n".join(f"  {i+1}. {q}" for i, q in enumerate(questions))
     few_shot = _select_few_shot(context)
+    if generation_style == "targeted":
+        org_block = (
+            "ORGANIZING PRINCIPLE -- grain first, theme second:\n"
+            "- Each metric view declares its grain via its source table "
+            "(one row = one encounter, one order line, one prescription fill, etc.)\n"
+            "- All measures in a view must be valid at that grain. Do NOT mix measures that imply "
+            "different grains (e.g. patient-level counts alongside encounter-level rates in a single encounters-sourced view)\n"
+            "- Within a single grain, create SEPARATE views for different analytical themes "
+            "(e.g. from the same encounters table: one view for throughput analysis, another for staffing efficiency, "
+            "another for readmission patterns)\n"
+            "- Name views to reflect both grain and theme: encounter_throughput_metrics, prescription_fill_channel_analysis"
+        )
+    else:
+        org_block = (
+            "ORGANIZING PRINCIPLE -- one comprehensive view per fact-table grain:\n"
+            "- Each metric view declares its grain via its source table. All measures must be valid at that grain.\n"
+            "- Prefer ONE broad view per grain with all relevant measures and dimensions. "
+            "The consumer (Genie, agent, SQL) selects dimensions/measures per query.\n"
+            "- Split into multiple views from the same source ONLY when the persistent filter, "
+            "join path, or grain changes -- NOT because of different \"themes\"."
+        )
     return f"""You are a data modeler building a semantic layer for Databricks Unity Catalog.
 
 TASK: Generate metric view definitions (as a JSON array) that enable answering the business questions below.
 
-ORGANIZING PRINCIPLE -- grain first, theme second:
-- Each metric view declares its grain via its source table (one row = one encounter, one order line, one prescription fill, etc.)
-- All measures in a view must be valid at that grain. Do NOT mix measures that imply different grains (e.g. patient-level counts alongside encounter-level rates in a single encounters-sourced view)
-- Within a single grain, create SEPARATE views for different analytical themes (e.g. from the same encounters table: one view for throughput analysis, another for staffing efficiency, another for readmission patterns)
-- Name views to reflect both grain and theme: encounter_throughput_metrics, prescription_fill_channel_analysis
+{org_block}
 
 ANALYTICAL QUALITY (HIGHEST PRIORITY):
 - Every metric view MUST include at least one RATIO measure (x / NULLIF(y, 0)) and one computed dimension (CASE, DATE_TRUNC)
@@ -6533,7 +6569,7 @@ JOIN AND RELATIONSHIP RULES:
 - SNOWFLAKE / NESTED JOINS: for dimension hierarchies (e.g. customer -> nation -> region), nest child joins inside the parent join's "joins" array. Child "on" references the PARENT alias, not "source":
   {{"name": "customer", "source": "...", "on": "source.customer_id = customer.id", "joins": [{{"name": "nation", "source": "...", "on": "customer.nation_id = nation.id"}}]}}
   Limit nesting to 2 levels (source -> dim -> sub-dim). Use nested joins when JOIN PATHS in the metadata show multi-hop FK chains.
-- COLUMN REFERENCING: Use "source.col" for source table columns, "join_alias.col" for joined table columns (including nested aliases like "nation.name").
+- COLUMN REFERENCING: Use "source.col" for source columns, "alias.col" for flat joins. For NESTED joins use the full dot-path: "customer.nation.name" not "nation.name".
 - Include joins when FK relationships OR GRAPH RELATIONSHIPS show a valid path
 - Cross-table metrics are encouraged when FKs exist: join fact tables to dimension tables for breakdowns and ratios
 - EXISTING METRIC VIEWS: do NOT duplicate -- build on existing coverage
@@ -6768,7 +6804,9 @@ def _autofix_dimension_columns(defn: dict, table_cols: dict[str, set[str]]) -> d
                 prefix_lower = prefix.lower()
                 if prefix_lower not in known_aliases:
                     continue
-                # Check if column exists for this alias
+                # Skip intermediate dot-path segments (col is a join alias, not a column)
+                if col.lower() in known_aliases:
+                    continue
                 alias_map = alias_cols.get(prefix_lower, all_cols_lower)
                 if col.lower() in alias_map:
                     continue
@@ -6807,7 +6845,7 @@ def _resolve_table_columns(full_table_name: str) -> set[str]:
     if len(parts) == 3:
         try:
             rows = execute_sql(
-                f"SELECT column_name FROM `{parts[0]}`.information_schema.columns "
+                f"SELECT column_name FROM system.information_schema.columns "
                 f"WHERE table_catalog = '{parts[0]}' AND table_schema = '{parts[1]}' AND table_name = '{parts[2]}'"
             )
             return {r["column_name"].lower() for r in rows}
@@ -6875,9 +6913,11 @@ def _validate_definition_structure(defn: dict) -> list[str]:
                             f"{item_type} {item.get('name', '')}: column {alias} not found in {source}"
                         )
                     elif col.lower() not in target:
-                        errors.append(
-                            f"{item_type} {item.get('name', '')}: column {col} not found in alias {alias}"
-                        )
+                        # Skip if col is an intermediate dot-path segment (a join alias name)
+                        if col.lower() not in known_aliases:
+                            errors.append(
+                                f"{item_type} {item.get('name', '')}: column {col} not found in alias {alias}"
+                            )
                 else:
                     if col.lower() not in all_cols and col.lower() not in known_aliases:
                         errors.append(
@@ -7140,6 +7180,28 @@ def _autofix_expr(expr: str) -> str:
         if match and expr.strip().upper().startswith(iv.upper()):
             expr = pat.sub(rf"DATE_TRUNC('{iv}', \1)", expr)
 
+    # Fix DATE_FORMAT with unquoted format strings: DATE_FORMAT(col, yyyy) -> DATE_FORMAT(col, 'yyyy')
+    def _fix_date_format(m):
+        col_part = m.group(1)
+        fmt = m.group(2).strip()
+        if not (fmt.startswith("'") or fmt.startswith('"')):
+            return f"DATE_FORMAT({col_part}, '{fmt}')"
+        return m.group(0)
+
+    expr = re.sub(
+        r"DATE_FORMAT\(([^,]+),\s*([^)]+)\)", _fix_date_format, expr, flags=re.IGNORECASE
+    )
+
+    # SUBSTR(date_col, 1, 7) -> DATE_FORMAT(col, 'yyyy-MM'); SUBSTR(date_col, 1, 4) -> DATE_FORMAT(col, 'yyyy')
+    def _fix_substr_date(m):
+        col = m.group(1).strip()
+        length = m.group(2).strip()
+        if any(kw in col.lower() for kw in ("date", "time", "dt", "_ts", "created", "updated")):
+            fmt = "'yyyy-MM'" if length == "7" else "'yyyy'"
+            return f"DATE_FORMAT({col}, {fmt})"
+        return m.group(0)
+    expr = re.sub(r"SUBSTR\(([^,]+),\s*1\s*,\s*(4|7)\)", _fix_substr_date, expr, flags=re.IGNORECASE)
+
     expr = _fix_none_literal(expr)
     expr = _fix_double_commas(expr)
     expr = _fix_position_bare_char(expr)
@@ -7154,24 +7216,74 @@ def _autofix_expr(expr: str) -> str:
 
 
 def _build_from_clause(source_table: str, joins: list[dict] | None = None) -> str:
-    """Build ``FROM source AS source [JOIN ...]`` clause for expression dry-runs."""
+    """Build ``FROM source AS source [JOIN ...]`` clause for expression dry-runs.
+
+    Recurses into nested joins so aliases at any depth are available.
+    """
     clause = f"{source_table} AS source"
-    for j in (joins or []):
-        j_alias = j.get("name", j.get("source", "").split(".")[-1])
-        j_src = j.get("source", "")
-        on = j.get("on", "1=1")
-        if j_src:
-            clause += f" LEFT JOIN {j_src} AS {j_alias} ON {on}"
+
+    def _append_joins(jlist: list[dict]) -> None:
+        nonlocal clause
+        for j in jlist:
+            j_alias = j.get("name", j.get("source", "").split(".")[-1])
+            j_src = j.get("source", "")
+            on = j.get("on", "1=1")
+            if j_src:
+                clause += f" LEFT JOIN {j_src} AS {j_alias} ON {on}"
+            if j.get("joins"):
+                _append_joins(j["joins"])
+
+    _append_joins(joins or [])
     return clause
+
+
+_NESTED_AGG_RE = re.compile(
+    r"\b(SUM|COUNT|AVG|MIN|MAX|STDDEV|VARIANCE|PERCENTILE)\s*\(\s*"
+    r"(SUM|COUNT|AVG|MIN|MAX|STDDEV|VARIANCE|PERCENTILE)\s*\(",
+    re.IGNORECASE,
+)
+
+
+def _dotpath_to_leaf(expr: str, joins: list[dict] | None = None) -> str:
+    """Convert metric-view dot-path refs to SQL-friendly leaf-alias refs for dry-runs.
+
+    ``physician.account.territory.region`` -> ``territory.region``
+    Only rewrites segments whose prefix matches the nested join tree.
+    """
+    if not joins:
+        return expr
+    # Build set of leaf aliases that are nested (have a parent)
+    nested_aliases: set[str] = set()
+    def _collect(jlist, is_nested=False):
+        for j in jlist:
+            name = j.get("name", "").lower()
+            if name and is_nested:
+                nested_aliases.add(name)
+            if j.get("joins"):
+                _collect(j["joins"], True)
+    _collect(joins)
+    if not nested_aliases:
+        return expr
+
+    def _sub(m):
+        parts = m.group(0).split(".")
+        if len(parts) >= 3 and parts[-2].lower() in nested_aliases:
+            return f"{parts[-2]}.{parts[-1]}"
+        return m.group(0)
+
+    return re.sub(r"\b[A-Za-z_]\w*(?:\.[A-Za-z_]\w*){2,}", _sub, expr)
 
 
 def _validate_expr(expr: str, source_table: str, joins: list[dict] | None = None) -> tuple:
     """Test a SQL expression with optional joins. Returns (error_or_None, possibly_fixed_expr)."""
     if re.search(r'\bOVER\s*\(', expr, re.IGNORECASE):
         return "Window functions (OVER) are not supported in metric view expressions. Use the 'window' property instead.", expr
+    if _NESTED_AGG_RE.search(expr):
+        return "Nested aggregate functions are not supported. Use a conditional aggregate (CASE/WHEN) or create a separate metric view for the inner aggregation.", expr
     from_clause = _build_from_clause(source_table, joins)
+    sql_expr = _dotpath_to_leaf(expr, joins)
     try:
-        execute_sql(f"SELECT {expr} FROM {from_clause} LIMIT 0")
+        execute_sql(f"SELECT {sql_expr} FROM {from_clause} LIMIT 0")
         return None, expr
     except Exception as e:
         err_str = str(e)
@@ -7185,7 +7297,7 @@ def _validate_expr(expr: str, source_table: str, joins: list[dict] | None = None
             )
             if fixed != expr:
                 try:
-                    execute_sql(f"SELECT {fixed} FROM {from_clause} LIMIT 0")
+                    execute_sql(f"SELECT {_dotpath_to_leaf(fixed, joins)} FROM {from_clause} LIMIT 0")
                     return None, fixed
                 except Exception:
                     pass
@@ -7428,7 +7540,22 @@ def _score_definition_complexity(defn: dict) -> dict:
     if has_joined_dim:
         q_agent += 2
 
-    q_score = q_meta + q_agent
+    # Penalty: flat joins whose ON references a sibling alias (should be nested)
+    flat_penalty = 0
+    joins = defn.get("joins", [])
+    if joins:
+        join_names = {j.get("name", "").lower() for j in joins if j.get("name")}
+        for j in joins:
+            if j.get("joins"):
+                continue
+            on = j.get("on", "")
+            refs = {m.group(1).lower() for m in _ALIAS_REF_RE.finditer(on)}
+            refs.discard("source")
+            own = j.get("name", "").lower()
+            if refs & join_names - {own}:
+                flat_penalty += 2
+
+    q_score = max(0, q_meta + q_agent - flat_penalty)
     if q_score >= 14:
         q_level = "production"
     elif q_score >= 7:
@@ -7660,24 +7787,92 @@ def _restructure_chained_to_nested(defn: dict) -> dict:
     return defn
 
 
-def _build_plan_prompt(questions: list[str], context: str) -> str:
+def _qualify_nested_refs(defn: dict) -> dict:
+    """Rewrite dimension/measure expressions so nested join aliases use full dot-paths.
+
+    Databricks metric views require nested aliases to be referenced through
+    their parent chain: ``parent.child.column`` not ``child.column``.
+    Flat (top-level) joins can be referenced directly: ``alias.column``.
+    """
+    joins = defn.get("joins", [])
+    if not joins:
+        return defn
+
+    # Build alias -> dot-path and set of top-level aliases
+    top_aliases: set[str] = set()
+    alias_path: dict[str, str] = {}  # lowered alias -> dot-path prefix
+
+    def _walk(jlist: list[dict], prefix: str = "") -> None:
+        for j in jlist:
+            name = j.get("name", "")
+            if not name:
+                continue
+            path = f"{prefix}.{name}" if prefix else name
+            alias_path[name.lower()] = path
+            if not prefix:
+                top_aliases.add(name.lower())
+            if j.get("joins"):
+                _walk(j["joins"], path)
+
+    _walk(joins)
+
+    # Only rewrite aliases that are nested (not top-level)
+    nested = {a: p for a, p in alias_path.items() if a not in top_aliases}
+    if not nested:
+        return defn
+
+    ref_pat = re.compile(r"\b([A-Za-z_]\w*)\.(\w+)")
+
+    def _rewrite(expr: str) -> str:
+        def _sub(m):
+            alias_low = m.group(1).lower()
+            if alias_low in nested:
+                return f"{nested[alias_low]}.{m.group(2)}"
+            return m.group(0)
+        return ref_pat.sub(_sub, expr)
+
+    for section in ("dimensions", "measures"):
+        for item in defn.get(section, []):
+            if item.get("expr"):
+                item["expr"] = _rewrite(item["expr"])
+    if defn.get("filter"):
+        defn["filter"] = _rewrite(defn["filter"])
+    return defn
+
+
+def _build_plan_prompt(questions: list[str], context: str, generation_style: str = "comprehensive") -> str:
     q_block = "\n".join(f"  {i+1}. {q}" for i, q in enumerate(questions))
+    if generation_style == "targeted":
+        org_block = (
+            "ORGANIZING PRINCIPLE -- grain first, theme second:\n"
+            "- Each view declares its grain via the source table. All measures must be valid at that grain.\n"
+            "- Within a single grain, create SEPARATE views for different analytical themes "
+            "(e.g. from the same orders table: one view for revenue analysis, another for fulfillment tracking).\n"
+            "- Name views to reflect both grain and theme: order_revenue_metrics, order_fulfillment_analysis.\n"
+            "- Multiple views from the same source table are encouraged when they serve different analytical audiences or drill paths."
+        )
+    else:
+        org_block = (
+            "ORGANIZING PRINCIPLE -- one comprehensive view per fact-table grain:\n"
+            "- Each view declares its grain via the source table. All measures must be valid at that grain.\n"
+            "- Prefer ONE broad view per grain with all relevant measures and dimensions. "
+            "The consumer (Genie, agent, SQL) selects dimensions/measures per query.\n"
+            "- Split into multiple views from the same source ONLY when the persistent filter, "
+            "join path, or grain changes -- NOT because of different \"themes\"."
+        )
     return f"""You are a data modeler planning a semantic layer for Databricks Unity Catalog.
 
 TASK: Output a PLAN only (no SQL). Reply with a single JSON object: {{ "views": [ ... ] }}.
 
-ORGANIZING PRINCIPLE -- grain first, theme second:
-- Each view declares its grain via the source table. All measures must be valid at that grain.
-- Within a single grain, create separate views for different analytical themes.
-- Name views to reflect grain + theme: encounter_throughput_metrics, prescription_fill_channel_analysis.
+{org_block}
 
 For each metric view in "views", include:
-- "name": unique snake_case name reflecting grain and theme
+- "name": unique snake_case name reflecting the grain (e.g. prescription_metrics, order_line_metrics)
 - "source": fully qualified source table (catalog.schema.table)
 - "comment": one sentence purpose
 - "joins": array of {{ "name": "<alias>", "source": "catalog.schema.table", "on": "source.<fk_col> = <alias>.<pk_col>" }}
-  Include joins where FK relationships have high confidence and are relevant to the business questions. Prefer simpler views with fewer joins over complex views that may fail. A view with 0-2 well-chosen joins is better than one with 5 forced joins.
-  For dimension hierarchies use nested joins: {{ "name": "customer", ..., "joins": [{{ "name": "nation", ..., "on": "customer.nation_id = nation.id" }}] }}
+  Include ALL joins supported by high-confidence FK relationships to maximize dimension reach. Use nested joins for dimension hierarchies (e.g. orders -> customers -> regions):
+  {{ "name": "customer", ..., "joins": [{{ "name": "nation", ..., "on": "customer.nation_id = nation.id" }}] }}
 - "dimensions": array of {{ "name": "Display Name", "comment": "what it is" }} (no expr)
 - "measures": array of {{ "name": "Display Name", "comment": "what it measures" }} (no expr)
 - "question_indices": array of 0-based question indices this view answers
@@ -7712,9 +7907,15 @@ RULES:
   STAR SCHEMA joins: "on": "source.<fk> = <alias>.<pk>"
   NESTED JOINS for hierarchies: nest child joins inside the parent's "joins" array with child "on" referencing the parent alias:
   {{"name": "customer", "source": "...", "on": "source.customer_id = customer.id", "joins": [{{"name": "nation", "source": "...", "on": "customer.nation_id = nation.id"}}]}}
-- COLUMN REFERENCING: Use "source.col" for source table columns, "join_alias.col" for joined table columns (including nested aliases like "nation.name"). NEVER use bare column names when joins are present -- always qualify with the alias.
+- COLUMN REFERENCING: Use "source.col" for source columns, "alias.col" for flat (top-level) join columns. For NESTED joins, use the full dot-path through parents: if physician -> account -> territory, use "physician.account.account_name" and "physician.account.territory.region". NEVER use bare "account.col" for a nested alias. NEVER use bare column names when joins are present.
+- NEVER substitute a placeholder column from an unrelated table or alias. If a dimension is called "Region", its expr MUST reference the actual region column from the correct alias (e.g. "territory.region"), NOT an unrelated column like "source.channel". If a column is unreachable through the join path, DROP the dimension entirely rather than using a fake placeholder.
+- Share/mix measures (X as % of total) CANNOT be computed in metric views because window functions are banned. Do NOT create measures like SUM(x)/NULLIF(SUM(x),0) -- this always equals 1.0. Instead, provide the raw numerator; the consumer computes shares at query time.
 - Ratios must use NULLIF in denominator. AVG of pre-aggregated values is usually wrong.
+- REVERSE STAR: When sourcing from a dimension table and joining to a fact table, SUM and COUNT of fact columns are valid. But AVG of a source dimension attribute inflates because each row is duplicated by the fan-out. Prefer COUNT(DISTINCT fact.pk) and SUM(fact.amount); avoid AVG(source.attribute) when a fact join is present.
+- Do NOT create duplicate measures with identical expressions but different names. Each measure expr must be semantically distinct.
 - Only use column names that appear in the metadata.
+- comment fields: describe content and lineage only. Do NOT reference KPI numbers, question numbers, or implementation details (e.g. "Implements KPIs 1, 10" is WRONG).
+- For year-month dimensions, use DATE_FORMAT(col, 'yyyy-MM'). NEVER use SUBSTR on date columns.
 
 {_REFERENCE_RULES_BLOCK}
 
@@ -7793,37 +7994,10 @@ def _inject_fk_joins(plan_views: list[dict], tables: list[str], cat: str, sch: s
     return plan_views
 
 
-def _defn_to_yaml(defn: dict) -> str:
-    """Convert a metric view JSON definition to YAML body for CREATE VIEW WITH METRICS."""
-    mv: dict = {"version": "1.1", "source": defn["source"]}
-    if defn.get("comment"):
-        mv["comment"] = defn["comment"]
-    if defn.get("filter"):
-        mv["filter"] = defn["filter"]
-    mv["dimensions"] = [
-        {k: v for k, v in {"name": d["name"], "expr": d["expr"], "comment": d.get("comment"), "display_name": d.get("display_name"), "synonyms": d.get("synonyms")}.items() if v}
-        for d in defn.get("dimensions", [])
-    ]
-    measures_out = []
-    for m in defn.get("measures", []):
-        entry = {k: v for k, v in {"name": m["name"], "expr": m["expr"], "comment": m.get("comment"), "display_name": m.get("display_name"), "synonyms": m.get("synonyms")}.items() if v}
-        if m.get("format"):
-            entry["format"] = m["format"]
-        if m.get("window"):
-            specs = _normalize_window_specs(m["window"])
-            if specs:
-                entry["window"] = specs
-        measures_out.append(entry)
-    mv["measures"] = measures_out
-    if defn.get("joins"):
-        mv["joins"] = defn["joins"]
-    return yaml.dump(mv, default_flow_style=False, sort_keys=False)
-
-
 def _yaml_dry_run(defn: dict, cat: str, sch: str) -> Optional[str]:
     """Attempt CREATE VIEW WITH METRICS LANGUAGE YAML; return error string or None."""
     try:
-        yaml_body = _defn_to_yaml(defn)
+        yaml_body = _definition_to_yaml(defn)
         mv_name = defn.get("name", "dry_run_test")
         dry_name = f"`{cat}`.`{sch}`.`_mv_dryrun_{mv_name}`"
         execute_sql(
@@ -7850,6 +8024,7 @@ def _run_sl_generation(
     mode: str = "replace",
     business_context: str = None,
     profile_id: str = None,
+    generation_style: str = "comprehensive",
 ):
     """Background thread for in-app metric view generation (two-phase)."""
     from datetime import datetime as _dt
@@ -7881,6 +8056,58 @@ def _run_sl_generation(
             except Exception:
                 pass
 
+        # Pre-generation gate: check which requested tables already have active views
+        existing_mvs: dict[str, list[dict]] = {}  # source_table -> [{name, status}]
+        try:
+            existing_rows = execute_sql(
+                f"SELECT metric_view_name, source_table, status "
+                f"FROM {fq('metric_view_definitions')} "
+                f"WHERE status IN ('applied', 'validated', 'created') LIMIT 200"
+            )
+            for r in (existing_rows or []):
+                src = (r.get("source_table") or "").lower()
+                if src:
+                    existing_mvs.setdefault(src, []).append({
+                        "name": r.get("metric_view_name", ""),
+                        "status": r.get("status", ""),
+                    })
+        except Exception:
+            pass
+
+        if existing_mvs and mode != "replace_all":
+            covered = []
+            uncovered = []
+            for t in tables:
+                matches = existing_mvs.get(t.lower(), [])
+                applied = [m for m in matches if m["status"] == "applied"]
+                if applied:
+                    covered.append((t, applied[0]["name"]))
+                else:
+                    uncovered.append(t)
+
+            if covered and not uncovered:
+                names = [f"{name} (source: {t})" for t, name in covered]
+                task.update({
+                    "status": "done",
+                    "stage": "done",
+                    "result": {
+                        "generated": 0, "validated": 0, "failed": 0, "repaired": 0,
+                        "skipped_reason": "all_covered",
+                        "message": f"All requested tables already have applied metric views: {', '.join(names)}. "
+                                   "Delete or supersede existing views to regenerate.",
+                        "existing_views": [{"table": t, "view": n} for t, n in covered],
+                    },
+                })
+                return
+
+            if covered and uncovered:
+                tables = uncovered
+                logger.info(
+                    "Skipping %d already-covered tables: %s",
+                    len(covered),
+                    ", ".join(n for _, n in covered),
+                )
+
         task["stage"] = "building_context"
         context = _build_sl_context(tables, cat, sch, questions=questions, business_context=business_context, profile_id=profile_id)
         if not context.strip():
@@ -7889,7 +8116,7 @@ def _run_sl_generation(
 
         # Phase 1: Plan
         task["stage"] = "planning"
-        plan_prompt = _build_plan_prompt(questions, context)
+        plan_prompt = _build_plan_prompt(questions, context, generation_style=generation_style)
         escaped = plan_prompt.replace("'", "''")
         rows = execute_sql(f"SELECT AI_QUERY('{model}', '{escaped}') as response", timeout=180)
         plan_response = rows[0]["response"] if rows else ""
@@ -7926,7 +8153,7 @@ def _run_sl_generation(
         else:
             # Fallback to single-shot
             task["stage"] = "calling_ai"
-            prompt = _build_prompt(questions, context)
+            prompt = _build_prompt(questions, context, generation_style=generation_style)
             escaped = prompt.replace("'", "''")
             rows = execute_sql(f"SELECT AI_QUERY('{model}', '{escaped}') as response", timeout=180)
             response = rows[0]["response"] if rows else ""
@@ -7961,6 +8188,7 @@ def _run_sl_generation(
             defn = _normalize_joins(defn)
             defn = _fix_join_alias_refs(defn)
             defn = _restructure_chained_to_nested(defn)
+            defn = _qualify_nested_refs(defn)
 
             # Fuzzy-match hallucinated column names to actual columns
             src = defn.get("source", "")
@@ -7968,29 +8196,59 @@ def _run_sl_generation(
                 src_cols = _resolve_table_columns(src)
                 if src_cols:
                     _tbl_cols: dict[str, set[str]] = {"source": src_cols}
-                    for j in defn.get("joins", []):
-                        j_src = j.get("source", "")
-                        j_name = j.get("name", "")
-                        if j_name and j_src:
-                            j_cols = _resolve_table_columns(j_src)
-                            if j_cols:
-                                _tbl_cols[j_name.lower()] = j_cols
+                    def _resolve_join_cols(jlist):
+                        for j in jlist:
+                            j_src = j.get("source", "")
+                            j_name = j.get("name", "")
+                            if j_name and j_src:
+                                j_cols = _resolve_table_columns(j_src)
+                                if j_cols:
+                                    _tbl_cols[j_name.lower()] = j_cols
+                            if j.get("joins"):
+                                _resolve_join_cols(j["joins"])
+                    _resolve_join_cols(defn.get("joins", []))
                     defn = _autofix_dimension_columns(defn, _tbl_cols)
 
             json_str = json.dumps(defn).replace("'", "''")
 
-            # In "replace" mode, supersede existing definitions with the same name
-            if mode == "replace":
-                mv_esc = mv_name.replace("'", "''")
-                proj_clause = f" AND project_id = '{project_id}'" if project_id else ""
-                try:
-                    execute_sql(
-                        f"UPDATE {fq('metric_view_definitions')} SET status = 'superseded' "
-                        f"WHERE metric_view_name = '{mv_esc}' "
-                        f"AND status != 'superseded'{proj_clause}"
-                    )
-                except Exception:
-                    pass
+            # Name collision check: skip if an applied view with this name already exists
+            mv_esc = mv_name.replace("'", "''")
+            collision_applied = False
+            try:
+                collision_rows = execute_sql(
+                    f"SELECT definition_id, status FROM {fq('metric_view_definitions')} "
+                    f"WHERE metric_view_name = '{mv_esc}' AND status NOT IN ('superseded', 'deleted') LIMIT 5"
+                )
+                for cr in (collision_rows or []):
+                    if cr.get("status") == "applied":
+                        collision_applied = True
+                        break
+            except Exception:
+                pass
+
+            if collision_applied and mode != "replace_all":
+                logger.info("Skipping '%s': an applied view with this name already exists", mv_name)
+                per_definition_results.append({
+                    "name": mv_name, "source": source, "status": "skipped",
+                    "validation_errors": [f"Metric view '{mv_name}' already exists and is applied. Delete or supersede it first."],
+                })
+                stats.setdefault("skipped", 0)
+                stats["skipped"] += 1
+                stats["generated"] += 1
+                continue
+
+            # Supersede non-applied siblings with the same name (created/validated/failed)
+            if collision_rows:
+                sibling_ids = [cr["definition_id"] for cr in collision_rows if cr.get("status") != "applied"]
+                if sibling_ids:
+                    id_list = ", ".join(f"'{sid}'" for sid in sibling_ids)
+                    try:
+                        execute_sql(
+                            f"UPDATE {fq('metric_view_definitions')} SET status = 'superseded' "
+                            f"WHERE definition_id IN ({id_list})"
+                        )
+                    except Exception:
+                        pass
 
             def _validate_defn(d: dict) -> list[str]:
                 errs = _validate_definition_structure(d)
@@ -8007,6 +8265,7 @@ def _run_sl_generation(
                                     item["expr"] = fixed_expr
                 return errs
 
+            _infer_format_specs(defn)
             errors = _validate_defn(defn)
 
             # YAML dry-run: catches metric-YAML-specific failures that pass SELECT validation
@@ -8030,6 +8289,7 @@ def _run_sl_generation(
                             item["expr"] = _autofix_expr(item["expr"])
                 if repaired.get("filter"):
                     repaired["filter"] = _autofix_expr(repaired["filter"])
+                _infer_format_specs(repaired)
                 repair_errors = _validate_defn(repaired)
                 if not repair_errors or len(repair_errors) < len(errors):
                     defn = repaired
@@ -8043,8 +8303,15 @@ def _run_sl_generation(
                 else:
                     break
 
+            defn = _normalize_joins(defn)
+            defn = _fix_join_alias_refs(defn)
+            defn = _restructure_chained_to_nested(defn)
+            defn = _qualify_nested_refs(defn)
             _infer_format_specs(defn)
             _backfill_agent_metadata(defn)
+            _strip_kpi_references(defn)
+            _drop_broken_measures(defn)
+            _drop_placeholder_dimensions(defn)
             cx = _score_definition_complexity(defn)
 
             if source and source.count('.') < 2:
@@ -8073,6 +8340,20 @@ def _run_sl_generation(
                 "complexity": cx.get("complexity_level"),
                 "quality": cx.get("quality_level"),
             })
+
+        # Flag duplicate-source views (same grain generated more than once)
+        source_seen: dict[str, list[str]] = {}
+        for r in per_definition_results:
+            src = r.get("source", "")
+            if src:
+                source_seen.setdefault(src, []).append(r["name"])
+        for src, names in source_seen.items():
+            if len(names) > 1:
+                logger.warning("Duplicate source grain '%s' across views: %s", src, names)
+                stats.setdefault("warnings", []).append(
+                    f"Multiple views share source {src.split('.')[-1]}: {', '.join(names)}. "
+                    "Consider merging into one comprehensive grain view."
+                )
 
         # Post-generation: LLM coverage check
         coverage = None
@@ -8154,6 +8435,7 @@ def start_sl_generation(req: SemanticGenerateRequest):
             req.mode,
             req.business_context,
             req.profile_id,
+            req.generation_style,
         ),
     )
 
@@ -8212,6 +8494,7 @@ def _parse_single_json(text: str) -> dict:
 
 def _validate_definition(defn: dict, source: str) -> tuple[str, str]:
     """Two-tier validation: structural then expression. Returns (status, errors_str)."""
+    _infer_format_specs(defn)
     for item_type in ("dimensions", "measures"):
         for item in defn.get(item_type, []):
             if item.get("expr"):
@@ -8221,6 +8504,7 @@ def _validate_definition(defn: dict, source: str) -> tuple[str, str]:
     defn = _normalize_joins(defn)
     defn = _fix_join_alias_refs(defn)
     defn = _restructure_chained_to_nested(defn)
+    defn = _qualify_nested_refs(defn)
     errors = _validate_definition_structure(defn)
     if not errors:
         defn_joins = defn.get("joins", [])
@@ -8265,6 +8549,9 @@ def _update_definition_row(definition_id: str, defn: dict, status: str, errors: 
     proj_val = f"'{proj_id}'" if proj_id else "NULL"
     _infer_format_specs(defn)
     _backfill_agent_metadata(defn)
+    _strip_kpi_references(defn)
+    _drop_broken_measures(defn)
+    _drop_placeholder_dimensions(defn)
     cx = _score_definition_complexity(defn)
     execute_sql(
         f"INSERT INTO {fq('metric_view_definitions')} VALUES ("
@@ -8315,6 +8602,95 @@ def _backfill_agent_metadata(defn: dict) -> None:
             item["synonyms"] = _infer_synonyms(item.get("name", ""), item.get("comment"))
 
 
+_KPI_REF_RE = re.compile(
+    r"\.?\s*(?:Implements|Supports|Addresses|Answers|Covers|Partially implements)"
+    r"\s+(?:KPI|question|Q)s?\s*[\d,\s\-and]+\.?"
+    r"|\s*\(KPI:\s*[^)]+\)",
+    re.IGNORECASE,
+)
+
+
+def _strip_kpi_references(defn: dict) -> None:
+    """Remove KPI/question number references from comments."""
+    for field in ("comment",):
+        if defn.get(field):
+            defn[field] = _KPI_REF_RE.sub("", defn[field]).strip().rstrip(".")
+            if defn[field]:
+                defn[field] += "."
+    for item in defn.get("measures", []) + defn.get("dimensions", []):
+        if item.get("comment"):
+            item["comment"] = _KPI_REF_RE.sub("", item["comment"]).strip().rstrip(".")
+            if item["comment"]:
+                item["comment"] += "."
+
+
+_ALIAS_DOT_PH_RE = re.compile(r"\b([A-Za-z_]\w*)\.\w+")
+
+
+def _drop_placeholder_dimensions(defn: dict) -> None:
+    """Drop dimensions whose name implies a join alias but whose expr uses a different alias."""
+    joins = defn.get("joins", [])
+    if not joins:
+        return
+
+    def _collect_aliases(jlist: list[dict]) -> set[str]:
+        out: set[str] = set()
+        for j in jlist:
+            alias = j.get("name", "").lower()
+            if alias:
+                out.add(alias)
+            if j.get("joins"):
+                out |= _collect_aliases(j["joins"])
+        return out
+
+    all_aliases = _collect_aliases(joins)
+    if not all_aliases:
+        return
+
+    cleaned: list[dict] = []
+    for d in defn.get("dimensions", []):
+        name_lower = d.get("name", "").lower().replace("_", " ")
+        expr = d.get("expr", "")
+        refs = {m.group(1).lower() for m in _ALIAS_DOT_PH_RE.finditer(expr)}
+
+        implied_alias = None
+        for alias in all_aliases:
+            if alias in name_lower:
+                implied_alias = alias
+                break
+
+        if implied_alias and implied_alias not in refs:
+            continue
+        cleaned.append(d)
+    defn["dimensions"] = cleaned
+
+
+_SELF_DIV_RE = re.compile(
+    r"^(SUM|COUNT|AVG|MIN|MAX)\s*\(([^)]+)\)\s*/\s*NULLIF\s*\(\s*\1\s*\(\2\)",
+    re.IGNORECASE,
+)
+
+
+def _drop_broken_measures(defn: dict) -> None:
+    """Remove self-dividing share measures (always=1.0) and deduplicate identical exprs."""
+    measures = defn.get("measures", [])
+    if not measures:
+        return
+
+    cleaned: list[dict] = []
+    seen_exprs: set[str] = set()
+    for m in measures:
+        expr = re.sub(r"\s+", " ", m.get("expr", "").strip())
+        if _SELF_DIV_RE.search(expr):
+            continue
+        norm = expr.upper()
+        if norm in seen_exprs:
+            continue
+        seen_exprs.add(norm)
+        cleaned.append(m)
+    defn["measures"] = cleaned
+
+
 def _normalize_window_specs(w) -> list[dict]:
     """Normalize window field to YAML 1.1 spec: array of {order, range/rows, semiadditive}."""
     if w is None:
@@ -8350,55 +8726,46 @@ def _normalize_window_specs(w) -> list[dict]:
     return result
 
 
+class _IndentYamlDumper(yaml.Dumper):
+    """Dumper that always indents list items under their parent key.
+
+    Default yaml.Dumper uses compact style where list items sit at the same
+    indent as the parent mapping key.  Databricks' metric-view YAML parser
+    requires the indented style where list items are nested one level deeper
+    (matching the format shown in the official documentation).
+    """
+    def increase_indent(self, flow=False, indentless=False):
+        return super().increase_indent(flow, False)
+
+
 def _definition_to_yaml(defn: dict) -> str:
     """Convert a JSON definition to the YAML body for CREATE VIEW WITH METRICS.
 
-    Uses manual construction instead of yaml.dump to guarantee SQL single
-    quotes inside CASE/FILTER expressions survive the round-trip.
+    Uses yaml.dump with an indenting Dumper so nested join lists are
+    properly indented (Databricks' parser rejects the compact style for
+    nested joins).  Pre-processing backfills currency_code and normalises
+    window specs.
     """
     source = defn.get("source", "")
     if not source:
         raise ValueError("Metric view definition missing 'source' table")
-    lines = ['version: "1.1"', f'source: {source}']
+    mv: dict = {"version": "1.1", "source": source}
     if defn.get("comment"):
-        lines.append(f'comment: "{_yaml_esc(defn["comment"])}"')
+        mv["comment"] = defn["comment"]
     if defn.get("filter"):
-        lines.append(f'filter: "{_yaml_esc(defn["filter"])}"')
-    def _fmt_synonyms(syns: list, indent: str = "    ") -> str:
-        items = ", ".join(f'"{_yaml_esc(s)}"' for s in syns)
-        return f"{indent}synonyms: [{items}]"
-
-    lines.append("dimensions:")
-    for i, d in enumerate(defn.get("dimensions", [])):
-        name = d.get("name", f"dim_{i}")
-        expr = d.get("expr", name)
-        lines.append(f'  - name: "{_yaml_esc(name)}"')
-        lines.append(f'    expr: "{_yaml_esc(expr)}"')
-        if d.get("comment"):
-            lines.append(f'    comment: "{_yaml_esc(d["comment"])}"')
-        if d.get("display_name"):
-            lines.append(f'    display_name: "{_yaml_esc(d["display_name"])}"')
-        if d.get("synonyms"):
-            lines.append(_fmt_synonyms(d["synonyms"]))
-    lines.append("measures:")
-    for i, m in enumerate(defn.get("measures", [])):
-        name = m.get("name", f"measure_{i}")
-        expr = m.get("expr", "COUNT(*)")
-        lines.append(f'  - name: "{_yaml_esc(name)}"')
-        lines.append(f'    expr: "{_yaml_esc(expr)}"')
-        if m.get("comment"):
-            lines.append(f'    comment: "{_yaml_esc(m["comment"])}"')
-        if m.get("display_name"):
-            lines.append(f'    display_name: "{_yaml_esc(m["display_name"])}"')
-        if m.get("synonyms"):
-            lines.append(_fmt_synonyms(m["synonyms"]))
+        mv["filter"] = defn["filter"]
+    mv["dimensions"] = [
+        {k: v for k, v in ((k, d.get(k)) for k in ("name", "expr", "comment", "display_name", "synonyms")) if v}
+        for d in defn.get("dimensions", [])
+    ]
+    measures_out = []
+    for m in defn.get("measures", []):
+        entry = {k: v for k, v in ((k, m.get(k)) for k in ("name", "expr", "comment", "display_name", "synonyms")) if v}
         if m.get("format") and isinstance(m["format"], dict):
-            fmt = m["format"]
-            lines.append("    format:")
-            if fmt.get("type"):
-                lines.append(f'      type: "{_yaml_esc(fmt["type"])}"')
-            if fmt.get("currency_code"):
-                lines.append(f'      currency_code: "{_yaml_esc(fmt["currency_code"])}"')
+            fmt = dict(m["format"])
+            if fmt.get("type") == "currency" and not fmt.get("currency_code"):
+                fmt["currency_code"] = "USD"
+            entry["format"] = fmt
         if m.get("window"):
             w = m["window"]
             if isinstance(w, str):
@@ -8408,30 +8775,12 @@ def _definition_to_yaml(defn: dict) -> str:
                     w = None
             specs = _normalize_window_specs(w)
             if specs:
-                lines.append("    window:")
-                for ws in specs:
-                    lines.append(f'      - order: "{_yaml_esc(ws["order"])}"')
-                    if ws.get("range"):
-                        lines.append(f'        range: "{_yaml_esc(ws["range"])}"')
-                    if ws.get("rows"):
-                        lines.append(f'        rows: "{_yaml_esc(ws["rows"])}"')
-                    if ws.get("semiadditive"):
-                        lines.append(f'        semiadditive: "{_yaml_esc(ws["semiadditive"])}"')
-    def _emit_joins(jlist: list[dict], indent: int = 2) -> None:
-        pfx = " " * indent
-        for j in jlist:
-            lines.append(f'{pfx}- name: "{_yaml_esc(j.get("name", ""))}"')
-            lines.append(f'{pfx}  source: {j.get("source", "")}')
-            if j.get("on"):
-                lines.append(f'{pfx}  on: "{_yaml_esc(j["on"])}"')
-            if j.get("joins"):
-                lines.append(f'{pfx}  joins:')
-                _emit_joins(j["joins"], indent + 4)
-
+                entry["window"] = specs
+        measures_out.append(entry)
+    mv["measures"] = measures_out
     if defn.get("joins"):
-        lines.append("joins:")
-        _emit_joins(defn["joins"])
-    return "\n".join(lines) + "\n"
+        mv["joins"] = defn["joins"]
+    return yaml.dump(mv, Dumper=_IndentYamlDumper, default_flow_style=False, sort_keys=False)
 
 
 _agent_ref_cache: dict[str, dict] = {}
@@ -8498,7 +8847,7 @@ def retry_definition(definition_id: str):
     if len(parts) == 3:
         try:
             col_rows = execute_sql(
-                f"SELECT column_name, data_type FROM `{parts[0]}`.information_schema.columns "
+                f"SELECT column_name, data_type FROM system.information_schema.columns "
                 f"WHERE table_catalog = '{parts[0]}' AND table_schema = '{parts[1]}' AND table_name = '{parts[2]}'"
             )
             available_cols = ", ".join(
@@ -8620,6 +8969,12 @@ def create_metric_view(definition_id: str, req: CreateDefinitionRequest):
     try:
         execute_sql(sql, timeout=60)
     except Exception as e:
+        err_msg = str(e).replace("'", "''")
+        execute_sql(
+            f"UPDATE {fq('metric_view_definitions')} "
+            f"SET status = 'failed', validation_errors = '{err_msg}' "
+            f"WHERE definition_id = '{definition_id}'"
+        )
         raise HTTPException(400, detail=str(e))
     # Tag as draft for governance
     try:
@@ -8632,6 +8987,20 @@ def create_metric_view(definition_id: str, req: CreateDefinitionRequest):
         f"deployed_catalog = '{req.target_catalog}', deployed_schema = '{req.target_schema}' "
         f"WHERE definition_id = '{definition_id}'"
     )
+    # Supersede all other definitions with the same name (safety net for duplicates)
+    mv_esc = mv_name.replace("'", "''")
+    try:
+        execute_sql(
+            f"UPDATE {fq('metric_view_definitions')} SET status = 'superseded' "
+            f"WHERE metric_view_name = '{mv_esc}' AND definition_id != '{definition_id}' "
+            f"AND status NOT IN ('superseded', 'deleted')"
+        )
+    except Exception:
+        pass
+    try:
+        _trigger_sg_sync_if_idle()
+    except Exception:
+        pass
     return {"definition_id": definition_id, "status": "applied", "metric_view": fq_mv}
 
 
@@ -9906,8 +10275,8 @@ def genie_uc_comment(table_identifier: str):
     for p in (cat, sch, tbl):
         _validate_filter(p, "identifier_part")
     rows = execute_sql(
-        f"SELECT comment FROM {cat}.information_schema.tables "
-        f"WHERE table_schema = {_safe_sql_str(sch)} AND table_name = {_safe_sql_str(tbl)} LIMIT 1"
+        f"SELECT comment FROM system.information_schema.tables "
+        f"WHERE table_catalog = '{cat}' AND table_schema = {_safe_sql_str(sch)} AND table_name = {_safe_sql_str(tbl)} LIMIT 1"
     )
     comment = rows[0].get("comment") if rows else None
     return {"comment": comment}
@@ -11787,6 +12156,321 @@ def sync_metric_views():
 @app.get("/api/vector/sync-metric-views/{task_id}")
 def sync_metric_views_status(task_id: str):
     task = _mv_sync_tasks.get(task_id)
+    if not task:
+        raise HTTPException(404, detail="Task not found")
+    return task
+
+
+# ---------------------------------------------------------------------------
+# Semantic Graph sync
+# ---------------------------------------------------------------------------
+
+_sg_sync_tasks: dict[str, dict] = {}
+
+def _sg_sync_worker(task_id: str):
+    """Build/refresh the semantic knowledge graph from metric view definitions."""
+    cfg_nodes = fq("semantic_nodes")
+    cfg_edges = fq("semantic_edges")
+    cfg_defs = fq("metric_view_definitions")
+    cfg_kb = fq("table_knowledge_base")
+    cfg_gn = fq("graph_nodes")
+
+    try:
+        # Create tables
+        execute_sql(f"""
+            CREATE TABLE IF NOT EXISTS {cfg_nodes} (
+                node_id STRING NOT NULL, node_type STRING, definition_id STRING,
+                name STRING, display_name STRING, expr STRING, comment STRING,
+                source_table STRING, status STRING, deployed_fqn STRING,
+                filter_expr STRING, synonyms STRING, format_spec STRING,
+                window_spec STRING, domain STRING, subdomain STRING,
+                graph_node_id STRING, created_at TIMESTAMP, updated_at TIMESTAMP
+            ) USING DELTA TBLPROPERTIES ('delta.enableChangeDataFeed' = 'true')
+        """, timeout=30)
+        execute_sql(f"""
+            CREATE TABLE IF NOT EXISTS {cfg_edges} (
+                edge_id STRING NOT NULL, src STRING, dst STRING,
+                relationship STRING, direction STRING, weight DOUBLE,
+                properties STRING, created_at TIMESTAMP, updated_at TIMESTAMP
+            ) USING DELTA TBLPROPERTIES ('delta.enableChangeDataFeed' = 'true')
+        """, timeout=30)
+
+        # Read definitions
+        rows = execute_sql(
+            f"SELECT definition_id, metric_view_name, source_table, json_definition, "
+            f"status, deployed_catalog, deployed_schema "
+            f"FROM {cfg_defs} WHERE status IN ('validated', 'applied')",
+            timeout=30,
+        )
+        if not rows:
+            # No active definitions -- sweep all definition-owned nodes/edges
+            execute_sql(
+                f"DELETE FROM {cfg_nodes} WHERE definition_id IS NOT NULL",
+                timeout=30,
+            )
+            execute_sql(
+                f"DELETE FROM {cfg_edges} WHERE src NOT IN (SELECT node_id FROM {cfg_nodes}) "
+                f"OR dst NOT IN (SELECT node_id FROM {cfg_nodes})",
+                timeout=30,
+            )
+            _sg_sync_tasks[task_id] = {"status": "done", "nodes": 0, "edges": 0}
+            return
+
+        # Load domain info
+        try:
+            kb_rows = execute_sql(f"SELECT table_name, domain, subdomain FROM {cfg_kb}", timeout=15)
+            domains = {r["table_name"]: (r["domain"], r["subdomain"]) for r in kb_rows} if kb_rows else {}
+        except Exception:
+            domains = {}
+
+        # Load graph_nodes for cross-reference
+        try:
+            gn_rows = execute_sql(f"SELECT id, table_name FROM {cfg_gn} WHERE node_type = 'table'", timeout=15)
+            gn_map = {r["table_name"]: r["id"] for r in gn_rows} if gn_rows else {}
+        except Exception:
+            gn_map = {}
+
+        import re as _re
+        _alias_re = _re.compile(r"(?<![.\w])(\w+)\.(\w+)(?!\w)")
+        now_str = "current_timestamp()"
+        all_nodes = []
+        all_edges = []
+        valid_def_ids = set()
+
+        for r in rows:
+            defn = json.loads(r["json_definition"]) if isinstance(r["json_definition"], str) else r["json_definition"]
+            did = r["definition_id"]
+            valid_def_ids.add(did)
+            mv_name = defn.get("name", "") or r.get("metric_view_name", "")
+            source = defn.get("source", "")
+            dom, subdom = domains.get(source, (None, None))
+            deployed_fqn = None
+            if r.get("deployed_catalog") and r.get("deployed_schema"):
+                deployed_fqn = f"{r['deployed_catalog']}.{r['deployed_schema']}.{mv_name}"
+
+            mv_nid = f"metric_view::{did}::{mv_name}"
+            all_nodes.append((mv_nid, "metric_view", did, mv_name, None, None,
+                              defn.get("comment"), source, r["status"], deployed_fqn,
+                              defn.get("filter"), None, None, None, dom, subdom, None))
+
+            src_nid = f"source_table::{source}"
+            all_nodes.append((src_nid, "source_table", None, source, None, None,
+                              None, None, None, None, None, None, None, None,
+                              dom, subdom, gn_map.get(source)))
+
+            all_edges.append((f"{mv_nid}::{src_nid}::sourced_from", mv_nid, src_nid,
+                              "sourced_from", "directed", None, None))
+
+            alias_map = {"source": source}
+
+            def walk_joins(joins, parent_fqn, parent_alias):
+                for j in joins:
+                    j_source = j.get("source", "")
+                    j_alias = j.get("name", j_source.split(".")[-1] if j_source else "")
+                    alias_map[j_alias] = j_source
+                    j_nid = f"source_table::{j_source}"
+                    j_dom, j_subdom = domains.get(j_source, (None, None))
+                    all_nodes.append((j_nid, "source_table", None, j_source, None, None,
+                                      None, None, None, None, None, None, None, None,
+                                      j_dom, j_subdom, gn_map.get(j_source)))
+                    p_nid = f"source_table::{parent_fqn}"
+                    props = json.dumps({"join_expression": j.get("on", ""), "join_type": j.get("type", "LEFT")})
+                    all_edges.append((f"{p_nid}::{j_nid}::joins_to", p_nid, j_nid,
+                                      "joins_to", "directed", None, props))
+                    if j.get("joins"):
+                        walk_joins(j["joins"], j_source, j_alias)
+
+            walk_joins(defn.get("joins", []), source, "source")
+
+            def resolve_provides(expr, target_nid):
+                if not expr:
+                    return
+                resolved = set()
+                for alias, col in _alias_re.findall(expr):
+                    t = alias_map.get(alias)
+                    if t:
+                        resolved.add(t)
+                if resolved:
+                    for t in resolved:
+                        eid = f"source_table::{t}::{target_nid}::provides"
+                        all_edges.append((eid, f"source_table::{t}", target_nid,
+                                          "provides", "directed", 1.0, None))
+                else:
+                    eid = f"source_table::{source}::{target_nid}::provides"
+                    all_edges.append((eid, f"source_table::{source}", target_nid,
+                                      "provides", "directed", 0.7, None))
+
+            for m in defn.get("measures", []):
+                m_nid = f"measure::{did}::{m['name']}"
+                syns = json.dumps(m["synonyms"]) if m.get("synonyms") else None
+                fmt = json.dumps(m["format"]) if m.get("format") else None
+                win = json.dumps(m["window"]) if m.get("window") else None
+                all_nodes.append((m_nid, "measure", did, m["name"], m.get("display_name"),
+                                  m.get("expr"), m.get("comment"), None, None, None, None,
+                                  syns, fmt, win, None, None, None))
+                all_edges.append((f"{mv_nid}::{m_nid}::has_measure", mv_nid, m_nid,
+                                  "has_measure", "directed", None, None))
+                resolve_provides(m.get("expr", ""), m_nid)
+
+            for d in defn.get("dimensions", []):
+                d_nid = f"dimension::{did}::{d['name']}"
+                syns = json.dumps(d["synonyms"]) if d.get("synonyms") else None
+                all_nodes.append((d_nid, "dimension", did, d["name"], d.get("display_name"),
+                                  d.get("expr"), d.get("comment"), None, None, None, None,
+                                  syns, None, None, None, None, None))
+                all_edges.append((f"{mv_nid}::{d_nid}::has_dimension", mv_nid, d_nid,
+                                  "has_dimension", "directed", None, None))
+                resolve_provides(d.get("expr", ""), d_nid)
+
+        # Inter-view: shared_source
+        mv_table_map = {}
+        for e in all_edges:
+            if e[3] in ("sourced_from", "joins_to"):
+                for n in all_nodes:
+                    if n[0] == e[1] and n[1] == "metric_view":
+                        mv_table_map.setdefault(n[0], set()).add(e[2])
+        mv_list = list(mv_table_map.keys())
+        for i, a in enumerate(mv_list):
+            for b in mv_list[i + 1:]:
+                if mv_table_map[a] & mv_table_map[b]:
+                    all_edges.append((f"{a}::{b}::shared_source", a, b,
+                                      "shared_source", "undirected", None, None))
+
+        # Inter-view: co_dimension
+        dim_sigs = {}
+        for n in all_nodes:
+            if n[1] == "dimension":
+                raw_expr = n[5] or ""
+                norm = _alias_re.sub(lambda m: m.group(2), raw_expr).strip()
+                sig = f"{n[3]}||{norm}"
+                dim_sigs.setdefault(sig, []).append(n[0])
+        for sig, nids in dim_sigs.items():
+            if len(nids) < 2:
+                continue
+            for i, a in enumerate(nids):
+                for b in nids[i + 1:]:
+                    all_edges.append((f"{a}::{b}::co_dimension", a, b,
+                                      "co_dimension", "undirected", None, None))
+
+        # Dedup nodes and edges
+        seen_n = {}
+        for n in all_nodes:
+            if n[0] not in seen_n or (n[2] and not seen_n[n[0]][2]):
+                seen_n[n[0]] = n
+        seen_e = {}
+        for e in all_edges:
+            seen_e[e[0]] = e
+
+        # MERGE nodes via temp view SQL
+        n_values = []
+        for n in seen_n.values():
+            vals = []
+            for v in n:
+                if v is None:
+                    vals.append("NULL")
+                elif isinstance(v, (int, float)):
+                    vals.append(str(v))
+                else:
+                    vals.append("'" + str(v).replace("'", "''") + "'")
+            n_values.append(f"({', '.join(vals)}, {now_str}, {now_str})")
+        if n_values:
+            n_col_list = [
+                "node_id", "node_type", "definition_id", "name", "display_name", "expr", "comment",
+                "source_table", "status", "deployed_fqn", "filter_expr", "synonyms", "format_spec",
+                "window_spec", "domain", "subdomain", "graph_node_id", "created_at", "updated_at",
+            ]
+            n_cols_str = ", ".join(n_col_list)
+            n_select_tpl = ", ".join(f"col{i+1} AS {c}" for i, c in enumerate(n_col_list))
+            batch_sz = 200
+            for idx in range(0, len(n_values), batch_sz):
+                batch = n_values[idx:idx + batch_sz]
+                execute_sql(
+                    f"MERGE INTO {cfg_nodes} AS t "
+                    f"USING (SELECT {n_select_tpl} FROM VALUES {', '.join(batch)}) AS s "
+                    f"ON t.node_id = s.node_id "
+                    f"WHEN MATCHED AND ("
+                    f"  COALESCE(t.expr, '') != COALESCE(s.expr, '') "
+                    f"  OR COALESCE(t.comment, '') != COALESCE(s.comment, '') "
+                    f"  OR COALESCE(t.source_table, '') != COALESCE(s.source_table, '') "
+                    f"  OR COALESCE(t.status, '') != COALESCE(s.status, '') "
+                    f"  OR COALESCE(t.deployed_fqn, '') != COALESCE(s.deployed_fqn, '') "
+                    f") THEN UPDATE SET * "
+                    f"WHEN NOT MATCHED THEN INSERT *",
+                    timeout=60,
+                )
+
+        # MERGE edges
+        e_values = []
+        for e in seen_e.values():
+            vals = []
+            for v in e:
+                if v is None:
+                    vals.append("NULL")
+                elif isinstance(v, (int, float)):
+                    vals.append(str(v))
+                else:
+                    vals.append("'" + str(v).replace("'", "''") + "'")
+            e_values.append(f"({', '.join(vals)}, {now_str}, {now_str})")
+        if e_values:
+            e_col_list = ["edge_id", "src", "dst", "relationship", "direction", "weight", "properties", "created_at", "updated_at"]
+            e_select_tpl = ", ".join(f"col{i+1} AS {c}" for i, c in enumerate(e_col_list))
+            for idx in range(0, len(e_values), batch_sz):
+                batch = e_values[idx:idx + batch_sz]
+                execute_sql(
+                    f"MERGE INTO {cfg_edges} AS t "
+                    f"USING (SELECT {e_select_tpl} FROM VALUES {', '.join(batch)}) AS s "
+                    f"ON t.edge_id = s.edge_id "
+                    f"WHEN MATCHED THEN UPDATE SET * "
+                    f"WHEN NOT MATCHED THEN INSERT *",
+                    timeout=60,
+                )
+
+        # Sweep stale
+        if valid_def_ids:
+            id_list = ", ".join(f"'{d}'" for d in valid_def_ids)
+            execute_sql(
+                f"DELETE FROM {cfg_nodes} WHERE definition_id IS NOT NULL "
+                f"AND definition_id NOT IN ({id_list})",
+                timeout=30,
+            )
+            execute_sql(
+                f"DELETE FROM {cfg_edges} WHERE src NOT IN (SELECT node_id FROM {cfg_nodes}) "
+                f"OR dst NOT IN (SELECT node_id FROM {cfg_nodes})",
+                timeout=30,
+            )
+
+        _sg_sync_tasks[task_id] = {
+            "status": "done",
+            "nodes": len(seen_n),
+            "edges": len(seen_e),
+        }
+    except Exception as exc:
+        logger.exception("Semantic graph sync failed")
+        _sg_sync_tasks[task_id] = {"status": "error", "error": str(exc)}
+
+
+def _trigger_sg_sync_if_idle():
+    """Fire-and-forget semantic graph sync if none is currently running."""
+    for t in _sg_sync_tasks.values():
+        if t.get("status") == "running":
+            return
+    task_id = str(_uuid.uuid4())[:12]
+    _sg_sync_tasks[task_id] = {"status": "running"}
+    _spawn_with_obo(_sg_sync_worker, args=(task_id,))
+
+
+@app.post("/api/semantic-graph/sync")
+def sync_semantic_graph():
+    """Build/refresh the semantic knowledge graph from metric view definitions."""
+    task_id = str(_uuid.uuid4())[:12]
+    _sg_sync_tasks[task_id] = {"status": "running"}
+    _spawn_with_obo(_sg_sync_worker, args=(task_id,))
+    return {"task_id": task_id}
+
+
+@app.get("/api/semantic-graph/sync/{task_id}")
+def sync_semantic_graph_status(task_id: str):
+    task = _sg_sync_tasks.get(task_id)
     if not task:
         raise HTTPException(404, detail="Task not found")
     return task

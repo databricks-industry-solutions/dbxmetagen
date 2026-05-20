@@ -25,7 +25,7 @@ const _issueSevStyles = {
   low: 'text-slate-700 dark:text-slate-400 bg-slate-100 dark:bg-slate-900/30',
 }
 
-function MvAnalysisPanel({ issues, onClose, onApplyFix, appliedFields }) {
+function MvAnalysisPanel({ issues, onClose, onApplyFix, appliedFields, busy }) {
   const applied = appliedFields || new Set()
   if (!issues || issues.length === 0) return (
     <div className="mt-2 p-3 bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-700 rounded text-xs text-emerald-700 dark:text-emerald-400">
@@ -40,9 +40,9 @@ function MvAnalysisPanel({ issues, onClose, onApplyFix, appliedFields }) {
         <span className="text-xs font-medium text-slate-700 dark:text-slate-300">Analysis Issues ({issues.length})</span>
         <div className="flex items-center gap-2">
           {fixable.length > 0 && onApplyFix && (
-            <button onClick={() => onApplyFix('__all__')}
-              className="px-2 py-0.5 text-[10px] bg-cyan-600 text-white rounded hover:bg-cyan-700">
-              Apply All ({fixable.length})
+            <button onClick={() => onApplyFix('__all__')} disabled={busy}
+              className="px-2 py-0.5 text-[10px] bg-cyan-600 text-white rounded hover:bg-cyan-700 disabled:opacity-50">
+              {busy ? 'Applying...' : `Apply All (${fixable.length})`}
             </button>
           )}
           <button onClick={onClose} className="text-xs text-slate-400 hover:text-slate-600">Close</button>
@@ -64,8 +64,9 @@ function MvAnalysisPanel({ issues, onClose, onApplyFix, appliedFields }) {
                 <div className="flex items-center gap-2 mt-1">
                   <p className="text-slate-500 dark:text-slate-400 italic flex-1">{iss.suggestion}</p>
                   {iss.field && iss.fix_value && onApplyFix && (
-                    <button onClick={() => onApplyFix(iss.field, iss.fix_value)}
-                      className="shrink-0 px-1.5 py-0.5 text-[10px] bg-cyan-600 text-white rounded hover:bg-cyan-700">Apply</button>
+                    <button onClick={() => onApplyFix(iss.field, iss.fix_value)} disabled={busy}
+                      className="shrink-0 px-1.5 py-0.5 text-[10px] bg-cyan-600 text-white rounded hover:bg-cyan-700 disabled:opacity-50">
+                      {busy ? '...' : 'Apply'}</button>
                   )}
                 </div>
               )}
@@ -222,6 +223,7 @@ export default function SemanticLayer({ onNavigate, pipelineStats }) {
   const [profileName, setProfileName] = useState('')
   const [questionsText, setQuestionsText] = useState('')
   const [businessContext, setBusinessContext] = useState('')
+  const [generationStyle, setGenerationStyle] = useState('comprehensive')
 
   // Generation
   const [taskId, setTaskId] = useState(null)
@@ -251,9 +253,11 @@ export default function SemanticLayer({ onNavigate, pipelineStats }) {
   const [editJson, setEditJson] = useState('')
   const [suggestLoading, setSuggestLoading] = useState(false)
   const [suggestQLoading, setSuggestQLoading] = useState(false)
+  const [userIdentity, setUserIdentity] = useState(null)
   const [bulkCreating, setBulkCreating] = useState(false)
   const [bulkDeleting, setBulkDeleting] = useState(null)
   const [vectorSyncing, setVectorSyncing] = useState(false)
+  const [sgSyncing, setSgSyncing] = useState(false)
   const [kpiCoverage, setKpiCoverage] = useState(null)
   const [tableSaveStatus, setTableSaveStatus] = useState(null)
   const [openMenuId, setOpenMenuId] = useState(null)
@@ -317,6 +321,9 @@ export default function SemanticLayer({ onNavigate, pipelineStats }) {
         setSelectedCatalog(cfg.catalog_name || '')
         setSelectedSchema(cfg.schema_name || '')
       }
+    })
+    cachedFetchObj('/api/auth/check', {}, TTL.CONFIG).then(({ data }) => {
+      if (data?.user_identity) setUserIdentity(data.user_identity)
     })
     loadProjects()
     loadProfiles()
@@ -621,6 +628,7 @@ export default function SemanticLayer({ onNavigate, pipelineStats }) {
         catalog_name: selectedCatalog, schema_name: selectedSchema,
         business_context: businessContext || undefined,
         profile_id: activeProfileId || undefined,
+        generation_style: generationStyle,
       }
       if (selectedProjectId) body.project_id = selectedProjectId
       const res = await fetch('/api/semantic-layer/generate', {
@@ -708,10 +716,12 @@ export default function SemanticLayer({ onNavigate, pipelineStats }) {
   }
 
   const applyFieldFix = async (defId, pathOrAll, value) => {
+    setActionLoading(prev => ({ ...prev, [defId]: 'apply-fix' }))
     if (pathOrAll === '__all__') {
       const issues = mvAnalysis[defId] || []
       const existing = mvAppliedFields[defId] || new Set()
       const fixable = issues.filter(iss => iss.field && iss.fix_value && !existing.has(iss.field))
+      let failures = 0
       for (const iss of fixable) {
         try {
           const res = await fetch(`/api/semantic-layer/definitions/${defId}/field`, {
@@ -724,12 +734,14 @@ export default function SemanticLayer({ onNavigate, pipelineStats }) {
               s.add(iss.field)
               return { ...prev, [defId]: s }
             })
-          }
-        } catch {}
+          } else { failures++ }
+        } catch { failures++ }
       }
+      if (failures) setError(`${failures} of ${fixable.length} fixes failed to apply`)
       invalidateCache('/api/semantic-layer/definitions')
       refreshDefinitions()
       fetchMvHealth(defId)
+      setActionLoading(prev => ({ ...prev, [defId]: null }))
       return
     }
     try {
@@ -746,8 +758,12 @@ export default function SemanticLayer({ onNavigate, pipelineStats }) {
         invalidateCache('/api/semantic-layer/definitions')
         refreshDefinitions()
         fetchMvHealth(defId)
+      } else {
+        const data = await res.json().catch(() => ({}))
+        setError(data.detail || `Failed to apply fix for ${pathOrAll}`)
       }
     } catch (e) { setError(e.message) }
+    setActionLoading(prev => ({ ...prev, [defId]: null }))
   }
 
   const createDefinition = async (defId) => {
@@ -856,6 +872,29 @@ export default function SemanticLayer({ onNavigate, pipelineStats }) {
       poll()
     } catch (e) {
       setVectorSyncing(false)
+      alert(`Sync failed: ${e.message}`)
+    }
+  }
+
+  const syncToSemanticGraph = async () => {
+    setSgSyncing(true)
+    try {
+      const res = await fetch('/api/semantic-graph/sync', { method: 'POST' })
+      const { task_id } = await res.json()
+      const poll = async () => {
+        const r = await fetch(`/api/semantic-graph/sync/${task_id}`)
+        const data = await r.json()
+        if (data.status === 'running') { setTimeout(poll, 2000); return }
+        setSgSyncing(false)
+        if (data.status === 'done') {
+          alert(`Semantic graph synced: ${data.nodes || 0} nodes, ${data.edges || 0} edges`)
+        } else {
+          alert(`Sync failed: ${data.error || 'unknown error'}`)
+        }
+      }
+      poll()
+    } catch (e) {
+      setSgSyncing(false)
       alert(`Sync failed: ${e.message}`)
     }
   }
@@ -1426,9 +1465,20 @@ export default function SemanticLayer({ onNavigate, pipelineStats }) {
       {/* Generate actions */}
       <section className={section}>
         <h2 className="text-lg font-semibold mb-2 dark:text-gray-100">Generate Metric Views</h2>
-        <p className="text-sm text-gray-500 dark:text-gray-400 mb-4">
+        <p className="text-sm text-gray-500 dark:text-gray-400 mb-3">
           Uses AI to analyze your questions against the catalog metadata for the selected tables and generate metric view definitions.
         </p>
+        <label className="flex items-center gap-2 mb-4 cursor-pointer select-none">
+          <input type="checkbox" checked={generationStyle === 'targeted'}
+            onChange={e => setGenerationStyle(e.target.checked ? 'targeted' : 'comprehensive')}
+            className="accent-dbx-lava w-4 h-4" />
+          <span className="text-sm font-medium text-slate-700 dark:text-slate-200">Targeted (theme-based)</span>
+          <span className="text-xs text-slate-400 dark:text-slate-500 ml-1">
+            {generationStyle === 'targeted'
+              ? 'Creates smaller views organized by analytical theme'
+              : 'Best practice: one comprehensive view per fact-table grain'}
+          </span>
+        </label>
         <div className="flex gap-3 flex-wrap">
           <button onClick={() => startGeneration('replace')}
             disabled={loading || isGenerating || !selectedTables.length || !questionLines.length}
@@ -1489,7 +1539,10 @@ export default function SemanticLayer({ onNavigate, pipelineStats }) {
 
       <div className="text-xs text-slate-500 dark:text-slate-400 space-y-1">
         <p>Each definition below is a metric view. The lifecycle is: <strong>Generated</strong> &rarr; <strong>Validated</strong> (SQL checked) &rarr; <strong>Applied</strong> (created as a UC view). Use <strong>Improve</strong> to re-generate a definition with AI feedback.</p>
-        <p className="text-amber-700 dark:text-amber-400">Note: Only the owner of a metric view can edit it. Views created by this app are owned by the app service principal. Use <strong>Transfer Ownership</strong> to take ownership &mdash; this is irreversible for the app.</p>
+        <p className="text-amber-700 dark:text-amber-400">Note: Only the owner of a metric view can edit it. {userIdentity
+          ? <>Views created by this app are owned by you (<strong>{userIdentity}</strong>) via on-behalf-of authentication.</>
+          : <>Views created by this app are owned by the app service principal. Use <strong>Transfer Ownership</strong> to take ownership &mdash; this is irreversible for the app.</>
+        }</p>
         <div className="flex items-center gap-2">
           <span>Showing definitions for:</span>
           <span className="font-medium text-slate-700 dark:text-slate-200">
@@ -1518,13 +1571,23 @@ export default function SemanticLayer({ onNavigate, pipelineStats }) {
           </div>
 
           {/* Deploy target override */}
-          <div className="flex items-center gap-3 mb-4 p-3 bg-dbx-oat dark:bg-gray-900 rounded-md border dark:border-gray-700">
+          <div className="flex items-center gap-3 mb-4 p-3 bg-dbx-oat dark:bg-gray-900 rounded-md border dark:border-gray-700 flex-wrap">
             <span className="text-xs font-medium text-gray-600 dark:text-gray-400 whitespace-nowrap" title="Override deploys all metric views to this schema instead of each view's source table schema">Deploy target override:</span>
-            <select value={globalTargetOverride} onChange={e => { userEditedTargetRef.current = true; setGlobalTargetOverride(e.target.value) }}
-              className="input-base !text-xs w-64">
+            <select value={schemaOptions.includes(globalTargetOverride) ? globalTargetOverride : (globalTargetOverride ? '__custom__' : '')}
+              onChange={e => { userEditedTargetRef.current = true; setGlobalTargetOverride(e.target.value === '__custom__' ? '' : e.target.value) }}
+              className="input-base !text-xs w-56">
               <option value="">(None - use each view's source schema)</option>
               {schemaOptions.map(s => <option key={s} value={s}>{s}</option>)}
+              <option value="__custom__">Custom catalog.schema...</option>
             </select>
+            <input type="text" placeholder="catalog.schema"
+              value={!schemaOptions.includes(globalTargetOverride) ? globalTargetOverride : ''}
+              onChange={e => { userEditedTargetRef.current = true; setGlobalTargetOverride(e.target.value) }}
+              className={`input-base !text-xs w-48 ${schemaOptions.includes(globalTargetOverride) && globalTargetOverride ? 'opacity-40 pointer-events-none' : ''}`}
+              title="Type a custom catalog.schema for federated or cross-catalog deploys" />
+            {globalTargetOverride && !schemaOptions.includes(globalTargetOverride) && !globalTargetOverride.match(/^[^.]+\.[^.]+$/) && (
+              <span className="text-[10px] text-red-500">Format: catalog.schema</span>
+            )}
             {definitions.filter(d => d.status === 'validated').length > 0 && (
               <button onClick={createAllValidated} disabled={bulkCreating}
                 className="ml-auto px-3 py-1.5 bg-green-600 text-white rounded text-xs hover:bg-green-700 disabled:opacity-50 whitespace-nowrap">
@@ -1550,6 +1613,10 @@ export default function SemanticLayer({ onNavigate, pipelineStats }) {
               <button onClick={syncToVectorStore} disabled={vectorSyncing}
                 className="px-2.5 py-1 text-xs text-blue-600 dark:text-blue-400 border border-blue-300 dark:border-blue-700 rounded hover:bg-blue-50 dark:hover:bg-blue-900/20 disabled:opacity-50 whitespace-nowrap">
                 {vectorSyncing ? 'Syncing...' : 'Sync to Vector Store'}
+              </button>
+              <button onClick={syncToSemanticGraph} disabled={sgSyncing}
+                className="px-2.5 py-1 text-xs text-purple-600 dark:text-purple-400 border border-purple-300 dark:border-purple-700 rounded hover:bg-purple-50 dark:hover:bg-purple-900/20 disabled:opacity-50 whitespace-nowrap">
+                {sgSyncing ? 'Syncing...' : 'Sync to Semantic Graph'}
               </button>
             </div>
           )}
@@ -1757,6 +1824,7 @@ export default function SemanticLayer({ onNavigate, pipelineStats }) {
                     <MvAnalysisPanel issues={mvAnalysis[d.definition_id]}
                       onClose={() => setMvAnalysisExpanded(null)}
                       appliedFields={mvAppliedFields[d.definition_id]}
+                      busy={actionLoading[d.definition_id] === 'apply-fix'}
                       onApplyFix={(path, value) => applyFieldFix(d.definition_id, path, value)} />
                   )}
                 </div>

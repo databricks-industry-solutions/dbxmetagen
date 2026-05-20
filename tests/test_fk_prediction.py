@@ -13,6 +13,7 @@ from dbxmetagen.fk_prediction import (
     FKPredictor,
     _FK_MODEL,
     _FK_EXCLUDED_DTYPES,
+    _PLURAL_RULES,
     _dtype_exclusion_sql,
     _dtype_excluded,
     _DEFAULT_SYSTEM_COL_PATTERNS,
@@ -224,15 +225,64 @@ class TestUIDedup:
 # --- TestTableNameMatchStem ---
 
 
+class TestSingularize:
+    """Verify the _PLURAL_RULES-based singularizer handles common English plurals."""
+
+    @staticmethod
+    def _singularize(word: str) -> str:
+        """Python mirror of _singularize_col / _singularize_sql."""
+        import re
+        for pattern, repl in _PLURAL_RULES:
+            if re.search(pattern, word):
+                return re.sub(pattern, repl, word)
+        return word
+
+    def test_ies(self):
+        assert self._singularize("territories") == "territory"
+        assert self._singularize("categories") == "category"
+
+    def test_sses(self):
+        assert self._singularize("processes") == "process"
+
+    def test_shes(self):
+        assert self._singularize("crashes") == "crash"
+
+    def test_ches(self):
+        assert self._singularize("batches") == "batch"
+
+    def test_xes(self):
+        assert self._singularize("boxes") == "box"
+        assert self._singularize("indexes") == "index"
+
+    def test_zes(self):
+        assert self._singularize("buzzes") == "buzz"
+
+    def test_ses(self):
+        assert self._singularize("databases") == "database"
+        assert self._singularize("responses") == "response"
+
+    def test_plain_s(self):
+        assert self._singularize("orders") == "order"
+        assert self._singularize("products") == "product"
+        assert self._singularize("accounts") == "account"
+
+    def test_no_plural(self):
+        assert self._singularize("status") == "statu"
+        assert self._singularize("index") == "index"
+
+
 class TestTableNameMatchStem:
-    """Verify that table_name_match strips dim_/fct_ prefixes before matching."""
+    """Verify that table_name_match strips dim_/fct_ prefixes and singularizes."""
 
     @staticmethod
     def _stem(table_short: str) -> str:
-        """Mirror the SQL: strip dim_/fct_/fact_/stg_ prefix, then trailing 's'."""
+        """Mirror the SQL: strip prefix then singularize via _PLURAL_RULES."""
         import re
         s = re.sub(r"^(dim_|fct_|fact_|stg_)", "", table_short)
-        return re.sub(r"s$", "", s)
+        for pattern, repl in _PLURAL_RULES:
+            if re.search(pattern, s):
+                return re.sub(pattern, repl, s)
+        return s
 
     @staticmethod
     def _matches(col_short: str, stem: str) -> bool:
@@ -268,6 +318,21 @@ class TestTableNameMatchStem:
         stem = self._stem("dim_product")
         assert stem == "product"
         assert not self._matches("customer_id", stem)
+
+    def test_territory_id_matches_territories(self):
+        stem = self._stem("territories")
+        assert stem == "territory"
+        assert self._matches("territory_id", stem)
+
+    def test_batch_id_matches_batches(self):
+        stem = self._stem("batches")
+        assert stem == "batch"
+        assert self._matches("batch_id", stem)
+
+    def test_category_id_matches_fct_categories(self):
+        stem = self._stem("fct_categories")
+        assert stem == "category"
+        assert self._matches("category_id", stem)
 
 
 # --- TestEnforceDirection ---
@@ -435,6 +500,7 @@ class TestRunOrchestration:
             patch.object(FKPredictor, "add_entity_match", side_effect=lambda c: c),
             patch.object(FKPredictor, "add_lineage_signal", side_effect=lambda c: c),
             patch.object(FKPredictor, "add_domain_signal", side_effect=lambda c: c),
+            patch.object(FKPredictor, "_backfill_embedding_similarity", side_effect=lambda c: c),
             patch.object(FKPredictor, "_sample_from_source", side_effect=lambda c: c),
             patch.object(FKPredictor, "rule_score", side_effect=lambda c: c),
             patch.object(FKPredictor, "cardinality_analysis", side_effect=lambda c: c),
@@ -469,6 +535,7 @@ class TestDryRunAccounting:
             patch.object(FKPredictor, "add_entity_match", side_effect=lambda c: c),
             patch.object(FKPredictor, "add_lineage_signal", side_effect=lambda c: c),
             patch.object(FKPredictor, "add_domain_signal", side_effect=lambda c: c),
+            patch.object(FKPredictor, "_backfill_embedding_similarity", side_effect=lambda c: c),
             patch.object(FKPredictor, "_sample_from_source", side_effect=lambda c: c),
             patch.object(FKPredictor, "rule_score", side_effect=lambda c: c),
             patch.object(FKPredictor, "cardinality_analysis", side_effect=lambda c: c),
@@ -498,6 +565,7 @@ class TestDryRunAccounting:
             patch.object(FKPredictor, "add_entity_match", side_effect=lambda c: c),
             patch.object(FKPredictor, "add_lineage_signal", side_effect=lambda c: c),
             patch.object(FKPredictor, "add_domain_signal", side_effect=lambda c: c),
+            patch.object(FKPredictor, "_backfill_embedding_similarity", side_effect=lambda c: c),
             patch.object(FKPredictor, "_sample_from_source", side_effect=lambda c: c),
             patch.object(FKPredictor, "rule_score", side_effect=lambda c: c),
             patch.object(FKPredictor, "cardinality_analysis", side_effect=lambda c: c),

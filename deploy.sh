@@ -141,6 +141,7 @@ sed -e "s|__CATALOG_NAME__|${catalog_name}|g" \
     -e "s|__SCHEMA_NAME__|${schema_name}|g" \
     -e "s|__ENABLE_OBO__|${enable_obo:-false}|g" \
     -e "s|__VS_ENDPOINT_NAME__|${vs_endpoint_name:-dbxmetagen-vs}|g" \
+    -e "s|__APP_DISPLAY_NAME__|${app_display_name:-}|g" \
     apps/dbxmetagen-app/app/app.yaml.template > apps/dbxmetagen-app/app/app.yaml
 
 echo "=== Generating app resource YAML with permissions ==="
@@ -309,7 +310,7 @@ if [ -n "${app_name:-}" ]; then
     DEPLOY_VARS+=(--var "app_name=${app_name}")
 fi
 
-databricks bundle validate -t "$TARGET" --profile "$PROFILE"
+databricks bundle validate -t "$TARGET" --profile "$PROFILE" "${DEPLOY_VARS[@]}"
 
 echo ""
 echo "=== Deploying bundle ==="
@@ -473,10 +474,9 @@ if [ "$SKIP_APP" = false ]; then
     # --- Start app ---
     echo ""
     echo "=== Starting app ==="
-    databricks bundle run -t "$TARGET" --profile "$PROFILE" \
-        --var "deploying_user=${CURRENT_USER}" \
-        --var "app_service_principal_application_id=${APP_SP_ID:-None}" \
-        dbxmetagen_app
+    RUN_VARS=(--var "deploying_user=${CURRENT_USER}" --var "app_service_principal_application_id=${APP_SP_ID:-None}")
+    [ -n "${app_name:-}" ] && RUN_VARS+=(--var "app_name=${app_name}")
+    databricks bundle run -t "$TARGET" --profile "$PROFILE" "${RUN_VARS[@]}" dbxmetagen_app
 
     echo ""
     echo "=== Deployment complete ==="

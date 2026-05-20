@@ -702,3 +702,202 @@ def execute_dimension_query(
             "aggregation": aggregation,
         }
     return {"error": result.get("error"), "sql": sql}
+
+
+# ---------------------------------------------------------------------------
+# Semantic graph queries
+# ---------------------------------------------------------------------------
+
+def _sg_table_exists() -> bool:
+    """Check whether semantic_nodes table exists."""
+    try:
+        r = _run_sql(f"SELECT 1 FROM {_fq('semantic_nodes')} LIMIT 1")
+        return r.get("success", False)
+    except Exception:
+        return False
+
+
+def get_related_views(metric_view_name: str) -> list[dict]:
+    """Find metric views related via shared_source or co_dimension edges."""
+    if not _sg_table_exists():
+        return []
+    try:
+        mv_match = _run_sql(
+            f"SELECT node_id FROM {_fq('semantic_nodes')} "
+            f"WHERE node_type = 'metric_view' AND name = '{metric_view_name}'"
+        )
+        if not mv_match["success"] or not mv_match["rows"]:
+            return []
+        mv_nid = mv_match["rows"][0]["node_id"]
+
+        related = _run_sql(f"""
+            SELECT DISTINCT n.name AS related_view, e.relationship,
+                   n.comment, n.domain, n.subdomain, n.status
+            FROM {_fq('semantic_edges')} e
+            JOIN {_fq('semantic_nodes')} n
+              ON n.node_id = CASE WHEN e.src = '{mv_nid}' THEN e.dst ELSE e.src END
+            WHERE (e.src = '{mv_nid}' OR e.dst = '{mv_nid}')
+              AND e.relationship IN ('shared_source', 'co_dimension')
+              AND n.node_type = 'metric_view'
+              AND n.name != '{metric_view_name}'
+        """)
+        return related["rows"] if related["success"] else []
+    except Exception as e:
+        logger.warning("get_related_views failed: %s", e)
+        return []
+
+
+def get_view_lineage(metric_view_name: str) -> dict:
+    """Get full decomposition of a metric view: source tables, joins, measures, dimensions."""
+    if not _sg_table_exists():
+        return {}
+    try:
+        mv_match = _run_sql(
+            f"SELECT node_id, source_table, filter_expr, deployed_fqn "
+            f"FROM {_fq('semantic_nodes')} "
+            f"WHERE node_type = 'metric_view' AND name = '{metric_view_name}'"
+        )
+        if not mv_match["success"] or not mv_match["rows"]:
+            return {}
+        mv = mv_match["rows"][0]
+        mv_nid = mv["node_id"]
+
+        children = _run_sql(f"""
+            SELECT n.node_id, n.node_type, n.name, n.expr, n.comment, e.relationship
+            FROM {_fq('semantic_edges')} e
+            JOIN {_fq('semantic_nodes')} n ON n.node_id = e.dst
+            WHERE e.src = '{mv_nid}'
+              AND e.relationship IN ('has_measure', 'has_dimension', 'sourced_from')
+        """)
+        measures, dimensions, source_tables = [], [], []
+        child_ids = []
+        if children["success"]:
+            for r in children["rows"]:
+                if r["node_type"] == "measure":
+                    measures.append({"name": r["name"], "expr": r.get("expr"), "comment": r.get("comment")})
+                    child_ids.append(r["node_id"])
+                elif r["node_type"] == "dimension":
+                    dimensions.append({"name": r["name"], "expr": r.get("expr"), "comment": r.get("comment")})
+                    child_ids.append(r["node_id"])
+                elif r["node_type"] == "source_table":
+                    source_tables.append(r["name"])
+
+        providers = {}
+        if child_ids:
+            id_list = ", ".join(f"'{c}'" for c in child_ids)
+            prov = _run_sql(f"""
+                SELECT e.dst AS child_id, n.name AS provider_table, e.weight
+                FROM {_fq('semantic_edges')} e
+                JOIN {_fq('semantic_nodes')} n ON n.node_id = e.src
+                WHERE e.relationship = 'provides' AND e.dst IN ({id_list})
+            """)
+            if prov["success"]:
+                for r in prov["rows"]:
+                    providers.setdefault(r["child_id"], []).append(r["provider_table"])
+
+        mv_prefix = mv_nid.split("::")[1] if "::" in mv_nid else metric_view_name
+        for m in measures:
+            m_nid = f"measure::{mv_prefix}::{m['name']}"
+            m["provided_by"] = providers.get(m_nid, source_tables[:1])
+        for d in dimensions:
+            d_nid = f"dimension::{mv_prefix}::{d['name']}"
+            d["provided_by"] = providers.get(d_nid, source_tables[:1])
+
+        join_rows = []
+        if source_tables:
+            tbl_list = ", ".join(f"'{t}'" for t in source_tables)
+            joins = _run_sql(f"""
+                SELECT n_src.name AS from_table, n_dst.name AS to_table, e.properties
+                FROM {_fq('semantic_edges')} e
+                JOIN {_fq('semantic_nodes')} n_src ON n_src.node_id = e.src
+                JOIN {_fq('semantic_nodes')} n_dst ON n_dst.node_id = e.dst
+                WHERE e.relationship = 'joins_to'
+                  AND (n_src.name IN ({tbl_list}) OR n_dst.name IN ({tbl_list}))
+            """)
+            join_rows = joins["rows"] if joins["success"] else []
+
+        return {
+            "metric_view": metric_view_name,
+            "source_table": mv.get("source_table"),
+            "deployed_fqn": mv.get("deployed_fqn"),
+            "filter": mv.get("filter_expr"),
+            "source_tables": source_tables,
+            "joins": join_rows,
+            "measures": measures,
+            "dimensions": dimensions,
+        }
+    except Exception as e:
+        logger.warning("get_view_lineage failed: %s", e)
+        return {}
+
+
+def explore_table_metrics(table_name: str) -> list[dict]:
+    """Find all metric views that source from or join to a given table."""
+    if not _sg_table_exists():
+        return []
+    short = table_name.split(".")[-1]
+    try:
+        result = _run_sql(f"""
+            SELECT DISTINCT mv.name AS metric_view, mv.status,
+                   mv.comment, e.relationship AS link_type
+            FROM {_fq('semantic_nodes')} tbl
+            JOIN {_fq('semantic_edges')} e
+              ON e.dst = tbl.node_id AND e.relationship = 'sourced_from'
+            JOIN {_fq('semantic_nodes')} mv
+              ON mv.node_id = e.src AND mv.node_type = 'metric_view'
+            WHERE tbl.node_type = 'source_table'
+              AND tbl.name LIKE '%{short}%'
+        """)
+        return result["rows"] if result["success"] else []
+    except Exception as e:
+        logger.warning("explore_table_metrics failed: %s", e)
+        return []
+
+
+def get_semantic_graph_context(question: str, selected_view: str = None) -> str:
+    """Build compact semantic graph context for LLM prompts.
+
+    If a view is selected, shows its lineage and related views.
+    Also finds views connected to tables mentioned in the question.
+    """
+    if not _sg_table_exists():
+        return ""
+    parts = []
+
+    if selected_view:
+        related = get_related_views(selected_view)
+        if related:
+            lines = [f"  - {r['related_view']} ({r['relationship']}, {r.get('domain', '')})" for r in related[:8]]
+            parts.append(f"RELATED METRIC VIEWS to {selected_view}:\n" + "\n".join(lines))
+
+        lineage = get_view_lineage(selected_view)
+        if lineage and lineage.get("source_tables"):
+            tables = lineage["source_tables"]
+            joins = lineage.get("joins", [])
+            join_lines = [f"  {j.get('from_table', '')} -> {j.get('to_table', '')}" for j in joins]
+            parts.append(
+                f"TABLE LINEAGE for {selected_view}:\n"
+                f"  Source tables: {', '.join(tables)}\n"
+                + ("  Joins:\n" + "\n".join(join_lines) if join_lines else "")
+            )
+
+    try:
+        words = [w for w in re.findall(r'\b\w+\b', question.lower()) if len(w) > 3]
+        if words:
+            table_hits = _run_sql(
+                f"SELECT DISTINCT name FROM {_fq('semantic_nodes')} "
+                f"WHERE node_type = 'source_table' LIMIT 50"
+            )
+            if table_hits["success"]:
+                for tbl_row in table_hits["rows"]:
+                    tbl = tbl_row["name"]
+                    short = tbl.split(".")[-1].lower()
+                    if any(w in short for w in words):
+                        views = explore_table_metrics(tbl)
+                        if views:
+                            lines = [f"  - {v['metric_view']} ({v.get('link_type', '')})" for v in views[:5]]
+                            parts.append(f"METRIC VIEWS using table '{tbl}':\n" + "\n".join(lines))
+    except Exception:
+        pass
+
+    return "\n\n".join(parts) if parts else ""

@@ -167,7 +167,8 @@ class ColumnKnowledgeBaseBuilder:
                             column_name,
                             data_type,
                             CASE WHEN is_nullable = 'YES' THEN true ELSE false END as nullable
-                        FROM {catalog}.information_schema.columns
+                        FROM system.information_schema.columns
+                        WHERE table_catalog = '{catalog}'
                     """)
                     dfs.append(df)
                 except Exception as e:
@@ -349,8 +350,8 @@ class ColumnKnowledgeBaseBuilder:
                         current_timestamp() AS created_at,
                         current_timestamp() AS updated_at,
                         CAST(NULL AS TIMESTAMP) AS review_updated_at
-                    FROM {cat}.information_schema.columns
-                    WHERE table_schema = '{sch}'
+                    FROM system.information_schema.columns
+                    WHERE table_catalog = '{cat}' AND table_schema = '{sch}'
                       AND table_name IN ({in_clause})
                 """)
                 all_dfs.append(df)

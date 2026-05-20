@@ -96,7 +96,7 @@ JOB_ENV_MAP = {
     "SETUP_MCP_SERVERS_JOB_ID": "setup_mcp_servers_job",
 }
 
-def generate_app_yaml(catalog, schema, bound_resource_names, obo="false"):
+def generate_app_yaml(catalog, schema, bound_resource_names, obo="false", app_display_name=""):
     """Generate app.yaml, using valueFrom only for resources that are bound."""
     lines = [
         "command:",
@@ -124,6 +124,7 @@ def generate_app_yaml(catalog, schema, bound_resource_names, obo="false"):
         '  - name: VECTOR_SEARCH_INDEX\n    value: "metadata_vs_index"',
         '  - name: LLM_MODEL\n    value: "databricks-claude-sonnet-4-6"',
         f'  - name: ENABLE_OBO\n    value: "{obo}"',
+        f'  - name: APP_DISPLAY_NAME\n    value: "{app_display_name}"',
         '  - name: MLFLOW_TRACE_TIMEOUT_SECONDS\n    value: "120"',
     ]
     return "\n".join(lines) + "\n"
@@ -344,7 +345,11 @@ wh_resource = AppResource(
 all_resources = [wh_resource] + job_resources
 bound_names = {r.name for r in all_resources}
 
-app_yaml = generate_app_yaml(catalog_name, schema_name, bound_names, obo=enable_obo)
+try:
+    _app_display_name = dbutils.widgets.get("app_display_name")
+except Exception:
+    _app_display_name = ""
+app_yaml = generate_app_yaml(catalog_name, schema_name, bound_names, obo=enable_obo, app_display_name=_app_display_name)
 with open(f"{deploy_dir}/app.yaml", "w") as f:
     f.write(app_yaml)
 print(f"Generated app.yaml ({len(bound_names)} bound resources)")
@@ -461,7 +466,7 @@ else:
 # COMMAND ----------
 
 if app_spn_uuid:
-    vs_endpoint_name = "dbxmetagen-vs"
+    vs_endpoint_name = dbutils.widgets.get("vs_endpoint_name").strip() or "dbxmetagen-vs"
     try:
         from databricks.sdk.service.iam import AccessControlRequest, Permission
         vs_ep = w.vector_search_endpoints.get_endpoint(vs_endpoint_name)

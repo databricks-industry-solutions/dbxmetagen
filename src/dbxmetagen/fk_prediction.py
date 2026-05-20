@@ -57,6 +57,38 @@ def _dtype_excluded(col_expr: str) -> str:
     return f"ELEMENT_AT(SPLIT(LOWER({col_expr}), '\\\\('), 1) IN ({in_list})"
 
 
+_PLURAL_RULES = [
+    (r"ies$", "y"),       # territories -> territory, categories -> category
+    (r"sses$", "ss"),     # processes -> process, addresses -> address
+    (r"shes$", "sh"),     # crashes -> crash, bushes -> bush
+    (r"ches$", "ch"),     # batches -> batch, matches -> match
+    (r"xes$", "x"),       # boxes -> box, indexes -> index
+    (r"zes$", "z"),       # buzzes -> buzz
+    (r"ses$", "se"),      # databases -> database, responses -> response
+    (r"s$", ""),          # orders -> order (default fallback)
+]
+
+
+def _singularize_col(col: "F.Column") -> "F.Column":
+    """Singularize a PySpark string column using ordered English plural rules."""
+    expr = col
+    for i, (pattern, repl) in enumerate(_PLURAL_RULES):
+        if i == 0:
+            result = F.when(col.rlike(pattern), F.regexp_replace(col, pattern, repl))
+        else:
+            result = result.when(col.rlike(pattern), F.regexp_replace(col, pattern, repl))
+    return result.otherwise(col)
+
+
+def _singularize_sql(col_expr: str) -> str:
+    """Return a SQL CASE expression that singularizes *col_expr* using English plural rules."""
+    clauses = " ".join(
+        f"WHEN {col_expr} RLIKE '{pat}' THEN REGEXP_REPLACE({col_expr}, '{pat}', '{repl}')"
+        for pat, repl in _PLURAL_RULES
+    )
+    return f"CASE {clauses} ELSE {col_expr} END"
+
+
 @dataclass
 class FKPredictionConfig:
     catalog_name: str
@@ -348,6 +380,7 @@ class FKPredictor:
         """
         nodes = self.config.fq(self.config.nodes_table)
         k = self.config.max_candidates_per_table_pair
+        _sing_tbl = _singularize_sql("pk.tbl_short")
         sql = f"""
         WITH cols AS (
             SELECT id, parent_id, data_type,
@@ -376,7 +409,7 @@ class FKPredictor:
               ON fk.parent_id != pk.parent_id
               AND (
                   REPLACE(REPLACE(REPLACE(fk.col_short, '_id', ''), '_key', ''), '_code', '')
-                  = REGEXP_REPLACE(pk.tbl_short, 's$', '')
+                  = {_sing_tbl}
                   OR REPLACE(REPLACE(REPLACE(fk.col_short, '_id', ''), '_key', ''), '_code', '')
                   = pk.tbl_short
               )
@@ -989,6 +1022,51 @@ class FKPredictor:
         )
 
     # ------------------------------------------------------------------
+    # Backfill embedding similarity for candidates missing graph edges
+    # ------------------------------------------------------------------
+    def _backfill_embedding_similarity(self, candidates: DataFrame) -> DataFrame:
+        """Compute cosine similarity from graph_nodes embeddings for candidates with col_similarity=0.
+
+        Name-based and ontology candidates start with col_similarity=0.0.  If the
+        similarity_edges threshold (0.85) excluded a valid pair, the propagation
+        step finds nothing to propagate.  This backfill joins against the raw
+        embeddings in graph_nodes and computes the dot product directly.
+        """
+        nodes = self.config.fq(self.config.nodes_table)
+        try:
+            zero_count = candidates.filter(F.col("col_similarity") == 0.0).count()
+            if zero_count == 0:
+                return candidates
+            emb_a = self.spark.sql(
+                f"SELECT id AS _emb_a_id, embedding AS _emb_a FROM {nodes} WHERE embedding IS NOT NULL"
+            )
+            emb_b = self.spark.sql(
+                f"SELECT id AS _emb_b_id, embedding AS _emb_b FROM {nodes} WHERE embedding IS NOT NULL"
+            )
+            cands_zero = (
+                candidates.filter(F.col("col_similarity") == 0.0)
+                .join(emb_a, F.col("col_a") == F.col("_emb_a_id"), "inner")
+                .join(emb_b, F.col("col_b") == F.col("_emb_b_id"), "inner")
+                .withColumn(
+                    "_cosine",
+                    F.aggregate(
+                        F.zip_with(F.col("_emb_a"), F.col("_emb_b"), lambda a, b: a * b),
+                        F.lit(0.0).cast("double"),
+                        lambda acc, x: acc + x,
+                    ),
+                )
+                .withColumn("col_similarity", F.greatest(F.col("col_similarity"), F.col("_cosine")))
+                .drop("_cosine", "_emb_a_id", "_emb_a", "_emb_b_id", "_emb_b")
+            )
+            cands_nonzero = candidates.filter(F.col("col_similarity") != 0.0)
+            result = cands_nonzero.unionByName(cands_zero, allowMissingColumns=True)
+            logger.info("Backfilled embedding similarity for %d candidates with col_similarity=0", zero_count)
+            return result
+        except Exception as e:
+            logger.warning("Embedding similarity backfill failed, skipping: %s", e)
+            return candidates
+
+    # ------------------------------------------------------------------
     # Step 2: Sample values
     # ------------------------------------------------------------------
     def sample_values(self, candidates: DataFrame) -> DataFrame:
@@ -1321,19 +1399,19 @@ class FKPredictor:
         tbl_a_short = F.lower(F.element_at(F.split(F.col("table_a"), "\\."), -1))
         tbl_b_short = F.lower(F.element_at(F.split(F.col("table_b"), "\\."), -1))
         # Token-boundary match: col must start with table stem or have it after '_'.
-        # Strip common dim_/fct_/fact_/stg_ prefixes and trailing plural 's' from table
-        # names so that e.g. index_code matches dim_index via stem 'index'.
         _prefix_re = "^(dim_|fct_|fact_|stg_)"
-        tbl_b_stem = F.regexp_replace(F.regexp_replace(tbl_b_short, _prefix_re, ""), "s$", "")
-        tbl_a_stem = F.regexp_replace(F.regexp_replace(tbl_a_short, _prefix_re, ""), "s$", "")
-        _stem_sql = "regexp_replace(regexp_replace(lower(element_at(split({tbl}, '\\\\.'), -1)), '^(dim_|fct_|fact_|stg_)', ''), 's$', '')"
+        tbl_b_stem = _singularize_col(F.regexp_replace(tbl_b_short, _prefix_re, ""))
+        tbl_a_stem = _singularize_col(F.regexp_replace(tbl_a_short, _prefix_re, ""))
+        _stripped = "regexp_replace(lower(element_at(split({tbl}, '\\\\.'), -1)), '^(dim_|fct_|fact_|stg_)', '')"
+        _stem_sql_a = _singularize_sql(_stripped.format(tbl='table_a'))
+        _stem_sql_b = _singularize_sql(_stripped.format(tbl='table_b'))
         _a_matches_b = F.expr(
             f"rlike(lower(element_at(split(col_a, '\\\\.'), -1)), "
-            f"concat('(^|_)', {_stem_sql.format(tbl='table_b')}, '(_|$)'))"
+            f"concat('(^|_)', {_stem_sql_b}, '(_|$)'))"
         )
         _b_matches_a = F.expr(
             f"rlike(lower(element_at(split(col_b, '\\\\.'), -1)), "
-            f"concat('(^|_)', {_stem_sql.format(tbl='table_a')}, '(_|$)'))"
+            f"concat('(^|_)', {_stem_sql_a}, '(_|$)'))"
         )
         table_name_match = F.when(_a_matches_b | _b_matches_a, 1.0).otherwise(0.0)
 
@@ -2022,6 +2100,8 @@ class FKPredictor:
         candidates = candidates.fillna(
             0.0, subset=["col_similarity", "table_similarity", "query_hit_count"]
         )
+
+        candidates = self._backfill_embedding_similarity(candidates)
 
         if self.config.table_names:
             from dbxmetagen.table_filter import table_names_col_filter

@@ -25,6 +25,7 @@ dbutils.widgets.text("incremental", "true", "Incremental (true/false)")
 dbutils.widgets.text("entity_tag_key", "entity_type", "UC Tag Key for entities")
 dbutils.widgets.text("model", "", "Model Endpoint")
 dbutils.widgets.text("table_names", "", "Table Names (comma-separated, empty=all)")
+dbutils.widgets.text("endpoint_name", "dbxmetagen-vs", "VS Endpoint Name")
 
 catalog_name = dbutils.widgets.get("catalog_name")
 schema_name = dbutils.widgets.get("schema_name")
@@ -36,6 +37,7 @@ incremental = dbutils.widgets.get("incremental").lower() == "true"
 entity_tag_key = dbutils.widgets.get("entity_tag_key").strip() or "entity_type"
 model_endpoint = dbutils.widgets.get("model").strip() or None
 table_names_raw = dbutils.widgets.get("table_names")
+endpoint_name = dbutils.widgets.get("endpoint_name").strip() or "dbxmetagen-vs"
 
 print(f"Catalog: {catalog_name}")
 print(f"Schema: {schema_name}")
@@ -71,7 +73,7 @@ expected_index = f"{catalog_name}.{schema_name}.ontology_vs_index"
 try:
     from databricks.vector_search.client import VectorSearchClient
     vsc = VectorSearchClient(disable_notice=True)
-    idx = vsc.get_index(endpoint_name="dbxmetagen-vs", index_name=expected_index)
+    idx = vsc.get_index(endpoint_name=endpoint_name, index_name=expected_index)
     if idx:
         ontology_vs_index = expected_index
         print(f"Ontology VS index detected: {ontology_vs_index}")

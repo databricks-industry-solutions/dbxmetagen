@@ -25,6 +25,7 @@ dbutils.widgets.text("use_ann_similarity", "true", "Use ANN (Vector Search)")
 dbutils.widgets.text("sweep_stale_edges", "false", "Sweep stale edges")
 dbutils.widgets.text("table_names", "", "Table Names (comma-separated, empty for all)")
 dbutils.widgets.text("incremental", "true", "Incremental")
+dbutils.widgets.text("endpoint_name", "dbxmetagen-vs", "VS Endpoint Name")
 
 catalog_name = dbutils.widgets.get("catalog_name")
 schema_name = dbutils.widgets.get("schema_name")
@@ -33,6 +34,7 @@ max_edges_per_node = int(dbutils.widgets.get("max_edges_per_node"))
 use_ann = dbutils.widgets.get("use_ann_similarity").strip().lower() in ("true", "1", "yes")
 sweep_stale = dbutils.widgets.get("sweep_stale_edges").strip().lower() in ("true", "1", "yes")
 incremental = dbutils.widgets.get("incremental").strip().lower() in ("true", "1", "yes")
+endpoint_name = dbutils.widgets.get("endpoint_name").strip() or "dbxmetagen-vs"
 
 if not catalog_name or not schema_name:
     raise ValueError("Both catalog_name and schema_name are required")
@@ -61,6 +63,7 @@ result = build_similarity_edges(
     sweep_stale=sweep_stale,
     table_names=table_names,
     incremental=incremental,
+    endpoint_name=endpoint_name,
 )
 
 print(f"Similarity edge creation complete")

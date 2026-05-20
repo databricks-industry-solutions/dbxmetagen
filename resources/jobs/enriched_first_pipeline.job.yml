@@ -58,6 +58,8 @@ resources:
           default: ${var.model}
         - name: spacy_model_names
           default: ${var.spacy_model_names}
+        - name: endpoint_name
+          default: "dbxmetagen-vs"
 
       tasks:
         # ------------------------------------------------------------------
@@ -125,6 +127,7 @@ resources:
               incremental: "{{job.parameters.incremental}}"
               model: "{{job.parameters.model}}"
               table_names: "{{job.parameters.table_names}}"
+              endpoint_name: "{{job.parameters.endpoint_name}}"
 
         # ------------------------------------------------------------------
         # Stage 2: Generate comments/PI/domain (enriched by profiling + constraints)
@@ -307,6 +310,7 @@ resources:
               use_ann_similarity: "{{job.parameters.use_ann_similarity}}"
               table_names: "{{job.parameters.table_names}}"
               incremental: "{{job.parameters.incremental}}"
+              endpoint_name: "{{job.parameters.endpoint_name}}"
 
         - task_key: cluster_analysis
           max_retries: 1
@@ -407,7 +411,7 @@ resources:
             base_parameters:
               catalog_name: "{{job.parameters.catalog_name}}"
               schema_name: "{{job.parameters.schema_name}}"
-              endpoint_name: "dbxmetagen-vs"
+              endpoint_name: "{{job.parameters.endpoint_name}}"
               sweep_stale_docs: "false"
               table_names: "{{job.parameters.table_names}}"
 

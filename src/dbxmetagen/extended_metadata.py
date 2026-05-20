@@ -121,7 +121,8 @@ class ExtendedMetadataBuilder:
                         table_owner,
                         created,
                         last_altered
-                    FROM {catalog}.information_schema.tables
+                    FROM system.information_schema.tables
+                    WHERE table_catalog = '{catalog}'
                 """)
                 all_dfs.append(df)
             except Exception as e:
@@ -153,7 +154,8 @@ class ExtendedMetadataBuilder:
                     SELECT 
                         CONCAT(table_catalog, '.', table_schema, '.', table_name) as table_name,
                         COUNT(*) as column_count
-                    FROM {catalog}.information_schema.columns
+                    FROM system.information_schema.columns
+                    WHERE table_catalog = '{catalog}'
                     GROUP BY table_catalog, table_schema, table_name
                 """)
                 all_dfs.append(df)
@@ -229,16 +231,17 @@ class ExtendedMetadataBuilder:
                     kcu.column_name AS src_col,
                     CONCAT(rc.unique_constraint_catalog, '.', rc.unique_constraint_schema, '.',
                            kcu2.table_name, '.', kcu2.column_name) AS ref_target
-                FROM {catalog}.information_schema.referential_constraints rc
-                JOIN {catalog}.information_schema.key_column_usage kcu
+                FROM system.information_schema.referential_constraints rc
+                JOIN system.information_schema.key_column_usage kcu
                     ON rc.constraint_catalog = kcu.constraint_catalog
                     AND rc.constraint_schema = kcu.constraint_schema
                     AND rc.constraint_name = kcu.constraint_name
-                JOIN {catalog}.information_schema.key_column_usage kcu2
+                JOIN system.information_schema.key_column_usage kcu2
                     ON rc.unique_constraint_catalog = kcu2.constraint_catalog
                     AND rc.unique_constraint_schema = kcu2.constraint_schema
                     AND rc.unique_constraint_name = kcu2.constraint_name
                     AND kcu.ordinal_position = kcu2.ordinal_position
+                WHERE rc.constraint_catalog = '{catalog}'
             """).collect()
             for r in rows:
                 ref_map.setdefault(r.src_table, {})[r.src_col] = r.ref_target
@@ -263,12 +266,13 @@ class ExtendedMetadataBuilder:
                         CONCAT(t.constraint_catalog, '.', t.constraint_schema, '.', t.table_name) as table_name,
                         t.constraint_type,
                         k.column_name
-                    FROM {catalog}.information_schema.table_constraints t
-                    LEFT JOIN {catalog}.information_schema.key_column_usage k
+                    FROM system.information_schema.table_constraints t
+                    LEFT JOIN system.information_schema.key_column_usage k
                         ON t.constraint_catalog = k.constraint_catalog 
                         AND t.constraint_schema = k.constraint_schema 
                         AND t.constraint_name = k.constraint_name
-                    WHERE t.constraint_type IN ('PRIMARY KEY', 'FOREIGN KEY')
+                    WHERE t.constraint_catalog = '{catalog}'
+                      AND t.constraint_type IN ('PRIMARY KEY', 'FOREIGN KEY')
                 """)
                 all_dfs.append(df)
             except Exception as e:

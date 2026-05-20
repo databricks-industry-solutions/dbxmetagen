@@ -2334,8 +2334,8 @@ def _is_metric_view(spark: SparkSession, full_table_name: str) -> bool:
     try:
         df = spark.sql(
             f"""
-            SELECT table_type FROM `{cat}`.information_schema.tables
-            WHERE table_schema = '{sch}' AND table_name = '{tbl}' LIMIT 1
+            SELECT table_type FROM system.information_schema.tables
+            WHERE table_catalog = '{cat}' AND table_schema = '{sch}' AND table_name = '{tbl}' LIMIT 1
         """
         )
         rows = df.collect()
@@ -3308,7 +3308,7 @@ def table_exists_uc(spark: SparkSession, full_name: str) -> bool:
     try:
         df = spark.sql(
             f"""
-            SELECT 1 FROM `{catalog_name}`.information_schema.tables
+            SELECT 1 FROM system.information_schema.tables
             WHERE table_catalog = '{cat_esc}' AND table_schema = '{sch_esc}' AND table_name = '{tbl_esc}'
             LIMIT 1
             """
@@ -3865,8 +3865,8 @@ def get_tables_in_schema(
         tables_df = spark.sql(
             f"""
             SELECT table_name, table_type, data_source_format
-            FROM `{catalog_name}`.information_schema.tables
-            WHERE table_schema = '{schema_name}'
+            FROM system.information_schema.tables
+            WHERE table_catalog = '{catalog_name}' AND table_schema = '{schema_name}'
               AND table_type NOT IN ('METRIC_VIEW', 'METRIC VIEW')
               {_EXCLUDE_INTERNAL_SQL}
         """

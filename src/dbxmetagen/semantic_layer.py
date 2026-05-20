@@ -299,6 +299,98 @@ def _backfill_agent_metadata(defn: dict) -> None:
             item["synonyms"] = _infer_synonyms(item.get("name", ""), item.get("comment"))
 
 
+_KPI_REF_RE = re.compile(
+    r"\.?\s*(?:Implements|Supports|Addresses|Answers|Covers|Partially implements)"
+    r"\s+(?:KPI|question|Q)s?\s*[\d,\s\-and]+\.?"
+    r"|\s*\(KPI:\s*[^)]+\)",
+    re.IGNORECASE,
+)
+
+
+def _strip_kpi_references(defn: dict) -> None:
+    """Remove KPI/question number references from comments."""
+    for field in ("comment",):
+        if defn.get(field):
+            defn[field] = _KPI_REF_RE.sub("", defn[field]).strip().rstrip(".")
+            if defn[field]:
+                defn[field] += "."
+    for item in defn.get("measures", []) + defn.get("dimensions", []):
+        if item.get("comment"):
+            item["comment"] = _KPI_REF_RE.sub("", item["comment"]).strip().rstrip(".")
+            if item["comment"]:
+                item["comment"] += "."
+
+
+_ALIAS_DOT_RE = re.compile(r"\b([A-Za-z_]\w*)\.\w+")
+
+
+def _drop_placeholder_dimensions(defn: dict) -> None:
+    """Drop dimensions whose name implies a join alias but whose expr uses a different alias.
+
+    E.g. a dim named "Territory Code" whose expr is "source.prescription_id" is a placeholder.
+    """
+    joins = defn.get("joins", [])
+    if not joins:
+        return
+
+    def _collect_aliases(jlist: list[dict]) -> set[str]:
+        out: set[str] = set()
+        for j in jlist:
+            alias = j.get("name", "").lower()
+            if alias:
+                out.add(alias)
+            if j.get("joins"):
+                out |= _collect_aliases(j["joins"])
+        return out
+
+    all_aliases = _collect_aliases(joins)
+    if not all_aliases:
+        return
+
+    cleaned: list[dict] = []
+    for d in defn.get("dimensions", []):
+        name_lower = d.get("name", "").lower().replace("_", " ")
+        expr = d.get("expr", "")
+        refs = {m.group(1).lower() for m in _ALIAS_DOT_RE.finditer(expr)}
+
+        implied_alias = None
+        for alias in all_aliases:
+            if alias in name_lower:
+                implied_alias = alias
+                break
+
+        if implied_alias and implied_alias not in refs:
+            continue
+        cleaned.append(d)
+    defn["dimensions"] = cleaned
+
+
+_SELF_DIV_RE = re.compile(
+    r"^(SUM|COUNT|AVG|MIN|MAX)\s*\(([^)]+)\)\s*/\s*NULLIF\s*\(\s*\1\s*\(\2\)",
+    re.IGNORECASE,
+)
+
+
+def _drop_broken_measures(defn: dict) -> None:
+    """Remove self-dividing share measures (always=1.0) and deduplicate identical exprs."""
+    measures = defn.get("measures", [])
+    if not measures:
+        return
+
+    cleaned: list[dict] = []
+    seen_exprs: set[str] = set()
+    for m in measures:
+        expr = re.sub(r"\s+", " ", m.get("expr", "").strip())
+        if _SELF_DIV_RE.search(expr):
+            continue
+        norm = expr.upper()
+        if norm in seen_exprs:
+            continue
+        seen_exprs.add(norm)
+        cleaned.append(m)
+    defn["measures"] = cleaned
+
+
 def _normalize_window_specs(w) -> list[dict]:
     """Normalize window field to YAML 1.1 spec: array of {order, range/rows, semiadditive}."""
     if w is None:
@@ -624,6 +716,65 @@ class SemanticLayerGenerator:
                 )
                 parts.extend(path_sections)
 
+        # Name-matched column hints (safety net for FK gaps)
+        _GENERIC_COLS = {
+            "id", "name", "type", "status", "code", "description",
+            "created_at", "updated_at", "created_by", "updated_by",
+            "modified_at", "modified_by", "is_active", "is_deleted", "version",
+        }
+        fk_pairs = {(fk["src_table"], fk["dst_table"]) for fk in fk_rows} | {
+            (fk["dst_table"], fk["src_table"]) for fk in fk_rows
+        } if fk_rows else set()
+        id_cols: dict[str, list[tuple[str, str]]] = {}  # col_short -> [(table, col_fqn)]
+        for tname, cols in col_by_table.items():
+            for c in cols:
+                cn = c["column_name"].lower()
+                if cn in _GENERIC_COLS:
+                    continue
+                if cn.endswith(("_id", "_key", "_code")):
+                    id_cols.setdefault(cn, []).append((tname, cn))
+        import re as _re
+        possible_hints: list[str] = []
+        table_shorts = {t.split(".")[-1].lower(): t for t in table_names_list}
+        for col_short, locations in id_cols.items():
+            stem = _re.sub(r"(_id|_key|_code)$", "", col_short)
+            if not stem or stem in _GENERIC_COLS:
+                continue
+            target_names = [stem, stem + "s", stem + "es"]
+            for tgt_short in target_names:
+                if tgt_short in table_shorts:
+                    target_fq = table_shorts[tgt_short]
+                    for src_tbl, _ in locations:
+                        if src_tbl == target_fq:
+                            continue
+                        if (src_tbl, target_fq) in fk_pairs:
+                            continue
+                        possible_hints.append(
+                            f"  {src_tbl}.{col_short} -> {target_fq}.{col_short} (name match)"
+                        )
+        if possible_hints:
+            parts.append(
+                "\nPOSSIBLE JOINS (name-matched, not confirmed by FK prediction -- use when questions need these tables):"
+            )
+            parts.extend(possible_hints)
+
+        # Existing metric views -- avoid duplicates
+        existing_mvs = self._safe_collect(
+            f"SELECT metric_view_name, source_table, json_definition "
+            f"FROM {fq(self.config.definitions_table)} "
+            f"WHERE status IN ('validated', 'applied') AND metric_view_name IS NOT NULL"
+        )
+        if existing_mvs:
+            parts.append("\nEXISTING METRIC VIEWS (do NOT duplicate -- create complementary views):")
+            for emv in existing_mvs:
+                comment = ""
+                try:
+                    edefn = json.loads(emv["json_definition"]) if isinstance(emv["json_definition"], str) else emv["json_definition"]
+                    comment = edefn.get("comment", "")
+                except Exception:
+                    pass
+                parts.append(f"  - {emv['metric_view_name']} (source: {emv.get('source_table', '?')}){': ' + comment if comment else ''}")
+
         # Inject metric view best-practices reference (loaded from JSON)
         ref = _load_reference("metric_view_reference.json")
         if ref:
@@ -760,6 +911,11 @@ class SemanticLayerGenerator:
                 _infer_format_specs(defn)
                 _fix_percentage_scaling(defn)
                 _backfill_agent_metadata(defn)
+                _strip_kpi_references(defn)
+                _drop_broken_measures(defn)
+                _drop_placeholder_dimensions(defn)
+                defn = self._restructure_chained_to_nested(defn)
+                defn = self._qualify_nested_refs(defn)
 
                 defn_id = str(uuid.uuid4())
                 mv_name = defn.get("name", f"metric_view_{defn_id[:8]}")
@@ -800,6 +956,17 @@ class SemanticLayerGenerator:
                 stats[status] += 1
                 stats["generated"] += 1
 
+            # Flag duplicate-source views (same grain generated more than once)
+            source_seen: dict[str, list[str]] = {}
+            for d in definitions:
+                src = d.get("source", "")
+                name = d.get("name", "")
+                if src:
+                    source_seen.setdefault(src, []).append(name)
+            for src, names in source_seen.items():
+                if len(names) > 1:
+                    logger.warning("Duplicate source grain '%s' across views: %s", src, names)
+
             # Mark questions: processed if at least one definition stored, failed if all definitions failed validation
             id_list = ", ".join(f"'{qid}'" for qid in q_ids)
             if stats["generated"] > 0:
@@ -837,15 +1004,16 @@ class SemanticLayerGenerator:
 
 TASK: Generate metric view definitions (as a JSON array) that enable answering the business questions below.
 
-ORGANIZING PRINCIPLE -- grain first, theme second:
-- Each metric view declares its grain via its source table (one row = one encounter, one order line, one prescription fill, etc.)
-- All measures must be valid at that grain. Do NOT mix measures implying different grains in one view
-- Within a single grain, create SEPARATE views for different analytical themes
-- Name views to reflect both grain and theme: encounter_throughput_metrics, prescription_fill_channel_analysis
+ORGANIZING PRINCIPLE -- one comprehensive view per fact-table grain:
+- Each metric view declares its grain via its source table (one row = one prescription, one order line, one encounter, etc.)
+- All measures must be valid at that grain. NEVER mix measures implying different grains
+- Prefer ONE broad view per grain with all relevant measures and dimensions, rather than splitting by analytical theme. The consumer (Genie, agent, SQL) selects which dimensions/measures to use per query
+- Split into multiple views from the same source ONLY when the persistent filter, join path, or grain changes -- NOT because of different "themes"
+- Use nested joins to maximize dimension reach through FK chains (e.g. line_items -> orders -> customers -> regions)
 
 RULES:
 1. Create measures that directly support answering the business questions. Do NOT add a generic "row count" or "Record Count" measure unless a question explicitly asks for "how many records" or "count of X". Prefer ratios (e.g. rate, per capita), conditional aggregates (FILTER), and entity-specific KPIs (e.g. readmission rate, avg length of stay) over raw COUNT(*) when the question implies a more specific metric.
-2. Create metric views organized around analytical themes from the questions, not just one-to-one with tables. Multiple metric views from the same table are fine if they address different analytical angles
+2. Prefer one comprehensive view per fact-table grain with all relevant measures. Multiple views from the same source table are acceptable ONLY when filters, join paths, or grains differ
 3. Only reference columns that exist in the metadata below (Columns in the metadata). Do not invent column names
 4. Use standard SQL aggregate functions: SUM, COUNT, AVG, MIN, MAX, COUNT(DISTINCT ...). NEVER use SQL window functions (OVER, PARTITION BY, ROW_NUMBER, LAG, LEAD) in measure expressions -- they are not supported in metric views. For rolling/trailing calculations, use the "window" property on the measure instead
 5. Date/time function rules (Databricks/Spark SQL):
@@ -853,6 +1021,7 @@ RULES:
    b. EXTRACT: use EXTRACT(HOUR FROM col) for extracting date parts. Do NOT use DATE_PART(HOUR, col)
    c. DATEDIFF only returns days with 2 args: DATEDIFF(end, start). For other units use TIMESTAMPDIFF(MINUTE, start, end) with a bare unquoted keyword unit
    d. TIMESTAMPADD: bare unquoted singular unit -- TIMESTAMPADD(MONTH, 1, col), NOT TIMESTAMPADD('MONTHS', 1, col)
+   e. For year-month dimensions, use DATE_FORMAT(col, 'yyyy-MM'). NEVER use SUBSTR(col, 1, 7) on date columns
 6. ALWAYS single-quote ALL string literal values everywhere in expressions:
    - Comparisons: status = 'fulfilled', NOT status = fulfilled
    - THEN/ELSE results: CASE WHEN x = 'A' THEN 'Category A' ELSE 'Other' END, NOT THEN Category A
@@ -866,6 +1035,7 @@ RULES:
    NESTED / SNOWFLAKE JOINS: for dimension hierarchies (e.g. customer -> nation -> region), nest child joins inside the parent's "joins" array. Child "on" references the PARENT alias, not "source":
    {{"name": "customer", "source": "...", "on": "source.customer_id = customer.id", "joins": [{{"name": "nation", "source": "...", "on": "customer.nation_id = nation.id"}}]}}
    Limit nesting to 2 levels. Use nested joins when JOIN PATHS in the metadata show multi-hop FK chains.
+   NESTED ALIAS REACHABILITY: all nested join aliases are fully reachable in expressions. If you nest physician -> account -> territory, use "account.bed_count" and "territory.region" directly. NEVER substitute a placeholder column from an unrelated table/alias. If a column is unreachable through joins, DROP the dimension entirely rather than faking it.
 8. Include joins when RECOMMENDED JOINS exist; when questions ask for breakdowns by attributes in another table (e.g. by customer segment, department), you MUST add a join. Prefer at least one metric view with joins when FKs exist
 9. Every metric view MUST have at least one measure and one dimension
 10. Add a top-level "comment" (1-2 sentences) describing what the metric view measures, its analytical purpose, and which source tables it draws from. Do NOT reference question numbers, KPI numbers, or list which questions are/aren't answerable. Focus on content and lineage (e.g. "Analyzes order revenue by product family and sales representative, joining line items to the product catalog and parent order for discount tracking.")
@@ -873,7 +1043,7 @@ RULES:
 12. Use "filter" (optional) for persistent WHERE clauses (e.g. excluding null/test rows)
 13. Use measure-level FILTER for conditional aggregation: SUM(col) FILTER (WHERE condition)
 14. If some questions are not answerable with metrics (e.g. document search, free-text lookups, SOP retrieval), generate metric views for the ones that ARE quantitative/analytical and silently ignore the rest. Do NOT mention skipped or unanswerable questions in the comment field
-15. Each metric view "name" must be unique and descriptive (e.g. staffing_efficiency_metrics, ed_throughput_analysis). Vary names based on the analytical theme, not just the table name
+15. Each metric view "name" must be unique and descriptive, reflecting the grain (e.g. prescription_metrics, order_line_metrics, encounter_metrics)
 16. Output ONLY a valid JSON array, no explanation
 17. Use domain and subdomain from table metadata to choose which dimensions (e.g. department, region, product category) are relevant to the questions.
 18. When Entity types are annotated on tables, use the ENTITY MEASURE SUGGESTIONS in the metadata and generate entity-specific analytical metrics:
@@ -889,6 +1059,12 @@ RULES:
     - For measures, use what a business user would say: "Total Sales", "Avg Order Value", "Fulfillment Rate"
     - NEVER prefix dimension names with the join alias (use "Industry" not "account.Industry")
     - LIKE patterns MUST be quoted: product_code LIKE 'HW%', NOT product_code LIKE HW%
+21. GRAIN INTEGRITY with joins: When joining a fact table to a dimension table, only use dimension columns as GROUP BY dimensions or in FILTER clauses. NEVER aggregate a dimension-table numeric attribute (e.g. SUM(dim.bed_count), AVG(dim.capacity)) from a fact-grain view -- the value fans out by the number of fact rows per dimension row, producing inflated results. If you need to analyze dimension attributes directly, create a SEPARATE metric view sourced from the dimension table
+    REVERSE STAR (dimension as source): When a metric view is sourced from a dimension table and joins to a fact table, the join fans out (one physician -> many prescriptions). SUM and COUNT of fact columns are valid (they aggregate the fan-out). But AVG of a pre-aggregated dimension attribute (e.g. AVG(dim.score)) becomes wrong because each row is duplicated by the fan-out. Use COUNT(DISTINCT fact.pk) and SUM(fact.amount) but avoid AVG(source.attribute) when a fact join is present
+22. NEVER create share-of-total or percent-of-total measures (e.g. SUM(x)/SUM(total_x), COUNT(*)/COUNT(*)). These require window functions (OVER()) for the denominator, which are not supported. The denominator collapses to the same group as the numerator, always producing 1.0. Instead use: conditional ratios with FILTER, within-grain rates, or describe the share concept in the view comment for downstream Genie SQL
+23. NEVER nest aggregate functions inside other aggregate functions (e.g. SUM(COUNT(*)), AVG(SUM(x))). Databricks SQL does not allow nested aggregates. If you need a two-stage aggregation, use a conditional aggregate with CASE/WHEN or create a separate metric view for the inner aggregation
+24. If EXISTING METRIC VIEWS are listed in the metadata, do NOT recreate views with the same name or identical measures/dimensions. Instead create complementary views that cover different analytical angles, grains, or join paths. Reference existing views when planning to ensure coverage without overlap
+25. Do NOT create duplicate measures with identical expressions but different names. Each measure must have a semantically distinct expr. "Revenue per Physician" as SUM(cost) is just a duplicate of "Total Revenue" -- the grouping is a query-time choice, not a measure definition property
 
 EXAMPLE:
 {few_shot}
@@ -908,8 +1084,14 @@ OUTPUT (JSON array only):"""
 
 TASK: Output a PLAN only (no SQL). Reply with a single JSON object: {{ "views": [ ... ] }}.
 
+ORGANIZING PRINCIPLE -- one comprehensive view per fact-table grain:
+- Each metric view declares its grain via its source table (one row = one prescription, one order, etc.)
+- Prefer ONE broad view per grain with all relevant measures/dimensions, rather than splitting by theme
+- Split into multiple views from the same source ONLY when the filter, join path, or grain differs
+- Use nested joins to maximize dimension reach through FK chains
+
 For each metric view in "views", include:
-- "name": unique snake_case name (e.g. order_performance_metrics)
+- "name": unique snake_case name reflecting the grain (e.g. prescription_metrics, order_line_metrics)
 - "source": fully qualified source table (catalog.schema.table)
 - "comment": one sentence describing what the view measures and its source lineage. Do NOT reference question numbers or KPI numbers
 - "joins": array of {{ "name": "<alias>", "source": "catalog.schema.table", "on": "source.<fk_col> = <alias>.<pk_col>" }} when RECOMMENDED JOINS exist and questions need breakdowns by another table
@@ -1091,6 +1273,27 @@ OUTPUT (one JSON object only, no array, no explanation):"""
             defn["joins"] = joins
             logger.info("Auto-added %d joins to %s from FK predictions (graph-traversed)", len(joins), defn.get("name", ""))
 
+    def _register_join_aliases(self, joins: list[dict], alias_cols: dict[str, set[str]], existing_cols: set[str]) -> None:
+        """Recursively register column sets for each join alias (including nested joins)."""
+        for j in joins:
+            j_source = j.get("source", "")
+            j_name = j.get("name", j_source.split(".")[-1] if j_source else "")
+            j_parts = j_source.split(".")
+            try:
+                if len(j_parts) == 3:
+                    j_rows = self.spark.sql(
+                        f"SELECT column_name FROM system.information_schema.columns "
+                        f"WHERE table_catalog = '{j_parts[0]}' AND table_schema = '{j_parts[1]}' "
+                        f"AND table_name = '{j_parts[2]}'"
+                    ).collect()
+                    jcols = {r["column_name"].lower() for r in j_rows}
+                    alias_cols[j_name.lower()] = jcols
+                    existing_cols.update(jcols)
+            except Exception:
+                pass
+            if j.get("joins"):
+                self._register_join_aliases(j["joins"], alias_cols, existing_cols)
+
     def _validate_definition(self, defn: dict) -> list[str]:
         """Tier 1: structural validation against information_schema."""
         errors = []
@@ -1111,7 +1314,7 @@ OUTPUT (one JSON object only, no array, no explanation):"""
         try:
             rows = self.spark.sql(
                 f"""
-                SELECT column_name FROM {cat}.information_schema.columns
+                SELECT column_name FROM system.information_schema.columns
                 WHERE table_catalog = '{cat}' AND table_schema = '{sch}' AND table_name = '{tbl}'
             """
             ).collect()
@@ -1126,23 +1329,7 @@ OUTPUT (one JSON object only, no array, no explanation):"""
 
         # Build per-alias column sets so dotted refs (alias.col) are validated correctly
         alias_cols: dict[str, set[str]] = {"source": set(existing_cols)}
-        for j in defn.get("joins", []):
-            j_source = j.get("source", "")
-            j_name = j.get("name", j_source.split(".")[-1] if j_source else "")
-            j_parts = j_source.split(".")
-            try:
-                if len(j_parts) == 3:
-                    j_rows = self.spark.sql(
-                        f"""
-                        SELECT column_name FROM {j_parts[0]}.information_schema.columns
-                        WHERE table_catalog = '{j_parts[0]}' AND table_schema = '{j_parts[1]}' AND table_name = '{j_parts[2]}'
-                    """
-                    ).collect()
-                    jcols = {r["column_name"].lower() for r in j_rows}
-                    alias_cols[j_name.lower()] = jcols
-                    existing_cols.update(jcols)
-            except Exception:
-                pass
+        self._register_join_aliases(defn.get("joins", []), alias_cols, existing_cols)
 
         for item_type in ("dimensions", "measures"):
             for item in defn.get(item_type, []):
@@ -1526,8 +1713,29 @@ OUTPUT (one JSON object only, no array, no explanation):"""
         expr = re.sub(
             r"DATE_TRUNC\(\s*([A-Za-z]+)(,)", _fix_date_trunc, expr, flags=re.IGNORECASE
         )
+
+        def _fix_date_format(m):
+            col_part = m.group(1)
+            fmt = m.group(2).strip()
+            if not (fmt.startswith("'") or fmt.startswith('"')):
+                return f"DATE_FORMAT({col_part}, '{fmt}')"
+            return m.group(0)
+
+        expr = re.sub(
+            r"DATE_FORMAT\(([^,]+),\s*([^)]+)\)", _fix_date_format, expr, flags=re.IGNORECASE
+        )
         expr = cls._fix_date_part(expr)
         expr = cls._fix_datediff(expr)
+
+        def _fix_substr_date(m):
+            col = m.group(1).strip()
+            length = m.group(2).strip()
+            if any(kw in col.lower() for kw in ("date", "time", "dt", "_ts", "created", "updated")):
+                fmt = "'yyyy-MM'" if length == "7" else "'yyyy'"
+                return f"DATE_FORMAT({col}, {fmt})"
+            return m.group(0)
+        expr = re.sub(r"SUBSTR\(([^,]+),\s*1\s*,\s*(4|7)\)", _fix_substr_date, expr, flags=re.IGNORECASE)
+
         expr = cls._fix_none_literal(expr)
         expr = cls._fix_double_commas(expr)
         expr = cls._fix_position_bare_char(expr)
@@ -1570,24 +1778,30 @@ OUTPUT (one JSON object only, no array, no explanation):"""
         joins = defn.get("joins", [])
         if not joins:
             return source
-        parts = [f"{source} AS source"]
-        for j in joins:
-            j_source = j.get("source", "")
-            if not j_source:
-                continue
-            alias = j.get("name", j_source.split(".")[-1])
-            join_type = j.get("type", "LEFT").upper()
-            on_clause = j.get("on", "")
-            if on_clause:
-                parts.append(f"{join_type} JOIN {j_source} AS {alias} ON {on_clause}")
-            else:
-                using = j.get("using", [])
-                if using:
-                    cols = ", ".join(using)
-                    parts.append(f"{join_type} JOIN {j_source} AS {alias} USING ({cols})")
+
+        def _render_joins(jlist: list[dict]) -> list[str]:
+            parts: list[str] = []
+            for j in jlist:
+                j_source = j.get("source", "")
+                if not j_source:
+                    continue
+                alias = j.get("name", j_source.split(".")[-1])
+                join_type = j.get("type", "LEFT").upper()
+                on_clause = j.get("on", "")
+                if on_clause:
+                    parts.append(f"{join_type} JOIN {j_source} AS {alias} ON {on_clause}")
                 else:
-                    parts.append(f"CROSS JOIN {j_source} AS {alias}")
-        return " ".join(parts)
+                    using = j.get("using", [])
+                    if using:
+                        cols = ", ".join(using)
+                        parts.append(f"{join_type} JOIN {j_source} AS {alias} USING ({cols})")
+                    else:
+                        parts.append(f"CROSS JOIN {j_source} AS {alias}")
+                if j.get("joins"):
+                    parts.extend(_render_joins(j["joins"]))
+            return parts
+
+        return " ".join([f"{source} AS source"] + _render_joins(joins))
 
     # ------------------------------------------------------------------
     # Apply metric views
@@ -1667,6 +1881,13 @@ OUTPUT (one JSON object only, no array, no explanation):"""
                     if apply_span is not None:
                         apply_span.set_outputs({"success": False, "error": str(e)[:500]})
 
+        if applied > 0:
+            try:
+                from dbxmetagen.semantic_graph import build_semantic_graph
+                build_semantic_graph(self.spark, self.config)
+            except Exception as e:
+                logger.warning("Semantic graph sync after apply failed: %s", e)
+
         return {"applied": applied, "failed": failed}
 
     def _normalize_joins(self, defn: dict) -> None:
@@ -1675,48 +1896,162 @@ OUTPUT (one JSON object only, no array, no explanation):"""
         if not source or not defn.get("joins"):
             return
         source_short = source.split(".")[-1]
-        for j in defn["joins"]:
+
+        def _norm(jlist: list[dict], parent_short: str, parent_alias: str) -> None:
+            for j in jlist:
+                on = j.get("on", "")
+                if on and f"{parent_short}." in on:
+                    j["on"] = on.replace(f"{parent_short}.", f"{parent_alias}.")
+                if j.get("joins"):
+                    j_source = j.get("source", "")
+                    j_alias = j.get("name", j_source.split(".")[-1] if j_source else "")
+                    j_short = j_source.split(".")[-1] if j_source else ""
+                    _norm(j["joins"], j_short, j_alias)
+
+        _norm(defn["joins"], source_short, "source")
+
+    @staticmethod
+    def _restructure_chained_to_nested(defn: dict) -> dict:
+        """Convert flat chained joins into proper nested (snowflake) structure."""
+        joins = defn.get("joins", [])
+        if not joins:
+            return defn
+
+        ref_pat = re.compile(r"\b([A-Za-z_]\w*)\.\w+")
+        join_aliases = {j.get("name", "").lower() for j in joins if j.get("name")}
+
+        root_joins: list[dict] = []
+        chained: list[dict] = []
+        for j in joins:
+            if j.get("joins"):
+                root_joins.append(j)
+                continue
             on = j.get("on", "")
-            if on and f"{source_short}." in on:
-                j["on"] = on.replace(f"{source_short}.", "source.")
+            refs = {m.group(1).lower() for m in ref_pat.finditer(on)}
+            refs.discard("source")
+            own = j.get("name", "").lower()
+            if refs & join_aliases - {own}:
+                chained.append(j)
+            else:
+                root_joins.append(j)
+
+        if not chained:
+            return defn
+
+        alias_to_join: dict[str, dict] = {}
+        def _index(jlist: list[dict]) -> None:
+            for j in jlist:
+                alias = j.get("name", "").lower()
+                if alias:
+                    alias_to_join[alias] = j
+                if j.get("joins"):
+                    _index(j["joins"])
+        _index(root_joins)
+
+        dropped: set[str] = set()
+        for j in chained:
+            on = j.get("on", "")
+            refs = {m.group(1).lower() for m in ref_pat.finditer(on)}
+            refs.discard("source")
+            own = j.get("name", "").lower()
+            parent_refs = refs & set(alias_to_join.keys()) - {own}
+            if parent_refs:
+                parent = alias_to_join[next(iter(parent_refs))]
+                parent.setdefault("joins", []).append(j)
+                alias_to_join[own] = j
+            else:
+                dropped.add(own)
+
+        defn["joins"] = root_joins
+
+        if dropped:
+            for section in ("dimensions", "measures"):
+                items = defn.get(section, [])
+                defn[section] = [
+                    item for item in items
+                    if not ({m.group(1).lower() for m in ref_pat.finditer(item.get("expr", ""))} & dropped)
+                ]
+        return defn
+
+    @staticmethod
+    def _qualify_nested_refs(defn: dict) -> dict:
+        """Rewrite dimension/measure expressions so nested join aliases use full dot-paths.
+
+        Databricks metric views require ``parent.child.column`` not ``child.column``.
+        """
+        joins = defn.get("joins", [])
+        if not joins:
+            return defn
+        top_aliases: set[str] = set()
+        alias_path: dict[str, str] = {}
+
+        def _walk(jlist, prefix=""):
+            for j in jlist:
+                name = j.get("name", "")
+                if not name:
+                    continue
+                path = f"{prefix}.{name}" if prefix else name
+                alias_path[name.lower()] = path
+                if not prefix:
+                    top_aliases.add(name.lower())
+                if j.get("joins"):
+                    _walk(j["joins"], path)
+
+        _walk(joins)
+        nested = {a: p for a, p in alias_path.items() if a not in top_aliases}
+        if not nested:
+            return defn
+        ref_pat = re.compile(r"\b([A-Za-z_]\w*)\.(\w+)")
+
+        def _rewrite(expr):
+            def _sub(m):
+                al = m.group(1).lower()
+                if al in nested:
+                    return f"{nested[al]}.{m.group(2)}"
+                return m.group(0)
+            return ref_pat.sub(_sub, expr)
+
+        for section in ("dimensions", "measures"):
+            for item in defn.get(section, []):
+                if item.get("expr"):
+                    item["expr"] = _rewrite(item["expr"])
+        if defn.get("filter"):
+            defn["filter"] = _rewrite(defn["filter"])
+        return defn
+
+    class _IndentYamlDumper(yaml.Dumper):
+        """Dumper that always indents list items under their parent key."""
+        def increase_indent(self, flow=False, indentless=False):
+            return super().increase_indent(flow, False)
 
     def _definition_to_yaml(self, defn: dict) -> str:
         """Convert a JSON definition to the YAML body for CREATE VIEW WITH METRICS."""
         self._normalize_joins(defn)
+        defn = self._restructure_chained_to_nested(defn)
+        defn = self._qualify_nested_refs(defn)
         mv: dict = {"version": "1.1", "source": defn["source"]}
         if defn.get("comment"):
             mv["comment"] = defn["comment"]
         if defn.get("filter"):
             mv["filter"] = defn["filter"]
         mv["dimensions"] = [
-            {
-                k: v
-                for k, v in {
-                    "name": d["name"],
-                    "expr": d["expr"],
-                    "comment": d.get("comment"),
-                    "display_name": d.get("display_name"),
-                    "synonyms": d.get("synonyms"),
-                }.items()
-                if v
-            }
+            {k: v for k, v in {
+                "name": d["name"], "expr": d["expr"], "comment": d.get("comment"),
+                "display_name": d.get("display_name"), "synonyms": d.get("synonyms"),
+            }.items() if v}
             for d in defn.get("dimensions", [])
         ]
         measures_out = []
         for m in defn.get("measures", []):
-            entry = {
-                k: v
-                for k, v in {
-                    "name": m["name"],
-                    "expr": m["expr"],
-                    "comment": m.get("comment"),
-                    "display_name": m.get("display_name"),
-                    "synonyms": m.get("synonyms"),
-                }.items()
-                if v
-            }
+            entry = {k: v for k, v in {
+                "name": m["name"], "expr": m["expr"], "comment": m.get("comment"),
+                "display_name": m.get("display_name"), "synonyms": m.get("synonyms"),
+            }.items() if v}
             if m.get("format"):
-                entry["format"] = m["format"]
+                fmt = dict(m["format"]) if isinstance(m["format"], dict) else m["format"]
+                if isinstance(fmt, dict) and fmt.get("type") == "currency" and not fmt.get("currency_code"):
+                    fmt["currency_code"] = "USD"
+                entry["format"] = fmt
             if m.get("window"):
                 specs = _normalize_window_specs(m["window"])
                 if specs:
@@ -1725,7 +2060,7 @@ OUTPUT (one JSON object only, no array, no explanation):"""
         mv["measures"] = measures_out
         if defn.get("joins"):
             mv["joins"] = defn["joins"]
-        return yaml.dump(mv, default_flow_style=False, sort_keys=False)
+        return yaml.dump(mv, Dumper=self._IndentYamlDumper, default_flow_style=False, sort_keys=False)
 
     # ------------------------------------------------------------------
     # Genie space creation

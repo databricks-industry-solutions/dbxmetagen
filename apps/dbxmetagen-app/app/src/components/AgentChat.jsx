@@ -807,7 +807,7 @@ export default function AgentChat() {
                 placeholder="Ask a business question about your metrics..."
                 className="flex-1 px-3 py-2 text-sm border border-slate-200 dark:border-dbx-navy-400/40 rounded-lg bg-white dark:bg-dbx-navy-600 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-amber-500"
                 disabled={mvLoading} />
-              <button onClick={sendMvMessage} disabled={mvLoading || !mvInput.trim()}
+              <button onClick={() => sendMvMessage()} disabled={mvLoading || !mvInput.trim()}
                 className="px-4 py-2 bg-amber-500 hover:bg-amber-600 text-white rounded-lg text-sm disabled:opacity-50 shrink-0 transition-colors">
                 {mvLoading ? 'Sending...' : 'Send'}
               </button>
