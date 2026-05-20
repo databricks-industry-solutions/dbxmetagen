@@ -581,6 +581,12 @@ def get_config():
         host = _get_effective_client().config.host or ""
     except Exception:
         host = os.environ.get("DATABRICKS_HOST", "")
+    pkg_version = ""
+    try:
+        from importlib.metadata import version as _pkg_ver
+        pkg_version = _pkg_ver("dbxmetagen")
+    except Exception:
+        pass
     return {
         "catalog_name": CATALOG,
         "schema_name": SCHEMA,
@@ -595,6 +601,8 @@ def get_config():
         "lakebase_configured": pg_configured(),
         "obo_enabled": _OBO_ENABLED,
         "mlflow_experiment_id": _get_mlflow_experiment_id(),
+        "app_display_name": os.environ.get("APP_DISPLAY_NAME", ""),
+        "version": pkg_version,
     }
 
 
@@ -5718,17 +5726,8 @@ def list_semantic_definitions(project_id: Optional[str] = None):
         f"COALESCE(version, 1) as version, parent_definition_id, project_id, "
         f"complexity_score, complexity_level, deployed_catalog, deployed_schema, "
         f"quality_score, quality_level "
-        f"FROM ("
-        f"  SELECT *, ROW_NUMBER() OVER ("
-        f"    PARTITION BY metric_view_name, source_table "
-        f"    ORDER BY CASE status "
-        f"      WHEN 'applied' THEN 0 WHEN 'validated' THEN 1 "
-        f"      WHEN 'created' THEN 2 ELSE 3 END, "
-        f"    created_at DESC"
-        f"  ) AS _rn "
-        f"  FROM {fq('metric_view_definitions')} "
-        f"  {where}"
-        f") WHERE _rn = 1 "
+        f"FROM {fq('metric_view_definitions')} "
+        f"{where} "
         f"ORDER BY created_at DESC"
     )
     try:
@@ -5805,6 +5804,33 @@ def delete_semantic_definition(
     execute_sql(
         f"DELETE FROM {fq('metric_view_definitions')} WHERE definition_id = '{definition_id}'"
     )
+    # Eagerly remove vector docs and semantic graph entries for this definition
+    try:
+        for dt in ("metric_view_summary", "metric_view_measures", "metric_view_schema"):
+            execute_sql(
+                f"DELETE FROM {fq('metadata_documents')} "
+                f"WHERE doc_type = '{dt}' AND node_id = '{definition_id}'"
+            )
+    except Exception:
+        pass
+    try:
+        execute_sql(
+            f"DELETE FROM {fq('semantic_nodes')} WHERE definition_id = '{definition_id}'"
+        )
+        execute_sql(
+            f"DELETE FROM {fq('semantic_edges')} WHERE "
+            f"src NOT IN (SELECT node_id FROM {fq('semantic_nodes')}) "
+            f"OR dst NOT IN (SELECT node_id FROM {fq('semantic_nodes')})"
+        )
+    except Exception:
+        pass
+    # Trigger VS index sync so deletions propagate via CDF
+    try:
+        vs_index_name = f"{CATALOG}.{SCHEMA}.{VS_INDEX_SUFFIX}"
+        ws = _get_effective_client()
+        ws.vector_search_indexes.sync_index(index_name=vs_index_name)
+    except Exception:
+        pass
     return {"deleted": True, "definition_id": definition_id}
 
 
@@ -5901,17 +5927,8 @@ def list_metric_views(status: Optional[str] = None):
     q = (
         f"SELECT definition_id, metric_view_name, source_table, status, "
         f"genie_space_id, created_at, deployed_catalog, deployed_schema "
-        f"FROM ("
-        f"  SELECT *, ROW_NUMBER() OVER ("
-        f"    PARTITION BY metric_view_name, source_table "
-        f"    ORDER BY CASE status "
-        f"      WHEN 'applied' THEN 0 WHEN 'validated' THEN 1 "
-        f"      WHEN 'created' THEN 2 ELSE 3 END, "
-        f"    created_at DESC"
-        f"  ) AS _rn "
-        f"  FROM {fq('metric_view_definitions')} "
-        f"  WHERE {status_filter}"
-        f") WHERE _rn = 1 "
+        f"FROM {fq('metric_view_definitions')} "
+        f"WHERE {status_filter} AND status != 'superseded' "
         f"ORDER BY source_table, metric_view_name"
     )
     try:
@@ -8005,6 +8022,58 @@ def _run_sl_generation(
             except Exception:
                 pass
 
+        # Pre-generation gate: check which requested tables already have active views
+        existing_mvs: dict[str, list[dict]] = {}  # source_table -> [{name, status}]
+        try:
+            existing_rows = execute_sql(
+                f"SELECT metric_view_name, source_table, status "
+                f"FROM {fq('metric_view_definitions')} "
+                f"WHERE status IN ('applied', 'validated', 'created') LIMIT 200"
+            )
+            for r in (existing_rows or []):
+                src = (r.get("source_table") or "").lower()
+                if src:
+                    existing_mvs.setdefault(src, []).append({
+                        "name": r.get("metric_view_name", ""),
+                        "status": r.get("status", ""),
+                    })
+        except Exception:
+            pass
+
+        if existing_mvs and mode != "replace_all":
+            covered = []
+            uncovered = []
+            for t in tables:
+                matches = existing_mvs.get(t.lower(), [])
+                applied = [m for m in matches if m["status"] == "applied"]
+                if applied:
+                    covered.append((t, applied[0]["name"]))
+                else:
+                    uncovered.append(t)
+
+            if covered and not uncovered:
+                names = [f"{name} (source: {t})" for t, name in covered]
+                task.update({
+                    "status": "done",
+                    "stage": "done",
+                    "result": {
+                        "generated": 0, "validated": 0, "failed": 0, "repaired": 0,
+                        "skipped_reason": "all_covered",
+                        "message": f"All requested tables already have applied metric views: {', '.join(names)}. "
+                                   "Delete or supersede existing views to regenerate.",
+                        "existing_views": [{"table": t, "view": n} for t, n in covered],
+                    },
+                })
+                return
+
+            if covered and uncovered:
+                tables = uncovered
+                logger.info(
+                    "Skipping %d already-covered tables: %s",
+                    len(covered),
+                    ", ".join(n for _, n in covered),
+                )
+
         task["stage"] = "building_context"
         context = _build_sl_context(tables, cat, sch, questions=questions, business_context=business_context, profile_id=profile_id)
         if not context.strip():
@@ -8108,18 +8177,44 @@ def _run_sl_generation(
 
             json_str = json.dumps(defn).replace("'", "''")
 
-            # In "replace" mode, supersede existing definitions with the same name
-            if mode == "replace":
-                mv_esc = mv_name.replace("'", "''")
-                proj_clause = f" AND project_id = '{project_id}'" if project_id else ""
-                try:
-                    execute_sql(
-                        f"UPDATE {fq('metric_view_definitions')} SET status = 'superseded' "
-                        f"WHERE metric_view_name = '{mv_esc}' "
-                        f"AND status != 'superseded'{proj_clause}"
-                    )
-                except Exception:
-                    pass
+            # Name collision check: skip if an applied view with this name already exists
+            mv_esc = mv_name.replace("'", "''")
+            collision_applied = False
+            try:
+                collision_rows = execute_sql(
+                    f"SELECT definition_id, status FROM {fq('metric_view_definitions')} "
+                    f"WHERE metric_view_name = '{mv_esc}' AND status NOT IN ('superseded', 'deleted') LIMIT 5"
+                )
+                for cr in (collision_rows or []):
+                    if cr.get("status") == "applied":
+                        collision_applied = True
+                        break
+            except Exception:
+                pass
+
+            if collision_applied and mode != "replace_all":
+                logger.info("Skipping '%s': an applied view with this name already exists", mv_name)
+                per_definition_results.append({
+                    "name": mv_name, "source": source, "status": "skipped",
+                    "validation_errors": [f"Metric view '{mv_name}' already exists and is applied. Delete or supersede it first."],
+                })
+                stats.setdefault("skipped", 0)
+                stats["skipped"] += 1
+                stats["generated"] += 1
+                continue
+
+            # Supersede non-applied siblings with the same name (created/validated/failed)
+            if collision_rows:
+                sibling_ids = [cr["definition_id"] for cr in collision_rows if cr.get("status") != "applied"]
+                if sibling_ids:
+                    id_list = ", ".join(f"'{sid}'" for sid in sibling_ids)
+                    try:
+                        execute_sql(
+                            f"UPDATE {fq('metric_view_definitions')} SET status = 'superseded' "
+                            f"WHERE definition_id IN ({id_list})"
+                        )
+                    except Exception:
+                        pass
 
             def _validate_defn(d: dict) -> list[str]:
                 errs = _validate_definition_structure(d)
@@ -8857,6 +8952,16 @@ def create_metric_view(definition_id: str, req: CreateDefinitionRequest):
         f"deployed_catalog = '{req.target_catalog}', deployed_schema = '{req.target_schema}' "
         f"WHERE definition_id = '{definition_id}'"
     )
+    # Supersede all other definitions with the same name (safety net for duplicates)
+    mv_esc = mv_name.replace("'", "''")
+    try:
+        execute_sql(
+            f"UPDATE {fq('metric_view_definitions')} SET status = 'superseded' "
+            f"WHERE metric_view_name = '{mv_esc}' AND definition_id != '{definition_id}' "
+            f"AND status NOT IN ('superseded', 'deleted')"
+        )
+    except Exception:
+        pass
     try:
         _trigger_sg_sync_if_idle()
     except Exception:
@@ -12063,6 +12168,16 @@ def _sg_sync_worker(task_id: str):
             timeout=30,
         )
         if not rows:
+            # No active definitions -- sweep all definition-owned nodes/edges
+            execute_sql(
+                f"DELETE FROM {cfg_nodes} WHERE definition_id IS NOT NULL",
+                timeout=30,
+            )
+            execute_sql(
+                f"DELETE FROM {cfg_edges} WHERE src NOT IN (SELECT node_id FROM {cfg_nodes}) "
+                f"OR dst NOT IN (SELECT node_id FROM {cfg_nodes})",
+                timeout=30,
+            )
             _sg_sync_tasks[task_id] = {"status": "done", "nodes": 0, "edges": 0}
             return
 
