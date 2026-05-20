@@ -7153,6 +7153,16 @@ def _autofix_expr(expr: str) -> str:
         r"DATE_FORMAT\(([^,]+),\s*([^)]+)\)", _fix_date_format, expr, flags=re.IGNORECASE
     )
 
+    # SUBSTR(date_col, 1, 7) -> DATE_FORMAT(col, 'yyyy-MM'); SUBSTR(date_col, 1, 4) -> DATE_FORMAT(col, 'yyyy')
+    def _fix_substr_date(m):
+        col = m.group(1).strip()
+        length = m.group(2).strip()
+        if any(kw in col.lower() for kw in ("date", "time", "dt", "_ts", "created", "updated")):
+            fmt = "'yyyy-MM'" if length == "7" else "'yyyy'"
+            return f"DATE_FORMAT({col}, {fmt})"
+        return m.group(0)
+    expr = re.sub(r"SUBSTR\(([^,]+),\s*1\s*,\s*(4|7)\)", _fix_substr_date, expr, flags=re.IGNORECASE)
+
     expr = _fix_none_literal(expr)
     expr = _fix_double_commas(expr)
     expr = _fix_position_bare_char(expr)
@@ -7450,7 +7460,22 @@ def _score_definition_complexity(defn: dict) -> dict:
     if has_joined_dim:
         q_agent += 2
 
-    q_score = q_meta + q_agent
+    # Penalty: flat joins whose ON references a sibling alias (should be nested)
+    flat_penalty = 0
+    joins = defn.get("joins", [])
+    if joins:
+        join_names = {j.get("name", "").lower() for j in joins if j.get("name")}
+        for j in joins:
+            if j.get("joins"):
+                continue
+            on = j.get("on", "")
+            refs = {m.group(1).lower() for m in _ALIAS_REF_RE.finditer(on)}
+            refs.discard("source")
+            own = j.get("name", "").lower()
+            if refs & join_names - {own}:
+                flat_penalty += 2
+
+    q_score = max(0, q_meta + q_agent - flat_penalty)
     if q_score >= 14:
         q_level = "production"
     elif q_score >= 7:
@@ -7688,18 +7713,18 @@ def _build_plan_prompt(questions: list[str], context: str) -> str:
 
 TASK: Output a PLAN only (no SQL). Reply with a single JSON object: {{ "views": [ ... ] }}.
 
-ORGANIZING PRINCIPLE -- grain first, theme second:
+ORGANIZING PRINCIPLE -- one comprehensive view per fact-table grain:
 - Each view declares its grain via the source table. All measures must be valid at that grain.
-- Within a single grain, create separate views for different analytical themes.
-- Name views to reflect grain + theme: encounter_throughput_metrics, prescription_fill_channel_analysis.
+- Prefer ONE broad view per grain with all relevant measures and dimensions. The consumer (Genie, agent, SQL) selects dimensions/measures per query.
+- Split into multiple views from the same source ONLY when the persistent filter, join path, or grain changes -- NOT because of different "themes".
 
 For each metric view in "views", include:
-- "name": unique snake_case name reflecting grain and theme
+- "name": unique snake_case name reflecting the grain (e.g. prescription_metrics, order_line_metrics)
 - "source": fully qualified source table (catalog.schema.table)
 - "comment": one sentence purpose
 - "joins": array of {{ "name": "<alias>", "source": "catalog.schema.table", "on": "source.<fk_col> = <alias>.<pk_col>" }}
-  Include joins where FK relationships have high confidence and are relevant to the business questions. Prefer simpler views with fewer joins over complex views that may fail. A view with 0-2 well-chosen joins is better than one with 5 forced joins.
-  For dimension hierarchies use nested joins: {{ "name": "customer", ..., "joins": [{{ "name": "nation", ..., "on": "customer.nation_id = nation.id" }}] }}
+  Include ALL joins supported by high-confidence FK relationships to maximize dimension reach. Use nested joins for dimension hierarchies (e.g. orders -> customers -> regions):
+  {{ "name": "customer", ..., "joins": [{{ "name": "nation", ..., "on": "customer.nation_id = nation.id" }}] }}
 - "dimensions": array of {{ "name": "Display Name", "comment": "what it is" }} (no expr)
 - "measures": array of {{ "name": "Display Name", "comment": "what it measures" }} (no expr)
 - "question_indices": array of 0-based question indices this view answers
@@ -7737,6 +7762,8 @@ RULES:
 - COLUMN REFERENCING: Use "source.col" for source table columns, "join_alias.col" for joined table columns (including nested aliases like "nation.name"). NEVER use bare column names when joins are present -- always qualify with the alias.
 - Ratios must use NULLIF in denominator. AVG of pre-aggregated values is usually wrong.
 - Only use column names that appear in the metadata.
+- comment fields: describe content and lineage only. Do NOT reference KPI numbers, question numbers, or implementation details (e.g. "Implements KPIs 1, 10" is WRONG).
+- For year-month dimensions, use DATE_FORMAT(col, 'yyyy-MM'). NEVER use SUBSTR on date columns.
 
 {_REFERENCE_RULES_BLOCK}
 
@@ -8067,6 +8094,7 @@ def _run_sl_generation(
 
             _infer_format_specs(defn)
             _backfill_agent_metadata(defn)
+            _strip_kpi_references(defn)
             cx = _score_definition_complexity(defn)
 
             if source and source.count('.') < 2:
@@ -8287,6 +8315,7 @@ def _update_definition_row(definition_id: str, defn: dict, status: str, errors: 
     proj_val = f"'{proj_id}'" if proj_id else "NULL"
     _infer_format_specs(defn)
     _backfill_agent_metadata(defn)
+    _strip_kpi_references(defn)
     cx = _score_definition_complexity(defn)
     execute_sql(
         f"INSERT INTO {fq('metric_view_definitions')} VALUES ("
@@ -8335,6 +8364,27 @@ def _backfill_agent_metadata(defn: dict) -> None:
             item["display_name"] = _infer_display_name(item.get("name", ""))
         if not item.get("synonyms"):
             item["synonyms"] = _infer_synonyms(item.get("name", ""), item.get("comment"))
+
+
+_KPI_REF_RE = re.compile(
+    r"\.?\s*(?:Implements|Supports|Addresses|Answers|Covers|Partially implements)"
+    r"\s+(?:KPI|question|Q)s?\s*[\d,\s\-and]+\.?",
+    re.IGNORECASE,
+)
+
+
+def _strip_kpi_references(defn: dict) -> None:
+    """Remove KPI/question number references from comments."""
+    for field in ("comment",):
+        if defn.get(field):
+            defn[field] = _KPI_REF_RE.sub("", defn[field]).strip().rstrip(".")
+            if defn[field]:
+                defn[field] += "."
+    for item in defn.get("measures", []) + defn.get("dimensions", []):
+        if item.get("comment"):
+            item["comment"] = _KPI_REF_RE.sub("", item["comment"]).strip().rstrip(".")
+            if item["comment"]:
+                item["comment"] += "."
 
 
 def _normalize_window_specs(w) -> list[dict]:

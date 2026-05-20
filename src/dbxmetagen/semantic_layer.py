@@ -299,6 +299,27 @@ def _backfill_agent_metadata(defn: dict) -> None:
             item["synonyms"] = _infer_synonyms(item.get("name", ""), item.get("comment"))
 
 
+_KPI_REF_RE = re.compile(
+    r"\.?\s*(?:Implements|Supports|Addresses|Answers|Covers|Partially implements)"
+    r"\s+(?:KPI|question|Q)s?\s*[\d,\s\-and]+\.?",
+    re.IGNORECASE,
+)
+
+
+def _strip_kpi_references(defn: dict) -> None:
+    """Remove KPI/question number references from comments."""
+    for field in ("comment",):
+        if defn.get(field):
+            defn[field] = _KPI_REF_RE.sub("", defn[field]).strip().rstrip(".")
+            if defn[field]:
+                defn[field] += "."
+    for item in defn.get("measures", []) + defn.get("dimensions", []):
+        if item.get("comment"):
+            item["comment"] = _KPI_REF_RE.sub("", item["comment"]).strip().rstrip(".")
+            if item["comment"]:
+                item["comment"] += "."
+
+
 def _normalize_window_specs(w) -> list[dict]:
     """Normalize window field to YAML 1.1 spec: array of {order, range/rows, semiadditive}."""
     if w is None:
@@ -819,6 +840,8 @@ class SemanticLayerGenerator:
                 _infer_format_specs(defn)
                 _fix_percentage_scaling(defn)
                 _backfill_agent_metadata(defn)
+                _strip_kpi_references(defn)
+                defn = self._restructure_chained_to_nested(defn)
 
                 defn_id = str(uuid.uuid4())
                 mv_name = defn.get("name", f"metric_view_{defn_id[:8]}")
@@ -896,15 +919,16 @@ class SemanticLayerGenerator:
 
 TASK: Generate metric view definitions (as a JSON array) that enable answering the business questions below.
 
-ORGANIZING PRINCIPLE -- grain first, theme second:
-- Each metric view declares its grain via its source table (one row = one encounter, one order line, one prescription fill, etc.)
-- All measures must be valid at that grain. Do NOT mix measures implying different grains in one view
-- Within a single grain, create SEPARATE views for different analytical themes
-- Name views to reflect both grain and theme: encounter_throughput_metrics, prescription_fill_channel_analysis
+ORGANIZING PRINCIPLE -- one comprehensive view per fact-table grain:
+- Each metric view declares its grain via its source table (one row = one prescription, one order line, one encounter, etc.)
+- All measures must be valid at that grain. NEVER mix measures implying different grains
+- Prefer ONE broad view per grain with all relevant measures and dimensions, rather than splitting by analytical theme. The consumer (Genie, agent, SQL) selects which dimensions/measures to use per query
+- Split into multiple views from the same source ONLY when the persistent filter, join path, or grain changes -- NOT because of different "themes"
+- Use nested joins to maximize dimension reach through FK chains (e.g. line_items -> orders -> customers -> regions)
 
 RULES:
 1. Create measures that directly support answering the business questions. Do NOT add a generic "row count" or "Record Count" measure unless a question explicitly asks for "how many records" or "count of X". Prefer ratios (e.g. rate, per capita), conditional aggregates (FILTER), and entity-specific KPIs (e.g. readmission rate, avg length of stay) over raw COUNT(*) when the question implies a more specific metric.
-2. Create metric views organized around analytical themes from the questions, not just one-to-one with tables. Multiple metric views from the same table are fine if they address different analytical angles
+2. Prefer one comprehensive view per fact-table grain with all relevant measures. Multiple views from the same source table are acceptable ONLY when filters, join paths, or grains differ
 3. Only reference columns that exist in the metadata below (Columns in the metadata). Do not invent column names
 4. Use standard SQL aggregate functions: SUM, COUNT, AVG, MIN, MAX, COUNT(DISTINCT ...). NEVER use SQL window functions (OVER, PARTITION BY, ROW_NUMBER, LAG, LEAD) in measure expressions -- they are not supported in metric views. For rolling/trailing calculations, use the "window" property on the measure instead
 5. Date/time function rules (Databricks/Spark SQL):
@@ -912,6 +936,7 @@ RULES:
    b. EXTRACT: use EXTRACT(HOUR FROM col) for extracting date parts. Do NOT use DATE_PART(HOUR, col)
    c. DATEDIFF only returns days with 2 args: DATEDIFF(end, start). For other units use TIMESTAMPDIFF(MINUTE, start, end) with a bare unquoted keyword unit
    d. TIMESTAMPADD: bare unquoted singular unit -- TIMESTAMPADD(MONTH, 1, col), NOT TIMESTAMPADD('MONTHS', 1, col)
+   e. For year-month dimensions, use DATE_FORMAT(col, 'yyyy-MM'). NEVER use SUBSTR(col, 1, 7) on date columns
 6. ALWAYS single-quote ALL string literal values everywhere in expressions:
    - Comparisons: status = 'fulfilled', NOT status = fulfilled
    - THEN/ELSE results: CASE WHEN x = 'A' THEN 'Category A' ELSE 'Other' END, NOT THEN Category A
@@ -932,7 +957,7 @@ RULES:
 12. Use "filter" (optional) for persistent WHERE clauses (e.g. excluding null/test rows)
 13. Use measure-level FILTER for conditional aggregation: SUM(col) FILTER (WHERE condition)
 14. If some questions are not answerable with metrics (e.g. document search, free-text lookups, SOP retrieval), generate metric views for the ones that ARE quantitative/analytical and silently ignore the rest. Do NOT mention skipped or unanswerable questions in the comment field
-15. Each metric view "name" must be unique and descriptive (e.g. staffing_efficiency_metrics, ed_throughput_analysis). Vary names based on the analytical theme, not just the table name
+15. Each metric view "name" must be unique and descriptive, reflecting the grain (e.g. prescription_metrics, order_line_metrics, encounter_metrics)
 16. Output ONLY a valid JSON array, no explanation
 17. Use domain and subdomain from table metadata to choose which dimensions (e.g. department, region, product category) are relevant to the questions.
 18. When Entity types are annotated on tables, use the ENTITY MEASURE SUGGESTIONS in the metadata and generate entity-specific analytical metrics:
@@ -1607,6 +1632,16 @@ OUTPUT (one JSON object only, no array, no explanation):"""
         )
         expr = cls._fix_date_part(expr)
         expr = cls._fix_datediff(expr)
+
+        def _fix_substr_date(m):
+            col = m.group(1).strip()
+            length = m.group(2).strip()
+            if any(kw in col.lower() for kw in ("date", "time", "dt", "_ts", "created", "updated")):
+                fmt = "'yyyy-MM'" if length == "7" else "'yyyy'"
+                return f"DATE_FORMAT({col}, {fmt})"
+            return m.group(0)
+        expr = re.sub(r"SUBSTR\(([^,]+),\s*1\s*,\s*(4|7)\)", _fix_substr_date, expr, flags=re.IGNORECASE)
+
         expr = cls._fix_none_literal(expr)
         expr = cls._fix_double_commas(expr)
         expr = cls._fix_position_bare_char(expr)
@@ -1781,9 +1816,73 @@ OUTPUT (one JSON object only, no array, no explanation):"""
 
         _norm(defn["joins"], source_short, "source")
 
+    @staticmethod
+    def _restructure_chained_to_nested(defn: dict) -> dict:
+        """Convert flat chained joins into proper nested (snowflake) structure."""
+        joins = defn.get("joins", [])
+        if not joins:
+            return defn
+
+        ref_pat = re.compile(r"\b([A-Za-z_]\w*)\.\w+")
+        join_aliases = {j.get("name", "").lower() for j in joins if j.get("name")}
+
+        root_joins: list[dict] = []
+        chained: list[dict] = []
+        for j in joins:
+            if j.get("joins"):
+                root_joins.append(j)
+                continue
+            on = j.get("on", "")
+            refs = {m.group(1).lower() for m in ref_pat.finditer(on)}
+            refs.discard("source")
+            own = j.get("name", "").lower()
+            if refs & join_aliases - {own}:
+                chained.append(j)
+            else:
+                root_joins.append(j)
+
+        if not chained:
+            return defn
+
+        alias_to_join: dict[str, dict] = {}
+        def _index(jlist: list[dict]) -> None:
+            for j in jlist:
+                alias = j.get("name", "").lower()
+                if alias:
+                    alias_to_join[alias] = j
+                if j.get("joins"):
+                    _index(j["joins"])
+        _index(root_joins)
+
+        dropped: set[str] = set()
+        for j in chained:
+            on = j.get("on", "")
+            refs = {m.group(1).lower() for m in ref_pat.finditer(on)}
+            refs.discard("source")
+            own = j.get("name", "").lower()
+            parent_refs = refs & set(alias_to_join.keys()) - {own}
+            if parent_refs:
+                parent = alias_to_join[next(iter(parent_refs))]
+                parent.setdefault("joins", []).append(j)
+                alias_to_join[own] = j
+            else:
+                dropped.add(own)
+
+        defn["joins"] = root_joins
+
+        if dropped:
+            for section in ("dimensions", "measures"):
+                items = defn.get(section, [])
+                defn[section] = [
+                    item for item in items
+                    if not ({m.group(1).lower() for m in ref_pat.finditer(item.get("expr", ""))} & dropped)
+                ]
+        return defn
+
     def _definition_to_yaml(self, defn: dict) -> str:
         """Convert a JSON definition to the YAML body for CREATE VIEW WITH METRICS."""
         self._normalize_joins(defn)
+        defn = self._restructure_chained_to_nested(defn)
         mv: dict = {"version": "1.1", "source": defn["source"]}
         if defn.get("comment"):
             mv["comment"] = defn["comment"]
