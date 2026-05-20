@@ -7759,8 +7759,11 @@ RULES:
   STAR SCHEMA joins: "on": "source.<fk> = <alias>.<pk>"
   NESTED JOINS for hierarchies: nest child joins inside the parent's "joins" array with child "on" referencing the parent alias:
   {{"name": "customer", "source": "...", "on": "source.customer_id = customer.id", "joins": [{{"name": "nation", "source": "...", "on": "customer.nation_id = nation.id"}}]}}
-- COLUMN REFERENCING: Use "source.col" for source table columns, "join_alias.col" for joined table columns (including nested aliases like "nation.name"). NEVER use bare column names when joins are present -- always qualify with the alias.
+- COLUMN REFERENCING: Use "source.col" for source table columns, "join_alias.col" for joined table columns. Nested join aliases are FULLY REACHABLE -- if you nest physician -> account -> territory, use "account.bed_count" and "territory.region" directly. NEVER use bare column names when joins are present.
+- NEVER substitute a placeholder column from an unrelated table or alias. If a dimension is called "Region", its expr MUST reference the actual region column from the correct alias (e.g. "territory.region"), NOT an unrelated column like "source.channel". If a column is unreachable through the join path, DROP the dimension entirely rather than using a fake placeholder.
+- Share/mix measures (X as % of total) CANNOT be computed in metric views because window functions are banned. Do NOT create measures like SUM(x)/NULLIF(SUM(x),0) -- this always equals 1.0. Instead, provide the raw numerator; the consumer computes shares at query time.
 - Ratios must use NULLIF in denominator. AVG of pre-aggregated values is usually wrong.
+- Do NOT create duplicate measures with identical expressions but different names. Each measure expr must be semantically distinct.
 - Only use column names that appear in the metadata.
 - comment fields: describe content and lineage only. Do NOT reference KPI numbers, question numbers, or implementation details (e.g. "Implements KPIs 1, 10" is WRONG).
 - For year-month dimensions, use DATE_FORMAT(col, 'yyyy-MM'). NEVER use SUBSTR on date columns.
@@ -8095,6 +8098,8 @@ def _run_sl_generation(
             _infer_format_specs(defn)
             _backfill_agent_metadata(defn)
             _strip_kpi_references(defn)
+            _drop_broken_measures(defn)
+            _drop_placeholder_dimensions(defn)
             cx = _score_definition_complexity(defn)
 
             if source and source.count('.') < 2:
@@ -8316,6 +8321,8 @@ def _update_definition_row(definition_id: str, defn: dict, status: str, errors: 
     _infer_format_specs(defn)
     _backfill_agent_metadata(defn)
     _strip_kpi_references(defn)
+    _drop_broken_measures(defn)
+    _drop_placeholder_dimensions(defn)
     cx = _score_definition_complexity(defn)
     execute_sql(
         f"INSERT INTO {fq('metric_view_definitions')} VALUES ("
@@ -8385,6 +8392,73 @@ def _strip_kpi_references(defn: dict) -> None:
             item["comment"] = _KPI_REF_RE.sub("", item["comment"]).strip().rstrip(".")
             if item["comment"]:
                 item["comment"] += "."
+
+
+_ALIAS_DOT_PH_RE = re.compile(r"\b([A-Za-z_]\w*)\.\w+")
+
+
+def _drop_placeholder_dimensions(defn: dict) -> None:
+    """Drop dimensions whose name implies a join alias but whose expr uses a different alias."""
+    joins = defn.get("joins", [])
+    if not joins:
+        return
+
+    def _collect_aliases(jlist: list[dict]) -> set[str]:
+        out: set[str] = set()
+        for j in jlist:
+            alias = j.get("name", "").lower()
+            if alias:
+                out.add(alias)
+            if j.get("joins"):
+                out |= _collect_aliases(j["joins"])
+        return out
+
+    all_aliases = _collect_aliases(joins)
+    if not all_aliases:
+        return
+
+    cleaned: list[dict] = []
+    for d in defn.get("dimensions", []):
+        name_lower = d.get("name", "").lower().replace("_", " ")
+        expr = d.get("expr", "")
+        refs = {m.group(1).lower() for m in _ALIAS_DOT_PH_RE.finditer(expr)}
+
+        implied_alias = None
+        for alias in all_aliases:
+            if alias in name_lower:
+                implied_alias = alias
+                break
+
+        if implied_alias and implied_alias not in refs and "source" in refs:
+            continue
+        cleaned.append(d)
+    defn["dimensions"] = cleaned
+
+
+_SELF_DIV_RE = re.compile(
+    r"^(SUM|COUNT|AVG|MIN|MAX)\s*\(([^)]+)\)\s*/\s*NULLIF\s*\(\s*\1\s*\(\2\)",
+    re.IGNORECASE,
+)
+
+
+def _drop_broken_measures(defn: dict) -> None:
+    """Remove self-dividing share measures (always=1.0) and deduplicate identical exprs."""
+    measures = defn.get("measures", [])
+    if not measures:
+        return
+
+    cleaned: list[dict] = []
+    seen_exprs: set[str] = set()
+    for m in measures:
+        expr = re.sub(r"\s+", " ", m.get("expr", "").strip())
+        if _SELF_DIV_RE.search(expr):
+            continue
+        norm = expr.upper()
+        if norm in seen_exprs:
+            continue
+        seen_exprs.add(norm)
+        cleaned.append(m)
+    defn["measures"] = cleaned
 
 
 def _normalize_window_specs(w) -> list[dict]:

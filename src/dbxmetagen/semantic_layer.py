@@ -320,6 +320,76 @@ def _strip_kpi_references(defn: dict) -> None:
                 item["comment"] += "."
 
 
+_ALIAS_DOT_RE = re.compile(r"\b([A-Za-z_]\w*)\.\w+")
+
+
+def _drop_placeholder_dimensions(defn: dict) -> None:
+    """Drop dimensions whose name implies a join alias but whose expr uses a different alias.
+
+    E.g. a dim named "Territory Code" whose expr is "source.prescription_id" is a placeholder.
+    """
+    joins = defn.get("joins", [])
+    if not joins:
+        return
+
+    def _collect_aliases(jlist: list[dict]) -> set[str]:
+        out: set[str] = set()
+        for j in jlist:
+            alias = j.get("name", "").lower()
+            if alias:
+                out.add(alias)
+            if j.get("joins"):
+                out |= _collect_aliases(j["joins"])
+        return out
+
+    all_aliases = _collect_aliases(joins)
+    if not all_aliases:
+        return
+
+    cleaned: list[dict] = []
+    for d in defn.get("dimensions", []):
+        name_lower = d.get("name", "").lower().replace("_", " ")
+        expr = d.get("expr", "")
+        refs = {m.group(1).lower() for m in _ALIAS_DOT_RE.finditer(expr)}
+
+        implied_alias = None
+        for alias in all_aliases:
+            if alias in name_lower:
+                implied_alias = alias
+                break
+
+        if implied_alias and implied_alias not in refs and "source" in refs:
+            continue
+        cleaned.append(d)
+    defn["dimensions"] = cleaned
+
+
+_SELF_DIV_RE = re.compile(
+    r"^(SUM|COUNT|AVG|MIN|MAX)\s*\(([^)]+)\)\s*/\s*NULLIF\s*\(\s*\1\s*\(\2\)",
+    re.IGNORECASE,
+)
+
+
+def _drop_broken_measures(defn: dict) -> None:
+    """Remove self-dividing share measures (always=1.0) and deduplicate identical exprs."""
+    measures = defn.get("measures", [])
+    if not measures:
+        return
+
+    cleaned: list[dict] = []
+    seen_exprs: set[str] = set()
+    for m in measures:
+        expr = re.sub(r"\s+", " ", m.get("expr", "").strip())
+        if _SELF_DIV_RE.search(expr):
+            continue
+        norm = expr.upper()
+        if norm in seen_exprs:
+            continue
+        seen_exprs.add(norm)
+        cleaned.append(m)
+    defn["measures"] = cleaned
+
+
 def _normalize_window_specs(w) -> list[dict]:
     """Normalize window field to YAML 1.1 spec: array of {order, range/rows, semiadditive}."""
     if w is None:
@@ -841,6 +911,8 @@ class SemanticLayerGenerator:
                 _fix_percentage_scaling(defn)
                 _backfill_agent_metadata(defn)
                 _strip_kpi_references(defn)
+                _drop_broken_measures(defn)
+                _drop_placeholder_dimensions(defn)
                 defn = self._restructure_chained_to_nested(defn)
 
                 defn_id = str(uuid.uuid4())
@@ -950,6 +1022,7 @@ RULES:
    NESTED / SNOWFLAKE JOINS: for dimension hierarchies (e.g. customer -> nation -> region), nest child joins inside the parent's "joins" array. Child "on" references the PARENT alias, not "source":
    {{"name": "customer", "source": "...", "on": "source.customer_id = customer.id", "joins": [{{"name": "nation", "source": "...", "on": "customer.nation_id = nation.id"}}]}}
    Limit nesting to 2 levels. Use nested joins when JOIN PATHS in the metadata show multi-hop FK chains.
+   NESTED ALIAS REACHABILITY: all nested join aliases are fully reachable in expressions. If you nest physician -> account -> territory, use "account.bed_count" and "territory.region" directly. NEVER substitute a placeholder column from an unrelated table/alias. If a column is unreachable through joins, DROP the dimension entirely rather than faking it.
 8. Include joins when RECOMMENDED JOINS exist; when questions ask for breakdowns by attributes in another table (e.g. by customer segment, department), you MUST add a join. Prefer at least one metric view with joins when FKs exist
 9. Every metric view MUST have at least one measure and one dimension
 10. Add a top-level "comment" (1-2 sentences) describing what the metric view measures, its analytical purpose, and which source tables it draws from. Do NOT reference question numbers, KPI numbers, or list which questions are/aren't answerable. Focus on content and lineage (e.g. "Analyzes order revenue by product family and sales representative, joining line items to the product catalog and parent order for discount tracking.")
@@ -977,6 +1050,7 @@ RULES:
 22. NEVER create share-of-total or percent-of-total measures (e.g. SUM(x)/SUM(total_x), COUNT(*)/COUNT(*)). These require window functions (OVER()) for the denominator, which are not supported. The denominator collapses to the same group as the numerator, always producing 1.0. Instead use: conditional ratios with FILTER, within-grain rates, or describe the share concept in the view comment for downstream Genie SQL
 23. NEVER nest aggregate functions inside other aggregate functions (e.g. SUM(COUNT(*)), AVG(SUM(x))). Databricks SQL does not allow nested aggregates. If you need a two-stage aggregation, use a conditional aggregate with CASE/WHEN or create a separate metric view for the inner aggregation
 24. If EXISTING METRIC VIEWS are listed in the metadata, do NOT recreate views with the same name or identical measures/dimensions. Instead create complementary views that cover different analytical angles, grains, or join paths. Reference existing views when planning to ensure coverage without overlap
+25. Do NOT create duplicate measures with identical expressions but different names. Each measure must have a semantically distinct expr. "Revenue per Physician" as SUM(cost) is just a duplicate of "Total Revenue" -- the grouping is a query-time choice, not a measure definition property
 
 EXAMPLE:
 {few_shot}
