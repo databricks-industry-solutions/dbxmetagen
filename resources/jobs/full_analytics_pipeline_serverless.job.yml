@@ -197,6 +197,7 @@ resources:
               model: "{{job.parameters.model}}"
               table_names: "{{job.parameters.table_names}}"
               apply_ddl: "{{job.parameters.apply_ddl}}"
+              endpoint_name: "{{job.parameters.endpoint_name}}"
 
         - task_key: build_similarity_edges
           max_retries: 1
@@ -216,6 +217,7 @@ resources:
               sweep_stale_edges: "{{job.parameters.sweep_stale_edges}}"
               table_names: "{{job.parameters.table_names}}"
               incremental: "{{job.parameters.incremental}}"
+              endpoint_name: "{{job.parameters.endpoint_name}}"
 
         - task_key: cluster_analysis
           max_retries: 1

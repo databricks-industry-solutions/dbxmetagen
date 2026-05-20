@@ -213,6 +213,7 @@ resources:
               model: "{{job.parameters.model}}"
               table_names: "{{job.parameters.table_names}}"
               apply_ddl: "{{job.parameters.apply_ddl}}"
+              endpoint_name: "{{job.parameters.endpoint_name}}"
           libraries:
             - whl: ../../dist/*.whl
 
@@ -234,6 +235,7 @@ resources:
               sweep_stale_edges: "{{job.parameters.sweep_stale_edges}}"
               table_names: "{{job.parameters.table_names}}"
               incremental: "{{job.parameters.incremental}}"
+              endpoint_name: "{{job.parameters.endpoint_name}}"
           libraries:
             - whl: ../../dist/*.whl
 

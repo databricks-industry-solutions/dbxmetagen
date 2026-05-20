@@ -18,6 +18,8 @@ resources:
           default: "healthcare"
         - name: incremental
           default: "true"
+        - name: endpoint_name
+          default: "dbxmetagen-vs"
 
       tasks:
         - task_key: build_knowledge_base
@@ -81,6 +83,7 @@ resources:
               schema_name: "{{job.parameters.schema_name}}"
               ontology_bundle: "{{job.parameters.ontology_bundle}}"
               incremental: "{{job.parameters.incremental}}"
+              endpoint_name: "{{job.parameters.endpoint_name}}"
 
         - task_key: generate_embeddings
           depends_on:
@@ -104,6 +107,7 @@ resources:
               similarity_threshold: "{{job.parameters.similarity_threshold}}"
               max_edges_per_node: "{{job.parameters.max_edges_per_node}}"
               use_ann_similarity: "{{job.parameters.use_ann_similarity}}"
+              endpoint_name: "{{job.parameters.endpoint_name}}"
 
         - task_key: cluster_analysis
           depends_on: [{task_key: generate_embeddings}]
@@ -175,7 +179,7 @@ resources:
             base_parameters:
               catalog_name: "{{job.parameters.catalog_name}}"
               schema_name: "{{job.parameters.schema_name}}"
-              endpoint_name: "dbxmetagen-vs"
+              endpoint_name: "{{job.parameters.endpoint_name}}"
               sweep_stale_docs: "false"
 
       environments:
