@@ -2009,7 +2009,10 @@ OUTPUT (one JSON object only, no array, no explanation):"""
                 if v
             }
             if m.get("format"):
-                entry["format"] = m["format"]
+                fmt = dict(m["format"]) if isinstance(m["format"], dict) else m["format"]
+                if isinstance(fmt, dict) and fmt.get("type") == "currency" and not fmt.get("currency_code"):
+                    fmt["currency_code"] = "USD"
+                entry["format"] = fmt
             if m.get("window"):
                 specs = _normalize_window_specs(m["window"])
                 if specs:

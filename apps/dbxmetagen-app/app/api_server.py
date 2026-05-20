@@ -8074,6 +8074,7 @@ def _run_sl_generation(
                                     item["expr"] = fixed_expr
                 return errs
 
+            _infer_format_specs(defn)
             errors = _validate_defn(defn)
 
             # YAML dry-run: catches metric-YAML-specific failures that pass SELECT validation
@@ -8097,6 +8098,7 @@ def _run_sl_generation(
                             item["expr"] = _autofix_expr(item["expr"])
                 if repaired.get("filter"):
                     repaired["filter"] = _autofix_expr(repaired["filter"])
+                _infer_format_specs(repaired)
                 repair_errors = _validate_defn(repaired)
                 if not repair_errors or len(repair_errors) < len(errors):
                     defn = repaired
@@ -8299,6 +8301,7 @@ def _parse_single_json(text: str) -> dict:
 
 def _validate_definition(defn: dict, source: str) -> tuple[str, str]:
     """Two-tier validation: structural then expression. Returns (status, errors_str)."""
+    _infer_format_specs(defn)
     for item_type in ("dimensions", "measures"):
         for item in defn.get(item_type, []):
             if item.get("expr"):
@@ -8576,8 +8579,9 @@ def _definition_to_yaml(defn: dict) -> str:
             lines.append("    format:")
             if fmt.get("type"):
                 lines.append(f'      type: "{_yaml_esc(fmt["type"])}"')
-            if fmt.get("currency_code"):
-                lines.append(f'      currency_code: "{_yaml_esc(fmt["currency_code"])}"')
+            if fmt.get("type") == "currency":
+                cc = fmt.get("currency_code") or "USD"
+                lines.append(f'      currency_code: "{_yaml_esc(cc)}"')
         if m.get("window"):
             w = m["window"]
             if isinstance(w, str):
