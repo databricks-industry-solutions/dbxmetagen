@@ -6769,7 +6769,9 @@ def _autofix_dimension_columns(defn: dict, table_cols: dict[str, set[str]]) -> d
                 prefix_lower = prefix.lower()
                 if prefix_lower not in known_aliases:
                     continue
-                # Check if column exists for this alias
+                # Skip intermediate dot-path segments (col is a join alias, not a column)
+                if col.lower() in known_aliases:
+                    continue
                 alias_map = alias_cols.get(prefix_lower, all_cols_lower)
                 if col.lower() in alias_map:
                     continue
@@ -6876,9 +6878,11 @@ def _validate_definition_structure(defn: dict) -> list[str]:
                             f"{item_type} {item.get('name', '')}: column {alias} not found in {source}"
                         )
                     elif col.lower() not in target:
-                        errors.append(
-                            f"{item_type} {item.get('name', '')}: column {col} not found in alias {alias}"
-                        )
+                        # Skip if col is an intermediate dot-path segment (a join alias name)
+                        if col.lower() not in known_aliases:
+                            errors.append(
+                                f"{item_type} {item.get('name', '')}: column {col} not found in alias {alias}"
+                            )
                 else:
                     if col.lower() not in all_cols and col.lower() not in known_aliases:
                         errors.append(
