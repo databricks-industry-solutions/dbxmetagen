@@ -28,6 +28,7 @@ dbutils.widgets.text("warehouse_id", "", "SQL Warehouse ID")
 dbutils.widgets.text("repo_path", "", "Repo root (e.g. /Workspace/Repos/<user>/dbxmetagen)")
 dbutils.widgets.text("volume_path", "", "Volume for wheel (e.g. /Volumes/cat/sch/vol)")
 dbutils.widgets.text("app_name", "dbxmetagen-app", "App Name")
+dbutils.widgets.text("vs_endpoint_name", "dbxmetagen-vs", "Vector Search Endpoint")
 dbutils.widgets.dropdown("enable_obo", "false", ["false", "true"], "Enable OBO")
 dbutils.widgets.dropdown("mode", "deploy", ["deploy", "destroy"], "Mode")
 
@@ -37,6 +38,7 @@ warehouse_id = dbutils.widgets.get("warehouse_id")
 repo_path = dbutils.widgets.get("repo_path").rstrip("/")
 volume_path = dbutils.widgets.get("volume_path").rstrip("/")
 app_name = dbutils.widgets.get("app_name")
+vs_endpoint_name = dbutils.widgets.get("vs_endpoint_name").strip() or "dbxmetagen-vs"
 enable_obo = dbutils.widgets.get("enable_obo")
 mode = dbutils.widgets.get("mode")
 
@@ -120,7 +122,7 @@ def generate_app_yaml(catalog, schema, bound_resource_names, obo="false", app_di
         else:
             lines.append(f'  - name: {env_name}\n    value: ""')
     lines += [
-        '  - name: VECTOR_SEARCH_ENDPOINT\n    value: "dbxmetagen-vs"',
+        f'  - name: VECTOR_SEARCH_ENDPOINT\n    value: "{vs_endpoint_name}"',
         '  - name: VECTOR_SEARCH_INDEX\n    value: "metadata_vs_index"',
         '  - name: LLM_MODEL\n    value: "databricks-claude-sonnet-4-6"',
         f'  - name: ENABLE_OBO\n    value: "{obo}"',

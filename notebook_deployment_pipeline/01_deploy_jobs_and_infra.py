@@ -342,7 +342,7 @@ def build_analytics_pipeline_job():
                 deps=["build_knowledge_base"]),
         serverless_task("build_ontology_vector_index", "build_ontology_vector_index.py",
                 {**cat_sch, "ontology_bundle": ref("ontology_bundle"),
-                 "endpoint_name": "dbxmetagen-vs"},
+                 "endpoint_name": vs_endpoint_name},
                 deps=["build_knowledge_base"]),
         serverless_task("build_ontology", "build_ontology.py",
                 {**cat_sch_tbl, "ontology_bundle": ref("ontology_bundle"),
@@ -386,7 +386,7 @@ def build_analytics_pipeline_job():
                 {**cat_sch, "model": ref("model")},
                 deps=["final_analysis"]),
         serverless_task("build_vector_index", "build_vector_index.py",
-                {**cat_sch, "endpoint_name": "dbxmetagen-vs"},
+                {**cat_sch, "endpoint_name": vs_endpoint_name},
                 deps=["final_analysis", "build_community_summaries"]),
     ]
     return (f"{app_name}_full_analytics_pipeline", tasks, params,

@@ -146,7 +146,7 @@ class TestRunProfiling:
         mock_builder_class.return_value = mock_builder
         
         run_profiling(MagicMock(), "cat", "sch", max_tables=10)
-        mock_builder.run.assert_called_once_with(10)
+        mock_builder.run.assert_called_once_with(10, federation_mode=False)
     
     @patch('dbxmetagen.profiling.ProfilingBuilder')
     def test_returns_run_result(self, mock_builder_class):

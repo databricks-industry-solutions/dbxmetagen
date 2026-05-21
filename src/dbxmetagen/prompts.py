@@ -19,6 +19,38 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+COMMENT_STYLE_GUIDELINES = {
+    "concise": {
+        "data": "1-2 sentences for simple columns, 2-3 sentences when rich metadata/patterns emerge",
+        "nodata": "1-2 sentences for simple columns, 2-3 sentences when rich metadata/patterns emerge",
+    },
+    "standard": {
+        "data": "3-5 sentences for simple columns, 4-8 sentences when rich metadata/patterns emerge",
+        "nodata": "2-3 sentences for simple columns, 4-8 sentences when rich metadata/patterns emerge",
+    },
+    "detailed": {
+        "data": "4-8 sentences for simple columns, 6-10 sentences when rich metadata/patterns emerge",
+        "nodata": "3-5 sentences for simple columns, 6-10 sentences when rich metadata/patterns emerge",
+    },
+}
+
+_CONCISE_RETAIL_EXAMPLE = """{"table": "Daily retail transaction records tracking individual sales and refunds.", "columns": ["transaction_id", "sale_amount", "is_refund"], "column_contents": ["Unique transaction identifier following 'TXN###' format with high cardinality and no nulls.", "Sale amount in decimal format with two decimal precision. No nulls indicates required field.", "Refund flag stored as string ('true'/'false'). Metadata confirms 2 distinct values exist."]}"""
+
+_CONCISE_HEALTHCARE_EXAMPLE = """{"table": "Clinical laboratory test results combining patient identifiers with test metadata, results, and ordering physician information. Protected health information requiring access controls.", "columns": ["patient_mrn", "test_date", "test_code", "result_value", "ref_range_low", "ref_range_high", "abnormal_flag", "ordering_physician"], "column_contents": ["Medical Record Number patient identifier in consistent 14-character 'MRN-YYYY-####' format. High cardinality, no nulls.", "Date when the laboratory test was performed. Fully populated across roughly a year of daily activity.", "Standardized lab test code (e.g. GLUC, HBA1C, CHOL). Variable length, no nulls, required field.", "Numeric test result stored as string for format flexibility. High cardinality; very few nulls likely represent pending or cancelled tests.", "Lower bound of normal reference range. Small fraction of nulls for tests without established ranges.", "Upper bound of normal reference range. Null pattern mirrors ref_range_low, confirming paired values.", "Result interpretation flag (H/L/N/Critical). Single-character, 4 distinct values, zero nulls — required derived field.", "Ordering physician name. Very few nulls; low cardinality suggests small practice or specialized facility."]}"""
+
+_CONCISE_NODATA_RETAIL_EXAMPLE = """{"table": "Daily retail transaction records tracking individual sales and refunds.", "columns": ["transaction_id", "sale_amount", "is_refund"], "column_contents": ["Unique transaction identifier with consistent length, high cardinality, and no nulls.", "Sale amount in decimal format with two decimal precision. No nulls indicates required field.", "Refund flag stored as string. Metadata confirms 2 distinct values exist, no nulls."]}"""
+
+_CONCISE_NODATA_HEALTHCARE_EXAMPLE = """{"table": "Clinical laboratory test results combining patient identifiers with test metadata, results, and ordering physician information. Protected health information requiring access controls.", "columns": ["patient_mrn", "test_date", "test_code", "result_value", "ref_range_low", "ref_range_high", "abnormal_flag", "ordering_physician"], "column_contents": ["Medical Record Number patient identifier in consistent 14-character format. High cardinality, no nulls.", "Date when the laboratory test was performed. Fully populated across roughly a year of daily activity.", "Standardized lab test code for common clinical tests. Variable length, no nulls, required field.", "Numeric test result stored as string for format flexibility. High cardinality; very few nulls likely represent pending tests.", "Lower bound of normal reference range. Small fraction of nulls for tests without established ranges.", "Upper bound of normal reference range. Null pattern mirrors lower bound, confirming paired values.", "Result interpretation flag indicating values outside normal parameters. Single-character, 4 distinct values, zero nulls.", "Ordering physician name. Very few nulls; low cardinality suggests small practice or specialized facility."]}"""
+
+_DETAILED_RETAIL_EXAMPLE = """{"table": "Daily retail transaction records tracking individual sales and refunds. Located in the retail catalog under transactions schema, indicating transactional operational data. Grain is one row per transaction, with a surrogate key, monetary amount, and a boolean refund indicator. This table likely serves as a core fact table for downstream revenue reporting, refund analysis, and customer behavior analytics.", "columns": ["transaction_id", "sale_amount", "is_refund"], "column_contents": ["Unique transaction identifier following 'TXN###' format. Sample shows sequential numbering suggesting an auto-increment or application-generated key. No nulls with high cardinality indicating good uniqueness across the full dataset. The consistent 6-character average and max length confirms a fixed-width format, making this a reliable join key for related tables such as transaction line items or payment records.", "Sale amount in decimal format representing transaction total with two decimal precision. High distinct count suggests diverse pricing across a wide product catalog rather than a few standard price points, no nulls indicates a required field populated at transaction creation. Useful as the primary revenue measure for aggregation; downstream consumers should be aware the column includes both sales and refund amounts depending on the is_refund flag, so net revenue calculations should filter or sign-flip accordingly.", "Refund flag stored as string ('true'/'false') rather than boolean data type. Sample shows only 'false' values but metadata confirms 2 distinct values exist in full dataset indicating refunds are present but relatively infrequent. No nulls indicates the system always populates this field, likely defaulting to 'false' for new transactions. Consider casting to boolean for more efficient storage and predicate pushdown; the string representation may originate from an upstream source system that serializes booleans as text."]}"""
+
+_DETAILED_HEALTHCARE_EXAMPLE = """{"table": "Clinical laboratory test results for patients, combining patient identifiers with test metadata, numeric results, reference ranges, and ordering physician information. Located in healthcare.clinical schema indicating protected health information requiring appropriate access controls. The table structure supports multiple test types per patient over time, with reference ranges for result interpretation. Grain is one row per individual lab test result, with a many-to-one relationship to patients and ordering physicians. Likely serves downstream clinical analytics, quality reporting, and patient health monitoring dashboards.", "columns": ["patient_mrn", "test_date", "test_code", "result_value", "ref_range_low", "ref_range_high", "abnormal_flag", "ordering_physician"], "column_contents": ["Medical Record Number serving as the patient identifier. Consistent 14-character format with high cardinality and no nulls, indicating strong data quality. The 'MRN-YYYY-####' format visible in samples suggests year-based record numbering, which can be useful for identifying cohort vintages. As a patient identifier this is protected health information under HIPAA and should be handled with row-level security or column masking in downstream consumption layers.", "Date when the laboratory test was performed. Fully populated with a distinct count suggesting approximately daily testing activity over roughly a year. Consistent 10-character length indicates standard date format (YYYY-MM-DD). Sample shows clustering of tests on same dates, which is typical for batch processing of lab orders or panel tests. This column is the primary temporal dimension for trend analysis and should be indexed for time-series queries.", "Standardized laboratory test code identifier. Sample shows common codes (GLUC for Glucose, HBA1C for Hemoglobin A1C, CHOL for Cholesterol) with a moderate number of distinct test types available. Variable length (5-8 characters) accommodates different coding standards such as LOINC abbreviations. No nulls indicates a required field for all lab orders. This is the primary grouping dimension for test-type analytics and reference range lookups.", "Numeric test result stored as string to accommodate diverse result formats across test types, including qualitative results like 'Positive'/'Negative'. High cardinality appropriate for continuous measurements. Contains a very small number of nulls which likely represent pending, cancelled, or failed tests — important for downstream processing to handle missing results. Variable length suggests accommodation of text qualifiers or complex results beyond simple numerics. Consumers should cast to DOUBLE for numeric analysis with appropriate null handling.", "Lower bound of the normal reference range for test interpretation. A small fraction of nulls correlate with potential gaps where tests may not have established reference ranges or use alternative interpretation methods such as qualitative cutoffs. Moderate distinct count indicates reference ranges vary by test type and possibly by patient demographics (age, gender). Paired with ref_range_high, these columns enable automated normal/abnormal classification and trend-against-range visualizations.", "Upper bound of the normal reference range. Mirrors the null pattern of 'ref_range_low', confirming these are paired values that should be populated or null together. The sample data shows reference ranges contextualizing result values for clinical interpretation. Consistent character lengths with the low bound suggests standardized numeric formatting. Quality checks should verify that ref_range_high is always greater than or equal to ref_range_low where both are populated.", "Result interpretation flag indicating whether the value falls outside normal parameters. Sample shows 'H' (High) and 'N' (Normal) with metadata indicating 4 distinct values total (likely H, L, N, and possibly Critical). Single-character format with max length 2 suggests occasional use of two-character codes for critical indicators. Zero nulls indicates this is a required calculated/derived field, essential for clinical decision support and alerts. Downstream consumers can use this for exception-based reporting without recalculating against reference ranges.", "Name of the physician who ordered the laboratory test. Very few nulls suggesting some tests may be ordered by non-physician providers, through automated standing orders, or via clinical protocols. Relatively low cardinality given the patient volume indicates a small practice, specialized facility, or limited provider network. Variable length accommodates different name formats and titles with professional prefixes. As a provider identifier, consider joining to a physician dimension for NPI-based analytics rather than relying on string matching."]}"""
+
+_DETAILED_NODATA_RETAIL_EXAMPLE = """{"table": "Daily retail transaction records tracking individual sales and refunds. Located in the retail catalog under transactions schema, indicating transactional operational data. Grain is one row per transaction, with a surrogate key, monetary amount, and a boolean refund indicator. This table likely serves as a core fact table for downstream revenue reporting, refund analysis, and customer behavior analytics.", "columns": ["transaction_id", "sale_amount", "is_refund"], "column_contents": ["Unique transaction identifier following alphanumeric format with consistent length. No nulls with high cardinality indicating good uniqueness across the full dataset. The fixed-width format confirms a reliable surrogate or application-generated key, suitable as a join key for related tables such as transaction line items or payment records.", "Sale amount in decimal format representing transaction total with two decimal precision. High distinct count suggests diverse pricing across a wide product catalog rather than a few standard price points, no nulls indicates a required field populated at transaction creation. Useful as the primary revenue measure; downstream consumers should be aware the column may include both sales and refund amounts, so net revenue calculations should account for the refund flag.", "Refund flag stored as string rather than boolean data type. Metadata confirms 2 distinct values exist in full dataset indicating refunds are present but relatively infrequent. No nulls indicates the system always populates this field, likely defaulting to the non-refund state. Consider casting to boolean for more efficient storage and predicate pushdown; the string representation may originate from an upstream source system."]}"""
+
+_DETAILED_NODATA_HEALTHCARE_EXAMPLE = """{"table": "Clinical laboratory test results for patients, combining patient identifiers with test metadata, numeric results, reference ranges, and ordering physician information. Located in healthcare.clinical schema indicating protected health information requiring appropriate access controls. The table structure supports multiple test types per patient over time, with reference ranges for result interpretation. Grain is one row per individual lab test result, with a many-to-one relationship to patients and ordering physicians.", "columns": ["patient_mrn", "test_date", "test_code", "result_value", "ref_range_low", "ref_range_high", "abnormal_flag", "ordering_physician"], "column_contents": ["Medical Record Number serving as the patient identifier. Consistent 14-character format with high cardinality and no nulls, indicating strong data quality. Format suggests year-based record numbering useful for cohort vintage identification. As a patient identifier this is protected health information and should be handled with row-level security or column masking.", "Date when the laboratory test was performed. Fully populated with a distinct count suggesting approximately daily testing activity over roughly a year. Consistent length indicates standard date format. Patterns show clustering of tests on same dates, typical for batch processing of lab orders. Primary temporal dimension for trend analysis.", "Standardized laboratory test code identifier for common clinical tests including glucose, hemoglobin A1C, and cholesterol measurements. Moderate number of distinct test types with variable length accommodating different coding standards. No nulls indicates required field. Primary grouping dimension for test-type analytics and reference range lookups.", "Numeric test result stored as string to accommodate diverse result formats across test types including qualitative results. High cardinality appropriate for continuous measurements. Contains a very small number of nulls which likely represent pending, cancelled, or failed tests. Variable length suggests accommodation of text qualifiers or complex results. Consumers should cast to numeric types with null handling for quantitative analysis.", "Lower bound of the normal reference range for test interpretation. A small fraction of nulls correlate with tests lacking established reference ranges. Moderate distinct count indicates ranges vary by test type and possibly demographics. Paired with upper bound for automated normal/abnormal classification.", "Upper bound of the normal reference range. Mirrors the null pattern of the lower bound, confirming paired values. Consistent formatting with lower bound. Quality checks should verify upper bound is always greater than or equal to lower bound.", "Result interpretation flag indicating whether values fall outside normal parameters. Single-character format with metadata indicating 4 distinct values (likely High, Low, Normal, Critical). Max length of 2 suggests occasional two-character codes. Zero nulls indicates required derived field for clinical decision support.", "Name of the physician who ordered the laboratory test. Very few nulls suggesting some tests may be ordered by non-physician providers or automated protocols. Relatively low cardinality given patient volume indicates a small practice or specialized facility. Consider joining to a physician dimension for NPI-based analytics rather than relying on string matching."]}"""
+
+
 def _format_lineage_section(lineage: dict) -> str:
     """Format a lineage dict as labeled text for LLM prompts."""
     parts = []
@@ -425,15 +457,19 @@ class Prompt(ABC):
         """
         if not columns:
             return {}
-        catalog, schema, table = self.full_table_name.split(".")
-        quoted = ", ".join(f"'{c.replace(chr(39), chr(39)*2)}'" for c in columns)
-        df = self.spark.sql(
-            f"SELECT column_name, data_type, comment "
-            f"FROM system.information_schema.columns "
-            f"WHERE table_catalog = '{catalog}' AND table_schema = '{schema}' "
-            f"AND table_name = '{table}' AND column_name IN ({quoted})"
-        )
-        rows = df.collect()
+        try:
+            catalog, schema, table = self.full_table_name.split(".")
+            quoted = ", ".join(f"'{c.replace(chr(39), chr(39)*2)}'" for c in columns)
+            df = self.spark.sql(
+                f"SELECT column_name, data_type, comment "
+                f"FROM system.information_schema.columns "
+                f"WHERE table_catalog = '{catalog}' AND table_schema = '{schema}' "
+                f"AND table_name = '{table}' AND column_name IN ({quoted})"
+            )
+            rows = df.collect()
+        except Exception as e:
+            logger.warning("Failed to fetch column metadata from information_schema for %s: %s", self.full_table_name, e)
+            return {}
         excluded = self._excluded_info_names()
         result = {}
         for row in rows:
@@ -516,28 +552,32 @@ class Prompt(ABC):
         Args:
             column_metadata (Tuple[Dict[str, str], str, str, str]): Tuple containing column constraints.
         """
-        catalog_name, schema_name, table_name = self.full_table_name.split(".")
-        query = f"""
-        SELECT catalog_name, schema_name, table_name, column_name, tag_name, tag_value
-        FROM system.information_schema.column_tags
-        WHERE catalog_name = '{catalog_name}'
-        AND schema_name = '{schema_name}'
-        AND table_name = '{table_name}';
-        """
-        result_df = self.spark.sql(query)
-        column_tags = (
-            result_df.groupBy("column_name")
-            .agg(collect_list(struct("tag_name", "tag_value")).alias("tags"))
-            .collect()
-        )
-        column_tags_dict = {
-            row["column_name"]: {
-                tag["tag_name"]: tag["tag_value"] for tag in row["tags"]
+        try:
+            catalog_name, schema_name, table_name = self.full_table_name.split(".")
+            query = f"""
+            SELECT catalog_name, schema_name, table_name, column_name, tag_name, tag_value
+            FROM system.information_schema.column_tags
+            WHERE catalog_name = '{catalog_name}'
+            AND schema_name = '{schema_name}'
+            AND table_name = '{table_name}';
+            """
+            result_df = self.spark.sql(query)
+            column_tags = (
+                result_df.groupBy("column_name")
+                .agg(collect_list(struct("tag_name", "tag_value")).alias("tags"))
+                .collect()
+            )
+            column_tags_dict = {
+                row["column_name"]: {
+                    tag["tag_name"]: tag["tag_value"] for tag in row["tags"]
+                }
+                for row in column_tags
             }
-            for row in column_tags
-        }
-        logger.debug("column tags dict: %s", column_tags_dict)
-        return column_tags_dict
+            logger.debug("column tags dict: %s", column_tags_dict)
+            return column_tags_dict
+        except Exception as e:
+            logger.warning("Failed to fetch column_tags from information_schema for %s: %s", self.full_table_name, e)
+            return {}
 
     @staticmethod
     def _merge_column_tags(
@@ -592,36 +632,39 @@ class Prompt(ABC):
         Returns:
             Dict[str, Dict[str, str]]: Dictionary containing column tags (excluding biasing tags).
         """
-        catalog_name, schema_name, table_name = self.full_table_name.split(".")
+        try:
+            catalog_name, schema_name, table_name = self.full_table_name.split(".")
 
-        tags_to_exclude = self._tags_to_exclude()
+            tags_to_exclude = self._tags_to_exclude()
 
-        query = f"""
-        SELECT catalog_name, schema_name, table_name, column_name, tag_name, tag_value
-        FROM system.information_schema.column_tags
-        WHERE catalog_name = '{catalog_name}'
-        AND schema_name = '{schema_name}'
-        AND table_name = '{table_name}';
-        """
-        result_df = self.spark.sql(query)
+            query = f"""
+            SELECT catalog_name, schema_name, table_name, column_name, tag_name, tag_value
+            FROM system.information_schema.column_tags
+            WHERE catalog_name = '{catalog_name}'
+            AND schema_name = '{schema_name}'
+            AND table_name = '{table_name}';
+            """
+            result_df = self.spark.sql(query)
 
-        # Filter out biasing tags
-        if tags_to_exclude:
-            result_df = result_df.filter(~col("tag_name").isin(tags_to_exclude))
+            if tags_to_exclude:
+                result_df = result_df.filter(~col("tag_name").isin(tags_to_exclude))
 
-        column_tags = (
-            result_df.groupBy("column_name")
-            .agg(collect_list(struct("tag_name", "tag_value")).alias("tags"))
-            .collect()
-        )
-        column_tags_dict = {
-            row["column_name"]: {
-                tag["tag_name"]: tag["tag_value"] for tag in row["tags"]
+            column_tags = (
+                result_df.groupBy("column_name")
+                .agg(collect_list(struct("tag_name", "tag_value")).alias("tags"))
+                .collect()
+            )
+            column_tags_dict = {
+                row["column_name"]: {
+                    tag["tag_name"]: tag["tag_value"] for tag in row["tags"]
+                }
+                for row in column_tags
             }
-            for row in column_tags
-        }
-        logger.debug("column tags dict (after filtering): %s", column_tags_dict)
-        return column_tags_dict
+            logger.debug("column tags dict (after filtering): %s", column_tags_dict)
+            return column_tags_dict
+        except Exception as e:
+            logger.warning("Failed to fetch column_tags from information_schema for %s: %s", self.full_table_name, e)
+            return {}
 
     def get_table_tags(self) -> str:
         """
@@ -630,24 +673,27 @@ class Prompt(ABC):
         Returns:
             str: JSON string containing table tags (excluding biasing tags).
         """
-        catalog_name, schema_name, table_name = self.full_table_name.split(".")
+        try:
+            catalog_name, schema_name, table_name = self.full_table_name.split(".")
 
-        tags_to_exclude = self._tags_to_exclude()
+            tags_to_exclude = self._tags_to_exclude()
 
-        query = f"""
-        SELECT tag_name, tag_value
-        FROM system.information_schema.table_tags
-        WHERE catalog_name = '{catalog_name}'
-        AND schema_name = '{schema_name}'
-        AND table_name = '{table_name}';
-        """
-        result_df = self.spark.sql(query)
+            query = f"""
+            SELECT tag_name, tag_value
+            FROM system.information_schema.table_tags
+            WHERE catalog_name = '{catalog_name}'
+            AND schema_name = '{schema_name}'
+            AND table_name = '{table_name}';
+            """
+            result_df = self.spark.sql(query)
 
-        # Filter out biasing tags
-        if tags_to_exclude:
-            result_df = result_df.filter(~col("tag_name").isin(tags_to_exclude))
+            if tags_to_exclude:
+                result_df = result_df.filter(~col("tag_name").isin(tags_to_exclude))
 
-        return self.df_to_json(result_df)
+            return self.df_to_json(result_df)
+        except Exception as e:
+            logger.warning("Failed to fetch table_tags from information_schema for %s: %s", self.full_table_name, e)
+            return "[]"
 
     def get_table_constraints(self) -> str:
         """
@@ -656,23 +702,27 @@ class Prompt(ABC):
         Returns:
             str: JSON string containing table constraints.
         """
-        catalog_name, schema_name, table_name = self.full_table_name.split(".")
-        query = f"""
-        SELECT 
-        c.table_name, 
-        c.constraint_name, 
-        t.constraint_type, 
-        c.column_name
-        FROM system.information_schema.table_constraints t
-        LEFT JOIN system.information_schema.constraint_column_usage c
-                ON t.constraint_catalog = c.constraint_catalog 
-                AND t.constraint_schema = c.constraint_schema 
-                AND t.constraint_name = c.constraint_name
-        WHERE t.constraint_catalog = '{catalog_name}'
-        AND t.constraint_schema = '{schema_name}'
-        AND t.table_name = '{table_name}';
-        """
-        return self.df_to_json(self.spark.sql(query))
+        try:
+            catalog_name, schema_name, table_name = self.full_table_name.split(".")
+            query = f"""
+            SELECT 
+            c.table_name, 
+            c.constraint_name, 
+            t.constraint_type, 
+            c.column_name
+            FROM system.information_schema.table_constraints t
+            LEFT JOIN system.information_schema.constraint_column_usage c
+                    ON t.constraint_catalog = c.constraint_catalog 
+                    AND t.constraint_schema = c.constraint_schema 
+                    AND t.constraint_name = c.constraint_name
+            WHERE t.constraint_catalog = '{catalog_name}'
+            AND t.constraint_schema = '{schema_name}'
+            AND t.table_name = '{table_name}';
+            """
+            return self.df_to_json(self.spark.sql(query))
+        except Exception as e:
+            logger.warning("Failed to fetch table_constraints from information_schema for %s: %s", self.full_table_name, e)
+            return "[]"
 
     def get_table_comment(self) -> str:
         """
@@ -681,15 +731,19 @@ class Prompt(ABC):
         Returns:
             str: JSON string containing table comment.
         """
-        catalog_name, schema_name, table_name = self.full_table_name.split(".")
-        query = f"""
-        SELECT table_name, comment
-        FROM system.information_schema.tables
-        WHERE table_catalog = '{catalog_name}'
-        AND table_schema = '{schema_name}'
-        AND table_name = '{table_name}';
-        """
-        return self.df_to_json(self.spark.sql(query))
+        try:
+            catalog_name, schema_name, table_name = self.full_table_name.split(".")
+            query = f"""
+            SELECT table_name, comment
+            FROM system.information_schema.tables
+            WHERE table_catalog = '{catalog_name}'
+            AND table_schema = '{schema_name}'
+            AND table_name = '{table_name}';
+            """
+            return self.df_to_json(self.spark.sql(query))
+        except Exception as e:
+            logger.warning("Failed to fetch table comment from information_schema for %s: %s", self.full_table_name, e)
+            return "[]"
 
     def get_table_metadata(self) -> Tuple[Dict[str, Dict[str, str]], str, str, str]:
         """
@@ -752,19 +806,22 @@ class CommentPrompt(Prompt):
         logger.debug("Creating comment prompt template...")
         content = self.prompt_content
         acro_content = self.config.acro_content
+        style = getattr(self.config, "comment_style", "standard")
+        length_guideline = COMMENT_STYLE_GUIDELINES.get(style, COMMENT_STYLE_GUIDELINES["standard"])["data"]
+        retail_example, healthcare_example = self._get_fewshot_examples(style)
         return {
             "comment": [
                 {
                     "role": "system",
-                    "content": """Generate comprehensive metadata comments for Databricks tables and columns. Analyze all provided information (table name, column names, data samples, metadata statistics, acronyms) to create well-reasoned descriptions.
+                    "content": f"""Generate comprehensive metadata comments for Databricks tables and columns. Analyze all provided information (table name, column names, data samples, metadata statistics, acronyms) to create well-reasoned descriptions.
 
                     Response Format (MUST be valid JSON with arrays, not stringified arrays):
-                    {"table": "description", "columns": ["col1", "col2"], "column_contents": ["col1 desc", "col2 desc"]}
+                    {{"table": "description", "columns": ["col1", "col2"], "column_contents": ["col1 desc", "col2 desc"]}}
                     
                     IMPORTANT: column_contents must be a JSON array [...], NOT a string containing an array.
 
                     Guidelines:
-                    1. Scale comment length with information richness: 3-5 sentences for simple columns, 4-8 sentences when rich metadata/patterns emerge
+                    1. Scale comment length with information richness: {length_guideline}
                     2. Synthesize insights from: column name -> table context -> sample data -> metadata statistics
                     3. Unpack acronyms confidently. Note anomalies (e.g., unexpectedly low distinct counts, suspicious nulls, data type mismatches)
                     4. Sample data may not represent full distribution - use metadata to validate/contradict sample observations
@@ -780,24 +837,30 @@ class CommentPrompt(Prompt):
                     "role": "user",
                     "content": """Content is here - {"table_name": "retail.transactions.daily_sales", "column_contents": {"index": [0,1,2], "columns": ["transaction_id", "sale_amount", "is_refund"], "data": [["TXN001", "49.99", "false"], ["TXN002", "125.00", "false"], ["TXN003", "89.50", "false"]], "column_metadata": {"transaction_id": {"col_name": "transaction_id", "data_type": "string", "num_nulls": "0", "distinct_count": "50000", "avg_col_len": "6", "max_col_len": "6"}, "sale_amount": {"col_name": "sale_amount", "data_type": "decimal", "num_nulls": "0", "distinct_count": "15000", "avg_col_len": "6", "max_col_len": "8"}, "is_refund": {"col_name": "is_refund", "data_type": "string", "num_nulls": "0", "distinct_count": "2", "avg_col_len": "5", "max_col_len": "5"}}}} and abbreviations and acronyms are here - {}""",
                 },
-                {
-                    "role": "assistant",
-                    "content": """{"table": "Daily retail transaction records tracking individual sales and refunds. Located in the retail catalog under transactions schema, indicating transactional operational data.", "columns": ["transaction_id", "sale_amount", "is_refund"], "column_contents": ["Unique transaction identifier following 'TXN###' format. Sample shows sequential numbering. No nulls with high cardinality indicating good uniqueness across the full dataset.", "Sale amount in decimal format representing transaction total with two decimal precision. High distinct count suggests diverse pricing, no nulls indicates required field.", "Refund flag stored as string ('true'/'false') rather than boolean data type. Sample shows only 'false' values but metadata confirms 2 distinct values exist in full dataset. No nulls indicates system always populates this field, likely defaulting to 'false' for new transactions."]}""",
-                },
+                {"role": "assistant", "content": retail_example},
                 {
                     "role": "user",
                     "content": """Content is here - {"table_name": "healthcare.clinical.patient_lab_results", "column_contents": {"index": [0,1,2,3], "columns": ["patient_mrn", "test_date", "test_code", "result_value", "ref_range_low", "ref_range_high", "abnormal_flag", "ordering_physician"], "data": [["MRN-2024-8901", "2024-03-15", "GLUC", "105", "70", "100", "H", "Dr. Smith"], ["MRN-2024-8902", "2024-03-15", "HBA1C", "6.2", "4.0", "5.6", "H", "Dr. Johnson"], ["MRN-2024-8903", "2024-03-16", "CHOL", "185", "125", "200", "N", "Dr. Smith"], ["MRN-2024-8904", "2024-03-16", "GLUC", "92", "70", "100", "N", "Dr. Williams"]], "column_metadata": {"patient_mrn": {"col_name": "patient_mrn", "data_type": "string", "num_nulls": "0", "distinct_count": "8500", "avg_col_len": "14", "max_col_len": "14"}, "test_date": {"col_name": "test_date", "data_type": "date", "num_nulls": "0", "distinct_count": "365", "avg_col_len": "10", "max_col_len": "10"}, "test_code": {"col_name": "test_code", "data_type": "string", "num_nulls": "0", "distinct_count": "250", "avg_col_len": "5", "max_col_len": "8"}, "result_value": {"col_name": "result_value", "data_type": "string", "num_nulls": "12", "distinct_count": "15000", "avg_col_len": "6", "max_col_len": "20"}, "ref_range_low": {"col_name": "ref_range_low", "data_type": "string", "num_nulls": "50", "distinct_count": "150", "avg_col_len": "4", "max_col_len": "6"}, "ref_range_high": {"col_name": "ref_range_high", "data_type": "string", "num_nulls": "50", "distinct_count": "150", "avg_col_len": "4", "max_col_len": "6"}, "abnormal_flag": {"col_name": "abnormal_flag", "data_type": "string", "num_nulls": "0", "distinct_count": "4", "avg_col_len": "1", "max_col_len": "2"}, "ordering_physician": {"col_name": "ordering_physician", "data_type": "string", "num_nulls": "5", "distinct_count": "45", "avg_col_len": "12", "max_col_len": "30"}}}} and abbreviations and acronyms are here - {"MRN - Medical Record Number", "GLUC - Glucose", "HBA1C - Hemoglobin A1C", "CHOL - Cholesterol"}""",
                 },
-                {
-                    "role": "assistant",
-                    "content": """{"table": "Clinical laboratory test results for patients, combining patient identifiers with test metadata, results, and ordering physician information. Located in healthcare.clinical schema indicating protected health information requiring appropriate access controls. The table structure supports multiple test types per patient over time, with reference ranges for result interpretation.", "columns": ["patient_mrn", "test_date", "test_code", "result_value", "ref_range_low", "ref_range_high", "abnormal_flag", "ordering_physician"], "column_contents": ["Medical Record Number serving as the patient identifier. Consistent 14-character format with high cardinality and no nulls, indicating strong data quality. The 'MRN-YYYY-####' format visible in samples suggests year-based record numbering.", "Date when the laboratory test was performed. Fully populated with a distinct count suggesting approximately daily testing activity over roughly a year. Consistent 10-character length indicates standard date format (YYYY-MM-DD). Sample shows clustering of tests on same dates, which is typical for batch processing of lab orders.", "Standardized laboratory test code identifier. Sample shows common codes (GLUC for Glucose, HBA1C for Hemoglobin A1C, CHOL for Cholesterol) with a moderate number of distinct test types available. Variable length (5-8 characters) accommodates different coding standards. No nulls indicates required field for all lab orders.", "Numeric test result stored as string to accommodate diverse result formats across test types. High cardinality appropriate for continuous measurements. Contains a very small number of nulls which likely represent pending, cancelled, or failed tests - important for downstream processing to handle missing results. Variable length suggests accommodation of text qualifiers or complex results beyond simple numerics.", "Lower bound of the normal reference range for test interpretation. A small fraction of nulls correlate with potential gaps where tests may not have established reference ranges or use alternative interpretation methods. Moderate distinct count indicates reference ranges vary by test type and possibly by patient demographics (age, gender).", "Upper bound of the normal reference range. Mirrors the null pattern of 'ref_range_low', confirming these are paired values that should be populated or null together. The sample data shows reference ranges contextualizing result values. Consistent character lengths with low bound suggests standardized numeric formatting.", "Result interpretation flag indicating whether the value falls outside normal parameters. Sample shows 'H' (High) and 'N' (Normal) with metadata indicating 4 distinct values total (likely H, L, N, and possibly Critical). Single-character format with max length 2 suggests occasional use of two-character codes. Zero nulls indicates this is a required calculated/derived field, essential for clinical decision support and alerts.", "Name of the physician who ordered the laboratory test. Very few nulls suggesting some tests may be ordered by non-physician providers, through automated standing orders, or via clinical protocols. Relatively low cardinality given the patient volume indicates a small practice, specialized facility, or limited provider network. Variable length accommodates different name formats and titles."]}""",
-                },
+                {"role": "assistant", "content": healthcare_example},
                 {
                     "role": "user",
                     "content": self._build_user_content(content, acro_content),
                 },
             ]
         }
+
+    @staticmethod
+    def _get_fewshot_examples(style: str):
+        """Return (retail_example, healthcare_example) for the given comment style."""
+        if style == "concise":
+            return _CONCISE_RETAIL_EXAMPLE, _CONCISE_HEALTHCARE_EXAMPLE
+        if style == "detailed":
+            return _DETAILED_RETAIL_EXAMPLE, _DETAILED_HEALTHCARE_EXAMPLE
+        return (
+            """{"table": "Daily retail transaction records tracking individual sales and refunds. Located in the retail catalog under transactions schema, indicating transactional operational data.", "columns": ["transaction_id", "sale_amount", "is_refund"], "column_contents": ["Unique transaction identifier following 'TXN###' format. Sample shows sequential numbering. No nulls with high cardinality indicating good uniqueness across the full dataset.", "Sale amount in decimal format representing transaction total with two decimal precision. High distinct count suggests diverse pricing, no nulls indicates required field.", "Refund flag stored as string ('true'/'false') rather than boolean data type. Sample shows only 'false' values but metadata confirms 2 distinct values exist in full dataset. No nulls indicates system always populates this field, likely defaulting to 'false' for new transactions."]}""",
+            """{"table": "Clinical laboratory test results for patients, combining patient identifiers with test metadata, results, and ordering physician information. Located in healthcare.clinical schema indicating protected health information requiring appropriate access controls. The table structure supports multiple test types per patient over time, with reference ranges for result interpretation.", "columns": ["patient_mrn", "test_date", "test_code", "result_value", "ref_range_low", "ref_range_high", "abnormal_flag", "ordering_physician"], "column_contents": ["Medical Record Number serving as the patient identifier. Consistent 14-character format with high cardinality and no nulls, indicating strong data quality. The 'MRN-YYYY-####' format visible in samples suggests year-based record numbering.", "Date when the laboratory test was performed. Fully populated with a distinct count suggesting approximately daily testing activity over roughly a year. Consistent 10-character length indicates standard date format (YYYY-MM-DD). Sample shows clustering of tests on same dates, which is typical for batch processing of lab orders.", "Standardized laboratory test code identifier. Sample shows common codes (GLUC for Glucose, HBA1C for Hemoglobin A1C, CHOL for Cholesterol) with a moderate number of distinct test types available. Variable length (5-8 characters) accommodates different coding standards. No nulls indicates required field for all lab orders.", "Numeric test result stored as string to accommodate diverse result formats across test types. High cardinality appropriate for continuous measurements. Contains a very small number of nulls which likely represent pending, cancelled, or failed tests - important for downstream processing to handle missing results. Variable length suggests accommodation of text qualifiers or complex results beyond simple numerics.", "Lower bound of the normal reference range for test interpretation. A small fraction of nulls correlate with potential gaps where tests may not have established reference ranges or use alternative interpretation methods. Moderate distinct count indicates reference ranges vary by test type and possibly by patient demographics (age, gender).", "Upper bound of the normal reference range. Mirrors the null pattern of 'ref_range_low', confirming these are paired values that should be populated or null together. The sample data shows reference ranges contextualizing result values. Consistent character lengths with low bound suggests standardized numeric formatting.", "Result interpretation flag indicating whether the value falls outside normal parameters. Sample shows 'H' (High) and 'N' (Normal) with metadata indicating 4 distinct values total (likely H, L, N, and possibly Critical). Single-character format with max length 2 suggests occasional use of two-character codes. Zero nulls indicates this is a required calculated/derived field, essential for clinical decision support and alerts.", "Name of the physician who ordered the laboratory test. Very few nulls suggesting some tests may be ordered by non-physician providers, through automated standing orders, or via clinical protocols. Relatively low cardinality given the patient volume indicates a small practice, specialized facility, or limited provider network. Variable length accommodates different name formats and titles."]}""",
+        )
 
     @staticmethod
     def _build_user_content(content: dict, acro_content: Any) -> str:
@@ -988,19 +1051,22 @@ class CommentNoDataPrompt(Prompt):
         print("Creating comment prompt template with no data in comments...")
         content = self.prompt_content
         acro_content = self.config.acro_content
+        style = getattr(self.config, "comment_style", "standard")
+        length_guideline = COMMENT_STYLE_GUIDELINES.get(style, COMMENT_STYLE_GUIDELINES["standard"])["nodata"]
+        retail_example, healthcare_example = self._get_nodata_fewshot_examples(style)
         return {
             "comment": [
                 {
                     "role": "system",
-                    "content": """Generate comprehensive metadata comments for Databricks tables and columns. Analyze all provided information (table name, column names, data samples, metadata statistics, acronyms) to create well-reasoned descriptions. **CRITICAL: Do NOT include any actual data values in your descriptions - this data may be sensitive.**
+                    "content": f"""Generate comprehensive metadata comments for Databricks tables and columns. Analyze all provided information (table name, column names, data samples, metadata statistics, acronyms) to create well-reasoned descriptions. **CRITICAL: Do NOT include any actual data values in your descriptions - this data may be sensitive.**
 
                     Response Format (MUST be valid JSON with arrays, not stringified arrays):
-                    {"table": "description", "columns": ["col1", "col2"], "column_contents": ["col1 desc", "col2 desc"]}
+                    {{"table": "description", "columns": ["col1", "col2"], "column_contents": ["col1 desc", "col2 desc"]}}
                     
                     IMPORTANT: column_contents must be a JSON array [...], NOT a string containing an array.
 
                     Guidelines:
-                    1. Scale comment length with information richness: 2-3 sentences for simple columns, 4-8 sentences when rich metadata/patterns emerge
+                    1. Scale comment length with information richness: {length_guideline}
                     2. Synthesize insights from: column name -> table context -> sample data patterns -> metadata statistics (WITHOUT citing specific values)
                     3. Unpack acronyms confidently. Note anomalies (e.g., unexpectedly low distinct counts, suspicious nulls, data type mismatches)
                     4. Use sample data to understand patterns/formats/types, but describe generically without quoting specific values
@@ -1016,24 +1082,30 @@ class CommentNoDataPrompt(Prompt):
                     "role": "user",
                     "content": """Content is here - {"table_name": "retail.transactions.daily_sales", "column_contents": {"index": [0,1,2], "columns": ["transaction_id", "sale_amount", "is_refund"], "data": [["TXN001", "49.99", "false"], ["TXN002", "125.00", "false"], ["TXN003", "89.50", "false"]], "column_metadata": {"transaction_id": {"col_name": "transaction_id", "data_type": "string", "num_nulls": "0", "distinct_count": "50000", "avg_col_len": "6", "max_col_len": "6"}, "sale_amount": {"col_name": "sale_amount", "data_type": "decimal", "num_nulls": "0", "distinct_count": "15000", "avg_col_len": "6", "max_col_len": "8"}, "is_refund": {"col_name": "is_refund", "data_type": "string", "num_nulls": "0", "distinct_count": "2", "avg_col_len": "5", "max_col_len": "5"}}}} and abbreviations and acronyms are here - {}""",
                 },
-                {
-                    "role": "assistant",
-                    "content": """{"table": "Daily retail transaction records tracking individual sales and refunds. Located in the retail catalog under transactions schema, indicating transactional operational data.", "columns": ["transaction_id", "sale_amount", "is_refund"], "column_contents": ["Unique transaction identifier following alphanumeric format with consistent length. No nulls with high cardinality indicating good uniqueness across the full dataset.", "Sale amount in decimal format representing transaction total with two decimal precision. High distinct count suggests diverse pricing, no nulls indicates required field.", "Refund flag stored as string rather than boolean data type. Metadata confirms 2 distinct values exist in full dataset. No nulls indicates system always populates this field."]}""",
-                },
+                {"role": "assistant", "content": retail_example},
                 {
                     "role": "user",
                     "content": """Content is here - {"table_name": "healthcare.clinical.patient_lab_results", "column_contents": {"index": [0,1,2,3], "columns": ["patient_mrn", "test_date", "test_code", "result_value", "ref_range_low", "ref_range_high", "abnormal_flag", "ordering_physician"], "data": [["MRN-2024-8901", "2024-03-15", "GLUC", "105", "70", "100", "H", "Dr. Smith"], ["MRN-2024-8902", "2024-03-15", "HBA1C", "6.2", "4.0", "5.6", "H", "Dr. Johnson"], ["MRN-2024-8903", "2024-03-16", "CHOL", "185", "125", "200", "N", "Dr. Smith"], ["MRN-2024-8904", "2024-03-16", "GLUC", "92", "70", "100", "N", "Dr. Williams"]], "column_metadata": {"patient_mrn": {"col_name": "patient_mrn", "data_type": "string", "num_nulls": "0", "distinct_count": "8500", "avg_col_len": "14", "max_col_len": "14"}, "test_date": {"col_name": "test_date", "data_type": "date", "num_nulls": "0", "distinct_count": "365", "avg_col_len": "10", "max_col_len": "10"}, "test_code": {"col_name": "test_code", "data_type": "string", "num_nulls": "0", "distinct_count": "250", "avg_col_len": "5", "max_col_len": "8"}, "result_value": {"col_name": "result_value", "data_type": "string", "num_nulls": "12", "distinct_count": "15000", "avg_col_len": "6", "max_col_len": "20"}, "ref_range_low": {"col_name": "ref_range_low", "data_type": "string", "num_nulls": "50", "distinct_count": "150", "avg_col_len": "4", "max_col_len": "6"}, "ref_range_high": {"col_name": "ref_range_high", "data_type": "string", "num_nulls": "50", "distinct_count": "150", "avg_col_len": "4", "max_col_len": "6"}, "abnormal_flag": {"col_name": "abnormal_flag", "data_type": "string", "num_nulls": "0", "distinct_count": "4", "avg_col_len": "1", "max_col_len": "2"}, "ordering_physician": {"col_name": "ordering_physician", "data_type": "string", "num_nulls": "5", "distinct_count": "45", "avg_col_len": "12", "max_col_len": "30"}}}} and abbreviations and acronyms are here - {"MRN - Medical Record Number", "GLUC - Glucose", "HBA1C - Hemoglobin A1C", "CHOL - Cholesterol"}""",
                 },
-                {
-                    "role": "assistant",
-                    "content": """{"table": "Clinical laboratory test results for patients, combining patient identifiers with test metadata, results, and ordering physician information. Located in healthcare.clinical schema indicating protected health information requiring appropriate access controls. The table structure supports multiple test types per patient over time, with reference ranges for result interpretation.", "columns": ["patient_mrn", "test_date", "test_code", "result_value", "ref_range_low", "ref_range_high", "abnormal_flag", "ordering_physician"], "column_contents": ["Medical Record Number serving as the patient identifier. Consistent 14-character format with high cardinality and no nulls, indicating strong data quality. Format suggests year-based record numbering.", "Date when the laboratory test was performed. Fully populated with a distinct count suggesting approximately daily testing activity over roughly a year. Consistent 10-character length indicates standard date format. Sample patterns show clustering of tests on same dates, typical for batch processing of lab orders.", "Standardized laboratory test code identifier for common clinical tests including glucose, hemoglobin A1C, and cholesterol measurements. Moderate number of distinct test types with variable length (5-8 characters) accommodating different coding standards. No nulls indicates required field for all lab orders.", "Numeric test result stored as string to accommodate diverse result formats across test types. High cardinality appropriate for continuous measurements. Contains a very small number of nulls which likely represent pending, cancelled, or failed tests - important for downstream processing to handle missing results. Variable length suggests accommodation of text qualifiers or complex results beyond simple numerics.", "Lower bound of the normal reference range for test interpretation. A small fraction of nulls correlate with potential gaps where tests may not have established reference ranges or use alternative interpretation methods. Moderate distinct count indicates reference ranges vary by test type and possibly by patient demographics. Consistent character lengths suggest standardized numeric formatting.", "Upper bound of the normal reference range. Mirrors the null pattern of 'ref_range_low', confirming these are paired values that should be populated or null together. Format provides context for result interpretation alongside lower bounds. Consistent character lengths with low bound suggests standardized numeric formatting.", "Result interpretation flag indicating whether values fall outside normal parameters. Single-character format with metadata indicating 4 distinct values (likely High, Low, Normal, and possibly Critical). Max length of 2 suggests occasional use of two-character codes. Zero nulls indicates this is a required calculated/derived field, essential for clinical decision support and alerts.", "Name of the physician who ordered the laboratory test. Very few nulls suggesting some tests may be ordered by non-physician providers, through automated standing orders, or via clinical protocols. Relatively low cardinality given the patient volume indicates a small practice, specialized facility, or limited provider network. Variable length accommodates different name formats and titles with professional prefixes."]}""",
-                },
+                {"role": "assistant", "content": healthcare_example},
                 {
                     "role": "user",
                     "content": self._build_nodata_user_content(content, acro_content),
                 },
             ]
         }
+
+    @staticmethod
+    def _get_nodata_fewshot_examples(style: str):
+        """Return (retail_example, healthcare_example) for the given comment style (no-data variant)."""
+        if style == "concise":
+            return _CONCISE_NODATA_RETAIL_EXAMPLE, _CONCISE_NODATA_HEALTHCARE_EXAMPLE
+        if style == "detailed":
+            return _DETAILED_NODATA_RETAIL_EXAMPLE, _DETAILED_NODATA_HEALTHCARE_EXAMPLE
+        return (
+            """{"table": "Daily retail transaction records tracking individual sales and refunds. Located in the retail catalog under transactions schema, indicating transactional operational data.", "columns": ["transaction_id", "sale_amount", "is_refund"], "column_contents": ["Unique transaction identifier following alphanumeric format with consistent length. No nulls with high cardinality indicating good uniqueness across the full dataset.", "Sale amount in decimal format representing transaction total with two decimal precision. High distinct count suggests diverse pricing, no nulls indicates required field.", "Refund flag stored as string rather than boolean data type. Metadata confirms 2 distinct values exist in full dataset. No nulls indicates system always populates this field."]}""",
+            """{"table": "Clinical laboratory test results for patients, combining patient identifiers with test metadata, results, and ordering physician information. Located in healthcare.clinical schema indicating protected health information requiring appropriate access controls. The table structure supports multiple test types per patient over time, with reference ranges for result interpretation.", "columns": ["patient_mrn", "test_date", "test_code", "result_value", "ref_range_low", "ref_range_high", "abnormal_flag", "ordering_physician"], "column_contents": ["Medical Record Number serving as the patient identifier. Consistent 14-character format with high cardinality and no nulls, indicating strong data quality. Format suggests year-based record numbering.", "Date when the laboratory test was performed. Fully populated with a distinct count suggesting approximately daily testing activity over roughly a year. Consistent 10-character length indicates standard date format. Sample patterns show clustering of tests on same dates, typical for batch processing of lab orders.", "Standardized laboratory test code identifier for common clinical tests including glucose, hemoglobin A1C, and cholesterol measurements. Moderate number of distinct test types with variable length (5-8 characters) accommodating different coding standards. No nulls indicates required field for all lab orders.", "Numeric test result stored as string to accommodate diverse result formats across test types. High cardinality appropriate for continuous measurements. Contains a very small number of nulls which likely represent pending, cancelled, or failed tests - important for downstream processing to handle missing results. Variable length suggests accommodation of text qualifiers or complex results beyond simple numerics.", "Lower bound of the normal reference range for test interpretation. A small fraction of nulls correlate with potential gaps where tests may not have established reference ranges or use alternative interpretation methods. Moderate distinct count indicates reference ranges vary by test type and possibly by patient demographics. Consistent character lengths suggest standardized numeric formatting.", "Upper bound of the normal reference range. Mirrors the null pattern of 'ref_range_low', confirming these are paired values that should be populated or null together. Format provides context for result interpretation alongside lower bounds. Consistent character lengths with low bound suggests standardized numeric formatting.", "Result interpretation flag indicating whether values fall outside normal parameters. Single-character format with metadata indicating 4 distinct values (likely High, Low, Normal, and possibly Critical). Max length of 2 suggests occasional use of two-character codes. Zero nulls indicates this is a required calculated/derived field, essential for clinical decision support and alerts.", "Name of the physician who ordered the laboratory test. Very few nulls suggesting some tests may be ordered by non-physician providers, through automated standing orders, or via clinical protocols. Relatively low cardinality given the patient volume indicates a small practice, specialized facility, or limited provider network. Variable length accommodates different name formats and titles with professional prefixes."]}""",
+        )
 
     @staticmethod
     def _build_nodata_user_content(content: dict, acro_content: Any) -> str:

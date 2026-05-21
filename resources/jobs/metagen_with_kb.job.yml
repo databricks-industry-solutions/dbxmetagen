@@ -33,6 +33,8 @@ resources:
           default: "{{job.run_id}}"
         - name: include_previously_failed_tables
           default: "false"
+        - name: federation_mode
+          default: "false"
         - name: spacy_model_names
           default: ${var.spacy_model_names}
 
@@ -54,6 +56,7 @@ resources:
               permission_users: "{{job.parameters.permission_users}}"
               run_id: "{{job.parameters.run_id}}"
               include_previously_failed_tables: "{{job.parameters.include_previously_failed_tables}}"
+              federation_mode: "{{job.parameters.federation_mode}}"
               spacy_model_names: "{{job.parameters.spacy_model_names}}"
 
         - task_key: build_knowledge_base

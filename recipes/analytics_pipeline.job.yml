@@ -19,7 +19,7 @@ resources:
         - name: incremental
           default: "true"
         - name: endpoint_name
-          default: "dbxmetagen-vs"
+          default: ${var.vs_endpoint_name}
 
       tasks:
         - task_key: build_knowledge_base

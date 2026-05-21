@@ -70,6 +70,7 @@ resources:
               confidence_threshold: "{{job.parameters.confidence_threshold}}"
               sample_size: "{{job.parameters.sample_size}}"
               apply_ddl: "{{job.parameters.apply_ddl}}"
+              federation_mode: "{{job.parameters.federation_mode}}"
               dry_run: "{{job.parameters.dry_run}}"
               incremental: "{{job.parameters.incremental}}"
               table_names: "{{job.parameters.table_names}}"

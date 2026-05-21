@@ -123,6 +123,7 @@ sed -e "s|__DATABRICKS_HOST__|${DATABRICKS_HOST}|g" \
     -e "s|__CATALOG_NAME__|${catalog_name}|g" \
     -e "s|__SCHEMA_NAME__|${schema_name}|g" \
     -e "s|__WAREHOUSE_ID__|${warehouse_id}|g" \
+    -e "s|__VS_ENDPOINT_NAME__|${vs_endpoint_name:-dbxmetagen-vs}|g" \
     databricks.yml.template > databricks.yml
 python3 -c "
 import os, re

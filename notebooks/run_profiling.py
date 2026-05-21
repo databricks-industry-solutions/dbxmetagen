@@ -18,6 +18,7 @@ dbutils.widgets.text("schema_name", "", "Schema Name")
 dbutils.widgets.text("max_tables", "", "Max Tables (empty for all)")
 dbutils.widgets.text("incremental", "true", "Incremental (true/false)")
 dbutils.widgets.text("table_names", "", "Table Names (comma-separated, empty=all)")
+dbutils.widgets.dropdown("federation_mode", "false", ["true", "false"], "Federation Mode")
 
 catalog_name = dbutils.widgets.get("catalog_name")
 schema_name = dbutils.widgets.get("schema_name")
@@ -25,11 +26,14 @@ max_tables_str = dbutils.widgets.get("max_tables")
 max_tables = int(max_tables_str) if max_tables_str else None
 incremental = dbutils.widgets.get("incremental").lower() == "true"
 table_names_raw = dbutils.widgets.get("table_names")
+federation_mode = dbutils.widgets.get("federation_mode").lower() == "true"
 
 print(f"Catalog: {catalog_name}")
 print(f"Schema: {schema_name}")
 print(f"Max Tables: {max_tables}")
 print(f"Incremental: {incremental}")
+if federation_mode:
+    print(f"Federation mode: enabled (profiling will be skipped)")
 if table_names_raw:
     print(f"Table filter: {table_names_raw}")
 
@@ -50,6 +54,7 @@ result = run_profiling(
     max_tables=max_tables,
     incremental=incremental,
     table_names=table_names,
+    federation_mode=federation_mode,
 )
 
 print(f"Profiling complete:")

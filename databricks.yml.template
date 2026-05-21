@@ -61,6 +61,7 @@ targets:
       catalog_name: __CATALOG_NAME__
       schema_name: __SCHEMA_NAME__
       warehouse_id: __WAREHOUSE_ID__
+      vs_endpoint_name: __VS_ENDPOINT_NAME__
     permissions:
       - user_name: ${var.deploying_user}
         level: CAN_MANAGE
@@ -74,6 +75,7 @@ __RUN_AS__
       catalog_name: __CATALOG_NAME__
       schema_name: __SCHEMA_NAME__
       warehouse_id: __WAREHOUSE_ID__
+      vs_endpoint_name: __VS_ENDPOINT_NAME__
     permissions:
       - user_name: ${var.deploying_user}
         level: CAN_MANAGE
@@ -88,6 +90,7 @@ __RUN_AS__
       catalog_name: __CATALOG_NAME__
       schema_name: __SCHEMA_NAME__
       warehouse_id: __WAREHOUSE_ID__
+      vs_endpoint_name: __VS_ENDPOINT_NAME__
     permissions:
       - user_name: ${var.current_user}
         level: CAN_MANAGE
