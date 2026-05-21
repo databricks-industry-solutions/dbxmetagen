@@ -247,7 +247,7 @@ matplotlib==3.10.0
     #   ydata-profiling
 minify-html==0.18.1
     # via ydata-profiling
-mlflow==3.6.0
+mlflow==3.11.1
     # via
     #   databricks-langchain
     #   dbxmetagen
