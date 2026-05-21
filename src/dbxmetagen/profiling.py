@@ -742,6 +742,9 @@ def run_profiling(
     Returns:
         Dict with execution statistics
     """
+    from dbxmetagen.processing import _check_federation_guard
+    _check_federation_guard(spark, catalog_name, schema_name, table_names, federation_mode)
+
     config = ProfilingConfig(
         catalog_name=catalog_name,
         schema_name=schema_name,
