@@ -49,6 +49,7 @@ class TestYAMLVariableCoverage:
             "job_table_names",  # Job-level default (table_names used instead)
             "policy_id",  # Bundle-level cluster policy, not a MetadataConfig param
             "budget_policy_id",  # Bundle-level serverless budget policy, not a MetadataConfig param
+            "vs_endpoint_name",  # Bundle/job-level param for Vector Search, not a MetadataConfig param
         }
 
         # Check for unexpected missing params

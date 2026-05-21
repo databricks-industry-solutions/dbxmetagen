@@ -2239,10 +2239,11 @@ def get_domain_classification(
 
     # Bound row count to avoid full table scan for domain classification
     bounded_df = first_chunk_df.limit(int(config.sample_size) * 100)
-    nrows = bounded_df.count()
+    federation = getattr(config, "federation_mode", False)
+    nrows = 0 if federation else bounded_df.count()
     sampled_df = sample_df(
         bounded_df, nrows, config.sample_size,
-        federation_mode=getattr(config, "federation_mode", False),
+        federation_mode=federation,
     )
 
     prompt = PromptFactory.create_prompt(config, sampled_df, full_table_name)
@@ -2352,6 +2353,34 @@ def _is_metric_view(spark: SparkSession, full_table_name: str) -> bool:
         return False
 
 
+def _check_federation_guard(spark, catalog, schema, table_names=None, federation_mode=False):
+    """Fail fast if any target tables are FOREIGN and federation_mode is off."""
+    if federation_mode:
+        return
+    try:
+        filter_clause = ""
+        if table_names:
+            names = ", ".join(f"'{t.split('.')[-1]}'" for t in table_names)
+            filter_clause = f"AND table_name IN ({names})"
+        rows = spark.sql(f"""
+            SELECT table_name FROM system.information_schema.tables
+            WHERE table_catalog = '{catalog}' AND table_schema = '{schema}'
+              AND table_type = 'FOREIGN' {filter_clause} LIMIT 5
+        """).collect()
+        foreign = [r.table_name for r in rows]
+        if foreign:
+            raise ValueError(
+                f"Tables {foreign} are federated (FOREIGN) but federation_mode is not enabled. "
+                f"Set federation_mode=true to safely query federated tables. Without it, "
+                f"operations like TABLESAMPLE, df.sample(), and DESCRIBE EXTENDED will fail "
+                f"or pull excessive data from the external source."
+            )
+    except ValueError:
+        raise
+    except Exception:
+        pass
+
+
 def get_generated_metadata_data_aware(
     spark: SparkSession, config: MetadataConfig, full_table_name: str
 ):
@@ -2397,7 +2426,10 @@ def get_generated_metadata_data_aware(
                 return []
 
     responses = []
-    nrows = df.count()
+    if getattr(config, "federation_mode", False):
+        nrows = 0
+    else:
+        nrows = df.count()
     chunked_dfs = chunk_df(df, config.columns_per_call)
     for i, chunk in enumerate(chunked_dfs):
         sampled_chunk = sample_df(
@@ -3436,6 +3468,16 @@ def generate_and_persist_metadata(config: Any) -> None:
     logger.setLevel(logging.INFO)
 
     validate_optional_tables(spark, config)
+
+    # Fail fast if any target tables are federated but federation_mode is off
+    if config.table_names and not getattr(config, "federation_mode", False):
+        groups: dict = {}
+        for t in config.table_names:
+            parts = t.split(".")
+            if len(parts) == 3:
+                groups.setdefault((parts[0], parts[1]), []).append(t)
+        for (cat, sch), tbls in groups.items():
+            _check_federation_guard(spark, cat, sch, tbls, federation_mode=False)
 
     global _column_types_cache
     if config.table_names and len(config.table_names) > 1:

@@ -476,6 +476,9 @@ def extract_extended_metadata(
     federation_mode: bool = False,
 ) -> Dict[str, Any]:
     """Convenience function to extract extended metadata."""
+    from dbxmetagen.processing import _check_federation_guard
+    _check_federation_guard(spark, catalog_name, schema_name, table_names, federation_mode)
+
     config = ExtendedMetadataConfig(
         catalog_name=catalog_name,
         schema_name=schema_name,

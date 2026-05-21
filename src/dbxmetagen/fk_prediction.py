@@ -2275,6 +2275,9 @@ def predict_foreign_keys(
     federation_mode: bool = False,
 ) -> Dict[str, Any]:
     """Convenience function to run FK prediction."""
+    from dbxmetagen.processing import _check_federation_guard
+    _check_federation_guard(spark, catalog_name, schema_name, table_names, federation_mode)
+
     config = FKPredictionConfig(
         catalog_name=catalog_name,
         schema_name=schema_name,

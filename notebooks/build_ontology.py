@@ -60,9 +60,12 @@ import sys
 sys.path.append("../src")  # For git-clone or DAB deployment; pip-installed package works without this
 
 from dbxmetagen.ontology import build_ontology, resolve_bundle_path
+from dbxmetagen.processing import _check_federation_guard
 from dbxmetagen.table_filter import parse_table_names
 
 table_names = parse_table_names(table_names_raw) or None
+
+_check_federation_guard(spark, catalog_name, schema_name, table_names, federation_mode)
 
 effective_config = config_path
 if ontology_bundle:
