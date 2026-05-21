@@ -216,6 +216,7 @@ resources:
               table_names: "{{job.parameters.table_names}}"
               apply_ddl: "{{job.parameters.apply_ddl}}"
               endpoint_name: "{{job.parameters.endpoint_name}}"
+              federation_mode: "{{job.parameters.federation_mode}}"
           libraries:
             - whl: ../../dist/*.whl
 

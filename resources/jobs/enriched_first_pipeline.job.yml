@@ -130,6 +130,7 @@ resources:
               model: "{{job.parameters.model}}"
               table_names: "{{job.parameters.table_names}}"
               endpoint_name: "{{job.parameters.endpoint_name}}"
+              federation_mode: "{{job.parameters.federation_mode}}"
 
         # ------------------------------------------------------------------
         # Stage 2: Generate comments/PI/domain (enriched by profiling + constraints)
