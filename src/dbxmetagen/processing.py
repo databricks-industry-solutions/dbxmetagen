@@ -2239,10 +2239,11 @@ def get_domain_classification(
 
     # Bound row count to avoid full table scan for domain classification
     bounded_df = first_chunk_df.limit(int(config.sample_size) * 100)
-    nrows = bounded_df.count()
+    federation = getattr(config, "federation_mode", False)
+    nrows = 0 if federation else bounded_df.count()
     sampled_df = sample_df(
         bounded_df, nrows, config.sample_size,
-        federation_mode=getattr(config, "federation_mode", False),
+        federation_mode=federation,
     )
 
     prompt = PromptFactory.create_prompt(config, sampled_df, full_table_name)
@@ -2397,7 +2398,10 @@ def get_generated_metadata_data_aware(
                 return []
 
     responses = []
-    nrows = df.count()
+    if getattr(config, "federation_mode", False):
+        nrows = 0
+    else:
+        nrows = df.count()
     chunked_dfs = chunk_df(df, config.columns_per_call)
     for i, chunk in enumerate(chunked_dfs):
         sampled_chunk = sample_df(
