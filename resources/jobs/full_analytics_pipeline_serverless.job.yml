@@ -56,7 +56,7 @@ resources:
         - name: sweep_stale_docs
           default: "false"
         - name: endpoint_name
-          default: "dbxmetagen-vs"
+          default: ${var.vs_endpoint_name}
 
       tasks:
         - task_key: build_knowledge_base
@@ -113,6 +113,7 @@ resources:
               schema_name: "{{job.parameters.schema_name}}"
               incremental: "{{job.parameters.incremental}}"
               table_names: "{{job.parameters.table_names}}"
+              federation_mode: "{{job.parameters.federation_mode}}"
 
         - task_key: build_knowledge_graph
           max_retries: 1
@@ -161,6 +162,7 @@ resources:
               schema_name: "{{job.parameters.schema_name}}"
               incremental: "{{job.parameters.incremental}}"
               table_names: "{{job.parameters.table_names}}"
+              federation_mode: "{{job.parameters.federation_mode}}"
 
         - task_key: build_ontology_vector_index
           max_retries: 1
@@ -198,6 +200,7 @@ resources:
               table_names: "{{job.parameters.table_names}}"
               apply_ddl: "{{job.parameters.apply_ddl}}"
               endpoint_name: "{{job.parameters.endpoint_name}}"
+              federation_mode: "{{job.parameters.federation_mode}}"
 
         - task_key: build_similarity_edges
           max_retries: 1
@@ -289,6 +292,7 @@ resources:
               max_candidates_per_table_pair: "{{job.parameters.max_candidates_per_table_pair}}"
               sweep_stale_edges: "{{job.parameters.sweep_stale_edges}}"
               table_names: "{{job.parameters.table_names}}"
+              federation_mode: "{{job.parameters.federation_mode}}"
 
         - task_key: refresh_ontology_edges
           max_retries: 1

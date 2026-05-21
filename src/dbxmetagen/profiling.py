@@ -421,7 +421,7 @@ class ProfilingBuilder:
         
         # === SAMPLE VALUES (for all column types) ===
         try:
-            sample_rows = df.select(col.cast("string")).filter(col.isNotNull()).limit(100).collect()
+            sample_rows = df.filter(col.isNotNull()).select(col.cast("string")).limit(100).collect()
             sample_values = [row[0] for row in sample_rows[:5] if row[0] is not None]
             result["sample_values"] = json.dumps(sample_values[:5])
         except Exception:
@@ -660,13 +660,28 @@ class ProfilingBuilder:
                 logger.warning("Dedup DELETE failed for column_stats, proceeding with append: %s", e)
             stats_df.write.mode("append").option("mergeSchema", "true").saveAsTable(self.config.fully_qualified_column_stats)
     
-    def run(self, max_tables: int = None) -> Dict[str, Any]:
+    def run(self, max_tables: int = None, federation_mode: bool = False) -> Dict[str, Any]:
         """Execute the profiling pipeline."""
         logger.info("Starting profiling pipeline")
         self._stats = {"numeric_cols": 0, "string_cols": 0, "other_cols": 0, "total_cols": 0}
         
         self.create_snapshots_table()
         self.create_column_stats_table()
+        
+        if federation_mode:
+            logger.info(
+                "Federation mode enabled — skipping source table profiling. "
+                "Output tables created but will remain empty for this run."
+            )
+            return {
+                "tables_profiled": 0,
+                "tables_failed": 0,
+                "total_tables": 0,
+                "columns_profiled": 0,
+                "numeric_columns": 0,
+                "string_columns": 0,
+                "other_columns": 0,
+            }
         
         tables = self.get_tables_to_profile()
         if max_tables:
@@ -711,6 +726,7 @@ def run_profiling(
     max_tables: int = None,
     incremental: bool = True,
     table_names: list[str] | None = None,
+    federation_mode: bool = False,
 ) -> Dict[str, Any]:
     """
     Convenience function to run profiling.
@@ -721,6 +737,7 @@ def run_profiling(
         schema_name: Schema name for tables
         max_tables: Maximum tables to profile
         incremental: Only profile tables changed since last snapshot
+        federation_mode: Skip source table profiling for federated catalogs
         
     Returns:
         Dict with execution statistics
@@ -732,4 +749,4 @@ def run_profiling(
         table_names=table_names,
     )
     builder = ProfilingBuilder(spark, config)
-    return builder.run(max_tables)
+    return builder.run(max_tables, federation_mode=federation_mode)

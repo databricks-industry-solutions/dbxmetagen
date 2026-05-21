@@ -459,7 +459,7 @@ class KnowledgeBaseBuilder:
                     FROM system.information_schema.tables
                     WHERE table_catalog = '{cat}' AND table_schema = '{sch}'
                       AND table_name IN ({in_clause})
-                      AND table_type IN ('MANAGED', 'EXTERNAL')
+                      AND table_type IN ('MANAGED', 'EXTERNAL', 'FOREIGN')
                 """)
                 all_dfs.append(df)
             except Exception as e:

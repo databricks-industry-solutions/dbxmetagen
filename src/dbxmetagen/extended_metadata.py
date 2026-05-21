@@ -25,6 +25,7 @@ class ExtendedMetadataConfig:
     target_table: str = "extended_table_metadata"
     incremental: bool = True
     table_names: list[str] | None = None
+    federation_mode: bool = False
 
     @property
     def fully_qualified_source(self) -> str:
@@ -319,15 +320,18 @@ class ExtendedMetadataBuilder:
         return self.spark.createDataFrame([], "table_name STRING, primary_key_columns ARRAY<STRING>, foreign_keys MAP<STRING, STRING>")
     
     def extract_table_properties(self, tables: List[str]) -> DataFrame:
-        """Extract clustering and partition info using DESCRIBE EXTENDED."""
+        """Extract clustering and partition info using DESCRIBE DETAIL."""
+        empty_schema = "table_name STRING, clustering_columns ARRAY<STRING>, partition_columns ARRAY<STRING>, table_size_bytes BIGINT, num_files INT"
         if not tables:
-            return self.spark.createDataFrame([], 
-                "table_name STRING, clustering_columns ARRAY<STRING>, partition_columns ARRAY<STRING>, table_size_bytes BIGINT, num_files INT")
-        
+            return self.spark.createDataFrame([], empty_schema)
+
+        if self.config.federation_mode:
+            logger.info("Federation mode: skipping DESCRIBE DETAIL (not supported on federated tables)")
+            return self.spark.createDataFrame([(t, None, None, None, None) for t in tables], empty_schema)
+
         results = []
-        for table in tables[:100]:  # Limit to avoid too many queries
+        for table in tables[:100]:
             try:
-                # Try DESCRIBE DETAIL for Delta tables
                 detail_df = self.spark.sql(f"DESCRIBE DETAIL {table}")
                 row = detail_df.collect()[0]
                 
@@ -469,24 +473,15 @@ def extract_extended_metadata(
     schema_name: str,
     incremental: bool = True,
     table_names: list[str] | None = None,
+    federation_mode: bool = False,
 ) -> Dict[str, Any]:
-    """
-    Convenience function to extract extended metadata.
-    
-    Args:
-        spark: SparkSession instance
-        catalog_name: Catalog name for source and target tables
-        schema_name: Schema name for source and target tables
-        incremental: Only process tables changed since last extraction
-        
-    Returns:
-        Dict with execution statistics
-    """
+    """Convenience function to extract extended metadata."""
     config = ExtendedMetadataConfig(
         catalog_name=catalog_name,
         schema_name=schema_name,
         incremental=incremental,
         table_names=table_names,
+        federation_mode=federation_mode,
     )
     builder = ExtendedMetadataBuilder(spark, config)
     return builder.run()

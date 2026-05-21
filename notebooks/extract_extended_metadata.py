@@ -17,17 +17,21 @@ dbutils.widgets.text("catalog_name", "", "Catalog Name")
 dbutils.widgets.text("schema_name", "", "Schema Name")
 dbutils.widgets.text("incremental", "true", "Incremental (true/false)")
 dbutils.widgets.text("table_names", "", "Table Names (comma-separated, empty=all)")
+dbutils.widgets.dropdown("federation_mode", "false", ["true", "false"], "Federation Mode")
 
 catalog_name = dbutils.widgets.get("catalog_name")
 schema_name = dbutils.widgets.get("schema_name")
 incremental = dbutils.widgets.get("incremental").lower() == "true"
 table_names_raw = dbutils.widgets.get("table_names")
+federation_mode = dbutils.widgets.get("federation_mode").lower() == "true"
 
 if not catalog_name or not schema_name:
     raise ValueError("Both catalog_name and schema_name are required")
 
 print(f"Extracting extended metadata to {catalog_name}.{schema_name}")
 print(f"Incremental: {incremental}")
+if federation_mode:
+    print("Federation mode: enabled (DESCRIBE DETAIL will be skipped)")
 if table_names_raw:
     print(f"Table filter: {table_names_raw}")
 
@@ -47,6 +51,7 @@ result = extract_extended_metadata(
     schema_name=schema_name,
     incremental=incremental,
     table_names=table_names,
+    federation_mode=federation_mode,
 )
 
 print(f"Extended metadata extraction complete")

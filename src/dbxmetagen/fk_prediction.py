@@ -42,6 +42,9 @@ _FK_EXCLUDED_DTYPES = (
     "timestamp_ntz", "binary", "variant", "struct", "array", "map",
 )
 
+_FEDERATION_SAMPLE_ROWS = 1000
+_FEDERATION_MAX_WORKERS = 4
+
 def _dtype_exclusion_sql() -> str:
     """SQL IN-list for data types that can never be foreign keys."""
     return ", ".join(f"'{d}'" for d in _FK_EXCLUDED_DTYPES)
@@ -122,6 +125,12 @@ class FKPredictionConfig:
     max_ai_candidates: int = 200
     system_column_patterns: Tuple[str, ...] = field(default_factory=lambda: _DEFAULT_SYSTEM_COL_PATTERNS)
     table_names: list = field(default_factory=list)
+    federation_mode: bool = False
+
+    def __post_init__(self):
+        if self.federation_mode and self.apply_ddl:
+            logger.warning("federation_mode=true forces apply_ddl=false (ALTER TABLE ADD CONSTRAINT may push to source)")
+            self.apply_ddl = False
 
     def fq(self, table: str) -> str:
         return f"{self.catalog_name}.{self.schema_name}.{table}"
@@ -1111,7 +1120,8 @@ class FKPredictor:
                     result[fq_id] = []
             return result
 
-        with ThreadPoolExecutor(max_workers=16) as pool:
+        workers = _FEDERATION_MAX_WORKERS if self.config.federation_mode else 16
+        with ThreadPoolExecutor(max_workers=workers) as pool:
             futures = {
                 pool.submit(_fetch_table_samples, tbl_id, list(col_set)): tbl_id
                 for tbl_id, col_set in table_cols.items()
@@ -1206,17 +1216,21 @@ class FKPredictor:
             else:
                 unprofiled_by_table.setdefault(r.tbl_id, []).append((r.col_id, col_short))
 
-        # Fallback: TABLESAMPLE for unprofiled columns
-        sample_n = self.config.cardinality_sample_rows
+        # Fallback: sample for unprofiled columns (LIMIT for federation, TABLESAMPLE otherwise)
         for tbl, cols_list in unprofiled_by_table.items():
             try:
                 count_exprs = ", ".join(
                     f"COUNT(DISTINCT `{cs}`) AS `d_{ci.replace('.', '_')}`"
                     for ci, cs in cols_list
                 )
-                row = self.spark.sql(
-                    f"SELECT COUNT(*) AS total, {count_exprs} FROM {tbl} TABLESAMPLE ({sample_n} ROWS) REPEATABLE (42)"
-                ).collect()[0]
+                if self.config.federation_mode:
+                    col_selects = ", ".join(f"`{cs}`" for _, cs in cols_list)
+                    sample_n = _FEDERATION_SAMPLE_ROWS
+                    sample_sql = f"SELECT COUNT(*) AS total, {count_exprs} FROM (SELECT {col_selects} FROM {tbl} LIMIT {sample_n})"
+                else:
+                    sample_n = self.config.cardinality_sample_rows
+                    sample_sql = f"SELECT COUNT(*) AS total, {count_exprs} FROM {tbl} TABLESAMPLE ({sample_n} ROWS) REPEATABLE (42)"
+                row = self.spark.sql(sample_sql).collect()[0]
                 total = max(row.total, 1)
                 for ci, cs in cols_list:
                     col_stats[ci] = row[f"d_{ci.replace('.', '_')}"] / total
@@ -1264,14 +1278,23 @@ class FKPredictor:
         """Sample a table once and register as temp view; return the view name."""
         view_key = (table, col_short)
         if view_key not in self._table_samples:
-            n = self.config.cardinality_sample_rows
             view_name = f"_sample_{table.replace('.', '_')}_{col_short}"
             try:
-                self.spark.sql(
-                    f"SELECT CAST(`{col_short}` AS STRING) AS val "
-                    f"FROM {table} TABLESAMPLE ({n} ROWS) REPEATABLE (42) "
-                    f"WHERE `{col_short}` IS NOT NULL"
-                ).createOrReplaceTempView(view_name)
+                if self.config.federation_mode:
+                    n = _FEDERATION_SAMPLE_ROWS
+                    self.spark.sql(
+                        f"SELECT CAST(`{col_short}` AS STRING) AS val "
+                        f"FROM {table} "
+                        f"WHERE `{col_short}` IS NOT NULL "
+                        f"LIMIT {n}"
+                    ).createOrReplaceTempView(view_name)
+                else:
+                    n = self.config.cardinality_sample_rows
+                    self.spark.sql(
+                        f"SELECT CAST(`{col_short}` AS STRING) AS val "
+                        f"FROM {table} TABLESAMPLE ({n} ROWS) REPEATABLE (42) "
+                        f"WHERE `{col_short}` IS NOT NULL"
+                    ).createOrReplaceTempView(view_name)
             except Exception:
                 self.spark.createDataFrame([], "val STRING").createOrReplaceTempView(view_name)
             self._table_samples[view_key] = view_name
@@ -2194,7 +2217,11 @@ class FKPredictor:
         ai_negative = judged.filter(F.col("ai_is_fk") == False).count()
         logger.info("AI judgment: %d positive, %d negative", ai_positive, ai_negative)
 
-        judged = self.join_validate(judged)
+        try:
+            judged = self.join_validate(judged)
+        except Exception as e:
+            logger.warning("join_validate failed, continuing with zero join_rate: %s", e)
+            judged = judged.withColumn("join_rate", F.lit(0.0)).withColumn("join_matched", F.lit(0))
 
         try:
             judged = self.referential_integrity(judged)
@@ -2245,6 +2272,7 @@ def predict_foreign_keys(
     system_column_patterns: Tuple[str, ...] = _DEFAULT_SYSTEM_COL_PATTERNS,
     sweep_stale: bool = False,
     table_names: list = None,
+    federation_mode: bool = False,
 ) -> Dict[str, Any]:
     """Convenience function to run FK prediction."""
     config = FKPredictionConfig(
@@ -2268,6 +2296,7 @@ def predict_foreign_keys(
         max_candidates_per_table_pair=max_candidates_per_table_pair,
         system_column_patterns=system_column_patterns,
         table_names=table_names or [],
+        federation_mode=federation_mode,
     )
     predictor = FKPredictor(spark, config)
     return predictor.run(sweep_stale=sweep_stale)

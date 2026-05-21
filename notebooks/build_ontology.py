@@ -26,11 +26,13 @@ dbutils.widgets.text("entity_tag_key", "entity_type", "UC Tag Key for entities")
 dbutils.widgets.text("model", "", "Model Endpoint")
 dbutils.widgets.text("table_names", "", "Table Names (comma-separated, empty=all)")
 dbutils.widgets.text("endpoint_name", "dbxmetagen-vs", "VS Endpoint Name")
+dbutils.widgets.dropdown("federation_mode", "false", ["true", "false"], "Federation Mode")
 
 catalog_name = dbutils.widgets.get("catalog_name")
 schema_name = dbutils.widgets.get("schema_name")
 config_path = dbutils.widgets.get("config_path")
-apply_tags = dbutils.widgets.get("apply_ddl").lower() in ("true", "1", "yes")
+federation_mode = dbutils.widgets.get("federation_mode").lower() == "true"
+apply_tags = dbutils.widgets.get("apply_ddl").lower() in ("true", "1", "yes") and not federation_mode
 _raw_bundle = dbutils.widgets.get("ontology_bundle")
 ontology_bundle = _raw_bundle.strip()
 incremental = dbutils.widgets.get("incremental").lower() == "true"
@@ -92,6 +94,7 @@ result = build_ontology(
     model_endpoint=model_endpoint,
     table_names=table_names,
     ontology_vs_index=ontology_vs_index,
+    vs_endpoint_name=endpoint_name,
 )
 
 print(f"Ontology build complete:")

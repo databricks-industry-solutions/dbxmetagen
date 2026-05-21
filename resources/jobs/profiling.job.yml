@@ -19,6 +19,8 @@ resources:
           default: ${var.schema_name}
         - name: max_tables
           default: ""
+        - name: federation_mode
+          default: "false"
 
       tasks:
         - task_key: run_profiling
@@ -33,6 +35,7 @@ resources:
               catalog_name: "{{job.parameters.catalog_name}}"
               schema_name: "{{job.parameters.schema_name}}"
               max_tables: "{{job.parameters.max_tables}}"
+              federation_mode: "{{job.parameters.federation_mode}}"
 
         - task_key: compute_quality_scores
           max_retries: 1
