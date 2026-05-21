@@ -131,6 +131,7 @@ class MetadataConfig:
             "ann_batch_size",
             "ann_max_workers",
             "ann_max_nodes",
+            "comment_style",
         ],
         "yaml_advanced_file_path": "../variables.advanced.yml",
         "yaml_advanced_variable_names": [
@@ -277,13 +278,12 @@ class MetadataConfig:
         self.federation_mode = _parse_bool(getattr(self, "federation_mode", False))
         if self.federation_mode:
             self.apply_ddl = False
-            self.add_metadata = _parse_bool(getattr(self, "add_metadata", True))
-            # DESCRIBE EXTENDED won't work reliably on federated tables
-            if self.add_metadata:
+            if _parse_bool(getattr(self, "add_metadata", True)):
                 print(
-                    "[federation_mode] Warning: add_metadata=true may produce limited "
-                    "results against federated tables (DESCRIBE EXTENDED may fail)."
+                    "[federation_mode] Forcing add_metadata=false — DESCRIBE EXTENDED "
+                    "is not supported on federated tables."
                 )
+            self.add_metadata = False
 
         # Two-stage domain classification options
         self.two_stage_classification = _parse_bool(
@@ -302,6 +302,14 @@ class MetadataConfig:
                 f"[config] Both domain_config_path='{_dcp}' and ontology_bundle='{_ob}' are set. "
                 f"Domain prediction will use the standalone file; ontology will use the bundle. "
                 f"Ensure domain keys match domain_entity_affinity keys in the bundle."
+            )
+
+        # Comment style preset
+        _VALID_COMMENT_STYLES = {"concise", "standard", "detailed"}
+        self.comment_style = getattr(self, "comment_style", "standard")
+        if self.comment_style not in _VALID_COMMENT_STYLES:
+            raise ValueError(
+                f"comment_style must be one of {_VALID_COMMENT_STYLES}, got '{self.comment_style}'"
             )
 
         # Fallback for run_id if not provided via kwargs/YAML

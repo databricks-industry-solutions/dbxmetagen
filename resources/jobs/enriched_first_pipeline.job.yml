@@ -59,7 +59,7 @@ resources:
         - name: spacy_model_names
           default: ${var.spacy_model_names}
         - name: endpoint_name
-          default: "dbxmetagen-vs"
+          default: ${var.vs_endpoint_name}
 
       tasks:
         # ------------------------------------------------------------------
@@ -94,6 +94,7 @@ resources:
               schema_name: "{{job.parameters.schema_name}}"
               incremental: "{{job.parameters.incremental}}"
               table_names: "{{job.parameters.table_names}}"
+              federation_mode: "{{job.parameters.federation_mode}}"
 
         - task_key: extract_extended_metadata
           max_retries: 1
@@ -109,6 +110,7 @@ resources:
               schema_name: "{{job.parameters.schema_name}}"
               incremental: "{{job.parameters.incremental}}"
               table_names: "{{job.parameters.table_names}}"
+              federation_mode: "{{job.parameters.federation_mode}}"
 
         - task_key: build_ontology
           max_retries: 1
@@ -379,6 +381,7 @@ resources:
               dry_run: "false"
               incremental: "{{job.parameters.incremental}}"
               table_names: "{{job.parameters.table_names}}"
+              federation_mode: "{{job.parameters.federation_mode}}"
 
         - task_key: final_analysis
           max_retries: 1

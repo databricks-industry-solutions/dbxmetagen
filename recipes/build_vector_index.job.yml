@@ -9,7 +9,7 @@ resources:
         - name: schema_name
           default: ${var.schema_name}
         - name: endpoint_name
-          default: "dbxmetagen-vs"
+          default: ${var.vs_endpoint_name}
         - name: sweep_stale_docs
           default: "false"
 

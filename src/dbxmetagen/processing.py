@@ -394,7 +394,9 @@ def convert_special_types_to_string(df: DataFrame) -> DataFrame:
     return df
 
 
-def sample_df(df: DataFrame, nrows: int, sample_size: int = 5) -> DataFrame:
+def sample_df(
+    df: DataFrame, nrows: int, sample_size: int = 5, federation_mode: bool = False,
+) -> DataFrame:
     """
     Sample dataframe to a given size and filter out rows with lots of nulls.
 
@@ -405,11 +407,14 @@ def sample_df(df: DataFrame, nrows: int, sample_size: int = 5) -> DataFrame:
         df (DataFrame): The DataFrame to be analyzed.
         nrows (int): number of rows in dataframe
         sample_size (int): The number of rows to sample.
+        federation_mode (bool): If True, use LIMIT instead of df.sample()
+            because .sample() does not push down through JDBC and would
+            pull the entire remote table into Spark.
 
     Returns:
         DataFrame: A DataFrame with columns to generate metadata for.
     """
-    if nrows < sample_size:
+    if federation_mode or nrows < sample_size:
         return df.limit(sample_size)
 
     larger_sample = sample_size * 100
@@ -2235,7 +2240,10 @@ def get_domain_classification(
     # Bound row count to avoid full table scan for domain classification
     bounded_df = first_chunk_df.limit(int(config.sample_size) * 100)
     nrows = bounded_df.count()
-    sampled_df = sample_df(bounded_df, nrows, config.sample_size)
+    sampled_df = sample_df(
+        bounded_df, nrows, config.sample_size,
+        federation_mode=getattr(config, "federation_mode", False),
+    )
 
     prompt = PromptFactory.create_prompt(config, sampled_df, full_table_name)
     if getattr(config, "use_kb_comments", False):
@@ -2392,7 +2400,10 @@ def get_generated_metadata_data_aware(
     nrows = df.count()
     chunked_dfs = chunk_df(df, config.columns_per_call)
     for i, chunk in enumerate(chunked_dfs):
-        sampled_chunk = sample_df(chunk, nrows, config.sample_size)
+        sampled_chunk = sample_df(
+            chunk, nrows, config.sample_size,
+            federation_mode=getattr(config, "federation_mode", False),
+        )
         prompt = PromptFactory.create_prompt(config, sampled_chunk, full_table_name)
         if getattr(config, "use_kb_comments", False):
             prompt.enrich_from_knowledge_base()

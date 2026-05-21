@@ -561,6 +561,8 @@ class OntologyConfig:
     pass0_min_candidates: int = 12
     # Vector Search index for ontology retrieval (empty = disabled)
     ontology_vs_index: str = ""
+    # VS endpoint name for ontology vector queries
+    vs_endpoint_name: str = "dbxmetagen-vs"
 
     @property
     def fully_qualified_entities(self) -> str:
@@ -1700,6 +1702,7 @@ class EntityDiscoverer:
             domain_entity_affinity=getattr(self, "_domain_entity_affinity", None),
             vs_index=vs_index if effective_pass0 == "vector" else None,
             vs_bundle=bundle if effective_pass0 == "vector" else None,
+            vs_endpoint=self.config.vs_endpoint_name,
         )
 
         # Accept any entity name the LLM was shown (tier-1) plus bundle definitions
@@ -5629,6 +5632,7 @@ def build_ontology(
     model_endpoint: Optional[str] = None,
     table_names: Optional[List[str]] = None,
     ontology_vs_index: str = "",
+    vs_endpoint_name: str = "dbxmetagen-vs",
 ) -> Dict[str, Any]:
     """Convenience function to build the ontology.
 
@@ -5646,6 +5650,7 @@ def build_ontology(
         model_endpoint: LLM endpoint for classification (overrides bundle/default)
         ontology_vs_index: Fully-qualified VS index name for ontology retrieval.
             When set, entity/edge classification uses HYBRID vector search.
+        vs_endpoint_name: Vector Search endpoint name for ontology queries.
     """
     config = OntologyConfig(
         catalog_name=catalog_name,
@@ -5656,6 +5661,7 @@ def build_ontology(
         entity_tag_key=entity_tag_key,
         table_names=table_names,
         ontology_vs_index=ontology_vs_index,
+        vs_endpoint_name=vs_endpoint_name,
     )
     builder = OntologyBuilder(spark, config, model_endpoint=model_endpoint)
     return builder.run(apply_tags=apply_tags)

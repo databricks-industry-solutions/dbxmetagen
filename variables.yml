@@ -11,6 +11,9 @@ variables:
   sample_size:
     description: Sample size used per chunk in the prompt generation. when set to 0, no data will be sent to LLM, but due to leakage from metadata if this field alone is set, does not prevent data being added to comments.
     default: 5
+  comment_style:
+    description: "Controls the verbosity of generated table and column comments. Options: 'concise' (1-2 sentence column comments, brief table summaries), 'standard' (3-5 sentence columns, 200-300 word table summaries -- the default), 'detailed' (4-8 sentence columns, 300-500 word table summaries for analyst-oriented documentation)."
+    default: standard
   allow_data_in_comments:
     description: Whether to allow data in comments. Note that this does not prevent data from being used in the inputs, but is meant to keep data from the outputs. These comments still need to be reviewed, and to be 100% sure, either set allow_data to false, or set your combination of add_metadata, include_existing_table_comment, and other fields to the proper settings.
     default: true
@@ -194,6 +197,9 @@ variables:
   generate_profiling_data:
     description: Enable profiling payload capture and statistics collection. When true, LLM prompts are logged and table statistics are computed.
     default: false
+  vs_endpoint_name:
+    description: "Name of the Vector Search endpoint used by the analytics pipeline (build_vector_index, build_similarity_edges, build_ontology_vector_index, ontology predictor). Created automatically if it doesn't exist."
+    default: dbxmetagen-vs
   embedding_model:
     description: Databricks Foundation Model endpoint for generating embeddings
     default: databricks-bge-large-en
