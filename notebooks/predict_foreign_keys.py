@@ -34,6 +34,7 @@ dbutils.widgets.text("max_candidates_per_table_pair", "5", "Max candidates per t
 dbutils.widgets.text("system_column_exclude_patterns", "", "Regex patterns to exclude system columns from FK boosting (comma-separated, empty=defaults)")
 dbutils.widgets.text("sweep_stale_edges", "false", "Sweep stale edges")
 dbutils.widgets.text("table_names", "", "Table Names")
+dbutils.widgets.dropdown("federation_mode", "false", ["true", "false"], "Federation Mode")
 
 catalog_name = dbutils.widgets.get("catalog_name")
 schema_name = dbutils.widgets.get("schema_name")
@@ -57,10 +58,14 @@ _sys_col_raw = dbutils.widgets.get("system_column_exclude_patterns").strip()
 system_column_patterns = tuple(p.strip() for p in _sys_col_raw.split(",") if p.strip()) if _sys_col_raw else None
 sweep_stale = dbutils.widgets.get("sweep_stale_edges").strip().lower() in ("true", "1", "yes")
 
+federation_mode = dbutils.widgets.get("federation_mode").lower() == "true"
+
 if not catalog_name or not schema_name:
     raise ValueError("Both catalog_name and schema_name are required")
 
 print(f"Predicting foreign keys in {catalog_name}.{schema_name}")
+if federation_mode:
+    print("Federation mode: enabled (TABLESAMPLE replaced with LIMIT, apply_ddl forced off)")
 print(f"Column similarity threshold: {column_similarity_threshold}")
 print(f"Duplicate table similarity threshold: {duplicate_table_similarity_threshold}")
 print(f"Cross-block column similarity min: {cross_block_column_similarity_min}")
@@ -102,6 +107,7 @@ _fk_kwargs = dict(
     max_ai_candidates=max_ai_candidates,
     rule_score_min_for_ai=rule_score_min_for_ai,
     max_candidates_per_table_pair=max_candidates_per_table_pair,
+    federation_mode=federation_mode,
 )
 if system_column_patterns is not None:
     _fk_kwargs["system_column_patterns"] = system_column_patterns
