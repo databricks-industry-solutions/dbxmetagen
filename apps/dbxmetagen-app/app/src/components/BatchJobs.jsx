@@ -863,6 +863,7 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
                 The advanced pipeline builds on your core metadata to produce the full semantic layer: <strong className="text-slate-700 dark:text-slate-200">knowledge bases</strong>, a <strong className="text-slate-700 dark:text-slate-200">knowledge graph</strong>, <strong className="text-slate-700 dark:text-slate-200">embeddings</strong> and similarity edges, <strong className="text-slate-700 dark:text-slate-200">ontology</strong> entity discovery, <strong className="text-slate-700 dark:text-slate-200">profiling</strong> and data quality scores, <strong className="text-slate-700 dark:text-slate-200">foreign key prediction</strong>, <strong className="text-slate-700 dark:text-slate-200">table clustering</strong>, and a <strong className="text-slate-700 dark:text-slate-200">vector search index</strong>. This runs as a single Databricks job with 15 orchestrated tasks. <em className="text-slate-400">Requires core metadata to be generated first.</em>
               </div>
             </details>
+            <p className="text-[11px] text-slate-400 dark:text-slate-500 italic">No row-level data is sent to LLMs during this step. All prompts use only metadata (table/column names, comments, types, and computed statistics).</p>
 
             <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
               <div>

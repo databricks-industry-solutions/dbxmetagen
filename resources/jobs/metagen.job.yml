@@ -51,6 +51,8 @@ resources:
           default: "databricks-claude-sonnet-4-6"
         - name: spacy_model_names
           default: ${var.spacy_model_names}
+        - name: comment_style
+          default: "standard"
 
       tasks:
         - task_key: generate_metadata
@@ -80,6 +82,7 @@ resources:
               include_lineage: "{{job.parameters.include_lineage}}"
               model: "{{job.parameters.model}}"
               spacy_model_names: "{{job.parameters.spacy_model_names}}"
+              comment_style: "{{job.parameters.comment_style}}"
 
       environments:
         - environment_key: default

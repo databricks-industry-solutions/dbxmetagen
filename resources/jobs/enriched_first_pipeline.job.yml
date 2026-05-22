@@ -60,6 +60,8 @@ resources:
           default: ${var.spacy_model_names}
         - name: endpoint_name
           default: ${var.vs_endpoint_name}
+        - name: comment_style
+          default: "standard"
 
       tasks:
         # ------------------------------------------------------------------
@@ -161,6 +163,7 @@ resources:
               domain_config_path: "{{job.parameters.domain_config_path}}"
               model: "{{job.parameters.model}}"
               spacy_model_names: "{{job.parameters.spacy_model_names}}"
+              comment_style: "{{job.parameters.comment_style}}"
 
         - task_key: generate_pi
           max_retries: 1
