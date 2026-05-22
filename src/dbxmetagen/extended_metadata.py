@@ -68,11 +68,25 @@ class ExtendedMetadataBuilder:
             column_mask_policies MAP<STRING, STRING>,
             table_size_bytes BIGINT,
             num_files INT,
+            data_source_format STRING,
+            connection_name STRING,
+            connection_type STRING,
+            connection_url STRING,
             updated_at TIMESTAMP
         )
         COMMENT 'Extended table metadata from system tables'
         """
         self.spark.sql(ddl)
+
+        from dbxmetagen.processing import add_column_if_not_exists
+        for col, typ in [
+            ("data_source_format", "STRING"),
+            ("connection_name", "STRING"),
+            ("connection_type", "STRING"),
+            ("connection_url", "STRING"),
+        ]:
+            add_column_if_not_exists(self.spark, self.config.fully_qualified_target, col, typ)
+
         logger.info(f"Target table {self.config.fully_qualified_target} ready")
     
     def get_tables_to_process(self) -> List[str]:
@@ -105,6 +119,45 @@ class ExtendedMetadataBuilder:
         """)
         return [row.table_name for row in df.collect()]
     
+    def _resolve_catalog_connections(self, catalogs: List[str]) -> Dict[str, Dict[str, str]]:
+        """For each catalog, get its connection info (if foreign).
+
+        Returns: {catalog_name: {connection_name, connection_type, connection_url}}
+        """
+        result: Dict[str, Dict[str, str]] = {}
+        foreign_connection_names = []
+
+        for catalog in catalogs:
+            try:
+                rows = self.spark.sql(f"DESCRIBE CATALOG EXTENDED {catalog}").collect()
+                info = {r["info_name"]: r["info_value"] for r in rows}
+                if info.get("Catalog Type", "").lower() == "foreign":
+                    conn_name = info.get("Connection Name", "")
+                    if conn_name:
+                        result[catalog] = {"connection_name": conn_name, "connection_type": None, "connection_url": None}
+                        foreign_connection_names.append(conn_name)
+            except Exception as e:
+                logger.debug(f"Could not describe catalog {catalog}: {e}")
+
+        if foreign_connection_names:
+            try:
+                names_in = ",".join(f"'{n}'" for n in foreign_connection_names)
+                conn_rows = self.spark.sql(f"""
+                    SELECT connection_name, connection_type, url
+                    FROM system.information_schema.connections
+                    WHERE connection_name IN ({names_in})
+                """).collect()
+                conn_map = {r["connection_name"]: (r["connection_type"], r["url"]) for r in conn_rows}
+                for cat_info in result.values():
+                    cn = cat_info["connection_name"]
+                    if cn in conn_map:
+                        cat_info["connection_type"] = conn_map[cn][0]
+                        cat_info["connection_url"] = conn_map[cn][1]
+            except Exception as e:
+                logger.debug(f"Could not query connections: {e}")
+
+        return result
+
     def extract_basic_table_info(self, tables: List[str]) -> DataFrame:
         """Extract basic table info from information_schema.tables."""
         if not tables:
@@ -121,7 +174,8 @@ class ExtendedMetadataBuilder:
                         table_type,
                         table_owner,
                         created,
-                        last_altered
+                        last_altered,
+                        data_source_format
                     FROM system.information_schema.tables
                     WHERE table_catalog = '{catalog}'
                 """)
@@ -132,14 +186,13 @@ class ExtendedMetadataBuilder:
         if all_dfs:
             from functools import reduce
             combined = reduce(lambda a, b: a.union(b), all_dfs)
-            # Filter to only tables in our list
             tables_df = self.spark.createDataFrame([(t,) for t in tables], ["filter_table"])
             return combined.join(tables_df, combined.table_name == tables_df.filter_table, "inner").drop("filter_table")
         
         return self.spark.createDataFrame([], self._get_basic_schema())
     
     def _get_basic_schema(self) -> str:
-        return "table_name STRING, table_type STRING, table_owner STRING, created TIMESTAMP, last_altered TIMESTAMP"
+        return "table_name STRING, table_type STRING, table_owner STRING, created TIMESTAMP, last_altered TIMESTAMP, data_source_format STRING"
     
     def extract_column_counts(self, tables: List[str]) -> DataFrame:
         """Extract column counts from information_schema.columns."""
@@ -374,6 +427,19 @@ class ExtendedMetadataBuilder:
         constraints = self.extract_constraints(tables)
         properties = self.extract_table_properties(tables)
         
+        # Resolve catalog connections (one DESCRIBE per catalog)
+        catalogs = list(set(t.split(".")[0] for t in tables if "." in t))
+        catalog_conn_map = self._resolve_catalog_connections(catalogs)
+
+        conn_rows = []
+        for t in tables:
+            cat = t.split(".")[0] if "." in t else ""
+            info = catalog_conn_map.get(cat, {})
+            conn_rows.append((t, info.get("connection_name"), info.get("connection_type"), info.get("connection_url")))
+        conn_df = self.spark.createDataFrame(
+            conn_rows, "table_name STRING, connection_name STRING, connection_type STRING, connection_url STRING"
+        )
+
         # Start with all tables
         tables_df = self.spark.createDataFrame([(t,) for t in tables], ["table_name"])
         
@@ -385,9 +451,9 @@ class ExtendedMetadataBuilder:
             .join(lineage, "table_name", "left")
             .join(constraints, "table_name", "left")
             .join(properties, "table_name", "left")
+            .join(conn_df, "table_name", "left")
         )
         
-        # Add placeholders for governance columns (would need additional system table access)
         result = (
             result
             .withColumn("row_filter_policy", F.lit(None).cast("string"))
@@ -405,7 +471,8 @@ class ExtendedMetadataBuilder:
             foreign_keys MAP<STRING, STRING>, clustering_columns ARRAY<STRING>,
             partition_columns ARRAY<STRING>, row_filter_policy STRING,
             column_mask_policies MAP<STRING, STRING>, table_size_bytes BIGINT,
-            num_files INT, updated_at TIMESTAMP
+            num_files INT, data_source_format STRING, connection_name STRING,
+            connection_type STRING, connection_url STRING, updated_at TIMESTAMP
         """
     
     def merge_to_target(self, staged_df: DataFrame) -> Dict[str, int]:
@@ -436,6 +503,10 @@ class ExtendedMetadataBuilder:
             target.column_mask_policies = COALESCE(source.column_mask_policies, target.column_mask_policies),
             target.table_size_bytes = COALESCE(source.table_size_bytes, target.table_size_bytes),
             target.num_files = COALESCE(source.num_files, target.num_files),
+            target.data_source_format = COALESCE(source.data_source_format, target.data_source_format),
+            target.connection_name = COALESCE(source.connection_name, target.connection_name),
+            target.connection_type = COALESCE(source.connection_type, target.connection_type),
+            target.connection_url = COALESCE(source.connection_url, target.connection_url),
             target.updated_at = source.updated_at
 
         WHEN NOT MATCHED THEN INSERT *

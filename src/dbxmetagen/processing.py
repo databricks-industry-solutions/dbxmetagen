@@ -2365,7 +2365,9 @@ def _check_federation_guard(spark, catalog, schema, table_names=None, federation
         rows = spark.sql(f"""
             SELECT table_name FROM system.information_schema.tables
             WHERE table_catalog = '{catalog}' AND table_schema = '{schema}'
-              AND table_type = 'FOREIGN' {filter_clause} LIMIT 5
+              AND table_type = 'FOREIGN'
+              AND data_source_format != 'VECTOR_INDEX_FORMAT'
+              {filter_clause} LIMIT 5
         """).collect()
         foreign = [r.table_name for r in rows]
         if foreign:
@@ -2377,8 +2379,12 @@ def _check_federation_guard(spark, catalog, schema, table_names=None, federation
             )
     except ValueError:
         raise
-    except Exception:
-        pass
+    except Exception as e:
+        raise ValueError(
+            f"Cannot verify whether tables in {catalog}.{schema} are federated "
+            f"(information_schema query failed: {e}). Set federation_mode=true if "
+            f"targeting federated catalogs, or fix access to information_schema."
+        ) from e
 
 
 def get_generated_metadata_data_aware(

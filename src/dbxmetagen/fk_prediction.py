@@ -9,6 +9,7 @@ as a tie-breaker, with optional skip-AI for high-trust declared/query pairs.
 """
 
 import logging
+import threading
 import warnings
 from dataclasses import dataclass, field
 from typing import Any, Dict, Tuple
@@ -143,6 +144,7 @@ class FKPredictor:
         self.spark = spark
         self.config = config
         self._table_samples: dict = {}
+        self._table_samples_lock = threading.Lock()
         self._changed_tables: set | None = None
         if self.config.table_similarity_threshold != 0.9:
             warnings.warn(
@@ -1217,7 +1219,8 @@ class FKPredictor:
                 unprofiled_by_table.setdefault(r.tbl_id, []).append((r.col_id, col_short))
 
         # Fallback: sample for unprofiled columns (LIMIT for federation, TABLESAMPLE otherwise)
-        for tbl, cols_list in unprofiled_by_table.items():
+        def _cardinality_for_table(tbl, cols_list):
+            result = {}
             try:
                 count_exprs = ", ".join(
                     f"COUNT(DISTINCT `{cs}`) AS `d_{ci.replace('.', '_')}`"
@@ -1233,11 +1236,25 @@ class FKPredictor:
                 row = self.spark.sql(sample_sql).collect()[0]
                 total = max(row.total, 1)
                 for ci, cs in cols_list:
-                    col_stats[ci] = row[f"d_{ci.replace('.', '_')}"] / total
+                    result[ci] = row[f"d_{ci.replace('.', '_')}"] / total
             except Exception as e:
                 logger.debug("Cardinality query failed for table %s: %s", tbl, e)
                 for ci, _ in cols_list:
-                    col_stats[ci] = 0.5
+                    result[ci] = 0.5
+            return result
+
+        if self.config.federation_mode and len(unprofiled_by_table) > 1:
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            with ThreadPoolExecutor(max_workers=_FEDERATION_MAX_WORKERS) as pool:
+                futs = {
+                    pool.submit(_cardinality_for_table, tbl, cl): tbl
+                    for tbl, cl in unprofiled_by_table.items()
+                }
+                for f in as_completed(futs):
+                    col_stats.update(f.result())
+        else:
+            for tbl, cols_list in unprofiled_by_table.items():
+                col_stats.update(_cardinality_for_table(tbl, cols_list))
 
         if not col_stats:
             return candidates.withColumn("pk_uniqueness", F.lit(0.5)) \
@@ -1300,6 +1317,71 @@ class FKPredictor:
             self._table_samples[view_key] = view_name
         return self._table_samples[view_key]
 
+    def _batch_ensure_table_samples(self, pairs: list) -> None:
+        """Batch-create temp views grouped by table to minimize remote queries.
+
+        For federation_mode, groups (table, col_short) pairs by table and issues
+        one multi-column query per table instead of one per column. Results are
+        split into per-column temp views with the same schema _ensure_table_sample
+        produces (single ``val STRING`` column).
+
+        For Delta, delegates to _ensure_table_sample (TABLESAMPLE is local/fast).
+        """
+        if not self.config.federation_mode:
+            for tbl, col_short in pairs:
+                self._ensure_table_sample(tbl, col_short)
+            return
+
+        # Deduplicate and skip already-cached pairs
+        needed: dict[str, list[str]] = {}
+        for tbl, col_short in pairs:
+            if (tbl, col_short) not in self._table_samples:
+                needed.setdefault(tbl, []).append(col_short)
+
+        if not needed:
+            return
+
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        def _fetch_and_register(tbl: str, cols: list[str]):
+            selects = ", ".join(
+                f"CAST(`{c}` AS STRING) AS `{c}`" for c in cols
+            )
+            where = " OR ".join(f"`{c}` IS NOT NULL" for c in cols)
+            try:
+                df = self.spark.sql(
+                    f"SELECT {selects} FROM {tbl} "
+                    f"WHERE {where} LIMIT {_FEDERATION_SAMPLE_ROWS}"
+                )
+                df.cache()
+                df.count()
+                for c in cols:
+                    vn = f"_sample_{tbl.replace('.', '_')}_{c}"
+                    df.select(F.col(f"`{c}`").cast("string").alias("val")) \
+                      .filter(F.col("val").isNotNull()) \
+                      .createOrReplaceTempView(vn)
+                    with self._table_samples_lock:
+                        self._table_samples[(tbl, c)] = vn
+                df.unpersist()
+            except Exception:
+                for c in cols:
+                    vn = f"_sample_{tbl.replace('.', '_')}_{c}"
+                    self.spark.createDataFrame([], "val STRING") \
+                        .createOrReplaceTempView(vn)
+                    with self._table_samples_lock:
+                        self._table_samples[(tbl, c)] = vn
+
+        with ThreadPoolExecutor(max_workers=_FEDERATION_MAX_WORKERS) as pool:
+            futs = {
+                pool.submit(_fetch_and_register, tbl, cols): tbl
+                for tbl, cols in needed.items()
+            }
+            for f in as_completed(futs):
+                exc = f.exception()
+                if exc:
+                    logger.warning("_batch_ensure_table_samples failed for %s: %s",
+                                   futs[f], exc)
+
     def referential_integrity(self, candidates: DataFrame) -> DataFrame:
         """Batch RI check using UNION ALL to minimize round-trips."""
         ri_filter = F.col("rule_score") >= self.config.rule_score_min_for_ai
@@ -1312,10 +1394,12 @@ class FKPredictor:
             .collect()
         )
 
-        # Pre-create all needed table sample views (cached)
+        # Pre-create all needed table sample views (batched per table for federation)
+        pairs = []
         for row in rows:
-            self._ensure_table_sample(row.table_a, row.col_a.split(".")[-1])
-            self._ensure_table_sample(row.table_b, row.col_b.split(".")[-1])
+            pairs.append((row.table_a, row.col_a.split(".")[-1]))
+            pairs.append((row.table_b, row.col_b.split(".")[-1]))
+        self._batch_ensure_table_samples(pairs)
 
         # Build a single UNION ALL query for all RI checks
         fragments = []
@@ -1628,10 +1712,12 @@ class FKPredictor:
             .collect()
         )
 
-        # Pre-create all needed table sample views
+        # Pre-create all needed table sample views (batched per table for federation)
+        pairs = []
         for row in rows:
-            self._ensure_table_sample(row.table_a, row.col_a.split(".")[-1])
-            self._ensure_table_sample(row.table_b, row.col_b.split(".")[-1])
+            pairs.append((row.table_a, row.col_a.split(".")[-1]))
+            pairs.append((row.table_b, row.col_b.split(".")[-1]))
+        self._batch_ensure_table_samples(pairs)
 
         fragments = []
         for row in rows:
