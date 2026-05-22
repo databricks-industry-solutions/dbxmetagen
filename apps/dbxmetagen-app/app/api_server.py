@@ -942,6 +942,7 @@ _JOB_ENV_MAP = {
     "metadata_parallel_serverless": "METADATA_PARALLEL_SERVERLESS_JOB_ID",
     "kb_enriched_modes": "KB_ENRICHED_MODES_JOB_ID",
     "setup_mcp_servers": "SETUP_MCP_SERVERS_JOB_ID",
+    "build_vector_index": "BUILD_VECTOR_INDEX_JOB_ID",
 }
 
 _KNOWN_JOB_IDS: dict[str, int] = {}
@@ -12021,7 +12022,27 @@ def vector_search(req: VectorSearchRequest):
 
 @app.post("/api/vector/sync")
 def vector_sync():
-    """Trigger a sync of the metadata VS index."""
+    """Trigger an incremental rebuild of metadata_documents + VS index sync.
+
+    If the build_vector_index job is configured, triggers it on serverless
+    compute (incremental=true). Falls back to a bare sync_index() call when
+    the job ID is not available.
+    """
+    job_id = _KNOWN_JOB_IDS.get("build_vector_index")
+    if job_id:
+        try:
+            ws = _get_effective_client()
+            run = ws.jobs.run_now(
+                job_id=job_id,
+                job_parameters={"incremental": "true"},
+            )
+            with _job_list_lock:
+                _job_list_cache.clear()
+            return {"status": "job_triggered", "run_id": run.run_id}
+        except Exception as e:
+            logger.error("build_vector_index run_now failed: %s", e)
+            raise HTTPException(500, detail=f"Failed to trigger vector index build job: {e}")
+
     vs_index_name = f"{CATALOG}.{SCHEMA}.{VS_INDEX_SUFFIX}"
     try:
         ws = _get_effective_client()

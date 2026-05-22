@@ -60,6 +60,8 @@ env:
     valueFrom: kb_enriched_modes_job
   - name: SETUP_MCP_SERVERS_JOB_ID
     valueFrom: setup_mcp_servers_job
+  - name: BUILD_VECTOR_INDEX_JOB_ID
+    valueFrom: build_vector_index_job
   - name: VECTOR_SEARCH_ENDPOINT
     value: "__VS_ENDPOINT_NAME__"
   - name: VECTOR_SEARCH_INDEX
