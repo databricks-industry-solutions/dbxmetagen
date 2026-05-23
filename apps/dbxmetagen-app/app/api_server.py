@@ -5918,7 +5918,12 @@ def list_metric_views(status: Optional[str] = None):
     Defaults to status='created'. Pass status='all' to return every non-superseded
     metric view (latest version only), or a comma-separated list like
     'applied,validated,created'.
+
+    When the request includes 'applied', results are supplemented with metric
+    views discovered from information_schema (table_type='METRIC_VIEW') so that
+    MVs are visible even when metric_view_definitions is absent or stale.
     """
+    want_applied = status and "applied" in status.lower()
     _ensure_semantic_layer_tables()
     if status and status.lower() == "all":
         status_filter = "status != 'superseded'"
@@ -5927,6 +5932,9 @@ def list_metric_views(status: Optional[str] = None):
         status_filter = f"status IN ({vals})" if vals else "status = 'created'"
     else:
         status_filter = "status = 'created'"
+
+    # Primary source: definitions table (has richer metadata)
+    rows = []
     q = (
         f"SELECT definition_id, metric_view_name, source_table, status, "
         f"genie_space_id, created_at, deployed_catalog, deployed_schema "
@@ -5935,11 +5943,38 @@ def list_metric_views(status: Optional[str] = None):
         f"ORDER BY source_table, metric_view_name"
     )
     try:
-        return execute_sql(q)
+        rows = execute_sql(q)
     except HTTPException as e:
-        if e.status_code == 404:
-            return []
-        raise
+        if e.status_code != 404:
+            raise
+    except Exception:
+        pass
+
+    # Supplement with information_schema so MVs in UC are always discoverable
+    if want_applied:
+        known = {r["metric_view_name"] for r in rows if r.get("status") == "applied"}
+        try:
+            uc_rows = execute_sql(
+                "SELECT table_catalog, table_schema, table_name "
+                "FROM system.information_schema.tables "
+                "WHERE table_type = 'METRIC_VIEW' "
+                "ORDER BY table_catalog, table_schema, table_name"
+            )
+            for r in uc_rows:
+                if r["table_name"] not in known:
+                    rows.append({
+                        "definition_id": None,
+                        "metric_view_name": r["table_name"],
+                        "source_table": None,
+                        "status": "applied",
+                        "genie_space_id": None,
+                        "created_at": None,
+                        "deployed_catalog": r["table_catalog"],
+                        "deployed_schema": r["table_schema"],
+                    })
+        except Exception as e:
+            logger.warning("information_schema metric view discovery failed: %s", e)
+    return rows
 
 
 @app.post("/api/semantic-layer/projects")
@@ -7002,6 +7037,16 @@ _SQL_RESERVED = {
 }
 
 
+def _fix_bare_comparison(expr: str) -> str:
+    """Insert '' when a comparison operator has no RHS value (LLM omitted empty string literal)."""
+    return re.sub(
+        r"([!=<>]+)\s*(?=\s*[,)]|\s+(?:AND|OR|THEN|ELSE|END|WHEN)\b)",
+        r"\1 ''",
+        expr,
+        flags=re.IGNORECASE,
+    )
+
+
 def _fix_unquoted_literals(expr: str) -> str:
     """Quote bare words/phrases used as string literals in comparisons."""
 
@@ -7204,6 +7249,7 @@ def _autofix_expr(expr: str) -> str:
         return m.group(0)
     expr = re.sub(r"SUBSTR\(([^,]+),\s*1\s*,\s*(4|7)\)", _fix_substr_date, expr, flags=re.IGNORECASE)
 
+    expr = _fix_bare_comparison(expr)
     expr = _fix_none_literal(expr)
     expr = _fix_double_commas(expr)
     expr = _fix_position_bare_char(expr)

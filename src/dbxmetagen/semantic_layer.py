@@ -1680,6 +1680,16 @@ OUTPUT (one JSON object only, no array, no explanation):"""
         return expr
 
     @classmethod
+    def _fix_bare_comparison(cls, expr: str) -> str:
+        """Insert '' when a comparison operator has no RHS value (LLM omitted empty string literal)."""
+        return re.sub(
+            r"([!=<>]+)\s*(?=\s*[,)]|\s+(?:AND|OR|THEN|ELSE|END|WHEN)\b)",
+            r"\1 ''",
+            expr,
+            flags=re.IGNORECASE,
+        )
+
+    @classmethod
     def _fix_none_literal(cls, expr: str) -> str:
         """Replace Python None leaked into SQL with NULL."""
         return re.sub(r"\bNone\b", "NULL", expr)
@@ -1736,6 +1746,7 @@ OUTPUT (one JSON object only, no array, no explanation):"""
             return m.group(0)
         expr = re.sub(r"SUBSTR\(([^,]+),\s*1\s*,\s*(4|7)\)", _fix_substr_date, expr, flags=re.IGNORECASE)
 
+        expr = cls._fix_bare_comparison(expr)
         expr = cls._fix_none_literal(expr)
         expr = cls._fix_double_commas(expr)
         expr = cls._fix_position_bare_char(expr)
