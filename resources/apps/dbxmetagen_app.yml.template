@@ -64,6 +64,10 @@ resources:
           job:
             id: ${resources.jobs.metadata_kb_enriched_modes_job.id}
             permission: CAN_MANAGE_RUN
+        - name: import_comments_job
+          job:
+            id: ${resources.jobs.metadata_import_comments_job.id}
+            permission: CAN_MANAGE_RUN
         - name: semantic_layer_job
           job:
             id: ${resources.jobs.semantic_layer_job.id}

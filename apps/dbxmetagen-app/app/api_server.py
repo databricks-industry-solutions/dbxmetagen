@@ -941,6 +941,7 @@ _JOB_ENV_MAP = {
     "metadata_serverless": "METADATA_SERVERLESS_JOB_ID",
     "metadata_parallel_serverless": "METADATA_PARALLEL_SERVERLESS_JOB_ID",
     "kb_enriched_modes": "KB_ENRICHED_MODES_JOB_ID",
+    "import_comments": "IMPORT_COMMENTS_JOB_ID",
     "setup_mcp_servers": "SETUP_MCP_SERVERS_JOB_ID",
     "build_vector_index": "BUILD_VECTOR_INDEX_JOB_ID",
 }
