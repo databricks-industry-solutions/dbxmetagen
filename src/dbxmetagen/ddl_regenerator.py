@@ -104,7 +104,10 @@ def get_pii_tags_from_ddl(ddl: str, config: MetadataConfig) -> Tuple[str, str]:
         config, "pi_subclassification_tag_name", "data_subclassification"
     )
 
-    if "ALTER COLUMN" not in ddl:
+    if "SET TAG ON" in ddl.upper():
+        # SET TAG ON TABLE/COLUMN syntax (federation mode)
+        pattern = rf"SET TAG ON (?:TABLE|COLUMN) [^ ]+ {tag_class} = '([^']+)', {tag_subclass} = '([^']+)';"
+    elif "ALTER COLUMN" not in ddl:
         pattern = rf"ALTER TABLE [^ ]+ SET TAGS \('{tag_class}' = '([^']+)', '{tag_subclass}' = '([^']+)'\);"
     else:
         pattern = rf"ALTER TABLE [^ ]+ ALTER COLUMN [^ ]+ SET TAGS \('{tag_class}' = '([^']+)', '{tag_subclass}' = '([^']+)'\);"
@@ -191,7 +194,14 @@ def replace_pii_tags_in_ddl(
         config, "pi_subclassification_tag_name", "data_subclassification"
     )
 
-    if "ALTER COLUMN" not in ddl:
+    if "SET TAG ON" in ddl.upper():
+        # SET TAG ON TABLE/COLUMN syntax (federation mode)
+        ddl = re.sub(
+            rf"(SET TAG ON (?:TABLE|COLUMN) [^ ]+ {tag_class} = ')[^']+(', {tag_subclass} = ')[^']+(';\s*$)",
+            lambda m: f"{m.group(1)}{classification}{m.group(2)}{subclassification}{m.group(3)}",
+            ddl,
+        )
+    elif "ALTER COLUMN" not in ddl:
         ddl = re.sub(
             rf"(ALTER TABLE [^ ]+ SET TAGS \('{tag_class}' = ')[^']+(', '{tag_subclass}' = ')[^']+('\);)",
             lambda m: f"{m.group(1)}{classification}{m.group(2)}{subclassification}{m.group(3)}",

@@ -32,7 +32,15 @@ catalog_name = dbutils.widgets.get("catalog_name")
 schema_name = dbutils.widgets.get("schema_name")
 config_path = dbutils.widgets.get("config_path")
 federation_mode = dbutils.widgets.get("federation_mode").lower() == "true"
-apply_tags = dbutils.widgets.get("apply_ddl").lower() in ("true", "1", "yes") and not federation_mode
+try:
+    _apply_tags_raw = dbutils.widgets.get("apply_tags")
+except Exception:
+    _apply_tags_raw = ""
+apply_tags = (
+    _apply_tags_raw.lower() in ("true", "1", "yes")
+    if _apply_tags_raw
+    else dbutils.widgets.get("apply_ddl").lower() in ("true", "1", "yes")
+)
 _raw_bundle = dbutils.widgets.get("ontology_bundle")
 ontology_bundle = _raw_bundle.strip()
 incremental = dbutils.widgets.get("incremental").lower() == "true"
