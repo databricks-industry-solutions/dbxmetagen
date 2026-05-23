@@ -378,6 +378,79 @@ class ColumnKnowledgeBaseBuilder:
         logger.info("Bootstrap: merged %d column rows into %s", count, self.config.fully_qualified_target)
         return count
 
+    def log_bootstrap_to_generation_log(self, table_names: List[str]) -> int:
+        """Write existing UC column comments to metadata_generation_log.
+
+        Creates rows matching the schema that ``mode=comment`` would produce,
+        with ``metadata_type='comment'`` and ``ddl_type='column'``.
+        One row per column per table.
+        """
+        from dbxmetagen.processing import ensure_log_table
+
+        log_table = f"{self.config.catalog_name}.{self.config.schema_name}.metadata_generation_log"
+        ensure_log_table(self.spark, self.config.catalog_name, self.config.schema_name)
+
+        by_catalog_schema: Dict[str, List[str]] = {}
+        for fqtn in table_names:
+            parts = fqtn.split(".")
+            if len(parts) != 3:
+                continue
+            key = f"{parts[0]}.{parts[1]}"
+            by_catalog_schema.setdefault(key, []).append(parts[2])
+
+        all_dfs = []
+        for cs_key, short_names in by_catalog_schema.items():
+            cat, sch = cs_key.split(".", 1)
+            in_clause = ", ".join(f"'{t}'" for t in short_names)
+            try:
+                df = self.spark.sql(f"""
+                    SELECT
+                        'comment' AS metadata_type,
+                        CONCAT(table_catalog, '.', table_schema, '.', table_name) AS `table`,
+                        CAST(NULL AS STRING) AS tokenized_table,
+                        'column' AS ddl_type,
+                        column_name,
+                        current_timestamp() AS _created_at,
+                        COALESCE(comment, '') AS column_content,
+                        CAST(NULL AS STRING) AS classification,
+                        CAST(NULL AS STRING) AS type,
+                        CAST(NULL AS DOUBLE) AS confidence,
+                        CAST(NULL AS STRING) AS presidio_results,
+                        CAST(NULL AS STRING) AS domain,
+                        CAST(NULL AS STRING) AS subdomain,
+                        CAST(NULL AS STRING) AS recommended_domain,
+                        CAST(NULL AS STRING) AS recommended_subdomain,
+                        CAST(NULL AS STRING) AS reasoning,
+                        CAST(NULL AS STRING) AS metadata_summary,
+                        table_catalog AS catalog,
+                        table_schema AS `schema`,
+                        table_name,
+                        CAST(NULL AS STRING) AS ddl,
+                        CAST(NULL AS STRING) AS current_user,
+                        'import' AS model,
+                        CAST(NULL AS INT) AS sample_size,
+                        CAST(NULL AS INT) AS max_tokens,
+                        CAST(NULL AS DOUBLE) AS temperature,
+                        CAST(NULL AS INT) AS columns_per_call,
+                        'bootstrap_import' AS status
+                    FROM system.information_schema.columns
+                    WHERE table_catalog = '{cat}' AND table_schema = '{sch}'
+                      AND table_name IN ({in_clause})
+                """)
+                all_dfs.append(df)
+            except Exception as e:
+                logger.warning("log_bootstrap: could not query %s.information_schema.columns: %s", cat, e)
+
+        if not all_dfs:
+            return 0
+
+        from functools import reduce
+        combined = reduce(lambda a, b: a.union(b), all_dfs)
+        combined.write.mode("append").option("mergeSchema", "true").saveAsTable(log_table)
+        count = combined.count()
+        logger.info("log_bootstrap: wrote %d column-level rows to %s", count, log_table)
+        return count
+
 
 def build_column_knowledge_base(
     spark: SparkSession,

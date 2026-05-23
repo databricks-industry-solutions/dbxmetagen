@@ -62,6 +62,8 @@ resources:
           default: ${var.vs_endpoint_name}
         - name: comment_style
           default: "standard"
+        - name: populate_log
+          default: "true"
 
       tasks:
         # ------------------------------------------------------------------
@@ -78,6 +80,7 @@ resources:
               table_names: "{{job.parameters.table_names}}"
               catalog_name: "{{job.parameters.catalog_name}}"
               schema_name: "{{job.parameters.schema_name}}"
+              populate_log: "{{job.parameters.populate_log}}"
 
         # ------------------------------------------------------------------
         # Stage 1: Profiling, extended metadata, ontology (parallel, after bootstrap)
