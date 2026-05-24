@@ -928,7 +928,7 @@ def run_profiling(
         schema_name: Schema name for tables
         max_tables: Maximum tables to profile
         incremental: Only profile tables changed since last snapshot
-        federation_mode: Skip source table profiling for federated catalogs
+        federation_mode: Use pushdown-safe profiling for federated catalogs
         raise_on_error: If True (default), raise on any table failure.
             Set False for pipeline resilience (partial results).
         

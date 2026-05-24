@@ -33,7 +33,7 @@ print(f"Schema: {schema_name}")
 print(f"Max Tables: {max_tables}")
 print(f"Incremental: {incremental}")
 if federation_mode:
-    print(f"Federation mode: enabled (profiling will be skipped)")
+    print("Federation mode: enabled (using pushdown-safe profiling)")
 if table_names_raw:
     print(f"Table filter: {table_names_raw}")
 

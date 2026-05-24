@@ -5665,6 +5665,7 @@ def build_ontology(
     table_names: Optional[List[str]] = None,
     ontology_vs_index: str = "",
     vs_endpoint_name: str = "dbxmetagen-vs",
+    federation_mode: bool = False,
 ) -> Dict[str, Any]:
     """Convenience function to build the ontology.
 
@@ -5683,6 +5684,7 @@ def build_ontology(
         ontology_vs_index: Fully-qualified VS index name for ontology retrieval.
             When set, entity/edge classification uses HYBRID vector search.
         vs_endpoint_name: Vector Search endpoint name for ontology queries.
+        federation_mode: Use SET TAG ON syntax for federated (FOREIGN) tables.
     """
     config = OntologyConfig(
         catalog_name=catalog_name,
@@ -5694,6 +5696,7 @@ def build_ontology(
         table_names=table_names,
         ontology_vs_index=ontology_vs_index,
         vs_endpoint_name=vs_endpoint_name,
+        federation_mode=federation_mode,
     )
     builder = OntologyBuilder(spark, config, model_endpoint=model_endpoint)
     return builder.run(apply_tags=apply_tags)

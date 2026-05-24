@@ -106,6 +106,7 @@ result = build_ontology(
     table_names=table_names,
     ontology_vs_index=ontology_vs_index,
     vs_endpoint_name=endpoint_name,
+    federation_mode=federation_mode,
 )
 
 print(f"Ontology build complete:")
