@@ -45,6 +45,7 @@ dbutils.widgets.dropdown("skip_generation", "false", ["true", "false"], "Skip Da
 dbutils.widgets.dropdown("skip_pipeline", "false", ["true", "false"], "Skip Pipeline Run")
 dbutils.widgets.dropdown("skip_idempotency", "false", ["true", "false"], "Skip Idempotency Re-Run")
 dbutils.widgets.text("exclude_tables", "", "Exclude Tables (comma-sep short names, e.g. dim_index,fct_index_membership)")
+dbutils.widgets.dropdown("federation_mode", "false", ["true", "false"], "Federation Mode")
 dbutils.widgets.text("min_overall_score", "0.40", "Min Overall Score to Pass")
 dbutils.widgets.text("metagen_job_id", "", "Metadata Generator Job ID (from DAB)")
 dbutils.widgets.text("pipeline_job_id", "", "Full Analytics Pipeline Job ID (from DAB)")
@@ -61,6 +62,7 @@ skip_pipeline = dbutils.widgets.get("skip_pipeline").lower() == "true"
 skip_idempotency = dbutils.widgets.get("skip_idempotency").lower() == "true"
 exclude_tables_raw = dbutils.widgets.get("exclude_tables").strip()
 exclude_tables = {t.strip() for t in exclude_tables_raw.replace("|", ",").split(",") if t.strip()} if exclude_tables_raw else set()
+federation_mode = dbutils.widgets.get("federation_mode").lower() == "true"
 metagen_job_id = int(dbutils.widgets.get("metagen_job_id").strip())
 pipeline_job_id = int(dbutils.widgets.get("pipeline_job_id").strip())
 
@@ -781,6 +783,7 @@ if not skip_pipeline:
         "mode": "comment",
         "model": model_endpoint,
         "apply_ddl": "false",
+        "federation_mode": str(federation_mode).lower(),
         "sample_size": "5",
     }, "comment generation")
 
@@ -794,6 +797,7 @@ if not skip_pipeline:
         "mode": "pi",
         "model": model_endpoint,
         "apply_ddl": "false",
+        "federation_mode": str(federation_mode).lower(),
     }, "PI identification")
 
 # COMMAND ----------
@@ -806,6 +810,7 @@ if not skip_pipeline:
         "mode": "domain",
         "model": model_endpoint,
         "apply_ddl": "false",
+        "federation_mode": str(federation_mode).lower(),
     }, "domain classification")
 
 # COMMAND ----------
@@ -828,6 +833,7 @@ if not skip_pipeline:
         "model": model_endpoint,
         "incremental": "true",
         "apply_ddl": "false",
+        "federation_mode": str(federation_mode).lower(),
     }, "full analytics pipeline")
 
 # COMMAND ----------
@@ -1347,6 +1353,7 @@ if not skip_pipeline and not skip_idempotency:
         "mode": "comment",
         "model": model_endpoint,
         "apply_ddl": "false",
+        "federation_mode": str(federation_mode).lower(),
         "sample_size": "5",
         "incremental": "true",
     }, "idempotency: comment re-run")
@@ -1358,6 +1365,7 @@ if not skip_pipeline and not skip_idempotency:
         "mode": "pi",
         "model": model_endpoint,
         "apply_ddl": "false",
+        "federation_mode": str(federation_mode).lower(),
         "incremental": "true",
     }, "idempotency: PI re-run")
 
@@ -1368,6 +1376,7 @@ if not skip_pipeline and not skip_idempotency:
         "mode": "domain",
         "model": model_endpoint,
         "apply_ddl": "false",
+        "federation_mode": str(federation_mode).lower(),
         "incremental": "true",
     }, "idempotency: domain re-run")
 
@@ -1379,6 +1388,7 @@ if not skip_pipeline and not skip_idempotency:
         "model": model_endpoint,
         "incremental": "true",
         "apply_ddl": "false",
+        "federation_mode": str(federation_mode).lower(),
     }, "idempotency: analytics pipeline re-run")
 elif skip_idempotency:
     print("Skipping idempotency test (skip_idempotency=true)")

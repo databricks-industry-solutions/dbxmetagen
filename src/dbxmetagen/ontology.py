@@ -563,6 +563,7 @@ class OntologyConfig:
     ontology_vs_index: str = ""
     # VS endpoint name for ontology vector queries
     vs_endpoint_name: str = "dbxmetagen-vs"
+    federation_mode: bool = False
 
     @property
     def fully_qualified_entities(self) -> str:

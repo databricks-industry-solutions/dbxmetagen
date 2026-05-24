@@ -36,6 +36,8 @@ resources:
           default: "false"
         - name: exclude_tables
           default: ""
+        - name: federation_mode
+          default: "false"
         - name: min_overall_score
           default: "0.40"
         - name: metagen_job_id
@@ -62,6 +64,7 @@ resources:
               skip_pipeline: "{{job.parameters.skip_pipeline}}"
               skip_idempotency: "{{job.parameters.skip_idempotency}}"
               exclude_tables: "{{job.parameters.exclude_tables}}"
+              federation_mode: "{{job.parameters.federation_mode}}"
               min_overall_score: "{{job.parameters.min_overall_score}}"
               metagen_job_id: "{{job.parameters.metagen_job_id}}"
               pipeline_job_id: "{{job.parameters.pipeline_job_id}}"

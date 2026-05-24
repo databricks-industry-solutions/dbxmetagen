@@ -302,21 +302,19 @@ class ProfilingBuilder:
     def profile_table(
         self, table_name: str, federation_mode: bool = False,
         drift_baselines: Optional[Dict[str, Dict[str, int]]] = None
-    ) -> Optional[Dict[str, Any]]:
+    ) -> Dict[str, Any]:
         """Generate profiling snapshot for a single table.
 
         Routes to _profile_table_delta (single-pass with APPROX_COUNT_DISTINCT,
         PERCENTILE_APPROX, mode/frequency) or _profile_table_federated
         (pushdown-safe aggregates only).
+
+        Raises on failure so callers get actionable error messages.
         """
-        try:
-            baselines = drift_baselines or {}
-            if federation_mode:
-                return self._profile_table_federated(table_name, baselines)
-            return self._profile_table_delta(table_name, baselines)
-        except Exception as e:
-            logger.warning(f"Could not profile table {table_name}: {e}")
-            return None
+        baselines = drift_baselines or {}
+        if federation_mode:
+            return self._profile_table_federated(table_name, baselines)
+        return self._profile_table_delta(table_name, baselines)
 
     # ------------------------------------------------------------------
     # Delta path: single-pass SQL with full stats
@@ -480,8 +478,8 @@ class ProfilingBuilder:
                 rec["pattern_detected"] = self._detect_pattern(sample_map.get(c, []))
 
             if is_date:
-                rec["min_value"] = str(row.get(f"{c}__dt_min") or "")
-                rec["max_value"] = str(row.get(f"{c}__dt_max") or "")
+                rec["min_value"] = str(row[f"{c}__dt_min"] or "")
+                rec["max_value"] = str(row[f"{c}__dt_max"] or "")
                 rec["pattern_detected"] = "datetime"
 
             if is_bool:
@@ -532,7 +530,10 @@ class ProfilingBuilder:
             elif isinstance(f.dataType, SparkStringType):
                 string_cols.append(f.name)
 
-        # Single pushdown-safe SQL (COUNT, MIN, MAX, AVG, STDDEV_SAMP all push down)
+        # Guaranteed-pushdown aggregates only: bare-column COUNT/MIN/MAX/AVG.
+        # STDDEV_SAMP and AGG(EXPR(col)) like MIN(LENGTH(col)) are NOT guaranteed
+        # to push down across all LF connectors. Those stats are derived from
+        # the LIMIT-based sample pull below instead.
         agg_parts = ["COUNT(*) AS `_row_count`"]
         for c in columns:
             qc = f"`{c}`"
@@ -543,13 +544,6 @@ class ProfilingBuilder:
         for c in numeric_cols:
             qc = f"`{c}`"
             agg_parts.append(f"AVG({qc}) AS `{c}__mean`")
-            agg_parts.append(f"STDDEV_SAMP({qc}) AS `{c}__stddev`")
-
-        for c in string_cols:
-            qc = f"`{c}`"
-            agg_parts.append(f"MIN(LENGTH({qc})) AS `{c}__min_len`")
-            agg_parts.append(f"MAX(LENGTH({qc})) AS `{c}__max_len`")
-            agg_parts.append(f"AVG(LENGTH({qc})) AS `{c}__avg_len`")
 
         sql = f"SELECT {', '.join(agg_parts)} FROM {table_name}"
         row = self.spark.sql(sql).collect()[0]
@@ -613,18 +607,27 @@ class ProfilingBuilder:
             }
 
             if is_numeric:
-                mean_v = row.get(f"{c}__mean")
-                stddev_v = row.get(f"{c}__stddev")
+                mean_v = row[f"{c}__mean"]
                 rec["mean_value"] = float(mean_v) if mean_v is not None else 0.0
-                rec["stddev_value"] = float(stddev_v) if stddev_v is not None else 0.0
+                samples = sample_map.get(c, [])
+                nums = []
+                for s in samples:
+                    try:
+                        nums.append(float(s))
+                    except (ValueError, TypeError):
+                        pass
+                if len(nums) > 1:
+                    m = sum(nums) / len(nums)
+                    var = sum((x - m) ** 2 for x in nums) / (len(nums) - 1)
+                    rec["stddev_value"] = var ** 0.5
 
             if is_string:
-                ml = row.get(f"{c}__min_len")
-                rec["min_length"] = int(ml) if ml is not None else 0
-                xl = row.get(f"{c}__max_len")
-                rec["max_length"] = int(xl) if xl is not None else 0
-                al = row.get(f"{c}__avg_len")
-                rec["avg_length"] = float(al) if al is not None else 0.0
+                samples = sample_map.get(c, [])
+                if samples:
+                    lengths = [len(s) for s in samples]
+                    rec["min_length"] = min(lengths)
+                    rec["max_length"] = max(lengths)
+                    rec["avg_length"] = sum(lengths) / len(lengths)
 
             column_stats_summary[c] = f"dist:0,null:{null_rate:.2f}"
             column_stat_records.append(rec)
@@ -830,8 +833,13 @@ class ProfilingBuilder:
                 logger.warning("Dedup DELETE failed for column_stats, proceeding with append: %s", e)
             stats_df.write.mode("append").option("mergeSchema", "true").saveAsTable(self.config.fully_qualified_column_stats)
     
-    def run(self, max_tables: int = None, federation_mode: bool = False) -> Dict[str, Any]:
-        """Execute the profiling pipeline with cross-table parallelism."""
+    def run(self, max_tables: int = None, federation_mode: bool = False, raise_on_error: bool = True) -> Dict[str, Any]:
+        """Execute the profiling pipeline with cross-table parallelism.
+
+        Args:
+            raise_on_error: If True (default), raise RuntimeError when any table
+                fails to profile. Set False for pipeline resilience (partial results).
+        """
         from concurrent.futures import ThreadPoolExecutor, as_completed
 
         logger.info("Starting profiling pipeline")
@@ -854,11 +862,11 @@ class ProfilingBuilder:
 
         logger.info(f"Profiling {len(tables)} tables (federation_mode={federation_mode})")
 
-        # Load all drift baselines in one query upfront
         drift_baselines = self._load_all_drift_baselines(tables)
 
         successful = 0
         failed = 0
+        errors: list[str] = []
         max_workers = min(4 if federation_mode else 8, len(tables))
 
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
@@ -870,13 +878,11 @@ class ProfilingBuilder:
                 tbl = futures[future]
                 try:
                     snapshot = future.result()
-                    if snapshot:
-                        self.write_snapshot(snapshot)
-                        successful += 1
-                    else:
-                        failed += 1
+                    self.write_snapshot(snapshot)
+                    successful += 1
                 except Exception as e:
-                    logger.warning(f"Profiling failed for {tbl}: {e}")
+                    logger.error(f"Profiling failed for {tbl}: {e}")
+                    errors.append(f"{tbl}: {e}")
                     failed += 1
 
         logger.info(
@@ -885,6 +891,12 @@ class ProfilingBuilder:
             f"({self._stats['numeric_cols']} numeric, {self._stats['string_cols']} string, "
             f"{self._stats['other_cols']} other)"
         )
+
+        if failed > 0 and raise_on_error:
+            raise RuntimeError(
+                f"Profiling failed for {failed}/{len(tables)} tables:\n" +
+                "\n".join(f"  - {e}" for e in errors)
+            )
 
         return {
             "tables_profiled": successful,
@@ -905,6 +917,7 @@ def run_profiling(
     incremental: bool = True,
     table_names: list[str] | None = None,
     federation_mode: bool = False,
+    raise_on_error: bool = True,
 ) -> Dict[str, Any]:
     """
     Convenience function to run profiling.
@@ -916,6 +929,8 @@ def run_profiling(
         max_tables: Maximum tables to profile
         incremental: Only profile tables changed since last snapshot
         federation_mode: Skip source table profiling for federated catalogs
+        raise_on_error: If True (default), raise on any table failure.
+            Set False for pipeline resilience (partial results).
         
     Returns:
         Dict with execution statistics
@@ -930,4 +945,4 @@ def run_profiling(
         table_names=table_names,
     )
     builder = ProfilingBuilder(spark, config)
-    return builder.run(max_tables, federation_mode=federation_mode)
+    return builder.run(max_tables, federation_mode=federation_mode, raise_on_error=raise_on_error)

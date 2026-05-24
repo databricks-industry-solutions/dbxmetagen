@@ -350,10 +350,9 @@ class TestFederatedSinglePass:
             "_row_count": row_count,
             "patient_id__non_null": 5000,
             "patient_id__min": "1", "patient_id__max": "5000",
-            "patient_id__mean": 2500.0, "patient_id__stddev": 1443.0,
+            "patient_id__mean": 2500.0,
             "diagnosis__non_null": 4800,
             "diagnosis__min": "A01", "diagnosis__max": "Z99",
-            "diagnosis__min_len": 3, "diagnosis__max_len": 10, "diagnosis__avg_len": 5.2,
         }
         agg_row = MagicMock()
         agg_row.__getitem__ = lambda self, k: agg_data.get(k)
@@ -408,8 +407,8 @@ class TestFederatedSinglePass:
         assert not any("GROUP BY" in s for s in all_sqls)
 
     @_patch_types
-    def test_federated_uses_pushdown_safe_aggregates(self, builder, mock_spark):
-        """Federated path should use COUNT, MIN, MAX, AVG, STDDEV_SAMP."""
+    def test_federated_uses_only_guaranteed_pushdown_aggregates(self, builder, mock_spark):
+        """Federated path should only use bare-column COUNT, MIN, MAX, AVG."""
         self._setup_federated_responses(mock_spark)
 
         builder._profile_table_federated("fed_cat.fed_sch.patients")
@@ -420,7 +419,9 @@ class TestFederatedSinglePass:
         assert "MIN(" in first_sql
         assert "MAX(" in first_sql
         assert "AVG(" in first_sql
-        assert "STDDEV_SAMP(" in first_sql
+        # These must NOT be in the pushed SQL (not guaranteed pushdown)
+        assert "STDDEV_SAMP(" not in first_sql
+        assert "LENGTH(" not in first_sql
 
     @_patch_types
     def test_federated_computes_null_from_subtraction(self, builder, mock_spark):
@@ -476,10 +477,10 @@ class TestProfileTableDispatch:
             m.assert_called_once_with("t", {})
             assert result == {"fed": True}
 
-    def test_dispatch_returns_none_on_error(self, builder):
+    def test_dispatch_raises_on_error(self, builder):
         with patch.object(builder, "_profile_table_delta", side_effect=RuntimeError("boom")):
-            result = builder.profile_table("t")
-            assert result is None
+            with pytest.raises(RuntimeError, match="boom"):
+                builder.profile_table("t")
 
 
 class TestParallelExecution:
@@ -533,16 +534,40 @@ class TestParallelExecution:
     @patch('dbxmetagen.profiling.ProfilingBuilder.get_tables_to_profile')
     @patch('dbxmetagen.profiling.ProfilingBuilder.create_column_stats_table')
     @patch('dbxmetagen.profiling.ProfilingBuilder.create_snapshots_table')
-    def test_run_handles_failures(self, mock_create_snap, mock_create_col,
-                                  mock_get_tables, mock_load_drift, mock_profile, mock_write):
+    def test_run_raises_on_failures(self, mock_create_snap, mock_create_col,
+                                    mock_get_tables, mock_load_drift, mock_profile, mock_write):
         mock_get_tables.return_value = ["t1", "t2"]
         mock_load_drift.return_value = {}
-        mock_profile.side_effect = [{"snapshot_id": "x", "table_name": "t1", "column_stat_records": []}, None]
+        mock_profile.side_effect = [
+            {"snapshot_id": "x", "table_name": "t1", "column_stat_records": []},
+            RuntimeError("t2 broke"),
+        ]
 
         spark = MagicMock()
         config = ProfilingConfig(catalog_name="c", schema_name="s")
         builder = ProfilingBuilder(spark, config)
-        result = builder.run()
+        with pytest.raises(RuntimeError, match="1/2 tables"):
+            builder.run()
+
+    @patch('dbxmetagen.profiling.ProfilingBuilder.write_snapshot')
+    @patch('dbxmetagen.profiling.ProfilingBuilder.profile_table')
+    @patch('dbxmetagen.profiling.ProfilingBuilder._load_all_drift_baselines')
+    @patch('dbxmetagen.profiling.ProfilingBuilder.get_tables_to_profile')
+    @patch('dbxmetagen.profiling.ProfilingBuilder.create_column_stats_table')
+    @patch('dbxmetagen.profiling.ProfilingBuilder.create_snapshots_table')
+    def test_run_tolerates_failures_when_raise_off(self, mock_create_snap, mock_create_col,
+                                                   mock_get_tables, mock_load_drift, mock_profile, mock_write):
+        mock_get_tables.return_value = ["t1", "t2"]
+        mock_load_drift.return_value = {}
+        mock_profile.side_effect = [
+            {"snapshot_id": "x", "table_name": "t1", "column_stat_records": []},
+            RuntimeError("t2 broke"),
+        ]
+
+        spark = MagicMock()
+        config = ProfilingConfig(catalog_name="c", schema_name="s")
+        builder = ProfilingBuilder(spark, config)
+        result = builder.run(raise_on_error=False)
 
         assert result["tables_profiled"] == 1
         assert result["tables_failed"] == 1
@@ -589,7 +614,7 @@ class TestRunProfiling:
         mock_builder_class.return_value = mock_builder
 
         run_profiling(MagicMock(), "cat", "sch", max_tables=10)
-        mock_builder.run.assert_called_once_with(10, federation_mode=False)
+        mock_builder.run.assert_called_once_with(10, federation_mode=False, raise_on_error=True)
 
     @patch('dbxmetagen.profiling.ProfilingBuilder')
     def test_returns_run_result(self, mock_builder_class):
