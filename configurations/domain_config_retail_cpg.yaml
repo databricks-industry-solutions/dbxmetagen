@@ -1,0 +1,376 @@
+# Retail & CPG domain taxonomy.
+# Use as a standalone domain config when pairing with imported OWL/TTL ontologies.
+version: "1.1"
+mutually_exclusive: false
+domains:
+  merchandising:
+    name: Merchandising
+    description: Product assortment, pricing, planograms, and category management
+    keywords:
+    - product
+    - assortment
+    - planogram
+    - price
+    - category
+    - merchandise
+    subdomains:
+      assortment:
+        name: Assortment Planning
+        description: Product assortment selection, planogram design, and space allocation
+        keywords:
+        - assortment
+        - planogram
+        - allocation
+        - space
+      pricing:
+        name: Pricing
+        description: Price optimization, markdowns, competitive pricing, and MSRP management
+        keywords:
+        - price
+        - markdown
+        - optimization
+        - competitive
+        - msrp
+      category_management:
+        name: Category Management
+        description: Category performance reviews, department hierarchies, and captain programs
+        keywords:
+        - category
+        - department
+        - hierarchy
+        - captain
+        - review
+  ecommerce:
+    name: E-Commerce
+    description: Online shopping, digital storefront, cart, and checkout
+    keywords:
+    - ecommerce
+    - online
+    - cart
+    - checkout
+    - digital
+    - website
+    - app
+    subdomains:
+      storefront:
+        name: Storefront
+        description: Product catalog, search, browse experience, and recommendations
+        keywords:
+        - catalog
+        - search
+        - browse
+        - recommendation
+        - pdp
+      checkout:
+        name: Cart & Checkout
+        description: Shopping cart, checkout flow, payment processing, and order confirmation
+        keywords:
+        - cart
+        - checkout
+        - payment
+        - order
+        - confirmation
+      digital_experience:
+        name: Digital Experience
+        description: Clickstream analytics, session tracking, conversion rates, and bounce analysis
+        keywords:
+        - click
+        - session
+        - pageview
+        - conversion
+        - bounce
+  store_operations:
+    name: Store Operations
+    description: Physical store management, POS, staffing, and facilities
+    keywords:
+    - store
+    - pos
+    - register
+    - floor
+    - staff
+    subdomains:
+      pos:
+        name: Point of Sale
+        description: Register transactions, tender types, receipt generation, and barcode scanning
+        keywords:
+        - pos
+        - register
+        - tender
+        - receipt
+        - scan
+      store_mgmt:
+        name: Store Management
+        description: Floor planning, fixture management, planogram compliance, and facility maintenance
+        keywords:
+        - store
+        - floor
+        - planogram
+        - fixture
+        - maintenance
+  supply_chain:
+    name: Supply Chain
+    description: Procurement, logistics, warehousing, and distribution
+    keywords:
+    - supply_chain
+    - procurement
+    - logistics
+    - warehouse
+    - distribution
+    subdomains:
+      procurement:
+        name: Procurement
+        description: Vendor management, purchase orders, supplier sourcing, and contract negotiation
+        keywords:
+        - procurement
+        - vendor
+        - purchase_order
+        - supplier
+        - sourcing
+      warehousing:
+        name: Warehousing
+        description: Distribution center operations, pick/pack/ship, putaway, and WMS
+        keywords:
+        - warehouse
+        - dc
+        - pick
+        - pack
+        - putaway
+        - wms
+      distribution:
+        name: Distribution
+        description: Shipping logistics, carrier management, route optimization, and last-mile delivery
+        keywords:
+        - distribution
+        - shipping
+        - carrier
+        - route
+        - delivery
+  customer_engagement:
+    name: Customer Engagement
+    description: Loyalty programs, personalization, and customer analytics
+    keywords:
+    - loyalty
+    - engagement
+    - personalization
+    - segment
+    - retention
+    subdomains:
+      loyalty:
+        name: Loyalty
+        description: Points programs, reward tiers, and redemption tracking
+        keywords:
+        - loyalty
+        - points
+        - reward
+        - tier
+        - redemption
+      personalization:
+        name: Personalization
+        description: Product recommendations, preference profiling, and targeted experiences
+        keywords:
+        - personalization
+        - recommendation
+        - preference
+        - profile
+  marketing:
+    name: Marketing
+    description: Campaigns, promotions, advertising, and media spend
+    keywords:
+    - marketing
+    - campaign
+    - promotion
+    - advertising
+    - media
+    subdomains:
+      campaigns:
+        name: Campaigns
+        description: Email, SMS, push notifications, and marketing attribution
+        keywords:
+        - campaign
+        - email
+        - sms
+        - push
+        - attribution
+      promotions:
+        name: Promotions
+        description: Coupons, discounts, BOGO deals, and promotional offers
+        keywords:
+        - promotion
+        - coupon
+        - discount
+        - deal
+        - bogo
+      advertising:
+        name: Advertising
+        description: Ad spend, impressions, click-through rates, and return on ad spend
+        keywords:
+        - advertising
+        - ad
+        - media
+        - impression
+        - click
+        - roas
+  finance:
+    name: Finance
+    description: Revenue, accounting, and financial operations
+    keywords:
+    - revenue
+    - billing
+    - ledger
+    - payment
+    - accounting
+    subdomains:
+      accounting:
+        name: Accounting
+        description: General ledger, journal entries, accounts payable/receivable
+        keywords:
+        - ledger
+        - journal
+        - gl
+        - ap
+        - ar
+      revenue:
+        name: Revenue Management
+        description: Revenue analysis, margin tracking, shrink reduction, and loss prevention
+        keywords:
+        - revenue
+        - margin
+        - shrink
+        - loss_prevention
+  operations:
+    name: Operations
+    description: Inventory management, replenishment, and forecasting
+    keywords:
+    - inventory
+    - replenishment
+    - forecast
+    - demand
+    subdomains:
+      inventory:
+        name: Inventory Management
+        description: Stock levels, on-hand quantities, safety stock, and cycle counting
+        keywords:
+        - inventory
+        - stock
+        - on_hand
+        - safety_stock
+        - cycle_count
+      demand:
+        name: Demand Planning
+        description: Demand forecasting, seasonality modeling, and replenishment planning
+        keywords:
+        - demand
+        - forecast
+        - planning
+        - seasonality
+  workforce:
+    name: Workforce
+    description: Store associates, scheduling, and HR
+    keywords:
+    - employee
+    - associate
+    - schedule
+    - payroll
+    - hr
+    subdomains:
+      scheduling:
+        name: Scheduling
+        description: Shift scheduling, labor availability, and workforce allocation
+        keywords:
+        - schedule
+        - shift
+        - availability
+        - labor
+      hr:
+        name: HR
+        description: Payroll processing, recruitment, training, and performance management
+        keywords:
+        - payroll
+        - recruitment
+        - training
+        - performance
+  customer:
+    name: Customer
+    description: CRM, customer service, and voice of customer
+    keywords:
+    - customer
+    - service
+    - support
+    - review
+    - feedback
+    subdomains:
+      service:
+        name: Customer Service
+        description: Support tickets, case management, call center operations, and resolution tracking
+        keywords:
+        - ticket
+        - case
+        - support
+        - resolution
+        - call_center
+      voice:
+        name: Voice of Customer
+        description: Product reviews, star ratings, feedback surveys, and NPS
+        keywords:
+        - review
+        - rating
+        - feedback
+        - nps
+        - survey
+  technology:
+    name: Technology
+    description: IT, e-commerce platform, and data infrastructure
+    keywords:
+    - server
+    - security
+    - log
+    - monitoring
+    - infrastructure
+    subdomains:
+      platform:
+        name: Platform
+        description: APIs, integrations, microservices, and platform infrastructure
+        keywords:
+        - platform
+        - api
+        - integration
+        - microservice
+      monitoring:
+        name: Monitoring
+        description: System logs, alerts, uptime tracking, and incident management
+        keywords:
+        - monitoring
+        - alert
+        - log
+        - uptime
+        - incident
+  governance:
+    name: Governance
+    description: Legal, compliance, data governance, and privacy
+    keywords:
+    - compliance
+    - contract
+    - governance
+    - policy
+    - regulation
+    - gdpr
+    - ccpa
+    subdomains:
+      data_governance:
+        name: Data Governance
+        description: Data quality, lineage, metadata management, and catalog policies
+        keywords:
+        - data_lineage
+        - data_catalog
+        - data_governance
+        - data_steward
+        - retention_policy
+      privacy:
+        name: Privacy & Compliance
+        description: GDPR, CCPA, consent management, and PII handling
+        keywords:
+        - privacy
+        - gdpr
+        - ccpa
+        - consent
+        - pii

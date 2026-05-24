@@ -1,241 +1,204 @@
-# Manual Deployment Guide
+# Manual Deployment Guide (Workspace UI)
 
-Step-by-step instructions for deploying dbxmetagen when you can only use
-`databricks bundle deploy` (e.g. from a CI/CD pipeline or a locked-down
-workstation). Every action that `deploy.sh` performs is broken out below
-as an explicit command you can run yourself.
-
-> **No CLI at all?** If you cannot run the Databricks CLI or any local
-> tooling, see `notebook_deployment_pipeline/README.md` for a fully
-> notebook-based deployment using the Python SDK.
+Deploy dbxmetagen entirely from within the Databricks workspace using
+Git Folders and the built-in Deploy button. No local CLI, `uv`, or
+shell scripting required.
 
 ---
 
 ## 1. Prerequisites
 
-| Tool | Minimum version | Purpose |
-|------|----------------|---------|
-| Databricks CLI | >= 0.283.0 | Bundle deploy, app management |
-| `uv` | any | Build wheel locally (skip if downloading from releases) |
-| `sed` | any | Tokenize template files (or edit by hand) |
-
-You also need:
-
-- A Databricks workspace with Unity Catalog enabled
+- A Databricks workspace with **Unity Catalog** enabled
 - A catalog you own or have `CREATE SCHEMA` on
-- A SQL warehouse ID
-- A personal access token (PAT) or OAuth configured for the CLI
+- A SQL warehouse ID (find in SQL Warehouses page)
+- Git integration configured (Settings > Developer > Git integration)
+- Access to the dbxmetagen GitHub repository
 
 ---
 
-## 2. Initial Setup
+## 2. Clone the Repo into a Git Folder
 
-```bash
-# Clone the repository
-git clone <repo-url> dbxmetagen && cd dbxmetagen
+1. In the workspace sidebar, click **Workspace**
+2. Navigate to your user folder
+3. Click **Create > Git Folder**
+4. Paste the repository URL and click **Create Git Folder**
 
-# Create your environment file from the template
-cp example.env dev.env
-```
-
-Edit `dev.env` and fill in every value:
-
-| Variable | Required | Example |
-|----------|----------|---------|
-| `DATABRICKS_HOST` | Yes | `https://my-workspace.cloud.databricks.com` |
-| `catalog_name` | Yes | `my_catalog` |
-| `schema_name` | Yes | `metadata_results` |
-| `warehouse_id` | Yes | `abc123def456` |
-| `node_type` | No | `Standard_D8s_v3` (Azure), `n2-standard-8` (GCP) |
-| `permission_groups` | No | `data_analysts,data_scientists` |
-| `permission_users` | No | `user1@company.com,user2@company.com` |
-
-Load the variables into your shell:
-
-```bash
-set -a && source dev.env && set +a
-```
-
-Authenticate the CLI and confirm it works:
-
-```bash
-databricks configure --profile MYPROFILE
-databricks current-user me --profile MYPROFILE
-```
+Your repo is now at `/Workspace/Users/<you>/dbxmetagen`.
 
 ---
 
-## 3. Generate Configuration Files
+## 3. Create `databricks.yml` from Template
 
-Three template files need placeholder replacement. For each one you can
-use the `sed` command shown, or open the file and find-and-replace by hand.
+Open `databricks.yml.template` in the workspace file editor. Duplicate
+the file (right-click > Clone) or copy its contents into a new file
+named `databricks.yml` in the same directory.
 
-### 3a. `databricks.yml`
+Replace these placeholders with your values:
 
-```bash
-sed -e "s|__DATABRICKS_HOST__|${DATABRICKS_HOST}|g" \
-    -e "s|__CATALOG_NAME__|${catalog_name}|g" \
-    -e "s|__SCHEMA_NAME__|${schema_name}|g" \
-    -e "s|__WAREHOUSE_ID__|${warehouse_id}|g" \
-    databricks.yml.template > databricks.yml
+| Placeholder | Replace with | Example |
+|-------------|-------------|---------|
+| `__DATABRICKS_HOST__` | Your workspace URL | `https://my-workspace.cloud.databricks.com` |
+| `__CATALOG_NAME__` | Target catalog | `my_catalog` |
+| `__SCHEMA_NAME__` | Target schema | `metadata_results` |
+| `__WAREHOUSE_ID__` | SQL warehouse ID | `abc123def456` |
+| `__VS_ENDPOINT_NAME__` | Vector Search endpoint name | `dbxmetagen-vs` |
+
+Also handle the `__RUN_AS__` lines:
+
+- **No service principal (typical):** Delete every line containing `__RUN_AS__`
+- **With service principal:** Replace each `__RUN_AS__` with:
+
+```yaml
+    run_as:
+      service_principal_name: "your-spn-uuid"
 ```
 
-**Manual alternative:** Copy `databricks.yml.template` to `databricks.yml`
-and replace the four `__PLACEHOLDER__` tokens with your values.
+Save the file.
 
-### 3b. `app.yaml`
+---
 
-```bash
-sed -e "s|__CATALOG_NAME__|${catalog_name}|g" \
-    -e "s|__SCHEMA_NAME__|${schema_name}|g" \
-    -e "s|__ENABLE_OBO__|${enable_obo:-false}|g" \
-    apps/dbxmetagen-app/app/app.yaml.template \
-    > apps/dbxmetagen-app/app/app.yaml
+## 4. Create `app.yaml` from Template
+
+Open `apps/dbxmetagen-app/app/app.yaml.template`. Create a copy named
+`app.yaml` in the same directory (`apps/dbxmetagen-app/app/app.yaml`).
+
+Replace these placeholders:
+
+| Placeholder | Replace with |
+|-------------|-------------|
+| `__CATALOG_NAME__` | Your catalog name |
+| `__SCHEMA_NAME__` | Your schema name |
+| `__ENABLE_OBO__` | `false` (or `true` if workspace admin enabled On-Behalf-Of auth) |
+| `__VS_ENDPOINT_NAME__` | `dbxmetagen-vs` (or your custom endpoint name) |
+| `__APP_DISPLAY_NAME__` | A display name, or leave empty |
+
+Save the file.
+
+---
+
+## 5. Create `dbxmetagen_app.yml` from Template
+
+Open `resources/apps/dbxmetagen_app.yml.template`. Create a copy named
+`dbxmetagen_app.yml` in the same directory
+(`resources/apps/dbxmetagen_app.yml`).
+
+Replace these placeholders:
+
+- **`__USER_API_SCOPES__`** -- Delete this line entirely (unless OBO is
+  enabled, in which case replace with):
+
+```yaml
+      user_api_scopes:
+        - "files.files"
+        - "sql.statement-execution"
+        - "dashboards.genie"
 ```
 
-### 3c. `dbxmetagen_app.yml` (app resource definition)
-
-```bash
-sed 's|__APP_PERMISSIONS__||' \
-    resources/apps/dbxmetagen_app.yml.template \
-    > resources/apps/dbxmetagen_app.yml
-```
-
-This creates the file with **no extra permissions** (only the deploying
-user gets CAN_MANAGE via the top-level bundle permissions).
-
-To add group/user access, replace `__APP_PERMISSIONS__` with a permissions
-block instead. Example with a group:
+- **`__APP_PERMISSIONS__`** -- Delete this line entirely (only the
+  deploying user gets access). To grant access to others, replace with:
 
 ```yaml
       permissions:
-        - group_name: "data_analysts"
+        - group_name: "your_group"
           level: CAN_USE
 ```
 
+Save the file.
+
 ---
 
-## 4. Stage the App Wheel and Configurations
+## 6. Stage the App Wheel and Configurations
 
-**How the two wheels work:** `databricks.yml` declares an `artifacts`
-block that automatically runs `uv build` during `bundle deploy`. That
-wheel is used by **job clusters**. The **app**, however, installs its
-own copy from `requirements.txt` (which references `./dbxmetagen-*.whl`
-inside the app source directory). You must stage this app copy manually.
+The app installs its own copy of the dbxmetagen wheel at runtime. You
+need to place the wheel, configurations, and a requirements file into
+the app source directory. Run this in a **notebook** attached to any
+cluster (the cells use `%sh` to operate on workspace files):
 
-Choose **one** option to get the wheel, then stage it:
+**Cell 1 -- Download the wheel from GitHub Releases:**
 
-### Option A: Download from GitHub Releases
-
-```bash
+```
+%sh
 # Replace X.Y.Z with the release version
+cd /Workspace/Users/$USER/dbxmetagen
 curl -L -o "apps/dbxmetagen-app/app/dbxmetagen-X.Y.Z-py3-none-any.whl" \
   "https://github.com/<org>/dbxmetagen/releases/download/vX.Y.Z/dbxmetagen-X.Y.Z-py3-none-any.whl"
 ```
 
-### Option B: Build locally then copy
+**Cell 2 -- Copy configurations:**
 
-```bash
-uv build
-cp dist/dbxmetagen-*.whl apps/dbxmetagen-app/app/
+```
+%sh
+cd /Workspace/Users/$USER/dbxmetagen
+cp -r configurations apps/dbxmetagen-app/app/configurations
 ```
 
-> **Tip:** After the first `bundle deploy` (step 6), a freshly-built
-> wheel will exist in `dist/`. On subsequent deploys you can simply
-> re-copy from there instead of rebuilding manually.
+**Cell 3 -- Generate requirements.txt:**
 
-### Stage configurations and requirements.txt
-
-```bash
-# Copy ontology/domain configurations
-cp -r configurations apps/dbxmetagen-app/app/configurations
-
-# Generate requirements.txt from template
+```
+%sh
+cd /Workspace/Users/$USER/dbxmetagen
 WHL_NAME=$(basename apps/dbxmetagen-app/app/dbxmetagen-*.whl)
 sed "s|__WHL_NAME__|${WHL_NAME}|" \
     apps/dbxmetagen-app/app/requirements.txt.template \
     > apps/dbxmetagen-app/app/requirements.txt
 ```
 
-Verify the generated `requirements.txt` ends with `./<your-wheel-name>.whl`.
+Verify that `apps/dbxmetagen-app/app/requirements.txt` ends with
+`./<your-wheel-filename>.whl`.
 
 ---
 
-## 5. First Deploy
+## 7. Update `variables.yml` (Optional)
 
-This creates all jobs, the app, and its service principal.
+Most defaults in `variables.yml` work out of the box. Review and update
+if needed:
 
-```bash
-databricks bundle validate -t dev --profile MYPROFILE
+| Variable | When to change |
+|----------|---------------|
+| `node_type` | Azure (`Standard_DS4_v2`) or GCP (`n2-highmem-8`) users -- default is AWS `i3.2xlarge` |
+| `model_endpoint` | To use a different foundation model |
+| `federation_mode` | Set `true` for federated catalogs (Redshift, Snowflake via UC) |
+| `ontology_bundle` | Change to `healthcare`, `financial_services`, etc. |
 
-databricks bundle deploy -t dev --profile MYPROFILE \
-    --var "deploying_user=$(databricks current-user me --profile MYPROFILE --output json | python3 -c 'import sys,json; print(json.load(sys.stdin)[\"userName\"])')"
-```
-
-If you know your username you can pass it directly:
-`--var "deploying_user=you@company.com"`.
-
-**Azure / GCP users:** The default `node_type` is `i3.2xlarge` (AWS).
-Pass your cloud's node type or job clusters will fail to provision:
-
-```bash
---var "node_type=Standard_D8s_v3"   # Azure example
---var "node_type=n2-standard-8"     # GCP example
-```
+You do **not** need to set `catalog_name`, `schema_name`, or
+`warehouse_id` here -- those are already set in `databricks.yml` via the
+targets block.
 
 ---
 
-## 6. Find the App Service Principal
+## 8. Deploy
 
-The first deploy created a service principal for the app. You need its
-IDs for the next steps.
+1. Open `databricks.yml` in the workspace file editor
+2. Click the **Deployments icon** (rocket) in the right sidebar
+3. Select a target (e.g. `dev`)
+4. Click **Deploy**
+5. Review the deployment summary in the confirmation dialog
+6. Click **Deploy** again to confirm
 
-```bash
-databricks apps get dbxmetagen-app --profile MYPROFILE --output json
-```
+The deployment validates the bundle, builds the wheel (via the
+`artifacts` block), creates all jobs, and deploys the app. Status
+appears in the Project output window.
 
-Look for two fields in the JSON output:
-
-| Field | Format | Used for |
-|-------|--------|----------|
-| `service_principal_id` | Numeric (e.g. `12345`) | Second deploy pass (step 6b) |
-| `service_principal_client_id` | UUID (e.g. `aaaa-bbbb-...`) | UC GRANT statements (step 7) |
-
-If `service_principal_client_id` is missing (older workspaces), resolve
-it from the numeric ID:
-
-```bash
-databricks service-principals get <numeric_id> --profile MYPROFILE --output json
-# Look for "applicationId" in the output
-```
-
-If neither CLI command works, find the service principal in the workspace
-Admin Console under **Settings > Identity and access > Service principals**.
+When deployment completes, deployed resources appear in the
+**Bundle resources** pane.
 
 ---
 
-## 6b. Second Deploy (wire SPN permissions onto jobs)
+## 9. Post-Deploy: Grant UC Permissions to the App
 
-The job definitions grant `CAN_MANAGE_RUN` to the app's service
-principal. Now that the SPN exists, redeploy so those permissions resolve:
+After the first deploy, the app gets a service principal. You need to
+grant it access to your catalog/schema.
 
-```bash
-databricks bundle deploy -t dev --profile MYPROFILE \
-    --var "deploying_user=you@company.com" \
-    --var "app_service_principal_application_id=<NUMERIC_SP_ID>"
-```
+### Find the app SPN
 
-Use the **numeric** `service_principal_id` from step 6 (not the UUID).
+1. Go to **Workspace > Apps** in the left sidebar
+2. Click `dbxmetagen-app`
+3. Note the **Service Principal** name (a UUID like `aaaa-bbbb-cccc-dddd`)
 
-Include `--var "node_type=..."` here too if you passed it in step 5.
+### Grant permissions
 
----
-
-## 7. Grant UC Permissions to the App Service Principal
-
-Run these SQL statements in the Databricks SQL editor, a notebook, or
-via the CLI. Replace `<SPN_UUID>` with the `service_principal_client_id`
-(UUID) from step 6.
+Run these in the **SQL Editor** or a notebook, replacing `<SPN_UUID>`
+with the service principal name from above:
 
 ```sql
 CREATE SCHEMA IF NOT EXISTS `<catalog>`.`<schema>`;
@@ -247,98 +210,89 @@ GRANT SELECT ON SCHEMA `<catalog>`.`<schema>` TO `<SPN_UUID>`;
 GRANT MODIFY ON SCHEMA `<catalog>`.`<schema>` TO `<SPN_UUID>`;
 ```
 
-Or via CLI:
+---
 
-```bash
-for STMT in \
-  "CREATE SCHEMA IF NOT EXISTS \`${catalog_name}\`.\`${schema_name}\`" \
-  "GRANT USE CATALOG ON CATALOG \`${catalog_name}\` TO \`<SPN_UUID>\`" \
-  "GRANT USE SCHEMA ON SCHEMA \`${catalog_name}\`.\`${schema_name}\` TO \`<SPN_UUID>\`" \
-  "GRANT CREATE TABLE ON SCHEMA \`${catalog_name}\`.\`${schema_name}\` TO \`<SPN_UUID>\`" \
-  "GRANT SELECT ON SCHEMA \`${catalog_name}\`.\`${schema_name}\` TO \`<SPN_UUID>\`" \
-  "GRANT MODIFY ON SCHEMA \`${catalog_name}\`.\`${schema_name}\` TO \`<SPN_UUID>\`"; do
-  databricks api post /api/2.0/sql/statements --profile MYPROFILE \
-    --json "{\"warehouse_id\": \"${warehouse_id}\", \"statement\": \"${STMT}\", \"wait_timeout\": \"30s\"}"
-done
+## 10. Post-Deploy: Vector Search Endpoint
+
+The analytics pipeline needs a Vector Search endpoint for embeddings
+and deep analysis.
+
+### Create the endpoint
+
+In the workspace left sidebar, go to **Compute > Vector Search** and
+click **Create endpoint**. Name it `dbxmetagen-vs` (or whatever you set
+in `__VS_ENDPOINT_NAME__`), select **Standard** type, and create.
+
+Wait until the endpoint status shows **Online**.
+
+### Grant the app SPN access
+
+Run in SQL Editor or a notebook:
+
+```sql
+-- Find the endpoint's numeric ID from the VS page URL or API
+-- Then grant via the Permissions API (use a notebook):
 ```
+
+```python
+from databricks.sdk import WorkspaceClient
+w = WorkspaceClient()
+# The Permissions API grant is done by the deploy script normally.
+# For workspace-only deploy, grant via the VS endpoint's Permissions tab in the UI.
+```
+
+Alternatively, open the Vector Search endpoint in the workspace UI,
+click **Permissions**, and add the app service principal with
+**CAN_USE** access.
 
 ---
 
-## 8. Create Vector Search Endpoint
+## 11. Start the App
 
-```bash
-databricks api post /api/2.0/vector-search/endpoints --profile MYPROFILE \
-    --json '{"name": "dbxmetagen-vs", "endpoint_type": "STANDARD"}'
-```
+1. Go to **Workspace > Apps** in the left sidebar
+2. Click `dbxmetagen-app`
+3. Click **Start** (or the app may auto-start after deploy)
 
-Check status:
-
-```bash
-databricks api get /api/2.0/vector-search/endpoints/dbxmetagen-vs --profile MYPROFILE
-```
-
-Wait until `endpoint_status.state` is `ONLINE` before using vector search
-features in the app.
-
-### Grant the app SPN `CAN_USE` on the VS endpoint
-
-`deploy.sh` and the notebook deploy pipeline do this automatically, but
-for manual deploys you must grant it yourself. The Permissions API requires
-the **numeric** endpoint ID (not the name):
-
-```bash
-# Extract the numeric endpoint ID from the GET response
-VS_EP_ID=$(databricks api get /api/2.0/vector-search/endpoints/dbxmetagen-vs \
-    --profile MYPROFILE --output json | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
-
-# Grant CAN_USE to the app SPN (use the UUID from step 6)
-databricks api patch "/api/2.0/permissions/vector-search-endpoints/${VS_EP_ID}" \
-    --profile MYPROFILE \
-    --json "{\"access_control_list\": [{\"service_principal_name\": \"<SPN_UUID>\", \"permission_level\": \"CAN_USE\"}]}"
-```
-
-Without this grant, the app's deep analysis agent and graph explorer will
-not be able to query the vector search index.
+The app is now accessible at the URL shown on the Apps page.
 
 ---
 
-## 9. Start the App
+## 12. Updating / Redeploying
 
-```bash
-databricks bundle run -t dev --profile MYPROFILE \
-    --var "deploying_user=you@company.com" \
-    --var "app_service_principal_application_id=<NUMERIC_SP_ID>" \
-    dbxmetagen_app
-```
+To update an existing deployment:
 
-The app is now accessible at **Workspace > Apps > dbxmetagen-app**.
+1. Pull latest changes from Git (right-click Git Folder > **Pull**)
+2. If templates changed, re-apply your edits to the generated files
+   (steps 3-5)
+3. If the wheel version changed, re-run the staging notebook (step 6)
+4. Open `databricks.yml` > Deployments panel > **Deploy**
 
----
-
-## 10. Updating an Existing Deployment
-
-To redeploy with a new wheel or configuration changes:
-
-1. Replace the wheel in `apps/dbxmetagen-app/app/` with the new version
-2. Regenerate `requirements.txt` (step 4)
-3. If configurations changed, re-copy `configurations/` (step 4)
-4. Run `databricks bundle deploy` (step 5 -- skip the `validate` if you want)
-5. Restart the app (step 9)
-
-`databricks bundle deploy` is idempotent -- it updates existing resources
-in place.
+Deployment is idempotent -- it updates existing resources in place.
 
 ---
 
-## 11. Teardown
+## 13. Second Deploy Pass (Wire SPN Permissions)
 
-### Remove all bundle resources (jobs + app)
+Job definitions grant `CAN_MANAGE_RUN` to the app service principal.
+Since the SPN only exists after the first deploy, you need to deploy a
+second time so those permissions resolve:
 
-```bash
-databricks bundle destroy -t dev --profile MYPROFILE
-```
+1. Open `databricks.yml` > Deployments panel > **Deploy**
 
-This deletes all jobs and the app created by the bundle.
+This is the same action as step 8. The second deploy picks up the
+now-existing SPN and applies job-level permissions.
+
+---
+
+## 14. Teardown
+
+### Remove bundle resources
+
+Open `databricks.yml` > Deployments panel > right-click the target >
+**Destroy** (or redeploy with resources removed).
+
+Alternatively, delete the app and jobs manually from their respective
+workspace pages.
 
 ### Revoke UC permissions
 
@@ -352,26 +306,12 @@ REVOKE MODIFY ON SCHEMA `<catalog>`.`<schema>` FROM `<SPN_UUID>`;
 
 ### Delete Vector Search endpoint
 
-```bash
-databricks api delete /api/2.0/vector-search/endpoints/dbxmetagen-vs \
-    --profile MYPROFILE
-```
+Delete from **Compute > Vector Search** in the workspace UI.
 
 ### Drop schema (optional -- DESTRUCTIVE)
 
-Only run this if you want to delete **all tables** in the metadata schema:
+Only if you want to delete **all tables** in the metadata schema:
 
 ```sql
 DROP SCHEMA IF EXISTS `<catalog>`.`<schema>` CASCADE;
-```
-
-### Clean up local files
-
-```bash
-rm -f databricks.yml
-rm -f apps/dbxmetagen-app/app/app.yaml
-rm -f resources/apps/dbxmetagen_app.yml
-rm -f apps/dbxmetagen-app/app/requirements.txt
-rm -f apps/dbxmetagen-app/app/dbxmetagen-*.whl
-rm -rf apps/dbxmetagen-app/app/configurations
 ```

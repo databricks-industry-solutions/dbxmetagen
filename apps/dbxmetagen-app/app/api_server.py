@@ -2939,15 +2939,8 @@ async def import_ontology(
     file: UploadFile = File(...),
     bundle_name: str = Form("imported"),
 ):
-    """Import a custom OWL/TTL file and generate a bundle YAML + tier indexes."""
+    """Import a custom OWL/TTL file, generate bundle YAML + tier indexes, persist to UC Volume."""
     import tempfile
-    bd = _find_bundle_dir()
-    if not bd:
-        return JSONResponse({"error": "Bundle directory not found"}, status_code=500)
-    safe_yaml = _safe_bundle_path(bd, f"{bundle_name}.yaml")
-    safe_subdir = _safe_bundle_path(bd, bundle_name)
-    if not safe_yaml or not safe_subdir:
-        return JSONResponse({"error": "Invalid bundle name"}, status_code=400)
 
     content = await file.read()
     suffix = ".ttl" if file.filename and file.filename.endswith(".ttl") else ".owl"
@@ -2957,33 +2950,47 @@ async def import_ontology(
 
     try:
         from dbxmetagen.ontology_import import owl_to_bundle_yaml
-        output_yaml = safe_yaml
-        bundle = owl_to_bundle_yaml(tmp_path, output_path=output_yaml, bundle_name=bundle_name)
 
-        bundle_subdir = safe_subdir
-        os.makedirs(bundle_subdir, exist_ok=True)
-        source_dest = os.path.join(bundle_subdir, f"source{suffix}")
-        with open(source_dest, "wb") as f:
-            f.write(content)
+        bundle = owl_to_bundle_yaml(tmp_path, output_path=None, bundle_name=bundle_name)
+
+        yaml_str = yaml.dump(bundle, default_flow_style=False, sort_keys=False, allow_unicode=True)
+
+        # Primary persistence: UC Volume
+        vol_path = _save_bundle_to_volume(bundle_name, yaml_str)
+
+        # Save source file to volume for provenance
+        _save_source_to_volume(bundle_name, content, suffix)
+
+        # Best-effort local write for tier generation
+        bd = _find_bundle_dir()
+        safe_yaml = _safe_bundle_path(bd, f"{bundle_name}.yaml") if bd else None
+        safe_subdir = _safe_bundle_path(bd, bundle_name) if bd else None
+
+        if safe_yaml:
+            with open(safe_yaml, "w", encoding="utf-8") as f:
+                f.write(yaml_str)
+
+        if safe_subdir:
+            os.makedirs(safe_subdir, exist_ok=True)
 
         # Generate tier indexes
-        try:
-            from pathlib import Path
+        counts = {}
+        if safe_yaml and safe_subdir:
+            try:
+                from pathlib import Path
+                from dbxmetagen.ontology_bundle_indexes import (
+                    build_tiers,
+                    entities_from_bundle,
+                    load_edge_catalog,
+                )
+                entities = entities_from_bundle(Path(safe_yaml))
+                edge_cat = load_edge_catalog(Path(safe_yaml))
+                counts = build_tiers(entities, Path(safe_subdir), edge_catalog=edge_cat or None)
+                # Upload tier files to volume
+                _upload_tier_files_to_volume(bundle_name, safe_subdir)
+            except Exception as tier_err:
+                logger.warning("Tier generation failed (bundle still created): %s", tier_err)
 
-            from dbxmetagen.ontology_bundle_indexes import (
-                build_tiers,
-                entities_from_bundle,
-                load_edge_catalog,
-            )
-
-            entities = entities_from_bundle(Path(output_yaml))
-            edge_cat = load_edge_catalog(Path(output_yaml))
-            counts = build_tiers(entities, Path(bundle_subdir), edge_catalog=edge_cat or None)
-        except Exception as tier_err:
-            logger.warning("Tier generation failed (bundle still created): %s", tier_err)
-            counts = {}
-
-        # Invalidate bundle list cache
         _yaml_cache.clear()
 
         entity_count = len(bundle.get("ontology", {}).get("entities", {}).get("definitions", {}))
@@ -2994,6 +3001,9 @@ async def import_ontology(
             "edge_count": edge_count,
             "tier_counts": counts,
             "source_stored": True,
+            "volume_path": vol_path,
+            "persisted_to_volume": vol_path is not None,
+            "has_domains": len(bundle.get("domains", {})) > 0,
         }
     except ImportError:
         return JSONResponse({"error": "rdflib required for import"}, status_code=500)
@@ -3122,6 +3132,34 @@ def _delete_bundle_from_volume(bundle_key: str) -> bool:
         return True
     except Exception:
         return False
+
+
+def _save_source_to_volume(bundle_key: str, content: bytes, suffix: str) -> Optional[str]:
+    """Persist the original OWL/TTL source file to the volume for provenance."""
+    vol_path = f"{_volume_bundle_prefix()}/{bundle_key}/source{suffix}"
+    try:
+        ws = _get_effective_client()
+        ws.files.upload(vol_path, io.BytesIO(content), overwrite=True)
+        return vol_path
+    except Exception as e:
+        logger.warning("Failed to save source to volume: %s", e)
+        return None
+
+
+def _upload_tier_files_to_volume(bundle_key: str, local_subdir: str) -> int:
+    """Upload generated tier index files from local subdir to volume. Returns count uploaded."""
+    from pathlib import Path
+    uploaded = 0
+    try:
+        ws = _get_effective_client()
+        for tier_file in Path(local_subdir).glob("*.*"):
+            if tier_file.suffix in (".json", ".yaml", ".yml"):
+                vol_path = f"{_volume_bundle_prefix()}/{bundle_key}/{tier_file.name}"
+                ws.files.upload(vol_path, open(tier_file, "rb"), overwrite=True)
+                uploaded += 1
+    except Exception as e:
+        logger.warning("Failed to upload tier files to volume: %s", e)
+    return uploaded
 
 
 def _read_bundle_metadata_fast(filepath: str) -> dict | None:

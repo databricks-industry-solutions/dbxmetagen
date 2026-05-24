@@ -578,8 +578,8 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
                     if (resp.ok) {
                       loadBundles()
                       setOntologyBundle(name)
-                      setImportStatus(`Imported "${name}": ${data.entity_count} entities, ${data.edge_count} edges`)
-                      setTimeout(() => setImportStatus(null), 6000)
+                      setImportStatus(`Imported "${name}": ${data.entity_count} entities, ${data.edge_count} edges. Select a Domain Taxonomy below to enable domain classification.`)
+                      setTimeout(() => setImportStatus(null), 10000)
                     } else {
                       setError(`Ontology import failed: ${data.error || 'Unknown error'}`)
                     }
@@ -588,18 +588,23 @@ export default function BatchJobs({ onNavigate, pipelineStats }) {
                 }} />
                 Import ontology file (.ttl, .owl, or .rdf)
               </label>
+              <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">Imported ontologies provide entity types and relationships. For domain classification, pair with a Domain Taxonomy below.</p>
               {importStatus && <p className="text-xs text-green-600 dark:text-green-400 mt-1">{importStatus}</p>}
             </div>
             <div>
-              <label className="section-title mb-1.5 block">Business Domain List (Legacy)</label>
+              <label className="section-title mb-1.5 block">Domain Taxonomy</label>
               <select value={domainConfig} onChange={e => setDomainConfig(e.target.value)} className="select-base">
-                <option value="">{ontologyBundle ? '(Use domains from selected ontology)' : '(No domain list selected)'}</option>
+                <option value="">{ontologyBundle && bundles.find(b => b.key === ontologyBundle)?.custom ? '(Select a domain taxonomy for classification)' : ontologyBundle ? '(Use domains from selected ontology)' : '(No domain taxonomy selected)'}</option>
                 {domainConfigs.map(d => (
                   <option key={d.key} value={d.key}>{d.name} ({d.domain_count} domains)</option>
                 ))}
               </select>
-              {ontologyBundle && <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">Replaces the default domain list from the selected ontology.</p>}
-              <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">Do not use unless you know why you are using this. Select an Industry Ontology above instead -- ontology bundles include domain definitions along with entity types, properties, and relationships.</p>
+              {ontologyBundle && bundles.find(b => b.key === ontologyBundle)?.custom && (
+                <p className="text-xs text-blue-600 dark:text-blue-400 mt-1">Imported ontologies don't include domain definitions. Select a domain taxonomy that matches your data's industry to enable domain classification.</p>
+              )}
+              {ontologyBundle && !bundles.find(b => b.key === ontologyBundle)?.custom && (
+                <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">Overrides the domain list included in the selected ontology bundle.</p>
+              )}
             </div>
           </div>
         </details>
