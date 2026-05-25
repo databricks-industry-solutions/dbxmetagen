@@ -46,34 +46,39 @@ def owl_to_bundle_yaml(
     source_label = _detect_source_ontology(g) or "OWL"
 
     entities: Dict[str, Dict[str, Any]] = {}
-    for cls in g.subjects(RDF.type, OWL.Class):
-        name = _local_name(cls)
-        if not name or name.startswith("_"):
-            continue
-        comment = _get_comment(g, cls, RDFS) or f"{name} entity"
-        parents = [_local_name(p) for p in g.objects(cls, RDFS.subClassOf) if _local_name(p)]
+    seen_uris: set = set()
+    for cls_type in (OWL.Class, RDFS.Class):
+        for cls in g.subjects(RDF.type, cls_type):
+            if cls in seen_uris:
+                continue
+            seen_uris.add(cls)
+            name = _local_name(cls)
+            if not name or name.startswith("_"):
+                continue
+            comment = _get_comment(g, cls, RDFS) or f"{name} entity"
+            parents = [_local_name(p) for p in g.objects(cls, RDFS.subClassOf) if _local_name(p)]
 
-        entry: Dict[str, Any] = {
-            "description": comment,
-            "keywords": [name.lower()],
-            "typical_attributes": [],
-            "relationships": {},
-            "properties": {},
-        }
-        if parents:
-            entry["parent"] = parents[0]
-
-        if format_version.startswith("2"):
-            entry["uri"] = str(cls)
-            entry["source_ontology"] = source_label
+            entry: Dict[str, Any] = {
+                "description": comment,
+                "keywords": [name.lower()],
+                "typical_attributes": [],
+                "relationships": {},
+                "properties": {},
+            }
             if parents:
-                entry["subclass_of"] = parents[0]
-            equiv = list(g.objects(cls, OWL.equivalentClass))
-            if equiv:
-                entry["owl_equivalent_class"] = str(equiv[0])
-            entry["owl_properties"] = []
+                entry["parent"] = parents[0]
 
-        entities[name] = entry
+            if format_version.startswith("2"):
+                entry["uri"] = str(cls)
+                entry["source_ontology"] = source_label
+                if parents:
+                    entry["subclass_of"] = parents[0]
+                equiv = list(g.objects(cls, OWL.equivalentClass))
+                if equiv:
+                    entry["owl_equivalent_class"] = str(equiv[0])
+                entry["owl_properties"] = []
+
+            entities[name] = entry
 
     # Data properties
     for prop in g.subjects(RDF.type, OWL.DatatypeProperty):
@@ -143,6 +148,11 @@ def owl_to_bundle_yaml(
                         "cardinality": "many-to-one",
                         "inverse": inverse_props[0] if inverse_props else None,
                     })
+
+    # Schema.org-style properties: schema:domainIncludes / schema:rangeIncludes
+    # These are used by Schema.org (and similar ontologies) instead of
+    # owl:ObjectProperty with rdfs:domain/range.
+    _extract_schema_style_properties(g, rdflib, entities, edge_catalog, format_version)
 
     metadata: Dict[str, Any] = {
         "name": bundle_name,
@@ -227,6 +237,63 @@ def migrate_v1_to_v2(bundle: Dict[str, Any]) -> Dict[str, Any]:
 
     logger.info("Migrated bundle '%s' from v1 to v2 (%d entities)", bundle_name, len(definitions))
     return bundle
+
+
+_SCHEMA_DATATYPE_NAMES = frozenset({
+    "Text", "Number", "Integer", "Float", "Boolean", "Date", "DateTime",
+    "Time", "URL", "Duration", "Distance", "Energy", "Mass",
+})
+
+
+def _extract_schema_style_properties(
+    g, rdflib_mod, entities: Dict[str, Dict], edge_catalog: Dict[str, Dict],
+    format_version: str,
+) -> None:
+    """Extract edges via schema:domainIncludes/rangeIncludes (Schema.org convention)."""
+    SCHEMA_DOMAIN = rdflib_mod.URIRef("https://schema.org/domainIncludes")
+    SCHEMA_RANGE = rdflib_mod.URIRef("https://schema.org/rangeIncludes")
+
+    if not any(g.triples((None, SCHEMA_DOMAIN, None))):
+        return
+
+    entity_names = set(entities.keys()) - _SCHEMA_DATATYPE_NAMES
+
+    for prop, _, domain_cls in g.triples((None, SCHEMA_DOMAIN, None)):
+        domain_name = _local_name(domain_cls)
+        if not domain_name or domain_name not in entities:
+            continue
+        prop_name = _local_name(prop)
+        if not prop_name:
+            continue
+
+        ranges = [_local_name(r) for r in g.objects(prop, SCHEMA_RANGE) if _local_name(r)]
+        obj_ranges = [r for r in ranges if r in entity_names]
+        data_ranges = [r for r in ranges if r in _SCHEMA_DATATYPE_NAMES]
+
+        if obj_ranges:
+            target = obj_ranges[0]
+            if prop_name not in edge_catalog:
+                edge_entry: Dict[str, Any] = {
+                    "symmetric": False, "category": "business",
+                    "domain": domain_name, "range": target,
+                }
+                if format_version.startswith("2"):
+                    edge_entry["uri"] = str(prop)
+                    edge_entry["owl_type"] = "Property"
+                edge_catalog[prop_name] = edge_entry
+
+            entities[domain_name]["relationships"].setdefault(prop_name, {
+                "target": target, "cardinality": "unknown",
+            })
+            entities[domain_name]["properties"].setdefault(prop_name, {
+                "kind": "object_property", "role": "object_property",
+                "edge": prop_name, "target_entity": target,
+                "typical_attributes": [f"{prop_name}_id"],
+            })
+        elif data_ranges:
+            attrs = entities[domain_name]["typical_attributes"]
+            if prop_name not in attrs:
+                attrs.append(prop_name)
 
 
 def _detect_source_ontology(g) -> Optional[str]:

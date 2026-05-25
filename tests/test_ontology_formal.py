@@ -303,6 +303,97 @@ class TestOntologyImportV2(unittest.TestCase):
             os.unlink(f.name)
 
 
+class TestSchemaOrgImport(unittest.TestCase):
+    """Verify owl_to_bundle_yaml handles Schema.org-style ontologies
+    (rdfs:Class + schema:domainIncludes/rangeIncludes)."""
+
+    def test_rdfs_class_entities_discovered(self):
+        try:
+            import rdflib  # noqa: F401
+        except ImportError:
+            self.skipTest("rdflib not installed")
+
+        with tempfile.NamedTemporaryFile(suffix=".ttl", mode="w", delete=False) as f:
+            f.write("""
+            @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+            @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+            @prefix schema: <https://schema.org/> .
+            schema:Person rdf:type rdfs:Class ; rdfs:comment "A person" .
+            schema:Organization rdf:type rdfs:Class ; rdfs:comment "An organization" .
+            """)
+            f.flush()
+            from dbxmetagen.ontology_import import owl_to_bundle_yaml
+            bundle = owl_to_bundle_yaml(f.name, bundle_name="test_schema")
+            defs = bundle["ontology"]["entities"]["definitions"]
+            self.assertIn("Person", defs)
+            self.assertIn("Organization", defs)
+            os.unlink(f.name)
+
+    def test_schema_domain_includes_edges(self):
+        try:
+            import rdflib  # noqa: F401
+        except ImportError:
+            self.skipTest("rdflib not installed")
+
+        with tempfile.NamedTemporaryFile(suffix=".ttl", mode="w", delete=False) as f:
+            f.write("""
+            @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+            @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+            @prefix schema: <https://schema.org/> .
+            schema:Person rdf:type rdfs:Class ; rdfs:comment "A person" .
+            schema:Organization rdf:type rdfs:Class ; rdfs:comment "An org" .
+            schema:worksFor rdf:type rdf:Property ;
+                schema:domainIncludes schema:Person ;
+                schema:rangeIncludes schema:Organization .
+            schema:name rdf:type rdf:Property ;
+                schema:domainIncludes schema:Person ;
+                schema:rangeIncludes schema:Text .
+            """)
+            f.flush()
+            from dbxmetagen.ontology_import import owl_to_bundle_yaml
+            bundle = owl_to_bundle_yaml(f.name, bundle_name="test_schema")
+            edge_catalog = bundle["ontology"]["edge_catalog"]
+            self.assertIn("worksFor", edge_catalog)
+            self.assertEqual(edge_catalog["worksFor"]["domain"], "Person")
+            self.assertEqual(edge_catalog["worksFor"]["range"], "Organization")
+            # "name" targets Text (datatype), should become typical_attribute not edge
+            self.assertNotIn("name", edge_catalog)
+            person = bundle["ontology"]["entities"]["definitions"]["Person"]
+            self.assertIn("worksFor", person["relationships"])
+            self.assertIn("name", person["typical_attributes"])
+            os.unlink(f.name)
+
+    def test_owl_properties_still_work(self):
+        """Ensure standard OWL ontologies aren't affected by the Schema.org fallback."""
+        try:
+            import rdflib  # noqa: F401
+        except ImportError:
+            self.skipTest("rdflib not installed")
+
+        with tempfile.NamedTemporaryFile(suffix=".ttl", mode="w", delete=False) as f:
+            f.write("""
+            @prefix owl: <http://www.w3.org/2002/07/owl#> .
+            @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+            @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+            @prefix ex: <http://example.org/> .
+            ex:Patient rdf:type owl:Class ; rdfs:comment "A patient" .
+            ex:Encounter rdf:type owl:Class ; rdfs:comment "A visit" .
+            ex:hasEncounter rdf:type owl:ObjectProperty ;
+                rdfs:domain ex:Patient ; rdfs:range ex:Encounter .
+            """)
+            f.flush()
+            from dbxmetagen.ontology_import import owl_to_bundle_yaml
+            bundle = owl_to_bundle_yaml(f.name, bundle_name="test_owl")
+            defs = bundle["ontology"]["entities"]["definitions"]
+            self.assertIn("Patient", defs)
+            self.assertIn("Encounter", defs)
+            edge_catalog = bundle["ontology"]["edge_catalog"]
+            self.assertIn("hasEncounter", edge_catalog)
+            self.assertEqual(edge_catalog["hasEncounter"]["domain"], "Patient")
+            self.assertEqual(edge_catalog["hasEncounter"]["range"], "Encounter")
+            os.unlink(f.name)
+
+
 class TestMigrateV1ToV2(unittest.TestCase):
 
     def test_migration_adds_fields(self):
