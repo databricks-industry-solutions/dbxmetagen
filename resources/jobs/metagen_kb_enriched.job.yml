@@ -61,7 +61,7 @@ resources:
           max_retries: 1
           min_retry_interval_millis: 600000
           timeout_seconds: 86400
-          environment_key: default
+          job_cluster_key: metadata_cluster
           notebook_task:
             notebook_path: ../../notebooks/generate_metadata.py
             base_parameters:
@@ -84,6 +84,8 @@ resources:
               model: "{{job.parameters.model}}"
               spacy_model_names: "{{job.parameters.spacy_model_names}}"
               comment_style: "{{job.parameters.comment_style}}"
+          libraries:
+            - whl: ../../dist/*.whl
 
         - task_key: build_knowledge_base
           max_retries: 1
@@ -91,12 +93,14 @@ resources:
           timeout_seconds: 14400
           depends_on:
             - task_key: generate_comments
-          environment_key: default
+          job_cluster_key: metadata_cluster
           notebook_task:
             notebook_path: ../../notebooks/build_knowledge_base.py
             base_parameters:
               catalog_name: "{{job.parameters.catalog_name}}"
               schema_name: "{{job.parameters.schema_name}}"
+          libraries:
+            - whl: ../../dist/*.whl
 
         - task_key: build_column_kb
           max_retries: 1
@@ -104,12 +108,14 @@ resources:
           timeout_seconds: 14400
           depends_on:
             - task_key: generate_comments
-          environment_key: default
+          job_cluster_key: metadata_cluster
           notebook_task:
             notebook_path: ../../notebooks/build_column_kb.py
             base_parameters:
               catalog_name: "{{job.parameters.catalog_name}}"
               schema_name: "{{job.parameters.schema_name}}"
+          libraries:
+            - whl: ../../dist/*.whl
 
         - task_key: generate_pi
           max_retries: 1
@@ -118,7 +124,7 @@ resources:
           depends_on:
             - task_key: build_knowledge_base
             - task_key: build_column_kb
-          environment_key: default
+          job_cluster_key: metadata_cluster
           notebook_task:
             notebook_path: ../../notebooks/generate_metadata.py
             base_parameters:
@@ -142,6 +148,8 @@ resources:
               include_lineage: "{{job.parameters.include_lineage}}"
               model: "{{job.parameters.model}}"
               spacy_model_names: "{{job.parameters.spacy_model_names}}"
+          libraries:
+            - whl: ../../dist/*.whl
 
         - task_key: generate_domain
           max_retries: 1
@@ -150,7 +158,7 @@ resources:
           depends_on:
             - task_key: build_knowledge_base
             - task_key: build_column_kb
-          environment_key: default
+          job_cluster_key: metadata_cluster
           notebook_task:
             notebook_path: ../../notebooks/generate_metadata.py
             base_parameters:
@@ -174,10 +182,19 @@ resources:
               include_lineage: "{{job.parameters.include_lineage}}"
               model: "{{job.parameters.model}}"
               spacy_model_names: "{{job.parameters.spacy_model_names}}"
+          libraries:
+            - whl: ../../dist/*.whl
 
-      environments:
-        - environment_key: default
-          spec:
-            environment_version: "2"
-            dependencies:
-              - ../../dist/*.whl
+      job_clusters:
+        - job_cluster_key: metadata_cluster
+          new_cluster:
+            apply_policy_default_values: true
+            policy_id: ${var.policy_id}
+            spark_version: 17.3.x-cpu-ml-scala2.13
+            node_type_id: ${var.node_type}
+            data_security_mode: SINGLE_USER
+            autoscale:
+              min_workers: 2
+              max_workers: 4
+            custom_tags:
+              project: dbxmetagen
