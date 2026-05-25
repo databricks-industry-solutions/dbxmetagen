@@ -387,6 +387,8 @@ resources:
               apply_ddl: "false"
               dry_run: "false"
               incremental: "{{job.parameters.incremental}}"
+              same_schema_bonus: "0.10"
+              cross_schema_penalty: "-0.10"
               table_names: "{{job.parameters.table_names}}"
               federation_mode: "{{job.parameters.federation_mode}}"
 

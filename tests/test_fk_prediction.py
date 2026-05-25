@@ -995,15 +995,20 @@ class TestSystemColumnExclusion:
         assert "is_system_col" in src
 
     def test_rule_score_gates_new_signals_by_system_flag(self):
-        """same_schema, same_domain, sim_floor are all multiplied by not_system."""
+        """schema_signal, same_domain, sim_floor are all multiplied by not_system."""
         src = inspect.getsource(FKPredictor.rule_score)
-        assert "same_schema * 0.05 * not_system" in src
+        assert "schema_signal * not_system" in src
         assert "same_domain * 0.05 * not_system" in src
         assert "sim_floor * not_system" in src
 
     def test_predict_fk_accepts_system_column_patterns(self):
         sig = inspect.signature(predict_foreign_keys)
         assert "system_column_patterns" in sig.parameters
+
+    def test_predict_fk_accepts_schema_penalty_params(self):
+        sig = inspect.signature(predict_foreign_keys)
+        assert "same_schema_bonus" in sig.parameters
+        assert "cross_schema_penalty" in sig.parameters
 
 
 # --- TestDomainSignal ---
@@ -1049,7 +1054,20 @@ class TestNewRuleScoreSignals:
 
     def test_same_schema_signal_in_source(self):
         src = inspect.getsource(FKPredictor.rule_score)
-        assert "same_schema" in src
+        assert "schema_signal" in src
+        assert "same_schema_bonus" in src
+        assert "cross_schema_penalty" in src
+
+    def test_cross_schema_penalty_default_values(self):
+        cfg = FKPredictionConfig(catalog_name="c", schema_name="s")
+        assert cfg.same_schema_bonus == 0.10
+        assert cfg.cross_schema_penalty == -0.10
+
+    def test_cross_schema_penalty_configurable(self):
+        cfg = FKPredictionConfig(catalog_name="c", schema_name="s",
+                                 same_schema_bonus=0.20, cross_schema_penalty=-0.05)
+        assert cfg.same_schema_bonus == 0.20
+        assert cfg.cross_schema_penalty == -0.05
 
     def test_same_domain_signal_in_source(self):
         src = inspect.getsource(FKPredictor.rule_score)

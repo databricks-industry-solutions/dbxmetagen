@@ -45,6 +45,10 @@ resources:
           default: "false"
         - name: incremental
           default: "true"
+        - name: same_schema_bonus
+          default: "0.10"
+        - name: cross_schema_penalty
+          default: "-0.10"
         - name: table_names
           default: ""
 
@@ -73,6 +77,8 @@ resources:
               federation_mode: "{{job.parameters.federation_mode}}"
               dry_run: "{{job.parameters.dry_run}}"
               incremental: "{{job.parameters.incremental}}"
+              same_schema_bonus: "{{job.parameters.same_schema_bonus}}"
+              cross_schema_penalty: "{{job.parameters.cross_schema_penalty}}"
               table_names: "{{job.parameters.table_names}}"
 
       environments:

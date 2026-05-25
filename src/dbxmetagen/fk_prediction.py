@@ -117,6 +117,8 @@ class FKPredictionConfig:
     apply_ddl: bool = False
     dry_run: bool = False
     ontology_match_bonus_weight: float = 0.15
+    same_schema_bonus: float = 0.10
+    cross_schema_penalty: float = -0.10
     rule_score_min_for_ai: float = 0.50
     # When True, skip or narrow expensive steps via _compute_incremental_state / _changed_tables.
     incremental: bool = True
@@ -1558,7 +1560,10 @@ class FKPredictor:
 
         schema_a = F.element_at(F.split(F.col("table_a"), "\\."), 2)
         schema_b = F.element_at(F.split(F.col("table_b"), "\\."), 2)
-        same_schema = F.when(schema_a == schema_b, 1.0).otherwise(0.0)
+        schema_signal = F.when(
+            schema_a == schema_b,
+            F.lit(self.config.same_schema_bonus),
+        ).otherwise(F.lit(self.config.cross_schema_penalty))
 
         same_domain = domain_sig
 
@@ -1589,7 +1594,7 @@ class FKPredictor:
                 + entity_match * bonus
                 + lineage_sig * 0.1
                 + source_bonus * 0.10
-                + same_schema * 0.05 * not_system
+                + schema_signal * not_system
                 + same_domain * 0.05 * not_system
                 + sim_floor * not_system
                 + pk_match * 0.10 * not_system,
@@ -2355,6 +2360,8 @@ def predict_foreign_keys(
     max_ai_candidates: int = 200,
     rule_score_min_for_ai: float = 0.50,
     max_candidates_per_table_pair: int = 5,
+    same_schema_bonus: float = 0.10,
+    cross_schema_penalty: float = -0.10,
     system_column_patterns: Tuple[str, ...] = _DEFAULT_SYSTEM_COL_PATTERNS,
     sweep_stale: bool = False,
     table_names: list = None,
@@ -2383,6 +2390,8 @@ def predict_foreign_keys(
         max_ai_candidates=max_ai_candidates,
         rule_score_min_for_ai=rule_score_min_for_ai,
         max_candidates_per_table_pair=max_candidates_per_table_pair,
+        same_schema_bonus=same_schema_bonus,
+        cross_schema_penalty=cross_schema_penalty,
         system_column_patterns=system_column_patterns,
         table_names=table_names or [],
         federation_mode=federation_mode,
