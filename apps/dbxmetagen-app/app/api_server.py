@@ -3092,13 +3092,16 @@ def _list_volume_bundles() -> list[dict]:
                 raw = yaml.safe_load(resp.contents.read())
                 meta = (raw or {}).get("metadata", {})
                 entity_count = len((raw or {}).get("ontology", {}).get("entities", {}).get("definitions", {}))
+                edge_count = len((raw or {}).get("ontology", {}).get("edge_catalog", {}))
                 domain_count = len((raw or {}).get("domains", {}))
                 bundles.append({
                     "key": bundle_key,
                     "name": meta.get("name", bundle_key),
                     "industry": meta.get("industry", "general"),
                     "description": meta.get("description", ""),
+                    "standards_alignment": meta.get("standards_alignment", ""),
                     "entity_count": entity_count,
+                    "edge_count": edge_count,
                     "domain_count": domain_count,
                     "format_version": meta.get("format_version", "2.0"),
                     "bundle_type": meta.get("bundle_type", "ontology"),
