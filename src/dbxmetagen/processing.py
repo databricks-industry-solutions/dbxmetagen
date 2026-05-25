@@ -1352,38 +1352,7 @@ def ensure_log_table(spark_session, catalog_name: str, schema_name: str) -> None
 def run_log_table_ddl(config):
     """Run the unified log table DDL."""
     spark = SparkSession.builder.getOrCreate()
-    spark.sql(
-        f"""CREATE TABLE IF NOT EXISTS {config.catalog_name}.{config.schema_name}.metadata_generation_log (
-        metadata_type STRING,
-        table STRING, 
-        tokenized_table STRING, 
-        ddl_type STRING, 
-        column_name STRING,
-        _created_at TIMESTAMP,
-        column_content STRING,
-        classification STRING,
-        type STRING,
-        confidence DOUBLE,
-        presidio_results STRING,
-        domain STRING,
-        subdomain STRING,
-        recommended_domain STRING,
-        recommended_subdomain STRING,
-        reasoning STRING,
-        metadata_summary STRING,
-        catalog STRING, 
-        schema STRING, 
-        table_name STRING, 
-        ddl STRING, 
-        current_user STRING, 
-        model STRING, 
-        sample_size INT, 
-        max_tokens INT, 
-        temperature DOUBLE, 
-        columns_per_call INT, 
-        status STRING
-    )"""
-    )
+    ensure_log_table(spark, config.catalog_name, config.schema_name)
 
 
 def output_df_pandas_to_tsv(df, output_file):

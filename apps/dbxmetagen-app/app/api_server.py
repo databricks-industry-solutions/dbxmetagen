@@ -3155,7 +3155,8 @@ def _upload_tier_files_to_volume(bundle_key: str, local_subdir: str) -> int:
         for tier_file in Path(local_subdir).glob("*.*"):
             if tier_file.suffix in (".json", ".yaml", ".yml"):
                 vol_path = f"{_volume_bundle_prefix()}/{bundle_key}/{tier_file.name}"
-                ws.files.upload(vol_path, open(tier_file, "rb"), overwrite=True)
+                with open(tier_file, "rb") as fh:
+                    ws.files.upload(vol_path, fh, overwrite=True)
                 uploaded += 1
     except Exception as e:
         logger.warning("Failed to upload tier files to volume: %s", e)
@@ -5985,8 +5986,6 @@ def list_metric_views(status: Optional[str] = None):
     except HTTPException as e:
         if e.status_code != 404:
             raise
-    except Exception:
-        pass
 
     # Supplement with information_schema so MVs in UC are always discoverable
     if want_applied:

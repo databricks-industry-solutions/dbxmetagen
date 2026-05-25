@@ -431,11 +431,17 @@ else:
 # Test F1: Run profiling with federation_mode=True against the same Delta tables.
 # This exercises the federated code path (pushdown-safe aggregates only) without
 # needing a real federated catalog.
+# Bump KB timestamps so the incremental watermark sees these tables as changed.
+spark.sql(f"""
+    UPDATE {catalog_name}.{profiling_test_schema}.table_knowledge_base
+    SET updated_at = current_timestamp()
+""")
+
 fed_result = run_profiling(
     spark=spark,
     catalog_name=catalog_name,
     schema_name=profiling_test_schema,
-    federation_mode=True
+    federation_mode=True,
 )
 
 assert fed_result["tables_profiled"] == 3, \
